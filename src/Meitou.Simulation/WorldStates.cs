@@ -6,57 +6,100 @@ using Meitou.Data.Gameplay;
 namespace Meitou.Simulation;
 
 /// <summary>
-/// The WORLD_EVENT_STATEs answered live, as the original's <c>FUN_1409a7e00</c> (docs/game/factions-squads-towns.md "Unique characters", queries): a state holds when every
-/// <c>NPC is</c> unique has its state (and, with <c>player involvement</c>, one other than alive has the player flag), no <c>NPC is NOT</c> unique has its state (with the player
-/// flag needed for an alive one), and each <c>player ally</c> / <c>player enemy</c> faction is or is not the player's ally (relation ≥ 50) / hostile to it (≤ -30) as the entry
-/// says. A unique with no entry is alive and the player not involved, so a new game answers by the data alone. Nothing is saved: the unique table and the relations are.
-/// <para>The population refreshes the unique states it reads at each look (<see cref="Refresh"/>, serial); a query reads that copy, so the build threads may ask at any time.</para>
+/// One global answer to WORLD_EVENT_STATE queries. Original single-player meanings are in docs/game/factions-squads-towns.md.
+/// Multiplayer evaluates every player-dependent condition against the same faction witness; it never combines different players' deeds or diplomacy.
+/// Worker queries read an immutable snapshot, including diplomacy, prepared at the population boundary.
 /// </summary>
 public sealed class WorldStates(GameDatabase db, FactionRelations relations) : IWorldStates
 {
     readonly ConcurrentDictionary<string, WorldEventStateData?> states = new(StringComparer.Ordinal);
-    volatile Snapshot current = new(new Dictionary<string, (UniqueState, bool)>(StringComparer.Ordinal), -1);
-    long version = -1;
+    volatile Snapshot current = new(new Dictionary<string, UniqueFact>(StringComparer.Ordinal), [], new Dictionary<string, int>(StringComparer.Ordinal), -1);
+    long uniqueVersion = -1;
 
-    sealed record Snapshot(IReadOnlyDictionary<string, (UniqueState State, bool Player)> Uniques, int Player);
+    sealed record UniqueFact(UniqueState State, bool LegacyPlayer, IReadOnlySet<int> Factions);
+    static readonly UniqueFact NeverMade = new(UniqueState.Alive, false, new HashSet<int>());
+    sealed record FactionFact(int Index, float[] Relations);
+    sealed record Snapshot(IReadOnlyDictionary<string, UniqueFact> Uniques, FactionFact[] Players,
+        IReadOnlyDictionary<string, int> FactionIndices, int LegacyPlayer);
 
-    /// <summary>Takes the unique table's states and the player's faction (serial phase); cheap when nothing changed.</summary>
-    public void Refresh(UniqueCharacters uniques, int playerFaction)
+    public void Refresh(UniqueCharacters uniques, int playerFaction) => Capture(uniques, [playerFaction], playerFaction);
+
+    /// <summary>Player factions are persistent membership/ownership, not the currently connected clients.</summary>
+    public void Refresh(UniqueCharacters uniques, IEnumerable<int> playerFactions, int legacyPlayerFaction = -1) =>
+        Capture(uniques, playerFactions.Where(relations.Contains).Distinct().Order().ToArray(), legacyPlayerFaction);
+
+    void Capture(UniqueCharacters uniques, int[] players, int legacyPlayer)
     {
-        if (uniques.Version == version && current.Player == playerFaction) return;
-        version = uniques.Version;
-        var copy = new Dictionary<string, (UniqueState, bool)>(uniques.Count, StringComparer.Ordinal);
-        foreach (var (id, e) in uniques.All) copy[id] = (e.State, e.Player);
-        current = new Snapshot(copy, playerFaction);
+        var copy = current.Uniques;
+        if (uniqueVersion != uniques.Version)
+        {
+            var made = new Dictionary<string, UniqueFact>(uniques.Count, StringComparer.Ordinal);
+            foreach (var (id, entry) in uniques.All)
+                made[id] = new UniqueFact(entry.State, entry.Player, entry.InvolvedFactions.ToHashSet());
+            copy = made;
+            uniqueVersion = uniques.Version;
+        }
+        var indices = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int f = 0; f < relations.Count; f++) indices.TryAdd(relations.Factions[f].Id, f);
+        var facts = new FactionFact[players.Length];
+        for (int p = 0; p < players.Length; p++)
+        {
+            var values = relations.Contains(players[p]) ? new float[relations.Count] : [];
+            for (int f = 0; f < values.Length; f++) values[f] = relations.Get(f, players[p]);
+            facts[p] = new FactionFact(players[p], values);
+        }
+        current = new Snapshot(copy, facts, indices, legacyPlayer);
     }
 
-    /// <summary>The state's record, read once (null: not a WORLD_EVENT_STATE).</summary>
     public WorldEventStateData? Find(string id) =>
         states.GetOrAdd(id, static (key, d) => d.Find(key) is { Type: FcsRecordType.WORLD_EVENT_STATE } r ? WorldEventStateData.From(d, r) : null, db);
 
     public bool IsTrue(string worldStateId)
     {
-        if (Find(worldStateId) is not { } s) return false;
-        var now = current;
-        (UniqueState State, bool Player) Of(string character) => now.Uniques.TryGetValue(character, out var e) ? e : (UniqueState.Alive, false);
-        foreach (var (character, wanted) in s.NpcIs)
+        if (Find(worldStateId) is not { } state) return false;
+        var snapshot = current;
+        bool needsFaction = state.PlayerAlly.Count + state.PlayerEnemy.Count > 0
+            || state.PlayerInvolvement && (state.NpcIs.Any(n => n.State != 1) || state.NpcIsNot.Any(n => n.State == 1));
+        if (!needsFaction) return MatchesUniques(state, snapshot, -1);
+        foreach (var faction in snapshot.Players)
+            if (MatchesUniques(state, snapshot, faction.Index) && MatchesRelations(state, snapshot, faction)) return true;
+        return false;
+    }
+
+    /// <summary>Evaluates every player-dependent clause using this one persistent faction witness.</summary>
+    public bool IsTrueForFaction(string worldStateId, int faction)
+    {
+        if (Find(worldStateId) is not { } state) return false;
+        var snapshot = current;
+        var player = snapshot.Players.FirstOrDefault(p => p.Index == faction);
+        return player is not null && MatchesUniques(state, snapshot, faction) && MatchesRelations(state, snapshot, player);
+    }
+
+    static bool MatchesUniques(WorldEventStateData state, Snapshot snapshot, int faction)
+    {
+        UniqueFact Of(string id) => snapshot.Uniques.TryGetValue(id, out var value) ? value : NeverMade;
+        bool Involved(UniqueFact fact) => fact.Factions.Count > 0 ? fact.Factions.Contains(faction)
+            : fact.LegacyPlayer && faction == snapshot.LegacyPlayer;
+        foreach (var (id, wanted) in state.NpcIs)
         {
-            var (state, player) = Of(character);
-            if ((int)state != wanted) return false;
-            if (s.PlayerInvolvement && wanted != 1 && !player) return false;
+            var fact = Of(id);
+            if ((int)fact.State != wanted || state.PlayerInvolvement && wanted != 1 && !Involved(fact)) return false;
         }
-        foreach (var (character, unwanted) in s.NpcIsNot)
+        foreach (var (id, unwanted) in state.NpcIsNot)
         {
-            var (state, player) = Of(character);
-            if ((int)state == unwanted) return false;
-            if (s.PlayerInvolvement && unwanted == 1 && !player) return false;
+            var fact = Of(id);
+            if ((int)fact.State == unwanted || state.PlayerInvolvement && unwanted == 1 && !Involved(fact)) return false;
         }
-        int p = now.Player;
-        if (s.PlayerAlly.Count + s.PlayerEnemy.Count > 0 && !relations.Contains(p)) return false;
-        foreach (var (faction, ally) in s.PlayerAlly)
-            if (relations.IndexOf(faction) is var f and >= 0 && relations.IsAlly(f, p) != ally) return false;
-        foreach (var (faction, enemy) in s.PlayerEnemy)
-            if (relations.IndexOf(faction) is var f and >= 0 && relations.IsHostile(f, p) != enemy) return false;
+        return true;
+    }
+
+    static bool MatchesRelations(WorldEventStateData state, Snapshot snapshot, FactionFact player)
+    {
+        if (state.PlayerAlly.Count + state.PlayerEnemy.Count > 0 && player.Relations.Length == 0) return false;
+        foreach (var (id, expected) in state.PlayerAlly)
+            if (snapshot.FactionIndices.TryGetValue(id, out int f) && (player.Relations[f] >= FactionRelations.AllyThreshold) != expected) return false;
+        foreach (var (id, expected) in state.PlayerEnemy)
+            if (snapshot.FactionIndices.TryGetValue(id, out int f) && (player.Relations[f] <= FactionRelations.HostileThreshold) != expected) return false;
         return true;
     }
 }

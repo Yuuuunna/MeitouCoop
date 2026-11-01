@@ -8,6 +8,8 @@ public sealed record PathResult(IReadOnlyList<Vector3> Points)
 {
     public static readonly PathResult NotFound = new([]);
     public bool Found => Points.Count > 0;
+    /// <summary>Only the Exact prefix is usable; retain the order while required navigation is prepared.</summary>
+    public bool WaitingForNavigation { get; init; }
     /// <summary>
     /// How many of the points, from the start, follow the real walkable surface; the rest are a provisional long-range route over the terrain through
     /// zones whose navmesh is not loaded, to be asked for again on the way (all of them for an ordinary path).

@@ -17,6 +17,9 @@ public sealed class UniqueEntry
     public UniqueState State { get; set; } = UniqueState.Alive;
     /// <summary>The player killed, imprisoned or holds it.</summary>
     public bool Player { get; set; }
+    /// <summary>Runtime faction provenance for multiplayer deeds. Empty with Player=true denotes a legacy single-player save.</summary>
+    public IReadOnlySet<int> InvolvedFactions => involvedFactions;
+    internal readonly HashSet<int> involvedFactions = [];
     /// <summary>The handle a loaded save gave it, written back while its character has not been made in this world.</summary>
     public Hand SavedHandle { get; set; } = Hand.Null;
 }
@@ -96,22 +99,24 @@ public sealed class UniqueCharacters
     }
 
     /// <summary>Death (<c>FUN_1407a6200</c>): state 0; the player flag is set (never cleared here) when the killer is the player's.</summary>
-    public void Died(string recordId, bool byPlayer)
+    public void Died(string recordId, bool byPlayer, int? faction = null)
     {
         Version++;
         var e = Entry(recordId);
         e.State = UniqueState.Dead;
         e.Player |= byPlayer;
+        if (byPlayer && faction is >= 0) e.involvedFactions.Add(faction.Value);
     }
 
     /// <summary>Imprisoned or captured (<c>FUN_140330600</c>): state 2 unless dead; the player flag set when the captor is the player's.</summary>
-    public void Captured(string recordId, bool byPlayer)
+    public void Captured(string recordId, bool byPlayer, int? faction = null)
     {
         var e = Entry(recordId);
         if (e.State == UniqueState.Dead) return;
         e.State = UniqueState.Imprisoned;
         Version++;
         e.Player |= byPlayer;
+        if (byPlayer && faction is >= 0) e.involvedFactions.Add(faction.Value);
     }
 
     /// <summary>Freed (the periodic refresh, <c>FUN_1405cf470</c>): state 1, player cleared.</summary>
@@ -120,6 +125,7 @@ public sealed class UniqueCharacters
         var e = Entry(recordId);
         e.State = UniqueState.Alive;
         e.Player = false;
+        e.involvedFactions.Clear();
         Version++;
     }
 
@@ -130,6 +136,7 @@ public sealed class UniqueCharacters
         e.Claimed = true;
         e.State = state;
         e.Player = player;
+        e.involvedFactions.Clear();
         e.SavedHandle = handle;
         Version++;
     }
@@ -164,6 +171,12 @@ public sealed class UniqueCharacters
             h.Add((int)e.State);
             h.Add(e.Player);
             h.Add(e.Handle.IsNone);
+            if (e.involvedFactions.Count > 0)
+            {
+                h.Add(0x556E4661);
+                h.Add(e.involvedFactions.Count);
+                foreach (int faction in e.involvedFactions.Order()) h.Add(faction);
+            }
         }
     }
 }

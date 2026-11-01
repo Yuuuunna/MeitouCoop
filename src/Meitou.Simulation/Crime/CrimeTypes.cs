@@ -196,10 +196,14 @@ public sealed class PendingCrime
 }
 
 /// <summary>Pay the bail of a caged character (<see cref="ArrestSystem.BailFor"/>): a free player character near the cage pays, the jail's entry is erased and the prisoner freed.</summary>
-public sealed record PayBailOrder(CharacterId Prisoner) : SimCommand;
+public sealed record PayBailOrder(CharacterId Prisoner) : Locks.FixtureCommand
+{
+    public CharacterId Payer { get; init; } = CharacterId.None;
+    public int? ExpectedPrice { get; init; }
+}
 
 /// <summary>The carriers (the selection when empty) take the bodies they carry to the nearest free cage and put them in; a wanted captive pays its bounty (<see cref="ArrestSystem.Claim"/>).</summary>
-public sealed record PutInCageOrder(IReadOnlyList<CharacterId> Carriers) : SimCommand
+public sealed record PutInCageOrder(IReadOnlyList<CharacterId> Carriers) : Locks.FixtureCommand
 {
     /// <summary>The cage to take them to (a clicked cage, Put in 108); null: the nearest free one.</summary>
     public string? Cage { get; init; }

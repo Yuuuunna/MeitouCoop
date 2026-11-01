@@ -37,11 +37,12 @@ sealed partial class PlayerInterface
     /// <summary>The title's buttons and the catalog messages their captions are (FUN_140918ef0, upper-cased).</summary>
     static readonly (string Widget, string Caption)[] TitleCaptions =
     [
-        ("ContinueButton", "Continue"), ("NewGameButton", "New game"), ("LoadGameButton", "Load game"), ("ImportGameButton", "Import game"),
+        ("MultiplayerButton", "Multiplayer"), ("ContinueButton", "Continue"), ("NewGameButton", "New game"), ("LoadGameButton", "Load game"), ("ImportGameButton", "Import game"),
         ("OptionsButton", "Options"), ("CreditsButton", "Credits"), ("ExitButton", "Exit"),
     ];
     static readonly (string Widget, string Caption, UiRect Icon)[] MenuButtons =
     [
+        ("MultiplayerButton", "MULTIPLAYER", new(49, 0, 44, 36)),
         ("NewGameButton", "NEW GAME", new(108, 88, 33, 37)), ("LoadGameButton", "LOAD GAME", new(222, 90, 32, 23)),
         ("ImportGameButton", "IMPORT GAME", new(73, 88, 32, 32)),   // pic_PointerPickupItem
         ("OptionsButton", "OPTIONS", new(146, 88, 34, 37)), ("CreditsButton", "CREDITS", new(49, 0, 44, 36)), ("ExitButton", "EXIT", new(202, 126, 30, 36)),

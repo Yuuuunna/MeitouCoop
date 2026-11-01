@@ -38,7 +38,8 @@ internal sealed partial class ZoneGeometryGatherer : IDisposable
     readonly List<Vector3>[]? seedsByZone;
     readonly BuildingLayouts layouts;
 
-    readonly NavRuntimeBuildings? runtime;
+    NavRuntimeBuildings? runtime;
+    internal void UseRuntimeSnapshot(NavRuntimeBuildings? snapshot) => runtime = snapshot;
 
     public ZoneGeometryGatherer(GameInstall install, GameDatabase db, WorldLevelData levels, CollisionCache collision, NavRuntimeBuildings? runtime = null)
     {

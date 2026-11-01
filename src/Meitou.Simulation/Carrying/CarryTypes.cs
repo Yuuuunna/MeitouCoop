@@ -30,14 +30,14 @@ public sealed record OpenLootOrder(IReadOnlyList<CharacterId> Looters, Character
 /// fails) move into the looter's (<see cref="Items.InventoryCommands.MoveInto"/>: its open bag first with <see cref="BagFirst"/>, then its slots, then its grid). A theft as a loot is
 /// (<see cref="Crime.CrimeSystem.IsLootTheft"/>); a locked-on item stays. Dragging goes through the held item (<see cref="Items.LiftItem"/>).
 /// </summary>
-public sealed record TakeLootItem(Items.InventoryItemToken Item) : SimCommand
+public sealed record TakeLootItem(Items.InventoryItemToken Item) : LootTransferCommand
 {
     public int Count { get; init; }
     public bool BagFirst { get; init; }
 }
 
 /// <summary>A right click on the looter's (<see cref="Character"/>, the one who opened it) <see cref="Item"/>: units into the open loot, as <see cref="TakeLootItem"/> the other way.</summary>
-public sealed record PutLootItem(CharacterId Character, Items.InventoryItemToken Item) : SimCommand
+public sealed record PutLootItem(CharacterId Character, Items.InventoryItemToken Item) : LootTransferCommand
 {
     public int Count { get; init; }
     public bool BagFirst { get; init; }
@@ -128,4 +128,21 @@ public static class CarryPose
     /// <summary>The placement for the carrier's attach bone at <paramref name="bone"/> / <paramref name="rotation"/> in its frame (model space, lowered by its ground offset).</summary>
     public static CarryAttach Attach(System.Numerics.Vector3 bone, System.Numerics.Quaternion rotation, float height01) =>
         new(bone + System.Numerics.Vector3.Transform(Offset(height01), rotation), System.Numerics.Quaternion.Normalize(rotation * Twist));
+}
+
+public abstract record LootTransferCommand : SimCommand
+{
+    public CharacterId Actor { get; init; } = CharacterId.None;
+    public CharacterId Target { get; init; } = CharacterId.None;
+    public long SessionId { get; init; }
+    public ulong InventoryRevision { get; init; }
+    public ulong DestinationRevision { get; init; }
+}
+
+/// <summary>Closes only the issuing player's matching loot interaction.</summary>
+public sealed record CloseLoot : SimCommand
+{
+    public long SessionId { get; init; }
+    public CharacterId Actor { get; init; } = CharacterId.None;
+    public CharacterId Target { get; init; } = CharacterId.None;
 }

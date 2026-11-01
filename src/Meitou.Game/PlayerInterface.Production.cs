@@ -31,6 +31,9 @@ sealed partial class PlayerInterface
 
     MachineSnapshot? Machine(string? site) => site is null ? null : session.CurrentSnapshot.Machines.FirstOrDefault(m => m.Site == site);
 
+    ulong WorkRevisionOf(string site) => session.CurrentSnapshot.Buildings.FirstOrDefault(b => b.Id == site)?.SiteRevision
+        ?? Machine(site)?.SiteRevision ?? (session.CurrentSnapshot.InspectedRichness is { } rich && rich.Instance == site ? rich.SiteRevision : 0);
+
     /// <summary>The storage window's layout pixels above its grid (caption and item heading) and in all around it, with the two-line Max Capacity text below (measured on the original's window).</summary>
     const float StorageAbove = 86, StorageChrome = 150;
 
@@ -57,7 +60,7 @@ sealed partial class PlayerInterface
         }
         if (shownMachine is not null && Machine(shownMachine) is { } shown && !faithfulScreens.IsOpen(MachineScreen(shown)))
         {
-            if (shown.IsContainer) Say(new Meitou.Simulation.Items.CloseContainer { Tick = session.World.Tick });
+            if (shown.IsContainer) Say(new Meitou.Simulation.Items.CloseContainer { Tick = session.CommandTick, SessionId = shown.ContainerSessionId });
             closedMachine = shownMachine;
             shownMachine = null;
             storageWithInventory = null;
@@ -305,17 +308,17 @@ sealed partial class PlayerInterface
         // An automatic machine: Auto-Haul (152) in place of Use; with Shift the 152 job (its companion 124 follows), else a one-shot haul round (the operator only hauls there).
         if (site.Complete && Machine(site.Id) is { Operable: true, IsAutomatic: true })
             verbs.Add(("Auto-Haul", () => Say(SlowModifier
-                ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_AUTOMATIC_MACHINERY, site.Id) { Tick = session.World.Tick }
-                : new OperateOrder(selection, site.Id) { Tick = session.World.Tick })));
+                ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_AUTOMATIC_MACHINERY, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
+                : new OperateOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
         else if (site.Complete && Machine(site.Id) is { Operable: true })
             verbs.Add(("Use", () => Say(SlowModifier
-                ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY, site.Id) { Tick = session.World.Tick }
-                : new OperateOrder(selection, site.Id) { Tick = session.World.Tick })));
+                ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
+                : new OperateOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
         // A training dummy: Training (97 USE_TRAINING_DUMMY, UseableStuff slot 131 for function 7), which Shift turns into the Training job.
         else if (site.Complete && Machine(site.Id) is { Function: Meitou.Data.Gameplay.Construction.MachineData.TrainingFunction })
             verbs.Add(("Training", () => Say(SlowModifier
-                ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.USE_TRAINING_DUMMY, site.Id) { Tick = session.World.Tick }
-                : new OperateOrder(selection, site.Id) { Tick = session.World.Tick })));
+                ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.USE_TRAINING_DUMMY, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
+                : new OperateOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
     }
 
     /// <summary>
@@ -600,9 +603,9 @@ sealed partial class PlayerInterface
         else if (e.Action.StartsWith("research-queue:", StringComparison.Ordinal))
         {
             researchFocus = e.Action[15..];
-            Say(new QueueResearch(researchFocus) { Tick = session.World.Tick });
+            Say(new QueueResearch(researchFocus) { Tick = session.CommandTick });
         }
-        else if (e.Action.StartsWith("research-cancel:", StringComparison.Ordinal)) Say(new CancelResearch(e.Action[16..]) { Tick = session.World.Tick });
+        else if (e.Action.StartsWith("research-cancel:", StringComparison.Ordinal)) Say(new CancelResearch(e.Action[16..]) { Tick = session.CommandTick });
     }
 
     /// <summary>

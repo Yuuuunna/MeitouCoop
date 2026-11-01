@@ -43,6 +43,7 @@ public sealed partial class CombatSystem : IProjectileSource
         public int Id;
         public int Shooter, ShooterGeneration, Target, TargetGeneration, ShooterFaction;
         public bool ShooterIsPlayer;
+        public PlayerId? ShooterPlayer;
         public float ShooterSkill;
         public Vector3 Position, Direction;
         public float Speed, RangeLeft, Damage, Avoidance;
@@ -439,6 +440,7 @@ public sealed partial class CombatSystem : IProjectileSource
             TargetGeneration = prev[t].Generation,
             ShooterFaction = ac.Faction,
             ShooterIsPlayer = ac.IsPlayer,
+            ShooterPlayer = world.PresentationOwner(table.IdOf(a)),
             ShooterSkill = Eff(ac, StatsEnumerated.Crossbows),
             Position = barrel,
             Direction = dir,
@@ -560,7 +562,7 @@ public sealed partial class CombatSystem : IProjectileSource
                         p.Position = at;
                         p.Stuck = true;
                         projectiles[k] = p;
-                        Sound(world, SoundKind.BoltStuck, -1, p.Shooter, at);
+                        Sound(world, SoundKind.BoltStuck, -1, p.Shooter, at, otherIdentity: new(p.Shooter, p.ShooterGeneration));
                         k = TrimStuck(k, p.Mesh);
                     }
                     break;
@@ -643,8 +645,9 @@ public sealed partial class CombatSystem : IProjectileSource
         ReadOnlySpan<ArmourPiece> armour = dc.Fighter is { } df ? df.Armour : default;
         var cover = new BoltCover(world.Seed, Rng.Key(table.IdOf(v)), p.Id);
         var (part, damage, absorbed) = HitResolver.LandDetailed(dc.Medical, ctx, packet, armour, cover, toughness, false, true, combat, events);
-        FloatHit(world, v, dc, p.ShooterIsPlayer, part, damage, absorbed);
-        Sound(world, SoundKind.BoltHit, v, p.Shooter, prev[v].Position, armoured: absorbed.Cut + absorbed.Blunt + absorbed.Pierce > 0, robot: false);
+        FloatHit(world, v, dc, p.ShooterIsPlayer, part, damage, absorbed, p.ShooterPlayer);
+        Sound(world, SoundKind.BoltHit, v, p.Shooter, prev[v].Position, armoured: absorbed.Cut + absorbed.Blunt + absorbed.Pierce > 0, robot: false,
+            otherIdentity: new(p.Shooter, p.ShooterGeneration));
         Splash(world, v, dc, new Vector2(p.Direction.X, p.Direction.Z), damage.Cut + damage.Blunt + damage.Pierce);
 
         StickBolt(world, p, v, dc, part);
@@ -672,7 +675,7 @@ public sealed partial class CombatSystem : IProjectileSource
             D.AttackTech = -1;
             D.NextBlow = 0;
             D.ReactTech = -1;
-            Sound(world, SoundKind.Down, v, p.Shooter, prev[v].Position, fatal: death);
+            Sound(world, SoundKind.Down, v, p.Shooter, prev[v].Position, fatal: death, otherIdentity: new(p.Shooter, p.ShooterGeneration));
         }
         // Only a heavy bolt staggers (engine choice: the original's reaction to a bolt was not traced).
         else if (damage.Cut + damage.Blunt + damage.Pierce + damage.ExtraStun > DamageFormulas.StumbleThreshold(toughness, combat))
@@ -684,7 +687,7 @@ public sealed partial class CombatSystem : IProjectileSource
         if (shooterAlive) Crimes?.Hit(world, p.Shooter, v);
         // The bolt hit's relation events (FUN_140439c90: none without a shooter; a bolt that was not meant for the victim is a minor knock-out and no hit).
         if (shooterAlive) Deeds?.Blow(world, p.Shooter, v, dc.Medical.Incapacitated, death, bolt: true, aimed: intended);
-        if (death && world.Uniques.RecordOf(world.Characters.IdOf(v)) is { } unique) world.Uniques.Died(unique, p.ShooterIsPlayer);
+        if (death && world.Uniques.RecordOf(world.Characters.IdOf(v)) is { } unique) world.Uniques.Died(unique, p.ShooterIsPlayer, world.Players.RequiresExplicitControl ? p.ShooterFaction : null);
         if (death && world.Luckyren) dc.Burst = new Vector2(p.Direction.X, p.Direction.Z);
         if (Settings.RecordLog)
             log.Add(new CombatLogEntry(now, p.Shooter, v, 0, BlowOutcome.Hit, part, damage.Cut, damage.Blunt, damage.Pierce, damage.ExtraStun, knockout, death) { Ranged = true, Intended = intended });

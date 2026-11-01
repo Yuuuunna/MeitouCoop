@@ -8,7 +8,7 @@ namespace Meitou.Game;
 /// <summary>
 /// The loot window (docs/simulation.md "Carrying, rescue and looting", engine choice: the original's is <b>Unknown</b>): a downed character's whole inventory in a second character window (<c>loot</c>, <c>Kenshi_InventoryCharacterWindow</c>) beside the
 /// looter's, its worn gear in the equipment slots, and its bag in <c>loot-bag</c> (the generic window, OPEN BAG). Items are held with the mouse between the two characters' windows
-/// (PlayerInterface.Inventory.cs) or moved with a right click (<see cref="TakeLootItem"/>, <see cref="PutLootItem"/>); closing it closes the loot (<see cref="CloseContainer"/>).
+/// (PlayerInterface.Inventory.cs) or moved with a right click (<see cref="TakeLootItem"/>, <see cref="PutLootItem"/>); closing it closes the loot (<see cref="CloseLoot"/>).
 /// </summary>
 sealed partial class PlayerInterface
 {
@@ -58,7 +58,7 @@ sealed partial class PlayerInterface
         if (closedLoot != open) closedLoot = CharacterId.None;
         if (!shownLoot.IsNone && shownLoot == open && !faithfulScreens.IsOpen("loot"))
         {
-            Say(new CloseContainer { Tick = session.World.Tick });
+            Say(new CloseLoot { Tick = session.CommandTick, SessionId = session.CurrentSnapshot.LootSessionId, Actor = session.CurrentSnapshot.LootOpener, Target = open });
             (closedLoot, shownLoot) = (open, CharacterId.None);
             return;
         }

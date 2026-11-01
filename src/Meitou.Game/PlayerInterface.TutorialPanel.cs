@@ -41,7 +41,7 @@ sealed partial class PlayerInterface
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
         float dt = tutorialClock == 0 ? 0 : MathF.Min((float)System.Diagnostics.Stopwatch.GetElapsedTime(tutorialClock, now).TotalSeconds, 0.25f);
         tutorialClock = now;
-        if (tutorials is not { } manager || TitleOpen || !session.World.Player.Exists) return;
+        if (tutorials is not { } manager || TitleOpen || !session.HasPlayer) return;
         if (!manager.Enabled) { tutorialShown = null; tutorialFlashes.Clear(); return; }
         if (manager.Update(dt, () => TutorialPoll(false)) is { Count: > 0 } started)
         {
@@ -161,7 +161,7 @@ sealed partial class PlayerInterface
     /// <summary>The list's lines and, when one is open, the window, over the HUD.</summary>
     void AddTutorialPanel(List<UiControl> controls)
     {
-        if (tutorials is not { Enabled: true } manager || tutorialLineLayout is null || tutorialPanelLayout is null || !session.World.Player.Exists || EditorOpen) return;
+        if (tutorials is not { Enabled: true } manager || tutorialLineLayout is null || tutorialPanelLayout is null || !session.HasPlayer || EditorOpen) return;
         float scale = Height / 1080f, lineHeight = MathF.Round(TutorialLineHeight * scale), width = MathF.Round(Width * TutorialListWidth);
         float y = Height * TutorialListHeight;
         var active = manager.Active;
@@ -337,7 +337,7 @@ sealed partial class PlayerInterface
             TutorialHighlight.BuildModePanelBuildings => Named("BuildingsList"),
             // The first Obedient Slave job's whole row (FUN_140972a50 case 0x1c); none: no box.
             TutorialHighlight.PanelOrdersJobObedience => obedienceJob < 0 ? null
-                : Where(c => c.Properties.GetValueOrDefault("ListOwner") == "JobsPanel" && c.Argument == "job:" + obedienceJob.ToString(CultureInfo.InvariantCulture)),
+                : Where(c => c.Properties.GetValueOrDefault("ListOwner") == "JobsPanel" && JobTag(c.Argument)?.Index == obedienceJob),
             _ => null,
         };
 

@@ -44,10 +44,10 @@ sealed partial class GameHost
             battleSides.Add((record.StringId, record.Name, count, faction >= 0 ? faction : null));
         }
         var spot = g.BattleFlat ? Vector2.Zero : g.BattleAt is { } at ? new Vector2(at.X, at.Z) : BattleSpot;
-        battleSpot = new Vector3(spot.X, session.World.Walkability.GroundHeight(spot.X, spot.Y), spot.Y);
-        BattleSetup(session.World, population!);
+        battleSpot = new Vector3(spot.X, LocalSession.World.Walkability.GroundHeight(spot.X, spot.Y), spot.Y);
+        BattleSetup(LocalSession.World, population!);
         session.Ticked += _ => BattleTick();
-        var wet = battleFighters.SelectMany(f => f).Count(id => !simWalkability!.IsWalkable(session.World.Characters.Previous[id.Slot].Position.X, session.World.Characters.Previous[id.Slot].Position.Z));
+        var wet = battleFighters.SelectMany(f => f).Count(id => !simWalkability!.IsWalkable(LocalSession.World.Characters.Previous[id.Slot].Position.X, LocalSession.World.Characters.Previous[id.Slot].Position.Z));
         if (wet > 0) Console.Error.WriteLine($"battle    {wet} fighter(s) start under water: pick another spot with --battle-map x,z");
         Console.WriteLine($"battle    {BattleSide(0)} vs {BattleSide(1)} at {spot.X:0}, {spot.Y:0}{(g.BattleFlat ? " (sandbox floor)" : "")}; Backspace restarts");
         return battleSpot;
@@ -91,7 +91,7 @@ sealed partial class GameHost
     /// </summary>
     void BattleTick()
     {
-        var world = session.World;
+        var world = LocalSession.World;
         if (battleOver || world.Tick < BattleOrderTick || world.Tick == battleOrderedAt) return;
         battleOrderedAt = world.Tick;
         // The world and its combat system are new after each restart.
@@ -167,7 +167,7 @@ sealed partial class GameHost
     /// </summary>
     void DrawBattleCounter(DebugOverlay o, int width, int height)
     {
-        var world = session.World;
+        var world = LocalSession.World;
         if (battleCountedAt != world.Tick || battleCountedIn != world)
         {
             (battleCountedAt, battleCountedIn) = (world.Tick, world);
@@ -202,7 +202,7 @@ sealed partial class GameHost
         if (!IsBattle || !battleRestartRequested) return;
         battleRestartRequested = false;
         var built = BuildSystems(interactive: true);
-        session.ReplaceWorld(built.Systems, world => BattleSetup(world, built.Population!));
+        LocalSession.ReplaceWorld(built.Systems, world => BattleSetup(world, built.Population!));
         population = built.Population;
         aggro = built.Aggro;
         worldEpoch++;

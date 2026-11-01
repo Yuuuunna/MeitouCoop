@@ -94,12 +94,12 @@ public sealed partial class ProductionSystem
     {
         if (instance is null) return null;
         if (world.Machines.Find(instance) is { } m)
-            return m.Data is { Function: MachineData.MineFunction or MachineData.NaturalMineFunction, Resource: not 0 and var r } ? new(instance, r, m.Yield) { Owner = Natural(instance)?.Owner ?? -1, TownName = TownNameOf(world, Natural(instance)) } : null;
+            return m.Data is { Function: MachineData.MineFunction or MachineData.NaturalMineFunction, Resource: not 0 and var r } ? new(instance, r, m.Yield) { SiteRevision = WorkSiteRevision(world, instance), Owner = Natural(instance)?.Owner ?? -1, TownName = TownNameOf(world, Natural(instance)) } : null;
         if (Natural(instance) is not { } site || Data(site.Record) is not { Resource: not 0 and var resource } data) return null;
         if (!naturalYields.TryGetValue(instance, out float y)) naturalYields[instance] = y = resources.NodeYield(resource, site.Position);
         // A rock nobody has mined yet: no machine, so nobody works it; whole, no power draw; research counts only for the player's buildings (FUN_14082ec70).
-        return new(instance, resource, y) { Owner = site.Owner, TownName = TownNameOf(world, site), Efficiency = new(0, data.PowerOperators, 1, 1, data.IsConsumer,
-            data.OutputRate * (site.Owner == world.Player.Faction ? world.Research.Upgrade(data.Id).ProductionMult : 1), y) };
+        return new(instance, resource, y) { SiteRevision = world.BuildingRevision(site), Owner = site.Owner, TownName = TownNameOf(world, site), Efficiency = new(0, data.PowerOperators, 1, 1, data.IsConsumer,
+            data.OutputRate * (site.Owner >= 0 ? ResearchFor(world, site.Owner).Upgrade(data.Id).ProductionMult : 1), y) };
     }
 
     /// <summary>The name of the player town a worked rock joined (null: none, the original's NO_TOWN, which the panel's <c>Town:</c> line leaves out).</summary>

@@ -78,7 +78,7 @@ sealed partial class PlayerInterface
         }
 
         // The speed keys (F2 to F4) change the clock without a button: the same sound when the speed moves to a new running one (the buttons did it already).
-        double speedNow = session.Simulation.Speed;
+        double speedNow = session.TimeScale;
         if (speedNow > 0 && speedNow != soundSpeed && !speedSounded && (speedNow == 1 || speedNow == 2 || speedNow == 5))
         {
             string name = speedNow == 1 ? "Normal" : speedNow == 2 ? "x2" : "x4";
@@ -88,14 +88,14 @@ sealed partial class PlayerInterface
         speedSounded = false;
 
         // A research finished (also one that unlocks nothing) or a blueprint read: "Research complete" (140834550). The first look only takes the baseline.
-        if (!ReferenceEquals(soundWorld, session.World)) soundUnlocked = -1;
+        if (!ReferenceEquals(soundWorld, session.WorldIdentity)) soundUnlocked = -1;
         int unlocked = session.CurrentSnapshot.UnlockedBuildings.Count + session.CurrentSnapshot.Research.Finished;
         if (soundUnlocked >= 0 && unlocked > soundUnlocked) Sound("Notifications", "Notifications", "Thing_Complete");
         soundUnlocked = unlocked;
 
         // A building of the player's finishing: the notification (140559110). The first look only takes the baseline.
         var snapshot = session.CurrentSnapshot;
-        if (!ReferenceEquals(soundWorld, session.World)) { soundWorld = session.World; soundBuildingsRevision = -1; soundBuildings.Clear(); soundUnlocked = -1; }
+        if (!ReferenceEquals(soundWorld, session.WorldIdentity)) { soundWorld = session.WorldIdentity; soundBuildingsRevision = -1; soundBuildings.Clear(); soundUnlocked = -1; }
         if (snapshot.BuildingsRevision != soundBuildingsRevision || soundBuildings.Count != snapshot.Buildings.Count)
         {
             bool baseline = soundBuildingsRevision < 0;

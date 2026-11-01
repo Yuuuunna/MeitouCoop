@@ -10,8 +10,18 @@ namespace Meitou.Simulation;
 /// </summary>
 public abstract record SimCommand
 {
+    /// <summary>Assigned by trusted host dispatch, never taken from a client's serialized payload. Null denotes a local/internal command.</summary>
+    public PlayerId? Issuer { get; internal init; }
+    internal IReadOnlyList<CharacterControl> ControlGrants { get; init; } = [];
+    internal ulong FactionGrantRevision { get; init; }
     /// <summary>The simulation tick the command applies at; a command for a tick already run applies at the next one.</summary>
     public required long Tick { get; init; }
+}
+
+/// <summary>An operation on a specific faction. An attributed command must name its faction explicitly.</summary>
+public abstract record FactionCommand : SimCommand
+{
+    public int Faction { get; init; } = -1;
 }
 
 /// <summary>Move order: the characters walk to <see cref="Target"/> (world units; the height is taken from the ground).</summary>
@@ -40,6 +50,9 @@ public sealed record SandboxMovement(CharacterId Character, byte? Mode, float? S
 /// </summary>
 public sealed class CommandQueue
 {
+    readonly World? world;
+    public CommandQueue() { }
+    internal CommandQueue(World world) => this.world = world;
     readonly Lock gate = new();
     readonly List<(SimCommand Command, long Sequence)> pending = [];
     long sequence;
@@ -52,7 +65,23 @@ public sealed class CommandQueue
     public void Enqueue(SimCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command.Issuer is not null && !PlayerCommandRouting.Supports(command))
+            throw new NotSupportedException($"Attributed {command.GetType().Name} has not been migrated to player-scoped execution.");
         lock (gate) pending.Add((command, sequence++));
+    }
+
+    /// <summary>Trusted host dispatch after authentication. Gameplay systems still check permissions at execution.</summary>
+    public void Enqueue(PlayerId issuer, SimCommand command)
+    {
+        if (issuer.IsNone) throw new ArgumentException("A player identity is required.", nameof(issuer));
+        ArgumentNullException.ThrowIfNull(command);
+        if (world is null) throw new InvalidOperationException("Attributed commands require a world-owned queue.");
+        var grants = new List<CharacterControl>();
+        foreach (var id in PlayerCommandRouting.Characters(command))
+            if (world.Players.ControlOf(id) is { } grant && grant.Player == issuer) grants.Add(grant);
+        int faction = PlayerCommandRouting.Faction(world, command);
+        ulong factionRevision = faction >= 0 ? world.Players.Find(issuer)?.MembershipRevision(faction) ?? 0 : 0;
+        Enqueue(command with { Issuer = issuer, ControlGrants = grants.ToArray(), FactionGrantRevision = factionRevision });
     }
 
     /// <summary>Removes and returns the commands whose tick is at or before <paramref name="tick"/>, oldest tick first, then queue order.</summary>
@@ -77,6 +106,121 @@ public sealed class CommandQueue
         for (int k = 0; k < commands.Length; k++) commands[k] = due[k].Command;
         return commands;
     }
+}
+
+/// <summary>Fail closed until each command's handlers support explicit actors; this is not the network protocol allowlist.</summary>
+public static class PlayerCommandRouting
+{
+    public static IReadOnlyList<CharacterId> Characters(SimCommand command) => command switch
+    {
+        MoveOrder c => c.Characters, FollowOrder c => c.Characters, StopCommand c => c.Characters,
+        SelectCommand c => c.Characters, Combat.AttackOrder c => c.Attackers, Combat.ShootAtOrder c => c.Gunners,
+        Trading.OpenTrade c => [c.Customer],
+        Dialogue.TalkOrder c => [c.Talker],
+        FirstAid.TreatOrder c => c.Medics, FirstAid.SplintOrder c => c.Medics,
+        FirstAid.RestOrder c => c.Characters, FirstAid.MedicJobCommand c => c.Characters,
+        Editing.EditCharacter c => [c.Character],
+        Carrying.PickUpOrder c => c.Carriers, Carrying.PutDownOrder c => c.Carriers,
+        Carrying.LootOrder c => c.Looters, Carrying.OpenLootOrder c => c.Looters,
+        Carrying.StealthKoOrder c => c.Attackers, Carrying.RescueJobCommand c => c.Characters,
+        Carrying.LootTransferCommand c => [c.Actor],
+        Carrying.CloseLoot c => [c.Actor],
+        Crime.PutInCageOrder c => c.Carriers, Crime.PayBailOrder c => [c.Payer],
+        Locks.PickLockOrder c => c.Characters, Locks.GetOutOrder c => c.Characters,
+        Locks.DoorOrder c => c.Characters, Locks.SetFreeOrder c => c.Characters,
+        Locks.GetInCageOrder c => c.Characters, Locks.ForceLockOrder c => c.Characters,
+        Locks.ShackleOrder c => c.Characters, Locks.PutShacklesOrder c => c.Characters,
+        Locks.UseBedOrder c => c.Characters, Locks.PutInBedOrder c => c.Carriers,
+        Items.HeldCommand c => [.. new[] { c is Items.LiftItem lift ? lift.Actor : c.HolderActor }.Concat(c.ControlledCharacters).Distinct()],
+        Trading.OpenPlayerTrade c => [c.Actor], Trading.AcceptPlayerTrade c => [c.Actor],
+        Locks.BuyBuilding c => [c.Buyer],
+        MoveToSquadCommand c => c.SwapWith is { } other ? [c.Character, other] : [c.Character],
+        DismissCommand c => [c.Character],
+        Items.TransferInventoryItem c => [c.From, c.To],
+        Items.PickUpItemOrder c => c.Characters,
+        ShowInventoryCommand c => c.Targets,
+        Items.OpenContainerOrder c => c.Characters,
+        Production.PutInMachine c => [c.Character], Production.TakeFromMachine c => [c.Character],
+        Production.RemoveJob c => [c.Character], Production.MoveJob c => [c.Character], Production.AddOrderJob c => c.Characters,
+        Production.ProspectOrder c => [c.Character],
+        Production.OperateOrder c => c.Characters, Production.UseTurretOrder c => c.Characters, Production.AddJob c => c.Characters,
+        Production.DisposeCorpseOrder c => c.Characters,
+        Construction.BuildOrder c => c.Characters, Construction.DismantleOrder c => c.Characters,
+        Items.ArrangeInventory c => [c.Character], Items.QuickMoveItem c => [c.Character], Items.ReadMapItem c => [c.Character],
+        OrdersCommand c => c.Characters, RunSpeedCommand c => c.Characters, StandUpCommand c => c.Characters,
+        _ => [],
+    };
+    public static CommandFactionScope FactionScope(SimCommand command) => command switch
+    {
+        FactionCommand c => new(CommandFactionSource.Explicit, Faction: c.Faction),
+        Construction.ConstructionSiteCommand c => new(CommandFactionSource.ConstructionRoot, Site: c switch
+        {
+            Construction.BuildOrder q => q.Site, Construction.DismantleOrder q => q.Site, Construction.ConfirmDismantle q => q.Site,
+            Construction.CancelSite q => q.Site, Construction.PauseSite q => q.Site, Construction.UpgradeSite q => q.Site,
+            Construction.DowngradeSite q => q.Site, Construction.SetBuildingPublic q => q.Building, _ => "",
+        }),
+        Items.OpenContainerOrder c => new(CommandFactionSource.Container, Site: c.Fixture),
+        Production.PutInMachine c => new(CommandFactionSource.WorkSite, Site: c.Site),
+        Production.TakeFromMachine c => new(CommandFactionSource.WorkSite, Site: c.Site),
+        Production.SiteWorkCommand c => new(CommandFactionSource.WorkSite, Site: c switch
+        {
+            Production.OperateOrder q => q.Site, Production.UseTurretOrder q => q.Site, Production.AddJob q => q.Site, Production.DisposeCorpseOrder q => q.Site, _ => "",
+        }),
+        Production.MachineControlCommand c => new(CommandFactionSource.WorkSite, Site: c switch
+        {
+            Production.QueueCraft q => q.Site, Production.CancelCraft q => q.Site, Production.RepeatCrafts q => q.Site,
+            Production.SetMachinePower q => q.Site, Production.IncinerateFurnace q => q.Site, _ => "",
+        }),
+        Trading.OpenTrade c => new(CommandFactionSource.Character, Character: c.Customer),
+        Dialogue.TalkOrder c => new(CommandFactionSource.Character, Character: c.Talker),
+        Items.LiftItem { From.Holder: Items.ItemHolder.Site } c => new(CommandFactionSource.WorkSite, Site: c.From.Site),
+        Items.PlaceHeld { Into.Holder: Items.ItemHolder.Site } c => new(CommandFactionSource.WorkSite, Site: c.Into.Site),
+        Trading.OpenPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
+        Trading.AcceptPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
+        Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
+            or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
+            or Crime.PutInCageOrder or Crime.PayBailOrder
+            => new(CommandFactionSource.Character, Character: Characters(command).FirstOrDefault()),
+        _ => new(CommandFactionSource.None),
+    };
+    internal static int Faction(World world, SimCommand command)
+    {
+        var scope = FactionScope(command);
+        return scope.Source switch
+        {
+            CommandFactionSource.Explicit => scope.Faction,
+            CommandFactionSource.Character when world.Characters.TryResolveNext(scope.Character, out int slot) => world.Characters.Cold(slot)!.Faction,
+            CommandFactionSource.ConstructionRoot => Construction.ConstructionSystem.Root(world.Buildings, world.Buildings.Find(scope.Site!))?.Owner ?? world.Fixtures.DoorOwner(scope.Site!),
+            CommandFactionSource.Container => world.Fixtures.Find(scope.Site!)?.Owner ?? -1,
+            CommandFactionSource.WorkSite => world.SystemOf<Production.ProductionSystem>()?.StorageOwner(world, scope.Site!) ?? -1,
+            _ => -1,
+        };
+    }
+    internal static bool Supports(SimCommand command) => command is
+        Production.QueueResearch or Production.CancelResearch or MoveOrder or FollowOrder or StopCommand or SelectCommand
+        or Combat.AttackOrder or Combat.ShootAtOrder or Trading.OpenTrade or Trading.BuyItem or Trading.SellItem or Trading.CloseTrade or Trading.ArrangeStock
+        or Items.ArrangeInventory or Items.QuickMoveItem or Items.ReadMapItem or Items.TransferInventoryItem or OrdersCommand or RunSpeedCommand or StandUpCommand
+        or Dialogue.TalkOrder or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
+        or NewSquadCommand or RenameSquadCommand or RemoveSquadCommand or MoveToSquadCommand or ReorderSquadCommand or ActiveSquadCommand or DismissCommand
+        or RenameFactionCommand or SquadFormationCommand or SquadAiCommand or Items.OpenContainerOrder or Items.CloseContainer
+        or Production.PutInMachine or Production.TakeFromMachine or Production.QueueCraft or Production.CancelCraft
+        or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace
+        or Production.RemoveJob or Production.MoveJob or Production.AddOrderJob or Production.ProspectOrder
+        or Production.OperateOrder or Production.UseTurretOrder or Production.AddJob
+        or Construction.BuildOrder or Construction.DismantleOrder or Construction.ConfirmDismantle or Construction.CancelSite
+        or Construction.PauseSite or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic
+        or Construction.RenameTown or Construction.SetTownPublic or Construction.PlaceBuildings or Locks.BuyBuilding
+        or FirstAid.TreatOrder or FirstAid.SplintOrder or FirstAid.RestOrder or FirstAid.MedicJobCommand or Editing.EditCharacter
+        or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder
+        or Carrying.StealthKoOrder or Carrying.RescueJobCommand or Carrying.TakeLootItem or Carrying.PutLootItem
+        or Carrying.CloseLoot or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder
+        or Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
+        or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
+        or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
+        or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld
+        or Items.PickUpItemOrder
+        or InspectCommand or InspectBuildingCommand or ShowInventoryCommand
+        or Trading.OpenPlayerTrade or Trading.AcceptPlayerTrade or Trading.RevisePlayerTrade or Trading.ConfirmPlayerTrade or Trading.CancelPlayerTrade;
 }
 
 /// <summary>

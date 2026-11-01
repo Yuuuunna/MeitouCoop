@@ -49,23 +49,23 @@ public sealed partial class FixtureRegistry
     IReadOnlyList<ContainerSpot>? containerSpots;
 
     /// <summary>Where the containers with an inventory stand, for the host's picking; rebuilt (serial phases) only when a building registers or goes.</summary>
-    public IReadOnlyList<ContainerSpot> ContainerSpots => containerSpots ??= [.. all.Where(f => f.Contents is not null).Select(f => new ContainerSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Lock is { EffectivelyLocked: true }))];
+    public IReadOnlyList<ContainerSpot> ContainerSpots => containerSpots ??= [.. all.Where(f => f.Contents is not null).Select(f => new ContainerSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Lock is { EffectivelyLocked: true }) { Revision = RevisionOf(f) })];
 
     List<Fixture>? cageList;
 
     /// <summary>Every cage, for the host's picking; rebuilt (serial phases) when a building registers or goes, or a cage's lock or occupant changes (<see cref="Touch"/>).</summary>
     public IReadOnlyList<CageSpot> CageSpots(CharacterTable table) =>
-        [.. (cageList ??= [.. all.Where(f => f.Kind == FixtureKind.Cage)]).Select(f => new CageSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Lock is { EffectivelyLocked: true }, IsFree(table, f) ? CharacterId.None : f.Occupant))];
+        [.. (cageList ??= [.. all.Where(f => f.Kind == FixtureKind.Cage)]).Select(f => new CageSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Lock is { EffectivelyLocked: true }, IsFree(table, f) ? CharacterId.None : f.Occupant) { Revision = RevisionOf(f) })];
 
     IReadOnlyList<BedSpot>? bedSpots;
 
     /// <summary>Every bed, for the host's picking; rebuilt (serial phases) only when a building registers or goes.</summary>
-    public IReadOnlyList<BedSpot> BedSpots => bedSpots ??= [.. all.Where(f => f.Kind == FixtureKind.Bed).Select(f => new BedSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Yaw))];
+    public IReadOnlyList<BedSpot> BedSpots => bedSpots ??= [.. all.Where(f => f.Kind == FixtureKind.Bed).Select(f => new BedSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Yaw) { Revision = RevisionOf(f) })];
 
     IReadOnlyList<DoorPick>? doorPicks;
 
     /// <summary>Every door, for the host's picking (<see cref="PublishedDoors"/> leaves closed unlocked town doors out); rebuilt (serial phases) only when a building registers or goes.</summary>
-    public IReadOnlyList<DoorPick> DoorPicks => doorPicks ??= [.. all.Where(f => f.Kind == FixtureKind.Door).Select(f => new DoorPick(f.Id, f.Building, f.DoorIndex, f.Owner, DoorSpotOf(f)?.Centre ?? f.Position, DoorSpotOf(f)?.Slide ?? Vector3.Zero))];
+    public IReadOnlyList<DoorPick> DoorPicks => doorPicks ??= [.. all.Where(f => f.Kind == FixtureKind.Door).Select(f => new DoorPick(f.Id, f.Building, f.DoorIndex, f.Owner, DoorSpotOf(f)?.Centre ?? f.Position, DoorSpotOf(f)?.Slide ?? Vector3.Zero) { Revision = RevisionOf(f) })];
 
     /// <summary>The doors of each building, rebuilt with <see cref="DoorPicks"/> (both in the serial phases; read in parallel ones after).</summary>
     public ILookup<string, Fixture> DoorsByBuilding => doorsByBuilding ??= all.Where(f => f.Kind == FixtureKind.Door).ToLookup(f => f.Building, StringComparer.Ordinal);
@@ -124,7 +124,9 @@ public sealed partial class FixtureRegistry
         int owner = levelOwner;
         if (Saved?.GetValueOrDefault(b.Key)?.Strings.GetValueOrDefault("owner faction ID") is { Length: > 0 } savedOwner && data.FactionIndex(savedOwner) is >= 0 and var savedFaction)
             owner = savedFaction;
-        RegisterProperty(world, data, site, b, owner, purchased: owner != levelOwner && owner == data.PlayerFaction);   // saved as the player's: bought, and saved again as such
+        bool purchased = Saved?.GetValueOrDefault(b.Key)?.Bools.TryGetValue(PurchasedKey, out bool savedPurchase) == true
+            ? savedPurchase : owner != levelOwner && owner == data.PlayerFaction;
+        RegisterProperty(world, data, site, b, owner, purchased);
         var faction = owner >= 0 && owner < data.Factions.Count ? data.Factions[owner] : null;
         var list = new List<Fixture>();
         var record = db.Find(b.BuildingId);
@@ -940,6 +942,7 @@ public sealed partial class FixtureRegistry
     public bool WriteBuilding(string buildingInstance, FcsRecord state)
     {
         if (!byBuilding.TryGetValue(buildingInstance, out var list)) return false;
+        ClearResetContainers(buildingInstance, state);
         WriteReset(buildingInstance, state);
         WriteProperty(buildingInstance, state);
         if (publicFlags.TryGetValue(buildingInstance, out bool open)) state.Bools["is public day"] = open;
@@ -1010,7 +1013,7 @@ public sealed partial class FixtureRegistry
         if (instance is null || !byBuilding.TryGetValue(instance, out var list)) return null;
         var doorList = list.Where(f => f.Kind == FixtureKind.Door).OrderBy(f => f.DoorIndex)
             .Select(f => new DoorDetail(f.Motion is DoorMotion.Open or DoorMotion.Opening, f.Lock is { EffectivelyLocked: true }, f.Lock?.Level ?? 0, f.DoorBroken, f.RecordId, f.WantsLock)).ToArray();
-        return new BuildingDetail(instance, doorList, OwnsBuilding(instance, faction), PublicOf(instance)) { SalePrice = SalePrice(instance, faction) };
+        return new BuildingDetail(instance, doorList, OwnsBuilding(instance, faction), PublicOf(instance)) { SalePrice = SalePrice(instance, faction), PropertyRevision = PropertyRevision(instance), DoorGroupRevision = DoorGroupRevision(instance) };
     }
 
     /// <summary>

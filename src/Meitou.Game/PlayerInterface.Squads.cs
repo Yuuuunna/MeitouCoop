@@ -54,7 +54,7 @@ sealed partial class PlayerInterface
         const string prefix = "mygui:tab:SquadPanel:";
         if (!c.Action.StartsWith(prefix, StringComparison.Ordinal) || !int.TryParse(c.Action.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int i)) return false;
         var tabs = SquadTabSquads();
-        if (i < tabs.Count) Say(new ActiveSquadCommand(tabs[i].Id) { Tick = session.World.Tick });
+        if (i < tabs.Count) Say(new ActiveSquadCommand(tabs[i].Id) { Faction = session.ActiveFaction, Tick = session.CommandTick });
         return true;
     }
 
@@ -210,12 +210,13 @@ sealed partial class PlayerInterface
             int index = -1;
             if (target!.Properties.TryGetValue("SquadPortrait", out var at) && at.Split(':') is [_, var place]) index = int.Parse(place, CultureInfo.InvariantCulture);
             if (index >= 0 && PortraitAt(target.Properties["SquadPortrait"]) == drag.Character) return;
-            Say(new MoveToSquadCommand(drag.Character, into, index, shift) { Tick = session.World.Tick });
+            var swapWith = shift && index >= 0 ? PortraitAt(target.Properties["SquadPortrait"]) : null;
+            Say(new MoveToSquadCommand(drag.Character, into, index, shift) { Faction = session.ActiveFaction, SwapWith = swapWith, Tick = session.CommandTick });
         }
         else if (box is { } moved && targetSquad is { } onto && onto != moved.Squad && Vector2.Distance(moved.From, p) >= DragThreshold)
         {
             int index = session.CurrentSnapshot.PlayerSquads.ToList().FindIndex(q => q.Id == onto);
-            Say(new ReorderSquadCommand(moved.Squad, index) { Tick = session.World.Tick });
+            Say(new ReorderSquadCommand(moved.Squad, index) { Faction = session.ActiveFaction, Tick = session.CommandTick });
         }
     }
 
@@ -224,7 +225,8 @@ sealed partial class PlayerInterface
     {
         if (LivingPlayerCharacters() <= 1) { Confirm("Dismiss character", "Cannot dismiss the only remaining character in the faction.", () => { }, "OK"); return; }
         string name = session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id)?.Name ?? "";
-        Confirm("Dismiss character", Loc.Tr("Dismiss character '{1}'?", name), () => Say(new DismissCommand(id) { Tick = session.World.Tick }));
+        int faction = session.ActiveFaction;
+        Confirm("Dismiss character", Loc.Tr("Dismiss character '{1}'?", name), () => Say(new DismissCommand(id) { Faction = faction, Tick = session.CommandTick }));
     }
 
     bool SquadsWheel(Vector2 p, float steps)
@@ -239,15 +241,15 @@ sealed partial class PlayerInterface
         if (e.Action == "squad-new" || e.Widget == "NewSquadButton")
         {
             var view = session.Camera.Current;
-            Say(new NewSquadCommand(view.Target) { Tick = session.World.Tick });
+            Say(new NewSquadCommand(view.Target) { Faction = session.ActiveFaction, Tick = session.CommandTick });
         }
         else if (e.Action.StartsWith("squad-remove:", StringComparison.Ordinal) && int.TryParse(e.Action.AsSpan(13), NumberStyles.None, CultureInfo.InvariantCulture, out int doomed))
-            Say(new RemoveSquadCommand(doomed) { Tick = session.World.Tick });
+            Say(new RemoveSquadCommand(doomed) { Faction = session.ActiveFaction, Tick = session.CommandTick });
         else if (e.Action == "text" && e.Widget.StartsWith("squad-name-", StringComparison.Ordinal) && int.TryParse(e.Widget.AsSpan(11), NumberStyles.None, CultureInfo.InvariantCulture, out int named))
         {
             string text = e.Text.Length > SquadManagement.NameLength ? e.Text[..SquadManagement.NameLength] : e.Text;
             if (text != e.Text) faithfulScreens.SetText("overview", e.Widget, text);
-            Say(new RenameSquadCommand(named, text) { Tick = session.World.Tick });
+            Say(new RenameSquadCommand(named, text) { Faction = session.ActiveFaction, Tick = session.CommandTick });
         }
     }
 }

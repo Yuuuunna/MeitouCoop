@@ -7,6 +7,21 @@ namespace Meitou.Tests.Engine;
 public class TickAheadTests
 {
     [Fact]
+    public void CommonClientLoopPreservesLocalModalPauseAndPresentationTime()
+    {
+        using var local = new WorldSession(Vector3.Zero, (-100, -100, 100, 100), (_, _) => 0);
+        IClientSession client = local;
+        client.Advance(1.0 / 30);
+        Assert.Equal(1, local.World.Tick);
+        Assert.Equal(local.ShownTick + local.SimulationAlpha, client.PresentationTick);
+        Assert.Equal(local.Clock.GameSeconds, client.PresentationSeconds);
+        client.SetModalPause(true); Assert.True(client.IsPaused); Assert.Equal(1, client.TimeScale);
+        client.Advance(.1); Assert.Equal(1, local.World.Tick);
+        client.SetModalPause(false); Assert.False(client.IsPaused);
+        client.Advance(1.0 / 30); Assert.Equal(2, local.World.Tick);
+    }
+
+    [Fact]
     public void A_tick_run_ahead_shows_when_it_falls_due_and_a_pause_takes_it()
     {
         using var session = new WorldSession(Vector3.Zero, (-100, -100, 100, 100), (_, _) => 0);

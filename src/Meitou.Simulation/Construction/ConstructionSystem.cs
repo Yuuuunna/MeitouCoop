@@ -18,6 +18,7 @@ public sealed class ConstructionSettings
     public Func<string, float>? Footprint { get; init; }
     /// <summary>The X/Z gap from a point to a site's footprint hull, 0 inside (the host knows the hull); null, or a null answer: the gap to its position (<see cref="SiteReach"/>).</summary>
     public Func<BuildSite, Vector2, float?>? EdgeGap { get; init; }
+    public IConstructionPlacement? Placement { get; init; }
 }
 
 /// <summary>
@@ -74,6 +75,7 @@ public sealed class ConstructionSystem : ITickSystem
     readonly XpService xp;
     readonly IReadOnlyList<PlacementTown> towns;
     readonly string playerFactionId;
+    readonly PopulationData? population;
     readonly Dictionary<string, BuildingBuildData?> buildData = new(StringComparer.Ordinal);
     // A wall subsection (short piece, connector, wedge) to the BUILDINGs that list it in `wall subsections`.
     Dictionary<string, List<string>>? sectionOf;
@@ -81,9 +83,10 @@ public sealed class ConstructionSystem : ITickSystem
     /// <summary>
     /// Research allows a plan: its record is unlocked, or it is a wall subsection of an unlocked BUILDING (a wall line lays those pieces; no research enables them, docs/game/buildings-production.md "Walls").
     /// </summary>
-    bool Unlocked(World world, string record)
+    bool Unlocked(World world, string record, int faction)
     {
-        if (world.Research.IsUnlocked(record)) return true;
+        if (world.Factions.Find(faction)?.Research is not { } research) return false;
+        if (research.IsUnlocked(record)) return true;
         if (sectionOf is null)
         {
             sectionOf = new(StringComparer.Ordinal);
@@ -91,7 +94,7 @@ public sealed class ConstructionSystem : ITickSystem
                 foreach (var s in r.GetReferences("wall subsections"))
                     (sectionOf.TryGetValue(s.TargetStringId, out var owners) ? owners : sectionOf[s.TargetStringId] = []).Add(r.StringId);
         }
-        return sectionOf.TryGetValue(record, out var masters) && masters.Exists(world.Research.IsUnlocked);
+        return sectionOf.TryGetValue(record, out var masters) && masters.Exists(research.IsUnlocked);
     }
     // Some character may still hold a site that is gone (the sweep in Schedule ends its task).
     bool sweep;
@@ -110,6 +113,7 @@ public sealed class ConstructionSystem : ITickSystem
     public ConstructionSystem(PopulationData data, ConstructionSettings? settings = null)
         : this(data.Db, data.Bodies.Constants, data.BodyOptions, data.Items, TownsOf(data), data.PlayerFaction >= 0 ? data.Factions[data.PlayerFaction].Id : "", settings)
     {
+        population = data;
     }
 
     public ConstructionSettings Settings { get; }
@@ -132,22 +136,23 @@ public sealed class ConstructionSystem : ITickSystem
 
     // ------------------------------------------------------------------ orders
 
-    static IReadOnlyList<CharacterId> Who(World world, IReadOnlyList<CharacterId> ids) => ids.Count > 0 ? ids : world.Player.Selection.ToArray();
-
     public void Inputs(World world, IReadOnlyList<SimCommand> commands)
     {
         var table = world.Characters;
         var reg = world.Buildings;
         foreach (var command in commands)
         {
+            void Notice(string text) => world.Post(command.Issuer ?? PlayerId.Local, text);
             switch (command)
             {
                 case PlaceBuildings place:
                 {
+                    if (world.CommandFaction(place, FactionPermission.ManageAssets) is not { Index: >= 0 } faction) break;
+                    if (place.Plans.Count > 2048 || place.Issuer is not null && Settings.Placement is null) break;
                     var placed = new List<BuildSite>(place.Plans.Count);
                     foreach (var plan in place.Plans)
-                        if (Place(world, plan) is { } site) placed.Add(site);
-                    TownForWalls(world, placed);
+                        if (Place(world, plan, faction.Index, place.Issuer) is { } site) placed.Add(site);
+                    TownForWalls(world, placed, faction.Index);
                     AttachWalls(world.Buildings, Data, placed);
                     foreach (int number in placed.Select(s => s.Town).Distinct())
                         if (reg.FindTown(number) is { } town) ReassessTown(world, town);
@@ -156,9 +161,9 @@ public sealed class ConstructionSystem : ITickSystem
                 case BuildOrder order:
                 {
                     // Build and Repair are both Task_Build: an unfinished site is built, a damaged one (progress below its target) repaired; a whole building has nothing to do.
-                    if (Root(reg, reg.Find(order.Site)) is not { NeedsWork: true } site || site.Owner != world.Player.Faction) break;
-                    foreach (var id in Who(world, order.Characters))
-                        if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } cold && Able(cold))
+                    if (CommandSite(world, order, order.Site) is not { NeedsWork: true } site) break;
+                    foreach (var id in world.CommandCharacters(order, order.Characters))
+                        if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } cold && Able(cold) && MayBuild(world, cold, site))
                         {
                             if (site.LevelPlacement is not null && site.Destroyed)
                             {
@@ -174,55 +179,56 @@ public sealed class ConstructionSystem : ITickSystem
                 }
                 case DismantleOrder order:
                 {
-                    if (Root(reg, reg.Find(order.Site)) is not { LevelPlacement: null } site) break;
+                    if (CommandSite(world, order, order.Site) is not { LevelPlacement: null } site) break;
                     if (Blocker(reg, site) is { } text)
                     {
-                        world.Post(text);
+                        Notice(text);
                         break;
                     }
-                    foreach (var id in Who(world, order.Characters))
-                        if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } cold && Able(cold))
+                    foreach (var id in world.CommandCharacters(order, order.Characters))
+                        if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } cold && Able(cold) && MayBuild(world, cold, site))
                             Begin(world, slot, site, CharacterTask.Dismantle, CharacterTask.Idle);
                     break;
                 }
                 case ConfirmDismantle confirm:
-                    if (Root(reg, reg.Find(confirm.Site)) is { LevelPlacement: null } doomed && doomed.Owner == world.Player.Faction) DismantleAtOnce(world, doomed);
+                    if (CommandSite(world, confirm, confirm.Site) is { LevelPlacement: null } doomed) DismantleAtOnce(world, doomed, confirm.Issuer);
                     break;
                 case CancelSite cancel:
-                    if (Root(reg, reg.Find(cancel.Site)) is not { Complete: false, LevelPlacement: null } cancelled) break;
-                    if (cancelled.Deliverable > 0) world.Post("Dismantle it to get the materials back.");
+                    if (CommandSite(world, cancel, cancel.Site) is not { Complete: false, LevelPlacement: null } cancelled) break;
+                    if (cancelled.Deliverable > 0) Notice("Dismantle it to get the materials back.");
                     else Remove(world, cancelled);
                     break;
                 case PauseSite pause:
-                    if (Root(reg, reg.Find(pause.Site)) is { } paused && paused.Paused != pause.Paused)
+                    if (CommandSite(world, pause, pause.Site) is { } paused && paused.Paused != pause.Paused)
                     {
                         paused.Paused = pause.Paused;
                         reg.Touch();
                     }
                     break;
                 case UpgradeSite up:
-                    if (reg.Find(up.Site) is { LevelPlacement: null } upgraded && CanUpgrade(world, upgraded) is { } higher) Swap(world, upgraded, higher, UpgradeProgressCap, upgrade: true);
+                    if (CommandSite(world, up, up.Site, root: false) is { LevelPlacement: null } upgraded && CanUpgrade(world, upgraded, upgraded.Owner) is { } higher) Swap(world, upgraded, higher, UpgradeProgressCap, upgrade: true);
                     break;
                 case DowngradeSite down:
-                    if (reg.Find(down.Site) is { LevelPlacement: null } downgraded && CanDowngrade(world, downgraded) is { } lower) Swap(world, downgraded, lower, DowngradeProgressCap, upgrade: false);
+                    if (CommandSite(world, down, down.Site, root: false) is { LevelPlacement: null } downgraded && CanDowngrade(world, downgraded, downgraded.Owner) is { } lower) Swap(world, downgraded, lower, DowngradeProgressCap, upgrade: false);
                     break;
                 case SetBuildingPublic open:
-                    if (reg.Find(open.Building) is { } shown && shown.Owner == world.Player.Faction && shown.Public != open.Public)
+                    if (CommandSite(world, open, open.Building, root: false) is { } shown && shown.Public != open.Public)
                     {
                         shown.Public = open.Public;
+                        if (shown.LevelPlacement is not null) world.Fixtures.SetPublic(shown.Id, open.Public);
                         reg.Touch();
                     }
                     break;
                 // The panel enables its name box and tick only for a town of the player's faction (FUN_140722de0).
                 case RenameTown rename:
-                    if (reg.FindTown(rename.Town) is { } renamed && renamed.Owner == world.Player.Faction && rename.Name.Length > 0 && renamed.Name != rename.Name)
+                    if (CommandTown(world, rename, rename.Town) is { } renamed && rename.Name.Length is > 0 and <= 128 && renamed.Name != rename.Name)
                     {
                         renamed.Name = rename.Name;
                         reg.Touch();
                     }
                     break;
                 case SetTownPublic tick:
-                    if (reg.FindTown(tick.Town) is { } outpost && outpost.Owner == world.Player.Faction && outpost.Public != tick.Public)
+                    if (CommandTown(world, tick, tick.Town) is { } outpost && outpost.Public != tick.Public)
                     {
                         outpost.Public = tick.Public;
                         reg.Touch();
@@ -240,15 +246,37 @@ public sealed class ConstructionSystem : ITickSystem
     /// original's WallBuilding upgrades the whole wall line; a gate is a GatewayBuilding and upgrades alone); a building with a machine gets one for the new record that keeps its stock
     /// (<see cref="Production.ProductionSystem"/>).
     /// </summary>
-    public string? CanUpgrade(World world, BuildSite site) =>
-        Swappable(world, site) && BuildingUpgrades.UpgradeOf(db, site.Record) is { } target && world.Research.IsUnlocked(target) && Data(target) is not null ? target : null;
+    public string? CanUpgrade(World world, BuildSite site) => CanUpgrade(world, site, world.Player.Faction);
+    public string? CanUpgrade(World world, BuildSite site, int faction) =>
+        Swappable(site, faction) && BuildingUpgrades.UpgradeOf(db, site.Record) is { } target && world.Factions.Find(faction)?.Research.IsUnlocked(target) == true && Data(target) is not null ? target : null;
 
     /// <summary>The BUILDING an unfinished site of the player's goes back to (the one that upgrades to it), shown while it is not complete; same scope as <see cref="CanUpgrade"/>.</summary>
-    public string? CanDowngrade(World world, BuildSite site) =>
-        !site.Complete && Swappable(world, site) && BuildingUpgrades.DowngradeOf(db, site.Record) is { } lower && Data(lower) is not null ? lower : null;
+    public string? CanDowngrade(World world, BuildSite site) => CanDowngrade(world, site, world.Player.Faction);
+    public string? CanDowngrade(World world, BuildSite site, int faction) =>
+        !site.Complete && Swappable(site, faction) && BuildingUpgrades.DowngradeOf(db, site.Record) is { } lower && Data(lower) is not null ? lower : null;
 
-    bool Swappable(World world, BuildSite site) =>
-        site.Owner == world.Player.Faction && !site.Destroyed && site.WallParent is null && Data(site.Record) is { LinksTogether: false } or { IsWallGate: true };
+    bool Swappable(BuildSite site, int faction) =>
+        faction >= 0 && site.Owner == faction && !site.Destroyed && site.WallParent is null && Data(site.Record) is { LinksTogether: false } or { IsWallGate: true };
+
+    internal static BuildSite? CommandSite(World world, ConstructionSiteCommand command, string id, bool root = true)
+    {
+        var target = world.Buildings.Find(id);
+        if (target is null || command.SiteRevision != 0 && world.BuildingRevision(target) != command.SiteRevision) return null;
+        var site = root ? Root(world.Buildings, target) : target;
+        if (site is null) return null;
+        if (site != target && command.RootRevision != 0 && world.BuildingRevision(site) != command.RootRevision) return null;
+        if (command.Issuer is not { } issuer) return site;
+        return command.SiteRevision != 0 && (site == target || command.RootRevision != 0) && site.Owner >= 0
+            && command.FactionGrantRevision != 0 && world.Players.Find(issuer) is { } player
+            && player.MembershipRevision(site.Owner) == command.FactionGrantRevision && player.HasPermission(site.Owner, FactionPermission.ManageAssets) ? site : null;
+    }
+
+    static PlayerTown? CommandTown(World world, TownCommand command, int id)
+    {
+        if (world.CommandFaction(command, FactionPermission.ManageAssets) is not { } faction
+            || world.Buildings.FindTown(id) is not { } town || town.Owner != faction.Index) return null;
+        return command.Issuer is null && command.TownRevision == 0 || command.TownRevision != 0 && world.TownRevision(town) == command.TownRevision ? town : null;
+    }
 
     /// <summary>
     /// Makes a site the BUILDING <paramref name="record"/> in place (Building slots 75 / 76, docs/game/buildings-production.md "Upgrades"): no longer complete or paused, progress capped
@@ -322,21 +350,31 @@ public sealed class ConstructionSystem : ITickSystem
         return text;
     }
 
-    BuildSite? Place(World world, PlannedBuilding plan)
+    BuildSite? Place(World world, PlannedBuilding plan, int faction, PlayerId? actor)
     {
+        void Notice(string text) => world.Post(actor ?? PlayerId.Local, text);
+        if (!float.IsFinite(plan.Position.X) || !float.IsFinite(plan.Position.Y) || !float.IsFinite(plan.Position.Z)
+            || !float.IsFinite(plan.Rotation.LengthSquared()) || plan.Rotation.LengthSquared() < 1e-6f || plan.Floor < 0) return null;
         var data = Data(plan.Record);
-        if (data is null || !Unlocked(world, plan.Record))
+        if (data is null || !Unlocked(world, plan.Record, faction))
         {
-            world.Post(PlacementRules.Message(PlacementFailure.NotAvailable));
+            Notice(PlacementRules.Message(PlacementFailure.NotAvailable));
             return null;
         }
-        var fail = PlacementRules.TownBlock(data, new Vector2(plan.Position.X, plan.Position.Z), towns, playerFactionId);
+        if (Settings.Placement?.Check(world, actor, faction, plan) is { } invalid && invalid != PlacementFailure.None)
+        { Notice(PlacementRules.Message(invalid)); return null; }
+        string factionRecord = population is not null && (uint)faction < (uint)population.Factions.Count ? population.Factions[faction].Id
+            : faction == world.Player.Faction ? playerFactionId : "";
+        var fail = plan.Parent is not null && Settings.Placement is not null ? PlacementFailure.None
+            : PlacementRules.TownBlock(data, new Vector2(plan.Position.X, plan.Position.Z), towns, factionRecord);
         if (fail != PlacementFailure.None)
         {
-            world.Post(PlacementRules.Message(fail));
+            Notice(PlacementRules.Message(fail));
             return null;
         }
         var reg = world.Buildings;
+        if (plan.Parent is { } parent && reg.Find(parent) is { } home && home.Owner != faction)
+        { Notice(PlacementRules.Message(PlacementFailure.NotOwnedBuilding)); return null; }
         var materials = new MaterialSlot[data.Materials.Count];
         for (int i = 0; i < materials.Length; i++) materials[i] = new MaterialSlot(data.Materials[i].Item, data.Materials[i].Required);
         var site = new BuildSite
@@ -348,7 +386,7 @@ public sealed class ConstructionSystem : ITickSystem
             Rotation = plan.Rotation,
             Floor = plan.Floor,
             Parent = plan.Parent,
-            Owner = world.Player.Faction,
+            Owner = faction,
             Materials = materials,
             Target = data.Target,
             Rate = data.Rate,
@@ -378,8 +416,8 @@ public sealed class ConstructionSystem : ITickSystem
     int TownFor(World world, BuildSite site, BuildingBuildData data)
     {
         var reg = world.Buildings;
-        if (site.Parent is { } parent && reg.Find(parent) is { } home) return home.Town;   // a level building's town is not a player town: the rules below
-        int faction = world.Player.Faction;
+        if (site.Parent is { } parent && reg.Find(parent) is { } home && home.Owner == site.Owner) return home.Town;
+        int faction = site.Owner;
         PlayerTown? nearest = null;
         float best = float.MaxValue;
         foreach (var t in reg.Towns)
@@ -403,13 +441,13 @@ public sealed class ConstructionSystem : ITickSystem
         if (data.LinksTogether || !data.CreatesPlayerTown) return 0;
         var town = reg.AddTown(site.Position, faction);
         foreach (var s in reg.All)
-            if (s.Owner == faction && NearestTown(reg, s.Position, AdoptRange) == town.Number) s.Town = town.Number;
+            if (s.Owner == faction && NearestTown(reg, s.Position, AdoptRange, faction) == town.Number) s.Town = town.Number;
         return town.Number;
     }
 
     /// <summary>Confirm's second pass (<b>Verified</b>, <c>FUN_1404db180</c>): queued walls still without a town take the last player town of the queue, else the nearest town within
     /// <see cref="WallTownRange"/> of their mean position, else a new outpost there. A nearest town of another faction leaves them without one (engine: <see cref="BuildSite.Town"/> names player towns only).</summary>
-    void TownForWalls(World world, List<BuildSite> placed)
+    void TownForWalls(World world, List<BuildSite> placed, int faction)
     {
         int count = 0, last = 0;
         var sum = Vector3.Zero;
@@ -427,8 +465,8 @@ public sealed class ConstructionSystem : ITickSystem
         if (town == 0)
         {
             var mean = sum / count;
-            town = NearestTown(world.Buildings, mean, WallTownRange);
-            if (town == 0) town = world.Buildings.AddTown(mean, world.Player.Faction).Number;
+            town = NearestTown(world.Buildings, mean, WallTownRange, faction);
+            if (town == 0) town = world.Buildings.AddTown(mean, faction).Number;
             else if (town < 0) return;
         }
         foreach (var s in placed)
@@ -436,7 +474,7 @@ public sealed class ConstructionSystem : ITickSystem
     }
 
     /// <summary>The nearest town (X/Z) within <paramref name="radius"/> of any faction: a player town's number, -1 for a placed town of the level data, 0 for none.</summary>
-    int NearestTown(BuildingRegistry reg, Vector3 at, float radius)
+    int NearestTown(BuildingRegistry reg, Vector3 at, float radius, int faction)
     {
         int found = 0;
         float best = radius * radius;
@@ -449,7 +487,7 @@ public sealed class ConstructionSystem : ITickSystem
         foreach (var t in reg.Towns)
         {
             float d = Vector2.DistanceSquared(new Vector2(t.Position.X, t.Position.Z), p);
-            if (d <= best) { best = d; found = t.Number; }
+            if (d <= best) { best = d; found = t.Owner == faction ? t.Number : -1; }
         }
         return found;
     }
@@ -467,13 +505,13 @@ public sealed class ConstructionSystem : ITickSystem
         var sum = Vector3.Zero;
         int count = 0;
         foreach (var s in world.Buildings.All)
-            if (s.Town == town.Number && s.Parent is null) { sum += s.Position; count++; }
+            if (s.Owner == town.Owner && s.Town == town.Number && s.Parent is null) { sum += s.Position; count++; }
         if (count == 0) return;
         var centre = sum / count;
         if (WalkableSpots.Nearest(world.Walkability, new Vector2(centre.X, centre.Z), out var spot)) centre = new Vector3(spot.X, centre.Y, spot.Y);
         float radius = TownRadiusStart;
         foreach (var s in world.Buildings.All)
-            if (s.Town == town.Number) radius = MathF.Max(radius, DistanceXZ(s.Position, centre) + TownRadiusMargin);
+            if (s.Owner == town.Owner && s.Town == town.Number) radius = MathF.Max(radius, DistanceXZ(s.Position, centre) + TownRadiusMargin);
         town.Position = centre;
         town.Override = Math.Clamp(radius, TownRadiusMin, TownRadiusMax);
     }
@@ -495,7 +533,8 @@ public sealed class ConstructionSystem : ITickSystem
     {
         var reg = world.Buildings;
         if (IsWall(site))
-            foreach (var child in reg.All.Where(s => s.WallParent == site.Id).ToList()) reg.Remove(child);
+            foreach (var child in reg.All.Where(s => s.WallParent == site.Id).ToList())
+                if (child.Owner == site.Owner) reg.Remove(child); else child.WallParent = null;
         reg.Remove(site);
         if (reg.FindTown(site.Town) is { } town) ReassessTown(world, town);
         sweep = true;
@@ -508,7 +547,11 @@ public sealed class ConstructionSystem : ITickSystem
     /// <summary>The site that takes a site's work and orders: the root of its <see cref="BuildSite.WallParent"/> chain, else the site itself (a child's slot 69 forwards to its parent's).</summary>
     public static BuildSite? Root(BuildingRegistry reg, BuildSite? site)
     {
-        for (int guard = 0; guard < 64 && site?.WallParent is { } up && reg.Find(up) is { } parent; guard++) site = parent;
+        for (int guard = 0; guard < 64 && site?.WallParent is { } up && reg.Find(up) is { } parent; guard++)
+        {
+            if (parent.Owner != site.Owner) return null;
+            site = parent;
+        }
         return site;
     }
 
@@ -532,10 +575,11 @@ public sealed class ConstructionSystem : ITickSystem
             BuildSite? pick = null, fallback = null;
             foreach (var w in reg.All)
             {
-                if (w == child || data(w.Record) is not { LinksTogether: true } wd) continue;
+                if (w == child || w.Owner != child.Owner || data(w.Record) is not { LinksTogether: true } wd) continue;
                 var (w0, w1) = LinkEnds(wd, w);
                 if (!Joined(c0, w0, w1) && !Joined(c1, w0, w1) && !Joined(mid, w0, w1)) continue;
-                var root = Root(reg, w)!;
+                var root = Root(reg, w);
+                if (root is null) continue;
                 if (root == child || root.Complete != child.Complete || data(root.Record) is not { IsWallGate: false } rd) continue;
                 if (rd.LinkType is 0 or 3)
                 {
@@ -568,7 +612,7 @@ public sealed class ConstructionSystem : ITickSystem
         var reg = world.Buildings;
         foreach (var c in reg.All)
         {
-            if (c.WallParent != parent.Id) continue;
+            if (c.WallParent != parent.Id || c.Owner != parent.Owner) continue;
             c.Progress = Share(parent, c);
             if (c.Complete == parent.Complete) continue;
             c.Complete = parent.Complete;
@@ -584,6 +628,12 @@ public sealed class ConstructionSystem : ITickSystem
     /// <summary>A character that can work a site: awake, free to act, not in a fight, not carrying or carried, not in a cage.</summary>
     static bool Able(CharacterCold cold) =>
         cold.Medical is not { Incapacitated: true } && !cold.InCombat && cold.CarriedBy.IsNone && cold.Carrying.IsNone && !cold.IsImprisoned;
+
+    static bool MayBuild(World world, CharacterCold worker, BuildSite site) => world.MayUseAssets(worker, site.Owner);
+
+    static bool MayFetch(World world, CharacterCold worker, BuildSite site, BuildSite source) => source.Owner == site.Owner
+        && world.MayUseAssets(worker, source.Owner) && (!world.Players.RequiresExplicitControl || !worker.IsPlayer
+            || world.Fixtures.Find(source.Id)?.Lock is not { EffectivelyLocked: true } && world.Machines.Find(source.Id) is not { Closed: true });
 
     /// <summary>A builder's reach of a site (<see cref="SiteReach.Building"/>, a wall's <see cref="SiteReach.Wall"/>).</summary>
     float ReachOf(BuildSite site) => IsWall(site) ? SiteReach.Wall : SiteReach.Building;
@@ -602,8 +652,9 @@ public sealed class ConstructionSystem : ITickSystem
     (Vector3 At, BuildSite? Site, float Reach)? Goal(World world, CharacterCold cold, byte task, BuildSite site)
     {
         if (task != (byte)CharacterTask.FetchMaterials) return (site.Position, site, ReachOf(site));
-        if (cold.FetchItem is { } item) return world.GroundItems.Find(item) is { } loose ? (loose.Position, null, PlayerSystem.PickUpReach) : null;
-        return cold.FetchSite is { } from && world.Buildings.Find(from) is { Complete: true } store && world.Machines.Find(from) is { } machine
+        if (cold.FetchItem is { } item) return world.GroundItems.Find(item) is { } loose && (loose.OwnedBy < 0 || loose.OwnedBy == site.Owner)
+            && loose.Item.Record == cold.FetchRecord ? (loose.Position, null, PlayerSystem.PickUpReach) : null;
+        return cold.FetchSite is { } from && world.Buildings.Find(from) is { Complete: true } store && MayFetch(world, cold, site, store) && world.Machines.Find(from) is { } machine
             ? (store.Position, store, machine.Data.UseRange) : null;
     }
 
@@ -612,6 +663,7 @@ public sealed class ConstructionSystem : ITickSystem
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
+        if (!MayBuild(world, cold, site)) return;
         ref var n = ref table.Next[slot];
         var keep = IsWork(n.Task) ? cold.ResumeTask : resume;
         MovementSystem.Stop(table, slot);
@@ -679,7 +731,7 @@ public sealed class ConstructionSystem : ITickSystem
                 continue;
             }
             var site = Root(reg, reg.Find(id));
-            if (site is null || !Able(cold) || (n.Task != (byte)CharacterTask.Dismantle && !site.NeedsWork))
+            if (site is null || !Able(cold) || !MayBuild(world, cold, site) || (n.Task != (byte)CharacterTask.Dismantle && !site.NeedsWork))
             {
                 End(table, i);
                 continue;
@@ -751,7 +803,7 @@ public sealed class ConstructionSystem : ITickSystem
             var cold = table.Cold(i)!;
             if (cold.BuildSite is not { } id) continue;
             var site = Root(reg, reg.Find(id));
-            if (site is null || !Able(cold))
+            if (site is null || !Able(cold) || !MayBuild(world, cold, site))
             {
                 End(table, i);
                 continue;
@@ -826,7 +878,7 @@ public sealed class ConstructionSystem : ITickSystem
         world.Buildings.Changed();
         SyncChildren(world, site);
         SetBroken(world, site, false);
-        if (site.Owner == world.Player.Faction) world.Post(Loc.Tr("Building '{1}' construction complete.", site.Name));
+        if (world.IsPlayerFaction(site.Owner)) world.PostFaction(site.Owner, Loc.Tr("Building '{1}' construction complete.", site.Name));
     }
 
     /// <summary>The first tick on a destroyed building (<b>Verified</b>, <c>FUN_1405595a0</c>): no longer complete, progress 0.4 x target, each delivered amount floor(delivered x U[0.3, 0.5) + 0.5).</summary>
@@ -888,7 +940,7 @@ public sealed class ConstructionSystem : ITickSystem
             float best = GroundRadius * GroundRadius;
             foreach (var g in world.GroundItems.All)
             {
-                if (g.Item.Record != want || g.Item.Quantity <= 0 || g.Item.Contents is not null || g.OwnedBy >= 0 && g.OwnedBy != cold.Faction) continue;
+                if (g.Item.Record != want || g.Item.Quantity <= 0 || g.Item.Contents is not null || g.OwnedBy >= 0 && g.OwnedBy != site.Owner) continue;
                 float d = Vector3.DistanceSquared(g.Position, at);
                 if (d <= best && (loose is null || d < best)) (loose, best) = (g.Id, d);
             }
@@ -897,7 +949,7 @@ public sealed class ConstructionSystem : ITickSystem
             float storeGap = float.MaxValue, machineGap = float.MaxValue;
             foreach (var m in world.Machines.All)
             {
-                if (world.Buildings.Find(m.Site) is not { Complete: true } building || building.Owner != cold.Faction) continue;
+                if (world.Buildings.Find(m.Site) is not { Complete: true } building || !MayFetch(world, cold, site, building)) continue;
                 float d = Vector3.DistanceSquared(building.Position, at);
                 if (d > SourceRangeSquared) continue;
                 if (m.Data.IsStorage)
@@ -948,10 +1000,12 @@ public sealed class ConstructionSystem : ITickSystem
     {
         var table = world.Characters;
         ref var n = ref table.Next[slot];
+        if (Root(world.Buildings, world.Buildings.Find(cold.BuildSite ?? "")) is not { } site || !MayBuild(world, cold, site)) { End(table, slot); return; }
         int taken = 0;
         if (cold.Inventory is { } inv && cold.FetchRecord is { } record)
         {
-            if (cold.FetchItem is { } id && world.GroundItems.Find(id) is { } loose)
+            if (cold.FetchItem is { } id && world.GroundItems.Find(id) is { } loose && loose.Item.Record == record
+                && (loose.OwnedBy < 0 || loose.OwnedBy == site.Owner))
             {
                 int before = loose.Item.Quantity;
                 if (inv.Add(loose.Item))
@@ -962,7 +1016,7 @@ public sealed class ConstructionSystem : ITickSystem
                 else taken = before - loose.Item.Quantity;
                 if (taken > 0) world.EmitSound(SoundKind.PickedUp, slot, n.Position);
             }
-            else if (cold.FetchSite is { } from && world.Machines.Find(from) is { } m)
+            else if (cold.FetchSite is { } from && world.Buildings.Find(from) is { Complete: true } source && MayFetch(world, cold, site, source) && world.Machines.Find(from) is { } m)
             {
                 for (; taken < PickupUnits; taken++)
                 {
@@ -1037,7 +1091,7 @@ public sealed class ConstructionSystem : ITickSystem
         if (site.Progress > 0) return;
         Refund(world, site);
         foreach (var c in world.Buildings.All)
-            if (c.WallParent == site.Id) Refund(world, c);   // nothing unless a save from before the link gave it materials
+            if (c.WallParent == site.Id && c.Owner == site.Owner) Refund(world, c);   // nothing unless a save from before the link gave it materials
         world.EmitSound(SoundKind.DismantleDone, slot, world.Characters.Next[slot].Position);
         Remove(world, site);
     }
@@ -1050,13 +1104,13 @@ public sealed class ConstructionSystem : ITickSystem
     /// other than furniture stands in it (the panel's own test, engine reading: Meitou's mounted buildings are the non-furniture children); otherwise its furniture is destroyed (no
     /// refund) and the dismantle step runs with an endless amount (slot 73 with <c>FLT_MAX</c>), so the site goes at once with the usual refund.
     /// </summary>
-    void DismantleAtOnce(World world, BuildSite site)
+    void DismantleAtOnce(World world, BuildSite site, PlayerId? actor = null)
     {
         var reg = world.Buildings;
         var children = reg.All.Where(o => o.Parent == site.Id).ToList();
-        if (children.Any(o => Data(o.Record) is not ({ IsInteriorFurniture: true } or { IsNode: true })))
+        if (children.Any(o => o.Owner != site.Owner || Data(o.Record) is not ({ IsInteriorFurniture: true } or { IsNode: true })))
         {
-            world.Post(MountedRefusal);
+            world.Post(actor ?? PlayerId.Local, MountedRefusal);
             return;
         }
         foreach (var furniture in children) Remove(world, furniture);
@@ -1066,7 +1120,7 @@ public sealed class ConstructionSystem : ITickSystem
         SetBroken(world, site, true);
         Refund(world, site);
         foreach (var c in reg.All)
-            if (c.WallParent == site.Id) Refund(world, c);
+            if (c.WallParent == site.Id && c.Owner == site.Owner) Refund(world, c);
         Remove(world, site);
         world.Buildings.Touch();
     }
@@ -1118,7 +1172,7 @@ public sealed class ConstructionSystem : ITickSystem
         float bestScore = 0;
         foreach (var site in reg.All)
         {
-            if (!site.NeedsWork || site.Paused || site.Destroyed || site.Dismantling || site.WallParent is not null || site.Owner != cold.Faction) continue;
+            if (!site.NeedsWork || site.Paused || site.Destroyed || site.Dismantling || site.WallParent is not null || site.Owner != cold.Faction || !MayBuild(world, cold, site)) continue;
             if (site.Stalled && !Carries(cold, site) && Source(world, slot, cold, site) is null) continue;
             float d2 = Vector3.DistanceSquared(at, site.Position);
             float score = MathF.Max(2 * (1 - d2 / (9000f * 9000f)), 0.0001f) / (Workers(table, site.Id, slot) + 1);

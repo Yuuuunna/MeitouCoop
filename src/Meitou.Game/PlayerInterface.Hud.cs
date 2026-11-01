@@ -25,6 +25,7 @@ sealed partial class PlayerInterface
     const float NoticeHoldSeconds = 4, NoticeFadeRate = 3;
 
     readonly Queue<(string Text, bool Error)> noticeQueue = new();
+    internal int PendingNoticeCount => noticeQueue.Count + (notice is null ? 0 : 1);
     (string Text, bool Error)? notice;
     float noticeHold, noticeAlpha;
     long noticeAt;
@@ -39,6 +40,7 @@ sealed partial class PlayerInterface
     {
         string line = Loc.Tr(text).ReplaceLineEndings(" ");
         LogMessage("", logText?.ReplaceLineEndings(" ") ?? line, MessageTone.System);
+        if (noticeQueue.Count == 32) noticeQueue.Dequeue();
         noticeQueue.Enqueue((line, error));
     }
 
@@ -53,7 +55,7 @@ sealed partial class PlayerInterface
     /// The DIALOGUE log as the text box's text: each line after the colour tag of its tone (the original's MessageLogColor: #000000, <c>DialogueTextOption</c>, #c6ac6a),
     /// its own <c>#</c> doubled. The Meitou mode's dark panel takes the kit's text colour for the black.
     /// </summary>
-    string MessagesText()
+    internal string MessagesText()
     {
         string normal = UiMode == UiMode.Meitou ? Tag(MainColour) : "#000000", player = Tag(MyGuiColours.Named("DialogueTextOption", "b3b3b3"));
         return string.Join('\n', uiMessages.Select(m => (m.Tone switch { MessageTone.Player => player, MessageTone.System => "#c6ac6a", _ => normal })
@@ -100,6 +102,7 @@ sealed partial class PlayerInterface
     /// <summary>Drops the transient state of the mouse (a drag box, a steering right click): the world it belonged to is gone.</summary>
     public void Reset()
     {
+        pendingTalk = null;
         floaters.Clear();
         dragFrom = null;
         dragging = false;
@@ -117,8 +120,9 @@ sealed partial class PlayerInterface
 
     void PressButton(int index)
     {
-        if (index == 0) session.Simulation.TogglePause();
-        else session.Simulation.SetSpeed(ButtonSpeeds[index]);
+        if (!session.CanChangeSpeed) return;
+        if (index == 0) session.TogglePause();
+        else session.SetSpeed(ButtonSpeeds[index]);
     }
 
     /// <summary>The selected characters of the current snapshot, found once per snapshot (the HUD box is asked for on every hit test).</summary>
@@ -147,6 +151,7 @@ sealed partial class PlayerInterface
     /// <summary>The HUD, the selection rings and the drag box, over the finished picture.</summary>
     public void Draw(DebugOverlay o, int width, int height, DebugOverlay.OverlayPass? pass = null)
     {
+        PollSessionMessages();
         PollUiSounds();
         Width = width;
         Height = height;

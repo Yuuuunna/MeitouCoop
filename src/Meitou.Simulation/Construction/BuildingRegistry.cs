@@ -170,6 +170,7 @@ public sealed partial class BuildingRegistry
     public int Count => sites.Count;
     public IReadOnlyList<BuildSite> All => sites;
     public BuildSite? Find(string id) => byId.GetValueOrDefault(id);
+    internal IEnumerable<KeyValuePair<ZoneCoordinate, int>> AllocationCounters => counters;
 
     /// <summary>The player towns (outposts), in creation order; never removed.</summary>
     public IReadOnlyList<PlayerTown> Towns => towns;
@@ -237,7 +238,7 @@ public sealed partial class BuildingRegistry
     {
         while (true)
         {
-            int n = counters.GetValueOrDefault(zone) + 1;
+            int n = checked(counters.GetValueOrDefault(zone) + 1);
             counters[zone] = n;
             string id = IdOf(n, zone);
             if (!byId.ContainsKey(id)) return id;
@@ -276,17 +277,18 @@ public sealed partial class BuildingRegistry
         Version++;
     }
 
-    /// <summary>The snapshots of every site, rebuilt only when something changed since the last call.</summary>
-    internal IReadOnlyList<BuildingSnapshot> Published()
+    /// <summary>Site snapshots; revisioned authority views are captured fresh, legacy views cache until Touch.</summary>
+    internal IReadOnlyList<BuildingSnapshot> Published(Func<BuildSite, ulong>? revision = null)
     {
-        if (publishedVersion == Version) return published;
+        if (revision is null && publishedVersion == Version) return published;
         var list = new List<BuildingSnapshot>(sites.Count);
         foreach (var s in sites)
         {
             var materials = new MaterialView[s.Materials.Length];
             for (int i = 0; i < materials.Length; i++) materials[i] = new MaterialView(s.Materials[i].Item, s.Materials[i].Required, s.Materials[i].Delivered);
-            list.Add(new BuildingSnapshot(s.Id, s.Record, s.Position, s.Rotation, s.Floor, s.Parent, s.Owner, s.Progress, s.Target, materials, s.Complete, s.Paused) { Dismantling = s.Dismantling, WallParent = s.WallParent, Public = s.Public, TownName = s.LevelTownName ?? FindTown(s.Town)?.Name, LevelPlacement = s.LevelPlacement, Destroyed = s.Destroyed, Name = s.Name });
+            list.Add(new BuildingSnapshot(s.Id, s.Record, s.Position, s.Rotation, s.Floor, s.Parent, s.Owner, s.Progress, s.Target, materials, s.Complete, s.Paused) { SiteRevision = revision?.Invoke(s) ?? 0, RootRevision = revision is not null && ConstructionSystem.Root(this, s) is { } root ? revision(root) : 0, Dismantling = s.Dismantling, WallParent = s.WallParent, Public = s.Public, TownName = s.LevelTownName ?? FindTown(s.Town)?.Name, LevelPlacement = s.LevelPlacement, Destroyed = s.Destroyed, Name = s.Name });
         }
+        if (revision is not null) return list;
         publishedVersion = Version;
         return published = list;
     }

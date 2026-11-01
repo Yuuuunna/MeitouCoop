@@ -1,0 +1,65 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_CN\n"
+
+msgid "Multiplayer"
+msgstr "多人游戏"
+
+msgid "MULTIPLAYER"
+msgstr "多人游戏"
+
+msgid "Server (host:port)"
+msgstr "服务器地址（主机:端口）"
+
+msgid "Connection profile (.json)"
+msgstr "服务器连接配置（.json 文件路径）"
+
+msgid "Faction name (new character)"
+msgstr "势力名称（创建角色时使用）"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Nameless"
+msgstr "无名者"
+
+msgid "Enter the server address and the connection profile supplied by its administrator."
+msgstr "输入服务器地址，以及服主提供的连接配置文件路径。已有角色会直接恢复入场。"
+
+msgid "Enter the connection profile path."
+msgstr "请填写服务器连接配置文件路径。"
+
+msgid "Connecting and checking content…"
+msgstr "正在连接并检查游戏内容…"
+
+msgid "Preparing the selected beginning…"
+msgstr "正在准备所选出身…"
+
+msgid "Updating appearance…"
+msgstr "正在更新外貌…"
+
+msgid "Creating characters and preparing entry…"
+msgstr "正在创建角色并准备入场…"
+
+msgid "Enter a faction name of 1–30 characters, then reconnect."
+msgstr "请填写 1–30 个字符的势力名称，然后重新连接。"
+
+msgid "Character name"
+msgstr "角色名称"
+
+msgid "Names must contain 1–30 characters."
+msgstr "角色名称必须包含 1–30 个字符。"
+
+msgid "Create characters"
+msgstr "创建角色"
+
+
+msgid "Enter the server address. Your identity is created automatically and remembered on this computer."
+msgstr "输入服务器地址即可连接。首次连接自动建立本机身份，之后重连恢复原角色。"
+
+msgid "Enter the server address."
+msgstr "请输入服务器地址。"

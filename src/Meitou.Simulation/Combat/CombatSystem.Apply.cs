@@ -66,7 +66,7 @@ public sealed partial class CombatSystem
                 bool parry = IsParry(ac, dc, tech, blow);
                 if (!techniques[D.ReactTech].IsDodge) Sound(world, SoundKind.Blocked, d, a, prev[d].Position, unarmed: !parry, robot: false);
                 // A parry throws sparks at the parrying weapon (FUN_1404394f0, IsParry); a fist blow of a plain hand-to-hand impact does not.
-                if (!techniques[D.ReactTech].IsDodge && parry) world.BlockSparks?.Enqueue(Id(world, d));
+                if (!techniques[D.ReactTech].IsDodge && parry) world.EmitBlockSpark(Id(world, d));
                 Stop(ref A, tech, blow);
                 Record(now, a, d, blow, outcome, -1, default, false, false);
                 return;
@@ -98,7 +98,7 @@ public sealed partial class CombatSystem
         events.Clear();
         var cover = new CoverRoll(world.Seed, Rng.Key(table.IdOf(d)), a, seq, blow);
         var (part, damage, absorbed) = HitResolver.LandDetailed(dc.Medical, ctx, packet, target.Armour, cover, toughness, tech.LowStrike, direction == 6, combat, events);
-        FloatHit(world, d, dc, ac.IsPlayer, part, damage, absorbed);
+        FloatHit(world, d, dc, ac.IsPlayer, part, damage, absorbed, world.PresentationOwner(table.IdOf(a)));
         A.Landed++;
         D.Taken++;
         D.HitTick = now;
@@ -144,7 +144,7 @@ public sealed partial class CombatSystem
         Crimes?.Hit(world, a, d);
         Deeds?.Blow(world, a, d, dc.Medical.Incapacitated, death);
         // A unique killed: dead in the registry, with the player flag when the killer is the player's (the body pass would mark it dead without).
-        if (death && world.Uniques.RecordOf(world.Characters.IdOf(d)) is { } unique) world.Uniques.Died(unique, ac.IsPlayer);
+        if (death && world.Uniques.RecordOf(world.Characters.IdOf(d)) is { } unique) world.Uniques.Died(unique, ac.IsPlayer, world.Players.RequiresExplicitControl ? ac.Faction : null);
         Record(now, a, d, blow, outcome, part, damage, knockout, death);
     }
 
@@ -251,10 +251,10 @@ public sealed partial class CombatSystem
         : xp.WeaponWeightStrengthFactor(f.Weapon!.Stats.Weight, c.Stats![StatsEnumerated.Strength], c.Medical!.StatMultiplier(StatsEnumerated.Strength));
 
     /// <summary>Queues the damage floater of a landed hit when the host shows them (<see cref="World.Floaters"/>).</summary>
-    void FloatHit(World world, int d, CharacterCold dc, bool sourceIsPlayer, int part, in HitDamage damage, in ArmourAbsorbed absorbed)
+    void FloatHit(World world, int d, CharacterCold dc, bool sourceIsPlayer, int part, in HitDamage damage, in ArmourAbsorbed absorbed, PlayerId? sourcePlayer = null)
     {
-        if (world.Floaters is not { } queue || part < 0) return;
-        queue.Enqueue(Floater.Hit(world.Characters.IdOf(d), world.Characters.Previous[d].Position, dc.IsPlayer, sourceIsPlayer, dc.Medical!.Parts[part].Template.Name, damage, absorbed));
+        if (!world.HasFloaterSink || part < 0) return;
+        world.EmitFloater(Floater.Hit(world.Characters.IdOf(d), world.Characters.Previous[d].Position, dc.IsPlayer, sourceIsPlayer, dc.Medical!.Parts[part].Template.Name, damage, absorbed), sourcePlayer);
     }
 
     void Record(int now, int a, int d, int blow, BlowOutcome outcome, int part, in HitDamage damage, bool knockout, bool death)

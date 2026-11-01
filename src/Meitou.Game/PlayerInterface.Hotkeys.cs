@@ -53,15 +53,15 @@ sealed partial class PlayerInterface
         else if (Bound(InputAction.NextCharacter, key)) StepCharacter(1);
         else if (Bound(InputAction.PreviousCharacter, key)) StepCharacter(-1);
         else if (free) return;   // the orders below are not given from the free camera (its R is up)
-        else if (Bound(InputAction.StopMovement, key)) Say(new StopCommand(SelectedIds()) { Tick = session.World.Tick });
+        else if (Bound(InputAction.StopMovement, key)) Say(new StopCommand(SelectedIds()) { Tick = session.CommandTick });
         else if (OrderHotkey(key) is { } order) ExecuteUiAction("order." + order, "");
         else if (Bound(InputAction.CycleRunSpeed, key)) ExecuteUiAction("runspeed.1", "");   // the right speed arrow (FUN_140722630)
         // Medic and Rescue: one search each, with Shift the job (58 / 148) added to the lists, as their buttons.
-        else if (Bound(InputAction.Medic, key)) Say(new Meitou.Simulation.FirstAid.MedicJobCommand(SelectedIds(), shift) { Tick = session.World.Tick });
-        else if (Bound(InputAction.Rescue, key)) Say(new Meitou.Simulation.Carrying.RescueJobCommand(SelectedIds(), shift) { Tick = session.World.Tick });
+        else if (Bound(InputAction.Medic, key)) Say(new Meitou.Simulation.FirstAid.MedicJobCommand(SelectedIds(), shift) { Tick = session.CommandTick });
+        else if (Bound(InputAction.Rescue, key)) Say(new Meitou.Simulation.Carrying.RescueJobCommand(SelectedIds(), shift) { Tick = session.CommandTick });
         else if (Bound(InputAction.Prospect, key)) ExecuteUiAction("prospect", "");
-        else if (Bound(InputAction.Rest, key)) Say(new Meitou.Simulation.FirstAid.RestOrder(SelectedIds()) { Tick = session.World.Tick });
-        else if (Bound(InputAction.PutDown, key)) Say(new Meitou.Simulation.Carrying.PutDownOrder(SelectedIds()) { Tick = session.World.Tick });
+        else if (Bound(InputAction.Rest, key)) Say(new Meitou.Simulation.FirstAid.RestOrder(SelectedIds()) { Tick = session.CommandTick });
+        else if (Bound(InputAction.PutDown, key)) Say(new Meitou.Simulation.Carrying.PutDownOrder(SelectedIds()) { Tick = session.CommandTick });
     }
 
     /// <summary>

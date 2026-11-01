@@ -70,7 +70,8 @@ public static class SquadFactory
     /// <summary>Offset of member number <paramref name="i"/> from the squad position.</summary>
     public static Vector2 Offset(int i, float spacing = 3) => new(spacing * (i % 8), spacing * (i / 8) + (i % 2));
 
-    public static SquadPlan Plan(GameDatabase db, SquadTemplate template, float multiplier, ulong seed, ulong key, IWorldStates? states = null)
+    public static SquadPlan Plan(GameDatabase db, SquadTemplate template, float multiplier, ulong seed, ulong key, IWorldStates? states = null,
+        int? memberLimit = null, bool includeSlaves = true)
     {
         states ??= IWorldStates.None;
         var members = new List<MemberPlan>();
@@ -82,6 +83,7 @@ public static class SquadFactory
 
         void Add(string recordId, SquadRole role, bool animal, float age, float spacing)
         {
+            if (memberLimit is { } limit && members.Count >= limit) throw new InvalidOperationException("Squad exceeds its approved character limit.");
             if (role == SquadRole.Leader) haveLeader = true;
             int i = members.Count;
             members.Add(new MemberPlan(recordId, role, i, Offset(i, spacing), animal, age));
@@ -138,7 +140,7 @@ public static class SquadFactory
         Group(template.Animals, SquadRole.Squad1, true, 3, "animals");
         Group(template.Animals2, SquadRole.Squad2, true, 5, "animals2");
 
-        foreach (var slave in template.Slaves)
+        foreach (var slave in includeSlaves ? template.Slaves : [])
         {
             if (db.Find(slave.Id) is not { } record || !IsTemplate(record))
             {

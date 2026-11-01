@@ -10,7 +10,7 @@ namespace Meitou.Simulation.Locks;
 public sealed record SetFreeOrder(IReadOnlyList<CharacterId> Characters, CharacterId Prisoner) : SimCommand;
 
 /// <summary>Get in (107, Task_UseCage): the nearest of the characters (the selection when empty) who may walks into the free, unlocked <see cref="Cage"/> and is imprisoned there.</summary>
-public sealed record GetInCageOrder(IReadOnlyList<CharacterId> Characters, string Cage) : SimCommand;
+public sealed record GetInCageOrder(IReadOnlyList<CharacterId> Characters, string Cage) : FixtureCommand;
 
 /// <summary>
 /// The cage verbs of a clicked cage (docs/game/ui-input.md "Context menu verbs", cage rows): Set Free and Get in. Put in is <see cref="Crime.PutInCageOrder.Cage"/>, Pick Lock of an empty
@@ -22,10 +22,11 @@ public sealed partial class LockSystem
     {
         var table = world.Characters;
         if (!table.TryResolveNext(order.Prisoner, out int p) || table.Cold(p) is not { IsImprisoned: true, InWhat: { } where } || world.Fixtures.Find(where) is not { } cage) return;
-        int best = NearestWorker(world, order.Characters, cage);
+        int best = NearestWorker(world, order, order.Characters, cage);
         if (best < 0) return;
         var walker = table.Cold(best)!;
         ClearWork(walker);
+        Remember(world, order, table.IdOf(best), cage, order.Prisoner);
         walker.Freeing = order.Prisoner;
         MovementSystem.GoToFloor(world, best, cage.Position, walker.RunSpeed);
     }
@@ -33,23 +34,24 @@ public sealed partial class LockSystem
     void GetInInput(World world, GetInCageOrder order)
     {
         var table = world.Characters;
-        if (world.Fixtures.Find(order.Cage) is not { Kind: FixtureKind.Cage } cage || !FixtureRegistry.IsFree(table, cage)) return;
-        int best = NearestWorker(world, order.Characters, cage);
+        if (world.Fixtures.Find(order.Cage) is not { Kind: FixtureKind.Cage } cage || !FixtureRegistry.IsFree(table, cage) || !world.Fixtures.Matches(order, cage)) return;
+        int best = NearestWorker(world, order, order.Characters, cage);
         if (best < 0) return;
         var walker = table.Cold(best)!;
         if (!walker.Carrying.IsNone) return;
         ClearWork(walker);
+        Remember(world, order, table.IdOf(best), cage);
         walker.EnteringCage = cage.Id;
         MovementSystem.GoToFloor(world, best, cage.Position, walker.RunSpeed);
     }
 
     /// <summary>The slot of the player's free, awake, uncarried character nearest <paramref name="where"/> among <paramref name="who"/> (the selection when empty); -1 when none.</summary>
-    int NearestWorker(World world, IReadOnlyList<CharacterId> who, Fixture where)
+    int NearestWorker(World world, SimCommand order, IReadOnlyList<CharacterId> who, Fixture where)
     {
         var table = world.Characters;
         int best = -1;
         float bestDistance = float.MaxValue;
-        foreach (var id in Who(world, who))
+        foreach (var id in Who(world, order, who))
         {
             if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(where.Position));

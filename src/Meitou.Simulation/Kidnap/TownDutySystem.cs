@@ -109,16 +109,15 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     /// </summary>
     void LookPlayerFood(World world)
     {
-        int faction = world.Player.Faction;
-        if (faction < 0) return;
         foodWaits.RemoveAll(w => w.Until <= world.GameHours);
         var table = world.Characters;
-        bool feedAnimals = (world.Player.SquadAi & SquadAi.Feed) != 0;
         bool occupations = world.Squads.All.Any(q => q.Ai is { CurrentClass: PackageClass.OccupyTown });
         for (int s = 0; s < table.HighWater; s++)
         {
             if (!table.Next[s].Alive || table.Next[s].Task != (byte)CharacterTask.Idle) continue;
-            if (table.Cold(s) is not { Medical: { Dead: false, Incapacitated: false } med, Race: { } race } c || !(c.IsPlayer || c.Faction == faction)) continue;
+            if (table.Cold(s) is not { Medical: { Dead: false, Incapacitated: false } med, Race: { } race } c || !(c.IsPlayer || world.IsPlayerFaction(c.Faction))) continue;
+            int faction = c.Faction;
+            bool feedAnimals = (world.SquadOptions(c) & SquadAi.Feed) != 0;
             bool animal = !med.HasStatsObject;
             if (animal && !feedAnimals) continue;
             bool hungry = med.Fed <= 0 && med.Hunger <= FeedSystem.FoodOnGroundBelow && !(c.InCombat && med.Hunger >= FeedSystem.FoodOnGroundInFight);

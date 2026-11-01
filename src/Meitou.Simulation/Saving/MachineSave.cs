@@ -4,6 +4,7 @@ using Meitou.Data.Save;
 using Meitou.Data.World;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Production;
+using Meitou.Simulation.Construction;
 
 namespace Meitou.Simulation.Saving;
 
@@ -16,7 +17,6 @@ namespace Meitou.Simulation.Saving;
 /// </summary>
 public static class MachineSave
 {
-    const string StateSuffix = "-S23";
     const string InventorySuffix = "-inventory";
     /// <summary>The item furnace's input section (<b>Verified</b>, <c>FurnaceBuilding::setupFromData</c>), Meitou's storage grid of a furnace.</summary>
     const string FurnaceSection = "in1";
@@ -24,17 +24,19 @@ public static class MachineSave
     /// <summary>Writes every machine into its building's state (after <see cref="BuildingSave.Write"/>).</summary>
     public static void Write(SaveGame game, World world)
     {
+        ClearResetMachines(game, world);
         if (world.Machines.Count == 0) return;
         foreach (var m in world.Machines.All)
         {
             if (world.Buildings.Find(m.Site) is not { } site || !game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list) continue;
             var file = zone.File;
-            var state = file.Records.FirstOrDefault(r => r.StringId == site.Id + StateSuffix && r.RecordType == FcsRecordType.GAMESTATE_BUILDING);
-            var instance = list.Instances.FirstOrDefault(i => i.Id == site.Id);
+            string rawId = site.LevelPlacement?.InstanceId ?? site.Id;
+            var instance = list.Instances.FirstOrDefault(i => i.Id == rawId);
+            var state = instance?.States.Select(id => file.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.GAMESTATE_BUILDING)).FirstOrDefault(r => r is not null);
             if (state is null || instance is null) continue;
             WriteKeys(state, m, world.GameHours);
             var saveItems = Items(m);
-            string inventoryId = site.Id + InventorySuffix;
+            string inventoryId = rawId + InventorySuffix;
             var inventory = file.Records.FirstOrDefault(r => r.StringId == inventoryId && r.RecordType == FcsRecordType.INVENTORY_STATE);
             instance.States.Remove(inventoryId);
             if (saveItems.Count == 0)
@@ -103,46 +105,119 @@ public static class MachineSave
         return list;
     }
 
-    /// <summary>Reads the machines of the player buildings the world holds (after <see cref="BuildingSave.Read"/>); an unfinished one keeps its stock too (an upgrade being built).</summary>
-    public static void Read(SaveGame save, World world, ProductionSystem production, ItemFactory factory)
+    /// <summary>Bind a checkpoint once. Late-created machines use the same restoration path as those loaded immediately.</summary>
+    internal static void Bind(SaveGame save, World world, ItemFactory factory)
     {
-        var states = HeldSave.BuildingStates(save);
+        if (world.SavedMachines is { } existing)
+        {
+            if (!ReferenceEquals(existing.Source, save)) throw new InvalidOperationException("A world's machine source cannot be replaced.");
+            return;
+        }
+        world.SavedMachines = new Restoration(save, factory);
+        world.Fixtures.Saved ??= HeldSave.BuildingStates(save);
+    }
+
+    internal sealed class Restoration(SaveGame source, ItemFactory factory)
+    {
+        public SaveGame Source { get; } = source;
+        readonly Dictionary<string, string> consumed = new(StringComparer.Ordinal);
+        internal void Invalidate(string key) => consumed.TryAdd(key, key);
+        internal IEnumerable<string> Retired(World world) => consumed.Where(p => world.Machines.Find(p.Value) is null).Select(p => p.Key);
+
+        internal void Apply(World world, ProductionSystem production, BuildSite site, Machine machine)
+        {
+            string rawId = site.LevelPlacement?.InstanceId ?? site.Id;
+            string key = BuildingKey.Of(site.Zone, rawId);
+            if (!consumed.TryAdd(key, site.Id)) return;
+            // A town override may discard a level building's saved state before its machine is ever created.
+            if (site.LevelPlacement is not null && world.Fixtures.Saved?.ContainsKey(key) != true) return;
+            if (!Source.Zones.TryGetValue(site.Zone, out var zone) ||
+                zone.BuildingList?.Instances.FirstOrDefault(i => i.Id == rawId && !i.IsRemoved) is not { } instance) return;
+            if (instance.Target != site.Record) throw new InvalidDataException("A saved machine's building record differs from the restored site.");
+            RestoreSite(zone, instance, machine, production, factory);
+            world.Machines.Touch();
+        }
+    }
+
+    /// <summary>Read existing machines after buildings; the binding also handles subsequently created level-house machines.</summary>
+    public static void Read(SaveGame save, World world, ProductionSystem production, ItemFactory factory, bool allOwners = false)
+    {
+        Bind(save, world, factory);
         foreach (var site in world.Buildings.All)
         {
-            if (site.Owner != world.Player.Faction || production.Data(site.Record) is null) continue;
-            if (production.Ensure(world, site) is not { } m) continue;
-            if (states.TryGetValue(BuildingKey.Of(site.Zone, site.Id), out var state))
-            {
-                ReadKeys(state, m);
-                if (m.Craft is not null) ReadCraft(state, m, production);
-            }
-            if (!save.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList?.Instances.FirstOrDefault(i => i.Id == site.Id) is not { } instance) continue;
-            var inventory = instance.States.Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.INVENTORY_STATE)).FirstOrDefault(r => r is not null);
-            if (inventory is null) continue;
-            var storage = new List<SaveItem>();
-            foreach (var item in SaveInventory.Read(zone.File, inventory))
-            {
-                if (item.Section == "out" && m.Craft is { } craft) { if (SavedKit.ItemOf(item, factory) is { } done) craft.Done.Add(done); }
-                else if (item.Section == "out" && m.Output is { } o && o.Recipe.Item == item.BaseId) o.Count = Math.Min(o.Recipe.Capacity, o.Count + item.Quantity);
-                else if (item.Section.StartsWith("in", StringComparison.Ordinal) && int.TryParse(item.Section.AsSpan(2), CultureInfo.InvariantCulture, out int k) && k < m.Inputs.Length
-                    && (m.Inputs[k].Item == item.BaseId || m.Craft is not null && m.Inputs[k].Count == 0))
-                {
-                    // A crafting bench's sections hold its last craft's ingredients, also with nothing queued.
-                    m.Inputs[k].Item = item.BaseId;
-                    m.Inputs[k].Count = Math.Min(m.Inputs[k].Recipe.Capacity, m.Inputs[k].Count + item.Quantity);
-                }
-                else storage.Add(item);
-            }
-            if (m.Storage is { } grid && storage.Count > 0)
-                foreach (var item in SavedKit.ToInventory(storage, factory).Items)
-                {
-                    if (m.Data.IsFurnace) item.Section = "main";   // its in1 is Meitou's storage grid
-                    // A grid that is now smaller (a storage sized from its one item) gets an item that no longer fits at the next free cell, as the original's loader does.
-                    bool fits = item.X >= 0 && item.Y >= 0 && item.X + item.Width <= grid.Width && item.Y + item.Height <= grid.Height && grid.IsFree(item.Section, item.X, item.Y, item.Width, item.Height);
-                    if (fits || grid.Add(item) is false && item.Quantity > 0) grid.Items.Add(item);
-                }
+            if ((!allOwners && site.Owner != world.Player.Faction) || production.Data(site.Record) is null) continue;
+            if (production.Ensure(world, site) is { } machine) world.SavedMachines!.Apply(world, production, site, machine);
         }
-        world.Machines.Touch();
+    }
+
+    static void RestoreSite(SaveZone zone, FcsInstance instance, Machine m, ProductionSystem production, ItemFactory factory)
+    {
+        var state = instance.States.Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id &&
+            r.RecordType == FcsRecordType.GAMESTATE_BUILDING)).FirstOrDefault(r => r is not null);
+        if (state is not null)
+        {
+            ReadKeys(state, m);
+            if (m.Craft is not null) ReadCraft(state, m, production);
+        }
+        var inventory = instance.States.Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.INVENTORY_STATE)).FirstOrDefault(r => r is not null);
+        if (inventory is null) return;
+        var storage = new List<SaveItem>();
+        foreach (var item in SaveInventory.Read(zone.File, inventory))
+        {
+            if (item.Section == "out" && m.Craft is { } craft) { if (SavedKit.ItemOf(item, factory) is { } done) craft.Done.Add(done); }
+            else if (item.Section == "out" && m.Output is { } o && o.Recipe.Item == item.BaseId) o.Count = Math.Min(o.Recipe.Capacity, o.Count + item.Quantity);
+            else if (item.Section.StartsWith("in", StringComparison.Ordinal) && int.TryParse(item.Section.AsSpan(2), CultureInfo.InvariantCulture, out int k) && k >= 0 && k < m.Inputs.Length
+                && (m.Inputs[k].Item == item.BaseId || m.Craft is not null && m.Inputs[k].Count == 0))
+            {
+                // A crafting bench's sections hold its last craft's ingredients, also with nothing queued.
+                m.Inputs[k].Item = item.BaseId;
+                m.Inputs[k].Count = Math.Min(m.Inputs[k].Recipe.Capacity, m.Inputs[k].Count + item.Quantity);
+            }
+            else storage.Add(item);
+        }
+        if (m.Storage is { } grid && storage.Count > 0)
+            foreach (var item in SavedKit.ToInventory(storage, factory).Items)
+            {
+                if (m.Data.IsFurnace) item.Section = "main";   // its in1 is Meitou's storage grid
+                // A grid that is now smaller (a storage sized from its one item) gets an item that no longer fits at the next free cell, as the original's loader does.
+                bool fits = item.X >= 0 && item.Y >= 0 && item.X + item.Width <= grid.Width && item.Y + item.Height <= grid.Height && grid.IsFree(item.Section, item.X, item.Y, item.Width, item.Height);
+                if (fits || grid.Add(item) is false && item.Quantity > 0) grid.Items.Add(item);
+            }
+    }
+
+    static void ClearResetMachines(SaveGame game, World world)
+    {
+        var reset = world.Fixtures.ResetBuildings.ToHashSet(StringComparer.Ordinal);
+        if (world.SavedMachines is { } restored) reset.UnionWith(restored.Retired(world));
+        if (reset.Count == 0) return;
+        foreach (var zone in game.Zones.Values)
+        {
+            if (zone.BuildingList is not { } list) continue;
+            foreach (var instance in list.Instances)
+            {
+                if (!reset.Contains(BuildingKey.Of(zone.Coordinate, instance.Id))) continue;
+                foreach (var id in instance.States.ToArray())
+                {
+                    var record = zone.File.Records.FirstOrDefault(r => r.StringId == id);
+                    if (record?.RecordType == FcsRecordType.INVENTORY_STATE)
+                    {
+                        SaveInventory.Replace(zone.File, record, [], n => $"{n}-zone{zone.Coordinate.X}.{zone.Coordinate.Y}-INGAME");
+                        zone.File.Records.Remove(record);
+                        instance.States.Remove(id);
+                    }
+                    else if (record?.RecordType == FcsRecordType.GAMESTATE_BUILDING)
+                    {
+                        foreach (var key in record.Floats.Keys.Where(k => k is "resource mult" or "production amount" or "batterycharge" or "plant growth" or "plant death" or "plant start" or "save time" or "num crafts"
+                            || Numbered(k, "consumption amount-") || Numbered(k, "current prog")).ToArray()) record.Floats.Remove(key);
+                        foreach (var key in new[] { "power on", "gets battery", "broken", "repeat" }) record.Bools.Remove(key);
+                        foreach (var key in record.Ints.Keys.Where(k => k == "plants harvested" || Numbered(k, "crit")).ToArray()) record.Ints.Remove(key);
+                        foreach (var key in record.Strings.Keys.Where(k => Numbered(k, "current") || Numbered(k, "currentExtraData")).ToArray()) record.Strings.Remove(key);
+                    }
+                }
+            }
+        }
+        static bool Numbered(string key, string prefix) => key.StartsWith(prefix, StringComparison.Ordinal) &&
+            int.TryParse(key.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out _);
     }
 
     static void ReadCraft(FcsRecord state, Machine m, ProductionSystem production)

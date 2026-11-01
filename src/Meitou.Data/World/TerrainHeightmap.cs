@@ -19,7 +19,7 @@ public sealed class TerrainHeightmap : IDisposable
 
     public static TerrainHeightmap Open(GameInstall install) => Open(Path.Combine(install.DataDirectory, RelativePath));
 
-    public static TerrainHeightmap Open(string path) => FromImage(TiffImage.Open(path));
+    public static TerrainHeightmap Open(string path) => FromImage(TiffImage.Open(GameFiles.Resolve(path)));
 
     public static TerrainHeightmap Open(Stream stream) => FromImage(TiffImage.Open(stream));
 

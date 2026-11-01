@@ -174,7 +174,8 @@ public static partial class SaveCapture
         foreach (var site in population.WildSites) wild.UnionWith(population.WildSquadsOf(site.Index));
         foreach (var squad in world.Squads.All)
         {
-            if (squad.Town >= 0 || squad.PlatoonId >= 0 || squad.Dead || wild.Contains(squad.Id) || squad.Faction == world.Player.Faction || squad.Faction < 0 || squad.Faction >= data.Factions.Count) continue;
+            if (squad.Town >= 0 || squad.PlatoonId >= 0 || squad.Dead || wild.Contains(squad.Id) ||
+                (world.Players.RequiresExplicitControl ? squad.PlayerManaged : squad.Faction == world.Player.Faction) || squad.Faction < 0 || squad.Faction >= data.Factions.Count) continue;
             var every = squad.Members.Where(m => table.IsAlive(m) && table.Cold(m.Slot) is { IsPlayer: false, Save: null }).ToList();
             var alive = every.Where(m => table.Cold(m.Slot)!.DiedTick < 0).ToList();
             if (alive.Count == 0) continue;

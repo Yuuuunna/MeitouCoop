@@ -72,10 +72,11 @@ public sealed partial class CarrySystem
         var table = world.Characters;
         if (!table.TryResolveNext(order.Target, out int target) || !CanBeKnockedOut(table.Cold(target)!)) return;
         // The first that can go, in the order given (the selection's order), so the chance the interface showed is the one rolled.
-        foreach (var id in Who(world, order.Attackers))
+        foreach (var id in Who(world, order, order.Attackers))
             if (table.TryResolveNext(id, out int attacker) && attacker != target && CanKnockOut(table.Cold(attacker)!))
             {
                 Begin(table, attacker, order.Target, CharacterTask.StealthKo, CharacterTask.Idle);
+                Remember(world, attacker, order);
                 return;
             }
     }

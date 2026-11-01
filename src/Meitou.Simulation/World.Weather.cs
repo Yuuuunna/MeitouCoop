@@ -17,6 +17,12 @@ public interface IWeatherSource
     IReadOnlyList<WeatherAffectZone> Zones { get; }
 }
 
+public interface IWeatherPresentationSource
+{
+    WeatherFrame CaptureWeather();
+    Meitou.Data.Particles.WeatherEffectFrame CaptureEffects();
+}
+
 public sealed partial class World
 {
     /// <summary>The weather (<see cref="WeatherSystem"/>); null (the default, every test): no weather acts on anyone.</summary>

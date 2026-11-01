@@ -37,7 +37,7 @@ sealed partial class GameHost
         public float Scale;
         public float Floor;
         public bool Resting, Landed, Flesh;
-        public long Born;
+        public long Born, CorpseTicks;
         public uint Colour;
     }
 
@@ -67,8 +67,9 @@ sealed partial class GameHost
     const float FallGravity = 98.1f, FallTipTime = 0.25f, FallUnsampledSeconds = 2;
 
     /// <summary>A burst: blood all round and the pieces thrown.</summary>
-    void Burst(in BloodMark m, World world)
+    void Burst(in BloodVisual visual)
     {
+        var m = visual.Mark;
         bool bleeds = m.Amount > 0;
         var blow = m.Direction.LengthSquared() > 1e-6f ? Vector2.Normalize(m.Direction) : Vector2.Zero;
         if (decalStore is { } store && bleeds && m.Position.Y <= gpu.Terrain.HeightAt(m.Position.X, m.Position.Z) + BloodAboveGround)
@@ -117,7 +118,8 @@ sealed partial class GameHost
             var spinAxis = Vector3.Normalize(new Vector3(bloodRandom.NextSingle() - 0.5f, bloodRandom.NextSingle() - 0.5f, bloodRandom.NextSingle() - 0.5f) + new Vector3(1e-3f));
             pieces.Add(new Piece
             {
-                Mesh = mesh, Scale = scale, Extent = extent, Floor = floor, Born = world.Tick, Colour = bleeds ? 0xFF000000 | Abgr(m.Colour) : 0, Flesh = flesh,
+                Mesh = mesh, Scale = scale, Extent = extent, Floor = floor, Born = visual.Tick, CorpseTicks = visual.CorpseTicks,
+                Colour = bleeds ? 0xFF000000 | Abgr(m.Colour) : 0, Flesh = flesh,
                 Position = centre,
                 Velocity = new Vector3(d.X * speed, 30 + bloodRandom.NextSingle() * 50, d.Y * speed),
                 Rotation = Quaternion.Normalize(new Quaternion(bloodRandom.NextSingle() - 0.5f, bloodRandom.NextSingle() - 0.5f, bloodRandom.NextSingle() - 0.5f, bloodRandom.NextSingle() - 0.5f)),
@@ -156,12 +158,12 @@ sealed partial class GameHost
     }
 
     /// <summary>Moves the pieces by <paramref name="dt"/> seconds of game time and hands the renderer this frame's list; those older than a corpse go.</summary>
-    void UpdateDebris(World world, float dt)
+    void UpdateDebris(float dt)
     {
-        pieces.RemoveAll(p => world.Tick - p.Born >= BodySystem.CorpseTicksOf(world));
+        pieces.RemoveAll(p => session.CommandTick - p.Born >= p.CorpseTicks);
         gpu.DebrisPieces.Clear();
         AddBolts();
-        UpdateFalls(world);
+        UpdateFalls();
         AddRestingLimbs();
         if (pieces.Count == 0) return;
         int steps = Math.Clamp((int)MathF.Ceiling(dt * 60), 1, 8);
@@ -178,10 +180,10 @@ sealed partial class GameHost
     /// picture taken n ticks after the cut shows the fall at that point (still while paused). The stump is sampled once its character is drawn; with no stump drawn after
     /// <see cref="FallUnsampledSeconds"/> the item is set at rest. Landed, it becomes a ground item's placement; with no placement layer (the animation sandbox) the piece stays drawn.
     /// </summary>
-    void UpdateFalls(World world)
+    void UpdateFalls()
     {
-        double clock = session.ShownTick + session.SimulationAlpha;
-        float tick = world.TickSeconds;
+        double clock = session.PresentationTick;
+        float tick = session.SimulationStepSeconds;
         for (int i = falls.Count - 1; i >= 0; i--)
         {
             var f = falls[i];

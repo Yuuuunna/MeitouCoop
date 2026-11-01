@@ -46,7 +46,8 @@ sealed partial class GameHost
 
     string DebugApply(DebugRow row, string field)
     {
-        var world = session.World;
+        if (session.IsRemote) return "Debug mutations are controlled by the server.";
+        var world = LocalSession.World;
         long tick = world.Tick;
         var selected = world.Player.Selection.ToArray();
         CharacterId[] targets = selected.Length > 0 ? selected : world.Player.Inspected.IsNone ? [] : [world.Player.Inspected];
@@ -126,7 +127,8 @@ sealed partial class GameHost
 
     void DrawDebugMenu(DebugOverlay o, int width, int height, float top, string close = "F10")
     {
-        var world = session.World;
+        if (session.IsRemote) { debugMenuOpen = false; player.Notice("Debug mutations are controlled by the server."); return; }
+        var world = LocalSession.World;
         var here = session.Camera.Current.Target;
         var lines = new List<string>();
         for (int i = 0; i < DebugLabels.Length; i++)

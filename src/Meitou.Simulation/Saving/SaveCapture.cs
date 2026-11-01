@@ -73,11 +73,19 @@ public static partial class SaveCapture
         ArgumentNullException.ThrowIfNull(data);
         options ??= new SaveCaptureOptions();
         // The item on the mouse is not saved: it goes back into its window first (docs/game/ui-screens.md section 6 "Holding an item").
-        world.ReturnHeldItem();
+        if (world.Characters.Phase != TablePhase.Outside) throw new InvalidOperationException("Save capture requires a serialized world boundary.");
+        world.ReturnAllHeldItems();
+        if (loaded?.Source.Camera.Record.Ints.ContainsKey(PlayerSquadSave.WorldKey) == true && !world.Players.RequiresExplicitControl)
+            throw new InvalidOperationException("Restore multiplayer authority before capturing the world.");
 
         var builder = prepared ?? PrepareBase(data, loaded, options);
         var game = builder.Game;
         var camera = game.Camera;
+        if (world.Players.RequiresExplicitControl)
+        {
+            camera.Record.Ints[PlayerSquadSave.WorldKey] = 1;
+            camera.Record.Ints[PlayerSquadSave.NextSquadKey] = world.Squads.NextAvailableId;
+        }
         memoryPass = new MemoryPass();
 
         camera.Day = clock.Day;
@@ -101,6 +109,7 @@ public static partial class SaveCapture
             camera.Tracking = Hand.Null;
         }
 
+        AddFreshFactions(builder, data);
         UpdateFactions(game, data, loaded);
         WriteKnownFactions(game, data, world.Player);
         WriteTownKnowledge(builder, data, world.Player);
@@ -116,7 +125,9 @@ public static partial class SaveCapture
         WriteLocks(world, buildings);
         world.Fixtures.WriteResets(buildings);
         ResearchSave.Write(game.Research, world.Research);
-        var outposts = data.PlayerFaction >= 0 ? BuildingSave.Write(game, world, data.Factions[data.PlayerFaction].Id, options.Seed) : new Dictionary<int, Hand>();
+        var outposts = world.Players.RequiresExplicitControl ? BuildingSave.WriteMultiplayer(game, world, data, options.Seed,
+            loaded is not null && !loaded.Source.Camera.Record.Ints.ContainsKey(PlayerSquadSave.WorldKey) ? loaded.Source.PlayerFaction?.Id : null)
+            : data.PlayerFaction >= 0 ? BuildingSave.Write(game, world, data.Factions[data.PlayerFaction].Id, options.Seed) : new Dictionary<int, Hand>();
         // Again, with the states of the buildings first written now (job targets name them by handle).
         buildings = HeldSave.BuildingStates(game);
         MachineSave.Write(game, world);
@@ -141,6 +152,15 @@ public static partial class SaveCapture
 
         WriteMemories();
         game.UpdateDerived();
+        EntitySave.Capture(world, game);
+        if (world.Players.RequiresExplicitControl)
+        {
+            var savedEntities = game.Platoons.SelectMany(p => p.Characters).Select(EntitySave.Read).Where(e => !e.IsNone).ToHashSet();
+            foreach (var player in world.Players.All)
+                foreach (var grant in world.Players.KnownRoles(player.Id))
+                    if (world.Entities.TryResolve(grant.Entity, out _) && !savedEntities.Contains(grant.Entity))
+                        throw new InvalidDataException("A loaded controlled role has no saved character record.");
+        }
         return game;
     }
 
@@ -178,6 +198,7 @@ public static partial class SaveCapture
         for (int a = 0; a < data.Factions.Count; a++)
         {
             var f = data.Factions[a];
+            if (builder.Game.Factions.Any(existing => existing.Id == f.Id)) continue;
             bool player = a == data.PlayerFaction;
             var table = new List<SaveRelation>();
             if (!player)
@@ -315,9 +336,7 @@ public static partial class SaveCapture
         var game = builder.Game;
         var table = world.Characters;
         var written = new Dictionary<CharacterId, SaveCharacter>();
-        string playerFactionId = data.PlayerFaction >= 0 ? data.Factions[data.PlayerFaction].Id : "204-gamedata.base";
-        string playerFactionName = world.Player.FactionName ?? (data.PlayerFaction >= 0 ? data.Factions[data.PlayerFaction].Name : "Nameless");
-        var playerState = game.Factions.FirstOrDefault(f => f.Id == playerFactionId);
+        bool multiplayer = world.Players.RequiresExplicitControl;
         int squads = 0, members = 0;
 
         // Platoons of the loaded save whose characters the world held: those not alive any more are removed.
@@ -325,16 +344,23 @@ public static partial class SaveCapture
         var seen = new HashSet<(string Platoon, int Slot)>();
 
         // The player's squads in order (their `squad index`), then any other squad holding characters of a loaded platoon (a prisoner or slave kept in it).
-        var order = SquadManagement.PlayerSquads(world);
+        var order = multiplayer ? world.Squads.All.Where(s => s.PlayerManaged && !s.Dead && s.PlatoonId < 0)
+            .OrderBy(s => s.Faction).ThenBy(s => s.Index).ThenBy(s => s.Id).ToList() : SquadManagement.PlayerSquads(world);
         var kept = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var squad in order.Concat(world.Squads.All.Where(s => s.PlatoonId < 0 && !order.Contains(s))))
+        foreach (var squad in order.Concat(world.Squads.All.Where(s => s.PlatoonId < 0 && !order.Contains(s) && (!multiplayer || s.PlayerManaged))))
         {
+            int owner = multiplayer ? squad.Faction : data.PlayerFaction;
+            if (multiplayer && (owner < 0 || owner >= data.Factions.Count)) throw new InvalidDataException("Player squad has an unknown faction.");
+            string playerFactionId = owner >= 0 ? data.Factions[owner].Id : "204-gamedata.base";
+            string playerFactionName = (multiplayer ? world.Factions.Find(owner)?.Name : world.Player.FactionName)
+                ?? (owner >= 0 ? data.Factions[owner].Name : "Nameless");
+            var playerState = game.Factions.FirstOrDefault(f => f.Id == playerFactionId);
             // A member of a loaded platoon is written whoever owns it (a prisoner or slave kept in the squad is not the player's but is in the file); only the
             // resident squads the population system made, which have no link, are left out by the player test.
-            var alive = squad.Members.Where(m => table.IsAlive(m) && (table.Cold(m.Slot)!.IsPlayer || table.Cold(m.Slot)!.Save is not null)).ToList();
-            int index = order.IndexOf(squad);
+            var alive = squad.Members.Where(m => table.IsAlive(m) && (multiplayer || table.Cold(m.Slot)!.IsPlayer || table.Cold(m.Slot)!.Save is not null)).ToList();
+            int index = multiplayer ? SquadManagement.PlayerSquads(world, owner).IndexOf(squad) : order.IndexOf(squad);
             // A player's squad is written even when empty: the original keeps empty squads (the squads screen removes them).
-            if (alive.Count == 0 && index < 0) continue;
+            if (alive.Count == 0 && index < 0 && !(multiplayer && squad.Dead)) continue;
             squads++;
 
             // The squad's own platoon, by the file it was loaded from (never by its members: a character moved between squads would carry the platoon with it).
@@ -346,6 +372,13 @@ public static partial class SaveCapture
             else
                 platoon.Position = at;
             kept.Add(platoon.Name);
+            if (multiplayer)
+            {
+                platoon.FactionId = playerFactionId;
+                platoon.Record.Strings["faction name"] = playerFactionName;
+                platoon.Record.Bools[PlayerSquadSave.SquadKey] = true;
+                platoon.Record.Ints[PlayerSquadSave.SquadIdKey] = squad.Id;
+            }
             NoteMemory(platoon.Record, MemoryOf(world)?.Snapshot(squad.Id));
             if (index >= 0)
             {
@@ -365,11 +398,12 @@ public static partial class SaveCapture
                     sc = platoon.Characters.FirstOrDefault(c => c.Handle.I == link.Slot);
                     seen.Add((link.PlatoonName, link.Slot));
                 }
-                written[id] = WriteCharacter(builder, world, data, options, clock, buildings, races, platoon, sc, id, playerFactionId, squad.Leader == id, orders: true);
+                string characterOwner = multiplayer && cold.Faction >= 0 && cold.Faction < data.Factions.Count ? data.Factions[cold.Faction].Id : playerFactionId;
+                written[id] = WriteCharacter(builder, world, data, options, clock, buildings, races, platoon, sc, id, characterOwner, squad.Leader == id, orders: true);
             }
             // The platoon's `imprisoned` (meaning Observed): set while a member is in a cage, cleared when the save had it and none is.
             bool caged = alive.Any(m => table.Cold(m.Slot)!.IsImprisoned);
-            if (caged || platoon.Record.Bools.ContainsKey("imprisoned")) platoon.Record.Bools["imprisoned"] = caged;
+            if (caged || (world.StoredPlayerRoles?.PendingCount(squad.Id) ?? 0) == 0 && platoon.Record.Bools.ContainsKey("imprisoned")) platoon.Record.Bools["imprisoned"] = caged;
             SetCharCount(platoon);
         }
 
@@ -387,7 +421,7 @@ public static partial class SaveCapture
                 builder.RemovePlatoon(gone);
 
         game.Camera.Squads = squads;
-        game.Camera.Members = members;
+        game.Camera.Members = members + (world.StoredPlayerRoles?.PendingMembers ?? 0);
         return written;
     }
 
@@ -436,6 +470,13 @@ public static partial class SaveCapture
         sc.Rotation = link is not null && MathF.Abs(SaveRotation.Difference(hot.Yaw, link.Yaw)) < 1e-4f ? link.Rotation : SaveRotation.OfYaw(hot.Yaw);
         if (sc.GameState is { } g)
         {
+            if (world.Players.RequiresExplicitControl)
+            {
+                g.Bools[PlayerSquadSave.RoleKey] = cold.IsPlayer;
+                g.Bools[PlayerSquadSave.DeadKey] = cold.DiedTick >= 0 || cold.Medical?.Dead == true;
+                g.Strings["owner faction ID"] = ownerFactionId;
+            }
+            EntitySave.Write(g, cold.Entity);
             g.Strings["name"] = cold.Name;
             g.Bools["is leader"] = isLeader;
             BountySave.Write(g, cold.Bounties, data.Relations, clock, world.Tick, world.TickSeconds);
@@ -528,6 +569,13 @@ public static partial class SaveCapture
             {
                 var sc = platoon.Characters.FirstOrDefault(c => c.Handle.I == m.Slot);
                 if (sc is null) continue;
+                // Recruitment discards the old save link; do not write the same persistent entity into its former NPC platoon too.
+                if (table.TryResolveNext(m.Live, out int live) && table.Cold(live) is { } current &&
+                    (current.Save is not { } link || link.PlatoonName != sp.Name || link.Slot != m.Slot))
+                {
+                    builder.RemoveCharacter(platoon, sc);
+                    continue;
+                }
                 // A corpse that decayed or was unloaded since it was made leaves its platoon's list, as the original's destroyed character does.
                 if (m.Gone || !m.Live.IsNone && !table.IsAlive(m.Live) && sc.Medical?.Bools.GetValueOrDefault("dead") == true)
                 {
@@ -544,6 +592,7 @@ public static partial class SaveCapture
                     WriteBody(sc, sc.RecordId, m.Stats, m.Medical, false, data, races);
                     if (sc.GameState is { } g)
                     {
+                        EntitySave.Write(g, m.Entity.IsNone ? EntitySave.Read(m.Source) : m.Entity);
                         BountySave.Write(g, m.Bounties, data.Relations, clock, world.Tick, world.TickSeconds);
                         RagdollSave.Write(g, null);   // its ragdoll went with it
                     }
@@ -636,11 +685,12 @@ public static partial class SaveCapture
             return platoon;
         }
 
-        bool Writable(int town, int faction) => town >= 0 && town < data.Sites.Count && faction >= 0 && faction < data.Factions.Count && faction != data.PlayerFaction;
+        bool Writable(int town, int faction) => town >= 0 && town < data.Sites.Count && faction >= 0 && faction < data.Factions.Count &&
+            (world.Players.RequiresExplicitControl || faction != data.PlayerFaction);
 
         foreach (var squad in world.Squads.All)
         {
-            if (!Writable(squad.Town, squad.Faction)) continue;
+            if (!Writable(squad.Town, squad.Faction) || world.Players.RequiresExplicitControl && squad.PlayerManaged) continue;
             Platoon? roamer = null;
             if (squad.PlatoonId >= 0)
             {

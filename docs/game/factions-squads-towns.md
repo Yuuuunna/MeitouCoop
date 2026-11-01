@@ -511,6 +511,16 @@ Meitou: [ground items](../simulation.md#items-and-eating).
 
 ### Campaigns
 
+**Observed (Meitou multiplayer extension; source inspection, not original-game evidence):** each
+persistent player faction and owned base gets its own campaign candidates and repeat clock.
+An active/requested campaign blocks that base only; each base draws once per manager roll.
+All campaign world-state conditions use the target faction, including follow-ups; living/stored
+members count without a connected client. Announcements use a nearby member of that faction,
+not a camera. A special leader already campaigning cannot join another event.
+`CampaignTargetSave` checkpoints repeat clocks by town instance; destroyed bases end their scope,
+rebuilt instances start fresh. Legacy saves retain their original shared cooldown until new clocks exist.
+Shared event facts remain global; [multiplayer contracts](../multiplayer.md) define attribution.
+
 Raids, assaults, tax/tribute and trader visits, ally reinforcements: one `FactionWarMgr` per faction (Faction +0x88), stepped in the round
 robin above. **Verified** by code (kenshi-named dump; disassembly where noted) unless marked. Save layout: [WAR_SAVESTATE](../formats/save.md#war_savestate-type-9-faction-campaigns).
 

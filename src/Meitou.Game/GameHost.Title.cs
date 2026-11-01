@@ -27,7 +27,7 @@ sealed partial class GameHost
     float? gameplayLens;
     /// <summary>The gameplay character source, set aside while the title shows its staged actors.</summary>
     Action<CharacterDrawList>? gameplayCharacters;
-    bool TitleVisible => player.TitleOpen && player.UiMode == UiMode.Meitou;
+    bool TitleVisible => player.TitleOpen && !player.EditorOpen && player.UiMode == UiMode.Meitou;
     float TitleHour => scene.Clock.Sunrise + 0.75f;
     /// <summary>The moons' fill light, and the shafts' air layer (a multiple of the usual) on the title: thick morning air so the low sun casts strong rays.</summary>
     const float TitlePlanetFill = 0.8f, TitleShaftAir = 2, TitleClouds = 0.38f;

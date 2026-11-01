@@ -395,6 +395,7 @@ public sealed partial class PopulationSystem
         var walk = world.Walkability;
         var players = PlayerSpots(world);
         var hold = HoldOf(world, site.Index);
+        var playerFactions = world.PlayerFactionIndices().ToHashSet();
         if (site.Kind == WildKind.Nest)
         {
             // The nest's pool (docs/simulation.md "Off-screen tier"): up to its current max, less the save's members it holds; a wiped-out nest makes none.
@@ -407,8 +408,8 @@ public sealed partial class PopulationSystem
             else work.Add(() => builtWild.Enqueue(BuildNest(site, loadId, seed, walk, players, budget)));
             return;
         }
-        if (work is null) SpawnWild(world, BuildSector(site, loadId, seed, walk, players, hold));
-        else work.Add(() => builtWild.Enqueue(BuildSector(site, loadId, seed, walk, players, hold)));
+        if (work is null) SpawnWild(world, BuildSector(site, loadId, seed, walk, players, hold, playerFactions: playerFactions));
+        else work.Add(() => builtWild.Enqueue(BuildSector(site, loadId, seed, walk, players, hold, playerFactions: playerFactions)));
     }
 
     static Vector2[] PlayerSpots(World world)
@@ -416,7 +417,9 @@ public sealed partial class PopulationSystem
         var list = new List<Vector2>();
         var table = world.Characters;
         for (int i = 0; i < table.Previous.Length; i++)
-            if (table.Previous[i].Alive && table.Cold(i) is { IsPlayer: true }) list.Add(new Vector2(table.Previous[i].Position.X, table.Previous[i].Position.Z));
+            if (table.Previous[i].Alive && table.Cold(i) is { } c && world.IsPlayerFaction(c.Faction)) list.Add(new Vector2(table.Previous[i].Position.X, table.Previous[i].Position.Z));
+        foreach (int faction in world.PlayerFactionIndices())
+            foreach (var (position, _) in StoredPlayers(world, faction)) list.Add(position);
         return [.. list];
     }
 
@@ -502,14 +505,14 @@ public sealed partial class PopulationSystem
         data.Db.Find(id) is { } r && SquadFactory.IsTemplate(r) && SquadTemplate.From(r).WorldState.All(w => IWorldStates.Passes(States, data.Db, w.Id, w.V0));
 
     /// <summary>A sector's squads as it loads, or with <paramref name="topUp"/> ≥ 0 the one squad of the area tick's refill number <paramref name="topUp"/> (<c>PopulationHomeless.cs</c>).</summary>
-    BuiltWild BuildSector(WildSite site, long loadId, ulong seed, IWalkability walk, Vector2[] players, WildHold? hold, int topUp = -1)
+    BuiltWild BuildSector(WildSite site, long loadId, ulong seed, IWalkability walk, Vector2[] players, WildHold? hold, int topUp = -1, IReadOnlySet<int>? playerFactions = null)
     {
         var squads = new List<BuiltSquad>();
         var group = data.Biomes!.Groups[site.Group];
         var (minX, minZ, maxX, maxZ) = WeatherAreas.CellRect(site.Zone.X, site.Zone.Y);
         var centre = new Vector2((minX + maxX) / 2, (minZ + maxZ) / 2);
         // A sector whose nearest town is the player's makes nothing (6.2).
-        if (NearestTown(centre, out _) is { } nearest && data.PlayerFaction >= 0 && data.SiteFactions[nearest.Index] == data.PlayerFaction)
+        if (NearestTown(centre, out _) is { } nearest && playerFactions?.Contains(data.SiteFactions[nearest.Index]) == true)
             return new BuiltWild(site.Index, loadId, centre, squads, TopUp: topUp >= 0);
         int n = HomelessCount(group, settings.PopulationMultiplier);
         var counts = new int[group.HomelessSpawns.Count];

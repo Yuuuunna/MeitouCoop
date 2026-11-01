@@ -14,6 +14,8 @@ using Meitou.Simulation.Locks;
 using Meitou.Simulation.Production;
 using Meitou.Tests.Simulation;
 
+using Meitou.Runtime.Placement;
+
 namespace Meitou.Tests.Ui;
 
 public class HouseRepairUiTests

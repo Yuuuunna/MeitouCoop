@@ -3,10 +3,49 @@ using System.Numerics;
 namespace Meitou.Simulation.Dialogue;
 
 /// <summary>The biome banner has faded for <see cref="GroupId"/> (a BIOME_GROUP): the active squad may banter about the area (<see cref="DialogueSystem"/>, "arrival dialog").</summary>
-public sealed record AreaArrival(string GroupId) : SimCommand;
+public sealed record AreaArrival(string GroupId, int SquadId = -1) : SimCommand;
+public sealed record AreaArrivalMemory(ulong Leader, string GroupId);
 
 public sealed partial class DialogueSystem
 {
+    readonly Dictionary<EntityId, string> areaArrivals = [];
+
+    public AreaArrivalMemory[] CaptureAreaArrivals() => [.. areaArrivals.OrderBy(a => a.Key.Value).Select(a => new AreaArrivalMemory(a.Key.Value, a.Value))];
+
+    void HashAreaArrivals(ref StateHasher hasher)
+    {
+        if (areaArrivals.Count == 0) return;
+        hasher.Add(areaArrivals.Count);
+        foreach (var (leader, group) in areaArrivals.OrderBy(a => a.Key.Value))
+        { hasher.Add(leader.Value); hasher.Add(Rng.StableHash(group)); }
+    }
+
+    public void RestoreAreaArrivals(IEnumerable<AreaArrivalMemory> memories)
+    {
+        var restored = new Dictionary<EntityId, string>();
+        foreach (var memory in memories)
+            if (memory is null || memory.Leader == 0 || string.IsNullOrEmpty(memory.GroupId) || !restored.TryAdd(new(memory.Leader), memory.GroupId))
+                throw new InvalidDataException("Invalid area arrival memory.");
+        areaArrivals.Clear();
+        foreach (var (leader, group) in restored) areaArrivals.Add(leader, group);
+    }
+
+    // A server has no biome banner or active UI squad. Observe each persistent player faction's squads once.
+    void StepAreaArrivals(World world)
+    {
+        if (!world.Players.RequiresExplicitControl) return;
+        foreach (var squad in world.Squads.All.ToArray())
+        {
+            if (!world.IsPlayerFaction(squad.Faction) || !world.Characters.TryResolveNext(squad.Leader, out int slot)
+                || world.Characters.Cold(slot) is not { DiedTick: < 0 } leader || leader.Medical is { Dead: true }) continue;
+            var position = world.Characters.Next[slot].Position;
+            if (data.BiomeGroupAt(new Vector2(position.X, position.Z)) is not { } group) continue;
+            bool changed = areaArrivals.TryGetValue(leader.Entity, out string? previous) && previous != group;
+            areaArrivals[leader.Entity] = group;
+            if (changed) Arrive(world, new AreaArrival(group, squad.Id) { Tick = world.Tick });
+        }
+    }
+
     /// <summary>
     /// <c>PlayerInterface::triggerAreaArrivalDialogue</c> (<c>FUN_1407ffe40</c>, docs/game/dialogue.md "Arrival banter"): with the active squad of at least 2, its members awake, not carried,
     /// not in a bed or cage, not animals, not fighting and not in a town are the candidates; nothing when a member senses an enemy; with 2 or more, a line of the group's
@@ -16,7 +55,7 @@ public sealed partial class DialogueSystem
     void Arrive(World world, AreaArrival a)
     {
         var table = world.Characters;
-        if (world.Squads.Find(world.Player.Squad) is not { Members.Count: >= 2 } squad || data.Db.Find(a.GroupId) is not { } group) return;
+        if (world.Squads.Find(a.SquadId >= 0 ? a.SquadId : world.CommandPlayer(a)?.Squad ?? -1) is not { Members.Count: >= 2 } squad || data.Db.Find(a.GroupId) is not { } group) return;
         var roots = group.GetReferences("arrival dialog").Select(r => dialogue.Node(r.TargetStringId)).Where(n => n is { IsRoot: true }).ToList();
         if (roots.Count == 0) return;
         var candidates = new List<CharacterId>();

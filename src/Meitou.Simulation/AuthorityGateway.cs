@@ -1,0 +1,455 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+
+namespace Meitou.Simulation;
+
+public enum AdmissionPhase { Preparing, Synchronizing, Active }
+public enum AuthorityStatus
+{
+    Evaluated, InvalidConnection, NotActive, InvalidRequest, Unsupported, Conflict, Expired,
+    Busy, StaleAuthority, NoActiveRole, WorldClosed, WorldFaulted,
+}
+
+/// <summary>Evaluated means every input handler ran; individual gameplay rules may still reject the action.</summary>
+public sealed record AuthorityReceipt(ulong Request, AuthorityStatus Status, ulong Operation, ulong Revision, long Tick);
+
+/// <summary>Grants and target faction observed in the client's authorized baseline, not inferred at submission.</summary>
+public sealed record AuthorityContext(IReadOnlyList<CharacterControl> Characters, int Faction = -1, ulong MembershipRevision = 0);
+public sealed record PlayerAdmissionState(ulong Sequence, AdmissionPhase Phase, bool Busy, PlayerEntryAssessment? Entry,
+    PlayerRoleView[] Roles, CreationQualificationView[] Qualifications, ulong CommandHighWater);
+
+internal sealed record ViewMembership(int Faction, FactionPermission Permissions, ulong Revision);
+internal sealed record ViewGrantStamp(PlayerRoleView[] Roles, ViewMembership[] Memberships);
+
+/// <summary>Opaque trusted-host handle. A transport retains it after authentication; clients cannot construct it.</summary>
+public sealed class AuthorityConnection
+{
+    internal AuthorityConnection(Guid world, PlayerId player, ulong generation) => (World, Player, Generation) = (world, player, generation);
+    public Guid World { get; }
+    public PlayerId Player { get; }
+    public ulong Generation { get; }
+    internal AdmissionPhase Phase;
+    internal ulong ViewSequence;
+    internal ulong AdmissionSequence;
+    internal readonly SortedDictionary<ulong, ViewGrantStamp> PublishedGrants = [];
+    internal HashSet<CharacterId> PublishedCharacters = [];
+    internal HashSet<string> PublishedSites = new(StringComparer.Ordinal);
+}
+
+/// <summary>
+/// One world's bounded, in-memory request ledger. Open/admission/process run on the serialized world owner.
+/// Submit/Close/GetPhase/HighWater may run on transport threads. This is neither authentication nor a wire decoder.
+/// </summary>
+public sealed class AuthorityGateway : IDisposable
+{
+    readonly World world;
+    readonly Lock gate = new();
+    readonly Guid incarnation = Guid.NewGuid();
+    readonly Dictionary<PlayerId, Ledger> players = [];
+    readonly Queue<Pending> pending = [];
+    readonly Dictionary<PlayerId, ulong> closed = [];
+    static readonly JsonSerializerOptions json = new() { IncludeFields = true, RespectNullableAnnotations = true, Converters = { new CommandAppearanceJson() } };
+    const int MaxPayload = 1024 * 1024, MaxPending = 256, MaxBytes = 8 * MaxPayload, MaxReceipts = 128;
+    int queuedBytes;
+    ulong operation;
+    bool disposed, faulted, processing;
+    long observedTick;
+    ulong observedRevision;
+
+    sealed class Ledger
+    {
+        public ulong Generation, HighWater;
+        public AuthorityConnection? Connection;
+        public readonly Dictionary<ulong, Entry> Receipts = [];
+        public readonly Queue<ulong> Completed = [];
+    }
+
+    sealed record Entry(byte[] Fingerprint)
+    {
+        public TaskCompletionSource<AuthorityReceipt> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+    sealed record Pending(AuthorityConnection Connection, ulong Number, SimCommand Command,
+        AuthorityContext Context, Entry Entry, int Bytes);
+
+    internal AuthorityGateway(World world) => this.world = world;
+    internal bool HasHistory { get { lock (gate) return players.Count != 0 || disposed || faulted; } }
+
+    /// <summary>Only a trusted host calls this after authenticating and resolving an existing persistent player.</summary>
+    public AuthorityConnection Open(PlayerId player)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (faulted) throw new InvalidOperationException("The authority world has faulted.");
+            if (world.Players.Find(player) is null) throw new ArgumentException("Unknown player.", nameof(player));
+            if (!players.TryGetValue(player, out var ledger)) players.Add(player, ledger = new Ledger());
+            var connection = new AuthorityConnection(incarnation, player, checked(++ledger.Generation));
+            if (ledger.Generation > 1) world.ResetPlayerInteractions(player);
+            ledger.Connection = connection;
+            return connection;
+        }
+    }
+
+    public AdmissionPhase? GetPhase(AuthorityConnection connection)
+    {
+        lock (gate) return Current(connection) ? connection.Phase : null;
+    }
+
+    public bool IsActive(PlayerId player)
+    {
+        lock (gate) return !disposed && !faulted && players.TryGetValue(player, out var ledger)
+            && ledger.Connection?.Phase == AdmissionPhase.Active;
+    }
+
+    /// <summary>World-owner query for an authenticated preparation session; identity comes only from its current connection.</summary>
+    public PlayerEntryAssessment? AssessEntry(AuthorityConnection connection)
+    {
+        lock (gate)
+        {
+            if (!Current(connection)) return null;
+            EnsureOwnerBoundary();
+            return world.Players.AssessEntry(connection.Player);
+        }
+    }
+
+    /// <summary>Private preparation-session view. Qualification issuance is a separate trusted policy/administrative operation.</summary>
+    public IReadOnlyList<CreationQualificationView>? CreationOptions(AuthorityConnection connection)
+    {
+        lock (gate)
+        {
+            if (!Current(connection)) return null;
+            EnsureOwnerBoundary();
+            return world.CreationQualifications.For(connection.Player);
+        }
+    }
+
+    /// <summary>Private preparation status. No arbitrary world view is exposed before admission.</summary>
+    public PlayerAdmissionState? ReadAdmission(AuthorityConnection connection)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (!Current(connection)) return null;
+            ulong sequence = connection.AdmissionSequence = checked(connection.AdmissionSequence + 1);
+            if (world.HasPendingDurableMutation) return new(sequence, connection.Phase, true, null, [], [], players[connection.Player].HighWater);
+            if (connection.Phase != AdmissionPhase.Preparing && !HasRole(connection.Player)) connection.Phase = AdmissionPhase.Preparing;
+            return new(sequence, connection.Phase, false, world.Players.AssessEntry(connection.Player), DescribeRoles(connection.Player),
+                world.CreationQualifications.For(connection.Player).ToArray(), players[connection.Player].HighWater);
+        }
+    }
+
+    PlayerRoleView[] DescribeRoles(PlayerId player) => world.Players.KnownRoles(player).Select(grant =>
+    {
+        bool loaded = world.Entities.TryResolve(grant.Entity, out var character);
+        var location = world.Players.LocateRole(player, grant.Entity);
+        return new PlayerRoleView(grant.Entity, character, grant.Faction, grant.Revision, world.Players.Validate(grant), location?.Availability == PlayerRoleAvailability.Dead)
+            { Availability = location?.Availability ?? PlayerRoleAvailability.Unavailable };
+    }).ToArray();
+
+    public PlayerRoleLocation? LocateRole(AuthorityConnection connection, EntityId entity)
+    {
+        lock (gate) { EnsureOwnerBoundary(); return Current(connection) ? world.Players.LocateRole(connection.Player, entity) : null; }
+    }
+
+    public ulong HighWater(AuthorityConnection connection)
+    {
+        lock (gate) return Current(connection) ? players[connection.Player].HighWater : 0;
+    }
+
+    /// <summary>Serialized world-owner capture, rechecking admission and ownership on every publication.</summary>
+    public PlayerWorldView? CaptureView(AuthorityConnection connection, PlayerViewRequest request, PlayerObservationRules rules)
+    {
+        ArgumentNullException.ThrowIfNull(request); ArgumentNullException.ThrowIfNull(rules);
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (!Current(connection) || connection.Phase == AdmissionPhase.Preparing || world.HasPendingDurableMutation) return null;
+            if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return null; }
+            var view = world.CapturePlayerView(connection, request, rules);
+            connection.PublishedCharacters = view.Snapshot.Characters.Select(c => c.Id).ToHashSet();
+            connection.PublishedSites = view.Snapshot.Buildings.Select(b => b.Id).Concat(view.Snapshot.DoorPicks.Select(d => d.Building))
+                .Concat(view.Snapshot.Beds.Select(b => b.Id)).Concat(view.Snapshot.Cages.Select(c => c.Id))
+                .Concat(view.Snapshot.Containers.Select(c => c.Id)).ToHashSet(StringComparer.Ordinal);
+            connection.ViewSequence = checked(connection.ViewSequence + 1);
+            connection.PublishedGrants.Add(connection.ViewSequence, new(view.Roles.ToArray(),
+                view.Factions.Select(f => new ViewMembership(f.Faction, f.Permissions, f.MembershipRevision)).ToArray()));
+            while (connection.PublishedGrants.Count > 8) connection.PublishedGrants.Remove(connection.PublishedGrants.Keys.First());
+            return view with { Publication = connection.ViewSequence };
+        }
+    }
+
+    public void Close(AuthorityConnection connection)
+    {
+        lock (gate) if (Current(connection))
+        {
+            players[connection.Player].Connection = null;
+            closed[connection.Player] = connection.Generation;
+        }
+    }
+
+    /// <summary>Read-only affordance query, scoped to an active viewer's current actor and visible NPC.</summary>
+    public PlayerTalkHint QueryTalk(AuthorityConnection connection, CharacterId speaker, CharacterId target, CharacterControl grant,
+        ulong membershipRevision, PlayerViewRequest observation, PlayerObservationRules rules)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (!Current(connection) || connection.Phase != AdmissionPhase.Active || world.HasPendingDurableMutation)
+                return new(TalkHintStatus.Unknown, world.StateRevision);
+            if (grant.Player != connection.Player || world.Players.ControlOf(speaker) != grant || membershipRevision == 0 ||
+                world.Players.Find(connection.Player)?.MembershipRevision(grant.Faction) != membershipRevision)
+                return new(TalkHintStatus.StaleAuthority, world.StateRevision);
+            if (!connection.PublishedCharacters.Contains(target) || !world.CanObserveCharacter(connection.Player, target, observation, rules) || world.TalkBusy(target, connection.Player))
+                return new(TalkHintStatus.Unknown, world.StateRevision);
+            return new(world.CanTalk(target, speaker) ? TalkHintStatus.Available : TalkHintStatus.Unavailable, world.StateRevision);
+        }
+    }
+
+    /// <summary>Trusted publisher query for previously visible IDs, never an unrestricted remote lookup.</summary>
+    public bool ConfirmedDestroyed(AuthorityConnection connection, CharacterId character)
+    {
+        lock (gate) { EnsureOwnerBoundary(); return Current(connection) && world.Characters.ConfirmedDestroyed(character); }
+    }
+
+    /// <summary>Current host publication withdrawing a replica on loss of admission or a durable-write barrier.</summary>
+    public ulong? WithdrawView(AuthorityConnection connection)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (!Current(connection)) return null;
+            connection.PublishedGrants.Clear();
+            connection.PublishedCharacters.Clear();
+            connection.PublishedSites.Clear();
+            return connection.ViewSequence = checked(connection.ViewSequence + 1);
+        }
+    }
+
+    /// <summary>Trusted replication host calls only after validating the exact publication/hash ACK. Rechecks captured role and membership grants before opening control.</summary>
+    public bool ActivateAfterView(AuthorityConnection connection, ulong publication)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (!Current(connection) || connection.Phase != AdmissionPhase.Synchronizing || world.HasPendingDurableMutation ||
+                !connection.PublishedGrants.TryGetValue(publication, out var stamp)) return false;
+            if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return false; }
+            var player = world.Players.Find(connection.Player)!;
+            var memberships = player.Memberships.Select(m => new ViewMembership(m.Key, m.Value, player.MembershipRevision(m.Key)));
+            if (!stamp.Memberships.SequenceEqual(memberships)) return false;
+            var roles = DescribeRoles(connection.Player);
+            if (!stamp.Roles.SequenceEqual(roles)) return false;
+            connection.Phase = AdmissionPhase.Active; return true;
+        }
+    }
+
+    public bool BeginSynchronization(AuthorityConnection connection)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (world.HasPendingDurableMutation) return false;
+            if (!Current(connection) || connection.Phase != AdmissionPhase.Preparing || !HasRole(connection.Player)) return false;
+            connection.Phase = AdmissionPhase.Synchronizing;
+            return true;
+        }
+    }
+
+    /// <summary>The trusted host calls this after acknowledging a complete authorized baseline.</summary>
+    public bool Activate(AuthorityConnection connection)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (world.HasPendingDurableMutation) return false;
+            if (!Current(connection) || connection.Phase != AdmissionPhase.Synchronizing) return false;
+            if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return false; }
+            connection.Phase = AdmissionPhase.Active;
+            return true;
+        }
+    }
+
+    /// <summary>Freezes payloads. Request numbers increase per player across connections; Tick is assigned by the server.</summary>
+    public Task<AuthorityReceipt> Submit(AuthorityConnection connection, ulong number, SimCommand command, AuthorityContext context)
+    {
+        lock (gate)
+        {
+            if (disposed) return Rejected(number, AuthorityStatus.WorldClosed);
+            if (faulted) return Rejected(number, AuthorityStatus.WorldFaulted);
+            if (!Current(connection)) return Rejected(number, AuthorityStatus.InvalidConnection);
+            if (number == 0 || command is null || context?.Characters is null) return Rejected(number, AuthorityStatus.InvalidRequest);
+            if (!PlayerCommandRouting.Supports(command)) return Rejected(number, AuthorityStatus.Unsupported);
+            SimCommand frozen;
+            AuthorityContext expected;
+            byte[] hash;
+            int bytes;
+            try
+            {
+                // Stamping data never participates in a client's command. Type comes from the trusted decoder, not JSON.
+                command = command with { Tick = 0, Issuer = null, ControlGrants = [], FactionGrantRevision = 0 };
+                using var payload = new BoundedPayload();
+                JsonSerializer.Serialize(payload, command, command.GetType(), json);
+                bytes = checked((int)payload.Length);
+                payload.Position = 0;
+                frozen = (SimCommand)JsonSerializer.Deserialize(payload, command.GetType(), json)!;
+                if (frozen is Construction.PlaceBuildings placement && placement.Plans.Any(p => p is null))
+                    return Rejected(number, AuthorityStatus.InvalidRequest);
+                if (context.Characters.Count > 4096) return Rejected(number, AuthorityStatus.InvalidRequest);
+                expected = context with { Characters = context.Characters.OrderBy(c => c.Entity.Value).ToArray() };
+                using var fingerprint = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                fingerprint.AppendData(System.Text.Encoding.UTF8.GetBytes(command.GetType().FullName!));
+                fingerprint.AppendData(payload.GetBuffer().AsSpan(0, bytes));
+                fingerprint.AppendData(JsonSerializer.SerializeToUtf8Bytes(expected, json));
+                hash = fingerprint.GetHashAndReset();
+                if (PlayerCommandRouting.Characters(frozen) is null) return Rejected(number, AuthorityStatus.InvalidRequest);
+            }
+            catch (Exception e) when (e is JsonException or NotSupportedException or ArgumentException or PayloadTooLargeException)
+            { return Rejected(number, AuthorityStatus.InvalidRequest); }
+
+            var ledger = players[connection.Player];
+            if (ledger.Receipts.TryGetValue(number, out var previous))
+                return hash.AsSpan().SequenceEqual(previous.Fingerprint) ? previous.Completion.Task : Rejected(number, AuthorityStatus.Conflict);
+            if (number <= ledger.HighWater) return Rejected(number, AuthorityStatus.Expired);
+            if (connection.Phase != AdmissionPhase.Active) return Rejected(number, AuthorityStatus.NotActive);
+            if (pending.Count >= MaxPending || queuedBytes + bytes > MaxBytes) return Rejected(number, AuthorityStatus.Busy);
+            var entry = new Entry(hash);
+            var request = new Pending(connection, number, frozen, expected, entry, bytes);
+            ledger.HighWater = number;
+            ledger.Receipts.Add(number, entry);
+            pending.Enqueue(request);
+            queuedBytes += bytes;
+            return entry.Completion.Task;
+        }
+    }
+
+    /// <summary>Serialized world-owner boundary, before physics or publication. Each request commits its character buffer separately.</summary>
+    public int ProcessPending()
+    {
+        lock (gate)
+        {
+            world.RequireNoDurableMutation();
+            EnsureOwnerBoundary();
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (faulted) throw new InvalidOperationException("The authority world has faulted.");
+            if (processing) throw new InvalidOperationException("Recursive authority processing.");
+            foreach (var (player, generation) in closed)
+                if (players.TryGetValue(player, out var ledger) && ledger.Generation == generation && ledger.Connection is null)
+                    world.ResetPlayerInteractions(player);
+            closed.Clear();
+            processing = true;
+            int count = pending.Count;
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    var request = pending.Dequeue();
+                    queuedBytes -= request.Bytes;
+                    operation = checked(operation + 1);
+                    try
+                    {
+                        var status = Validate(request);
+                        if (status == AuthorityStatus.Evaluated)
+                            world.ApplyAuthorityCommand(request.Command with
+                            {
+                                Tick = world.Tick, Issuer = request.Connection.Player,
+                                ControlGrants = request.Context.Characters, FactionGrantRevision = request.Context.MembershipRevision,
+                            });
+                        Observe();
+                        Complete(request, status, operation);
+                    }
+                    catch
+                    {
+                        faulted = true;
+                        Observe();
+                        Complete(request, AuthorityStatus.WorldFaulted, operation);
+                        Drain(AuthorityStatus.WorldFaulted);
+                        throw;
+                    }
+                }
+                Observe();
+                return count;
+            }
+            finally { processing = false; }
+        }
+    }
+
+    AuthorityStatus Validate(Pending request)
+    {
+        var connection = request.Connection;
+        if (!Current(connection)) return AuthorityStatus.InvalidConnection;
+        if (connection.Phase != AdmissionPhase.Active) return AuthorityStatus.NotActive;
+        if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return AuthorityStatus.NoActiveRole; }
+        if (request.Command is InspectCommand inspect && !inspect.Target.IsNone && !connection.PublishedCharacters.Contains(inspect.Target)
+            || request.Command is InspectBuildingCommand { Instance: { } site } && !connection.PublishedSites.Contains(site))
+            return AuthorityStatus.InvalidRequest;
+        var expected = request.Context;
+        var characters = PlayerCommandRouting.Characters(request.Command).Distinct().ToArray();
+        if (characters.Length != expected.Characters.Count) return AuthorityStatus.StaleAuthority;
+        foreach (var id in characters)
+            if (world.Players.ControlOf(id) is not { } grant || grant.Player != connection.Player || !expected.Characters.Contains(grant))
+                return AuthorityStatus.StaleAuthority;
+        int faction = PlayerCommandRouting.Faction(world, request.Command);
+        if (faction != expected.Faction || expected.MembershipRevision !=
+            (faction >= 0 ? world.Players.Find(connection.Player)!.MembershipRevision(faction) : 0)) return AuthorityStatus.StaleAuthority;
+        return AuthorityStatus.Evaluated;
+    }
+
+    bool HasRole(PlayerId player) => world.Players.KnownRoles(player).Any(world.Players.Validate);
+    bool Current(AuthorityConnection connection) => !disposed && !faulted && connection is not null &&
+        players.TryGetValue(connection.Player, out var ledger) && ReferenceEquals(ledger.Connection, connection);
+    void EnsureOwnerBoundary()
+    {
+        if (world.Characters.Phase != TablePhase.Outside) throw new InvalidOperationException("Authority requires the serialized world boundary.");
+    }
+    void Observe() => (observedTick, observedRevision) = (world.Tick, world.StateRevision);
+    Task<AuthorityReceipt> Rejected(ulong number, AuthorityStatus status) => Task.FromResult(new AuthorityReceipt(number, status, 0, observedRevision, observedTick));
+    void Complete(Pending request, AuthorityStatus status, ulong sequence)
+    {
+        var ledger = players[request.Connection.Player];
+        request.Entry.Completion.TrySetResult(new AuthorityReceipt(request.Number, status, sequence, observedRevision, observedTick));
+        ledger.Completed.Enqueue(request.Number);
+        while (ledger.Completed.Count > MaxReceipts) ledger.Receipts.Remove(ledger.Completed.Dequeue());
+    }
+    void Drain(AuthorityStatus status)
+    {
+        while (pending.TryDequeue(out var request)) Complete(request, status, 0);
+        queuedBytes = 0;
+    }
+    /// <summary>Trusted runtime failure notification. Stops requests even when the failure was outside command processing.</summary>
+    public void MarkFaulted()
+    {
+        lock (gate)
+        {
+            if (disposed || faulted) return;
+            faulted = true;
+            Drain(AuthorityStatus.WorldFaulted);
+        }
+    }
+    public void Dispose()
+    {
+        lock (gate)
+        {
+            if (disposed) return;
+            disposed = true;
+            Drain(AuthorityStatus.WorldClosed);
+            players.Clear();
+        }
+    }
+
+    sealed class PayloadTooLargeException : Exception;
+    sealed class BoundedPayload : MemoryStream
+    {
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            if (Length + buffer.Length > MaxPayload) throw new PayloadTooLargeException();
+            byte[] copy = buffer.ToArray();
+            base.Write(copy, 0, copy.Length);
+        }
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            if (Length + count > MaxPayload) throw new PayloadTooLargeException();
+            base.Write(buffer, offset, count);
+        }
+    }
+}

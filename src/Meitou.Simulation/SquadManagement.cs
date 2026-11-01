@@ -5,7 +5,7 @@ using Meitou.Data.Fcs;
 namespace Meitou.Simulation;
 
 /// <summary>A change to the player's squads (docs/game/ui-screens.md "Squads tab"), applied by <see cref="SquadManagement"/>.</summary>
-public abstract record SquadCommand : SimCommand;
+public abstract record SquadCommand : FactionCommand;
 
 /// <summary>NEW SQUAD: an empty squad of the player's faction at <paramref name="At"/> (the camera's focus).</summary>
 public sealed record NewSquadCommand(Vector3 At) : SquadCommand;
@@ -20,7 +20,11 @@ public sealed record RemoveSquadCommand(int Squad) : SquadCommand;
 /// A portrait dropped on a squad box: the character goes into <paramref name="Squad"/> at <paramref name="Index"/> (-1: the end). With <paramref name="Swap"/> (Shift held) and a
 /// member at <paramref name="Index"/>, the two change places instead.
 /// </summary>
-public sealed record MoveToSquadCommand(CharacterId Character, int Squad, int Index = -1, bool Swap = false) : SquadCommand;
+public sealed record MoveToSquadCommand(CharacterId Character, int Squad, int Index = -1, bool Swap = false) : SquadCommand
+{
+    /// <summary>The displayed target member when swapping. Attributed swaps must name it explicitly.</summary>
+    public CharacterId? SwapWith { get; init; }
+}
 
 /// <summary>A squad box dropped in the squads list: the squad takes place <paramref name="Index"/> in the order (-1: the end).</summary>
 public sealed record ReorderSquadCommand(int Squad, int Index) : SquadCommand;
@@ -46,24 +50,28 @@ public static class SquadManagement
     public const string DeadSquadName = "__DEAD_SQUAD__";
 
     /// <summary>The player's own squads in order: of the player's faction, not a platoon's active half and not the squad of the dead.</summary>
-    public static List<Squad> PlayerSquads(World world)
+    public static List<Squad> PlayerSquads(World world) => PlayerSquads(world, world.Player.Faction);
+
+    public static List<Squad> PlayerSquads(World world, int faction)
     {
         var list = new List<Squad>();
-        if (!world.Player.Exists) return list;
+        if (faction < 0) return list;
         foreach (var s in world.Squads.All)
-            if (Mine(world, s)) list.Add(s);
+            if (Mine(world, faction, s)) list.Add(s);
         list.Sort((a, b) => a.Index != b.Index ? a.Index.CompareTo(b.Index) : a.Id.CompareTo(b.Id));
         return list;
     }
 
     /// <summary>The player's characters alive (what CONSTANTS <c>max faction size</c> counts).</summary>
-    public static int FactionHeads(World world)
+    public static int FactionHeads(World world) => FactionHeads(world, world.Player.Faction);
+
+    public static int FactionHeads(World world, int faction)
     {
         var table = world.Characters;
         int heads = 0;
-        for (int i = 0; i < table.Next.Length; i++)
-            if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: true, DiedTick: < 0 }) heads++;
-        return heads;
+        for (int i = 0; i < table.Current.Length; i++)
+            if (table.Current[i].Alive && table.Cold(i) is { IsPlayer: true, DiedTick: < 0 } cold && cold.Faction == faction && cold.Medical?.Dead != true) heads++;
+        return heads + (world.StoredPlayerRoles?.PendingFactionHeads(faction) ?? 0);
     }
 
     /// <summary>
@@ -71,9 +79,12 @@ public static class SquadManagement
     /// the order and named like the original's platoons, the faction's name and a number (<c>Nameless_1</c>).
     /// </summary>
     public static Squad NewSquad(World world, GameDatabase db, Vector3 at, string factionName)
+        => NewSquad(world, db, at, factionName, world.Player.Faction);
+
+    public static Squad NewSquad(World world, GameDatabase db, Vector3 at, string factionName, int faction)
     {
         var template = db.OfType(FcsRecordType.SQUAD_TEMPLATE).FirstOrDefault(r => r.BaseName == "blank squad");
-        var squads = PlayerSquads(world);
+        var squads = PlayerSquads(world, faction);
         int n = squads.Count;
         while (squads.Any(s => s.Name == $"{factionName}_{n}")) n++;
         var squad = new Squad
@@ -81,72 +92,85 @@ public static class SquadManagement
             Id = world.Squads.NextId(),
             TemplateId = template?.StringId ?? "blank squad",
             Name = $"{factionName}_{n}",
+            PlayerManaged = true,
             Index = squads.Count == 0 ? 0 : squads[^1].Index + 1,
-            Faction = world.Player.Faction,
+            Faction = faction,
             Position = at,
             HomeCentre = new Vector2(at.X, at.Z),
             HomeRadius = 100,
         };
         world.Squads.Add(squad);
+        if (world.Players.RequiresExplicitControl) world.Factions.GetOrCreate(faction).PlayerOwned = true;
         return squad;
     }
 
     /// <summary>Keeps the active squad one of the player's: when it is gone, the first in order with members, else the first.</summary>
     internal static void KeepActive(World world)
     {
-        if (!world.Player.Exists) return;
-        if (world.Squads.Find(world.Player.Squad) is { } s && Mine(world, s)) return;
-        var squads = PlayerSquads(world);
-        world.Player.Squad = (squads.FirstOrDefault(q => q.Members.Count > 0) ?? squads.FirstOrDefault())?.Id ?? -1;
+        foreach (var player in world.Players.All) KeepActive(world, player.State);
+    }
+
+    static void KeepActive(World world, PlayerState player)
+    {
+        if (!player.Exists) { player.Squad = -1; return; }
+        if (world.Squads.Find(player.Squad) is { } active && Mine(world, player.Faction, active)) return;
+        var squads = PlayerSquads(world, player.Faction);
+        player.Squad = (squads.FirstOrDefault(s => s.Members.Count > 0) ?? squads.FirstOrDefault())?.Id ?? -1;
     }
 
     internal static void Apply(World world, PopulationData? data, SquadCommand command)
     {
-        if (!world.Player.Exists) return;
+        if (world.CommandPlayer(command) is not { } player) return;
+        var permission = command is ActiveSquadCommand ? FactionPermission.None
+            : command is MoveToSquadCommand or DismissCommand ? FactionPermission.AssignCharacters : FactionPermission.ManageSquads;
+        if (world.CommandFaction(command, permission) is not { Index: >= 0 } state) return;
+        int faction = state.Index;
         var constants = data?.Bodies.Constants;
+        void Notice(string text) => world.Post(command.Issuer ?? PlayerId.Local, text);
         switch (command)
         {
             case NewSquadCommand create:
-                if (data is null) return;
-                // The original counts the squad boxes against `max squads` (FUN_140491b50).
-                if (PlayerSquads(world).Count >= constants!.MaxSquads) { world.Post("Maximum number of squads reached."); return; }
-                NewSquad(world, data.Db, create.At, FactionName(world, data));
+                if (data is null || !float.IsFinite(create.At.X) || !float.IsFinite(create.At.Y) || !float.IsFinite(create.At.Z)) return;
+                if (PlayerSquads(world, faction).Count >= constants!.MaxSquads) { Notice("Maximum number of squads reached."); return; }
+                NewSquad(world, data.Db, create.At, FactionName(world, data, faction), faction);
                 break;
             case RenameSquadCommand rename:
-                if (Own(world, rename.Squad) is { } named) named.Name = rename.Name.Length > NameLength ? rename.Name[..NameLength] : rename.Name;
+                if (Own(world, faction, rename.Squad) is { } named) named.Name = rename.Name.Length > NameLength ? rename.Name[..NameLength] : rename.Name;
                 break;
             case RemoveSquadCommand remove:
-                if (Own(world, remove.Squad) is not { } doomed) return;
-                // FUN_140491d20: an empty squad only, and never the last.
-                if (doomed.Members.Count > 0) { world.Post("The squad needs to be empty before it can be removed."); return; }
-                if (PlayerSquads(world).Count == 1) { world.Post("You must have at least one squad."); return; }
+                if (Own(world, faction, remove.Squad) is not { } doomed) return;
+                if (doomed.Members.Count > 0 || world.StoredPlayerRoles?.PendingCount(doomed.Id) > 0) { Notice("The squad needs to be empty before it can be removed."); return; }
+                if (PlayerSquads(world, faction).Count == 1) { Notice("You must have at least one squad."); return; }
                 world.Squads.Remove(doomed.Id);
-                Renumber(PlayerSquads(world));
+                Renumber(PlayerSquads(world, faction));
                 KeepActive(world);
                 break;
             case MoveToSquadCommand move:
-                Move(world, constants?.MaxSquadSize ?? int.MaxValue, move);
+                Move(world, faction, constants?.MaxSquadSize ?? int.MaxValue, move);
                 break;
             case ReorderSquadCommand reorder:
-                if (Own(world, reorder.Squad) is not { } moved) return;
-                var order = PlayerSquads(world);
+                if (Own(world, faction, reorder.Squad) is not { } moved) return;
+                var order = PlayerSquads(world, faction);
                 order.Remove(moved);
                 order.Insert(reorder.Index < 0 || reorder.Index > order.Count ? order.Count : reorder.Index, moved);
                 Renumber(order);
                 break;
             case ActiveSquadCommand active:
-                if (active.Squad >= 0) { if (Own(world, active.Squad) is { } shown) world.Player.Squad = shown.Id; }
-                else NextSquad(world);
+                if (active.Squad >= 0)
+                {
+                    if (Own(world, faction, active.Squad) is { } shown) { player.Faction = faction; player.Squad = shown.Id; }
+                }
+                else { player.Faction = faction; NextSquad(world, player); }
                 break;
             case DismissCommand dismiss:
-                if (data is not null) Dismiss(world, data, dismiss.Character);
+                if (data is not null && world.MayOrder(command, dismiss.Character)) Dismiss(world, data, dismiss.Character, faction, command.Issuer);
                 break;
         }
     }
 
-    static Squad? Own(World world, int id) => world.Squads.Find(id) is { } s && Mine(world, s) ? s : null;
-
-    static bool Mine(World world, Squad s) => s.Faction == world.Player.Faction && s.PlatoonId < 0 && !s.Dead;
+    static Squad? Own(World world, int faction, int id) => world.Squads.Find(id) is { } s && Mine(world, faction, s) ? s : null;
+    static bool Mine(World world, int faction, Squad s) => s.Faction == faction && s.PlatoonId < 0 && !s.Dead &&
+        (!world.Players.RequiresExplicitControl || s.PlayerManaged);
 
     /// <summary>
     /// The death handler's player rule (<c>FUN_1407a6200</c>): a character of the player's faction that has died leaves its squad (the next member leads) for the faction's
@@ -154,31 +178,32 @@ public static class SquadManagement
     /// </summary>
     internal static void BuryDead(World world, GameDatabase? db)
     {
-        if (!world.Player.Exists) return;
         var table = world.Characters;
-        Squad? dead = null;
-        foreach (var squad in PlayerSquads(world))
+        foreach (int faction in world.PlayerFactionIndices())
         {
-            bool moved = false;
-            for (int i = squad.Members.Count - 1; i >= 0; i--)
+            Squad? dead = null;
+            foreach (var squad in PlayerSquads(world, faction))
             {
-                var id = squad.Members[i];
-                if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { DiedTick: >= 0 } cold
-                    || !cold.IsPlayer && cold.Faction != world.Player.Faction) continue;
-                dead ??= DeadSquad(world, db, table.Next[slot].Position);
-                squad.Members.RemoveAt(i);
-                dead.Members.Add(id);
-                cold.SquadId = dead.Id;
-                moved = true;
+                bool moved = false;
+                for (int i = squad.Members.Count - 1; i >= 0; i--)
+                {
+                    var id = squad.Members[i];
+                    if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { DiedTick: >= 0 } cold || cold.Faction != faction) continue;
+                    dead ??= DeadSquad(world, db, table.Next[slot].Position, faction);
+                    squad.Members.RemoveAt(i);
+                    dead.Members.Add(id);
+                    cold.SquadId = dead.Id;
+                    moved = true;
+                }
+                if (moved) Relead(table, squad);
             }
-            if (moved) Relead(table, squad);
         }
     }
 
-    static Squad DeadSquad(World world, GameDatabase? db, Vector3 at)
+    static Squad DeadSquad(World world, GameDatabase? db, Vector3 at, int faction)
     {
         foreach (var s in world.Squads.All)
-            if (s.Dead && s.Faction == world.Player.Faction) return s;
+            if (s.Dead && s.Faction == faction) return s;
         var template = db?.OfType(FcsRecordType.SQUAD_TEMPLATE).FirstOrDefault(r => r.BaseName == "blank squad");
         var squad = new Squad
         {
@@ -186,7 +211,8 @@ public static class SquadManagement
             TemplateId = template?.StringId ?? "blank squad",
             Name = DeadSquadName,
             Dead = true,
-            Faction = world.Player.Faction,
+            PlayerManaged = true,
+            Faction = faction,
             Position = at,
             HomeCentre = new Vector2(at.X, at.Z),
             HomeRadius = 100,
@@ -195,8 +221,8 @@ public static class SquadManagement
         return squad;
     }
 
-    static string FactionName(World world, PopulationData data) =>
-        world.Player.Faction < data.Factions.Count && data.Factions[world.Player.Faction].Name is { Length: > 0 } name ? name : "Nameless";
+    static string FactionName(World world, PopulationData data, int faction) => world.Factions.Find(faction)?.Name
+        ?? ((uint)faction < (uint)data.Factions.Count && data.Factions[faction].Name is { Length: > 0 } name ? name : "Nameless");
 
     static void Renumber(List<Squad> order)
     {
@@ -204,15 +230,15 @@ public static class SquadManagement
     }
 
     /// <summary>change_squad (<c>FUN_1407f6380</c>): with more than one squad, the next one after the active in order (wrapping) that has members; none: unchanged.</summary>
-    static void NextSquad(World world)
+    static void NextSquad(World world, PlayerState player)
     {
-        var squads = PlayerSquads(world);
+        var squads = PlayerSquads(world, player.Faction);
         if (squads.Count < 2) return;
-        int at = squads.FindIndex(s => s.Id == world.Player.Squad);
+        int at = squads.FindIndex(s => s.Id == player.Squad);
         for (int k = 1; k < squads.Count; k++)
         {
             var next = squads[(at + k + squads.Count) % squads.Count];
-            if (next.Members.Count > 0) { world.Player.Squad = next.Id; return; }
+            if (next.Members.Count > 0) { player.Squad = next.Id; return; }
         }
     }
 
@@ -220,18 +246,22 @@ public static class SquadManagement
     /// A portrait drop (<c>FUN_14049b050</c>): into another squad that already has <c>max squad size</c> members only with Shift; with Shift onto a member the two swap places
     /// (<c>FUN_140792e60</c> within a squad); else the character is put in at the place (<c>FUN_140796620</c>, the end when none).
     /// </summary>
-    static void Move(World world, int maxSize, MoveToSquadCommand move)
+    static void Move(World world, int faction, int maxSize, MoveToSquadCommand move)
     {
         var table = world.Characters;
-        if (Own(world, move.Squad) is not { } target || !table.TryResolveNext(move.Character, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold
-            || Own(world, cold.SquadId) is not { } source) return;
+        if (Own(world, faction, move.Squad) is not { } target || !table.TryResolveNext(move.Character, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold
+            || Own(world, faction, cold.SquadId) is not { } source) return;
+        if (cold.Faction != faction || !world.MayOrder(move, move.Character)) return;
+        if (world.StoredPlayerRoles?.PendingCount(source.Id) > 0 || world.StoredPlayerRoles?.PendingCount(target.Id) > 0) return;
         int from = source.Members.IndexOf(move.Character);
         if (from < 0) return;
         bool atMember = move.Index >= 0 && move.Index < target.Members.Count;
-        if (!move.Swap && source != target && target.Members.Count >= maxSize) return;
+        if (!(move.Swap && atMember) && source != target && target.Members.Count >= maxSize) return;
+        if (move.Issuer is not null && move.Swap && atMember && move.SwapWith != target.Members[move.Index]) return;
         if (move.Swap && atMember)
         {
             var other = target.Members[move.Index];
+            if (!world.MayOrder(move, other)) return;
             if (source == target) (source.Members[from], source.Members[move.Index]) = (other, move.Character);
             else
             {
@@ -301,21 +331,22 @@ public static class SquadManagement
     /// faction."). The character is deselected, joins Tech Hunters (else No Faction) and leaves in a new squad of its own of the "Wandering Squad" template, whose AI packages
     /// then run it.
     /// </summary>
-    static void Dismiss(World world, PopulationData data, CharacterId id)
+    static void Dismiss(World world, PopulationData data, CharacterId id, int ownerFaction, PlayerId? actor)
     {
         var table = world.Characters;
-        if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold) return;
-        if (FactionHeads(world) <= 1) { world.Post("Cannot dismiss the only remaining character in the faction."); return; }
+        if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold || cold.Faction != ownerFaction) return;
+        if (FactionHeads(world, ownerFaction) <= 1) { world.Post(actor ?? PlayerId.Local, "Cannot dismiss the only remaining character in the faction."); return; }
         int faction = data.FactionIndex(DismissFaction);
         if (faction < 0) faction = data.FactionIndex(DismissFallbackFaction);
         if (faction < 0) return;
         if (world.Squads.Find(cold.SquadId) is { } old)
         {
             old.Members.Remove(id);
-            if (Own(world, old.Id) is not null) Relead(table, old);
+            if (Own(world, ownerFaction, old.Id) is not null) Relead(table, old);
             else if (old.Leader == id) old.Leader = SquadRegistry.Successor(old.Members, table);
         }
-        world.Player.Selection.Remove(id);
+        world.Players.RevokeControl(id);
+        foreach (var player in world.Players.All) { player.State.Selection.Remove(id); player.State.InventoryShown.Remove(id); }
         var at = table.Next[slot].Position;
         var template = data.Db.Find(DismissTemplate);
         var squad = new Squad

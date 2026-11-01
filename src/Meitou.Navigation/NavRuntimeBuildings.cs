@@ -14,6 +14,8 @@ public sealed class NavRuntimeBuildings
     public const float Reach = 600 + 72;
 
     readonly object gate = new();
+    long revision;
+    public long Revision => Interlocked.Read(ref revision);
     readonly Dictionary<string, BuildingPlacement> all = new(StringComparer.Ordinal);
     volatile Dictionary<ZoneCoordinate, BuildingPlacement[]> byZone = [];
 
@@ -21,11 +23,18 @@ public sealed class NavRuntimeBuildings
 
     /// <summary>Adds or replaces a placement (by global placement key).</summary>
     public void Add(BuildingPlacement placement)
+        => Replace(placement);
+
+    /// <summary>Atomically replaces a placement and returns its previous location for invalidating both affected regions.</summary>
+    public BuildingPlacement? Replace(BuildingPlacement placement)
     {
         lock (gate)
         {
+            all.TryGetValue(placement.Key, out var previous);
             all[placement.Key] = placement;
+            Interlocked.Increment(ref revision);
             byZone = all.Values.GroupBy(p => p.Zone).ToDictionary(g => g.Key, g => g.ToArray());
+            return previous;
         }
     }
 
@@ -35,6 +44,7 @@ public sealed class NavRuntimeBuildings
         lock (gate)
         {
             if (!all.Remove(instanceId, out var removed)) return null;
+            Interlocked.Increment(ref revision);
             byZone = all.Values.GroupBy(p => p.Zone).ToDictionary(g => g.Key, g => g.ToArray());
             return removed;
         }
@@ -47,6 +57,7 @@ public sealed class NavRuntimeBuildings
         {
             var removed = all.Values.ToList();
             all.Clear();
+            Interlocked.Increment(ref revision);
             byZone = [];
             return removed;
         }
@@ -54,6 +65,17 @@ public sealed class NavRuntimeBuildings
 
     /// <summary>Every placement now.</summary>
     public List<BuildingPlacement> All() { lock (gate) return [.. all.Values]; }
+
+    internal NavRuntimeBuildings Snapshot()
+    {
+        lock (gate)
+        {
+            var copy = new NavRuntimeBuildings();
+            foreach (var pair in all) copy.all.Add(pair.Key, pair.Value);
+            copy.byZone = byZone;
+            return copy;
+        }
+    }
 
     public IReadOnlyList<BuildingPlacement> In(ZoneCoordinate zone) => byZone.TryGetValue(zone, out var list) ? list : [];
 

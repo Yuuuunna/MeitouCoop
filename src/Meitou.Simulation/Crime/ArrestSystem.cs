@@ -466,9 +466,9 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
                 if (gap <= Settings.TalkRange)
                 {
                     MovementSystem.Stop(table, g);
-                    if (world.Player.Money > a.Fine && tc.Bounties is { } ledger && ledger.Of(a.Faction) is { } entry)
+                    if (tc.Faction >= 0 && world.Factions.GetOrCreate(tc.Faction) is { } funds && funds.Money > a.Fine && tc.Bounties is { } ledger && ledger.Of(a.Faction) is { } entry)
                     {
-                        world.Player.Money -= a.Fine;
+                        funds.TryDebit(a.Fine);
                         ledger.Remove(entry);
                         if (ledger.Count == 0) tc.Bounties = null;
                         tc.Recognition = 0;

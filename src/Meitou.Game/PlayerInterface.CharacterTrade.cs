@@ -51,7 +51,7 @@ sealed partial class PlayerInterface
         }
         if (!faithfulScreens.IsOpen(CharacterTradeScreen) && !characterTradeCloseSent)
         {
-            Say(new CloseCharacterTrade { Tick = session.World.Tick });
+            Say(new CloseCharacterTrade { Tick = session.CommandTick, TradeId = trade.Id });
             characterTradeCloseSent = true;
         }
     }
@@ -72,7 +72,7 @@ sealed partial class PlayerInterface
     {
         if (session.CurrentSnapshot.CharacterTrade is not { } trade) return;
         var (count, total) = TickedRows(trade);
-        bool affordable = total <= trade.BuyerMoney;
+        bool affordable = trade.CanConfirm && total <= trade.BuyerMoney;
         b.Text["CaptionTextBox"] = trade.Title;
         b.Text["ConfirmButton"] = trade.ConfirmCaption;
         b.Text["CancelButton"] = Loc.Tr("Cancel");
@@ -81,7 +81,7 @@ sealed partial class PlayerInterface
         if (!affordable) b.Properties["MoneyAmountTextBox"] = new Dictionary<string, string> { ["TextColour"] = BadColour };
         b.Text["SelectedTotalTextBox"] = $"{count}/{trade.Rows.Count}";
         b.Text["lbBuyersMoney"] = Loc.Tr("Buyer's money:");
-        b.Text["TotalMoneyBuyer"] = "c." + Money(trade.BuyerMoney);
+        b.Text["TotalMoneyBuyer"] = trade.FundsVisible ? "c." + Money(trade.BuyerMoney) : Loc.Tr("Unavailable");
         b.Actions["CancelButton"] = "CancelButton";
         b.Disabled.Remove("CancelButton");
         b.Actions["ConfirmButton"] = "ConfirmButton";
@@ -147,8 +147,8 @@ sealed partial class PlayerInterface
         else if (e.Widget == "ConfirmButton")
         {
             var (count, total) = TickedRows(trade);
-            if (count == 0 || total > trade.BuyerMoney) return;
-            Say(new ConfirmCharacterTrade([.. trade.Rows.Select(r => r.Character).Where(characterTradeTicked.Contains)]) { Tick = session.World.Tick });
+            if (!trade.CanConfirm || count == 0 || total > trade.BuyerMoney) return;
+            Say(new ConfirmCharacterTrade([.. trade.Rows.Select(r => r.Character).Where(characterTradeTicked.Contains)]) { Tick = session.CommandTick, TradeId = trade.Id });
             characterTradeCloseSent = true;
             faithfulScreens.Close(CharacterTradeScreen);
         }

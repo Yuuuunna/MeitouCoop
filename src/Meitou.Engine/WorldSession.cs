@@ -3,6 +3,7 @@ using Meitou.Engine.Cameras;
 using Meitou.Engine.Input;
 using Meitou.Engine.Time;
 using Meitou.Simulation;
+using Meitou.Runtime;
 
 namespace Meitou.Engine;
 
@@ -17,7 +18,7 @@ namespace Meitou.Engine;
 /// simulation ticks the speed they left allows (docs/simulation.md "Time model").</item>
 /// </list>
 /// </summary>
-public sealed class WorldSession : IDisposable
+public sealed partial class WorldSession : IDisposable, IClientSession
 {
     public WorldSession(Vector3 focus, (double X0, double Z0, double X1, double Z1) region, Func<float, float, float> ground,
         double startHour = GameClock.DefaultStartHour, double tickRate = FixedStepClock.DefaultTickRate, InputBindings? bindings = null,
@@ -35,14 +36,10 @@ public sealed class WorldSession : IDisposable
         Bindings = bindings ?? new InputBindings();
         // The game keeps its cameras above the water surface too (docs/formats/camera.md): the lowest ground is the sea.
         Camera = new CameraRig((x, z) => MathF.Max(ground(x, z), Meitou.Data.World.WorldWater.Height));
-        worldSettings = settings;
-        worldWalkability = walkability ?? new OpenGroundWalkability(ground);
-        World = new World(settings, worldWalkability, systems);
-        World.Fixtures.Doors = worldWalkability as Meitou.Simulation.Locks.IDoorGate;
+        runtime = new WorldRuntime(settings with { StartHours = Clock.TotalHours }, walkability ?? new OpenGroundWalkability(ground), systems);
     }
 
-    readonly WorldSettings worldSettings;
-    readonly IWalkability worldWalkability;
+    readonly WorldRuntime runtime;
 
     /// <summary>The point the world was loaded around.</summary>
     public Vector3 Focus { get; }
@@ -54,7 +51,9 @@ public sealed class WorldSession : IDisposable
     public SimulationClock Simulation { get; } = new();
     public GameClock Clock { get; }
     /// <summary>The simulated world; it ticks with the simulation clock. Replaced as a whole by <see cref="ReplaceWorld"/> (a loaded save); read it again after a frame, do not keep it.</summary>
-    public World World { get; private set; }
+    public World World => runtime.World;
+    /// <summary>Loading/idle hosts commit prepared external state only after any tick-ahead worker is joined.</summary>
+    public void SynchronizeWorld() { EndTickAhead(); runtime.Synchronize(); }
     /// <summary>
     /// The snapshot the last simulation tick published and the one before it, for interpolating by <see cref="SimulationAlpha"/>. While a tick runs ahead
     /// (<see cref="BeginTickAhead"/>) or waits to fall due, the pair from before it: the picture moves on only when the clock reaches that tick.
@@ -63,6 +62,8 @@ public sealed class WorldSession : IDisposable
     public WorldSnapshot PreviousSnapshot => held ? heldPrevious! : World.PreviousSnapshot;
     /// <summary>The world tick the shown snapshot is of (<see cref="World.Tick"/> less a tick run ahead).</summary>
     public long ShownTick => World.Tick - (aheadDone ? 1 : 0);
+    public double PresentationTick => ShownTick + SimulationAlpha;
+    public double PresentationSeconds => Clock.GameSeconds;
 
     // The tick run ahead (docs/simulation.md "Tick ahead"): the shown pair held meanwhile, the runner, and whether the tick is done but not yet due.
     bool held, aheadDone;
@@ -86,6 +87,7 @@ public sealed class WorldSession : IDisposable
     public float Alpha => (float)Ticks.Alpha;
     /// <summary>The speed: 0 while paused by the player, else 1, 2 or 5.</summary>
     public double TimeScale => Simulation.Speed;
+    public bool IsPaused => Simulation.IsPaused;
 
     /// <summary>Called for each control tick's actions after the session's own handling (pause, speed, camera); the host's actions (quit, screenshot...).</summary>
     public event Action<ActionState>? Ticked;
@@ -113,7 +115,7 @@ public sealed class WorldSession : IDisposable
         }
         // Only a frame's last two ticks publish: the host draws between those two snapshots, and the ones before would go unseen.
         for (int i = 0; i < run; i++) SimulationTick(publish: i >= run - 2);
-        if (Simulation.IsPaused) World.ApplyPausedInterfaceCommands();
+        if (Simulation.IsPaused) runtime.ApplyPausedInterfaceCommands();
         return n;
     }
 
@@ -129,7 +131,7 @@ public sealed class WorldSession : IDisposable
         World.GameHours = Clock.TotalHours;   // the tick's start, as SimulationTick sets it; the game clock moves when the tick falls due
         World.Daytime = Clock.IsDaytime;
         runner ??= new TickRunner();
-        runner.Start(World);
+        runner.Start(runtime);
         running = true;
     }
 
@@ -163,7 +165,7 @@ public sealed class WorldSession : IDisposable
     {
         readonly Thread thread;
         readonly SemaphoreSlim start = new(0), done = new(0);
-        World? world;
+        WorldRuntime? runtime;
         double ms;
         System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure;
         volatile bool stopping;
@@ -174,16 +176,16 @@ public sealed class WorldSession : IDisposable
             thread.Start();
         }
 
-        public void Start(World w)
+        public void Start(WorldRuntime w)
         {
-            (world, failure) = (w, null);
+            (runtime, failure) = (w, null);
             start.Release();
         }
 
         public double Wait()
         {
             done.Wait();
-            world = null;
+            runtime = null;
             failure?.Throw();
             return ms;
         }
@@ -195,7 +197,7 @@ public sealed class WorldSession : IDisposable
                 start.Wait();
                 if (stopping) return;
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                try { world!.RunTick(publish: true); }
+                try { runtime!.Step(publish: true, daytime: runtime.World.Daytime); }
                 catch (Exception e) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e); }
                 ms = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 done.Release();
@@ -204,8 +206,12 @@ public sealed class WorldSession : IDisposable
 
         public void Dispose()
         {
+            if (stopping) return;
             stopping = true;
             start.Release();
+            thread.Join();
+            start.Dispose();
+            done.Dispose();
         }
     }
 
@@ -215,7 +221,7 @@ public sealed class WorldSession : IDisposable
         World.GameHours = Clock.TotalHours;
         World.Daytime = Clock.IsDaytime;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        World.RunTick(publish);
+        runtime.Step(publish, Clock.TotalHours, Clock.IsDaytime);
         Measure(System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
         Clock.Advance(Simulation.TickSeconds);
     }
@@ -229,29 +235,16 @@ public sealed class WorldSession : IDisposable
     public World ReplaceWorld(IEnumerable<ITickSystem> systems, Action<World>? setup = null)
     {
         EnsureNotRunning();
-        var list = systems.ToList();
-        var next = new World(worldSettings, worldWalkability, list);
-        next.Floaters = World.Floaters;   // the host keeps drawing the floaters across the swap
-        try { setup?.Invoke(next); }
-        catch
+        var floaters = World.Floaters;
+        var next = runtime.ReplaceWorld(systems, candidate =>
         {
-            Discard(next);
-            throw;
-        }
-        var old = World;
-        World = next;
+            candidate.Floaters = floaters;
+            setup?.Invoke(candidate);
+        });
         // A tick the old world ran ahead goes with it.
+        presentationIdentity = new();
         (aheadDone, held, heldPrevious, heldCurrent) = (false, false, null, null);
-        Discard(old);
-        // The navmesh door table follows the new world: the old one's locked doors are forgotten, the new one's told.
-        if (worldWalkability is Meitou.Simulation.Locks.IDoorGate gate) { gate.ResetDoors(); next.Fixtures.Doors = gate; }
         return next;
-    }
-
-    static void Discard(World world)
-    {
-        world.Dispose();
-        foreach (var s in world.Systems) (s as IDisposable)?.Dispose();
     }
 
     /// <summary>Called when the session is disposed, for the systems that own threads.</summary>
@@ -259,7 +252,7 @@ public sealed class WorldSession : IDisposable
     {
         if (running) { running = false; try { runner!.Wait(); } catch (Exception) { } }   // a tick still ahead finishes first; what it threw no longer matters
         runner?.Dispose();
-        Discard(World);
+        runtime.Dispose();
     }
 
     /// <summary>One control tick: the actions from the input (pause, speed), then the camera.</summary>

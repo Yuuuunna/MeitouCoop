@@ -34,23 +34,28 @@ sealed partial class PlayerInterface
             if (d < best) (nearest, best) = (c, d);
         }
         if (nearest is null || nearest.Task == CharacterTask.Prospect) return;
-        Say(new ProspectOrder(nearest.Id) { Tick = session.World.Tick });
+        Say(new ProspectOrder(nearest.Id) { Tick = session.CommandTick });
         Sound("Prospect_Click");
     }
 
     /// <summary>Once a frame: a new finished prospecting opens the results window (the exe shows it the moment the task hands it the spot) and sounds <c>Prospect_Results</c>. A new world only takes the baseline.</summary>
     void PollProspect()
     {
-        var world = session.World;
-        if (!ReferenceEquals(prospectWorld, world))
+        if (!ReferenceEquals(prospectWorld, session.WorldIdentity))
         {
-            prospectWorld = world;
-            prospectSerial = world.Prospected?.Serial ?? 0;
+            prospectWorld = session.WorldIdentity;
+            prospectSerial = session.Prospected?.Serial ?? 0;
             prospectReport = null;
             prospectMapDrawn = -1;
             faithfulScreens.Close("prospect");
         }
-        if (world.Prospected is not { } report || report.Serial == prospectSerial) return;
+        if (session.Prospected is not { } report)
+        {
+            prospectReport = null;
+            faithfulScreens.Close("prospect");
+            return;
+        }
+        if (report.Serial == prospectSerial) return;
         prospectSerial = report.Serial;
         prospectReport = report;
         prospectRow = 0;

@@ -35,18 +35,33 @@ public sealed class SquadMemory
         a.Item1 != b.Item1 ? a.Item1.CompareTo(b.Item1) : CompareIds(a.Item2, b.Item2)));
     readonly SortedDictionary<int, Entry> player = [];
     readonly SortedSet<int> tempPlayerAlly = [];
+    readonly SortedDictionary<(int Squad, int Faction), Entry> factions = [];
+    readonly SortedSet<(int Squad, int Faction)> factionAllies = [];
     // Squads holding a TEMP_ENEMY tag on someone: the aggro scan's gate (a derived index, not hashed).
     readonly SortedSet<int> tempEnemySquads = [];
 
-    public bool IsEmpty => entries.Count == 0 && player.Count == 0 && tempPlayerAlly.Count == 0;
+    public bool IsEmpty => entries.Count == 0 && player.Count == 0 && tempPlayerAlly.Count == 0 && factions.Count == 0 && factionAllies.Count == 0;
 
-    static bool PlayerSide(World world, CharacterCold c) => c.IsPlayer || (world.Player.Faction >= 0 && c.Faction == world.Player.Faction);
+    static bool PlayerSide(World world, CharacterCold c) => c.IsPlayer || world.IsPlayerFaction(c.Faction);
+
+    Entry? PlayerEntry(World world, int squad, CharacterCold character, bool create)
+    {
+        if (!world.Players.RequiresExplicitControl) return create ? Get(player, squad) : player.GetValueOrDefault(squad);
+        var key = (squad, character.Faction);
+        if (factions.TryGetValue(key, out var found)) return found;
+        if (character.Faction == world.Player.Faction && player.TryGetValue(squad, out var legacy))
+        {
+            if (!create) return legacy;
+            return factions[key] = new Entry { Time = legacy.Time, Long = legacy.Long, Short = legacy.Short };
+        }
+        return create ? Get(factions, key) : null;
+    }
 
     /// <summary>The entry a lookup finds (<c>FUN_140673a90</c>): the squad's player entry for a player-faction character, else the character's own; null: never remembered.</summary>
     public Entry? Find(World world, int squad, CharacterId who)
     {
         if (squad < 0 || !world.Characters.TryResolveNext(who, out int s) || world.Characters.Cold(s) is not { } c) return null;
-        return PlayerSide(world, c) ? player.GetValueOrDefault(squad) : entries.GetValueOrDefault((squad, who));
+        return PlayerSide(world, c) ? PlayerEntry(world, squad, c, false) : entries.GetValueOrDefault((squad, who));
     }
 
     /// <summary>
@@ -55,7 +70,7 @@ public sealed class SquadMemory
     public void Remember(World world, int squad, CharacterId who, int tag)
     {
         if (squad < 0 || (uint)tag > 31 || !world.Characters.TryResolveNext(who, out int s) || world.Characters.Cold(s) is not { } c) return;
-        var e = PlayerSide(world, c) ? Get(player, squad) : Get(entries, (squad, who));
+        var e = PlayerSide(world, c) ? PlayerEntry(world, squad, c, true)! : Get(entries, (squad, who));
         e.Long |= 1u << tag;
         e.Time = world.GameHours;
     }
@@ -73,15 +88,21 @@ public sealed class SquadMemory
         e.Time = world.GameHours;
         if (tag == MemoryTag.TempEnemy) tempEnemySquads.Add(squad);
         if (!PlayerSide(world, c)) return;
-        if (tag == MemoryTag.TempAlly) tempPlayerAlly.Add(squad);
-        if (player.TryGetValue(squad, out var p)) p.Time = world.GameHours;
+        if (tag == MemoryTag.TempAlly)
+        {
+            if (world.Players.RequiresExplicitControl) factionAllies.Add((squad, c.Faction));
+            else tempPlayerAlly.Add(squad);
+        }
+        if (PlayerEntry(world, squad, c, false) is { } p) p.Time = world.GameHours;
     }
 
     /// <summary>Whether the squad holds short-term <paramref name="tag"/> on the character (<c>FUN_140678830</c>): TEMP_ALLY on a player-faction character is the squad's player flag.</summary>
     public bool HasShort(World world, int squad, CharacterId who, int tag)
     {
         if (squad < 0 || !world.Characters.TryResolveNext(who, out int s) || world.Characters.Cold(s) is not { } c) return false;
-        if (tag == MemoryTag.TempAlly && PlayerSide(world, c)) return tempPlayerAlly.Contains(squad);
+        if (tag == MemoryTag.TempAlly && PlayerSide(world, c)) return world.Players.RequiresExplicitControl
+            ? factionAllies.Contains((squad, c.Faction)) || c.Faction == world.Player.Faction && tempPlayerAlly.Contains(squad)
+            : tempPlayerAlly.Contains(squad);
         return entries.TryGetValue((squad, who), out var e) && (e.Short >> tag & 1) != 0;
     }
 
@@ -97,6 +118,9 @@ public sealed class SquadMemory
         if (player.TryGetValue(from, out var p)) player[to] = new Entry { Time = p.Time, Long = p.Long, Short = p.Short };
         if (tempPlayerAlly.Contains(from)) tempPlayerAlly.Add(to);
         if (tempEnemySquads.Contains(from)) tempEnemySquads.Add(to);
+        foreach (var ((squad, faction), e) in factions.Where(p => p.Key.Squad == from).ToArray())
+            factions[(to, faction)] = new Entry { Time = e.Time, Long = e.Long, Short = e.Short };
+        foreach (var entry in factionAllies.Where(p => p.Squad == from).ToArray()) factionAllies.Add((to, entry.Faction));
     }
 
     /// <summary>Whether the squad holds a TEMP_ENEMY tag on any character (the aggro scan skips the per-target lookup for squads that do not).</summary>
@@ -113,6 +137,10 @@ public sealed class SquadMemory
             if (q == squad) (data ??= new()).Entries.Add(new SquadMemoryData.Item(who, e.Time, e.Long, e.Short));
         if (player.TryGetValue(squad, out var p)) (data ??= new()).Player = new SquadMemoryData.Item(CharacterId.None, p.Time, p.Long, p.Short);
         if (tempPlayerAlly.Contains(squad)) (data ??= new()).TempAlly = true;
+        foreach (var ((q, faction), entry) in factions)
+            if (q == squad) (data ??= new()).Factions[faction] = new SquadMemoryData.Item(CharacterId.None, entry.Time, entry.Long, entry.Short);
+        foreach (var (q, faction) in factionAllies)
+            if (q == squad) (data ??= new()).FactionAllies.Add(faction);
         return data;
     }
 
@@ -125,6 +153,8 @@ public sealed class SquadMemory
         player.Remove(squad);
         tempPlayerAlly.Remove(squad);
         tempEnemySquads.Remove(squad);
+        foreach (int faction in data.Factions.Keys) factions.Remove((squad, faction));
+        foreach (int faction in data.FactionAllies) factionAllies.Remove((squad, faction));
         return data;
     }
 
@@ -139,6 +169,9 @@ public sealed class SquadMemory
         }
         if (data.Player is { } p) player[squad] = new Entry { Time = p.Time, Long = p.Long, Short = p.Short };
         if (data.TempAlly) tempPlayerAlly.Add(squad);
+        foreach (var (faction, entry) in data.Factions)
+            factions[(squad, faction)] = new Entry { Time = entry.Time, Long = entry.Long, Short = entry.Short };
+        foreach (int faction in data.FactionAllies) factionAllies.Add((squad, faction));
     }
 
     static Entry Get<TKey>(SortedDictionary<TKey, Entry> map, TKey key) where TKey : notnull
@@ -154,6 +187,14 @@ public sealed class SquadMemory
         foreach (var ((squad, who), e) in entries) { hasher.Add(squad); hasher.Add(who); hasher.Add(e.Time); hasher.Add((ulong)e.Long); hasher.Add((ulong)e.Short); }
         foreach (var (squad, e) in player) { hasher.Add(squad); hasher.Add(e.Time); hasher.Add((ulong)e.Long); hasher.Add((ulong)e.Short); }
         foreach (int squad in tempPlayerAlly) hasher.Add(squad);
+        if (factions.Count + factionAllies.Count > 0)
+        {
+            hasher.Add(0x4D704D65); hasher.Add(factions.Count);
+            foreach (var ((squad, faction), e) in factions)
+            { hasher.Add(squad); hasher.Add(faction); hasher.Add(e.Time); hasher.Add((ulong)e.Long); hasher.Add((ulong)e.Short); }
+            hasher.Add(factionAllies.Count);
+            foreach (var (squad, faction) in factionAllies) { hasher.Add(squad); hasher.Add(faction); }
+        }
     }
 }
 
@@ -168,4 +209,6 @@ public sealed class SquadMemoryData
     public List<Item> Entries { get; } = [];
     public Item? Player { get; set; }
     public bool TempAlly { get; set; }
+    public Dictionary<int, Item> Factions { get; } = [];
+    public HashSet<int> FactionAllies { get; } = [];
 }

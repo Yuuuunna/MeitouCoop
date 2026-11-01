@@ -37,6 +37,16 @@ position. Content-file `platoon/` alone means no platoon file, not an empty file
 Every GAMESTATE_BUILDING uses its zone container C, CS11111 and a listed slot. Overlay retains
 base placements and saved targets for IDs present in both.
 
+**Meitou persistent identities** (engine extension, **Verified** by `SaveWorldTests` identity cases): GAMESTATE_CHARACTER string `meitou entity` and CAMERA string `meitou entity registry` preserve role identity and allocator reservations across load/unload and disk saves. Schema, rejection rules and checkpoint contracts: [multiplayer persistence](../multiplayer.md#persistence-boundaries).
+
+**Meitou multiplayer rosters** (engine extension, **Verified** by multiplayer `SaveWorldTests`): CAMERA ints `meitou multiplayer` (1) and `meitou next squad`; PLATOON bool `meitou player squad` and int `meitou squad id`; character-state bools `meitou player role` and `meitou role dead`. These retain actual owners and roster classification independently of NPC faction membership. Marked worlds require matching checkpoint metadata; single-player import refuses them.
+
+**Meitou multiplayer constructed assets** (engine extension, **Verified** by `ProductionTests` multiplayer persistence cases): CAMERA string `meitou building allocation` stores versioned zone counters; building bools `meitou constructed building`, `meitou upgrading`, `meitou ruined`; outpost bool `meitou outpost` and int `meitou town number`. Actual faction IDs continue using the original owner fields. Contracts: [multiplayer persistence](../multiplayer.md#persistence-boundaries).
+
+**Meitou purchased properties** (engine extension, **Verified** by multiplayer `HousePurchaseTests`): GAMESTATE_BUILDING bool `meitou property purchased` preserves purchases across remote-faction loading and town replacement. `meitou upgrading`/`meitou ruined` also retain repair state on level houses; ownership continues using `owner faction ID`.
+
+**Runtime checkpoint timing** (engine extension, **Verified** by `WorldCheckpointCoordinatorTests`): CAMERA int `meitou runtime checkpoint` (1), strings `meitou precise game hours`, `meitou checkpoint tick`, `meitou checkpoint revision`, and bool `meitou checkpoint daytime`. Precise hours use invariant round-trip formatting and must agree with the native minute clock; source tick/revision are diagnostic. Native saved timers still load relative to tick zero.
+
 **Research** (RESEARCH record in `quick.save`, **Verified**: five sample saves): float `num finished`, strings `finished<k>` (RESEARCH ids in the
 order finished; every sample holds only `finished0` = `5359-gamedata.base`), float `num currents` (0); in progress, strings `current<k>` and floats
 `current prog<k>`, and `paid<k>` (**Observed**, [research](../game/buildings-production.md#research)). Meitou (`Saving/ResearchSave`) round-trips all of them;
@@ -56,7 +66,7 @@ scratch harness; pinned by `SaveReadTests`); with `Blood` off the loaded record 
 GAMESTATE_BUILDING `<id>-S23` carrying `name`, `owner faction ID`, `floornum`, `destroyed`, `flags`, `is complete`, `pause`, `construction progress`,
 `<i>construction mats`, `world Y pos`, `handle`, `isInsideBuilding` (key set from the original's writer `FUN_1405547f0`, **Verified** by code; no
 sample save holds a player-built building, so a real file was not compared). A finished one with doors also gets the door keys of [locks](../game/locks.md#save-keys)
-(the original saves doors the same way for every building, **Observed** by code). Meitou-only `meitou parent` (instance id) names a parent the handle cannot.
+(the original saves doors the same way for every building, **Observed** by code). Meitou-only `meitou parent` names a parent by raw instance id or zone-qualified runtime key. The writer resolves either form to `isInsideBuilding` when a parent handle exists (**Verified** engine tests: `SavedInteriorParentHandleAcceptsRawAndZoneQualifiedIdentity`).
 
 **Town-house repair** (Meitou): the original zone instance's GAMESTATE_BUILDING stores `destroyed`, `is complete`,
 `pause`, `construction progress`, `<i>construction mats` and ownership. Bool `meitou town construction` keeps it distinct

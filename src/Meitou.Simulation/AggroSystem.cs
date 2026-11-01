@@ -583,7 +583,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         var targetId = table.IdOf(t);
         world.Defer(new AttackOrder(fighters, targetId) { Tick = world.Tick + 1 });
         Started++;
-        if (world.Sounds is { } sounds) foreach (var fighter in fighters) sounds.Enqueue(new SoundEvent(SoundKind.Alert, fighter, targetId, next[t].Position));   // the fighters' alert voices
+        if (world.HasSoundSink) foreach (var fighter in fighters) world.EmitSound(new SoundEvent(SoundKind.Alert, fighter, targetId, next[fighter.Slot].Position));   // the fighters' alert voices
         if (Settings.RecordLog) log.Add(new AggroEntry(world.Tick, fighters[0], targetId, table.Cold(i)!.Faction, target.Faction, e.Amount, fighters.Count - 1));
     }
 

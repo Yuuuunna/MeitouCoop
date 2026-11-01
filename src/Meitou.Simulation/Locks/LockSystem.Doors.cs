@@ -3,17 +3,17 @@ using System.Numerics;
 namespace Meitou.Simulation.Locks;
 
 /// <summary>Opens the closed doors of a player building, or closes its open ones when any is open (the door panel's open/close button, <c>FUN_140546fb0</c>; a locked door is unlocked first).</summary>
-public sealed record ToggleDoorsOrder(string Building) : SimCommand;
+public sealed record ToggleDoorsOrder(string Building) : FactionCommand { public ulong ExpectedDoorGroupRevision { get; init; } }
 
 /// <summary>Flips <c>wants lock</c> on every door of a player building (the door panel's lock button, <c>FUN_140547060</c>): a closed door locks at once, an open one when it closes; unlocking clears the lock.</summary>
-public sealed record ToggleDoorLocksOrder(string Building) : SimCommand;
+public sealed record ToggleDoorLocksOrder(string Building) : FactionCommand { public ulong ExpectedDoorGroupRevision { get; init; } }
 
 /// <summary>
 /// A quick right click on a door (docs/game/ui-input.md "Building hover and click"): the nearest of the characters (the selection when empty) walks to it and opens a closed one or closes an
 /// open one (72 OPEN_DOOR / 73 CLOSE_DOOR; a locked one: "It's locked."). Another faction's locked door: with <see cref="PickLock"/> (Alt) its lock is picked (76 PICK_LOCK), else the
 /// hint and a walk to it.
 /// </summary>
-public sealed record DoorOrder(IReadOnlyList<CharacterId> Characters, string Door, bool PickLock = false) : SimCommand;
+public sealed record DoorOrder(IReadOnlyList<CharacterId> Characters, string Door, bool PickLock = false) : FixtureCommand;
 
 /// <summary>
 /// The doors (docs/simulation.md "Cages, beds and locks"; the original's rules in docs/game/locks.md "Doors"): every tick the opening and closing leaves move (<see cref="FixtureRegistry.StepDoors"/>);
@@ -48,8 +48,8 @@ public sealed partial class LockSystem
         {
             case ToggleDoorsOrder toggle:
             {
-                var doors = PlayerDoors(world, toggle.Building);
-                if (doors.Count == 0) break;
+                var doors = PlayerDoors(world, toggle, toggle.Building);
+                if (doors.Count == 0 || toggle.Issuer is not null && (toggle.ExpectedDoorGroupRevision == 0 || toggle.ExpectedDoorGroupRevision != fixtures.DoorGroupRevision(toggle.Building))) break;
                 // Meitou: a door still moving counts by where it is heading and turns back (the original's open and close act only from closed / open, so a
                 // slow gate ignored the button for seconds).
                 bool anyOpen = doors.Any(d => d.Motion is DoorMotion.Open or DoorMotion.Opening);
@@ -69,8 +69,8 @@ public sealed partial class LockSystem
             }
             case ToggleDoorLocksOrder lockToggle:
             {
-                var doors = PlayerDoors(world, lockToggle.Building);
-                if (doors.Count == 0) break;
+                var doors = PlayerDoors(world, lockToggle, lockToggle.Building);
+                if (doors.Count == 0 || lockToggle.Issuer is not null && (lockToggle.ExpectedDoorGroupRevision == 0 || lockToggle.ExpectedDoorGroupRevision != fixtures.DoorGroupRevision(lockToggle.Building))) break;
                 bool wants = !doors.All(d => d.WantsLock);
                 foreach (var d in doors)
                 {
@@ -84,7 +84,7 @@ public sealed partial class LockSystem
             }
             case Construction.SetBuildingPublic open when world.Buildings.Find(open.Building) is null or { LevelPlacement: not null }:
                 // A town building the player owns (a site's flag is the construction system's).
-                if (world.Fixtures.OwnsBuilding(open.Building, world.Player.Faction)) fixtures.SetPublic(open.Building, open.Public);
+                if (world.Fixtures.DoorOwner(open.Building) is var owner && world.MayManage(open, owner, FactionPermission.ManageAssets) && (open.Issuer is null || open.FactionGrantRevision != 0 && world.Players.Find(open.Issuer.Value)?.MembershipRevision(owner) == open.FactionGrantRevision)) fixtures.SetPublic(open.Building, open.Public);
                 break;
         }
     }
@@ -101,11 +101,11 @@ public sealed partial class LockSystem
 
     void DoorOrderInput(World world, DoorOrder order)
     {
-        if (world.Fixtures.Find(order.Door) is not { Kind: FixtureKind.Door, DoorBroken: false } door) return;
+        if (world.Fixtures.Find(order.Door) is not { Kind: FixtureKind.Door, DoorBroken: false } door || !world.Fixtures.Matches(order, door)) return;
         var table = world.Characters;
         int best = -1;
         float bestDistance = float.MaxValue;
-        foreach (var id in Who(world, order.Characters))
+        foreach (var id in Who(world, order, order.Characters))
         {
             if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), WorkSpot(world, door, Flat(table.Next[s].Position)).At);
@@ -113,51 +113,47 @@ public sealed partial class LockSystem
         }
         if (best < 0) return;
         var walker = table.Cold(best)!;
-        var player = world.Player;
+        var actor = table.IdOf(best);
         var (at, _) = WorkSpot(world, door, Flat(table.Next[best].Position));
         walker.Shackles = null;
         walker.PickingLock = null;
-        player.DoorTarget = null;
-        if (door.Lock is { EffectivelyLocked: true } && door.Motion == DoorMotion.Closed && door.Owner != world.Player.Faction)
+        doorWalkers.Remove(actor);
+        if (door.Lock is { EffectivelyLocked: true } && door.Motion == DoorMotion.Closed && !MayManageDoor(world, order, door.Owner))
         {
             if (order.PickLock) walker.PickingLock = door.Id;
             else world.Post("Hold down the ALT key to pick the lock.");
         }
-        else (player.DoorTarget, player.DoorWalker) = (door.Id, table.IdOf(best));
+        else doorWalkers[actor] = door;
+        Remember(world, order, actor, door);
         MovementSystem.GoToFloor(world, best, new Vector3(at.X, door.Position.Y, at.Y), walker.RunSpeed);
     }
 
     /// <summary>Each tick: the door walker in reach opens or closes its door; one given another order, downed or gone gives up.</summary>
-    static void DoorWalkers(World world)
+    void DoorWalkers(World world)
     {
-        var player = world.Player;
-        if (player.DoorTarget is not { } wanted) return;
         var table = world.Characters;
-        if (world.Fixtures.Find(wanted) is not { DoorBroken: false } door || !table.TryResolveNext(player.DoorWalker, out int s) || table.Cold(s) is not { Medical.Incapacitated: false } c || !c.CarriedBy.IsNone)
+        foreach (var (actor, door) in doorWalkers.ToArray())
         {
-            player.DoorTarget = null;
-            return;
+            if (!ReferenceEquals(world.Fixtures.Find(door.Id), door) || door.DoorBroken || !table.TryResolveNext(actor, out int s) || table.Cold(s) is not { Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone)
+            { doorWalkers.Remove(actor); continue; }
+            ref var n = ref table.Next[s];
+            var (at, reach) = WorkSpot(world, door, Flat(n.Position));
+            if (Vector2.Distance(Flat(n.Position), at) > reach)
+            { if (Redirected(n, at, reach)) doorWalkers.Remove(actor); continue; }
+            if (n.Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, s);
+            doorWalkers.Remove(actor);
+            if (door.Motion is DoorMotion.Open or DoorMotion.Opening) { if (door.Motion == DoorMotion.Open) FixtureRegistry.CloseDoor(door); }
+            else if (door.Lock is { EffectivelyLocked: true }) world.Post($"{c.Name}: It's locked.");
+            else FixtureRegistry.OpenDoor(door);
         }
-        ref var n = ref table.Next[s];
-        var (at, reach) = WorkSpot(world, door, Flat(n.Position));
-        if (Vector2.Distance(Flat(n.Position), at) > reach)
-        {
-            if (Redirected(n, at, reach)) player.DoorTarget = null;
-            return;
-        }
-        if (n.Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, s);
-        player.DoorTarget = null;
-        if (door.Motion is DoorMotion.Open or DoorMotion.Opening) { if (door.Motion == DoorMotion.Open) FixtureRegistry.CloseDoor(door); }
-        else if (door.Lock is { EffectivelyLocked: true }) world.Post($"{c.Name}: It's locked.");
-        else FixtureRegistry.OpenDoor(door);
     }
 
     /// <summary>The door fixtures of a building the player's faction owns (none for any other).</summary>
-    static List<Fixture> PlayerDoors(World world, string building)
+    static List<Fixture> PlayerDoors(World world, FactionCommand command, string building)
     {
         var list = new List<Fixture>();
         foreach (var f in world.Fixtures.OfBuilding(building))
-            if (f.Kind == FixtureKind.Door && !f.DoorBroken && f.Owner >= 0 && f.Owner == world.Player.Faction) list.Add(f);
+            if (f.Kind == FixtureKind.Door && !f.DoorBroken && f.Owner >= 0 && world.CommandFaction(command, FactionPermission.ManageAssets)?.Index == f.Owner) list.Add(f);
         return list;
     }
 

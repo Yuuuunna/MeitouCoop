@@ -5,7 +5,7 @@ using Meitou.Navigation;
 using Meitou.Simulation;
 using Meitou.Simulation.Construction;
 
-namespace Meitou.Game.Building;
+namespace Meitou.Runtime.Placement;
 
 /// <summary>A ghost waiting for Confirm: what it is and where it stands, with its footprint in the world.</summary>
 public sealed record QueuedGhost(BuildingBuildData Building, Vector3 Position, Quaternion Rotation, int Floor, Vector2[]? Hull, string? Parent = null);
@@ -56,6 +56,7 @@ public sealed record PlacementQuery(BuildingBuildData Building, Vector3 Position
     public bool WallPiece { get; init; }
     /// <summary>Sites and queued ghosts (record, position, rotation) that never block this one: the walls at a snapped joint, connectors and wedges.</summary>
     public Func<string, Vector3, Quaternion, bool>? Ignore { get; init; }
+    public Func<BuildingSnapshot, bool>? IgnoreSite { get; init; }
     /// <summary>The building floor the ghost stands on; null on the terrain.</summary>
     public GhostFloor? On { get; init; }
 }
@@ -77,14 +78,15 @@ public static class PlacementCheck
     {
         var b = q.Building;
         var at = new Vector2(q.Position.X, q.Position.Z);
-        var town = PlacementRules.TownBlock(b, at, q.Towns, q.PlayerFactionId);
+        var town = q.On is { Owned: true } ? PlacementFailure.None : PlacementRules.TownBlock(b, at, q.Towns, q.PlayerFactionId);
         if (town != PlacementFailure.None) return town;
 
         var turned = Quaternion.CreateFromAxisAngle(Vector3.UnitY, q.Yaw);
-        var hull = q.Services.Footprint(b.Id) is { } footprint ? footprint.Place(q.Position, turned) : null;
+        var footprint = q.Services.Footprint(b.Id);
+        var hull = footprint?.Place(q.Position, turned);
         // On a floor: the building must be ours, a level building the player's faction owns or a finished site.
         string? parent = q.On?.Building;
-        if (q.On is { Level: not null, Owned: false }) return PlacementFailure.NotOwnedBuilding;
+        if (q.On is { Owned: false }) return PlacementFailure.NotOwnedBuilding;
         if (q.On is { Level: null } && q.Sites.FirstOrDefault(s => s.Id == parent) is null) return PlacementFailure.NotOwnedBuilding;
         // The resource row comes after the first row's "don't own" text and before "incomplete".
         var resources = PlacementRules.ResourceBlock(q.Services.Readout(b.Id, q.Position));
@@ -93,7 +95,7 @@ public static class PlacementCheck
         if (q.On is not null && q.Sites.FirstOrDefault(s => s.Id == parent) is { Complete: false }) return PlacementFailure.InsideIncomplete;
         // A building under the ghost's centre (the one it stands in aside): another town's or the level's (not ours), or an unfinished site of ours.
         foreach (var site in q.Sites)
-            if (site.Id != parent && q.Ignore?.Invoke(site.Record, site.Position, site.Rotation) != true && q.Services.Footprint(site.Record) is { } siteFootprint
+            if (site.Id != parent && !(q.IgnoreSite?.Invoke(site) ?? q.Ignore?.Invoke(site.Record, site.Position, site.Rotation) ?? false) && q.Services.Footprint(site.Record) is { } siteFootprint
                 && Contains(siteFootprint.Place(site.Position, site.Rotation), at))
                 return site.Complete ? PlacementFailure.TooCloseToBuilding : PlacementFailure.InsideIncomplete;
         foreach (var other in q.Services.StaticAround(at, 20))
@@ -110,7 +112,7 @@ public static class PlacementCheck
             foreach (var other in q.Services.StaticAround(at, reach))
                 if (other.Id != parent && Overlap(hull, other.Hull)) return PlacementFailure.TooCloseToBuilding;
             foreach (var site in q.Sites)
-                if (site.Id != parent && q.Ignore?.Invoke(site.Record, site.Position, site.Rotation) != true && q.Services.Footprint(site.Record) is { } f
+                if (site.Id != parent && !(q.IgnoreSite?.Invoke(site) ?? q.Ignore?.Invoke(site.Record, site.Position, site.Rotation) ?? false) && q.Services.Footprint(site.Record) is { } f
                     && Overlap(hull, f.Place(site.Position, site.Rotation))) return PlacementFailure.TooCloseToBuilding;
             foreach (var queued in q.Queued)
                 if (queued.Hull is not null && q.Ignore?.Invoke(queued.Building.Id, queued.Position, queued.Rotation) != true && Overlap(hull, queued.Hull))
@@ -118,6 +120,9 @@ public static class PlacementCheck
             foreach (var c in q.Characters)
             {
                 if (c.Body is { Dead: true } || !c.CarriedBy.IsNone) continue;
+                // Floor-separated actors do not occupy this ghost's collision height interval.
+                if (footprint is not null && (c.Position.Y + CharacterRadius * 2 < q.Position.Y + footprint.YMin
+                    || c.Position.Y > q.Position.Y + footprint.YMax)) continue;
                 if (Distance(hull, new Vector2(c.Position.X, c.Position.Z)) < CharacterRadius) return PlacementFailure.CharactersInTheWay;
             }
         }

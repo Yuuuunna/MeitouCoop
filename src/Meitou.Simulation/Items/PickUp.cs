@@ -16,13 +16,15 @@ namespace Meitou.Simulation
 
         static Vector2 Flat(Vector3 p) => new(p.X, p.Z);
 
-        static void PickUpInput(World world, Items.PickUpItemOrder order)
+        readonly Dictionary<CharacterId, (CharacterControl Grant, Items.GroundItem Item)> pickupAuthority = [];
+
+        void PickUpInput(World world, Items.PickUpItemOrder order)
         {
             if (world.GroundItems.Find(order.Item) is not { } item) return;
             var table = world.Characters;
             int best = -1;
             float bestDistance = float.MaxValue;
-            foreach (var id in order.Characters.Count > 0 ? order.Characters : world.Player.Selection.ToArray())
+            foreach (var id in world.CommandCharacters(order, order.Characters))
             {
                 if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, Inventory: not null, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
                 float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(item.Position));
@@ -33,6 +35,9 @@ namespace Meitou.Simulation
             walker.PickingLock = null;
             walker.Shackles = null;
             walker.PickingUpItem = order.Item;
+            var actor = table.IdOf(best);
+            pickupAuthority.Remove(actor);
+            if (order.Issuer is not null && world.Players.ControlOf(actor) is { } grant) pickupAuthority[actor] = (grant, item);
             if (bestDistance > PickUpReach) MovementSystem.GoToFloor(world, best, item.Position, walker.RunSpeed);
         }
 
@@ -41,9 +46,19 @@ namespace Meitou.Simulation
         {
             var table = world.Characters;
             var next = table.Next;
+            foreach (var actor in pickupAuthority.Keys.ToArray())
+                if (!table.TryResolveNext(actor, out int current) || table.Cold(current)?.PickingUpItem != pickupAuthority[actor].Item.Id) pickupAuthority.Remove(actor);
             for (int s = 0; s < table.HighWater; s++)
             {
                 if (!next[s].Alive || table.Cold(s) is not { PickingUpItem: { } id } c) continue;
+                var actor = table.IdOf(s);
+                if (pickupAuthority.TryGetValue(actor, out var authority)
+                    && (!world.Players.Validate(authority.Grant) || !ReferenceEquals(world.GroundItems.Find(id), authority.Item)))
+                {
+                    pickupAuthority.Remove(actor);
+                    c.PickingUpItem = null;
+                    continue;
+                }
                 if (world.GroundItems.Find(id) is not { } item || c.Medical is { Incapacitated: true } || !c.CarriedBy.IsNone || c.Inventory is not { } inventory)
                 {
                     c.PickingUpItem = null;
@@ -56,6 +71,7 @@ namespace Meitou.Simulation
                     continue;
                 }
                 c.PickingUpItem = null;
+                pickupAuthority.Remove(actor);
                 if (next[s].Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, s);
                 // An animal takes a limb in its mouth and eats it later (docs/game/character-stats.md "Eating").
                 if (Items.FeedSystem.CanHold(c, item.Item))
@@ -83,7 +99,9 @@ namespace Meitou.Simulation
                     item.Item.StolenFrom = mark;
                     // Task_Pickup sounds when any of the stack went in.
                     if (item.Item.Quantity < before) world.EmitSound(SoundKind.PickedUp, s, next[s].Position);
-                    world.Post($"{c.Name}: Not enough room in my inventory");
+                    if (item.Item.Quantity < before && item.OwnedBy >= 0 && item.OwnedBy != c.Faction && world.Sight.BuildingOf(s) is not null)
+                        world.SystemOf<Crime.CrimeSystem>()?.StolePickUp(world, s, item.OwnedBy);
+                    world.Post(authority.Grant.Player.IsNone ? PlayerId.Local : authority.Grant.Player, $"{c.Name}: Not enough room in my inventory");
                 }
             }
         }

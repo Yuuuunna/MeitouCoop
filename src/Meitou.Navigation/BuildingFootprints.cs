@@ -101,6 +101,24 @@ public sealed class BuildingFootprints
     /// <summary>The footprint of a BUILDING, read now if it was not yet (null: no collision).</summary>
     public BuildingFootprint? Wait(string buildingId) => Request(buildingId).GetAwaiter().GetResult();
 
+    readonly ConcurrentDictionary<string, Lazy<bool>> verifiedCollision = new(StringComparer.Ordinal);
+
+    /// <summary>Authority must distinguish a record with no collision from a declared collision that could not be read.</summary>
+    public BuildingFootprint? Require(string buildingId)
+    {
+        _ = verifiedCollision.GetOrAdd(buildingId, id => new Lazy<bool>(() =>
+        {
+            if (db.Find(id) is not { } building) throw new InvalidDataException($"Unknown building record: {id}");
+            foreach (var part in WorldObjectLayout.Building(db, building, "placement", Vector3.Zero, Quaternion.Identity, new BuildingState()))
+            {
+                string path = part.Source.GetPath("xml collision");
+                if (path.Length > 0 && collision.Get(path) is null) throw new InvalidDataException($"Required collision unavailable for building {id}: {path}");
+            }
+            return true;
+        })).Value;
+        return Wait(buildingId);
+    }
+
     /// <summary>
     /// The placed footprints of the buildings that stand in a walker's way: the long-range grid's obstacles (<see cref="CoarseRoute"/>). Left out (engine choice): IGNORE
     /// <c>path mode</c>, gateways, destroyed ones, and WALKABLE ones walked across rather than round: features (Shield Bridge, Swamp Walkboard) and those whose top is

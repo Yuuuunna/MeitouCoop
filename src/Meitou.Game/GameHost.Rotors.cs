@@ -32,8 +32,7 @@ sealed partial class GameHost
         objects.RotorWind ??= (x, z) => gpu.Weather?.World is { } weather ? weather.WindAt(x, z) : (0, Vector2.Zero);
         float real = rotorClock.IsRunning ? (float)Math.Min(rotorClock.Elapsed.TotalSeconds, 0.25) : 0;
         rotorClock.Restart();
-        var sim = session.Simulation;
-        objects.AdvanceRotors(sim.IsPaused ? 0 : real * (float)sim.Speed);
+        objects.AdvanceRotors(session.IsPaused ? 0 : real * (float)session.TimeScale);
     }
 
     /// <summary>

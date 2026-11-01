@@ -12,6 +12,8 @@ Authority: `src/Meitou.Game/GameOptions.cs` (`Split`, `Usage`), `src/Meitou.Game
 
 ### Start and session
 
+The Vulkan title also offers [Multiplayer](networking.md#graphical-admission): enter a server address, choose an offered beginning and edit appearances before entering. CLI entry remains available.
+
 | Option | Value | Default | Effect |
 |---|---|---|---|
 | `--new-game [start]` | start name | Wanderer | New game: squad at its town, camera on it. |

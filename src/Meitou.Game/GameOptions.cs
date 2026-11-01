@@ -5,6 +5,10 @@ namespace Meitou.Game;
 /// <summary>Game-only options; everything else is the world options shared with the viewer (<see cref="WorldOptions"/>).</summary>
 sealed class GameOptions
 {
+    public string? Connect;
+    public string? CreateFaction;
+    public ulong? OnlineRole;
+    public bool ConnectionCheck;
     public bool TitlePreview;
     public int? FpsLimit;
     public ulong Seed;
@@ -81,6 +85,10 @@ sealed class GameOptions
           --ui-showcase              with --screenshot: capture HUD, inventory, stats, map, menus, a trade with the nearest trader and a conversation in either UI mode
           --ui-panel <name>          with --screenshot: open one HUD/panel for the picture (hud, hud-expanded, inventory, stats, overview, menu, title, ...)
           --title-preview            with --screenshot: capture the staged Meitou title scene
+          --connect <host:port|profile.json>   connect by address with remembered device identity (legacy profile also accepted)
+          --create-faction <name>    with --connect: create an eligible new account's server-default starting squad
+          --role <EntityId>          with --connect: choose an existing persistent role for entry
+          --connection-check        with --connect: verify real admission without opening a graphics window
           --no-population            no town residents or movement (an empty world)
           --new-game [start]         a new game as the NEW_GAME_STARTOFF start (default Wanderer): the player squad at its town, camera on it
           --list-starts              print the available starts and exit
@@ -135,6 +143,10 @@ sealed class GameOptions
             string Next() => i + 1 < args.Length ? args[++i] : throw new ArgumentException($"{a} needs a value");
             switch (a)
             {
+                case "--connect": g.Connect = Next(); break;
+                case "--create-faction": g.CreateFaction = Next(); break;
+                case "--role": g.OnlineRole = ulong.Parse(Next(), CultureInfo.InvariantCulture); break;
+                case "--connection-check": g.ConnectionCheck = true; break;
                 case "--ui-showcase": g.UiShowcase = true; break;
                 case "--ui-panel": g.UiPanel = Next(); break;
                 case "--fps-limit": g.FpsLimit = int.Parse(Next(), CultureInfo.InvariantCulture); break;

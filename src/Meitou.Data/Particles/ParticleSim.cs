@@ -32,7 +32,7 @@ public readonly record struct ParticleEnvironment(Vector2 Wind, float WindSpeedM
 /// random sources are the seeded <see cref="System.Random"/> of the emissions and a hash of each particle's own seed (so the affector
 /// passes can run in parallel and give the same result). Time advances only through <see cref="Advance"/>.
 /// </summary>
-public sealed class ParticleSimulation
+public sealed partial class ParticleSimulation
 {
     /// <summary>
     /// Particles above which an affector pass splits over the thread pool. Observed (2026-10-10): at 4000 particles (Heavy_Rain) the split gains nothing
@@ -64,10 +64,10 @@ public sealed class ParticleSimulation
     public int ParticleCount => techniques.Sum(t => t.Count);
     public IReadOnlyList<PuTechniqueDef> Techniques => Definition.Techniques;
 
-    public ParticleSimulation(PuSystemDef definition, int seed)
+    public ParticleSimulation(PuSystemDef definition, int seed, bool persistent = false)
     {
         Definition = definition;
-        random = new Random(seed);
+        random = persistent ? new CheckpointRandom(seed) : new Random(seed);
         techniques = [.. definition.Techniques.Select(t => new TechniqueState(t))];
     }
 

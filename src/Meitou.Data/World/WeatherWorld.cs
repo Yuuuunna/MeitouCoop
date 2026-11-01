@@ -115,10 +115,10 @@ public sealed class WeatherWorld
     /// One frame. <paramref name="camera"/> is the camera position (X and Z are the ground plane), <paramref name="time"/> the game day and time of day,
     /// <paramref name="dt"/> the frame times (see <see cref="FrameTimes"/>; paused is expressed there), <paramref name="sunHeight"/> the Y of the sun direction.
     /// </summary>
-    public WeatherState Update(Vector3 camera, WeatherTime time, FrameTimes dt, float sunHeight)
+    public WeatherState Update(Vector3 camera, WeatherTime time, FrameTimes dt, float sunHeight, bool updateRegions = true)
     {
         Time = time;
-        foreach (var r in Regions) r.Update(time);
+        if (updateRegions) foreach (var r in Regions) r.Update(time);
         double minute = time.Minutes;
 
         var here = new Vector2(camera.X, camera.Z);
@@ -253,6 +253,21 @@ public sealed class WeatherWorld
 
     /// <summary>The state of every region, for a save (no save format is defined here).</summary>
     public IReadOnlyList<WeatherRegionSnapshot> Snapshot() => Regions.Select(r => r.Snapshot()).ToList();
+
+    /// <summary>Atomically validates a complete compatible presentation frame, without advancing random state or resetting camera ramps.</summary>
+    public void AcceptPresentation(WeatherFrame frame)
+    {
+        frame.Validate();
+        if (!frame.Enabled) { Time = frame.Time; return; }
+        if (frame.Regions.Count != Regions.Count) throw new InvalidDataException("Weather frame has a different regional catalogue.");
+        foreach (var snapshot in frame.Regions)
+        {
+            if (!regionIndex.TryGetValue(snapshot.RegionId, out int index)) throw new InvalidDataException("Unknown weather region.");
+            Regions[index].ValidatePresentation(snapshot);
+        }
+        foreach (var snapshot in frame.Regions) Regions[regionIndex[snapshot.RegionId]].AcceptPresentation(snapshot, frame.Time);
+        Time = frame.Time;
+    }
 
     /// <summary>Continues every region from a snapshot taken by <see cref="Snapshot"/>; regions are matched by StringId and any not in the snapshot keep their new schedule.</summary>
     public void Restore(IEnumerable<WeatherRegionSnapshot> snapshots, WeatherTime now)

@@ -153,7 +153,11 @@ public sealed class PlatoonRegistry
             {
                 // Only for stored squads, so worlds without them hash as before.
                 h.Add(stored.Members.Count);
-                foreach (var m in stored.Members) h.Add(m.Position);
+                foreach (var m in stored.Members)
+                {
+                    h.Add(m.Position);
+                    if (!m.Cold.Entity.IsNone) { h.Add(0x456E7469); h.Add(m.Cold.Entity.Value); }
+                }
                 h.Add(stored.Anchor);
                 h.Add(stored.Pinned);
             }
@@ -170,6 +174,11 @@ public sealed class PlatoonRegistry
                 // Only for a save's platoons, so worlds without them hash as before.
                 h.Add(saved.Pinned);
                 h.Add(saved.Touched);
+                foreach (var member in saved.Members)
+                {
+                    var entity = member.Entity.IsNone ? Saving.EntitySave.Read(member.Source) : member.Entity;
+                    if (!entity.IsNone) { h.Add(0x456E7469); h.Add(member.Slot); h.Add(entity.Value); }
+                }
             }
         }
     }

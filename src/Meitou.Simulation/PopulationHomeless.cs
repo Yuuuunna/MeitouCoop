@@ -351,8 +351,9 @@ public sealed partial class PopulationSystem
         var walk = world.Walkability;
         var players = PlayerSpots(world);
         int number = st.Made;
-        if (work is null) SpawnWild(world, BuildSector(at, loadId, seed, walk, players, hold, number));
-        else work.Add(() => builtWild.Enqueue(BuildSector(at, loadId, seed, walk, players, hold, number)));
+        var playerFactions = world.PlayerFactionIndices().ToHashSet();
+        if (work is null) SpawnWild(world, BuildSector(at, loadId, seed, walk, players, hold, number, playerFactions));
+        else work.Add(() => builtWild.Enqueue(BuildSector(at, loadId, seed, walk, players, hold, number, playerFactions)));
     }
 
     /// <summary>Whether the town nearest a sector's centre stands in it (<c>FUN_1408f62e0</c>).</summary>

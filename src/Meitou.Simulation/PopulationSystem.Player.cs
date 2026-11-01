@@ -20,19 +20,25 @@ public sealed partial class PopulationSystem
     /// lists towns and none of them is placed. The host loads the world round it before <see cref="StartPlayer"/>, which draws the same.
     /// </summary>
     public static (Vector2 Centre, TownSite? Town, bool Missing) StartPlace(PopulationData data, ulong seed, NewGameStart start)
+        => StartPlace(data, seed, start, data.PlayerFaction);
+
+    public static (Vector2 Centre, TownSite? Town, bool Missing) StartPlace(PopulationData data, ulong seed, NewGameStart start, int faction)
     {
         if (start.ForceStartPos) return (start.StartPosition, null, false);
         var candidates = data.Sites.Where(site => start.Towns.Any(t => t.Id == site.Town.Id)).ToList();
         bool missing = candidates.Count == 0 && start.Towns.Count > 0;
-        if (candidates.Count == 0 && data.PlayerFaction >= 0)
+        if (candidates.Count == 0 && faction >= 0 && faction < data.Factions.Count)
         {
             // The fallback reads the relations the start makes, from a table of its own: only StartPlayer changes the world's.
-            var relations = FactionRelations.Build(data.Factions);
-            relations.PlayerFaction = data.PlayerFaction;
+            var relations = FactionRelations.Build(data.Factions.Count == data.Relations.Count
+                ? data.Factions.Take(data.Relations.ContentCount).ToArray() : data.Factions);
+            for (int i = relations.Count; i < data.Factions.Count; i++)
+                relations.RegisterFaction(data.Factions[i].Id, data.Factions[i].Name, relations.IndexOf(data.FactionTemplate(i)));
+            relations.PlayerFaction = faction;
             ApplyStartRelations(relations, start);
             candidates = [.. data.Sites.Where(site => site.Town.Type is TownType.Town or TownType.Village && site.Index < data.SiteFactions.Count
                 && data.SiteFactions[site.Index] is var f and >= 0 && !data.Factions[f].NotReal
-                && data.Factions[f].FundamentalType != FundamentalType.Bandit && relations.Get(f, data.PlayerFaction) > FactionRelations.HostileThreshold)];
+                && data.Factions[f].FundamentalType != FundamentalType.Bandit && relations.Get(f, faction) > FactionRelations.HostileThreshold)];
         }
         if (candidates.Count == 0) return (new Vector2(-43500, -6625), null, missing);
         ulong key = Rng.Mix(SeedSalts.PlayerStart ^ Rng.StableHash(start.Id));
@@ -65,6 +71,7 @@ public sealed partial class PopulationSystem
     /// </summary>
     public Squad StartPlayer(World world, NewGameStart start)
     {
+        if (world.Players.RequiresExplicitControl) throw new InvalidOperationException("Multiplayer admission must not reinitialize the single-player world.");
         if (data.PlayerFaction < 0) throw new InvalidOperationException("the game data has no player faction (Nameless)");
         ulong key = Rng.Mix(SeedSalts.PlayerStart ^ Rng.StableHash(start.Id));
         ApplyStartRelations(data.Relations, start);
@@ -85,41 +92,7 @@ public sealed partial class PopulationSystem
             foreach (var site in data.Sites)
                 if (site.Town.Type == TownType.Town && data.BiomeGroupAt(new Vector2(site.Position.X, site.Position.Z)) == group) world.Player.Know(site.Index, TownKnowledge.Discovered);
 
-        // One squad of everything the start lists.
-        var members = new List<BuiltMember>();
-        var first = new List<MemberPlan>();
-        SquadTemplate? template = null;
-        void AddTemplate(GameRecord record)
-        {
-            var t = SquadTemplate.From(record);
-            template ??= t;
-            first.AddRange(SquadFactory.Plan(data.Db, t, settings.SquadSizeMultiplier, world.Seed, Rng.Mix(key ^ (uint)first.Count), States).Members);
-        }
-        // A CHARACTER entry's characters stand up to 50 from the place on x and z, as the original's do.
-        Vector2 Scatter(int i) => new(Rng.Float(Rng.Hash(world.Seed, key, RngPurpose.Spawn, SeedSalts.PlayerScatter + 2 * (ulong)i)) * 100 - 50,
-            Rng.Float(Rng.Hash(world.Seed, key, RngPurpose.Spawn, SeedSalts.PlayerScatter + 2 * (ulong)i + 1)) * 100 - 50);
-        foreach (var link in start.Squad)
-        {
-            var record = data.Db.Find(link.Id);
-            if (record is null) continue;
-            if (SquadFactory.IsTemplate(record)) AddTemplate(record);
-            else for (int n = 0; n < Math.Max(1, link.V0); n++) first.Add(new MemberPlan(link.Id, SquadRole.Squad1, first.Count, Scatter(first.Count), false, 1));
-        }
-        if (first.Count == 0 && data.Db.Find(WandererSquadId) is { } wanderer && SquadFactory.IsTemplate(wanderer)) AddTemplate(wanderer);
-        // Renumber in creation order and make the first the leader when none is; each template keeps its own layout (in the original, a squad of its own).
-        bool hasLeader = first.Any(m => m.Role == SquadRole.Leader);
-        for (int i = 0; i < first.Count; i++)
-            first[i] = first[i] with { Index = i, Role = !hasLeader && i == 0 ? SquadRole.Leader : first[i].Role };
-        var factionId = data.Factions[data.PlayerFaction].Id;
-        foreach (var m in first)
-        {
-            CharacterAppearance? look = null;
-            if (data.Appearances is { } source)   // an animal gets its species' shared look (GeneratedAppearances)
-                look = source.Create(m.RecordId, factionId, (int)(Rng.Hash(world.Seed, key, RngPurpose.Spawn, SeedSalts.PlayerLook + (ulong)m.Index) & 0x7FFFFFFF));
-            members.Add(new BuiltMember(m, look));
-        }
-        var plan = new SquadPlan(template ?? new SquadTemplate { Id = start.Id, Name = start.Name }, first, [], []);
-        var built = new BuiltSquad(plan, at, data.PlayerFaction, members);
+        var built = BuildPlayerStart(world, start, data.PlayerFaction, world.Seed, at);
         var squad = SpawnSquad(world, built, null, town is null ? 100 : town.Town.SizeRadius * town.Town.TownRadiusMult, player: true);
         // CHARACTER `slave` (fcs.def "sets initial slave state", SlaveStateEnum NOT_SLAVE 0, IS_SLAVE 1, ESCAPING_SLAVE 2, EX_SLAVE 3): The Slaves start's "start slave" is 1. The owner is
         // the start town's faction (engine choice: the original's is Unknown); an ex-slave is free.
@@ -141,5 +114,56 @@ public sealed partial class PopulationSystem
         world.Player.Selection.Clear();
         if (squad.Members.Count > 0) world.Player.Selection.Add(squad.Members[0]);
         return squad;
+    }
+
+    BuiltSquad BuildPlayerStart(World world, NewGameStart start, int faction, ulong seed, Vector2 at, bool strict = false, int? limit = null)
+    {
+        ulong key = Rng.Mix(SeedSalts.PlayerStart ^ Rng.StableHash(start.Id));
+        // One squad of everything the start lists.
+        var members = new List<BuiltMember>();
+        var first = new List<MemberPlan>();
+        SquadTemplate? template = null;
+        void AddTemplate(GameRecord record)
+        {
+            var t = SquadTemplate.From(record);
+            template ??= t;
+            var planned = SquadFactory.Plan(data.Db, t, settings.SquadSizeMultiplier, seed, Rng.Mix(key ^ (uint)first.Count), States,
+                memberLimit: limit is { } maximum ? maximum - first.Count : null, includeSlaves: !strict);
+            if (strict && planned.Problems.Count != 0) throw new InvalidDataException(string.Join("; ", planned.Problems));
+            first.AddRange(planned.Members);
+        }
+        // A CHARACTER entry's characters stand up to 50 from the place on x and z, as the original's do.
+        Vector2 Scatter(int i) => new(Rng.Float(Rng.Hash(seed, key, RngPurpose.Spawn, SeedSalts.PlayerScatter + 2 * (ulong)i)) * 100 - 50,
+            Rng.Float(Rng.Hash(seed, key, RngPurpose.Spawn, SeedSalts.PlayerScatter + 2 * (ulong)i + 1)) * 100 - 50);
+        foreach (var link in start.Squad)
+        {
+            var record = data.Db.Find(link.Id);
+            if (record is null) { if (strict) throw new InvalidDataException("Start squad content is missing."); continue; }
+            if (SquadFactory.IsTemplate(record)) AddTemplate(record);
+            else
+            {
+                if (strict && record.Type is not (FcsRecordType.CHARACTER or FcsRecordType.ANIMAL_CHARACTER))
+                    throw new InvalidDataException("A start member is not a character.");
+                int count = Math.Max(1, link.V0);
+                if (limit is { } maximum && count > maximum - first.Count) throw new InvalidOperationException("Start exceeds its approved character limit.");
+                for (int n = 0; n < count; n++) first.Add(new MemberPlan(link.Id, SquadRole.Squad1, first.Count, Scatter(first.Count),
+                    strict && record.Type == FcsRecordType.ANIMAL_CHARACTER, 1));
+            }
+        }
+        if (first.Count == 0 && (!strict || start.Squad.Count == 0) && data.Db.Find(WandererSquadId) is { } wanderer && SquadFactory.IsTemplate(wanderer)) AddTemplate(wanderer);
+        // Renumber in creation order and make the first the leader when none is; each template keeps its own layout (in the original, a squad of its own).
+        bool hasLeader = first.Any(m => m.Role == SquadRole.Leader);
+        for (int i = 0; i < first.Count; i++)
+            first[i] = first[i] with { Index = i, Role = !hasLeader && i == 0 ? SquadRole.Leader : first[i].Role };
+        var factionId = strict ? data.FactionTemplate(faction) : data.Factions[faction].Id;
+        foreach (var m in first)
+        {
+            CharacterAppearance? look = null;
+            if (data.Appearances is { } source)   // an animal gets its species' shared look (GeneratedAppearances)
+                look = source.Create(m.RecordId, factionId, (int)(Rng.Hash(seed, key, RngPurpose.Spawn, SeedSalts.PlayerLook + (ulong)m.Index) & 0x7FFFFFFF));
+            members.Add(new BuiltMember(m, look));
+        }
+        var plan = new SquadPlan(template ?? new SquadTemplate { Id = start.Id, Name = start.Name }, first, [], []);
+        return new BuiltSquad(plan, at, faction, members);
     }
 }

@@ -1,0 +1,263 @@
+using System.Numerics;
+using Meitou.Engine.Cameras;
+using Meitou.Engine.Input;
+using Meitou.Engine.Time;
+using Meitou.Networking;
+using Meitou.Simulation;
+using Meitou.Simulation.Production;
+
+namespace Meitou.Engine;
+
+public sealed record RemoteCommandCompletion(ulong Request, AuthorityReceipt? Receipt, Exception? Error);
+
+/// <summary>
+/// Main-thread presentation/command adapter for an authenticated connection. Owns only camera, UI selection,
+/// display clock and received snapshots; never constructs or steps a World. Dispose owns the connection.
+/// </summary>
+public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposable
+{
+    readonly RemoteGameSession connection;
+    readonly List<CharacterId> selection = [];
+    readonly List<(ulong Request, Task<CommandReceiptMessage> Reply)> pending = [];
+    readonly Queue<Floater> floaters = [];
+    readonly Queue<SoundEvent> sounds = [];
+    readonly Queue<SaidLine> publicSpeech = [];
+    ulong soundFloor, floaterFloor;
+    bool soundsEnabled;
+    ulong eventHighWater;
+    bool eventBaseline, floatersEnabled = true;
+    PlayerWorldView? view;
+    int? chosenFaction;
+    ulong requestCounter;
+    bool disposed;
+    Task? disposal;
+    double elapsed, lastPublicationAt, blendSeconds = .1, blendAge;
+    double lastGameHours;
+    bool clockReady;
+
+    public RemotePlayerSession(RemoteGameSession connection, Func<float, float, float> ground, InputBindings? bindings = null,
+        GameClock? clock = null, double tickRate = FixedStepClock.DefaultTickRate)
+    {
+        this.connection = connection;
+        Bindings = bindings ?? new();
+        Clock = clock ?? new(); Ticks = new(tickRate);
+        Camera = new((x, z) => MathF.Max(ground(x, z), Meitou.Data.World.WorldWater.Height));
+        requestCounter = connection.State.Admission.State.CommandHighWater;
+    }
+
+    public RemoteGameSession Connection => connection;
+    public object WorldIdentity { get; } = new();
+    public bool HasWorldView => !disposed && view is not null && connection.State.View is not null;
+    public PlayerMessageBatch Messages => view?.Messages ?? PlayerMessageBatch.Empty;
+    public Meitou.Data.World.WeatherFrame? Weather => HasWorldView ? view?.Weather : null;
+    public Meitou.Data.Particles.WeatherEffectFrame? WeatherEffects => HasWorldView ? view?.WeatherEffects ?? Meitou.Data.Particles.WeatherEffectFrame.Empty : Meitou.Data.Particles.WeatherEffectFrame.Empty;
+    public bool TryDequeuePublicSpeech(out SaidLine line) => publicSpeech.TryDequeue(out line);
+    public WorldSnapshot CurrentSnapshot { get; private set; } = WorldSnapshot.Empty;
+    public WorldSnapshot PreviousSnapshot { get; private set; } = WorldSnapshot.Empty;
+    public float SimulationAlpha => (float)Math.Clamp(blendAge / blendSeconds, 0, 1);
+    public double PresentationTick => CurrentSnapshot.Tick < 0 ? 0 : PreviousSnapshot.Tick < 0 ? CurrentSnapshot.Tick
+        : PreviousSnapshot.Tick + (CurrentSnapshot.Tick - (double)PreviousSnapshot.Tick) * SimulationAlpha;
+    public double PresentationSeconds => Math.Max(0, Clock.GameSeconds - Math.Max(0, CurrentSnapshot.Tick - PresentationTick) / SimulationClock.TickRate);
+    public long CommandTick => Math.Max(0, CurrentSnapshot.Tick);
+    public float SimulationStepSeconds => view?.SimulationStepSeconds ?? 1f / 30;
+    public CameraRig Camera { get; }
+    public InputState Input { get; } = new();
+    public InputBindings Bindings { get; }
+    public GameClock Clock { get; }
+    public FixedStepClock Ticks { get; }
+    public float Alpha => Ticks.Alpha;
+    public CameraState CameraAt() => Camera.At(Alpha);
+    public int ActiveFaction => chosenFaction ?? view?.ActiveFaction ?? -1;
+    public IReadOnlyList<FactionIdentityView> FactionCatalogue => view?.FactionCatalogue ?? [];
+    public FactionIdentityView? DescribeFaction(int faction) => FactionCatalogue.FirstOrDefault(f => f.Faction == faction);
+    public FactionIdentityView? DescribeFaction(string recordId) => FactionCatalogue.FirstOrDefault(f => f.RecordId == recordId);
+    public FactionStandingView? StandingTowards(int faction) => Faction?.Standings.FirstOrDefault(f => f.Faction == faction);
+    public (IReadOnlyList<FactionInfoLine> Contracts, IReadOnlyList<FactionInfoLine> Events) FactionInformation
+        => (Faction?.Contracts.Select(c => c.ToLine()).ToArray() ?? [], Faction?.UpcomingEvents.Select(e => e.ToLine()).ToArray() ?? []);
+    PlayerFactionView? Faction => view?.Factions.FirstOrDefault(f => f.Faction == ActiveFaction);
+    public long? Money => Faction?.Money;
+    public bool HasPlayer => connection.State.Admission.State.Roles.Length != 0;
+    public IReadOnlyList<string> CreationRaces => []; // remote creation uses the server catalogue; the legacy editor is not wired
+    public int Formation => Faction?.Formation ?? (int)SquadFormation.Random;
+    public bool IsRemote => true;
+    public bool CanSaveWorld => false;
+    public bool CanChangeSpeed => false;
+    public double TimeScale => view?.TimeScale ?? 0;
+    public bool IsPaused => TimeScale == 0;
+    public bool CanControl => !disposed && view is not null && connection.State.CanControl;
+    public int PendingCommands => pending.Count;
+    public RemoteCommandCompletion? LastCompletion { get; private set; }
+    /// <summary>Delivered only on the UI thread, by Submit or Advance.</summary>
+    public event Action<RemoteCommandCompletion>? CommandCompleted;
+    public event Action<ActionState>? Ticked;
+    public void SetSpeed(double speed) => throw new InvalidOperationException("World speed is controlled by the server.");
+    public void TogglePause() => throw new InvalidOperationException("World pause is controlled by the server.");
+    public void SetModalPause(bool paused) { } // a client menu never pauses other players
+
+    public bool WantsToTalk(CharacterId target) => view?.Snapshot.Characters.Any(c => c.Id == target && c.WantsToTalk) == true;
+    public ProspectReport? Prospected => view?.Prospected;
+    public void EnableFloaters(bool enabled)
+    {
+        if (enabled && !floatersEnabled) floaterFloor = connection.State.View?.Events.HighWater ?? eventHighWater;
+        floatersEnabled = enabled; if (!enabled) floaters.Clear();
+    }
+    public bool TryDequeueFloater(out Floater floater) => floaters.TryDequeue(out floater);
+    public void EnableSounds(bool enabled)
+    {
+        if (enabled && !soundsEnabled) soundFloor = connection.State.View?.Events.HighWater ?? eventHighWater;
+        soundsEnabled = enabled; if (!enabled) sounds.Clear();
+    }
+    public bool TryDequeueSound(out SoundEvent sound) => sounds.TryDequeue(out sound);
+
+    public void SelectFaction(int faction)
+    {
+        if (view?.Factions.Any(f => f.Faction == faction) != true) throw new InvalidOperationException("Faction is outside this player's memberships.");
+        chosenFaction = faction;
+        RefreshPresentation();
+    }
+
+    public void Submit(SimCommand intent)
+    {
+        ulong request = 0;
+        try
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (!CanControl) throw new InvalidOperationException("No active remote world is ready for commands.");
+            if (pending.Count >= 64) throw new InvalidOperationException("Too many unconfirmed commands.");
+            var bound = ClientCommandBinding.Bind(view!, intent, selection, ActiveFaction);
+            requestCounter = Math.Max(requestCounter, connection.State.Admission.State.CommandHighWater);
+            request = requestCounter = checked(requestCounter + 1);
+            var reply = connection.CommandAsync(request, bound.Command, bound.Expected);
+            pending.Add((request, reply));
+            if (bound.Command is SelectCommand select)
+            {
+                if (!select.Additive) selection.Clear();
+                foreach (var id in select.Characters) if (!selection.Contains(id)) selection.Add(id);
+                if (selection.Count > 0 && view!.Roles.FirstOrDefault(r => r.Character == selection[0]) is { } role)
+                    chosenFaction = role.Faction;
+                RefreshPresentation();
+            }
+        }
+        catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException or ArgumentException or OverflowException)
+        { Complete(new(request, null, error)); }
+    }
+
+    public int Advance(double realSeconds)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (!double.IsFinite(realSeconds) || realSeconds < 0) throw new ArgumentOutOfRangeException(nameof(realSeconds));
+        elapsed += realSeconds; blendAge += realSeconds;
+        PumpTalkHints();
+        var state = connection.State;
+        if (state.View is not { } next)
+        {
+            view = null; selection.Clear(); chosenFaction = null;
+            ClearProjectionRevisions();
+            floaters.Clear(); sounds.Clear(); publicSpeech.Clear(); ClearCombatVisuals(); eventBaseline = false;
+            PreviousSnapshot = CurrentSnapshot = WorldSnapshot.Empty;
+        }
+        else if (view?.Publication != next.Publication)
+        {
+            var previous = CurrentSnapshot;
+            bool first = view is null;
+            view = next;
+            if (eventBaseline && floatersEnabled)
+                foreach (var item in next.Events.Floaters.Where(e => e.Id > eventHighWater && e.Id > floaterFloor).OrderBy(e => e.Id))
+                {
+                    if (floaters.Count == 128) floaters.Dequeue();
+                    floaters.Enqueue(item.Value);
+                }
+            if (eventBaseline && soundsEnabled)
+                foreach (var item in next.Events.Sounds.Where(e => e.Id > eventHighWater && e.Id > soundFloor).OrderBy(e => e.Id))
+                {
+                    if (sounds.Count == 128) sounds.Dequeue();
+                    sounds.Enqueue(item.Value);
+                }
+            if (eventBaseline)
+                foreach (var item in next.Events.Speech.Where(e => e.Id > eventHighWater).OrderBy(e => e.Id))
+                {
+                    if (publicSpeech.Count == 128) publicSpeech.Dequeue();
+                    publicSpeech.Enqueue(item.Line);
+                }
+            ReceiveCombatVisuals(next.Events);
+            eventHighWater = Math.Max(eventHighWater, next.Events.HighWater); eventBaseline = true;
+            if (chosenFaction is { } faction && !next.Factions.Any(f => f.Faction == faction)) chosenFaction = null;
+            selection.RemoveAll(id => !next.Roles.Any(r => r.Character == id && r.Available && !r.Dead));
+            if (first) selection.AddRange(next.Snapshot.Characters.Where(c => c.Selected && next.Roles.Any(r => r.Character == c.Id && r.Available)).Select(c => c.Id));
+            RefreshPresentation();
+            // Only retain old poses for still-visible entities. Previous frames never retain revoked private details.
+            var old = previous.Characters.ToDictionary(c => c.Id);
+            PreviousSnapshot = CurrentSnapshot with { Tick = previous.Tick, Characters = CurrentSnapshot.Characters.Select(c => old.TryGetValue(c.Id, out var before)
+                ? c with { Position = before.Position, Yaw = before.Yaw, DrawYaw = before.DrawYaw, Animations = before.Animations,
+                    Carry = before.Carry, Ragdoll = before.Ragdoll } : c).ToArray() };
+            blendSeconds = Math.Clamp(elapsed - lastPublicationAt, 1.0 / 30, .25);
+            blendAge = first || previous.Tick >= CurrentSnapshot.Tick ? blendSeconds : 0;
+            lastPublicationAt = elapsed;
+            if (!clockReady || next.GameHours < lastGameHours)
+            {
+                double day = Math.Floor(next.GameHours / 24);
+                Clock.SetTime((long)day, next.GameHours - day * 24);
+            }
+            else Clock.Advance((next.GameHours - lastGameHours) * GameClock.SecondsPerGameHour);
+            clockReady = true; lastGameHours = next.GameHours;
+        }
+        foreach (var item in pending.Where(p => p.Reply.IsCompleted).ToArray())
+        {
+            pending.Remove(item);
+            RemoteCommandCompletion completion;
+            try { completion = new(item.Request, item.Reply.GetAwaiter().GetResult().Receipt, null); }
+            catch (Exception error) { completion = new(item.Request, null, error); }
+            Complete(completion);
+        }
+        int ticks = Ticks.Advance(realSeconds);
+        for (int i = 0; i < ticks; i++) Tick();
+        return ticks;
+    }
+
+    public ActionState Tick()
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        var actions = Bindings.Resolve(Input.Consume());
+        Camera.Update((float)Ticks.TickSeconds, actions);
+        Ticked?.Invoke(actions);
+        return actions;
+    }
+
+    void RefreshPresentation()
+    {
+        if (view is null) return;
+        var faction = Faction;
+        CurrentSnapshot = ProjectRevisions(view.Snapshot) with
+        {
+            Characters = view.Snapshot.Characters.Select(c => c with { Selected = selection.Contains(c.Id) }).ToArray(),
+            Research = faction?.Research ?? ResearchSnapshot.Empty,
+            UnlockedBuildings = faction?.UnlockedBuildings ?? new HashSet<string>(),
+            PlayerSquads = faction?.Squads ?? [],
+            ActiveSquad = faction?.Squads.Any(s => s.Id == view.Snapshot.ActiveSquad) == true ? view.Snapshot.ActiveSquad : faction?.Squads.FirstOrDefault()?.Id ?? -1,
+        };
+    }
+
+    void Complete(RemoteCommandCompletion completion)
+    {
+        LastCompletion = completion;
+        CommandCompleted?.Invoke(completion);
+    }
+
+    public ValueTask DisposeAsync() => new(disposal ??= DisposeCoreAsync());
+
+    async Task DisposeCoreAsync()
+    {
+        disposed = true;
+        try { await connection.DisposeAsync().ConfigureAwait(false); }
+        finally
+        {
+            try { await Task.WhenAll(pending.Select(p => (Task)p.Reply).Concat(talkHints.Values.Select(h => (Task)h.Pending))).ConfigureAwait(false); }
+            catch { /* Interrupted requests remain unknown; the connection reports the failure. */ }
+            pending.Clear(); selection.Clear(); view = null;
+            ClearProjectionRevisions();
+            talkHints.Clear();
+            floaters.Clear(); sounds.Clear(); publicSpeech.Clear(); ClearCombatVisuals();
+            PreviousSnapshot = CurrentSnapshot = WorldSnapshot.Empty;
+        }
+    }
+}

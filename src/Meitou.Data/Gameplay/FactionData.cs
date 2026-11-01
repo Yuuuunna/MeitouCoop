@@ -133,7 +133,7 @@ public sealed record FactionData
 /// answered that way; the row itself is still built by the same rule (callers that count NPC pairs leave it out) but is then never read.
 /// This is the live table of a game: <see cref="Event"/> applies the section 3.4 changes and counts them in <see cref="Changes"/>.
 /// </summary>
-public sealed class FactionRelations
+public sealed partial class FactionRelations
 {
     /// <summary>At or below this a faction is hostile to another (section 3.3, <b>Verified</b>).</summary>
     public const float HostileThreshold = -30;
@@ -141,15 +141,20 @@ public sealed class FactionRelations
     public const float AllyThreshold = 50;
 
     readonly Dictionary<string, int> index;
-    readonly float[] relation;
-    readonly bool[] coexist;
-    readonly bool[] war;
-    readonly int[] rank;
-    readonly float[] trust;
+    float[] relation;
+    bool[] coexist;
+    bool[] war;
+    int[] rank;
+    float[] trust;
+    readonly List<FactionData> factions;
+    readonly List<string> templates;
 
     FactionRelations(IReadOnlyList<FactionData> factions, Dictionary<string, int> index, float[] relation, bool[] coexist)
     {
-        Factions = factions;
+        this.factions = [.. factions];
+        ContentCount = factions.Count;
+        Factions = this.factions.AsReadOnly();
+        templates = [.. factions.Select(f => f.Id)];
         this.index = index;
         this.relation = relation;
         this.coexist = coexist;
@@ -160,6 +165,56 @@ public sealed class FactionRelations
 
     public IReadOnlyList<FactionData> Factions { get; }
     public int Count => Factions.Count;
+    /// <summary>Faction definitions loaded before any runtime registrations; the dynamic catalogue is an append-only suffix.</summary>
+    public int ContentCount { get; }
+
+    /// <summary>The content record used by a runtime faction. Runtime identity remains Factions[index].Id.</summary>
+    public string TemplateId(int faction) => templates[faction];
+
+    /// <summary>
+    /// Registers an independent faction based on a content definition, preserving every existing pair and index.
+    /// This is a Meitou multiplayer rule, not an original-game format rule. Call only at an exclusive world boundary.
+    /// Player factions use ordinary directed relation rows (PlayerFaction = -1 in multiplayer).
+    /// </summary>
+    public int RegisterFaction(string identity, string name, int template)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(identity);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (!Contains(template)) throw new ArgumentOutOfRangeException(nameof(template));
+        if (index.ContainsKey(identity)) throw new InvalidOperationException("The faction identity already exists.");
+        var definition = Factions[template];
+        int oldCount = Count, count = checked(oldCount + 1);
+        int length = checked(count * count);
+        var nextRelations = new float[length];
+        var nextCoexist = new bool[length];
+        var nextWar = new bool[length];
+        for (int a = 0; a < oldCount; a++)
+        {
+            Array.Copy(relation, a * oldCount, nextRelations, a * count, oldCount);
+            Array.Copy(coexist, a * oldCount, nextCoexist, a * count, oldCount);
+            Array.Copy(war, a * oldCount, nextWar, a * count, oldCount);
+            var other = Factions[a];
+            // New relations come from definitions, never the template faction's accumulated live diplomacy.
+            nextRelations[oldCount * count + a] = InitialRelation(definition, other, templates[a]);
+            nextRelations[a * count + oldCount] = InitialRelation(other, definition, templates[template]);
+            nextCoexist[oldCount * count + a] = definition.Coexistence.Contains(templates[a], StringComparer.Ordinal);
+            nextCoexist[a * count + oldCount] = other.Coexistence.Contains(templates[template], StringComparer.Ordinal);
+        }
+        nextRelations[oldCount * count + oldCount] = 100;
+        var nextRank = new int[count];
+        var nextTrust = new float[count];
+        rank.CopyTo(nextRank, 0);
+        trust.CopyTo(nextTrust, 0);
+        factions.Add(definition with { Id = identity, Name = name });
+        templates.Add(templates[template]);
+        index.Add(identity, oldCount);
+        (relation, coexist, war, rank, trust) = (nextRelations, nextCoexist, nextWar, nextRank, nextTrust);
+        Changes++;
+        return oldCount;
+    }
+
+    static float InitialRelation(FactionData from, FactionData to, string targetTemplate) =>
+        from.Relations.TryGetValue(targetTemplate, out int value) ? value : Math.Min(from.DefaultRelation, to.DefaultRelation);
 
     /// <summary>The player's faction (a position in <see cref="Factions"/>), whose row is answered by the other side's table; -1: none.</summary>
     public int PlayerFaction { get; set; } = -1;
@@ -373,7 +428,12 @@ public sealed class FactionRelations
     public void Reset()
     {
         Array.Clear(coexist);
-        Defaults(Factions, index, relation, coexist);
+        for (int a = 0; a < Count; a++)
+            for (int b = 0; b < Count; b++)
+            {
+                relation[a * Count + b] = a == b ? 100 : InitialRelation(Factions[a], Factions[b], templates[b]);
+                coexist[a * Count + b] = Factions[a].Coexistence.Contains(templates[b], StringComparer.Ordinal);
+            }
         Array.Clear(war);
         Array.Clear(rank);
         Changes = 0;

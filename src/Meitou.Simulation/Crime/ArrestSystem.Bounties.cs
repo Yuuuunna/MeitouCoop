@@ -10,10 +10,17 @@ public sealed class Caging
     public required CharacterId Captive { get; init; }
     public required string Cage { get; set; }
     public int Tries { get; set; }
+    internal PutInCageOrder? Request { get; init; }
+    internal Fixture? Fixture { get; set; }
+    internal ulong FixtureRevision { get; set; }
+    internal CharacterCold? Body { get; init; }
+    internal int BodyFaction { get; init; }
+    internal ulong Membership { get; init; }
 
     internal void Hash(ref StateHasher h)
     {
         h.Add(Carrier); h.Add(Captive); h.Add(Rng.StableHash(Cage)); h.Add(Tries);
+        if (Request?.Issuer is { } issuer) { h.Add(issuer.Value); h.Add(Membership); h.Add(FixtureRevision); h.Add(BodyFaction); }
     }
 }
 
@@ -52,9 +59,9 @@ public sealed partial class ArrestSystem
         {
             switch (command)
             {
-                case PayBailOrder bail: PayBail(world, bail.Prisoner); break;
+                case PayBailOrder bail: PayBailInput(world, bail); break;
                 case PutInCageOrder put:
-                    foreach (var id in put.Carriers.Count > 0 ? put.Carriers : world.Player.Selection.ToArray()) StartCaging(world, id, put.Cage);
+                    foreach (var id in world.CommandCharacters(put, put.Carriers)) StartCaging(world, id, put.Cage, put);
                     break;
             }
         }
@@ -66,13 +73,14 @@ public sealed partial class ArrestSystem
     /// The bail of a caged character (economy.md 11.5, <b>Observed</b>): twice its bounty with the jail (the cage owner's faction), at least <see cref="MinNpcBail"/> when it is not of the
     /// player's faction. Null when none is offered: not caged, or the cage is the player's or of a lawless faction (<b>engine</b> stand-in for the original's speaker and hostility tests).
     /// </summary>
-    public int? BailFor(World world, CharacterCold c)
+    public int? BailFor(World world, CharacterCold c, int? payerFaction = null)
     {
+        int paying = payerFaction ?? world.Player.Faction;
         if (!c.IsImprisoned || c.Kidnapped || c.InWhat is not { } id || world.Fixtures.Find(id) is not { Kind: FixtureKind.Cage } cage) return null;
         int owner = cage.Owner;
-        if (owner < 0 || owner == world.Player.Faction || Crimes.Factions.Lawless(owner)) return null;
+        if (owner < 0 || owner == paying || Crimes.Factions.Lawless(owner)) return null;
         long price = 2L * (c.Bounties?.AmountFor(owner) ?? 0);
-        if (c.Faction != world.Player.Faction) price = Math.Max(price, MinNpcBail);
+        if (c.Faction != paying) price = Math.Max(price, MinNpcBail);
         return (int)Math.Min(price, int.MaxValue);
     }
 
@@ -81,8 +89,9 @@ public sealed partial class ArrestSystem
     /// occupants of cages in the speaker's home town (<b>engine reading</b>: within <see cref="ArrestSettings.TownSlack"/> times its resident squad's home radius) that are of the player's
     /// faction or not hostile to the speaker's, with their bail (<see cref="BailFor"/>). Empty when the speaker has no town.
     /// </summary>
-    public List<(CharacterId Prisoner, string Name, int Price)> BailOffers(World world, CharacterId speaker)
+    public List<(CharacterId Prisoner, string Name, int Price)> BailOffers(World world, CharacterId speaker, int? payerFaction = null)
     {
+        int paying = payerFaction ?? world.Player.Faction;
         var offers = new List<(CharacterId, string, int)>();
         var table = world.Characters;
         if (!table.TryResolveNext(speaker, out int s) || table.Cold(s) is not { SquadId: >= 0 } sc || world.Squads.Find(sc.SquadId) is not { TownOwn: true } squad) return offers;
@@ -91,8 +100,8 @@ public sealed partial class ArrestSystem
         {
             if (!table.Next[i].Alive || table.Cold(i) is not { IsImprisoned: true, Medical.Dead: false, InWhat: { } where } pc || world.Fixtures.Find(where) is not { } cage) continue;
             if (Vector2.DistanceSquared(new Vector2(cage.Position.X, cage.Position.Z), squad.HomeCentre) > r * r) continue;
-            if (pc.Faction != world.Player.Faction && Crimes.Relations.Contains(pc.Faction) && Crimes.Relations.Contains(sc.Faction) && Crimes.Relations.IsHostile(pc.Faction, sc.Faction)) continue;
-            if (BailFor(world, pc) is { } price) offers.Add((table.IdOf(i), pc.Name, price));
+            if (pc.Faction != paying && Crimes.Relations.Contains(pc.Faction) && Crimes.Relations.Contains(sc.Faction) && Crimes.Relations.IsHostile(pc.Faction, sc.Faction)) continue;
+            if (BailFor(world, pc, paying) is { } price) offers.Add((table.IdOf(i), pc.Name, price));
         }
         return offers;
     }
@@ -102,8 +111,8 @@ public sealed partial class ArrestSystem
     {
         var table = world.Characters;
         if (!table.TryResolveNext(prisoner, out int p) || table.Cold(p) is not { IsImprisoned: true, InWhat: { } where } pc || world.Fixtures.Find(where) is not { } cage) return false;
-        if (BailFor(world, pc) is not { } price || !table.TryResolveNext(payer, out int s)) return false;
-        if (world.Player.Money < price) { world.Post($"Not enough money: the bail is c.{price}."); return false; }
+        if (!table.TryResolveNext(payer, out int s) || table.Cold(s) is not { Faction: >= 0 } paying || BailFor(world, pc, paying.Faction) is not { } price) return false;
+        if (world.Factions.GetOrCreate(paying.Faction).Money < price) { world.Post($"Not enough money: the bail is c.{price}."); return false; }
         Bail(world, p, pc, cage, price, s);
         return true;
     }
@@ -121,7 +130,8 @@ public sealed partial class ArrestSystem
         float best = Settings.BailRange * Settings.BailRange;
         for (int s = 0; s < table.HighWater; s++)
         {
-            if (s == p || !table.Next[s].Alive || table.Cold(s) is not { IsPlayer: true, IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true }) continue;
+            if (s == p || !table.Next[s].Alive || table.Cold(s) is not { IsPlayer: true, IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true } candidate
+                || candidate.Faction != world.Player.Faction) continue;
             var at = table.Next[s].Position;
             float d2 = Vector2.DistanceSquared(new Vector2(at.X, at.Z), new Vector2(cage.Position.X, cage.Position.Z));
             if (d2 <= best) (payer, best) = (s, d2);
@@ -131,12 +141,27 @@ public sealed partial class ArrestSystem
         Bail(world, p, pc, cage, price, payer);
     }
 
+    void PayBailInput(World world, PayBailOrder order)
+    {
+        if (order.Issuer is null) { PayBail(world, order.Prisoner); return; }
+        var table = world.Characters;
+        if (!world.MayOrder(order, order.Payer) || !table.TryResolveNext(order.Payer, out int payer)
+            || table.Cold(payer) is not { IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true } c
+            || order.FactionGrantRevision == 0 || world.Players.Find(order.Issuer.Value)?.MembershipRevision(c.Faction) != order.FactionGrantRevision
+            || !world.MayManage(order, c.Faction, FactionPermission.SpendFunds)
+            || !table.TryResolveNext(order.Prisoner, out int prisoner) || table.Cold(prisoner) is not { IsImprisoned: true, InWhat: { } where } pc
+            || world.Fixtures.Find(where) is not { Kind: FixtureKind.Cage } cage || !world.Fixtures.Matches(order, cage)
+            || BailFor(world, pc, c.Faction) is not { } price || order.ExpectedPrice != price
+            || Vector3.DistanceSquared(table.Next[payer].Position, cage.Position) > Settings.BailRange * Settings.BailRange) return;
+        Bail(world, prisoner, pc, cage, price, payer);
+    }
+
     /// <summary>Paying (<c>FUN_1406ae170</c>, economy.md 11.5): the money, the jail's entry erased, the prisoner freed (no escape).</summary>
     void Bail(World world, int p, CharacterCold pc, Fixture cage, int price, int payer)
     {
         var table = world.Characters;
         var prisoner = table.IdOf(p);
-        world.Player.Money -= price;
+        if (table.Cold(payer) is not { Faction: >= 0 } paying || !world.Factions.GetOrCreate(paying.Faction).TryDebit(price)) return;
         if (pc.Bounties is { } ledger && ledger.Of(cage.Owner) is { } entry)
         {
             ledger.Remove(entry);
@@ -150,15 +175,21 @@ public sealed partial class ArrestSystem
 
     // ------------------------------------------------------------------ putting a captive in a cage, and the claim
 
-    void StartCaging(World world, CharacterId carrier, string? chosen = null)
+    void StartCaging(World world, CharacterId carrier, string? chosen = null, PutInCageOrder? request = null)
     {
         var table = world.Characters;
         if (Carry is null || !table.TryResolveNext(carrier, out int s) || table.Cold(s) is not { IsPlayer: true, IsImprisoned: false, Medical.Incapacitated: false, Carrying.IsNone: false } c) return;
+        if (request?.Issuer is { } issuer && (request.FactionGrantRevision == 0 || world.Players.Find(issuer)?.MembershipRevision(c.Faction) != request.FactionGrantRevision)) return;
         cagings.RemoveAll(k => k.Carrier == carrier);
         var cage = chosen is not null ? world.Fixtures.Find(chosen) is { Kind: FixtureKind.Cage } picked && FixtureRegistry.IsFree(table, picked) && !Reserved(picked, null) && !cagings.Exists(k => k.Cage == picked.Id) ? picked : null
             : FindCageFor(world, s, c, null);
         if (cage is null) { world.Post($"{c.Name}: no free cage nearby"); return; }
-        cagings.Add(new Caging { Carrier = carrier, Captive = c.Carrying, Cage = cage.Id });
+        if (request is not null && chosen is not null && !world.Fixtures.Matches(request, cage)) return;
+        if (cage.Owner == c.Faction && request is not null && !world.MayManage(request, cage.Owner, FactionPermission.ManageAssets)) return;
+        if (!table.TryResolveNext(c.Carrying, out int body)) return;
+        cagings.Add(new Caging { Carrier = carrier, Captive = c.Carrying, Cage = cage.Id, Request = request, Fixture = cage,
+            FixtureRevision = world.Fixtures.RevisionOf(cage), Body = table.Cold(body), BodyFaction = table.Cold(body)!.Faction,
+            Membership = request?.Issuer is { } player ? world.Players.Find(player)?.MembershipRevision(c.Faction) ?? 0 : 0 });
         MovementSystem.GoTo(table, s, new Vector2(cage.Position.X, cage.Position.Z), c.RunSpeed);
     }
 
@@ -176,12 +207,17 @@ public sealed partial class ArrestSystem
     {
         var table = world.Characters;
         if (!table.TryResolveNext(k.Carrier, out int s) || table.Cold(s) is not { Medical.Incapacitated: false } c || c.Carrying != k.Captive) return false;
+        if (k.Request is { } request && (!world.MayOrder(request, k.Carrier) || request.Issuer is { } issuer
+            && (k.Membership == 0 || world.Players.Find(issuer)?.MembershipRevision(c.Faction) != k.Membership))) return false;
+        if (!table.TryResolveNext(k.Captive, out int captiveSlot) || !ReferenceEquals(table.Cold(captiveSlot), k.Body) || k.Body!.Faction != k.BodyFaction) return false;
+        if (k.Fixture is { } fixture && (!ReferenceEquals(world.Fixtures.Find(k.Cage), fixture) || world.Fixtures.RevisionOf(fixture) != k.FixtureRevision)) return false;
+        if (k.Fixture?.Owner == c.Faction && k.Request is { } ownerRequest && !world.MayManage(ownerRequest, c.Faction, FactionPermission.ManageAssets)) return false;
         ref var n = ref table.Next[s];
         var cage = world.Fixtures.Find(k.Cage);
         if (cage is null || !FixtureRegistry.IsFree(table, cage))
         {
-            if (FindCageFor(world, s, c, k) is not { } other) { world.Post($"{c.Name}: no free cage nearby"); return false; }
-            k.Cage = other.Id;
+            if (k.Request?.Cage is not null || FindCageFor(world, s, c, k) is not { } other) { world.Post($"{c.Name}: no free cage nearby"); return false; }
+            k.Cage = other.Id; k.Fixture = other; k.FixtureRevision = world.Fixtures.RevisionOf(other);
             MovementSystem.GoTo(table, s, new Vector2(other.Position.X, other.Position.Z), c.RunSpeed);
             return true;
         }
@@ -192,8 +228,9 @@ public sealed partial class ArrestSystem
         if (d <= cage.UseRange + Settings.CageReach || !walking && d <= Settings.CageSlack)
         {
             if (walking) MovementSystem.Stop(table, s);
+            if (cage.Lock is { EffectivelyLocked: true }) return false;
             Carry!.LetGo(world, s);
-            if (!world.Fixtures.Imprison(world, k.Captive, cage, constants.PrisonTime)) { world.Post($"{c.Name} could not put the captive in the cage"); return false; }
+            if (!world.Fixtures.Imprison(world, k.Captive, cage, constants.PrisonTime, k.Carrier)) { world.Post($"{c.Name} could not put the captive in the cage"); return false; }
             Claim(world, s, k.Captive, cage);
             if (table.TryResolveNext(k.Captive, out int captive)) Deeds?.Caged(world, s, captive);   // after the claim, as the put-in task does
             return false;
@@ -215,12 +252,12 @@ public sealed partial class ArrestSystem
     public int Claim(World world, int carrier, CharacterId captive, Fixture cage)
     {
         var table = world.Characters;
-        if (table.Cold(carrier) is not { IsPlayer: true, Escaped: false } || !table.TryResolveNext(captive, out int b) || table.Cold(b) is not { IsPlayer: false, Escaped: false } bc) return 0;
+        if (table.Cold(carrier) is not { IsPlayer: true, Escaped: false, Faction: >= 0 } cc || !table.TryResolveNext(captive, out int b) || table.Cold(b) is not { Escaped: false } bc) return 0;
         int owner = cage.Owner;
-        if (cage.Kind != FixtureKind.Cage || owner < 0 || owner == world.Player.Faction || bc.Faction == world.Player.Faction || Crimes.Factions.Lawless(owner)) return 0;
+        if (cage.Kind != FixtureKind.Cage || owner < 0 || owner == cc.Faction || bc.Faction == cc.Faction || Crimes.Factions.Lawless(owner)) return 0;
         if (bc.Bounties?.Of(owner) is not { Amount: > 0, Claimed: false } entry) return 0;
         int amount = bc.Medical is { Dead: true } ? entry.Amount / 2 : entry.Amount;
-        world.Player.Money += amount;
+        if (!world.Factions.GetOrCreate(cc.Faction).TryCredit(amount)) return 0;
         entry.Claimed = true;
         world.Post(Loc.Tr("Received c.{1} reward.", amount));
         world.EmitSound(SoundKind.BountyPaid, carrier, table.Next[carrier].Position);
@@ -249,11 +286,11 @@ public sealed partial class ArrestSystem
     {
         var table = world.Characters;
         if (!table.TryResolveNext(speaker, out int s) || table.Cold(s) is not { } sc || !table.TryResolveNext(carrier, out int c) || table.Cold(c) is not { IsPlayer: true } cc) return 0;
-        if (!table.TryResolveNext(cc.Carrying, out int b) || table.Cold(b) is not { IsPlayer: false } bc || bc.Faction == world.Player.Faction) return 0;
+        if (cc.Faction < 0 || !table.TryResolveNext(cc.Carrying, out int b) || table.Cold(b) is not { } bc || bc.Faction == cc.Faction) return 0;
         int booking = Crimes.Factions.BookingOf(sc.Faction);
         if (booking < 0 || bc.Bounties?.Of(booking) is not { Amount: > 0, Claimed: false } entry) return 0;
         int amount = bc.Medical is { Dead: true } ? entry.Amount / 2 : entry.Amount;
-        world.Player.Money += amount;
+        if (!world.Factions.GetOrCreate(cc.Faction).TryCredit(amount)) return 0;
         entry.Claimed = true;
         world.Post(Loc.Tr("Received c.{1} reward.", amount));
         world.EmitSound(SoundKind.BountyPaid, c, table.Next[c].Position);

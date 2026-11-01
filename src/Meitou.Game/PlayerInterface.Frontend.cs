@@ -53,7 +53,7 @@ sealed partial class PlayerInterface
     public void ConfigureFrontend(GameDatabase? database, Func<IReadOnlyList<SaveSlot>> enumerate, string creditsText)
     {
         gameData = database;
-        starts =database is null ? [] : NewGameStart.LoadAll(database);
+        starts = session.IsRemote || database is null ? [] : NewGameStart.LoadAll(database);
         startIndex = Math.Max(0, starts.ToList().FindIndex(s => s.Name == NewGameStart.DefaultName));
         saveSlots = enumerate;
         // As the title reads data/credits.txt (FUN_14013d680, docs/game/ui-screens.md "Credits"): empty lines dropped, a "-" line a blank one, each line ended.
@@ -77,6 +77,7 @@ sealed partial class PlayerInterface
     string CancelButton => confirmation?.Middle is null ? "ButtonB" : "ButtonC";
     void RefreshSlots()
     {
+        if (session.IsRemote) { slots = []; selectedSlot = null; slotReadable = false; return; }
         try { slots = saveSlots(); selectedSlot = slots.FirstOrDefault(); ReadSlotDetails(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { slots = []; selectedSlot = null; slotDetails = e.Message; }
     }
@@ -127,6 +128,7 @@ sealed partial class PlayerInterface
 
     void OpenSlots(string id)
     {
+        if (session.IsRemote || id == "save" && !session.CanSaveWorld) return;
         RefreshSlots();
         if (id == "save" || id == "load" && UiMode == UiMode.Meitou) { selectedSlot = VisibleSlots(id).FirstOrDefault(); ReadSlotDetails(); }
         // The original's windows open with nothing selected and the info box empty (LoadSaveWindow, FUN_140480100), the ticks as their layout has them.
@@ -137,6 +139,9 @@ sealed partial class PlayerInterface
     }
     bool HandleFrontendAction(MyGuiEvent e)
     {
+        if (HandleOnlineAction(e)) return true;
+        if (session.IsRemote && (e.Screen is "save" or "load" or "import" or "new-game" ||
+            e.Screen is "title" or "menu" && e.Widget is "NewGameButton" or "SaveGameButton" or "LoadGameButton" or "ImportGameButton" or "ContinueButton")) return true;
         if (e.Screen is "title" or "menu")
         {
             // The title's buttons first close its other windows and the credits (FUN_140914a90); Load and Import close their own window when it is open,
@@ -148,7 +153,7 @@ sealed partial class PlayerInterface
             {
                 case "ResumeButton": faithfulScreens.Close("menu"); break;
                 case "NewGameButton": if (!wasOpen) { NewGameOptions = new(); advancedOpen = false; faithfulScreens.Open("new-game"); } break;
-                case "SaveGameButton": OpenSlots("save"); break;
+                case "SaveGameButton": if (session.CanSaveWorld) OpenSlots("save"); break;
                 case "LoadGameButton": if (!(title && wasOpen)) OpenSlots("load"); break;
                 case "ImportGameButton": if (!wasOpen) { advancedOpen = false; OpenSlots("import"); } break;
                 case "OptionsButton": ScreenAction?.Invoke(e); break;
@@ -157,7 +162,7 @@ sealed partial class PlayerInterface
                 case "ExitButton": Confirm("EXIT", "Are you sure you want to exit?", () => ScreenAction?.Invoke(new("menu", "ExitGameButton", "exit"))); break;
                 // In play the Esc menu's Exit offers the main menu as well (engine choice: the original's in-game Exit dialog is not traced).
                 case "ExitGameButton":
-                    Confirm("EXIT", session.World.Player.Exists ? "Return to the main menu or quit the game? Unsaved progress will be lost." : "Return to the main menu or quit the game?",
+                    Confirm("EXIT", session.IsRemote ? "Disconnect and return to the main menu or quit the game?" : session.HasPlayer ? "Return to the main menu or quit the game? Unsaved progress will be lost." : "Return to the main menu or quit the game?",
                         () => ScreenAction?.Invoke(new("menu", "MainMenuButton", "main-menu")), "MAIN MENU", ("QUIT", () => ScreenAction?.Invoke(new("menu", "ExitGameButton", "exit"))));
                     break;
             }
@@ -172,6 +177,12 @@ sealed partial class PlayerInterface
         }
         if (e.Screen == "new-game")
         {
+            if (lobby is not null)
+            {
+                if (e.Widget == "CancelButton") { CancelOnline(); return true; }
+                if (e.Widget == "BeginButton") { BeginOnlineStart(); return true; }
+                if (e.Widget == "AdvancedButton") return true;
+            }
             if (AdvancedAction(e)) return true;
             if (e.Widget == "CancelButton") faithfulScreens.Close(e.Screen);
             else if (e.Widget == "LeftButton" && starts.Count > 0) startIndex = (startIndex + starts.Count - 1) % starts.Count;
@@ -180,7 +191,7 @@ sealed partial class PlayerInterface
             else if (e.Widget == "BeginButton" && starts.Count > 0)
             {
                 void Start() => ScreenAction?.Invoke(new("new-game", "BeginButton", "new-game", starts[startIndex].Id));
-                if (session.World.Player.Exists) Confirm("NEW GAME", "Start a new game? Unsaved progress will be lost.", Start); else Start();
+                if (session.HasPlayer) Confirm("NEW GAME", "Start a new game? Unsaved progress will be lost.", Start); else Start();
             }
             return true;
         }
@@ -199,7 +210,7 @@ sealed partial class PlayerInterface
             {
                 void Import() => ScreenAction?.Invoke(new("import", "ImportButton", "import", importSlot.Folder));
                 if (!slotReadable) Notice("This save file is invalid", true);   // the original's message box for a save whose row reads ERROR
-                else if (session.World.Player.Exists) Confirm("IMPORT GAME", "Import this save into a new game? Unsaved progress will be lost.", Import); else Import();
+                else if (session.HasPlayer) Confirm("IMPORT GAME", "Import this save into a new game? Unsaved progress will be lost.", Import); else Import();
             }
             else if (e.Widget == "GamesList" && e.Action == "select")
             {
@@ -211,7 +222,7 @@ sealed partial class PlayerInterface
             else if (e.Widget == "LoadButton" && selectedSlot is { } loadSlot)
             {
                 void Load() => ScreenAction?.Invoke(new("load", "LoadButton", "load", loadSlot.Folder));
-                if (session.World.Player.Exists) Confirm("LOAD GAME", "Load this save? Unsaved progress will be lost.", Load); else Load();
+                if (session.HasPlayer) Confirm("LOAD GAME", "Load this save? Unsaved progress will be lost.", Load); else Load();
             }
             else if (e.Widget == "SaveButton")
             {
@@ -244,19 +255,28 @@ sealed partial class PlayerInterface
     {
         void Enable(params string[] names) { foreach (string name in names) { b.Disabled.Remove(name); b.Actions[name] = name; } }
         void Paragraph(string name, string text) { b.Text[name] = text; b.Properties[name] = new Dictionary<string, string> { ["WordWrap"] = "true", ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.InkText, ["TextPadding"] = name == "InfoPanel" ? "8 8 8 8" : "12 10 12 10" }; }
+        if (BindOnline(id, b)) return true;
         if (id is "title" or "menu")
         {
+            if (id == "title" && OnlineInstall is not null && !session.IsRemote) Enable("MultiplayerButton");
+            else b.Hidden.Add("MultiplayerButton");
+            if (session.IsRemote)
+                foreach (string button in new[] { "NewGameButton", "SaveGameButton", "LoadGameButton", "ImportGameButton", "ContinueButton" }) b.Hidden.Add(button);
             Enable("NewGameButton", "LoadGameButton", "OptionsButton");
             if (starts.Count == 0) b.Disabled.Add("NewGameButton");
             if (id == "menu")
             {
                 Enable("ExitGameButton", "ResumeButton");
-                if (session.World.Player.Exists) Enable("SaveGameButton");
+                if (session.HasPlayer && session.CanSaveWorld) Enable("SaveGameButton");
                 return true;
             }
             Enable("ExitButton", "CreditsButton", "ImportGameButton");
             if (UiMode == UiMode.Faithful)
+            {
+                string[] order = ["ContinueButton", "NewGameButton", "MultiplayerButton", "LoadGameButton", "ImportGameButton", "OptionsButton", "CreditsButton", "ExitButton"];
+                for (int i = 0; i < order.Length; i++) b.Positions[order[i]] = new(Width * .260417f, Height * (.12f + i * .095f), Width * .15625f, Height * .063889f);
                 foreach (var (widget, caption) in TitleCaptions) b.Text[widget] = UpperCaption(caption);
+            }
             if (UiMode == UiMode.Meitou)
             {
                 foreach (var (widget, at) in MenuLayout(card: slots.Count > 0 && slotReadable)) b.Positions[widget] = at;
@@ -281,6 +301,7 @@ sealed partial class PlayerInterface
         {
             BindNewGamePanels(b);
             Enable("CancelButton", "AdvancedButton");
+            if (lobby is not null) b.Hidden.Add("AdvancedButton");
             b.Text["lbChooseBeginning"] = UpperCaption("Choose your beginning");
             b.Text["AdvancedButton"] = UpperCaption("Advanced options");
             b.Text["BeginButton"] = UpperCaption("Begin");

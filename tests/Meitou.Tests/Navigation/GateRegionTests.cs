@@ -37,7 +37,7 @@ public class GateRegionTests
         var world = NavWorld.Empty.With(mesh);
         Vector3 At(float x) => new(x0 + x, 0, (z0 + z1) / 2);
 
-        var regions = NavGateRegions.Label(world, id => id == "gate");
+        var regions = NavGateRegions.Label(world, id => id == "gate", TestContext.Current.CancellationToken);
         Assert.Equal(1, regions.RegionCount);
         var gate = Assert.Single(regions.Gates);
         Assert.Equal("gate", gate.Building);
@@ -47,7 +47,7 @@ public class GateRegionTests
         Assert.Equal(-1, regions.CodeAt(At(2000)));
 
         // An ordinary door walls nothing in.
-        var plain = NavGateRegions.Label(world, _ => false);
+        var plain = NavGateRegions.Label(world, _ => false, TestContext.Current.CancellationToken);
         Assert.Equal(0, plain.RegionCount);
         Assert.Equal(0, plain.CodeAt(At(300)));
     }

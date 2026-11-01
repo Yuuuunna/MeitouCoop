@@ -13,7 +13,7 @@ using SimWorld = Meitou.Simulation.World;
 namespace Meitou.Tests.Simulation;
 
 /// <summary>Player conversations (docs/simulation.md "Dialogue", docs/game/dialogue.md) on an invented database.</summary>
-public class DialogueTests
+public partial class DialogueTests
 {
     static FcsReference Ref(string id, int v0 = 0) => new(id, v0, 0, 0);
 
@@ -88,9 +88,9 @@ public class DialogueTests
 
         public void Dispose() => World.Dispose();
 
-        CharacterId Spawn(string name, Vector2 at, int faction, bool player, string record)
+        public CharacterId Spawn(string name, Vector2 at, int faction, bool player, string record)
         {
-            var squad = new Squad { Id = World.Squads.NextId(), TemplateId = "t", Faction = faction, HomeCentre = at, HomeRadius = 10 };
+            var squad = new Squad { Id = World.Squads.NextId(), TemplateId = "t", Faction = faction, HomeCentre = at, HomeRadius = 10, PlayerManaged = player };
             World.Squads.Add(squad);
             var cold = new Meitou.Tests.Combat.Combatant { Name = name }.MakeCold();
             cold.Faction = faction;
@@ -106,6 +106,289 @@ public class DialogueTests
 
         public void Say(SimCommand c) => World.Commands.Enqueue(c with { Tick = World.Tick });
         public ConversationView? Talk => Dialogue.PublishConversation();
+    }
+
+    sealed class MultiplayerVillage : IDisposable
+    {
+        public Village Village { get; }
+        public SimWorld World => Village.World;
+        public DialogueSystem Dialogue => Village.Dialogue;
+        public WorldPlayer A { get; }
+        public WorldPlayer B { get; }
+        public CharacterId First => Village.Hero;
+        public CharacterId Second { get; }
+        public CharacterId NpcA => Village.Villager;
+        public CharacterId NpcB { get; }
+
+        public MultiplayerVillage(PopulationData? data = null, bool sharedFaction = false)
+        {
+            Village = new Village(data: data);
+            int other = sharedFaction ? Village.Data.PlayerFaction : Village.Data.RegisterFaction("remote", "Remote", Village.Data.PlayerFaction);
+            A = World.Players.Register(new PlayerId(2)); B = World.Players.Register(new PlayerId(3));
+            World.Players.SetMembership(A.Id, Village.Data.PlayerFaction, FactionPermission.All);
+            World.Players.SetMembership(B.Id, other, FactionPermission.All);
+            Second = Village.Spawn("second", new Vector2(1, 0), other, true, "");
+            NpcB = Village.Spawn("other villager", new Vector2(11, 0), Village.Data.FactionIndex("f-d"), false, "npc-d");
+            A.State.Squad = World.Characters.Cold(First.Slot)!.SquadId;
+            B.State.Squad = World.Characters.Cold(Second.Slot)!.SquadId;
+            World.Players.AssignInitial(A.Id, First); World.Players.AssignInitial(B.Id, Second);
+            A.State.Money = B.State.Money = 1000;
+        }
+
+        public void Send(PlayerId actor, SimCommand command) => World.Commands.Enqueue(actor, command with { Tick = World.Tick });
+        public ConversationView View(PlayerId actor) => Assert.IsType<ConversationView>(Dialogue.PublishConversation(actor));
+        public void OpenBoth()
+        {
+            Send(A.Id, new TalkOrder(First, NpcA) { Tick = 0 });
+            Send(B.Id, new TalkOrder(Second, NpcB) { Tick = 0 });
+            World.RunTicks(2);
+            Assert.NotNull(Dialogue.PublishConversation(A.Id)); Assert.NotNull(Dialogue.PublishConversation(B.Id));
+        }
+        public void Choose(PlayerId actor, ConversationView view, int index) => Send(actor,
+            new DialogueChoice(index) { Tick = 0, SessionId = view.SessionId, ChoiceRevision = view.ChoiceRevision });
+        public void Dispose() => Village.Dispose();
+    }
+
+    [Fact]
+    public void IndependentConversationsReadAndChargeTheirOwnFactionWithoutReplacingAnotherWindow()
+    {
+        using var v = new MultiplayerVillage();
+        v.B.State.Money = 100;
+        v.OpenBoth();
+        var a = v.View(v.A.Id); var b = v.View(v.B.Id);
+        Assert.Contains("rich", a.Text);
+        Assert.Equal("Hello.", b.Text);
+        Assert.NotEqual(a.SessionId, b.SessionId);
+        Assert.Null(v.Dialogue.PublishConversation());
+        v.Choose(v.A.Id, a, 0);
+        v.World.RunTick();
+        Assert.Equal(900, v.A.State.Money);
+        Assert.Equal(100, v.B.State.Money);
+        Assert.Equal(b.SessionId, v.View(v.B.Id).SessionId);
+        Assert.Contains(v.World.TakeMessages(v.A.Id), m => m.Contains("Paid", StringComparison.Ordinal));
+        Assert.Empty(v.World.TakeMessages(v.B.Id));
+        Assert.Empty(v.World.TakeMessages());
+    }
+
+    [Fact]
+    public void OneNpcCannotBeClaimedByTwoPlayerConversations()
+    {
+        using var v = new MultiplayerVillage();
+        v.Send(v.A.Id, new TalkOrder(v.First, v.NpcA) { Tick = 0 });
+        v.Send(v.B.Id, new TalkOrder(v.Second, v.NpcA) { Tick = 0 });
+        v.World.RunTicks(2);
+        var a = v.View(v.A.Id);
+        Assert.Null(v.Dialogue.PublishConversation(v.B.Id));
+        Assert.Contains("This character is busy.", v.World.TakeMessages(v.B.Id));
+        v.Send(v.B.Id, new EndConversation { Tick = 0, SessionId = a.SessionId });
+        v.World.RunTick();
+        Assert.Equal(a.SessionId, v.View(v.A.Id).SessionId);
+        v.Send(v.A.Id, new EndConversation { Tick = 0, SessionId = a.SessionId });
+        v.World.RunTick();
+        v.Send(v.B.Id, new TalkOrder(v.Second, v.NpcA) { Tick = 0 });
+        v.World.RunTick();
+        Assert.Equal(v.NpcA, v.View(v.B.Id).Npc);
+    }
+
+    [Fact]
+    public void AStaleChoiceCannotChargeAgainAfterTheDialogueAdvances()
+    {
+        var data = Data();
+        var file = new FcsFile();
+        file.Records.Add(Rec("buy-l", FcsRecordType.DIALOGUE_LINE, r => r.References["lines"] = [Ref("again-l")]));
+        file.Records.Add(Rec("again-l", FcsRecordType.DIALOGUE_LINE, r => { r.Strings["text0"] = "Again?"; r.References["lines"] = [Ref("pay-again-l")]; }));
+        file.Records.Add(Rec("pay-again-l", FcsRecordType.DIALOGUE_LINE, r =>
+        {
+            r.Ints["speaker"] = (int)Talker.Target; r.Strings["text0"] = "Pay again";
+            r.References["effects"] = [Ref("pay-d", 100)]; r.References["lines"] = [Ref("again-l")];
+        }));
+        data.Db.Apply(file, "repeat.mod");
+        using var v = new MultiplayerVillage(data);
+        v.OpenBoth();
+        var a = v.View(v.A.Id);
+        v.Choose(v.A.Id, a, 0); v.Choose(v.A.Id, a, 0);
+        v.World.RunTick();
+        Assert.Equal(900, v.A.State.Money);
+        var next = v.View(v.A.Id);
+        Assert.Equal(a.SessionId, next.SessionId);
+        Assert.NotEqual(a.ChoiceRevision, next.ChoiceRevision);
+        v.Choose(v.A.Id, next, 0); v.World.RunTick();
+        Assert.Equal(800, v.A.State.Money);
+    }
+
+    [Fact]
+    public void RevokedAuthorityAndSharedFundsAreRecheckedBeforeDialogueEffects()
+    {
+        using var v = new MultiplayerVillage(sharedFaction: true);
+        v.OpenBoth();
+        var a = v.View(v.A.Id); var b = v.View(v.B.Id);
+        v.A.State.Money = 150;
+        v.Choose(v.A.Id, a, 0); v.Choose(v.B.Id, b, 0);
+        v.World.RunTick();
+        Assert.Equal(50, v.A.State.Money);
+        Assert.NotNull(v.Dialogue.PublishConversation(v.B.Id));
+        Assert.False(v.World.Characters.Cold(v.NpcB.Slot)!.DialogueLocks?.GetValueOrDefault("rich-d") == true);
+        v.A.State.Money = 1000;
+        var pending = v.View(v.B.Id);
+        v.Choose(v.B.Id, pending, 0);
+        v.World.Players.SetMembership(v.B.Id, v.B.State.Faction, FactionPermission.None);
+        v.World.Players.SetMembership(v.B.Id, v.B.State.Faction, FactionPermission.All);
+        v.World.RunTick();
+        Assert.Equal(1000, v.A.State.Money);
+        Assert.Null(v.Dialogue.PublishConversation(v.B.Id));
+    }
+
+    [Fact]
+    public void GuildRankAndNpcFactionMemoryDoNotLeakBetweenPlayerFactions()
+    {
+        using var v = new MultiplayerVillage(Guild());
+        v.A.State.Money = 20000;
+        v.OpenBoth();
+        v.Choose(v.A.Id, v.View(v.A.Id), 0); v.World.RunTick();
+        int guild = v.Village.Data.FactionIndex("f-d");
+        Assert.Equal(1, v.A.State.FactionState.Rank(guild));
+        Assert.Equal(0, v.B.State.FactionState.Rank(guild));
+        v.Send(v.A.Id, new TalkOrder(v.First, v.NpcA) { Tick = 0 }); v.World.RunTick();
+        Assert.Contains("sell off", v.View(v.A.Id).Text);
+        Assert.Equal("I don't know you.", v.View(v.B.Id).Text);
+        int squad = v.World.Characters.Cold(v.NpcA.Slot)!.SquadId;
+        v.Dialogue.Memory.Remember(v.World, squad, v.First, MemoryTag.Captor);
+        v.Dialogue.Memory.Flag(v.World, squad, v.First, MemoryTag.TempAlly);
+        Assert.Null(v.Dialogue.Memory.Find(v.World, squad, v.Second));
+        Assert.False(v.Dialogue.Memory.HasShort(v.World, squad, v.Second, MemoryTag.TempAlly));
+        var saved = v.Dialogue.Memory.Take(squad);
+        v.Dialogue.Memory.Restore(squad, saved);
+        Assert.True((v.Dialogue.Memory.Find(v.World, squad, v.First)!.Long & (1u << MemoryTag.Captor)) != 0);
+        Assert.True(v.Dialogue.Memory.HasShort(v.World, squad, v.First, MemoryTag.TempAlly));
+        Assert.Null(v.Dialogue.Memory.Find(v.World, squad, v.Second));
+    }
+
+    static PopulationData Recruiting(int factionLimit = 30)
+    {
+        var data = Data();
+        var file = new FcsFile();
+        file.Records.AddRange([
+            Rec("limits", FcsRecordType.CONSTANTS, r => r.Ints["max faction size"] = factionLimit),
+            Rec("recruit-npc", FcsRecordType.CHARACTER, r => r.References["dialogue"] = [Ref("recruit-d")]),
+            Rec("join-da", FcsRecordType.DIALOG_ACTION, r => r.Ints["action name"] = DialogueActions.JoinSquadFast),
+            Rec("recruit-d", FcsRecordType.DIALOGUE, r => r.References["lines"] = [Ref("recruit-l")]),
+            Rec("recruit-l", FcsRecordType.DIALOGUE_LINE, r => { r.Strings["text0"] = "Hire me"; r.References["lines"] = [Ref("hire-l")]; }),
+            Rec("hire-l", FcsRecordType.DIALOGUE_LINE, r =>
+            {
+                r.Ints["speaker"] = (int)Talker.Target; r.Strings["text0"] = "Join us";
+                r.References["effects"] = [Ref("pay-d", 100), Ref("join-da")];
+            }),
+        ]);
+        data.Db.Apply(file, "recruit.mod");
+        return data;
+    }
+
+    [Fact]
+    public void RecruitingUsesTheTalkersFactionAndGrantsControlToTheInitiatingPlayer()
+    {
+        using var v = new MultiplayerVillage(Recruiting());
+        v.World.Characters.Cold(v.NpcA.Slot)!.RecordId = "recruit-npc";
+        v.World.Characters.Cold(v.NpcB.Slot)!.RecordId = "recruit-npc";
+        v.OpenBoth();
+        Assert.Equal("Hire me", v.View(v.A.Id).Text);
+        int actual = v.A.State.Faction;
+        v.World.Players.SetMembership(v.A.Id, v.B.State.Faction, FactionPermission.None);
+        Assert.True(v.World.Players.SelectFaction(v.A.Id, v.B.State.Faction));
+        v.Choose(v.A.Id, v.View(v.A.Id), 0);
+        v.World.RunTick();
+        var recruit = v.World.Characters.Cold(v.NpcA.Slot)!;
+        Assert.True(recruit.IsPlayer);
+        Assert.Equal(actual, recruit.Faction);
+        Assert.Equal(v.World.Characters.Cold(v.First.Slot)!.SquadId, recruit.SquadId);
+        Assert.True(v.World.Players.CanControl(v.A.Id, v.NpcA));
+        Assert.False(v.World.Players.CanControl(v.B.Id, v.NpcA));
+        Assert.Equal(900, v.World.Factions.Find(actual)!.Money);
+        Assert.Equal(1000, v.B.State.Money);
+    }
+
+    [Fact]
+    public void RecruitmentCapacityIsPerFactionAndRejectedRecruitmentDoesNotTakePayment()
+    {
+        var data = Recruiting(factionLimit: 2);
+        using var v = new MultiplayerVillage(data);
+        Assert.Equal(2, data.Bodies.Constants.MaxFactionSize);
+        v.World.Characters.Cold(v.NpcA.Slot)!.RecordId = "recruit-npc";
+        v.World.Characters.Cold(v.NpcB.Slot)!.RecordId = "recruit-npc";
+        var extra = v.Village.Spawn("extra", Vector2.Zero, v.A.State.Faction, true, "");
+        v.World.Players.AssignInitial(v.A.Id, extra);
+        v.OpenBoth();
+        v.Choose(v.A.Id, v.View(v.A.Id), 0);
+        v.Choose(v.B.Id, v.View(v.B.Id), 0);
+        v.World.RunTick();
+        Assert.False(v.World.Characters.Cold(v.NpcA.Slot)!.IsPlayer);
+        Assert.Equal(1000, v.A.State.Money);
+        Assert.True(v.World.Characters.Cold(v.NpcB.Slot)!.IsPlayer);
+        Assert.Equal(v.B.State.Faction, v.World.Characters.Cold(v.NpcB.Slot)!.Faction);
+        Assert.True(v.World.Players.CanControl(v.B.Id, v.NpcB));
+        Assert.Equal(900, v.B.State.Money);
+    }
+
+    [Fact]
+    public void DialogueCannotReadOrSpendFactionFundsWithoutTheCorrespondingPermission()
+    {
+        using var v = new MultiplayerVillage();
+        v.World.Players.SetMembership(v.A.Id, v.A.State.Faction, FactionPermission.ReadFunds);
+        v.World.Players.SetMembership(v.B.Id, v.B.State.Faction, FactionPermission.None);
+        v.OpenBoth();
+        var a = v.View(v.A.Id); var b = v.View(v.B.Id);
+        Assert.Contains("rich", a.Text);
+        Assert.Equal("Hello.", b.Text);
+        Assert.False(b.FundsVisible);
+        Assert.Equal(0, b.PlayerMoney);
+        v.Choose(v.A.Id, a, 0); v.World.RunTick();
+        Assert.Equal(1000, v.A.State.Money);
+        Assert.False(v.World.Characters.Cold(v.NpcA.Slot)!.DialogueLocks?.GetValueOrDefault("rich-d") == true);
+    }
+
+    [Fact]
+    public void SpendingPermissionAloneDoesNotAuthorizeRecruitingForTheFaction()
+    {
+        using var v = new MultiplayerVillage(Recruiting());
+        v.World.Characters.Cold(v.NpcA.Slot)!.RecordId = "recruit-npc";
+        v.World.Players.SetMembership(v.A.Id, v.A.State.Faction, FactionPermission.ReadFunds | FactionPermission.SpendFunds);
+        v.OpenBoth();
+        v.Choose(v.A.Id, v.View(v.A.Id), 0); v.World.RunTick();
+        Assert.Equal(1000, v.A.State.Money);
+        Assert.False(v.World.Characters.Cold(v.NpcA.Slot)!.IsPlayer);
+        Assert.False(v.World.Players.CanControl(v.A.Id, v.NpcA));
+    }
+
+    [Fact]
+    public void PausedChoicesKeepSessionIsolationAndRejectAnOldRevision()
+    {
+        using var v = new MultiplayerVillage();
+        v.OpenBoth();
+        var a = v.View(v.A.Id); var b = v.View(v.B.Id);
+        long tick = v.World.Tick;
+        v.Choose(v.A.Id, a, 0); v.Choose(v.A.Id, a, 0);
+        v.World.ApplyPausedInterfaceCommands();
+        Assert.Equal(tick, v.World.Tick);
+        Assert.Equal(900, v.A.State.Money);
+        Assert.Equal(1000, v.B.State.Money);
+        Assert.Equal(b.SessionId, v.View(v.B.Id).SessionId);
+    }
+
+    [Fact]
+    public void AnNpcAssignedToAnotherPlayerCannotBeRecruitedThroughAnOldConversation()
+    {
+        using var v = new MultiplayerVillage(Recruiting());
+        v.World.Characters.Cold(v.NpcA.Slot)!.RecordId = "recruit-npc";
+        v.OpenBoth();
+        var quote = v.View(v.A.Id);
+        int npcFaction = v.World.Characters.Cold(v.NpcA.Slot)!.Faction;
+        v.World.Players.SetMembership(v.B.Id, npcFaction, FactionPermission.None);
+        v.World.Players.AssignInitial(v.B.Id, v.NpcA);
+        v.Choose(v.A.Id, quote, 0); v.World.RunTick();
+        Assert.Equal(1000, v.A.State.Money);
+        Assert.Equal(npcFaction, v.World.Characters.Cold(v.NpcA.Slot)!.Faction);
+        Assert.True(v.World.Players.CanControl(v.B.Id, v.NpcA));
+        Assert.False(v.World.Players.CanControl(v.A.Id, v.NpcA));
+        Assert.Null(v.Dialogue.PublishConversation(v.A.Id));
     }
 
     [Fact]
@@ -287,8 +570,10 @@ public class DialogueTests
     /// A slaver of the jail town's faction whose reply carries DA 42 (CHOOSE_SLAVES_BUYING) lists its caged slave at the formula price, trunc(20 + 15 + 10.4) x 100 (docs/game/economy.md
     /// 12); buying it takes the money and frees it from cage and slavery, without joining the hero's squad.
     /// </summary>
-    [Fact]
-    public void Buying_a_caged_slave_lists_it_at_its_value_and_paying_frees_it()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Buying_a_caged_slave_lists_it_at_its_value_and_paying_frees_it(bool multiplayer)
     {
         var data = ArrestTests.Town([
             Rec("slaver-c", FcsRecordType.CHARACTER, r => { r.Name = "Slaver"; r.References["dialogue"] = [Ref("trade-d")]; }),
@@ -334,19 +619,47 @@ public class DialogueTests
         var cage = world.Fixtures.Find("0.0:cageA")!;
         Assert.True(world.Fixtures.Imprison(world, slave, cage));
         world.Player.Money = 10000;
-
-        world.Commands.Enqueue(new TalkOrder(hero, slaver) { Tick = world.Tick });
+        var firstActor = new PlayerId(2); var secondActor = new PlayerId(3);
+        CharacterId otherHero = CharacterId.None, otherSlaver = CharacterId.None;
+        if (multiplayer)
+        {
+            int otherFaction = data.RegisterFaction("other", "Other", data.PlayerFaction);
+            world.Players.Register(firstActor); world.Players.Register(secondActor);
+            world.Players.SetMembership(firstActor, data.PlayerFaction, FactionPermission.All);
+            world.Players.SetMembership(secondActor, otherFaction, FactionPermission.All);
+            world.Players.Find(secondActor)!.State.Money = 10000;
+            world.Players.AssignInitial(firstActor, hero);
+            otherHero = Spawn("other", centre + new Vector3(110, 0, 20), NewSquad(otherFaction), c => (c.Faction, c.IsPlayer) = (otherFaction, true));
+            otherSlaver = Spawn("other slaver", centre + new Vector3(110, 0, 0), slavers, c => (c.Faction, c.RecordId) = (city, "slaver-c"));
+            world.Players.AssignInitial(secondActor, otherHero);
+        }
+        void Send(SimCommand command) { if (multiplayer) world.Commands.Enqueue(firstActor, command); else world.Commands.Enqueue(command); }
+        ConversationView Talk() => (multiplayer ? dialogue.PublishConversation(firstActor) : dialogue.PublishConversation())!;
+        CharacterTradeView Window() => (multiplayer ? dialogue.PublishCharacterTrade(firstActor) : dialogue.PublishCharacterTrade())!;
+        Send(new TalkOrder(hero, slaver) { Tick = world.Tick });
+        if (multiplayer) world.Commands.Enqueue(secondActor, new TalkOrder(otherHero, otherSlaver) { Tick = world.Tick });
         world.RunTicks(2);
-        Assert.Equal("Looking to trade?", dialogue.PublishConversation()!.Text);
-        world.Commands.Enqueue(new DialogueChoice(0) { Tick = world.Tick });
+        Assert.Equal("Looking to trade?", Talk().Text);
+        Send(new DialogueChoice(0) { Tick = world.Tick, SessionId = Talk().SessionId, ChoiceRevision = Talk().ChoiceRevision });
+        if (multiplayer)
+        {
+            var other = dialogue.PublishConversation(secondActor)!;
+            world.Commands.Enqueue(secondActor, new DialogueChoice(0) { Tick = world.Tick, SessionId = other.SessionId, ChoiceRevision = other.ChoiceRevision });
+        }
         world.RunTicks(2);
-        var window = dialogue.PublishCharacterTrade()!;
+        var window = Window();
         Assert.Equal("Buying Slaves", window.Title);
         Assert.Equal([(slave, 4500L)], window.Rows.Select(r => (r.Character, r.Price)));
 
-        world.Commands.Enqueue(new ConfirmCharacterTrade([slave]) { Tick = world.Tick });
+        Send(new ConfirmCharacterTrade([slave]) { Tick = world.Tick, TradeId = window.Id });
+        if (multiplayer)
+        {
+            var other = dialogue.PublishCharacterTrade(secondActor)!;
+            world.Commands.Enqueue(secondActor, new ConfirmCharacterTrade([slave]) { Tick = world.Tick, TradeId = other.Id });
+        }
         world.RunTicks(2);
-        Assert.Null(dialogue.PublishCharacterTrade());
+        Assert.Null(multiplayer ? dialogue.PublishCharacterTrade(firstActor) : dialogue.PublishCharacterTrade());
+        if (multiplayer) Assert.Equal(10000, world.Players.Find(secondActor)!.State.Money);
         Assert.Equal(5500, world.Player.Money);
         Assert.Equal((0, false, false), (sc.SlaveState, sc.IsImprisoned, sc.IsPlayer));
         Assert.False(cage.Lock!.Locked);

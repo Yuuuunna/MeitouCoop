@@ -111,7 +111,7 @@ sealed class CharacterAssembly(PopulationData data)
         AnimalData.From(record) is { } animal ? MakeAnimalFighter(animal) : MakeFighter(inventory, medical, raceId);
 
     /// <summary>The FACTION record of the character's faction (null: none or not in the data).</summary>
-    GameRecord? FactionRecord(CharacterCold cold) => (uint)cold.Faction < (uint)data.Factions.Count ? data.Db.Find(data.Factions[cold.Faction].Id) : null;
+    GameRecord? FactionRecord(CharacterCold cold) => (uint)cold.Faction < (uint)data.Factions.Count ? data.Db.Find(data.FactionTemplate(cold.Faction)) : null;
 
     /// <summary>
     /// Gives what the character has on (any item outside the main grid and the bag) without a colour the wearer's scheme, which it keeps (<c>AppearanceBase::createAttachedObject</c>,

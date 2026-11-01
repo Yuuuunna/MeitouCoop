@@ -11,6 +11,8 @@ using Meitou.Simulation;
 using Meitou.Simulation.Construction;
 using Meitou.Ui;
 
+using Meitou.Runtime.Placement;
+
 namespace Meitou.Game;
 
 /// <summary>
@@ -81,7 +83,7 @@ sealed partial class PlayerInterface
             CloseInventoryWindows();
             faithfulScreens.Open("build");
             CloseContextMenu();
-            if (session.Simulation.Speed != 0) session.Simulation.TogglePause();   // a player pause: the speed buttons resume it
+            if (session.CanChangeSpeed && session.TimeScale != 0) session.TogglePause();   // a player pause: the speed buttons resume it
         }
         else
         {
@@ -371,7 +373,7 @@ sealed partial class PlayerInterface
     {
         if (buildQueue.Count == 0) return;
         Sound("Building_Confirm");
-        Say(new PlaceBuildings([.. buildQueue.Select(q => new PlannedBuilding(q.Building.Id, q.Position, q.Rotation, q.Floor, q.Parent))]) { Tick = session.World.Tick });
+        Say(new PlaceBuildings([.. buildQueue.Select(q => new PlannedBuilding(q.Building.Id, q.Position, q.Rotation, q.Floor, q.Parent))]) { Tick = session.CommandTick, Faction = session.ActiveFaction });
         buildQueue.Clear();
         SetBuildMode(false);
     }
@@ -561,47 +563,49 @@ sealed partial class PlayerInterface
     /// </summary>
     List<(string Caption, Action Give)> SiteVerbs(BuildingSnapshot site)
     {
+        var snapshot = session.CurrentSnapshot;
         var verbs = new List<(string, Action)>();
         var selection = SelectedIds();
         if (selection.Count == 0) return verbs;
         // Building work is the owner's (the construction system ignores it on another faction's); the other verbs are as before.
-        bool own = site.Owner == session.World.Player.Faction;
+        bool own = site.Owner == session.ActiveFaction;
         if (own && (site.Destroyed || site.Complete && site.NeedsWork)) verbs.Add(("Repair", () => OrderConstruction(site, selection)));
         else if (own && !site.Complete) verbs.Add(("Build", () => OrderConstruction(site, selection)));
         AddMachineVerb(verbs, site, selection);
         if (site.Complete && Machine(site.Id) is { } machine)
         {
             if (machine.IsStorage)
-                verbs.Add(("Auto-Haul", () => Say(new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE, site.Id) { Tick = session.World.Tick })));
+                verbs.Add(("Auto-Haul", () => Say(new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
             // With Shift the dispatch turns Inventory (26) on a storage into Hauling to (124) and Man Turret (146) into Turret guard (234) (FUN_1407fa650, docs/game/ui-input.md "Click").
             if (machine.IsStorage)
-                verbs.Add(("Inventory", () => { if (SlowModifier) Say(new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE, site.Id) { Tick = session.World.Tick }); else OpenStorage(site); }));
+                verbs.Add(("Inventory", () => { if (SlowModifier) Say(new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }); else OpenStorage(site); }));
             else if (machine.Function == MachineData.ItemFurnaceFunction) verbs.Add(("Inventory", () => OpenStorage(site)));
             // A corpse machine (function 11) offers Corpse Disposal (136): with Shift the Corpse disposal job (137 and its finder 138), else the carried corpses go in.
             if (own && machine.Function == Meitou.Data.World.TownBuildings.CorpseDisposalFunction)
                 verbs.Add(("Corpse Disposal", () => Say(SlowModifier
-                    ? (Meitou.Simulation.SimCommand)new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.FEED_CORPSE_INTO_MACHINE, site.Id) { Tick = session.World.Tick }
-                    : new Meitou.Simulation.Production.DisposeCorpseOrder(selection, site.Id) { Tick = session.World.Tick })));
+                    ? (Meitou.Simulation.SimCommand)new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.FEED_CORPSE_INTO_MACHINE, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
+                    : new Meitou.Simulation.Production.DisposeCorpseOrder(selection, site.Id) { Tick = session.CommandTick, SiteRevision = site.SiteRevision,
+                        Bodies = selection.Select(id => snapshot.Characters.FirstOrDefault(c => c.Id == id)?.Carrying ?? CharacterId.None).ToArray() })));
             if (machine.Function == Meitou.Data.World.ObjectRanges.TurretFunction)
                 verbs.Add(("Man Turret", () => Say(SlowModifier
-                    ? (Meitou.Simulation.SimCommand)new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.USE_TURRET, site.Id) { Tick = session.World.Tick }
-                    : new Meitou.Simulation.Production.UseTurretOrder(selection, site.Id) { Tick = session.World.Tick })));
+                    ? (Meitou.Simulation.SimCommand)new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.USE_TURRET, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
+                    : new Meitou.Simulation.Production.UseTurretOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
         }
-        if (site.LevelPlacement is null) verbs.Add(("Dismantle", () => Say(new DismantleOrder(selection, site.Id) { Tick = session.World.Tick })));
+        if (site.LevelPlacement is null) verbs.Add(("Dismantle", () => Say(new DismantleOrder(selection, site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick })));
         if (site.LevelPlacement is null && !site.Complete && site.Progress <= 0 && site.Materials.All(m => m.Delivered <= 0))
-            verbs.Add(("Cancel Construction", () => Say(new CancelSite(site.Id) { Tick = session.World.Tick })));
+            verbs.Add(("Cancel Construction", () => Say(new CancelSite(site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick })));
         // A finished building's doors: the door panel's open/close and lock buttons, for all its doors at once (docs/simulation.md "Cages, beds and locks").
         var doors = session.CurrentSnapshot.Doors.Where(d => d.Key.Building == site.Id).Select(d => d.Value).ToList();
         if (site.Complete && doors.Count > 0)
         {
             bool open = doors.Any(d => d.Motion == Meitou.Simulation.Locks.DoorMotion.Open);
-            verbs.Add((open ? "Close Doors" : "Open Doors", () => Say(new Meitou.Simulation.Locks.ToggleDoorsOrder(site.Id) { Tick = session.World.Tick })));
+            verbs.Add((open ? "Close Doors" : "Open Doors", () => Say(new Meitou.Simulation.Locks.ToggleDoorsOrder(site.Id) { Tick = session.CommandTick })));
             // The Security button's sound (FUN_140547060): Build_Lock is the state being left.
             bool locked = doors.All(d => d.WantsLock);
             verbs.Add((locked ? "Unlock Doors" : "Lock Doors", () =>
             {
                 Sound("Building_Lock_Unlock", "Build_Lock", locked ? "Lock_Building" : "Unlock_Building");
-                Say(new Meitou.Simulation.Locks.ToggleDoorLocksOrder(site.Id) { Tick = session.World.Tick });
+                Say(new Meitou.Simulation.Locks.ToggleDoorLocksOrder(site.Id) { Tick = session.CommandTick });
             }));
         }
         return verbs;
@@ -609,10 +613,10 @@ sealed partial class PlayerInterface
 
     void OrderConstruction(BuildingSnapshot site, IReadOnlyList<CharacterId> selection)
     {
-        Say(new BuildOrder(selection, site.Id) { Tick = session.World.Tick });
+        Say(new BuildOrder(selection, site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick });
         if (SlowModifier) Say(new Meitou.Simulation.Production.AddJob(selection,
             site.Destroyed || site.Complete ? Meitou.Data.Gameplay.Ai.TaskType.REPAIR : Meitou.Data.Gameplay.Ai.TaskType.BUILD,
-            site.Id) { Tick = session.World.Tick });
+            site.Id) { Tick = session.CommandTick });
     }
 
     /// <summary>A right press on a site with characters selected: a click released within the hold time orders the build, held longer it opens the menu (true: taken).</summary>
@@ -642,14 +646,14 @@ sealed partial class PlayerInterface
                 : job.Function == MachineData.TrainingFunction ? Meitou.Data.Gameplay.Ai.TaskType.USE_TRAINING_DUMMY
                 : job.Operable ? (job.IsAutomatic ? Meitou.Data.Gameplay.Ai.TaskType.OPERATE_AUTOMATIC_MACHINERY : Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY)
                 : Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE;
-            Say(new Meitou.Simulation.Production.AddJob(SelectedIds(), type, pending.Site.Id) { Tick = session.World.Tick });
+            Say(new Meitou.Simulation.Production.AddJob(SelectedIds(), type, pending.Site.Id) { SiteRevision = pending.Site.SiteRevision, Tick = session.CommandTick });
             return;
         }
         // With Shift the Build order becomes the Engineer job (125), which builds any unfinished site.
         if (QuickConstruction(pending.Site)) OrderConstruction(pending.Site, SelectedIds());
-        else if (Machine(pending.Site.Id) is { Operable: true } or { Function: MachineData.TrainingFunction }) Say(new Meitou.Simulation.Production.OperateOrder(SelectedIds(), pending.Site.Id) { Tick = session.World.Tick });
+        else if (Machine(pending.Site.Id) is { Operable: true } or { Function: MachineData.TrainingFunction }) Say(new Meitou.Simulation.Production.OperateOrder(SelectedIds(), pending.Site.Id) { SiteRevision = pending.Site.SiteRevision, Tick = session.CommandTick });
         else if (Machine(pending.Site.Id) is { Function: Meitou.Data.World.ObjectRanges.TurretFunction })
-            Say(new Meitou.Simulation.Production.UseTurretOrder(SelectedIds(), pending.Site.Id) { Tick = session.World.Tick });   // the original's order 146 USE_TURRET
+            Say(new Meitou.Simulation.Production.UseTurretOrder(SelectedIds(), pending.Site.Id) { SiteRevision = pending.Site.SiteRevision, Tick = session.CommandTick });   // the original's order 146 USE_TURRET
         else if (Machine(pending.Site.Id) is { IsStorage: true } or { Function: MachineData.ItemFurnaceFunction }) OpenStorage(pending.Site);
         else if (!SiteIsObject(pending.Site) && Ray(pending.At) is { } ray && MoveHit(ray.Origin, ray.Direction) is { } hit)
         {

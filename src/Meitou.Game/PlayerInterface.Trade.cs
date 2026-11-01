@@ -22,6 +22,7 @@ sealed partial class PlayerInterface
 {
     /// <summary>The trader whose window the interface opened (none: no trade shown) and whether its closing was already sent.</summary>
     CharacterId shownTrader = CharacterId.None;
+    ulong shownTradeSession;
     bool tradeCloseSent;
 
     /// <summary>Opens the trader beside the inventory when a trade opens, and ends the trade when the player closes its window.</summary>
@@ -33,12 +34,14 @@ sealed partial class PlayerInterface
         {
             if (!shownTrader.IsNone && faithfulScreens.IsOpen("trader")) faithfulScreens.Close("trader");
             shownTrader = CharacterId.None;
+            shownTradeSession = 0;
             tradeCloseSent = false;
             return;
         }
-        if (trade.Trader != shownTrader)
+        if (trade.Trader != shownTrader || trade.SessionId != shownTradeSession)
         {
             shownTrader = trade.Trader;
+            shownTradeSession = trade.SessionId;
             tradeCloseSent = false;
             faithfulScreens.ResetScroll("trader");
             if (!faithfulScreens.IsOpen("inventory")) faithfulScreens.Open("inventory");
@@ -48,7 +51,7 @@ sealed partial class PlayerInterface
         }
         if (!faithfulScreens.IsOpen("trader") && !tradeCloseSent)
         {
-            Say(new CloseTrade { Tick = session.World.Tick });
+            Say(new CloseTrade { Tick = session.CommandTick, SessionId = trade.SessionId });
             tradeCloseSent = true;
         }
     }
@@ -228,14 +231,14 @@ sealed partial class PlayerInterface
     /// </summary>
     void Sell(TradeView trade, InventoryItemToken token, int quantity, int? x, int y)
     {
-        var sale = new SellItem(token, quantity) { Tick = session.World.Tick, X = x, Y = y };
+        var sale = new SellItem(token, quantity) { Tick = session.CommandTick, X = x, Y = y, SessionId = trade.SessionId, InventoryRevision = trade.GoodsRevision };
         if (trade.Goods.FirstOrDefault(g => g.Index == token.Index) is not { FenceOdds: { } odds })
         {
             Say(sale);
             return;
         }
         int caught = 100 - (int)MathF.Floor(odds * 100 + 0.5f);
-        Confirm("FENCING ITEM", $"You have a {caught}% chance of getting caught selling this stolen item.\nFence it anyway?", () => Say(sale with { Tick = session.World.Tick }));
+        Confirm("FENCING ITEM", $"You have a {caught}% chance of getting caught selling this stolen item.\nFence it anyway?", () => Say(sale with { Tick = session.CommandTick }));
         UpdateMenuPause();
     }
 

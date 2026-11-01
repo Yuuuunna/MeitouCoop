@@ -14,6 +14,7 @@ public sealed partial class DialogueSystem
     /// </summary>
     void RunEffects(World world, Conversation c, DialogueNode line, CharacterId me)
     {
+        if (!PrepareEffects(world, c, line, me)) { c.Ended = true; return; }
         var mc = Cold(world, me);
         if (mc is not null)
         {
@@ -22,18 +23,18 @@ public sealed partial class DialogueSystem
             foreach (string d in line.UnlockButKeepMe) Lock(mc, d, false);
             foreach (string d in line.Locks) Lock(mc, d, true);
         }
-        if (line.Interrupt is { } interrupt) interrupts[me] = interrupt;
+        if (line.Interrupt is { } interrupt) SetInterrupt(c, me, interrupt);
         foreach (var (factionId, amount) in line.ChangeRelations)
         {
             int f = data.Relations.IndexOf(factionId);
-            if (f < 0 || amount == 0 || world.Player.Faction < 0) continue;
-            ChangeRelation(world, f, world.Player.Faction, amount);
-            world.Post(amount > 0 ? Loc.Tr("Relations with {1} improved by {2}", data.Factions[f].Name, amount) : Loc.Tr("Relations with {1} decreased by {2}", data.Factions[f].Name, -amount));
+            if (f < 0 || amount == 0 || c.Faction < 0) continue;
+            ChangeRelation(world, f, c.Faction, amount);
+            Post(world, c, amount > 0 ? Loc.Tr("Relations with {1} improved by {2}", data.Factions[f].Name, amount) : Loc.Tr("Relations with {1} decreased by {2}", data.Factions[f].Name, -amount));
         }
         CrowdTrigger(world, c, line, me);
         var target = c.Player;
         var tc = Cold(world, target);
-        if (tc is not null) GiveItems(world, line, target, tc);
+        if (tc is not null) GiveItems(world, c, line, target, tc);
         if (line.TriggerCampaigns.Count > 0) population?.TriggerFromDialogue(world, me, c.Player, line.TriggerCampaigns);
         bool takeOver = false, enslave = false;
         foreach (var effect in line.Effects)
@@ -43,7 +44,7 @@ public sealed partial class DialogueSystem
                 case DialogueActions.Trade:
                     c.Ended = true;
                     if (mc is { SquadId: >= 0 } && world.Squads.Find(mc.SquadId)?.Shop is not null)
-                        world.Defer(new Trading.OpenTrade(target, me) { Tick = world.Tick + 1 });
+                        DeferPlayer(world, c, new Trading.OpenTrade(target, me) { Tick = world.Tick + 1 });
                     return;
                 case DialogueActions.AffectRelations when mc is not null && tc is not null:
                     ChangeRelation(world, mc.Faction, tc.Faction, effect.Value);
@@ -60,30 +61,32 @@ public sealed partial class DialogueSystem
                     Attack(world, me, target);
                     break;
                 case DialogueActions.TakeMoney when tc is not null:
-                    Pay(world, tc, -effect.Value);
-                    world.Post(effect.Value > 100000 ? Loc.Tr("Paid c.{1}k", effect.Value / 1000) : Loc.Tr("Paid c.{1}", effect.Value.ToString("N0", CultureInfo.InvariantCulture)));
+                    Pay(world, tc, -(long)effect.Value);
+                    Post(world, c, effect.Value > 100000 ? Loc.Tr("Paid c.{1}k", effect.Value / 1000) : Loc.Tr("Paid c.{1}", effect.Value.ToString("N0", CultureInfo.InvariantCulture)));
                     break;
                 case DialogueActions.GiveMoney when tc is not null:
                     Pay(world, tc, effect.Value);
                     break;
                 case DialogueActions.CharacterEditor:
                     c.Ended = true;
-                    request = new DialogueRequest(++requestId, DialogueRequestKind.CharacterEditor, target, me);
+                    var editSession = Editing.CharacterEditing.OpenSession(world, c.Actor, target, me, Editing.EditKind.Surgery, paid: true);
+                    if (editSession != Guid.Empty)
+                        InteractionOf(c).Request = new DialogueRequest(++requestId, DialogueRequestKind.CharacterEditor, target, me) { EditSession = editSession };
                     return;
                 case DialogueActions.ChooseSlavesSelling or DialogueActions.ChooseSlavesBuying or DialogueActions.ChooseAnimalsBuying when target != me:
                     // The character trading window opens as the conversation closes (OpenCharacterTrade), a speech bubble's at once; val0 is the price override.
-                    characterTradeAfter = (effect.Action switch
+                    InteractionOf(c).TradeAfter = (effect.Action switch
                     {
                         DialogueActions.ChooseSlavesSelling => CharacterTradeKind.SlaveSelling,
                         DialogueActions.ChooseSlavesBuying => CharacterTradeKind.SlaveBuying,
                         _ => CharacterTradeKind.AnimalBuying,
-                    }, me, target, effect.Value);
-                    if (!ReferenceEquals(open, c)) { OpenCharacterTrade(world); break; }
+                    }, me, target, effect.Value, c);
+                    if (!ReferenceEquals(InteractionOf(c).Open, c)) { OpenCharacterTrade(world, InteractionOf(c)); break; }
                     c.Ended = true;
                     return;
                 case ChoosePrisonerBail when Arrests is not null:
                     c.Ended = true;
-                    bailAfter = (me, target);   // the bail list opens as the conversation closes (OpenBail)
+                    InteractionOf(c).BailAfter = (me, target, c);   // the bail list opens as the conversation closes
                     return;
                 case DialogueActions.AssignBounty when tc is not null && mc is not null && effect.Value > 0 && data.Relations.Contains(mc.Faction):
                 {
@@ -110,7 +113,7 @@ public sealed partial class DialogueSystem
                     takeOver = enslave = true;
                     break;
                 case DialogueActions.GiveTargetMySlaves when tc is not null && mc is not null:
-                    GiveSlaves(world, me, mc, tc);
+                    GiveSlaves(world, c, me, mc, tc);
                     break;
                 case DialogueActions.SurrenderNonHumans when tc is not null && mc is not null:
                     SurrenderNonHumans(world, me, mc, tc);
@@ -136,7 +139,7 @@ public sealed partial class DialogueSystem
                     tc.Recognition = 0;
                     break;
                 case DialogueActions.IncreaseFactionRank when mc is not null:
-                    data.Relations.RaiseRank(mc.Faction, effect.Value);
+                    RaiseFactionRank(world, c, mc.Faction, effect.Value);
                     break;
                 case DialogueActions.LockThisDialog when mc is not null && c.Root is { } current:
                     Lock(mc, current.StringId, true);
@@ -166,7 +169,7 @@ public sealed partial class DialogueSystem
                     world.Characters.Next[runner].Mode = SpeedMode.Free;   // the original's speed mode 2
                     break;
                 case DialogueActions.SeparateToMyOwnSquad when mc is not null:
-                    Separate(world, mc.IsPlayer || mc.Faction == world.Player.Faction ? target : me);
+                    Separate(world, mc.IsPlayer || mc.Faction == c.Faction ? target : me);
                     break;
                 case DialogueActions.DeclareWar when mc is not null && tc is not null && data.Relations.Contains(mc.Faction) && data.Relations.Contains(tc.Faction):
                     PlayerRelations.DeclareWar(world, data.Relations, mc.Faction, tc.Faction);
@@ -190,7 +193,7 @@ public sealed partial class DialogueSystem
         }
         if (takeOver) Arrests?.TakeOver(world, me, target, enslave);
         // Last, for a speaker squad outside the player's faction (FUN_140273330): change AI replaces its packages, then AI contract starts the contract aimed at the target.
-        if (mc is { SquadId: >= 0 } && mc.Faction != world.Player.Faction && !mc.IsPlayer)
+        if (mc is { SquadId: >= 0 } && mc.Faction != c.Faction && !mc.IsPlayer)
         {
             if (line.ChangeAi is { } package) world.Defer(new Ai.ChangeAi(mc.SquadId, package) { Tick = world.Tick + 1 });
             if (line.AiContract is { } contract) world.Defer(new Ai.StartContract(mc.SquadId, contract.Package, contract.Hours, target.IsNone ? null : target) { Tick = world.Tick + 1 });
@@ -204,14 +207,14 @@ public sealed partial class DialogueSystem
     /// <c>give item</c> (<c>FUN_140680560</c>): each listed item made and put into the target's inventory, val0 2..49 its stack count, and "Received &lt;name&gt;" posted. What does not fit
     /// is dropped at the target's feet (engine choice; the original's add has no such case in this code).
     /// </summary>
-    void GiveItems(World world, DialogueNode line, CharacterId target, CharacterCold tc)
+    void GiveItems(World world, Conversation c, DialogueNode line, CharacterId target, CharacterCold tc)
     {
         foreach (var (id, count) in line.GiveItems)
         {
             if (data.Items.Create(id, count is >= 2 and <= 49 ? count : 1) is not { } item) continue;
             string name = item.Name;
             if (tc.Inventory?.Add(item) != true && Position(world, target) is { } at) world.GroundItems.Drop(item, at, 0);
-            world.Post($"{Loc.Tr("Received")} {name}");
+            Post(world, c, $"{Loc.Tr("Received")} {name}");
         }
     }
 
@@ -253,16 +256,44 @@ public sealed partial class DialogueSystem
     void ChangeRelation(World world, int a, int b, int amount)
     {
         var (before, after) = data.Relations.Add(a, b, amount);
-        int other = a == world.Player.Faction ? b : a;
-        if (b == world.Player.Faction || a == world.Player.Faction)
-            if (PlayerRelations.Notice(data.Factions[other].Name, before, after) is { } text) world.Post(text);
+        if (world.IsPlayerFaction(a) && data.Relations.Contains(b) && PlayerRelations.Notice(data.Factions[b].Name, before, after) is { } first) world.PostFaction(a, first);
+        if (b != a && world.IsPlayerFaction(b) && data.Relations.Contains(a) && PlayerRelations.Notice(data.Factions[a].Name, before, after) is { } second) world.PostFaction(b, second);
     }
 
-    /// <summary>Money to (or from, when negative) the character's faction: the player's purse, else its squad's.</summary>
     static void Pay(World world, CharacterCold who, long amount)
     {
-        if (who.IsPlayer || who.Faction == world.Player.Faction) world.Player.Money = Math.Max(0, world.Player.Money + amount);
-        else if (who.SquadId >= 0 && world.Squads.Find(who.SquadId) is { } squad) squad.Money = Math.Max(0, squad.Money + amount);
+        if (who.IsPlayer || world.IsPlayerFaction(who.Faction))
+        {
+            if (who.Faction < 0) return;
+            var funds = world.Factions.GetOrCreate(who.Faction);
+            if (amount >= 0) funds.TryCredit(amount); else funds.TryDebit(-amount);
+        }
+        else if (who.SquadId >= 0 && world.Squads.Find(who.SquadId) is { } squad)
+            squad.Money = amount >= 0 ? Math.Min(squad.Money, long.MaxValue - amount) + amount : Math.Max(0, squad.Money + amount);
+    }
+
+    bool PrepareEffects(World world, Conversation c, DialogueNode line, CharacterId speaker)
+    {
+        if (!Authorized(world, c)) return false;
+        var target = Cold(world, c.Player);
+        if (target is { IsPlayer: true } && Funds(world, c) is { } funds)
+        {
+            long balance = funds.Money;
+            foreach (var effect in line.Effects)
+            {
+                long delta = effect.Action switch { DialogueActions.TakeMoney => -(long)effect.Value, DialogueActions.GiveMoney => effect.Value, _ => 0 };
+                if (delta < 0 && (!CanSpend(world, c) || balance < -delta))
+                { Post(world, c, "Not enough money or no permission to spend this faction's funds."); return false; }
+                if (delta > 0 && balance > long.MaxValue - delta)
+                { Post(world, c, "This payment would exceed the account balance limit."); return false; }
+                balance += delta;
+            }
+        }
+        if (line.Effects.Any(e => e.Action is DialogueActions.JoinSquadFast or DialogueActions.JoinSquadWithEdit)
+            && Cold(world, speaker) is { IsPlayer: false } recruit && target is { IsPlayer: true }
+            && (!CanJoin(world, c, target) || c.Actor is not null && world.Players.KnownControl(recruit.Entity) is not null))
+        { Post(world, c, "It looks like your squad is a little full, or you cannot manage this faction."); return false; }
+        return true;
     }
 
     /// <summary>The speaker and the awake members of its squad near the target attack it from the next tick (DA_ATTACK_CHASE_FOREVER's task 101 on the target's squad, engine reading).</summary>
@@ -314,7 +345,7 @@ public sealed partial class DialogueSystem
             case "MYNAME": return NameOf(world, me);
             case "YOURNAME": return Cold(world, other)?.Name ?? "you";
             case "TARGETFACTION": return Cold(world, other) is { } o && data.Relations.Contains(o.Faction) ? data.Factions[o.Faction].Name : "you";
-            case "PLAYERFACTION": return data.Relations.Contains(world.Player.Faction) ? data.Factions[world.Player.Faction].Name : "";
+            case "PLAYERFACTION": return data.Relations.Contains(c.Faction) ? world.Factions.Find(c.Faction)?.Name ?? data.Factions[c.Faction].Name : "";
         }
         if (dialogue.WordSwap(token) is not { } swap) return "";
         var candidates = new List<DialogueNode>();

@@ -50,7 +50,7 @@ sealed partial class GameHost
         var view = session.Camera.Strategy;
         return new SaveCaptureOptions
         {
-            DataFiles = saveDataFiles, Placements = townPlacements, Levels = saveLevels, Seed = session.World.Seed ^ (ulong)++captures << 20,
+            DataFiles = saveDataFiles, Placements = townPlacements, Levels = saveLevels, Seed = LocalSession.World.Seed ^ (ulong)++captures << 20,
             View = new SavedView(view.Pivot, view.Yaw, view.Pitch, view.Distance),
         };
     }
@@ -79,18 +79,20 @@ sealed partial class GameHost
     /// </summary>
     void ApplyGameplay()
     {
+        if (session.IsRemote) return;
         var gameplay = Gameplay;
         if (popData is { } data) data.BodyOptions.Dismemberment = gameplay.Dismemberment;
-        foreach (var population in session.World.Systems.OfType<Meitou.Simulation.PopulationSystem>())
+        foreach (var population in LocalSession.World.Systems.OfType<Meitou.Simulation.PopulationSystem>())
             (population.Settings.SquadSizeMultiplier, population.Settings.PopulationMultiplier, population.Settings.RaidSizeMult, population.Settings.RaidFrequencyMult) =
                 (gameplay.SquadSize, gameplay.Population, gameplay.RaidSize, gameplay.RaidFrequency);
-        foreach (var ai in session.World.Systems.OfType<Meitou.Simulation.Ai.AiSystem>()) ai.Settings.TownAttacks = gameplay.TownAttacks;
+        foreach (var ai in LocalSession.World.Systems.OfType<Meitou.Simulation.Ai.AiSystem>()) ai.Settings.TownAttacks = gameplay.TownAttacks;
     }
 
     /// <summary>The system list and its order are <see cref="StandardSystems"/>'(docs/simulation.md "Threading"); built again for each world.</summary>
     Meitou.Simulation.StandardSystemSet BuildSystems(bool interactive, PopulationData? data = null, NewGameSettings? settings = null) =>
-        Meitou.Simulation.StandardSystems.Build(data ?? popData!, simWalkability!, new Meitou.Simulation.StandardSystemOptions
+        simulationContent!.BuildSystems(new Meitou.Simulation.StandardSystemOptions
         {
+            Environment = simulationWeather is { HasWorldOwner: true } currentWeather ? currentWeather.CreateSibling() : simulationWeather,
             // The sandbox compares motion with the original on characters standing still: a hostile foe there must not start a fight by itself. The duel and the battle script their fights.
             // --battle-no-fear: no flee system, so nobody runs away.
             Parts = (IsSandbox || IsDuel || IsBattle ? Meitou.Simulation.StandardParts.All & ~Meitou.Simulation.StandardParts.Aggro : Meitou.Simulation.StandardParts.All)
@@ -113,12 +115,7 @@ sealed partial class GameHost
             // The duel prints what its measured lap holds (MeasureLap).
             Combat = new Meitou.Simulation.Combat.CombatOptions { SelfApproach = false, TickMedical = false, RecordLog = IsDuel, AttackSlots = Math.Clamp(config.AttackSlots, 1, 5), LateDefences = config.LateDefences, GunnerFacesBarrel = config.FixGunnerFacing, PunchReachFix = config.FixPunchReach },
             DoorsCloseBehind = config.DoorsCloseBehind,
-            AnimationLengths = animationLengths,
-            AnimationLibrary = animationLibrary,
-            AnimationBlendRate = popData!.Bodies.Constants.AnimationBlendRate,
-            Ragdolls = characterRigs,
-            RagdollEnvironment = ragdollGeometry,
-        });
+        }, data ?? popData);
 
     /// <summary>Once per frame, between ticks: the notices of the write worker, the requests of the keys, the autosave, a finished read. <paramref name="realDt"/>: the frame's real seconds.</summary>
     void HandleSaves(double realDt)
@@ -132,7 +129,7 @@ sealed partial class GameHost
         if (loadRequestedFolder is { } sourceFolder) { loadRequestedFolder = null; BeginQuickLoad(sourceFolder); }
         if (importRequested is { } import) { importRequested = null; BeginImport(import.Folder, import.Options); }
 
-        if (preparedBase is null && SavesAvailable(out _) && session.World.Player.Exists)
+        if (preparedBase is null && SavesAvailable(out _) && LocalSession.World.Player.Exists)
         {
             var (data, from, options) = (popData!, loadedSave, CaptureOptions());
             (preparedBase, preparedFor) = (Task.Run(() => SaveCapture.PrepareBase(data, from, options)), from);
@@ -145,6 +142,7 @@ sealed partial class GameHost
     /// </summary>
     void Autosave(double realDt)
     {
+        if (!session.CanSaveWorld) { autosaveDue = false; autosaveSeconds = 0; return; }
         if (autosaveDue)
         {
             autosaveDue = false;
@@ -153,7 +151,7 @@ sealed partial class GameHost
             QuickSaveNow(QuickSave.AutosaveFolder(config.AutosaveIndex));
             return;
         }
-        if (!Gameplay.AutoSave || Covered || session.Simulation.IsPaused || !session.World.Player.Exists || !SavesAvailable(out _)) return;
+        if (!Gameplay.AutoSave || Covered || LocalSession.Simulation.IsPaused || !LocalSession.World.Player.Exists || !SavesAvailable(out _)) return;
         autosaveSeconds += realDt;
         if (autosaveSeconds < Gameplay.AutoSaveMinutes * 60 || Busy()) return;
         autosaveSeconds = 0;
@@ -164,6 +162,7 @@ sealed partial class GameHost
     /// <summary>Whether this run has a game to save and load: the population (so not <c>--no-population</c> or the sandbox).</summary>
     bool SavesAvailable(out string reason)
     {
+        if (!session.CanSaveWorld) { reason = "The server manages world saves."; return false; }
         reason = popData is null || population is null || IsFlat ? "No game to save or load here (needs the town population)" : "";
         return reason.Length == 0;
     }
@@ -173,8 +172,8 @@ sealed partial class GameHost
     void QuickSaveNow(string? destination = null)
     {
         if (!SavesAvailable(out string reason)) { player.Notice(reason, true); return; }
-        session.SettleAhead();   // a tick run ahead counts as run: the saved world and its clock agree
-        var world = session.World;
+        LocalSession.SettleAhead();   // a tick run ahead counts as run: the saved world and its clock agree
+        var world = LocalSession.World;
         if (!world.Player.Exists) { player.Notice("Nothing to save: no player squad (start a new game)", true); return; }
         if (Busy()) { player.Notice("Save or load still in progress", true); return; }
         var watch = Stopwatch.StartNew();
@@ -220,7 +219,8 @@ sealed partial class GameHost
     /// <summary>The save's NPC platoons made since the last call (one line each), to the log.</summary>
     void PrintSavedLog()
     {
-        if (session.World.Saved is { } saved)
+        if (session.IsRemote) return;
+        if (LocalSession.World.Saved is { } saved)
             foreach (var line in saved.TakeLog()) Console.WriteLine($"saved     {line}");
     }
 
@@ -230,8 +230,16 @@ sealed partial class GameHost
     /// </summary>
     void WriteWeather(SaveGame game, int day, double hour)
     {
-        if (ActiveWeather is not { } weather || game.Biomes is not { } biomes || weather.World.ForcedWeather is not null) return;
-        SaveWeather.Write(biomes, weather.World.Snapshot(), new Meitou.Data.World.WeatherTime(day, hour), popData?.Db);
+        if (game.Biomes is not { } biomes) return;
+        var weather = ActiveWeather;
+        var schedules = simulationWeather?.Schedule.World.Snapshot();
+        if (schedules is null)
+        {
+            if (weather is null || weather.World.ForcedWeather is not null) return;
+            schedules = weather.World.Snapshot();
+        }
+        SaveWeather.Write(biomes, schedules, new Meitou.Data.World.WeatherTime(day, hour), popData?.Db);
+        if (weather is null) return;
         var camera = game.Camera;
         var state = weather.State;
         camera.SkyUpdating = false;
@@ -335,7 +343,7 @@ sealed partial class GameHost
         {
             var data = nextData;
             // A world that fails to load leaves the old one running (ReplaceWorld drops the half-made one).
-            session.ReplaceWorld(built.Systems, world =>
+            LocalSession.ReplaceWorld(built.Systems, world =>
             {
                 loaded = SaveLoader.Load(world, read.Result, data, loadOptions ?? new SaveLoadOptions { Appearances = data.Appearances });
                 if (world.Squads.Find(world.Player.Squad) is { Members.Count: > 0 } squad)
@@ -354,17 +362,20 @@ sealed partial class GameHost
         difficulty = nextDifficulty;
         population = built.Population;
         aggro = built.Aggro;
-        if (nav is not null) population!.ZoneGate = zone => nav.Walkability.World.Contains(zone);
+        if (nav is not null) population!.ZoneGate = nav.IsReady;
         loadedSave = loaded;
         preparedBase = null;
         worldEpoch++;
-        var world = session.World;
+        var world = LocalSession.World;
         BloodForNewWorld(read.Result.Decals);
         session.Clock.SetTime(loaded!.Clock.Day, loaded.Clock.HourOfDay);
+        simulationWeather = world.Systems.OfType<Meitou.Runtime.SimulationWeather>().FirstOrDefault();
+        simulationWeather?.Reset();
         // The regions' weather the save holds (docs/formats/save.md "BIOMES"); a save without (an old Meitou one) keeps the schedule rolled from day 0.
-        if (ActiveWeather is { } weather && read.Result.Biomes is { } biomes && SaveWeather.Read(biomes) is { Count: > 0 } regions)
+        if (read.Result.Biomes is { } biomes && SaveWeather.Read(biomes) is { Count: > 0 } regions)
         {
-            weather.Restore(regions, loaded.Clock.Day, loaded.Clock.HourOfDay);
+            ActiveWeather?.Restore(regions, loaded.Clock.Day, loaded.Clock.HourOfDay);
+            simulationWeather?.Restore(regions, new Meitou.Data.World.WeatherTime(loaded.Clock.Day, loaded.Clock.HourOfDay));
             Console.WriteLine($"load      weather of {regions.Count} region(s) from the save");
         }
         playerSquad = world.Squads.Find(world.Player.Squad);
@@ -409,21 +420,19 @@ sealed partial class GameHost
     /// <summary>
     /// The navmesh of the zones round <paramref name="at"/> (the ones already loaded cost nothing): done when they are, or after 15 s (loading goes on without them).
     /// </summary>
-    Task NavmeshAround(Vector3 at)
+    async Task NavmeshAround(Vector3 at)
     {
-        if (nav is null) return Task.CompletedTask;
-        long now = Stopwatch.GetTimestamp();
+        if (nav is null) return;
+        var zones = ZoneActivation.ZonesAround(at, 0);
+        using var preparation = LocalSession.World.Regions.Retain(zones, simulation: false);
         var pending = new List<Task>();
-        foreach (var z in ZoneActivation.ZonesAround(at, 0))
+        foreach (var z in zones)
         {
-            if (!navZones.ContainsKey(z)) pending.Add(nav.LoadZone(z));
-            navZones[z] = now;
+            if (!nav.IsReady(z)) pending.Add(nav.PrepareZone(z));
         }
-        if (pending.Count == 0) return Task.CompletedTask;
+        if (pending.Count == 0) return;
         var all = Task.WhenAll(pending);
-        return Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(15))).ContinueWith(t =>
-        {
-            if (t.Result != all) Console.Error.WriteLine("load      the navmesh round the player was not ready after 15 s; loading goes on");
-        }, TaskScheduler.Default);
+        if (await Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(15))).ConfigureAwait(false) == all) await all.ConfigureAwait(false);
+        else Console.Error.WriteLine("load      the navmesh round the player was not ready after 15 s; loading goes on");
     }
 }

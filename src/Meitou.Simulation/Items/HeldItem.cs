@@ -16,12 +16,20 @@ public readonly record struct ItemOwner(ItemHolder Holder, CharacterId Character
 
 /// <summary>
 /// The item on the mouse (the original's single <c>MouseInventory</c> item, <c>FUN_14070e640</c>): taken out of its window, with where it came from so it can go back
-/// (<see cref="PlayerSystem.ReturnHeldItem"/>, <c>FUN_14070d860</c>). <see cref="Grid"/> is the root inventory it was in (a character's, the stock, a storage or container grid; null for a
+/// (<see cref="PlayerSystem.ReturnHeldItem(World)"/>, <c>FUN_14070d860</c>). <see cref="Grid"/> is the root inventory it was in (a character's, the stock, a storage or container grid; null for a
 /// machine's input or output slot, addressed by <see cref="From"/>'s site); <see cref="Section"/>, <see cref="X"/>, <see cref="Y"/> its place there. <see cref="Actor"/> is the character
 /// whose inventory window holds it (the buyer, the looter, the one in reach).
 /// </summary>
 public sealed class HeldItem
 {
+    public CharacterControl? ControlGrant { get; init; }
+    public CharacterControl? SourceControl { get; init; }
+    public System.Numerics.Vector3 Origin { get; init; }
+    public ulong SourceSiteRevision { get; init; }
+    public int SourceFaction { get; init; } = -1;
+    public ulong SourceMembershipRevision { get; init; }
+    public ulong SessionId { get; init; }
+    public ulong ContainerSessionId { get; init; }
     public required ItemInstance Item { get; init; }
     public required ItemOwner From { get; init; }
     public Inventory? Grid { get; init; }
@@ -39,7 +47,9 @@ public sealed record HeldItemView(string Record, string Name, string Material, M
     float? Charge, ItemOwner From, int BagItems)
 {
     public static HeldItemView Of(HeldItem held) => new(held.Item.Record, held.Item.Name, held.Item.MaterialId, held.Item.Type, held.Item.EquipmentSection, held.Item.Quantity,
-        held.Item.Width, held.Item.Height, held.Item.ChargeFraction, held.From, held.Item.Contents?.Items.Count ?? -1) { WornOnlyBy = held.Item.WornOnlyBy, WornNeverBy = held.Item.WornNeverBy, Colour = held.Item.ColourId };
+        held.Item.Width, held.Item.Height, held.Item.ChargeFraction, held.From, held.Item.Contents?.Items.Count ?? -1) { Actor = held.Actor, WornOnlyBy = held.Item.WornOnlyBy, WornNeverBy = held.Item.WornNeverBy, Colour = held.Item.ColourId };
+
+    public CharacterId Actor { get; init; } = CharacterId.None;
 
     /// <summary>The COLOR_DATA it is dyed with (<see cref="ItemInstance.ColourId"/>).</summary>
     public string Colour { get; init; } = "";
@@ -54,9 +64,16 @@ public sealed record HeldItemView(string Record, string Name, string Material, M
 /// A command on the held item. <see cref="Serial"/> is the interface's own number for it: the world publishes the last one it applied (<see cref="WorldSnapshot.HeldSerial"/>), so the
 /// interface knows when its picture of the held item is the world's again.
 /// </summary>
-public abstract record HeldCommand : SimCommand
+public abstract record HeldCommand : InventoryCommand
 {
     public long Serial { get; init; }
+    public IReadOnlyList<CharacterId> ControlledCharacters { get; init; } = [];
+    public long ExpectedHeldSerial { get; init; }
+    public CharacterId HolderActor { get; init; } = CharacterId.None;
+    public ulong DestinationRevision { get; init; }
+    public ulong SessionId { get; init; }
+    public ulong ContainerSessionId { get; init; }
+    public ulong SiteRevision { get; init; }
 }
 
 /// <summary>
@@ -85,4 +102,4 @@ public sealed record ReturnHeld : HeldCommand;
 /// A right click on an item of a player character's own window with no other owner's window open (<c>FUN_140714a20</c>): a money item (function 14) is turned into cats; a grid item goes
 /// to the slot that takes it (equipped), a worn one to the grid, else a prosthetic to its limb, else between the grid and the bag (<see cref="BagOpen"/>). One unit, all with <see cref="All"/>.
 /// </summary>
-public sealed record QuickMoveItem(CharacterId Character, InventoryItemToken Item, bool All, bool BagOpen) : SimCommand;
+public sealed record QuickMoveItem(CharacterId Character, InventoryItemToken Item, bool All, bool BagOpen) : InventoryCommand;

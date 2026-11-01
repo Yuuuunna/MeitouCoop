@@ -53,10 +53,10 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
         if (world.Tick % Math.Max(Settings.CheckEveryTicks, 1) != 0) return;
         var table = world.Characters;
         var state = table.Next;
-        var options = world.Player.SquadAi;
         for (int i = 0; i < table.HighWater; i++)
         {
             if (!state[i].Alive || table.Cold(i) is not { Medical: { Dead: false } med, Race: { } race, Inventory: { } own } cold) continue;
+            var options = world.SquadOptions(cold);
             bool animal = !med.HasStatsObject;
             bool playerSide = PlayerSide(world, cold);
             // A limb in the mouth is all it does (FUN_1405dc650): the usual look for food comes only when the mouth is empty, and the Feed Animals option does not matter to it.
@@ -146,7 +146,7 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
     }
 
     /// <summary>The player's side for eating (<c>FUN_140856bc0</c>): a character of the player's faction (the original also counts one an AI of the player's owns, not modelled).</summary>
-    static bool PlayerSide(World world, CharacterCold cold) => cold.IsPlayer || world.Player.Faction >= 0 && cold.Faction == world.Player.Faction;
+    static bool PlayerSide(World world, CharacterCold cold) => cold.IsPlayer || world.IsPlayerFaction(cold.Faction);
 
     (Inventory? From, ItemInstance? Food) FromMates(World world, int slot, CharacterCold cold, RaceData race, bool animal)
     {
@@ -155,7 +155,9 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
         var here = table.Next[slot].Position;
         foreach (var m in squad.Members)
         {
-            if (!table.TryResolveNext(m, out int s) || table.Cold(s) is not { Inventory.Backpack.Contents: { } bag }) continue;
+            if (!table.TryResolveNext(m, out int s) || table.Cold(s) is not { Inventory.Backpack.Contents: { } bag } donor || donor.Faction != cold.Faction) continue;
+            // Sharing across controllers requires the donor's own opt-in; membership alone cannot open their backpack.
+            if (world.Players.RequiresExplicitControl && (world.PlayerOf(donor) is not { } owner || (owner.SquadAi & SquadAi.Share) == 0)) continue;
             if (Vector3.DistanceSquared(table.Next[s].Position, here) > ShareReach * ShareReach) continue;
             if (Best(bag.Items, race, animal) is { } food) return (bag, food);
         }
@@ -205,7 +207,7 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
         }
         med.Fed = amount * 0.01f;
         var at = world.Characters.Next[slot].Position;
-        world.Floaters?.Enqueue(Floater.Text(world.Characters.IdOf(slot), at, "Ate " + item.Name));
+        if (world.HasFloaterSink) world.EmitFloater(Floater.Text(world.Characters.IdOf(slot), at, "Ate " + item.Name));
         world.EmitSound(SoundKind.Eat, slot, at);
     }
 }

@@ -18,10 +18,11 @@ namespace Meitou.Game;
 /// </summary>
 sealed partial class PlayerInterface
 {
-    sealed class EditorSession(EditKind kind, IReadOnlyList<CharacterId> characters, CharacterId surgeon, bool paid = false)
+    sealed class EditorSession(EditKind kind, IReadOnlyList<CharacterId> characters, CharacterId surgeon, bool paid = false, Guid editSession = default)
     {
         /// <summary>A surgeon's dialogue took the money already (<see cref="EditCharacter.Paid"/>).</summary>
         public bool Paid { get; } = paid;
+        public Guid EditSession { get; } = editSession;
         public EditKind Kind { get; } = kind;
         public IReadOnlyList<CharacterId> Characters { get; } = characters;
         public CharacterId Surgeon { get; } = surgeon;
@@ -70,12 +71,12 @@ sealed partial class PlayerInterface
     /// Opens the editor for <paramref name="characters"/> (the start's squad at creation; one character at a surgeon). Characters without a person's look (animals) are
     /// left out; nothing opens when none is left.
     /// </summary>
-    public bool OpenEditor(EditKind kind, IReadOnlyList<CharacterId> characters, CharacterId surgeon = default, bool paid = false)
+    public bool OpenEditor(EditKind kind, IReadOnlyList<CharacterId> characters, CharacterId surgeon = default, bool paid = false, Guid editSession = default)
     {
         if (EditorData is null) return false;
         var people = characters.Where(id => session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { Appearance: { Animal: null } look } && RecordOf(look) is not null).ToList();
         if (people.Count == 0) return false;
-        editor = new EditorSession(kind, people, surgeon, paid);
+        editor = new EditorSession(kind, people, surgeon, paid, editSession);
         previews.Clear();
         faithfulScreens.Open("editor");
         ShowEditorCharacter();
@@ -103,7 +104,7 @@ sealed partial class PlayerInterface
         if (editor.Kind == EditKind.Creation && EditorData is { } data && EditorRaces(data.Db) is [{ } first, ..] groups && IndexOf(groups, draft.Race) < 0)
             draft.SetRace(first.Races[0], editor.Seed++);
         faithfulScreens.SetText("editor", "NameText", draft.Name);
-        Select([editor.Current], false);
+        if (!OnlineEditor) Select([editor.Current], false);
     }
 
     void CloseEditor()
@@ -340,7 +341,9 @@ sealed partial class PlayerInterface
 
     /// <summary>The races this session offers: at creation the playable ones, limited to the start's <c>force race</c>; a surgeon offers none (race stays).</summary>
     IReadOnlyList<EditorRaceGroup> EditorRaces(GameDatabase db) =>
-        editor?.Kind == EditKind.Creation ? CharacterDraft.PlayableRaces(db, [.. session.World.Player.CreationRaces]) : [];
+        OnlineEditor && editor is { } edit && lobby?.Preview is { } preview
+            ? CharacterDraft.PlayableRaces(db, [.. preview.Members[onlineMembers[edit.Current]].Editor!.AllowedRaces])
+            : editor?.Kind == EditKind.Creation ? CharacterDraft.PlayableRaces(db, [.. session.CreationRaces]) : [];
 
     /// <summary>
     /// CONFIRM. Like the original (<c>FUN_1405e9f40</c>), a squad with characters never shown asks first ("There are other characters whose appearance haven't
@@ -348,16 +351,17 @@ sealed partial class PlayerInterface
     /// </summary>
     void ConfirmEditor(bool asked = false)
     {
+        if (OnlineEditor) { CommitOnlineEditor(); return; }
         if (editor is not { } s) return;
         if (!asked && s.Drafts.Count < s.Characters.Count)
         {
             Confirm("CONFIRM", "There are other characters whose appearance haven't been changed. Are you sure you want to continue?", () => ConfirmEditor(true));
             return;
         }
-        long tick = session.World.Tick;
+        long tick = session.CommandTick;
         foreach (var (id, draft) in s.Drafts)
             if (s.Kind == EditKind.Surgery || draft.Version > 0 || draft.Name != s.StartNames[id])
-                Say(new EditCharacter(id, CharacterDraft.Copy(draft.Record), draft.Name, s.Kind) { Tick = tick, Surgeon = s.Surgeon, Paid = s.Paid });
+                Say(new EditCharacter(id, CharacterDraft.Copy(draft.Record), draft.Name, s.Kind) { Tick = tick, Surgeon = s.Surgeon, Paid = s.Paid, SessionId = s.EditSession });
         if (s.Kind == EditKind.Creation) Say(new FinishCreation { Tick = tick });
         CloseEditor();
     }
@@ -510,6 +514,10 @@ sealed partial class PlayerInterface
         b.Properties["NameText"] = new Dictionary<string, string> { ["DefaultAction"] = "false" };
         b.Properties["ConfirmButton"] = new Dictionary<string, string> { ["DefaultAction"] = "true" };
         BindEditorRows(b, draft, s.Tab);
+        if (OnlineEditor)
+        {
+            if (onlineWork is not null) b.Disabled.Add("ConfirmButton");
+        }
     }
 
     /// <summary>The widgets whose captions the original sets from the catalog (<c>FUN_1405f1a40</c>), upper-cased, and their messages.</summary>

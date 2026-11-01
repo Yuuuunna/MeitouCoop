@@ -160,7 +160,7 @@ public sealed partial class PopulationSystem
             // A town coming into the world has neither its squads nor its platoons for a moment: not judged then.
             if (s < states.Length && (states[s].Status == SiteStatus.Loading || states[s].Pending)) continue;
             // A town of the player's faction is the player's to keep (as the repopulation and remake passes leave it alone).
-            if (data.SiteFactions[s] is >= 0 and var owner && owner == PlayerFactionOf(world)) continue;
+            if (data.SiteFactions[s] is >= 0 and var owner && world.IsPlayerFaction(owner)) continue;
             if (townPools[s] is not { Started: true, Ded: false } pools || resident[s] || pools.Roaming.Current > WipeRoamingPool || roamers[s] > WipeRoamingLiving) continue;
             pools.Ded = true;
             pools.DiedAt = (float)Hours(world);

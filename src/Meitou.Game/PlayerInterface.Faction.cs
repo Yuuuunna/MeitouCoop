@@ -52,6 +52,7 @@ sealed partial class PlayerInterface
 
     /// <summary>What was typed in the name box and is not yet accepted (null: nothing).</summary>
     string? factionDraft;
+    int factionDraftOwner = -1;
 
     /// <summary>
     /// The player faction's name in the tab's name box (the original's text is the player interface's faction name). The box takes typing; accepting it or losing the key focus renames
@@ -59,7 +60,7 @@ sealed partial class PlayerInterface
     /// </summary>
     void BindFactionTab(UiBindings b)
     {
-        string name = FactionName?.Invoke(session.World.Player.Faction) ?? "Nameless";
+        string name = FactionName?.Invoke(session.ActiveFaction) ?? "Nameless";
         if (faithfulScreens.Focus is not { Screen: "overview", Widget: FactionNameBox }) faithfulScreens.SetText("overview", FactionNameBox, name);
         b.Text[FactionNameBox] = name;
     }
@@ -67,7 +68,7 @@ sealed partial class PlayerInterface
     /// <summary>A text change in the name box is kept as the draft; the box losing the focus (or the tab closing) sends the rename of the last one.</summary>
     void FactionAction(MyGuiEvent e)
     {
-        if (e.Widget == FactionNameBox && e.Action == "text") factionDraft = e.Text;
+        if (e.Widget == FactionNameBox && e.Action == "text") { factionDraft = e.Text; factionDraftOwner = session.ActiveFaction; }
     }
 
     /// <summary>Whether another faction already has a name (the host's data); null: the simulation alone decides.</summary>
@@ -82,7 +83,7 @@ sealed partial class PlayerInterface
         if (factionDraft is not { } draft || faithfulScreens.Focus is { Screen: "overview", Widget: FactionNameBox }) return;
         factionDraft = null;
         if (FactionNameTaken?.Invoke(draft.Trim()) == true) { MessageBox("Faction Name", "This faction name already exists"); return; }
-        Say(new Meitou.Simulation.RenameFactionCommand(draft) { Tick = session.World.Tick });
+        Say(new Meitou.Simulation.RenameFactionCommand(draft) { Faction = factionDraftOwner, Tick = session.CommandTick });
     }
 
     /// <summary>

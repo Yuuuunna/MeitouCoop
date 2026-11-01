@@ -15,15 +15,15 @@ sealed partial class GameHost
     readonly Dictionary<string, float[]> previousTurretAngles = new(StringComparer.Ordinal);
     // The turrets whose records are missing (not retried).
     readonly HashSet<string> turretPoseMissing = new(StringComparer.Ordinal);
-    World? turretPosesWorld;
+    object? turretPosesWorld;
 
     /// <summary>Once a frame, with the buildings.</summary>
     void UpdateTurretPoses(WorldSnapshot snapshot)
     {
         if (gpu?.Objects is not { } objects || scene.Database is not { } db) return;
-        if (!ReferenceEquals(turretPosesWorld, session.World))
+        if (!ReferenceEquals(turretPosesWorld, session.WorldIdentity))
         {
-            turretPosesWorld = session.World;
+            turretPosesWorld = session.WorldIdentity;
             turretPoses.Clear();
             turretPoseMissing.Clear();
             objects.Turrets = null;

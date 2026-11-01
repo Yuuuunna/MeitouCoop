@@ -96,8 +96,7 @@ sealed partial class GameHost
     {
         held.Clear();
         expired.Clear();
-        var world = session.World;
-        double now = world.Tick * (double)world.TickSeconds;
+        double now = session.PresentationTick * Meitou.Runtime.WorldRuntime.TickSeconds;
         foreach (var b in viewed) keepOpen[b.PlacementId] = (b, now);
         foreach (var (id, open) in keepOpen)
         {

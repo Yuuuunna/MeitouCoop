@@ -22,18 +22,22 @@ public sealed partial class ProductionSystem
         return everEnabled = [.. allResearch.SelectMany(r => r.EnableCrafts.Select(e => (e.Kind, e.Id)))];
     }
 
-    bool Unlocked(World world, CraftKind kind, string id) => world.Research.UnlockedCrafts.Contains((kind, id)) || !EverEnabled().Contains((kind, id));
+    bool Unlocked(World world, CraftKind kind, string id, int faction) => ResearchFor(world, faction).UnlockedCrafts.Contains((kind, id)) || !EverEnabled().Contains((kind, id));
 
     /// <summary>Whether the player can queue an option now: its record (and a weapon's model) unlocked, and its level within the bench's tech level.</summary>
-    public bool CanCraft(World world, CraftBench bench, CraftOption option) =>
-        Unlocked(world, option.Kind, option.Item) && (option.Model is null || Unlocked(world, CraftKind.Weapon, option.Model)) && option.Level <= bench.TechLevel;
+    public bool CanCraft(World world, CraftBench bench, CraftOption option) => CanCraft(world, bench, option, world.Player.Faction);
+
+    public bool CanCraft(World world, CraftBench bench, CraftOption option, int faction) =>
+        Unlocked(world, option.Kind, option.Item, faction) && (option.Model is null || Unlocked(world, CraftKind.Weapon, option.Model, faction)) && option.Level <= bench.TechLevel;
 
     CraftRecipe RecipeOf(Machine m, CraftOption option) => m.Data.Craft!.Recipe(db, constants, option, m.Data.Inputs);
 
     void QueueCraft(World world, QueueCraft order)
     {
+        if (!MayControlMachine(world, order, order.Site) || order.Issuer is not null && (order.Count <= 0 || order.Count > MaxCraftQueue)) return;
         if (world.Machines.Find(order.Site) is not { Craft: { } state, Data.Craft: { } bench } m) return;
-        if (bench.Options.FirstOrDefault(o => o.Key == order.Option) is not { } option || !CanCraft(world, bench, option)) return;
+        if (Site(world, order.Site) is not { Owner: >= 0 } site || !world.MayManage(order, site.Owner, FactionPermission.ManageAssets)) return;
+        if (bench.Options.FirstOrDefault(o => o.Key == order.Option) is not { } option || !CanCraft(world, bench, option, site.Owner)) return;
         for (int i = 0; i < Math.Max(1, order.Count) && state.Queue.Count < MaxCraftQueue; i++) state.Queue.Add(new CraftJob(RecipeOf(m, option)));
         Bind(world, m, state, state.Queue[0]);
         world.Machines.Touch();
@@ -41,6 +45,7 @@ public sealed partial class ProductionSystem
 
     void CancelCraft(World world, CancelCraft order)
     {
+        if (!MayControlMachine(world, order, order.Site)) return;
         if (world.Machines.Find(order.Site) is not { Craft: { } state } m || order.Index < 0 || order.Index >= state.Queue.Count) return;
         state.Queue.RemoveAt(order.Index);
         if (state.Queue.Count > 0) Bind(world, m, state, state.Queue[0]);
@@ -180,7 +185,7 @@ public sealed partial class ProductionSystem
     }
 
     IReadOnlyDictionary<string, IReadOnlyList<CraftOptionView>>? publishedCrafts;
-    long craftsResearch = -1;
+    (int Faction, long Version)[] craftsResearch = [];
     int craftsBenches = -1;
 
     /// <summary>Every crafting bench's options (rebuilt when research or the set of benches changed).</summary>
@@ -188,8 +193,9 @@ public sealed partial class ProductionSystem
     {
         int benches = 0;
         foreach (var m in world.Machines.All) if (m.Craft is not null) benches++;
-        if (publishedCrafts is not null && craftsResearch == world.Research.Version && craftsBenches == benches) return publishedCrafts;
-        craftsResearch = world.Research.Version;
+        var versions = world.Factions.All.Select(f => (f.Index, f.Research.Version)).ToArray();
+        if (publishedCrafts is not null && craftsResearch.SequenceEqual(versions) && craftsBenches == benches) return publishedCrafts;
+        craftsResearch = versions;
         craftsBenches = benches;
         var map = new Dictionary<string, IReadOnlyList<CraftOptionView>>(StringComparer.Ordinal);
         foreach (var m in world.Machines.All) if (m.Craft is not null) map[m.Site] = CraftOptions(world, m.Site);
@@ -203,7 +209,7 @@ public sealed partial class ProductionSystem
         return [.. bench.Options.Select(o =>
         {
             var recipe = RecipeOf(m, o);
-            return new CraftOptionView(o.Key, recipe.Name, o.Kind, o.Level, recipe.Hours, [.. recipe.Inputs.Select(i => (items.Info(i.Item)?.Name ?? i.Item, i.PerItem))], CanCraft(world, bench, o));
+            return new CraftOptionView(o.Key, recipe.Name, o.Kind, o.Level, recipe.Hours, [.. recipe.Inputs.Select(i => (items.Info(i.Item)?.Name ?? i.Item, i.PerItem))], CanCraft(world, bench, o, Site(world, m.Site)?.Owner ?? -1));
         })];
     }
 

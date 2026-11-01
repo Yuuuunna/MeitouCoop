@@ -12,7 +12,7 @@ public sealed partial class ProductionSystem
     (BuildSite Site, Machine Machine)? Hauling(World world, CharacterCold cold)
     {
         if (cold.HaulSite is not { } id) return null;
-        if (Site(world, id) is { Complete: true } site && world.Machines.Find(id) is { } m && (m.Storage is not null || cold.HaulFetch is not null && m.Output is not null)) return (site, m);
+        if (Site(world, id) is { Complete: true } site && MayWork(world, cold, site) && world.Machines.Find(id) is { } m && (m.Storage is not null || cold.HaulFetch is not null && m.Output is not null)) return (site, m);
         cold.HaulSite = null;
         cold.HaulFetch = null;
         return null;
@@ -21,7 +21,7 @@ public sealed partial class ProductionSystem
     /// <summary>What an operator at its machine does before working; true when it set off for a storage.</summary>
     bool StartHaul(World world, CharacterCold cold, BuildSite site, Machine m)
     {
-        if (cold.Inventory is not { } inv) return false;
+        if (!MayWork(world, cold, site) || cold.Inventory is not { } inv) return false;
         bool changed = false;
         foreach (var input in m.Inputs)
         {
@@ -66,6 +66,9 @@ public sealed partial class ProductionSystem
     /// <summary>At the storage: puts the carried output in, or takes what the machine's empty inputs hold room for (from a producer, out of its output); then the trip ends.</summary>
     void HaulAt(World world, CharacterCold cold, Machine machine, Machine store)
     {
+        if (Site(world, machine.Site) is not { } sourceSite || Site(world, store.Site) is not { } storageSite
+            || !MayWork(world, cold, sourceSite) || !MayWork(world, cold, storageSite))
+        { cold.HaulSite = cold.HaulFetch = null; return; }
         var inv = cold.Inventory;
         if (inv is not null && cold.HaulFetch is { } want)
         {
@@ -136,7 +139,7 @@ public sealed partial class ProductionSystem
     string? NearestSource(World world, BuildSite from, string record, CharacterCold? by = null) =>
         NearestSite(world, from.Position, Settings.HaulRange, (s, m) => s.Id != from.Id && (m.Data.IsStorage
             ? m.Storage is { } st && st.Items.Any(i => i.Record == record && i.Quantity > 0 && i.Section == "main")
-            : m.Output is { Count: > 0 } o && o.Recipe.Item == record && (o.Full || by?.OperateSite != s.Id)));
+            : m.Output is { Count: > 0 } o && o.Recipe.Item == record && (o.Full || by?.OperateSite != s.Id)), from.Owner);
 
     /// <summary>The player's nearest complete storage within <see cref="ProductionSettings.HaulRange"/> of a machine that passes <paramref name="ok"/> (ties: the lower site id).</summary>
     string? NearestStorage(World world, BuildSite from, Func<Machine, bool> ok)
@@ -145,7 +148,8 @@ public sealed partial class ProductionSystem
         float bestGap = float.MaxValue;
         foreach (var s in world.Machines.All)
         {
-            if (!s.Data.IsStorage || s.Storage is null || s.Site == from.Id || Site(world, s.Site) is not { Complete: true } site || site.Owner != world.Player.Faction) continue;
+            if (!s.Data.IsStorage || s.Storage is null || s.Site == from.Id || Site(world, s.Site) is not { Complete: true } site || site.Owner != from.Owner
+                || world.Players.RequiresExplicitControl && !WorkSiteOpen(world, site)) continue;
             float gap = Gap(site.Position, from.Position);
             if (gap > Settings.HaulRange || gap > bestGap || (gap == bestGap && string.CompareOrdinal(s.Site, best) > 0) || !ok(s)) continue;
             best = s.Site;

@@ -29,6 +29,10 @@ public sealed class SaveLoadOptions
 
     /// <summary>The look of a spawned character, rolled by this source from the character's saved serial (the saved CHARACTER_APPEARANCE is not read into a drawable look yet). Null: no look.</summary>
     public IAppearanceSource? Appearances { get; init; }
+    /// <summary>The same checkpoint's metadata, after catalogue preparation. Restores faction resources before building/machine creation.</summary>
+    public byte[]? MultiplayerMetadata { get; init; }
+    /// <summary>Multiplayer only: retain player records until their authoritative regions are prepared. The host must drive restoration independently of connection readiness.</summary>
+    public bool DeferPlayerRoles { get; init; }
 }
 
 /// <summary>
@@ -48,7 +52,12 @@ public static class SaveLoader
         ArgumentNullException.ThrowIfNull(save);
         ArgumentNullException.ThrowIfNull(data);
         options ??= new SaveLoadOptions();
+        var multiplayerFactions = options.MultiplayerMetadata is { } metadata ? PlayerRegistrySave.PlayerFactionIds(data, metadata) : null;
         if (world.Tick != 0 || world.Characters.Count != 0) throw new InvalidOperationException("A save is loaded into a world that has not started and has no characters.");
+        if (world.Squads.Count != 0 || world.Squads.NextAvailableId != 0) throw new InvalidOperationException("A save requires an empty squad registry.");
+        int? squadAllocation = PlayerSquadSave.ValidateLoad(save, data, multiplayerFactions);
+        EntitySave.Restore(world, save);
+        if (squadAllocation is { } nextSquad) world.Squads.RestoreAllocation(nextSquad);
         // The seed a Meitou save was made with (its seeded layout: the nests it did not write roll again where they were); a base save keeps the world's.
         if (save.Camera.Record.Strings.GetValueOrDefault(SeedKey) is { } seedText && ulong.TryParse(seedText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out ulong seed)) world.RestoreSeed(seed);
 
@@ -93,9 +102,13 @@ public static class SaveLoader
 
         // The research the player has finished, and the buildings the player made (docs/simulation.md "Buildings").
         ResearchSave.Load(save.Research, world.Research, data.Db);
-        if (playerFaction is not null) BuildingSave.Read(save, world, data.Db, playerFaction.Id, playerIndex);
+        if (options.MultiplayerMetadata is { } resourceMetadata) PlayerRegistrySave.PrepareResources(world, data, resourceMetadata);
+        if (multiplayerFactions is not null) BuildingSave.ReadMultiplayer(save, world, data);
+        else if (playerFaction is not null) BuildingSave.Read(save, world, data.Db, playerFaction.Id, playerIndex);
         // The machines of the player's complete buildings: recipe slots, storage, farms (docs/simulation.md "Production").
-        if (playerFaction is not null && world.Systems.OfType<Production.ProductionSystem>().FirstOrDefault() is { } production) MachineSave.Read(save, world, production, data.Items);
+        MachineSave.Bind(save, world, data.Items);
+        if ((playerFaction is not null || multiplayerFactions is not null) && world.Systems.OfType<Production.ProductionSystem>().FirstOrDefault() is { } production)
+            MachineSave.Read(save, world, production, data.Items, allOwners: multiplayerFactions is not null);
         // The loose items of the zone files (docs/simulation.md "Ground items").
         if (GroundItemSave.Load(save, world, data.Items, id => data.FactionIndex(id) is var f and >= 0 && !data.Factions[f].NotReal ? f : -1) is > 0 and var lost) loaded.Notes.Add($"{lost} loose items name records this game does not have; they stay in the zone files.");
 
@@ -107,8 +120,10 @@ public static class SaveLoader
         var context = new SavedPopulation
         {
             Handles = handles, InstanceOf = instanceOf, Appearances = options.Appearances, Clock = loaded.Clock, PlayerFaction = playerIndex,
+            MultiplayerFactions = multiplayerFactions,
         };
         world.Saved = context;
+        if (multiplayerFactions is not null) world.StoredPlayerRoles = new StoredPlayerRoles(world);
         context.Memory = world.Systems.OfType<Dialogue.DialogueSystem>().FirstOrDefault()?.Memory;
         ReadNests(save, data, context);
         foreach (var town in save.Towns)
@@ -128,13 +143,14 @@ public static class SaveLoader
         var campaignHomes = WarSave.PlatoonHomes(context.Wars.Values);
         foreach (var platoon in save.Platoons)
         {
-            bool mine = playerFaction is not null && platoon.FactionId == playerFaction.Id;
+            bool mine = multiplayerFactions is null ? playerFaction is not null && platoon.FactionId == playerFaction.Id
+                : platoon.Record.Bools.GetValueOrDefault(PlayerSquadSave.SquadKey);
             if (mine && platoon.IsLoaded)
-                LoadPlayerPlatoon(world, platoon, data, options, loaded, playerIndex, races, parts, bySource, assembly, context);
+                LoadPlayerPlatoon(world, platoon, data, options, loaded, multiplayerFactions is null ? playerIndex : data.FactionIndex(platoon.FactionId), races, parts, bySource, assembly, context);
             else if (!mine && options.NpcPlatoons)
                 LoadNpcPlatoon(world, platoon, data, loaded, context, campaignHomes.TryGetValue((platoon.Handle.C, platoon.Handle.CS), out var home) ? home : null);
         }
-        if (loaded.PlayerPlatoons.Count > 0) world.Player.Squad = loaded.PlayerPlatoons[0].Squad.Id;
+        if (loaded.PlayerPlatoons.FirstOrDefault(p => p.Squad.Faction == playerIndex) is { } localPlatoon) world.Player.Squad = localPlatoon.Squad.Id;
         // What the player's squads remembered (of the characters made so far; an NPC not made yet is not named again).
         if (context.Memory is { } memory)
             foreach (var lp in loaded.PlayerPlatoons) memory.Restore(lp.Squad.Id, MemorySave.Read(lp.Platoon.Record, context.CharacterOf));
@@ -245,7 +261,8 @@ public static class SaveLoader
     {
         var squad = new Squad
         {
-            Id = world.Squads.NextId(),
+            Id = context.MultiplayerFactions is null ? world.Squads.NextId() : platoon.Record.Ints[PlayerSquadSave.SquadIdKey],
+            PlayerManaged = true,
             TemplateId = platoon.SquadTemplate,
             // The record's name is what the squad tabs show (a renamed squad's, the original's `platoon->+0x78->+0x18`, Observed); its string id names the file.
             Name = platoon.Record.Name is { Length: > 0 } shown ? shown : platoon.Name,
@@ -258,22 +275,35 @@ public static class SaveLoader
             HomeCentre = new Vector2(platoon.Position.X, platoon.Position.Z),
             HomeRadius = 100,
         };
-        foreach (var sc in platoon.Characters)
+        CharacterId Spawn(SavedParts p)
         {
-            if (SavedCharacters.Read(sc, platoon.Name, data, options.Appearances, races, parts, loaded.Notes.Add) is not { } p) continue;
-            if (p.Medical is { Dead: true })
-            {
-                loaded.Notes.Add($"{platoon.Name}: {sc.Name} is dead in the save; not made, and kept as it is when saving.");
-                continue;
-            }
+            var sc = p.Source;
             var id = SavedCharacters.Make(world, p, platoon.Name, squad, playerIndex, playerIndex, true, sc.Position, SaveRotation.YawOf(sc.Rotation), CharacterTask.Idle, SpeedMode.Free,
                 data, assembly, context, null, loaded.Notes);
-            squad.Members.Add(id);
-            bySource[sc] = id;
-            context.Spawned[(sc.Handle.C, sc.Handle.I)] = id;
-            loaded.Characters.Add(id);
-            loaded.SpawnedSlots.Add((platoon.Name, sc.Handle.I));
+            squad.Members.Add(id); bySource[sc] = id; context.Spawned[(sc.Handle.C, sc.Handle.I)] = id;
+            loaded.Characters.Add(id); loaded.SpawnedSlots.Add((platoon.Name, sc.Handle.I));
             if (sc.IsLeader && squad.Leader.IsNone) squad.Leader = id;
+            return id;
+        }
+        SavedParts? Read(SaveCharacter sc) => SavedCharacters.Read(sc, platoon.Name, data, options.Appearances, races, parts, loaded.Notes.Add);
+        world.StoredPlayerRoles?.Register(squad, platoon, data, Read, Spawn, (sc, id) =>
+        {
+            squad.Members.Remove(id); bySource.Remove(sc); context.Spawned.Remove((sc.Handle.C, sc.Handle.I));
+            loaded.Characters.Remove(id); loaded.SpawnedSlots.Remove((platoon.Name, sc.Handle.I));
+        });
+        foreach (var sc in platoon.Characters)
+        {
+            if (context.MultiplayerFactions is not null && (squad.Dead || sc.GameState?.Bools.GetValueOrDefault(PlayerSquadSave.DeadKey) == true || sc.Medical?.Bools.GetValueOrDefault("dead") == true))
+            { world.StoredPlayerRoles!.MarkDead(sc); continue; }
+            if (options.DeferPlayerRoles && context.MultiplayerFactions is not null) continue;
+            if (Read(sc) is not { } p) continue;
+            if (p.Medical is { Dead: true } || context.MultiplayerFactions is not null && sc.GameState?.Bools.GetValueOrDefault(PlayerSquadSave.DeadKey) == true)
+            {
+                loaded.Notes.Add($"{platoon.Name}: {sc.Name} is dead in the save; not made, and kept as it is when saving.");
+                world.StoredPlayerRoles?.MarkDead(sc);
+                continue;
+            }
+            Spawn(p); world.StoredPlayerRoles?.MarkLoaded(sc);
         }
         if (squad.Leader.IsNone && squad.Members.Count > 0) squad.Leader = squad.Members[0];
         world.Squads.Add(squad);

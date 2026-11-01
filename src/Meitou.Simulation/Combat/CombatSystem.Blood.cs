@@ -11,7 +11,7 @@ public sealed partial class CombatSystem
     /// </summary>
     static void Splash(World world, int victim, CharacterCold vc, Vector2 direction, float damage)
     {
-        if (world.BloodMarks is not { } marks || vc.WaterState != 0 || vc.Race is not { BleedRate: > 0 } race) return;
+        if (!world.HasBloodSink || vc.WaterState != 0 || vc.Race is not { BleedRate: > 0 } race) return;
         var id = world.Characters.IdOf(victim);
         var prev = world.Characters.Previous;
         if (direction.LengthSquared() < 1e-6f) direction = new Vector2(MathF.Sin(prev[victim].Yaw), MathF.Cos(prev[victim].Yaw));
@@ -22,6 +22,6 @@ public sealed partial class CombatSystem
         var (s, c) = MathF.SinCos(turn);
         direction = new Vector2(direction.X * c + direction.Y * s, direction.Y * c - direction.X * s);
         var at = prev[victim].Position + new Vector3(direction.X, 0, direction.Y) * far;
-        marks.Enqueue(new BloodMark(BloodMarkKind.Splash, id, at, direction, Math.Clamp(MathF.Min(damage / 100, 1), 0.05f, 0.5f), race.BloodColour));
+        world.EmitBlood(new BloodMark(BloodMarkKind.Splash, id, at, direction, Math.Clamp(MathF.Min(damage / 100, 1), 0.05f, 0.5f), race.BloodColour));
     }
 }

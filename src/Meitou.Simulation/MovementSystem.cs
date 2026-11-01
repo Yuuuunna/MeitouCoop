@@ -125,21 +125,13 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
         {
             if (command is RepathCommand repath)
             {
-                for (int s = 0; s < table.Next.Length; s++)
-                {
-                    ref var c = ref table.Next[s];
-                    if (!c.Alive || c.Task != (byte)CharacterTask.GoTo || (c.Flags & (ushort)(MoveFlags.Pending | MoveFlags.HasPath)) == 0) continue;
-                    // A walker whose way on does not lead through a changed zone keeps its path (a long walk loads zones ahead all the way, and each would
-                    // otherwise turn every walker about). One waiting for an answer asks again: it may have been made on the old meshes.
-                    if (repath.Zones is { } zones && (c.Flags & (ushort)MoveFlags.Pending) == 0 && !Crosses(c.Position, table.Cold(s)!.Path, c.PathCursor, zones)) continue;
-                    c.Flags = (ushort)((c.Flags & ~(ushort)(MoveFlags.Pending | MoveFlags.HasPath)) | (ushort)MoveFlags.NeedPath);
-                    c.PathCursor = 0;
-                    table.Cold(s)!.PathRequest = 0;
-                }
+                if (command.Issuer is not null) continue;
+                InvalidatePaths(world, repath.Zones);
                 continue;
             }
             if (command is SandboxMovement sandbox)
             {
+                if (command.Issuer is not null) continue;
                 if (table.TryResolveNext(sandbox.Character, out int target))
                 {
                     var tc = table.Cold(target)!;
@@ -155,7 +147,8 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
             }
             if (command is not MoveOrder order) continue;
             // An empty list orders the selection (the UI sends orders for whatever is selected when the click happens).
-            var who = order.Characters.Count > 0 ? order.Characters : world.Player.Selection.ToArray();
+            if (!float.IsFinite(order.Target.X) || !float.IsFinite(order.Target.Y) || !float.IsFinite(order.Target.Z)) continue;
+            var who = world.CommandCharacters(order, order.Characters);
             var slots = new List<int>();
             foreach (var id in who)
             {
@@ -182,6 +175,23 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
             }
         }
         foreach (var squad in world.Squads.All) RefreshFormation(world, squad);
+    }
+
+    internal void InvalidatePaths(World world, IReadOnlySet<Meitou.Data.World.ZoneCoordinate>? zones)
+    {
+        var table = world.Characters;
+        long obsolete = Paths.Submitted;
+        for (int s = 0; s < table.HighWater; s++)
+        {
+            ref var n = ref table.Next[s];
+            if (!n.Alive || table.Cold(s) is not { } cold) continue;
+            if ((n.Flags & (ushort)MoveFlags.AnyPath) == 0 && !cold.NavigationWaiting) continue;
+            if (zones is not null && !cold.NavigationWaiting && (n.Flags & (ushort)(MoveFlags.Pending | MoveFlags.NeedPath)) == 0
+                && !Crosses(n.Position, cold.Path, n.PathCursor, zones)) continue;
+            n.Flags = (ushort)((n.Flags & ~(ushort)(MoveFlags.Pending | MoveFlags.HasPath)) | (ushort)MoveFlags.NeedPath);
+            n.PathCursor = 0; cold.PathRequest = 0; cold.PathApplied = Math.Max(cold.PathApplied, obsolete);
+            cold.NavigationWaiting = false;
+        }
     }
 
     /// <summary>
@@ -253,6 +263,7 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
     {
         ref var n = ref table.Next[slot];
         var cold = table.Cold(slot)!;
+        cold.NavigationWaiting = false;
         cold.OrderQueue.Clear();
         cold.ArriveWithin = 0;
         cold.BlockedRepaths = 0;
@@ -271,7 +282,7 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
     {
         var table = world.Characters;
         if (!table.TryResolveNext(order.Target, out int led)) return;
-        foreach (var id in order.Characters.Count > 0 ? order.Characters : world.Player.Selection.ToArray())
+        foreach (var id in world.CommandCharacters(order, order.Characters))
         {
             if (!table.TryResolveNext(id, out int s) || s == led || table.Cold(s) is not { IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true } cold) continue;
             if (cold.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, id);
@@ -313,6 +324,7 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
         n.Task = (byte)CharacterTask.Idle;
         n.PathCursor = 0;
         var cold = table.Cold(slot)!;
+        cold.NavigationWaiting = false;
         cold.OrderQueue.Clear();
         cold.PathRequest = 0;
         cold.FollowHeading = Vector2.Zero;
@@ -328,8 +340,14 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
         _ = world.Fixtures.DoorsByBuilding;
         for (int i = 0; i < next.Length; i++)
         {
-            if (!next[i].Alive || (next[i].Flags & (ushort)MoveFlags.NeedPath) == 0) continue;
+            if (!next[i].Alive) continue;
             var cold = table.Cold(i)!;
+            if (cold.NavigationWaiting)
+            {
+                if (world.Tick < cold.NavigationRetryTick || (next[i].Flags & (ushort)MoveFlags.Pending) != 0) continue;
+                next[i].Flags |= (ushort)MoveFlags.NeedPath;
+            }
+            if ((next[i].Flags & (ushort)MoveFlags.NeedPath) == 0) continue;
             // The goal's floor: the height the order was given at (a follower's leader on another storey), else the character's own (a wander or follow goal on its level).
             float nearY = cold.GoalHeightAt == next[i].Goal && !float.IsNaN(cold.GoalHeight) ? cold.GoalHeight : next[i].Position.Y;
             var to = new Vector3(next[i].Goal.X, world.Walkability.GroundHeight(next[i].Goal.X, next[i].Goal.Y, nearY), next[i].Goal.Y);
@@ -354,7 +372,7 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
                 // An older request: the character was given another goal since. Orders given again every tick (a held right button) are each replaced
                 // before their path comes, so a found path newer than the one followed is still taken while the latest request is on its way.
                 bool waiting = (n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0;
-                if (!answer.Path.Found || !waiting || n.Task != (byte)CharacterTask.GoTo || answer.Id <= cold.PathApplied) continue;
+                if (!answer.Path.Found || answer.Path.WaitingForNavigation || !waiting || n.Task != (byte)CharacterTask.GoTo || answer.Id <= cold.PathApplied) continue;
                 cold.Path = [.. answer.Path.Points.Skip(1)];
                 cold.PathExact = answer.Path.IsProvisional ? answer.Path.Exact - 1 : int.MaxValue;
                 if (answer.Path.Exact > 1) cold.ProvisionalBlocked = 0;
@@ -364,6 +382,16 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
                 continue;
             }
             n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.Pending);
+            if (answer.Path.WaitingForNavigation)
+            {
+                cold.PathFailed = false; cold.NavigationWaiting = true; cold.NavigationRetryTick = world.Tick + 30;
+                cold.Path = [.. answer.Path.Points.Take(Math.Min(answer.Path.Exact, answer.Path.Points.Count)).Skip(1)];
+                cold.PathExact = int.MaxValue; cold.PathApplied = Math.Max(cold.PathApplied, answer.Id); n.PathCursor = 0;
+                n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.HasPath);
+                if (cold.Path.Length > 0) n.Flags |= (ushort)MoveFlags.HasPath;
+                continue;
+            }
+            cold.NavigationWaiting = false;
             if (answer.Path.Found)
             {
                 cold.PathFailed = false;
@@ -399,6 +427,7 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
             var flags = (MoveFlags)n.Flags;
             var cold = table.Cold(i)!;
             if (cold.Medical is { Incapacitated: true }) continue;
+            if (cold.NavigationWaiting) continue;
             bool busy = (flags & MoveFlags.AnyPath) != 0;
             if (task == CharacterTask.Follow)
             {
@@ -640,6 +669,11 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
                 cold.AgentSpeed = 0;
                 continue;
             }
+            if (cold.NavigationWaiting && n.PathCursor >= cold.Path.Length)
+            {
+                n.Velocity = Vector3.Zero; cold.AgentSpeed = 0;
+                continue;
+            }
             float speed = MathF.Sqrt(p.Velocity.X * p.Velocity.X + p.Velocity.Z * p.Velocity.Z);
             var dir = Vector2.Zero;
             bool facing = false, agentWalk = false;
@@ -690,7 +724,7 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
                     {
                         n.PathCursor++;
                         if (cold.BlockedRepaths != 0) cold.BlockedRepaths = 0;
-                        if (last) finished = true;
+                        if (last) finished = !cold.NavigationWaiting;
                     }
                 }
                 while (reached && !last);
@@ -717,9 +751,9 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
             }
             else if (((MoveFlags)n.Flags & MoveFlags.HasPath) != 0)
             {
-                finished = true;
+                finished = !cold.NavigationWaiting;
             }
-            else if (n.Task == (byte)CharacterTask.Follow && ((MoveFlags)n.Flags & MoveFlags.AnyPath) == 0 && cold.FollowPathTime <= 0 && cold.FollowSpeed > 0)
+            else if (!cold.NavigationWaiting && n.Task == (byte)CharacterTask.Follow && ((MoveFlags)n.Flags & MoveFlags.AnyPath) == 0 && cold.FollowPathTime <= 0 && cold.FollowSpeed > 0)
             {
                 // Near its aim (Think set it as the goal): straight at it at its desired speed, capped by its top speed, never past it.
                 var gap = new Vector2(n.Goal.X - p.Position.X, n.Goal.Y - p.Position.Z);
@@ -831,6 +865,14 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
             var step = (drive + push.Sum * SeparationStrength) * dt;
             var shove = closing || seated ? Vector2.Zero : Contact(world, i, cold, ref push, new Vector2(p.Position.X, p.Position.Z) + step);
             step += shove;
+            if (cold.NavigationWaiting && cold.Path.Length > 0)
+            {
+                var end = new Vector2(cold.Path[^1].X - p.Position.X, cold.Path[^1].Z - p.Position.Z);
+                if (n.PathCursor >= cold.Path.Length) step = Vector2.Zero;
+                else if (Vector2.Dot(step, end) >= end.LengthSquared()) step = end;
+                float limited = step.Length();
+                speed = limited / dt; dir = limited > 1e-6f ? step / limited : Vector2.Zero;
+            }
             float x = p.Position.X + step.X, z = p.Position.Z + step.Y, y = 0;
             bool stands = false;
             // Pushed by its neighbours where it cannot stand (over a hole furniture cuts in a floor): its own step alone.

@@ -40,7 +40,7 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>The pointer over a door: <c>lock</c> for the player's own locked one, <c>lockpick</c> for another faction's, else <c>door</c>.</summary>
-    string DoorPointer((DoorPick Door, bool Locked) pick) => !pick.Locked ? "door" : pick.Door.Owner == session.World.Player.Faction ? "lock" : "lockpick";
+    string DoorPointer((DoorPick Door, bool Locked) pick) => !pick.Locked ? "door" : pick.Door.Owner == session.ActiveFaction ? "lock" : "lockpick";
 
     /// <summary>
     /// A right press on a door (true, with a selection): released quickly, the door order, where Alt picks another faction's locked lock; held, its context menu (<see cref="DoorVerbs"/>,
@@ -49,7 +49,7 @@ sealed partial class PlayerInterface
     bool DoorClick(Vector2 p, bool alt)
     {
         if (SelectedIds().Count == 0 || PickDoor(p) is not { } pick) return false;
-        void Quick() => Say(new DoorOrder([], pick.Door.Id, alt) { Tick = session.World.Tick });
+        void Quick() => Say(new DoorOrder(SelectedIds().ToArray(), pick.Door.Id, alt) { Tick = session.CommandTick, ExpectedFixtureRevision = pick.Door.Revision });
         if (!ContextPressOn(p, at => Menu(Loc.Tr("Door"), at, DoorVerbs(pick)), Quick)) Quick();
         return true;
     }

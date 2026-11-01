@@ -66,6 +66,7 @@ public sealed class RegionArea : IEffectArea
 /// </summary>
 public sealed class EffectWorld
 {
+    public bool Persistent { get; init; }
     public Func<float, float, float> GroundHeight { get; set; } = static (_, _) => 100;
     /// <summary>
     /// Null: <see cref="GroundHeight"/> may be called from any thread. Otherwise it is for the render thread only and this, called there, returns a
@@ -75,6 +76,7 @@ public sealed class EffectWorld
     /// <summary>A copy for a worker thread (a group being warmed in the background, <see cref="EffectSet"/>): the ground height frozen as it is now (<see cref="FreezeGroundHeight"/>), the rest as it is (<see cref="GroundColour"/> too, so it must be callable from any thread when set; the viewer leaves it unset). Call it on the render thread.</summary>
     public EffectWorld Frozen() => new()
     {
+        Persistent = Persistent,
         GroundHeight = FreezeGroundHeight?.Invoke() ?? GroundHeight, Area = Area, ActiveRadius = ActiveRadius, FallbackRadius = FallbackRadius, GroundColour = GroundColour, Density = Density,
     };
     /// <summary>Null: a disc round the camera of <see cref="FallbackRadius"/>.</summary>
@@ -129,10 +131,11 @@ public enum UnitWrap { None, Cube, Sphere }
 /// <c>nonvisible_update_timeout</c> is the same idea). The main thread moves it (<see cref="EffectGroup.Update"/>) and queues time in
 /// <see cref="Pending"/>; <see cref="Advance"/> runs the simulation and may run on any thread, one unit per thread.
 /// </summary>
-public sealed class EffectUnit
+public sealed partial class EffectUnit
 {
-    public EffectUnit(EffectRecord effect, PuSystemDef system, int seed)
+    public EffectUnit(EffectRecord effect, PuSystemDef system, int seed, bool persistent = false)
     {
+        Persistent = persistent;
         Effect = effect;
         System = system;
         Seed = seed;
@@ -142,6 +145,7 @@ public sealed class EffectUnit
     public EffectRecord Effect { get; }
     public PuSystemDef System { get; }
     public int Seed { get; }
+    public bool Persistent { get; }
     public float LongestLife { get; }
     public ParticleSimulation? Simulation { get; set; }
     /// <summary>The node's place in the world.</summary>
@@ -199,7 +203,7 @@ public sealed class EffectUnit
 
     public void Activate()
     {
-        Simulation = new ParticleSimulation(System, Seed) { EmissionStopped = Stopped, Orientation = Orientation, Size = Size, LifeScale = LifeScale };
+        Simulation = new ParticleSimulation(System, Seed, Persistent) { EmissionStopped = Stopped, Orientation = Orientation, Size = Size, LifeScale = LifeScale };
         Anchor = Position;
     }
 
@@ -256,7 +260,7 @@ public sealed class EffectUnit
 /// <see cref="EffectGroups.Create"/> makes the right one. A group owns its <see cref="Units"/>. Two phases per frame: <see cref="Update"/> on the
 /// main thread (schedules, places and moves the units, queues the time) and <see cref="Simulate"/> (the particles; thread-safe per unit).
 /// </summary>
-public abstract class EffectGroup
+public abstract partial class EffectGroup
 {
     protected readonly List<EffectUnit> units = [];
     protected readonly Random random;
@@ -271,7 +275,7 @@ public abstract class EffectGroup
         System = system;
         this.seed = seed;
         this.world = world;
-        random = new Random(seed * 7919 + 17);
+        random = world.Persistent ? new CheckpointRandom(seed * 7919 + 17) : new Random(seed * 7919 + 17);
         Tint = TintOf(effect);
     }
 
@@ -285,6 +289,8 @@ public abstract class EffectGroup
     /// <summary>The EFFECT's <c>colour multiplier</c> applied to the particles' rgb (Observed: "for weather effects only"; a black multiplier, which would blank the particles, is ignored: <c>Sand-Stream any altitude</c> has one next to <c>ground colour</c>).</summary>
     public Vector3 Tint { get; }
     public int ParticleCount => units.Sum(u => u.Simulation?.ParticleCount ?? 0);
+    /// <summary>Authoritative roots stay present until a new frame removes them, even if a cosmetic particle pool has drained.</summary>
+    public virtual bool NodesAreAuthoritative => false;
 
     static Vector3 TintOf(EffectRecord e) => e.ColourMultiplier.LengthSquared() < 1e-4f ? Vector3.One : e.ColourMultiplier;
 
@@ -352,7 +358,7 @@ public abstract class EffectGroup
 
     protected EffectUnit NewUnit(Vector3 position)
     {
-        var u = new EffectUnit(Effect, System, seed * 31 + made++) { Position = position, Anchor = position, Tint = Tint, Radius = System.BoundingRadius };
+        var u = new EffectUnit(Effect, System, seed * 31 + made++, world.Persistent) { Position = position, Anchor = position, Tint = Tint, Radius = System.BoundingRadius };
         if (Effect.GroundColour && world.GroundColour is { } ground) u.Tint = Tint * ground(position.X, position.Z);
         // The life: random between min and max time to live, none when the maximum is 0 (Verified (decompiled), FUN_1401034f0).
         if (!Effect.Immortal) u.Life = Effect.MinTimeToLive + (Effect.MaxTimeToLive - Effect.MinTimeToLive) * random.NextSingle();
@@ -475,6 +481,7 @@ public sealed class RespawningEffectGroup : EffectGroup
     const int MaxUnits = 256;
     readonly bool wandering, lightning;
     float timer;
+    internal float CheckpointTimer { get => timer; set => timer = value; }
 
     public RespawningEffectGroup(WeatherEffectEntry entry, PuSystemDef system, int seed, EffectWorld world) : base(entry.Effect, entry, system, seed, world)
     {
@@ -578,6 +585,7 @@ public sealed class GlobalEffectGroup : EffectGroup
 {
     readonly float size;
     Vector3? lastEye;
+    internal Vector3? CheckpointEye { get => lastEye; set => lastEye = value; }
 
     public GlobalEffectGroup(WeatherEffectEntry entry, PuSystemDef system, int seed, EffectWorld world) : base(entry.Effect, entry, system, seed, world)
     {
@@ -736,6 +744,7 @@ public sealed class PlacerEffectGroup : EffectGroup
 public sealed class BurstEffectGroup(PuSystemDef system, int seed, EffectWorld world)
     : EffectGroup(new EffectRecord(system.Name, EffectType.Point, system.Name, false, false, 1, 0, 0, Vector3.One, 1, false, 0, 0, 0, 0, 0), null, system, seed, world)
 {
+    public void Clear() => units.Clear();
     /// <summary>A unit at <paramref name="position"/>, turned by <paramref name="orientation"/>, emitting for <paramref name="seconds"/>, its particles <paramref name="size"/> times as big and <paramref name="lifeScale"/> times as long-lived.</summary>
     public void Spawn(Vector3 position, Quaternion orientation, float seconds, float size, float lifeScale)
     {

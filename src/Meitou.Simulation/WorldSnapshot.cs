@@ -147,6 +147,7 @@ public sealed record InventoryItemView(int Index, string Record, string Name, st
 }
 public sealed record InventoryView(int Width, int Height, int BagWidth, int BagHeight, IReadOnlyList<InventoryItemView> Items)
 {
+    public ulong Revision { get; init; }
     public float? CarryCapacity { get; init; }
     public float TotalWeight { get; init; }
     /// <summary>The holder's encumbrance factor (<see cref="Bodies.Encumbrance.Factor"/>, 1 unburdened): the window's burden word, for a looted body too (which has no HUD view).</summary>
@@ -176,8 +177,11 @@ public sealed record CharacterSnapshot(CharacterId Id, CharacterAppearance? Appe
     public int SquadId { get; init; } = -1;
     /// <summary>One of the player's characters, and whether it is selected.</summary>
     public bool IsPlayer { get; init; }
+    public PlayerId? Controller { get; init; }
     /// <summary>A member of a squad with a shop (right click trades).</summary>
     public bool IsTrader { get; init; }
+    /// <summary>A follow-up dialogue intended for this view's recipient (remote projections only).</summary>
+    public bool WantsToTalk { get; init; }
     public bool Selected { get; init; }
     /// <summary>Another faction's character the HUD shows (<see cref="InspectCommand"/>): it carries the same HUD details as a selected one but is not selected.</summary>
     public bool Inspected { get; init; }
@@ -186,6 +190,7 @@ public sealed record CharacterSnapshot(CharacterId Id, CharacterAppearance? Appe
     public byte RunSpeed { get; init; } = SpeedMode.Free;
     /// <summary>The job list (<see cref="CharacterCold.Jobs"/>), first = highest priority.</summary>
     public IReadOnlyList<Production.PermaJob> Jobs { get; init; } = [];
+    public ulong JobsRevision { get; init; }
     /// <summary>The path being followed from the next waypoint, for selected characters only (the host draws it).</summary>
     public IReadOnlyList<Vector3> Path { get; init; } = [];
     /// <summary>Null for a character without a body (an animal).</summary>
@@ -352,6 +357,8 @@ public readonly record struct SkillSummary(float Attack, float Defence, float Do
 /// </summary>
 public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> Characters)
 {
+    /// <summary>Tick/command boundary revision; paused commands can publish several snapshots with the same Tick.</summary>
+    public ulong StateRevision { get; init; }
     /// <summary>What the tutorial triggers ask of the player's characters (<see cref="Simulation.TutorialFacts"/>).</summary>
     public TutorialFacts TutorialFacts { get; init; }
     /// <summary>Crossbow bolts in flight and stuck in the ground (the renderer may draw them; empty when there are none).</summary>
@@ -381,9 +388,11 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// <summary>The downed (or the player's own) character whose inventory window is open (<see cref="PlayerState.OpenLoot"/>; its snapshot has the <see cref="CharacterSnapshot.ItemGrid"/>), and who opened it.</summary>
     public CharacterId OpenLoot { get; init; } = CharacterId.None;
     public CharacterId LootOpener { get; init; } = CharacterId.None;
+    public long LootSessionId { get; init; }
     /// <summary>The item on the mouse (<see cref="PlayerState.Held"/>), null for none, and the serial of the last held-item command applied (<see cref="PlayerState.HeldSerial"/>).</summary>
     public Items.HeldItemView? Held { get; init; }
     public long HeldSerial { get; init; }
+    public Trading.PlayerTradeView? PlayerTrade { get; init; }
     /// <summary>Player-built buildings and construction sites, in creation order (docs/simulation.md "Buildings").</summary>
     public IReadOnlyList<Construction.BuildingSnapshot> Buildings { get; init; } = [];
     /// <summary>Bumped when a building is added, completed, destroyed or removed (not on progress): the host diffs <see cref="Buildings"/> by id when it changes.</summary>
@@ -406,6 +415,7 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     public IReadOnlySet<string> UnlockedBuildings { get; init; } = EmptySet;
     /// <summary>The doors of the player's buildings and the others that are open, moving, locked or set to lock, by (building instance, index in its <c>doors</c> list); any other door is closed and unlocked (docs/simulation.md "Cages, beds and locks").</summary>
     public IReadOnlyDictionary<(string Building, int Door), Locks.DoorView> Doors { get; init; } = NoDoors;
+    public IReadOnlyDictionary<string, ulong> DoorGroupRevisions { get; init; } = new Dictionary<string, ulong>(StringComparer.Ordinal);
 
     /// <summary>The town houses the player owns (bought ones too, with or without doors); indoor placement checks them.</summary>
     public IReadOnlySet<string> OwnedTownBuildings { get; init; } = EmptySet;

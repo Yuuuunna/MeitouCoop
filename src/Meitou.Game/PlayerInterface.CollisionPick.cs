@@ -1,5 +1,7 @@
 using System.Numerics;
 
+using Meitou.Runtime.Placement;
+
 namespace Meitou.Game;
 
 /// <summary>
@@ -32,7 +34,7 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>
-    /// Where the ray meets a building without collision (a farm) by its plot (<see cref="Building.PlacementServices.Plot"/>, an engine stand-in): just before the ground, when the ground
+    /// Where the ray meets a building without collision (a farm) by its plot (<see cref="PlacementServices.Plot"/>, an engine stand-in): just before the ground, when the ground
     /// the ray meets at <paramref name="ground"/> lies inside the placed hull; null otherwise.
     /// </summary>
     static float? PlotT((Vector3 Origin, Vector3 Direction) ray, Vector2[] hull, float? ground)

@@ -94,7 +94,7 @@ public sealed partial class CarrySystem
                 || body.Fighter is { IsAnimal: true }) continue;
             float d2 = Vector2.DistanceSquared(at, new Vector2(next[s].Position.X, next[s].Position.Z));
             if (body.Medical!.Dead) { if (d2 <= dead2) (dead, dead2) = (s, d2); continue; }
-            if (d2 > down2 || Friendly(cold, body) || PlayerSide(world, body) && !world.Player.BanditsLoot) continue;
+            if (d2 > down2 || Friendly(cold, body) || PlayerSide(world, body) && !BanditsMayLoot(world, body)) continue;
             if (memory?.Find(world, cold.SquadId, table.IdOf(s)) is { } known && (known.Long & Dialogue.MemoryTag.LoveMask) != 0) continue;
             (down, down2) = (s, d2);
         }

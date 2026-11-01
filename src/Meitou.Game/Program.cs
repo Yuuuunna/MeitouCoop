@@ -59,15 +59,18 @@ static class Program
         }
         // Steamworks must start before Vulkan creates its device so Steam can hook the renderer for Shift+Tab. Not for pictures or a
         // listing: those must not count as Kenshi play time or get the overlay.
-        using var steam = world.Screenshot is null && !game.ListStarts ? SteamSession.TryStart(install) : null;
+        using var steam = world.Screenshot is null && !game.ListStarts && !game.ConnectionCheck ? SteamSession.TryStart(install) : null;
         // A native splash at once, until the game window draws (docs/engine.md "Loading"); not for pictures or a listing.
-        using var splash = world.Screenshot is null && !game.ListStarts ? SplashWindow.Show(install.DataDirectory) : null;
+        using var splash = world.Screenshot is null && !game.ListStarts && !game.ConnectionCheck ? SplashWindow.Show(install.DataDirectory) : null;
         var config = UserConfig.Load();
         Meitou.Localisation.Loc.Use(install);   // the language of settings.cfg: texts from locale/<code>/LC_MESSAGES/main.mo (docs/formats/localisation.md)
         // The saved texture quality before the world loads: the terrain's layer arrays are sized from it once (the Tab panel's restore after
         // the boot reaches only the other textures). --texture-quality and --low-end choose it for this run instead.
         if (!args.Contains("--texture-quality") && !args.Contains("--low-end") && config.Graphics.TryGetValue(WorldFrame.TextureQualitySlider, out float savedQuality))
             world.TextureQuality = Math.Clamp((int)MathF.Round(savedQuality), 0, Meitou.Data.Textures.TextureQuality.Maximum);
+        if (game.Connect is not null) return RunOnline(install, world, game, config, splash);
+        if (game.ConnectionCheck || game.CreateFaction is not null || game.OnlineRole is not null)
+        { Console.Error.WriteLine("--connection-check, --create-faction and --role require --connect <host:port>."); return 2; }
         Meitou.Data.GameDatabase? db = null;
         Meitou.Data.Gameplay.NewGameStart? start = null;
         if (game.Battle is not null && (game.NewGame || game.NoPopulation || game.Load is not null || game.Duel || game.Sandbox > 0))
@@ -186,5 +189,33 @@ static class Program
         using var scene = WorldFrame.Load(install, world, db);
         if (scene is null) return 1;
         return new GameHost(install, scene, new AssetLocator(install), world, game, config, start) { StartSave = save }.Run();
+    }
+
+    static int RunOnline(GameInstall install, WorldOptions world, GameOptions game, UserConfig config, IDisposable? splash)
+    {
+        if (game.NewGame || game.Load is not null || game.NoPopulation || game.Duel || game.Sandbox != 0 || game.Battle is not null ||
+            game.TerrainSandbox is not null || game.UiShowcase || game.TitlePreview || game.Renderer != "vulkan" || game.PlayBench is not null)
+        { Console.Error.WriteLine("Online entry requires the normal Vulkan game mode; remove local world/demo options."); return 2; }
+        Meitou.Networking.RemoteGameSession? connection = null;
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            connection = OnlineBootstrap.ConnectAsync(install, game.Connect!, game.CreateFaction, game.OnlineRole, timeout.Token).GetAwaiter().GetResult();
+            var view = connection.State.View ?? throw new IOException("The server withdrew the entry view.");
+            Console.WriteLine($"online    joined player {view.Player}, {view.Roles.Count} role(s), server tick {view.Snapshot.Tick}");
+            if (game.ConnectionCheck) return 0;
+            var own = view.Roles.Where(r => r.Available && !r.Dead).Select(r => r.Character).ToHashSet();
+            var focus = view.Snapshot.Characters.FirstOrDefault(c => own.Contains(c.Id))?.Position ?? throw new IOException("No visible entry role.");
+            (world.X, world.Z, world.Town, world.Zone) = (focus.X, focus.Z, null, null);
+            world.Day = (int)Math.Floor(view.GameHours / 24); world.Hour = (float)(view.GameHours % 24);
+            var db = Meitou.Data.GameDatabase.Load(Meitou.Data.LoadOrder.FromInstall(install));
+            if (world.Screenshot is null)
+                return new GameHost(install, null!, new AssetLocator(install), world, game, config, null)
+                { OnlineConnection = connection, Splash = splash, LoadScene = () => WorldFrame.Load(install, world, db) }.Run();
+            using var scene = WorldFrame.Load(install, world, db);
+            return scene is null ? 1 : new GameHost(install, scene, new AssetLocator(install), world, game, config, null) { OnlineConnection = connection }.Run();
+        }
+        catch (Exception e) { Console.Error.WriteLine("Online entry failed: " + e.Message); Console.Error.WriteLine(e.StackTrace); return 1; }
+        finally { connection?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
     }
 }

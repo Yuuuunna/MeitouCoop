@@ -8,18 +8,26 @@ namespace Meitou.Simulation.Locks;
 /// The original's order 258 <c>USE_BED_ORDER</c> (verb "Sleep"; a quick right click on a bed, docs/game/ui-input.md "Building hover and click"): one of the characters (the selection when
 /// the list is empty), the nearest that is awake and free, walks to <see cref="Bed"/> (a bed fixture id) and lies in it until another order.
 /// </summary>
-public sealed record UseBedOrder(IReadOnlyList<CharacterId> Characters, string Bed) : SimCommand;
+public sealed record UseBedOrder(IReadOnlyList<CharacterId> Characters, string Bed) : FixtureCommand;
 
 /// <summary>
 /// The original's order 99 <c>PUT_SOMEONE_IN_BED</c> (verb "Put in Bed"): each of the carriers (the selected ones carrying someone when the list is empty) carries its body to
 /// <see cref="Bed"/>, or with none to the bed the bed search finds for it, and lays it in.
 /// </summary>
-public sealed record PutInBedOrder(IReadOnlyList<CharacterId> Carriers, string? Bed = null) : SimCommand;
+public sealed record PutInBedOrder(IReadOnlyList<CharacterId> Carriers, string? Bed = null) : FixtureCommand;
 
 /// <summary>A walk to a bed (<see cref="BedSystem"/>): <see cref="Character"/> to lie in <see cref="Bed"/> itself, or to lay <see cref="Body"/> it carries in it.</summary>
 public sealed class BedTrip
 {
     public required CharacterId Character { get; init; }
+    internal SimCommand? Request { get; init; }
+    internal CharacterControl? Control { get; init; }
+    internal ulong Membership { get; init; }
+    internal Fixture? Target { get; set; }
+    internal int Owner { get; set; }
+    internal ulong FixtureRevision { get; set; }
+    internal CharacterCold? BodyCold { get; init; }
+    internal int BodyFaction { get; init; }
     public required string Bed { get; set; }
     /// <summary>The carried character to lay in the bed; <see cref="CharacterId.None"/>: the character lies in it itself.</summary>
     public CharacterId Body { get; init; } = CharacterId.None;
@@ -31,6 +39,7 @@ public sealed class BedTrip
     internal void Hash(ref StateHasher h)
     {
         h.Add(Character); h.Add(Rng.StableHash(Bed)); h.Add(Body); h.Add(Fixed); h.Add(Tries);
+        if (Control is { } grant) { h.Add(grant.Player.Value); h.Add(grant.Entity.Value); h.Add(grant.Revision); h.Add(Membership); h.Add(Owner); h.Add(BodyFaction); }
     }
 }
 
@@ -81,8 +90,11 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
 
     /// <summary>Sets the game hour a bed's rent was last paid (a loaded save does this).</summary>
     public void SetRentPaid(string bed, double hours) => paid[bed] = hours;
+    public static string RentKey(int faction, string bed) => $"faction:{faction}:{bed}";
 
-    static IReadOnlyList<CharacterId> Who(World world, IReadOnlyList<CharacterId> ids) => ids.Count > 0 ? ids : world.Player.Selection.ToArray();
+    static IReadOnlyList<CharacterId> Who(World world, SimCommand command, IReadOnlyList<CharacterId> ids) => world.CommandCharacters(command, ids).Where(id =>
+        command.Issuer is not { } issuer || world.Characters.TryResolveNext(id, out int slot)
+        && command.FactionGrantRevision != 0 && world.Players.Find(issuer)?.MembershipRevision(world.Characters.Cold(slot)!.Faction) == command.FactionGrantRevision).ToArray();
 
     public void Inputs(World world, IReadOnlyList<SimCommand> commands)
     {
@@ -93,26 +105,27 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
             {
                 case UseBedOrder use:
                 {
-                    if (world.Fixtures.Find(use.Bed) is not { Kind: FixtureKind.Bed } bed) break;
+                    if (world.Fixtures.Find(use.Bed) is not { Kind: FixtureKind.Bed } bed || !world.Fixtures.Matches(use, bed)) break;
                     int best = -1;
                     float bestD = float.MaxValue;
-                    foreach (var id in Who(world, use.Characters))
+                    foreach (var id in Who(world, use, use.Characters))
                     {
                         if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { } c || !CanWalk(c) || !c.Carrying.IsNone) continue;
                         if (c.InSomething == HeldState.Bed && c.InWhat == bed.Id) { best = -1; break; }   // one of them lies in it already
                         float d = Vector3.DistanceSquared(table.Next[s].Position, bed.Position);
                         if (d < bestD) (best, bestD) = (s, d);
                     }
-                    if (best >= 0) StartSleep(world, best, bed, fixedBed: true);
+                    if (best >= 0) StartSleep(world, best, bed, fixedBed: true, request: use);
                     break;
                 }
                 case PutInBedOrder put:
-                    foreach (var id in Who(world, put.Carriers))
+                    foreach (var id in Who(world, put, put.Carriers))
                     {
                         if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { Carrying.IsNone: false } c || !CanWalk(c)) continue;
                         var bed = put.Bed is { } given ? world.Fixtures.Find(given) : world.Fixtures.FindBed(world, s, data.Relations, f => Reserved(f, id));
                         if (bed is not { Kind: FixtureKind.Bed }) { if (c.IsPlayer) world.Post($"{c.Name}: no free bed nearby"); continue; }
-                        StartPutIn(world, s, bed, fixedBed: put.Bed is not null);
+                        if (put.Bed is not null && !world.Fixtures.Matches(put, bed)) continue;
+                        StartPutIn(world, s, bed, fixedBed: put.Bed is not null, request: put);
                     }
                     break;
             }
@@ -140,15 +153,16 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
     /// Sends a character to lie in <paramref name="bed"/> (task <see cref="CharacterTask.Sleep"/>): out of another bed first; in reach it gets in at once. <paramref name="fixedBed"/>: the
     /// player named the bed, so no other is looked for. The "Sleep when injured" job starts it too.
     /// </summary>
-    public void StartSleep(World world, int slot, Fixture bed, bool fixedBed = false)
+    public void StartSleep(World world, int slot, Fixture bed, bool fixedBed = false, SimCommand? request = null)
     {
         var table = world.Characters;
         var id = table.IdOf(slot);
         var c = table.Cold(slot)!;
         trips.RemoveAll(t => t.Character == id);
+        if (world.Players.RequiresExplicitControl && c.IsPlayer && world.Players.ControlOf(id) is null) return;
         if (c.InSomething == HeldState.Bed && c.InWhat != bed.Id) world.Fixtures.LeaveBed(world, id);
         if (c.InSomething == HeldState.Bed) { table.Next[slot].Task = (byte)CharacterTask.Sleep; return; }
-        var trip = new BedTrip { Character = id, Bed = bed.Id, Fixed = fixedBed };
+        var trip = Trip(world, id, bed, CharacterId.None, fixedBed, request);
         trips.Add(trip);
         WalkTo(world, slot, bed);
         table.Next[slot].Task = (byte)CharacterTask.Sleep;
@@ -156,13 +170,14 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
     }
 
     /// <summary>Sends a carrier to lay its body in <paramref name="bed"/>.</summary>
-    public void StartPutIn(World world, int slot, Fixture bed, bool fixedBed = false)
+    public void StartPutIn(World world, int slot, Fixture bed, bool fixedBed = false, SimCommand? request = null)
     {
         var table = world.Characters;
         var id = table.IdOf(slot);
         var c = table.Cold(slot)!;
         trips.RemoveAll(t => t.Character == id);
-        var trip = new BedTrip { Character = id, Bed = bed.Id, Body = c.Carrying, Fixed = fixedBed };
+        if (world.Players.RequiresExplicitControl && c.IsPlayer && world.Players.ControlOf(id) is null) return;
+        var trip = Trip(world, id, bed, c.Carrying, fixedBed, request);
         trips.Add(trip);
         WalkTo(world, slot, bed);
         if (!Step(world, trip)) trips.Remove(trip);
@@ -200,10 +215,25 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
     }
 
     /// <summary>One tick of a trip; false when it is over (in bed, laid in, refused, given up, or another order).</summary>
+    BedTrip Trip(World world, CharacterId actor, Fixture bed, CharacterId body, bool fixedBed, SimCommand? request)
+    {
+        var grant = world.Players.ControlOf(actor);
+        return new BedTrip { Character = actor, Bed = bed.Id, Body = body, Fixed = fixedBed, Request = request,
+            Control = grant, Membership = grant is { } g ? world.Players.Find(g.Player)?.MembershipRevision(g.Faction) ?? 0 : 0,
+            Target = bed, Owner = bed.Owner, FixtureRevision = world.Fixtures.RevisionOf(bed),
+            BodyCold = world.Characters.TryResolveNext(body, out int bodySlot) ? world.Characters.Cold(bodySlot) : null,
+            BodyFaction = world.Characters.TryResolveNext(body, out int factionSlot) ? world.Characters.Cold(factionSlot)!.Faction : -1 };
+    }
+
     bool Step(World world, BedTrip t)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(t.Character, out int s) || table.Cold(s) is not { } c || !CanWalk(c)) return false;
+        if (t.Request is { } request && !world.MayOrder(request, t.Character)) return false;
+        if (world.Players.RequiresExplicitControl && c.IsPlayer && (t.Control is not { } control || !world.Players.Validate(control)
+            || t.Membership == 0 || world.Players.Find(control.Player)?.MembershipRevision(c.Faction) != t.Membership)) return false;
+        if (t.Target is { } target && (!ReferenceEquals(world.Fixtures.Find(t.Bed), target) || target.Owner != t.Owner || world.Fixtures.RevisionOf(target) != t.FixtureRevision)) return false;
+        if (t.BodyCold is { } bodyCold && (!table.TryResolveNext(t.Body, out int bodySlot) || !ReferenceEquals(table.Cold(bodySlot), bodyCold) || bodyCold.Faction != t.BodyFaction)) return false;
         bool carrying = !t.Body.IsNone;
         if (carrying ? c.Carrying != t.Body : c.InSomething != HeldState.None) return false;
         ref var n = ref table.Next[s];
@@ -216,7 +246,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
                 if (!carrying) MovementSystem.Stop(table, s);
                 return false;
             }
-            t.Bed = other.Id;
+            t.Bed = other.Id; t.Target = other; t.Owner = other.Owner; t.FixtureRevision = world.Fixtures.RevisionOf(other);
             WalkTo(world, s, other);
             if (!carrying) n.Task = (byte)CharacterTask.Sleep;
             return true;
@@ -294,15 +324,16 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         return Math.Max(cost, 0);
     }
 
-    internal BuildingDetail? DetailOf(World world, string? instance)
+    internal BuildingDetail? DetailOf(World world, string? instance, int? faction = null)
     {
         // Town beds only: a bed the player built is a machine site (Site -1) and keeps the machine's panel.
         if (instance is null || world.Fixtures.Find(instance) is not { Kind: FixtureKind.Bed, Site: >= 0 } bed || data.Db.Find(bed.RecordId) is not { } record) return null;
         string? town = bed.Site >= 0 && bed.Site < data.Sites.Count ? data.Sites[bed.Site].Town.Name : null;
         float healing = Meitou.Data.Gameplay.Construction.MachineData.From(data.Db, record)?.OutputValue ?? 1;
-        return new BuildingDetail(instance, [], bed.Owner == world.Player.Faction)
+        int viewerFaction = faction ?? world.Player.Faction;
+        return new BuildingDetail(instance, [], bed.Owner == viewerFaction)
         {
-            Bed = new(record.Name, town, Cost(world, bed, world.Player.Faction), healing),
+            Bed = new(record.Name, town, Cost(world, bed, viewerFaction), healing),
         };
     }
 
@@ -320,14 +351,16 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
             world.Bark(table.IdOf(slot), Loc.Tr("This isn't mine"));
             return false;
         }
-        if (paid.TryGetValue(bed.Id, out double when) && world.GameHours - when < Settings.RentHours) return true;
-        if (world.Player.Money < cost)
+        string key = world.Players.RequiresExplicitControl ? RentKey(table.Cold(slot)!.Faction, bed.Id) : bed.Id;
+        if (paid.TryGetValue(key, out double when) && world.GameHours - when < Settings.RentHours) return true;
+        var cold = table.Cold(slot)!;
+        if (world.Players.RequiresExplicitControl && (world.Players.ControlOf(table.IdOf(slot)) is not { } grant || world.Players.Find(grant.Player)?.HasPermission(cold.Faction, FactionPermission.SpendFunds) != true)) return false;
+        if (world.Factions.Find(cold.Faction) is not { } funds || !funds.TryDebit(cost))
         {
             world.Post(Loc.Tr("Can't afford c.{1} for bed rental.", cost));
             return false;
         }
-        world.Player.Money -= cost;
-        paid[bed.Id] = world.GameHours;
+        paid[key] = world.GameHours;
         world.Post(Loc.Tr("Paid c.{1} for bed rental.", cost));
         return true;
     }

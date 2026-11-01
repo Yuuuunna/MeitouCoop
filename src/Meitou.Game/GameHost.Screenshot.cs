@@ -31,13 +31,13 @@ sealed partial class GameHost
         var trader = characters.Where(c => c.IsTrader && c.Body is not { Dead: true } and not { Unconscious: true })
             .OrderBy(c => Vector3.DistanceSquared(c.Position, leader.Position)).FirstOrDefault();
         if (trader is null) { Console.WriteLine("showcase  no trader in the world"); return false; }
-        session.World.Commands.Enqueue(new Meitou.Simulation.Trading.OpenTrade(leader.Id, trader.Id) { Tick = session.World.Tick });
+        LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Trading.OpenTrade(leader.Id, trader.Id) { Tick = LocalSession.World.Tick });
         for (int i = 0; i < 4000 && session.CurrentSnapshot.Trade is null; i++)
         {
             // A long walk outlasts the approach time: ask again now and then.
-            if (i > 0 && i % 400 == 0) session.World.Commands.Enqueue(new Meitou.Simulation.Trading.OpenTrade(leader.Id, trader.Id) { Tick = session.World.Tick });
+            if (i > 0 && i % 400 == 0) LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Trading.OpenTrade(leader.Id, trader.Id) { Tick = LocalSession.World.Tick });
             session.Tick();
-            session.AdvanceSimulation(session.Ticks.TickSeconds);
+            LocalSession.AdvanceSimulation(session.Ticks.TickSeconds);
             UpdateNav(wait: true);
         }
         Console.WriteLine(session.CurrentSnapshot.Trade is { } t ? $"showcase  trading with {t.TraderName}: {t.Stock.Count} stock items" : "showcase  the trade did not open");
@@ -53,12 +53,12 @@ sealed partial class GameHost
     /// <summary>The showcase's conversation: the trade closes, the leader talks to the nearest shopkeeper (else the nearest NPC) that answers a Talk and walks up to it (false: none, or it never opened).</summary>
     bool ShowcaseTalk()
     {
-        session.World.Commands.Enqueue(new Meitou.Simulation.Trading.CloseTrade { Tick = session.World.Tick });
-        session.AdvanceSimulation(session.Ticks.TickSeconds);
+        LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Trading.CloseTrade { Tick = LocalSession.World.Tick });
+        LocalSession.AdvanceSimulation(session.Ticks.TickSeconds);
         var characters = session.CurrentSnapshot.Characters;
         if (playerSquad is null || characters.FirstOrDefault(c => c.Id == playerSquad.Leader) is not { } leader) return false;
         // Most NPCs answer a Talk only in a special state (a guard while caged): try the nearest ones, shopkeepers first, until one talks.
-        var candidates = characters.Where(c => !c.IsPlayer && c.Body is not { Dead: true } and not { Unconscious: true } && session.World.CanTalk(c.Id))
+        var candidates = characters.Where(c => !c.IsPlayer && c.Body is not { Dead: true } and not { Unconscious: true } && LocalSession.World.CanTalk(c.Id))
             .OrderBy(c => c.IsTrader ? 0 : 1).ThenBy(c => Vector3.DistanceSquared(c.Position, leader.Position)).Take(12).ToList();
         if (candidates.Count == 0) { Console.WriteLine("showcase  nobody to talk to"); return false; }
         CharacterSnapshot? npc = null;
@@ -67,11 +67,11 @@ sealed partial class GameHost
             bool silent = false;
             for (int i = 0; i < 3000 && session.CurrentSnapshot.Conversation is null && !silent; i++)
             {
-                if (i % 400 == 0) session.World.Commands.Enqueue(new Meitou.Simulation.Dialogue.TalkOrder(leader.Id, candidate.Id) { Tick = session.World.Tick });
+                if (i % 400 == 0) LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Dialogue.TalkOrder(leader.Id, candidate.Id) { Tick = LocalSession.World.Tick });
                 session.Tick();
-                session.AdvanceSimulation(session.Ticks.TickSeconds);
+                LocalSession.AdvanceSimulation(session.Ticks.TickSeconds);
                 UpdateNav(wait: true);
-                foreach (string message in session.World.TakeMessages())
+                foreach (string message in LocalSession.World.TakeMessages())
                 {
                     Console.WriteLine($"message   {message}");
                     silent |= message.EndsWith("has nothing to say.", StringComparison.Ordinal);
@@ -113,13 +113,14 @@ sealed partial class GameHost
             player.Select([playerSquad.Leader], additive: false);
         if (playerSquad is not null && g.MoveTo is { } to)
         {
-            session.World.Commands.Enqueue(new Meitou.Simulation.SelectCommand(playerSquad.Members.ToList()) { Tick = session.World.Tick });
-            session.World.Commands.Enqueue(new Meitou.Simulation.MoveOrder([], new Vector3(to.X, 0, to.Z)) { Tick = session.World.Tick });
+            LocalSession.World.Commands.Enqueue(new Meitou.Simulation.SelectCommand(playerSquad.Members.ToList()) { Tick = LocalSession.World.Tick });
+            LocalSession.World.Commands.Enqueue(new Meitou.Simulation.MoveOrder([], new Vector3(to.X, 0, to.Z)) { Tick = LocalSession.World.Tick });
         }
         for (int i = 0; i < Math.Max(g.Ticks, g.UiShowcase ? 1 : 0); i++)
         {
             session.Tick();
-            session.AdvanceSimulation(session.Ticks.TickSeconds);   // one control tick of real time, at speed 1
+            if (session is WorldSession local) local.AdvanceSimulation(session.Ticks.TickSeconds);
+            else session.Advance(0);
             UpdateNav(wait: true);
             DuelHoldClock();
             if (player is not null) DuelFrame(false);   // the duel's laps run on in a long still too
@@ -174,8 +175,8 @@ sealed partial class GameHost
             gpu.Dispose();
             return 0;
         }
-        string?[] panels = g.UiShowcase
-            ? [null, "hud-expanded", "inventory", "limbs", "stats", "overview", "overview-faction", "building", "menu", "new-game", "save", "load", "title", "title-new-game", "title-load", "title-import", "title-credits", "title-exit", "build", "editor", "editor-face", "editor-hair", "edited", "trade", "talk"] : [null];
+        string?[] panels = g.UiPanel is { Length: > 0 } ? StillPanels() : g.UiShowcase
+            ? [null, "hud-expanded", "inventory", "limbs", "stats", "overview", "overview-faction", "building", "menu", "new-game", "save", "load", "title", "title-multiplayer", "title-new-game", "title-load", "title-import", "title-credits", "title-exit", "build", "editor", "editor-face", "editor-hair", "edited", "trade", "talk"] : [null];
         foreach (string? panelName in panels)
         {
             if (panelName == "trade" && !ShowcaseTrade()) continue;
@@ -185,8 +186,8 @@ sealed partial class GameHost
                 player.MouseMove(new Vector2(item.Bounds.X + item.Bounds.Width / 2, item.Bounds.Y + item.Bounds.Height / 2));
             bool showPanel = panelName is not ("trade" or "talk");   // the trade and the conversation open their own windows; closing them would end them
             if (panelName?.StartsWith("editor", StringComparison.Ordinal) == true) { player.ShowUiPanel(panelName); EditorCamera(); }
-            if (panelName == "edited") { player.ShowcaseEdit(); session.AdvanceSimulation(session.Ticks.TickSeconds); }
-            if (panelName == "building") { UpdateView(w, h); player.ShowUiPanel("building"); session.AdvanceSimulation(session.Ticks.TickSeconds); }
+            if (panelName == "edited") { player.ShowcaseEdit(); LocalSession.AdvanceSimulation(session.Ticks.TickSeconds); }
+            if (panelName == "building") { UpdateView(w, h); player.ShowUiPanel("building"); LocalSession.AdvanceSimulation(session.Ticks.TickSeconds); }
             // Item icons are drawn from the frame after a cell asks for them, and their textures stream in: show the panel until they are done.
             for (int frames = 0; panelName is not null && overlay is not null && frames < 400 && (frames < 3 || gpu.Characters is { PendingIcons: > 0 } || gpu.Objects is { StagePropPending: true } || gpu.Objects is { PendingBuildingIcons: > 0 } || player.PendingIconFiles > 0); frames++)
             {
@@ -224,7 +225,7 @@ sealed partial class GameHost
         player.DisposeUi();
         var s = session.Camera.Current;
         Console.WriteLine($"camera    {(session.Camera.IsFree ? "free" : "strategy")}: pivot {s.Target.X:0}, {s.Target.Y:0}, {s.Target.Z:0}, eye {s.Eye.X:0}, {s.Eye.Y:0}, {s.Eye.Z:0}, " +
-            $"yaw {s.Yaw * 180 / MathF.PI:0.#}, pitch {s.Pitch * 180 / MathF.PI:0.#}, boom {s.Distance:0.#}; {session.Ticks.TotalTicks} control ticks, {session.Simulation.TotalTicks} simulation ticks, game time {session.Clock.TimeText} ({session.Clock.DayText})");
+            $"yaw {s.Yaw * 180 / MathF.PI:0.#}, pitch {s.Pitch * 180 / MathF.PI:0.#}, boom {s.Distance:0.#}; {session.Ticks.TotalTicks} control ticks, world tick {session.CommandTick}, game time {session.Clock.TimeText} ({session.Clock.DayText})");
         DisposeTitleScene();
         gpu.Dispose();
         return 0;

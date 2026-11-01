@@ -62,11 +62,11 @@ sealed partial class GameHost
     void UpdateDoorSounds(Vector3 eye)
     {
         var sounds = doorSounds!;
-        if (!ReferenceEquals(doorSoundsFor, session.World))
+        if (!ReferenceEquals(doorSoundsFor, session.WorldIdentity))
         {
             sounds.Clear();
             doorTypes.Clear();
-            doorSoundsFor = session.World;
+            doorSoundsFor = session.WorldIdentity;
         }
         var db = scene.Database;
         sounds.Update(session.CurrentSnapshot.Doors.Select(d => KeyValuePair.Create($"{d.Key.Building}#{d.Key.Door}",
@@ -84,11 +84,11 @@ sealed partial class GameHost
     void UpdateEmitters()
     {
         var emitters = worldEmitters!;
-        if (!ReferenceEquals(emittersFor, session.World))
+        if (!ReferenceEquals(emittersFor, session.WorldIdentity))
         {
             emitters.Clear();
             ForgetEmitters();
-            emittersFor = session.World;
+            emittersFor = session.WorldIdentity;
             levelEmitters = scene.Objects is { } objects ? Task.Run(objects.Emitters) : null;
         }
         if (!levelEmittersAdded && levelEmitters is { IsCompleted: true } read)

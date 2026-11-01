@@ -1,3 +1,4 @@
+using Meitou.Runtime.Placement;
 using Meitou.Data.Gameplay.Construction;
 using Meitou.Data.World;
 using Meitou.Simulation;
@@ -7,16 +8,16 @@ namespace Meitou.Game;
 
 /// <summary>
 /// The host's side of player construction (docs/simulation.md "Buildings", "Host seam: snapshot diff"): the snapshot's <see cref="WorldSnapshot.Buildings"/> are diffed by id
-/// whenever <see cref="WorldSnapshot.BuildingsRevision"/> changes. A new site goes into the renderer's runtime placements and, when it qualifies, the navmesh overlay; a removed
-/// one leaves both; a completed one enters the navmesh and lights its lamps. The scaffold of a site that is not finished is read from <c>Progress / Target</c> every frame.
+/// whenever <see cref="WorldSnapshot.BuildingsRevision"/> changes. Runtime owns navigation changes; this host updates rendering, lamps and effects.
+/// The scaffold of a site that is not finished is read from <c>Progress / Target</c> every frame.
 /// </summary>
 sealed partial class GameHost
 {
-    World? buildingsWorld;
+    object? buildingsWorld;
     long buildingsRevision = -1;
     // What the overlays were last told, by instance id.
     readonly Dictionary<string, BuildingSnapshot> shownBuildings = new(StringComparer.Ordinal);
-    readonly HashSet<string> navBuildings = new(StringComparer.Ordinal), litBuildings = new(StringComparer.Ordinal), effectBuildings = new(StringComparer.Ordinal);
+    readonly HashSet<string> litBuildings = new(StringComparer.Ordinal), effectBuildings = new(StringComparer.Ordinal);
     readonly Dictionary<string, float> constructionLook = new(StringComparer.Ordinal);
     Dictionary<string, BuildingBuildData>? buildData;
 
@@ -27,11 +28,11 @@ sealed partial class GameHost
     /// <summary>Once a frame, before the world is drawn.</summary>
     void UpdateBuildings()
     {
-        if (!ReferenceEquals(buildingsWorld, session.World))
+        if (!ReferenceEquals(buildingsWorld, session.WorldIdentity))
         {
             // A new world (a loaded save, a new game): the old world's sites go, the new one's first snapshot carries all of its own.
             ForgetBuildings();
-            buildingsWorld = session.World;
+            buildingsWorld = session.WorldIdentity;
         }
         var snapshot = session.CurrentSnapshot;
         if (snapshot.BuildingsRevision != buildingsRevision)
@@ -76,7 +77,6 @@ sealed partial class GameHost
         foreach (string id in shownBuildings.Keys.Where(id => !current.ContainsKey(id)).ToArray())
         {
             ActiveObjects?.RemoveRuntime(id);
-            if (navBuildings.Remove(id)) nav?.RemoveRuntimeBuilding(id);
             if (litBuildings.Remove(id)) ActiveLamps?.RemoveRuntime(id);
             if (effectBuildings.Remove(id)) gpu?.Particles?.RemoveBuildingEffects(id);
             shownBuildings.Remove(id);
@@ -86,17 +86,14 @@ sealed partial class GameHost
             var placement = Placement(site);
             if (shownBuildings.TryGetValue(site.Id, out var shown) && shown.Record == site.Record && shown.Position == site.Position && shown.Rotation == site.Rotation && shown.Destroyed == site.Destroyed)
             {
-                if (site.Complete && !shown.Complete) AddToNavmesh(site, placement);   // newly complete
                 UpdateLamps(site);
                 UpdateEffects(site);
                 shownBuildings[site.Id] = site;
                 continue;
             }
-            if (shown is not null && navBuildings.Remove(site.Id)) nav?.RemoveRuntimeBuilding(site.Id);   // moved or changed: out, then in again
             if (shown is not null && litBuildings.Remove(site.Id)) ActiveLamps?.RemoveRuntime(site.Id);
             if (shown is not null && effectBuildings.Remove(site.Id)) gpu?.Particles?.RemoveBuildingEffects(site.Id);
             ActiveObjects?.AddRuntime(placement);
-            AddToNavmesh(site, placement);
             UpdateLamps(site);
             UpdateEffects(site);
             shownBuildings[site.Id] = site;
@@ -152,15 +149,6 @@ sealed partial class GameHost
             ? level with { Key = site.Id, WorldY = site.Position.Y, DestroyedOverride = site.Destroyed }
             : new(WorldLayout.ZoneOf(site.Position.X, site.Position.Z), site.Id, site.Record, site.Position, site.Rotation, null, site.Position.Y) { Key = site.Id, Contained = site.Parent is not null, ContainerId = site.Parent };
 
-    /// <summary>Navmesh membership (engine reading of the Observed rebuild on placing): <c>path mode</c> not 0 and the building complete or without a <c>build threshold</c>.</summary>
-    void AddToNavmesh(BuildingSnapshot site, BuildingPlacement placement)
-    {
-        if (nav is null || navBuildings.Contains(site.Id) || !BuildData().TryGetValue(site.Record, out var data)) return;
-        if (data.PathMode == 0 || site.LevelPlacement is null && !site.Complete && data.BuildThreshold != 0) return;
-        navBuildings.Add(site.Id);
-        nav.AddRuntimeBuilding(placement);   // the zones loaded are built again; UpdateNav sends the RepathCommand when one is ready
-    }
-
     void ForgetBuildings()
     {
         ActiveObjects?.ClearRuntime();
@@ -171,8 +159,6 @@ sealed partial class GameHost
         levelOwners = null;
         ForgetGroundItems();
         ForgetFarms();
-        foreach (string id in navBuildings) nav?.RemoveRuntimeBuilding(id);
-        navBuildings.Clear();
         shownBuildings.Clear();
         constructionLook.Clear();
         buildingsRevision = -1;
@@ -224,7 +210,7 @@ sealed partial class GameHost
                     : [];
             },
             IconFile = icons.Find,
-            Placement = new Building.PlacementServices
+            Placement = new PlacementServices
             {
                 Ground = ActiveGround,
                 Footprint = footprints.Of,
@@ -268,7 +254,7 @@ sealed partial class GameHost
                     placement.DestroyedOverride ?? state?.GetBool("destroyed") ?? false);
             },
             Towns = () => towns ??= popData is { } d ? [.. d.Sites.Select(s => new Meitou.Data.Gameplay.Construction.PlacementTown(s.Town, new(s.Position.X, s.Position.Z)))] : [],
-            PlayerFactionId = () => popData is { } d && d.PlayerFaction is >= 0 and var mine && mine < d.Factions.Count ? d.Factions[mine].Id : "",
+            PlayerFactionId = () => session.DescribeFaction(session.ActiveFaction)?.RecordId ?? "",
             DrawGhosts = draws => ActiveObjects?.SetGhosts(draws),
         };
     }
@@ -280,9 +266,10 @@ sealed partial class GameHost
     /// The floor a ghost stands on in <paramref name="room"/>: a player site's, else a level building's with whether the player's faction owns it. A repaired town house is
     /// shown as a site but stays a level building, so what is built in it names the level instance as its parent (as in any owned town building).
     /// </summary>
-    Building.GhostFloor GhostFloorOf(InteriorVolume room, int floor)
+    GhostFloor GhostFloorOf(InteriorVolume room, int floor)
     {
-        if (shownBuildings.TryGetValue(room.PlacementId, out var shown) && shown.LevelPlacement is null) return new(room.PlacementId, room.Footprint, floor);
+        if (shownBuildings.TryGetValue(room.PlacementId, out var shown) && shown.LevelPlacement is null)
+            return new(room.PlacementId, room.Footprint, floor, Owned: shown.Owner == session.ActiveFaction);
         if (levelOwners is null && popData is { } d)
         {
             levelOwners = new(StringComparer.Ordinal);
@@ -294,7 +281,7 @@ sealed partial class GameHost
         }
         string player = popData is { } p && p.PlayerFaction is >= 0 and var mine && mine < p.Factions.Count ? p.Factions[mine].Id : "";
         return levelOwners?.TryGetValue(room.PlacementId, out var level) == true
-            ? new(room.PlacementId, room.Footprint, floor, level.Instance, session.CurrentSnapshot.OwnedTownBuildings.Contains(room.PlacementId) || player.Length > 0 && level.Owner == player)
+            ? new(room.PlacementId, room.Footprint, floor, room.PlacementId, session.CurrentSnapshot.OwnedTownBuildings.Contains(room.PlacementId) || player.Length > 0 && level.Owner == player)
             : new(room.PlacementId, room.Footprint, floor, room.PlacementId);
     }
 }

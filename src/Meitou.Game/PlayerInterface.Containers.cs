@@ -48,5 +48,5 @@ sealed partial class PlayerInterface
     /// locked and <c>scavenge</c> when not.
     /// </summary>
     string ContainerPointer(ContainerSpot container) =>
-        container.Owner < 0 || container.Owner == session.World.Player.Faction ? "search" : container.Locked ? "lockpick" : "scavenge";
+        container.Owner < 0 || container.Owner == session.ActiveFaction ? "search" : container.Locked ? "lockpick" : "scavenge";
 }

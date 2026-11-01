@@ -10,7 +10,7 @@ namespace Meitou.Tests.Simulation;
 public class LuckyrenTests
 {
     /// <summary>A started player squad whose second member bursts at tick 2 carrying two items (one worn); the world after the burst's tick.</summary>
-    static (SimWorld World, CharacterId Victim, Vector3 At, ConcurrentQueue<BloodMark> Marks) Burst(int threads)
+    static (SimWorld World, CharacterId Victim, Vector3 At, ConcurrentQueue<BloodMark> Marks) Burst(int threads, bool headless = false)
     {
         var db = SyntheticTown.Database();
         var data = SyntheticTown.Data(db);
@@ -31,6 +31,12 @@ public class LuckyrenTests
         world.Luckyren = true;
         cold.Burst = new Vector2(1, 0);
         var at = world.Characters.Previous[victim.Slot].Position;
+        if (headless)
+        {
+            var observer = world.Players.Register(new(99)); world.Players.SetMembership(observer.Id, cold.Faction, FactionPermission.All);
+            var role = world.Characters.Spawn(new CharacterHot { Position = at }, new CharacterCold { Faction = cold.Faction, IsPlayer = true }, world.Tick);
+            world.Players.AssignInitial(observer.Id, role); world.BloodMarks = null;
+        }
         world.RunTicks(1);
         return (world, victim, at, marks);
     }
@@ -40,6 +46,20 @@ public class LuckyrenTests
     {
         var (world, _, _, _) = Burst(threads);
         using (world) return [world.StateHash()];
+    }
+
+    [Fact]
+    public void HeadlessBurstPublishesAnExplosionEvenAfterTheVictimHasBeenRemoved()
+    {
+        var (world, victim, _, marks) = Burst(1, headless: true); using var dispose = world;
+        Assert.Null(world.BloodMarks); Assert.Empty(marks); Assert.False(world.Characters.IsAlive(victim));
+        var connection = world.Authority.Open(new(99)); Assert.True(world.Authority.BeginSynchronization(connection));
+        var blood = Assert.Single(world.Authority.CaptureView(connection, new(), new(100))!.Events.Blood).Value;
+        Assert.Equal(BloodMarkKind.Explosion, blood.Mark.Kind);
+        Assert.All(world.GroundItems.All, item => Assert.InRange(Vector2.Distance(new(item.Position.X, item.Position.Z),
+            new(blood.Mark.Position.X, blood.Mark.Position.Z)), 0, BodySystem.BurstSpread));
+        Assert.True(blood.Mark.Who.IsNone); Assert.NotNull(blood.Mark.Race);
+        Assert.Equal(world.TickSeconds, blood.TickSeconds); Assert.Equal(BodySystem.CorpseTicksOf(world), blood.CorpseTicks);
     }
 
     [Fact]

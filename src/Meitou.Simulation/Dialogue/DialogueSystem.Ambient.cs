@@ -39,6 +39,11 @@ public sealed partial class DialogueSystem
         world.Characters.TryResolveNext(npc, out int slot) && world.Characters.Cold(slot) is { } c && !SquadRegistry.IsAnimal(c)
         && dialogue.Node(dialogueId) is { IsRoot: true } root && StartBubbles(world, npc, CharacterId.None, root, DialogueEvents.Announcement, now: false);
 
+    public bool Announce(World world, CharacterId npc, CharacterId target, string dialogueId) =>
+        world.Characters.TryResolveNext(npc, out int slot) && world.Characters.Cold(slot) is { } c && !SquadRegistry.IsAnimal(c)
+        && world.Characters.TryResolveNext(target, out _)
+        && dialogue.Node(dialogueId) is { IsRoot: true } root && StartBubbles(world, npc, target, root, DialogueEvents.Announcement, now: false);
+
     /// <summary>
     /// Starts <paramref name="root"/> as a bubble conversation of <paramref name="npc"/> with <paramref name="whom"/> (<c>FUN_140683f90</c>): the best of its lines (speakers resolved as in
     /// any choice) is said, the chain after it. <paramref name="now"/>: said this tick, else on the next bubble step. Returns whether a line was found.
@@ -46,7 +51,7 @@ public sealed partial class DialogueSystem
     bool StartBubbles(World world, CharacterId npc, CharacterId whom, DialogueNode root, int ev, bool now = true)
     {
         if (!world.Characters.TryResolveNext(npc, out int n) || !Awake(world.Characters, n) || BubbleOf(npc)) return false;
-        var c = new Conversation { Npc = npc, Player = whom, Event = ev, Root = root };
+        var c = Context(world, new Conversation { Npc = npc, Player = whom, Event = ev, Root = root });
         if (Pick(world, c, root.Children) is not { } first || Busy(first.Speaker, c)) return false;
         bubbles.Add(new Bubble(c, first.Line, world.Tick, first.Speaker));
         if (now) StepBubbles(world);
@@ -61,7 +66,7 @@ public sealed partial class DialogueSystem
     {
         var table = world.Characters;
         if (!table.TryResolveNext(npc, out int n) || !Awake(table, n) || BubbleOf(npc)) return false;
-        var c = new Conversation { Npc = npc, Player = whom, Event = ev };
+        var c = Context(world, new Conversation { Npc = npc, Player = whom, Event = ev });
         if (Pick(world, c, SetOf(world, n).For(ev)) is not { } picked || picked.Speaker.IsNone || picked.Speaker == whom || Busy(picked.Speaker, c)) return false;
         c.Root = picked.Root;
         bubbles.Add(new Bubble(c, picked.Line, world.Tick, picked.Speaker));
@@ -73,7 +78,7 @@ public sealed partial class DialogueSystem
 
     /// <summary>Whether <paramref name="who"/> is saying a line of another conversation, or is in the open player conversation.</summary>
     bool Busy(CharacterId who, Conversation c) =>
-        open is { } o && (o.Npc == who || o.Player == who) || bubbles.Any(b => b.C != c && (b.Speaker == who || b.C.Npc == who));
+        interactions.Values.Any(s => s.Open is { } o && (o.Npc == who || o.Player == who)) || bubbles.Any(b => b.C != c && (b.Speaker == who || b.C.Npc == who));
 
     /// <summary>
     /// Whom a loaded NPC reacts to by sight (the perception that fires events 3, 66 and 67, <c>FUN_140859680</c>): the nearest player character it sees by the sight test every
@@ -86,8 +91,8 @@ public sealed partial class DialogueSystem
         var table = world.Characters;
         var players = new List<int>();
         for (int i = 0; i < table.HighWater; i++)
-            if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: true, Medical.Dead: false }) players.Add(i);
-        if (players.Count == 0 || !data.Relations.Contains(world.Player.Faction)) return;
+            if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: true, Medical.Dead: false } player && data.Relations.Contains(player.Faction)) players.Add(i);
+        if (players.Count == 0) return;
         float audible2 = Settings.AmbientRange * Settings.AmbientRange;
         // The NPCs that can look or be greeted: loaded, awake, free, within their sight reach of a player character; by that distance, then slot.
         var near = new List<(int Slot, float D2)>();
@@ -133,7 +138,7 @@ public sealed partial class DialogueSystem
             // The squad's cooldown starts only once a line is said: the original asks again on every perception update and rolls `chance temporary` afresh each time
             // (the Red Sabres' attack root is 20%), so a failed look is tried again on the next scan. A player character it has nothing to say to leaves the turn to the NPCs.
             if (best >= 0 && !Recent(world, nc.SquadId, table.IdOf(best))
-                && TrySay(world, i, nc.SquadId, best, data.Relations.IsHostile(nc.Faction, world.Player.Faction) ? 66 : data.Relations.IsAlly(nc.Faction, world.Player.Faction) ? 67 : 3))
+                && TrySay(world, i, nc.SquadId, best, data.Relations.IsHostile(nc.Faction, table.Cold(best)!.Faction) ? 66 : data.Relations.IsAlly(nc.Faction, table.Cold(best)!.Faction) ? 67 : 3))
             {
                 said++;
                 continue;
@@ -227,6 +232,7 @@ public sealed partial class DialogueSystem
         for (int k = 0; k < bubbles.Count; k++)
         {
             var (c, line, due, speaker) = bubbles[k];
+            if (!Authorized(world, c)) { bubbles.RemoveAt(k--); continue; }
             if (world.Tick < due) continue;
             if (!world.Characters.TryResolveNext(speaker, out int n) || !Awake(world.Characters, n))
             {
@@ -240,7 +246,7 @@ public sealed partial class DialogueSystem
             if (text.Length > 0)
             {
                 shown[speaker] = (text, world.Tick + (long)MathF.Ceiling(seconds / world.TickSeconds), IsLarge(c.Event));
-                world.Said(NameOf(world, speaker), text, world.Characters.Cold(n) is { IsPlayer: true });
+                LogLine(world, c, speaker, NameOf(world, speaker), text, world.Characters.Cold(n) is { IsPlayer: true });
             }
             foreach (var e in line.Effects) if (e.Action == DialogueActions.BubbleWait) seconds = MathF.Max(seconds, e.Value);
             if (c.Ended || NextBubble(world, c, line) is not { } next)

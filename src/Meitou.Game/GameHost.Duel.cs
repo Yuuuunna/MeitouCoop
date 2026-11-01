@@ -146,16 +146,16 @@ sealed partial class GameHost
     void DuelRestart()
     {
         var built = BuildSystems(interactive: true);
-        session.ReplaceWorld(built.Systems, world => DuelSetup(world, built.Population!));
+        LocalSession.ReplaceWorld(built.Systems, world => DuelSetup(world, built.Population!));
         population = built.Population;
         aggro = built.Aggro;
         worldEpoch++;
         session.Clock.SetTime(o.Day ?? Meitou.Engine.Time.GameClock.DefaultStartDay, duelHour);
-        session.Simulation.ResetPhase();
+        LocalSession.Simulation.ResetPhase();
         // The fight before the lap, headless; the last tick publishes the snapshot (the frame draws the pair at once).
-        do session.World.RunTick();
-        while (session.World.Tick <= duelSkipTicks);
-        session.Clock.Advance(session.Simulation.TickSeconds);
+        do LocalSession.World.RunTick();
+        while (LocalSession.World.Tick <= duelSkipTicks);
+        session.Clock.Advance(LocalSession.Simulation.TickSeconds);
         animSeconds = 0;
         indexedFor = null;
         previousById.Clear();
@@ -173,7 +173,7 @@ sealed partial class GameHost
     void DuelFrame(bool flightStarted)
     {
         if (!IsDuel) return;
-        var world = session.World;
+        var world = LocalSession.World;
         if (!duelRestartRequested && !flightStarted && world.Tick < duelEndTick) return;
         // A lap that ran to its end on the tick must be the measured one (a frame that ran past it has nothing to compare).
         if (world.Tick == duelEndTick)

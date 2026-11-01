@@ -1,8 +1,10 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text;
 using System.Numerics;
 using Meitou.Rendering;
 using Meitou.Simulation;
+
+using Meitou.Runtime.Placement;
 
 namespace Meitou.Game;
 
@@ -27,7 +29,7 @@ sealed partial class PlayerInterface
         closedMachine = null;   // clicking a building asks for its window again, also when the player closed it before (the mark only held until another was selected)
         // Selecting calls the building's select sound (FUN_1405504a0: Buildings_Click = its `select sound`, none for 0); a click on the same building picks it anew and sounds again.
         if (building?.Record is { } record) Sound("Building_Click", building: record);
-        Say(new InspectBuildingCommand(building?.Instance) { Tick = session.World.Tick });
+        Say(new InspectBuildingCommand(building?.Instance) { Tick = session.CommandTick });
     }
 
     /// <summary>The selected building while it still exists (a site that was cancelled or dismantled drops the selection).</summary>
@@ -39,8 +41,8 @@ sealed partial class PlayerInterface
 
     /// <summary>A site of the player's as a selected building (what a left click on it selects).</summary>
     SelectedBuilding SiteBuilding(Meitou.Simulation.Construction.BuildingSnapshot site) =>
-        new(SiteName(site), null, FactionName?.Invoke(session.World.Player.Faction), null, site.Id, site.Id, site.Position,
-            (buildHost?.Placement.Footprint(site.Record) ?? buildHost?.Placement.Plot(site.Record)) is { } f ? f.Place(site.Position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, Meitou.Game.Building.PlacementCheck.YawOf(site.Rotation))) : null,
+        new(SiteName(site), null, FactionName?.Invoke(session.ActiveFaction), null, site.Id, site.Id, site.Position,
+            (buildHost?.Placement.Footprint(site.Record) ?? buildHost?.Placement.Plot(site.Record)) is { } f ? f.Place(site.Position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, PlacementCheck.YawOf(site.Rotation))) : null,
             Record: site.Record);
 
     /// <summary>The nearest building under the pixel, a site of the player's or a level-data one, when the ray meets it before the ground.</summary>
@@ -178,7 +180,7 @@ sealed partial class PlayerInterface
         string? owner = focus.Owner;
         if (own && !player)
             owner = inspected is { Owner: >= 0 and var by } ? FactionName?.Invoke(by) : RecordName?.Invoke(Meitou.Simulation.SquadManagement.DismissFallbackFaction);
-        return (new(detail?.Bed?.Name ?? focus.Name, mine ? FactionName?.Invoke(session.World.Player.Faction) ?? "" : owner ?? "", TitleColour, TitleColour), [.. state], [.. stats], status, bad, [.. extended]);
+        return (new(detail?.Bed?.Name ?? focus.Name, mine ? FactionName?.Invoke(session.ActiveFaction) ?? "" : owner ?? "", TitleColour, TitleColour), [.. state], [.. stats], status, bad, [.. extended]);
     }
 
     /// <summary>The upgrade chain of a BUILDING record and its build data (the panel's [UPGRADE] / [DOWNGRADE] and their tooltips); the host sets them.</summary>
@@ -324,51 +326,53 @@ sealed partial class PlayerInterface
             string instance = focus.Instance;
             Sound("General_Click");
             Confirm(focus.Name, Loc.Tr("Do you want to buy this building for c.{1,num}?", price),
-                () => Say(new Meitou.Simulation.Locks.BuyBuilding(instance, price) { Tick = session.World.Tick }), yes: "Yes", cancel: "No");
+                () => Say(new Meitou.Simulation.Locks.BuyBuilding(instance, price) { Tick = session.CommandTick }), yes: "Yes", cancel: "No");
             return;
         }
         if (focus.SiteId is null && detail is { Owned: true })
         {
             // A town building the player owns: its doors and the public toggle.
-            if (action == "building-doors") Say(new Meitou.Simulation.Locks.ToggleDoorsOrder(focus.Instance) { Tick = session.World.Tick });
-            else if (action == "building-locks") Say(new Meitou.Simulation.Locks.ToggleDoorLocksOrder(focus.Instance) { Tick = session.World.Tick });
+            if (action == "building-doors") Say(new Meitou.Simulation.Locks.ToggleDoorsOrder(focus.Instance) { Tick = session.CommandTick });
+            else if (action == "building-locks") Say(new Meitou.Simulation.Locks.ToggleDoorLocksOrder(focus.Instance) { Tick = session.CommandTick });
             else if (action == "building-public")
             {
                 Sound("General_Click");
-                Say(new Meitou.Simulation.Construction.SetBuildingPublic(focus.Instance, !PublicOf(focus, null, detail)) { Tick = session.World.Tick });
+                Say(new Meitou.Simulation.Construction.SetBuildingPublic(focus.Instance, !PublicOf(focus, null, detail)) { Tick = session.CommandTick });
             }
             return;
         }
         if (focus.SiteId is not { } id || Meitou.Simulation.Production.ProductionSystem.IsNatural(id)) return;
         var site = session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == id);
-        if (action == "building-upgrade") Say(new Meitou.Simulation.Construction.UpgradeSite(id) { Tick = session.World.Tick });
-        else if (action == "building-downgrade") Say(new Meitou.Simulation.Construction.DowngradeSite(id) { Tick = session.World.Tick });
+        if (site is null) return;
+        if (action == "building-upgrade") Say(new Meitou.Simulation.Construction.UpgradeSite(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick });
+        else if (action == "building-downgrade") Say(new Meitou.Simulation.Construction.DowngradeSite(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick });
         else if (action == "building-public" && site is not null)
         {
             Sound("General_Click");
-            Say(new Meitou.Simulation.Construction.SetBuildingPublic(id, !site.Public) { Tick = session.World.Tick });
+            Say(new Meitou.Simulation.Construction.SetBuildingPublic(id, !site.Public) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick });
         }
-        if (action == "building-dismantle" && site?.LevelPlacement is null)
+        if (action == "building-dismantle" && site is { LevelPlacement: null })
         {
             // Slot 84 (FUN_14054db30): with furniture in it the furniture warning, else "Are you sure?"; Yes dismantles it at once (Building::confirmDismantle).
             bool furnished = session.CurrentSnapshot.Buildings.Any(b => b.Parent == id);
             Confirm("Dismantle", furnished ? "Dismantling this building will destroy all furniture.\nDo you want to continue?" : "Are you sure?",
-                () => Say(new Meitou.Simulation.Construction.ConfirmDismantle(id) { Tick = session.World.Tick }));
+                () => Say(new Meitou.Simulation.Construction.ConfirmDismantle(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick }));
         }
         else if (action is "machine-power" or "machine-battery" && Machine(id) is { Power: { } pw } machine)
         {
             // A click flips the toggle, sets the Generator switch and posts UI_Generator (vfunc 161, FUN_140297a60).
             bool on = action == "machine-power" ? !(machine.Wind?.PowerOn ?? pw.PowerOn) : !pw.GetsBattery;
             Sound("UI_Generator", "Generator", on ? "On" : "Off");
-            Say(action == "machine-power" ? new Meitou.Simulation.Production.SetMachinePower(id, PowerOn: on) { Tick = session.World.Tick } : new Meitou.Simulation.Production.SetMachinePower(id, GetsBattery: on) { Tick = session.World.Tick });
+            Say(action == "machine-power" ? new Meitou.Simulation.Production.SetMachinePower(id, PowerOn: on) { Tick = session.CommandTick, ControlRevision = machine.ControlRevision }
+                : new Meitou.Simulation.Production.SetMachinePower(id, GetsBattery: on) { Tick = session.CommandTick, ControlRevision = machine.ControlRevision });
         }
-        else if (action == "machine-incinerate" && Machine(id) is { Furnace: not null })
+        else if (action == "machine-incinerate" && Machine(id) is { Furnace: not null } furnace)
         {
             Sound("General_Click");   // engine choice: the button's own sound is not traced
-            Say(new Meitou.Simulation.Production.IncinerateFurnace(id) { Tick = session.World.Tick });
+            Say(new Meitou.Simulation.Production.IncinerateFurnace(id) { Tick = session.CommandTick, ControlRevision = furnace.ControlRevision });
         }
-        else if (action == "building-pause" && site is { Complete: false }) Say(new Meitou.Simulation.Construction.PauseSite(id, !site.Paused) { Tick = session.World.Tick });
-        else if (action == "building-doors") Say(new Meitou.Simulation.Locks.ToggleDoorsOrder(id) { Tick = session.World.Tick });
-        else if (action == "building-locks") Say(new Meitou.Simulation.Locks.ToggleDoorLocksOrder(id) { Tick = session.World.Tick });
+        else if (action == "building-pause" && site is { Complete: false }) Say(new Meitou.Simulation.Construction.PauseSite(id, !site.Paused) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick });
+        else if (action == "building-doors") Say(new Meitou.Simulation.Locks.ToggleDoorsOrder(id) { Tick = session.CommandTick });
+        else if (action == "building-locks") Say(new Meitou.Simulation.Locks.ToggleDoorLocksOrder(id) { Tick = session.CommandTick });
     }
 }

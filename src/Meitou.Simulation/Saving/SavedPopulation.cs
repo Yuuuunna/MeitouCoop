@@ -21,6 +21,8 @@ public sealed class SavedMember
     public int Slot => Source.Handle.I;
     /// <summary>The character while its platoon is in the world; <see cref="CharacterId.None"/> otherwise.</summary>
     public CharacterId Live { get; set; } = CharacterId.None;
+    /// <summary>An identity acquired since loading the source file survives leaving the active table.</summary>
+    public EntityId Entity { get; set; }
     /// <summary>Its body left the world (removed after death): the next save leaves it out.</summary>
     public bool Gone { get; set; }
     /// <summary>Dead (in the save, or when its platoon left the world): never made again; a save keeps its records (with the medical state it died with).</summary>
@@ -92,6 +94,7 @@ public sealed class SavedPopulation
     /// <summary>The save's clock, which is world tick 0 (bounty timers are read against it).</summary>
     public SaveClock Clock { get; init; }
     public int PlayerFaction { get; init; } = -1;
+    public IReadOnlySet<string>? MultiplayerFactions { get; init; }
     /// <summary>The squads' memories (the dialogue system's; null: none), which the platoons' <c>tags</c> keys are restored into when their squads are made.</summary>
     public Dialogue.SquadMemory? Memory { get; set; }
     /// <summary>The characters made from the save by their handle's container and slot, for the memory keys that name them.</summary>
@@ -191,7 +194,7 @@ internal static class SavedCharacters
     /// orders for a player character, and its bed or cage. The caller adds it to the squad.
     /// </summary>
     public static CharacterId Make(World world, SavedParts p, string platoonName, Squad squad, int fallbackFaction, int playerFaction, bool playerPlatoon, Vector3 position, float yaw,
-        CharacterTask task, byte mode, PopulationData data, CharacterAssembly assembly, SavedPopulation context, Crime.BountyLedger? bounties, List<string>? notes)
+        CharacterTask task, byte mode, PopulationData data, CharacterAssembly assembly, SavedPopulation context, Crime.BountyLedger? bounties, List<string>? notes, EntityId entity = default)
     {
         var sc = p.Source;
         var race = p.Race;
@@ -211,9 +214,13 @@ internal static class SavedCharacters
         };
         string ownerId = sc.OwnerFactionId;
         int faction = ownerId.Length > 0 && data.FactionIndex(ownerId) is var fi and >= 0 ? fi : fallbackFaction;
-        bool player = faction == playerFaction && (playerPlatoon || playerFaction >= 0);
+        bool player = context.MultiplayerFactions is null ? faction == playerFaction && (playerPlatoon || playerFaction >= 0)
+            : sc.GameState?.Bools.GetValueOrDefault(PlayerSquadSave.RoleKey) == true;
+        if (player && context.MultiplayerFactions is { } playerFactions && !playerFactions.Contains(sc.OwnerFactionId))
+            throw new InvalidDataException("Player role has an unknown player faction.");
         var cold = new CharacterCold
         {
+            Entity = entity.IsNone ? EntitySave.Read(sc) : entity,
             Name = sc.Name.Length > 0 ? sc.Name : p.Record.Name,
             Faction = faction,
             Appearance = p.Look,
@@ -373,7 +380,8 @@ internal static class SavedCharacters
             float yaw = m.Position is null ? SaveRotation.YawOf(p.Source.Rotation) : m.Yaw;
             bool leads = !corpse && (p.Source.IsLeader || ReferenceEquals(m, successor));
             var task = corpse ? CharacterTask.Idle : leads ? (sp.Pinned || sp.Wild is not null ? CharacterTask.Wander : CharacterTask.Idle) : CharacterTask.Follow;
-            var id = Make(world, p, sp.Name, squad, platoon.Faction, context.PlayerFaction, false, at, yaw, task, SpeedMode.Walk, data, assembly, context, m.Bounties, notes);
+            var id = Make(world, p, sp.Name, squad, platoon.Faction, context.PlayerFaction, false, at, yaw, task, SpeedMode.Walk, data, assembly, context, m.Bounties, notes, m.Entity);
+            m.Entity = world.Characters.Cold(id.Slot)!.Entity;
             // Made again after its platoon left the world: the save's ragdoll is from before that.
             if (m.Position is not null && world.Characters.Cold(id.Slot)?.Save is { } link) link.Ragdoll = null;
             ref var hot = ref world.Characters.Next[id.Slot];
@@ -417,7 +425,8 @@ internal static class SavedCharacters
         foreach (var m in sp.Members)
         {
             if (m.Live.IsNone) continue;
-            if (!table.TryResolveNext(m.Live, out int slot) || table.Cold(slot) is not { } cold)
+            if (!table.TryResolveNext(m.Live, out int slot) || table.Cold(slot) is not { } cold ||
+                cold.Save is not { } link || link.PlatoonName != sp.Name || link.Slot != m.Slot)
             {
                 m.Gone = true;
                 m.Live = CharacterId.None;
@@ -430,6 +439,7 @@ internal static class SavedCharacters
             m.Inventory = cold.Inventory;
             m.Look = cold.Appearance;
             m.Bounties = cold.Bounties;
+            m.Entity = cold.Entity;
             if (cold.DiedTick >= 0) m.Dead = true;
             m.Live = CharacterId.None;
         }

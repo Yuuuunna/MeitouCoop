@@ -26,6 +26,9 @@ public interface IAppearanceSource
 
     /// <summary>A proposed CHARACTER_APPEARANCE made valid for <paramref name="race"/> (<see cref="CharacterDraft.Sanitize"/>, which needs the install's editor limits). Null: not checked.</summary>
     FcsRecord? Sanitize(FcsRecord proposed, GameRecord race) => null;
+    /// <summary>Apply typed creation choices against server editor definitions. Null means this source cannot validate them.</summary>
+    FcsRecord? CreationAppearance(FcsRecord original, CreationAppearanceChoice choice, int seed) => null;
+    CreationEditorView? CreationEditor(FcsRecord original) => null;
 }
 
 /// <summary><see cref="IAppearanceSource"/> over the game data and the install.</summary>
@@ -56,6 +59,9 @@ public sealed class GeneratedAppearances(GameDatabase db, string installRoot) : 
 
 
     public FcsRecord? Sanitize(FcsRecord proposed, GameRecord race) => CharacterDraft.Sanitize(db, installRoot, proposed, race);
+    public FcsRecord? CreationAppearance(FcsRecord original, CreationAppearanceChoice choice, int seed)
+        => CreationAppearanceEditing.Apply(db, installRoot, original, choice, seed);
+    public CreationEditorView? CreationEditor(FcsRecord original) => CreationAppearanceEditing.Describe(db, installRoot, original);
 
     readonly Lazy<NamePool> names = new(() => NamePool.Load(installRoot));
     public string? RandomName(bool female, ulong roll) => names.Value.Pick(female, roll);
@@ -104,7 +110,26 @@ public sealed class PopulationData
 {
     public required GameDatabase Db { get; init; }
     public required IReadOnlyList<TownSite> Sites { get; init; }
-    public required IReadOnlyList<FactionData> Factions { get; init; }
+    public required IReadOnlyList<FactionData> Factions { get => factions; init => factions = value; }
+    IReadOnlyList<FactionData> factions = [];
+
+    /// <summary>
+    /// Adds a runtime faction without resetting existing world state. Content lookups use Relations.TemplateId;
+    /// diplomacy and ownership use the returned world index. Call at an exclusive boundary with no population builds running.
+    /// </summary>
+    public int RegisterFaction(string identity, string name, int template)
+    {
+        if (Factions.Count != Relations.Count || Factions.Where((f, i) => f.Id != Relations.Factions[i].Id).Any())
+            throw new InvalidOperationException("Population and diplomacy must share the same faction catalogue.");
+        int added = Relations.RegisterFaction(identity, name, template);
+        factions = Relations.Factions;
+        factionIndex = null;
+        return added;
+    }
+
+    /// <summary>The content definition behind a world faction, including dynamically registered player factions.</summary>
+    public string FactionTemplate(int faction) => Relations.Contains(faction) && Relations.Factions[faction].Id == Factions[faction].Id
+        ? Relations.TemplateId(faction) : Factions[faction].Id;
     /// <summary>Rolls the characters' looks; null leaves them without (headless tests, markers only).</summary>
     public IAppearanceSource? Appearances { get; init; }
     public IWorldStates States { get; init; } = IWorldStates.None;

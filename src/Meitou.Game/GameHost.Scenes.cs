@@ -27,7 +27,7 @@ sealed partial class GameHost
     /// </summary>
     Vector3? StageScene(string scene)
     {
-        var world = session.World;
+        var world = LocalSession.World;
         long tick = world.Tick;
         if (playerSquad is null || session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == playerSquad.Leader) is not { } leader)
         {
@@ -119,7 +119,7 @@ sealed partial class GameHost
         for (int i = 0; i < ticks; i++)
         {
             session.Tick();
-            session.AdvanceSimulation(session.Ticks.TickSeconds);
+            LocalSession.AdvanceSimulation(session.Ticks.TickSeconds);
             UpdateNav(wait: true);
         }
     }
@@ -133,7 +133,7 @@ sealed partial class GameHost
         var enemies = session.CurrentSnapshot.Characters.Where(c => !c.IsPlayer && c.FightsPlayer).ToList();
         string turrets = string.Join(", ", session.CurrentSnapshot.Characters.Where(c => c.Turret is not null).Select(c => $"{c.Name} on {c.Turret!.BuildingId}"));
         var near = session.CurrentSnapshot.Characters.Where(c => !c.IsPlayer && Vector3.Distance(c.Position, me.Position) < 200)
-            .Select(c => $"{c.Name} [{c.Task}{(session.World.Characters.TryResolveNext(c.Id, out int cs) && session.World.Characters.Cold(cs) is { } cc ? $" faction {cc.Faction}{(cc.Fleeing ? ", fleeing" : "")}{(cc.Fighter is { CanAttack: false } ? ", no attack" : "")}" : "")}{(c.InCombat ? ", fighting" : "")}{(c.FightsPlayer ? ", vs player" : "")}{(c.Body is { Unconscious: true } ? ", down" : c.Body is { Dead: true } ? ", dead" : "")}]");
+            .Select(c => $"{c.Name} [{c.Task}{(LocalSession.World.Characters.TryResolveNext(c.Id, out int cs) && LocalSession.World.Characters.Cold(cs) is { } cc ? $" faction {cc.Faction}{(cc.Fleeing ? ", fleeing" : "")}{(cc.Fighter is { CanAttack: false } ? ", no attack" : "")}" : "")}{(c.InCombat ? ", fighting" : "")}{(c.FightsPlayer ? ", vs player" : "")}{(c.Body is { Unconscious: true } ? ", down" : c.Body is { Dead: true } ? ", dead" : "")}]");
         return $"{me.Name} at {me.Position.X:0}, {me.Position.Z:0}: task {me.Task}, {me.Activity}, weapon {(me.WeaponDrawn ? me.BackDrawn ? "back" : "hip" : "none")}, " +
             $"in bed {me.InBed}, weather {me.WeatherNotice}, {blood}, {parts}; enemies fighting {enemies.Count}{(turrets.Length > 0 ? $"; gunners: {turrets}" : "")}; near: {string.Join(", ", near)}";
     }
@@ -172,7 +172,7 @@ sealed partial class GameHost
             display.Context.Finish();
             string output = Path.Combine(Path.GetDirectoryName(o.Screenshot!) ?? "", $"{Path.GetFileNameWithoutExtension(o.Screenshot!)}-{scene}-{f:00}.png");
             FramebufferCapture.SavePng(display.Context, target, output, w, h);
-            Console.WriteLine($"scene     frame {f} tick {session.World.Tick}: {SceneState()}");
+            Console.WriteLine($"scene     frame {f} tick {LocalSession.World.Tick}: {SceneState()}");
             Console.WriteLine($"saved     {Path.GetFullPath(output)}");
         }
     }

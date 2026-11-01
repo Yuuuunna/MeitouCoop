@@ -389,13 +389,14 @@ public sealed class RetaliationSystem(CombatSystem combat) : ITickSystem
     /// </summary>
     void HelpAllies(World world, CharacterTable table, int slot, int attacker, List<CharacterId> defenders, HashSet<int> taken)
     {
-        if ((world.Player.SquadAi & SquadAi.Help) == 0 || combat.Relations is not { } relations || table.Cold(slot) is not { IsPlayer: false, Medical.Incapacitated: false } ally || !relations.Contains(ally.Faction)) return;
-        if (table.Cold(attacker) is not { IsPlayer: false } foe || foe.Faction == world.Player.Faction) return;   // never against its own side
+        if (combat.Relations is not { } relations || table.Cold(slot) is not { Medical.Incapacitated: false } ally || !relations.Contains(ally.Faction)) return;
+        if (table.Cold(attacker) is not { } foe) return;
         var next = table.Next;
         var at = next[slot].Position;
         foreach (int s in players)
         {
             if (!next[s].Alive || table.Cold(s) is not { IsPlayer: true } c || c.Faction == ally.Faction || !relations.Contains(c.Faction) || !relations.IsAlly(c.Faction, ally.Faction)) continue;
+            if ((world.SquadOptions(c) & SquadAi.Help) == 0 || c.Faction == foe.Faction || relations.Contains(foe.Faction) && relations.IsAlly(c.Faction, foe.Faction)) continue;
             var d = next[s].Position - at;
             if (d.X * d.X + d.Z * d.Z > JoinRange * JoinRange || !CanFight(table, s, taken)) continue;
             defenders.Add(new CharacterId(s, next[s].Generation));

@@ -26,6 +26,7 @@ public sealed record EffectRecord(string Name, EffectType Type, string ParticleS
     float MinWindSpan, float MaxWindSpan, Vector3 ColourMultiplier, float SkyColourMultiplier, bool GroundColour, float MaximumViewDistance,
     float ParticleFadeOutDelay, float MinTimeToLive, float MaxTimeToLive, float WanderingSpeed)
 {
+    public string? RecordId { get; init; }
     /// <summary>The ground height window and the terrain normal's y window an effect may be placed in (<c>min/max altitude</c>, <c>min/max slope</c>; Verified (decompiled), FUN_1408fc3c0).</summary>
     public float MinAltitude { get; init; } = 200;
     public float MaxAltitude { get; init; } = 100000;
@@ -54,6 +55,7 @@ public sealed record EffectRecord(string Name, EffectType Type, string ParticleS
         UnpackRgb(r.GetInt("colour multiplier", 0xFFFFFF)), r.GetFloat("sky colour multiplier", 1), r.GetBool("ground colour"), r.GetFloat("maximum view distance"),
         r.GetFloat("particle fade out delay"), r.GetFloat("min time to live"), r.GetFloat("max time to live", 30), r.GetFloat("wandering speed", 10))
     {
+        RecordId = r.StringId,
         MinAltitude = r.GetFloat("min altitude", 200), MaxAltitude = r.GetFloat("max altitude", 100000),
         MinSlope = r.GetFloat("min slope"), MaxSlope = r.GetFloat("max slope", 1),
         FogFadeIn = r.GetFloat("fog fade in duration"), FogFadeOut = r.GetFloat("fog fade out duration"),

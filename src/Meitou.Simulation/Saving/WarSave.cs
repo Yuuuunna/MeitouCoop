@@ -11,7 +11,7 @@ namespace Meitou.Simulation.Saving;
 /// </summary>
 internal static class WarSave
 {
-    static readonly string[] ActiveStrings = ["dat c", "enemy c"], ActiveInts = ["phase c", "id c"], ActiveBools = ["rd c", "trig c"], ActiveHands = ["target c", "leader c", "home c"];
+    static readonly string[] ActiveStrings = ["dat c", "enemy c"], ActiveInts = ["phase c", "id c"], ActiveBools = ["rd c", "trig c", "meitou fought target c"], ActiveHands = ["target c", "leader c", "home c"];
     const string PhaseStartKey = "meitou phase start c", FightStartKey = "meitou fight start c", ArrivedKey = "meitou arrived c", AnnouncedKey = "meitou announced c", CarryStartKey = "meitou carry start c";
     static readonly string[] Timers = [PhaseStartKey, FightStartKey, ArrivedKey, AnnouncedKey, CarryStartKey];
     static readonly string[] HandParts = ["TYPE", "C", "CS", "I", "S"];
@@ -63,6 +63,7 @@ internal static class WarSave
                     PhaseStart = Hour(war, PhaseStartKey + i) ?? now, Required = (int)(c.NumForces * population.Settings.RaidSizeMult),
                     FightStart = Hour(war, FightStartKey + i) ?? -1, ArrivedAt = Hour(war, ArrivedKey + i) ?? -1, AnnouncedAt = Hour(war, AnnouncedKey + i) ?? -1,
                     CarryStart = Hour(war, CarryStartKey + i) ?? -1,
+                    FoughtPlayer = war.Bools.GetValueOrDefault($"meitou fought target c{i}"),
                 };
                 if (inst.Phase == 1 && !c.HasPt2) inst.Phase = 2;
                 if (Platoon(saved, Hand.Read(war, $"leader c{i}")) is int leader) leaders[inst] = leader;
@@ -78,6 +79,8 @@ internal static class WarSave
                 m.Requests.Add(new CampaignRequest
                 {
                     CampaignId = id, Enemy = enemy, Due = war.Floats.GetValueOrDefault($"req time{i}"),
+                    Attempts = Math.Clamp(war.Ints.GetValueOrDefault($"meitou req attempts{i}"), 0, 100),
+                    Delays = Math.Clamp(war.Ints.GetValueOrDefault($"meitou req delays{i}"), 0, 10),
                     Target = Town(world, saved, Hand.Read(war, $"req targ{i}")), Home = Town(world, saved, Hand.Read(war, $"req home{i}")),
                 });
             }
@@ -157,6 +160,7 @@ internal static class WarSave
                 war.Ints[$"id c{i}"] = a.Id;
                 war.Bools[$"rd c{i}"] = a.Reached;
                 war.Bools[$"trig c{i}"] = a.Trig;
+                war.Bools[$"meitou fought target c{i}"] = a.FoughtPlayer;
                 Hour(war, PhaseStartKey + i, a.PhaseStart);
                 Hour(war, FightStartKey + i, a.FightStart);
                 Hour(war, ArrivedKey + i, a.ArrivedAt);
@@ -173,10 +177,12 @@ internal static class WarSave
                 war.Strings[$"req sid{i}"] = r.CampaignId;
                 war.Strings[$"req enemysid{i}"] = FactionId(r.Enemy);
                 war.Floats[$"req time{i}"] = (float)r.Due;
+                war.Ints[$"meitou req attempts{i}"] = r.Attempts;
+                war.Ints[$"meitou req delays{i}"] = r.Delays;
                 TownHand(r.Target).Write(war, $"req targ{i}");
                 TownHand(r.Home).Write(war, $"req home{i}");
             }
-            for (int i = m.Requests.Count; i < old; i++) Remove(war, i, ["req sid", "req enemysid"], [], [], ["req targ", "req home"], ["req time"]);
+            for (int i = m.Requests.Count; i < old; i++) Remove(war, i, ["req sid", "req enemysid"], ["meitou req attempts", "meitou req delays"], [], ["req targ", "req home"], ["req time"]);
 
             old = war.Ints.GetValueOrDefault("num poss");
             war.Ints["num poss"] = m.Known.Count;

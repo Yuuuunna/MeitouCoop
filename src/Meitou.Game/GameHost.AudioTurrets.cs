@@ -19,7 +19,7 @@ sealed partial class GameHost
 
     AudioSystem? turretAudioFor;
     TurretSounds? turretSounds;
-    World? turretSoundsWorld;
+    object? turretSoundsWorld;
     // Each turret's mount and its gun's range, by the turret's key (null: its records are missing).
     readonly Dictionary<string, (TurretMount Mount, float Range)?> turretMounts = new(StringComparer.Ordinal);
     readonly List<TurretAim> mannedTurrets = [];
@@ -33,11 +33,11 @@ sealed partial class GameHost
             turretSoundsWorld = null;
         }
         var sounds = turretSounds!;
-        if (!ReferenceEquals(turretSoundsWorld, session.World))
+        if (!ReferenceEquals(turretSoundsWorld, session.WorldIdentity))
         {
             sounds.Clear();
             turretMounts.Clear();
-            turretSoundsWorld = session.World;
+            turretSoundsWorld = session.WorldIdentity;
         }
         if (scene.Database is not { } db) return;
         mannedTurrets.Clear();
@@ -50,7 +50,7 @@ sealed partial class GameHost
             mannedTurrets.Add(new TurretAim(post.Key, known.Mount, TargetOf(gunner, post.Position, known.Range, characters)));
         }
         // The turning is by game time: the frame time times the game speed (the exe's frame time is scaled by it; 0 while paused).
-        sounds.Update(mannedTurrets, (float)(realSeconds * session.Simulation.Speed), eye);
+        sounds.Update(mannedTurrets, (float)(realSeconds * session.TimeScale), eye);
     }
 
     /// <summary>

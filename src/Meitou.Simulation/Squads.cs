@@ -42,6 +42,8 @@ public sealed class Squad
     public bool TownOwn => Town >= 0 && (PlatoonId < 0 || Pinned);
     /// <summary>The player faction's hidden <c>__DEAD_SQUAD__</c> its characters move to when they die (<see cref="SquadManagement.BuryDead"/>): no tab, never one of the player's squads.</summary>
     public bool Dead { get; init; }
+    /// <summary>Explicitly managed by players; faction membership alone never claims resident or roaming NPC squads.</summary>
+    public bool PlayerManaged { get; set; }
     /// <summary>Back from its town's time unloaded: its members' minds take up their schedule where it puts them (<see cref="PopulationSettings.ResidentSchedule"/>); cleared once they have minds.</summary>
     public bool Resume { get; set; }
     /// <summary>How many it was made with (its town's regeneration measures losses against it; not part of the state).</summary>
@@ -94,9 +96,23 @@ public sealed class SquadRegistry
     public IEnumerable<Squad> All => squads.Values;
     public Squad? Find(int id) => squads.GetValueOrDefault(id);
 
-    public int NextId() => nextId++;
+    public int NextAvailableId => Math.Max(nextId, squads.Count == 0 ? 0 : squads.Keys.Last() + 1);
+    public int NextId()
+    {
+        while (squads.ContainsKey(nextId)) nextId = checked(nextId + 1);
+        int id = nextId; nextId = checked(nextId + 1); return id;
+    }
 
-    public void Add(Squad squad) => squads[squad.Id] = squad;
+    public void Add(Squad squad)
+    {
+        if (squad.Id < 0 || squad.Id == int.MaxValue) throw new ArgumentOutOfRangeException(nameof(squad));
+        if (!squads.TryAdd(squad.Id, squad)) throw new InvalidOperationException("The squad identity is already loaded.");
+    }
+    internal void RestoreAllocation(int next)
+    {
+        if (squads.Count != 0 || nextId != 0 || next < 0) throw new InvalidOperationException("Squad allocation is restored into an empty registry.");
+        nextId = next;
+    }
 
     public bool Remove(int id) => squads.Remove(id);
 
@@ -124,7 +140,7 @@ public sealed class SquadRegistry
 
     public static bool IsAnimal(CharacterCold c) => c.Fighter?.IsAnimal == true || c.Appearance?.Animal is not null;
 
-    internal void Hash(ref StateHasher hasher)
+    internal void Hash(ref StateHasher hasher, bool explicitControl = false)
     {
         hasher.Add(squads.Count);
         hasher.Add(nextId);
@@ -142,6 +158,7 @@ public sealed class SquadRegistry
             if (s.Index != 0) hasher.Add(0x51647800 + s.Index);   // nothing for a squad in the first place, so the pinned hashes stay
             if (s.Resume) hasher.Add(0x52657375);
             if (s.Dead) hasher.Add(0x44656164);
+            if (explicitControl) hasher.Add(s.PlayerManaged);
             hasher.Add(s.Members.Count);
             foreach (var m in s.Members)
             {

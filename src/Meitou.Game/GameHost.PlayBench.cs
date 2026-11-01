@@ -121,9 +121,9 @@ sealed partial class GameHost
         benchScript[benchSegment].Frame?.Invoke(t, dt);
         benchCurrent = new BenchFrame { Segment = benchSegment, T = benchClock, FrameMs = dt * 1000, Characters = session.CurrentSnapshot.Characters.Count, StartMs = benchGc?.NowMs ?? 0 };
         if (profiler is not null) profiler.Tag = benchFrames.Count;
-        session.World.Profile.Clear();
-        (session.CameraMs, session.HandlersMs) = (0, 0);
-        benchTickAt = session.World.Tick;
+        LocalSession.World.Profile.Clear();
+        (LocalSession.CameraMs, LocalSession.HandlersMs) = (0, 0);
+        benchTickAt = LocalSession.World.Tick;
         return true;
     }
 
@@ -140,11 +140,11 @@ sealed partial class GameHost
     {
         if (benchCurrent is not { } f) return;
         f.UpdateMs = ms;
-        (f.CameraMs, f.HandlersMs) = (session.CameraMs, session.HandlersMs);
-        f.Ticks = (int)(session.World.Tick - benchTickAt);
-        var profile = session.World.Profile;
+        (f.CameraMs, f.HandlersMs) = (LocalSession.CameraMs, LocalSession.HandlersMs);
+        f.Ticks = (int)(LocalSession.World.Tick - benchTickAt);
+        var profile = LocalSession.World.Profile;
         Array.Copy(profile.PhaseMs, f.Steps, f.Steps.Length);
-        var systems = session.World.Systems;
+        var systems = LocalSession.World.Systems;
         for (int k = 0; k < profile.SystemMs.Length && k < systems.Count; k++)
         {
             string system = systems[k].GetType().Name;
@@ -186,7 +186,7 @@ sealed partial class GameHost
         void Look(Vector2 at, float yaw, float pitch, float distance) => strategy.Place(at, yaw, pitch, distance);
         void OnLeader() { var p = LeaderAt(); Look(new Vector2(p.X, p.Z), strategy.Yaw, pitch0, distance0); }
         List<CharacterId> Squad() => [.. session.CurrentSnapshot.Characters.Where(c => c.IsPlayer).Select(c => c.Id)];
-        void Order(SimCommand command) => session.World.Commands.Enqueue(command with { Tick = session.World.Tick });
+        void Order(SimCommand command) => LocalSession.World.Commands.Enqueue(command with { Tick = LocalSession.World.Tick });
         // The nearest of what the script interacts with, said on the console (or that there is none within reach).
         T? Nearest<T>(string what, IEnumerable<T> items, Func<T, Vector3> at) where T : class
         {
@@ -221,12 +221,12 @@ sealed partial class GameHost
                 Begin: () => pan = Vector2.Zero),
             new("travel", 30, (t, dt) => { pan += benchDirection * (float)(3000 * dt); Look(benchOrigin + pan, strategy.Yaw, pitch0, distance0); }),
             new("return", 10, Begin: () => Look(benchOrigin, yaw0, pitch0, distance0)),
-            new("speed-x2", 10, (t, dt) => OnLeader(), Begin: () => session.Simulation.SetSpeed(2)),
-            new("speed-x5", 15, (t, dt) => OnLeader(), Begin: () => session.Simulation.SetSpeed(5)),
+            new("speed-x2", 10, (t, dt) => OnLeader(), Begin: () => LocalSession.Simulation.SetSpeed(2)),
+            new("speed-x5", 15, (t, dt) => OnLeader(), Begin: () => LocalSession.Simulation.SetSpeed(5)),
             new("talk", 10, Retry(() => session.CurrentSnapshot.Conversation is not null, () => { if (talkee is not null) Order(new Meitou.Simulation.Dialogue.TalkOrder(benchLeader, talkee.Id) { Tick = 0 }); }), Begin: () =>
             {
-                session.Simulation.SetSpeed(1);
-                talkee = Nearest("talker", session.CurrentSnapshot.Characters.Where(c => !c.IsPlayer && Alive(c) && session.World.CanTalk(c.Id, benchLeader)).ToList(), c => c.Position);
+                LocalSession.Simulation.SetSpeed(1);
+                talkee = Nearest("talker", session.CurrentSnapshot.Characters.Where(c => !c.IsPlayer && Alive(c) && LocalSession.World.CanTalk(c.Id, benchLeader)).ToList(), c => c.Position);
                 if (talkee is not null) Order(new Meitou.Simulation.Dialogue.TalkOrder(benchLeader, talkee.Id) { Tick = 0 });
             }),
             new("trade", 12, Retry(() => session.CurrentSnapshot.Trade is not null, () => { if (trader is not null) Order(new Meitou.Simulation.Trading.OpenTrade(benchLeader, trader.Id) { Tick = 0 }); }), Begin: () =>
@@ -271,13 +271,13 @@ sealed partial class GameHost
             }),
             new("walk", 15, (t, dt) => OnLeader(), Begin: () =>
             {
-                session.Simulation.SetSpeed(1);
+                LocalSession.Simulation.SetSpeed(1);
                 var at = LeaderAt();
-                session.World.Commands.Enqueue(new MoveOrder(Squad(), at + new Vector3(benchDirection.X * 600, 0, benchDirection.Y * 600)) { Tick = session.World.Tick });
+                LocalSession.World.Commands.Enqueue(new MoveOrder(Squad(), at + new Vector3(benchDirection.X * 600, 0, benchDirection.Y * 600)) { Tick = LocalSession.World.Tick });
             }),
             new("fight", 25, (t, dt) => OnLeader(), Begin: () =>
             {
-                var world = session.World;
+                var world = LocalSession.World;
                 var at = LeaderAt();
                 if (DebugRecord(g.SceneNpc, character: true) is not { } npc) { Console.WriteLine($"bench     no character record matches '{g.SceneNpc}': no fight"); return; }
                 for (int k = 0; k < 6; k++)
@@ -288,7 +288,7 @@ sealed partial class GameHost
             {
                 var at = LeaderAt();
                 if (session.CurrentSnapshot.Characters.Where(c => !c.IsPlayer && Vector3.Distance(c.Position, at) < 150).OrderBy(c => Vector3.DistanceSquared(c.Position, at)).FirstOrDefault() is { } enemy)
-                    session.World.Commands.Enqueue(new Meitou.Simulation.Combat.AttackOrder(Squad(), enemy.Id) { Tick = session.World.Tick });
+                    LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Combat.AttackOrder(Squad(), enemy.Id) { Tick = LocalSession.World.Tick });
             }),
             new("loot", 8, Retry(() => !session.CurrentSnapshot.OpenLoot.IsNone, () => { if (body is not null) Order(new Meitou.Simulation.Carrying.OpenLootOrder([benchLeader], body.Id) { Tick = 0 }); }), Begin: () =>
             {

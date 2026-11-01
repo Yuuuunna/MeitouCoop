@@ -99,7 +99,12 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
     public IWorldStates States => ReferenceEquals(data.States, IWorldStates.None) ? live : data.States;
 
     /// <summary>The live world states take the unique table and the player's faction (serial; every look, and before the loading screen's builds).</summary>
-    void RefreshStates(World world) => live.Refresh(world.Uniques, world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction);
+    void RefreshStates(World world)
+    {
+        int legacy = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
+        if (world.Players.RequiresExplicitControl) live.Refresh(world.Uniques, world.PlayerFactionIndices(), legacy);
+        else live.Refresh(world.Uniques, legacy);
+    }
 
     public PopulationData Data => data;
     public PopulationSettings Settings => settings;
@@ -196,13 +201,22 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
     /// </summary>
     void Discover(World world)
     {
+        if (world.Players.RequiresExplicitControl)
+        {
+            foreach (var owner in world.Players.All) Discover(world, owner.Id, owner.State);
+        }
+        else Discover(world, PlayerId.Local, world.Player);
+    }
+
+    void Discover(World world, PlayerId owner, PlayerState player)
+    {
         // Not during the new game's character creation: the original's "Discovered" messages come after CONFIRM (its world waits for the editor).
-        if (!world.Player.Exists || world.Player.InCreation) return;
+        if (!player.Exists || player.InCreation) return;
         var prev = world.Characters.Previous;
-        var player = world.Player;
         viewers.Clear();
         for (int i = 0; i < prev.Length; i++)
-            if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true }) viewers.Add(Viewer(prev[i].Position));
+            if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true }
+                && (!world.Players.RequiresExplicitControl || world.Players.CanControl(owner, new CharacterId(i, prev[i].Generation)))) viewers.Add(Viewer(prev[i].Position));
         foreach (var site in data.Sites)
         {
             if (site.Town.Type is TownType.NestMarker) continue;   // the original skips only type 8
@@ -212,7 +226,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
                 if (player.Know(site.Index, TownKnowledge.Discovered | TownKnowledge.Explored) && site.Index < data.SiteFactions.Count) player.Meet(data.SiteFactions[site.Index]);
             }
             else if (d2 < far * far && player.Know(site.Index, TownKnowledge.Discovered) && site.Town.Type != TownType.Nest)
-                world.Post(Loc.Tr("Discovered {1}", site.Town.UnexploredName is { Length: > 0 } unexplored ? unexplored : site.Town.Name));
+                world.Post(owner, Loc.Tr("Discovered {1}", site.Town.UnexploredName is { Length: > 0 } unexplored ? unexplored : site.Town.Name));
         }
         var wild = WildSites;
         for (int w = 0; w < wild.Count && w < wildCentres.Length; w++)
@@ -249,7 +263,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
     /// </summary>
     void MeetFactions(World world)
     {
-        if (!world.Player.Exists || world.Player.InCreation) return;
+        if (!world.Players.RequiresExplicitControl && (!world.Player.Exists || world.Player.InCreation)) return;
         var table = world.Characters;
         var prev = table.Previous;
         fights ??= world.Systems.OfType<Combat.CombatSystem>().FirstOrDefault();
@@ -258,6 +272,8 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
         for (int i = (int)(world.Tick % every); i < prev.Length; i += every)
         {
             if (!prev[i].Alive || table.Cold(i) is not { } cold || !MeetsFactions(cold)) continue;
+            var player = world.Players.RequiresExplicitControl ? world.PlayerOf(new CharacterId(i, prev[i].Generation)) : world.Player;
+            if (player is null || !player.Exists || player.InCreation) continue;
             var at = new Vector2(prev[i].Position.X, prev[i].Position.Z);
             float range = (locks?.Regions?.CodeAt(prev[i].Position) > 0 ? SightMap.IndoorSight * WeatherSystem.SightFactor(cold) : AggroSystem.RangeOf(cold, AggroSystem.OutdoorSight))
                 * (0.5f + 0.5f * world.Sight.Daylight);
@@ -268,10 +284,10 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
             if (found >= CrowdCount) range = MathF.Max(range, CrowdReach);
             for (int j = 0; j < prev.Length; j++)
                 if (j != i && prev[j].Alive && Vector2.DistanceSquared(at, new(prev[j].Position.X, prev[j].Position.Z)) < range * range && table.Cold(j) is { } other)
-                    world.Player.Meet(other.Faction);
+                    player.Meet(other.Faction);
             if (fights?.StateOf(new CharacterId(i, prev[i].Generation)) is { TargetSlot: >= 0 and var t } fight && t < prev.Length && prev[t].Alive
                 && prev[t].Generation == fight.TargetGeneration && table.Cold(t) is { } target)
-                world.Player.Meet(target.Faction);
+                player.Meet(target.Faction);
         }
     }
 
@@ -302,18 +318,25 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
     /// <see cref="ZoneActivation.LoadedLingerSeconds"/> after), and the box round each player character (<see cref="ZoneActivation.Box"/>, a ring of one more zone when Fast zone
     /// hopping is on; kept <see cref="ZoneActivation.BoxLingerSeconds"/> after). A zone stays loaded until the latest of its requests has run out.
     /// </summary>
-    void RefreshLoaded(World world, Vector3 camera)
+    void RefreshLoaded(World world, Vector3? camera)
     {
-        bool move = loadCentre is not { } c
-            || MathF.Abs(camera.X - ZoneActivation.CentreOf(c).X) > ZoneActivation.RecentreDistance || MathF.Abs(camera.Z - ZoneActivation.CentreOf(c).Y) > ZoneActivation.RecentreDistance;
-        if (move) loadCentre = WorldLayout.ZoneOf(camera.X, camera.Z);
         long now = world.Tick;
-        long until = now + (long)Math.Ceiling(ZoneActivation.LoadedLingerSeconds / world.TickSeconds);
-        var centre = loadCentre!.Value;
-        for (int x = centre.X - 1; x <= centre.X + 1; x++)
-            for (int y = centre.Y - 1; y <= centre.Y + 1; y++)
-                Ask(new ZoneCoordinate(x, y), until);
-        if (players.Count > 0)
+        if (camera is { } position)
+        {
+            bool move = loadCentre is not { } c || MathF.Abs(position.X - ZoneActivation.CentreOf(c).X) > ZoneActivation.RecentreDistance
+                || MathF.Abs(position.Z - ZoneActivation.CentreOf(c).Y) > ZoneActivation.RecentreDistance;
+            if (move) loadCentre = WorldLayout.ZoneOf(position.X, position.Z);
+            long until = now + (long)Math.Ceiling(ZoneActivation.LoadedLingerSeconds / world.TickSeconds);
+            var centre = loadCentre!.Value;
+            for (int x = centre.X - 1; x <= centre.X + 1; x++)
+                for (int y = centre.Y - 1; y <= centre.Y + 1; y++) Ask(new ZoneCoordinate(x, y), until);
+        }
+        if (world.Players.RequiresExplicitControl)
+        {
+            long until = now + (long)Math.Ceiling(ZoneActivation.BoxLingerSeconds / world.TickSeconds);
+            foreach (var zone in world.Regions.Capture(ring: settings.FastZoneHopping ? 1 : 0).Keys) Ask(zone, until);
+        }
+        else if (players.Count > 0)
         {
             long boxUntil = now + (long)Math.Ceiling(ZoneActivation.BoxLingerSeconds / world.TickSeconds);
             boxZones.Clear();
@@ -337,14 +360,15 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
     {
         // The player's characters ask for the box round them (the player's faction, docs/game/character-stats.md "Corpses"); the camera focus centres the block, and alone it does without a player.
         players.Clear();
-        if (world.Player.Exists)
+        if (world.Player.Exists || world.Players.RequiresExplicitControl)
         {
             var prev = world.Characters.Previous;
             for (int i = 0; i < prev.Length; i++)
-                if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true }) players.Add(prev[i].Position);
+                if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true } cold
+                    && (!world.Players.RequiresExplicitControl || cold.DiedTick < 0 && cold.Medical?.Dead != true)) players.Add(prev[i].Position);
         }
-        if (players.Count == 0 && focus is null) return;
-        RefreshLoaded(world, focus ?? players[0]);
+        if (!world.Players.RequiresExplicitControl && players.Count == 0 && focus is null) return;
+        RefreshLoaded(world, world.Players.RequiresExplicitControl ? null : focus ?? players[0]);
         (active, spareActive) = (spareActive, active);
         active.Clear();
         foreach (var zone in loadedUntil.Keys) active.Add(zone);
@@ -430,7 +454,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
     /// </summary>
     bool Replace(World world, TownSite site)
     {
-        if (loadingScreen || site.Index < data.SiteFactions.Count && data.SiteFactions[site.Index] is >= 0 and var f && f == PlayerFactionOf(world)) return false;
+        if (loadingScreen || site.Index < data.SiteFactions.Count && data.SiteFactions[site.Index] is >= 0 and var f && world.IsPlayerFaction(f)) return false;
         var state = states[site.Index];
         if (state.Repopulate)
         {
@@ -649,7 +673,8 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
         return list;
     }
 
-    Squad SpawnSquad(World world, BuiltSquad built, TownSite? site, float radius, bool player = false, int platoonId = -1, bool idle = false, float yaw = 0, bool pinned = false)
+    Squad SpawnSquad(World world, BuiltSquad built, TownSite? site, float radius, bool player = false, int platoonId = -1, bool idle = false, float yaw = 0, bool pinned = false,
+        ulong? creationSeed = null, Action<CharacterId>? spawned = null, bool bindUniques = true)
     {
         var table = world.Characters;
         var walk = world.Walkability;
@@ -657,6 +682,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
         {
             Id = world.Squads.NextId(),
             TemplateId = built.Plan.Template.Id,
+            PlayerManaged = player,
             Name = built.Plan.Template.Name,
             Faction = built.Faction,
             Town = site?.Index ?? -1,
@@ -698,23 +724,13 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
                 WalkSpeed = CharacterAssembly.WalkSpeed(race),
                 TaskTime = 0.5f + Rng.Float(Rng.Hash(world.Seed, (ulong)squad.Id << 8 | (uint)plan.Index, RngPurpose.Think)) * 3,
             };
-            var cold = new CharacterCold
-            {
-                Name = SpawnName(world, record, member.Appearance, squad.Id, plan.Index) ?? record?.Name ?? plan.RecordId,
-                Faction = squad.Faction,
-                Appearance = member.Appearance,
-                RecordId = plan.RecordId,
-                SquadId = squad.Id,
-                Role = (int)plan.Role,
-                IsPlayer = player,
-                Orders = player ? Orders.PlayerDefaults : CharacterOrders.None,
-                FootprintRadius = race?.GetFloat("pathfind footprint radius") ?? 0,
-            };
-            assembly.Attach(table.PeekNextId(), cold, ref hot, record, race, world.Seed, plan.IsAnimal ? plan.Age : 1);
+            var cold = AssembleMember(world, member, squad.Faction, squad.Id, player,
+                creationSeed.HasValue ? new CharacterId(plan.Index, 1) : table.PeekNextId(), ref hot, creationSeed);
             // A new NPC's bounties (economy.md 11.2; engine: not the player's characters, nor the sandbox's idle spawns).
             if (!player && !idle) cold.Bounties = Crime.SpawnBounties.Roll(data, record, world.Seed, table.PeekNextId(), world.Tick);
             var id = table.Spawn(hot, cold, world.Tick);
-            if (UniqueCharacters.IsUnique(record)) world.Uniques.Bind(plan.RecordId, id);
+            spawned?.Invoke(id);
+            if (bindUniques && UniqueCharacters.IsUnique(record)) world.Uniques.Bind(plan.RecordId, id);
             squad.Members.Add(id);
             if (plan.Role == SquadRole.Leader && squad.Leader.IsNone) squad.Leader = id;
         }
@@ -724,10 +740,31 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
         return squad;
     }
 
+    /// <summary>Shared detached member assembly for spawning and authoritative creation previews.</summary>
+    CharacterCold AssembleMember(World world, BuiltMember member, int faction, int squadId, bool player, CharacterId seedId, ref CharacterHot hot, ulong? creationSeed)
+    {
+        var plan = member.Plan; var record = data.Db.Find(plan.RecordId); var race = assembly.RaceOf(plan.RecordId, member.Appearance);
+        var cold = new CharacterCold
+        {
+            Name = member.CreationName ?? SpawnName(world, record, member.Appearance, squadId, plan.Index, creationSeed) ?? record?.Name ?? plan.RecordId,
+            Faction = faction,
+            Appearance = member.Appearance,
+            LookEdited = member.LookEdited,
+            RecordId = plan.RecordId,
+            SquadId = squadId,
+            Role = (int)plan.Role,
+            IsPlayer = player,
+            Orders = player ? Orders.PlayerDefaults : CharacterOrders.None,
+            FootprintRadius = race?.GetFloat("pathfind footprint radius") ?? 0,
+        };
+        assembly.Attach(seedId, cold, ref hot, record, race,
+            creationSeed ?? world.Seed, plan.IsAnimal ? plan.Age : 1);
+        return cold;
+    }
     /// <summary>A <c>named</c> CHARACTER's random name from its look's sex's list (docs/characters.md "Names"); null: the record's name.</summary>
-    string? SpawnName(World world, GameRecord? record, CharacterAppearance? look, int squadId, int index) =>
+    string? SpawnName(World world, GameRecord? record, CharacterAppearance? look, int squadId, int index, ulong? creationSeed = null) =>
         record is not null && record.GetBool("named") && data.Appearances is { } source
-            ? source.RandomName(look?.Female ?? false, Rng.Hash(world.Seed, (ulong)squadId << 8 | (uint)index, RngPurpose.Name))
+            ? source.RandomName(look?.Female ?? false, Rng.Hash(creationSeed ?? world.Seed, (ulong)(creationSeed.HasValue ? 0 : squadId) << 8 | (uint)index, RngPurpose.Name))
             : null;
 
 
@@ -752,7 +789,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
             var replacements = record.GetReferences("unique replacement spawn");
             if (replacements.Count == 0 || data.Db.Find(replacements[0].TargetStringId) is null) continue;
             string replacement = replacements[0].TargetStringId;
-            string? faction = built.Faction >= 0 && built.Faction < data.Factions.Count ? data.Factions[built.Faction].Id : null;
+            string? faction = built.Faction >= 0 && built.Faction < data.Factions.Count ? data.FactionTemplate(built.Faction) : null;
             var look = data.Appearances?.Create(replacement, faction, (int)(Rng.Hash(world.Seed, Rng.StableHash(replacement) ^ (ulong)squadId << 32, RngPurpose.Spawn, SeedSalts.MemberLook + (ulong)i) & 0x7FFFFFFF));
             gated.Add(new BuiltMember(member.Plan with { RecordId = replacement }, look));
         }
@@ -809,7 +846,6 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
         if (uniques.Count == 0) return;
         var table = world.Characters;
         var relations = data.Relations;
-        int playerFaction = world.Player.Faction;
         List<CharacterId>? gone = null;
         foreach (var (recordId, e) in uniques.All)
         {
@@ -826,12 +862,16 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable
             }
             else if (cold.IsImprisoned)
             {
-                if (e.State != UniqueState.Imprisoned) uniques.Captured(recordId, cold.InWhat is { } cage && world.Fixtures.Find(cage) is { } f && f.Owner >= 0 && f.Owner == playerFaction);
+                if (e.State != UniqueState.Imprisoned)
+                {
+                    int owner = cold.InWhat is { } cage && world.Fixtures.Find(cage) is { } fixture ? fixture.Owner : -1;
+                    uniques.Captured(recordId, world.IsPlayerFaction(owner), world.Players.RequiresExplicitControl ? owner : null);
+                }
             }
             else if (!cold.CarriedBy.IsNone && table.TryResolveNext(cold.CarriedBy, out int carrierSlot) && table.Cold(carrierSlot) is { } carrier)
             {
                 bool friend = carrier.Faction == cold.Faction || relations.Contains(carrier.Faction) && relations.Contains(cold.Faction) && relations.IsAlly(cold.Faction, carrier.Faction);
-                if (e.State == UniqueState.Alive && !friend) uniques.Captured(recordId, carrier.IsPlayer);
+                if (e.State == UniqueState.Alive && !friend) uniques.Captured(recordId, carrier.IsPlayer, world.Players.RequiresExplicitControl ? carrier.Faction : null);
             }
             else if (e.State == UniqueState.Imprisoned || e.State == UniqueState.Dead && cold.IsPlayer) uniques.Freed(recordId);
         }

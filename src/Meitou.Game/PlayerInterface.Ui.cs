@@ -60,14 +60,16 @@ sealed partial class PlayerInterface
             var layout = MyGuiReader.ReadLayout(resolve(file + ".layout") ?? throw new FileNotFoundException(file));
             if (id is "new-game" or "import") layout = WithAdvancedPanel(layout, MyGuiReader.ReadLayout(resolve("Kenshi_AdvancedOptionsWindow.layout") ?? throw new FileNotFoundException("Kenshi_AdvancedOptionsWindow.layout")));
             if (id == "load") layout = WithSaveFilter(layout);
+            if (id == "title") layout = WithMultiplayer(layout);
             if (id == "editor") (editorLayout, editorRowsShape) = (layout, "");
             if (id == "inventory") characterInventoryLayout = layout;
             faithfulScreens.Register(id, layout, modal, centreRoot: id is "file");
         }
+        faithfulScreens.Register("online", OnlineLayout(), true);
         animalInventoryLayout = resolve("Kenshi_InventoryAnimalWindow.layout") is { } animalWindow ? MyGuiReader.ReadLayout(animalWindow) : null;
         characterRowLayout = resolve("Kenshi_CharacterSelectionBox.layout") is { } characterRow ? MyGuiTemplates.Expand(MyGuiReader.ReadLayout(characterRow), uiResources) : null;
         // The title's start, load and import windows leave its buttons live (the original's title windows are not modal): another button replaces them.
-        faithfulScreens.PassThrough = id => id is "new-game" or "load" or "import" && faithfulScreens.IsOpen("title");
+        faithfulScreens.PassThrough = id => lobby is null && id is "new-game" or "load" or "import" && faithfulScreens.IsOpen("title");
         faithfulScreens.RegisterPanel(TownScreen, TownPanelLayout(mainPanel));
         faithfulScreens.Follow("bag", "inventory");   // the bag window is married to the inventory, opened and closed by OPEN BAG only
         faithfulScreens.Follow("loot-bag", "loot");
@@ -103,7 +105,7 @@ sealed partial class PlayerInterface
         uiPainter.Prefetch(FaithfulScreenFiles.SelectMany(s => faithfulScreens.Layout(s.Id).Widgets).Concat(faithfulHud.Widgets)
             .Select(w => w.Properties.GetValueOrDefault("ImageTexture")).OfType<string>());
     }
-    public void DisposeUi() { uiPainter?.Dispose(); uiPainter = null; uiRegistration?.Dispose(); uiRegistration = null; }
+    public void DisposeUi() { DisposeOnline(); uiPainter?.Dispose(); uiPainter = null; uiRegistration?.Dispose(); uiRegistration = null; }
     /// <summary>Future code-mod loader entry point; disposal removes the extension's owned registrations.</summary>
     public IDisposable RegisterUiExtension(IUiExtension extension) => uiHost.Register(extension);
     public bool ContainsUi(Vector2 p)
@@ -133,7 +135,7 @@ sealed partial class PlayerInterface
         b.Text["DayText"] = session.Clock.DayText;
         b.Text["TimeText"] = session.Clock.TimeText;
         // The exe's money format string is c.{1,num} (docs/game/ui-screens.md section 1): no space after the point.
-        b.Text["MoneyAmountText"] = "c." + session.World.Player.Money.ToString("N0", CultureInfo.InvariantCulture);
+        b.Text["MoneyAmountText"] = session.Money is { } money ? "c." + money.ToString("N0", CultureInfo.InvariantCulture) : "—";
         // The name bar draws its own lines over the widget (PlayerInterface.HudText.cs).
         b.Text["NameText"] = lead?.Name ?? "No character selected";
         b.Properties["NameText"] = new Dictionary<string, string> { ["SkipCaption"] = "true" };
@@ -153,7 +155,12 @@ sealed partial class PlayerInterface
         b.Text["MoneyLabelText"] = "Money";
         // The bounty panel draws its own Bounty: line over the widget (PlayerInterface.HudText.cs).
         b.Properties["BountyText"] = new Dictionary<string, string> { ["SkipCaption"] = "true" };
-        for (int i = 0; i < ButtonSpeeds.Length; i++) b.Actions[$"TimeSpeedButton{i + 1}"] = $"meitou:speed.{i}";
+        for (int i = 0; i < ButtonSpeeds.Length; i++)
+        {
+            string button = $"TimeSpeedButton{i + 1}";
+            b.Actions[button] = $"meitou:speed.{i}";
+            if (!session.CanChangeSpeed) b.Disabled.Add(button);
+        }
         b.Actions["ShortcutInventoryButton"] = "meitou:inventory";
         b.Actions["ShortcutStatsButton"] = "meitou:stats";
         b.Text["ShortcutTechButton"] = "TEC";
@@ -181,7 +188,7 @@ sealed partial class PlayerInterface
             b.Positions["ExtendingPanel"] = rect with { Y = infoRect.Y + infoRect.Height - rect.Height };
         }
         b.Actions["ExtendedStatsButton"] = "meitou:extendedstats";
-        if (session.Simulation.Speed != 0) b.Hidden.Add("PausedPanel");
+        if (session.TimeScale != 0) b.Hidden.Add("PausedPanel");
         var buildingNow = BuildingFocus();
         bool buildingFocus = buildingNow is not null;
         BindMedicalBars(b, lead, buildingNow is { } shownBuilding ? BuildingRows(shownBuilding) : null);
@@ -207,6 +214,7 @@ sealed partial class PlayerInterface
 
     IReadOnlyList<UiControl> ArrangeUi()
     {
+        PollSessionMessages();
         SyncTradeScreens();
         SyncMachineScreens();
         SyncLootScreen();
@@ -263,6 +271,7 @@ sealed partial class PlayerInterface
         AddSpeech(controls);
         AddBuildReadout(controls);
         AddContextMenu(controls);
+        AddPlayerTradeControls(controls);
         pointerOverUi = faithfulScreens.Contains(mouse) || MyGuiPresentation.HitTest(controls, mouse.X, mouse.Y) is not null;
         AddHoverLabel(controls);
         return controls;
@@ -278,6 +287,7 @@ sealed partial class PlayerInterface
         if (faithfulScreens.PointerDown(p)) { UpdateMenuPause(); return true; }
         if (JobDragStart(controls, p)) return true;
         if (MyGuiPresentation.HitTest(controls, p.X, p.Y) is not { } c) return false;
+        if (PlayerTradeClick(c)) return true;
         if (SquadTabClick(c)) return true;
         if (c.Action.StartsWith("faithful:", StringComparison.Ordinal))
         {
@@ -326,19 +336,19 @@ sealed partial class PlayerInterface
             (lastMemberClick, lastMemberClickAt) = (doubleClick ? -1 : index, now);
             SelectMember(index, pressShift, doubleClick);
         }
-        else if (action == "stop") Say(new StopCommand(SelectedIds()) { Tick = session.World.Tick });
-        else if (action == "medic") Say(new Meitou.Simulation.FirstAid.MedicJobCommand(SelectedIds(), SlowModifier) { Tick = session.World.Tick });
-        else if (action == "rescue") Say(new Meitou.Simulation.Carrying.RescueJobCommand(SelectedIds(), SlowModifier) { Tick = session.World.Tick });
+        else if (action == "stop") Say(new StopCommand(SelectedIds()) { Tick = session.CommandTick });
+        else if (action == "medic") Say(new Meitou.Simulation.FirstAid.MedicJobCommand(SelectedIds(), SlowModifier) { Tick = session.CommandTick });
+        else if (action == "rescue") Say(new Meitou.Simulation.Carrying.RescueJobCommand(SelectedIds(), SlowModifier) { Tick = session.CommandTick });
         else if (action == "prospect") ProspectAction();
         else if (action.StartsWith("building-", StringComparison.Ordinal) || action.StartsWith("machine-", StringComparison.Ordinal)) BuildingAction(action);
         else if (action == "tutorial") TutorialAction(argument);
         else if (action == "job-remove") RemoveJob(argument);
         else if (action.StartsWith("order.", StringComparison.Ordinal) && Enum.TryParse(action[6..], out CharacterOrders order))
-            Say(new OrdersCommand(SelectedIds(), order) { Tick = session.World.Tick });
+            Say(new OrdersCommand(SelectedIds(), order) { Tick = session.CommandTick });
         else if (action.StartsWith("runspeed.", StringComparison.Ordinal))
         {
             int step = int.Parse(action[9..], CultureInfo.InvariantCulture);
-            Say(new RunSpeedCommand(SelectedIds(), step) { Tick = session.World.Tick });
+            Say(new RunSpeedCommand(SelectedIds(), step) { Tick = session.CommandTick });
         }
     }
 
@@ -349,13 +359,14 @@ sealed partial class PlayerInterface
     {
         IReadOnlyList<UiControl> controls = ArrangeUi();
         if (UiMode == UiMode.Faithful && LoadBar is { Visible: true } bar) controls = [.. controls, .. bar.Controls(uiResources, width, height)];
-        uiPainter?.Draw(controls, width, height, mouse, $"meitou:speed.{Array.IndexOf(ButtonSpeeds, session.Simulation.Speed)}",
+        uiPainter?.Draw(controls, width, height, mouse, $"meitou:speed.{Array.IndexOf(ButtonSpeeds, session.TimeScale)}",
             minimumTextPixels: TitleOpen ? 0 : StandardPixels, pass: pass);
     }
 
     /// <summary>For screenshot reviews: open the same panel through its registered button action.</summary>
     public void ShowUiPanel(string? panel, bool? expandInformation = null)
     {
+        if (session.IsRemote && panel is "new-game" or "save" or "load" or "import") return;
         if (expandInformation is { } expanded) infoExpanded = expanded;
         if (panel?.StartsWith("editor", StringComparison.Ordinal) == true)
         {
@@ -371,7 +382,7 @@ sealed partial class PlayerInterface
         if (panel.StartsWith("title-", StringComparison.Ordinal))
         {
             ShowTitle();
-            string button = panel[6..] switch { "load" => "LoadGameButton", "import" => "ImportGameButton", "new-game" => "NewGameButton", "exit" => "ExitButton", _ => "CreditsButton" };
+            string button = panel[6..] switch { "multiplayer" => "MultiplayerButton", "load" => "LoadGameButton", "import" => "ImportGameButton", "new-game" => "NewGameButton", "exit" => "ExitButton", _ => "CreditsButton" };
             HandleFrontendAction(new("title", button, button));
             UpdateMenuPause(); return;
         }

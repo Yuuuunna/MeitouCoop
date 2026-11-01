@@ -15,8 +15,11 @@
     <Project Path="src/Meitou.Metal/Meitou.Metal.csproj" />
     <Project Path="src/Meitou.MetalSpike/Meitou.MetalSpike.csproj" />
     <Project Path="src/Meitou.Navigation/Meitou.Navigation.csproj" />
+    <Project Path="src/Meitou.Networking/Meitou.Networking.csproj" />
     <Project Path="src/Meitou.Rendering.Display/Meitou.Rendering.Display.csproj" />
     <Project Path="src/Meitou.Rendering/Meitou.Rendering.csproj" />
+    <Project Path="src/Meitou.Runtime/Meitou.Runtime.csproj" />
+    <Project Path="src/Meitou.Server/Meitou.Server.csproj" />
     <Project Path="src/Meitou.Simulation/Meitou.Simulation.csproj" />
     <Project Path="src/Meitou.Ui/Meitou.Ui.csproj" />
   </Folder>

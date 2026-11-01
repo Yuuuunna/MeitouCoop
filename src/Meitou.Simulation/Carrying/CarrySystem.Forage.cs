@@ -20,6 +20,7 @@ public sealed partial class CarrySystem
         for (int i = 0; i < table.HighWater; i++)
         {
             if (!next[i].Alive || table.Cold(i) is not { IsPlayer: true } cold || cold.Jobs.Count == 0) continue;
+            if (world.Players.RequiresExplicitControl && world.Players.ControlOf(table.IdOf(i)) is null) continue;
             if (!PermaJobs.FreeFor(cold, (CharacterTask)next[i].Task, PermaJobs.IndexOf(cold, TaskType.LOOT_ANIMALS_JOB)) || cold.Fleeing || !CanCarry(cold) || cold.Inventory is null) continue;
             if (cold.SquadId >= 0 && world.Squads.Find(cold.SquadId) is { } squad && Fighting(table, squad)) continue;
             taken ??= Looting(table);
@@ -36,6 +37,7 @@ public sealed partial class CarrySystem
             if (best < 0) continue;
             taken.Add(best);
             Begin(table, i, table.IdOf(best), CharacterTask.Loot, cold.JobIndex >= 0 || cold.Implicit is not null ? cold.ResumeTask : (CharacterTask)next[i].Task);
+            RememberJob(world, i);
         }
     }
 
@@ -54,5 +56,5 @@ public sealed partial class CarrySystem
     /// standing for that (its bits are <b>Unknown</b>).
     /// </summary>
     bool Rescues(World world, CharacterCold rescuer, CharacterCold body) =>
-        body.Faction == rescuer.Faction || rescuer.IsPlayer && (world.Player.SquadAi & SquadAi.Rescue) != 0 && Friendly(rescuer, body);
+        body.Faction == rescuer.Faction || rescuer.IsPlayer && (world.SquadOptions(rescuer) & SquadAi.Rescue) != 0 && Friendly(rescuer, body);
 }

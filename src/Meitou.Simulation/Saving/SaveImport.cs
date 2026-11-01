@@ -46,6 +46,8 @@ public static class SaveImport
     /// </summary>
     public static SaveGame Filter(SaveGame game, ImportOptions options, PopulationData data)
     {
+        if (game.Camera.Record.Ints.ContainsKey(PlayerSquadSave.WorldKey))
+            throw new InvalidOperationException("A multiplayer checkpoint cannot be filtered into a single-player import without losing other players' state.");
         // Cut down in place; the views of a SaveGame (research, weather...) are only rebuilt by making a new one from the records, at the end.
         var player = game.PlayerFaction ?? throw new InvalidOperationException("The save has no player faction.");
         options = AllowedFor(options, game.Camera.Version);

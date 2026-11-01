@@ -4,19 +4,23 @@ namespace Meitou.Simulation.Locks;
 
 /// <summary>
 /// Gates (docs/game/locks.md "Gates"): the gate codes (<see cref="IGateRegions"/>) and the states between them, which DESTINATION_NOT_BLOCKED_BY_FORTIFICATIONS reads, and the NPC
-/// attackers that bash a locked gate between them and their target (<see cref="GatePlan"/>). Without gate codes (headless, before the first labelling) nothing is blocked.
+/// attackers that bash a locked gate between them and their target (<see cref="GatePlan"/>). Runtime marks pending derived data explicitly.
 /// </summary>
 public sealed partial class LockSystem
 {
     /// <summary>The gate codes now (null: none yet, every destination counts as reachable).</summary>
     public IGateRegions? Regions { get; private set; }
+    public bool GateRegionsPending { get; private set; }
 
     /// <summary>The gate states of the codes' pairs, rebuilt once a check (<see cref="BashCheckTicks"/>) from the gates' doors; null when not yet asked this check.</summary>
     Dictionary<int, List<(int To, int State, GateLink Gate)>>? gateGraph;
 
-    void GateInputs(GateRegionsCommand command)
+    void GateInputs(GateRegionsCommand command) => SetGateRegions(command.Regions);
+
+    /// <summary>Serialized runtime boundary only. Pending labels must not permit fortification checks using an absent or obsolete map.</summary>
+    public void SetGateRegions(IGateRegions? regions, bool pending = false)
     {
-        Regions = command.Regions;
+        Regions = regions; GateRegionsPending = pending;
         gateGraph = null;
     }
 
@@ -108,6 +112,7 @@ public sealed partial class LockSystem
     /// </summary>
     public bool NotBlocked(World world, Vector3 from, Vector3 to)
     {
+        if (GateRegionsPending) return false;
         if (Regions is null) return true;
         int a = Regions.CodeAt(from), b = Regions.CodeAt(to);
         return a == b || a < 0 || b < 0 || RouteState(world, a, b, Flat(from), out _) == 1;

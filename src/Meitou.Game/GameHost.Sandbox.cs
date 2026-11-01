@@ -61,7 +61,7 @@ sealed partial class GameHost
     /// <summary>Spawns the hero (and the foe), selects the hero, applies the command-line start state; returns where the camera starts.</summary>
     Vector3 SandboxSpawn()
     {
-        var world = session.World;
+        var world = LocalSession.World;
         string record = SandboxRecord(scene.Database!);
         float half = g.Sandbox >= 2 ? 15 : 0;
         sandboxHero = population!.SpawnSandbox(world, record, new Vector2(-half, 0), player: true, yaw: MathF.PI / 2);
@@ -116,7 +116,7 @@ sealed partial class GameHost
     /// </summary>
     void SpawnCrowd(Vector3 around, int count)
     {
-        var world = session.World;
+        var world = LocalSession.World;
         string record = SandboxRecord(scene.Database!);
         int placed = 0;
         for (int ring = 1; placed < count && ring < 200; ring++)
@@ -137,7 +137,7 @@ sealed partial class GameHost
     void SandboxSendMovement()
     {
         if (sandboxHero.IsNone) return;
-        session.World.Commands.Enqueue(new SandboxMovement(sandboxHero, sandboxMode, sandboxSpeed) { Tick = session.World.Tick });
+        LocalSession.World.Commands.Enqueue(new SandboxMovement(sandboxHero, sandboxMode, sandboxSpeed) { Tick = LocalSession.World.Tick });
     }
 
     void SandboxTogglePatrol()
@@ -145,7 +145,7 @@ sealed partial class GameHost
         sandboxPatrol = !sandboxPatrol;
         if (!sandboxPatrol)
         {
-            session.World.Commands.Enqueue(new StopCommand([sandboxHero]) { Tick = session.World.Tick });
+            LocalSession.World.Commands.Enqueue(new StopCommand([sandboxHero]) { Tick = LocalSession.World.Tick });
             return;
         }
         float x = session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == sandboxHero)?.Position.X ?? 0;
@@ -159,12 +159,12 @@ sealed partial class GameHost
         if (!sandboxPatrol || sandboxHero.IsNone) return;
         var hero = session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == sandboxHero);
         if (hero is null) return;
-        long tick = session.World.Tick;
+        long tick = LocalSession.World.Tick;
         bool arrived = patrolIssued >= 0 && Math.Abs(hero.Position.X - patrolTarget) < 12;
         if (arrived) patrolTarget = -patrolTarget;
         if (patrolIssued < 0 || arrived || tick - patrolIssued > 30 * 30)
         {
-            session.World.Commands.Enqueue(new MoveOrder([sandboxHero], new Vector3(patrolTarget, 0, 0)) { Tick = tick });
+            LocalSession.World.Commands.Enqueue(new MoveOrder([sandboxHero], new Vector3(patrolTarget, 0, 0)) { Tick = tick });
             patrolIssued = tick;
         }
     }
@@ -187,8 +187,8 @@ sealed partial class GameHost
             case EngineKey.P: SandboxTogglePatrol(); break;
             case EngineKey.Y: sandboxFollow = !sandboxFollow; break;
             case EngineKey.G when !sandboxFoe.IsNone:
-                session.World.Commands.Enqueue(new Meitou.Simulation.Combat.AttackOrder([sandboxHero], sandboxFoe) { Tick = session.World.Tick });
-                session.World.Commands.Enqueue(new Meitou.Simulation.Combat.AttackOrder([sandboxFoe], sandboxHero) { Tick = session.World.Tick });
+                LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Combat.AttackOrder([sandboxHero], sandboxFoe) { Tick = LocalSession.World.Tick });
+                LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Combat.AttackOrder([sandboxFoe], sandboxHero) { Tick = LocalSession.World.Tick });
                 break;
         }
     }
@@ -245,14 +245,14 @@ sealed partial class GameHost
 
     void AddCharacter(string label, CharacterId id, Action<string, Vector4?> add, Vector4 heading, bool detailed)
     {
-        var table = session.World.Characters;
+        var table = LocalSession.World.Characters;
         var snapshot = session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id);
         if (snapshot is null || !table.IsAlive(id)) { add($"{label}: gone", null); return; }
         ref readonly var hot = ref table.Previous[id.Slot];
         var cold = table.Cold(id.Slot)!;
         float v = MathF.Sqrt(hot.Velocity.X * hot.Velocity.X + hot.Velocity.Z * hot.Velocity.Z), measured = 0;
         if (session.PreviousSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { } before)
-            measured = Vector3.Distance(new Vector3(before.Position.X, 0, before.Position.Z), new Vector3(snapshot.Position.X, 0, snapshot.Position.Z)) / (float)session.Simulation.TickSeconds;
+            measured = Vector3.Distance(new Vector3(before.Position.X, 0, before.Position.Z), new Vector3(snapshot.Position.X, 0, snapshot.Position.Z)) / (float)LocalSession.Simulation.TickSeconds;
         byte mode = cold.ModeOverride ?? hot.Mode;
         string modeText = mode switch { SpeedMode.Walk => $"WALK (cap {hot.WalkSpeed:0.#})", SpeedMode.Run => $"RUN (cap {SpeedMode.RunCap:0})", SpeedMode.Group => "GROUP (squad's slowest)", _ => "FREE (no cap)" };
         add($"{label}: {snapshot.Name}   {(CharacterTask)hot.Task}", heading);

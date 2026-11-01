@@ -12,7 +12,7 @@ using SimWorld = Meitou.Simulation.World;
 
 namespace Meitou.Tests.Simulation;
 
-public class HousePurchaseTests
+public partial class HousePurchaseTests
 {
     internal static (PopulationData Data, TownBuilding House) Setup(bool destroyed = false, bool sale = true, int townType = 2, bool inside = false)
     {

@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Meitou.Audio;
 
 namespace Meitou.Game;
@@ -71,7 +71,7 @@ sealed partial class GameHost
         // The Audio settings' Hear from switch: the listener and every distance limit move to the first selected character's ears; the camera keeps the orientation.
         var ears = config.HearFromSelected && player.SelectedPosition is { } lead ? lead + Vector3.UnitY * EarHeight : eye;
         audio.SetListener(ears, front, Vector3.Cross(right, front));
-        audio.SetPaused(session.Simulation.IsPaused);
+        audio.SetPaused(session.IsPaused);
         var weather = ActiveWeather;
         var clock = session.Clock;
         audio.Ambience.FixDelayedSuffix = config.FixAmbienceSuffix;

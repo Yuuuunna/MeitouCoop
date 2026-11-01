@@ -35,7 +35,7 @@ sealed partial class GameHost
                 if (group.Effect.Sound is not { } sound) continue;
                 foreach (var unit in group.Units)
                 {
-                    if (unit.Done) continue;
+                    if (unit.Done && !group.NodesAreAuthoritative) continue;
                     effectUnitsSeen.Add(unit);
                     if (!effectEmitterKeys.TryGetValue(unit, out string? key))
                         effectEmitterKeys[unit] = key = $"effect/{++effectEmitterNumber}";

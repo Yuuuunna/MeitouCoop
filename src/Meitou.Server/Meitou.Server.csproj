@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Meitou.Server</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Meitou.Runtime/Meitou.Runtime.csproj" />
+    <InternalsVisibleTo Include="Meitou.Tests" />
+  </ItemGroup>
+</Project>

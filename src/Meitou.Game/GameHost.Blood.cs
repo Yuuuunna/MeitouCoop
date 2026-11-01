@@ -25,10 +25,9 @@ sealed partial class GameHost
     const float BloodAboveGround = 20;
 
     TerrainDecalStore? decalStore;
-    World? bloodFor;
+    object? bloodFor;
     long bloodTick;
     double debrisClock;
-    readonly ConcurrentQueue<BloodMark> bloodQueue = new();
     readonly Random bloodRandom = new();
 
     /// <summary>Makes the store and the renderer when the install's <c>Blood</c> setting is on (missing: on).</summary>
@@ -52,25 +51,30 @@ sealed partial class GameHost
     /// </summary>
     void UpdateBlood()
     {
-        var world = session.World;
-        world.Luckyren = config.LuckyrenMode;
-        UpdateBlockSparks(world);
-        if (decalStore is null && !config.LuckyrenMode && pieces.Count == 0)
+        if (session is Meitou.Engine.WorldSession local) local.World.Luckyren = config.LuckyrenMode;
+        if (!session.HasWorldView)
         {
-            world.BloodMarks = null;
-            gpu.DebrisPieces.Clear();
-            AddBolts();   // the bolts are drawn whatever the Blood setting
-            UpdateFalls(world);   // and the severed limbs falling
+            if (bloodFor is not null) { BloodForNewWorld(null); bloodFor = null; }
             return;
         }
-        if (!ReferenceEquals(bloodFor, world)) BloodForNewWorld(null);
-        world.BloodMarks = bloodQueue;
-        float tick = world.TickSeconds;
-        while (bloodQueue.TryDequeue(out var m))
+        if (!ReferenceEquals(bloodFor, session.WorldIdentity)) BloodForNewWorld(null);
+        UpdateBlockSparks();
+        bool enabled = decalStore is not null || session.IsRemote || config.LuckyrenMode || pieces.Count > 0;
+        session.EnableBlood(enabled);
+        if (!enabled)
         {
+            gpu.DebrisPieces.Clear();
+            AddBolts();   // the bolts are drawn whatever the Blood setting
+            UpdateFalls();   // and the severed limbs falling
+            return;
+        }
+        float tick = session.SimulationStepSeconds;
+        while (session.TryDequeueBlood(out var visual))
+        {
+            var m = visual.Mark;
             if (m.Kind == BloodMarkKind.Explosion)
             {
-                Burst(m, world);
+                Burst(visual);
                 continue;
             }
             if (decalStore is not { } store) continue;
@@ -79,7 +83,7 @@ sealed partial class GameHost
             long who = (long)(uint)m.Who.Slot << 32 | (uint)m.Who.Generation;
             switch (m.Kind)
             {
-                case BloodMarkKind.Pool: store.Bleed(who, m.Position, m.Amount, tick, opaque, bloodRandom); break;
+                case BloodMarkKind.Pool: store.Bleed(who, m.Position, m.Amount, visual.TickSeconds, opaque, bloodRandom); break;
                 case BloodMarkKind.Smear:
                     store.Add(TerrainDecalType.Smear, m.Position, m.Direction, 0.2f, (uint)(Math.Clamp(m.Amount, 0, 1) * 255) << 24 | Abgr(m.Colour), TerrainDecalStore.NewLife, bloodRandom);
                     break;
@@ -87,32 +91,31 @@ sealed partial class GameHost
                 case BloodMarkKind.Splash: store.Add(TerrainDecalType.Splash, m.Position, m.Direction, m.Amount, opaque, TerrainDecalStore.NewLife, bloodRandom); break;
             }
         }
-        long ticks = world.Tick - bloodTick;
-        bloodTick = world.Tick;
+        long ticks = session.CommandTick - bloodTick;
+        bloodTick = session.CommandTick;
         if (ticks > 0 && decalStore is { } aging && gpu.Decals is { } decals) aging.Age(ticks * tick, decals.Drawn);
         // The pieces move by the game time between frames, the tick count plus the simulation's alpha, so they fly smoothly at the display rate, not in tick steps.
-        double clock = session.ShownTick + session.SimulationAlpha;   // the shown tick: one run ahead is not on screen yet
-        UpdateDebris(world, (float)Math.Clamp((clock - debrisClock) * tick, 0, 0.5));
+        double clock = session.PresentationTick;   // the shown tick: one run ahead is not on screen yet
+        UpdateDebris((float)Math.Clamp((clock - debrisClock) * tick, 0, 0.5));
         debrisClock = clock;
     }
 
     /// <summary>The EFFECT `small- sparks1` (5463-nodes_furniture1_otto.mod) the original throws on a parry: its particle system.</summary>
     const string SparksSystem = "kenshi_sparks";
-    readonly ConcurrentQueue<CharacterId> sparkQueue = new();
 
     /// <summary>
     /// Once a frame: the parries of the ticks since the last frame throw <see cref="SparksSystem"/> at the parrying character's <c>Bip01 Prop2</c> (its weapon), 0 or 1 unit higher
     /// at random, when that character is drawn (the original's <c>FUN_1404394f0</c>: only for a character on screen; docs/game/combat.md "Block sparks").
     /// </summary>
-    void UpdateBlockSparks(World world)
+    void UpdateBlockSparks()
     {
         if (gpu.Particles is not { } particles || gpu.Characters is not { } characters)
         {
-            world.BlockSparks = null;
+            session.EnableBlockSparks(false);
             return;
         }
-        if (!ReferenceEquals(world.BlockSparks, sparkQueue)) { sparkQueue.Clear(); world.BlockSparks = sparkQueue; }
-        while (sparkQueue.TryDequeue(out var who))
+        session.EnableBlockSparks(true);
+        while (session.TryDequeueBlockSpark(out var who))
             if (characters.BonePosition(DrawKey(who), "Bip01 Prop2") is { } at)
                 particles.Burst(SparksSystem, at + new Vector3(0, bloodRandom.Next(2), 0), Quaternion.Identity, 0.1f);
     }
@@ -123,16 +126,14 @@ sealed partial class GameHost
     /// </summary>
     void BloodForNewWorld(FcsRecord? saved)
     {
-        var world = session.World;
         pieces.Clear();
-        if (gpu is not null) gpu.DebrisPieces.Clear();
-        bloodQueue.Clear();
-        bloodFor = world;
-        bloodTick = world.Tick;
-        debrisClock = session.ShownTick + session.SimulationAlpha;
+        if (gpu is not null) { gpu.DebrisPieces.Clear(); gpu.Particles?.ClearBursts(); }
+        bloodFor = session.WorldIdentity;
+        bloodTick = session.CommandTick;
+        debrisClock = session.PresentationTick;
+        session.EnableBlood(decalStore is not null || session.IsRemote || config.LuckyrenMode);
         if (decalStore is not { } store) return;
         store.Clear();
-        world.BloodMarks = bloodQueue;
         if (saved is not null) store.Load(SaveDecals.Read(saved));
     }
 

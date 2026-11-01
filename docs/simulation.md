@@ -22,7 +22,8 @@ The game can run the next tick on its own thread (`WorldSession.BeginTickAhead`,
 ahead of the clock: it counts as the next one owed (`AdvanceSimulation` takes it, then runs the rest), and the game clock moves when it falls due.
 Until then `CurrentSnapshot`/`PreviousSnapshot` hold the pair from before it, so the picture is where it was; `ShownTick` is the world tick on
 screen. Between `BeginTickAhead` and `EndTickAhead` nothing may touch the `World`: the renderer's host callbacks (`Source`, `PoseClock`) read only
-the session's snapshots, and the world reads the renderer only through the weather source (a reference and a float per region). Consequences
+the session's snapshots. Normal game weather is a CPU environment system; the renderer receives regional copies at frame boundaries
+([runtime contracts](multiplayer.md#shared-runtime)). Consequences
 (**engine choice**): a command lands one tick later (33 ms at 1x); blood marks and sounds come out with the tick, up to a tick before it shows; a
 pause with a tick ahead takes it at once (the picture jumps a tick, then the paused interface's republished snapshots show); a save takes it first
 (`SettleAhead`); `ReplaceWorld` drops it. Display → World tick alongside drawing (`TickAhead`): Faithful never (the world, then the draw); Meitou, the default, once
@@ -88,7 +89,9 @@ crime sees deeds and final positions/carry links. Game combat uses `SelfApproach
 ## Population
 
 `PopulationSystem`, `SquadFactory`, `CharacterAssembly`, `GeneratedAppearances`: activate the loaded zones
-(the camera's 3 x 3 block and the box round the player's characters, [corpses](game/character-stats.md#corpses)), gate spawning on navmesh readiness, create residents/bar/roaming/wild/nest squads,
+(legacy: the camera's 3 x 3 block and player-character boxes, [corpses](game/character-stats.md#corpses);
+explicit multiplayer: `World.Regions` role/activity/preparation demand, [contracts](multiplayer.md#shared-runtime)),
+gate spawning on navmesh readiness, create residents/bar/roaming/wild/nest squads,
 and assemble race appearance, gear, stats and bodies. Counts, roles, offsets, caps, spawn weights
 and world-state gating follow [population research](game/factions-squads-towns.md).
 Missing references become `SquadPlan.Problems`; world states are answered live (`WorldStates`, see Campaigns under the off-screen tier). Residents are housed by the original's building rules with housemates and
@@ -960,7 +963,7 @@ Engineer (125), which resumes available work after supplies arrive; a direct ord
 Jobs retain their queue priority and switch. Transient orders are not saved; persistent jobs and the house's progress,
 delivered materials and ownership are ([save](formats/save.md#zone-files)). Normal damage to a complete house needs no materials.
 Town houses cannot be dismantled, cancelled or upgraded through this seam. The original town and instance remain unchanged.
-Building inside one names the level instance as parent (as any owned town building; build mode's floor is the level one), refused while it is being repaired.
+Building inside one names its zone-qualified runtime key as parent; save handles accept that key or a legacy raw instance id. Placement is refused while it is being repaired.
 **Verified** implementation coverage: `HouseRepairTests` and `HouseRepairUiTests` (both UI modes, original Storm House data).
 
 **Outposts.** `World.Buildings.Towns` (`PlayerTown`: `Number` 1.., `Name`, `Position`, `Owner`, `Public`; never removed; renamed and ticked public by the [town panel](game/ui-screens.md#town-panel)) and
@@ -1033,13 +1036,16 @@ when set. Existing golden hashes are unchanged while there are no sites; the `bu
 Decisions read only world state and command order, never collision or navmesh readiness (paths stay the usual
 asynchronous input).
 
-**Host seam: snapshot diff.** The host keeps the last `BuildingsRevision` it acted on (-1 after `ReplaceWorld`) and,
-when it differs, diffs `Buildings` by id: added → render overlay (and navmesh if it qualifies), removed → out of both,
-newly complete → navmesh and lamps (lamps leave when it is no longer complete). Progress does not bump the revision; the scaffold reads `Progress/Target` each frame (rule in
-[construction look](game/buildings-production.md#construction-look)). An event queue would lose changes across dropped
-ticks and loads; the diff does not. Navmesh membership (engine reading of the Observed rebuild on placing):
-`PathMode != 0` and (`Complete` or `BuildThreshold == 0`). Rebuilt zones that publish go into the host's next
-`RepathCommand` (with its zones, [long routes](game/pathfinding.md)).
+**Host seam: authority and presentation.** Runtime's `WorldBuildings` diffs the live registry at serialized
+input/tick boundaries and paused edits; navigation needs no published snapshot or renderer frame. Its overlay
+includes non-IGNORE sites that are complete, have zero build threshold, or carry destroyed/level-placement
+overrides. Runtime activation/rollback contracts: [multiplayer](multiplayer.md#shared-runtime).
+The graphical host diffs snapshot `BuildingsRevision` only for objects, lamps and effects; the scaffold reads
+`Progress/Target` each frame ([construction look](game/buildings-production.md#construction-look)).
+Runtime navigation builds asynchronously but commits meshes, unloads, coarse obstacles and seed expansion
+at world boundaries. Stale build generations/incarnations are discarded; waiting movement retains its goal
+and stops at the verified prefix. Loading hosts distinguish prepared from published zones. Contracts and
+verification: [multiplayer](multiplayer.md#shared-runtime), [long routes](game/pathfinding.md).
 - Overlay type: `BuildingPlacement` (`StateId` null for new buildings, `WorldY` = absolute Y). Town repairs retain the
   original state and instance ids, overriding only `Destroyed`; render and nav replace by global `Key`, never append a second house; removing the override lays its zone out again from the level data.
   A repaired town house replaces only its objects and interior in the resident zone; floors are invalidated and its nav overlay applies from repair start even below build threshold.
@@ -1050,11 +1056,13 @@ ticks and loads; the diff does not. Navmesh membership (engine reading of the Ob
   see it, so the cache key changes), `NavSystem.AddRuntimeBuilding/RemoveRuntimeBuilding` and `RebuildZone(zone)` for
   each zone within `BuildingReach`.
 
-**Placement validation.** Host: `Meitou.Game/Building/PlacementCheck.Evaluate(PlacementQuery) -> PlacementFailure`,
+**Placement validation.** Shared CPU rule: `Meitou.Runtime/Placement/PlacementCheck.Evaluate(PlacementQuery) -> PlacementFailure`,
 pure over the query (build data, transform, floor, queued ghosts, snapshot characters and sites, towns) and services
 (heightmap, collision cache, water level). It calls `PlacementRules.TownBlock` first and returns the first failure in
-the original's order. The geometric half depends on asynchronously loaded collision, so the simulation trusts it and
-re-checks only the town block. Ghost controls, tilt and the unconfirmed ghost queue (Undo) are host UI state.
+the original's order. The graphical preview may load collision asynchronously; `WorldContent` installs an
+authoritative `IConstructionPlacement` that reads complete CPU geometry and live world state at execution.
+Attributed placement requires this validator. Authority contracts and remaining limits: [multiplayer](multiplayer.md).
+Ghost controls, tilt and the unconfirmed ghost queue (Undo) are host UI state.
 Implemented host-side, in the original's order: town block, resource row (`PlacementRules.Readout` /
 `ResourceBlock`: a farm's fertility factor or crop yield (x crop match), or a `world resource mining` building's
 `ResourceField.Yield`, below 0.01; no readout without an areas map, or for iron/copper/carbon without known rocks; the
@@ -1063,16 +1071,16 @@ rule, footprint overlap with static buildings, sites and queued ghosts (convex h
 characters within 2.5 of the hull, LAND parts below the water level 98, slope (four rotated bounding-box corners, `max slope`,
 `match slope` tilts fully) and normal.y < 0.2. **Indoors:** the ghost (not walls) stands on the first building floor the
 cursor ray meets before the terrain, using the movement pick up to the viewed floor (the build window's floor arrows), untilted;
-it queues with that building as parent (a site's id, a level building's instance id) and its floor. The building must be
+it queues with that building as parent (a site's id, a level building's zone-qualified key) and its floor. The building must be
 a finished player site or a level building the player's faction owns (its state's `owner faction ID`, else its town's
 faction; else the original's "don't own" / "incomplete" texts); the parent is left out of the overlap tests, the slope test is skipped (floor taken as
 level), and interior-only furniture is refused only off a floor. Engine stand-in for the original's node boxes against the
 building's walls: the footprint must lie within the building's indoor hull. **Not decided** (never fail, so the ghost may
-show valid where the original refuses): snap nodes, usage nodes, blocked use nodes, the floor-number
-check above floor 0, vertical margins, the 5 deg object-surface rule. A `ceiling placement` ghost hangs its origin 1 below the
+show valid where the original refuses): snap nodes, usage nodes, blocked use nodes, vertical margins and the
+5 deg object-surface rule. Authority resolves the requested floor against CPU floor collision. A `ceiling placement` ghost hangs its origin 1 below the
 lowest collision over the floor point (a slab's or roof's underside, from 5 up; its meshes hang below their origin, Ceiling Lamp
 y -19..+4) and fails with the floor-number text when there is none. A site inside another (its parent) is picked through
-the parent's roof and walls while the interior view shows the parent; a site in a level building takes the usual town rules. Messages: `PlacementRules.Message`, else the original's text table in `PlacementCheck`.
+the parent's roof and walls while the interior view shows the parent. Owned-parent interiors bypass the foreign-town exclusion. Messages: `PlacementRules.Message`.
 
 Build mode (B, `Kenshi_BuildWindow`, Faithful UI only): categories and groups list `WorldSnapshot.UnlockedBuildings` in
 database order (the original's order is **Unknown**); the window estimates hours as materials / (`build speed mult` x 6),
@@ -1120,7 +1128,7 @@ The first snapshot after a load carries every site, so the host seam needs nothi
 `Rng.cs`, `PopulationSystem.Player.cs`, `AnimationSystem.cs` (held clips), `Saving/*`, `Meitou.Data/Save/SaveBuilder.cs`
 (a comment). Host track:
 `Meitou.Game/GameHost.Building.cs` (diff, overlays, rebuilds, repath), `PlayerInterface.Build.cs` (Kenshi_BuildWindow,
-ghost, commands), `Building/PlacementCheck.cs`, `Building/BuildMenu.cs` (categories and groups from
+ghost, commands), `Meitou.Runtime/Placement/PlacementCheck.cs`, `Building/BuildMenu.cs` (categories and groups from
 `BuildingBuildData` and `UnlockedBuildings`), `KeyMap.cs` (build map), `PlayerInterface.ContextMenu.cs` and
 `PlayerInterface.Picking.cs` (site verbs), `GameHost.Interactive.cs` (hook), `Meitou.Engine` if needed,
 `Meitou.Ui/*`; `Meitou.Rendering/WorldObjects.cs`, `ObjectStreamer.cs` and the object shader plumbing;
@@ -1283,10 +1291,11 @@ crafting benches, generators and batteries. Facts: [production](game/buildings-p
 
 Facts: [Prospecting](game/ui-screens.md#prospecting), [Task_Prospecting](game/ai-tasks.md#prospecting). `ProductionSystem` (`ProductionSystem.Prospecting.cs`, `Production/Prospecting.cs`) owns it because it holds the `ResourceField`.
 - `ProspectOrder` names one player character (the host picks the selected one nearest the camera pivot). If it is awake, not fighting, carried, carrying, caged or swimming (water state 3) it stops and takes
-  `CharacterTask.Prospect` with `CharacterCold.Prospecting` = 0 (hashed only while set, not saved). A character already prospecting is left alone; when done it is `Idle`.
-- Each tick (`SlowWorld`, before the early returns) the progress grows by the tick's game seconds. At `ProspectSeconds` = 1 (**Verified**) the task ends (`Idle`) and a `ProspectReport` is published as `World.Prospected`: the
+  `CharacterTask.Prospect` with `CharacterCold.Prospecting` = 0 (hashed only while set, not saved). The same controller's repeated order preserves progress; when done it is `Idle`.
+- Each tick (`SlowWorld`, before the early returns) the progress grows by the tick's game seconds. At `ProspectSeconds` = 1 (**Verified**) the task ends (`Idle`) and a `ProspectReport` is published to the recipient's `PlayerState.Prospected` (`World.Prospected` aliases the local player's report): the
   prospector's name and science (raw stat), the spot (its position), the zone name and the crop coverages, and the five resource values from `ResourceField.Yield` at the spot. Another task (a move, an attack, a stop) or the character going down
   ends it with no report. The report is display only: nothing reads it, the state hash does not see it, a save does not hold it.
+- Multiplayer surveys capture and continuously validate the actor's grant. Transfer/revocation cancels the old task; a new controller starts fresh. Each recipient has an independent result serial. **Verified** by `MultiplayerProspectingTests`; network delivery and bounds are specified in [networking](networking.md#private-results-and-transient-events).
 - Map: the report carries `ProspectMap`, sampled once at the end (terrain height `IWalkability.TerrainHeight`, the field resources by `ResourceField.FieldYield` per cell with the spot's record, the rocks in range by `NodeYield`); the window colours it per checked row. The report also carries the wind of the spot's region at that moment (`World.Weather.At`, 0 without weather). The window's camera marker is drawn each frame at the camera's
   target (the strategy camera's pivot) and turned by the level direction from the eye to it.
 - Animation: the `medic` clip (`AnimationSystem.HeldClip`). HUD goal text "Prospecting". **Not modelled:** the progress bar over the character, the state field `+0x198`.
@@ -1345,6 +1354,7 @@ to the next tick. A hostile target is attacked instead.
 - **Speech bubbles**: `WorldSnapshot.Speech` lists the lines on show (`SpeechBubble`: speaker, text, large font); `PlayerInterface.AddSpeech` draws them over the head. Sources and engine choices: [dialogue](game/dialogue.md#meitou-design).
 - **Personality**: the save's `personality` when above 0, else an engine roll from the record's PERSONALITY tags (`Personality`).
 - **Engine choices**: a childless NPC line shows `[Leave]`; a reply leading to another reply offers it alone; number keys pick choices.
+- **Multiplayer follow-ups**: interrupts produced by attributed dialogue belong to the initiating player and faction. Other accounts, including same-faction members, cannot consume them; another faction of the same player cannot consume them either. Unattributed world-script and legacy interrupts retain their shared NPC scope. The recipient's pending icon is separate from actor-specific eligibility. **Verified** by `DialogueTests.Hints`; [network queries](networking.md#talk-hints) recheck current grants and visibility.
 - **State**: last use per line, permanent chance rolls, event counters, squad memory, interrupts and the open conversation are hashed, not
   saved (as the original, except the squad memory, which it saves on the platoon; the faction global trust and war flags it saves under `meitou` keys, [save](formats/save.md#faction-trust-war-flags-bed-rent-and-turrets)). Locks are on `CharacterCold.DialogueLocks`, hashed while set, saved as `lok*` (`DialogueSave`).
 

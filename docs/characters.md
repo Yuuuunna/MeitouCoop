@@ -297,11 +297,12 @@ exe decompile unless marked; Meitou: `CharacterDraft` (data), `EditCharacter` / 
 - **Keys**: `in editor` true while open; a mode 0 character without a body file is randomised on open (Meitou's start characters are already
   rolled). Closing in mode 0 also sets health from the CHARACTER's `starting health` (Meitou: a new race at creation gets a new body, which
   applies it; the edited look keeps stumps and prosthetics).
-- **Meitou validation** (`CharacterEditing.Apply`, `CharacterDraft.Sanitize`): player character with a person's look; creation only while
-  `PlayerState.InCreation` (new game until CONFIRM) and within the start's force races; surgery needs the surgeon alive within 60 units
-  (engine choice), the same race and gender, money > price, and takes the price. Head/hair/beard must be the race's, sliders and poses are
-  clamped to the limits, the name to 30 characters. **Verified** by a scratch round trip on save 2: edit, capture, load gives the edited
-  values with the original key set.
+- **Observed** (implementation, `CharacterEditing` / `CharacterEditSessions`; not multiplayer-runtime verified): in-play edits require a
+  server dialogue token bound to the issuer, character, NPC, edit kind, control grant and membership revision. Reopening or disconnecting invalidates it;
+  a successful token applies once. Surgery rechecks the living NPC within 60 units and keeps race/sex. Client `Paid` is ignored: the session records
+  dialogue payment; an unpaid server session derives the price from server content and debits the character's faction with `SpendFunds`.
+  Only server-defined editor controls are reconstructed onto the original appearance; hidden FCS fields are preserved. Names are limited to 30 characters.
+  Legacy new-game editing uses the local creation window and force races; attributed creation uses the durable server creation endpoint.
 
 ### Import and export
 
@@ -325,8 +326,9 @@ same line (val0), gated by `DC_PLAYERMONEY` (2) strictly greater. "plastic surge
 "bar plastic surgeon" / "plastic surgeon": Holy Nation, Empire Peasants, United Cities, Deadcat, Waystation, Bark, Sho-Battai...) 200;
 "doctor shop" (hospital squads' `dialog leader` package) 500; Doctor Chung (Mud Town) 200, no money check; Thieves Guild surgeon free
 behind `DC_FACTION_RANK`; Grey free for escaped slaves. Meitou: the surgeon is talked to; its line's DA 8 pays and DA 11 opens the editor in
-mode 1, already paid ([dialogue](game/dialogue.md#meitou-design)). An unpaid `EditCharacter` (no UI sends one) is checked against `SurgeonDialogues`:
-a line gated only by money or `DC_IS_RECRUITABLE`.
+mode 1, already paid ([dialogue](game/dialogue.md#meitou-design)), with a server-issued editor session. Direct client requests cannot
+claim payment or open an editor without the dialogue authorization. An unpaid trusted-host session derives its price from `SurgeonDialogues`.
+
 
 ## Open questions
 

@@ -288,8 +288,11 @@ through one helper (`FUN_1405c9a70(char, event, maxSqDist)`): **dropped when the
 
 Meitou (`CharacterSounds`, `AnimationSoundEvents`, `GroundSurfaces` in `Meitou.Audio`; `GameHost.AudioCharacters.cs`): characters within 1100 units of the eye get an object (dropped past 1400, or when they leave the snapshot);
 the host hands each character's place, facing, speed (horizontal distance between the last two snapshots over the tick) and animation layers (`AnimationLayer.Length` and `.Definition`, added to the snapshot) every frame.
-Combat facts come from `World.Sounds`, a display-only queue the host sets while audio runs (blocks, hits, shots, bolt hits and sticks, characters going down, fighters taking up a fight); nothing in the simulation reads it, so
-it is outside the state hash. Overlay tiles for the ground load on a worker (6 kept).
+Combat facts pass through `IPlayerSession`'s sound queue: local sessions delegate to `World.Sounds`, while
+remote sessions consume [authorized events](networking.md#private-results-and-transient-events). Producers
+use `World.EmitSound`; nothing in gameplay reads the queues, which remain outside the state hash.
+Velocity uses the tick gap between pose snapshots, rather than assuming every publication advances one tick.
+Overlay tiles for the ground load on a worker (6 kept).
 
 Building floors in Meitou (`BuildingFloors` in `Meitou.Rendering`, `FloorSurfaces.HighestBelow`, `CharacterSounds.Floor`, `GameHost.AudioFloors.cs`; display only, nothing reaches the simulation). For a moving character within the
 surface limit (120,000 squared; the exe has none for buildings, but footsteps sound only within 200 units), asked again after it moved a unit: the placed, undestroyed BUILDINGs of the zones within 400 units (X/Z of the building's

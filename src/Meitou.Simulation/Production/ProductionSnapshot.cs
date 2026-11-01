@@ -19,6 +19,7 @@ public readonly record struct FarmView(float Growth, float Death, int Harvested,
 /// </summary>
 public readonly record struct RichnessView(string Instance, int Resource, float Yield)
 {
+    public ulong SiteRevision { get; init; }
     /// <summary>A rock nobody has mined yet: its efficiency lines (a mined rock's and a mine's are its machine's, <see cref="MachineSnapshot.Efficiency"/>).</summary>
     public EfficiencyView? Efficiency { get; init; }
     /// <summary>A rock's owner faction: -1 (the original's <c>nofac</c>) until a player character has worked it, then the player's faction; -1 for a player's mine.</summary>
@@ -82,8 +83,15 @@ public readonly record struct FurnaceView(bool Burning, float Metal);
 /// <summary>A machine of a complete player building after a tick (docs/simulation.md "Production"); <see cref="Site"/> is the building's instance id.</summary>
 public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<MachineSlotView> Inputs, MachineSlotView? Output, InventoryView? Storage, FarmView? Farm, byte Status, int Operators, int MaxOperators)
 {
+    /// <summary>The current fixture/site owner's faction for revision-bound remote commands.</summary>
+    public int AuthorityFaction { get; init; } = -1;
     /// <summary>A container of a building's interior, open (<see cref="PlayerState.OpenContainer"/>): <see cref="Site"/> is its fixture id; no research, recipe or power.</summary>
     public bool IsContainer { get; init; }
+    public ulong ContainerSessionId { get; init; }
+    public CharacterId ContainerOpener { get; init; } = CharacterId.None;
+    public ulong StorageRevision { get; init; }
+    public ulong ControlRevision { get; init; }
+    public ulong SiteRevision { get; init; }
     /// <summary>The research bench's tech level (0 for other machines).</summary>
     public int TechLevel { get; init; }
     /// <summary>Characters can work it (a well, farm or research bench).</summary>
@@ -190,4 +198,7 @@ public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyLi
 public readonly record struct TownPower(float Generated, float Demand, float Charging, float Draining, float Charge, float Capacity);
 
 /// <summary>A player outpost as the town panel shows it (docs/game/ui-screens.md "Town panel").</summary>
-public sealed record OutpostSnapshot(int Number, string Name, System.Numerics.Vector3 Position, float Radius, int Owner, bool Public, TownPower Power);
+public sealed record OutpostSnapshot(int Number, string Name, System.Numerics.Vector3 Position, float Radius, int Owner, bool Public, TownPower Power)
+{
+    public ulong Revision { get; init; }
+}

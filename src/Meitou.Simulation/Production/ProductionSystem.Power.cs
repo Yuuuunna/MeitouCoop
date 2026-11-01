@@ -11,16 +11,16 @@ namespace Meitou.Simulation.Production;
 public sealed partial class ProductionSystem
 {
     /// <summary>Per town, whether batteries covered a shortfall last tick (the original's town <c>+0x470</c>, read the frame after it is set; not saved).</summary>
-    readonly Dictionary<int, bool> batteryMode = [];
-    readonly Dictionary<int, List<Machine>> grids = [];
+    readonly Dictionary<(int Town, int Owner), bool> batteryMode = [];
+    readonly Dictionary<(int Town, int Owner), List<Machine>> grids = [];
     /// <summary>Per town, whether its generators give power and its batteries can (the town object's <c>+0x474</c> and <c>+0x480</c> above 0 after <c>Town::vfunc_87</c>); what <see cref="HasPower"/> reads. Not saved.</summary>
-    readonly Dictionary<int, (bool Generators, bool Batteries)> townSupply = [];
+    readonly Dictionary<(int Town, int Owner), (bool Generators, bool Batteries)> townSupply = [];
     /// <summary>Per town, the grid's totals after the last tick (the town panel's power and battery bars, <see cref="TownPower"/>). Not saved.</summary>
-    readonly Dictionary<int, TownPower> townPower = [];
+    readonly Dictionary<(int Town, int Owner), TownPower> townPower = [];
 
-    float Rated(World world, Machine m) => m.Data.PowerOutput + world.Research.Upgrade(m.Data.Id).PowerIncrease;
+    float Rated(World world, Machine m) => m.Data.PowerOutput + ResearchFor(world, m).Upgrade(m.Data.Id).PowerIncrease;
     /// <summary>A battery's capacity now (<c>FUN_140297650</c>, <b>Verified</b>): the construction fraction x (capacity + research increase).</summary>
-    float Capacity(World world, Machine m) => m.Health * (m.Data.PowerCapacity + world.Research.Upgrade(m.Data.Id).CapacityIncrease);
+    float Capacity(World world, Machine m) => m.Health * (m.Data.PowerCapacity + ResearchFor(world, m).Upgrade(m.Data.Id).CapacityIncrease);
 
     /// <summary>Whether a generator has fuel: no fuel sections (wind), or something left in one.</summary>
     static bool Fueled(Machine m) => m.Inputs.Length == 0 || Array.Exists(m.Inputs, i => i.Level > 0 || i.Count > 0);
@@ -39,7 +39,7 @@ public sealed partial class ProductionSystem
 
     /// <summary>The player outposts with their grids' totals, for the town panel (docs/game/ui-screens.md "Town panel").</summary>
     public IReadOnlyList<OutpostSnapshot> OutpostView(World world) => world.Buildings.Towns.Count == 0 ? []
-        : [.. world.Buildings.Towns.Select(t => new OutpostSnapshot(t.Number, t.Name, t.Position, t.Radius, t.Owner, t.Public, townPower.GetValueOrDefault(t.Number)))];
+        : [.. world.Buildings.Towns.Select(t => new OutpostSnapshot(t.Number, t.Name, t.Position, t.Radius, t.Owner, t.Public, townPower.GetValueOrDefault(GridKey(world, t.Number, t.Owner))) { Revision = world.TownRevision(t) })];
 
     void PowerTick(World world, float dt)
     {
@@ -56,7 +56,7 @@ public sealed partial class ProductionSystem
                 m.Rain = !m.Indoors && world.Weather?.At(m.Position.X, m.Position.Z) is { Affect: not WeatherAffecting.Acid } here ? here.Wetness : 0;
             if (!m.Data.IsConsumer && !m.Data.IsGenerator && !m.Data.IsBattery) continue;
             if (Site(world, m.Site) is not { Complete: true } site) continue;
-            if (!grids.TryGetValue(site.Town, out var grid)) grids[site.Town] = grid = [];
+            if (!grids.TryGetValue(GridKey(world, site.Town, site.Owner), out var grid)) grids[GridKey(world, site.Town, site.Owner)] = grid = [];
             grid.Add(m);
         }
         foreach (var (town, grid) in grids)
@@ -72,7 +72,7 @@ public sealed partial class ProductionSystem
             var site = Site(world, m.Site);
             bool built = site is { Complete: true };
             m.Health = site is { Target: > 0 } s ? Math.Clamp(s.Progress / s.Target, 0, 1) : 1;
-            m.ProductionMult = world.Research.Upgrade(m.Data.Id).ProductionMult;
+            m.ProductionMult = ResearchFor(world, m).Upgrade(m.Data.Id).ProductionMult;
             m.Efficiency = built ? Efficiency(world, m) : 0;
             m.HasPower = built && HasPower(world, m, Site(world, m.Site)!.Town);
             m.Rotation = !built ? 0 : m.Data.IsGenerator ? (m.PowerOn ? Output(world, m) * 0.01f : 0) : m.Efficiency;
@@ -80,7 +80,7 @@ public sealed partial class ProductionSystem
             {
                 // The battery's word reads its town grid's flows, not its own (FUN_140300b40).
                 TownPower grid = default;
-                m.OnGrid = site is not null && townPower.TryGetValue(site.Town, out grid);
+                m.OnGrid = site is not null && townPower.TryGetValue(GridKey(world, site.Town, site.Owner), out grid);
                 m.GridCharging = grid.Charging > 0;
                 m.GridDraining = grid.Draining > 0;
             }
@@ -120,8 +120,9 @@ public sealed partial class ProductionSystem
     /// Whether a machine counts as powered for its sound emitter (<c>FUN_140299370</c>, <b>Observed</b>): a generator always (fuel and switch are not asked); a machine drawing nothing always; else
     /// it must be switched on and its town's generators give power, or its batteries do while the grid is in battery mode and the machine takes battery power.
     /// </summary>
-    bool HasPower(World world, Machine m, int town)
+    bool HasPower(World world, Machine m, int townNumber)
     {
+        var town = GridKey(world, townNumber, Site(world, m.Site)?.Owner ?? -1);
         if (m.Data.IsGenerator || Rated(world, m) == 0) return true;
         if (!m.PowerOn) return false;
         if (!townSupply.TryGetValue(town, out var supply)) return true;
@@ -133,7 +134,9 @@ public sealed partial class ProductionSystem
     /// left (<c>FUN_140927350</c> sorts); when batteries were in use last tick, consumers left short that get battery power share the batteries' output. With nothing left over the
     /// batteries drain by what was drawn; with a surplus they charge from it (each at most its rate) and the grid leaves battery mode.
     /// </summary>
-    void Share(World world, int town, List<Machine> grid, float dt)
+    static (int Town, int Owner) GridKey(World world, int town, int owner) => (town, world.Players.RequiresExplicitControl ? owner : -1);
+
+    void Share(World world, (int Town, int Owner) town, List<Machine> grid, float dt)
     {
         bool mode = batteryMode.GetValueOrDefault(town);
         float supply = 0, batteries = 0, demandTotal = 0;
@@ -234,6 +237,6 @@ public sealed partial class ProductionSystem
     /// The factor a machine's work is scaled by: its health, its power share (slot 109, which slot 150 <c>FUN_140298700</c> reads virtually) and its research production multiplier. A rain
     /// collector's slot 109 (<c>FUN_140298470</c>, <b>Verified</b>) is that times the rain strength, so it collects nothing while it does not rain.
     /// </summary>
-    float WorkFactor(World world, Machine m) => m.Health * m.Power * world.Research.Upgrade(m.Data.Id).ProductionMult
+    float WorkFactor(World world, Machine m) => m.Health * m.Power * ResearchFor(world, m).Upgrade(m.Data.Id).ProductionMult
         * (m.Data.Function == MachineData.RainCollectorFunction ? m.Rain : 1);
 }

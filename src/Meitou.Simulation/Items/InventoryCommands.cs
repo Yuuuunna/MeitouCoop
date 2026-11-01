@@ -5,7 +5,20 @@ namespace Meitou.Simulation.Items;
 /// <summary>Snapshot identity prevents a drag started before eating/looting from moving a different item.</summary>
 public sealed record InventoryItemToken(int Index, string Record, string Section, int X, int Y, int Quantity, float Quality);
 /// <summary>The inventory window's ARRANGE (<c>FUN_14070f740</c>): <see cref="InventoryCommands.Arrange"/> on the character's grids.</summary>
-public sealed record ArrangeInventory(CharacterId Character) : SimCommand;
+public sealed record ArrangeInventory(CharacterId Character) : InventoryCommand;
+
+/// <summary>A drag preview committed as one transaction; no item is removed while the client is dragging.</summary>
+public sealed record TransferInventoryItem(CharacterId From, CharacterId To, InventoryItemToken Item, int Count,
+    string Section, int X, int Y, bool Swap = false) : InventoryCommand
+{
+    public ulong TargetRevision { get; init; }
+}
+
+/// <summary>A request against a displayed inventory revision; attributed requests must provide that revision.</summary>
+public abstract record InventoryCommand : SimCommand
+{
+    public ulong InventoryRevision { get; init; }
+}
 
 public static class InventoryCommands
 {
@@ -92,6 +105,7 @@ public static class InventoryCommands
             return before - item.Quantity;
         }
         var unit = item.WithQuantity(count);
+        if (unit.MaxCharges > 0) unit.Charges = unit.MaxCharges; // the source keeps its partly used unit
         unit.Death = false;
         int moved = into.Add(unit) ? count : count - unit.Quantity;
         item.Quantity -= moved;
@@ -244,6 +258,7 @@ public static class InventoryCommands
             int at = owner.Items.IndexOf(item);
             if (at < 0) break;
             var unit = last ? item : item.WithQuantity(1);
+            if (!last && unit.MaxCharges > 0) unit.Charges = unit.MaxCharges;
             bool death = unit.Death;
             if (last) owner.Items.RemoveAt(at);
             unit.Death = false;

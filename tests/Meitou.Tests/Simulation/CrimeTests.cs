@@ -49,6 +49,20 @@ public class CrimeTests
     [InlineData((CrimeCode)17, 500)]
     public void The_crime_table_pays_the_games_amount_and_an_unknown_code_the_default(CrimeCode code, int amount) => Assert.Equal(amount, CrimeTable.Amount(code));
 
+    [Fact]
+    public void BeingPlayerControlledDoesNotExemptAnotherFactionFromAssaultOrLooting()
+    {
+        using var town = new Town();
+        var attacker = town.PlayerCharacter(Vector2.Zero);
+        var victim = town.PlayerCharacter(new Vector2(10, 0), "other player");
+        town.Cold(victim).Faction = Farmers;
+        town.Crime.Assault(town.World, attacker.Slot, victim.Slot);
+        Assert.Equal(CrimeCode.Assault, town.Cold(attacker).Pending!.Code);
+        Assert.True(CrimeSystem.IsLootTheft(town.Cold(attacker), town.Cold(victim)));
+        town.Cold(victim).Faction = Player;
+        Assert.False(CrimeSystem.IsLootTheft(town.Cold(attacker), town.Cold(victim)));
+    }
+
     // ------------------------------------------------------------------ worlds
 
     sealed class Town : IDisposable

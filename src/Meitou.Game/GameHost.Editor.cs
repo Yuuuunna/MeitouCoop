@@ -19,6 +19,7 @@ sealed partial class GameHost
     {
         if (popData is not { } data) return;
         ui.EditorData = (data.Db, install.Root);
+        if (!metalRenderer && !session.IsRemote) ui.OnlineInstall = install;
         ui.PreviewSource = (recordId, loadout) => data.Appearances?.Create(recordId, loadout);
         ui.PreviewReady = look => ActiveCharacters?.IsPrepared(look) ?? true;
         // The editor's looks are close-ups: their meshes without generated levels (CharacterContent.PrepareMesh), so a new hair or head shows at once, as in the original.
@@ -33,7 +34,7 @@ sealed partial class GameHost
         if (!squad.All(id => session.CurrentSnapshot.Characters.Any(c => c.Id == id))) return;
         pendingCreation = null;
         creationWarmOwed = true;
-        if (!player.OpenEditor(EditKind.Creation, squad)) session.World.Commands.Enqueue(new FinishCreation { Tick = session.World.Tick });
+        if (!player.OpenEditor(EditKind.Creation, squad)) LocalSession.World.Commands.Enqueue(new FinishCreation { Tick = LocalSession.World.Tick });
     }
 
     /// <summary>The world has not been warmed up yet: the new game's editor came first (see <see cref="CoveredFrame"/>).</summary>
@@ -50,11 +51,11 @@ sealed partial class GameHost
         if (gpu is null || metalRenderer)
         {
             // Metal has no Vulkan loading/warm loop here: the world was loaded and drawn under the editor already. Apply the edits at once.
-            session.World.RunTick();
+            LocalSession.World.RunTick();
             return;
         }
         if (loading is null) return;
-        session.World.RunTick();
+        LocalSession.World.RunTick();
         loading.Restart();
         loadingSteps = SceneSteps;
         BeginWarm();
@@ -82,10 +83,12 @@ sealed partial class GameHost
     {
         if (ActiveCharacters is not { } characters) return;
         editorStaged = true;
-        if (player.EditorView() is not { } view || session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == view.Character) is not { } c) { characters.StageRequest = null; return; }
+        if (player.EditorView() is not { } view) { characters.StageRequest = null; return; }
+        var c = session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == view.Character);
+        if (!player.OnlineEditor && c is null) { characters.StageRequest = null; return; }
         characters.StageRequest = new EditorStageRequest(DrawKey(view.Character), width, height, view.Yaw, view.Elevation, view.Distance, view.Head, camera.FieldOfView, EditorStageShift);
         characters.SetView(width, height, camera.FieldOfView);
-        characters.Update(DrawnPosition(c));
+        characters.Update(player.OnlineEditor ? Vector3.Zero : DrawnPosition(c!));
         characters.DrawStage();
         DrawEditorPlatform(view.Character, characters);
         characters.ResolveStage();

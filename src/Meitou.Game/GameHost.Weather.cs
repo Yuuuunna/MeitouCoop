@@ -2,6 +2,7 @@ using Meitou.Data.Particles;
 using Meitou.Data.World;
 using Meitou.Rendering;
 using Meitou.Simulation;
+using Meitou.Runtime;
 
 namespace Meitou.Game;
 
@@ -29,6 +30,10 @@ sealed partial class GameHost
     }
 
     HostWeather? hostWeather;
+    SimulationWeather? simulationWeather;
+    object? weatherShownWorld;
+    WeatherFrame? remoteWeatherFrame;
+    long weatherShownTick = -1;
 
     /// <summary>
     /// Once a frame, before the simulation's ticks: hands the weather to the world and collects the affecting units of the particle groups (units whose life is over do not act;
@@ -36,8 +41,34 @@ sealed partial class GameHost
     /// </summary>
     void UpdateWeatherSource()
     {
+        gpu.AuthorityEffects = session.WeatherEffects;
+        gpu.EffectContent = scene.Database;
+        gpu.EffectWorldIdentity = session.WorldIdentity;
+        if (session.IsRemote)
+        {
+            if (ActiveWeather is { } presentation && session.Weather is { } frame &&
+                (!ReferenceEquals(weatherShownWorld, session.WorldIdentity) || !ReferenceEquals(remoteWeatherFrame, frame)))
+            {
+                if (!ReferenceEquals(weatherShownWorld, session.WorldIdentity)) presentation.World.Snap();
+                presentation.AcceptRemoteAuthority(frame);
+                remoteWeatherFrame = frame; weatherShownWorld = session.WorldIdentity;
+            }
+            return;
+        }
+        simulationWeather = LocalSession.World.Systems.OfType<SimulationWeather>().FirstOrDefault();
+        if (simulationWeather is { } authority)
+        {
+            authority.Forced = hostWeather?.Forced;
+            if (ActiveWeather is { } view && (weatherShownWorld != LocalSession.World || weatherShownTick != LocalSession.World.Tick))
+            {
+                view.AcceptAuthority(authority.Schedule.World.Snapshot(), authority.Schedule.Time);
+                weatherShownWorld = LocalSession.World;
+                weatherShownTick = LocalSession.World.Tick;
+            }
+            return;
+        }
         hostWeather ??= new HostWeather(() => gpu.Weather);
-        session.World.Weather = hostWeather;
+        LocalSession.World.Weather = hostWeather;
         var zones = hostWeather.ZoneList;
         zones.Clear();
         if (gpu.Particles is not { } particles) return;

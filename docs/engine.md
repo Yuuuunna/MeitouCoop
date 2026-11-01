@@ -1,9 +1,9 @@
 # Engine architecture
 
-Projects: Core installation; Data clean-room readers/typed game data; Simulation headless world;
+Projects: Core installation; Data clean-room readers/typed game data; Simulation headless world; Runtime world ownership/CPU content/environment;
 Navigation own navmesh; Engine WorldSession/time/input/camera; Rendering Vulkan/content/streaming;
 Rendering.Display window/device/presenter; Game host/UI; ModelViewer debug world/atlas; Tools surveys.
-GPU and simulation ownership stay separate. [Simulation contracts](simulation.md),
+GPU and simulation ownership stay separate. [Simulation contracts](simulation.md), [authority/runtime contracts](multiplayer.md),
 [native renderer](renderer-native.md), [viewer controls](viewer.md).
 
 ## Loop, input and camera
@@ -14,6 +14,32 @@ WorldSession owns world, clocks, input/bindings, camera and last two snapshots. 
 angle rotation and cuts on mode changes. The authoritative time/order/determinism details are
 in simulation. Host copies camera state into WorldCamera and snapshots into CharacterDrawList. The next world tick runs on its own
 thread during the world draw ([simulation](simulation.md#tick-ahead)).
+
+`GameHost` holds an `IClientSession`, exposing control ticks, camera, clock and snapshots without a World.
+Simulation, save, warm-up and diagnostic paths explicitly require `LocalSession`. Building/turret/audio
+caches use the opaque session identity. Tick-ahead is available only to WorldSession; local modal pause
+remains distinct from speed zero. `PresentationTick` and `PresentationSeconds` follow the displayed timeline,
+including network snapshot gaps. The remote clock accumulates authoritative time changes rather than resetting animation seconds on
+every publication; local pause keys do not change the server clock. **Verified** by `TickAheadTests` and
+`SecureServerTests.PlayerSession`. Windows Vulkan `--connect <profile.json>` boots a RemotePlayerSession
+with static presentation content and no local World. Optional `--create-faction` uses the server's default
+start/appearance; `--role` selects a persistent role, and `--connection-check` validates admission without GPU.
+**Verified** by published Release account entry and an offscreen GPU/HUD capture (2026-10-31). Full connection
+menus, creation editing UI and complete interactive gameplay acceptance remain unfinished.
+Remote regional weather uses [authoritative presentation imports](networking.md#regional-weather); it neither
+advances a local schedule nor writes simulation weather. Local imports use the same no-roll presentation path.
+Both session types expose authoritative effect roots to the renderer; the local runtime caches detached roots
+until its next effect update. World identity changes clear cosmetic pools. Remote view withdrawal clears
+weather/effect access even between presentation frames. [Effect replication](networking.md#regional-weather).
+Blood, sparks and debris consume session events/timing; source-world replacement or withdrawal clears decals,
+pieces and transient particle bursts. Rotor motion reads session pause/speed. Ground-item limits and luckyren
+gameplay settings are applied only to local simulation owners; remote clients cannot set them through rendering.
+Remote display collection revisions combine server registry changes with the recipient's building/machine/item
+identity sets. A scope change invalidates rendering caches even while paused and without a registry mutation;
+unchanged baselines retain the revisions. Per-record authority stamps stay untouched. Withdrawal clears caches,
+and re-entry gets fresh display revisions. **Verified** by `SecureServerTests.Projection` over TLS.
+Covered host frames still ingest remote state with zero control time; loading readiness uses the authorized
+view instead of preparing local population. Local autosaves/news/profiling do not run against remote worlds.
 
 KenshiCamera follows pivot/boom/zoom/pitch/ground constraints from [camera](formats/camera.md).
 Engine choices: pivot500*clamp(boom/600,0.1,1), keys1.5rad/s, mouse0.005rad/pixel; terrain-ground
@@ -27,6 +53,31 @@ settings and current key list belong in viewer. Quicksave F5/loadF9; cinematic F
 GameHost partials own boot/interactive/offscreen, characters, saving, transitions, duel and battle;
 PlayerInterface owns picking/HUD/panels/commands. StandardSystems supplies order. NavAdapter
 bridges Navigation; never let UI/rendering duplicate simulation state.
+`PlayerInterface` consumes `IPlayerSession`: snapshots, commands, active-faction funds, camera/input,
+interaction queries and presentation events. It has no direct World/SimulationClock access.
+Faction names, directed relations, map colours/IDs, build faction IDs and faction information panels also
+come through the session. Local sessions use loaded definitions and legacy panel rules; remote sessions
+use [authorized faction views](networking.md#faction-presentation), including runtime player factions.
+`WorldSession` implements the local adapter; its opaque presentation identity changes after a successful
+world replacement. Missing balance permission displays an unavailable value, never another faction's funds.
+Remote capability flags hide/block local save/load/new-game/import actions and disable speed controls;
+modal pause requests belong to the session implementation, not a shared server clock.
+**Verified** by `PlayerSessionUiTests` against both installed UI modes using a presentation-only session,
+plus the existing UI interaction tests for local dragging, trading, menus and building actions.
+
+`RemotePlayerSession` adapts the [remote transport](networking.md) to `IPlayerSession` and
+`IWorldPresentation`, without a World. The main thread owns camera/input, immediate selection, faction
+choice, display clock and up to 64 pending commands. Submission freezes explicit actors and revisions;
+receipts/errors are delivered on that thread, with no automatic retry. Position interpolation stops at the
+latest server pose. Previous rendering snapshots retain only old poses for currently visible entities,
+using current private details. View withdrawal/disconnection clears both snapshots and faction funds.
+**Verified** by `SecureServerTests.PlayerSession` using real TLS connections and PlayerInterface inputs.
+Private [results, notices and presentation events](networking.md#private-results-and-transient-events) reach the existing
+presentation interface. [Talk hints](networking.md#talk-hints) use nonblocking queries and defer clicks while
+eligibility is unknown. Character audio consumes the session sound queue; remote previous snapshots retain
+their pose tick for correct velocity across publication gaps. Host wiring and remote creation/editor UI
+remain pending. These tests do not establish
+full multiplayer UI or rendering acceptance.
 GUI executable attaches a caller's console; folder prompt creates its own when necessary.
 Native splash precedes Vulkan; worker loading and render-thread GPU steps keep the window
 responsive. On Wayland the window is shown and its first configure taken before the first loading frame is presented: a buffer attached before the shell role makes the compositor drop the client (**Verified** natively on KDE Wayland, GLFW 3.4). Full screen at start shows the window before going full screen there: GLFW ignores showing a full-screen window, and on Wayland (unlike X11) going full screen while hidden never maps it (**Verified** KDE Plasma, GLFW 3.4, PR #77). Scene transitions draw loading between stages, wait on asynchronous results, and

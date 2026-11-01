@@ -224,7 +224,7 @@ public sealed partial class FirstAidSystem
         // Nor while it carries someone (the goal's 0.1 then): the carrying goal (a kidnap, a rescue) keeps it, so a carrier does not walk off after a patient with the body.
         if (!cold.IsPlayer && !cold.Carrying.IsNone) return (-1, 0);
         bool organic = cold.Inventory is { } inv && Best(inv, ItemInfo.FirstAidKitFunction) is not null, robotic = cold.Inventory is { } inv2 && Best(inv2, ItemInfo.RobotKitFunction) is not null;
-        bool healAllies = (world.Player.SquadAi & SquadAi.Heal) != 0;
+        bool healAllies = (world.SquadOptions(cold) & SquadAi.Heal) != 0;
         bool heals = Relations is { } rel && rel.Contains(cold.Faction) && rel.Factions[cold.Faction].HealsStrangers;
         float range = AggroSystem.RangeOf(cold, AggroSystem.OutdoorSight), range2 = range * range;
         var origin = next[i].Position;   // the range gate first in both passes: it is the cheapest test and drops nearly every character of the big save before the path, ally and enemy tests
@@ -409,7 +409,7 @@ public sealed partial class FirstAidSystem
     }
 
     /// <summary>Starts a job's treatment of <paramref name="patient"/>, going back afterwards to what the medic did before its job.</summary>
-    static bool StartJob(World world, int i, int patient, List<(int Medic, int Patient)> taken, bool splint)
+    bool StartJob(World world, int i, int patient, List<(int Medic, int Patient)> taken, bool splint)
     {
         var next = world.Characters.Next;
         var cold = world.Characters.Cold(i)!;

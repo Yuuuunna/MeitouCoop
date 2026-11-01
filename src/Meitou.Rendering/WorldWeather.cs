@@ -25,9 +25,27 @@ public sealed class WorldWeather
     readonly Meitou.Data.GameDatabase? database;
     readonly Dictionary<WeatherDef, IReadOnlyList<Meitou.Data.Particles.WeatherEffectEntry>> effectLists = new(ReferenceEqualityComparer.Instance);
 
-    public WorldWeather(WeatherWorld world, Meitou.Data.GameDatabase? database = null) => (World, this.database) = (world, database);
+    public WorldWeather(WeatherWorld world, Meitou.Data.GameDatabase? database = null) => (World, Schedule, this.database) = (world, new WeatherSchedule(world), database);
 
     public WeatherWorld World { get; }
+    public WeatherSchedule Schedule { get; }
+    bool hasAuthority;
+    bool remoteAuthority, remoteEnabled;
+
+    /// <summary>Copies the simulation's regional schedules. Camera drawing never advances the authoritative source.</summary>
+    public void AcceptAuthority(IReadOnlyList<WeatherRegionSnapshot> regions, WeatherTime time)
+    {
+        Schedule.AcceptPresentation(new(time, regions));
+        if (remoteAuthority) { World.ForceWeather((WeatherDef?)null); remoteAuthority = false; }
+        hasAuthority = true;
+    }
+    public void AcceptRemoteAuthority(WeatherFrame frame)
+    {
+        Schedule.AcceptPresentation(frame);
+        bool snap = !remoteAuthority || remoteEnabled != frame.Enabled;
+        World.ForceWeather(frame.Enabled ? null : World.Data.Default, snap: snap);
+        hasAuthority = remoteAuthority = true; remoteEnabled = frame.Enabled;
+    }
     /// <summary>The state of the last <see cref="Update"/>.</summary>
     public WeatherState State => World.Current;
     /// <summary>The frame times of the last update (the sky's cloud drift steps by <see cref="FrameTimes.Game"/>).</summary>
@@ -55,19 +73,15 @@ public sealed class WorldWeather
         clock.Restart();
         var times = FrameTimes.FromClock(real, GameSpeed, Paused);
         Times = times;
-        var now = new WeatherTime(Day, hour);
+        var now = hasAuthority ? Schedule.Time : new WeatherTime(Day, hour);
         // The schedule runs from the world's creation (day 0, 00:00; the seasons count from there, as `meitou-tools weather --days 0 ..` prints them) in game minutes, so a
         // start at --day 50 or a jump forward (the step keys, the time slider) passes through every change before it; a jump of more than an hour then snaps everything.
         double from = last?.Minutes ?? 0;
-        for (double m = Math.Floor(from) + 1; m <= now.Minutes; m++)
-        {
-            var t = WeatherTime.FromHours(m / 60);
-            foreach (var region in World.Regions) region.Update(t);
-        }
+        if (!hasAuthority) Schedule.Advance(now);
         // The clock moved back (the viewer's time slider or its camera keys set the hour, not the day): nothing to replay, the sky and fog snap as for a long jump.
         if (now.Minutes - from > 60 || (last is not null && now.Minutes < from)) { World.Snap(); times = default; }
         last = now;
-        var state = World.Update(eye, now, times, sunHeight);
+        var state = World.Update(eye, now, times, sunHeight, updateRegions: false);
         LogChange(state);
         return state;
     }
@@ -80,13 +94,7 @@ public sealed class WorldWeather
     {
         Day = day;
         var now = new WeatherTime(day, hour);
-        double from = last?.Minutes ?? 0;
-        for (double m = Math.Floor(from) + 1; m <= now.Minutes; m++)
-        {
-            var t = WeatherTime.FromHours(m / 60);
-            foreach (var region in World.Regions) region.Update(t);
-        }
-        World.Restore(regions, now);
+        Schedule.Restore(regions, now);
         last = now;
     }
 
@@ -107,6 +115,7 @@ public sealed class WorldWeather
     /// </summary>
     public string Choose(int entry)
     {
+        if (remoteAuthority) return "The server controls the weather.";
         World.ForceWeather((WeatherDef?)null, snap: true);
         if (Here is not { } region) return "No weather region at the camera yet.";
         string before = region.Weather.Name;
@@ -122,7 +131,7 @@ public sealed class WorldWeather
         var s = State;
         sky.SkyColourMultiplierInput = s.SkyColourMultiplier;
         sky.CloudDensityInput = s.CloudDensity;
-        sky.CloudWind = CloudWindOverride ?? s.CloudDrift;
+        sky.CloudWind = remoteAuthority ? s.CloudDrift : CloudWindOverride ?? s.CloudDrift;
         sky.FogInput = (s.FogEnabled, s.FogColour, s.FogDistance);
     }
 

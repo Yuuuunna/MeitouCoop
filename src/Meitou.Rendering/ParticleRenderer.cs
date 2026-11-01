@@ -15,7 +15,7 @@ namespace Meitou.Rendering;
 /// (docs/formats/fogfeatures.md). The effects' fog volumes (the twisters' dust balls) are handed to <see cref="FogVolumes"/> (<see cref="CollectFogVolumes"/>).
 /// Nothing is recorded while no unit has a particle, so a clear weather with no placer in sight draws exactly what it did.
 /// </summary>
-public sealed unsafe class ParticleRenderer : IDisposable
+public sealed unsafe partial class ParticleRenderer : IDisposable
 {
     const string Vertex = """
         #version 330 core
@@ -145,10 +145,10 @@ public sealed unsafe class ParticleRenderer : IDisposable
     /// <summary>The last frame's simulation time (summed over its threads' work: the wall time of the background task) and how long the main thread waited for it, in milliseconds.</summary>
     public double SimulationMilliseconds => simulationTicks * 1000.0 / Stopwatch.Frequency;
     public double WaitMilliseconds => waitTicks * 1000.0 / Stopwatch.Frequency;
-    public int ParticleCount { get { Sync(); return weatherGroups.Groups.Concat(placerGroups).Sum(g => g.ParticleCount); } }
+    public int ParticleCount { get { Sync(); return AllGroups.Sum(g => g.ParticleCount); } }
     /// <summary>The weather's groups (not the map placers').</summary>
-    public IReadOnlyList<EffectGroup> Groups => weatherGroups.Groups;
-    public IReadOnlyList<EffectGroup> PlacerGroups => placerGroups;
+    public IReadOnlyList<EffectGroup> Groups => weatherGroups.Groups.Where(ShowLocal).Concat(presented.Groups.Where(g => g.Entry is not null)).ToArray();
+    public IReadOnlyList<EffectGroup> PlacerGroups => placerGroups.Where(ShowLocal).Concat(presented.Groups.Where(g => g.Entry is null)).ToArray();
     /// <summary>The entries of the weather's effect list that have no group (a type that is not a weather effect, or an unknown particle system).</summary>
     public IReadOnlyList<WeatherEffectEntry> Skipped => weatherGroups.Skipped;
 
@@ -171,6 +171,7 @@ public sealed unsafe class ParticleRenderer : IDisposable
         this.texturesDirectory = texturesDirectory;
         Library = library;
         weatherGroups = new WeatherGroups(library, World);
+        presented = new PresentedEffectSet(library, World);
         program = LegacyProgram.Create(gpu, Vertex, Fragment, "particles");
         segment = new NativeSegment(gpu, program, PrimitiveType.TriangleStrip, "particles");
         viewProjection = program.Uniform("uViewProjection");
@@ -208,7 +209,7 @@ public sealed unsafe class ParticleRenderer : IDisposable
     /// ready, the old weather's particles being drawn until then; the very first groups are made at the next <see cref="Update"/>. An entry whose type is not a
     /// weather effect (NONE) or whose particle system is unknown is skipped.
     /// </summary>
-    public void SetWeather(WeatherEffectInput weather) => weatherGroups.Want(weather, Now());
+    public void SetWeather(WeatherEffectInput weather) => weatherGroups.Want(FilterWeather(weather), Now());
 
     static double Now() => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
@@ -221,6 +222,7 @@ public sealed unsafe class ParticleRenderer : IDisposable
         toWarm.RemoveAll(placerGroups.Contains);
         placerGroups.Clear();
         placerGroups.AddRange(MapEffectPlacers.Groups(placements, Library, World, Seed));
+        mapPlacerGroups.Clear(); mapPlacerGroups.UnionWith(placerGroups);
         toWarm.AddRange(placerGroups);
         placerGroups.AddRange(bursts.Values);
         foreach (var groups in buildingEffects.Values) placerGroups.AddRange(groups);
@@ -271,6 +273,13 @@ public sealed unsafe class ParticleRenderer : IDisposable
         toWarm.RemoveAll(old.Contains);
     }
 
+    /// <summary>Removes transient units when their world is replaced or its view is withdrawn.</summary>
+    public void ClearBursts()
+    {
+        Sync();
+        foreach (var group in bursts.Values) group.Clear();
+    }
+
     /// <summary>
     /// Fires the particle system <paramref name="system"/> once at <paramref name="position"/>, its emitters turned by <paramref name="orientation"/>, emitting for
     /// <paramref name="seconds"/> of the frame clock, the particles <paramref name="size"/> times as big and <paramref name="lifeScale"/> times as long-lived
@@ -314,7 +323,7 @@ public sealed unsafe class ParticleRenderer : IDisposable
     {
         into.Clear();
         if (!Enabled) return;
-        foreach (var g in weatherGroups.Groups.Concat(placerGroups))
+        foreach (var g in AllGroups)
             foreach (var u in g.Units)
             {
                 if (u.Effect.FogVolumes.Count == 0) continue;
@@ -351,18 +360,17 @@ public sealed unsafe class ParticleRenderer : IDisposable
             PreloadTextures(preloaded);   // decoded on a worker while the groups are warmed
         }
         DropStalePreloads();
-        if (weatherGroups.Groups.Count == 0 && placerGroups.Count == 0) { lastSeconds = seconds; return; }
+        if (!AllGroups.Any()) { lastSeconds = seconds; return; }
         float dt = double.IsNaN(lastSeconds) ? 0 : (float)Math.Clamp(seconds - lastSeconds, 0, 0.25);
         lastSeconds = seconds;
         var input = weatherGroups.Input;
         if (toWarm.Count > 0)
         {
-            foreach (var g in toWarm.ToArray())
+            foreach (var g in toWarm.Where(ShowLocal).ToArray())
                 g.Prewarm(PrewarmSeconds ?? Math.Min(ParticleSimulation.LongestLife(g.System), MaxAutoPrewarm), view, input);
             toWarm.Clear();
         }
-        foreach (var g in weatherGroups.Groups) g.Update(dt, view, input);
-        foreach (var g in placerGroups) g.Update(dt, view, input);
+        foreach (var g in AllGroups) g.Update(dt, view, input);
         StartSimulation();
     }
 
@@ -372,7 +380,7 @@ public sealed unsafe class ParticleRenderer : IDisposable
     {
         var work = new List<EffectUnit>();
         activeUnits = 0;
-        foreach (var g in weatherGroups.Groups.Concat(placerGroups))
+        foreach (var g in AllGroups)
             foreach (var u in g.Units)
             {
                 if (!u.Active) continue;
@@ -394,7 +402,7 @@ public sealed unsafe class ParticleRenderer : IDisposable
     {
         Sync();
         int n = 0;
-        foreach (var g in weatherGroups.Groups.Concat(placerGroups))
+        foreach (var g in AllGroups)
             foreach (var u in g.Units)
             {
                 if (g is CameraEffectGroup) continue;
@@ -479,13 +487,13 @@ public sealed unsafe class ParticleRenderer : IDisposable
         drawnParticles = 0;
         drawnUnits = 0;
         coveragePending = false;
-        if (!Enabled || (weatherGroups.Groups.Count == 0 && placerGroups.Count == 0)) return;
+        if (!Enabled || !AllGroups.Any()) return;
         draws.Clear();
         var frame = gpu.Frame;
         var forward = -new Vector3(view.M13, view.M23, view.M33);   // the view's -Z axis in the world
         var planes = WorldCamera.FrustumPlanes(viewProjectionMatrix);
         var units = new List<EffectUnit>();
-        foreach (var g in weatherGroups.Groups.Concat(placerGroups))
+        foreach (var g in AllGroups)
             foreach (var u in g.Units)
             {
                 if (!WeatherParticles && g.Entry is not null) continue;

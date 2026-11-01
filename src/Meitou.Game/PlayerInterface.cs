@@ -14,7 +14,7 @@ namespace Meitou.Game;
 /// Positions are framebuffer pixels, top-left origin. The host sets <see cref="ViewProjection"/>, <see cref="Eye"/>, <see cref="Width"/>
 /// and <see cref="Height"/> each frame (events arrive on the same thread, between frames).
 /// </summary>
-sealed partial class PlayerInterface(WorldSession session, Func<float, float, float> ground, Func<CharacterSnapshot, Vector3> where)
+sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, float> ground, Func<CharacterSnapshot, Vector3> where)
 {
     public Matrix4x4 ViewProjection = Matrix4x4.Identity;
     public Vector3 Eye;
@@ -55,24 +55,27 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
 
     void Say(SimCommand command)
     {
+        pendingTalk = null;
+        command = PrepareFixtureIntent(command);
         SoundForCommand(command);
-        session.World.Commands.Enqueue(command);
+        session.Submit(command);
     }
 
     public void Select(IReadOnlyList<CharacterId> ids, bool additive)
     {
         if (ids.Count > 0) SetBuilding(null);   // selecting a character ends the building's selection
-        Say(new SelectCommand(ids, additive) { Tick = session.World.Tick });
+        Say(new SelectCommand(ids, additive) { Tick = session.CommandTick });
     }
 
     public void Move(Vector3 target, bool queued) =>
-        Say(new MoveOrder([], target) { Tick = session.World.Tick, Queued = queued });
+        Say(new MoveOrder([], target) { Tick = session.CommandTick, Queued = queued });
 
     // ---- events ----
 
     /// <summary>Returns true when the click belonged to the HUD or the interface (the camera input should not see it).</summary>
     public bool MouseDown(MouseButton button, Vector2 p, bool shift, bool ctrl = false, bool alt = false)
     {
+        pendingTalk = null;
         mouse = p;
         (pressShift, pressCtrl) = (shift, ctrl);
         HideTooltip();   // a press captures the mouse, which hides a tooltip (MyGUI)
@@ -102,11 +105,11 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
             // character carries it. A plain right click on one of your own downed characters that needs no first aid picks it up too (the original's quick right click).
             var downed = alt || ctrl ? PickDowned(p) : null;
             if (alt && downed is { } loot && SelectedIds() is { Count: > 0 })
-                Say(new Meitou.Simulation.Carrying.LootOrder([], loot) { Tick = session.World.Tick });
+                Say(new Meitou.Simulation.Carrying.LootOrder([], loot) { Tick = session.CommandTick });
             else if (ctrl && downed is { } body && Selected().Where(c => c.Carrying == body).Select(c => c.Id).ToArray() is { Length: > 0 } carriers)
-                Say(new Meitou.Simulation.Carrying.PutDownOrder(carriers) { Tick = session.World.Tick });
+                Say(new Meitou.Simulation.Carrying.PutDownOrder(carriers) { Tick = session.CommandTick });
             else if (ctrl && downed is { } lift && SelectedIds() is { Count: > 0 })
-                Say(new Meitou.Simulation.Carrying.PickUpOrder([], lift) { Tick = session.World.Tick });
+                Say(new Meitou.Simulation.Carrying.PickUpOrder([], lift) { Tick = session.CommandTick });
             // Else the nearest target along the ray (PickAt). On a character: the quick order (trade with a trader, attack anyone else, treat a hurt ally, pick up a downed one of yours,
             // loot anyone else's) is given when the button comes up before the context menu's hold time; held longer, the menu opens instead (PlayerInterface.ContextMenu.cs).
             else if (PickAt(p).Kind is var kind && kind == Picked.Character) { var quick = QuickOrder(p)?.Do; if (!ContextPress(p, quick)) quick?.Invoke(); }
@@ -121,7 +124,7 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
             {
                 Move(hit, shift);
                 PlaceMarker(hit);
-                (steering, steerTarget, steerTick) = (!shift, hit, session.World.Tick);
+                (steering, steerTarget, steerTick) = (!shift, hit, session.CommandTick);
             }
             return true;
         }
@@ -140,7 +143,7 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
     }
 
     /// <summary>The talk pointer: <c>s_talk</c> while the character holds a line for the player (Dialogue <c>playerInterruptionDialog</c> +0xc8, <c>FUN_1407fb410</c>), else <c>talk</c>.</summary>
-    string TalkPointer(CharacterSnapshot c) => session.World.WantsToTalk(c.Id) ? "s_talk" : "talk";
+    string TalkPointer(CharacterSnapshot c) => session.WantsToTalk(c.Id) ? "s_talk" : "talk";
 
     /// <summary>
     /// The quick right click on <paramref name="c"/> (<c>FUN_1407fb410</c>, docs/game/ui-input.md "Quick right click"). The lead is the selected character nearest to it (with nothing selected the
@@ -150,7 +153,7 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
     /// (<c>search</c> pointer for a bandit, slave or not-real faction, else <c>scavenge</c>); standing and the lead sneaking, pick the shackles of a prisoner, loot a slave, else stealth KO; else talk
     /// when it has something to say (a trader trades), otherwise nothing (<c>green</c> pointer when allied to the lead).
     /// </summary>
-    (string Pointer, CharacterId Target, Action? Do)? QuickOrderFor(CharacterSnapshot c, IReadOnlyList<CharacterId> selection)
+    internal (string Pointer, CharacterId Target, Action? Do)? QuickOrderFor(CharacterSnapshot c, IReadOnlyList<CharacterId> selection)
     {
         var characters = session.CurrentSnapshot.Characters;
         CharacterSnapshot? lead = null;
@@ -162,8 +165,7 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
             if (d < nearest) (lead, nearest) = (o, d);
         }
         if (lead is null) return null;
-        var world = session.World;
-        long tick = world.Tick;
+        long tick = session.CommandTick;
         bool give = selection.Count > 0;
         Action? Do(Action a) => give ? a : null;
         bool carried = !c.CarriedBy.IsNone;
@@ -191,7 +193,12 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
             if (sneaking)
                 return c.Slave is { State: 1 } ? ("scavenge", id, loot) : ("knockout", id, Do(() => Say(new Meitou.Simulation.Carrying.StealthKoOrder([lead.Id], id) { Tick = tick })));
             if (c.Prison is not null) return ("search", id, loot);
-            if (c.InCombat || !(c.WarParty || c.Slave is { State: 1 }) || !world.CanTalk(id, lead.Id))
+            bool talkCandidate = !c.InCombat && (c.WarParty || c.Slave is { State: 1 } || session.WantsToTalk(id));
+            bool canTalk = talkCandidate && session.CanTalk(id, lead.Id);
+            if (talkCandidate && session.TalkHintPending(id, lead.Id))
+                return ("talk", id, Do(() => WaitForTalkHint(c, lead.Id, selection, quick: true)));
+            if (talkCandidate && !canTalk && session.WantsToTalk(id)) return (TalkPointer(c), id, null);
+            if (!canTalk)
             {
                 // Fighting back at someone attacking the squad is defence, not an assault on its faction.
                 bool defence = c.FightsPlayer;
@@ -211,7 +218,8 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
             return c.Slave is { State: 1 } ? ("scavenge", id, loot) : ("knockout", id, Do(() => Say(new Meitou.Simulation.Carrying.StealthKoOrder([lead.Id], id) { Tick = tick })));
         }
         // Order 12 (Task_PlayerTalkto) walks over and starts the conversation, a trader's included: its trade window is a reply of that conversation (DA_TRADE).
-        if (world.CanTalk(id, lead.Id)) return (TalkPointer(c), id, Do(() => Say(new Meitou.Simulation.Dialogue.TalkOrder(lead.Id, id) { Tick = tick })));
+        if (session.CanTalk(id, lead.Id)) return (TalkPointer(c), id, Do(() => RequestTalk(lead.Id, id)));
+        if (session.TalkHintPending(id, lead.Id)) return ("talk", id, Do(() => WaitForTalkHint(c, lead.Id, selection, quick: true)));
         if (c.IsTrader) return ("talk", id, Do(() => Say(new Meitou.Simulation.Trading.OpenTrade(lead.Id, id) { Tick = tick })));   // engine: a shop whose keeper has no line to say
         return AlliedFaction?.Invoke(c.Faction) == true ? ("green", id, null) : null;
     }
@@ -271,7 +279,7 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
     void Inspect(CharacterId target)
     {
         if (!target.IsNone) SetBuilding(null);
-        Say(new InspectCommand(target) { Tick = session.World.Tick });
+        Say(new InspectCommand(target) { Tick = session.CommandTick });
     }
 
     /// <summary>
@@ -281,6 +289,7 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
     /// </summary>
     public void Steer(bool final = false)
     {
+        PollPendingTalk();
         UpdateContextMenu();
         UpdateFactionName();
         UpdateTownName();
@@ -290,10 +299,10 @@ sealed partial class PlayerInterface(WorldSession session, Func<float, float, fl
         if (!steering || OverHud(mouse)) return;
         if (Ray(mouse) is not { } ray || MoveHit(ray.Origin, ray.Direction) is not { } hit) return;
         PlaceMarker(hit);   // the marker follows the cursor every frame; the order only once a tick
-        if (!final && session.World.Tick == steerTick) return;
-        if (final && session.World.Tick == steerTick && hit == steerTarget) return;
+        if (!final && session.CommandTick == steerTick) return;
+        if (final && session.CommandTick == steerTick && hit == steerTarget) return;
         Move(hit, queued: false);
-        (steerTarget, steerTick) = (hit, session.World.Tick);
+        (steerTarget, steerTick) = (hit, session.CommandTick);
     }
 
     /// <summary>The character the strategy camera follows (a double tap of its number key, F, or a double click on its squad button); panning the camera lets go.</summary>

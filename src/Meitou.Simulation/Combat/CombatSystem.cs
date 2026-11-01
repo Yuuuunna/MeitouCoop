@@ -173,26 +173,26 @@ public sealed partial class CombatSystem : ITickSystem, IStateHashed
                 case AttackOrder order:
                 {
                     // The order itself changes no relation (the original's relation events come from the blows, Deeds); an attack that is not self-defence is an assault.
-                    foreach (var id in order.Attackers)
+                    foreach (var id in command.Issuer is null ? order.Attackers : world.CommandCharacters(order, order.Attackers))
                         if (Engage(world, table, id, order.Target, now, order.Picked) && !order.Defensive && Crimes is { } crimes && table.TryResolveNext(order.Target, out int victimSlot))
                             crimes.Assault(world, id.Slot, victimSlot);
                     break;
                 }
                 case ShootAtOrder shoot:
-                    foreach (var id in shoot.Gunners.Count > 0 ? shoot.Gunners : world.Player.Selection.ToArray())
+                    foreach (var id in world.CommandCharacters(shoot, shoot.Gunners))
                         if (table.TryResolveNext(id, out int g) && table.Cold(g) is { IsPlayer: true, Gunning: not null } gunner && table.TryResolveNext(shoot.Target, out int victim) && victim != g
                             && table.Cold(victim) is { Medical.Dead: false }) gunner.TurretTarget = shoot.Target;
                     break;
                 case StopCommand stop:
-                    foreach (var id in stop.Characters) Disengage(table, id);
+                    foreach (var id in command.Issuer is null ? stop.Characters : world.CommandCharacters(stop, stop.Characters)) Disengage(table, id);
                     break;
                 // A move or follow order replaces the fight (the original's new task drops the fight task, and a new movement goal clears the stance): the runner
                 // neither swings at a chaser that comes into reach nor defends; its weapon stays out until it idles (docs/game/combat.md "Fight lifecycle and orders").
                 case MoveOrder move:
-                    foreach (var id in move.Characters.Count > 0 ? move.Characters : world.Player.Selection.ToArray()) LeaveFight(table, id);
+                    foreach (var id in world.CommandCharacters(move, move.Characters)) LeaveFight(table, id);
                     break;
                 case FollowOrder follow:
-                    foreach (var id in follow.Characters.Count > 0 ? follow.Characters : world.Player.Selection.ToArray())
+                    foreach (var id in world.CommandCharacters(follow, follow.Characters))
                         if (id != follow.Target) LeaveFight(table, id);
                     break;
             }

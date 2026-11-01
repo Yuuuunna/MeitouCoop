@@ -77,7 +77,7 @@ sealed partial class PlayerInterface
     void BindFormation(UiBindings b)
     {
         if (formationComboPlace is null) return;
-        int current = SquadAiKeys.FormationOf(session.World, session.World.Player.Faction, null);
+        int current = session.Formation;
         b.Lists[FormationCombo] = [.. FormationItems.Select(f => new UiListItem(((int)f.Formation).ToString(CultureInfo.InvariantCulture), Loc.Tr(f.Caption)))];
         b.SelectedItems[FormationCombo] = Array.FindIndex(FormationItems, f => (int)f.Formation == current);
     }
@@ -89,7 +89,7 @@ sealed partial class PlayerInterface
     void OrderOrJob(Meitou.Data.Gameplay.Ai.TaskType ordered, CharacterId target, Action order)
     {
         if (SlowModifier && Meitou.Simulation.Production.PermaJobs.JobOf(ordered) is not null)
-            Say(new Meitou.Simulation.Production.AddOrderJob(SelectedIds(), ordered, target) { Tick = session.World.Tick });
+            Say(new Meitou.Simulation.Production.AddOrderJob(SelectedIds(), ordered, target) { Tick = session.CommandTick });
         else order();
     }
 
@@ -113,11 +113,11 @@ sealed partial class PlayerInterface
         if (e.Widget == FormationCombo && e.Action == "select")
         {
             if (int.TryParse(e.Text, CultureInfo.InvariantCulture, out int formation) && Enum.IsDefined((SquadFormation)formation))
-                Say(new SquadFormationCommand((SquadFormation)formation) { Tick = session.World.Tick });
+                Say(new SquadFormationCommand((SquadFormation)formation) { Faction = session.ActiveFaction, Tick = session.CommandTick });
             return;
         }
         if (!e.Action.StartsWith("ai-option:", StringComparison.Ordinal) || !int.TryParse(e.Action.AsSpan(10), CultureInfo.InvariantCulture, out int i) || (uint)i >= (uint)AiOptionRows.Length) return;
         var option = AiOptionRows[i].Option;
-        Say(new SquadAiCommand(option, (session.CurrentSnapshot.SquadAi & option) == 0) { Tick = session.World.Tick });
+        Say(new SquadAiCommand(option, (session.CurrentSnapshot.SquadAi & option) == 0) { Tick = session.CommandTick });
     }
 }

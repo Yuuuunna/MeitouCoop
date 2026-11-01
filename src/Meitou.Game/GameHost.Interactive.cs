@@ -118,11 +118,11 @@ sealed partial class GameHost
                     Text: v => v <= 0 ? "Unlimited" : $"{v:0} fps"), config)
             {
                 UpscalerStatus = () => gpu.Post?.ActiveUpscaler ?? "Off",
-                AttackSlotsChanged = slots => { foreach (var combat in session.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.AttackSlots = slots; },
-                LateDefencesChanged = on => { foreach (var combat in session.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on; },
-                GunnerFacingChanged = on => { foreach (var combat in session.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.GunnerFacesBarrel = on; },
-                PunchReachChanged = on => { foreach (var combat in session.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.PunchReachFix = on; },
-                DoorsCloseChanged = on => { foreach (var locks in session.World.Systems.OfType<Meitou.Simulation.Locks.LockSystem>()) locks.DoorsCloseBehind = on; },
+                AttackSlotsChanged = slots => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.AttackSlots = slots; },
+                LateDefencesChanged = on => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on; },
+                GunnerFacingChanged = on => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.GunnerFacesBarrel = on; },
+                PunchReachChanged = on => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.PunchReachFix = on; },
+                DoorsCloseChanged = on => { foreach (var locks in LocalSystems.OfType<Meitou.Simulation.Locks.LockSystem>()) locks.DoorsCloseBehind = on; },
                 AudioChanged = AudioSettingsChanged,
                 GameplayChanged = ApplyGameplay,
                 SkinRaceList = scene.Database is { } raceDb ? CharacterRenderer.PersonRaces(raceDb) : [],
@@ -132,9 +132,9 @@ sealed partial class GameHost
                 ResetTutorials = () => tutorials?.Reset(),
                 OffscreenChanged = () =>
                 {
-                    foreach (var population in session.World.Systems.OfType<Meitou.Simulation.PopulationSystem>())
+                    foreach (var population in LocalSystems.OfType<Meitou.Simulation.PopulationSystem>())
                         (population.KeepRoamers, population.OffscreenFights, population.OffscreenHealing, population.CampaignAncestorsOnce, population.KeepWild, population.ResidentSchedule) = (config.KeepRoamers, config.OffscreenFights, config.OffscreenHealing, config.CampaignAncestorsOnce, config.KeepWild, config.ResidentSchedule);
-                    foreach (var production in session.World.Systems.OfType<Meitou.Simulation.Production.ProductionSystem>()) production.UnloadedProduction = config.UnloadedProduction;
+                    foreach (var production in LocalSystems.OfType<Meitou.Simulation.Production.ProductionSystem>()) production.UnloadedProduction = config.UnloadedProduction;
                 },
             };
         void ApplyCameraRotateSpeed(float speed) => session.Camera.Settings.RotateSpeedX = session.Camera.Settings.RotateSpeedY =
@@ -441,7 +441,11 @@ sealed partial class GameHost
             else if (e.Action == "load") loadRequestedFolder = e.Text;
             else if (e.Action == "import") importRequested = (e.Text, player.ImportFlags);
             else if (e.Action == "new-game") newGameRequested = e.Text;
-            else if (e.Action == "main-menu") mainMenuRequested = true;
+            else if (e.Action == "main-menu")
+            {
+                if (session.IsRemote) { ReturnToTitle = true; quit = true; }
+                else mainMenuRequested = true;
+            }
             else if (e.Widget == "OptionsButton" && panel is not null) panel.Visible = true;
             else if (e.Widget == "ExitGameButton") quit = true;
         };
@@ -491,6 +495,8 @@ sealed partial class GameHost
             window.DoEvents();
             if (window.IsClosing) break;
             RepeatEditKey();
+            player.PumpOnline();
+            if (player.ReadyOnline is { } ready) { NextOnline = ready; break; }
             double now = frame.Elapsed.TotalSeconds, dt = now - last;
             last = now;
             // The last frame was drawn under the loading screen: a scene load's next stage may run, the warm-up counts it.
@@ -531,8 +537,9 @@ sealed partial class GameHost
             // Edge scrolling (the game's default): the pointer at the edge of the window pans the camera, unless something else has the pointer.
             session.Camera.Settings.EdgeScroll = config.EdgeScroll != false;
             session.Camera.Strategy.EdgePointer = Covered || TitleVisible || panel?.Visible == true || interfaceHidden || cinemaHolds || cinema.EditorVisible ? null : WindowPointer.InWindow(window);
-            session.World.Profile.Enabled = profiler is { Showing: not FrameProfiler.Mode.Off } || g.PlayBench is not null;
+            if (session is WorldSession profileOwner) profileOwner.World.Profile.Enabled = profiler is { Showing: not FrameProfiler.Mode.Off } || g.PlayBench is not null;
             if (!Covered) session.Advance(frameDt);   // loading and arrival preserve the loaded world's exact time
+            else if (session.IsRemote) session.Advance(0); // ingest authoritative readiness even while presentation is covered
             DuelHoldClock();
             double advanceMs = Stopwatch.GetElapsedTime(a0).TotalMilliseconds;
             advanceTotal += advanceMs;
@@ -731,9 +738,13 @@ sealed partial class GameHost
                 // Once a second: the frame, the simulation, then the renderer's lines.
                 stats.Clear();
                 stats.Add($"{statsFrames / statsTimer:0} fps ({(display.VSync ? "vsync" : fpsLimit > 0 ? $"limit {fpsLimit}" : "uncapped")}), gpu {(gpuSamples > 0 ? $"{gpuSum / gpuSamples:0.00}" : "-")} ms");
-                long ticks = session.Simulation.TotalTicks - statsTicks;
-                statsTicks = session.Simulation.TotalTicks;
-                stats.Add($"simulation  {ticks / statsTimer:0} ticks/s, {session.CurrentSnapshot.Characters.Count} characters, dropped {session.Simulation.DroppedTicks} ticks in all");
+                if (session is WorldSession statsOwner)
+                {
+                    long ticks = statsOwner.Simulation.TotalTicks - statsTicks;
+                    statsTicks = statsOwner.Simulation.TotalTicks;
+                    stats.Add($"simulation  {ticks / statsTimer:0} ticks/s, {session.CurrentSnapshot.Characters.Count} characters, dropped {statsOwner.Simulation.DroppedTicks} ticks in all");
+                }
+                else stats.Add($"server tick {session.CommandTick}, {session.CurrentSnapshot.Characters.Count} visible characters");
                 WorldStats.Add(stats, display.Context, gpu, render, camera.Eye);
                 stats.Add($"ui          {(interfaceHidden ? 0 : player.OpaqueUiCoverage):P0} of the screen under opaque controls");
                 if (audio is not null) stats.Add($"audio       {audio.StatsLine()}");
@@ -743,12 +754,13 @@ sealed partial class GameHost
                 statsFrames = gpuSamples = 0;
             }
             totalFrames++;
-            if (g.QuitAfter is { } quitAfter && now >= quitAfter) { Console.WriteLine($"profile   {session.CurrentSnapshot.Characters.Count} characters in the snapshot, {session.CurrentSnapshot.Characters.Count(c => c.Appearance is not null)} drawable; per frame: simulation advance {advanceTotal / Math.Max(totalFrames, 1):0.000} ms ({session.Simulation.TotalTicks} ticks, {advanceTotal / Math.Max(session.Simulation.TotalTicks, 1):0.000} ms per tick), host draw-list fill {fillTotal / Math.Max(fillCalls, 1):0.000} ms, world draw cpu {drawTotal / Math.Max(totalFrames, 1):0.00} ms, {(gpu.Characters is { } chars ? chars.Statistics() : "no characters")}");
+            if (g.QuitAfter is { } quitAfter && now >= quitAfter) { if (session is WorldSession measured) Console.WriteLine($"profile   {session.CurrentSnapshot.Characters.Count} characters in the snapshot, {session.CurrentSnapshot.Characters.Count(c => c.Appearance is not null)} drawable; per frame: simulation advance {advanceTotal / Math.Max(totalFrames, 1):0.000} ms ({measured.Simulation.TotalTicks} ticks, {advanceTotal / Math.Max(measured.Simulation.TotalTicks, 1):0.000} ms per tick), host draw-list fill {fillTotal / Math.Max(fillCalls, 1):0.000} ms, world draw cpu {drawTotal / Math.Max(totalFrames, 1):0.00} ms, {(gpu.Characters is { } chars ? chars.Statistics() : "no characters")}");
+                else Console.WriteLine($"profile   remote view at server tick {session.CommandTick}: {session.CurrentSnapshot.Characters.Count} visible characters, client advance {advanceTotal / Math.Max(totalFrames, 1):0.000} ms/frame");
                 if (audio is not null) Console.WriteLine($"audio     {audio.StatsLine()}");
                 if (audio is not null) Console.WriteLine($"audio     world: {WorldAudioStats()}");
                 if (audio is not null) Console.WriteLine($"audio     characters: {CharacterAudioStats()}, {UiAudioStats()}");
                 if (menuFrames > 0) Console.WriteLine($"menu      {menuFrames} visible frames in {menuFrameSeconds:0.0} s: {menuFrames / menuFrameSeconds:0} fps, {menuSlowFrames} frames over 100 ms, longest {menuLongestFrame * 1000:0.0} ms");
-                Console.WriteLine($"smoke     {totalFrames} frames in {now:0.0} s: {totalFrames / now:0} fps on average, {session.Ticks.TotalTicks} control ticks, {session.Simulation.TotalTicks} simulation ticks, game time {session.Clock.TimeText}"); quit = true; }
+                Console.WriteLine($"smoke     {totalFrames} frames in {now:0.0} s: {totalFrames / now:0} fps on average, {session.Ticks.TotalTicks} control ticks, world tick {session.CommandTick}, game time {session.Clock.TimeText}"); quit = true; }
             if (!display.VSync && fpsLimit > 0) Limit(frame, now, 1.0 / fpsLimit);
         }
         WritePlayBench(window.FramebufferSize);
@@ -834,7 +846,12 @@ sealed partial class GameHost
     /// <summary>Hands the frame's <paramref name="advanceMs"/> to the profiler with the world's tick profile split into phases and systems, and clears the profile.</summary>
     void SimProfile(FrameProfiler profiler, double advanceMs)
     {
-        var world = session.World;
+        if (session is not WorldSession)
+        {
+            profiler.Outside(advanceMs, 0, ["client presentation"], [advanceMs], 1, 0, 0);
+            return;
+        }
+        var world = LocalSession.World;
         var profile = world.Profile;
         int phases = TickProfile.PhaseNames.Length;
         int systems = world.Systems.Count, parts = phases + 1 + systems;
@@ -846,7 +863,7 @@ sealed partial class GameHost
             simMs = new double[simNames.Length];
         }
         Array.Clear(simMs);
-        double inTicks = 0, ahead = session.TakeAheadMs();
+        double inTicks = 0, ahead = LocalSession.TakeAheadMs();
         for (int p = 0; p < phases; p++) inTicks += simMs[p] = profile.PhaseMs[p];
         // The phases also hold the tick run ahead during the last draw (docs/simulation.md "Tick ahead"), which is not in this frame's advance.
         simMs[phases] = Math.Max(0, advanceMs - Math.Max(0, inTicks - ahead));
@@ -861,7 +878,8 @@ sealed partial class GameHost
     /// <summary>Between ticks: the world's messages for the player go to the HUD and the log, the fights hostility started to the log.</summary>
     void WorldNews()
     {
-        var world = session.World;
+        if (session.IsRemote) return; // the interface consumes recipient-scoped replicated messages
+        var world = LocalSession.World;
         foreach (string message in world.TakeMessages())
         {
             Console.WriteLine($"relations {message}");

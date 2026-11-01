@@ -19,6 +19,185 @@ namespace Meitou.Tests.Simulation;
 /// <summary>Player construction (docs/simulation.md "Buildings", docs/game/buildings-production.md "Construction"): sites, builders, materials, dismantling.</summary>
 public class ConstructionTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SavedInteriorParentHandleAcceptsRawAndZoneQualifiedIdentity(bool qualified)
+    {
+        const string PlayerFactionId = "player-test";
+        using var rig = new Rig();
+        var parent = AddSite(rig, Hut, 2, complete: true);
+        var child = AddSite(rig, Shed, 2, complete: true);
+        child.Parent = qualified ? BuildingKey.Of(parent.Zone, parent.Id) : parent.Id;
+        var save = new SaveBuilder(1);
+        save.AddFaction(PlayerFactionId, "Nameless", true, 1000, []); save.AddEmptyWorldState();
+        BuildingSave.Write(save.Game, rig.World, PlayerFactionId, 5);
+        var states = HeldSave.BuildingStates(save.Game);
+        var expected = Hand.Read(states[BuildingKey.Of(parent.Zone, parent.Id)], "handle");
+        Assert.False(expected.IsNull);
+        Assert.Equal(expected, Hand.Read(states[BuildingKey.Of(child.Zone, child.Id)], "isInsideBuilding"));
+    }
+
+    [Fact]
+    public void TownEditsRequireTheirFactionAndTheDisplayedTownRevision()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        var player = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(player.Id, 2, FactionPermission.All);
+        var own = world.Buildings.AddTown(new Vector3(1000, 300, 2000), 2);
+        var other = world.Buildings.AddTown(new Vector3(2000, 300, 2000), 3);
+        world.Commands.Enqueue(player.Id, new RenameTown(other.Number, "stolen") { Tick = 0, Faction = 2, TownRevision = world.TownRevision(other) });
+        world.Commands.Enqueue(player.Id, new SetTownPublic(other.Number, true) { Tick = 0, Faction = 3, TownRevision = world.TownRevision(other) });
+        world.ApplyPausedInterfaceCommands(); Assert.NotEqual("stolen", other.Name); Assert.False(other.Public);
+        var stale = new SetTownPublic(own.Number, true) { Tick = 0, Faction = 2, TownRevision = world.TownRevision(own) };
+        own.Name = "changed";
+        world.Commands.Enqueue(player.Id, stale); world.ApplyPausedInterfaceCommands(); Assert.False(own.Public);
+        world.Commands.Enqueue(player.Id, stale with { TownRevision = world.TownRevision(own) });
+        world.ApplyPausedInterfaceCommands(); Assert.True(own.Public);
+        world.Commands.Enqueue(player.Id, new RenameTown(own.Number, "ours") { Tick = 0, Faction = 2, TownRevision = world.TownRevision(own) });
+        world.ApplyPausedInterfaceCommands(); Assert.Equal("ours", own.Name); Assert.NotEqual("ours", other.Name);
+    }
+
+    [Fact]
+    public void DelegatedBuilderUsesTheSitesMaterialsAndRechecksGroundOwnershipBeforePickup()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        var player = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(player.Id, 3, FactionPermission.All); world.Players.SetMembership(player.Id, 2, FactionPermission.ManageAssets);
+        var site = AddSite(rig, Hut, 2);
+        var actor = rig.Add(1000, 2000, Unit);
+        var cold = world.Characters.Cold(actor.Slot)!; cold.Faction = 3;
+        world.Players.AssignInitial(player.Id, actor);
+        int wrong = world.GroundItems.Place(rig.Items.Create(Plank, 3)!, site.Position + new Vector3(25, 0, 0), 0, "workers-stock", 3);
+        int selected = world.GroundItems.Place(rig.Items.Create(Plank, 3)!, site.Position + new Vector3(50, 0, 0), 0, "sites-stock", 2);
+        world.Commands.Enqueue(player.Id, Displayed(world, new BuildOrder([actor], site.Id) { Tick = 0 }, site));
+        world.RunTick();
+        Assert.Equal(selected, cold.FetchItem);
+        world.GroundItems.Claim(selected, "sites-stock", 3);
+        world.RunTicks(100);
+        Assert.Equal(3, world.GroundItems.Find(selected)!.Item.Quantity); Assert.Equal(3, world.GroundItems.Find(wrong)!.Item.Quantity);
+        Assert.Empty(cold.Inventory!.Items); Assert.Equal(0, site.Deliverable);
+    }
+
+    [Fact]
+    public void DemolitionCannotDeleteFurnitureOwnedByAnotherFaction()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        var furniture = Rec(Shed, FcsRecordType.BUILDING, "Furniture"); furniture.Bools["is interior furniture"] = true;
+        var file = new FcsFile(); file.Records.Add(furniture); rig.Db.Apply(file, "furniture.mod");
+        var player = world.Players.Register(new PlayerId(2)); world.Players.SetMembership(player.Id, 2, FactionPermission.All);
+        var home = AddSite(rig, Hut, 2, complete: true); var child = AddSite(rig, Shed, 3, complete: true); child.Parent = home.Id;
+        world.Commands.Enqueue(player.Id, Displayed(world, new ConfirmDismantle(home.Id) { Tick = 0 }, home));
+        world.ApplyPausedInterfaceCommands();
+        Assert.NotNull(world.Buildings.Find(home.Id)); Assert.NotNull(world.Buildings.Find(child.Id)); Assert.Empty(world.GroundItems.All);
+        child.Owner = 2;
+        world.Commands.Enqueue(player.Id, Displayed(world, new ConfirmDismantle(home.Id) { Tick = 0 }, home));
+        world.ApplyPausedInterfaceCommands();
+        Assert.Null(world.Buildings.Find(home.Id)); Assert.Null(world.Buildings.Find(child.Id));
+    }
+
+    static BuildSite AddSite(Rig rig, string record, int owner, Vector3? at = null, bool complete = false)
+    {
+        var data = rig.World.Systems.OfType<ConstructionSystem>().Single().Data(record)!;
+        var position = at ?? new Vector3(1000, 300, 2000);
+        var site = new BuildSite { Id = rig.World.Buildings.NewId(WorldLayout.ZoneOf(position.X, position.Z)), Record = record, Owner = owner,
+            Position = position, Rotation = Quaternion.Identity, Materials = data.Materials.Select(m => new MaterialSlot(m.Item, m.Required) { Delivered = complete ? m.Required : 0 }).ToArray(),
+            Target = data.Target, Progress = complete ? data.Target : 0, Rate = data.Rate, Complete = complete };
+        rig.World.Buildings.Add(site); return site;
+    }
+
+    static ConstructionSiteCommand Displayed(SimWorld world, ConstructionSiteCommand command, BuildSite site) => command with
+    { Tick = world.Tick, SiteRevision = world.BuildingRevision(site), RootRevision = ConstructionSystem.Root(world.Buildings, site) is { } root ? world.BuildingRevision(root) : 0 };
+
+    [Fact]
+    public void BuildingActionsRequireTheActualOwnerAndCurrentMembershipRevision()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2)); var b = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(a.Id, 2, FactionPermission.All); world.Players.SetMembership(b.Id, 3, FactionPermission.All);
+        var ours = AddSite(rig, Hut, 2); var theirs = AddSite(rig, Hut, 3, new Vector3(1100, 300, 2000));
+        world.Commands.Enqueue(a.Id, Displayed(world, new CancelSite(theirs.Id) { Tick = 0 }, theirs));
+        world.Commands.Enqueue(a.Id, Displayed(world, new SetBuildingPublic(theirs.Id, false) { Tick = 0 }, theirs));
+        world.Commands.Enqueue(a.Id, Displayed(world, new PauseSite(ours.Id, true) { Tick = 0 }, ours));
+        world.ApplyPausedInterfaceCommands();
+        Assert.NotNull(world.Buildings.Find(theirs.Id)); Assert.True(theirs.Public); Assert.True(ours.Paused);
+        world.Commands.Enqueue(a.Id, Displayed(world, new CancelSite(ours.Id) { Tick = 0 }, ours));
+        world.Players.SetMembership(a.Id, 2, FactionPermission.None); world.Players.SetMembership(a.Id, 2, FactionPermission.All);
+        world.ApplyPausedInterfaceCommands(); Assert.NotNull(world.Buildings.Find(ours.Id));
+        world.Commands.Enqueue(b.Id, Displayed(world, new CancelSite(theirs.Id) { Tick = 0 }, theirs));
+        world.ApplyPausedInterfaceCommands(); Assert.Null(world.Buildings.Find(theirs.Id)); Assert.NotNull(world.Buildings.Find(ours.Id));
+    }
+
+    [Fact]
+    public void WallForwardingRequiresTheDisplayedRootAndNeverCrossesFactionOwnership()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2)); world.Players.SetMembership(a.Id, 2, FactionPermission.All);
+        world.Players.SetMembership(a.Id, 3, FactionPermission.All);
+        var wall = AddSite(rig, WallRecord, 2);
+        var child = AddSite(rig, ShortRecord, 2, wall.Position + new Vector3(0, 0, 100));
+        ConstructionSystem.AttachWalls(world.Buildings, rig.World.Systems.OfType<ConstructionSystem>().Single().Data, [child]);
+        Assert.Equal(wall.Id, child.WallParent);
+        var stale = Displayed(world, new CancelSite(child.Id) { Tick = 0 }, child);
+        wall.Public = false;
+        world.Commands.Enqueue(a.Id, stale); world.ApplyPausedInterfaceCommands();
+        Assert.NotNull(world.Buildings.Find(wall.Id)); Assert.NotNull(world.Buildings.Find(child.Id));
+        child.Owner = 3;
+        Assert.Null(ConstructionSystem.Root(world.Buildings, child));
+        world.Commands.Enqueue(a.Id, Displayed(world, new ConfirmDismantle(child.Id) { Tick = 0 }, child));
+        world.ApplyPausedInterfaceCommands(); Assert.NotNull(world.Buildings.Find(wall.Id));
+        child.WallParent = null;
+        ConstructionSystem.AttachWalls(world.Buildings, rig.World.Systems.OfType<ConstructionSystem>().Single().Data, [child]);
+        Assert.Null(child.WallParent);
+    }
+
+    [Fact]
+    public void UpgradeUsesTheOwnersResearchEvenWhenAnotherFactionIsViewed()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        var player = world.Players.Register(new PlayerId(2)); world.Players.SetMembership(player.Id, 3, FactionPermission.All);
+        var site = AddSite(rig, StoreMk1, 3, complete: true);
+        world.Commands.Enqueue(player.Id, Displayed(world, new UpgradeSite(site.Id) { Tick = 0 }, site));
+        world.ApplyPausedInterfaceCommands(); Assert.Equal(StoreMk1, site.Record);
+        world.Factions.GetOrCreate(3).Research.Set(rig.Db, [Research]);
+        world.Players.SetMembership(player.Id, 2, FactionPermission.None); world.Players.SelectFaction(player.Id, 2);
+        world.Commands.Enqueue(player.Id, Displayed(world, new UpgradeSite(site.Id) { Tick = 0 }, site));
+        world.ApplyPausedInterfaceCommands(); Assert.Equal(StoreMk2, site.Record); Assert.Equal(3, site.Owner);
+        world.Commands.Enqueue(player.Id, Displayed(world, new DowngradeSite(site.Id) { Tick = 0 }, site));
+        world.ApplyPausedInterfaceCommands(); Assert.Equal(StoreMk1, site.Record);
+    }
+
+    [Fact]
+    public void BuilderStopsWithoutConsumingMoreMaterialsAfterPermissionLoss()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        var player = world.Players.Register(new PlayerId(2)); world.Players.SetMembership(player.Id, 2, FactionPermission.All);
+        var site = AddSite(rig, Hut, 2);
+        var actor = rig.Add(1000, 2000, Unit, (Plank, 3), (Iron, 2)); world.Players.AssignInitial(player.Id, actor);
+        world.Commands.Enqueue(player.Id, Displayed(world, new BuildOrder([actor], site.Id) { Tick = 0 }, site));
+        world.RunTicks(100);
+        Assert.Equal(site.Id, world.Characters.Cold(actor.Slot)!.BuildSite);
+        float progress = site.Progress, delivered = site.Deliverable;
+        int carried = world.Characters.Cold(actor.Slot)!.Inventory!.All().Sum(i => i.Quantity);
+        world.Players.SetMembership(player.Id, 2, FactionPermission.None);
+        world.RunTicks(100);
+        Assert.Equal(progress, site.Progress); Assert.Equal(delivered, site.Deliverable);
+        Assert.Equal(carried, world.Characters.Cold(actor.Slot)!.Inventory!.All().Sum(i => i.Quantity));
+        Assert.Null(world.Characters.Cold(actor.Slot)!.BuildSite);
+    }
+
+    [Fact]
+    public void ExplicitFactionPlacementKeepsNearbyOutpostsSeparateAndUsesItsOwnUnlocks()
+    {
+        using var rig = new Rig(); var world = rig.World;
+        world.Factions.GetOrCreate(3).Research.Set(rig.Db, [Research]);
+        world.Commands.Enqueue(new PlaceBuildings([new(Outpost, new Vector3(1000, 300, 2000), Quaternion.Identity)]) { Tick = 0, Faction = 2 });
+        world.Commands.Enqueue(new PlaceBuildings([new(Outpost, new Vector3(2000, 300, 2000), Quaternion.Identity)]) { Tick = 0, Faction = 3 });
+        world.ApplyPausedInterfaceCommands();
+        Assert.Equal(2, world.Buildings.Towns.Count);
+        foreach (var site in world.Buildings.All) Assert.Equal(site.Owner, world.Buildings.FindTown(site.Town)!.Owner);
+    }
+
     const string Plank = "70-t", Iron = "71-t", Hut = "80-t", Shed = "81-t", Outpost = "82-t", Research = "90-t";
     const string WallRecord = "83-t", ShortRecord = "84-t", GateRecord = "85-t", ConnectorRecord = "86-t";
     const string GateMk1 = "87-t", GateMk2 = "88-t", StoreMk1 = "91-t", StoreMk2 = "92-t";

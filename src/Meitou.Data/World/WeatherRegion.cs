@@ -247,11 +247,32 @@ public sealed class WeatherRegion
     public WeatherRegionSnapshot Snapshot() => new(Def.StringId, Season.Season.StringId, SeasonIndex, SeasonEndDay, Weather.StringId, WeatherEntryIndex, WeatherStartMinute,
         WeatherEndMinute, Strength, wind, NextWindUpdateMinute, fogFrom, fogFadeMinutes);
 
+    internal void ValidatePresentation(WeatherRegionSnapshot snapshot)
+    {
+        if (snapshot.RegionId != Def.StringId || (uint)snapshot.SeasonIndex >= (uint)Def.Seasons.Count ||
+            Def.Seasons[snapshot.SeasonIndex].Season.StringId != snapshot.SeasonId)
+            throw new InvalidDataException("Weather season disagrees with compatible local content.");
+        var weather = Def.Seasons[snapshot.SeasonIndex].Season.Weathers;
+        if ((uint)snapshot.WeatherEntryIndex >= (uint)weather.Count || weather[snapshot.WeatherEntryIndex].Weather.StringId != snapshot.WeatherId)
+            throw new InvalidDataException("Weather entry disagrees with compatible local content.");
+    }
+
+    internal void AcceptPresentation(WeatherRegionSnapshot snapshot, WeatherTime now)
+    {
+        bool changed = SeasonIndex != snapshot.SeasonIndex || WeatherEntryIndex != snapshot.WeatherEntryIndex || WeatherStartMinute != snapshot.WeatherStartMinute;
+        SeasonIndex = snapshot.SeasonIndex; SeasonEndDay = snapshot.SeasonEndDay;
+        WeatherEntryIndex = snapshot.WeatherEntryIndex; WeatherStartMinute = snapshot.WeatherStartMinute; WeatherEndMinute = snapshot.WeatherEndMinute;
+        Strength = snapshot.Strength; wind = snapshot.Wind; NextWindUpdateMinute = snapshot.NextWindUpdateMinute;
+        fogFrom = snapshot.FogFrom; fogFadeMinutes = snapshot.FogFadeMinutes;
+        if (changed) Serial++;
+        SyncWind(now.Minutes);
+    }
+
     /// <summary>
     /// Continues from a snapshot of this region. The season and the weather are found by their StringIds (so a mod that reorders a list does not
     /// shift them), else by the saved index, clamped into the current lists.
     /// </summary>
-    public void Restore(WeatherRegionSnapshot s, WeatherTime now)
+    public void Restore(WeatherRegionSnapshot s, WeatherTime now, int? effectGeneration = null)
     {
         int season = s.SeasonId.Length == 0 ? -1 : Def.Seasons.ToList().FindIndex(x => x.Season.StringId == s.SeasonId);
         SeasonIndex = season >= 0 ? season : Math.Clamp(s.SeasonIndex, 0, Def.Seasons.Count - 1);
@@ -267,7 +288,7 @@ public sealed class WeatherRegion
         fogFrom = s.FogFrom;
         fogFadeMinutes = s.FogFadeMinutes;
         random = new Random(unchecked(seed + SeasonEndDay * 31 + (int)WeatherStartMinute));
-        Serial++;
+        Serial = effectGeneration ?? unchecked(Serial + 1);
         SyncWind(now.Minutes);
     }
 

@@ -41,7 +41,7 @@ public sealed class NavGateRegions : IGateRegions
     public int CodeAt(Vector3 at) => world.TryFindPolygon(at, FindDistance, out var p, out _) ? codes.GetValueOrDefault(p.Key) : -1;
 
     /// <summary>Labels <paramref name="world"/>; <paramref name="isGate"/> tells which door owners (building instance ids) are gates.</summary>
-    public static NavGateRegions Label(NavWorld world, Func<string, bool> isGate)
+    public static NavGateRegions Label(NavWorld world, Func<string, bool> isGate, CancellationToken cancellation = default)
     {
         // The door polygons of gates, by gate.
         var gateOf = new Dictionary<long, string>();
@@ -49,10 +49,12 @@ public sealed class NavGateRegions : IGateRegions
         var known = new Dictionary<string, bool>(StringComparer.Ordinal);
         for (int slot = 0; slot < world.ZoneCount; slot++)
         {
+            cancellation.ThrowIfCancellationRequested();
             var m = world.Mesh(slot);
             if (m.DoorOf is not { } doorOf || m.DoorIds is not { } ids) continue;
             for (int p = 0; p < m.PolygonCount; p++)
             {
+                if ((p & 1023) == 0) cancellation.ThrowIfCancellationRequested();
                 if (doorOf[p] < 0 || !m.Kept[p]) continue;
                 string id = ids[doorOf[p]];
                 if (!known.TryGetValue(id, out bool gate)) known[id] = gate = isGate(id);
@@ -73,6 +75,7 @@ public sealed class NavGateRegions : IGateRegions
         int next = 1;
         foreach (var (id, doors) in gates)
         {
+            cancellation.ThrowIfCancellationRequested();
             var sides = new SortedSet<int>();
             foreach (var door in doors)
                 foreach (var seed in Around(world, door))
@@ -80,7 +83,7 @@ public sealed class NavGateRegions : IGateRegions
                     if (gateOf.ContainsKey(seed.Key) || !world.Mesh(seed.Zone).Kept[seed.Polygon]) continue;
                     if (codes.TryGetValue(seed.Key, out int code)) { sides.Add(code); continue; }
                     if (outside.Contains(seed.Key)) { sides.Add(0); continue; }
-                    if (Flood(world, seed, gateOf, visited, queue, seen))
+                    if (Flood(world, seed, gateOf, visited, queue, seen, cancellation))
                     {
                         foreach (var r in visited) codes[r.Key] = next;
                         sides.Add(next++);
@@ -100,7 +103,7 @@ public sealed class NavGateRegions : IGateRegions
     /// Floods from <paramref name="seed"/> over kept polygons, not into gate doors; true when the region is walled in (bounded, under budget, not at the loaded world's edge).
     /// <paramref name="visited"/> holds what it reached (all of it when walled in; a part when not).
     /// </summary>
-    static bool Flood(NavWorld world, NavRef seed, Dictionary<long, string> gateOf, List<NavRef> visited, Queue<NavRef> queue, HashSet<long> seen)
+    static bool Flood(NavWorld world, NavRef seed, Dictionary<long, string> gateOf, List<NavRef> visited, Queue<NavRef> queue, HashSet<long> seen, CancellationToken cancellation)
     {
         visited.Clear();
         queue.Clear();
@@ -110,6 +113,7 @@ public sealed class NavGateRegions : IGateRegions
         seen.Add(seed.Key);
         while (queue.Count > 0)
         {
+            if ((visited.Count & 1023) == 0) cancellation.ThrowIfCancellationRequested();
             var r = queue.Dequeue();
             visited.Add(r);
             var m = world.Mesh(r.Zone);

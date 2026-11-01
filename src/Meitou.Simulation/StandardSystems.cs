@@ -43,8 +43,10 @@ public enum StandardParts
 }
 
 /// <summary>What <see cref="StandardSystems.Build"/> builds and with which settings; the defaults are the game's.</summary>
-public sealed class StandardSystemOptions
+public sealed record StandardSystemOptions
 {
+    /// <summary>CPU environmental inputs, prepared before gameplay systems (weather, independent of rendering).</summary>
+    public ITickSystem? Environment { get; init; }
     /// <summary>The systems to build; a test that needs a few of them asks for those and gets them in the game's relative order.</summary>
     public StandardParts Parts { get; init; } = StandardParts.All;
     public PopulationSettings? Population { get; init; }
@@ -82,7 +84,7 @@ public sealed class StandardSystemOptions
 }
 
 /// <summary>The built systems in tick order, with the ones the host talks to.</summary>
-public sealed class StandardSystemSet
+public sealed record StandardSystemSet
 {
     public required IReadOnlyList<ITickSystem> Systems { get; init; }
     public PopulationSystem? Population { get; init; }
@@ -150,6 +152,7 @@ public static class StandardSystems
         var o = options ?? new StandardSystemOptions();
         bool Has(StandardParts p) => (o.Parts & p) != 0;
         var systems = new List<ITickSystem>();
+        if (options?.Environment is { } environment) systems.Add(environment);
         PopulationSystem? population = null;
         MovementSystem? movement = null;
         CombatSystem? combat = null;
@@ -247,6 +250,7 @@ public static class StandardSystems
         if (Has(StandardParts.Dialogue)) systems.Add(talk = new Meitou.Simulation.Dialogue.DialogueSystem(data, o.Dialogue, population));
         if (deeds is not null && talk is not null) (deeds.CagedHook, deeds.Memory) = (talk.Captured, talk.Memory);   // a captive's squad remembers its captor (MY_CAPTOR), blows their tags
         if (talk is not null && population is not null) (population.Announcer, population.PendingTalk) = (talk.Announce, talk.HasInterrupt);
+        if (talk is not null && population is not null) population.TargetAnnouncer = talk.Announce;
         if (talk is not null) talk.Arrests = arrest;
         if (weather is not null) weather.Talk = talk;
         if (talk is not null && aggro is not null) aggro.Memory = talk.Memory;

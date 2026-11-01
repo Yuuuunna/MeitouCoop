@@ -16,7 +16,7 @@ public sealed partial class CarrySystem
     /// <summary>Asleep (the original's state 1): in a bed, or resting with the sleep behaviour; awake otherwise, and never when down.</summary>
     public static bool Asleep(CharacterTable table, int slot) =>
         table.Cold(slot) is { Medical.Incapacitated: false } c
-        && (c.InSomething == Locks.HeldState.Bed || table.Next[slot].Task == (byte)CharacterTask.Rest && c.Ai?.Behaviour == Ai.AiBehaviour.Sleep);
+        && (c.InSomething == Locks.HeldState.Bed || table.Current[slot].Task == (byte)CharacterTask.Rest && c.Ai?.Behaviour == Ai.AiBehaviour.Sleep);
 
     /// <summary>A sleeping character a kidnap may go for: of a <c>carriable</c> race, free, not carried.</summary>
     public static bool CanBeKidnapped(CharacterTable table, int slot) =>

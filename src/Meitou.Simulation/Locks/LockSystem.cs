@@ -5,7 +5,7 @@ using Meitou.Simulation.Bodies;
 namespace Meitou.Simulation.Locks;
 
 /// <summary>Pick the lock of <see cref="Prisoner"/>'s cage (the original's Task_PickLock with a character target): the characters (the selection when empty) walk to it, or a caged one picks its own.</summary>
-public sealed record PickLockOrder(IReadOnlyList<CharacterId> Characters, CharacterId Prisoner) : SimCommand
+public sealed record PickLockOrder(IReadOnlyList<CharacterId> Characters, CharacterId Prisoner) : FixtureCommand
 {
     /// <summary>The cage to pick instead, by fixture id, when it is empty (then <see cref="Prisoner"/> is None).</summary>
     public string? Cage { get; init; }
@@ -27,7 +27,9 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
     public Lockpicking Picking { get; } = new(constants, options);
     public Crime.CrimeSystem? Crimes { get; set; }
 
-    static IReadOnlyList<CharacterId> Who(World world, IReadOnlyList<CharacterId> ids) => ids.Count > 0 ? ids : world.Player.Selection.ToArray();
+    static IReadOnlyList<CharacterId> Who(World world, SimCommand command, IReadOnlyList<CharacterId> ids) => world.CommandCharacters(command, ids).Where(id =>
+        command.Issuer is not { } issuer || world.Characters.TryResolveNext(id, out int slot)
+        && command.FactionGrantRevision != 0 && world.Players.Find(issuer)?.MembershipRevision(world.Characters.Cold(slot)!.Faction) == command.FactionGrantRevision).ToArray();
 
     public void Inputs(World world, IReadOnlyList<SimCommand> commands)
     {
@@ -44,11 +46,12 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
                     Fixture? cage;
                     if (pick.Cage is not null) cage = world.Fixtures.Find(pick.Cage) is { Kind: FixtureKind.Cage } empty ? empty : null;
                     else cage = table.TryResolveNext(pick.Prisoner, out int p) && table.Cold(p) is { IsImprisoned: true, InWhat: { } where } ? world.Fixtures.Find(where) : null;
-                    if (cage is null) break;
-                    foreach (var id in Who(world, pick.Characters))
+                    if (cage is null || !world.Fixtures.Matches(pick, cage)) break;
+                    foreach (var id in Who(world, pick, pick.Characters))
                     {
                         if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false } c || !c.CarriedBy.IsNone) continue;
                         if (c.IsImprisoned && c.InWhat != cage.Id) continue;   // a prisoner reaches only its own cage
+                        Remember(world, pick, id, cage, pick.Prisoner);
                         c.PickingLock = cage.Id;
                         c.Shackles = null;
                         if (!c.IsImprisoned) MovementSystem.GoTo(table, s, new Vector2(cage.Position.X, cage.Position.Z), c.RunSpeed);
@@ -57,7 +60,7 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
                     break;
                 }
                 case GetOutOrder getOut:
-                    foreach (var id in Who(world, getOut.Characters))
+                    foreach (var id in Who(world, getOut, getOut.Characters))
                     {
                         if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsImprisoned: true, Medical.Incapacitated: false } c) continue;
                         if (world.Fixtures.GetOut(world, id, Crimes)) { c.PickingLock = null; if (c.IsPlayer) world.Post($"{c.Name} got out of the cage"); }
@@ -94,6 +97,7 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
 
     public void SlowWorld(World world)
     {
+        ValidateWork(world);
         world.Fixtures.HoldCaged(world);
         Doors(world);
         Rounds(world);

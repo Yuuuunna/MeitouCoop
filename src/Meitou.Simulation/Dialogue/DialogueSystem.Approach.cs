@@ -21,8 +21,8 @@ public sealed partial class DialogueSystem
     /// </summary>
     void TalkToLeader(World world, Conversation c, CharacterCold mc, CharacterId target, CharacterCold tc)
     {
-        if (tc.Faction != world.Player.Faction && !tc.IsPlayer || mc.SquadId < 0 || world.Squads.Find(mc.SquadId) is not { Leader: { IsNone: false } leader }) return;
-        if (open?.Npc == leader || approaches.Any(a => a.Npc == leader)) return;
+        if (!world.IsPlayerFaction(tc.Faction) && !tc.IsPlayer || mc.SquadId < 0 || world.Squads.Find(mc.SquadId) is not { Leader: { IsNone: false } leader }) return;
+        if (HoldsNpc(leader) || approaches.Any(a => a.Npc == leader)) return;
         if (!world.Characters.TryResolveNext(leader, out int l) || !Awake(world.Characters, l)) return;
         approaches.Add(new Approach(leader, target, world.GameHours + ApproachGiveUpHours));
         Hold(world, l);
@@ -38,14 +38,15 @@ public sealed partial class DialogueSystem
         for (int k = 0; k < approaches.Count; k++)
         {
             var a = approaches[k];
+            var state = InteractionFor(world.Players.ControlOf(a.Target)?.Player ?? PlayerId.Local);
             int n = -1, t = -1;
             bool done = !table.TryResolveNext(a.Npc, out n) || !Awake(table, n) || !table.TryResolveNext(a.Target, out t) || !Awake(table, t);
-            if (!done && open is null && InTalkRange(table, n, t))
+            if (!done && state.Open is null && NpcAvailable(world, a.Npc, state) && InTalkRange(table, n, t))
             {
                 MovementSystem.Stop(table, n);
                 approaches.RemoveAt(k--);
                 Start(world, a.Npc, a.Target, DialogueEvents.PlayerTalkToMe, quiet: true);
-                if (open?.Npc != a.Npc) Release(world, a.Npc);
+                if (state.Open?.Npc != a.Npc) Release(world, a.Npc);
                 continue;
             }
             if (!done && world.GameHours >= a.GiveUpHours)

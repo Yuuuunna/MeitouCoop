@@ -20,7 +20,7 @@ public enum FixtureKind : byte
 }
 
 /// <summary>A bed as the host picks it (<see cref="WorldSnapshot.Beds"/>): its fixture id, BUILDING record, where it is and its owner faction (-1: none).</summary>
-public sealed record BedSpot(string Id, string Record, Vector3 Position, int Owner = -1, float Yaw = 0);
+public sealed record BedSpot(string Id, string Record, Vector3 Position, int Owner = -1, float Yaw = 0) { public ulong Revision { get; init; } }
 
 /// <summary>
 /// What a bed's BUILDING says (docs/game/locks.md "Beds"): its functionality's <c>function</c> (6 BF_BED, 25 BF_SKELETON_BED), the clip it is lain in (the functionality's <c>animation</c>:
@@ -39,13 +39,13 @@ public readonly record struct BedData(int Function, string? Clip, float Material
 public readonly record struct BedNode(Vector3 At, float Yaw);
 
 /// <summary>A container with an inventory as the host picks it: its fixture id, BUILDING record, position, owner faction (-1: none) and whether its lock is locked.</summary>
-public sealed record ContainerSpot(string Id, string Record, Vector3 Position, int Owner = -1, bool Locked = false);
+public sealed record ContainerSpot(string Id, string Record, Vector3 Position, int Owner = -1, bool Locked = false) { public ulong Revision { get; init; } }
 
 /// <summary>A door for the host's picking: its fixture id, its key in <see cref="WorldSnapshot.Doors"/>, its owner faction, where its closed leaf is (else its building's origin) and how far it slides fully open (<see cref="DoorSpot.Slide"/>).</summary>
 /// <summary>A cage for picking: its fixture id, CAGE-function BUILDING record, place, owner faction (-1 none), whether its lock holds and who is in it (None: free).</summary>
-public sealed record CageSpot(string Id, string Record, Vector3 Position, int Owner, bool Locked, CharacterId Occupant);
+public sealed record CageSpot(string Id, string Record, Vector3 Position, int Owner, bool Locked, CharacterId Occupant) { public ulong Revision { get; init; } }
 
-public sealed record DoorPick(string Id, string Building, int Door, int Owner, Vector3 Position, Vector3 Slide = default);
+public sealed record DoorPick(string Id, string Building, int Door, int Owner, Vector3 Position, Vector3 Slide = default) { public ulong Revision { get; init; } }
 
 /// <summary>The door's motion state as saved in <c>state&lt;i&gt;</c> (docs/game/locks.md "Doors"; not the DoorState enum): 0 closed, 1 open, 2 opening, 3 closing.</summary>
 public enum DoorMotion : byte { Closed = 0, Open = 1, Opening = 2, Closing = 3 }
@@ -170,6 +170,8 @@ public readonly record struct DoorView(float Open, DoorMotion Motion, bool Locke
 /// </summary>
 public sealed record BuildingDetail(string Instance, IReadOnlyList<DoorDetail> Doors, bool Owned = false, bool? Public = null)
 {
+    public ulong PropertyRevision { get; init; }
+    public ulong DoorGroupRevision { get; init; }
     public long? SalePrice { get; init; }
     public BedDetail? Bed { get; init; }
 }

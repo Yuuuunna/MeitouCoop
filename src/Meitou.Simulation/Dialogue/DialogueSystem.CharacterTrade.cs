@@ -18,12 +18,22 @@ public sealed record CharacterTradeRow(CharacterId Character, string Name, long 
 /// player's when buying) and the rows. <see cref="Id"/> is new for every opening.
 /// </summary>
 public sealed record CharacterTradeView(long Id, CharacterTradeKind Kind, CharacterId Slaver, CharacterId Player, string Title, string ConfirmCaption, long BuyerMoney,
-    IReadOnlyList<CharacterTradeRow> Rows);
+    IReadOnlyList<CharacterTradeRow> Rows)
+{
+    public bool FundsVisible { get; init; } = true;
+    public bool CanConfirm { get; init; } = true;
+}
 
 /// <summary>The window's confirm button with the characters of the ticked rows.</summary>
-public sealed record ConfirmCharacterTrade(IReadOnlyList<CharacterId> Selected) : SimCommand;
+public sealed record ConfirmCharacterTrade(IReadOnlyList<CharacterId> Selected) : SimCommand
+{
+    public long TradeId { get; init; }
+}
 /// <summary>Closes the character trading window without a trade (its cancel button, or the window closed).</summary>
-public sealed record CloseCharacterTrade : SimCommand;
+public sealed record CloseCharacterTrade : SimCommand
+{
+    public long TradeId { get; init; }
+}
 
 /// <summary>
 /// DA 41 <c>CHOOSE_SLAVES_SELLING</c> and DA 42 <c>CHOOSE_SLAVES_BUYING</c> (<c>FUN_140680560</c>, docs/game/economy.md section 12): the character trading window
@@ -46,15 +56,14 @@ public sealed partial class DialogueSystem
     static readonly StatsEnumerated[] TamedStats = [StatsEnumerated.Toughness, StatsEnumerated.Athletics, StatsEnumerated.MeleeDefence, StatsEnumerated.MeleeAttack,
         StatsEnumerated.MartialArts, StatsEnumerated.Dodge, StatsEnumerated.Stealth, StatsEnumerated.MassCombat, StatsEnumerated.Swimming];
 
-    sealed record CharacterTrade(long Id, CharacterTradeKind Kind, CharacterId Slaver, CharacterId Player, IReadOnlyList<CharacterTradeRow> Rows);
+    sealed record CharacterTrade(long Id, CharacterTradeKind Kind, CharacterId Slaver, CharacterId Player, IReadOnlyList<CharacterTradeRow> Rows, Conversation Context)
+    {
+        public IReadOnlyDictionary<CharacterId, CharacterControl> SaleControls { get; init; } = new Dictionary<CharacterId, CharacterControl>();
+    }
 
-    // The window to open when the conversation ends (val0 the price override), the open one and its view.
-    (CharacterTradeKind Kind, CharacterId Slaver, CharacterId Player, int Price)? characterTradeAfter;
-    CharacterTrade? characterTrade;
-    CharacterTradeView? characterTradeView;
     long characterTradeId;
-
-    public CharacterTradeView? PublishCharacterTrade() => characterTradeView;
+    public CharacterTradeView? PublishCharacterTrade() => Local.TradeView;
+    public CharacterTradeView? PublishCharacterTrade(PlayerId player) => interactions.GetValueOrDefault(player.Value)?.TradeView;
 
     /// <summary>
     /// A slave's base price (<c>FUN_1406751f0</c>, economy.md section 12): clamp(trunc(strength x k + melee attack + dexterity x k) x RACE <c>buy value</c>, 1000, 20000), k the
@@ -72,20 +81,21 @@ public sealed partial class DialogueSystem
     public static long SalePrice(CharacterCold c, int priceOverride) => priceOverride > 0 ? priceOverride : Math.Clamp(SlaveValue(c) / 2, 200, 2500);
 
     /// <summary>The price of buying <paramref name="c"/> free (<c>CharacterTrading_SlaveBuying</c>, <c>FUN_1406a7970</c>): the override when above 0, else its value; doubled for one of the player's faction.</summary>
-    public static long PurchasePrice(World world, CharacterCold c, int priceOverride)
+    public static long PurchasePrice(World world, CharacterCold c, int priceOverride, int? buyerFaction = null)
     {
         long price = priceOverride > 0 ? priceOverride : SlaveValue(c);
-        return world.Player.Faction >= 0 && c.Faction == world.Player.Faction ? price * 2 : price;
+        int faction = buyerFaction ?? world.Player.Faction;
+        return faction >= 0 && c.Faction == faction ? price * 2 : price;
     }
 
     /// <summary>
     /// Opens the window a DA 41 / 42 line asked for (as the conversation ends), when the customer is a player character. Selling lists the customer's squad members that are not dead and within 300 units of the slaver,
     /// the customer included; buying lists every character in slave state 1 owned by the slaver's faction that is not dead (engine reading of the original's per-owner slave set).
     /// </summary>
-    void OpenCharacterTrade(World world)
+    void OpenCharacterTrade(World world, Interaction state)
     {
-        if (characterTradeAfter is not { } t) return;
-        characterTradeAfter = null;
+        if (state.TradeAfter is not { } t) return;
+        state.TradeAfter = null;
         var table = world.Characters;
         if (!table.TryResolveNext(t.Slaver, out int s) || !table.TryResolveNext(t.Player, out int p) || table.Cold(s) is not { } sc || table.Cold(p) is not { IsPlayer: true } pc) return;
         var rows = new List<CharacterTradeRow>();
@@ -93,7 +103,8 @@ public sealed partial class DialogueSystem
         {
             if (world.Squads.Find(pc.SquadId) is { } squad)
                 foreach (var id in squad.Members)
-                    if (table.TryResolveNext(id, out int m) && table.Cold(m) is { Medical.Dead: false } mc && Vector3.Distance(table.Next[m].Position, table.Next[s].Position) <= SlaveSaleRange)
+                    if (table.TryResolveNext(id, out int m) && table.Cold(m) is { Medical.Dead: false } mc && Vector3.Distance(table.Next[m].Position, table.Next[s].Position) <= SlaveSaleRange
+                        && (t.Context.Actor is null || world.Players.CanControl(t.Context.Actor.Value, id)))
                         rows.Add(new(id, mc.Name, SalePrice(mc, t.Price), [(Loc.Tr("Name:"), mc.Name), (Loc.Tr("WARNING: Character will become a slave!"), "")], []));
         }
         else if (t.Kind == CharacterTradeKind.AnimalBuying)
@@ -106,12 +117,16 @@ public sealed partial class DialogueSystem
             for (int i = 0; i < table.HighWater; i++)
             {
                 if (!table.Next[i].Alive || table.Cold(i) is not { SlaveState: 1, Medical.Dead: false } c || c.SlaveOwner != sc.Faction) continue;
-                rows.Add(new(table.IdOf(i), c.Name, PurchasePrice(world, c, t.Price),
+                rows.Add(new(table.IdOf(i), c.Name, PurchasePrice(world, c, t.Price, t.Context.Faction),
                     StatLines(c, StatsEnumerated.Strength, StatsEnumerated.Dexterity, StatsEnumerated.Toughness, StatsEnumerated.MeleeAttack, StatsEnumerated.MeleeDefence),
                     StatLines(c, StatsEnumerated.Labouring, StatsEnumerated.Farming, StatsEnumerated.Cooking, StatsEnumerated.Engineering, StatsEnumerated.Medic)));
             }
         }
-        characterTrade = new(++characterTradeId, t.Kind, t.Slaver, t.Player, rows);
+        state.Trade = new(++characterTradeId, t.Kind, t.Slaver, t.Player, rows, t.Context)
+        {
+            SaleControls = t.Context.Actor is null ? new Dictionary<CharacterId, CharacterControl>()
+                : rows.Select(r => (r.Character, Grant: world.Players.ControlOf(r.Character))).Where(r => r.Grant is not null).ToDictionary(r => r.Character, r => r.Grant!.Value),
+        };
     }
 
     /// <summary>
@@ -169,53 +184,74 @@ public sealed partial class DialogueSystem
 
     /// <summary>The buyer's money the window shows and gates the confirm by: the slaver's squad purse when selling (its shop's money for a trader), the player's when buying.</summary>
     long BuyerMoney(World world, CharacterTrade t) =>
-        t.Kind != CharacterTradeKind.SlaveSelling ? world.Player.Money
+        t.Kind != CharacterTradeKind.SlaveSelling ? (Funds(world, t.Context)?.Money ?? 0)
         : world.Characters.TryResolveNext(t.Slaver, out int s) && world.Squads.Find(world.Characters.Cold(s)!.SquadId) is { } squad ? squad.Money : 0;
 
     /// <summary>Closes the window when the slaver or the customer is no longer awake (engine choice).</summary>
-    void KeepCharacterTrade(World world)
+    void KeepCharacterTrade(World world, Interaction state)
     {
-        if (characterTrade is not { } t) return;
+        if (state.Trade is not { } t) return;
         var table = world.Characters;
-        if (!table.TryResolveNext(t.Slaver, out int s) || !table.TryResolveNext(t.Player, out int p) || !Awake(table, s) || !Awake(table, p)) characterTrade = null;
+        if (!Authorized(world, t.Context) || !table.TryResolveNext(t.Slaver, out int s) || !table.TryResolveNext(t.Player, out int p) || !Awake(table, s) || !Awake(table, p) || !InTalkRange(table, p, s)) state.Trade = null;
     }
 
-    void RefreshCharacterTrade(World world)
+    void RefreshCharacterTrade(World world, Interaction state)
     {
-        if (characterTrade is not { } t) { characterTradeView = null; return; }
+        if (state.Trade is not { } t) { state.TradeView = null; return; }
         bool buying = t.Kind != CharacterTradeKind.SlaveSelling;
         string title = t.Kind switch { CharacterTradeKind.SlaveBuying => "Buying Slaves", CharacterTradeKind.AnimalBuying => "Buying Animals", _ => "Selling Slaves" };
-        characterTradeView = new(t.Id, t.Kind, t.Slaver, t.Player, Loc.Tr(title), Loc.Tr(buying ? "Buy" : "Sell"), BuyerMoney(world, t), t.Rows);
+        bool visible = !buying || CanReadFunds(world, t.Context);
+        bool allowed = Authorized(world, t.Context) && (buying ? CanSpend(world, t.Context) : CanManage(world, t.Context));
+        if (t.Kind == CharacterTradeKind.AnimalBuying) allowed &= CanManage(world, t.Context);
+        state.TradeView = new(t.Id, t.Kind, t.Slaver, t.Player, Loc.Tr(title), Loc.Tr(buying ? "Buy" : "Sell"), visible ? BuyerMoney(world, t) : 0, t.Rows)
+            { FundsVisible = visible, CanConfirm = allowed };
     }
 
     /// <summary>
     /// The confirm (<c>FUN_1406add20</c> buying, <c>FUN_1406a7740</c> selling): the ticked rows whose characters are not dead are traded and the window closes. The window's gate
     /// (<c>FUN_1407281c0</c>: a row ticked, the total within the buyer's money) is checked again here, as the money may have moved since the click.
     /// </summary>
-    void ConfirmTrade(World world, IReadOnlyList<CharacterId> selected)
+    void ConfirmTrade(World world, Interaction state, ConfirmCharacterTrade command)
     {
-        if (characterTrade is not { } t) return;
+        if (state.Trade is not { } t) return;
+        if (command.Issuer != t.Context.Actor) return;
+        if (command.Issuer is not null && (command.TradeId == 0 || command.TradeId != t.Id || t.Context.Actor != command.Issuer)) return;
+        if (command.TradeId != 0 && command.TradeId != t.Id || !Authorized(world, t.Context)) return;
+        if (t.Kind != CharacterTradeKind.SlaveSelling && !CanSpend(world, t.Context)) return;
+        if (t.Kind is CharacterTradeKind.SlaveSelling or CharacterTradeKind.AnimalBuying && !CanManage(world, t.Context)) return;
         long buyerMoney = BuyerMoney(world, t);
-        characterTrade = null;
+        state.Trade = null;
         var table = world.Characters;
         if (!table.TryResolveNext(t.Slaver, out int s) || table.Cold(s) is not { } sc) return;
         var chosen = new List<(int Slot, CharacterCold Cold, long Price)>();
         foreach (var row in t.Rows)
-            if (selected.Contains(row.Character) && table.TryResolveNext(row.Character, out int c) && table.Cold(c) is { Medical.Dead: false } cc) chosen.Add((c, cc, row.Price));
+            if (command.Selected.Contains(row.Character) && table.TryResolveNext(row.Character, out int c) && table.Cold(c) is { Medical.Dead: false } cc) chosen.Add((c, cc, row.Price));
         long total = chosen.Sum(x => x.Price);
-        if (chosen.Count == 0 || total > buyerMoney) return;
+        if (chosen.Count == 0 || chosen.Count != command.Selected.Distinct().Count() || total < 0 || total > buyerMoney) return;
+        if (!table.TryResolveNext(t.Player, out int buyerSlot) || !Awake(table, buyerSlot) || !Awake(table, s) || !InTalkRange(table, buyerSlot, s)) return;
+        foreach (var (slot, current, _) in chosen)
+        {
+            var id = table.IdOf(slot);
+            if (t.Kind == CharacterTradeKind.AnimalBuying && (current.IsPlayer || current.Faction != sc.Faction || current.Animal is null
+                || t.Context.Actor is not null && world.Players.KnownControl(current.Entity) is not null)) return;
+            if (t.Kind == CharacterTradeKind.SlaveBuying && (current.SlaveState != 1 || current.SlaveOwner != sc.Faction)) return;
+            if (t.Kind == CharacterTradeKind.SlaveSelling && (current.SquadId != table.Cold(buyerSlot)!.SquadId
+                || t.Context.Actor is not null && (!t.SaleControls.TryGetValue(id, out var grant) || !world.Players.Validate(grant))
+                || Vector3.Distance(table.Next[slot].Position, table.Next[s].Position) > SlaveSaleRange)) return;
+        }
+        if (t.Kind == CharacterTradeKind.SlaveSelling && (Funds(world, t.Context) is not { } recipient || recipient.Money > long.MaxValue - total)) return;
         if (t.Kind == CharacterTradeKind.AnimalBuying)
         {
-            BuyAnimals(world, t, s, chosen, total);
+            BuyAnimals(world, state, t, s, chosen, total);
             return;
         }
         foreach (var (slot, c, _) in chosen)
         {
-            if (t.Kind == CharacterTradeKind.SlaveBuying) BuyFree(world, slot, c, sc, t.Player);
-            else Sell(world, c, sc, t.Player);
+            if (t.Kind == CharacterTradeKind.SlaveBuying) BuyFree(world, slot, c, sc, t.Player, t.Context);
+            else Sell(world, c, sc, t.Player, t.Context);
         }
-        if (t.Kind == CharacterTradeKind.SlaveSelling) world.Player.Money += total;   // the slaver's purse is not touched
-        else if (world.Player.Money >= total) world.Player.Money -= total;
+        if (t.Kind == CharacterTradeKind.SlaveSelling) Funds(world, t.Context)!.TryCredit(total);   // the slaver's purse is not touched
+        else if (Funds(world, t.Context)?.Money >= total) Funds(world, t.Context)!.TryDebit(total);
     }
 
     /// <summary>
@@ -225,7 +261,7 @@ public sealed partial class DialogueSystem
     /// is out of its cage (the original fires it first; Meitou's events need a free speaker); the original's task 133 (GET_OUT_OF_CAGE_LEGIT) is a walk from the open cage to within
     /// a few units of the buyer (where the original's task takes it is <b>Unknown</b>).
     /// </summary>
-    void BuyFree(World world, int slot, CharacterCold c, CharacterCold slaver, CharacterId player)
+    void BuyFree(World world, int slot, CharacterCold c, CharacterCold slaver, CharacterId player, Conversation context)
     {
         var table = world.Characters;
         var id = table.IdOf(slot);
@@ -251,8 +287,8 @@ public sealed partial class DialogueSystem
         if (Locks.LockSystem.WornShackles(c)?.Lock is { } l) l.Locked = false;
         Memory.Remember(world, c.SquadId, player, MemoryTag.FreedMe);   // its (new) squad remembers the buyer as the one who freed it (FUN_1406add20, Observed)
         if (Settings.AmbientEvents) Fire(world, id, player, BoughtMeFromSlavery);
-        ChangeTowardPlayer(world, slaver.Faction, 1);
-        ChangeTowardPlayer(world, c.Faction, 4);
+        ChangeTowardPlayer(world, context, slaver.Faction, 1);
+        ChangeTowardPlayer(world, context, c.Faction, 4);
     }
 
     /// <summary>
@@ -262,14 +298,15 @@ public sealed partial class DialogueSystem
     /// to the seller's squad, each item into the first backpack of the seller's squad members (from the last member back) that takes it, the rest destroyed. Then the total is
     /// taken from the player's money. The original then opens the character editor on the bought animals to name them (not opened: Meitou's editor does not edit animals).
     /// </summary>
-    void BuyAnimals(World world, CharacterTrade t, int seller, List<(int Slot, CharacterCold Cold, long Price)> chosen, long total)
+    void BuyAnimals(World world, Interaction state, CharacterTrade t, int seller, List<(int Slot, CharacterCold Cold, long Price)> chosen, long total)
     {
         var table = world.Characters;
-        int free = data.Bodies.Constants.MaxFactionSize - PlayerHeads(world);
-        if (chosen.Count > free)
+        int free = data.Bodies.Constants.MaxFactionSize - PlayerHeads(world, t.Context.Faction);
+        if (!table.TryResolveNext(t.Player, out int targetSlot) || table.Cold(targetSlot) is not { } target) return;
+        if (chosen.Count > free || chosen.Count > RecruitSpace(world, t.Context, target))
         {
-            characterTrade = t;   // the original returns before closing
-            world.Post(free <= 0 ? Loc.Tr("You cannot hire any more characters")
+            state.Trade = t;   // the original returns before closing
+            Post(world, t.Context, free <= 0 ? Loc.Tr("You cannot hire any more characters")
                 : free == 1 ? Loc.Tr("You can only hire {1} more character", free) : Loc.Tr("You can only hire {1} more characters", free));
             return;
         }
@@ -277,14 +314,14 @@ public sealed partial class DialogueSystem
         var sellerSquad = world.Squads.Find(table.Cold(seller)!.SquadId);
         foreach (var (slot, c, _) in chosen)
         {
+            var packed = c.Inventory?.Backpack?.Contents is { } bag ? bag.All().ToList() : [];
+            if (!JoinPlayer(world, t.Context, slot, buyer)) throw new InvalidOperationException("Recruit capacity changed inside an authoritative character trade.");
             c.Ai = null;
             if (c.Stats is { } stats) foreach (var stat in TamedStats) stats[stat] *= 0.25f;
-            var packed = c.Inventory?.Backpack?.Contents is { } bag ? bag.All().ToList() : [];
             foreach (var item in packed) c.Inventory!.Remove(item);
-            if (!JoinPlayer(world, slot, buyer)) continue;
             foreach (var item in packed) GiveBack(world, sellerSquad, item);
         }
-        if (world.Player.Money >= total) world.Player.Money -= total;
+        Funds(world, t.Context)!.TryDebit(total);
     }
 
     /// <summary>Puts an item from a bought animal's bag into the first backpack of <paramref name="squad"/>'s members, from the last member back, that takes it; none: it is gone.</summary>
@@ -301,13 +338,13 @@ public sealed partial class DialogueSystem
     /// and faction; its squad remembers the customer as its captor (long-term tag 5 MY_CAPTOR, <b>Observed</b>); relations toward the player's faction: the slaver's +4, the sold one's
     /// own -4; it obeys the slaver's squad (job 187) and is chained (<see cref="Chain"/>).
     /// </summary>
-    void Sell(World world, CharacterCold c, CharacterCold slaver, CharacterId customer)
+    void Sell(World world, CharacterCold c, CharacterCold slaver, CharacterId customer, Conversation context)
     {
         Locks.FixtureRegistry.Enslave(world, c, slaver.Faction, slaver.SquadId);
         Chain(c);
         Memory.Remember(world, c.SquadId, customer, MemoryTag.Captor);
-        ChangeTowardPlayer(world, slaver.Faction, 4);
-        ChangeTowardPlayer(world, c.Faction, -4);
+        ChangeTowardPlayer(world, context, slaver.Faction, 4);
+        ChangeTowardPlayer(world, context, c.Faction, -4);
     }
 
     CharacterAssembly? chainAssembly;
@@ -332,10 +369,10 @@ public sealed partial class DialogueSystem
         (chainAssembly ??= new CharacterAssembly(data)).RefreshEquipment(c);
     }
 
-    void ChangeTowardPlayer(World world, int faction, int amount)
+    void ChangeTowardPlayer(World world, Conversation context, int faction, int amount)
     {
-        if (world.Player.Faction < 0 || faction == world.Player.Faction || !data.Relations.Contains(faction)) return;
-        ChangeRelation(world, faction, world.Player.Faction, amount);
+        if (context.Faction < 0 || faction == context.Faction || !data.Relations.Contains(faction)) return;
+        ChangeRelation(world, faction, context.Faction, amount);
     }
 
     /// <summary>The character leaves its squad for a new one of its own faction: a player squad (<see cref="SquadManagement.NewSquad"/>), else a "Wandering Squad" it leads.</summary>
@@ -346,8 +383,8 @@ public sealed partial class DialogueSystem
         var at = table.Next[slot].Position;
         Leave(world, id, c);
         Squad squad;
-        if (world.Player.Faction >= 0 && c.Faction == world.Player.Faction)
-            squad = SquadManagement.NewSquad(world, data.Db, at, data.Factions[world.Player.Faction].Name is { Length: > 0 } f ? f : "Nameless");
+        if (world.IsPlayerFaction(c.Faction))
+            squad = SquadManagement.NewSquad(world, data.Db, at, data.Factions[c.Faction].Name is { Length: > 0 } f ? f : "Nameless", c.Faction);
         else
         {
             var template = data.Db.Find(SquadManagement.DismissTemplate);

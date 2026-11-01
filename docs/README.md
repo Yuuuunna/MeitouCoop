@@ -44,6 +44,9 @@ used as a naming reference for our 1.0.68 analysis; they are **Observed** until 
 - [renderer-native](renderer-native.md)
 - [resource-layer](resource-layer.md): the resources and the commands between the renderers and the API - the proposed neutral vocabulary
 - [simulation](simulation.md)
+- [multiplayer](multiplayer.md): authority, faction resources, character identity and shared runtime contracts
+- [networking](networking.md): compatibility, command dispatch, state replication and client replica
+- [server](server.md): account credentials, persistent player bindings and TLS transport
 - [audio](audio.md): what the game sends to Wwise, Meitou's player, ambience rules
 - [viewer](viewer.md)
 
@@ -83,6 +86,7 @@ used as a naming reference for our 1.0.68 analysis; they are **Observed** until 
 
 ## Gameplay research
 
+- [Player capabilities and behaviour chains](game/behaviour-map.md): actions, conditions, outcomes and follow-up choices; Chinese index, separate from implementation status
 - [ai-tasks](game/ai-tasks.md)
 - [ai](game/ai.md)
 - [blood-decals](game/blood-decals.md): blood pools, smears and splashes on the terrain

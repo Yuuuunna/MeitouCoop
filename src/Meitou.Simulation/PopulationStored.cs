@@ -52,7 +52,7 @@ public sealed partial class PopulationSystem
             cold.SquadId = -1;
             return;
         }
-        table.Remove(id);
+        table.Remove(id, unloaded: true);
     }
 
     /// <summary>Clears what a character's cold state holds only while it is in the world: paths, AI, carrying, treatment, combat and stealth state, a pending crime, jobs.</summary>

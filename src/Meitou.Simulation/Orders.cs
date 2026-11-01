@@ -189,9 +189,12 @@ public static class Orders
         switch (command)
         {
             case OrdersCommand set:
+                const CharacterOrders allowed = CharacterOrders.Block | CharacterOrders.Hold | CharacterOrders.Passive | CharacterOrders.Ranged
+                    | CharacterOrders.Taunt | CharacterOrders.Sneak | CharacterOrders.Jobs;
+                if (command.Issuer is not null && (set.Order & ~allowed) != 0) break;
                 // A toggle sets the whole selection to the opposite of the first character's state, so a mixed selection ends up all on or all off.
                 bool? on = set.On;
-                foreach (var id in set.Characters.Count > 0 ? set.Characters : world.Player.Selection.ToArray())
+                foreach (var id in world.CommandCharacters(set, set.Characters))
                 {
                     if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold) continue;
                     on ??= (cold.Orders & set.Order) == 0;
@@ -205,7 +208,7 @@ public static class Orders
             case RunSpeedCommand speed:
                 int? mode = null;
                 int group = -1;
-                foreach (var id in speed.Characters.Count > 0 ? speed.Characters : world.Player.Selection.ToArray())
+                foreach (var id in world.CommandCharacters(speed, speed.Characters))
                 {
                     if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold) continue;
                     // One staying low (not crippled) stands up instead of changing speed (setStandingOrder 0, 1, 2, 16).
@@ -222,7 +225,7 @@ public static class Orders
                 }
                 break;
             case StandUpCommand stand:
-                foreach (var id in stand.Characters)
+                foreach (var id in command.Issuer is null ? stand.Characters : world.CommandCharacters(stand, stand.Characters))
                     if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true, Medical: { } medical }) medical.StayingLow = false;
                 break;
         }

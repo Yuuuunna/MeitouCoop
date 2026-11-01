@@ -10,6 +10,8 @@ public enum PlacementFailure : byte
     TooCloseToBuilding, NoValidUsageNodes, CharactersInTheWay, BlocksUseNodes, InvalidGround, InvalidFloor, NotLevel,
     /// <summary>Engine: the record is not a BUILDING or not research-unlocked.</summary>
     NotAvailable,
+    /// <summary>Engine authority: required region/content is not ready, or the request is not a valid transform/observation.</summary>
+    RegionNotReady, InvalidPlan,
 }
 
 /// <summary>
@@ -134,6 +136,8 @@ public static class PlacementRules
         PlacementFailure.InvalidFloor => "Invalid placing floor number.",
         PlacementFailure.NotLevel => "Ground needs to be more level.",
         PlacementFailure.NotAvailable => "That building is not available yet.",
+        PlacementFailure.RegionNotReady => "The construction area is not ready.",
+        PlacementFailure.InvalidPlan => "That construction plan is not valid.",
         _ => "",
     };
 }

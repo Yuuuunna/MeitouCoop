@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Meitou.Audio;
@@ -6,6 +5,7 @@ using Meitou.Data.Characters;
 using Meitou.Data.Gameplay;
 using Meitou.Data.Gameplay.Combat;
 using Meitou.Data.Fcs;
+using Meitou.Engine;
 using Meitou.Simulation;
 
 namespace Meitou.Game;
@@ -28,8 +28,8 @@ sealed partial class GameHost
 
     /// <summary>What a character did the frame before, for the sounds that are edges (a loot started, a bed got into, a person lifted).</summary>
     struct SoundMemo { public CharacterTask Task; public bool InBed, Carried, PutDown; public int Frame; }
-    World? soundsFor;
-    readonly ConcurrentQueue<SoundEvent> soundQueue = new();
+    object? soundsFor;
+    IPlayerSession? soundSource;
     readonly ConditionalWeakTable<CharacterAppearance, CharacterSoundProfile> soundProfiles = [];
     readonly List<SoundLayer> soundLayers = [];
 
@@ -61,21 +61,22 @@ sealed partial class GameHost
             characterSounds = new CharacterSounds(sound.Player, groundSurfaces) { Floor = FloorSurface };
         }
         var sounds = characterSounds;
-        var world = session.World;
-        if (!ReferenceEquals(soundsFor, world))
+        IPlayerSession source = session;
+        if (!ReferenceEquals(soundsFor, source.WorldIdentity))
         {
-            // A new world: the old one's objects go, and its combat feeds this host's queue.
+            // A new presentation source: retire the old emitters and subscribe to this session.
             sounds.Clear();
-            soundQueue.Clear();
-            world.Sounds = soundQueue;
-            soundsFor = world;
+            soundSource?.EnableSounds(false);
+            source.EnableSounds(true);
+            soundSource = source;
+            soundsFor = source.WorldIdentity;
         }
 
         sounds.BeginFrame(eye);
         soundFrame++;
         IndexPrevious();
         float alpha = session.SimulationAlpha;
-        float tick = world.TickSeconds;
+        float tick = (float)(Math.Max(1, session.CurrentSnapshot.Tick - session.PreviousSnapshot.Tick) * Meitou.Runtime.WorldRuntime.TickSeconds);
         foreach (var c in session.CurrentSnapshot.Characters)
         {
             if (c.Appearance is not { } look) continue;
@@ -104,7 +105,7 @@ sealed partial class GameHost
         sounds.EndFrame();
         if (soundMemo.Count > session.CurrentSnapshot.Characters.Count)
             foreach (ulong stale in soundMemo.Where(m => m.Value.Frame != soundFrame).Select(m => m.Key).ToArray()) soundMemo.Remove(stale);
-        while (soundQueue.TryDequeue(out var happened)) PlayCombatSound(sounds, happened);
+        while (source.TryDequeueSound(out var happened)) PlayCombatSound(sounds, happened);
     }
 
     /// <summary>The job sounds that are edges: a loot that started (<c>Character_Loot</c>), a bed got into or out of (<c>Character_Bed</c>, <c>Bed</c> = <c>Get_In</c> / <c>Get_Out</c>), a person lifted or set down by a put-down order.</summary>
@@ -149,9 +150,8 @@ sealed partial class GameHost
     void ResetCharacterAudio()
     {
         characterSounds?.Clear();
-        soundQueue.Clear();
-        if (soundsFor is { } world) world.Sounds = null;
-        soundsFor = null;
+        soundSource?.EnableSounds(false);
+        soundSource = null; soundsFor = null;
     }
 
     /// <summary>One statistics line; empty without audio.</summary>

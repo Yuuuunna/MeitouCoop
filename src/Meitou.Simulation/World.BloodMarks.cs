@@ -22,9 +22,21 @@ public enum BloodMarkKind : byte
 /// <param name="Colour">The race's <c>blood colour</c> (0xRRGGBB).</param>
 /// <param name="Race">The RACE record id (an <see cref="BloodMarkKind.Explosion"/> only: its severed limbs fly).</param>
 public readonly record struct BloodMark(BloodMarkKind Kind, CharacterId Who, Vector3 Position, Vector2 Direction, float Amount, uint Colour, string? Race = null);
+public readonly record struct BloodVisual(BloodMark Mark, long Tick, float TickSeconds, long CorpseTicks);
 
 public sealed partial class World
 {
+    internal bool HasBloodSink => BloodMarks is not null || Players.RequiresExplicitControl;
+    public void EmitBlood(BloodMark mark)
+    {
+        BloodMarks?.Enqueue(mark);
+        if (Players.RequiresExplicitControl) presentationEvents.Add(new BloodVisual(mark, Tick, TickSeconds, BodySystem.CorpseTicksOf(this)));
+    }
+    public void EmitBlockSpark(CharacterId who)
+    {
+        BlockSparks?.Enqueue(who);
+        if (Players.RequiresExplicitControl) presentationEvents.AddSpark(who);
+    }
     volatile System.Collections.Concurrent.ConcurrentQueue<BloodMark>? bloodMarks;
 
     /// <summary>

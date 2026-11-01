@@ -264,3 +264,18 @@ Evidence scopes below apply only to their named sources/checks.
 - 4.1 What may be looted (`isItemLootable`, state 0xf, `FUN_14059dcc0`, **Observed**)
 - 4.4 The stolen flag (`FUN_14079e550(item, strict)`, **Observed**; answers part of the economy.md Unknown)
 - 4.6 Carrying people past witnesses (`FUN_1408549f0`, **Observed**)
+
+## Multiplayer runtime contract
+
+**Observed** (implementation inspection; not acceptance-tested): issuer-specific loot windows bind
+actor, body, session generation and the opening control grant. Item transfers require both current
+inventory revisions and a matching actor/session. Carry, loot and assassination commands retain
+their grants through approach and execution; revocation stops the instruction without removing an
+already carried body. Awake teammate pickup requires control of that teammate in explicit mode;
+downed victims and kidnapping retain normal gameplay/crime checks. Loot money credits the acting
+character's faction; NPC looting preferences come from the victim's controller.
+
+**Observed** (implementation inspection): closing loot matches that player's actor, target and session,
+independently of container windows. Corpse disposal binds its selected machine/site, original owner,
+site revision, actor grant and membership revision until arrival. Losing these rights cancels the
+errand while preserving the carried body; incineration checks that the original carried body is dead.

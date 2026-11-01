@@ -362,13 +362,13 @@ sealed partial class GameHost
         {
             try
             {
-                playerSquad = population.StartPlayer(session.World, start);
-                var lead = session.World.Characters.Previous[playerSquad.Leader.Slot].Position;
+                playerSquad = population.StartPlayer(LocalSession.World, start);
+                var lead = LocalSession.World.Characters.Previous[playerSquad.Leader.Slot].Position;
                 startTarget = lead;
                 Console.WriteLine($"metal     player squad: {playerSquad.Members.Count} characters, leader at {lead.X:0}, {lead.Z:0}");
                 // --new-game is a shortcut past the menus: the rolled characters are kept (the menu's New game opens the editor);
                 // a still keeps creation open for the showcase's editor pictures.
-                if (o.Screenshot is null) session.World.Commands.Enqueue(new Meitou.Simulation.Editing.FinishCreation { Tick = session.World.Tick });
+                if (o.Screenshot is null) LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Editing.FinishCreation { Tick = LocalSession.World.Tick });
             }
             catch (InvalidOperationException e) { Console.WriteLine($"metal     player squad skipped: {e.Message}"); }
         }
@@ -376,12 +376,13 @@ sealed partial class GameHost
         // that has to be built first. The interactive loop keeps this table current (UpdateNav), as the Vulkan host does.
         if (nav is not null && population is not null)
         {
-            population.ZoneGate = zone => nav.Walkability.World.Contains(zone);
-            var around = playerSquad is not null ? session.World.Characters.Previous[playerSquad.Leader.Slot].Position : session.Focus;
+            population.ZoneGate = nav.IsReady;
+            var around = playerSquad is not null ? LocalSession.World.Characters.Previous[playerSquad.Leader.Slot].Position : LocalSession.Focus;
             var zones = Meitou.Simulation.ZoneActivation.ZonesAround(around, 0);
+            using var preparation = LocalSession.World.Regions.Retain(zones, simulation: false);
             var watch = Stopwatch.StartNew();
-            Task.WaitAll([.. zones.Select(z => (Task)nav.LoadZone(z))]);
-            foreach (var z in zones) navZones[z] = Stopwatch.GetTimestamp();
+            Task.WaitAll([.. zones.Select(z => (Task)nav.PrepareZone(z))]);
+            LocalSession.SynchronizeWorld();
             Console.WriteLine($"metal     navmesh {zones.Count} zone(s) round the start ready in {watch.ElapsedMilliseconds} ms");
         }
         ApplyCamera(session.Camera.Current);
@@ -520,17 +521,17 @@ sealed partial class GameHost
             {
                 UpscalerStatus = UpscalerStatusText,
                 GameplayChanged = ApplyGameplay,
-                AttackSlotsChanged = slots => { foreach (var combat in session.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.AttackSlots = slots; },
-                LateDefencesChanged = on => { foreach (var combat in session.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on; },
-                DoorsCloseChanged = on => { foreach (var locks in session.World.Systems.OfType<Meitou.Simulation.Locks.LockSystem>()) locks.DoorsCloseBehind = on; },
+                AttackSlotsChanged = slots => { foreach (var combat in LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.AttackSlots = slots; },
+                LateDefencesChanged = on => { foreach (var combat in LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on; },
+                DoorsCloseChanged = on => { foreach (var locks in LocalSession.World.Systems.OfType<Meitou.Simulation.Locks.LockSystem>()) locks.DoorsCloseBehind = on; },
                 TutorialsChanged = on => { if (tutorials is { } t) t.Enabled = on; },
                 ResetTutorials = () => tutorials?.Reset(),
                 OffscreenChanged = () =>
                 {
-                    foreach (var population in session.World.Systems.OfType<Meitou.Simulation.PopulationSystem>())
+                    foreach (var population in LocalSession.World.Systems.OfType<Meitou.Simulation.PopulationSystem>())
                         (population.KeepRoamers, population.OffscreenFights, population.OffscreenHealing, population.CampaignAncestorsOnce, population.KeepWild, population.ResidentSchedule) =
                             (config.KeepRoamers, config.OffscreenFights, config.OffscreenHealing, config.CampaignAncestorsOnce, config.KeepWild, config.ResidentSchedule);
-                    foreach (var production in session.World.Systems.OfType<Meitou.Simulation.Production.ProductionSystem>()) production.UnloadedProduction = config.UnloadedProduction;
+                    foreach (var production in LocalSession.World.Systems.OfType<Meitou.Simulation.Production.ProductionSystem>()) production.UnloadedProduction = config.UnloadedProduction;
                 },
                 CameraRotateSpeedChanged = ApplyCameraRotateSpeed,
                 AudioChanged = AudioSettingsChanged,
@@ -1035,7 +1036,7 @@ sealed partial class GameHost
             if (panelName == "edited" && player is not null)
             {
                 player.ShowcaseEdit();
-                session.AdvanceSimulation(session.Ticks.TickSeconds);
+                LocalSession.AdvanceSimulation(session.Ticks.TickSeconds);
             }
             if (panelName?.StartsWith("editor", StringComparison.Ordinal) == true && hud is not null)
             {
@@ -1141,6 +1142,7 @@ sealed partial class GameHost
                     WorldNews();
                 }
                 else if (!Covered) session.Advance(dt);
+                if (Covered && session.IsRemote) session.Advance(0);
                 if (hud is not null)
                 {
                     HandleSaves(dt);
@@ -1351,14 +1353,14 @@ sealed partial class GameHost
             }
             var savedParticles = gpu.Particles;
             if (titleLook) { gpu.Weather = null; gpu.Particles = null; }   // the staged title sky and its own dust, not the world's weather
-            if (tickAhead) session.BeginTickAhead();
+            if (tickAhead && session is WorldSession aheadOwner) aheadOwner.BeginTickAhead();
             try
             {
                 WorldFrame.Draw(gpu, scene, camera, render, size.X, size.Y, hour, (float)now / 600f, o.FogDistance);
             }
             finally
             {
-                if (tickAhead) session.EndTickAhead();
+                if (tickAhead && session is WorldSession completedOwner) completedOwner.EndTickAhead();
                 gpu.Weather = savedWeather;
                 gpu.Particles = savedParticles;
                 if (titleLook)
@@ -1401,7 +1403,7 @@ sealed partial class GameHost
                 {
                     statsLines.Clear();
                     statsLines.Add($"{fpsText}  {dt * 1000:0.00} ms  {size.X}x{size.Y}");
-                    statsLines.Add($"sim {session.Simulation.TotalTicks} ticks  {session.CurrentSnapshot.Characters.Count} characters  x{session.TimeScale:0}  {session.Clock.TimeText}");
+                    statsLines.Add($"world tick {session.CommandTick}  {session.CurrentSnapshot.Characters.Count} characters  x{session.TimeScale:0}  {session.Clock.TimeText}");
                     statsLines.Add($"camera {camera.Target.X:0}, {camera.Target.Y:0}, {camera.Target.Z:0}  yaw {camera.Yaw * 180 / MathF.PI:0}  pitch {camera.Pitch * 180 / MathF.PI:0}  boom {camera.Distance:0}");
                     if (characters is not null) statsLines.Add(characters.Statistics());
                     if (foliage is not null) statsLines.Add($"foliage {foliage.DrawnInstances} instances, {foliage.DrawnBlades} blades, {foliage.DrawCalls} calls");

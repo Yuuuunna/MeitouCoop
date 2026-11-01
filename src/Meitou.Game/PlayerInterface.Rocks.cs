@@ -44,8 +44,8 @@ sealed partial class PlayerInterface
     void MineRock(IReadOnlyList<CharacterId> selection, ResourceNode rock, bool asJob)
     {
         string site = ProductionSystem.NaturalId(rock.Record, rock.Position);
-        if (asJob) Say(new AddJob(selection, TaskType.OPERATE_MACHINERY, site) { Tick = session.World.Tick });
-        else Say(new OperateOrder(selection, site) { Tick = session.World.Tick });
+        if (asJob) Say(new AddJob(selection, TaskType.OPERATE_MACHINERY, site) { SiteRevision = WorkRevisionOf(site), Tick = session.CommandTick });
+        else Say(new OperateOrder(selection, site) { SiteRevision = WorkRevisionOf(site), Tick = session.CommandTick });
     }
 
     (ResourceNode Rock, Vector2 At, long Since)? rockPending;

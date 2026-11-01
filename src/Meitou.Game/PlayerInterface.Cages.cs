@@ -43,16 +43,16 @@ sealed partial class PlayerInterface
         bool occupied = !cage.Occupant.IsNone;
         if (cage.Locked)
         {
-            verbs.Add(("Pick Lock", () => Say(new PickLockOrder(selection, cage.Occupant) { Cage = occupied ? null : cage.Id, Tick = session.World.Tick })));
-            verbs.Add(("Use Tools", () => Say(new ForceLockOrder([], cage.Id, LockForce.Tools) { Tick = session.World.Tick })));
-            verbs.Add(("Use Strength", () => Say(new ForceLockOrder([], cage.Id, LockForce.Strength) { Tick = session.World.Tick })));
+            verbs.Add(("Pick Lock", () => Say(new PickLockOrder(selection, cage.Occupant) { Cage = occupied ? null : cage.Id, Tick = session.CommandTick })));
+            verbs.Add(("Use Tools", () => Say(new ForceLockOrder([], cage.Id, LockForce.Tools) { Tick = session.CommandTick })));
+            verbs.Add(("Use Strength", () => Say(new ForceLockOrder([], cage.Id, LockForce.Strength) { Tick = session.CommandTick })));
         }
-        if (occupied) verbs.Add(("Set Free", () => Say(new SetFreeOrder([], cage.Occupant) { Tick = session.World.Tick })));
+        if (occupied) verbs.Add(("Set Free", () => Say(new SetFreeOrder([], cage.Occupant) { Tick = session.CommandTick })));
         else if (!cage.Locked)
         {
             var carriers = Carriers();
-            if (carriers.Length > 0) verbs.Add(("Put in", () => Say(new Meitou.Simulation.Crime.PutInCageOrder(carriers) { Cage = cage.Id, Tick = session.World.Tick })));
-            else verbs.Add(("Get in", () => Say(new GetInCageOrder([], cage.Id) { Tick = session.World.Tick })));
+            if (carriers.Length > 0) verbs.Add(("Put in", () => Say(new Meitou.Simulation.Crime.PutInCageOrder(carriers) { Cage = cage.Id, Tick = session.CommandTick })));
+            else verbs.Add(("Get in", () => Say(new GetInCageOrder([], cage.Id) { Tick = session.CommandTick })));
         }
         return verbs;
     }

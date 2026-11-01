@@ -21,6 +21,7 @@ sealed partial class PlayerInterface
     Vector2 heldGrab;
     /// <summary>The serial of the held command the world has not applied yet (0: none), when it was sent, and the last serial used.</summary>
     long heldSerial, heldSentAt, heldCounter;
+    CharacterId heldActor = CharacterId.None;
     /// <summary>Where the press that lifted the held item was, while the button is down (null otherwise).</summary>
     Vector2? liftPress;
     /// <summary>The item cell a whole-stack lift emptied, hidden until the world's answer (its window and the cell's index or machine code).</summary>
@@ -95,7 +96,7 @@ sealed partial class PlayerInterface
             pinnedFrom = CharacterId.None;
         }
         var shown = pinnedInventories.Values.ToArray();
-        if (!shown.SequenceEqual(pinnedSent)) Say(new ShowInventoryCommand(pinnedSent = shown) { Tick = session.World.Tick });
+        if (!shown.SequenceEqual(pinnedSent)) Say(new ShowInventoryCommand(pinnedSent = shown) { Tick = session.CommandTick });
     }
 
     /// <summary>Closes every inventory window: the character's (bag, limbs, pinned ones), loot and the shown building's. Trade stays (it is the trader's to end).</summary>
@@ -134,6 +135,26 @@ sealed partial class PlayerInterface
     /// <summary>Sends a held-item command with a new serial; the world's published serial says when it was applied.</summary>
     void SayHeld(HeldCommand command)
     {
+        var snapshot = session.CurrentSnapshot;
+        long expected = heldSerial != 0 ? heldSerial : snapshot.HeldSerial;
+        if (command is LiftItem lift) heldActor = lift.Actor;
+        else if (heldActor.IsNone) heldActor = snapshot.Held?.Actor ?? CharacterId.None;
+        ItemOwner? window = command switch { LiftItem take => take.From, PlaceHeld put => put.Into, GiveHeld give => ItemOwner.Of(give.Target), _ => null };
+        ulong revision = window is { } owner ? owner.Holder switch
+        {
+            ItemHolder.Character => snapshot.Characters.FirstOrDefault(c => c.Id == owner.Character)?.ItemGrid?.Revision ?? 0,
+            ItemHolder.Stock => snapshot.Trade?.StockRevision ?? 0,
+            _ => Machine(owner.Site)?.StorageRevision ?? 0,
+        } : 0;
+        var machine = window is { Holder: ItemHolder.Site } target ? Machine(target.Site) : null;
+        bool stock = window?.Holder == ItemHolder.Stock || held?.From.Holder == ItemHolder.Stock;
+        var controlled = window is { Holder: ItemHolder.Character } characterTarget && snapshot.Characters.Any(c => c.Id == characterTarget.Character && c.IsPlayer)
+            ? new[] { characterTarget.Character } : Array.Empty<CharacterId>();
+        command = command with { ControlledCharacters = controlled, ExpectedHeldSerial = expected, HolderActor = heldActor,
+            InventoryRevision = command is LiftItem ? revision : command.InventoryRevision, DestinationRevision = command is not LiftItem ? revision : 0,
+            SessionId = stock ? snapshot.Trade?.SessionId ?? 0 : (ulong)Math.Max(0, snapshot.LootSessionId),
+            ContainerSessionId = machine?.ContainerSessionId ?? snapshot.Machines.FirstOrDefault(m => m.Site == held?.From.Site)?.ContainerSessionId ?? 0,
+            SiteRevision = machine?.SiteRevision ?? 0 };
         heldCounter = Math.Max(heldCounter + 1, Stopwatch.GetTimestamp());
         heldSerial = heldCounter;
         heldSentAt = Stopwatch.GetTimestamp();
@@ -144,7 +165,7 @@ sealed partial class PlayerInterface
     void ReturnHeldItem()
     {
         if (held is null) return;
-        SayHeld(new ReturnHeld { Tick = session.World.Tick });
+        SayHeld(new ReturnHeld { Tick = session.CommandTick });
         held = null;
     }
 
@@ -227,7 +248,7 @@ sealed partial class PlayerInterface
             view = View(item.Record, item.Name, item.Material, item.Quantity, item.Width, item.Height, item.Charge, window);
         }
         else return false;
-        SayHeld(new LiftItem(actor, window, token, whole) { Tick = session.World.Tick });
+        SayHeld(new LiftItem(actor, window, token, whole) { Tick = session.CommandTick });
         held = view;
         lifting = whole ? (window, code) : null;
         var b = control.Bounds;
@@ -330,7 +351,7 @@ sealed partial class PlayerInterface
         if (spot.Kind == DropKind.World && SquadBarMemberAt(p) is { } member)
         {
             if (h.From == ItemOwner.Of(member)) ReturnHeldItem();
-            else { SayHeld(new GiveHeld(member) { Tick = session.World.Tick }); held = null; }
+            else { SayHeld(new GiveHeld(member) { Tick = session.CommandTick }); held = null; }
             return;
         }
         if (spot.Kind == DropKind.World && OverHud(p)) spot = spot with { Kind = DropKind.Window };
@@ -338,13 +359,13 @@ sealed partial class PlayerInterface
         {
             case DropKind.Section:
             {
-                var place = new PlaceHeld(spot.Window, spot.Section, spot.X, spot.Y) { Tick = session.World.Tick };
+                var place = new PlaceHeld(spot.Window, spot.Section, spot.X, spot.Y) { Tick = session.CommandTick };
                 bool sale = h.From.Holder != ItemHolder.Stock && spot.Window.Holder == ItemHolder.Stock, exchange = sale || h.From.Holder == ItemHolder.Stock && spot.Window.Holder != ItemHolder.Stock;
                 void Send()
                 {
                     // A bag put on its slot opens its window again (FUN_14070e120).
                     if (spot.Section == "backpack_attach" && spot.Window.Holder == ItemHolder.Character && h.BagItems >= 0) bagOpen.Add(spot.Window.Character);
-                    SayHeld(place with { Tick = session.World.Tick });
+                    SayHeld(place with { Tick = session.CommandTick });
                     Sound(exchange ? "Sell_Item" : "Item_Drop", item: h.Record);
                     held = null;
                 }
@@ -363,10 +384,10 @@ sealed partial class PlayerInterface
                 return;
             default:
                 // Given to a character: no sound; dropped on the ground: Character_Drop_Ground (FUN_1407136a0).
-                if (PickWhere(p, _ => true) is { } who && h.From != ItemOwner.Of(who)) SayHeld(new GiveHeld(who) { Tick = session.World.Tick });
+                if (PickWhere(p, _ => true) is { } who && h.From != ItemOwner.Of(who)) SayHeld(new GiveHeld(who) { Tick = session.CommandTick });
                 else
                 {
-                    SayHeld(new DropHeld { Tick = session.World.Tick });
+                    SayHeld(new DropHeld { Tick = session.CommandTick });
                     Sound("Character_Drop_Ground", item: h.Record);
                 }
                 held = null;

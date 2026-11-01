@@ -35,7 +35,7 @@ public sealed partial class LockSystem
     {
         var table = world.Characters;
         if (!table.TryResolveNext(order.Wearer, out int w) || WornShackles(table.Cold(w)) is null) return;
-        foreach (var id in Who(world, order.Characters))
+        foreach (var id in Who(world, order, order.Characters))
         {
             if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false } c || !c.CarriedBy.IsNone) continue;
             if (c.IsImprisoned && id != order.Wearer) continue;   // from a cage only its own
@@ -45,6 +45,7 @@ public sealed partial class LockSystem
                 continue;
             }
             c.PickingLock = null;
+            Remember(world, order, id, target: order.Wearer);
             c.Shackles = new ShackleJob(order.Wearer, order.Work);
             if (id != order.Wearer) MovementSystem.GoTo(table, s, Flat(table.Next[w].Position), c.RunSpeed);
             break;
@@ -68,11 +69,12 @@ public sealed partial class LockSystem
     {
         var table = world.Characters;
         if (!table.TryResolveNext(order.Wearer, out int w) || !CanBeShackled(table.Cold(w), table.Next[w].Alive)) return;
-        foreach (var id in Who(world, order.Characters))
+        foreach (var id in Who(world, order, order.Characters))
         {
             if (id == order.Wearer || !table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
             if (CarriedShackles(c) is null) continue;
             c.PickingLock = null;
+            Remember(world, order, id, target: order.Wearer);
             c.Shackles = new ShackleJob(order.Wearer, ShackleWork.PutOn);
             MovementSystem.GoTo(table, s, Flat(table.Next[w].Position), c.RunSpeed);
             return;

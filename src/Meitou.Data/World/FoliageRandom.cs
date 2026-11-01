@@ -2,6 +2,8 @@ using System.Globalization;
 
 namespace Meitou.Data.World;
 
+public sealed record FoliageRandomState(int Index, int Count, uint[] Words);
+
 /// <summary>
 /// The random numbers of Kenshi's foliage placer (docs/formats/foliage.md, "Random numbers"): a 32-bit Mersenne Twister
 /// (MT19937, the standard initialisation and tempering), reseeded for every foliage layer of every zone, with the game's
@@ -21,6 +23,14 @@ public sealed class FoliageRandom
         var copy = new FoliageRandom(0) { index = index, Count = Count };
         state.CopyTo(copy.state, 0);
         return copy;
+    }
+
+    public FoliageRandomState Capture() => new(index, Count, state.ToArray());
+    public void Restore(FoliageRandomState saved)
+    {
+        if (saved is null || saved.Index is < 0 or > N || saved.Words is not { Length: N } || saved.Words.All(v => v == 0))
+            throw new InvalidDataException("Invalid random state.");
+        saved.Words.CopyTo(state, 0); index = saved.Index; Count = saved.Count;
     }
 
     /// <summary>Number of 32-bit results drawn since the last seed.</summary>

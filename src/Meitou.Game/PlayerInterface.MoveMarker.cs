@@ -35,7 +35,7 @@ sealed partial class PlayerInterface
         Markers.RotationAt = turning ? pose.Target + Vector3.UnitY : null;
         Markers.RotationScale = MathF.Max(3, pose.Distance * 0.06f);
         if (Markers is not { Strength: > 0 } marker) return;
-        double speed = session.Simulation.Speed;
+        double speed = session.TimeScale;
         marker.Strength = MathF.Max(0, marker.Strength - (speed > 0 ? frame * (float)speed : 0.01f));
     }
 }

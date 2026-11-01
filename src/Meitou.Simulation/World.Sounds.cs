@@ -73,6 +73,12 @@ public sealed partial class World
     /// <summary>Queues a sound-worthy happening for the host (nothing while <see cref="Sounds"/> is null); <paramref name="slot"/> is the character it happens to (-1 none). Display only.</summary>
     public void EmitSound(SoundKind kind, int slot, Vector3 at, string? item = null)
     {
-        if (sounds is { } queue) queue.Enqueue(new SoundEvent(kind, slot >= 0 ? Characters.IdOf(slot) : CharacterId.None, CharacterId.None, at, Item: item));
+        if (HasSoundSink) EmitSound(new SoundEvent(kind, slot >= 0 ? Characters.IdOf(slot) : CharacterId.None, CharacterId.None, at, Item: item));
+    }
+
+    public void EmitSound(SoundEvent value)
+    {
+        sounds?.Enqueue(value);
+        if (Players.RequiresExplicitControl) presentationEvents.Add(value, PresentationOwner(value.Subject));
     }
 }

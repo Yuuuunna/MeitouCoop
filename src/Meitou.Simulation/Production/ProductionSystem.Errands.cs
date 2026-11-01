@@ -35,6 +35,13 @@ public sealed partial class ProductionSystem
         public CharacterId Body;
         /// <summary>The carrier's current GoTo is this job's own (else a GoTo task is an order of the player's).</summary>
         public bool Walking;
+        public CharacterControl? Control;
+        public DisposeCorpseOrder? Command;
+        public BuildSite? Site;
+        public Machine? Machine;
+        public ulong SiteRevision;
+        public ulong MembershipRevision;
+        public int Owner;
     }
 
     // Derived state, not saved or hashed: a lift under way is looked at again from the characters' own state when it is lost.
@@ -57,7 +64,9 @@ public sealed partial class ProductionSystem
     /// </summary>
     void Errands(World world)
     {
-        if (Carry is null || world.Tick % ErrandEveryTicks != 0) return;
+        if (Carry is null) return;
+        ValidateErrands(world);
+        if (world.Tick % ErrandEveryTicks != 0) return;
         var table = world.Characters;
         foreach (var gone in errands.Keys.Where(k => !table.IsAlive(k)).ToList()) errands.Remove(gone);
         HashSet<CharacterId>? lifted = null;
@@ -70,6 +79,7 @@ public sealed partial class ProductionSystem
                 StepErrand(world, i, cold, errand);
                 continue;
             }
+            if (world.Players.RequiresExplicitControl && world.Players.ControlOf(id) is null) continue;
             if (cold.Jobs.Count == 0 || !cold.Carrying.IsNone || !CarrySystem.CanCarry(cold) || cold.Fleeing) continue;
             var task = (CharacterTask)table.Next[i].Task;
             for (int k = 0; k < cold.Jobs.Count; k++)
@@ -80,10 +90,15 @@ public sealed partial class ProductionSystem
                 lifted ??= Lifted(table);
                 var found = kind == ErrandKind.Corpse ? FindCorpse(world, i, cold, lifted) : FindIntruder(world, i, cold, lifted, kind);
                 if (found is not { } body) continue;
+                if (kind == ErrandKind.Corpse && (NearestIncinerator(world, table.Next[i].Position, cold.Faction) is not { } authorizedSite
+                    || !MayWork(world, cold, authorizedSite.Site))) continue;
                 var resume = cold.JobIndex >= 0 || cold.Implicit is not null ? cold.ResumeTask : task;
                 if (!Carry.BeginPickUp(world, i, body.Id, resume)) continue;
                 lifted.Add(body.Id);
-                errands[id] = new Errand { Kind = kind, Goal = body.Goal, Body = body.Id };
+                var started = new Errand { Kind = kind, Goal = body.Goal, Body = body.Id, Control = world.Players.ControlOf(id) };
+                if (kind == ErrandKind.Corpse && NearestIncinerator(world, table.Next[i].Position, cold.Faction) is { } disposal)
+                    BindDisposal(world, started, disposal.Site, disposal.Machine);
+                errands[id] = started;
                 break;
             }
         }
@@ -93,11 +108,75 @@ public sealed partial class ProductionSystem
     void DisposeCarried(World world, DisposeCorpseOrder order)
     {
         var table = world.Characters;
-        foreach (var id in order.Characters)
+        if (Site(world, order.Site) is not { Complete: true } site || world.Machines.Find(order.Site) is not { } machine
+            || machine.Data.Function != Meitou.Data.World.TownBuildings.CorpseDisposalFunction || !MayStartWork(world, order, site)) return;
+        var actors = world.CommandCharacters(order, order.Characters);
+        if (order.Issuer is not null && order.Bodies.Count != actors.Count) return;
+        for (int index = 0; index < actors.Count; index++)
         {
-            if (!table.TryResolveNext(id, out int i) || table.Cold(i) is not { IsPlayer: true } cold || cold.Carrying.IsNone) continue;
+            var id = actors[index];
+            if (!table.TryResolveNext(id, out int i) || table.Cold(i) is not { IsPlayer: true, Medical.Incapacitated: false } cold || cold.Carrying.IsNone || !MayWork(world, cold, site)) continue;
+            if (order.Issuer is not null && order.Bodies[index] != cold.Carrying) continue;
             if (!table.TryResolveNext(cold.Carrying, out int b) || table.Cold(b)?.Medical is not { Dead: true }) continue;
-            errands[id] = new Errand { Kind = ErrandKind.Corpse, Body = cold.Carrying };
+            var errand = new Errand { Kind = ErrandKind.Corpse, Body = cold.Carrying, Command = order, Control = world.Players.ControlOf(id) };
+            BindDisposal(world, errand, site, machine);
+            errands[id] = errand;
+        }
+    }
+
+    void BindDisposal(World world, Errand errand, BuildSite site, Machine machine)
+    {
+        errand.Site = site;
+        errand.Machine = machine;
+        errand.Owner = site.Owner;
+        errand.SiteRevision = world.BuildingRevision(site);
+        errand.MembershipRevision = errand.Control is { } grant ? world.Players.Find(grant.Player)?.MembershipRevision(site.Owner) ?? 0 : 0;
+    }
+
+    public void CloseCorpseErrands(World world, PlayerId player)
+    {
+        foreach (var (actor, errand) in errands.ToArray())
+        {
+            if (errand.Control?.Player != player) continue;
+            CancelErrand(world, actor, errand);
+        }
+    }
+
+    void CancelErrand(World world, CharacterId actor, Errand errand)
+    {
+        var table = world.Characters;
+        if (table.TryResolveNext(actor, out int slot))
+        {
+            var cold = table.Cold(slot)!;
+            if (table.Next[slot].Task == (byte)CharacterTask.PickUp && cold.CarryTarget == errand.Body)
+                Carry!.CancelInstruction(world, slot);
+            else if (errand.Walking && table.Next[slot].Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, slot);
+        }
+        errands.Remove(actor);
+    }
+
+    void ValidateErrands(World world)
+    {
+        foreach (var (actor, errand) in errands.ToArray())
+        {
+            var table = world.Characters;
+            if (!table.TryResolveNext(actor, out int slot)) { errands.Remove(actor); continue; }
+            var cold = table.Cold(slot)!;
+            bool valid = !world.Players.RequiresExplicitControl || errand.Control is { } grant && world.Players.Validate(grant)
+                && (errand.Command is null || world.MayOrder(errand.Command, actor));
+            if (valid && errand.Site is { } site)
+            {
+                valid = ReferenceEquals(Site(world, site.Id), site) && ReferenceEquals(world.Machines.Find(site.Id), errand.Machine)
+                    && site.Owner == errand.Owner && site.Complete && MayWork(world, cold, site)
+                    && world.BuildingRevision(site) == errand.SiteRevision;
+                if (valid && errand.Control is { } control)
+                    valid = world.Players.Find(control.Player) is { } player && player.HasPermission(site.Owner, FactionPermission.ManageAssets)
+                        && player.MembershipRevision(site.Owner) == errand.MembershipRevision;
+            }
+            if (valid && (!cold.Carrying.IsNone && cold.Carrying != errand.Body || cold.Medical is not { Incapacitated: false } || !cold.CarriedBy.IsNone)) valid = false;
+            if (valid) continue;
+            // Losing authority cancels work; the existing carried entity and its items remain linked.
+            CancelErrand(world, actor, errand);
         }
     }
 
@@ -138,14 +217,25 @@ public sealed partial class ProductionSystem
         Machine? machine = null;
         if (e.Kind == ErrandKind.Corpse)
         {
-            if (NearestIncinerator(world, n.Position) is not { } found) { GiveUp(world, i, e); return; }
-            (site, machine) = found;
+            if (e.Site is { } bound && e.Machine is { } boundMachine) (site, machine) = (bound, boundMachine);
+            else
+            {
+                if (NearestIncinerator(world, n.Position, cold.Faction) is not { } found) { GiveUp(world, i, e); return; }
+                (site, machine) = found;
+                BindDisposal(world, e, site, machine);
+            }
+            if (!MayWork(world, cold, site) || OperatorsOf(world, site.Id) >= machine.Data.MaxOperators) return;
             goal = GoalOf(world, site, machine);
         }
         bool arrived = site is not null ? AtSite(n, site, machine!) : Vector2.Distance(new Vector2(n.Position.X, n.Position.Z), goal) <= ErrandArrive;
         if (arrived)
         {
-            if (e.Kind == ErrandKind.Corpse) Incinerate(world, i, cold, site!, machine!);
+            if (e.Kind == ErrandKind.Corpse)
+            {
+                if (cold.Carrying != e.Body || !table.TryResolveNext(e.Body, out int body) || table.Cold(body)?.Medical is not { Dead: true })
+                { errands.Remove(id); return; }
+                Incinerate(world, i, cold, site!, machine!);
+            }
             else Carry!.BeginPutDown(world, i);
             errands.Remove(id);
             return;
@@ -186,7 +276,7 @@ public sealed partial class ProductionSystem
         var table = world.Characters;
         var body = cold.Carrying;
         if (!Carry!.LetGo(world, i) || !table.IsAlive(body)) return;
-        if (machine.Data.Label.Length > 0) world.Floaters?.Enqueue(Floater.Label(site.Position + new Vector3(0, 5, 0), machine.Data.Label));
+        if (machine.Data.Label.Length > 0) world.EmitFloater(Floater.Label(site.Position + new Vector3(0, 5, 0), machine.Data.Label));
         givenUp.Remove(body);
         world.Uniques.Left(body);
         table.Remove(body);
@@ -201,13 +291,13 @@ public sealed partial class ProductionSystem
     {
         var table = world.Characters;
         var at = table.Next[slot].Position;
-        Machine? any = NearestIncinerator(world, at) is { } inc ? inc.Machine : null;
+        Machine? any = NearestIncinerator(world, at, cold.Faction) is { } inc ? inc.Machine : null;
         if (any is null) return null;   // nothing to take it to: the job is blocked
         CharacterId? best = null;
         float bestD = float.MaxValue;
         foreach (var f in world.Fixtures.All)
         {
-            if (f.Kind != FixtureKind.Cage || f.Owner != world.Player.Faction || f.Occupant.IsNone || !table.TryResolveNext(f.Occupant, out int s)) continue;
+            if (f.Kind != FixtureKind.Cage || f.Owner != cold.Faction || f.Occupant.IsNone || !table.TryResolveNext(f.Occupant, out int s)) continue;
             if (!Liftable(world, table, s, f.Occupant, lifted)) continue;
             float d = Gap(at, f.Position);
             if (d <= Settings.HaulRange && d < bestD) (best, bestD) = (f.Occupant, d);
@@ -234,14 +324,14 @@ public sealed partial class ProductionSystem
     /// The corpse machine a body is taken to (<c>FUN_1408d0770</c> for function 11, <b>Verified</b> by decompile): the player's complete corpse-disposal building with an operator place free, the
     /// nearest weighing most (the original's weight is clamp(1 - d^2 / 2.1e7, 1e-5, 1), x100 for the character's own faction, the other factors do not apply to the player's own buildings).
     /// </summary>
-    (BuildSite Site, Machine Machine)? NearestIncinerator(World world, Vector3 from)
+    (BuildSite Site, Machine Machine)? NearestIncinerator(World world, Vector3 from, int faction)
     {
         BuildSite? bestSite = null;
         Machine? best = null;
         float bestGap = float.MaxValue;
         foreach (var m in world.Machines.All)
         {
-            if (m.Data.Function != Meitou.Data.World.TownBuildings.CorpseDisposalFunction || Site(world, m.Site) is not { Complete: true } site || site.Owner != world.Player.Faction) continue;
+            if (m.Data.Function != Meitou.Data.World.TownBuildings.CorpseDisposalFunction || Site(world, m.Site) is not { Complete: true } site || site.Owner != faction || !WorkSiteOpen(world, site)) continue;
             if (OperatorsOf(world, site.Id) >= m.Data.MaxOperators) continue;
             float gap = Gap(site.Position, from);
             if (gap > bestGap || (gap == bestGap && string.CompareOrdinal(m.Site, best?.Site) > 0)) continue;
@@ -264,7 +354,7 @@ public sealed partial class ProductionSystem
     {
         var table = world.Characters;
         var at = table.Next[slot].Position;
-        if (EnclosedAt(world, at) is not { } site) return null;
+        if (EnclosedAt(world, at, cold.Faction) is not { } site) return null;
         CharacterId? best = null;
         float bestD = float.MaxValue;
         for (int s = 0; s < table.HighWater; s++)
@@ -274,7 +364,7 @@ public sealed partial class ProductionSystem
             if (lifted.Contains(id) || givenUp.Contains(id) || body.IsImprisoned || !body.CarriedBy.IsNone || !CarrySystem.CanBeLifted(body)) continue;
             if (kind == ErrandKind.OutOfBuilding && body.InSomething != HeldState.None) continue;
             if (Carry!.Friendly(cold, body)) continue;
-            if (EnclosedAt(world, table.Next[s].Position) != site) continue;
+            if (EnclosedAt(world, table.Next[s].Position, cold.Faction) != site) continue;
             float d = Gap(at, table.Next[s].Position);
             if (d <= ErrandSight && d < bestD) (best, bestD) = (id, d);
         }
@@ -282,17 +372,18 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>A point lies in one of the player's complete buildings with doors (<see cref="EnclosedAt"/>): the context menu's Throw out of home.</summary>
-    public bool InPlayerBuilding(World world, Vector3 at) => EnclosedAt(world, at) is not null;
+    public bool InPlayerBuilding(World world, Vector3 at) => InPlayerBuilding(world, at, world.Player.Faction);
+    public bool InPlayerBuilding(World world, Vector3 at, int faction) => EnclosedAt(world, at, faction) is not null;
 
     /// <summary>The player's complete building with doors whose footprint holds a point (the nearest by origin), or null.</summary>
-    BuildSite? EnclosedAt(World world, Vector3 at)
+    BuildSite? EnclosedAt(World world, Vector3 at, int faction)
     {
         BuildSite? best = null;
         float bestGap = float.MaxValue;
         foreach (var site in world.Buildings.All)
         {
             float radius = Settings.Footprint?.Invoke(site.Record) ?? 0;
-            if (!site.Complete || site.Owner != world.Player.Faction || radius <= 0) continue;
+            if (!site.Complete || site.Owner != faction || radius <= 0) continue;
             float gap = Gap(site.Position, at);
             if (gap > radius || gap >= bestGap || !world.Fixtures.OfBuilding(site.Id).Any(f => f.Kind == FixtureKind.Door)) continue;
             (best, bestGap) = (site, gap);

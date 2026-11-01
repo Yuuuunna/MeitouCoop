@@ -9,6 +9,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Meitou.Tests" />
+    <InternalsVisibleTo Include="Meitou.Runtime" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BepuPhysics" Version="2.4.0" />

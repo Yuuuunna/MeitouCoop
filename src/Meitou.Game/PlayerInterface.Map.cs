@@ -121,7 +121,7 @@ sealed partial class PlayerInterface
             movementMarkerUntil = 0;
         }
         if (!shown && mapShown && !faithfulScreens.IsOpen("overview") && session.CurrentSnapshot.Towns.Any(t => (t & TownKnowledge.Recent) != 0))
-            Say(new SeenDiscoveriesCommand { Tick = session.World.Tick });
+            Say(new SeenDiscoveriesCommand { Tick = session.CommandTick });
         if (!shown) { mapDrag = null; mapRightPressed = false; }
         mapShown = shown;
     }
@@ -270,7 +270,8 @@ sealed partial class PlayerInterface
         if (trade is not null && picked.Control.Properties.TryGetValue("TradeItem", out var stockIndex))
         {
             if (trade.Stock.FirstOrDefault(i => i.Index == int.Parse(stockIndex, CultureInfo.InvariantCulture)) is not { } stock) return false;
-            Say(new BuyItem(stock.Token, shift ? stock.Quantity : 1) { Tick = session.World.Tick, Equip = true });
+            if (!trade.CanSpendFunds) { Notice("You do not have permission to spend this faction's funds."); return true; }
+            Say(new BuyItem(stock.Token, shift ? stock.Quantity : 1) { Tick = session.CommandTick, Equip = true, SessionId = trade.SessionId, InventoryRevision = trade.StockRevision });
             return true;
         }
         if (trade is null && WindowRightClick(picked.Screen, picked.Control, shift)) return true;
@@ -283,8 +284,8 @@ sealed partial class PlayerInterface
             Sell(trade, token, shift ? item.Quantity : 1, null, 0);
             return true;
         }
-        if (MapItemTowns?.Invoke(item.Record) is not null) Say(new ReadMapItem(lead.Id, token) { Tick = session.World.Tick });
-        else Say(new QuickMoveItem(lead.Id, token, shift, faithfulScreens.IsOpen("bag") && !IsPinnedInventory(picked.Screen)) { Tick = session.World.Tick });
+        if (MapItemTowns?.Invoke(item.Record) is not null) Say(new ReadMapItem(lead.Id, token) { Tick = session.CommandTick, InventoryRevision = grid.Revision });
+        else Say(new QuickMoveItem(lead.Id, token, shift, faithfulScreens.IsOpen("bag") && !IsPinnedInventory(picked.Screen)) { Tick = session.CommandTick, InventoryRevision = grid.Revision });
         return true;
     }
 
@@ -302,7 +303,8 @@ sealed partial class PlayerInterface
         if (machine is not null && control.Properties.TryGetValue("MachineItem", out var raw))
         {
             int code = int.Parse(raw, CultureInfo.InvariantCulture);
-            Say(new TakeFromMachine(lead.Id, machine.Site, code >= 1000 ? -1 : code - 10, Math.Max(0, code - 1000), Count: count) { Tick = session.World.Tick, BagFirst = faithfulScreens.IsOpen("bag") });
+            Say(new TakeFromMachine(lead.Id, machine.Site, code >= 1000 ? -1 : code - 10, Math.Max(0, code - 1000), Count: count)
+                { Tick = session.CommandTick, BagFirst = faithfulScreens.IsOpen("bag"), InventoryRevision = grid.Revision, StorageRevision = machine.StorageRevision, ContainerSessionId = machine.ContainerSessionId });
             return true;
         }
         if (!control.Properties.TryGetValue("InventoryItem", out var index)) return false;
@@ -310,20 +312,21 @@ sealed partial class PlayerInterface
         if (IsLootScreen(screen))
         {
             if (!loot || LootBody()?.ItemGrid?.Items.FirstOrDefault(i => i.Index == at) is not { } looted) return false;
-            Say(new TakeLootItem(Token(looted)) { Tick = session.World.Tick, Count = count, BagFirst = faithfulScreens.IsOpen("bag") });
+            Say(new TakeLootItem(Token(looted)) { Tick = session.CommandTick, Count = count, BagFirst = faithfulScreens.IsOpen("bag"), Actor = lead.Id, Target = session.CurrentSnapshot.OpenLoot, SessionId = session.CurrentSnapshot.LootSessionId, InventoryRevision = LootBody()!.ItemGrid!.Revision, DestinationRevision = grid.Revision });
             return true;
         }
         if (screen is not ("inventory" or "bag") || grid.Items.FirstOrDefault(i => i.Index == at) is not { } item || !InventoryCommands.IsMovableSection(item.Section)) return false;
         if (loot)
         {
-            Say(new PutLootItem(lead.Id, Token(item)) { Tick = session.World.Tick, Count = count, BagFirst = faithfulScreens.IsOpen("loot-bag") });
+            Say(new PutLootItem(lead.Id, Token(item)) { Tick = session.CommandTick, Count = count, BagFirst = faithfulScreens.IsOpen("loot-bag"), Actor = lead.Id, Target = session.CurrentSnapshot.OpenLoot, SessionId = session.CurrentSnapshot.LootSessionId, InventoryRevision = grid.Revision, DestinationRevision = LootBody()?.ItemGrid?.Revision ?? 0 });
             return true;
         }
         if (machine is null) return false;
         bool inputs = machine.Inputs.Count > 0 || machine.Storage is null;
         int slot = inputs ? machine.Inputs.ToList().FindIndex(i => i.Item == item.Record) : -1;
         if (inputs && slot < 0) return true;   // no input takes it
-        Say(new PutInMachine(lead.Id, Token(item), machine.Site, slot, -1, 0, count) { Tick = session.World.Tick });
+        Say(new PutInMachine(lead.Id, Token(item), machine.Site, slot, -1, 0, count)
+            { Tick = session.CommandTick, InventoryRevision = grid.Revision, StorageRevision = machine.StorageRevision, ContainerSessionId = machine.ContainerSessionId });
         return true;
 
         static InventoryItemToken Token(InventoryItemView i) => new(i.Index, i.Record, i.Section, i.X, i.Y, i.Quantity, i.Quality);

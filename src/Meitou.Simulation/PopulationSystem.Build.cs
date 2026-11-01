@@ -33,7 +33,7 @@ public sealed partial class PopulationSystem
 
     // ---- building (pure given the seed; safe on another thread) ----
 
-    internal sealed record BuiltMember(MemberPlan Plan, CharacterAppearance? Appearance);
+    internal sealed record BuiltMember(MemberPlan Plan, CharacterAppearance? Appearance, string? CreationName = null, bool LookEdited = false);
     /// <param name="NearY">The height of the spot inside a building it stands on (the floor under it is used); null: on the ground.</param>
     /// <param name="Home">The building its town gave it as its home; null: none.</param>
     internal sealed record BuiltSquad(SquadPlan Plan, Vector2 Position, int Faction, List<BuiltMember> Members, float? NearY = null, TownBuilding? Home = null);

@@ -99,7 +99,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     public void Assault(World world, int attacker, int victim)
     {
         var table = world.Characters;
-        if (table.Cold(attacker) is not { } a || a.Fighter?.IsAnimal == true || table.Cold(victim) is not { } v || a.IsPlayer && v.IsPlayer) return;
+        if (table.Cold(attacker) is not { } a || a.Fighter?.IsAnimal == true || table.Cold(victim) is not { } v || a.IsPlayer && v.IsPlayer && a.Faction == v.Faction) return;
         if (IsWantedBy(v, a.Faction) || v.NpcClass == FundamentalType.Bandit || v.Pending is not null || AggroSystem.IsEnemy(Relations, v.Faction, a.Faction)) return;
         SetPending(world, attacker, CrimeCode.Assault, v.Faction, table.IdOf(victim), MinTimer);
     }
@@ -120,7 +120,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     /// Whether the player's taking from a downed character is a theft: the permission test of <see cref="Loot"/> (<c>FUN_140793940</c>, <b>Observed</b>). The carry system marks what such a
     /// loot takes as stolen from the victim's faction (<see cref="Items.ItemInstance.StolenFrom"/>).
     /// </summary>
-    public static bool IsLootTheft(CharacterCold looter, CharacterCold victim) => looter.IsPlayer && !victim.IsPlayer && !LootAllowed(looter, victim);
+    public static bool IsLootTheft(CharacterCold looter, CharacterCold victim) => looter.IsPlayer && looter.Faction != victim.Faction && !LootAllowed(looter, victim);
 
     /// <summary>
     /// <c>Character::isItOkForMeToLoot</c> (<c>FUN_140793940</c>, <b>Observed</b>) asked with no item: yes when the victim is a slave or escaped slave (slave state 1 or 2; Meitou also
@@ -270,7 +270,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     /// here as: an NPC of another, real, non-bandit faction, not a bandit and with no bounty).
     /// </summary>
     bool Innocent(CharacterCold carrier, CharacterCold body) =>
-        !body.IsPlayer && body.Faction != carrier.Faction && !Factions.Lawless(body.Faction) && body.NpcClass != FundamentalType.Bandit && body.Bounties is not { Any: true };
+        body.Faction != carrier.Faction && !Factions.Lawless(body.Faction) && body.NpcClass != FundamentalType.Bandit && body.Bounties is not { Any: true };
 
     /// <summary>
     /// Every awake NPC that sees the culprit, in slot order, reacts as the game's witness function does (<c>FUN_140854d10</c>, <b>Observed</b>): not of the culprit's faction, not carried,

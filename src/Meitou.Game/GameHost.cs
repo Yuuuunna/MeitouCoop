@@ -9,6 +9,8 @@ using Meitou.Engine.Time;
 using Meitou.Rendering;
 using Meitou.Rendering.Characters;
 using Meitou.Simulation;
+using Meitou.Runtime;
+using Meitou.Networking;
 using Meitou.Rendering.Gpu;
 using Meitou.Rendering.Display;
 using Silk.NET.Maths;
@@ -33,7 +35,10 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     WorldScene? ownedScene;
     /// <summary>The native splash shown since the program started; closed when the game window first shows.</summary>
     public IDisposable? Splash { get; init; }
-    WorldSession session = null!;   // disposed with the host (Run)
+    IClientSession session = null!;   // disposed with the host (Run)
+    public Meitou.Networking.RemoteGameSession? OnlineConnection { get; init; }
+    IReadOnlyList<ITickSystem> LocalSystems => session is WorldSession local ? local.World.Systems : [];
+    WorldSession LocalSession => session as WorldSession ?? throw new InvalidOperationException("This operation requires a local simulation session.");
     Meitou.Simulation.PopulationSystem? population;
     /// <summary>The fights started by faction hostility (printed to the log); null in the sandbox and without the population.</summary>
     Meitou.Simulation.AggroSystem? aggro;
@@ -47,11 +52,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     Meitou.Navigation.RagdollGeometry? ragdollGeometry;
     Meitou.Navigation.NavSystem? nav;
     /// <summary>Zones whose mesh went live since the last <see cref="Meitou.Simulation.RepathCommand"/> (filled on the nav thread, under its own lock).</summary>
-    readonly HashSet<Meitou.Data.World.ZoneCoordinate> navReady = [];
-    long lastRepath;
     /// <summary>Seconds between <see cref="Meitou.Simulation.RepathCommand"/>s at least: zones go live in runs along a long walk, and are sent together (engine choice).</summary>
-    const double RepathCoalesceSeconds = 1;
-    readonly Dictionary<Meitou.Data.World.ZoneCoordinate, long> navZones = [];
     PlayerInterface player = null!;
     Meitou.Simulation.Squad? playerSquad;
     WorldFrame.Gpu gpu = null!;
@@ -95,6 +96,38 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
 
     public int Run()
     {
+        GameHost host = this;
+        while (true)
+        {
+            int result = host.RunOnce();
+            if (host.NextOnline is null && !host.ReturnToTitle) return result;
+            var next = host.NextOnline;
+            if (next is not null)
+            {
+                var view = next.State.View;
+                var roles = view?.Roles.Where(r => r.Available && !r.Dead).Select(r => r.Character).ToHashSet();
+                var focus = view?.Snapshot.Characters.FirstOrDefault(c => roles!.Contains(c.Id))?.Position;
+                if (focus is null)
+                {
+                    next.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    next = null;
+                }
+                else
+                {
+                    (o.X, o.Z, o.Town, o.Zone) = (focus.Value.X, focus.Value.Z, null, null);
+                    o.Day = (int)Math.Floor(view!.GameHours / 24); o.Hour = (float)(view.GameHours % 24);
+                }
+            }
+            host = new GameHost(install, null!, assets, o, g, config, null)
+            { OnlineConnection = next, LoadScene = () => WorldFrame.Load(install, o) };
+        }
+    }
+
+    RemoteGameSession? NextOnline;
+    bool ReturnToTitle;
+
+    int RunOnce()
+    {
         try
         {
 #if MEITOU_METAL
@@ -107,14 +140,27 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
             }
             return o.Screenshot is not null ? Screenshot() : Interactive();
         }
-        finally { DisposeAudio(); DisposeTitleScene(); session?.Dispose(); nav?.Dispose(); ragdollGeometry?.Dispose(); ownedScene?.Dispose(); }
+        finally
+        {
+            player?.DisposeOnline();
+            DisposeAudio(); DisposeTitleScene(); DisposeClientSession();
+            if (session is not RemotePlayerSession) OnlineConnection?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            simulationContent?.Dispose(); ownedScene?.Dispose();
+        }
+    }
+
+    void DisposeClientSession()
+    {
+        if (session is IAsyncDisposable asynchronous) asynchronous.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        else if (session is IDisposable local) local.Dispose();
     }
 
     /// <summary>The start opens on the title (no start, save, sandbox or duel was asked for).</summary>
-    bool OpensOnTitle(bool interactive) => g.TitlePreview || interactive && start is null && StartSave is null && !IsSandbox && !IsDuel && !IsBattle && !g.NoPopulation;
+    bool OpensOnTitle(bool interactive) => OnlineConnection is null && (g.TitlePreview || interactive && start is null && StartSave is null && !IsSandbox && !IsDuel && !IsBattle && !g.NoPopulation);
 
     void Boot(VulkanDisplay display, bool interactive)
     {
+        if (OnlineConnection is { } online) { BootOnline(display, interactive, online); return; }
         var context = display.Context;
         o.Day ??= (int)GameClock.DefaultStartDay;   // the weather schedule starts on the clock's first day (--day moves both)
         // --crowd in the game: simulated characters (SpawnCrowd), not the viewer's posed harness, which would take the renderer's place.
@@ -151,73 +197,33 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     /// The simulation's side of <see cref="Boot"/>, on a worker (it reads the game data and the scene's level data and makes no GPU resource): the navmesh system, the
     /// population's data and its systems. Returns the walkability, the systems and the game constants for the session.
     /// </summary>
+    WorldContent? simulationContent;
+
     (Meitou.Simulation.IWalkability Walkability, IReadOnlyList<Meitou.Simulation.ITickSystem> Systems, Meitou.Data.Gameplay.GameConstants? Constants) BootSimulation(
         Meitou.Data.World.GroundHeights heights, bool interactive)
     {
-        // The simulation samples the CPU heightmap (immutable, any thread), not the renderer's terrain.
-        Meitou.Simulation.IWalkability walkability = new Meitou.Simulation.OpenGroundWalkability(heights.HeightAt);
-        IReadOnlyList<Meitou.Simulation.ITickSystem> systems = [];
-        Meitou.Data.Gameplay.GameConstants? constants = null;   // parsed once: the body factory's, else for the clock alone
-        if (!g.NoPopulation && scene.Database is { } gameDb)
-        {
-            // The sandbox, the duel and the battle walk on open ground (the heightmap): the sandbox has no world, and the duel's spot may be a navmesh island the build prunes.
-            // None has towns: their own characters are the only ones.
-            var levels = IsSandbox || IsDuel || IsBattle ? null : scene.Objects?.Levels ?? Meitou.Data.World.WorldLevelData.Load(install, includeInteriors: true);
-            if (levels is not null)
-            {
-                nav = new Meitou.Navigation.NavSystem(install, gameDb, levels!, heights.HeightAt);
-                nav.ZoneReady += ready => { lock (navReady) navReady.Add(ready.Zone); };
-                walkability = new NavAdapter(nav.Walkability);
-                // Ragdolls land on the terrain and the buildings' collision (gathered per zone on a worker when a ragdoll comes near).
-                ragdollGeometry = new Meitou.Navigation.RagdollGeometry(install, gameDb, levels!, heights.HeightAt);
-            }
-            var towns = levels is null ? [] : levels.Towns().ToList();
-            // The wild (homeless squads and nests) needs the world's area sectors; the sandbox and the duel have none.
-            Meitou.Data.Gameplay.BiomeMap? biomes = null;
-            if (levels is not null)
-            {
-                try { biomes = Meitou.Data.Gameplay.BiomeMap.Create(gameDb, Meitou.Data.World.WeatherAreas.Load(install)); }
-                catch (Exception e) when (e is IOException or FormatException) { Console.Error.WriteLine($"population no areas map ({e.Message}): no wild squads"); }
-            }
-            // The towns' buildings with their beds and nodes: the AI's homes (docs/simulation.md "AI").
-            Dictionary<string, List<Meitou.Data.World.TownBuilding>>? buildings = null;
-            if (levels is not null)
-            {
-                var watch = System.Diagnostics.Stopwatch.StartNew();
-                var layouts = scene.Objects?.Layouts ?? new Meitou.Data.World.BuildingLayouts(gameDb, levels.Interiors);
-                buildings = Meitou.Data.World.TownBuildings.Build(gameDb, levels, layouts, (x, z) => heights.HeightAt((float)x, (float)z));
-                Console.WriteLine($"homes     {buildings.Values.Sum(l => l.Count)} town buildings, {buildings.Values.Sum(l => l.Sum(b => b.Beds))} beds, " +
-                    $"{buildings.Values.Sum(l => l.Sum(b => b.Spots.Count - b.Beds))} nodes in {buildings.Count} towns ({watch.ElapsedMilliseconds} ms)");
-            }
-            var data = Meitou.Simulation.PopulationData.Create(gameDb, towns, new Meitou.Simulation.GeneratedAppearances(gameDb, install.Root),
-                bodyOptions: Meitou.Simulation.Bodies.BodyOptions.Default with { Dismemberment = Gameplay.Dismemberment }, biomes: biomes, buildings: buildings, roads: levels?.Roads(), townZones: levels?.TownZones(), level: levels?.Level);
-            if (levels is not null) data.Sight = new BuildingSight(install, gameDb, levels, scene.Objects?.Layouts ?? new Meitou.Data.World.BuildingLayouts(gameDb, levels.Interiors));
-            if (nav is not null) nav.Walkability.Roads = data.Roads;   // one network for both: on-screen long routes take the roads as the off-screen squads do
-            // The mineable rocks for ore mines, from the foliage placement (read through the renderer's layout cache when it has the zone).
-            if (levels is not null)
-            {
-                var foliageCatalog = Meitou.Data.World.FoliageCatalog.Load(gameDb);
-                Meitou.Data.World.FoliageLayoutCache? layoutCache = null;
-                try { layoutCache = new Meitou.Data.World.FoliageLayoutCache(install, foliageCatalog, Meitou.Data.World.FoliageWorld.ReadTowns(gameDb, levels)); }
-                catch (IOException e) { Console.Error.WriteLine($"resource rocks without the layout cache: {e.Message}"); }
-                data.ResourceNodes = new Meitou.Data.Gameplay.Construction.FoliageResourceNodes(new Meitou.Data.World.FoliageWorld(install, gameDb, levels, foliageCatalog, cache: layoutCache), gameDb, name => assets.Find(name));
-            }
-            // One set of skeleton rigs for the ragdolls and the renderer, so a ragdoll starts from the drawn pose.
-            characterRigs = CharacterRenderer.CreateRigs(gameDb, assets);
-            animationLengths = Meitou.Data.Gameplay.AnimationLengths.Load(install.Root, gameDb, name => assets.Find(name));   // with the animals' own skeletons and the animation files
-            animationLibrary = Meitou.Data.Gameplay.AnimationLibrary.FromDatabase(gameDb);
-            popData = data;
-            townPlacements = towns;
-            saveLevels = levels;
-            simWalkability = walkability;
-            var built = BuildSystems(interactive);
-            population = built.Population;
-            aggro = built.Aggro;
-            if (nav is not null) population!.ZoneGate = zone => nav.Walkability.World.Contains(zone);
-            systems = built.Systems;
-            constants = data.Bodies.Constants;
-        }
-        return (walkability, systems, constants);
+        if (g.NoPopulation || scene.Database is not { } gameDb)
+            return (new Meitou.Simulation.OpenGroundWalkability(heights.HeightAt), [], null);
+        var levels = IsSandbox || IsDuel || IsBattle ? null
+            : scene.Objects?.Levels ?? Meitou.Data.World.WorldLevelData.Load(install, includeInteriors: true);
+        simulationContent = WorldContent.Load(install, gameDb, assets, heights.HeightAt, levels,
+            Meitou.Simulation.Bodies.BodyOptions.Default with { Dismemberment = Gameplay.Dismemberment },
+            scene.Objects?.Layouts, Console.WriteLine);
+        nav = simulationContent.Navigation;
+        ragdollGeometry = simulationContent.RagdollGeometry;
+        characterRigs = simulationContent.Rigs;
+        animationLengths = simulationContent.AnimationLengths;
+        animationLibrary = simulationContent.AnimationLibrary;
+        popData = simulationContent.Population;
+        townPlacements = simulationContent.Towns;
+        saveLevels = levels;
+        simWalkability = simulationContent.Walkability;
+        simulationWeather = levels is not null ? SimulationWeather.Load(install, gameDb, heights.HeightAt) : null;
+        var built = BuildSystems(interactive);
+        population = built.Population;
+        aggro = built.Aggro;
+        if (nav is not null) population!.ZoneGate = nav.IsReady;
+        return (simWalkability, built.Systems, popData.Bodies.Constants);
     }
 
     /// <summary>
@@ -227,7 +233,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     void ConfigurePlayerInterface(PlayerInterface ui)
     {
         ui.FixLoadButton = config.FixLoadButton;
-        ui.SaveInUse = folder => session.World.Player.Exists && saveInUse is { } used && string.Equals(Path.GetFullPath(used), Path.GetFullPath(folder), StringComparison.OrdinalIgnoreCase);
+        ui.SaveInUse = folder => session.CanSaveWorld && session.HasPlayer && saveInUse is { } used && string.Equals(Path.GetFullPath(used), Path.GetFullPath(folder), StringComparison.OrdinalIgnoreCase);
         ui.DeleteSave = folder =>
         {
             try { Directory.Delete(folder, recursive: true); return null; }
@@ -236,20 +242,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         // The region (BIOME_GROUP) under a point, for the biome banner.
         ui.RegionAt = (x, z) => ActiveWeather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
         ui.BuildHost = MakeBuildServices();
-        ui.FactionName = faction => faction >= 0 && faction == session.World.Player.Faction && session.World.Player.FactionName is { } renamed ? renamed : popData is { } d && faction >= 0 && faction < d.Factions.Count ? d.Factions[faction].Name : null;
-        // The rename's test (FUN_1402e7950, as RenameFactionCommand's): another faction of the data has the name.
-        ui.FactionNameTaken = name => popData is { } fd && fd.Factions.Where((f, i) => i != session.World.Player.Faction).Any(f => f.Name == name);
-        // The faction tab's list (docs/game/ui-screens.md "Faction tab"): every faction the player has met but the player's, the `not real` ones and the
-        // generation template, with the player's relation towards it.
-        // Its info panel's contracts and events, read from the live world as the list above is (a collection changed mid-read shows the panel empty for that frame).
-        ui.FactionInfo = () =>
-        {
-            try { return (session.World.ActiveContracts(ui.FactionName), population?.UpcomingEvents(session.World, ui.FactionName) ?? []); }
-            catch (InvalidOperationException) { return ([], []); }
-        };
-        ui.FactionRelations = () => popData is { } d && session.World.Player.Faction is >= 0 and var own && d.Relations.Contains(own) && session.CurrentSnapshot.KnownFactions is var known
-            ? [.. d.Relations.Factions.Select((f, i) => (f, i)).Where(p => p.i != own && known.Contains(p.i) && !p.f.NotReal && p.f.Id != "GENERATION_TEMPLATE_FACTION").Select(p => (p.f.Name, d.Relations.Get(own, p.i)))]
-            : [];
+        ConfigureFactionPresentation(ui);
         // A BUILDING's construction target (its Condition rows): the sum of its materials' required amounts.
         ui.BuildTarget = record => popData?.Db.Find(record) is { Type: Meitou.Data.Fcs.FcsRecordType.BUILDING } r
             ? Meitou.Data.Gameplay.Construction.BuildingBuildData.From(r).Materials.Sum(m => m.Required) : null;
@@ -260,23 +253,9 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         ui.PowerOutput = record => popData?.Db.Find(record)?.GetInt("power output");
         ui.SquadLimits = () => popData?.Bodies.Constants;
         ui.Rocks = () => popData?.ResourceNodes;
-        ui.AlliedFaction = faction => popData is { } d && session.World.Player.Faction is (>= 0 and var mine) && d.Relations.Contains(faction) && d.Relations.IsAlly(mine, faction);
-        ui.HostileFaction = faction => popData is not { } d || session.World.Player.Faction is not (>= 0 and var mine) || !d.Relations.Contains(faction) || d.Relations.IsHostile(mine, faction);
         ui.MapTowns = () => popData?.Sites ?? [];
-        ui.MapFactionOf = id =>
-        {
-            if (popData is not { } d || id is null || d.FactionIndex(id) is not (>= 0 and var town)) return null;
-            var faction = d.Factions[town];
-            if (session.World.Player.Faction is not (>= 0 and var mine))
-                return new MapFaction(faction.Name, 0, MapStanding.Neutral, faction.NotReal);
-            float relation = d.Relations.Get(mine, town);
-            var standing = town == mine ? MapStanding.Player : d.Relations.IsAlly(mine, town) ? MapStanding.Ally : relation < -30 ? MapStanding.Enemy : MapStanding.Neutral;
-            return new MapFaction(faction.Name, relation, standing, faction.NotReal);
-        };
-        ui.MapFactionId = faction => popData is { } d && faction >= 0 && faction < d.Factions.Count ? d.Factions[faction].Id : null;
         ui.ArmourOf = record => popData?.Combat.Armour(record);
         ui.RecordName = id => popData?.Db.Find(id)?.Name;
-        ui.PlayerFactionName = () => ui.FactionName?.Invoke(session.World.Player.Faction) ?? "";
         Meitou.Data.Gameplay.Economy.PriceConstants? priceConstants = null;
         Meitou.Simulation.Trading.Market? shelf = null;
         ui.PricesOf = tip =>
@@ -300,8 +279,9 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         ui.CombatOf = () => popData?.Combat;
         ui.MapItemTowns = record =>
         {
+            if (session.IsRemote) return null; // exact map discoveries require the server's hidden world seed
             if (popData is not { } d || d.Db.Find(record) is not { Type: Meitou.Data.Fcs.FcsRecordType.MAP_ITEM } map) return null;
-            return [.. Meitou.Simulation.Items.MapItems.Reveals(d, map, session.CurrentSnapshot.Towns, session.World.Seed).Select(i => d.Sites[i].Town.Name)];
+            return [.. Meitou.Simulation.Items.MapItems.Reveals(d, map, session.CurrentSnapshot.Towns, LocalSession.World.Seed).Select(i => d.Sites[i].Town.Name)];
         };
         ConfigureEditor(ui);
     }
@@ -358,20 +338,21 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
             // The squad is placed on the mesh, and a still has its town at once: wait for the zones round the start (a cold build is about 2 s, then cached).
             var watch = Stopwatch.StartNew();
             var zones = Meitou.Simulation.ZoneActivation.ZonesAround(scene.Focus, 0);
+            using var preparation = LocalSession.World.Regions.Retain(zones, simulation: false);
             LoadingStep("navmesh");
-            AwaitLoading(Task.WhenAll(zones.Select(z => (Task)nav.LoadZone(z))));
-            foreach (var z in zones) navZones[z] = Stopwatch.GetTimestamp();
+            AwaitLoading(Task.WhenAll(zones.Select(z => (Task)nav.PrepareZone(z))));
+            LocalSession.SynchronizeWorld();
             Console.WriteLine($"navmesh   {zones.Count} zone(s) round the start ready in {watch.ElapsedMilliseconds} ms");
         }
         if (start is not null && population is not null)
         {
-            playerSquad = population.StartPlayer(session.World, start);
-            var lead = session.World.Characters.Previous[playerSquad.Leader.Slot].Position;
+            playerSquad = population.StartPlayer(LocalSession.World, start);
+            var lead = LocalSession.World.Characters.Previous[playerSquad.Leader.Slot].Position;
             target = lead;
             Console.WriteLine($"player    {playerSquad.Members.Count} characters, leader at {lead.X:0}, {lead.Z:0}");
             // --new-game is a shortcut past the menus: the start's characters stay as rolled (the menu's New game opens the character editor); a still keeps the creation
             // open for the showcase's editor pictures.
-            if (interactive) session.World.Commands.Enqueue(new Meitou.Simulation.Editing.FinishCreation { Tick = session.World.Tick });
+            if (interactive) LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Editing.FinishCreation { Tick = LocalSession.World.Tick });
         }
         if (IsSandbox && population is not null) target = SandboxSpawn();
         if (IsDuel && population is not null) target = DuelStart();
@@ -396,6 +377,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
             catch (SceneLoadFailed e) { throw new InvalidDataException($"--load {folder}: {e.Message}"); }
             LoadingStep("navmesh");
             AwaitLoading(navmesh);
+            LocalSession.SynchronizeWorld();
             SettleNewWorld();
             FinishLoadNotice(summary);
         }
@@ -423,65 +405,20 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     }
 
     /// <summary>
-    /// Keeps the navmesh on the zones the population has active (built on the nav thread, cached), drops the ones idle for 30 s, and has the characters whose way
-    /// leads through a zone whose mesh arrived ask for their paths again (their first path may have crossed a building), at most every <see cref="RepathCoalesceSeconds"/>.
+    /// Waits for requested startup geometry when asked. Runtime owns navigation publication and gate labels.
     /// </summary>
     void UpdateNav(bool wait = false)
     {
-        if (nav is null || population is null) return;
-        UpdateGateRegions(nav);
-        long now = Stopwatch.GetTimestamp();
+        if (nav is null || population is null || !wait || session is not WorldSession local) return;
         var pending = new List<Task<Meitou.Navigation.NavZoneReady>>();
-        // The population's zones, and those the walkers' long routes lead into (NavmeshWalkability.RouteZones).
-        foreach (var z in population.ActiveZones.Concat(nav.Walkability.RouteZones(TimeSpan.FromSeconds(30))))
+        if (wait)
         {
-            if (!navZones.ContainsKey(z)) pending.Add(nav.LoadZone(z));
-            navZones[z] = now;
-        }
-        foreach (var (z, seen) in navZones.ToList())
-            if (Stopwatch.GetElapsedTime(seen, now).TotalSeconds > 30) { nav.UnloadZone(z); navZones.Remove(z); relabelGates = true; }
-        if (wait) Task.WaitAll([.. pending]);
-        HashSet<Meitou.Data.World.ZoneCoordinate> zones;
-        lock (navReady)
-        {
-            // The event follows the task's completion, so zones waited for are added here.
-            if (wait) foreach (var task in pending) navReady.Add(task.Result.Zone);
-            if (navReady.Count == 0 || !wait && Stopwatch.GetElapsedTime(lastRepath, now).TotalSeconds < RepathCoalesceSeconds) return;
-            zones = [.. navReady];
-            navReady.Clear();
-        }
-        lastRepath = now;
-        relabelGates = true;
-        session.World.Commands.Enqueue(new Meitou.Simulation.RepathCommand { Tick = session.World.Tick, Zones = zones });
-    }
-
-    /// <summary>The navmesh changed since the gate codes were made (a zone went live or was dropped).</summary>
-    bool relabelGates;
-    Task<Meitou.Navigation.NavGateRegions>? gateLabelling;
-    Meitou.Navigation.NavGateRegions? gateRegions;
-    object? gateRegionsFor;
-
-    /// <summary>
-    /// Keeps the simulation's gate codes (docs/game/pathfinding.md "Gate codes") up to date: labels the loaded meshes on the pool after they changed, one labelling at a time, and
-    /// hands each result to the world (again to a new world) as a <see cref="Meitou.Simulation.Locks.GateRegionsCommand"/>.
-    /// </summary>
-    void UpdateGateRegions(Meitou.Navigation.NavSystem navSystem)
-    {
-        if (gateLabelling is { IsCompleted: true } done)
-        {
-            if (done.Status == TaskStatus.RanToCompletion) { gateRegions = done.Result; gateRegionsFor = null; }
-            else Console.Error.WriteLine($"nav       gate codes failed: {done.Exception?.GetBaseException().Message}");
-            gateLabelling = null;
-        }
-        if (relabelGates && gateLabelling is null)
-        {
-            relabelGates = false;
-            gateLabelling = Task.Run(navSystem.LabelGates);
-        }
-        if (gateRegions is { } regions && !ReferenceEquals(gateRegionsFor, session.World))
-        {
-            gateRegionsFor = session.World;
-            session.World.Commands.Enqueue(new Meitou.Simulation.Locks.GateRegionsCommand(regions) { Tick = session.World.Tick });
+            local.SynchronizeWorld();
+            var wanted = population.ActiveZones.Concat(local.World.Regions.Capture(simulation: false).Keys)
+                .Concat(nav.Walkability.RouteZones(TimeSpan.FromSeconds(30))).Distinct().ToArray();
+            using var preparation = local.World.Regions.Retain(wanted, simulation: false);
+            foreach (var zone in wanted) if (!nav.IsReady(zone)) pending.Add(nav.PrepareZone(zone));
+            Task.WaitAll([.. pending]); local.SynchronizeWorld();
         }
     }
 
@@ -512,14 +449,13 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         // The heat haze's gameTime: game hours since the start (it stops while paused, as in the game).
         gpu.GameHours = session.Clock.HoursSinceStart;
         // The sim's sight counts the interior lamps the renderer shows (the interiorlamps switch).
-        session.World.Sight.InteriorLampsAllDay = gpu.Lamps?.InteriorAllDay ?? o.InteriorLamps;
+        if (session is WorldSession sightOwner) sightOwner.World.Sight.InteriorLampsAllDay = gpu.Lamps?.InteriorAllDay ?? o.InteriorLamps;
         // The weather's three time bases: the game day and time of day (the hour below), the game speed (the last non-zero one while paused) and the paused flag.
         if (gpu.Weather is { } weather)
         {
-            var sim = session.Simulation;
             weather.Day = (int)session.Clock.Day;
-            weather.Paused = sim.IsPaused || skyArrival is not null;
-            weather.GameSpeed = (float)(sim.Speed > 0 ? sim.Speed : sim.LastNonZeroSpeed);
+            weather.Paused = session.IsPaused || skyArrival is not null;
+            weather.GameSpeed = (float)(session.TimeScale > 0 ? session.TimeScale : session is WorldSession localWeather ? localWeather.Simulation.LastNonZeroSpeed : 1);
         }
         Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Host);   // the profiler: the host's frame so far, then the blood marks apart from the terrain's update
         UpdateBlood();
@@ -527,16 +463,16 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         UpdateWeatherSource();
         UpdateInteriorView();
         // The frame's animation time (particles, water, wet surfaces) is game time: still while paused, faster at higher speeds.
-        float gameTime = (float)(session.Clock.GameSeconds / 600 % 1e4);
+        float gameTime = (float)(session.PresentationSeconds / 600 % 1e4);
         // The next world tick runs on its own thread while the world is drawn from the shown snapshots (docs/simulation.md "Tick ahead"): from here to the
         // join nothing the renderer calls back may touch the world, only the session's snapshots.
-        if (tickAhead) session.BeginTickAhead();
+        if (tickAhead && session is WorldSession local) local.BeginTickAhead();
         try
         {
             WorldFrame.Draw(gpu, scene, camera, render, width, height, presentationHour ?? (float)session.Clock.HourOfDay, gameTime, o.FogDistance,
                 weatherHour: (float)session.Clock.HourOfDay);
         }
-        finally { session.EndTickAhead(); }
+        finally { if (session is WorldSession completedLocal) completedLocal.EndTickAhead(); }
     }
 
     /// <summary>This frame's world draw overlaps the next world tick (set by the interactive loop; never in stills, the duel, recorded flights or the play benchmark).</summary>
@@ -549,10 +485,10 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     const double AheadOnMs = 4, AheadOffMs = 2;
     bool worldBusy;
 
-    bool TickAheadWanted() => config.TickAhead switch
+    bool TickAheadWanted() => session is WorldSession local && config.TickAhead switch
     {
         TickAheadMode.Always => true,
-        TickAheadMode.Dynamic => worldBusy = session.TickMs >= (worldBusy ? AheadOffMs : AheadOnMs),
+        TickAheadMode.Dynamic => worldBusy = local.TickMs >= (worldBusy ? AheadOffMs : AheadOnMs),
         _ => false,
     };
 

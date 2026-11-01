@@ -13,7 +13,7 @@ sealed partial class PlayerInterface
     internal TutorialPoll TutorialPoll(bool loading)
     {
         var snap = session.CurrentSnapshot;
-        int faction = session.World.Player.Faction;
+        int faction = session.ActiveFaction;
         bool unsettled = false, aid = false, attack = false, ko = false, awake = false, sneak = false, hungry = false, playingDead = false, slave = false;
         int pcs = 0;
         var pcIds = new List<CharacterId>();

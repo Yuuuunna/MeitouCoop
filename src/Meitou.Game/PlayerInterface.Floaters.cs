@@ -31,7 +31,7 @@ sealed partial class PlayerInterface
         set
         {
             floaterMode = value;
-            session.World.Floaters = value == FloaterMode.Off ? null : session.World.Floaters ?? new();
+            session.EnableFloaters(value != FloaterMode.Off);
         }
     }
 
@@ -39,16 +39,15 @@ sealed partial class PlayerInterface
 
     void DrawFloaters(DebugOverlay o)
     {
-        var world = session.World;
         if (Floaters == FloaterMode.Off)
         {
-            world.Floaters = null;
+            session.EnableFloaters(false);
             floaters.Clear();
             return;
         }
-        var queue = world.Floaters ??= new();
+        session.EnableFloaters(true);
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
-        while (queue.TryDequeue(out var f))
+        while (session.TryDequeueFloater(out var f))
         {
             if (f.Kind == FloaterKind.Damage && Vector3.DistanceSquared(Eye, f.Position) >= FloaterRangeSquared) continue;
             if (FloaterText.Format(f, Floaters) is not { } text) continue;

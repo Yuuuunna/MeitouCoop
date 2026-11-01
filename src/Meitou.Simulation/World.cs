@@ -78,6 +78,7 @@ public sealed partial class World : IDisposable
     readonly List<SystemPhases> phases = [];
     readonly List<SimCommand> deferred = [];
     readonly List<string> messages = [];
+    readonly Dictionary<PlayerId, List<string>> playerMessages = [];
     readonly List<SaidLine> said = [];
     readonly Dictionary<CharacterId, (string Text, long Until)> barks = [];
     IAnimationSource? animations;
@@ -92,6 +93,13 @@ public sealed partial class World : IDisposable
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(walkability);
         Settings = settings;
+        Player = new PlayerState(Factions);
+        Players = new WorldPlayers(this);
+        Commands = new CommandQueue(this);
+        Authority = new AuthorityGateway(this);
+        PlayerTrades = new Trading.PlayerTradeService(Authority.IsActive);
+        CreationQualifications = new CreationQualifications(this);
+        Invitations = new FactionInvitations(this);
         GameHours = settings.StartHours;
         Walkability = walkability;
         this.systems = [.. systems ?? []];
@@ -103,6 +111,9 @@ public sealed partial class World : IDisposable
         dialogues = this.systems.OfType<Dialogue.IDialogueSource>().FirstOrDefault();
         ragdolls = this.systems.OfType<Ragdolls.IRagdollSource>().FirstOrDefault();
         Characters = characters ?? new CharacterTable();
+        Characters.EntityRemoved = Players.RoleRemoved;
+        Entities = new WorldEntities(Characters);
+        Regions = new WorldRegions(this);
         Grid = new SpatialGrid(settings.GridCellSize);
         pool = new WorkerPool(settings.Threads);
         buffers = new EffectBuffer[Math.Max(1, settings.Threads * settings.PartitionsPerThread)];
@@ -123,10 +134,20 @@ public sealed partial class World : IDisposable
     }
     public IWalkability Walkability { get; }
     public CharacterTable Characters { get; }
+    /// <summary>True between complete simulation steps. Hosts must still serialize their world-owner calls.</summary>
+    public bool AtTickBoundary => Characters.Phase == TablePhase.Outside;
+    public WorldEntities Entities { get; }
+    public WorldRegions Regions { get; }
     /// <summary>The neighbour grid of the last tick's positions (valid from the Schedule step of a tick on).</summary>
     public SpatialGrid Grid { get; }
     /// <summary>Player and test commands, applied at the tick they are stamped with.</summary>
-    public CommandQueue Commands { get; } = new();
+    public CommandQueue Commands { get; }
+    public AuthorityGateway Authority { get; }
+    public Trading.PlayerTradeService PlayerTrades { get; }
+    public CreationQualifications CreationQualifications { get; }
+    public FactionInvitations Invitations { get; }
+    /// <summary>Conservative state-publication revision, independent of simulation time. Not persisted yet.</summary>
+    public ulong StateRevision { get; private set; }
     /// <summary>The squads (factory output, kept for the leader and follower logic).</summary>
     public SquadRegistry Squads { get; } = new();
     /// <summary>Roaming squads that persist across the loading of zones (<see cref="PopulationSystem"/>).</summary>
@@ -135,8 +156,12 @@ public sealed partial class World : IDisposable
     public Saving.SavedPopulation? Saved { get; set; }
     /// <summary>Each faction's <c>squad formation</c> (<see cref="SquadFormation"/>), by faction position; set by the population. Null (no faction data): RANDOM, the field's default.</summary>
     public IReadOnlyList<int>? FactionFormations { get; set; }
-    /// <summary>The player: faction, money, selection.</summary>
-    public PlayerState Player { get; } = new();
+    /// <summary>Faction-owned funds, names and research. Player interface state only references these resources.</summary>
+    public FactionStates Factions { get; } = new();
+    /// <summary>The local player's interface and current faction (legacy single-player entry point).</summary>
+    public PlayerState Player { get; }
+    /// <summary>Registered players, explicit memberships and versioned character control grants.</summary>
+    public WorldPlayers Players { get; }
     /// <summary>Doors, lockable containers, cages and beds of the registered towns, with their occupants (docs/simulation.md "Cages, beds and locks").</summary>
     public Locks.FixtureRegistry Fixtures { get; } = new();
     /// <summary>The characters' places and light levels for the sight tests (docs/game/perception.md "Sight"), worked out each tick.</summary>
@@ -164,9 +189,10 @@ public sealed partial class World : IDisposable
     /// </summary>
     public IReadOnlyCollection<Meitou.Data.World.ZoneCoordinate>? LoadedZones { get; set; }
     /// <summary>The player's research: finished, queued, paid (docs/simulation.md "Production"); hashed once it changed in play.</summary>
-    public Construction.ResearchState Research { get; } = new();
+    public Construction.ResearchState Research => Player.FactionState.Research;
     /// <summary>The machines of the player's complete buildings: recipe slots, storage, farms (docs/simulation.md "Production").</summary>
     public Production.MachineRegistry Machines { get; } = new();
+    internal Saving.MachineSave.Restoration? SavedMachines { get; set; }
     public IReadOnlyList<ITickSystem> Systems => systems;
     /// <summary>The number of ticks run; during a tick, the number of the tick being run.</summary>
     public long Tick { get; private set; }
@@ -209,7 +235,7 @@ public sealed partial class World : IDisposable
     }
 
     /// <summary>The character holds a line it wants to say to the player (<see cref="Dialogue.IDialogueSource.HasInterrupt"/>).</summary>
-    public bool WantsToTalk(CharacterId id) => dialogues is not null && Characters.Phase == TablePhase.Outside && dialogues.HasInterrupt(id);
+    public bool WantsToTalk(CharacterId id, PlayerId? player = null) => dialogues is not null && Characters.Phase == TablePhase.Outside && dialogues.HasInterrupt(id, player ?? PlayerId.Local);
 
     /// <summary>Whether the character answers the player's Talk (the dialogue system finds event-1 dialogue for it, and with <paramref name="talker"/> given, a line of it passes now); the host asks between ticks.</summary>
     public bool CanTalk(CharacterId id, CharacterId? talker = null) => dialogues is not null && Characters.Phase == TablePhase.Outside && Characters.TryResolveNext(id, out int slot) && dialogues.CanTalk(this, slot, talker);
@@ -243,6 +269,8 @@ public sealed partial class World : IDisposable
     /// <summary>Runs one simulation tick; <paramref name="publish"/> false skips its snapshot (a tick the host will not draw: not one of a frame's last two).</summary>
     public void RunTick(bool publish = true)
     {
+        RequireNoDurableMutation();
+        Authority.ProcessPending();
         var table = Characters;
         var prof = Profile.Enabled ? Profile : null;
         prof?.Begin(systems.Count);
@@ -251,8 +279,10 @@ public sealed partial class World : IDisposable
         // 1. Inputs (serial).
         table.Phase = TablePhase.Inputs;
         var due = TakeDue();
+        PlayerTrades.Inputs(this, due);
         prof?.Lap(TickProfile.Inputs);
         for (int k = 0; k < systems.Count; k++) { systems[k].Inputs(this, due); prof?.Lap(TickProfile.Inputs, k); }
+        RuntimeBoundary?.Invoke(this);
 
         // 2. Schedule (serial): the grid of the last tick's positions, then the systems.
         table.Phase = TablePhase.Schedule;
@@ -294,11 +324,14 @@ public sealed partial class World : IDisposable
 
         // 8. Publish.
         Squads.Refresh(table);
-        Player.Prune(table);
+        Players.Prune();
+        PlayerTrades.Prune(this);
         table.Phase = TablePhase.Outside;
         table.EndTick();
         Tick++;
+        StateRevision = checked(StateRevision + 1);
         GameHours += TickSeconds / SecondsPerGameHour;
+        RuntimeBoundary?.Invoke(this);
         if (publish && Settings.PublishSnapshots) Publish();
         prof?.Lap(TickProfile.Publish);
     }
@@ -341,7 +374,41 @@ public sealed partial class World : IDisposable
     /// <summary>Posts a message for the player (a relation crossing a threshold...); serial phases only. The host shows them.</summary>
     public void Post(string message)
     {
-        lock (messages) messages.Add(message);
+        PostLocal(message, !Players.RequiresExplicitControl);
+    }
+    void PostLocal(string message, bool addressed)
+    {
+        lock (messages)
+        {
+            messages.Add(message); if (messages.Count > 200) messages.RemoveAt(0);
+            if (addressed) Player.Messages.Add(PlayerMessageKind.Notice, "", message);
+        }
+    }
+
+    /// <summary>A private interface notice. It is neither broadcast nor included in another player's message queue.</summary>
+    public void Post(PlayerId player, string message)
+    {
+        if (player.IsNone) throw new ArgumentException("A message recipient is required.", nameof(player));
+        if (player == PlayerId.Local) { PostLocal(message, addressed: true); return; }
+        lock (playerMessages)
+        {
+            if (!playerMessages.TryGetValue(player, out var pending)) playerMessages.Add(player, pending = []);
+            pending.Add(message);
+            if (pending.Count > 200) pending.RemoveAt(0);
+            Players.Find(player)?.State.Messages.Add(PlayerMessageKind.Notice, "", message);
+        }
+    }
+
+    public IReadOnlyList<string> TakeMessages(PlayerId player)
+    {
+        if (player == PlayerId.Local) return TakeMessages();
+        lock (playerMessages) return playerMessages.Remove(player, out var pending) ? pending.ToArray() : [];
+    }
+
+    public void PostFaction(int faction, string message)
+    {
+        foreach (var player in Players.All)
+            if (player.IsMember(faction) || !Players.RequiresExplicitControl && player.Id == PlayerId.Local && Player.Faction == faction) Post(player.Id, message);
     }
 
     /// <summary>
@@ -370,12 +437,23 @@ public sealed partial class World : IDisposable
     /// (<paramref name="player"/>: a player character, or the player's reply); serial phases only. Display only: not saved or hashed; the newest 200 are kept until the host takes them.
     /// </summary>
     public void Said(string owner, string text, bool player)
+        => SaidLocal(owner, text, player, !Players.RequiresExplicitControl);
+
+    public void Said(PlayerId recipient, string owner, string text, bool player)
+    {
+        if (recipient.IsNone) throw new ArgumentException("A dialogue log recipient is required.", nameof(recipient));
+        if (recipient == PlayerId.Local) SaidLocal(owner, text, player, addressed: true);
+        else Players.Find(recipient)?.State.Messages.Add(PlayerMessageKind.Dialogue, owner, text.ReplaceLineEndings(" "), player);
+    }
+
+    void SaidLocal(string owner, string text, bool player, bool addressed)
     {
         if (text.Length == 0) return;
         lock (said)
         {
             said.Add(new(owner, text.ReplaceLineEndings(" "), player));
             if (said.Count > 200) said.RemoveAt(0);
+            if (addressed) Player.Messages.Add(PlayerMessageKind.Dialogue, owner, text.ReplaceLineEndings(" "), player);
         }
     }
 
@@ -413,9 +491,11 @@ public sealed partial class World : IDisposable
         h.Add(Seed);
         h.Add(Tick);
         Characters.Hash(ref h);
-        Squads.Hash(ref h);
+        Squads.Hash(ref h, Players.RequiresExplicitControl);
         Platoons.Hash(ref h);
         Player.Hash(ref h);
+        CreationQualifications.Hash(ref h);
+        Invitations.Hash(ref h);
         if (Uniques.Count > 0) Uniques.Hash(ref h);   // only once a unique is tracked, so worlds without one hash as before
         if (Fixtures.Count > 0) Fixtures.Hash(ref h);   // only once a town with buildings registered, so worlds without them hash as before
         if (Buildings.Count > 0 || Buildings.Towns.Count > 0) Buildings.Hash(ref h);   // only once the player has a site, so worlds without one hash as before
@@ -423,9 +503,18 @@ public sealed partial class World : IDisposable
         if (ItemSlots.Count > 0) ItemSlots.Hash(ref h);   // only once a town with item slots registered
         if (Machines.Count > 0) Machines.Hash(ref h);   // only once the player has a working building
         if (Research.Changed) Research.Hash(ref h);   // only once research changed in play
+        Factions.HashExcept(ref h, Player.Faction);
+        Factions.HashRanks(ref h);
+        Players.Hash(ref h);
+        Entities.Hash(ref h);
         foreach (var s in systems) if (s is IStateHashed hashed) hashed.Hash(ref h);
         return h.Value;
     }
 
-    public void Dispose() => pool.Dispose();
+    public void Dispose()
+    {
+        PlayerTrades.Clear();
+        Authority.Dispose();
+        pool.Dispose();
+    }
 }

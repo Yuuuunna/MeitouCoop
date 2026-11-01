@@ -12,6 +12,10 @@ public readonly record struct MaterialView(string Item, float Required, float De
 public sealed record BuildingSnapshot(string Id, string Record, Vector3 Position, Quaternion Rotation, int Floor, string? Parent, int Owner,
     float Progress, float Target, IReadOnlyList<MaterialView> Materials, bool Complete, bool Paused)
 {
+    public ulong SiteRevision { get; init; }
+    public ulong RootRevision { get; init; }
+    /// <summary>The current root owner's faction for revision-bound remote commands.</summary>
+    public int AuthorityFaction { get; init; } = -1;
     public Meitou.Data.World.BuildingPlacement? LevelPlacement { get; init; }
     public string Name { get; init; } = "";
     public bool Destroyed { get; init; }

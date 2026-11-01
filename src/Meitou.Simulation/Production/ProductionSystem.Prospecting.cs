@@ -22,13 +22,18 @@ public sealed partial class ProductionSystem
     void ProspectBegin(World world, ProspectOrder order)
     {
         var table = world.Characters;
-        if (!table.TryResolveNext(order.Character, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold || !Able(cold) || cold.WaterState == 3) return;
+        if (!table.TryResolveNext(order.Character, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold ||
+            !world.MayOrder(order, order.Character) || !Able(cold) || cold.WaterState == 3) return;
+        var grant = world.Players.ControlOf(order.Character);
+        if (world.Players.RequiresExplicitControl && grant is null) return;
         ref var n = ref table.Next[slot];
-        if (n.Task == (byte)CharacterTask.Prospect) return;
+        if (n.Task == (byte)CharacterTask.Prospect && cold.ProspectControl == grant && cold.ProspectPlayer == (grant?.Player ?? PlayerId.Local)) return;
         MovementSystem.Stop(table, slot);
         n.Task = (byte)CharacterTask.Prospect;
         n.TaskTime = 0;
         cold.Prospecting = 0;
+        cold.ProspectPlayer = grant?.Player ?? PlayerId.Local;
+        cold.ProspectControl = grant;
         prospectors++;
     }
 
@@ -45,9 +50,11 @@ public sealed partial class ProductionSystem
         {
             ref var n = ref table.Next[i];
             if (!n.Alive || table.Cold(i) is not { Prospecting: { } progress } cold) continue;
-            if (n.Task != (byte)CharacterTask.Prospect || !Able(cold))
+            if (n.Task != (byte)CharacterTask.Prospect || !Able(cold) ||
+                (cold.ProspectControl is { } authority ? !world.Players.Validate(authority) : world.Players.RequiresExplicitControl))
             {
                 cold.Prospecting = null;
+                cold.ProspectControl = null;
                 if (n.Task == (byte)CharacterTask.Prospect) n.Task = (byte)CharacterTask.Idle;
                 continue;
             }
@@ -60,7 +67,8 @@ public sealed partial class ProductionSystem
             }
             cold.Prospecting = null;
             n.Task = (byte)CharacterTask.Idle;
-            PublishProspect(world, cold, n.Position);
+            if (world.Players.Find(cold.ProspectPlayer) is { } recipient) PublishProspect(world, recipient.State, cold, n.Position);
+            cold.ProspectControl = null;
         }
         prospectors = found;
     }
@@ -69,7 +77,7 @@ public sealed partial class ProductionSystem
     /// The window's content for a finished prospecting (<b>Verified</b>/<b>Observed</b> per docs/game/ui-screens.md "Prospecting"), read from the ground at the prospector's feet; the wind is
     /// the spot's weather region's at this moment (<c>FUN_140785f50</c>, read once when the window fills).
     /// </summary>
-    void PublishProspect(World world, CharacterCold prospector, System.Numerics.Vector3 at)
+    void PublishProspect(World world, PlayerState recipient, CharacterCold prospector, System.Numerics.Vector3 at)
     {
         float skill = prospector.Stats?[StatsEnumerated.Science] ?? 0;
         var environment = new List<ProspectLine>(3);
@@ -79,7 +87,7 @@ public sealed partial class ProductionSystem
         if (swamp > 0) environment.Add(new("Swamp", swamp));
         var found = new ProspectLine[ProspectResources.Length];
         for (int k = 0; k < found.Length; k++) found[k] = new(ProspectResources[k].Name, resources.Yield(ProspectResources[k].Resource, at));
-        world.Prospected = new ProspectReport((world.Prospected?.Serial ?? 0) + 1, at, prospector.Name, (int)skill, resources.ZoneName(at.X, at.Z) ?? "", (int)at.Y,
+        recipient.Prospected = new ProspectReport(checked((recipient.Prospected?.Serial ?? 0) + 1), at, prospector.Name, (int)skill, resources.ZoneName(at.X, at.Z) ?? "", (int)at.Y,
             (int)((skill * 0.01f * 6000 + 2000) * 0.2f), environment, found, SampleProspectMap(world, at, skill * 0.01f),
             world.Weather?.At(at.X, at.Z)?.WindSpeed ?? 0);
     }

@@ -140,6 +140,319 @@ public class TradeTests
         public TradeView View => World.Snapshot.Trade!;
     }
 
+    sealed class MultiplayerShop : IDisposable
+    {
+        public Bazaar Bazaar { get; } = new();
+        public SimWorld World => Bazaar.World;
+        public TradeSystem Trade => Bazaar.Trade;
+        public PlayerId A { get; } = new(2);
+        public PlayerId B { get; } = new(3);
+        public CharacterId CustomerA { get; }
+        public CharacterId CustomerB { get; }
+        public CharacterId Trader { get; }
+        public WorldPlayer PlayerA => World.Players.Find(A)!;
+        public WorldPlayer PlayerB => World.Players.Find(B)!;
+        public Shop Shop => Bazaar.SquadOf(Trader).Shop!;
+        public Squad Vendor => Bazaar.SquadOf(Trader);
+
+        public MultiplayerShop()
+        {
+            int other = Bazaar.Data.RegisterFaction("remote", "Remote", Bazaar.Data.PlayerFaction);
+            Bazaar.Data.Relations.PlayerFaction = -1;
+            World.Players.Register(A);
+            World.Players.Register(B);
+            World.Players.SetMembership(A, Bazaar.Data.PlayerFaction, FactionPermission.All);
+            World.Players.SetMembership(B, other, FactionPermission.All);
+            PlayerA.State.Money = PlayerB.State.Money = 1000;
+            CustomerA = Bazaar.Spawn("A", Vector2.Zero, PlayerA.State.Faction, true);
+            CustomerB = Bazaar.Spawn("B", new Vector2(1, 0), PlayerB.State.Faction, true);
+            Trader = Bazaar.Spawn("vendor", new Vector2(10, 0), Bazaar.Data.FactionIndex("f-t"), false, "shop-t");
+            World.Players.AssignInitial(A, CustomerA);
+            World.Players.AssignInitial(B, CustomerB);
+            World.RunTick();
+            Shop.Stock.Items.Clear();
+            Assert.True(Shop.Stock.Add(Bazaar.Data.Items.Create("cloth-t", 1)!));
+        }
+
+        public void Send(PlayerId player, SimCommand command) => World.Commands.Enqueue(player, command with { Tick = World.Tick });
+        public void OpenBoth()
+        {
+            Send(A, new OpenTrade(CustomerA, Trader) { Tick = 0 });
+            Send(B, new OpenTrade(CustomerB, Trader) { Tick = 0 });
+            World.RunTick();
+            Assert.NotNull(Trade.PublishTrade(A));
+            Assert.NotNull(Trade.PublishTrade(B));
+        }
+        public TradeView View(PlayerId player) => Assert.IsType<TradeView>(Trade.PublishTrade(player));
+        public void Dispose() => Bazaar.Dispose();
+    }
+
+    [Fact]
+    public void AuthorizedPublicationDropsCachedTradeImmediatelyAfterMembershipChanges()
+    {
+        using var m = new MultiplayerShop(); m.OpenBoth();
+        var connection = m.World.Authority.Open(m.A);
+        Assert.True(m.World.Authority.BeginSynchronization(connection));
+        Assert.NotNull(m.World.Authority.CaptureView(connection, new(), new())!.Snapshot.Trade);
+        m.World.Players.SetMembership(m.A, m.PlayerA.State.Faction, FactionPermission.SpendFunds);
+        Assert.NotNull(m.Trade.PublishTrade(m.A)); // cache still holds the previous window until the next tick
+        Assert.Null(m.World.Authority.CaptureView(connection, new(), new())!.Snapshot.Trade);
+        Assert.NotNull(m.Trade.PublishTrade(m.World, m.B));
+    }
+
+    [Fact]
+    public void DisconnectCleanupClosesOnlyTheCurrentConnectionsWindowsAndKeepsOtherTraders()
+    {
+        using var m = new MultiplayerShop(); m.OpenBoth();
+        var old = m.World.Authority.Open(m.A); var current = m.World.Authority.Open(m.A);
+        m.World.ReleasePlayerConnection(old);
+        Assert.NotNull(m.Trade.PublishTrade(m.A)); Assert.NotNull(m.Trade.PublishTrade(m.B));
+        m.World.ReleasePlayerConnection(current);
+        Assert.Null(m.Trade.PublishTrade(m.A)); Assert.NotNull(m.Trade.PublishTrade(m.B));
+        Assert.True(m.World.Characters.Cold(m.Trader.Slot)!.Engaged);
+        Assert.True(m.World.Players.CanControl(m.A, m.CustomerA));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TwoFactionsCompeteForOneStockItemWithoutDuplicatingItOrChargingTheLoser(bool reverse)
+    {
+        using var m = new MultiplayerShop();
+        m.OpenBoth();
+        var a = m.View(m.A);
+        var b = m.View(m.B);
+        Assert.NotEqual(a.SessionId, b.SessionId);
+        Assert.Null(m.Trade.PublishTrade()); // neither remote window replaces the local interface's window
+        long vendorBefore = m.Vendor.Money;
+        var first = reverse ? m.B : m.A;
+        var second = reverse ? m.A : m.B;
+        var firstView = reverse ? b : a;
+        var secondView = reverse ? a : b;
+        m.Send(first, new BuyItem(firstView.Stock.Single().Token, 1) { Tick = 0, SessionId = firstView.SessionId, InventoryRevision = firstView.StockRevision });
+        m.Send(second, new BuyItem(secondView.Stock.Single().Token, 1) { Tick = 0, SessionId = secondView.SessionId, InventoryRevision = secondView.StockRevision });
+        m.World.RunTick();
+        var winner = reverse ? m.CustomerB : m.CustomerA;
+        var loser = reverse ? m.CustomerA : m.CustomerB;
+        Assert.Equal("cloth-t", Assert.Single(m.Bazaar.Bag(winner).Items).Record);
+        Assert.Empty(m.Bazaar.Bag(loser).Items);
+        Assert.Empty(m.Shop.Stock.Items);
+        Assert.Equal(1000 - firstView.Stock.Single().UnitPrice, m.World.Players.Find(first)!.State.Money);
+        Assert.Equal(1000, m.World.Players.Find(second)!.State.Money);
+        Assert.Equal(vendorBefore + 2000, m.Vendor.Money + m.PlayerA.State.Money + m.PlayerB.State.Money);
+        Assert.Contains(m.World.TakeMessages(first), message => message.Contains("bought", StringComparison.Ordinal));
+        Assert.Empty(m.World.TakeMessages(second));
+        Assert.Empty(m.World.TakeMessages());
+    }
+
+    [Fact]
+    public async Task AuthorityPurchaseReceiptSurvivesReconnectWithoutChargingOrTransferringTwice()
+    {
+        using var m = new MultiplayerShop();
+        var authority = m.World.Authority;
+        var connection = authority.Open(m.A);
+        Assert.True(authority.BeginSynchronization(connection));
+        Assert.True(authority.Activate(connection));
+        var opening = authority.Submit(connection, 1, new OpenTrade(m.CustomerA, m.Trader) { Tick = 0 },
+            new([m.World.Players.ControlOf(m.CustomerA)!.Value], m.PlayerA.State.Faction, m.PlayerA.MembershipRevision(m.PlayerA.State.Faction)));
+        m.World.RunTick();
+        Assert.Equal(AuthorityStatus.Evaluated, (await opening).Status);
+        var view = m.View(m.A);
+        var item = Assert.Single(view.Stock);
+        var command = new BuyItem(item.Token, 1) { Tick = 0, SessionId = view.SessionId, InventoryRevision = view.StockRevision };
+        long vendor = m.Vendor.Money;
+        var bought = authority.Submit(connection, 2, command, new([]));
+        m.World.ApplyPausedInterfaceCommands();
+        Assert.Equal(AuthorityStatus.Evaluated, (await bought).Status);
+        Assert.Equal(1000 - item.UnitPrice, m.PlayerA.State.Money);
+        Assert.Equal(vendor + item.UnitPrice, m.Vendor.Money);
+        Assert.Single(m.Bazaar.Bag(m.CustomerA).Items);
+        connection = authority.Open(m.A);
+        Assert.True(authority.BeginSynchronization(connection));
+        Assert.True(authority.Activate(connection));
+        Assert.Same(bought, authority.Submit(connection, 2, command, new([])));
+        m.World.ApplyPausedInterfaceCommands();
+        Assert.Equal(1000 - item.UnitPrice, m.PlayerA.State.Money);
+        Assert.Equal(vendor + item.UnitPrice, m.Vendor.Money);
+        Assert.Single(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Empty(m.Shop.Stock.Items);
+        Assert.Empty(m.Bazaar.Bag(m.CustomerB).Items);
+        Assert.Equal(1000, m.PlayerB.State.Money);
+    }
+
+    [Fact]
+    public void ClosingOneWindowDoesNotCloseAnotherOrReleaseItsTrader()
+    {
+        using var m = new MultiplayerShop();
+        m.OpenBoth();
+        ulong a = m.View(m.A).SessionId, b = m.View(m.B).SessionId;
+        m.Send(m.A, new CloseTrade { Tick = 0, SessionId = a });
+        m.Send(m.B, new CloseTrade { Tick = 0, SessionId = a }); // another player's window is not a valid target
+        m.World.RunTick();
+        Assert.Null(m.Trade.PublishTrade(m.A));
+        Assert.Equal(b, m.View(m.B).SessionId);
+        Assert.True(m.World.Characters.Cold(m.Trader.Slot)!.Engaged);
+        m.Send(m.B, new CloseTrade { Tick = 0, SessionId = b });
+        m.World.RunTick();
+        Assert.Null(m.Trade.PublishTrade(m.B));
+        Assert.False(m.World.Characters.Cold(m.Trader.Slot)!.Engaged);
+    }
+
+    [Fact]
+    public void OldWindowAndRevokedMembershipRequestsDoNotSpendFunds()
+    {
+        using var m = new MultiplayerShop();
+        m.OpenBoth();
+        var before = m.View(m.A);
+        m.Send(m.A, new CloseTrade { Tick = 0, SessionId = before.SessionId });
+        m.Send(m.A, new OpenTrade(m.CustomerA, m.Trader) { Tick = 0 });
+        m.World.RunTick();
+        var after = m.View(m.A);
+        Assert.NotEqual(before.SessionId, after.SessionId);
+        m.Send(m.A, new BuyItem(before.Stock.Single().Token, 1) { Tick = 0, SessionId = before.SessionId, InventoryRevision = before.StockRevision });
+        m.World.RunTick();
+        Assert.Empty(m.Bazaar.Bag(m.CustomerA).Items);
+        m.Send(m.A, new BuyItem(after.Stock.Single().Token, 1) { Tick = 0, SessionId = after.SessionId, InventoryRevision = after.StockRevision });
+        m.World.Players.SetMembership(m.A, m.PlayerA.State.Faction, FactionPermission.None);
+        m.World.Players.SetMembership(m.A, m.PlayerA.State.Faction, FactionPermission.All);
+        m.World.RunTick();
+        Assert.Empty(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Equal(1000, m.PlayerA.State.Money);
+        Assert.Null(m.Trade.PublishTrade(m.A));
+        Assert.NotNull(m.Trade.PublishTrade(m.B));
+    }
+
+    [Fact]
+    public void MembershipDoesNotGrantSpendingOrExposeTheFactionBalance()
+    {
+        using var m = new MultiplayerShop();
+        m.World.Players.SetMembership(m.A, m.PlayerA.State.Faction, FactionPermission.None);
+        m.OpenBoth();
+        var view = m.View(m.A);
+        Assert.False(view.FundsVisible);
+        Assert.False(view.CanSpendFunds);
+        Assert.Equal(0, view.PlayerMoney);
+        m.Send(m.A, new BuyItem(view.Stock.Single().Token, 1) { Tick = 0, SessionId = view.SessionId, InventoryRevision = view.StockRevision });
+        m.World.RunTick();
+        Assert.Empty(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Equal(1000, m.PlayerA.State.Money);
+        Assert.Single(m.Shop.Stock.Items);
+    }
+
+    [Fact]
+    public void OutOfRangeAndOverflowingTradesDoNotMoveItemsOrMoney()
+    {
+        using var m = new MultiplayerShop();
+        Assert.True(m.Bazaar.Bag(m.CustomerA).Add(m.Bazaar.Data.Items.Create("junk-t", 1)!));
+        m.OpenBoth();
+        var view = m.View(m.A);
+        m.PlayerA.State.Money = long.MaxValue;
+        long vendorMoney = m.Vendor.Money;
+        m.Send(m.A, new SellItem(view.Goods.Single().Token, 1) { Tick = 0, SessionId = view.SessionId, InventoryRevision = view.GoodsRevision });
+        m.World.RunTick();
+        Assert.Single(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Equal(long.MaxValue, m.PlayerA.State.Money);
+        Assert.Equal(vendorMoney, m.Vendor.Money);
+        m.World.Characters.Place(m.CustomerA.Slot, new Vector3(10000, 150, 10000), 0);
+        m.Send(m.A, new BuyItem(view.Stock.Single().Token, 1) { Tick = 0, SessionId = view.SessionId, InventoryRevision = view.StockRevision });
+        m.World.RunTick();
+        Assert.Null(m.Trade.PublishTrade(m.A));
+        Assert.Single(m.Shop.Stock.Items);
+        Assert.Equal(long.MaxValue, m.PlayerA.State.Money);
+    }
+
+    [Fact]
+    public void APlayerCannotOpenAnotherPlayersCharacterOrBorrowALegacyWindow()
+    {
+        using var m = new MultiplayerShop();
+        m.Send(m.A, new OpenTrade(m.CustomerB, m.Trader) { Tick = 0 });
+        m.World.RunTick();
+        Assert.Null(m.Trade.PublishTrade(m.A));
+        m.Bazaar.Say(new OpenTrade(m.CustomerA, m.Trader) { Tick = 0 });
+        m.World.RunTick();
+        var local = Assert.IsType<TradeView>(m.Trade.PublishTrade());
+        m.Send(PlayerId.Local, new BuyItem(local.Stock.Single().Token, 1) { Tick = 0, SessionId = local.SessionId, InventoryRevision = local.StockRevision });
+        m.World.RunTick();
+        Assert.Empty(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Equal(1000, m.PlayerA.State.Money);
+        Assert.Single(m.Shop.Stock.Items);
+    }
+
+    [Fact]
+    public void ChangingTheViewedFactionDoesNotChangeTheTradesPayer()
+    {
+        using var m = new MultiplayerShop();
+        m.OpenBoth();
+        int payer = m.PlayerA.State.Faction;
+        var view = m.View(m.A);
+        m.World.Players.SetMembership(m.A, m.PlayerB.State.Faction, FactionPermission.None);
+        Assert.True(m.World.Players.SelectFaction(m.A, m.PlayerB.State.Faction));
+        m.Send(m.A, new BuyItem(view.Stock.Single().Token, 1) { Tick = 0, SessionId = view.SessionId, InventoryRevision = view.StockRevision });
+        m.World.RunTick();
+        Assert.Equal(1000 - view.Stock.Single().UnitPrice, m.World.Factions.Find(payer)!.Money);
+        Assert.Equal(1000, m.PlayerB.State.Money);
+        Assert.Equal(payer, m.World.Characters.Cold(m.CustomerA.Slot)!.Faction);
+    }
+
+    [Fact]
+    public void AnotherPlayerCannotUseTheSellersBuybackReceipt()
+    {
+        using var m = new MultiplayerShop();
+        Assert.True(m.Bazaar.Bag(m.CustomerA).Add(m.Bazaar.Data.Items.Create("junk-t", 1)!));
+        m.OpenBoth();
+        var selling = m.View(m.A);
+        m.Send(m.A, new SellItem(selling.Goods.Single().Token, 1) { Tick = 0, SessionId = selling.SessionId, InventoryRevision = selling.GoodsRevision });
+        m.World.RunTick();
+        var own = m.View(m.A).Stock.Single(i => i.Record == "junk-t");
+        var other = m.View(m.B).Stock.Single(i => i.Record == "junk-t");
+        Assert.True(own.Buyback);
+        Assert.False(other.Buyback);
+        m.Send(m.B, new BuyItem(other.Token, 1) { Tick = 0, SessionId = m.View(m.B).SessionId, InventoryRevision = m.View(m.B).StockRevision });
+        m.World.RunTick();
+        Assert.Equal(1000 - other.Price, m.PlayerB.State.Money);
+        Assert.Equal("junk-t", Assert.Single(m.Bazaar.Bag(m.CustomerB).Items).Record);
+    }
+
+    [Fact]
+    public void IdenticalLookingRestockStillInvalidatesAnOldInventoryRevision()
+    {
+        using var m = new MultiplayerShop();
+        m.OpenBoth();
+        var before = m.View(m.A);
+        var original = Assert.Single(m.Shop.Stock.Items);
+        m.Shop.Stock.Items[0] = original.WithQuantity(original.Quantity);
+        m.Send(m.A, new BuyItem(before.Stock.Single().Token, 1)
+            { Tick = 0, SessionId = before.SessionId, InventoryRevision = before.StockRevision });
+        m.World.RunTick();
+        Assert.Empty(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Equal(1000, m.PlayerA.State.Money);
+        var after = m.View(m.A);
+        Assert.NotEqual(before.StockRevision, after.StockRevision);
+        Assert.Equal(before.Stock.Single().Token, after.Stock.Single().Token);
+        m.Send(m.A, new BuyItem(after.Stock.Single().Token, 1)
+            { Tick = 0, SessionId = after.SessionId, InventoryRevision = after.StockRevision });
+        m.World.RunTick();
+        Assert.Single(m.Bazaar.Bag(m.CustomerA).Items);
+    }
+
+    [Fact]
+    public void PausedTradesStillSerializeStockChangesAndAdvanceInventoryRevisions()
+    {
+        using var m = new MultiplayerShop();
+        m.OpenBoth();
+        var a = m.View(m.A);
+        var b = m.View(m.B);
+        long tick = m.World.Tick;
+        m.Send(m.A, new BuyItem(a.Stock.Single().Token, 1) { Tick = 0, SessionId = a.SessionId, InventoryRevision = a.StockRevision });
+        m.Send(m.B, new BuyItem(b.Stock.Single().Token, 1) { Tick = 0, SessionId = b.SessionId, InventoryRevision = b.StockRevision });
+        m.World.ApplyPausedInterfaceCommands();
+        Assert.Equal(tick, m.World.Tick);
+        Assert.Single(m.Bazaar.Bag(m.CustomerA).Items);
+        Assert.Empty(m.Bazaar.Bag(m.CustomerB).Items);
+        Assert.NotEqual(a.StockRevision, m.View(m.A).StockRevision);
+        Assert.Equal(m.View(m.A).StockRevision, m.View(m.B).StockRevision);
+    }
+
     [Fact]
     public void A_trader_squad_gets_a_shop_and_the_player_buys_and_sells_at_its_prices()
     {

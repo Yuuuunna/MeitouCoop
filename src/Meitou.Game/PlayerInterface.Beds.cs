@@ -57,9 +57,9 @@ sealed partial class PlayerInterface
     /// <summary>The selected characters carrying someone.</summary>
     CharacterId[] Carriers() => [.. Selected().Where(c => !c.Carrying.IsNone).Select(c => c.Id)];
 
-    void SleepIn(BedSpot bed) => Say(new UseBedOrder([], bed.Id) { Tick = session.World.Tick });
+    void SleepIn(BedSpot bed) => Say(new UseBedOrder([], bed.Id) { Tick = session.CommandTick });
 
-    void PutIn(BedSpot bed, CharacterId[] carriers) => Say(new PutInBedOrder(carriers, bed.Id) { Tick = session.World.Tick });
+    void PutIn(BedSpot bed, CharacterId[] carriers) => Say(new PutInBedOrder(carriers, bed.Id) { Tick = session.CommandTick });
 
     /// <summary>The right button let go: a press on a bed released before the menu opened.</summary>
     void BedRelease()

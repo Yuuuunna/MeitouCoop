@@ -4,7 +4,7 @@ using Meitou.Data.Gameplay;
 namespace Meitou.Simulation.Items;
 
 /// <summary>Read a map item (inventory right click, docs/game/ui-screens.md "Map"): adds its towns to the player's map.</summary>
-public sealed record ReadMapItem(CharacterId Character, InventoryItemToken Item) : SimCommand;
+public sealed record ReadMapItem(CharacterId Character, InventoryItemToken Item) : InventoryCommand;
 
 /// <summary>
 /// The towns a MAP_ITEM reveals (docs/game/ui-screens.md "Map"). Per <c>towns</c> link: the placed towns of that record, without nests and ones already discovered;

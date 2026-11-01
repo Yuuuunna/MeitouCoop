@@ -9,7 +9,7 @@ public enum LockForce : byte { Tools, Strength, Smash }
 /// Force the lock of a door or container (<see cref="Fixture.Id"/>): the nearest of the characters (the selection when empty) who may walks to it and cuts it (Task_CutLock, needs a tool),
 /// breaks it by strength (Task_BruteForceLock) or, for a door, bashes it with its weapon (Task_BashDoor).
 /// </summary>
-public sealed record ForceLockOrder(IReadOnlyList<CharacterId> Characters, string Fixture, LockForce Force) : SimCommand;
+public sealed record ForceLockOrder(IReadOnlyList<CharacterId> Characters, string Fixture, LockForce Force) : FixtureCommand;
 
 /// <summary>
 /// The player's orders to cut, break or bash a lock (docs/game/locks.md "Cutting and breaking"): the same rules as the shackle versions, on a fixture's lock. The pending crime of every
@@ -20,11 +20,11 @@ public sealed partial class LockSystem
     void ForceInput(World world, ForceLockOrder order)
     {
         if (world.Fixtures.Find(order.Fixture) is not { } fixture || fixture.Lock is not { EffectivelyLocked: true } || order.Force == LockForce.Smash && fixture.Kind != FixtureKind.Door) return;
-        if (fixture.Kind == FixtureKind.Door && fixture.DoorBroken) return;
+        if (!world.Fixtures.Matches(order, fixture) || fixture.Kind == FixtureKind.Door && fixture.DoorBroken) return;
         var table = world.Characters;
         int best = -1;
         float bestDistance = float.MaxValue;
-        foreach (var id in Who(world, order.Characters))
+        foreach (var id in Who(world, order, order.Characters))
         {
             if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(fixture.Position));
@@ -57,7 +57,8 @@ public sealed partial class LockSystem
         walker.ForcingLock = null;
         walker.Bashing = null;
         walker.BashOrdered = false;
-        if (world.Player.DoorWalker == table.IdOf(best)) world.Player.DoorTarget = null;
+        doorWalkers.Remove(table.IdOf(best));
+        Remember(world, order, table.IdOf(best), fixture);
         if (order.Force == LockForce.Smash) (walker.Bashing, walker.BashOrdered, walker.BashTime) = (fixture.Id, true, 0);
         else (walker.ForcingLock, walker.Force) = (fixture.Id, order.Force);
         MovementSystem.GoToFloor(world, best, new Vector3(at.X, fixture.Position.Y, at.Y), walker.RunSpeed);

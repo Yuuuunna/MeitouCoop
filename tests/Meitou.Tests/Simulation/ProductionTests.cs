@@ -2,6 +2,7 @@ using System.Numerics;
 using Meitou.Data;
 using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Gameplay.Construction;
 using Meitou.Data.World;
@@ -16,8 +17,24 @@ using SimWorld = Meitou.Simulation.World;
 namespace Meitou.Tests.Simulation;
 
 /// <summary>Production (docs/simulation.md "Production", docs/game/buildings-production.md "Production", "Farming", "Research"): wells, farms, research benches.</summary>
-public class ProductionTests
+public partial class ProductionTests
 {
+    [Fact]
+    public void UnassignedTownNumberDoesNotSharePowerBetweenPlayerFactions()
+    {
+        using var rig = new Rig(Database(), Constants, [Generator, Lamp, BigLamp]);
+        var world = rig.World;
+        var other = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(PlayerId.Local, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(other.Id, 3, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[2])!.Owner = 3;
+        Assert.All(world.Buildings.All, site => Assert.Equal(0, site.Town));
+        world.RunTick(); rig.Machine(0).Inputs[0].Count = 10;
+        world.RunTicks(2);
+        Assert.True(rig.Machine(1).Granted > 0);
+        Assert.Equal(0, rig.Machine(2).Granted); Assert.False(rig.Machine(2).HasPower);
+    }
+
     const string Water = "50-t", Crop = "51-t", Book = "52-t", Gadget = "53-t", Well = "60-t", Farm = "61-t", Bench = "62-t", Workshop = "63-t", Study = "70-t",
         Fuel = "54-t", Generator = "64-t", Battery = "65-t", Lamp = "66-t", BigLamp = "67-t", PoweredWorkshop = "68-t", Tank = "69-t";
     /// <summary>The stat that gives skill factor 1: lerp(0.5, 1.4, x/100) = 1.</summary>
@@ -110,13 +127,15 @@ public class ProductionTests
         public ProductionSystem Production { get; }
         public List<string> Sites { get; } = [];
 
-        public Rig(GameDatabase db, GameConstants constants, string[] records, int threads = 1, bool snapshots = false)
+        public Rig(GameDatabase db, GameConstants constants, string[] records, int threads = 1, bool snapshots = false, ITickSystem? beforeProduction = null)
         {
             Items = new ItemFactory(db, constants);
             var walk = new OpenGroundWalkability(SyntheticTown.Ground);
             Production = new ProductionSystem(db, constants, BodyOptions.Default, Items, null);
-            World = new SimWorld(new WorldSettings { Seed = 5, Threads = threads, PublishSnapshots = snapshots, MinPartitionSize = 1 }, walk,
-                [new PlayerSystem(), new MovementSystem(new PathService(walk, true)), Production]);
+            var systems = new List<ITickSystem> { new PlayerSystem(), new MovementSystem(new PathService(walk, true)) };
+            if (beforeProduction is not null) systems.Add(beforeProduction);
+            systems.Add(Production);
+            World = new SimWorld(new WorldSettings { Seed = 5, Threads = threads, PublishSnapshots = snapshots, MinPartitionSize = 1 }, walk, systems);
             World.Player.Faction = PlayerFaction;
             World.Research.Set(db, []);
             for (int i = 0; i < records.Length; i++)
@@ -158,6 +177,374 @@ public class ProductionTests
 
         public Machine Machine(int site) => World.Machines.Find(Sites[site])!;
         public void Dispose() => World.Dispose();
+    }
+
+    [Fact]
+    public void MachineControlUsesActualOwnerAndRejectsForeignOrRegrantedPermissions()
+    {
+        using var rig = new Rig(Database(), Constants, [Generator, Generator]);
+        var world = rig.World;
+        var remote = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(PlayerId.Local, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[1])!.Owner = 3;
+        world.RunTick();
+        var local = rig.Machine(0); var theirs = rig.Machine(1);
+        SetMachinePower Toggle(Machine machine, bool on) => new(machine.Site, PowerOn: on) { Tick = world.Tick, ControlRevision = world.MachineControlRevision(machine) };
+        world.Commands.Enqueue(remote.Id, Toggle(local, false));
+        world.Commands.Enqueue(remote.Id, Toggle(theirs, false)); world.ApplyPausedInterfaceCommands();
+        Assert.True(local.PowerOn); Assert.False(theirs.PowerOn);
+        var old = Toggle(theirs, true);
+        world.Commands.Enqueue(remote.Id, old);
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.None);
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.All);
+        world.ApplyPausedInterfaceCommands(); Assert.False(theirs.PowerOn);
+        world.Commands.Enqueue(remote.Id, Toggle(theirs, true)); world.ApplyPausedInterfaceCommands(); Assert.True(theirs.PowerOn);
+        var original = Toggle(theirs, false);
+        var replacement = new Machine { Site = theirs.Site, Data = theirs.Data, Position = theirs.Position, PowerOn = true, Inputs = [] };
+        world.Machines.Replace(replacement);
+        world.Commands.Enqueue(remote.Id, original); world.ApplyPausedInterfaceCommands(); Assert.True(replacement.PowerOn);
+    }
+
+    [Fact]
+    public void CraftQueueRejectsOldRowsAndRepeatedRequestsButAllowsProgressBetweenDisplayAndClick()
+    {
+        using var rig = new Rig(Database(), Constants, [Workshop, Workshop]);
+        var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2)); var b = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(a.Id, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(b.Id, 3, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[1])!.Owner = 3; world.RunTick();
+        var first = rig.Machine(0); var second = rig.Machine(1);
+        QueueCraft Queue(Machine machine) => new(machine.Site, Gadget, 2) { Tick = world.Tick, ControlRevision = world.MachineControlRevision(machine) };
+        world.Commands.Enqueue(a.Id, Queue(second));
+        var request = Queue(first);
+        world.Commands.Enqueue(a.Id, request); world.Commands.Enqueue(a.Id, request);
+        world.Commands.Enqueue(b.Id, Queue(second)); world.ApplyPausedInterfaceCommands();
+        Assert.Equal(2, first.Craft!.Queue.Count); Assert.Equal(2, second.Craft!.Queue.Count);
+        ulong revision = world.MachineControlRevision(first);
+        first.Craft.Queue[0].Progress = 0.4f;
+        Assert.Equal(revision, world.MachineControlRevision(first));
+        var cancel = new CancelCraft(first.Site, 1) { Tick = world.Tick, ControlRevision = revision };
+        world.Commands.Enqueue(a.Id, cancel); world.ApplyPausedInterfaceCommands(); Assert.Single(first.Craft.Queue);
+        world.Commands.Enqueue(a.Id, Queue(first)); world.ApplyPausedInterfaceCommands(); Assert.Equal(3, first.Craft.Queue.Count);
+        var stale = new CancelCraft(first.Site, 0) { Tick = world.Tick, ControlRevision = world.MachineControlRevision(first) };
+        first.Craft.Queue[0] = new CraftJob(first.Craft.Queue[0].Recipe); // automatic completion/repeat can replace a row with the same option
+        world.Commands.Enqueue(a.Id, stale); world.ApplyPausedInterfaceCommands(); Assert.Equal(3, first.Craft.Queue.Count);
+        var repeat = new RepeatCrafts(first.Site, true) { Tick = world.Tick, ControlRevision = world.MachineControlRevision(first) };
+        world.Commands.Enqueue(b.Id, repeat); world.ApplyPausedInterfaceCommands(); Assert.False(first.Craft.Repeat);
+        world.Commands.Enqueue(a.Id, repeat); world.ApplyPausedInterfaceCommands(); Assert.True(first.Craft.Repeat);
+    }
+
+    [Fact]
+    public void FurnaceToggleRequiresItsOwnersPermissionAndCannotReplayAnOldDisplay()
+    {
+        using var rig = new Rig(Database(), Constants, [Tank]);
+        var world = rig.World;
+        var owner = world.Players.Register(new PlayerId(2)); var stranger = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(owner.Id, 3, FactionPermission.All);
+        world.Players.SetMembership(stranger.Id, 4, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[0])!.Owner = 3; world.RunTick();
+        var original = rig.Machine(0);
+        var furnace = new Machine { Site = original.Site, Position = original.Position,
+            Data = original.Data with { Function = MachineData.ItemFurnaceFunction, Output = new RecipeOutput(Crop, 100) },
+            Output = new OutputSlot(new RecipeOutput(Crop, 100)), Storage = new Inventory() };
+        furnace.Storage.Items.Add(rig.Items.Create(Gadget)!);
+        world.Machines.Replace(furnace);
+        var start = new IncinerateFurnace(furnace.Site) { Tick = world.Tick, ControlRevision = world.MachineControlRevision(furnace) };
+        world.Commands.Enqueue(stranger.Id, start); world.ApplyPausedInterfaceCommands(); Assert.False(furnace.Burning);
+        world.Commands.Enqueue(owner.Id, start); world.Commands.Enqueue(owner.Id, start); world.ApplyPausedInterfaceCommands();
+        Assert.True(furnace.Burning); Assert.Single(furnace.Storage.Items);
+        world.Commands.Enqueue(owner.Id, start with { ControlRevision = world.MachineControlRevision(furnace) }); world.ApplyPausedInterfaceCommands();
+        Assert.False(furnace.Burning); Assert.Single(furnace.Storage.Items);
+    }
+
+    [Fact]
+    public void JobListEditsBindTheRoleAndDisplayedRowOrder()
+    {
+        using var rig = new Rig(Database(), Constants, [Well]);
+        var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2)); var b = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(a.Id, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(b.Id, PlayerFaction, FactionPermission.None);
+        var actor = rig.Add(0, StatsEnumerated.Labouring, Unit);
+        var other = rig.Add(0, StatsEnumerated.Labouring, Unit);
+        world.Players.AssignInitial(a.Id, actor); world.Players.AssignInitial(b.Id, other);
+        var cold = world.Characters.Cold(actor.Slot)!;
+        PermaJobs.Add(cold, TaskType.JOB_MEDIC, PermaJob.Untargeted(TaskType.JOB_MEDIC));
+        PermaJobs.Add(cold, TaskType.SPLINT_JOB, PermaJob.Untargeted(TaskType.SPLINT_JOB));
+        ulong revision = world.JobsRevision(actor);
+        world.Commands.Enqueue(b.Id, new RemoveJob(actor, 0) { Tick = 0, JobsRevision = revision });
+        world.Commands.Enqueue(a.Id, new MoveJob(actor, 0, 1) { Tick = 0, JobsRevision = revision });
+        world.Commands.Enqueue(a.Id, new RemoveJob(actor, 0) { Tick = 0, JobsRevision = revision });
+        world.ApplyPausedInterfaceCommands();
+        Assert.Equal(new[] { TaskType.SPLINT_JOB, TaskType.JOB_MEDIC }, cold.Jobs.Select(j => j.Type));
+        world.Commands.Enqueue(a.Id, new AddOrderJob([actor, other], TaskType.MELEE_ATTACK, CharacterId.None) { Tick = 0 });
+        world.Commands.Enqueue(a.Id, new AddOrderJob([actor], TaskType._SLAVE_OBEDIENCE, CharacterId.None) { Tick = 0 });
+        world.ApplyPausedInterfaceCommands(); Assert.Equal(2, cold.Jobs.Count); Assert.Empty(world.Characters.Cold(other.Slot)!.Jobs);
+        world.Commands.Enqueue(a.Id, new RemoveJob(actor, 0) { Tick = 0, JobsRevision = world.JobsRevision(actor) });
+        var grant = world.Players.ControlOf(actor)!.Value;
+        Assert.True(world.Players.TryTransfer(a.Id, grant, b.Id, out _));
+        world.ApplyPausedInterfaceCommands(); Assert.Equal(2, cold.Jobs.Count);
+        world.Commands.Enqueue(b.Id, new RemoveJob(actor, 0) { Tick = 0, JobsRevision = world.JobsRevision(actor) });
+        world.ApplyPausedInterfaceCommands(); Assert.Equal(TaskType.JOB_MEDIC, Assert.Single(cold.Jobs).Type);
+    }
+
+    [Fact]
+    public void WorkOrdersRequireTheirDisplayedSiteAndExplicitControlledWorkers()
+    {
+        using var rig = new Rig(Database(), Constants, [Well, Well]);
+        var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2)); var b = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(a.Id, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(b.Id, 3, FactionPermission.All);
+        var actor = rig.Add(0, StatsEnumerated.Labouring, Unit);
+        world.Players.AssignInitial(a.Id, actor);
+        var site = world.Buildings.Find(rig.Sites[0])!;
+        var other = world.Buildings.Find(rig.Sites[1])!; other.Owner = 3;
+        world.Commands.Enqueue(a.Id, new OperateOrder([actor], other.Id) { Tick = 0, SiteRevision = world.BuildingRevision(other) });
+        world.Commands.Enqueue(b.Id, new OperateOrder([actor], site.Id) { Tick = 0, SiteRevision = world.BuildingRevision(site) });
+        world.ApplyPausedInterfaceCommands(); Assert.Null(world.Characters.Cold(actor.Slot)!.OperateSite);
+        var old = new OperateOrder([actor], site.Id) { Tick = world.Tick, SiteRevision = world.BuildingRevision(site) };
+        world.Players.SetMembership(a.Id, 3, FactionPermission.All);
+        world.Commands.Enqueue(a.Id, old);
+        site.Owner = 3;
+        world.ApplyPausedInterfaceCommands(); Assert.Null(world.Characters.Cold(actor.Slot)!.OperateSite);
+        world.Commands.Enqueue(a.Id, old with { SiteRevision = world.BuildingRevision(site) });
+        world.ApplyPausedInterfaceCommands(); Assert.Equal(site.Id, world.Characters.Cold(actor.Slot)!.OperateSite);
+    }
+
+    [Fact]
+    public void ContinuousWorkSurvivesAnAuthorizedTransferButStopsWhenAssetRightsAreRevoked()
+    {
+        using var rig = new Rig(Database(), Constants, [Well]);
+        var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2)); var b = world.Players.Register(new PlayerId(3));
+        world.Players.SetMembership(a.Id, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(b.Id, PlayerFaction, FactionPermission.ManageAssets);
+        var actor = rig.Add(0, StatsEnumerated.Labouring, Unit);
+        world.Players.AssignInitial(a.Id, actor);
+        var site = world.Buildings.Find(rig.Sites[0])!;
+        world.Commands.Enqueue(a.Id, new AddJob([actor], TaskType.OPERATE_MACHINERY, site.Id) { Tick = 0, SiteRevision = world.BuildingRevision(site) });
+        world.RunTicks(30);
+        var cold = world.Characters.Cold(actor.Slot)!;
+        Assert.True(cold.Operating); Assert.Single(cold.Jobs);
+        var output = rig.Machine(0).Output!;
+        float before = output.Count + output.Progress;
+        Assert.True(world.Players.TryTransfer(a.Id, world.Players.ControlOf(actor)!.Value, b.Id, out _));
+        world.RunTicks(10);
+        Assert.True(output.Count + output.Progress > before); Assert.True(cold.Operating);
+        world.Players.SetMembership(b.Id, PlayerFaction, FactionPermission.None);
+        before = output.Count + output.Progress;
+        world.RunTicks(20);
+        Assert.Equal(before, output.Count + output.Progress); Assert.False(cold.Operating);
+        Assert.Null(cold.OperateSite); Assert.Single(cold.Jobs);
+        world.Players.SetMembership(b.Id, PlayerFaction, FactionPermission.ManageAssets);
+        world.RunTicks(20); Assert.True(cold.Operating); Assert.True(output.Count + output.Progress > before);
+    }
+
+    [Fact]
+    public void AHaulerKeepsItsCargoWhenTheDestinationChangesOwner()
+    {
+        using var rig = new Rig(Database(), Constants, [Well, Tank]);
+        var world = rig.World;
+        var a = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(a.Id, PlayerFaction, FactionPermission.All);
+        var actor = rig.Add(0, new Vector3(-1000, 0, 0), StatsEnumerated.Labouring, Unit, (Water, 5));
+        world.Players.AssignInitial(a.Id, actor);
+        var destination = world.Buildings.Find(rig.Sites[1])!;
+        world.Commands.Enqueue(a.Id, new AddJob([actor], TaskType.OPERATE_STORAGE, destination.Id) { Tick = 0, SiteRevision = world.BuildingRevision(destination) });
+        world.RunTicks(20);
+        var cold = world.Characters.Cold(actor.Slot)!;
+        Assert.Equal(destination.Id, cold.HaulTo); Assert.Equal(5, rig.Count(actor, Water));
+        destination.Owner = 3;
+        world.RunTick();
+        Assert.Null(cold.HaulTo); Assert.Null(cold.HaulSite); Assert.Equal(5, rig.Count(actor, Water));
+        Assert.Empty(rig.Machine(1).Storage!.Items); Assert.Single(cold.Jobs);
+    }
+
+    [Fact]
+    public void DelegatedMiningDoesNotTransferOwnershipToTheWorkersFaction()
+    {
+        using var rig = new Rig(Database(), Constants, [Well]);
+        var world = rig.World;
+        var worker = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(worker.Id, 3, FactionPermission.All);
+        world.Players.SetMembership(worker.Id, PlayerFaction, FactionPermission.ManageAssets);
+        var actor = rig.Add(0, StatsEnumerated.Labouring, Unit);
+        world.Characters.Cold(actor.Slot)!.Faction = 3;
+        world.Players.AssignInitial(worker.Id, actor);
+        var resource = new BuildSite { Id = ProductionSystem.NaturalId(Well, At), Record = Well, Position = At,
+            Owner = PlayerFaction, Complete = true, Materials = [] };
+        world.Buildings.Add(resource);
+        world.Commands.Enqueue(worker.Id, new OperateOrder([actor], resource.Id) { Tick = 0, SiteRevision = world.BuildingRevision(resource) });
+        world.RunTicks(20);
+        Assert.Equal(PlayerFaction, resource.Owner);
+        Assert.True(world.Characters.Cold(actor.Slot)!.Operating);
+    }
+
+    sealed class BeforeProduction : ITickSystem
+    {
+        public Action<SimWorld>? Change { get; set; }
+        public void SlowWorld(SimWorld world) { var change = Change; Change = null; change?.Invoke(world); }
+    }
+
+    [Fact]
+    public void WorkRechecksRightsAfterSchedulingAndBeforeProducing()
+    {
+        var boundary = new BeforeProduction();
+        using var rig = new Rig(Database(), Constants, [Well], beforeProduction: boundary);
+        var world = rig.World;
+        var player = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(player.Id, PlayerFaction, FactionPermission.All);
+        var actor = rig.Add(0, StatsEnumerated.Labouring, Unit);
+        world.Players.AssignInitial(player.Id, actor);
+        var site = world.Buildings.Find(rig.Sites[0])!;
+        world.Commands.Enqueue(player.Id, new OperateOrder([actor], site.Id) { Tick = 0, SiteRevision = world.BuildingRevision(site) });
+        world.RunTicks(20);
+        Assert.True(world.Characters.Cold(actor.Slot)!.Operating);
+        var output = rig.Machine(0).Output!;
+        float before = output.Count + output.Progress;
+        boundary.Change = w => w.Players.SetMembership(player.Id, PlayerFaction, FactionPermission.None);
+        world.RunTick();
+        Assert.Equal(before, output.Count + output.Progress);
+        Assert.False(world.Characters.Cold(actor.Slot)!.Operating);
+    }
+
+    [Fact]
+    public void ReplacingAWorkSiteDoesNotRetargetAnOldOrder()
+    {
+        using var rig = new Rig(Database(), Constants, [Well]);
+        var world = rig.World;
+        var player = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(player.Id, PlayerFaction, FactionPermission.All);
+        var actor = rig.Add(0, StatsEnumerated.Labouring, Unit);
+        world.Players.AssignInitial(player.Id, actor);
+        var site = world.Buildings.Find(rig.Sites[0])!;
+        var command = new OperateOrder([actor], site.Id) { Tick = 0, SiteRevision = world.BuildingRevision(site) };
+        world.Commands.Enqueue(player.Id, command);
+        Assert.True(world.Buildings.Remove(site));
+        var replacement = new BuildSite { Id = site.Id, Record = site.Record, Position = site.Position, Owner = site.Owner, Complete = true, Materials = [] };
+        world.Buildings.Add(replacement);
+        world.ApplyPausedInterfaceCommands();
+        Assert.Null(world.Characters.Cold(actor.Slot)!.OperateSite);
+        world.Commands.Enqueue(player.Id, command with { SiteRevision = world.BuildingRevision(replacement) });
+        world.ApplyPausedInterfaceCommands();
+        Assert.Equal(site.Id, world.Characters.Cold(actor.Slot)!.OperateSite);
+    }
+
+    [Fact]
+    public void FactionsPayOnlyFromTheirOwnBenchesAndHaveIndependentResearchFalloff()
+    {
+        using var rig = new Rig(Database(), Constants, [Bench, Bench, Bench]);
+        var world = rig.World;
+        var remote = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(PlayerId.Local, PlayerFaction, FactionPermission.All);
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[2])!.Owner = 3;
+        var a = rig.Add(0, StatsEnumerated.Science, Unit);
+        var b = rig.Add(1, StatsEnumerated.Science, Unit);
+        var c = rig.Add(2, StatsEnumerated.Science, Unit);
+        world.Characters.Cold(c.Slot)!.Faction = 3;
+        world.Players.AssignInitial(PlayerId.Local, a);
+        world.Players.AssignInitial(PlayerId.Local, b);
+        world.Players.AssignInitial(remote.Id, c);
+        world.RunTick();
+        rig.Machine(0).Storage!.Add(rig.Items.Create(Book, 2)!);
+        world.Commands.Enqueue(remote.Id, new QueueResearch(Study) { Tick = world.Tick, Faction = 3 });
+        world.RunTick();
+        Assert.Empty(remote.State.FactionState.Research.Queue);
+        Assert.Equal(2, rig.Machine(0).Storage!.Items.Sum(i => i.Quantity));
+
+        rig.Machine(2).Storage!.Add(rig.Items.Create(Book, 2)!);
+        world.Commands.Enqueue(PlayerId.Local, new QueueResearch(Study) { Tick = world.Tick, Faction = PlayerFaction });
+        world.Commands.Enqueue(remote.Id, new QueueResearch(Study) { Tick = world.Tick, Faction = 3 });
+        world.Commands.Enqueue(new OperateOrder([a], rig.Sites[0]) { Tick = world.Tick });
+        world.Commands.Enqueue(new OperateOrder([b], rig.Sites[1]) { Tick = world.Tick });
+        world.Commands.Enqueue(new OperateOrder([c], rig.Sites[2]) { Tick = world.Tick });
+        world.RunTicks(20);
+        Assert.Empty(rig.Machine(0).Storage!.Items);
+        Assert.Empty(rig.Machine(2).Storage!.Items);
+        var own = world.Research;
+        var theirs = remote.State.FactionState.Research;
+        Assert.Single(own.Queue);
+        Assert.Single(theirs.Queue);
+        Assert.True(own.Rate > 0 && theirs.Rate > 0);
+        Assert.InRange(own.Rate / theirs.Rate, 1.59f, 1.61f);
+        Assert.True(own.Queue[0].Seconds > theirs.Queue[0].Seconds);
+    }
+
+    [Fact]
+    public void ResearchCommandsRequireTheExplicitFactionAndPermissionAtExecution()
+    {
+        using var rig = new Rig(Database(), Constants, [Bench, Bench]);
+        var world = rig.World;
+        var remote = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[1])!.Owner = 3;
+        world.RunTick();
+        rig.Machine(0).Storage!.Add(rig.Items.Create(Book, 2)!);
+        rig.Machine(1).Storage!.Add(rig.Items.Create(Book, 2)!);
+        world.Commands.Enqueue(remote.Id, new QueueResearch(Study) { Tick = world.Tick, Faction = PlayerFaction });
+        world.Commands.Enqueue(remote.Id, new QueueResearch(Study) { Tick = world.Tick });
+        world.Commands.Enqueue(new PlayerId(999), new QueueResearch(Study) { Tick = world.Tick, Faction = 3 });
+        world.Commands.Enqueue(remote.Id, new QueueResearch(Study) { Tick = world.Tick, Faction = 3 });
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.None);
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.All); // restoring a permission does not revive the queued grant
+        world.RunTick();
+        Assert.Empty(world.Research.Queue);
+        Assert.Empty(remote.State.FactionState.Research.Queue);
+        Assert.Equal(2, rig.Machine(0).Storage!.Items.Sum(i => i.Quantity));
+        Assert.Equal(2, rig.Machine(1).Storage!.Items.Sum(i => i.Quantity));
+    }
+
+    [Fact]
+    public void BlueprintKnowledgeAndPublishedResearchAreScopedToTheirFaction()
+    {
+        using var rig = new Rig(Database(), Constants, [Bench]);
+        var world = rig.World;
+        var remote = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.None);
+        Assert.True(rig.Production.Learn(world, Study, 3));
+        Assert.False(world.Research.IsDone(Study));
+        Assert.True(remote.State.FactionState.Research.IsDone(Study));
+        Assert.DoesNotContain(Study, rig.Production.ResearchView(world, PlayerFaction).Known);
+        Assert.Contains(Study, rig.Production.ResearchView(world, 3).Known);
+        Assert.DoesNotContain(Study, rig.Production.ResearchView(world, PlayerFaction).Known);
+    }
+
+    [Fact]
+    public void CraftUnlocksAndMachineImprovementsFollowTheBuildingOwner()
+    {
+        var db = Database();
+        var tech = Rec("owner-upgrade", FcsRecordType.RESEARCH, "Workshop upgrade");
+        tech.References["enable item"] = [new FcsReference(Gadget, 0, 0, 0)];
+        tech.References["improve buildings"] = [new FcsReference(Workshop, 0, 0, 0)];
+        tech.Floats["production mult"] = 3;
+        var file = new FcsFile();
+        file.Records.Add(tech);
+        db.Apply(file, "upgrade.mod");
+        using var rig = new Rig(db, Constants, [Workshop, Workshop]);
+        var world = rig.World;
+        var remote = world.Players.Register(new PlayerId(2));
+        world.Players.SetMembership(remote.Id, 3, FactionPermission.All);
+        world.Buildings.Find(rig.Sites[1])!.Owner = 3;
+        world.RunTick();
+        var before = rig.Production.CraftsView(world);
+        Assert.False(Assert.Single(before[rig.Sites[0]]).Unlocked);
+        Assert.False(Assert.Single(before[rig.Sites[1]]).Unlocked);
+        Assert.True(rig.Production.Learn(world, "owner-upgrade", 3));
+        world.RunTick();
+        Assert.Equal(1, rig.Machine(0).ProductionMult);
+        Assert.Equal(3, rig.Machine(1).ProductionMult);
+        var after = rig.Production.CraftsView(world);
+        Assert.False(Assert.Single(after[rig.Sites[0]]).Unlocked);
+        Assert.True(Assert.Single(after[rig.Sites[1]]).Unlocked);
+        world.Commands.Enqueue(new QueueCraft(rig.Sites[0], Gadget, 1) { Tick = world.Tick });
+        world.Commands.Enqueue(new QueueCraft(rig.Sites[1], Gadget, 1) { Tick = world.Tick });
+        world.RunTick();
+        Assert.Empty(rig.Machine(0).Craft!.Queue);
+        Assert.Single(rig.Machine(1).Craft!.Queue);
     }
 
     // ------------------------------------------------------------------ determinism

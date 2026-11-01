@@ -14,6 +14,7 @@ public sealed class NavmeshWalkability : IWalkability
     readonly Func<float, float, float> ground;
     readonly IWalkability fallback;
     volatile NavWorld world = NavWorld.Empty;
+    internal bool AllowUnloadedFallback { get; set; } = true;
 
     /// <param name="routeTerrain">Makes the finer height function the long-range grid is built from (<see cref="CoarseRoute"/>); null: <paramref name="terrainHeight"/>.</param>
     /// <param name="routeObstacles">Makes the building footprints the long-range grid avoids; null: none.</param>
@@ -37,7 +38,8 @@ public sealed class NavmeshWalkability : IWalkability
     internal void SetWorld(NavWorld value) => world = value;
 
     /// <summary>Keeps the pruned region a point stands on (<see cref="NavMeshService.KeepAt"/>); true when the world changed. Set by <see cref="NavSystem"/>.</summary>
-    internal Func<Vector3, bool>? KeepStanding { get; set; }
+    internal Func<Vector3, long, bool>? KeepStanding { get; set; }
+    internal Func<long>? NavigationIncarnation { get; set; }
 
     /// <summary>
     /// How far (in height) a walkable collision surface may be from the mesh for its height to be used instead, and the terrain's where no collision
@@ -77,14 +79,15 @@ public sealed class NavmeshWalkability : IWalkability
     public float GroundHeight(float x, float z) => TryStand(world, x, z, float.PositiveInfinity, out float y) ? y : Ground(world, x, z);
 
     /// <summary>As <see cref="GroundHeight(float, float)"/>, for a character at height <paramref name="nearY"/>: the highest surface at most <see cref="StandRise"/> above it.</summary>
-    public float GroundHeight(float x, float z, float nearY) => TryStand(world, x, z, nearY, out float y) ? y : Ground(world, x, z);
+    public float GroundHeight(float x, float z, float nearY) => !AllowUnloadedFallback && !world.Contains(WorldLayout.ZoneOf(x, z)) && float.IsFinite(nearY)
+        ? nearY : TryStand(world, x, z, nearY, out float y) ? y : Ground(world, x, z);
 
     public float TerrainHeight(float x, float z) => Ground(world, x, z);
 
     public bool IsWalkable(float x, float z)
     {
         var w = world;
-        if (!w.Contains(WorldLayout.ZoneOf(x, z))) return fallback.IsWalkable(x, z);
+        if (!w.Contains(WorldLayout.ZoneOf(x, z))) return AllowUnloadedFallback && fallback.IsWalkable(x, z);
         return w.TryGroundHeight(x, z, out _);
     }
 
@@ -93,7 +96,7 @@ public sealed class NavmeshWalkability : IWalkability
     public bool IsWalkable(float x, float z, float nearY)
     {
         var w = world;
-        if (!w.Contains(WorldLayout.ZoneOf(x, z))) return fallback.IsWalkable(x, z);
+        if (!w.Contains(WorldLayout.ZoneOf(x, z))) return AllowUnloadedFallback && fallback.IsWalkable(x, z);
         return TryStand(w, x, z, nearY, out _, out bool reachable) && reachable;
     }
 
@@ -101,7 +104,7 @@ public sealed class NavmeshWalkability : IWalkability
     {
         var w = world;
         if (!TryStand(w, x, z, nearY, out y, out bool reachable)) { y = Ground(w, x, z); reachable = false; }
-        return w.Contains(WorldLayout.ZoneOf(x, z)) ? reachable : fallback.IsWalkable(x, z);
+        return w.Contains(WorldLayout.ZoneOf(x, z)) ? reachable : AllowUnloadedFallback && fallback.IsWalkable(x, z);
     }
 
     bool TryStand(NavWorld w, float x, float z, float nearY, out float y) => TryStand(w, x, z, nearY, out y, out _);
@@ -201,6 +204,7 @@ public sealed class NavmeshWalkability : IWalkability
     /// <summary>The long-range router over the terrain, for goals in zones whose navmesh is not loaded (its grid is built on first use).</summary>
     public CoarseRoute Coarse => coarse.Value;
     readonly Lazy<CoarseRoute> coarse;
+    internal bool HasCoarseRoute => coarse.IsValueCreated;
 
     /// <summary>Spacing (units) of the points along a long route tried as the end of its navmesh part (engine choice).</summary>
     public const float HandoverStep = 150;
@@ -214,48 +218,73 @@ public sealed class NavmeshWalkability : IWalkability
     /// </summary>
     public PathResult FindPath(Vector3 from, Vector3 to, NavAgent agent)
     {
+        long incarnation = NavigationIncarnation?.Invoke() ?? 0;
         var w = world;
         bool fromLoaded = w.Contains(WorldLayout.ZoneOf(from.X, from.Z));
-        if (!fromLoaded || !w.Contains(WorldLayout.ZoneOf(to.X, to.Z))) return LongRoute(w, from, to, agent, fromLoaded);
+        if (!fromLoaded || !w.Contains(WorldLayout.ZoneOf(to.X, to.Z))) return Authoritative(LongRoute(w, from, to, agent, fromLoaded, incarnation));
         var exact = Exact(w, from, to, agent);
         if (exact.Found) return exact;
         // A walker on a region its zone's pruning dropped (its way to a seed leads through a zone not loaded): that region is kept, and the path asked again.
-        if (!IsWalkable(from.X, from.Z, from.Y) && KeepStanding?.Invoke(from) == true)
+        if (!IsWalkable(from.X, from.Z, from.Y) && KeepStanding?.Invoke(from, incarnation) == true)
         {
+            if (!AllowUnloadedFallback) return new PathResult([]) { WaitingForNavigation = true };
             w = world;
             exact = Exact(w, from, to, agent);
             if (exact.Found) return exact;
         }
         // Both ends loaded but in separate blocks of loaded zones (two groups of walkers far apart): a long route like any other through the zones
         // between, not a straight line from the nearest reachable point. Within one block the navmesh's answer stands (the terrain search is not run).
-        if (!Joined(w, WorldLayout.ZoneOf(from.X, from.Z), WorldLayout.ZoneOf(to.X, to.Z))) return LongRoute(w, from, to, agent, fromLoaded);
+        if (!Joined(w, WorldLayout.ZoneOf(from.X, from.Z), WorldLayout.ZoneOf(to.X, to.Z))) return Authoritative(LongRoute(w, from, to, agent, fromLoaded, incarnation));
+        if (!AllowUnloadedFallback)
+        {
+            var route = LongRoute(w, from, to, agent, fromLoaded, incarnation);
+            return CrossesUnloaded(w, route.Points) ? Authoritative(route) : exact;
+        }
         // Unreachable over the loaded zones (shut in, or the way round leads through zones not loaded): as near as can be got, then on to the goal
         // provisionally, which asks again a few times on the way (MovementSystem) before the walker gives up.
         var part = Toward(w, from, to, agent);
         if (!part.Found) return exact;
         if (Vector2.Distance(new(part.Points[^1].X, part.Points[^1].Z), new(to.X, to.Z)) <= NavQuery.GoalSnap) return part;
         List<Vector3> points = [.. part.Points, to];
-        Ahead(w, points, part.Points.Count);
-        return new PathResult(points) { Exact = part.Points.Count };
+        Ahead(w, points, part.Points.Count, incarnation);
+        return Authoritative(new PathResult(points) { Exact = part.Points.Count });
+    }
+
+    PathResult Authoritative(PathResult path) => !AllowUnloadedFallback && path.IsProvisional ? path with { WaitingForNavigation = true } : path;
+
+    static bool CrossesUnloaded(NavWorld world, IReadOnlyList<Vector3> points)
+    {
+        for (int i = 0; i < points.Count; i++)
+        {
+            var from = i == 0 ? points[i] : points[i - 1];
+            int steps = Math.Max(1, (int)MathF.Ceiling(Vector3.Distance(from, points[i]) / (WorldLayout.ZoneSize / 2)));
+            for (int k = 0; k <= steps; k++)
+            {
+                var p = Vector3.Lerp(from, points[i], k / (float)steps);
+                if (!world.Contains(WorldLayout.ZoneOf(p.X, p.Z))) return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>How far (units) along the provisional part of a route the zones are asked for (<see cref="RouteZones"/>), so the walker finds rocks,
     /// walls and cliffs the terrain grid does not know before it gets there (engine choice: about a zone).</summary>
     public const float Lookahead = 4000;
 
-    readonly System.Collections.Concurrent.ConcurrentDictionary<ZoneCoordinate, long> routeZones = new();
+    readonly System.Collections.Concurrent.ConcurrentDictionary<ZoneCoordinate, (long At, long Incarnation)> routeZones = new();
 
     /// <summary>The zones without a mesh that a provisional route passed through within <see cref="Lookahead"/> of its navmesh part, in the last
     /// <paramref name="maxAge"/>: the host loads them, and every walker asks for its path again when they are live.</summary>
     public IEnumerable<ZoneCoordinate> RouteZones(TimeSpan maxAge)
     {
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
-        foreach (var (zone, at) in routeZones)
-            if (System.Diagnostics.Stopwatch.GetElapsedTime(at, now) <= maxAge) yield return zone;
-            else routeZones.TryRemove(zone, out _);
+        long incarnation = NavigationIncarnation?.Invoke() ?? 0;
+        foreach (var pair in routeZones)
+            if (pair.Value.Incarnation == incarnation && System.Diagnostics.Stopwatch.GetElapsedTime(pair.Value.At, now) <= maxAge) yield return pair.Key;
+            else routeZones.TryRemove(pair);
     }
 
-    void Ahead(NavWorld w, List<Vector3> points, int exact)
+    void Ahead(NavWorld w, List<Vector3> points, int exact, long incarnation)
     {
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
         float left = Lookahead;
@@ -268,7 +297,7 @@ public sealed class NavmeshWalkability : IWalkability
             {
                 var p = Vector3.Lerp(a, b, d / MathF.Max(length, 1e-3f));
                 var zone = WorldLayout.ZoneOf(p.X, p.Z);
-                if (!w.Contains(zone)) routeZones[zone] = now;
+                if (!w.Contains(zone)) routeZones.AddOrUpdate(zone, (now, incarnation), (_, previous) => previous.Incarnation > incarnation ? previous : (now, incarnation));
             }
             left -= length;
         }
@@ -387,11 +416,17 @@ public sealed class NavmeshWalkability : IWalkability
     /// The long route (<see cref="Route"/>), with its start replaced by a navmesh path to the farthest point of it that lies well inside the loaded zones (the handover;
     /// on a road route at most <see cref="RoadHandover"/> along it).
     /// </summary>
-    PathResult LongRoute(NavWorld w, Vector3 from, Vector3 to, NavAgent agent, bool fromLoaded)
+    PathResult LongRoute(NavWorld w, Vector3 from, Vector3 to, NavAgent agent, bool fromLoaded, long incarnation)
     {
         var (route, road) = Route(from, to, agent);
-        if (route.Count == 0) return fallback.FindPath(from, to);
-        if (!fromLoaded) { Ahead(w, route, 1); return new PathResult(route) { Exact = 1 }; }
+        if (route.Count == 0)
+        {
+            if (AllowUnloadedFallback) return fallback.FindPath(from, to);
+            Ahead(w, [from, to], 1, incarnation);
+            return new PathResult([]) { WaitingForNavigation = !fromLoaded || !w.Contains(WorldLayout.ZoneOf(to.X, to.Z))
+                || !Joined(w, WorldLayout.ZoneOf(from.X, from.Z), WorldLayout.ZoneOf(to.X, to.Z)) };
+        }
+        if (!fromLoaded) { Ahead(w, route, 1, incarnation); return new PathResult(route) { Exact = 1 }; }
 
         // The handover: the farthest point along the route, in steps, that lies well inside the loaded zones, and the index of the route point after it.
         (int Next, Vector3 Point)? handover = null;
@@ -411,13 +446,13 @@ public sealed class NavmeshWalkability : IWalkability
             if (left) break;
             along += length;
         }
-        if (handover is not var (next, point)) { Ahead(w, route, 1); return new PathResult(route) { Exact = 1 }; }
+        if (handover is not var (next, point)) { Ahead(w, route, 1, incarnation); return new PathResult(route) { Exact = 1 }; }
 
         // The navmesh path there, or to the reachable point nearest it (it may stand in a building, or behind a wall or a cliff the terrain grid
         // does not know); from such a point the rest of the route is looked for again.
         var target = new Vector3(point.X, GroundHeight(point.X, point.Z, point.Y), point.Z);
         var part = Toward(w, from, target, agent);
-        if (!part.Found) { Ahead(w, route, 1); return new PathResult(route) { Exact = 1 }; }
+        if (!part.Found) { Ahead(w, route, 1, incarnation); return new PathResult(route) { Exact = 1 }; }
         var points = part.Points.ToList();
         var end = points[^1];
         bool reached = Vector2.Distance(new(end.X, end.Z), new(target.X, target.Z)) <= NavQuery.GoalSnap;
@@ -425,7 +460,7 @@ public sealed class NavmeshWalkability : IWalkability
         if (rest.Count == 0) rest = [.. route.Skip(next)];
         int exact = points.Count;
         points.AddRange(rest);
-        Ahead(w, points, exact);
+        Ahead(w, points, exact, incarnation);
         return new PathResult(points) { Exact = exact };
     }
 

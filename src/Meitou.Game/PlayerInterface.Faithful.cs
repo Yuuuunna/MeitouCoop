@@ -18,13 +18,15 @@ sealed partial class PlayerInterface
     public IReadOnlyList<string> OpenScreens => faithfulScreens.OpenScreens;
     /// <summary>Keys the host keeps for itself (the sandbox's letters), so the faithful window shortcuts leave them alone.</summary>
     public HashSet<Key> ReservedKeys { get; } = [];
-    void UpdateMenuPause() => session.Simulation.RequestedPause = settingsOpen || faithfulScreens.HasModal;
+    void UpdateMenuPause() => session.SetModalPause(settingsOpen || faithfulScreens.HasModal);
     public bool UiKey(Key key, bool ctrl = false, bool shift = false)
     {
+        if (key == Meitou.Engine.Input.Key.Escape) pendingTalk = null;
         if (!UiVisible) return false;
         if (key == Meitou.Engine.Input.Key.Escape && CancelInventoryDrag()) return true;
         if (key == Meitou.Engine.Input.Key.Escape)
         {
+            if (lobby is not null && !faithfulScreens.IsOpen("message")) { CancelOnline(); return true; }
             if (advancedOpen && faithfulScreens.OpenScreens.LastOrDefault() == "new-game") { advancedOpen = false; return true; }
             if (faithfulScreens.IsOpen("title") && faithfulScreens.OpenScreens.Count == 1) { showCredits = false; return true; }
             // The editor stays under the game menu (the original's Esc in the editor; it has no cancel: CONFIRM closes it).
@@ -55,7 +57,7 @@ sealed partial class PlayerInterface
         if (DialogueKey(key)) return true;
         if (faithfulScreens.HasModal) return true;
         // change_squad (Tab by default): the squad bar shows the next squad with members (docs/game/ui-input.md section 6).
-        if (Bound(InputAction.ChangeSquad, key) && !TitleOpen && !EditorOpen) { Say(new ActiveSquadCommand(-1) { Tick = session.World.Tick }); return true; }
+        if (Bound(InputAction.ChangeSquad, key) && !TitleOpen && !EditorOpen) { Say(new ActiveSquadCommand(-1) { Faction = session.ActiveFaction, Tick = session.CommandTick }); return true; }
         if (ReservedKeys.Contains(key)) return false;
         if (Bound(InputAction.ToggleInventory, key) || Bound(InputAction.ToggleCharacterStats, key))
         { ExecuteUiAction(Bound(InputAction.ToggleInventory, key) ? "inventory" : "stats", ""); return true; }
@@ -111,12 +113,14 @@ sealed partial class PlayerInterface
         else if (e.Screen is "building" or "bench" or "storage") MachineAction(e);
         else if (e.Screen == "loot" && e.Widget == "OpenBagButton") lootBagOpen = !lootBagOpen;
         else if (e.Screen == "loot" && e.Widget == "LimbsButton") ToggleLimbs(LootBody());
-        else if (e.Screen == "trader" && e.Widget == "ArrangeButton") Say(new Meitou.Simulation.Trading.ArrangeStock { Tick = session.World.Tick });
+        else if (e.Screen == "trader" && e.Widget == "ArrangeButton" && session.CurrentSnapshot.Trade is { } trade)
+            Say(new Meitou.Simulation.Trading.ArrangeStock { Tick = session.CommandTick, SessionId = trade.SessionId, InventoryRevision = trade.StockRevision });
         else if (e.Screen is "inventory" or "bag" || IsPinnedInventory(e.Screen))
         {
             if (e.Widget == "OpenBagButton") ToggleBag();
             else if (e.Widget == "LimbsButton") ToggleLimbs();
-            else if (e.Widget == "ArrangeButton" && WindowCharacter(e.Screen) is { } lead) Say(new Meitou.Simulation.Items.ArrangeInventory(lead.Id) { Tick = session.World.Tick });
+            else if (e.Widget == "ArrangeButton" && WindowCharacter(e.Screen) is { ItemGrid: { } grid } lead)
+                Say(new Meitou.Simulation.Items.ArrangeInventory(lead.Id) { Tick = session.CommandTick, InventoryRevision = grid.Revision });
         }
     }
     UiBindings BindFaithfulScreen(string id)
@@ -310,7 +314,7 @@ sealed partial class PlayerInterface
             if (job.Type == Meitou.Data.Gameplay.Ai.TaskType._SLAVE_OBEDIENCE && obedienceJob < 0) obedienceJob = i;
             string text = Loc.Tr(Meitou.Simulation.Production.PermaJobs.Text(job.Type) ?? job.Type.ToString());
             if (job.Site is { } id && session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == id) is { } site) text += ": " + SiteName(site);
-            jobs.Add(new("job:" + i.ToString(CultureInfo.InvariantCulture), text));
+            jobs.Add(new(FormattableString.Invariant($"job:{lead.Id.Slot}:{lead.Id.Generation}:{lead.JobsRevision}:{i}"), text));
         }
         b.Lists["JobsPanel"] = jobs;
         if (jobs.Count > 0) b.Hidden.Add("JobsPanelInfo");
@@ -329,14 +333,20 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>The job row (its list index) pressed and being dragged to a new place in the list; null: none.</summary>
-    int? jobDrag;
+    (CharacterId Character, ulong Revision, int Index)? jobDrag;
+
+    static (CharacterId Character, ulong Revision, int Index)? JobTag(string tag) => tag.Split(':') is ["job", var s, var g, var r, var i]
+        && int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out int slot)
+        && int.TryParse(g, NumberStyles.None, CultureInfo.InvariantCulture, out int generation)
+        && ulong.TryParse(r, NumberStyles.None, CultureInfo.InvariantCulture, out ulong revision)
+        && int.TryParse(i, NumberStyles.None, CultureInfo.InvariantCulture, out int index) ? (new(slot, generation), revision, index) : null;
 
     /// <summary>The job-list index of the jobs row under a point (not its X), or null.</summary>
-    static int? JobRowAt(IReadOnlyList<UiControl> controls, Vector2 p)
+    static (CharacterId Character, ulong Revision, int Index)? JobRowAt(IReadOnlyList<UiControl> controls, Vector2 p)
     {
         if (controls.Any(c => c.Action == "meitou:job-remove" && c.Bounds.Contains(p.X, p.Y))) return null;
         var row = controls.FirstOrDefault(c => c.Properties.GetValueOrDefault("ListOwner") == "JobsPanel" && c.Bounds.Contains(p.X, p.Y));
-        return row is not null && row.Argument.StartsWith("job:", StringComparison.Ordinal) && int.TryParse(row.Argument.AsSpan(4), NumberStyles.None, CultureInfo.InvariantCulture, out int i) ? i : null;
+        return row is not null ? JobTag(row.Argument) : null;
     }
 
     /// <summary>A press on a job row starts dragging it (true: taken).</summary>
@@ -351,16 +361,15 @@ sealed partial class PlayerInterface
     {
         if (jobDrag is not { } from) return;
         jobDrag = null;
-        if (JobRowAt(ArrangeUi(), p) is { } to && to != from && (Selected().FirstOrDefault() ?? Lead()) is { IsPlayer: true } lead)
-            Say(new Meitou.Simulation.Production.MoveJob(lead.Id, from, to) { Tick = session.World.Tick });
+        if (JobRowAt(ArrangeUi(), p) is { } to && to.Character == from.Character && to.Revision == from.Revision && to.Index != from.Index)
+            Say(new Meitou.Simulation.Production.MoveJob(from.Character, from.Index, to.Index) { Tick = session.CommandTick, JobsRevision = from.Revision });
     }
 
     /// <summary>Takes a job (the jobs list's row id) off the lead whose list shows it.</summary>
     void RemoveJob(string job)
     {
-        if ((Selected().FirstOrDefault() ?? Lead()) is not { IsPlayer: true } lead) return;
-        if (job.StartsWith("job:", StringComparison.Ordinal) && int.TryParse(job.AsSpan(4), NumberStyles.None, CultureInfo.InvariantCulture, out int index))
-            Say(new Meitou.Simulation.Production.RemoveJob(lead.Id, index) { Tick = session.World.Tick });
+        if (JobTag(job) is { } displayed)
+            Say(new Meitou.Simulation.Production.RemoveJob(displayed.Character, displayed.Index) { Tick = session.CommandTick, JobsRevision = displayed.Revision });
     }
 
     /// <summary>The speed icon per mode: the <c>Kenshi_CharacterSpeedSet</c> image names, in mode order.</summary>

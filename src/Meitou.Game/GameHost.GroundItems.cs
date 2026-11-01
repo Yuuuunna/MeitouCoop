@@ -20,7 +20,7 @@ sealed partial class GameHost
     /// <summary>Once a frame with <see cref="UpdateBuildings"/>, after a new world's runtime placements were cleared.</summary>
     void UpdateGroundItems(WorldSnapshot snapshot)
     {
-        session.World.GroundItems.Limit = config.GroundItemLimit;   // the setting, applied at the next drop
+        if (session is Meitou.Engine.WorldSession local) local.World.GroundItems.Limit = config.GroundItemLimit;
         if (snapshot.GroundItemsRevision == groundRevision) return;
         groundRevision = snapshot.GroundItemsRevision;
         var current = snapshot.GroundItems.Select(g => g.Id).ToHashSet();

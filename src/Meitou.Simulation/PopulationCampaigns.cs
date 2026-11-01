@@ -78,6 +78,7 @@ public sealed class KnownCampaign(string id)
 {
     public string Id { get; } = id;
     public double LastStart { get; set; }
+    public Dictionary<CampaignTown, double> TargetLastStarts { get; } = [];
 }
 
 /// <summary>A faction's war manager (the original's <c>FactionWarMgr</c>): its next roll, next campaign id, running and queued campaigns and the campaigns it knows.</summary>
@@ -127,20 +128,21 @@ public sealed partial class PopulationSystem : IStateHashed
     /// <summary>A FACTION_CAMPAIGN with its ancestors applied by the live inheritance switch (null: not one).</summary>
     public CampaignData? CampaignOf(string id) => (campaignDb ??= new CampaignDatabase(data.Db)).Find(id, !CampaignAncestorsOnce);
 
-    int PlayerFactionOf(World world) => world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
 
     /// <summary>The managers, made once: each faction's <c>campaigns</c> list known, the first roll 6 h on; then a loaded save's war states over them.</summary>
     internal void EnsureWars(World world)
     {
-        if (wars is not null) return;
-        wars = new WarManager[data.Factions.Count];
-        for (int f = 0; f < wars.Length; f++)
+        if (wars is not null && wars.Length == data.Factions.Count) return;
+        bool initial = wars is null;
+        int first = wars?.Length ?? 0;
+        Array.Resize(ref wars, data.Factions.Count);
+        for (int f = first; f < wars.Length; f++)
         {
             var m = wars[f] = new WarManager { Faction = f, UpdateTime = world.GameHours + RollEveryHours };
             foreach (var link in data.Factions[f].Campaigns)
                 if (CampaignOf(link.Id) is not null) m.Know(link.Id);
         }
-        if (world.Saved is { Wars.Count: > 0 } saved) Saving.WarSave.Read(world, this, saved);
+        if (initial && world.Saved is { Wars.Count: > 0 } saved) Saving.WarSave.Read(world, this, saved);
     }
 
     internal WarManager? WarOf(int faction) => wars is not null && faction >= 0 && faction < wars.Length ? wars[faction] : null;
@@ -158,7 +160,7 @@ public sealed partial class PopulationSystem : IStateHashed
             {
                 double at = m.UpdateTime;
                 m.UpdateTime = now + RollEveryHours;
-                if (m.Actives.Count == 0 && m.Requests.Count == 0) Roll(world, m, at, now);
+                Roll(world, m, at, now);
             }
         }
         MoveCampaigns(world, settings.CheckEveryTicks * world.TickSeconds);
@@ -184,7 +186,7 @@ public sealed partial class PopulationSystem : IStateHashed
         t.Site >= 0 ? data.SiteFactions[t.Site] : world.Buildings.FindTown(t.PlayerTown)?.Owner ?? -1;
 
     string NameOf(World world, CampaignTown t) =>
-        t.Site >= 0 ? data.Sites[t.Site].Town.Name : world.Buildings.FindTown(t.PlayerTown)?.Name ?? (PlayerFactionOf(world) is >= 0 and var pf ? data.Factions[pf].Name : "");
+        t.Site >= 0 ? data.Sites[t.Site].Town.Name : world.Buildings.FindTown(t.PlayerTown)?.Name ?? "";
 
     bool Exists(World world, CampaignTown t) => t.Site >= 0 ? t.Site < data.Sites.Count : world.Buildings.FindTown(t.PlayerTown) is not null;
 
@@ -226,42 +228,57 @@ public sealed partial class PopulationSystem : IStateHashed
 
     /// <summary>
     /// The roll (<c>FUN_1409cb310</c>): each <c>territorial triggers</c> campaign the faction knows with a target passes with its chance; one passer is drawn by chance and
-    /// started. <paramref name="at"/> is the roll's hour (the stored <c>updatetime</c>), which keys the rolls.
+    /// started independently per target base (Meitou multiplayer extension). <paramref name="at"/> is the roll's hour (the stored <c>updatetime</c>), which keys the rolls.
     /// </summary>
     void Roll(World world, WarManager m, double at, double now)
     {
-        int player = PlayerFactionOf(world);
-        if (player < 0) return;
-        int living = -1;
         ulong time = BitConverter.DoubleToUInt64Bits(at);
         var passers = new List<(CampaignData C, CampaignTown Target, CampaignTown Home, float Chance)>();
+        foreach (int player in world.PlayerFactionIndices())
         for (int i = 0; i < m.Known.Count; i++)
         {
             var known = m.Known[i];
             if (CampaignOf(known.Id) is not { TerritorialTriggers: true } c) continue;
-            if (!FindTarget(world, m.Faction, c, player, out var target, out var home)) continue;
-            if (living < 0) living = PlayerLiving(world);
-            float chance = Chance(world, m, c, known, target, now, living);
-            if (chance <= 0) continue;
-            ulong roll = Rng.Hash(world.Seed, (ulong)m.Faction << 32 | (uint)i, RngPurpose.Campaign, time ^ SeedSalts.CampaignPass);
-            if (chance > Rng.Float(roll)) passers.Add((c, target, home, chance));
+            var targets = world.Buildings.Towns.Where(t => t.Owner == player).OrderBy(t => t.Number).Select(t => CampaignTown.OfPlayer(t.Number))
+                .Concat(data.Sites.Where(t => data.SiteFactions[t.Index] == player && t.Town.Type is not (TownType.NestMarker or TownType.Null)).Select(t => CampaignTown.OfSite(t.Index)));
+            foreach (var target in targets)
+            {
+                if (!FindTarget(world, m.Faction, c, player, out _, out var home, target)) continue;
+                if (m.Actives.Any(a => a.Phase != 2 && a.Target == target) || m.Requests.Any(r => r.Target == target)) continue;
+                float chance = Chance(world, m, c, known, target, now, PlayerLiving(world, player));
+                if (chance <= 0) continue;
+                ulong key = ((ulong)(uint)m.Faction << 32 | (uint)i) ^ Rng.Mix((ulong)(uint)player << 32 | (uint)(target.Site >= 0 ? -target.Site - 1 : target.PlayerTown));
+                ulong roll = Rng.Hash(world.Seed, key, RngPurpose.Campaign, time ^ SeedSalts.CampaignPass);
+                if (chance > Rng.Float(roll)) passers.Add((c, target, home, chance));
+            }
         }
-        if (passers.Count == 0) return;
-        float total = passers.Sum(p => p.Chance);
-        float pick = Rng.Float(Rng.Hash(world.Seed, (ulong)m.Faction << 32, RngPurpose.Campaign, time ^ SeedSalts.CampaignDraw)) * total;
-        var chosen = passers[^1];
-        foreach (var p in passers)
-            if ((pick -= p.Chance) < 0) { chosen = p; break; }
-        Start(world, m, chosen.C, chosen.Target, chosen.Home, now);
+        foreach (var group in passers.GroupBy(p => p.Target))
+        {
+            var choices = group.Where(p => !SpecialLeaderBusy(world, p.C)).ToList();
+            if (choices.Count == 0) continue;
+            float total = choices.Sum(p => p.Chance);
+            ulong targetKey = (ulong)(uint)m.Faction << 32 | (uint)(group.Key.Site >= 0 ? -group.Key.Site - 1 : group.Key.PlayerTown);
+            float pick = Rng.Float(Rng.Hash(world.Seed, targetKey, RngPurpose.Campaign, time ^ SeedSalts.CampaignDraw)) * total;
+            var chosen = choices[^1];
+            foreach (var p in choices)
+                if ((pick -= p.Chance) < 0) { chosen = p; break; }
+            Start(world, m, chosen.C, chosen.Target, chosen.Home, now);
+        }
     }
 
     /// <summary>The player's living characters (the population gate counts them).</summary>
-    static int PlayerLiving(World world)
+    static int PlayerLiving(World world, int faction)
     {
         int n = 0;
         var prev = world.Characters.Previous;
         for (int i = 0; i < prev.Length; i++)
-            if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true, DiedTick: < 0 }) n++;
+            if (prev[i].Alive && world.Characters.Cold(i) is { DiedTick: < 0 } c && c.Faction == faction) n++;
+        foreach (var p in world.Platoons.All)
+            if (p.State != PlatoonState.Loaded && p.Stored is { } stored)
+                n += stored.Members.Count(m => m.Cold.Faction == faction && m.Cold.DiedTick < 0 && m.Cold.Medical is not { Dead: true });
+            else if (p.State != PlatoonState.Loaded && p.Faction == faction && p.Saved is { } saved)
+                n += saved.Members.Count(m => !m.Dead && !m.Gone && m.Medical is not { Dead: true } && m.Source.Medical?.Bools.GetValueOrDefault("dead") != true);
+        n += world.StoredPlayerRoles?.PendingFactionPositions(faction).Count() ?? 0;
         return n;
     }
 
@@ -274,8 +291,9 @@ public sealed partial class PopulationSystem : IStateHashed
     {
         if (living < c.TargetPopulationMin) return 0;
         if (target.PlayerTown > 0 && TownLevel(world, target.PlayerTown) < c.TargetTechLevel) return 0;
-        if (known.LastStart > 0 && now <= known.LastStart + c.RepeatLimitHours) return 0;
-        if (!WorldStatesPass(world, c)) return 0;
+        double last = known.TargetLastStarts.GetValueOrDefault(target, known.TargetLastStarts.Count == 0 ? known.LastStart : 0);
+        if (last > 0 && now <= last + c.RepeatLimitHours) return 0;
+        if (!WorldStatesPass(world, c, FactionOfTown(world, target))) return 0;
         var at = CentreOf(world, target);
         var nearest = NearestOwnTown(m.Faction, at);
         if (nearest.IsNone) return 0;
@@ -283,10 +301,10 @@ public sealed partial class PopulationSystem : IStateHashed
     }
 
     /// <summary>The world-state gate (<c>vfunc_2</c>): every <c>world state</c> has its value, and there is no <c>special leader</c> or one of them is alive (an untracked one counts as alive).</summary>
-    bool WorldStatesPass(World world, CampaignData c)
+    bool WorldStatesPass(World world, CampaignData c, int faction)
     {
         foreach (var (state, value) in c.WorldStates)
-            if (!IWorldStates.Passes(States, data.Db, state, value ? 1 : 0)) return false;
+            if (data.Db.Find(state) is { Type: FcsRecordType.WORLD_EVENT_STATE } && (States is WorldStates liveStates ? liveStates.IsTrueForFaction(state, faction) : States.IsTrue(state)) != value) return false;
         if (c.SpecialLeaders.Count == 0) return true;
         foreach (var leader in c.SpecialLeaders)
             if (world.Uniques.StateOf(leader) == UniqueState.Alive) return true;
@@ -299,19 +317,19 @@ public sealed partial class PopulationSystem : IStateHashed
     /// those in its <c>no-go zones</c> unless the campaign ignores them; then the first source town in site order with one of its 5 nearest candidates within <c>range far</c> is
     /// the home, that candidate the target.
     /// </summary>
-    bool FindTarget(World world, int faction, CampaignData c, int enemy, out CampaignTown target, out CampaignTown home)
+    bool FindTarget(World world, int faction, CampaignData c, int enemy, out CampaignTown target, out CampaignTown home, CampaignTown? only = null)
     {
         target = home = CampaignTown.None;
         var fd = data.Factions[faction];
         var all = new List<CampaignTown>();
-        if (enemy == PlayerFactionOf(world))
+        if (world.IsPlayerFaction(enemy))
         {
             foreach (var town in world.Buildings.Towns)
                 if (town.Owner == enemy) all.Add(CampaignTown.OfPlayer(town.Number));
         }
-        else
-            foreach (var site in data.Sites)
+        foreach (var site in data.Sites)
                 if (data.SiteFactions[site.Index] == enemy && site.Town.Type is not (TownType.NestMarker or TownType.Null)) all.Add(CampaignTown.OfSite(site.Index));
+        if (only is { } selected) all.RemoveAll(t => t != selected);
         if (all.Count == 0) return false;
         var candidates = all.Where(t => BiomeAt(CentreOf(world, t)) is { } b && fd.Biomes.Any(x => x.Id == b)).ToList();
         if (candidates.Count == 0) candidates = all;
@@ -341,12 +359,15 @@ public sealed partial class PopulationSystem : IStateHashed
     /// (here: within its radius, whose zone the character keeps loaded). So raids and redirects aim only at a player town the player is at.
     /// </summary>
     bool TownActive(World world, CampaignTown t)
-    {        if (t.Site >= 0) return active.Contains(data.Sites[t.Site].Zone);
+    {
+        if (t.Site >= 0) return active.Contains(data.Sites[t.Site].Zone);
         var at = CentreOf(world, t);
         float r = RadiusOf(world, t);
         var prev = world.Characters.Previous;
         for (int i = 0; i < prev.Length; i++)
-            if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true } && Vector2.DistanceSquared(new Vector2(prev[i].Position.X, prev[i].Position.Z), at) <= r * r) return true;
+            if (prev[i].Alive && world.Characters.Cold(i) is { } c && c.Faction == FactionOfTown(world, t) && Vector2.DistanceSquared(new Vector2(prev[i].Position.X, prev[i].Position.Z), at) <= r * r) return true;
+        foreach (var (position, _) in StoredPlayers(world, FactionOfTown(world, t)))
+            if (Vector2.DistanceSquared(position, at) <= r * r) return true;
         return false;
     }
 
@@ -386,31 +407,31 @@ public sealed partial class PopulationSystem : IStateHashed
     StartResult Start(World world, WarManager m, CampaignData c, CampaignTown target, CampaignTown home, double now)
     {
         if (home.IsNone || !Exists(world, home)) home = NearestOwnTown(m.Faction, CentreOf(world, target));
-        if (home.IsNone || !Exists(world, target)) return StartResult.NoHome;
+        if (home.IsNone || !Exists(world, target) || SpecialLeaderBusy(world, c)) return StartResult.NoHome;
         var inst = new CampaignInstance
         {
             Faction = m.Faction, Id = m.NextId++, CampaignId = c.Id, Target = target, Home = home, Enemy = FactionOfTown(world, target), PhaseStart = now,
             Required = (int)(c.NumForces * settings.RaidSizeMult),
         };
-        int player = PlayerFactionOf(world);
+        int player = inst.Enemy;
         var made = new List<Platoon>();
         Gather(world, m, c, inst, made);
         if (inst.Men <= inst.Required)
         {
-            if (inst.Enemy == player && player >= 0) world.Post(Loc.Tr("Assault to {1} canceled due to faction weakness", c.DisplayName));
+            if (world.IsPlayerFaction(inst.Enemy)) world.PostFaction(inst.Enemy, Loc.Tr("Assault to {1} canceled due to faction weakness", c.DisplayName));
             Disband(world, inst, made);
             Log($"{data.Factions[m.Faction].Name}: {c.Name} against {NameOf(world, target)} canceled ({inst.Men} of {inst.Required} men)");
             return StartResult.Weak;
         }
         m.Actives.Add(inst);
-        if (inst.Enemy == player && player >= 0)
-            world.Post(c.IsHostile ? Loc.Tr("Warning: {1} moving towards {2}", c.DisplayName, NameOf(world, target)) : Loc.Tr("{1} on the way to {2}", c.DisplayName, NameOf(world, target)));
-        m.Know(c.Id).LastStart = now;
+        if (world.IsPlayerFaction(inst.Enemy))
+            world.PostFaction(inst.Enemy, c.IsHostile ? Loc.Tr("Warning: {1} moving towards {2}", c.DisplayName, NameOf(world, target)) : Loc.Tr("{1} on the way to {2}", c.DisplayName, NameOf(world, target)));
+        m.Know(c.Id).TargetLastStarts[target] = now;
         Log($"{data.Factions[m.Faction].Name}: {c.Name} against {NameOf(world, target)} from {NameOf(world, home)}, {inst.Platoons.Count} squad(s), {inst.Men} men");
         foreach (var allyId in c.TriggerPlayerAlly)
         {
             if (CampaignOf(allyId) is not { FactionOverride: { } fo } ally || data.FactionIndex(fo) is not (>= 0 and var af) || player < 0) continue;
-            if (data.Relations.IsAlly(af, player)) Queue(world, m, ally, target, CampaignTown.None, inst.Enemy, 0, 0, now, callerFlag: false);
+            if (world.IsPlayerFaction(player) && data.Relations.IsAlly(af, player)) Queue(world, m, ally, target, CampaignTown.None, inst.Enemy, 0, 0, now, callerFlag: false);
         }
         return StartResult.Started;
     }
@@ -625,12 +646,12 @@ public sealed partial class PopulationSystem : IStateHashed
         var at = new Vector2(table.Next[s].Position.X, table.Next[s].Position.Z);
         var town = CampaignTown.None;
         var tc = table.TryResolveNext(target, out int t) ? table.Cold(t) : null;
-        if (tc is not null && (tc.IsPlayer || tc.Faction == world.Player.Faction))
+        if (tc is not null && world.IsPlayerFaction(tc.Faction))
         {
             float best = float.MaxValue;
             foreach (var pt in world.Buildings.Towns)
             {
-                if (pt.Owner != world.Player.Faction) continue;
+                if (pt.Owner != tc.Faction) continue;
                 float d = Vector2.DistanceSquared(at, new Vector2(pt.Position.X, pt.Position.Z));
                 if (d < best) (best, town) = (d, CampaignTown.OfPlayer(pt.Number));
             }
@@ -677,7 +698,7 @@ public sealed partial class PopulationSystem : IStateHashed
                     continue;
                 }
             }
-            if (!WorldStatesPass(world, c))
+            if (!WorldStatesPass(world, c, r.Enemy))
             {
                 m.Requests.RemoveAt(i--);
                 continue;
@@ -707,7 +728,7 @@ public sealed partial class PopulationSystem : IStateHashed
         if (FindTarget(world, inst.Faction, c, inst.Enemy, out var target, out _) && target != inst.Target)
         {
             inst.Target = target;
-            world.Post(Loc.Tr("{1} has redirected to {2}", c.DisplayName, NameOf(world, target)));
+            world.PostFaction(inst.Enemy, Loc.Tr("{1} has redirected to {2}", c.DisplayName, NameOf(world, target)));
         }
         inst.RedirectStart = now;
     }
@@ -764,7 +785,7 @@ public sealed partial class PopulationSystem : IStateHashed
                 if (Vector2.Distance(leader.Position, CentreOf(world, inst.Target)) > 0.8f * RadiusOf(world, inst.Target)) return false;
                 if (inst.ArrivedAt < 0)
                 {
-                    world.Post(Loc.Tr("{1} has arrived at {2}", c.DisplayName, NameOf(world, inst.Target)));
+                    world.PostFaction(inst.Enemy, Loc.Tr("{1} has arrived at {2}", c.DisplayName, NameOf(world, inst.Target)));
                     inst.ArrivedAt = now;
                 }
                 // With an announcement, a loaded leader waits for it, then while its negotiation is pending (engine choice for the Unknown event-2 state: up to
@@ -796,7 +817,7 @@ public sealed partial class PopulationSystem : IStateHashed
                         else if (inst.FightStart >= 0 && now - inst.FightStart > 0.2 && (!AnyFighting(world, inst) || !PlayersStanding(world, inst.Target))) won = true;
                         break;
                     case CampaignKey.DefendTown:
-                        won = hours > 12 && !HostileAgainstPlayer(world);
+                        won = hours > 12 && !HostileAgainstPlayer(world, inst.Enemy);
                         break;
                     case CampaignKey.TraderVisit:
                         won = hours > 1;   // trading holds it in the original (an open trade window); not modelled, engine choice
@@ -872,7 +893,7 @@ public sealed partial class PopulationSystem : IStateHashed
     {
         inst.Phase = 2;
         inst.PhaseStart = now;
-        if (c.IsHostile) world.Post(Loc.Tr("{1} against {2} has ended", c.DisplayName, NameOf(world, inst.Target)));
+        if (c.IsHostile) world.PostFaction(inst.Enemy, Loc.Tr("{1} against {2} has ended", c.DisplayName, NameOf(world, inst.Target)));
         Log($"{data.Factions[m.Faction].Name}: {c.Name} against {NameOf(world, inst.Target)} won");
         FollowUp(world, m, c.VictoryTriggers, inst, now, 1);
     }
@@ -882,7 +903,7 @@ public sealed partial class PopulationSystem : IStateHashed
         inst.Phase = 2;
         inst.PhaseStart = now;
         string target = NameOf(world, inst.Target);
-        world.Post(!c.IsHostile ? Loc.Tr("{1} was defeated on their way to {2}", c.DisplayName, target) : inst.FoughtPlayer ? Loc.Tr("{1} against {2} has been defeated", c.DisplayName, target) : Loc.Tr("{1} to {2} has failed", c.DisplayName, target));
+        world.PostFaction(inst.Enemy, !c.IsHostile ? Loc.Tr("{1} was defeated on their way to {2}", c.DisplayName, target) : inst.FoughtPlayer ? Loc.Tr("{1} against {2} has been defeated", c.DisplayName, target) : Loc.Tr("{1} to {2} has failed", c.DisplayName, target));
         Log($"{data.Factions[m.Faction].Name}: {c.Name} against {target} lost");
         if (c.IsHostile && inst.Reached || inst.FoughtPlayer) FollowUp(world, m, c.LossTriggers, inst, now, 2);
         else if (c.IsHostile)
@@ -920,16 +941,16 @@ public sealed partial class PopulationSystem : IStateHashed
             {
                 if (!table.TryResolveNext(member, out int slot) || table.Cold(slot) is not { InCombat: true }) continue;
                 if (inst.FightStart < 0) inst.FightStart = now;
-                if (id == inst.Leader && !inst.FoughtPlayer && PlayerNear(world, table.Previous[slot].Position, 300)) inst.FoughtPlayer = true;
+                if (id == inst.Leader && !inst.FoughtPlayer && PlayerNear(world, table.Previous[slot].Position, 300, inst.Enemy)) inst.FoughtPlayer = true;
             }
         }
     }
 
-    static bool PlayerNear(World world, Vector3 at, float range)
+    static bool PlayerNear(World world, Vector3 at, float range, int faction)
     {
         var prev = world.Characters.Previous;
         for (int i = 0; i < prev.Length; i++)
-            if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true } && Vector3.DistanceSquared(prev[i].Position, at) <= range * range) return true;
+            if (prev[i].Alive && world.Characters.Cold(i) is { } c && c.Faction == faction && Vector3.DistanceSquared(prev[i].Position, at) <= range * range) return true;
         return false;
     }
 
@@ -962,11 +983,13 @@ public sealed partial class PopulationSystem : IStateHashed
         var prev = world.Characters.Previous;
         for (int i = 0; i < prev.Length; i++)
         {
-            if (!prev[i].Alive || world.Characters.Cold(i) is not { IsPlayer: true } cold) continue;
+            if (!prev[i].Alive || world.Characters.Cold(i) is not { } cold || cold.Faction != FactionOfTown(world, t)) continue;
             if (Vector2.DistanceSquared(new Vector2(prev[i].Position.X, prev[i].Position.Z), at) > r * r) continue;
             all++;
             if (cold.DiedTick < 0 && cold.Medical is not { Unconscious: true } and not { Dead: true }) up++;
         }
+        foreach (var (position, standing) in StoredPlayers(world, FactionOfTown(world, t)))
+            if (Vector2.DistanceSquared(position, at) <= r * r) { all++; if (standing) up++; }
         return (all, up);
     }
 
@@ -980,9 +1003,8 @@ public sealed partial class PopulationSystem : IStateHashed
     bool PlayersStanding(World world, CampaignTown t) => PlayersIn(world, t).Up > 0;
 
     /// <summary>Some faction runs a hostile campaign against the player (a defence ends only when none does).</summary>
-    bool HostileAgainstPlayer(World world)
+    bool HostileAgainstPlayer(World world, int player)
     {
-        int player = PlayerFactionOf(world);
         foreach (var m in wars!)
             foreach (var a in m.Actives)
                 if (a.Phase != 2 && a.Enemy == player && CampaignOf(a.CampaignId) is { IsHostile: true }) return true;
@@ -1038,6 +1060,7 @@ public sealed partial class PopulationSystem : IStateHashed
 
     /// <summary>The dialogue's announcement and pending-talk queries (<see cref="Dialogue.DialogueSystem.Announce"/>, <see cref="Dialogue.DialogueSystem.HasInterrupt"/>), set by the host; null: none.</summary>
     public Func<World, CharacterId, string, bool>? Announcer { get; set; }
+    public Func<World, CharacterId, CharacterId, string, bool>? TargetAnnouncer { get; set; }
     public Func<CharacterId, bool>? PendingTalk { get; set; }
 
     /// <summary>The squads' memories (the dialogue system's): a squad that leaves the world hands its memory to its platoon (<see cref="StoredSquad.Memory"/>), and gets it back when it returns; null: none kept.</summary>
@@ -1048,16 +1071,24 @@ public sealed partial class PopulationSystem : IStateHashed
     /// <summary>The announcement needs the leader within this of the camera and a target-faction member within this of the leader (<b>Verified</b>, task 129).</summary>
     const float AnnounceRange = 2500;
 
-    /// <summary>A loaded leader in phase 0 says its campaign's <c>dialog announcement</c> once, with the camera and a target-faction member within 2500 of it.</summary>
+    /// <summary>A loaded leader announces once to a nearby member of the campaign target faction, independently of cameras.</summary>
     void TryAnnounce(World world, CampaignInstance inst, CharacterId leader, Vector3 at)
     {
-        if (inst.Phase != 0 || inst.AnnouncedAt >= 0 || Announcer is null || inst.Enemy < 0 || CampaignOf(inst.CampaignId)?.DialogAnnouncement is not { } announcement) return;
-        if (focus is not { } camera || Vector2.DistanceSquared(new Vector2(at.X, at.Z), new Vector2(camera.X, camera.Z)) > AnnounceRange * AnnounceRange) return;
+        if (inst.Phase != 0 || inst.AnnouncedAt >= 0 || Announcer is null && TargetAnnouncer is null || inst.Enemy < 0 || CampaignOf(inst.CampaignId)?.DialogAnnouncement is not { } announcement) return;
+        // Authority uses nearby target members; a client camera is not a simulation gate.
         var table = world.Characters;
-        bool heard = false;
-        for (int i = 0; i < table.Previous.Length && !heard; i++)
-            heard = table.Previous[i].Alive && table.Cold(i) is { } c && c.Faction == inst.Enemy && Vector3.DistanceSquared(table.Previous[i].Position, at) <= AnnounceRange * AnnounceRange;
-        if (!heard || !Announcer(world, leader, announcement)) return;
+        CharacterId listener = CharacterId.None;
+        float nearest = AnnounceRange * AnnounceRange;
+        for (int i = 0; i < table.Previous.Length; i++)
+        {
+            if (!table.Previous[i].Alive || table.Cold(i) is not { DiedTick: < 0 } c || c.Faction != inst.Enemy || c.Medical is { Dead: true }) continue;
+            float distance = Vector3.DistanceSquared(table.Previous[i].Position, at);
+            if (distance > nearest) continue;
+            nearest = distance;
+            listener = table.IdOf(i);
+        }
+        if (listener.IsNone || !(TargetAnnouncer is { } targeted ? targeted(world, leader, listener, announcement)
+            : Announcer?.Invoke(world, leader, announcement) == true)) return;
         inst.Announcer = leader;
         inst.AnnouncedAt = world.GameHours;
     }
@@ -1201,10 +1232,17 @@ public sealed partial class PopulationSystem : IStateHashed
         {
             h.Add(m.NextId);
             h.Add(m.UpdateTime);
+            foreach (var k in m.Known)
+            {
+                h.Add(Rng.StableHash(k.Id));
+                foreach (var t in k.TargetLastStarts.OrderBy(t => t.Key.Site).ThenBy(t => t.Key.PlayerTown))
+                { h.Add(t.Key.Site); h.Add(t.Key.PlayerTown); h.Add(t.Value); }
+            }
             h.Add(m.Actives.Count);
             foreach (var a in m.Actives)
             {
                 h.Add(a.Id);
+                h.Add(a.Enemy); h.Add(a.Target.Site); h.Add(a.Target.PlayerTown);
                 h.Add(a.Phase);
                 h.Add(a.Reached);
                 h.Add(a.Trig);
@@ -1224,6 +1262,7 @@ public sealed partial class PopulationSystem : IStateHashed
             {
                 h.Add(Rng.StableHash(r.CampaignId));
                 h.Add(r.Due);
+                h.Add(r.Enemy); h.Add(r.Target.Site); h.Add(r.Target.PlayerTown);
                 h.Add(r.Attempts);
             }
         }

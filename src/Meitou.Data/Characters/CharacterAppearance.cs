@@ -89,7 +89,7 @@ public sealed record CharacterOptions
 /// The parts and looks of a character, assembled from FCS records the way docs/characters.md describes (body, head,
 /// hair, clothing, weapons, colours, face poses). Resolution only; meshes and textures are left to the renderer.
 /// </summary>
-public sealed class CharacterAppearance
+public sealed partial class CharacterAppearance
 {
     public GameRecord? Character { get; private init; }
     /// <summary>The ANIMAL_CHARACTER this animal was built from (<see cref="BuildAnimal"/>); null for people.</summary>

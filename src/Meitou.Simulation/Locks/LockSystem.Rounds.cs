@@ -231,7 +231,7 @@ public sealed partial class LockSystem : IStateHashed
                 if (HasGoal(world, s, c, TaskType.LOCK_ALL_THE_CAGES, hour)) { cages = true; if (free && warden < 0) warden = s; }
             }
             if (cages && warden >= 0 && board.Town >= 0) LockCages(world, squad, board, warden, ref started);
-            if (board.OwnHome is not { } home || world.Fixtures.DoorOwner(home.Key) < 0 || world.Fixtures.OwnsBuilding(home.Key, world.Player.Faction) || Targeted(home.Key)) continue;
+            if (board.OwnHome is not { } home || world.Fixtures.DoorOwner(home.Key) < 0 || world.Fixtures.DoorOwner(home.Key) != squad.Faction || Targeted(home.Key)) continue;
             string building = home.Key;
             if (inside155 || from197)
             {
@@ -336,7 +336,7 @@ public sealed partial class LockSystem : IStateHashed
 
     /// <summary>The target's building is shut by doors the worker may open: its faction's, or its squad's home.</summary>
     static bool NeedsKeys(World world, Round round, CharacterCold c, Fixture f) =>
-        world.Fixtures.IsShut(f.Building) && (world.Fixtures.DoorOwner(f.Building) == round.Faction || c.Ai?.Squad.Ai?.OwnHome?.Key == f.Building);
+        world.Fixtures.IsShut(f.Building) && world.Fixtures.DoorOwner(f.Building) == round.Faction;
 
     static void Walk(World world, int worker, Round round, Fixture f)
     {
@@ -363,11 +363,12 @@ public sealed partial class LockSystem : IStateHashed
             if (r.Age > ReleaseTimeout) return End(world, r, fallback: true);
         }
         if (r.Index >= r.Targets.Length || world.Fixtures.Find(r.Targets[r.Index]) is not { } f) return End(world, r, fallback: true);
-        if (r.Faction != world.Player.Faction && world.Fixtures.OwnsBuilding(f.Building, world.Player.Faction)) return End(world, r, fallback: false);
+        if (wc.Faction != r.Faction || f.Owner != r.Faction) return End(world, r, fallback: false);
         ref var n = ref table.Next[w];
         switch (r.Phase)
         {
             case RoundPhase.Keys:
+                if (world.Fixtures.DoorOwner(f.Building) != r.Faction) return End(world, r, fallback: false);
                 r.Time += dt;
                 if (r.Time < LockWorkSeconds) return true;
                 world.Fixtures.SetDoorsLocked(f.Building, false);
@@ -442,7 +443,7 @@ public sealed partial class LockSystem : IStateHashed
             if (table.Next[w].Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, w);
         }
         if (fallback && r.Kind == RoundKind.Release && table.TryResolveNext(r.Prisoner, out int p) && table.Cold(p) is { IsImprisoned: true } pc && pc.InWhat == r.Targets[0]
-            && world.Fixtures.Find(r.Targets[0]) is { } cage)
+            && world.Fixtures.Find(r.Targets[0]) is { } cage && cage.Owner == r.Faction)
             world.Fixtures.Release(world, r.Prisoner, cage.Owner, Crimes);
         if (done && r.Building is { } b)
         {
@@ -454,11 +455,19 @@ public sealed partial class LockSystem : IStateHashed
 
     public void Hash(ref StateHasher hasher)
     {
-        if (rounds.Count == 0 && houseLocked.Count == 0) return;   // only while a round runs or a home is locked up, so worlds without them hash as before
+        if (rounds.Count == 0 && houseLocked.Count == 0 && workAccess.Count == 0 && doorWalkers.Count == 0) return;   // only while a round runs or a home is locked up, so worlds without them hash as before
         hasher.Add(0x526F756E);
         hasher.Add(rounds.Count);
         foreach (var r in rounds) r.Hash(ref hasher);
         hasher.Add(houseLocked.Count);
         foreach (var b in houseLocked) hasher.Add(Rng.StableHash(b));
+        foreach (var (actor, access) in workAccess.OrderBy(p => p.Key.Slot))
+        {
+            hasher.Add(actor); hasher.Add(access.Command.Issuer?.Value ?? 0); hasher.Add(access.Membership);
+            hasher.Add(access.Owner); hasher.Add(access.Target); hasher.Add(access.TargetFaction);
+            hasher.Add(Rng.StableHash(access.Fixture?.Id ?? ""));
+            foreach (var grant in access.Command.ControlGrants) { hasher.Add(grant.Entity.Value); hasher.Add(grant.Revision); }
+        }
+        foreach (var (actor, door) in doorWalkers.OrderBy(p => p.Key.Slot)) { hasher.Add(actor); hasher.Add(Rng.StableHash(door.Id)); }
     }
 }

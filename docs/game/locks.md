@@ -354,3 +354,26 @@ Shackles: the item's INVENTORY_ITEM_STATE record carries the same four keys (`Lo
 | `gatecode` | preserve it |
 | Which door states 59/60 open for a walk | a walker whose next path legs cross a closed door's plane opens it; at a locked one it stops ("It's locked.") |
 | What else sets or clears the squad "house locked" flag | the rules above |
+
+## Multiplayer implementation contract
+
+**Observed** (source inspection; no new/run tests): attributed lock, door, shackle and bed orders
+use explicit controlled actors. Door-panel toggles require the named owner's ManageAssets permission,
+current membership revision and observed door-group revision. Ordinary opening, lockpicking, forcing
+and freeing preserve cross-faction crime attempts. Door walks are independent per actor. Pending work
+retains actor control/membership revisions, fixture instance/owner/revision and character-target
+instance/faction. Revocation or replacement cancels pending work before further effects. Fixture
+revisions identify instances, owners, records and positions, independently of animation/pick progress;
+fixture-target commands require the observed revision. NPC rounds recheck worker/asset factions;
+home assignment alone grants no keys.
+Bed trips retain control/membership, bed owner and carried-body identity/faction. Rent debits the
+actor's faction with SpendFunds and records rental keys as `faction:<id>:<bed>` in explicit-control
+worlds; legacy keys remain bed IDs. Existing BedSave string/hour pairs preserve both. Bed access still
+follows faction/alliance/public-bed gameplay rules; alliance grants neither control nor spending rights.
+
+**Observed** (source inspection): manual Put in Cage retains the carrier's command grant, membership,
+fixture revision and captive identity/faction until arrival. Fixed cage orders cannot retarget; locked
+cages refuse placement. Using the actor's own faction cage requires ManageAssets; cross-faction
+attempts retain normal gameplay/crime handling. Bail commands explicitly name their controlled payer,
+observed cage and quoted price; execution rechecks SpendFunds, membership revision, proximity and
+current bail before debiting that payer's faction. Dialogue desk bail retains its existing session path.

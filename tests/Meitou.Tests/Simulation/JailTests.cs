@@ -62,6 +62,7 @@ public class JailTests
             };
             if (locks) systems.Add(Locks = new LockSystem(BaseGame, BodyOptions.Default) { Crimes = crime });
             World = new SimWorld(new WorldSettings { Seed = 31, PublishSnapshots = false, MinPartitionSize = 1 }, walk, systems);
+            World.Player.Faction = relations.PlayerFaction;
             World.Fixtures.RegisterSite(World, data, 0);
             playerSquad = new Squad { Id = 1000, TemplateId = "p", Faction = relations.PlayerFaction };
             World.Squads.Add(playerSquad);
@@ -230,6 +231,52 @@ public class JailTests
         Assert.Null(j.Cold(captive).Pending);
         Assert.True(j.CageA.Occupant.IsNone);
         Assert.Contains(j.Arrest.Log, e => e.Kind == ArrestEventKind.Bailed && e.Amount == 3000);
+    }
+
+    [Fact]
+    public void BountyAndBailUseTheActingCharactersFactionAccount()
+    {
+        using var j = new Jail();
+        var hero = j.Hero(new Vector2(150, 0), "remote", Weak);
+        j.Cold(hero).Faction = j.Hunters;
+        var remote = j.World.Players.Register(new PlayerId(2));
+        j.World.Players.SetMembership(remote.Id, j.Hunters, FactionPermission.All);
+        j.World.Players.AssignInitial(remote.Id, hero);
+        var captive = j.Npc(new Vector2(150, 30), j.City, FundamentalType.Civilian, new Combatant(), bounty: 1500);
+        Assert.True(j.World.Fixtures.Imprison(j.World, captive, j.CageA));
+        j.World.Player.Money = 123;
+        Assert.Equal(1500, j.Arrest.Claim(j.World, hero.Slot, captive, j.CageA));
+        Assert.Equal(1500, remote.State.Money);
+        Assert.Equal(123, j.World.Player.Money);
+        Assert.Equal(0, j.Arrest.Claim(j.World, hero.Slot, captive, j.CageA));
+        remote.State.Money = 5000;
+        Assert.True(j.Arrest.PayBail(j.World, captive, hero));
+        Assert.Equal(2000, remote.State.Money);
+        Assert.Equal(123, j.World.Player.Money);
+        Assert.False(j.Cold(captive).IsImprisoned);
+        Assert.True(j.CageA.Occupant.IsNone);
+    }
+
+    [Fact]
+    public void BountyOverflowDoesNotConsumeTheClaimAndOwnFactionBailUsesItsOwnRate()
+    {
+        using var j = new Jail();
+        var hero = j.Hero(new Vector2(150, 0), "remote", Weak);
+        j.Cold(hero).Faction = j.Hunters;
+        var remote = j.World.Players.Register(new PlayerId(2));
+        j.World.Players.SetMembership(remote.Id, j.Hunters, FactionPermission.All);
+        remote.State.Money = long.MaxValue;
+        var captive = j.Npc(new Vector2(150, 30), j.City, FundamentalType.Civilian, new Combatant(), bounty: 1500);
+        Assert.True(j.World.Fixtures.Imprison(j.World, captive, j.CageA));
+        Assert.Equal(0, j.Arrest.Claim(j.World, hero.Slot, captive, j.CageA));
+        Assert.False(j.Cold(captive).Bounties!.Of(j.City)!.Claimed);
+        Assert.Equal(long.MaxValue, remote.State.Money);
+        remote.State.Money = 0;
+        Assert.Equal(1500, j.Arrest.Claim(j.World, hero.Slot, captive, j.CageA));
+        var own = j.Npc(new Vector2(-200, 30), j.Hunters, FundamentalType.Civilian, new Combatant(), bounty: 700);
+        Assert.True(j.World.Fixtures.Imprison(j.World, own, j.CageB));
+        Assert.Equal(1400, j.Arrest.BailFor(j.World, j.Cold(own), j.Hunters));
+        Assert.Equal(2000, j.Arrest.BailFor(j.World, j.Cold(own), j.World.Player.Faction));
     }
 
     // ------------------------------------------------------------------ bounty hunters

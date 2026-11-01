@@ -34,7 +34,7 @@ public sealed partial class CombatSystem
         ReadOnlySpan<ArmourPiece> armour = dc.Fighter is { } df ? df.Armour : default;
         var cover = new CoverRoll(world.Seed, Rng.Key(table.IdOf(d)), a, blow, 0);
         var (part, damage, absorbed) = HitResolver.LandDetailed(medical, ctx, packet, armour, cover, toughness, false, false, combat, events);
-        FloatHit(world, d, dc, ac.IsPlayer, part, damage, absorbed);
+        FloatHit(world, d, dc, ac.IsPlayer, part, damage, absorbed, world.PresentationOwner(table.IdOf(a)));
         ref var D = ref write[d];
         D.Taken++;
         D.HitTick = (int)world.Tick;
@@ -63,7 +63,7 @@ public sealed partial class CombatSystem
         Sound(world, SoundKind.Hit, d, a, prev[d].Position, unarmed: fighter.Unarmed, robot: ac.Race!.IsRobot);
         Splash(world, d, dc, -toAttacker, damage.Cut + damage.Blunt + damage.Pierce);
         if (medical.Incapacitated) Sound(world, SoundKind.Down, d, a, prev[d].Position, fatal: death);
-        if (death && world.Uniques.RecordOf(table.IdOf(d)) is { } unique) world.Uniques.Died(unique, ac.IsPlayer);
+        if (death && world.Uniques.RecordOf(table.IdOf(d)) is { } unique) world.Uniques.Died(unique, ac.IsPlayer, world.Players.RequiresExplicitControl ? ac.Faction : null);
         return death;
     }
 }

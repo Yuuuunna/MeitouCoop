@@ -33,9 +33,9 @@ sealed partial class PlayerInterface
         if (TitleOpen || EditorOpen || RegionAt is null) return;
         var pivot = session.Camera.Current.Target;
         if (RegionAt(pivot.X, pivot.Z) is not { } here) return;
-        if (!ReferenceEquals(biomeWorld, session.World))
+        if (!ReferenceEquals(biomeWorld, session.WorldIdentity))
         {
-            biomeWorld = session.World;
+            biomeWorld = session.WorldIdentity;
             (biomeGroup, biomeShown, biomeHold, biomeCooldown, pendingBiomeCooldown) = (here.Id, false, 0, pendingBiomeCooldown, 0);
             return;
         }
@@ -54,7 +54,7 @@ sealed partial class PlayerInterface
             {
                 biomeShown = false;
                 // On hiding the game tests the group's `arrival dialog`: squad banter (PlayerInterface::triggerAreaArrivalDialogue).
-                if (biomeGroup is { } arrived) Say(new Meitou.Simulation.Dialogue.AreaArrival(arrived) { Tick = session.World.Tick });
+                if (biomeGroup is { } arrived) Say(new Meitou.Simulation.Dialogue.AreaArrival(arrived) { Tick = session.CommandTick });
             }
         }
         if (!blocked) biomeGroup = here.Id;

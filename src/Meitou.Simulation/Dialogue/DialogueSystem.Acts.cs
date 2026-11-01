@@ -43,7 +43,7 @@ public sealed partial class DialogueSystem
     {
         if (ac.Faction == bc.Faction) return true;
         if (Memory.HasShort(world, ac.SquadId, b, MemoryTag.TempEnemy)) return false;
-        if (ac.IsPlayer || ac.Faction == world.Player.Faction)
+        if (ac.IsPlayer || world.IsPlayerFaction(ac.Faction))
         {
             if (Memory.HasShort(world, bc.SquadId, a, MemoryTag.TempEnemy)) return false;
             if (Memory.HasShort(world, bc.SquadId, a, MemoryTag.TempAlly)) return true;
@@ -99,7 +99,7 @@ public sealed partial class DialogueSystem
         var table = world.Characters;
         if (table.Cold(a) is not { } ac || table.Cold(b) is not { } bc || ac.Faction == bc.Faction) return 0;
         var (ida, idb) = (table.IdOf(a), table.IdOf(b));
-        if (Memory.HasShort(world, ac.SquadId, idb, MemoryTag.TempEnemy) || (ac.IsPlayer || ac.Faction == world.Player.Faction) && Memory.HasShort(world, bc.SquadId, ida, MemoryTag.TempEnemy)) return 1;
+        if (Memory.HasShort(world, ac.SquadId, idb, MemoryTag.TempEnemy) || (ac.IsPlayer || world.IsPlayerFaction(ac.Faction)) && Memory.HasShort(world, bc.SquadId, ida, MemoryTag.TempEnemy)) return 1;
         return Memory.HasShort(world, ac.SquadId, idb, MemoryTag.TempAlly) ? -1 : 0;
     }
 
@@ -257,7 +257,7 @@ public sealed partial class DialogueSystem
         var table = world.Characters;
         foreach (var (who, whom) in followers.ToArray())
         {
-            bool talking = bubbles.Any(b => b.C.Npc == who) || open?.Npc == who;
+            bool talking = bubbles.Any(b => b.C.Npc == who) || interactions.Values.Any(s => s.Open?.Npc == who);
             if (!talking || !table.TryResolveNext(who, out int s) || !Awake(table, s) || Position(world, whom) is not { } at) { followers.Remove(who); continue; }
             if (world.Tick % 15 != 0 || Vector3.DistanceSquared(table.Next[s].Position, at) <= 40 * 40) continue;
             MovementSystem.GoTo(table, s, new Vector2(at.X, at.Z), SpeedMode.Walk);
@@ -292,8 +292,8 @@ public sealed partial class DialogueSystem
         foreach (var (who, stalk) in stalkers.ToArray())
         {
             if (!table.TryResolveNext(who, out int s) || !Awake(table, s) || !table.TryResolveNext(stalk.Target, out int t) || !Awake(table, t)) { stalkers.Remove(who); Release(world, who); continue; }
-            bool talking = bubbles.Any(b => b.C.Npc == who || b.C.Player == who) || open?.Npc == who || open?.Player == who;
-            bool victimTalking = bubbles.Any(b => b.C.Npc == stalk.Target || b.C.Player == stalk.Target) || open?.Npc == stalk.Target || open?.Player == stalk.Target;
+            bool talking = bubbles.Any(b => b.C.Npc == who || b.C.Player == who) || interactions.Values.Any(s => s.Open is { } c && (c.Npc == who || c.Player == who));
+            bool victimTalking = bubbles.Any(b => b.C.Npc == stalk.Target || b.C.Player == stalk.Target) || interactions.Values.Any(s => s.Open is { } c && (c.Npc == stalk.Target || c.Player == stalk.Target));
             if (stalk.Harassed && !talking && !victimTalking) { stalkers.Remove(who); Release(world, who); continue; }
             table.Cold(s)!.Engaged = true;   // the order holds it, not the AI
             ref var sn = ref table.Next[s];

@@ -35,7 +35,8 @@ sealed partial class PlayerInterface
         b.Lists["CraftingStationsList"] = [.. stations.Select(s => new UiListItem(s.Site, StationName(s)))];
         b.SelectedItems["CraftingStationsList"] = stations.FindIndex(s => s.Site == craftStation);
         bool repeat = stations.FirstOrDefault(s => s.Site == craftStation)?.Craft?.Repeat == true;
-        b.Actions["QueueRepeat"] = "QueueRepeat";
+        b.Actions["QueueRepeat"] = stations.FirstOrDefault(s => s.Site == craftStation) is { } shown
+            ? CraftActionId("craft-repeat", shown, repeat ? "0" : "1") : "";
         b.Properties["QueueRepeat"] = new Dictionary<string, string> { ["Checked"] = repeat ? "true" : "false", ["StateSelected"] = repeat ? "true" : "false" };
         IndentLabel(b, "lbCraftingDescription");
     }
@@ -47,17 +48,23 @@ sealed partial class PlayerInterface
             var stations = CraftStations();
             craftStation = stations.FirstOrDefault(s => s.Site == e.Text)?.Site ?? stations.FirstOrDefault(s => StationName(s) == e.Text)?.Site ?? craftStation;
         }
-        else if (e.Widget == "QueueRepeat" && craftStation is not null && Machine(craftStation)?.Craft is { } craft)
-            Say(new RepeatCrafts(craftStation, !craft.Repeat) { Tick = session.World.Tick });
-        else if (e.Action.StartsWith("craft-queue:", StringComparison.Ordinal) && craftStation is not null)
+        else if (e.Action.Split(':') is [var action, var r, var s, var value] && ulong.TryParse(r, NumberStyles.None, CultureInfo.InvariantCulture, out ulong revision))
         {
-            craftFocus = e.Action[12..];
-            Say(new QueueCraft(craftStation, craftFocus) { Tick = session.World.Tick });
+            string site = Uri.UnescapeDataString(s), argument = Uri.UnescapeDataString(value);
+            if (action == "craft-repeat") Say(new RepeatCrafts(site, argument == "1") { Tick = session.CommandTick, ControlRevision = revision });
+            else if (action == "craft-queue")
+            {
+                craftFocus = argument;
+                Say(new QueueCraft(site, argument) { Tick = session.CommandTick, ControlRevision = revision });
+            }
+            else if (action == "craft-cancel" && int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out int index))
+                Say(new CancelCraft(site, index) { Tick = session.CommandTick, ControlRevision = revision });
         }
         else if (e.Action.StartsWith("craft-focus:", StringComparison.Ordinal)) craftFocus = e.Action[12..];
-        else if (e.Action.StartsWith("craft-cancel:", StringComparison.Ordinal) && craftStation is not null)
-            Say(new CancelCraft(craftStation, int.Parse(e.Action.AsSpan(13), CultureInfo.InvariantCulture)) { Tick = session.World.Tick });
     }
+
+    static string CraftActionId(string action, MachineSnapshot machine, string argument) =>
+        FormattableString.Invariant($"{action}:{machine.ControlRevision}:{Uri.EscapeDataString(machine.Site)}:{Uri.EscapeDataString(argument)}");
 
     /// <summary>The item rows, the queue rows and the description, drawn into the Craft tab's panels.</summary>
     void AddCraftContent(List<UiControl> controls)
@@ -74,7 +81,7 @@ sealed partial class PlayerInterface
             {
                 var o = rows[i];
                 controls.Add(new($"craft-row-{i}", "Button", new(panel.Bounds.X + 6, panel.Bounds.Y + i * line, panel.Bounds.Width - 12, line), o.Name,
-                    o.Unlocked ? "craft-queue:" + o.Key : "craft-focus:" + o.Key, "", true, face, Vector4.Zero,
+                    o.Unlocked ? CraftActionId("craft-queue", Machine(craftStation)!, o.Key) : "craft-focus:" + o.Key, "", true, face, Vector4.Zero,
                     TextColour: o.Unlocked ? ink : new Vector4(0.75f, 0.35f, 0.3f, 1), HoverColour: new(0, 1, 0, 1), Pickable: true, Clip: panel.Bounds));
             }
         }
@@ -83,11 +90,11 @@ sealed partial class PlayerInterface
             {
                 var (_, name, progress, _) = craft.Queue[i];
                 controls.Add(new($"craft-queue-{i}", "Button", new(queue.Bounds.X + 6, queue.Bounds.Y + i * line, queue.Bounds.Width - 12, line),
-                    $"{name}  {(int)(progress * 100)}%", "craft-cancel:" + i.ToString(CultureInfo.InvariantCulture), "", true, face, Vector4.Zero,
+                    $"{name}  {(int)(progress * 100)}%", CraftActionId("craft-cancel", Machine(craftStation)!, i.ToString(CultureInfo.InvariantCulture)), "", true, face, Vector4.Zero,
                     TextColour: i == 0 ? new(0.66f, 0.72f, 0.45f, 1) : ink, HoverColour: new(1, 0.4f, 0.3f, 1), Pickable: true, Clip: queue.Bounds));
             }
         string? hovered = controls.LastOrDefault(c => c.Name.StartsWith("craft-row-", StringComparison.Ordinal) && c.Bounds.Contains(mouse.X, mouse.Y))?.Action;
-        string? focus = hovered is { } h ? h[(h.IndexOf(':') + 1)..] : craftFocus;
+        string? focus = hovered is { } h ? h.StartsWith("craft-queue:", StringComparison.Ordinal) ? Uri.UnescapeDataString(h[(h.LastIndexOf(':') + 1)..]) : h[(h.IndexOf(':') + 1)..] : craftFocus;
         if (focus is null || options.FirstOrDefault(o => o.Key == focus) is not { } option) return;
         var lines = new List<HudLine>
         {

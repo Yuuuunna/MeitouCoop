@@ -131,7 +131,8 @@ sealed partial class GameHost
         }
         // A ready character mesh alone is insufficient: finish terrain, scenery and deferred textures too.
         // Content readiness has no pacing timeout that can expose missing NPCs or white stand-ins.
-        bool populationReady = TitleVisible || session.World.PreparePopulation(session.Camera.Current.Target);
+        bool populationReady = TitleVisible || (session is Meitou.Engine.WorldSession local
+            ? local.World.PreparePopulation(session.Camera.Current.Target) : session.HasWorldView);
         // A game's view waits for the characters round the camera's focus only (CharacterRenderer.LoadingFocus); the rest are prepared once the screen lifts.
         var focus = session.Camera.Current.Target;
         if (!TitleVisible && gpu.Characters is { } near) near.LoadingFocus = new Vector2(focus.X, focus.Z);
@@ -210,9 +211,12 @@ sealed partial class GameHost
     /// <summary>The host's side of a new world: the camera focus sent again, the first tick (it publishes the snapshot), the draw list and the mouse state dropped, the menus closed.</summary>
     void SettleNewWorld()
     {
+        simulationWeather = LocalSession.World.Systems.OfType<Meitou.Runtime.SimulationWeather>().FirstOrDefault();
+        LocalSession.World.GameHours = session.Clock.TotalHours;
+        LocalSession.World.Daytime = session.Clock.IsDaytime;
         sentFocus = false;
         SendFocus();
-        session.World.RunTick();
+        LocalSession.World.RunTick();
         indexedFor = null;
         previousById.Clear();
         player.Reset();

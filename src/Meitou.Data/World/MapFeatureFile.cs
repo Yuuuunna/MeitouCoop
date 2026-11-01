@@ -22,7 +22,7 @@ public sealed class MapFeatureFile
     public IEnumerable<(ZoneCoordinate Zone, MapFeature Feature)> All() =>
         Zones.SelectMany((list, i) => list.Select(f => (ZoneOf(i), f)));
 
-    public static MapFeatureFile Open(GameInstall install) => Read(File.ReadAllBytes(Path.Combine(install.DataDirectory, RelativePath)));
+    public static MapFeatureFile Open(GameInstall install) => Read(File.ReadAllBytes(GameFiles.Resolve(Path.Combine(install.DataDirectory, RelativePath))));
 
     public static MapFeatureFile Read(byte[] data)
     {

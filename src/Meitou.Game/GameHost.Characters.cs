@@ -26,10 +26,11 @@ sealed partial class GameHost
     /// <summary>Tells the world where the camera looks, when it has moved enough to matter (the zones follow it).</summary>
     void SendFocus(Vector3? at = null)
     {
+        if (session.IsRemote) return; // server observation is anchored to authorized roles, never to the free camera
         if (IsDuel) return;   // the duel's worlds keep the focus on its spot (DuelSetup), wherever the camera flies
         var target = at ?? session.Camera.Current.Target;   // the cinema's camera while it holds the view
         if (sentFocus && Vector3.DistanceSquared(target, lastFocus) < 50 * 50) return;
-        session.World.Commands.Enqueue(new Meitou.Simulation.FocusCommand(target) { Tick = session.World.Tick });
+        LocalSession.World.Commands.Enqueue(new Meitou.Simulation.FocusCommand(target) { Tick = LocalSession.World.Tick });
         lastFocus = target;
         sentFocus = true;
     }
@@ -214,6 +215,13 @@ sealed partial class GameHost
 
     void FillDrawListCore(CharacterDrawList list)
     {
+        if (player.OnlineEditor)
+        {
+            if (player.OnlineEditorAppearance is { } look && player.EditorFocus is { } focus)
+                list.Add(new CharacterInstance(DrawKey(focus.Character), look, Vector3.Zero, 0,
+                    player.EditorIdle(focus.Character) is { } stance ? EditorStancePoses(focus.Character, stance) : []) { FullRateAnimation = true });
+            return;
+        }
         var current = session.CurrentSnapshot;
         IndexPrevious();
         float alpha = session.SimulationAlpha;

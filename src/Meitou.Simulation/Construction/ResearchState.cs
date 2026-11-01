@@ -52,6 +52,8 @@ public sealed class ResearchState
         Changed = true;
     }
 
+    internal void RestoreVersion(long version, bool changed) => (Version, Changed) = (version, changed);
+
     /// <summary>Replaces the completed research (and clears the queue).</summary>
     public void Set(GameDatabase db, IEnumerable<string> ids) => Set(db, ids, [], [], []);
 

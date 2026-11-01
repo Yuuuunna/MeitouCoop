@@ -41,6 +41,8 @@ public struct CharacterHot
 /// <summary>The rest of a character: things few systems touch per tick (identity, squad, path, body, inventory, combat state; the AI blackboard is still to come).</summary>
 public sealed class CharacterCold
 {
+    /// <summary>Persistent world identity when registered; retained when a stored character is unloaded and restored.</summary>
+    public EntityId Entity { get; internal set; }
     public string Name { get; set; } = "";
     public int Faction { get; set; }
     /// <summary>What the renderer needs to draw the character; a character without one is simulated but not published in snapshots.</summary>
@@ -214,6 +216,8 @@ public sealed class CharacterCold
     public float TargetFleeingTime { get; set; }
     /// <summary>Its last path request came back with no way there (set by the <see cref="MovementSystem"/>, taken by the <see cref="PursuitSystem"/>).</summary>
     public bool PathFailed { get; set; }
+    public bool NavigationWaiting { get; set; }
+    public long NavigationRetryTick { get; set; }
     /// <summary>
     /// Fight targets it found no path to and the tick until which its target choice leaves them out (<c>AITaskSytem::notifyPathImpossible</c> stores 20 in its
     /// <c>pathFailures</c>, <c>isPathImpossible</c> skips them; docs/game/combat.md "Attack slots and circling"). Not saved.
@@ -378,6 +382,8 @@ public sealed class CharacterCold
     public string? OperateSite { get; set; }
     /// <summary>The progress (0 to 1) of the <see cref="CharacterTask.Prospect"/> task (null: not prospecting). Serial phases only; not saved. Hashed only while set.</summary>
     public float? Prospecting { get; set; }
+    internal PlayerId ProspectPlayer { get; set; }
+    internal CharacterControl? ProspectControl { get; set; }
     /// <summary>The storage an operator walks to, to store its machine's output or fetch an input (<see cref="Production.ProductionSystem"/> "Hauling"; null: at its machine). Not saved. Hashed only while set.</summary>
     public string? HaulSite { get; set; }
     /// <summary>The ITEM a hauling operator fetches from <see cref="HaulSite"/>; null: it stores what it carries.</summary>
@@ -418,6 +424,10 @@ public sealed class CharacterTable
     CharacterHot[] next;
     CharacterCold?[] cold;
     readonly Stack<int> free = [];
+    readonly Dictionary<EntityId, CharacterId> entities = [];
+    readonly Dictionary<CharacterId, bool> recentRemovals = [];
+    readonly Queue<CharacterId> removalOrder = [];
+    internal Action<CharacterCold, bool>? EntityRemoved;
     int highWater;
     bool inTick;
     TablePhase phase = TablePhase.Outside;
@@ -442,6 +452,8 @@ public sealed class CharacterTable
     public ReadOnlySpan<CharacterHot> Previous => previous.AsSpan(0, highWater);
     /// <summary>The state being computed, same slots. A phase writes only the slots of its own partition.</summary>
     public Span<CharacterHot> Next => next.AsSpan(0, highWater);
+    /// <summary>Authoritative read state: Next during a tick, committed Previous at a host boundary.</summary>
+    public ReadOnlySpan<CharacterHot> Current => (inTick ? next : previous).AsSpan(0, highWater);
 
     public CharacterCold? Cold(int slot) => cold[slot];
 
@@ -452,11 +464,30 @@ public sealed class CharacterTable
     public bool IsAlive(CharacterId id) =>
         id.Slot >= 0 && id.Slot < highWater && previous[id.Slot].Alive && previous[id.Slot].Generation == id.Generation;
 
-    /// <summary>Finds the slot of <paramref name="id"/> in the state being computed (for the commit, which sees removals and spawns of this tick).</summary>
+    /// <summary>Finds the id in Next during a tick, or the committed state at a host boundary, including recent spawns/removals.</summary>
     public bool TryResolveNext(CharacterId id, out int slot)
     {
         slot = id.Slot;
-        return slot >= 0 && slot < highWater && next[slot].Alive && next[slot].Generation == id.Generation;
+        var current = inTick ? next : previous;
+        return slot >= 0 && slot < highWater && current[slot].Alive && current[slot].Generation == id.Generation;
+    }
+
+    public bool TryResolveEntity(EntityId entity, out CharacterId character)
+    {
+        character = CharacterId.None;
+        if (entity.IsNone || !entities.TryGetValue(entity, out var live) || !TryResolveNext(live, out _)) return false;
+        character = live;
+        return true;
+    }
+
+    internal void BindEntity(CharacterId character, EntityId entity)
+    {
+        if (phase == TablePhase.Parallel) throw new InvalidOperationException("Entity identities are assigned in serial phases.");
+        if (entity.IsNone || !TryResolveNext(character, out int slot)) throw new InvalidOperationException("A live character and nonempty identity are required.");
+        if (!cold[slot]!.Entity.IsNone && cold[slot]!.Entity != entity) throw new InvalidOperationException("A character identity cannot change.");
+        if (entities.TryGetValue(entity, out var existing) && existing != character) throw new InvalidOperationException("The identity is already loaded.");
+        cold[slot]!.Entity = entity;
+        entities[entity] = character;
     }
 
     internal TablePhase Phase
@@ -485,12 +516,13 @@ public sealed class CharacterTable
     {
         ArgumentNullException.ThrowIfNull(cold);
         if (phase == TablePhase.Parallel) throw new InvalidOperationException("characters are spawned in the serial phases only");
+        if (!cold.Entity.IsNone && entities.ContainsKey(cold.Entity)) throw new InvalidOperationException("The character identity is already loaded.");
         int slot;
         int generation;
         if (free.Count > 0)
         {
             slot = free.Pop();
-            generation = next[slot].Generation + 1;
+            generation = Current[slot].Generation + 1;
         }
         else
         {
@@ -507,24 +539,36 @@ public sealed class CharacterTable
         // Outside a tick there is no "last tick" to keep apart from the new one.
         if (!inTick) previous[slot] = state;
         this.cold[slot] = cold;
+        if (!cold.Entity.IsNone) entities.Add(cold.Entity, new CharacterId(slot, generation));
         return new CharacterId(slot, generation);
     }
 
     /// <summary>The id the next <see cref="Spawn"/> will give (serial phases), so a character's seeded body can be made before it is added.</summary>
-    public CharacterId PeekNextId() => free.Count > 0 ? new CharacterId(free.Peek(), next[free.Peek()].Generation + 1) : new CharacterId(highWater, 0);
+    public CharacterId PeekNextId() => free.Count > 0 ? new CharacterId(free.Peek(), Current[free.Peek()].Generation + 1) : new CharacterId(highWater, 0);
 
     /// <summary>Removes a character in the state being computed; false when <paramref name="id"/> is not alive there. Serial phases only.</summary>
-    public bool Remove(CharacterId id)
+    public bool Remove(CharacterId id, bool unloaded = false)
     {
         if (phase is TablePhase.Parallel or TablePhase.Inputs or TablePhase.Schedule)
             throw new InvalidOperationException("characters are removed in the commit or the slow world only (a phase reads them as alive)");
         if (!TryResolveNext(id, out int slot)) return false;
+        if (!inTick) next[slot] = previous[slot];
         next[slot].Alive = false;
         if (!inTick) previous[slot].Alive = false;
+        if (cold[slot] is { } removed)
+        {
+            if (!removed.Entity.IsNone) entities.Remove(removed.Entity);
+            EntityRemoved?.Invoke(removed, unloaded);
+        }
         cold[slot] = null;
         free.Push(slot);
+        recentRemovals.Add(id, !unloaded); removalOrder.Enqueue(id);
+        if (removalOrder.Count > 8192) recentRemovals.Remove(removalOrder.Dequeue());
         return true;
     }
+
+    /// <summary>Bounded transient evidence for network departures. Missing/expired evidence means loss of scope, never inferred destruction.</summary>
+    public bool ConfirmedDestroyed(CharacterId id) => recentRemovals.GetValueOrDefault(id);
 
     /// <summary>
     /// Puts a character at <paramref name="position"/> facing <paramref name="yaw"/>, standing still with no path (a teleport: into a cage). Serial phases or setup only; outside a
@@ -533,6 +577,7 @@ public sealed class CharacterTable
     public void Place(int slot, Vector3 position, float yaw)
     {
         if (phase == TablePhase.Parallel) throw new InvalidOperationException("characters are placed in the serial phases only");
+        if (!inTick) next[slot] = previous[slot];
         ref var n = ref next[slot];
         n.Position = position;
         n.Yaw = yaw;
@@ -585,6 +630,7 @@ public sealed class CharacterTable
             if (c.Task == (byte)CharacterTask.Follow) { hasher.Add(k.FollowHeading); hasher.Add(k.FollowSpeed); }
             hasher.Add(k.Path.Length);
             hasher.Add(k.PathRequest);
+            if (k.NavigationWaiting) { hasher.Add(0x4E617657); hasher.Add(k.NavigationRetryTick); }
             hasher.Add(k.IsPlayer);
             hasher.Add(k.OrderQueue.Count);
             foreach (var q in k.OrderQueue) hasher.Add(q);
@@ -651,7 +697,12 @@ public sealed class CharacterTable
                 if (k.FetchRecord is { } fetch) { hasher.Add(0x46657463); hasher.Add(Rng.StableHash(fetch)); hasher.Add(Rng.StableHash(k.FetchSite ?? "")); hasher.Add(k.FetchItem ?? 0); }
             }
             if (k.OperateSite is { } machine) { hasher.Add(0x4F706572); hasher.Add(Rng.StableHash(machine)); }
-            if (k.Prospecting is { } prospected) { hasher.Add(0x50726F73); hasher.Add(prospected); }
+            if (k.Prospecting is { } prospected)
+            {
+                hasher.Add(0x50726F73); hasher.Add(prospected);
+                if (k.ProspectControl is { } surveyGrant)
+                { hasher.Add(0x53757276); hasher.Add(surveyGrant.Player.Value); hasher.Add(surveyGrant.Entity.Value); hasher.Add(surveyGrant.Faction); hasher.Add(surveyGrant.Revision); }
+            }
             if (k.HaulSite is { } haul) { hasher.Add(0x4861756C); hasher.Add(Rng.StableHash(haul)); hasher.Add(Rng.StableHash(k.HaulFetch ?? "")); }
             if (k.HaulTo is { } haulTo) hasher.Add(Rng.StableHash(haulTo));
             if (k.Implicit is { } implicitJob) { hasher.Add(0x496D706C); hasher.Add((int)implicitJob); hasher.Add((int)k.ResumeTask); }

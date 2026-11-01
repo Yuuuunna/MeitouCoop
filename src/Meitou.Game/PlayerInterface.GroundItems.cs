@@ -51,7 +51,7 @@ sealed partial class PlayerInterface
     bool GroundItemClick(Vector2 p)
     {
         if (SelectedIds().Count == 0 || PickGroundItem(p) is not { } item) return false;
-        void Quick() => Say(new Meitou.Simulation.Items.PickUpItemOrder([], item) { Tick = session.World.Tick });
+        void Quick() => Say(new Meitou.Simulation.Items.PickUpItemOrder([], item) { Tick = session.CommandTick });
         if (session.CurrentSnapshot.GroundItems.FirstOrDefault(g => g.Id == item) is not { Name: { } name } g
             || !ContextPressOn(p, at => Menu(name, at, [(Stealing(g) ? "Steal" : "Pick Up", Quick)]), Quick)) Quick();
         return true;
@@ -108,7 +108,7 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>Picking the item up would be stealing it: its owner's faction (<see cref="Meitou.Simulation.Items.GroundItem.OwnedBy"/>) is not the player's.</summary>
-    bool Stealing(Meitou.Simulation.Items.GroundItemSnapshot g) => g.OwnedBy >= 0 && g.OwnedBy != session.World.Player.Faction;
+    bool Stealing(Meitou.Simulation.Items.GroundItemSnapshot g) => g.OwnedBy >= 0 && g.OwnedBy != session.ActiveFaction;
 
     /// <summary>Whether an ITEM record is an artifact (its <c>artifact</c> field); the host sets it.</summary>
     public Func<string, bool>? ArtifactOf { get; set; }

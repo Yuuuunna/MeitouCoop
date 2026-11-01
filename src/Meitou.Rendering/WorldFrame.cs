@@ -637,6 +637,9 @@ static class WorldFrame
         public readonly List<FogVolumes.EffectFog> EffectFogs = [];
         /// <summary>The weather's particle effects (null while there are none: a clear weather, or <c>--no-particles</c>); <see cref="EnsureParticles"/> makes it.</summary>
         public ParticleRenderer? Particles;
+        public WeatherEffectFrame? AuthorityEffects;
+        public GameDatabase? EffectContent;
+        public object? EffectWorldIdentity;
         /// <summary>The movement marker the game interface shows after a ground move order (null in the viewer, or without <c>position.mesh</c>).</summary>
         public MarkerRenderer? Markers;
         /// <summary>The blood decals on the ground (null in the viewer, or with the game's <c>Blood</c> setting off) and the host's decals they draw (docs/game/blood-decals.md).</summary>
@@ -760,8 +763,9 @@ static class WorldFrame
     {
         if (gpu.Weather is not { } weather || gpu.MakeParticles is null) return;
         var input = weather.EffectInput();
-        if (input.Effects.Count == 0 && gpu.Particles is null) return;
+        if (input.Effects.Count == 0 && gpu.AuthorityEffects?.Nodes.Count is not > 0 && gpu.Particles is null) return;
         var particles = gpu.Particles ??= gpu.MakeParticles();
+        particles.SetAuthorityEffects(gpu.AuthorityEffects, gpu.EffectContent, gpu.EffectWorldIdentity);
         // The effects are placed in the camera's weather region: the area follows the cell the camera is in.
         if (gpu.WeatherAreas is { } areas)
         {

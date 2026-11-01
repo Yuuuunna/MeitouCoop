@@ -17,7 +17,7 @@ sealed partial class PlayerInterface
     /// <summary>The outpost the panel shows (<see cref="PlayerTown.Number"/>), 0 for none.</summary>
     int shownTown;
     /// <summary>What was typed in the name box and is not yet accepted (null: nothing), and for which outpost.</summary>
-    (int Town, string Name)? townDraft;
+    (int Town, string Name, int Faction, ulong Revision)? townDraft;
 
     /// <summary>The town panel's subtree as a layout of its own, on the HUD's layer and shown (the HUD layout hides it until the code shows it).</summary>
     static MyGuiLayout TownPanelLayout(MyGuiLayout hud)
@@ -38,7 +38,7 @@ sealed partial class PlayerInterface
         var pivot = session.Camera.Current.Target;
         static bool Within(OutpostSnapshot t, Vector3 p) => (t.Position.X - p.X) * (t.Position.X - p.X) + (t.Position.Z - p.Z) * (t.Position.Z - p.Z) <= t.Radius * t.Radius;
         var town = outposts.FirstOrDefault(t => t.Number == shownTown) is { } kept && Within(kept, pivot) ? kept
-            : outposts.Where(t => t.Owner == session.World.Player.Faction)
+            : outposts.Where(t => t.Owner == session.ActiveFaction)
                 .MinBy(t => (t.Position.X - pivot.X) * (t.Position.X - pivot.X) + (t.Position.Z - pivot.Z) * (t.Position.Z - pivot.Z)) is { } nearest && Within(nearest, pivot) ? nearest : null;
         if (!hud) town = null;
         shownTown = town?.Number ?? 0;
@@ -54,7 +54,7 @@ sealed partial class PlayerInterface
     void BindTownScreen(UiBindings b)
     {
         if (session.CurrentSnapshot.Outposts.FirstOrDefault(t => t.Number == shownTown) is not { } town) return;
-        bool own = town.Owner == session.World.Player.Faction;
+        bool own = town.Owner == session.ActiveFaction;
         if (own) { b.Disabled.Remove(TownPublicTick); b.Actions[TownPublicTick] = TownPublicTick; }
         else b.Disabled.Add(TownNameBox);
         b.Properties[TownPublicTick] = new Dictionary<string, string> { ["StateSelected"] = town.Public ? "true" : "false", ["Checked"] = town.Public ? "true" : "false" };
@@ -75,11 +75,13 @@ sealed partial class PlayerInterface
     /// <summary>A text change in the name box is kept as the draft; the tick flips Open to public (<c>FUN_140721e50</c>, with <c>General_Click</c>).</summary>
     void TownAction(MyGuiEvent e)
     {
-        if (e.Widget == TownNameBox && e.Action == "text" && shownTown > 0) townDraft = (shownTown, e.Text);
+        if (e.Widget == TownNameBox && e.Action == "text" && session.CurrentSnapshot.Outposts.FirstOrDefault(t => t.Number == shownTown) is { } edited)
+            townDraft = townDraft is { } draft && draft.Town == shownTown ? (draft.Town, e.Text, draft.Faction, draft.Revision)
+                : (shownTown, e.Text, edited.Owner, edited.Revision);
         else if (e.Widget == TownPublicTick && session.CurrentSnapshot.Outposts.FirstOrDefault(t => t.Number == shownTown) is { } town)
         {
             Sound("General_Click");
-            Say(new SetTownPublic(town.Number, !town.Public) { Tick = session.World.Tick });
+            Say(new SetTownPublic(town.Number, !town.Public) { Tick = session.CommandTick, Faction = town.Owner, TownRevision = town.Revision });
         }
     }
 
@@ -88,6 +90,6 @@ sealed partial class PlayerInterface
     {
         if (townDraft is not { } draft || faithfulScreens.Focus is { Screen: TownScreen, Widget: TownNameBox }) return;
         townDraft = null;
-        Say(new RenameTown(draft.Town, draft.Name) { Tick = session.World.Tick });
+        Say(new RenameTown(draft.Town, draft.Name) { Tick = session.CommandTick, Faction = draft.Faction, TownRevision = draft.Revision });
     }
 }

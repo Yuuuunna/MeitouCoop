@@ -19,7 +19,7 @@ public readonly record struct ProspectLine(string Name, float Value)
 /// What a finished prospecting found (docs/game/ui-screens.md "Prospecting"): the spot, the prospector and the window's lines. Display only: the host reads <see cref="World.Prospected"/>
 /// and opens the results window when <see cref="Serial"/> is new; nothing in the simulation reads it.
 /// </summary>
-/// <param name="Serial">1, 2, 3... one per finished prospecting of this world.</param>
+/// <param name="Serial">1, 2, 3... one per completed survey of the receiving player in this world.</param>
 /// <param name="Position">Where the prospector stood.</param>
 /// <param name="Prospector">Its name.</param>
 /// <param name="Skill">Its science stat, cut to an int (the window's "Prospector Skill").</param>

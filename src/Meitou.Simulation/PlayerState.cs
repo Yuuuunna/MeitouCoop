@@ -7,16 +7,43 @@ namespace Meitou.Simulation;
 /// </summary>
 public sealed class PlayerState
 {
+    public PlayerMessageHistory Messages { get; } = new();
+    volatile Production.ProspectReport? prospected;
+    /// <summary>Last completed survey for this player. Presentation only; not saved or hashed.</summary>
+    public Production.ProspectReport? Prospected { get => prospected; internal set => prospected = value; }
+    readonly FactionStates factions;
+    readonly FactionState unassigned = new(-1);
+    FactionState faction;
+
+    public PlayerState() : this(new FactionStates()) { }
+
+    internal PlayerState(FactionStates factions)
+    {
+        this.factions = factions;
+        faction = unassigned;
+    }
+
+    /// <summary>The resources of the player's current faction; no resources move when membership changes.</summary>
+    public FactionState FactionState => faction;
+
     /// <summary>The player's faction, a position in the world's faction list (-1 before a game starts).</summary>
-    public int Faction { get; set; } = -1;
+    public int Faction
+    {
+        get => faction.Index;
+        set
+        {
+            if (value < -1) throw new ArgumentOutOfRangeException(nameof(value));
+            faction = value < 0 ? unassigned : factions.GetOrCreate(value);
+        }
+    }
     public bool Exists => Faction >= 0;
     /// <summary>
     /// The player faction's name once renamed (the faction tab's name box, <see cref="RenameFactionCommand"/>; docs/game/ui-screens.md "Faction tab"); null: the faction's own name from the data
     /// ("Nameless"). Saved as the CAMERA string <c>pfaction name</c>, the GAMESTATE_FACTION name and the player platoons' faction name. Hashed only while set.
     /// </summary>
-    public string? FactionName { get; set; }
+    public string? FactionName { get => faction.Name; set => faction.Name = value; }
     /// <summary>Money in cats (NEW_GAME_STARTOFF <c>money</c>; how it is spent is the economy stage).</summary>
-    public long Money { get; set; }
+    public long Money { get => faction.Money; set => faction.Money = value; }
     /// <summary>The selected characters, in the order they were selected.</summary>
     public List<CharacterId> Selection { get; } = [];
     /// <summary>
@@ -39,9 +66,12 @@ public sealed class PlayerState
     public CharacterId ContainerOpener { get; set; } = CharacterId.None;
     public string? OpeningContainer { get; set; }
     public CharacterId ContainerWalker { get; set; } = CharacterId.None;
+    internal Items.ContainerAccess? ContainerAccess { get; set; }
+    public ulong ContainerSessionId => ContainerAccess?.Id ?? 0;
     /// <summary>The downed (or the player's own) character whose inventory window is open and who opened it (<see cref="Carrying.OpenLootOrder"/>), and the one a looter is still walking to. Display only, as the container.</summary>
     public CharacterId OpenLoot { get; set; } = CharacterId.None;
     public CharacterId LootOpener { get; set; } = CharacterId.None;
+    public long LootSessionId { get; set; }
     public CharacterId OpeningLoot { get; set; } = CharacterId.None;
     public CharacterId LootWalker { get; set; } = CharacterId.None;
     /// <summary>The door (<see cref="Locks.Fixture.Id"/>) a character is walking to open or close (<see cref="Locks.DoorOrder"/>), and who. Not hashed and not saved, as the container walk.</summary>
@@ -116,21 +146,23 @@ public sealed class PlayerState
     }
 
     /// <summary>Drops characters that are gone (serial phases, after the commit).</summary>
-    internal void Prune(CharacterTable table)
+    internal void Prune(CharacterTable table, Func<CharacterId, bool>? canControl = null)
     {
         bool hadSelection = Selection.Count > 0;
-        Selection.RemoveAll(c => !table.TryResolveNext(c, out _));
+        Selection.RemoveAll(c => !table.TryResolveNext(c, out _) || canControl is not null && !canControl(c));
         // Somebody stays selected (the original keeps one of the player's characters selected): when every selected one is gone or dead, the first living one is.
         if (hadSelection && Exists && !Selection.Any(c => table.TryResolveNext(c, out int slot) && table.Cold(slot) is { DiedTick: < 0 }))
             for (int i = 0; i < table.HighWater; i++)
-                if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: true, DiedTick: < 0 })
+                if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: true, DiedTick: < 0 } candidate
+                    && (canControl is not null ? canControl(new CharacterId(i, table.Next[i].Generation)) : candidate.Faction == Faction))
                 {
                     Selection.Clear();
                     Selection.Add(new CharacterId(i, table.Next[i].Generation));
+                    if (canControl is not null) { Faction = candidate.Faction; Squad = candidate.SquadId; }
                     break;
                 }
         if (!Inspected.IsNone && !table.TryResolveNext(Inspected, out _)) Inspected = CharacterId.None;
-        InventoryShown.RemoveAll(c => !table.TryResolveNext(c, out _));
+        InventoryShown.RemoveAll(c => !table.TryResolveNext(c, out _) || canControl is not null && !canControl(c));
     }
 
     internal void Hash(ref StateHasher h)
@@ -158,7 +190,7 @@ public sealed class PlayerState
 /// The faction tab's rename (<c>FUN_1404923d0</c>, docs/game/ui-screens.md "Faction tab"): a name no faction has yet becomes the player faction's name; a taken one is refused with
 /// "This faction name already exists" (an empty name is refused too, <b>engine choice</b>: the original's empty-name rule is <b>Unknown</b>).
 /// </summary>
-public sealed record RenameFactionCommand(string Name) : SimCommand;
+public sealed record RenameFactionCommand(string Name) : FactionCommand;
 
 /// <summary>Applies the player's selection and stop commands (step 1 of the tick). Move orders are the movement system's.</summary>
 public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSystem
@@ -172,15 +204,18 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     public string? PlayerFactionName(World world) =>
         world.Player.FactionName ?? (data is not null && world.Player.Faction >= 0 && world.Player.Faction < data.Factions.Count ? data.Factions[world.Player.Faction].Name : null);
 
-    void RenameFaction(World world, string text)
+    void RenameFaction(World world, RenameFactionCommand command)
     {
-        var player = world.Player;
-        string name = text.Trim();
+        if (world.CommandFaction(command, FactionPermission.ManageFaction) is not { Index: >= 0 } faction) return;
+        string name = command.Name.Trim();
         if (name.Length > FactionNameLength) name = name[..FactionNameLength];
-        if (!player.Exists || name.Length == 0 || name == PlayerFactionName(world)) return;
+        string? Original(int index) => data is not null && (uint)index < (uint)data.Factions.Count ? data.Factions[index].Name : null;
+        if (name.Length == 0 || name == (faction.Name ?? Original(faction.Index))) return;
         // FUN_1402e7950: any other faction already named so. (The data's names; the player's own old name is free again.)
-        if (data is not null && data.Factions.Where((f, i) => i != player.Faction).Any(f => f.Name == name)) { world.Post("This faction name already exists"); return; }
-        player.FactionName = name == data?.Factions[player.Faction].Name ? null : name;
+        var indices = (data is not null ? Enumerable.Range(0, data.Factions.Count) : Enumerable.Empty<int>()).Concat(world.Factions.All.Select(f => f.Index)).Distinct();
+        if (indices.Any(i => i != faction.Index && (world.Factions.Find(i)?.Name ?? Original(i)) == name))
+        { world.Post(command.Issuer ?? PlayerId.Local, "This faction name already exists"); return; }
+        faction.Name = name == Original(faction.Index) ? null : name;
     }
 
     /// <summary>The characters a right-click order goes to (an empty list: the selection), null for any other command.</summary>
@@ -197,12 +232,12 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     /// <c>playerWantsMeToGetUp</c> (Character <c>+0xec</c>, docs/game/ragdolls.md "Staying low"): the order dispatch sets it on each selected character it reaches; one playing dead gets
     /// up (staying low when sneaking), one still getting up stands rather than staying low. Internal orders (an empty selection, or none of it) leave it.
     /// </summary>
-    static void WantsToGetUp(World world, IReadOnlyList<CharacterId> ordered)
+    static void WantsToGetUp(World world, PlayerState player, SimCommand command, IReadOnlyList<CharacterId> ordered)
     {
         var table = world.Characters;
-        foreach (var id in ordered.Count > 0 ? ordered : world.Player.Selection)
+        foreach (var id in world.CommandCharacters(command, ordered))
         {
-            if (!world.Player.Selection.Contains(id) || !table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true, Medical: { } medical } cold) continue;
+            if (command.Issuer is null && !player.Selection.Contains(id) || !table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true, Medical: { } medical } cold) continue;
             if (medical.PlayingDead)
             {
                 bool low = Orders.Has(cold, CharacterOrders.Sneak);
@@ -217,14 +252,14 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     public void Inputs(World world, IReadOnlyList<SimCommand> commands)
     {
         var table = world.Characters;
-        var player = world.Player;
         foreach (var command in commands)
         {
-            if (Ordered(command) is { } ordered) WantsToGetUp(world, ordered);
+            if (world.CommandPlayer(command) is not { } player) continue;
+            if (Ordered(command) is { } ordered) WantsToGetUp(world, player, command, ordered);
             switch (command)
             {
                 case SelectCommand select:
-                    var selectable = select.Characters.Where(id =>
+                    var selectable = (command.Issuer is null ? select.Characters : world.CommandCharacters(select, select.Characters)).Where(id =>
                         table.TryResolveNext(id, out int slot) && table.Cold(slot)!.IsPlayer).ToArray();
                     if (selectable.Length == 0) break;
                     // Selecting meets the owner's faction (FUN_1407f7f20), here the player's.
@@ -235,8 +270,11 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                     foreach (var id in selectable)
                         if (!player.Selection.Contains(id)) player.Selection.Add(id);
                     // Selecting someone of another squad shows that squad (engine reading of the original's cached squad).
-                    if (!select.Additive && table.TryResolveNext(selectable[0], out int first) && world.Squads.Find(table.Cold(first)!.SquadId) is { } theirs
-                        && theirs.Faction == player.Faction) player.Squad = theirs.Id;
+                    if (!select.Additive && table.TryResolveNext(selectable[0], out int first) && world.Squads.Find(table.Cold(first)!.SquadId) is { } theirs)
+                    {
+                        if (command.Issuer is not null) player.Faction = theirs.Faction;
+                        if (theirs.Faction == player.Faction) player.Squad = theirs.Id;
+                    }
                     break;
                 case SquadCommand squadCommand:
                     SquadManagement.Apply(world, data, squadCommand);
@@ -254,9 +292,8 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                 case Items.OpenContainerOrder open:
                     OpenContainerInput(world, open);
                     break;
-                case Items.CloseContainer:
-                    player.OpenContainer = player.OpeningContainer = null;
-                    player.OpenLoot = player.OpeningLoot = CharacterId.None;
+                case Items.CloseContainer close:
+                    CloseContainerInput(world, close);
                     break;
                 case InspectBuildingCommand building:
                     player.InspectedBuilding = building.Instance;
@@ -265,7 +302,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                         player.Meet((fixtures.FirstOrDefault(f => f.Kind == Locks.FixtureKind.Door) ?? fixtures.FirstOrDefault())?.Owner ?? -1);
                     break;
                 case StopCommand stop:
-                    foreach (var id in stop.Characters.Count > 0 ? stop.Characters : player.Selection.ToArray())
+                    foreach (var id in world.CommandCharacters(stop, stop.Characters))
                     {
                         if (!table.TryResolveNext(id, out int slot) || !table.Cold(slot)!.IsPlayer) continue;
                         MovementSystem.Stop(table, slot);
@@ -281,14 +318,19 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                 case Items.QuickMoveItem quick:
                     QuickMove(world, quick);
                     break;
+                case Items.TransferInventoryItem transfer:
+                    TransferInventory(world, transfer);
+                    break;
                 case RenameFactionCommand rename:
-                    RenameFaction(world, rename.Name);
+                    RenameFaction(world, rename);
                     break;
                 case SquadAiCommand option:
+                    if (!SquadAiKeys.Keys.Any(pair => pair.Option == option.Option)) break;
                     player.SquadAi = option.On ? player.SquadAi | option.Option : player.SquadAi & ~option.Option;
                     break;
                 case SquadFormationCommand formation:
-                    SquadAiKeys.SetFormation(world, player.Faction, (int)formation.Formation, data?.Factions);
+                    if (Enum.IsDefined(formation.Formation) && world.CommandFaction(formation, FactionPermission.ManageSquads) is { } formed)
+                        SquadAiKeys.SetFormation(world, formed.Index, (int)formation.Formation, data?.Factions);
                     break;
                 case OrdersCommand or RunSpeedCommand or StandUpCommand:
                     Orders.Apply(world, command);
@@ -306,8 +348,9 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                     PickUpInput(world, pick);
                     break;
                 case Items.ArrangeInventory arrange:
-                    if (table.TryResolveNext(arrange.Character, out int character) && table.Cold(character) is { IsPlayer: true, Inventory: { } carried } &&
-                        !Items.InventoryCommands.Arrange(carried)) world.Post("Cannot arrange inventory: the items do not fit.");
+                    if (world.MayOrder(arrange, arrange.Character) && table.TryResolveNext(arrange.Character, out int character)
+                        && table.Cold(character) is { IsPlayer: true, Inventory: { } carried } && world.InventoryMatches(arrange, carried)
+                        && !Items.InventoryCommands.Arrange(carried)) world.Post(arrange.Issuer ?? PlayerId.Local, "Cannot arrange inventory: the items do not fit.");
                     break;
             }
         }
@@ -316,7 +359,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     public void SlowWorld(World world)
     {
         SquadManagement.BuryDead(world, data?.Db);
-        world.Player.Prune(world.Characters);
+        world.Players.Prune();
         SquadManagement.KeepActive(world);
         PickUpWorkers(world);
         ContainerWorkers(world);
@@ -327,16 +370,18 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     void ReadMap(World world, Items.ReadMapItem read)
     {
         var table = world.Characters;
-        if (data is null || !table.TryResolveNext(read.Character, out int owner) || table.Cold(owner) is not { IsPlayer: true, Inventory: { } inventory }) return;
+        if (data is null || world.CommandPlayer(read) is not { } player || !world.MayOrder(read, read.Character)
+            || !table.TryResolveNext(read.Character, out int owner) || table.Cold(owner) is not { IsPlayer: true, Inventory: { } inventory }
+            || !world.InventoryMatches(read, inventory)) return;
         var t = read.Item;
         var item = inventory.All().ElementAtOrDefault(t.Index);
-        if (item is null || item.Record != t.Record || item.Section != t.Section || item.X != t.X || item.Y != t.Y || item.Type != Meitou.Data.Fcs.FcsRecordType.MAP_ITEM
+        if (item is null || !Matches(item, t) || item.Type != Meitou.Data.Fcs.FcsRecordType.MAP_ITEM
             || data.Db.Find(item.Record) is not { } record) return;
-        var sites = Items.MapItems.Reveals(data, record, world.Player.Towns, world.Seed);
-        if (sites.Count == 0) { world.Post("You already know all these locations, no new information can be learned."); return; }
-        foreach (int site in sites) world.Player.Know(site, TownKnowledge.Discovered | TownKnowledge.Recent);
+        var sites = Items.MapItems.Reveals(data, record, player.Towns, world.Seed);
+        if (sites.Count == 0) { world.Post(read.Issuer ?? PlayerId.Local, "You already know all these locations, no new information can be learned."); return; }
+        foreach (int site in sites) player.Know(site, TownKnowledge.Discovered | TownKnowledge.Recent);
         inventory.RemoveOne(item);
-        world.Post($"{sites.Count} location(s) added to the map.");
+        world.Post(read.Issuer ?? PlayerId.Local, $"{sites.Count} location(s) added to the map.");
     }
 }
 
@@ -377,7 +422,7 @@ public sealed record SquadAiCommand(SquadAi Option, bool On) : SimCommand;
 /// The AI tab's Follow Formation: the player faction's <c>squad formation</c> (<c>FUN_140494ce0</c> binds its combo to the FACTION record's value; the movement rebuilds the slots,
 /// as the original's change handler marks every player squad).
 /// </summary>
-public sealed record SquadFormationCommand(SquadFormation Formation) : SimCommand;
+public sealed record SquadFormationCommand(SquadFormation Formation) : FactionCommand;
 
 /// <summary>The squad AI options' CAMERA bools (<b>Verified</b>, the camera record writer <c>FUN_1403eb710</c> and reader <c>FUN_1403ebf50</c>: the byte each key holds).</summary>
 public static class SquadAiKeys
@@ -409,6 +454,8 @@ public static class SquadAiKeys
     public static void SetFormation(World world, int faction, int formation, IReadOnlyList<Meitou.Data.Gameplay.FactionData>? factions)
     {
         var list = world.FactionFormations?.ToArray() ?? factions?.Select(f => f.SquadFormation).ToArray();
+        if (list is not null && factions is not null && list.Length < factions.Count)
+            list = [.. list, .. factions.Skip(list.Length).Select(f => f.SquadFormation)];
         if (list is null || (uint)faction >= (uint)list.Length) return;
         list[faction] = formation;
         world.FactionFormations = list;

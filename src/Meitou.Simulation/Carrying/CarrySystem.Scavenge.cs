@@ -70,13 +70,16 @@ public sealed partial class CarrySystem
                 if (body.Faction != cold.Faction && d2 <= dead2) (dead, dead2) = (s, d2);
                 continue;
             }
-            if (d2 > down2 || Friendly(cold, body) || PlayerSide(world, body) && !world.Player.BanditsLoot || !ScrewsOver(world, cold, body, table.IdOf(s), memory)) continue;
+            if (d2 > down2 || Friendly(cold, body) || PlayerSide(world, body) && !BanditsMayLoot(world, body) || !ScrewsOver(world, cold, body, table.IdOf(s), memory)) continue;
             (down, down2) = (s, d2);
         }
         return dead >= 0 ? dead : down;
     }
 
-    static bool PlayerSide(World world, CharacterCold c) => c.IsPlayer || world.Player.Faction >= 0 && c.Faction == world.Player.Faction;
+    static bool PlayerSide(World world, CharacterCold c) => c.IsPlayer || world.IsPlayerFaction(c.Faction);
+
+    static bool BanditsMayLoot(World world, CharacterCold body) => world.PlayerOf(body)?.BanditsLoot
+        ?? (!world.Players.RequiresExplicitControl && world.Player.BanditsLoot);
 
     /// <summary>
     /// <c>Character::shouldIScrewThisGuyOver</c> (<c>FUN_14059a7b0</c>, <b>Observed</b>), each rule overriding the ones before: yes when either is of NPC class Bandit; no for the same class; yes for
@@ -117,7 +120,7 @@ public sealed partial class CarrySystem
         {
             cold.LiftTime = 0;
             Crimes?.NpcLooting(world, i, t, notPlayerSide || foodOnly, !HasWeapon(cold) && HasWeapon(victim));
-            if (animal && PlayerSide(world, victim)) world.Post($"{cold.Name} is butchering {victim.Name} for meat!!");
+            if (animal && PlayerSide(world, victim)) PostActor(world, t, $"{cold.Name} is butchering {victim.Name} for meat!!");
         }
         cold.LiftTime += dt;
         int death = DeathUnits(victim.Inventory!);

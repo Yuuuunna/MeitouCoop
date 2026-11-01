@@ -44,7 +44,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     /// <summary>Re-dresses a character whose worn gear the loot window moved (null: the looks and fighters stay).</summary>
     internal CharacterAssembly? Assembly { get; set; }
 
-    /// <summary>The game data, to price money taken out of a loot (<see cref="PlayerSystem.Cash(World, PopulationData?, ItemInstance, int)"/>); null: money moves as an item.</summary>
+    /// <summary>The game data, to price money taken out of a loot (<see cref="PlayerSystem.MoneyFunction"/>); null: money moves as an item.</summary>
     internal PopulationData? Data { get; set; }
     readonly BodyOptions bodyOptions = options;
     readonly List<LootEntry> loots = [];
@@ -112,8 +112,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     static bool Openable(CharacterTable table, int slot) => CanBeOpened(table.Cold(slot)!) || CanBePickpocketed(table, slot);
 
     /// <summary>Whether slot <paramref name="i"/>'s loot task is the walk of an <see cref="OpenLootOrder"/> (it opens the window instead of taking all).</summary>
-    static bool Opening(World world, int i) =>
-        world.Player.LootWalker == world.Characters.IdOf(i) && world.Player.OpeningLoot == world.Characters.Cold(i)!.CarryTarget;
+    bool Opening(World world, int i) => OpeningPlayer(world, i) is not null;
 
     /// <summary>
     /// Whether <paramref name="a"/> regards <paramref name="b"/> as friendly for the put-down KO: the same faction, or allied factions (relation 50 or more) when a table is known
@@ -128,7 +127,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         return MathF.Sqrt(dx * dx + dz * dz);
     }
 
-    static IReadOnlyList<CharacterId> Who(World world, IReadOnlyList<CharacterId> ids) => ids.Count > 0 ? ids : world.Player.Selection.ToArray();
+    static IReadOnlyList<CharacterId> Who(World world, SimCommand command, IReadOnlyList<CharacterId> ids) => world.CommandCharacters(command, ids);
 
     // ------------------------------------------------------------------ orders
 
@@ -137,32 +136,38 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         var table = world.Characters;
         foreach (var command in commands)
         {
+            if (world.CommandPlayer(command) is not { } player) continue;
             switch (command)
             {
                 case PickUpOrder order:
                     if (!table.TryResolveNext(order.Target, out int body) || !(CanBeLifted(world, table.Cold(body)!) || order.Kidnap && CanBeKidnapped(table, body))) break;
-                    if (Nearest(table, Who(world, order.Carriers), body, s => s != body && CanCarry(table.Cold(s)!)) is int carrier)
+                    if (Nearest(table, Who(world, order, order.Carriers), body, s => s != body && CanCarry(table.Cold(s)!) && (CanLiftFor(world, s, body) || order.Kidnap && CanBeKidnapped(table, body))) is int carrier)
                     {
                         Begin(table, carrier, order.Target, CharacterTask.PickUp, CharacterTask.Idle);
+                        Remember(world, carrier, order);
                         table.Cold(carrier)!.Kidnapping = order.Kidnap;
                     }
                     break;
                 case LootOrder loot:
                     if (!table.TryResolveNext(loot.Target, out int victim) || !CanBeLooted(table.Cold(victim)!)) break;
-                    if (Nearest(table, Who(world, loot.Looters), victim, s => s != victim && table.Cold(s) is { Medical.Incapacitated: false, Inventory: not null } c && c.CarriedBy.IsNone) is int looter)
+                    if (Nearest(table, Who(world, loot, loot.Looters), victim, s => s != victim && table.Cold(s) is { Medical.Incapacitated: false, Inventory: not null } c && c.CarriedBy.IsNone) is int looter)
                     {
-                        if (world.Player.LootWalker == table.IdOf(looter)) world.Player.OpeningLoot = CharacterId.None;
+                        if (player.LootWalker == table.IdOf(looter)) player.OpeningLoot = CharacterId.None;
                         LeaveFight(world, looter);
                         Begin(table, looter, loot.Target, CharacterTask.Loot, CharacterTask.Idle);
+                        Remember(world, looter, loot);
                     }
                     break;
                 case OpenLootOrder open:
                     if (!table.TryResolveNext(open.Target, out int body2) || !Openable(table, body2)) break;
-                    if (Nearest(table, Who(world, open.Looters), body2, s => s != body2 && table.Cold(s) is { Medical.Incapacitated: false, Inventory: not null } c && c.CarriedBy.IsNone) is int opener)
+                    if (Nearest(table, Who(world, open, open.Looters), body2, s => s != body2 && OpenableFor(world, s, body2) && table.Cold(s) is { Medical.Incapacitated: false, Inventory: not null } c && c.CarriedBy.IsNone) is int opener)
                     {
                         LeaveFight(world, opener);
                         Begin(table, opener, open.Target, CharacterTask.Loot, CharacterTask.Idle);
-                        (world.Player.OpenLoot, world.Player.OpeningLoot, world.Player.LootWalker) = (CharacterId.None, open.Target, table.IdOf(opener));
+                        Remember(world, opener, open);
+                        player.LootSessionId++;
+                        seenLoot.Remove(open.Issuer ?? PlayerId.Local);
+                        (player.OpenLoot, player.OpeningLoot, player.LootWalker) = (CharacterId.None, open.Target, table.IdOf(opener));
                     }
                     break;
                 case TakeLootItem take:
@@ -171,24 +176,27 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
                 case PutLootItem put:
                     PutLoot(world, put);
                     break;
-                case CloseContainer:
-                    world.Player.OpenLoot = world.Player.OpeningLoot = CharacterId.None;
+                case CloseLoot close:
+                    if (close.Issuer is not null && (close.SessionId != player.LootSessionId || close.SessionId <= 0
+                        || close.Actor != player.LootOpener || close.Target != player.OpenLoot)) break;
+                    player.OpenLoot = player.OpeningLoot = CharacterId.None;
+                    player.LootSessionId++;
                     break;
                 case StealthKoOrder ko:
                     BeginKnockOut(world, ko);
                     break;
                 case PutDownOrder put:
-                    foreach (var id in Who(world, put.Carriers))
-                        if (table.TryResolveNext(id, out int slot)) BeginPutDown(world, slot);
+                    foreach (var id in Who(world, put, put.Carriers))
+                        if (table.TryResolveNext(id, out int slot) && BeginPutDown(world, slot)) Remember(world, slot, put);
                     break;
                 case RescueJobCommand job:
                 {
                     var taken = job.Job ? null : Lifting(table);
-                    foreach (var id in Who(world, job.Characters))
+                    foreach (var id in Who(world, job, job.Characters))
                     {
                         if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold) continue;
                         if (taken is null) Production.PermaJobs.Add(cold, Meitou.Data.Gameplay.Ai.TaskType.FIND_AND_RESCUE_IF_THERES_BEDS, Production.PermaJob.Untargeted(Meitou.Data.Gameplay.Ai.TaskType.FIND_AND_RESCUE_IF_THERES_BEDS));
-                        else if (Free(table, slot)) RescueSomeone(world, slot, taken);
+                        else if (Free(table, slot) && RescueSomeone(world, slot, taken)) Remember(world, slot, job);
                     }
                     break;
                 }
@@ -202,6 +210,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         var table = world.Characters;
         if (!table.TryResolveNext(body, out int b) || b == carrier || table.Cold(carrier) is not { } c || !CanCarry(c) || !CanBeLifted(table.Cold(b)!)) return false;
         Begin(table, carrier, body, CharacterTask.PickUp, resume);
+        RememberJob(world, carrier);
         return true;
     }
 
@@ -304,6 +313,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
 
     public void Schedule(World world)
     {
+        ValidateTasks(world);
         ScheduleKnockOuts(world);
         var table = world.Characters;
         var next = table.Next;
@@ -315,7 +325,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
             var cold = table.Cold(i)!;
             bool lifting = n.Task == (byte)CharacterTask.PickUp;
             if (cold.Medical is not { Incapacitated: false } || cold.InCombat || !table.TryResolveNext(cold.CarryTarget, out int t)
-                || (lifting ? cold.LiftTime < 0 && !(CanCarry(cold) && (CanBeLifted(world, table.Cold(t)!) || cold.Kidnapping && CanBeKidnapped(table, t))) : !(Opening(world, i) ? Openable(table, t) : CanBeLooted(table.Cold(t)!))))
+                || (lifting ? cold.LiftTime < 0 && !(CanCarry(cold) && (CanLiftFor(world, i, t) || cold.Kidnapping && CanBeKidnapped(table, t))) : !(Opening(world, i) ? OpenableFor(world, i, t) : CanBeLooted(table.Cold(t)!))))
             {
                 if (!(lifting && cold.LiftTime >= 0)) End(table, i);   // a lift under way is finished or broken off in SlowWorld
                 continue;
@@ -350,6 +360,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
 
     public void SlowWorld(World world)
     {
+        ValidateTasks(world);
         var table = world.Characters;
         var next = table.Next;
         float dt = world.TickSeconds;
@@ -377,7 +388,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     /// The carries a save held (<see cref="Saving.SavedCharacterLink.CarryPartner"/>; docs/formats/save.md "Carry links"): a carrier whose partner is now in the world takes it up again at
     /// once, without the lift. One waits while its partner is not loaded (the original's deferred link, <c>FUN_140797ec0</c>); either one dead or gone drops the link.
     /// </summary>
-    void RestoreLinks(World world)
+    internal void RestoreLinks(World world)
     {
         var table = world.Characters;
         var next = table.Next;
@@ -385,6 +396,12 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         for (int i = 0; i < table.HighWater; i++)
         {
             if (!next[i].Alive || table.Cold(i) is not { Save: { CarryPartner.IsNull: false } link } cold) continue;
+            var savedPartner = world.Saved?.Handles.Character(link.CarryPartner);
+            bool archivedPartner = savedPartner?.Platoon.Record.Name == SquadManagement.DeadSquadName || savedPartner?.Platoon.Name == SquadManagement.DeadSquadName ||
+                savedPartner?.Platoon.Record.Bools.GetValueOrDefault(Saving.PlayerSquadSave.SquadKey) == true &&
+                (savedPartner.GameState?.Bools.GetValueOrDefault(Saving.PlayerSquadSave.DeadKey) == true || savedPartner.Medical?.Bools.GetValueOrDefault("dead") == true);
+            if (!link.CarryIsCarrier && savedPartner?.Medical?.Bools.GetValueOrDefault("dead") == true || link.CarryIsCarrier && archivedPartner)
+            { link.CarryPartner = Meitou.Data.Save.Hand.Null; continue; }
             if (!link.CarryIsCarrier) { if (!cold.CarriedBy.IsNone) link.CarryPartner = Meitou.Data.Save.Hand.Null; continue; }   // the carrier's side links it
             if (bySave is null)
             {
@@ -393,7 +410,8 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
                     if (next[s].Alive && table.Cold(s)?.Save is { } other) bySave[(other.Source.Handle.C, other.Source.Handle.I)] = s;
             }
             var hand = link.CarryPartner;
-            if (!bySave.TryGetValue((hand.C, hand.I), out int b) || b == i) continue;
+            if (!bySave.TryGetValue((hand.C, hand.I), out int b) &&
+                !(world.Saved?.CharacterOf(hand) is { } restored && table.TryResolveNext(restored, out b)) || b == i) continue;
             link.CarryPartner = Meitou.Data.Save.Hand.Null;
             var body = table.Cold(b)!;
             body.Save?.CarryPartner = Meitou.Data.Save.Hand.Null;
@@ -423,7 +441,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         if (!attached && cold.LiftTime > CarrySettings.AttachAt * LiftSeconds)
         {
             // The body is attached once, at 0.4 of the clip, if it can still be lifted and is still near (the reach was tested when the clip started).
-            if (!table.TryResolveNext(cold.CarryTarget, out int b) || !CanCarry(cold) || !CanBeLifted(world, table.Cold(b)!)
+            if (!table.TryResolveNext(cold.CarryTarget, out int b) || !CanCarry(cold) || !CanLiftFor(world, i, b)
                 || Gap(table.Next[i], table.Next[b]) > 2 * ReachOf(world, table.Cold(b)!))   // pushed about while lifting: some slack, not a pick-up from afar
             {
                 End(table, i);
@@ -562,7 +580,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         if (!table.TryResolveNext(cold.CarryTarget, out int t) || Gap(table.Next[i], table.Next[t]) > ReachOf(world, table.Cold(t)!)) return;   // still walking (Schedule ends a loot whose target went)
         var victim = table.Cold(t)!;
         bool opening = Opening(world, i);
-        if (cold.Inventory is not { } bag || !(opening ? Openable(table, t) : CanBeLooted(victim)))
+        if (cold.Inventory is not { } bag || !(opening ? OpenableFor(world, i, t) : CanBeLooted(victim)))
         {
             End(table, i);
             return;
@@ -572,8 +590,8 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
             NpcLoot(world, table, i, t, dt);
             return;
         }
-        var player = world.Player;
-        if (opening)
+        var player = OpeningPlayer(world, i);
+        if (opening && player is not null)
         {
             // An open-loot order: the window opens instead of a take-all.
             (player.OpenLoot, player.LootOpener, player.OpeningLoot) = (player.OpeningLoot, player.LootWalker, CharacterId.None);
@@ -581,15 +599,15 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
             return;
         }
         int death = DeathUnits(victim.Inventory!);
-        int cashed = cold.Faction == player.Faction ? CashMoney(world, victim.Inventory!) : 0;
+        int cashed = cold.IsPlayer ? CashMoney(world, victim.Inventory!, i) : 0;
         var (taken, left) = TakeAll(bag, victim.Inventory!, Crime.CrimeSystem.IsLootTheft(cold, victim) ? victim.Faction : -1);
         taken += cashed;
         Butcher(world, i, t, death);
         bool seen = Looted(world, table, i, t, taken, left, crime: true);
         if (cold.IsPlayer)
         {
-            world.Post(left > 0 ? $"{cold.Name} took {taken} items from {victim.Name}; {left} did not fit" : $"{cold.Name} took {taken} items from {victim.Name}");
-            if (seen) world.Post($"{cold.Name} was seen looting {victim.Name}");
+            PostActor(world, i, left > 0 ? $"{cold.Name} took {taken} items from {victim.Name}; {left} did not fit" : $"{cold.Name} took {taken} items from {victim.Name}");
+            if (seen) PostActor(world, i, $"{cold.Name} was seen looting {victim.Name}");
         }
         End(table, i);
     }
@@ -602,7 +620,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     {
         var cold = table.Cold(i)!;
         var victim = table.Cold(t)!;
-        bool seen = taken > 0 && cold.IsPlayer && !victim.IsPlayer && cold.Faction != victim.Faction && Witnessed(world, table, i, t);
+        bool seen = taken > 0 && cold.IsPlayer && cold.Faction != victim.Faction && Witnessed(world, table, i, t);
         if (crime && taken > 0) Crimes?.Loot(world, i, t);   // one item at a time: the take's own crime (Crime.CrimeSystem.Pickpocket)
         loots.Add(new LootEntry(world.Tick, table.IdOf(i), table.IdOf(t), taken, left, seen));
         return seen;
@@ -614,22 +632,27 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     /// </summary>
     void LootWindow(World world)
     {
-        var player = world.Player;
         var table = world.Characters;
+        foreach (var entry in world.Players.All)
+        {
+        var player = entry.State;
         if (!player.OpeningLoot.IsNone && (!table.TryResolveNext(player.LootWalker, out int w) || table.Next[w].Task != (byte)CharacterTask.Loot || table.Cold(w)!.CarryTarget != player.OpeningLoot))
             player.OpeningLoot = CharacterId.None;
-        if (!player.OpenLoot.IsNone && OpenLootPair(world) is null) player.OpenLoot = CharacterId.None;
-        if (player.OpenLoot.IsNone) seenLoot = CharacterId.None;
+        if (!player.OpenLoot.IsNone && OpenLootPair(world, entry.Id) is null) player.OpenLoot = CharacterId.None;
+        if (player.OpenLoot.IsNone) seenLoot.Remove(entry.Id);
+        }
     }
 
     /// <summary>The open loot's looter and body slots while it may stay open (see <see cref="LootWindow"/>), else null.</summary>
-    (int Looter, int Body)? OpenLootPair(World world)
+    (int Looter, int Body)? OpenLootPair(World world, PlayerId? issuer = null)
     {
-        var player = world.Player;
+        var player = issuer is { } id ? world.Players.Find(id)?.State : world.Player;
+        if (player is null || world.Players.RequiresExplicitControl && (!world.Players.CanControl(issuer ?? PlayerId.Local, player.LootOpener)
+            || !lootGrants.TryGetValue(issuer ?? PlayerId.Local, out var grant) || !world.Players.Validate(grant))) return null;
         var table = world.Characters;
-        return table.TryResolveNext(player.OpenLoot, out int t) && table.Cold(t) is { } body && Openable(table, t) && body.CarriedBy.IsNone
+        return table.TryResolveNext(player.OpenLoot, out int t) && table.Cold(t) is { } body && body.CarriedBy.IsNone
             && table.TryResolveNext(player.LootOpener, out int o) && table.Cold(o) is { Medical.Incapacitated: false, Inventory: not null } looter && looter.CarriedBy.IsNone
-            && Gap(table.Next[o], table.Next[t]) <= ReachOf(world, body) * 1.5f ? (o, t) : null;
+            && OpenableFor(world, o, t) && Gap(table.Current[o], table.Current[t]) <= ReachOf(world, body) * 1.5f ? (o, t) : null;
     }
 
     /// <summary>
@@ -638,7 +661,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     /// </summary>
     void TakeLoot(World world, TakeLootItem take)
     {
-        if (OpenLootPair(world) is not var (i, t)) return;
+        if (OpenLootPair(world, take.Issuer) is not var (i, t) || !ValidTransfer(world, take, i, t)) return;
         var table = world.Characters;
         var cold = table.Cold(i)!;
         var victim = table.Cold(t)!;
@@ -648,69 +671,71 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
             item.Quantity != token.Quantity || !InventoryCommands.IsMovableSection(item.Section)) return;
         if (item.LockedOn)
         {
-            if (cold.IsPlayer) world.Post("This item is locked in place and cannot be removed. You can try to pick the lock, find a saw, or use brute strength.");
+            if (cold.IsPlayer) PostActor(world, i, "This item is locked in place and cannot be removed. You can try to pick the lock, find a saw, or use brute strength.");
             return;
         }
         // The right click's crime and the steal roll (the owner watching unless down); caught, the item stays.
-        if (!victim.IsPlayer && Crimes?.Pickpocket(world, i, t, item, Crime.CrimeSystem.TakeKind.RightClick) == true) return;
+        if (cold.Faction != victim.Faction && Crimes?.Pickpocket(world, i, t, item, Crime.CrimeSystem.TakeKind.RightClick) == true) return;
         bool worn = InventoryCommands.IsEquipmentSection(item.Section);
         int mark = item.StolenFrom, death = DeathUnits(from);
         if (Crime.CrimeSystem.IsLootTheft(cold, victim)) item.StolenFrom = victim.Faction;
         var owner = from.Items.Contains(item) ? from : from.Backpack?.Contents ?? from;
         // Money taken by the player's own becomes cats, as when it is dropped into their window (PlayerSystem.Place, FUN_140714a20).
-        if (item.ItemFunction == PlayerSystem.MoneyFunction && cold.Faction == world.Player.Faction && Data is not null)
+        if (item.ItemFunction == PlayerSystem.MoneyFunction && cold.IsPlayer && Data is not null)
         {
             int units = take.Count > 0 ? Math.Min(take.Count, item.Quantity) : item.Quantity;
-            PlayerSystem.Cash(world, Data, item, units);
+            Cash(world, item, units, i);
             if (units >= item.Quantity) owner.Remove(item); else item.Quantity -= units;
             item.StolenFrom = mark;
             Butcher(world, i, t, death);
-            Seen(world, i, t, owner.Items.Contains(item) ? 1 : 0);
+            Seen(world, i, t, owner.Items.Contains(item) ? 1 : 0, take.Issuer);
             return;
         }
         int moved = InventoryCommands.MoveInto(owner, item, take.Count, cold.Inventory!, take.BagFirst, out bool wear, cold);
         if (owner.Items.Contains(item)) item.StolenFrom = mark;   // what stays keeps its mark
         if (moved == 0)
         {
-            if (cold.IsPlayer) world.Post($"{cold.Name} has no room for {item.Name}.");
+            if (cold.IsPlayer) PostActor(world, i, $"{cold.Name} has no room for {item.Name}.");
             return;
         }
         Butcher(world, i, t, death);
         if (worn) Assembly?.RefreshEquipment(victim);
         if (wear) Assembly?.RefreshEquipment(cold);
-        Seen(world, i, t, owner.Items.Contains(item) ? 1 : 0);
+        Seen(world, i, t, owner.Items.Contains(item) ? 1 : 0, take.Issuer);
     }
 
     /// <summary>Seen taking from one open window: one message, as a take-all (engine choice).</summary>
-    void Seen(World world, int looter, int body, int left)
+    void Seen(World world, int looter, int body, int left, PlayerId? issuer = null)
     {
         var table = world.Characters;
-        bool first = seenLoot != world.Player.OpenLoot;
+        var player = issuer is { } id ? world.Players.Find(id)?.State : world.Player;
+        if (player is null) return;
+        bool first = seenLoot.GetValueOrDefault(issuer ?? PlayerId.Local) != player.OpenLoot;
         if (Looted(world, table, looter, body, 1, left, crime: false))
         {
-            if (first && table.Cold(looter)!.IsPlayer) world.Post($"{table.Cold(looter)!.Name} was seen looting {table.Cold(body)!.Name}");
-            seenLoot = world.Player.OpenLoot;
+            if (first && table.Cold(looter)!.IsPlayer) PostActor(world, looter, $"{table.Cold(looter)!.Name} was seen looting {table.Cold(body)!.Name}");
+            seenLoot[issuer ?? PlayerId.Local] = player.OpenLoot;
         }
     }
 
     /// <summary>The open loot's looter and body while it may stay open, for the held item (<see cref="PlayerState.Held"/>); null when none is open.</summary>
-    internal (CharacterId Looter, CharacterId Body)? OpenLoot(World world) =>
-        OpenLootPair(world) is var (i, t) ? (world.Characters.IdOf(i), world.Characters.IdOf(t)) : null;
+    internal (CharacterId Looter, CharacterId Body)? OpenLoot(World world, PlayerId? issuer = null) =>
+        OpenLootPair(world, issuer) is var (i, t) ? (world.Characters.IdOf(i), world.Characters.IdOf(t)) : null;
 
     /// <summary>
     /// A held item that came out of the open loot's body went to someone else (placed in a window or given; its stolen mark is the held item's, <see cref="PlayerState.Held"/>): a death item
     /// butchers a live body (<paramref name="death"/>: it was one), and the looting may be seen (<see cref="Looted"/>), as a right click's take.
     /// </summary>
-    internal void TookHeld(World world, bool death)
+    internal void TookHeld(World world, bool death, PlayerId? issuer = null)
     {
-        if (OpenLootPair(world) is not var (i, t)) return;
+        if (OpenLootPair(world, issuer) is not var (i, t)) return;
         var victim = world.Characters.Cold(t)!;
         if (death && victim.Medical is { Dead: false, Incapacitated: true } medical)
         {
             medical.Butcher();
-            world.Post($"{victim.Name} has been butchered");
+            PostActor(world, i, $"{victim.Name} has been butchered");
         }
-        Seen(world, i, t, 0);
+        Seen(world, i, t, 0, issuer);
     }
 
     /// <summary>The units of <paramref name="inventory"/>'s death items (<see cref="ItemInstance.Death"/>).</summary>
@@ -731,16 +756,16 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         var victim = table.Cold(body)!;
         if (victim.Medical is not { Dead: false, Incapacitated: true } medical || DeathUnits(victim.Inventory!) >= before) return;
         medical.Butcher();
-        if (table.Cold(looter)!.IsPlayer || victim.IsPlayer) world.Post($"{victim.Name} has been butchered");
+        if (table.Cold(looter)!.IsPlayer || victim.IsPlayer) PostActor(world, looter, $"{victim.Name} has been butchered");
     }
 
     /// <summary>The open loot whose looting was already seen (see <see cref="TakeLoot"/>).</summary>
-    CharacterId seenLoot = CharacterId.None;
+    readonly Dictionary<PlayerId, CharacterId> seenLoot = [];
 
     /// <summary>A right click on one of the looter's items: units into the open loot (<see cref="InventoryCommands.MoveInto"/>); a worn bag with contents stays.</summary>
     void PutLoot(World world, PutLootItem put)
     {
-        if (OpenLootPair(world) is not var (i, t) || put.Character != world.Player.LootOpener) return;
+        if (OpenLootPair(world, put.Issuer) is not var (i, t) || put.Character != world.Characters.IdOf(i) || !ValidTransfer(world, put, i, t)) return;
         var table = world.Characters;
         var looter = table.Cold(i)!;
         var body = table.Cold(t)!;
@@ -763,7 +788,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     /// stolen from that faction; what stays keeps its mark.
     /// </summary>
     /// <summary>The money items of a loot's grid and bag into the player's purse (a take-all by the player's own); the number of stacks taken.</summary>
-    int CashMoney(World world, Inventory from)
+    int CashMoney(World world, Inventory from, int actor)
     {
         if (Data is null) return 0;
         int n = 0;
@@ -772,7 +797,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
             if (holder is null) continue;
             foreach (var item in holder.Items.Where(x => x.ItemFunction == PlayerSystem.MoneyFunction && (holder != from || x.Section == "main")).ToList())
             {
-                PlayerSystem.Cash(world, Data, item, item.Quantity);
+                Cash(world, item, item.Quantity, actor);
                 holder.Remove(item);
                 n++;
             }
@@ -843,7 +868,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         for (int i = 0; i < table.HighWater; i++)
         {
             if (!next[i].Alive || table.Cold(i) is not { RescueJob: true } cold) continue;
-            if (cold.IsPlayer && !Orders.Has(cold, CharacterOrders.Jobs)) continue;
+            if (cold.IsPlayer && (!Orders.Has(cold, CharacterOrders.Jobs) || world.Players.RequiresExplicitControl && world.Players.ControlOf(table.IdOf(i)) is null)) continue;
             // Free, or on a list job below the rescue job (which ranks above it).
             int rescue = cold.Jobs.FindIndex(j => j.Type == Meitou.Data.Gameplay.Ai.TaskType.FIND_AND_RESCUE_IF_THERES_BEDS);
             if (!Free(table, i) && !(cold.JobIndex > rescue && cold is { Fleeing: false } && CanCarry(cold))) continue;
@@ -883,6 +908,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         if (best < 0) return false;
         taken.Add(best);
         Begin(table, i, table.IdOf(best), CharacterTask.PickUp, cold.JobIndex >= 0 || cold.Implicit is not null ? cold.ResumeTask : (CharacterTask)next[i].Task);
+        RememberJob(world, i);
         return true;
     }
 

@@ -17,6 +17,8 @@ sealed partial class PlayerInterface
 {
     static readonly Vector4 ChoiceColour = new(0xb3 / 255f, 0xb3 / 255f, 0xb3 / 255f, 1), ChoiceHover = new(0, 1, 0, 1);
     bool conversationShown, conversationEndSent;
+    ulong conversationSession;
+    ConversationView? displayedConversation;
     long dialogueRequestHandled;
     string? dialogueText;
 
@@ -31,10 +33,14 @@ sealed partial class PlayerInterface
             if (conversationShown && faithfulScreens.IsOpen("dialogue")) faithfulScreens.Close("dialogue");
             if (conversationShown) UpdateMenuPause();
             conversationShown = conversationEndSent = false;
+            conversationSession = 0;
+            displayedConversation = null;
         }
-        else if (!conversationShown)
+        else if (!conversationShown || conversationSession != talk.SessionId)
         {
             conversationShown = true;
+            conversationSession = talk.SessionId;
+            displayedConversation = null;
             conversationEndSent = false;
             CloseContextMenu();
             faithfulScreens.Open("dialogue");
@@ -42,15 +48,15 @@ sealed partial class PlayerInterface
         }
         else if (!faithfulScreens.IsOpen("dialogue") && !conversationEndSent)
         {
-            Say(new EndConversation { Tick = session.World.Tick });
+            Say(new EndConversation { Tick = session.CommandTick, SessionId = talk.SessionId });
             conversationEndSent = true;
             UpdateMenuPause();
         }
         if (snapshot.DialogueRequest is { } request && request.Id > dialogueRequestHandled)
         {
             dialogueRequestHandled = request.Id;
-            if (request.Kind == DialogueRequestKind.CharacterEditor) OpenEditor(Meitou.Simulation.Editing.EditKind.Surgery, [request.Player], request.Npc, paid: true);
-            else if (request.Kind == DialogueRequestKind.RecruitEditor) OpenEditor(Meitou.Simulation.Editing.EditKind.Recruit, [request.Player]);
+            if (request.Kind == DialogueRequestKind.CharacterEditor) OpenEditor(Meitou.Simulation.Editing.EditKind.Surgery, [request.Player], request.Npc, paid: true, editSession: request.EditSession);
+            else if (request.Kind == DialogueRequestKind.RecruitEditor) OpenEditor(Meitou.Simulation.Editing.EditKind.Recruit, [request.Player], request.Npc, editSession: request.EditSession);
         }
     }
 
@@ -67,7 +73,7 @@ sealed partial class PlayerInterface
         foreach (var bar in faithfulScreens.Layout("dialogue").Find("PlayerDialog")?.Children.Where(w => w.Type == "ScrollBar") ?? []) b.HiddenWidgets.Add(bar);
         b.NativeScroll.Add("PlayerDialog");   // the choices are drawn against the box, not scrolled by its canvas
         b.Text["MoneyLabelText"] = "Money:";
-        b.Text["MoneyAmountText"] = "c." + talk.PlayerMoney.ToString("N0", CultureInfo.InvariantCulture);
+        b.Text["MoneyAmountText"] = talk.FundsVisible ? "c." + talk.PlayerMoney.ToString("N0", CultureInfo.InvariantCulture) : Loc.Tr("Unavailable");
     }
 
     /// <summary>The choices, one line each down the player panel's dialog area.</summary>
@@ -75,11 +81,12 @@ sealed partial class PlayerInterface
     {
         AddDialoguePortraits(controls);
         if (session.CurrentSnapshot.Conversation is not { } talk || controls.FirstOrDefault(c => c.Name == "PlayerDialog") is not { } area) return;
+        displayedConversation = talk;
         float line = MathF.Max(16, area.Bounds.Height / 7);
         for (int i = 0; i < talk.Choices.Count; i++)
         {
             var bounds = new UiRect(area.Bounds.X, area.Bounds.Y + i * line, area.Bounds.Width, line);
-            controls.Add(new($"dialogue-choice-{i}", "Button", bounds, $"{i + 1}. {talk.Choices[i]}", $"dialogue-choice:{i}", "", true,
+            controls.Add(new($"dialogue-choice-{i}", "Button", bounds, $"{i + 1}. {talk.Choices[i]}", $"dialogue-choice:{i}:{talk.SessionId}:{talk.ChoiceRevision}", "", true,
                 new Dictionary<string, string> { ["FontName"] = "Kenshi_StandardFont_Medium", ["TextAlign"] = "Left VCenter" }, Vector4.Zero,
                 TextColour: ChoiceColour, HoverColour: ChoiceHover, Pickable: true, Clip: area.Clip ?? area.Bounds));
         }
@@ -87,17 +94,19 @@ sealed partial class PlayerInterface
 
     void DialogueAction(MyGuiEvent e)
     {
-        if (e.Action.StartsWith("dialogue-choice:", StringComparison.Ordinal) && int.TryParse(e.Action[16..], CultureInfo.InvariantCulture, out int index))
-            Say(new DialogueChoice(index) { Tick = session.World.Tick });
+        var parts = e.Action.Split(':');
+        if (parts.Length == 4 && parts[0] == "dialogue-choice" && int.TryParse(parts[1], CultureInfo.InvariantCulture, out int index)
+            && ulong.TryParse(parts[2], CultureInfo.InvariantCulture, out ulong window) && ulong.TryParse(parts[3], CultureInfo.InvariantCulture, out ulong revision))
+            Say(new DialogueChoice(index) { Tick = session.CommandTick, SessionId = window, ChoiceRevision = revision });
     }
 
     /// <summary>The number keys pick a choice while the panel is open (engine convenience).</summary>
     bool DialogueKey(Meitou.Engine.Input.Key key)
     {
-        if (!faithfulScreens.IsOpen("dialogue") || session.CurrentSnapshot.Conversation is not { } talk) return false;
+        if (!faithfulScreens.IsOpen("dialogue") || displayedConversation is not { } talk) return false;
         int index = key - Meitou.Engine.Input.Key.D1;
         if (index < 0 || index > 8) return false;
-        if (index < talk.Choices.Count) Say(new DialogueChoice(index) { Tick = session.World.Tick });
+        if (index < talk.Choices.Count) Say(new DialogueChoice(index) { Tick = session.CommandTick, SessionId = talk.SessionId, ChoiceRevision = talk.ChoiceRevision });
         return true;
     }
 }
