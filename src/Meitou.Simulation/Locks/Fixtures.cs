@@ -133,6 +133,8 @@ public sealed class Fixture
     public bool Restrains { get; init; }
     /// <summary>Cages: the functionality's <c>animation</c>, <c>animation KO</c> and <c>animation dazed</c> clips, entry 0 of each (<c>UseableStuff::UseableStuff</c>, <b>Verified</b>); derived from the data.</summary>
     public CageClips Clips { get; init; }
+    /// <summary>Cage use nodes in local coordinates, derived from the building record; not saved or hashed.</summary>
+    public BedNode[]? UseNodes { get; init; }
     public float UseRange { get; init; }
     public CharacterId Occupant { get; set; } = CharacterId.None;
     /// <summary>Beds: its record's <see cref="BedData"/>; derived from the data, not hashed or saved.</summary>

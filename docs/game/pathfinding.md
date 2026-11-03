@@ -151,6 +151,10 @@ the first 10 units of the straight line to it, else it walks to within 2 of the 
 stands, up to 3 times since its last waypoint or order (`BlockedRepathLimit`), before the path and a GoTo order are dropped. **Observed** (zone 22.10, save "stuck", scratch sim): a walker on the terrain at
 Y392 beside the Old Storm House's (`6-rebirth-INGAME`) door stair snapped to the stair's corner (Recast corner vertices take the highest neighbouring cell, 408 over
 ground at 395); that polygon's only exits were narrower than the radius, the next start's path was cut up the stair's side, and the walker stood still. With the three rules it enters in 3 s.
+**No path at all** (engine choice, `MovementSystem.ApplyAnswers`): a player character's GoTo within 64 units of a goal walkable at its current height
+keeps the order and heads straight at the goal; ordinary step checks still apply. Longer orders and unwalkable goals retain the failed-path drop.
+**Observed** (source review, `MovementSystem.Move`): this fallback cannot escape a mesh-cut hole whose edge is farther than one step; its existing step checks still refuse the move.
+**Observed** (upstream PR #235, character inside a cage in Stack, -55291,1181,-14055): every path request returned not found and the order dropped on the first answer.
 A goal that cannot be reached is replaced by the reachable point nearest it in 3D (engine choice). **Observed** (Hub north wall, zone 20.32, scratch probe, issue #59):
 the walkway keeps corner pockets of 8..64 square units whose only exits are 3..8 wide between wall ends; nearest on the X/Z plane, a click there
 sent the walker to the ground beside the wall, 115..138 below; in 3D all such goals end on the walkway within 10. Cache key and unload rules: [simulation](../simulation.md#navmesh). Original Havok tiles are

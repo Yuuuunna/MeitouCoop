@@ -529,7 +529,7 @@ main grid, weight and burden only, grid size from its `inventory w` / `inventory
 
 `Ragdolls/RagdollSystem` (game behaviour: [ragdolls](game/ragdolls.md)) runs serially after animation
 when the host passes `CharacterRigs` (the game does; tests and goldens do not). Engine choices:
-- **Physics**: BepuPhysics2, one scene stepped on the calling thread (deterministic, 2 solver
+- **Physics**: BepuPhysics2, one scene stepped on the calling thread below 256 awake bodies, otherwise on the world's thread count (deterministic, 2 solver
   iterations, 4 substeps per tick, fallback batch threshold 1024: Bepu 2.4.0's fallback batch throws
   when its last contact on a dynamic body is removed with one on a kinematic body, which big battles hit at the default 64). Bodies and joints come from the race's ragdoll `.phs`
   (`RagdollDefinition`, scaled by the animal size); revolute → hinge + twist limit, spherical →
@@ -540,9 +540,16 @@ when the host passes `CharacterRigs` (the game does; tests and goldens do not). 
 - **Carried bodies**: `CarryMode` simulates the forearms and the head only, as the original does ([ragdolls](game/ragdolls.md#bodies-kinematic-or-simulated)); everything else follows the `carry me` clip. Ragdoll bodies turn at most 7 rad/s and the head's neck joint is sprung ([ragdolls](game/ragdolls.md#limits-of-motion-and-joint-springs)).
 - **Published pose**: `CharacterSnapshot.Ragdoll` (model-space `BonePose` overrides, weight for the
   get-up blend); the renderer poses with it. While `Whole`, the character's position follows the root.
-- **Scene**: 32-unit tiles round each moving ragdoll, terrain sampled every 2 units, plus building
+- **Scene**: 32-unit tiles round each moving ragdoll, terrain sampled every 4 units (128 triangles per tile), plus building
   collision from `Meitou.Navigation.RagdollGeometry` (per zone on a worker, doors and passable parts
-  skipped, ≤16 zones). A tile has ground only until its zones are gathered. Tiles unused for 90 ticks go.
+  skipped, ≤16 zones). A tile has ground only until its zones are gathered. Tiles unused for 1,800 ticks (one minute at 30 Hz) go.
+  **Budgets** (`RagdollSystem.TileBudget`, `StartBudget`, `RagdollPhysics.BuildingUnits`): each tick has 8 tile units
+  (ground mesh 1, building mesh 4, charged only when built; a final building mesh can exhaust the remaining units)
+  and starts at most 4 whole bodies falling. Starts wait for ground coverage within 12 units scaled by animal size;
+  deferred starts retain their saved pose. Frozen save restores, get-ups, limb dangles and lifts never wait for the start budget.
+  **Observed** (upstream headless flight probe): 2-unit tile meshes cost 0.45 ms, whole-body builds 0.7 ms;
+  single-threaded stepping cost about the same below 300 awake bodies (0.4-0.8 ms), avoiding dispatcher waits of 16-85 ms.
+  Remaining heavy frames are partly attributed to GC and dispatcher waits; other causes are **Unknown**.
   The terrain is the full-resolution heightmap (blocks of 64 samples read on demand), not the simulation's `GroundHeights`:
   outside the area loaded at the start that is a coarse grid (a sample per 144 units) off the real ground by 2.4 units
   at the median and 15 at the 90th percentile over the land, so bodies met a ground the character was not standing on.

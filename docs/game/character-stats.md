@@ -200,12 +200,22 @@ skill x 0.8 when treating oneself and q = min(skill, kit quality):
   parts takes about n times as long, and n times the charges, as one with a single part of the same damage.
 - **Drain** = lerp(`medkit drain 99`, `medkit drain 1`, (100 - skill) / 100) x dt (skill, not q), x `robot medic speed mult` for a
   robot kit (function 12).
+- **Reach.** The original's reach rule is **Unknown**. **Observed** (one run, an original save with a prisoner caged upstairs in the Rebirth
+  Slave Shop): its two treating guards stood 17 and 23 units from the patient, on the patient's floor. Meitou (engine choice,
+  `FirstAidSettings`): within `Reach` 14 on X/Z and `ReachHeight` 35 in height of the treatment spot, walked to on its floor (`GoalHeight`).
+  The spot is the patient, or for a caged one its cage's use node in front of the door (`FixtureRegistry.ExitSpot`: nearest the cage origin, world transformed; null without nodes).
+  Cage NODE_USE instances accept a single node; the bed reader retains its minimum of two (engine contracts). With X/Z alone and the
+  patient as the spot, a medic stopped on the floor below (8 across, 65 down) and treated through it; with the patient's height but no
+  use node, it found no way into the cage and stayed below. Meitou ends treatment when its path fails or ends outside reach of the spot's X/Z or height,
+  excluding that patient from the medic's finder for `PursuitSystem.PathFailureSeconds` (20 seconds; engine contract).
 - **Player only.** The bandaging step drains only when the medic's faction is the player's (Faction +0x250); NPC medics use up kits
   only on wounds.
 - **Kitless.** `Task_FirstAid` (`FUN_1403563a0`) skips the kit search when the medic is not the player's and the patient is
   imprisoned (+0x2f8 == 2) or a chained slave of the medic's faction (`FUN_14032e2a0`: +0x320 chained, +0x330 != 11, slave owner
   +0x1a0 → +0xe0). Without a kit, wounds close with quality 5, every part (organic or robotic) takes 1 HP a second (no `medic speed
-  mult`, no skill), nothing drains. Other NPCs still need a kit. Who goes to a prisoner: [Medic jobs](ai-tasks.md#medic-jobs). Meitou: the imprisoned case (`FirstAidSystem.Apply`); chained
+  mult`, no skill), nothing drains. Other NPCs still need a kit. Who goes to a prisoner: [Medic jobs](ai-tasks.md#medic-jobs). Meitou: the imprisoned case (`FirstAidSystem.Apply`), ended
+  as with a kit once the room left is under `Done` (healing turns bandage into flesh, so float dust otherwise reopened a sliver every update and a guard treated a fully
+  bandaged prisoner for ever: **Observed**, Rebirth Slave Shop prisoner, original save); chained
   slaves are not modelled. **Unknown**: whether a kit stored on the task earlier is still used then; what +0x330 code 11 is.
 - **Skill.** `Task_FirstAid` (`FUN_1403563a0`) runs a first aid kit phase, then (none left) a robot repair kit phase; the skill is
   CharStats +0x98 (`medic`) in the first, +0xdc (`robotics`) in the second, and the trained stat 9 or 6 likewise; the race's `heal

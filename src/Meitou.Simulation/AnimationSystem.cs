@@ -381,14 +381,16 @@ public sealed class AnimationSystem(AnimationLibrary library, AnimationLengths l
         var stance = StanceOf(cold) with { Combat = cold.InCombat && !approaching };
         bool down = cold.Medical is { Incapacitated: true };
         bool crawling = !carried && cold.Medical is { Prone: true };
-        if (HoldsForRagdoll(a, down, carried, ragdoll)) return Vector2.Zero;
-
         bool inBed = cold.InSomething == Locks.HeldState.Bed, inCage = cold.InSomething == Locks.HeldState.Imprisoned;
-        if (down && !a.WasDown && !carried && !ragdoll.Has && !inBed) StartAction(a, fall, false);   // a ragdoll falls instead; one in a bed lies on
+        // The fixture refuses a whole-body ragdoll and supplies the captive's pose (docs/game/locks.md "Cages and beds").
+        if (!inCage && HoldsForRagdoll(a, down, carried, ragdoll)) return Vector2.Zero;
+        // Clear a fall or get-up left over from before entering the fixture.
+        if (inCage) a.Action = -1;
+        if (down && !a.WasDown && !carried && !ragdoll.Has && !inBed && !inCage) StartAction(a, fall, false);   // a ragdoll falls instead; furniture supplies its own pose
         if (carried) a.Action = -1;   // held on the shoulder: no falling or getting up
         // Waking with a leg down there is nothing to get up on: the original's get-up plays the crawl idle and ends at once (docs/game/ragdolls.md "Getting up").
-        // Waking in a bed it lies on (engine choice).
-        else if (!down && a.WasDown && (crawling || inBed)) a.Action = -1;
+        // Waking in a bed it lies on (engine choice); in a cage or on a pole it takes the fixture's pose at once.
+        else if (!down && a.WasDown && (crawling || inBed || inCage)) a.Action = -1;
         else if (!down && a.WasDown)
         {
             StartAction(a, getUp, false);
@@ -709,6 +711,8 @@ public sealed class AnimationSystem(AnimationLibrary library, AnimationLengths l
         if (a.Rate == 0) a.Rate = 1 / size;
         bool carried = !cold.CarriedBy.IsNone;
         bool down = cold.Medical?.Incapacitated ?? false;
+        // A captive animal keeps a still frame; its layers do not advance (docs/game/locks.md "Cages and beds").
+        if (cold.InSomething == Locks.HeldState.Imprisoned) return Vector2.Zero;
         if (HoldsForRagdoll(a, down, carried, ragdoll)) return Vector2.Zero;
         if (down && !a.WasDown && !carried && !ragdoll.Has) StartAction(a, plan.Fall, false);
         if (carried || !down) a.Action = -1;   // the fall is an animal's only one-shot clip

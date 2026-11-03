@@ -48,6 +48,8 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
     public const float BodyShare = 0.6f;
     /// <summary>A character within this distance of a waypoint has reached it.</summary>
     public const float ArriveRadius = 10;
+    /// <summary>Maximum distance for a player's failed move path to fall back to walking straight to a walkable goal (engine choice: a few metres).</summary>
+    public const float StraightOrderReach = 64;
     /// <summary>
     /// How near (units) a walker comes to a corner it may not cut (<see cref="CanCut"/>) before it turns for the next waypoint (engine choice: about a step).
     /// </summary>
@@ -403,12 +405,27 @@ public sealed class MovementSystem(PathService paths) : ITickSystem, IDisposable
             }
             else
             {
-                // No way there: the old path (an order given on the move) is dropped too.
-                cold.PathFailed = true;
-                n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.HasPath);
-                n.PathCursor = 0;
-                n.TaskTime = FailedPathWait;
-                if (n.Task == (byte)CharacterTask.GoTo) { n.Task = (byte)CharacterTask.Idle; cold.OrderQueue.Clear(); }
+                // A short player order can leave a disconnected pocket by heading straight at a walkable goal; ordinary step checks still apply.
+                // Distant or off-mesh goals retain the failed-path behavior so the walker cannot keep chasing them indefinitely.
+                float toGoal = new Vector2(n.Goal.X - n.Position.X, n.Goal.Y - n.Position.Z).Length();
+                bool shortHop = toGoal <= StraightOrderReach && world.Walkability.IsWalkable(n.Goal.X, n.Goal.Y, n.Position.Y);
+                if (cold.IsPlayer && n.Task == (byte)CharacterTask.GoTo && shortHop)
+                {
+                    cold.PathFailed = false;
+                    cold.Path = [new Vector3(n.Goal.X, n.Position.Y, n.Goal.Y)];
+                    cold.PathExact = int.MaxValue;
+                    n.PathCursor = 0;
+                    n.Flags |= (ushort)MoveFlags.HasPath;
+                }
+                else
+                {
+                    // No way there: the old path (an order given on the move) is dropped too.
+                    cold.PathFailed = true;
+                    n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.HasPath);
+                    n.PathCursor = 0;
+                    n.TaskTime = FailedPathWait;
+                    if (n.Task == (byte)CharacterTask.GoTo) { n.Task = (byte)CharacterTask.Idle; cold.OrderQueue.Clear(); }
+                }
             }
         }
     }

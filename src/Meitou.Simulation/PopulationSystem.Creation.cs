@@ -81,7 +81,7 @@ public sealed partial class PopulationSystem
             int owner = prepared.Town is { } town && town.Index < data.SiteFactions.Count ? data.SiteFactions[town.Index] : -1;
             foreach (var id in spawned)
                 if (world.Characters.Cold(id.Slot) is { } cold && data.Db.Find(cold.RecordId)?.GetInt("slave") is (1 or 2) and var state && owner >= 0)
-                    (cold.SlaveState, cold.SlaveOwner) = ((byte)state, owner);
+                    (cold.SlaveState, cold.SlaveOwner, cold.SlaveSince) = ((byte)state, owner, world.GameHours);
         }
         catch
         {

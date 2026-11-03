@@ -55,6 +55,9 @@ public sealed partial class FirstAidSystem
         return float.IsFinite(range) && Gap(table.Next[medic], table.Next[patient]) <= range;
     }
 
+    static float Gap(in CharacterHot a, in CharacterHot b) =>
+        System.Numerics.Vector2.Distance(new(a.Position.X, a.Position.Z), new(b.Position.X, b.Position.Z));
+
     static bool MayShareKit(World world, int medic, CharacterId donor)
     {
         if (!world.Players.RequiresExplicitControl) return true;

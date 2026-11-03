@@ -46,6 +46,25 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
     public const float GetUpBlend = 0.75f;
     /// <summary>The edge of a square of static ground and buildings the scene is made of, in world units, on a grid from the origin (engine choice).</summary>
     public const float TileSize = 32;
+    /// <summary>Ground tiles are kept this far round a moving ragdoll's root (<see cref="RagdollPhysics.Cover"/>).</summary>
+    const float TileReach = 12;
+    /// <summary>
+    /// Ground tile units made in one tick (<see cref="RagdollPhysics.Cover"/>: a ground mesh 1, a building mesh <see cref="RagdollPhysics.BuildingUnits"/>), the starting ragdolls'
+    /// first; a ragdoll whose tiles the budget does not reach starts on a later tick, the character animating meanwhile (engine choice: a zone's downed characters arriving together
+    /// asked for 80-100 tiles in one tick, 45-60 ms, and a town's building meshes came to its pending tiles in one tick when the zone was gathered; docs/simulation.md "Ragdolls").
+    /// </summary>
+    const int TileBudget = 8;
+    /// <summary>
+    /// Whole bodies started falling in one tick (a knockdown, a put-down, a stored squad's downed member coming back); the rest start on a later tick. A save's frozen ragdoll is not
+    /// counted: it is the save's state and costs no settling. Engine choice: a build is 0.7 ms (bodies, joints, the ground probe), and a zone's arrivals asked for 20 in a tick.
+    /// </summary>
+    const int StartBudget = 4;
+    /// <summary>
+    /// Awake bodies from which the physics steps on the world's thread count. Below it the step runs on the calling thread: it costs the same (**Observed**, headless flight probe,
+    /// 15-300 awake bodies: 0.4-0.8 ms either way; the dispatcher's signals and waits are 0.3 ms a step), and a dispatcher worker preempted by the render, streaming or GC threads
+    /// stalled the step for a scheduler quantum or more (16-85 ms waits in the probe's trace), which a single thread cannot suffer from another thread.
+    /// </summary>
+    const int ThreadedBodies = 256;
     /// <summary>Freezing (docs/game/ragdolls.md "Sleep and limits"): not before this age, then when this share of the bodies is still; at the latest after <see cref="FreezeLatest"/>.</summary>
     public const float FreezeEarliest = 2, FreezeShare = 0.6f, FreezeLatest = 7;
     /// <summary>A body is still under these squared speeds (the game's PhysX sleep velocities: linear² 2.25, angular² 1.96).</summary>
@@ -173,6 +192,7 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
 
         // 1. Masks, building and pinning.
         var next = table.Next;
+        int tilesLeft = TileBudget, startsLeft = StartBudget;
         for (int i = 0; i < next.Length; i++)
         {
             if (!next[i].Alive || table.Cold(i) is not { } cold) continue;
@@ -182,6 +202,24 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
             // The look's ragdoll file asked only of a character that wants one (two cache lookups per standing character every tick were most of this loop in a big battle).
             var wanted = cold.Appearance is null ? RagdollPart.None : Wanted(cold);
             if (wanted != RagdollPart.None && !HasRagdoll(cold)) wanted = RagdollPart.None;
+            if (r is null && wanted == RagdollPart.None) continue;
+            float scale = cold is { Fighter.IsAnimal: true, Medical: { } size } ? size.ScaleK : 1;
+            // A whole body about to fall needs the ground under it and costs a build (TileBudget, StartBudget: past them it starts next tick, its saved pose kept); a frozen
+            // saved one needs none, and a get-up, a limb's dangle or a lift never waits.
+            bool falls = (wanted & RagdollPart.Whole) != 0 && (wanted & RagdollPart.CarryMode) == 0;
+            bool fell = r is not null && (r.Mask & RagdollPart.Whole) != 0 && (r.Mask & RagdollPart.CarryMode) == 0;
+            bool starts = falls && !fell && cold.Save?.Ragdoll is not { Frozen: true };
+            if (starts)
+            {
+                if (startsLeft <= 0) continue;
+                if (!physics.Covered(next[i].Position, TileReach * scale))
+                {
+                    if (tilesLeft <= 0) continue;
+                    physics.Cover(next[i].Position, TileReach * scale, env, tick, ref tilesLeft);
+                    if (!physics.Covered(next[i].Position, TileReach * scale)) continue;
+                }
+                startsLeft--;
+            }
             // A ragdoll a save holds (Saving.RagdollSave): taken the first time the character is seen, used when it starts as a whole body.
             SavedRagdoll? restore = null;
             if (cold.Save is { Ragdoll: { } saved })
@@ -189,10 +227,8 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
                 cold.Save.Ragdoll = null;
                 if (r is null && (wanted & RagdollPart.Whole) != 0) restore = saved;
             }
-            if (r is null && wanted == RagdollPart.None) continue;
             if (r is null)
             {
-                float scale = cold is { Fighter.IsAnimal: true, Medical: { } size } ? size.ScaleK : 1;
                 var setup = rigs.For(cold.Appearance!)!;
                 if (DefinitionOf(cold.Appearance!, setup.Rig, scale) is not { } definition) continue;
                 var carryBone = cold.Appearance!.Race.GetString("carry bone");
@@ -222,7 +258,7 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
             if (r.Mask == RagdollPart.None) continue;
             if (!r.Frozen && r.Dynamic.Any(d => !d))
                 Pin(r, animated ?? Animated(r, cold, placement), dt);
-            if (!r.Frozen) physics.Cover(r.Pose[r.Definition.Root].Position, 12 * r.Scale, env, tick);
+            if (!r.Frozen) physics.Cover(r.Pose[r.Definition.Root].Position, TileReach * r.Scale, env, tick, ref tilesLeft);
         }
 
         world.Profile.Part("rag setup");   // F12: the masks, the builds, the pins and the ground tiles
@@ -234,7 +270,7 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
         if (Moving > 0)
         {
             foreach (var id in order) if (ragdolls[id] is { Frozen: false, Mask: not RagdollPart.None } floating) Buoy(world, floating, dt);
-            physics.Step(dt, threads);
+            physics.Step(dt, physics.Simulation.Bodies.ActiveSet.Count >= ThreadedBodies ? threads : null);
         }
         world.Profile.Part("rag step");
 
