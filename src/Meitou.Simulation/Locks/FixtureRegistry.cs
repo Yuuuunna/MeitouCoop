@@ -268,7 +268,7 @@ public sealed partial class FixtureRegistry
         return best;
     }
 
-    /// <summary>The cage use node nearest its origin, in world coordinates; null when it has none. Used as the medic's treatment spot.</summary>
+    /// <summary>The cage use node nearest its origin, in world coordinates; null when it has none. Used for leaving the cage and as the medic's treatment spot.</summary>
     public static Vector3? ExitSpot(Fixture cage)
     {
         if (cage.UseNodes is not { Length: > 0 } nodes) return null;
@@ -751,6 +751,12 @@ public sealed partial class FixtureRegistry
         }
     }
 
+    /// <summary>Leaves at the cage's use node, preserving facing; cages without a node leave the position unchanged.</summary>
+    static void StepOut(CharacterTable table, int slot, Fixture cage)
+    {
+        if (ExitSpot(cage) is { } at) table.Place(slot, at, table.Next[slot].Yaw);
+    }
+
     static void Hold(CharacterTable table, int slot, CharacterCold c, Vector3 at, float yaw)
     {
         table.Place(slot, at, yaw);
@@ -760,8 +766,8 @@ public sealed partial class FixtureRegistry
 
     /// <summary>
     /// Frees a prisoner (Task_ReleasePrisoner, economy.md 11.5, <b>Observed</b>): the cage is unlocked and emptied, the state and sentence cleared; when the releaser's faction books
-    /// bounties its entry and the jail's (the cage owner's) are erased. A player-faction prisoner gets "{1} has been released from prison.". The prisoner stays where it stands
-    /// (getting out of the cage is the caller's walk). False when the character is not imprisoned.
+    /// bounties its entry and the jail's (the cage owner's) are erased. A player-faction prisoner gets "{1} has been released from prison.". The prisoner is placed at
+    /// the cage's <see cref="ExitSpot"/> when it has one. False when the character is not imprisoned.
     /// </summary>
     public bool Release(World world, CharacterId prisoner, int releaserFaction = -1, CrimeSystem? crimes = null)
     {
@@ -772,6 +778,7 @@ public sealed partial class FixtureRegistry
         {
             if (cage.Lock is { } l) l.Locked = false;
             if (cage.Occupant == prisoner) cage.Occupant = CharacterId.None;
+            StepOut(table, s, cage);
         }
         if (releaserFaction >= 0 && crimes is not null && crimes.Factions.Books(releaserFaction) && c.Bounties is { } ledger)
         {
@@ -800,6 +807,7 @@ public sealed partial class FixtureRegistry
         if (escape) crimes?.SetPending(world, s, CrimeCode.EscapingPrison, cage!.Owner, CharacterId.None, CrimeSystem.MinTimer);
         bool escaped = escape || !c.Kidnapped && cage is not null && crimes is not null && crimes.Factions.Lawless(cage.Owner);
         if (cage is not null && cage.Occupant == prisoner) cage.Occupant = CharacterId.None;
+        if (cage is not null) StepOut(table, s, cage);
         Clear(c);
         c.Escaped = escaped;
         if (escape && c.SlaveState == 1) SetSlave(world, c, 2, c.SlaveOwner);   // a slave getting out is an escaped slave (Task_GetOutOfCage)

@@ -242,6 +242,7 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   against the cage owner, prisoner flag `+0x1a0 -> +0xe8`) unless the sentence has run out; the escape flag is forced on for
   cages whose owner faction is `not real` or has `fundamental type` 8 (**Observed**). Lifting a prisoner out of another faction's cage
   (`FUN_14034fbe0`): the lifter gets code 7, the prisoner code 0xc (**Observed**).
+- **Exit spot** (**Observed**, upstream `b0a18865` analysis of `FUN_140330600` → `FUN_140661f90`): clearing the hold moves the character to the held building's nearest `NODE_USE` (type 4); without one it stays. The original also performs a physics ray query whose exact use is **Unknown**. Meitou's `GetOut` and `Release` use `ExitSpot` (nearest to the cage origin, transformed by its yaw), preserving facing; lifting out remains the carrier's responsibility.
 - **Release** (`Task_ReleasePrisoner` 110): clears the occupancy, "{1} has been released from prison." (**Observed**).
 - **Beds**: `+0x2f8 = 1`, bed handle +0x300 ([carry-loot](carry-loot.md)); beds have no lock. Details below.
 - Character save keys: `in something` (= +0x2f8) and `in what` (handle +0x300) (**Verified**, `FUN_1406280a0`); platoons
@@ -360,6 +361,10 @@ Shackles: the item's INVENTORY_ITEM_STATE record carries the same four keys (`Lo
 | What else sets or clears the squad "house locked" flag | the rules above |
 
 ## Multiplayer implementation contract
+
+**Observed** (source inspection): cage exit placement runs in the authoritative simulation through
+`CharacterTable.Place`, clearing movement and updating position for existing character snapshot replication.
+`GetOutOrder` actor authorization and release access checks still precede placement; no new wire fields.
 
 **Observed** (source inspection; no new/run tests): attributed lock, door, shackle and bed orders
 use explicit controlled actors. Door-panel toggles require the named owner's ManageAssets permission,
