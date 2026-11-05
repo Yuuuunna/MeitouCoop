@@ -83,3 +83,9 @@ pixel differences; temporal upscalers and evolving particles have noise. Profile
 recording/GPU/pre-frame/streaming, not serialized sums. --log-spikes helps diagnose tails.
 **Verified screenshot conventions:** right-handed/Y-up, counter-clockwise fronts, textures as
 stored; human~19.5 units and katana12.8. Unit/placement formulas have their own research scopes.
+
+## Game graphics controls
+
+**Observed** (implementation): FSR3 frame generation is selected at startup; changes in Display settings report a pending restart. The frame limit counts presented frames, including generated frames. Ctrl+Shift+F12 writes a VRAM cache report beside the executable. F11 can overlay counted character boxes and paths already included in the authorized snapshot.
+
+**Observed** (implementation): game screenshots are PNG in `_screens`, numbered by `screens.cfg`. A multiplier of two or more renders guarded tiles at the window pixel scale with exposure held across the shot. Local birds use visible character/building snapshots and static asset placements, without changing gameplay authority.

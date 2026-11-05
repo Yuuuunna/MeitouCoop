@@ -330,3 +330,5 @@ Names starting `MEITOU_` are also recorded in the benchmark JSON (`WorldApp.Benc
 - `MEITOU_FRAGMENT` (`src/Meitou.Rendering/Gpu/Shaders/GlslProgramCompiler.cs:167`) is a shader macro, not an environment variable, so it is excluded.
 - `MTL_CAPTURE_ENABLED` appears only in the game's usage text (`GameOptions.cs:120`); no project code reads it.
 - The viewer's `--class` and the impostor `--debug` semantics are not traced beyond the parse.
+
+**Observed** (implementation): `--benchmark-baseline` uses Medium quality, disables GI and ground relief, and selects full-resolution SMAA for this run. `--ui-panel <name>` selects one screenshot panel. `--hidden-window` renders without showing the window.

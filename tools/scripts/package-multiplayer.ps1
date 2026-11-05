@@ -1,6 +1,7 @@
 ﻿param(
     [string] $Stage = 'artifacts/multiplayer-release',
-    [string] $Output = 'artifacts/releases/20261031-multiplayer-experimental'
+    [string] $Output = 'artifacts/releases/20261031-multiplayer-experimental',
+    [string] $ValidationNote = '本包尚未完成实机验收。'
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -27,12 +28,12 @@ Meitou 多人测试包 — 仅输入服务器地址 / Windows x64 / .NET 自包�
 解压客户端，双击 start-client.cmd，选择“多人游戏”，输入服务器 IP:端口即可。
 同一电脑可填 localhost:27800。不需要账号、密码、签发账号或 connection.json。
 首次连接自动建立并记住本机身份，选择出身、完成捏脸后入场；再次使用同一地址连接会恢复原角色。
-新势力初始名称为“无名者”。出身包含服务器加载的原版和模组内容，并受服务器角色数量和种族规则限制。
+新势力由服务端自动分配不重名的名称，例如“无名者 2”。出身包含服务器加载的原版和模组内容，并受服务器角色数量和种族规则限制。
 
 3. 本机身份与重连
 本机身份自动保存在 %LOCALAPPDATA%/Meitou/identities，创建恢复记录保存在 Meitou/connections。
 不要删除或分享身份文件；换电脑或删除身份会被识别为新玩家。身份按服务器地址保存，建议始终使用同一地址。
-首次连接记住服务器证书，之后证书改变会拒绝连接，不会自动换身份或忽略校验。
+开发测试阶段暂时关闭服务器证书校验（正式发布前恢复），更换服务器证书不再拦截连接；TLS 加密和账号认证仍保留。
 断线后重新连接即可；结果未明的创建会按原请求恢复，不重复发放角色。
 服务端 AllowDeviceRegistration 默认 true；关闭后阻止新设备注册，已有身份仍可连接。
 
@@ -41,11 +42,14 @@ Steam 安装通常自动发现。否则复制 meitou.local.example.json 为 meit
 meitou.local.json 仅用于定位原版安装，与服务器连接和账号无关。
 
 5. 测试与反馈
-此为实验包。已检查只填地址的首次创建、退出重连恢复同一角色；完整图形交互仍需实机验收。
-自动身份路径相关 13 项测试通过；其他现有相关测试 29 项通过，1 项旧存档迁移测试失败。
+此为实验包。验证结果见下方本次构建说明，完整图形交互仍需实机验收。
+旧账号仍可通过 MeitouClient.exe --connect connection.json 入场；只填地址会使用独立的设备身份。
+升级时替换完整程序文件，不要单独混换 Meitou DLL；保留 server.json、server-data 和私人连接配置。
+network 日志记录基线丢失、视图撤回/恢复和状态变化，用于排查暂停及角色消失。
 客户端日志为 exe 旁 log.txt；服务端错误显示在控制台。报告时提供日志和复现步骤，不发送身份文件或 server.pfx。
 兼容校验默认覆盖数据库和模组加载顺序，GameplayAssets 可追加玩法资产。检查点目前不会自动轮替清理。
 '@
+$readme += "`r`n本次构建验证：$ValidationNote`r`n"
 [IO.File]::WriteAllText((Join-Path $outputRoot '实机测试说明.txt'), $readme)
 $head = (git -C $repo rev-parse HEAD).Trim()
 foreach ($kind in @('client', 'server')) {
@@ -55,6 +59,11 @@ foreach ($kind in @('client', 'server')) {
     Get-ChildItem -LiteralPath (Join-Path $stageRoot $kind) -File | Where-Object {
         $_.Name -notin @('log.txt', 'meitou.local.json', 'meitou.user.json', 'server.json') -and $_.Extension -in @('.dll', '.exe', '.json', '.pdb', '.config')
     } | Copy-Item -Destination $destination
+    # Vendor runtimes are optional client dependencies; retain their nested notices from publish output.
+    $runtimeLicenses = Join-Path (Join-Path $stageRoot $kind) 'licenses'
+    if ($kind -eq 'client' -and (Test-Path -LiteralPath $runtimeLicenses -PathType Container)) {
+        Copy-Item -LiteralPath $runtimeLicenses -Destination $destination -Recurse
+    }
     foreach ($license in @('LICENSE', 'LICENSE-EXCEPTION.md', 'THIRD_PARTY_NOTICES.md')) { Copy-Item -LiteralPath (Join-Path $repo $license) -Destination $destination }
     [IO.File]::WriteAllText((Join-Path $destination 'README-实机测试.txt'), $readme)
     [IO.File]::WriteAllText((Join-Path $destination 'meitou.local.example.json'), '{"kenshiPath":"C:\\Games\\Kenshi"}')
@@ -66,7 +75,7 @@ foreach ($kind in @('client', 'server')) {
     $assemblyHashes = Get-ChildItem -LiteralPath $destination -File | Where-Object { $_.Name -like 'Meitou*.dll' -or $_.Name -like 'Meitou*.exe' } | ForEach-Object {
         @{ name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     }
-    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=17; engine='meitou-experimental-1'; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
+    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=19; engine='meitou-experimental-1'; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination 'build-info.json') -Encoding utf8
     [IO.Compression.ZipFile]::CreateFromDirectory($destination, (Join-Path $outputRoot "$name.zip"), [IO.Compression.CompressionLevel]::Optimal, $true)
 }

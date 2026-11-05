@@ -15,7 +15,7 @@ sealed partial class GameHost
     long groundRevision = -1;
     readonly HashSet<int> shownGround = [];
 
-    static string GroundId(int id) => "ground:" + id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    static string GroundId(int id) => Meitou.Rendering.WorldObjectRenderer.GroundKeyPrefix + id.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>Once a frame with <see cref="UpdateBuildings"/>, after a new world's runtime placements were cleared.</summary>
     void UpdateGroundItems(WorldSnapshot snapshot)
@@ -30,11 +30,16 @@ sealed partial class GameHost
             shownGround.Remove(id);
             falls.RemoveAll(f => f.Ground.Id == id);
             restLimbs.Remove(id);
+            groundPoses.Remove(id);
+            hiddenGround.Remove(id);
+            hiddenGroundKeys.Remove(GroundId(id));
+            groundFloors.Remove(id);
         }
         foreach (var g in snapshot.GroundItems)
         {
             if (!shownGround.Add(g.Id)) continue;
             var (rotation, y) = g.Dropped ? LaidFlat(g) : (g.Rotation, g.Position.Y);
+            groundPoses[g.Id] = (new Vector3(g.Position.X, y, g.Position.Z), rotation, GroundId(g.Id));
             if (LimbLookOf(g.Record) is not null)
             {
                 // A severed limb is drawn by the debris renderer (its SeveredLimb look: skin tone and blood), falling and at rest.
@@ -51,9 +56,41 @@ sealed partial class GameHost
     void ShowGround(GroundItemSnapshot g, Quaternion rotation, float y) =>
         ActiveObjects?.AddRuntime(new BuildingPlacement(WorldLayout.ZoneOf(g.Position.X, g.Position.Z), GroundId(g.Id), g.Record, g.Position, rotation, null, y) { Key = GroundId(g.Id) });
 
-    readonly Dictionary<string, OgreBounds?> groundBounds = [];
+    /// <summary>
+    /// The ground items above the shown floor of a building in the interior view (game: <c>FUN_1409fb540</c>, as a character there): not picked and without a label; the renderer leaves
+    /// their placements out by <see cref="hiddenGroundKeys"/>, a limb's debris is left out here.
+    /// </summary>
+    readonly HashSet<int> hiddenGround = [];
 
+    /// <summary>The placement keys of <see cref="hiddenGround"/>, the renderer's <c>WorldObjectRenderer.HiddenItems</c>: drawing and picking share one answer.</summary>
+    readonly HashSet<string> hiddenGroundKeys = [];
+
+    /// <summary>By ground item, the building in the view it was last found in, where it was drawn then and the floor it lies on there (<see cref="UpdateGroundVisibility"/>).</summary>
+    readonly Dictionary<int, (InteriorVolume Building, Vector3 At, int Floor)> groundFloors = [];
+
+    /// <summary>
+    /// After the interior view each frame: which ground items are above their building's shown floor (as <see cref="AboveViewedFloor"/>). An item's floor is worked out again only
+    /// when it is drawn somewhere else or found in another building: a still item stays on its floor, only the shown floor changes.
+    /// </summary>
+    void UpdateGroundVisibility()
+    {
+        hiddenGround.Clear();
+        hiddenGroundKeys.Clear();
+        foreach (var (id, pose) in groundPoses)
+        {
+            if (ViewedAt(pose.At) is not { } inView) continue;
+            int shown = interiorView[inView.PlacementId];
+            if (shown >= 3) continue;
+            if (!groundFloors.TryGetValue(id, out var known) || !ReferenceEquals(known.Building, inView) || known.At != pose.At)
+                groundFloors[id] = known = (inView, pose.At, inView.FloorAt(pose.At));
+            if (known.Floor > shown && hiddenGround.Add(id)) hiddenGroundKeys.Add(pose.Key);
+        }
+    }
+
+    /// <summary>Where each shown ground item is drawn (a falling limb: where it comes to rest), for floor visibility.</summary>
+    readonly Dictionary<int, (Vector3 At, Quaternion Rotation, string Key)> groundPoses = [];
     /// <summary>The bounds of a record's item mesh (its ground mesh, else its mesh), read once; null when it has none.</summary>
+    readonly Dictionary<string, OgreBounds?> groundBounds = [];
     OgreBounds? BoundsOf(string record)
     {
         if (groundBounds.TryGetValue(record, out var bounds)) return bounds;
@@ -130,6 +167,10 @@ sealed partial class GameHost
         shownGround.Clear();
         falls.Clear();
         restLimbs.Clear();
+        groundPoses.Clear();
+        hiddenGround.Clear();
+        hiddenGroundKeys.Clear();
+        groundFloors.Clear();
         groundRevision = -1;
     }
 }

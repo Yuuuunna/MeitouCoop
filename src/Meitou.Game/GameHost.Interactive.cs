@@ -28,10 +28,12 @@ sealed partial class GameHost
         int fpsLimit = g.FpsLimit ?? config.FpsLimit;
         int initialFpsLimit = fpsLimit;
         VulkanDisplay.RayTracing = o.WantsRayTracing;
-        if (!g.NoPrecompile) JitWarmup.Start();   // the game's methods compiled ahead, from now on, behind the loading
+        // The game's methods compiled ahead behind the loading.
+        if (!g.NoPrecompile) JitWarmup.Start();
         // The world's files are read on a worker from here on: while the window and the device are made, then behind the loading screen.
         var sceneRead = LoadScene is { } readScene ? Task.Run(readScene) : null;
         BeginAudio();
+        bool frameGenerationAtStart = config.FrameGeneration;   // read at start-up only
         using var display = new VulkanDisplay(WindowOptions.Default with
         {
             Size = new Vector2D<int>(o.Width, o.Height),
@@ -40,7 +42,7 @@ sealed partial class GameHost
             IsVisible = false,
             FramesPerSecond = 0,
             UpdatesPerSecond = 0,
-        }, vsync, dlss: true);   // Load before the device so the settings panel can switch to DLSS without restarting.
+        }, vsync, dlss: true, frameGeneration: frameGenerationAtStart);   // Load before the device so the settings panel can switch to DLSS without restarting.
         streamline = display.Streamline;
         ngx = display.Ngx;
         var window = display.Window!;
@@ -53,14 +55,16 @@ sealed partial class GameHost
         bool fullScreen = config.FullScreen && !o.Windowed;
         bool savedVSync = vsync, savedFullScreen = fullScreen;
         if (fullScreen) BorderlessFullScreen.Toggle(window);
-        else if (!o.SizeGiven) window.WindowState = WindowState.Maximized;
+        else if (!o.SizeGiven && !o.HiddenWindow) window.WindowState = WindowState.Maximized;   // maximising would show a hidden window
         BeginLoadingScreen(display);   // its textures and fonts are made before the window shows
         // The Faithful start shows the original's splash, as the game does before its title, instead of the loading screen (unless the Interface setting turns it off).
         if (loading is { Faithful: true } && config.SplashScreens && OpensOnTitle(interactive: true)) loading.StartSplash();
         // The first loading frame is in the swapchain when the window shows, and on screen before the splash closes. Not on Wayland: a window gets its
         // shell role when it shows, and a buffer attached to the surface before that makes the compositor drop the client ("attached a buffer before
         // configure event"), so there the window shows first and takes the compositor's configure before anything is drawn.
-        if (window.Native?.Wayland is not null)
+        // --hidden-window: drawn and presented as usual, never shown (an unattended run).
+        if (o.HiddenWindow) LoadingFrame();
+        else if (window.Native?.Wayland is not null)
         {
             window.IsVisible = true;
             window.DoEvents();
@@ -95,12 +99,15 @@ sealed partial class GameHost
         if (gpu.Characters is { } portraits) { var (atlas, sampled) = portraits.PortraitAtlas; player.SetUiTexture(PlayerInterface.PortraitTexture, atlas, sampled); }
         // The debug overlays (docs/engine.md): F10 the debug menu (GameHost.DebugMenu.cs), F11 the frame statistics, F12 the profiler chart.
         var profiler = overlay is null ? null : new FrameProfiler(display.Context, () => display.Context.GpuFrameMs);
+        // --log-spikes: the run's allocations by type (the runtime's samples, one per ~100 KB), printed with the summary.
+        using var spikeGc = SpikeLog.Enabled ? new BenchGcListener() : null;
         // The Faithful / Meitou switches; Shift+F1 turns Meitou off and back on (plain F2..F4 and F8 are the game's speed and screenshot keys), the Tab panel sets them one by one.
         var switches = WorldFrame.LiveSwitches(o, () => gpu, () => camera, () => render);
         var meitou = new MeitouToggle(switches);
         // Keep the shared rendering settings' callbacks and persistence keys; the game supplies its own modal layout.
-        // --low-end (WorldOptions.LowEnd) is a preset for this run: the saved sliders and switches would undo it, so they are left as saved and not applied.
-        bool lowEnd = Environment.GetCommandLineArgs().Contains("--low-end");
+        // --low-end (WorldOptions.LowEnd) and --benchmark-baseline are presets for this run: the saved sliders and switches would undo them, so they are left as saved and not applied.
+        bool lowEnd = Environment.GetCommandLineArgs().Contains("--low-end") || g.BenchmarkBaseline;
+        var runOnly = RunOnlyKeys();   // the keys this run leaves as saved (--bloom)
         var settingsValues = overlay is null ? null : WorldFrame.CreateSettingsPanel(overlay, gpu, render,
             getHour: () => (float)session.Clock.HourOfDay, setHour: v => { session.Clock.SetHourOfDay(v); if (IsDuel) duelHour = v; },
             getVSync: () => display.VSync, setVSync: v => display.VSync = v, switches: switches,
@@ -118,6 +125,7 @@ sealed partial class GameHost
                     Text: v => v <= 0 ? "Unlimited" : $"{v:0} fps"), config)
             {
                 UpscalerStatus = () => gpu.Post?.ActiveUpscaler ?? "Off",
+                FrameGenerationStatus = () => (display.FrameGeneration ? "active" : frameGenerationAtStart ? "unavailable (see log)" : "off") + (config.FrameGeneration != frameGenerationAtStart ? ", pending restart" : ""),
                 AttackSlotsChanged = slots => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.AttackSlots = slots; },
                 LateDefencesChanged = on => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on; },
                 GunnerFacingChanged = on => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.GunnerFacesBarrel = on; },
@@ -147,17 +155,20 @@ sealed partial class GameHost
         player.ConfigureTutorials(tutorials);
         if (panel is not null && !lowEnd)
             foreach (var slider in panel.Sliders)
-                if (!SessionSliders.Contains(slider.Label) && config.Graphics.TryGetValue(slider.Label, out float v) && !(o.Post.Upscale.Explicit && WorldFrame.UpscalerSliders.Contains(slider.Label))
+                if (!runOnly.Contains(slider.Label) && config.Graphics.TryGetValue(slider.Label, out float v) && !(o.Post.Upscale.Explicit && WorldFrame.UpscalerSliders.Contains(slider.Label))
                     && !(slider.Label == WorldFrame.TextureQualitySlider && Environment.GetCommandLineArgs().Contains("--texture-quality")))   // the saved one was applied before the boot (Program)
                     slider.Set(Math.Clamp(v, slider.Min, slider.Max));
+        // The look as the command line chose it: Faithful or Meitou for "all", else read from the switches (not saved).
+        if (CommandLineLook() is var (given, faithfulLook) && given) config.FaithfulLook = faithfulLook;
         // The switches as saved, then the saved preset (one the launcher chose), unless the command line chose them (--meitou / --faithful):
         // switches it moved would read as another preset.
         if (panel is not null && !lowEnd && !Environment.GetCommandLineArgs().Any(a => a is "--meitou" or "--faithful"))
         {
             foreach (var toggle in panel.Toggles)
-                if (config.Graphics.TryGetValue(SwitchKey(toggle.Label), out float v) && (v >= 0.5f) != toggle.Get()) toggle.Set(v >= 0.5f);
+                if (!SettingsMenu.HiddenSwitch(toggle.Label) && !runOnly.Contains(SwitchKey(toggle.Label)) && config.Graphics.TryGetValue(SwitchKey(toggle.Label), out float v) && (v >= 0.5f) != toggle.Get()) toggle.Set(v >= 0.5f);
             panel.ApplySavedPreset();
         }
+        if (g.BenchmarkBaseline) panel?.ApplyBenchmarkBaseline();
         var stats = new List<string>();
         bool statsVisible = false, fpsVisible = false;
         string fpsText = "";
@@ -205,7 +216,7 @@ sealed partial class GameHost
 
         var silkInput = Silk.NET.Input.InputWindowExtensions.CreateInput(window);
         // The faithful windows' edit boxes copy and paste through the first keyboard's system clipboard.
-        player.ClipboardRead = () => silkInput.Keyboards.Count > 0 ? silkInput.Keyboards[0].ClipboardText : null;
+        player.ClipboardRead = () => silkInput.Keyboards.Count > 0 ? ClipboardText.Read(silkInput.Keyboards[0]) : null;
         player.ClipboardWrite = text => { if (silkInput.Keyboards.Count > 0) silkInput.Keyboards[0].ClipboardText = text; };
         Vector2? lastMouse = null;
         // Rotating pins the pointer. Windows and macOS put it back after every move (HoldPointer); Linux locks it (GLFW's disabled cursor),
@@ -302,7 +313,7 @@ sealed partial class GameHost
                     keyboard.ClipboardText = code;
                     Console.WriteLine($"camera    copied {code} ({WorldCameraCode.Describe(camera)})");
                 }
-                else if (WorldCameraCode.Decode(keyboard.ClipboardText) is { } pose)
+                else if (WorldCameraCode.Decode(ClipboardText.Read(keyboard)) is { } pose)
                 {
                     // The code's orbit (target, yaw, pitch, distance) as the free camera's eye and look direction.
                     Vector3 back = new(MathF.Cos(pose.Pitch) * MathF.Sin(pose.Yaw), MathF.Sin(pose.Pitch), MathF.Cos(pose.Pitch) * MathF.Cos(pose.Yaw));
@@ -339,16 +350,17 @@ sealed partial class GameHost
                 return;
             }
             // A numpad key bound to a game hotkey (the orders, NUM0..NUM8 by default) is the game's, except with Ctrl (saving a shot) or the cinema's editor open (F6).
-            bool hotkey = !IsDuel && !ctrl && !cinema.EditorVisible && KeyMap.Map(k) is { } gameKey && player.IsHotkey(gameKey);
+            bool hotkey = !IsDuel && !ctrl && !cinema.EditorVisible && KeyMap.Map(k) is { } gameKey && (player.IsHotkey(gameKey));
             if (!hotkey && Enum.TryParse(k.ToString(), out CinemaKey cinemaKey) && cinema.OnKey(cinemaKey, ctrl, shiftDown)) return;
             // F9 is the game's quickload; the fps counter is on Ctrl+F9 (a modifier, so the key never reaches the input bindings).
             if (k == SilkKey.F9 && ctrl) { fpsVisible = !fpsVisible; return; }
             if (KeyMap.Map(k) is { } key)
             {
-                if (shiftDown && key == EngineKey.F1) { Console.WriteLine(meitou.Toggle()); return; }
+                if (shiftDown && key == EngineKey.F1) { Console.WriteLine(meitou.Toggle()); config.FaithfulLook = !meitou.On; return; }
                 if (shiftDown && key == EngineKey.F2 && switches.FirstOrDefault(e => e.Id == "skin") is { } skin)   // the skin switch alone, to compare faces
                 { skin.IsMeitou = !skin.IsMeitou; Console.WriteLine($"skin      {skin.State}"); return; }
                 if (shiftDown && key == EngineKey.F11) { ToggleNavOverlay(); return; }
+                if (shiftDown && ctrl && key == EngineKey.F12) { DumpVram(profiler); return; }
                 if (shiftDown && key == EngineKey.F12) { if (profiler is not null) profiler.ShowVram = !profiler.ShowVram; return; }   // the VRAM pie (F12 alone cycles the profiler)
                 if (player.BuildKey(key, shiftDown)) return;
                 session.Input.SetKey(key, true);
@@ -365,14 +377,18 @@ sealed partial class GameHost
                 if (Covered) { loading?.SkipSplash(); return; }
                 player.UiVisible = PanelLive() && !g.NoPopulation;
                 var at = Pixels(orbitAnchor ?? m.Position);
-                if (PanelLive() && KeyMap.Map(b) is { } settingsButton && panel?.MouseDown(at, settingsButton) == true) { panelDrag = true; return; }
+                var physical = KeyMap.Map(b);
+                bool select = physical is { } pressed && pressed == EngineButton.Left;
+                if (PanelLive() && physical is { } settingsButton && panel?.MouseDown(at, settingsButton) == true) { panelDrag = true; return; }
                 if (PanelLive() && panel?.Contains(at) == true) return;
-                if (b == SilkButton.Left && PanelLive() && sandboxPicker?.MouseDown(at) == true) return;
-                if (b == SilkButton.Left && profiler?.Click(at) == true) { profilerClick = true; return; }   // F12's legend opens and closes rows
+                if (select && PanelLive() && !config.SandboxPanelCollapsed && sandboxPicker?.MouseDown(at) == true) return;
+                if (select && PanelLive() && SandboxToggleClick(at)) return;
+                if (select && profiler?.Click(at) == true) { profilerClick = true; return; }   // F12's legend opens and closes rows
+                if (select && StatsToggleClick(at)) { profilerClick = true; return; }   // F11's character boxes and paths
                 // The cinema's editor: its clicks never select or move characters.
-                if (b == SilkButton.Left && cinema.MouseDown(at)) return;
+                if (select && cinema.MouseDown(at)) return;
                 if (cinema.Contains(at)) return;
-                if (KeyMap.Map(b) is { } button)
+                if (physical is { } button)
                 {
                     // Ctrl and Alt with the right button: pick up / put down and loot (docs/game/ui-input.md, Meitou's carry bindings).
                     bool Held(SilkKey a, SilkKey b) => silkInput.Keyboards.Any(k => k.IsKeyPressed(a) || k.IsKeyPressed(b));
@@ -423,7 +439,7 @@ sealed partial class GameHost
             mouse.Scroll += (m, wheel) =>
             {
                 if (Covered || PanelLive() && panel?.Scroll(wheel.Y) == true) return;
-                if (PanelLive() && sandboxPicker?.Scroll(wheel.Y) == true) return;
+                if (PanelLive() && !config.SandboxPanelCollapsed && sandboxPicker?.Scroll(wheel.Y) == true) return;
                 var at = Pixels(orbitAnchor ?? m.Position);
                 if (!cinema.Contains(at) && !player.UiScroll(at, wheel.Y) && !(PanelLive() && player.ContainsUi(at))) session.Input.AddWheel(wheel.Y);
             };
@@ -468,7 +484,7 @@ sealed partial class GameHost
                 actions.Pressed(InputAction.ToggleFreeCamera)) player.Follow = null;
             if (actions.Pressed(InputAction.ToggleSettings) && panel is not null) panel.Visible = !panel.Visible;
             if (actions.Pressed(InputAction.Screenshot)) screenshotRequested = true;
-            if (actions.Pressed(InputAction.ToggleStats)) statsVisible = !statsVisible;
+            if (actions.Pressed(InputAction.ToggleStats)) { statsVisible = !statsVisible; FoliageGpuCull.CountTriangles = statsVisible; }   // the foliage triangles are read from its GPU cull while shown
             if (actions.Pressed(InputAction.ToggleFps)) fpsVisible = !fpsVisible;
             if (actions.Pressed(InputAction.QuickSave)) quickSaveRequested = true;
             if (actions.Pressed(InputAction.QuickLoad)) quickLoadRequested = true;
@@ -486,9 +502,15 @@ sealed partial class GameHost
                     strategy: actions.Pressed(InputAction.ToggleFreeCamera));
             }
         };
+        Meitou.Rendering.UiLayer? uiLayer = null;
+        Meitou.Rendering.Upscalers.FrameGeneration? frameGen = null;
+        bool frameGenTried = false;
         double drawTotal = 0, gpuSum = 0, statsTimer = 0;
         int gpuSamples = 0, statsFrames = 0;
         long statsTicks = 0;
+        // The triangle counts summed over the statistics' second (the objects' from their running colour total).
+        double terrainTris = 0, characterTris = 0, grassBlades = 0;
+        long objectTris0 = 0;
         while (!window.IsClosing && !quit)
         {
             BenchLap(BenchTail);
@@ -509,12 +531,14 @@ sealed partial class GameHost
                 menuLongestFrame = Math.Max(menuLongestFrame, dt);
                 if (dt > 0.1) menuSlowFrames++;
             }
-            // The counter: the mean over the last tenth of a second, so a single late frame doesn't read as a drop.
+            // The counter: the mean over the last tenth of a second, so a single late frame doesn't read as a drop; then a frame's work
+            // (its time without the waits) and its whole time in brackets.
             fpsWindow += dt;
             fpsWindowFrames++;
             if (fpsWindow >= 0.1)
             {
-                fpsText = $"{fpsWindowFrames / fpsWindow:0} fps";
+                fpsText = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"{fpsWindowFrames / fpsWindow:0} fps  ({fpsWindow * 1000 / fpsWindowFrames:0.0} ms)");
                 fpsWindow = 0;
                 fpsWindowFrames = 0;
             }
@@ -537,9 +561,10 @@ sealed partial class GameHost
             // Edge scrolling (the game's default): the pointer at the edge of the window pans the camera, unless something else has the pointer.
             session.Camera.Settings.EdgeScroll = config.EdgeScroll != false;
             session.Camera.Strategy.EdgePointer = Covered || TitleVisible || panel?.Visible == true || interfaceHidden || cinemaHolds || cinema.EditorVisible ? null : WindowPointer.InWindow(window);
-            if (session is WorldSession profileOwner) profileOwner.World.Profile.Enabled = profiler is { Showing: not FrameProfiler.Mode.Off } || g.PlayBench is not null;
+            if (session is WorldSession profileOwner) profileOwner.World.Profile.Enabled = profiler is { Showing: not FrameProfiler.Mode.Off } || g.PlayBench is not null || SpikeLog.Enabled;
             if (!Covered) session.Advance(frameDt);   // loading and arrival preserve the loaded world's exact time
             else if (session.IsRemote) session.Advance(0); // ingest authoritative readiness even while presentation is covered
+            ReportOnlineDisconnection();
             DuelHoldClock();
             double advanceMs = Stopwatch.GetElapsedTime(a0).TotalMilliseconds;
             advanceTotal += advanceMs;
@@ -561,6 +586,7 @@ sealed partial class GameHost
             cinema.Advance(cinema.FrameTime(dt));   // a flight through the keys moves the camera (and takes it from the rig)
             if (tour.Active && !tour.Advance(dt, camera, TourPosition)) EndTour();
             gpu.Ahead = tour.ArrivalEye(TourPosition);   // the streaming loads the landing view during the flight
+            gpu.CameraFlying = tour.Moving;   // the far shadow cascades wait for the landing (docs/render-shadows.md "Flights")
             gpu.Kept = !config.KeepTexturesAtCharacters ? []
                 : config.KeepTexturesAtAllSquads ? [.. session.CurrentSnapshot.PlayerSquads.SelectMany(s => s.Members).Select(TourPosition).OfType<Vector3>()]
                 : [.. player.SquadBarMembers().Select(c => TourPosition(c.Id)).OfType<Vector3>()];
@@ -626,17 +652,37 @@ sealed partial class GameHost
             else
                 gpu.HoverKeys = outlining && pointerWorld && player.HoverTarget is { } hover ? [(DrawKey(hover.Id), hover.Colour)] : [];
             BenchLap(5);
-            if (display.BeginFrame(size.X, size.Y))
+            bool began = display.BeginFrame(size.X, size.Y);
+            if (began)
             {
                 BenchLap(6);
                 long t0 = Stopwatch.GetTimestamp();
                 // The chain and the panel draw into the window's backbuffer (made again when the size changes).
                 var backbuffer = display.Backbuffer!;
                 gpu.Post!.Target = backbuffer;
-                if (overlay is not null) overlay.Target = backbuffer;
+                // Frame generation (the setting, when the FFX layer is in use): made on the first frame; wanted except under the loading screen and for saved pictures.
+                if (frameGen is not null && display.FrameGenerationLayer is null) { frameGen.Dispose(); frameGen = null; }   // the layer fell back to the plain swapchain
+                if (!frameGenTried && display.FrameGenerationLayer is { } fgLayer)
+                {
+                    frameGenTried = true;
+                    frameGen = Meitou.Rendering.Upscalers.FrameGeneration.TryCreate(display.Context, fgLayer, out var fgWhy);
+                    if (frameGen is null) Console.WriteLine($"frame generation  unavailable: {fgWhy}");
+                }
+                frameGen?.BeginFrame(!Covered && !screenshotRequested && takeFile is null, size.X, size.Y);
+                gpu.Post!.FrameGen = frameGen;
+                // The interface draws into a transparent layer of its own, laid over the backbuffer just before the present.
+                uiLayer ??= new Meitou.Rendering.UiLayer(display.Context);
+                var uiTarget = uiLayer.Clear(size.X, size.Y);
+                if (overlay is not null) overlay.Target = uiTarget;
                 profiler?.BeginFrame();
                 // A scene load draws only the loading screen; the warm-up draws whole frames under it (the first frames of a new place build what it needs).
                 bool covered = Covered, sceneLoading = sceneLoad is not null;
+                // Under the cover the streams take bigger shares of a frame (smooth frames do not matter there), until the warm-up's content is ready: its run of
+                // smooth frames is then measured at the play budgets.
+                bool streamsCovered = covered && !(warming && readySeconds > 0);
+                if (gpu.Characters is { } coveredCharacters) coveredCharacters.Covered = streamsCovered;
+                if (gpu.Foliage is { } coveredFoliage) coveredFoliage.Covered = streamsCovered;
+                if (gpu.Objects is { } coveredObjects) coveredObjects.Covered = streamsCovered;
                 // The loading screen follows the interface's mode as it is now (the settings can switch it at any time); only the Faithful mode counts loads.
                 bool faithfulUi = player.UiMode == Meitou.Data.Ui.UiMode.Faithful;
                 loadBar.Update(faithfulUi ? PendingLoads() : 0);
@@ -651,6 +697,9 @@ sealed partial class GameHost
                     DrawWorld(size.X, size.Y);
                     tickAhead = false;
                 }
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiWorldEnd);
+                // MEITOU_DIAG_SUBMIT=1 (issue #108): the world submitted and finished before the interface draws, and the interface before the present.
+                if (GpuContext.DiagSubmit) display.Context.SubmitAndWait();
                 // The sky arrival's fade to and from black, over the world and under everything else.
                 if (skyArrival is { Fade: > 0 } fading && overlay is not null)
                 {
@@ -667,7 +716,9 @@ sealed partial class GameHost
                 player.UiVisible = ui && !g.NoPopulation;
                 screenshotRequested = false;
                 if (ui && overlay is not null && !g.NoPopulation) DrawMarkers(overlay, size.X, size.Y);
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiMarkers);
                 if (!g.NoPopulation && !covered && panel?.Visible != true) player.Steer();
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiSteer);
                 if (ui && overlay is not null && !g.NoPopulation)
                 {
                     player.SelectionRings = config.SelectionRings;
@@ -675,6 +726,7 @@ sealed partial class GameHost
                 }
                 if (ui && overlay is not null && IsSandbox) DrawSandbox(overlay, size.X, size.Y);
                 if (ui && overlay is not null && IsBattle) DrawBattleCounter(overlay, size.X, size.Y);
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiHud);
                 // The debug overlays are left out of saved pictures: the statistics at the top left, the key list below them, the profiler.
                 if (ui && overlay is not null && !shot)
                 {
@@ -697,22 +749,40 @@ sealed partial class GameHost
                         overlay.Flush(size.X, size.Y);
                         panelsBottom = top + h - 8;
                     }
-                    if (statsVisible && stats.Count > 0) panelsBottom = overlay.Panel(size.X, size.Y, "Meitou   (F11 hides this)", stats, panelsBottom);
+                    if (walkPaths && !covered) panelsBottom = DrawWalkPathsLabel(overlay, session.CurrentSnapshot, size.X, size.Y, panelsBottom);
+                    characterBoxesToggle = walkPathsToggle = null;
+                    if (statsVisible && stats.Count > 0)
+                    {
+                        TickStatsToggles(stats);
+                        panelsBottom = overlay.Panel(size.X, size.Y, "Meitou   (F11 hides this)", stats, panelsBottom, laidOut: statsLaidOut);
+                        FindStatsToggles(overlay.CharWidth);
+                    }
                     if (debugMenuOpen) DrawDebugMenu(overlay, size.X, size.Y, panelsBottom);
                     profiler?.Draw(overlay, size.X, size.Y);
                     profiler?.DrawVram(overlay, size.X, size.Y);
                 }
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiDebug);
                 if (ui) panel?.Draw(size.X, size.Y);
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiSettings);
                 // Over everything: the letterbox and the cinema's editor (F6, also with F7); the game hides its status line.
                 if (overlay is not null && !covered) cinema.Draw(overlay, size.X, size.Y, shot || take || (interfaceHidden && !cinema.EditorVisible), showStatus: false);
+                // F11's character boxes and paths, on top of everything; the paths stay once ticked, with the statistics hidden too.
+                if (ui && overlay is not null && !covered && !shot)
+                {
+                    if (characterBoxes && statsVisible && gpu.Characters is { } boxed) DrawCharacterBoxes(overlay, boxed, camera, size.X, size.Y);
+                    if (walkPaths) DrawWalkPaths(overlay, session.CurrentSnapshot, camera, size.X, size.Y);
+                }
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiCinema);
                 // The loading screen over the whole frame while a scene loads or the world warms up.
                 if (covered && loading is not null && loadingOverlay is not null)
                 {
-                    loadingOverlay.Target = backbuffer;
+                    loadingOverlay.Target = uiTarget;
                     if (skyArrival is null) loading.Draw(size.X, size.Y);
                     else if (loading.Exiting || skyArrival is { AtStars: true, Arriving: false } && sceneLoad?.Clock.Elapsed.TotalSeconds >= 2)
                         loading.Draw(size.X, size.Y, background: false);
                 }
+                else loading?.ReleaseWhenGone();
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiLoading);
                 // The mouse pointer over everything, as the original's Pointer layer; never in saved pictures. What the right button would do picks it,
                 // the arrow over the settings panel, the cinema's editor and the loading screen. The free camera hides it (the original's `invisible`);
                 // Hardware mouse shows Windows' cursor instead.
@@ -723,14 +793,25 @@ sealed partial class GameHost
                     if (cursorMode != windowCursor) pointerMouse.Cursor.CursorMode = windowCursor = cursorMode;
                     if (!config.HardwareMouse && !freeLook) player.DrawPointer(pointerWorld ? player.PointerName : "arrow", pointerAt, size.X, size.Y);
                 }
-                display.Present();
+                // World and interface into the top-down picture the window shows (and a screenshot reads). With frame generation on this frame the window shows the
+                // world alone (the backbuffer, flipped by the present) and the layer lays the interface over every frame, generated ones too.
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiPointer);
+                bool generating = frameGen is not null && frameGen.Finish(uiTarget);
+                var finalPicture = generating ? null : uiLayer.Composite(backbuffer);
+                Meitou.Rendering.StageClock.UiPart(Meitou.Rendering.StageClock.UiComposite);
+                if (GpuContext.DiagSubmit) display.Context.SubmitAndWait();
+                display.Present(finalPicture);
                 profiler?.EndFrame();
                 BenchLap(7);
                 PlayBenchRendered(Stopwatch.GetElapsedTime(t0).TotalMilliseconds, display.Context.Pipelines.LatePipelines);
                 if (display.Context.GpuFrameMs > 0) { gpuSum += display.Context.GpuFrameMs; gpuSamples++; }
                 statsFrames++;
-                if (takeFile is not null) { FramebufferCapture.SavePng(display.Context, backbuffer, takeFile, size.X, size.Y); cinema.FrameDone(); }
-                else if (shot) SaveScreenshot(display.Context, backbuffer, size.X, size.Y);
+                terrainTris += gpu.Terrain.DrawnTriangles;
+                characterTris += gpu.Characters?.DrawnTriangles ?? 0;
+                if (gpu.Foliage is { Enabled: true } drawnFoliage) grassBlades += drawnFoliage.DrawnBlades;
+                if (takeFile is not null) { FramebufferCapture.SavePng(display.Context, finalPicture ?? backbuffer, takeFile, size.X, size.Y, topDown: finalPicture is not null); cinema.FrameDone(); }
+                else if (shot && GameScreenshots.Multiplier(install.Root) is >= 2 and var multiplier) SaveSupersampled(display.Context, multiplier, size.X, size.Y);
+                else if (shot) SaveScreenshot(display.Context, finalPicture ?? backbuffer, size.X, size.Y, topDown: finalPicture is not null);
             }
             statsTimer += dt;
             if (statsTimer >= 1)
@@ -745,7 +826,10 @@ sealed partial class GameHost
                     stats.Add($"simulation  {ticks / statsTimer:0} ticks/s, {session.CurrentSnapshot.Characters.Count} characters, dropped {statsOwner.Simulation.DroppedTicks} ticks in all");
                 }
                 else stats.Add($"server tick {session.CommandTick}, {session.CurrentSnapshot.Characters.Count} visible characters");
-                WorldStats.Add(stats, display.Context, gpu, render, camera.Eye);
+                WorldStats.Add(stats, display.Context, gpu, camera.Eye, new WorldStats.Triangles(terrainTris / Math.Max(statsFrames, 1), ((gpu.Objects?.Totals[0, 1] ?? 0) - objectTris0) / (double)Math.Max(statsFrames, 1), gpu.Foliage?.ColourTrianglesPerFrame, characterTris / Math.Max(statsFrames, 1), grassBlades / Math.Max(statsFrames, 1)), characterBoxes: true);
+                objectTris0 = gpu.Objects?.Totals[0, 1] ?? 0;
+                gpu.Foliage?.ResetDrawTally();
+                terrainTris = characterTris = grassBlades = 0;
                 stats.Add($"ui          {(interfaceHidden ? 0 : player.OpaqueUiCoverage):P0} of the screen under opaque controls");
                 if (audio is not null) stats.Add($"audio       {audio.StatsLine()}");
                 if (audio is not null) stats.Add($"world audio {WorldAudioStats()}");
@@ -761,7 +845,7 @@ sealed partial class GameHost
                 if (audio is not null) Console.WriteLine($"audio     characters: {CharacterAudioStats()}, {UiAudioStats()}");
                 if (menuFrames > 0) Console.WriteLine($"menu      {menuFrames} visible frames in {menuFrameSeconds:0.0} s: {menuFrames / menuFrameSeconds:0} fps, {menuSlowFrames} frames over 100 ms, longest {menuLongestFrame * 1000:0.0} ms");
                 Console.WriteLine($"smoke     {totalFrames} frames in {now:0.0} s: {totalFrames / now:0} fps on average, {session.Ticks.TotalTicks} control ticks, world tick {session.CommandTick}, game time {session.Clock.TimeText}"); quit = true; }
-            if (!display.VSync && fpsLimit > 0) Limit(frame, now, 1.0 / fpsLimit);
+            if (!display.VSync && fpsLimit > 0) Limit(frame, now, (frameGen is { Enabled: true } ? 2.0 : 1.0) / fpsLimit);
         }
         WritePlayBench(window.FramebufferSize);
         SaveSettings();
@@ -769,7 +853,12 @@ sealed partial class GameHost
         // otherwise dispose the profiler before the frame ring has delivered them.
         profiler?.Flush();
         if (SpikeLog.Enabled) SpikeLog.PrintSummary();
+        if (spikeGc is not null) PrintAllocations(spikeGc);
         profiler?.Dispose();
+        if (gpu.Post is { } postChain) postChain.FrameGen = null;
+        frameGen?.Dispose();
+        uiLayer?.Dispose();
+        birdStep?.Dispose(); birdStep = null;
         player.DisposeUi();
         EndLoadingScreen();
         overlay?.Dispose();
@@ -790,12 +879,13 @@ sealed partial class GameHost
             if (panel is not null && !lowEnd)
             {
                 foreach (var slider in panel.Sliders)
-                    if (!SessionSliders.Contains(slider.Label)) config.Graphics[slider.Label] = slider.Get();
-                foreach (var toggle in panel.Toggles) config.Graphics[SwitchKey(toggle.Label)] = toggle.Get() ? 1 : 0;
+                    if (!runOnly.Contains(slider.Label)) config.Graphics[slider.Label] = slider.Get();
+                foreach (var toggle in panel.Toggles)
+                    if (!runOnly.Contains(SwitchKey(toggle.Label))) config.Graphics[SwitchKey(toggle.Label)] = toggle.Get() ? 1 : 0;
                 panel.SavePreset();
             }
             config.Bindings = session.Bindings.ToDictionary();
-            config.UiMode = player.UiMode;
+            if (!g.LowEnd || player.UiMode != Meitou.Data.Ui.UiMode.Faithful) config.UiMode = player.UiMode;   // --low-end's Faithful UI is for the run
             config.Save();
         }
 
@@ -804,6 +894,35 @@ sealed partial class GameHost
 
     /// <summary>Panel rows that are the session's state, not graphics settings: kept out of <c>graphics</c> in meitou.user.json (vsync and full screen have their own keys).</summary>
     static readonly HashSet<string> SessionSliders = ["Time of day", "VSync", "Full screen"];
+
+    /// <summary>
+    /// The <c>graphics</c> keys this run neither reads from nor writes to meitou.user.json: <see cref="SessionSliders"/>, and the bloom's switch and strength
+    /// when <c>--bloom</c> sets them for one run.
+    /// </summary>
+    static HashSet<string> RunOnlyKeys()
+    {
+        var keys = new HashSet<string>(SessionSliders);
+        if (Environment.GetCommandLineArgs().Contains("--bloom")) { keys.Add(WorldFrame.BloomStrengthSlider); keys.Add(SettingsMenu.SwitchKeyPrefix + WorldFrame.BloomSwitch); }
+        return keys;
+    }
+
+    /// <summary>
+    /// The look the command line chose: Given when <c>--meitou</c> or <c>--faithful</c> is on it; Faithful by the last <c>all</c> (<c>--faithful all</c> true,
+    /// <c>--meitou all</c> false), null when only some switches are named (the menu then reads the look from the switches without saving it).
+    /// </summary>
+    static (bool Given, bool? Faithful) CommandLineLook()
+    {
+        var args = Environment.GetCommandLineArgs();
+        bool given = false;
+        bool? faithful = null;
+        for (int i = 0; i + 1 < args.Length; i++)
+            if (args[i] is "--meitou" or "--faithful")
+            {
+                given = true;
+                if (args[i + 1].Split(',', StringSplitOptions.TrimEntries).Contains("all")) faithful = args[i] == "--faithful";
+            }
+        return (given, faithful);
+    }
 
     /// <summary>The player moved, turned, zoomed or switched the camera this tick (what hands a camera the cinema left back to the rig).</summary>
     static bool CameraInput(ActionState a) =>
@@ -822,11 +941,63 @@ sealed partial class GameHost
         session.Input.SetMousePosition(anchor.X, anchor.Y);
     }
 
-    static void SaveScreenshot(GpuContext context, GpuTexture backbuffer, int width, int height)
+    void SaveScreenshot(GpuContext context, GpuTexture picture, int width, int height, bool topDown = false)
     {
-        var file = Path.Combine(Directory.CreateDirectory(@"C:\Temp").FullName, $"meitou-{DateTime.Now:yyyyMMdd-HHmmss}.png");
-        FramebufferCapture.SavePng(context, backbuffer, file, width, height);
+        var file = GameScreenshots.Next(install.Root);
+        FramebufferCapture.SavePng(context, picture, file, width, height, topDown);
         Console.WriteLine($"saved     {file}");
+    }
+
+    /// <summary>
+    /// The tiled shot of <c>screens.cfg</c>'s <c>multiplier</c> n (docs/game/ui-input.md "Screenshots"): the world alone, no interface, n x n tiles of window size, each drawn with the camera frustum
+    /// offset to it (<see cref="ViewWindow"/>) and blitted into one picture n times the window in each direction, as the original does. Screen-space effects therefore keep the window's pixel scale.
+    /// Each tile is drawn <see cref="TileGuard"/> pixels larger on every side and cropped, so what samples neighbours (ambient occlusion, bloom) has them at the tile's border; its temporal history is
+    /// dropped and warmed up again. The exposure of the live view is pinned for the whole shot, as the original zeroes the adaptation rate.
+    /// </summary>
+    void SaveSupersampled(GpuContext context, int n, int width, int height) => SaveTiles(context, n, width, height, GameScreenshots.Next(install.Root));
+
+    void SaveTiles(GpuContext context, int n, int width, int height, string file)
+    {
+        var post = gpu.Post!;
+        int warm = post.WarmupFrames, guard = TileGuard(width, height), tw = width + 2 * guard, th = height + 2 * guard;
+        var (adapted, _) = post.ReadExposure();
+        if (!float.IsNaN(adapted)) post.HoldExposure(adapted, n * n * (warm + 1) + 2);
+        var live = post.Target;
+        using var tile = context.CreateTexture(new Meitou.Rendering.Gpu.TextureDesc(Meitou.Rendering.Gpu.InternalFormat.Rgba8, tw, th,
+            Use: Meitou.Rendering.Gpu.TextureUse.ColourTarget | Meitou.Rendering.Gpu.TextureUse.TransferSrc | Meitou.Rendering.Gpu.TextureUse.Sampled, Name: "screenshot tile"));
+        var picture = new byte[n * width * n * height * 4];
+        post.Target = tile;
+        try
+        {
+            for (int row = 0; row < n; row++)
+                for (int column = 0; column < n; column++)
+                {
+                    ViewWindow.Current = ViewWindow.Tile(n, column, row, width, height, guard);
+                    post.ResetHistory();
+                    for (int i = 0; i <= warm; i++)
+                    {
+                        DrawWorld(tw, th);
+                        context.EndFrame();   // headless frames: the window's own frame was presented already
+                    }
+                    context.Finish();
+                    BlitTile(FramebufferCapture.ReadPicture(context, tile, tw, th), tw, guard, picture, n * width, column * width, row * height, width, height);
+                }
+        }
+        finally { ViewWindow.Current = ViewWindow.Whole; post.Target = live; post.ResetHistory(); }
+        var dir = Path.GetDirectoryName(Path.GetFullPath(file));
+        if (dir is not null) Directory.CreateDirectory(dir);
+        Meitou.Data.Textures.PngWriter.Write(file, n * width, n * height, picture);
+        Console.WriteLine($"saved     {file} ({n * width} x {n * height}, multiplier {n})");
+    }
+
+    /// <summary>The guard band of a tiled shot's tiles: an eighth of the height, at least 16 pixels.</summary>
+    static int TileGuard(int width, int height) => Math.Max(16, Math.Min(width, height) / 8);
+
+    /// <summary>Copies the middle <paramref name="width"/> x <paramref name="height"/> of a drawn tile (<paramref name="guard"/> pixels of guard round it) into the picture at (<paramref name="x"/>, <paramref name="y"/>).</summary>
+    static void BlitTile(byte[] tile, int tileWidth, int guard, byte[] picture, int pictureWidth, int x, int y, int width, int height)
+    {
+        for (int r = 0; r < height; r++)
+            tile.AsSpan(((r + guard) * tileWidth + guard) * 4, width * 4).CopyTo(picture.AsSpan(((y + r) * pictureWidth + x) * 4));
     }
 
     /// <summary>Waits until <paramref name="period"/> has passed since <paramref name="start"/>: sleeps most of it, spins the last 1.5 ms.</summary>
@@ -838,10 +1009,40 @@ sealed partial class GameHost
         while (clock.Elapsed.TotalSeconds < end) Thread.SpinWait(64);
     }
 
+    /// <summary>--log-spikes, at exit: the most allocated types over the run and the collections by generation, their pauses summed.</summary>
+    static void PrintAllocations(BenchGcListener gc)
+    {
+        var (allocated, collections) = gc.Take();
+        long total = allocated.Values.Sum();
+        Console.WriteLine($"spikes    allocated {total / 1048576.0:0} MB over the run (sampled); collections {string.Join(", ", collections.GroupBy(c => c.Generation).OrderBy(g => g.Key)
+            .Select(g => $"gen{g.Key} x{g.Count()} {g.Sum(c => c.PauseMs):0} ms"))}; the most allocated types (MB):");
+        foreach (var (type, bytes) in allocated.OrderByDescending(p => p.Value).Take(30))
+            Console.WriteLine($"spikes      {type,-90} {bytes / 1048576.0,9:0}");
+    }
+
+    /// <summary>Ctrl+Shift+F12: what is in video memory now, to vram-&lt;time&gt;.txt beside log.txt (<see cref="FrameProfiler.DumpVram"/>).</summary>
+    void DumpVram(FrameProfiler? profiler)
+    {
+        if (profiler is null) return;
+        string path = Path.Combine(AppContext.BaseDirectory, $"vram-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+        void Caches(TextWriter w)
+        {
+            if (gpu.Guard is { } guard) { w.WriteLine(guard.Status); w.WriteLine(); }
+            gpu.Objects?.WriteViewReport(w);
+            gpu.Objects?.Textures.WriteReport(w);
+            gpu.Foliage?.Textures.WriteReport(w);
+            gpu.Characters?.Textures.WriteReport(w);
+        }
+        try { profiler.DumpVram(path, Caches); Console.WriteLine($"vram      dumped to {path}"); }
+        catch (IOException e) { Console.WriteLine($"vram      dump failed: {e.Message}"); }
+    }
+
     // F12's sim parts: the names (the tick phases, the time outside the world's ticks, the world's systems), made again when the world is, and the frame's ms.
     World? simNamesFor;
     string[] simNames = [];
     double[] simMs = [];
+    /// <summary>--log-spikes notes the simulation's systems of a frame whose ticks took longer than this.</summary>
+    const double SpikeSimMs = 20;
 
     /// <summary>Hands the frame's <paramref name="advanceMs"/> to the profiler with the world's tick profile split into phases and systems, and clears the profile.</summary>
     void SimProfile(FrameProfiler profiler, double advanceMs)
@@ -864,6 +1065,7 @@ sealed partial class GameHost
         }
         Array.Clear(simMs);
         double inTicks = 0, ahead = LocalSession.TakeAheadMs();
+        if (SpikeLog.Enabled && ahead > SpikeSimMs) SpikeLog.Note("sim ahead tick", ms: ahead);
         for (int p = 0; p < phases; p++) inTicks += simMs[p] = profile.PhaseMs[p];
         // The phases also hold the tick run ahead during the last draw (docs/simulation.md "Tick ahead"), which is not in this frame's advance.
         simMs[phases] = Math.Max(0, advanceMs - Math.Max(0, inTicks - ahead));
@@ -872,7 +1074,56 @@ sealed partial class GameHost
         simMs[^1] = ahead;
         int paths = world.Systems.OfType<MovementSystem>().FirstOrDefault()?.Paths.Pending ?? 0;
         profiler.Outside(advanceMs, profile.Ticks, simNames, simMs, phases + 1, systems, paths);
+        // --log-spikes: a slow frame's simulation by system and part (the phases only add up what these hold).
+        if (SpikeLog.Enabled && advanceMs > SpikeSimMs)
+            for (int k = phases + 1; k < simMs.Length; k++)
+                if (simMs[k] >= 2) SpikeLog.Note($"sim {simNames[k]}", ms: simMs[k]);
+        if (SpikeLog.Enabled) SimWindow(profile, advanceMs, ahead, phases + 1, parts);
         profile.Clear();
+    }
+
+    // --log-spikes: the simulation's steady cost, summed over a window of real time (the spike notes only see frames over SpikeSimMs).
+    const double SimWindowSeconds = 5;
+    readonly Dictionary<string, double> simWindowMs = [];
+    double simWindowStart = -1, simWindowMain, simWindowAhead;
+    long simWindowTicks;
+    int simWindowFrames;
+    // The ragdolls sampled once a frame: in play, moving, the physics' awake bodies, frames with any moving.
+    long simWindowRagdolls, simWindowMoving;
+    int simWindowStepping;
+
+    /// <summary>
+    /// --log-spikes: every <see cref="SimWindowSeconds"/> one line of the speed, ticks a second, the sim's ms a frame, then ms a tick by phase, by system, by system in the slow
+    /// world phase and by part, biggest first. Keys carry their list's prefix: '#' phase, '~' slow world, '.' part.
+    /// </summary>
+    void SimWindow(TickProfile profile, double advanceMs, double ahead, int firstSystem, int firstPart)
+    {
+        double now = realTime.Elapsed.TotalSeconds;
+        if (simWindowStart < 0) simWindowStart = now;
+        (simWindowTicks, simWindowMain, simWindowAhead, simWindowFrames) = (simWindowTicks + profile.Ticks, simWindowMain + advanceMs, simWindowAhead + ahead, simWindowFrames + 1);
+        void Add(string key, double ms) => simWindowMs[key] = simWindowMs.GetValueOrDefault(key) + ms;
+        for (int p = 0; p < firstSystem - 1; p++) Add("#" + simNames[p], simMs[p]);
+        for (int k = firstSystem; k < simMs.Length - 1; k++) Add((k >= firstPart ? "." : "") + simNames[k], simMs[k]);
+        if (LocalSystems.OfType<Meitou.Simulation.Ragdolls.RagdollSystem>().FirstOrDefault() is { } rag)
+        {
+            (simWindowRagdolls, simWindowMoving, simWindowStepping) = (simWindowRagdolls + rag.Count, simWindowMoving + rag.Moving, simWindowStepping + (rag.Moving > 0 ? 1 : 0));
+        }
+        double seconds = now - simWindowStart;
+        if (seconds < SimWindowSeconds) return;
+        if (simWindowTicks > 0)
+        {
+            var inv = CultureInfo.InvariantCulture;
+            string Top(char kind, int count) => string.Join(", ", simWindowMs.Where(p => (p.Key[0] is '#' or '~' or '.' ? p.Key[0] : ' ') == kind && p.Value / simWindowTicks >= 0.01)
+                .OrderByDescending(p => p.Value).Take(count).Select(p => string.Create(inv, $"{p.Key.TrimStart('#', '~', '.')} {p.Value / simWindowTicks:0.00}")));
+            double tickMs = simWindowMs.Where(p => p.Key[0] == '#').Sum(p => p.Value) / simWindowTicks;
+            Console.WriteLine(string.Create(inv, $"simprof   {LocalSession.Simulation.Speed:0}x {simWindowFrames / seconds:0} fps, {simWindowTicks / seconds:0} ticks/s, {session.CurrentSnapshot.Characters.Count} characters; ") +
+                string.Create(inv, $"ms a frame: in frame {simWindowMain / simWindowFrames:0.00}, ahead {simWindowAhead / simWindowFrames:0.00}; ms a tick {tickMs:0.00}: ") +
+                $"phases: {Top('#', 10)}; systems: {Top(' ', 12)}; parts: {Top('.', 12)}; " +
+                string.Create(inv, $"ragdolls {(double)simWindowRagdolls / simWindowFrames:0.0}, moving {(double)simWindowMoving / simWindowFrames:0.0}, stepping {100.0 * simWindowStepping / simWindowFrames:0}% of frames"));
+        }
+        simWindowMs.Clear();
+        (simWindowStart, simWindowTicks, simWindowMain, simWindowAhead, simWindowFrames) = (now, 0, 0, 0, 0);
+        (simWindowRagdolls, simWindowMoving, simWindowStepping) = (0, 0, 0);
     }
 
     /// <summary>Between ticks: the world's messages for the player go to the HUD and the log, the fights hostility started to the log.</summary>

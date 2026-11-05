@@ -82,12 +82,38 @@ public sealed record AnimationMask(string AnimationName, string? RecordName, str
     public static AnimationMask Find(GameDatabase? db, string name)
     {
         if (db is null) return Plain(name);
-        var records = db.OfType(FcsRecordType.ANIMATION).ToList();
-        var byName = records.FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (byName is not null) return FromRecord(byName);
-        var technique = db.OfType(FcsRecordType.COMBAT_TECHNIQUE).FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (technique is not null) return FromTechnique(technique);
-        var byAnimation = records.FirstOrDefault(r => string.Equals(r.GetString("anim name"), name, StringComparison.OrdinalIgnoreCase));
-        return byAnimation is not null ? FromRecord(byAnimation) : Plain(name);
+        var index = Index.Of(db);
+        if (index.ByName.TryGetValue(name, out var byName)) return FromRecord(byName);
+        if (index.Techniques.TryGetValue(name, out var technique)) return FromTechnique(technique);
+        return index.ByAnimation.TryGetValue(name, out var byAnimation) ? FromRecord(byAnimation) : Plain(name);
+    }
+
+    /// <summary>
+    /// <see cref="Find"/>'s lookups over a database, the first record in its order for each name (case-insensitive), made once per <see cref="GameDatabase.Version"/>:
+    /// scanning every record for each layer of each new rig took two seconds of a town's loading with a heavy mod list.
+    /// </summary>
+    sealed class Index
+    {
+        static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GameDatabase, Index> made = new();
+        int version;
+        public readonly Dictionary<string, GameRecord> ByName = new(StringComparer.OrdinalIgnoreCase), Techniques = new(StringComparer.OrdinalIgnoreCase),
+            ByAnimation = new(StringComparer.OrdinalIgnoreCase);
+
+        public static Index Of(GameDatabase db)
+        {
+            if (made.TryGetValue(db, out var index) && index.version == db.Version) return index;
+            index = new Index { version = db.Version };
+            foreach (var r in db.Records.Values)
+            {
+                if (r.Type == FcsRecordType.ANIMATION)
+                {
+                    index.ByName.TryAdd(r.Name, r);
+                    index.ByAnimation.TryAdd(r.GetString("anim name"), r);
+                }
+                else if (r.Type == FcsRecordType.COMBAT_TECHNIQUE) index.Techniques.TryAdd(r.Name, r);
+            }
+            made.AddOrUpdate(db, index);
+            return index;
+        }
     }
 }

@@ -12,7 +12,7 @@ namespace Meitou.Rendering;
 /// (<see cref="Apply"/>). A layer is drawn again only when its cell changes or a new cell takes it. Each decal is its texture × its colour, alpha blended into the
 /// colour and added into the alpha, as the game's <c>Quad2DMaterial</c> draws it: one instanced draw per layer, each decal's texture by its bindless index.
 /// </summary>
-public sealed unsafe class TerrainDecalRenderer : IDisposable
+public sealed unsafe partial class TerrainDecalRenderer : IDisposable
 {
     /// <summary>The cells drawn at once: the game's eight decal textures (<see cref="Meitou"/> off), up to <see cref="MaxSlots"/> with it on.</summary>
     public const int FaithfulSlots = 8, MaxSlots = 32;
@@ -278,6 +278,7 @@ public sealed unsafe class TerrainDecalRenderer : IDisposable
 
     public void Dispose()
     {
+        DisposeSurfaces();
         if (bindless is { } b) gpu.Bindless.Free(BindlessKind.Texture2DArray, b.Index);
         target?.Dispose();
         foreach (var list in spriteIndex)

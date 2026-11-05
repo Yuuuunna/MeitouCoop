@@ -155,16 +155,17 @@ public sealed partial class SaveGame
         foreach (var z in Zones.Keys.Where(z => !listed.Contains(z))) Problems.Add($"Extra zone file: zone.{z.X}.{z.Y}.zone");
     }
 
-    /// <summary>A deep copy made by writing every file to memory and reading it back: nothing is shared with the original.</summary>
+    /// <summary>A deep structural copy; mutable file/record/slot/portrait data is detached.</summary>
     public SaveGame Clone()
     {
-        var copy = new SaveGame(SaveFile.Read(Quick.ToBytes()));
+        var copy = new SaveGame(Quick.Clone());
+        var platoons = copy.Platoons.ToDictionary(p => p.Record.StringId, StringComparer.Ordinal);
         foreach (var p in Platoons)
         {
-            var q = copy.Platoons.First(x => x.Record.StringId == p.Record.StringId);
-            if (p.File is not null) q.File = SaveFile.Read(p.File.ToBytes());
+            var q = platoons[p.Record.StringId];
+            if (p.File is not null) q.File = p.File.Clone();
         }
-        foreach (var z in Zones.Values) copy.Zones[z.Coordinate] = new SaveZone(z.Coordinate, SaveFile.Read(z.File.ToBytes()));
+        foreach (var z in Zones.Values) copy.Zones[z.Coordinate] = new SaveZone(z.Coordinate, z.File.Clone());
         copy.Portraits = Portraits?.ToArray();
         copy.Reindex();
         copy.Problems.AddRange(Problems);

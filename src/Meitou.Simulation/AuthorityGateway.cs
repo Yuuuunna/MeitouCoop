@@ -244,6 +244,20 @@ public sealed class AuthorityGateway : IDisposable
         }
     }
 
+    /// <summary>While a publication awaits its ACK, recheck its authority without capturing or retiring grant stamps.</summary>
+    public bool CanRetainPublishedView(AuthorityConnection connection, ulong publication)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (!Current(connection) || connection.Phase == AdmissionPhase.Preparing || world.HasPendingDurableMutation ||
+                !connection.PublishedGrants.TryGetValue(publication, out var stamp) || !HasRole(connection.Player)) return false;
+            var player = world.Players.Find(connection.Player)!;
+            return stamp.Memberships.SequenceEqual(player.Memberships.Select(m => new ViewMembership(m.Key, m.Value, player.MembershipRevision(m.Key)))) &&
+                stamp.Roles.SequenceEqual(DescribeRoles(connection.Player));
+        }
+    }
+
     public bool BeginSynchronization(AuthorityConnection connection)
     {
         lock (gate)

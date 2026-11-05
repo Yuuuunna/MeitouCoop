@@ -121,6 +121,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         cold.TreatTarget = patient;
         cold.TreatSplint = splint;
         cold.ResumeTask = keep;
+        cold.PathFailed = false;   // a failure from before is not this walk's
         RememberActivity(world, slot);
     }
 
@@ -208,11 +209,11 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
             }
             n.TaskTime -= dt;
             var goal = new Vector2(spot.X, spot.Z);
-            bool asking = (n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0;
+            bool asking = cold.NavigationWaiting || (n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0;
             // No way to the patient: no path, or one that ends short of the asked goal (the walkability answers an unreachable goal with the way to the reachable point nearest it). The
             // original's task walk reports it (notifyPathImpossible): the patient goes on the medic's path failures for 20 s, which the finder skips, and the treatment ends. Without it
             // a medic asked for the same hopeless path every half second (issue #124: searches run to the iteration limit, ~280 MB/s of garbage).
-            if (!asking && (cold.PathFailed || (n.Flags & (ushort)MoveFlags.HasPath) != 0 && cold.Path.Length > 0 && EndsShort(cold.Path[^1], n.Goal, spot.Y)))
+            if (!asking && (cold.PathFailed || (n.Flags & (ushort)MoveFlags.HasPath) != 0 && cold.Path.Length > 0 && EndsShort(ReachedEnd(cold, n), n.Goal, spot.Y)))
             {
                 cold.PathFailed = false;
                 var target = table.IdOf(t);
@@ -232,7 +233,11 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         }
     }
 
-    /// <summary>A path whose last waypoint is farther than the reach from the goal on X/Z, or off the treatment spot's floor: the patient cannot be got to.</summary>
+    /// <summary>The known navigation endpoint, excluding a provisional route's straight extension to the goal.</summary>
+    static Vector3 ReachedEnd(CharacterCold cold, in CharacterHot n) =>
+        cold.PathExact >= cold.Path.Length ? cold.Path[^1] : cold.PathExact > 0 ? cold.Path[cold.PathExact - 1] : n.Position;
+
+    /// <summary>A known endpoint farther than the reach from the goal on X/Z, or off the treatment spot's floor: the patient cannot be got to.</summary>
     bool EndsShort(Vector3 end, Vector2 goal, float spotHeight) =>
         Vector2.Distance(new Vector2(end.X, end.Z), goal) > Settings.Reach || MathF.Abs(end.Y - spotHeight) > Settings.ReachHeight;
 

@@ -65,6 +65,7 @@ public sealed class TcpGameServer : IAsyncDisposable
         catch (Exception e)
         {
             LastFailureType = e.GetType().Name; Interlocked.Increment(ref failures);
+            Console.Error.WriteLine($"network   {DateTime.UtcNow:O} peer failed: {e}");
         }
         finally
         {

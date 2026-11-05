@@ -100,8 +100,8 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         colourProg = new ObjProg(gpu, nativeFrame, BuildingLodShaders.VertexNative(), BuildingLodShaders.FragmentNative(), "objects");
         solidProg = new ObjProg(gpu, nativeFrame, BuildingLodShaders.VertexNative(), BuildingLodShaders.FragmentNative(solid: true), "objects solid");
         depthProg = new ObjProg(gpu, nativeFrame, BuildingLodShaders.VertexNative(), BuildingLodShaders.DepthNative(), "objects depth");
-        textureCache = new WorldTextureCache(gpu, assets, "object textures");
-        var library = OgreMaterialLibrary.LoadConfigured(objects.Install, out _);
+        textureCache = new WorldTextureCache(gpu, assets, "object textures") { Share = TextureShare.For(gpu) };
+        var library = assets.Materials;
         resolver = new MaterialResolver(objects.Database, library, assets);
         meshes = new ObjectMeshCache(gpu, assets, uploads);
         meshes.Unloaded = gpu => { unloadedMeshes.Add(gpu); RemoveBatches(gpu); };
@@ -139,7 +139,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     /// although within the object distance (in or out of view; a benchmark statistic).</summary>
     public int PartLimited { get; private set; }
 
-    /// <summary>Sums over every <see cref="Draw"/> since the start, [0, ...] colour (scene slices and reflection), [1, ...] depth (shadow cascades):
+    /// <summary>Sums over every <see cref="Draw"/> since the start, [0, ...] colour (scene and reflection), [1, ...] depth (shadow cascades):
     /// instances, triangles, draw calls, part-limited instances, calls of Draw (a benchmark statistic; the caller divides by its frames).</summary>
     public readonly long[,] Totals = new long[2, 5];
 
@@ -200,6 +200,9 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     float DistantReach => DistantRange * (guard?.RangeScale ?? 1f);
 
     // ---- runtime buildings, construction sites and the placement ghost (docs/render-objects.md "Construction sites") ----
+
+    /// <summary>The key prefix of a ground item's placement (see <see cref="WorldObjects.GroundKeyPrefix"/>).</summary>
+    public const string GroundKeyPrefix = WorldObjects.GroundKeyPrefix;
 
     /// <summary>A building the player placed: part of its zone from now on (laid out apart from the rest of an already loaded zone).</summary>
     public void AddRuntime(BuildingPlacement placement)
@@ -346,16 +349,18 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         construction is { Count: > 0 } sites && !inst.Stand && sites.ContainsKey(inst.Placed.ParentPlacementId ?? inst.Placed.PlacementId);
 
     /// <summary>Requested work: zone layouts, meshes and textures, including used textures deferred by memory pressure.</summary>
-    public int Pending => streamer.Pending + meshes.Pending + uploads.Count + textureCache.PendingCount + textureCache.UnresidentUsedCount + unresolvedInRange + (landmarkTask is not null ? 1 : 0);
+    public int Pending => streamer.Pending + meshes.Pending + uploads.Count + textureCache.AwaitedCount + textureCache.UnresidentUsedCount + unresolvedInRange + (landmarkTask is not null ? 1 : 0);
 
     int unresolvedInRange;
     /// <summary>What <see cref="Pending"/> is made of, for the loading log.</summary>
-    public string PendingDetail => $"zones {streamer.Pending}, meshes {meshes.Pending}, uploads {uploads.Count}, textures {textureCache.PendingCount} loading {textureCache.UnresidentUsedCount} deferred, unresolved {unresolvedInRange}, landmarks {(landmarkTask is not null ? 1 : 0)}";
+    public string PendingDetail => $"zones {streamer.Pending}, meshes {meshes.Pending}, uploads {uploads.Count}, textures {textureCache.AwaitedCount} loading {textureCache.UnresidentUsedCount} deferred, unresolved {unresolvedInRange}, landmarks {(landmarkTask is not null ? 1 : 0)}";
     public List<string> Messages { get; } = [];
 
     /// <summary>A line about what is loaded, for the log.</summary>
     /// <summary>GPU memory held by streamed meshes and textures, for the stats line and the window title.</summary>
     public long ResidentBytes => meshes.Bytes + textureCache.ResidentBytes;
+    /// <summary>The objects' texture cache (the VRAM dump lists it).</summary>
+    public WorldTextureCache Textures => textureCache;
     public string ResidentDescription => $"{meshes.Bytes / 1048576.0:0} MB in {meshes.Resident} meshes ({meshes.Unloads} unloaded, {meshes.Reloads} reloaded, {meshes.Refined} remade finer, {meshes.Coarsened} coarser), {textureCache.Describe()}";
     public string Describe() =>
         $"{streamer.Loaded} zones, {streamer.Instances:N0} instances ({streamer.Resolved:N0} resolved{(streamer.LandmarkZone is { } lz ? $", of them {lz.Real.Count(i => i.Gpu is not null)} of {lz.Real.Count} landmarks" : "")}), {meshes.Resident}/{meshes.Total} meshes requested or resident, resident: {ResidentDescription}, " +
@@ -365,6 +370,10 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
 
     /// <summary>Render-thread time per frame spent on uploads and resolving.</summary>
     public double BudgetMs { get; set; } = 2;
+    /// <summary>The view is under the loading screen (the host sets it each frame): its frames need not be smooth, so uploads and resolving take up to
+    /// <see cref="CoveredBudgetMs"/> a frame instead of <see cref="BudgetMs"/>, and zones and instances are taken eight times as fast.</summary>
+    public bool Covered { get; set; }
+    const double CoveredBudgetMs = 16;
 
     /// <summary>Follows the eye: lays out zones and loads meshes and textures around it, within <see cref="BudgetMs"/> of render-thread time.</summary>
     /// <summary>The arrival eye of a character flight (<see cref="ObjectStreamer.Ahead"/>): its objects are laid out, loaded and kept, their meshes and textures as fine
@@ -377,8 +386,24 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
 
     /// <summary>Points kept loaded besides the eye's (<see cref="ObjectStreamer.Kept"/>).</summary>
     public IReadOnlyList<Vector3> Kept { get => streamer.Kept; set => streamer.Kept = value; }
+    /// <summary>The ground's height under the eye, for the zones' loading (<see cref="ObjectStreamer.GroundUnderEye"/>).</summary>
+    public float GroundUnderEye { get => streamer.GroundUnderEye; set => streamer.GroundUnderEye = value; }
+    /// <summary>The camera's distance to its target (<see cref="ObjectStreamer.KeptViewDistance"/>).</summary>
+    public float KeptViewDistance { get => streamer.KeptViewDistance; set => streamer.KeptViewDistance = value; }
 
-    public void Update(Vector3 eye) => Update(eye, BudgetMs);
+    /// <summary>Places kept loaded (<see cref="WorldTextureCache.Areas"/>): the texture and mesh marks scale with it.</summary>
+    public int Areas { set { textureCache.Areas = value; meshes.Areas = value; } }
+
+    /// <summary>Where the last need pass measured from, for the VRAM dump: the eye, the margin for its speed, the arrival point and the kept points.</summary>
+    public void WriteViewReport(TextWriter w)
+    {
+        static string P(Vector3 v) => $"{v.X:0}, {v.Y:0}, {v.Z:0}";
+        w.WriteLine($"object needs measured from: eye {P(lastMarkEye)}, speed margin {needMargin:0}{(streamer.Ahead is { } a ? $", arrival {P(a)}" : "")}");
+        w.WriteLine($"  kept points ({streamer.Kept.Count}, merged, detail from at least {streamer.KeptViewDistance:0}): {string.Join("; ", streamer.Kept.Select(P))}");
+        w.WriteLine();
+    }
+
+    public void Update(Vector3 eye) => Update(eye, Covered ? Math.Max(BudgetMs, CoveredBudgetMs) : BudgetMs);
 
     /// <summary>Colour draws of parts whose diffuse map was not resident (drawn grey) and, at the same moment, textures waiting for a finer image,
     /// the largest of each since <see cref="TakePopStats"/> (the benchmark's pop-in lines).</summary>
@@ -429,11 +454,13 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
                 Console.WriteLine($"warning   landmarks: {collected.Exception?.GetBaseException().Message}");
             }
         }
-        streamer.Update(eye, streamRange, unlimited ? 64 : 1);
+        // Under the loading screen (Covered) eight times the zones and resolves a frame.
+        int scale = Covered ? 8 : 1;
+        streamer.Update(eye, streamRange, unlimited ? 64 : scale, Covered);
         ResolveTowns(eye);
-        unresolvedInRange = streamer.Scan(eye, RealRange, DistantReach, NoDistant, Resolve, unlimited ? int.MaxValue : 40);
-        unresolvedInRange += streamer.ScanLandmarks(eye, LandmarkReach, Resolve, unlimited ? int.MaxValue : 10);
-        unresolvedInRange += streamer.ScanLoose(streamer.Loose, eye, RealRange, Resolve, unlimited ? int.MaxValue : 10);
+        unresolvedInRange = streamer.Scan(eye, RealRange, DistantReach, NoDistant, Resolve, unlimited ? int.MaxValue : 40 * scale);
+        unresolvedInRange += streamer.ScanLandmarks(eye, LandmarkReach, Resolve, unlimited ? int.MaxValue : 10 * scale);
+        unresolvedInRange += streamer.ScanLoose(streamer.Loose, eye, RealRange, Resolve, unlimited ? int.MaxValue : 10 * scale);
         meshes.Pump();
         MarkInRange(eye, force: unlimited);
         meshes.Trim();
@@ -506,6 +533,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
             // During a flight the path asks for nothing finer: needs and mesh levels count only the arrival and the kept points (it keeps what it has).
             if (streamer.Ahead is not null && (value = streamer.LoadNear(eye, inst.Centre) - inst.Radius) >= limit) return;
             if (set.NeedStamp != markStamp) { set.NeedStamp = markStamp; set.Near = set.NearScaled = float.PositiveInfinity; markedSets.Add(set); }
+            value = streamer.DetailNear(eye, inst.Centre) - inst.Radius;
             float near = Math.Max(value - needMargin, 0);
             if (near < set.Near) set.Near = near;
             // A mesh is kept ready for where the camera will be by the next pass and the remake (1.5 s of its speed), a texture for half a second (its two levels of margin do the rest).
@@ -652,7 +680,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         // Mip streaming: this instance's distance is a use of the textures from now on (before the pass that would find it), and a new set's
         // textures are loaded now, knowing it (they were made without loading: deferred). Measured as the mark pass does (from the nearest kept point too),
         // or a kept point's textures load coarse for the far eye and wait in the refine queue.
-        float near = Math.Max(streamer.LoadNear(eyeNow, inst.Centre) - inst.Radius - needMargin, 0);
+        float near = Math.Max(streamer.DetailNear(eyeNow, inst.Centre) - inst.Radius - needMargin, 0);
         foreach (var part in set!.Parts) part.OfferNow(part.Triplanar ? near : near / Math.Max(scale, 1e-6f));
         if (made) set.Touch();
         return true;
@@ -700,7 +728,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
 
     /// <summary>The fog cull (set by the world frame around the main camera's draw only): instances wholly hidden by the fog the eye is in are skipped.</summary>
     internal FogVolumes? FogCull { get; set; }
-    /// <summary>The interior cut (docs/render-interior-cut.md; set by the world frame around its near slice's colour draw, null otherwise): map features over a mask take it.</summary>
+    /// <summary>The interior cut (docs/render-interior-cut.md; set by the world frame around its scene's colour draw, null otherwise): map features over a mask take it.</summary>
     internal InteriorMaskRenderer? InteriorCut { get; set; }
 
     /// <summary>The water reflection's cull (set around the reflection pass's own draw): an instance (bounding sphere centre and radius) it answers false for is skipped.</summary>
@@ -711,6 +739,9 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     /// are hidden and their <c>interior</c> parts shown; every other building shows its outside (its interior parts hidden). Set by the game each frame.
     /// </summary>
     public IReadOnlyDictionary<string, int> InteriorView { get; set; } = new Dictionary<string, int>();
+
+    /// <summary>The loose items (placement ids) above the shown floor of their building in the interior view: not drawn. Set by the game, which picks by the same answer.</summary>
+    public IReadOnlySet<string> HiddenItems { get; set; } = new HashSet<string>();
 
     /// <summary>The nearest loaded building's movement destination, using collision up to the viewed floor, before the terrain.</summary>
     public Vector3? MoveHit(Vector3 origin, Vector3 direction, int floor, float maxDistance) => FloorHit(origin, direction, floor, maxDistance)?.Position;
@@ -739,6 +770,19 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         foreach (var zone in streamer.AllZones)
             foreach (var room in zone.Interiors)
                 if (!InteriorView.ContainsKey(room.PlacementId) && room.MaskHit(origin, direction, best ?? maxDistance) is { } t) best = t;
+        return best;
+    }
+
+    /// <summary>
+    /// The nearest distance along the ray at which it meets the collision of a building in <see cref="InteriorView"/> on a floor it shows (as <see cref="MoveHit"/>), within
+    /// <paramref name="maxDistance"/>: what lies beyond is not pointed at (game: the pick's walk ends at such a building's hit, <c>FUN_140800250</c>). Null when none is in the way.
+    /// </summary>
+    public float? ShownInteriorHit(Vector3 origin, Vector3 direction, float maxDistance)
+    {
+        float? best = null;
+        foreach (var zone in streamer.AllZones)
+            foreach (var room in zone.Interiors)
+                if (InteriorView.TryGetValue(room.PlacementId, out int floor) && room.MoveHit(origin, direction, floor, best ?? maxDistance) is { } hit) best = hit.Distance;
         return best;
     }
 
@@ -772,12 +816,14 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     }
 
     /// <summary>
-    /// Whether a building of its own (a turret on a wall, furniture the player placed) stands above the viewed floor of a building in the interior view, by where it
-    /// stands in that building's hull: it is hidden with that floor (game: FUN_1409fb540 hides objects above their building's floor, as the host does for characters).
+    /// Whether a building of its own (a turret on a wall, furniture the player placed) stands above the viewed floor of a building in the interior view, by
+    /// where it stands in that building's hull: it is hidden with that floor (game: FUN_140547140 / FUN_14054a8f0, as the host does for characters). A loose item: the game's answer
+    /// (<see cref="HiddenItems"/>, FUN_1409fb540).
     /// </summary>
     bool StandsAbove(ObjectStreamer.Instance inst)
     {
         var p = inst.Placed;
+        if (p.Kind == PlacedKind.Item) return !AllFloors && HiddenItems.Contains(p.PlacementId);
         if (InteriorView.Count == 0 || AllFloors || p.Kind != PlacedKind.BuildingPart || p.ParentPlacementId is not null || InteriorView.ContainsKey(p.PlacementId)) return false;
         var answer = InteriorOf(inst);
         return answer.Building is { } building && InteriorView.TryGetValue(building, out int floor) && answer.Floor > floor;
@@ -808,7 +854,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         for (int x = lo.X; x <= hi.X; x++)
             for (int y = lo.Y; y <= hi.Y; y++)
             {
-                if (streamer.ZoneAt(new ZoneCoordinate(x, y)) is not { Interiors.Count: > 0 } zone || ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, p) > InteriorOver) continue;
+                if (streamer.ZoneAt(new ZoneCoordinate(x, y)) is not { Interiors.Length: > 0 } zone || ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, p) > InteriorOver) continue;
                 foreach (var v in zone.Interiors)
                     if (v.Contains(p, margin))
                     {
@@ -831,7 +877,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         var (lo, hi) = (WorldLayout.ZoneOf(at.X - InteriorOver, at.Y - InteriorOver), WorldLayout.ZoneOf(at.X + InteriorOver, at.Y + InteriorOver));
         for (int x = lo.X; x <= hi.X; x++)
             for (int y = lo.Y; y <= hi.Y; y++)
-                if (streamer.ZoneAt(new ZoneCoordinate(x, y)) is { Interiors.Count: > 0 } zone)
+                if (streamer.ZoneAt(new ZoneCoordinate(x, y)) is { Interiors.Length: > 0 } zone)
                     foreach (var v in zone.Interiors)
                         if (ReferenceEquals(v, volume) || v.PlacementId == volume.PlacementId) return v;
         return null;
@@ -863,7 +909,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         for (int x = lo.X; x <= hi.X && found is null; x++)
             for (int y = lo.Y; y <= hi.Y && found is null; y++)
             {
-                if (streamer.ZoneAt(new ZoneCoordinate(x, y)) is not { Interiors.Count: > 0 } zone) continue;
+                if (streamer.ZoneAt(new ZoneCoordinate(x, y)) is not { Interiors.Length: > 0 } zone) continue;
                 float zoneDistance = ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, p);
                 if (zoneDistance > reach) continue;
                 foreach (var v in zone.Interiors)
@@ -885,8 +931,10 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         InteriorVolume? best = null;
         foreach (var zone in streamer.AllZones)
         {
-            if (zone.Interiors.Count == 0 || ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, new Vector3(x, 0, z)) > 200) continue;
+            if (zone.Interiors.Length + zone.GateHulls.Length == 0 || ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, new Vector3(x, 0, z)) > 200) continue;
             foreach (var v in zone.Interiors)
+                if ((best is null || v.YMax > best.YMax) && v.ContainsGround(x, z)) best = v;
+            foreach (var v in zone.GateHulls)
                 if ((best is null || v.YMax > best.YMax) && v.ContainsGround(x, z)) best = v;
         }
         return best;
@@ -919,7 +967,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         var q = new Vector2(eye.X, eye.Z);
         foreach (var zone in streamer.AllZones)
         {
-            if (zone.Interiors.Count == 0 || ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, eye) > range + 200) continue;
+            if (zone.Interiors.Length == 0 || ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, eye) > range + 200) continue;
             foreach (var v in zone.Interiors)
             {
                 if (v.MaskMeshes.Count == 0 || v.Footprint.Length == 0) continue;
@@ -957,16 +1005,23 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
 
     /// <summary>
     /// Whether the interior view leaves a building part out: an interior part (or inside-only furniture) of a building seen from outside, or, in the view, a
-    /// part or object above the viewed floor. Floor 0 is never hidden (game: only the floor 1..3 lists are switched).
+    /// part or object above the viewed floor. Floor 0 is never hidden (game: only the floor 1..3 lists are switched). Nor is a door: in the game it is a building
+    /// of its own, which the view of the building it belongs to does not switch, and 15 of the base game's door leaves are floor-1 parts (Storm Houses, shacks),
+    /// which left the doorway empty at floor 0 (docs/render-objects.md "Doors").
     /// </summary>
     bool InteriorHidden(PlacedMesh p)
     {
         if (p.Kind != PlacedKind.BuildingPart) return false;
+        if (p.DoorIndex >= 0 && !p.Interior) return false;
         if (InteriorView.Count == 0 || !p.Interior && (p.Floor == 0 || AllFloors)) return p.Interior;
         // Layout objects (signs, furniture) go with their building.
         if (!InteriorView.TryGetValue(p.ParentPlacementId ?? p.PlacementId, out int floor)) return p.Interior;
         return p.Floor > floor && !AllFloors;
     }
+
+    /// <summary>What <see cref="InteriorHidden"/> leaves out whatever the viewed floor: an interior part of a building not in the interior view.</summary>
+    bool OutsideHidden(PlacedMesh p) =>
+        p.Kind == PlacedKind.BuildingPart && p.Interior && !InteriorView.ContainsKey(p.ParentPlacementId ?? p.PlacementId);
 
     /// <summary>Draws the objects seen from <paramref name="eye"/> through <paramref name="frustum"/>.</summary>
     public void Draw(Matrix4x4 viewProjection, Vector3 eye, Vector4[] frustum, WorldRenderOptions options, Vector3 light, Vector3 fogColour, float fogDistance, TerrainRenderer terrain)
@@ -986,6 +1041,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         active.Clear();
         terrainMeshes.Clear();
         terrainMeshesCut.Clear();
+        if (depthPass) ShadowCut(ref cutConstants);
 
         // 1. Cull and choose levels: every instance into the batch of its (mesh, materials, level) with its dither range.
         float realBand = Math.Clamp(real * 0.1f, 50, 1500);
@@ -1051,6 +1107,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         {
             var view = new ViewConstants { ViewProjection = viewProjection, Eye = eye, LightDir = light, FogColour = fogColour, FogDistance = fogDistance };
             if (!depthPass) InteriorMaskRenderer.Apply(ref view, InteriorCut);
+            else (view.CutVolumes, view.CutRanges, view.CutPlanes) = (cutConstants.CutVolumes, cutConstants.CutRanges, cutConstants.CutPlanes);
             var fadeRange = new Vector4(real - realBand, real, DistantReach - distantBand, DistantReach);
             if (wireMode != 2)
             {
@@ -1080,7 +1137,9 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     {
         if (inst.Gpu is not { } gpu) return;
         if (!ReferenceEquals(inst.Mesh.Gpu, gpu)) { Unresolve(zone, inst); return; }
-        if (InteriorHidden(inst.Placed) || StandsAbove(inst) || ClosedAround(inst)) return;
+        // A shadow pass keeps what the floor view hides above the viewed floor, so a lower floor stays shaded under its ceiling (docs/render-objects.md
+        // "Closed interiors"): only a closed building's interior parts stay out.
+        if ((depthPass ? OutsideHidden(inst.Placed) : InteriorHidden(inst.Placed) || StandsAbove(inst)) || ClosedAround(inst)) return;
         if (inst.Placed.DoorIndex >= 0) PoseDoor(inst, gpu);
         if (inst.Placed.Joints is not null) PoseJoints(inst, gpu);
         float value = Vector3.Distance(inst.Centre, eye) - inst.Radius;
@@ -1139,8 +1198,11 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
             site = true;
         }
         else if (inst.Tint < 0) m.M44 = inst.Tint;
-        // A map feature (CLIP_INTERIOR, docs/render-interior-cut.md) over a building's interior mask takes the cut; the rest keep the programs without it.
-        bool cut = !depthPass && inst.Placed.Kind == PlacedKind.MapFeature && InteriorCut is { Active: true } mask && mask.Overlaps(inst.Centre, inst.Radius);
+        // A map feature (CLIP_INTERIOR, docs/render-interior-cut.md) over a building's interior mask takes the cut, and so does another building's part over
+        // the mask of a building in the interior view (CutsIntoViewed); the rest keep the programs without it.
+        // In a shadow pass such a part casts nothing inside the viewed buildings' hulls (ShadowCut).
+        bool cut = depthPass ? shadowCuts.Count > 0 && CutsShadow(inst)
+            : InteriorCut is { Active: true } mask && (inst.Placed.Kind == PlacedKind.MapFeature ? mask.Overlaps(inst.Centre, inst.Radius) : CutsIntoViewed(inst, mask));
         if (!blend.IsBlending)
         {
             Add(gpu, inst.Materials!, blend.Lower, m, 0, weight >= 0.999f ? 2 : weight, value, inst.Placed.Interior, site, highlight: highlight, cut: cut);
@@ -1148,6 +1210,60 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         }
         Add(gpu, inst.Materials!, blend.Upper, m, 0, blend.T * weight, value, inst.Placed.Interior, site, highlight: highlight, cut: cut);
         Add(gpu, inst.Materials!, blend.Lower, m, blend.T * weight, weight, value, inst.Placed.Interior, site, highlight: highlight, cut: cut);
+    }
+
+    /// <summary>
+    /// Leave out other buildings' parts inside a building in the interior view (Fixes settings, on by default; docs/render-interior-cut.md "Meitou"): the Hub's
+    /// town wall runs into the Shinobi Thieves tower (issue #111). Not the parts of a building with a drawn mask (the viewed one's own floors and interior), nor
+    /// doors, layout objects or buildings placed inside another.
+    /// </summary>
+    public bool CutIntoViewed { get; set; } = true;
+
+    bool CutsIntoViewed(ObjectStreamer.Instance inst, InteriorMaskRenderer mask) =>
+        CutIntoViewed && InteriorView.Count > 0 && Cuttable(inst) && mask.Overlaps(inst.Centre, inst.Radius, InteriorView) && !mask.Drew(inst.Placed.PlacementId);
+
+    bool Cuttable(ObjectStreamer.Instance inst) =>
+        !inst.Stand && inst.Placed is { Kind: PlacedKind.BuildingPart, DoorIndex: < 0, ParentPlacementId: null, Contained: false };
+
+    /// <summary>The interior masks last drawn (the main view's), whose owners a shadow pass leaves uncut as the colour pass does.</summary>
+    internal InteriorMaskRenderer? Masks { get; set; }
+
+    /// <summary>The viewed buildings' hulls a shadow pass cuts (<see cref="ShadowCut"/>).</summary>
+    readonly List<InteriorVolume> shadowCuts = [];
+    ViewConstants cutConstants;
+
+    bool CutsShadow(ObjectStreamer.Instance inst)
+    {
+        if (!Cuttable(inst) || InteriorView.ContainsKey(inst.Placed.PlacementId) || Masks?.Drew(inst.Placed.PlacementId) == true) return false;
+        foreach (var v in shadowCuts)
+            if (v.Distance(inst.Centre) <= inst.Radius) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The shadow side of <see cref="CutIntoViewed"/>: the hulls (convex footprint, height range) of the buildings in the interior view, into <paramref name="view"/>
+    /// for the depth program, up to 4 buildings and 32 edges in all; a hull that does not fit is left uncut.
+    /// </summary>
+    void ShadowCut(ref ViewConstants view)
+    {
+        shadowCuts.Clear();
+        view.CutVolumes = 0;
+        if (!CutIntoViewed || InteriorView.Count == 0) return;
+        int planes = 0;
+        foreach (var id in InteriorView.Keys)
+        {
+            if (shadowCuts.Count == 4) break;
+            if (InteriorFor(id) is not { Footprint: { Length: >= 3 } f } v || planes + f.Length > 32) continue;
+            view.CutRanges[shadowCuts.Count] = new Vector4(planes, f.Length, v.YMin, v.YMax);
+            for (int i = 0; i < f.Length; i++)
+            {
+                var e = f[(i + 1) % f.Length] - f[i];
+                var n = e.LengthSquared() > 1e-8f ? Vector2.Normalize(new Vector2(-e.Y, e.X)) : Vector2.Zero;   // counter-clockwise: inside on the left
+                view.CutPlanes[planes++] = new Vector4(n, Vector2.Dot(n, f[i]), 0);
+            }
+            shadowCuts.Add(v);
+        }
+        view.CutVolumes = (uint)shadowCuts.Count;
     }
 
     void Add(GpuObjectMesh gpu, ObjectMaterialSet materials, int level, Matrix4x4 m, float lo, float hi, float near, bool backCull = false, bool site = false, int ghost = 0, bool highlight = false, bool cut = false)
@@ -1449,9 +1565,13 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         // block with its bindless indices), into a job that only records.
         var targets = Gpu.CurrentTargets();
         // The objects are drawn double-sided (the GL version turned the cull face off); the wireframe as lines pulled forward
-        // (GL's PolygonMode LINE with POLYGON_OFFSET_LINE and PolygonOffset(-1, -1)).
+        // (GL's PolygonMode LINE with POLYGON_OFFSET_LINE and PolygonOffset(-1, -1), toward the viewer in the scene's depth convention).
         var state = Gpu.CurrentState() with { Cull = CullMode.None };
-        if (wire) state = state with { Polygon = PolygonKind.Line, BiasEnable = true, BiasConstant = -1, BiasSlope = -1 };
+        if (wire)
+        {
+            var (biasConstant, biasSlope) = DepthConvention.TowardViewer(1);
+            state = state with { Polygon = PolygonKind.Line, BiasEnable = true, BiasConstant = biasConstant, BiasSlope = biasSlope };
+        }
         int segment = SegmentId(kind, prog.P, targets, state);
         // The fully visible draws of a colour pass use the program without a discard (own segment, own pipelines per part).
         int solidSegment = !depthPass && !wire ? SegmentId(4, solidProg.P, targets, state) : 0;

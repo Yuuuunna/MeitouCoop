@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Collections.Frozen;
 using Meitou.Content;
 
 namespace Meitou.Data.World;
@@ -12,37 +13,39 @@ namespace Meitou.Data.World;
 public sealed class FoliageWorld : IDisposable
 {
     readonly GameInstall install;
-    readonly GameDatabase db;
-    readonly WorldLevelData world;
     readonly FoliageLayoutCache? cache;
     // Opened on the first zone that is actually placed: a zone read from the layout cache needs none of them.
     TerrainHeightmap? map;
     BlendInfoFile? blend;
     FoliageBiomeMap? biomes;
-    List<(Vector2 At, float Range)>? towns;
+    readonly List<FoliageTown> towns;
     readonly Dictionary<(int, int), byte[]> tiles = [];
     readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), Lazy<byte[]>>? sharedTiles;
 
     public FoliageWorld(GameInstall install, GameDatabase db, WorldLevelData world, FoliageCatalog? catalog = null,
-        System.Collections.Concurrent.ConcurrentDictionary<(int, int), Lazy<byte[]>>? sharedTiles = null, FoliageLayoutCache? cache = null)
+        System.Collections.Concurrent.ConcurrentDictionary<(int, int), Lazy<byte[]>>? sharedTiles = null, FoliageLayoutCache? cache = null, IEnumerable<(int X, int Z)>? ownedTowns = null)
     {
         this.sharedTiles = sharedTiles;
         this.install = install;
-        this.db = db;
-        this.world = world;
-        this.cache = cache;
+        var ownership = (ownedTowns ?? []).ToFrozenSet();
+        towns = ReadTowns(db, world, ownership);
+        this.cache = cache is not null && cache.MatchesOwnership(ownership) ? cache : null;
         Catalog = catalog ?? FoliageCatalog.Load(db);
     }
 
     public FoliageCatalog Catalog { get; }
 
+    /// <summary>A town's ownership-snapshot key: its X/Z rounded to whole units.</summary>
+    public static (int X, int Z) TownKey(float x, float z) => ((int)MathF.Round(x), (int)MathF.Round(z));
+
     /// <summary>The towns that keep foliage away (not nest markers): X/Z and <c>no-foliage range</c>.</summary>
-    public static List<(Vector2 At, float Range)> ReadTowns(GameDatabase db, WorldLevelData world)
+    public static List<FoliageTown> ReadTowns(GameDatabase db, WorldLevelData world, IEnumerable<(int X, int Z)>? ownedTowns = null)
     {
-        var list = new List<(Vector2, float)>();
+        var ownership = (ownedTowns ?? []).ToFrozenSet();
+        var list = new List<FoliageTown>();
         foreach (var t in world.Towns())
             if (db.Find(t.TownId) is { } record && record.GetInt("type") != BuildingTowns.NestMarkerType)
-                list.Add((new Vector2(t.Position.X, t.Position.Z), record.GetFloat("no-foliage range", 2000)));
+                list.Add(new FoliageTown(new Vector2(t.Position.X, t.Position.Z), record.GetFloat("no-foliage range", 2000), ownership.Contains(TownKey(t.Position.X, t.Position.Z))));
         return list;
     }
 
@@ -50,7 +53,6 @@ public sealed class FoliageWorld : IDisposable
     void Open()
     {
         if (map is not null) return;
-        towns = ReadTowns(db, world);
         blend = BlendInfoFile.Open(install);
         biomes = FoliageBiomeMap.Open(install);
         map = TerrainHeightmap.Open(install);
@@ -73,12 +75,12 @@ public sealed class FoliageWorld : IDisposable
         return list;
     }
 
-    (Vector2 At, float Range)? NearestTown(float x, float z)
+    FoliageTown? NearestTown(float x, float z)
     {
         var at = new Vector2(x, z);
-        (Vector2, float)? best = null;
+        FoliageTown? best = null;
         float bestDistance = float.MaxValue;
-        foreach (var t in towns!)
+        foreach (var t in towns)
         {
             float d = Vector2.DistanceSquared(t.At, at);
             if (d < bestDistance) (bestDistance, best) = (d, t);

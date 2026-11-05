@@ -98,12 +98,19 @@ public sealed unsafe class DebugOverlay : IDisposable
     DebugOverlay(IGpuContext gpu, byte[] font, float pixelHeight = 16)
     {
         Gpu = gpu;
-        (PixelHeight, AtlasSize) = (pixelHeight, pixelHeight > 32 ? 2048 : 512);
-        var pixels = new byte[AtlasSize * AtlasSize];
-        fixed (byte* f = font)
-        fixed (byte* p = pixels)
-        fixed (StbTrueType.stbtt_bakedchar* g = glyphs)
-            StbTrueType.stbtt_BakeFontBitmap(f, 0, PixelHeight, p, AtlasSize, AtlasSize, FirstChar, CharCount, g);
+        PixelHeight = pixelHeight;
+        // The smallest square the glyphs fit in (the baker says how many rows it used, negative when they did not fit), at most 2048.
+        byte[] pixels;
+        for (AtlasSize = 256; ; AtlasSize *= 2)
+        {
+            pixels = new byte[AtlasSize * AtlasSize];
+            int rows;
+            fixed (byte* f = font)
+            fixed (byte* p = pixels)
+            fixed (StbTrueType.stbtt_bakedchar* g = glyphs)
+                rows = StbTrueType.stbtt_BakeFontBitmap(f, 0, PixelHeight, p, AtlasSize, AtlasSize, FirstChar, CharCount, g);
+            if (rows > 0 || AtlasSize >= 2048) break;
+        }
         LineHeight = PixelHeight * 1.25f;
         CharWidth = glyphs['M' - FirstChar].xadvance;
 
@@ -221,28 +228,38 @@ public sealed unsafe class DebugOverlay : IDisposable
         return result;
     }
 
-    /// <summary>A word as the pieces a line may break between: the word itself, but each ideograph, kana, hangul syllable or full-width form on its own.</summary>
+    /// <summary>
+    /// A word as the pieces a line may break between: the word itself, but each ideograph, kana, hangul syllable or full-width form on its own, except that closing
+    /// punctuation and small kana stay with the character before them and an opening bracket with the one after it (the CJK rule that a line starts or ends without them).
+    /// </summary>
     static IEnumerable<string> Pieces(string word)
     {
         bool wide = false;
         foreach (var rune in word.EnumerateRunes())
             if (IsBreakable(rune.Value)) { wide = true; break; }
         if (!wide) { yield return word; yield break; }
-        int start = 0;
+        int start = 0, previous = -1;
         for (int i = 0; i < word.Length;)
         {
             var rune = Rune.GetRuneAt(word, i);
-            int next = i + rune.Utf16SequenceLength;
-            if (IsBreakable(rune.Value))
+            if (previous >= 0 && BreaksBetween(previous, rune.Value))
             {
-                if (i > start) yield return word[start..i];
-                yield return word[i..next];
-                start = next;
+                yield return word[start..i];
+                start = i;
             }
-            i = next;
+            previous = rune.Value;
+            i += rune.Utf16SequenceLength;
         }
-        if (start < word.Length) yield return word[start..];
+        yield return word[start..];
     }
+
+    static bool BreaksBetween(int before, int after) =>
+        (IsBreakable(before) || IsBreakable(after)) && !Listed(NoLineStart, after) && !Listed(NoLineEnd, before);
+
+    const string NoLineStart = "、。，．,.：:；;？?！!）)」』】〕〉》］]｝}ー・…々ゝゞぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ";
+    const string NoLineEnd = "（(「『【〔〈《［[｛{";
+
+    static bool Listed(string set, int codePoint) => codePoint < 0x10000 && set.Contains((char)codePoint);
 
     static bool IsBreakable(int cp) => cp is >= 0x2E80 and <= 0x9FFF or >= 0xAC00 and <= 0xD7AF or >= 0xF900 and <= 0xFAFF or >= 0xFF00 and <= 0xFFEF or >= 0x20000 and <= 0x3FFFF;
 
@@ -284,9 +301,11 @@ public sealed unsafe class DebugOverlay : IDisposable
 
     /// <summary>
     /// Draws a titled panel at the left edge, below <paramref name="top"/>, listing <paramref name="lines"/> in as many
-    /// columns as the height left needs; returns the panel's bottom (where a next panel can start).
+    /// columns as the height left needs; returns the panel's bottom (where a next panel can start). <paramref name="laidOut"/> gets each
+    /// drawn (wrapped) line and its pixel rectangle (x0, y0, x1, y1), for clicks on it.
     /// </summary>
-    public float Panel(int width, int height, string title, IReadOnlyList<string> lines, float top = 0, float scale = 1)
+    public float Panel(int width, int height, string title, IReadOnlyList<string> lines, float top = 0, float scale = 1,
+        List<(string Line, Vector4 Rect)>? laidOut = null)
     {
         if (width <= 0 || height <= 0) return top;
         const float margin = 16, pad = 12, gap = 28;
@@ -310,8 +329,13 @@ public sealed unsafe class DebugOverlay : IDisposable
 
         Rect(margin, y, margin + panelW, y + panelH, PanelColour);
         TextScaled(title, margin + pad, y + pad, TextColour, scale);
+        laidOut?.Clear();
         for (int i = 0; i < lines.Count; i++)
-            TextScaled(lines[i], margin + pad + i / rows * (columnWidth + gap), y + pad + (i % rows + 1.5f) * lineHeight, TextColour, scale);
+        {
+            float x = margin + pad + i / rows * (columnWidth + gap), lineTop = y + pad + (i % rows + 1.5f) * lineHeight;
+            TextScaled(lines[i], x, lineTop, TextColour, scale);
+            laidOut?.Add((lines[i], new Vector4(x, lineTop, x + lines[i].Length * charWidth, lineTop + lineHeight)));
+        }
         Flush(width, height);
         return y + panelH;
     }
@@ -455,34 +479,37 @@ public sealed unsafe class DebugOverlay : IDisposable
     /// <summary>A pass that collects several overlays (the HUD, the debug text, the loading screen) into one render encoder; dispose it to draw them.</summary>
     public OverlayPass BeginPass(int width, int height) => new(Gpu, width, height);
 
+    /// <summary>
+    /// The scissor of a flush: the whole target without a clip (as <see cref="PassTargets.At"/> gives), else the clip in the target's pixels. Vulkan's target
+    /// is bottom-up, so its scissor is measured from the bottom; Metal's has the UI rectangles' top-left origin (a missing flip shifts every clipped widget down).
+    /// </summary>
+    PixelRect Scissor(GpuTexture target, int width, int height, Meitou.Data.Ui.UiRect? clip)
+    {
+        if (clip is not { } rect) return new PixelRect(0, 0, (uint)target.Desc.Width, (uint)target.Desc.Height);
+        var clipped = rect.Intersect(new(0, 0, width, height));
+        int left = (int)Math.Floor(clipped.X), right = (int)Math.Ceiling(clipped.X + clipped.Width);
+        int top = (int)Math.Floor(clipped.Y), bottom = (int)Math.Ceiling(clipped.Y + clipped.Height);
+        int scissorTop = Gpu.RenderTargetsBottomUp ? height - bottom : top;
+        return new PixelRect(left, scissorTop, (uint)(right - left), (uint)(bottom - top));
+    }
+
     /// <summary>Widget and font batches share one rendering; scissors and draw order still change per flush.</summary>
     public void Flush(int width, int height, Meitou.Data.Ui.UiRect? clip, OverlayPass? pass)
     {
         if (batch.Count == 0 || width <= 0 || height <= 0 || Target is null) { batch.Clear(); imageBatch = null; atlasRuns.Clear(); return; }
-        var t = PassTargets.Of(Target, null).At(new PixelViewport(0, 0, width, height, 0, 1));
-        if (clip is { } rect)
-        {
-            var clipped = rect.Intersect(new(0, 0, width, height));
-            // The target keeps the renderer's lower-left convention; UI rectangles use top-left.
-            int left = (int)Math.Floor(clipped.X), right = (int)Math.Ceiling(clipped.X + clipped.Width);
-            int top = (int)Math.Floor(clipped.Y), bottom = (int)Math.Ceiling(clipped.Y + clipped.Height);
-            // Vulkan's target is bottom-up, so its scissor is measured from the bottom; Metal's scissor has the
-            // same top-left origin as the UI rectangles. A missing flip here shifts every clipped widget down.
-            int scissorTop = Gpu.RenderTargetsBottomUp ? height - bottom : top;
-            t = t with { Scissor = new PixelRect(left, scissorTop, (uint)(right - left), (uint)(bottom - top)) };
-        }
+        var scissor = Scissor(Target, width, height, clip);
         // The atlas texture of run `run` of the batch: a UI font's (it can change within a batch), else the baked one.
         SampledTexture AtlasAt(int run) => atlasRuns.Count > 0 ? atlasRuns[run].Texture : uiFont is { } ui ? ui.Sampled : atlasSampled;
         if (pass is not null)
         {
             // Only the scissor goes to the pass (the whole target without a clip, as PassTargets.At gives).
             var all = CollectionsMarshal.AsSpan(batch);
-            if (atlasRuns.Count <= 1) pass.Add(this, all, imageBatch, t.Scissor, imageBatch is null ? AtlasAt(0) : null);
+            if (atlasRuns.Count <= 1) pass.Add(this, all, imageBatch, scissor, imageBatch is null ? AtlasAt(0) : null);
             else
                 for (int run = 0; run < atlasRuns.Count; run++)
                 {
                     int from = run == 0 ? 0 : atlasRuns[run].Start, to = run + 1 < atlasRuns.Count ? atlasRuns[run + 1].Start : all.Length;
-                    pass.Add(this, all[from..to], null, t.Scissor, atlasRuns[run].Texture);
+                    pass.Add(this, all[from..to], null, scissor, atlasRuns[run].Texture);
                 }
             batch.Clear();
             atlasRuns.Clear();
@@ -492,6 +519,8 @@ public sealed unsafe class DebugOverlay : IDisposable
         // A native segment of its own. It is begun first: the overlay is also drawn after a frame ended (a screenshot's key list), and the
         // segment opens the frame whose constants hold the vertices.
 
+        // The pass's targets only here, for a segment of its own: a pass needs only the scissor (PassTargets is a class, made per flush it was garbage).
+        var t = PassTargets.Of(Target, null).At(new PixelViewport(0, 0, width, height, 0, 1)) with { Scissor = scissor };
         var cmd = Gpu.BeginNative("debug overlay");
         cmd.BeginRendering(t.Rendering);
         program.Set(uScreen, (float)width, height);
@@ -499,8 +528,9 @@ public sealed unsafe class DebugOverlay : IDisposable
         var floats = CollectionsMarshal.AsSpan(batch);
         var vertices = Gpu.Frame.AllocateConstants((ulong)(floats.Length * 4), 16);
         MemoryMarshal.AsBytes(floats).CopyTo(new Span<byte>(vertices.Pointer, floats.Length * 4));
-        // As the GL version drew: no depth test or culling, blended over by alpha.
-        var state = DrawState.For(t.Formats, Gpu.DepthClamp, blend: new BlendState(true, BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha));
+        // As the GL version drew: no depth test or culling, blended over by alpha. The alpha channel accumulates as "over" does, so a transparent target
+        // (the UI layer) ends up premultiplied: colour a * c, alpha a.
+        var state = DrawState.For(t.Formats, Gpu.DepthClamp, blend: new BlendState(true, BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha, AlphaSrc: BlendingFactor.One, AlphaDst: BlendingFactor.OneMinusSrcAlpha));
         state.Record(cmd, t);
         Span<LegacyProgram.Attribute?> attributes =
         [
@@ -542,6 +572,23 @@ public sealed unsafe class DebugOverlay : IDisposable
         GpuTexture? target;
         readonly record struct Run(SampledTexture Texture, bool Image, PixelRect Scissor, int First, int Count);
 
+        /// <summary>One <see cref="Add"/> as recorded: its arguments, the data at <paramref name="First"/> in the recording's floats.</summary>
+        public readonly record struct Recorded(DebugOverlay Owner, SampledTexture? Image, PixelRect Clip, SampledTexture? Atlas, int First, int Count);
+
+        List<Recorded>? recording;
+        List<float>? recordedFloats;
+
+        /// <summary>Until <see cref="EndRecording"/>, every <see cref="Add"/> is also written to <paramref name="adds"/> and <paramref name="floats"/>.</summary>
+        public void BeginRecording(List<Recorded> adds, List<float> floats) => (recording, recordedFloats) = (adds, floats);
+
+        public void EndRecording() => (recording, recordedFloats) = (null, null);
+
+        /// <summary>Adds again what was recorded.</summary>
+        public void Replay(float[] floats, Recorded[] adds)
+        {
+            foreach (var r in adds) Add(r.Owner, floats.AsSpan(r.First, r.Count), r.Image, r.Clip, r.Atlas);
+        }
+
         public OverlayPass Reset(int newWidth, int newHeight)
         {
             width = newWidth; height = newHeight;
@@ -556,6 +603,11 @@ public sealed unsafe class DebugOverlay : IDisposable
                 throw new InvalidOperationException("An overlay pass must share its GPU and target.");
             renderer ??= owner;
             target = owner.Target;
+            if (recording is not null && recordedFloats is not null)
+            {
+                recording.Add(new(owner, image, clip, atlas, recordedFloats.Count, data.Length));
+                recordedFloats.AddRange(data);
+            }
             // If no geometry reaches outside this scissor, the full viewport clips it identically.
             // Different widget clips can then share a draw without changing their pixels.
             bool contained = true, solid = true;
@@ -594,7 +646,7 @@ public sealed unsafe class DebugOverlay : IDisposable
             cmd.BeginRendering(targets.Rendering);
             try
             {
-                var state = DrawState.For(targets.Formats, gpu.DepthClamp, blend: new BlendState(true, BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha));
+                var state = DrawState.For(targets.Formats, gpu.DepthClamp, blend: new BlendState(true, BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha, AlphaSrc: BlendingFactor.One, AlphaDst: BlendingFactor.OneMinusSrcAlpha));
                 state.Record(cmd, targets);
                 var data = CollectionsMarshal.AsSpan(vertices);
                 var upload = gpu.Frame.AllocateConstants((ulong)(data.Length * 4), 16);

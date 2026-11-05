@@ -23,7 +23,7 @@ public sealed partial class AiSystem
     /// </summary>
     static bool Carried(TaskType step) => step is TaskType.MOVE_ON_FREE_WILL or TaskType.MOVE_ON_FREE_WILL_FAST or TaskType.TRAVEL_TO_TARGET_TOWN
         or TaskType.TRAVEL_TO_TARGET_TOWN_FAST or TaskType.STAND_AT_NODE or TaskType.BUY_SHIT
-        or TaskType.USE_BED or TaskType.USE_BED_ORDER or TaskType.USE_TURRET or TaskType.OPERATE_MACHINERY or TaskType.PRETEND_TO_OPERATE_MACHINERY or TaskType.UNEQUIP_WEAPON
+        or TaskType.USE_BED or TaskType.USE_BED_ORDER or TaskType.USE_TURRET or TaskType.OPERATE_MACHINERY or TaskType.COLLECT_OUTPUT_RESOURCE or TaskType.PRETEND_TO_OPERATE_MACHINERY or TaskType.UNEQUIP_WEAPON
         or TaskType.GET_OUT_OF_BED or TaskType.GET_OUT_OF_BED_IF_ITS_EMERGENCY or TaskType.GET_OUT_OF_BED_ONCE_HEALED
         or TaskType.EQUIP_WEAPON or TaskType.EQUIP_CROSSBOW or TaskType.GO_HOMEBUILDING or TaskType.GET_NEAR_TO
         or TaskType.ENTER_BUILDING or TaskType.LEAVE_BUILDING;
@@ -103,6 +103,8 @@ public sealed partial class AiSystem
         /// A state's value for a target. States of rooms, doors, machines and fights the AI does not run into (it runs only out of a fight, carrying nothing)
         /// have a fixed stand-in value; an unlisted state is false.
         /// </summary>
+        Production.Machine? MachineAt(in PlanTarget target) => target.Kind == Targets.Work && target.Building is { } key ? world.Machines.Find(key) : null;
+
         public bool Holds(TaskCondition condition, in PlanTarget target)
         {
             var cold = world.Characters.Cold(slot)!;
@@ -112,6 +114,10 @@ public sealed partial class AiSystem
                 StateType.isWithin10Meters => Distance(target) <= 10,
                 StateType.isWithin50Meters => Distance(target) <= 50,
                 StateType.isNearTo => Distance(target) <= 10,
+                StateType.machineHasEmptyInputs => MachineAt(target)?.HasEmptyInputs == true,
+                StateType.isMachineOutputFull => MachineAt(target)?.OutputBlocked == true,
+                StateType.isMachineJammed => MachineAt(target)?.Jammed == true,
+                StateType.gotInventoryRoomForResources => MachineAt(target) is { Output: { } output } && cold.Inventory is { } inventory && system.Data.Items.Create(output.Recipe.Item, 1) is { } unit && Production.ProductionSystem.RoomForOutput(inventory, unit),
                 StateType.hasWeaponEquipped or StateType.hasWeaponEquipped_156 or StateType.hasWeaponEquipped_157 => cold.DrawnWeapon != WeaponKinds.None,
                 StateType.hasWeapon => cold.Fighter is { Weapon: not null, Unarmed: false },
                 StateType.IS_CARRYING_SOMETHING => !cold.Carrying.IsNone,
@@ -202,9 +208,9 @@ public sealed partial class AiSystem
                     return board.SeatClaims.TryGetValue(slot, out var seat) && !mind.SeatUnreachable ? new PlanTarget(Targets.Seat, seat.Position) : default;
                 case TaskType.AUTO_LABOURING_MINES or TaskType.AUTO_LABOURING_MINES_PRETEND:
                     // The building it works at: the one it walks to now, else the pick it will make (the same roll, AiMind.WorkEpoch).
-                    if (mind.Behaviour == AiBehaviour.Work && mind.Goal?.Task.Type == type && mind.Target is { } current) return new PlanTarget(Targets.Work, current);
+                    if (mind.Behaviour == AiBehaviour.Work && mind.Goal?.Task.Type == type && mind.Target is { } current) return new PlanTarget(Targets.Work, current) { Building = mind.WorkBuilding?.Key };
                     return system.PickWork(world, world.Characters.IdOf(slot), board.Town, mind.WorkEpoch + (mind.WorkActive ? 1 : 0)) is { } work
-                        ? new PlanTarget(Targets.Work, new Vector3(work.Position.X, float.NaN, work.Position.Z)) : default;
+                        ? new PlanTarget(Targets.Work, new Vector3(work.Position.X, float.NaN, work.Position.Z)) { Building = work.Key } : default;
                 case TaskType.MAN_A_TURRET or TaskType.MAN_A_TURRET_ON_BUILDING or TaskType.MAN_A_TURRET_PLAYER_JOB or TaskType.USE_TURRET:
                     return board.TurretClaims.TryGetValue(slot, out int t) && (uint)t < (uint)board.Turrets.Count && board.Turrets[t].Turret is { } turret
                         ? new PlanTarget(Targets.Turret, TurretSpot(world, turret)) : default;

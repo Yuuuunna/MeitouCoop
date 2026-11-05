@@ -47,6 +47,15 @@ public sealed record PlacedMesh(string MeshPath, Matrix4x4 Transform, GameRecord
 
     /// <summary>For a <see cref="Contained"/> player building: the building it was placed in (its parent, a site's id or a level building's instance id); null when unknown.</summary>
     public string? ContainerId { get; init; }
+
+    /// <summary>A destroyed building's upper-floor part with no destroyed mesh: kept for its collision, never drawn.</summary>
+    public bool RenderHidden { get; init; }
+
+    /// <summary>A destroyed building's stairs or upper-floor part whose destroyed mesh stands in for a blank own mesh: its collision is the <c>destroyed collision</c> only, never <c>xml collision</c>.</summary>
+    public bool BlankXmlCollision { get; init; }
+
+    /// <summary>The collision file the part has in this placement (<see cref="WorldObjectLayout.DestroyedCollision"/>); empty for none.</summary>
+    public string CollisionPath(bool destroyed) => WorldObjectLayout.DestroyedCollision(Source, destroyed, BlankXmlCollision);
 }
 
 /// <summary>
@@ -111,14 +120,14 @@ public static class WorldObjectLayout
     static Quaternion Normalized(Quaternion q) => q.LengthSquared() < 1e-12f ? Quaternion.Identity : Quaternion.Normalize(q);
 
     /// <summary>
-    /// A loose item on the ground (docs/simulation.md "Ground items"): the record's <c>ground mesh</c>, else its <c>mesh</c>, at <paramref name="worldPosition"/> turned by
-    /// <paramref name="rotation"/>; its look is the material resolver's pick for the record (its <c>material</c> list). Null when the record names no mesh.
+    /// A loose item on the ground (docs/simulation.md "Ground items"): its <see cref="ItemMesh"/> at <paramref name="worldPosition"/> turned by <paramref name="rotation"/>; its look is the
+    /// material resolver's pick for the record (its <c>material</c> list).
     /// </summary>
-    public static PlacedMesh? Item(GameRecord item, string placementId, Vector3 worldPosition, Quaternion rotation)
+    public static PlacedMesh? Item(GameRecord item, string placementId, Vector3 worldPosition, Quaternion rotation, string? mesh = null, float scale = 1)
     {
-        string mesh = ItemMesh(item);
+        mesh ??= ItemMesh(item);
         if (mesh.Length == 0) return null;
-        return new PlacedMesh(mesh, InstanceTransform(worldPosition, rotation, Vector3.One), item, item, placementId, PlacedKind.Item);
+        return new PlacedMesh(mesh, InstanceTransform(worldPosition, rotation, new Vector3(scale)), item, item, placementId, PlacedKind.Item);
     }
 
     /// <summary>The BUILDING_PART the character editor's stage stands the characters on (<c>FUN_1405f03c0</c>; base data: "character_editor_platform_part").</summary>
@@ -136,8 +145,12 @@ public static class WorldObjectLayout
         return new PlacedMesh(mesh, transform, part, part, "meitou:editor-platform", PlacedKind.BuildingPart) { Material = material };
     }
 
-    /// <summary>The mesh a loose item is drawn with: its <c>ground mesh</c>, else its <c>mesh</c>; "" for none.</summary>
-    public static string ItemMesh(GameRecord item) => item.GetPath("ground mesh") is { Length: > 0 } ground ? ground : item.GetPath("mesh");
+    /// <summary>
+    /// The mesh a loose item is drawn with: its <c>ground mesh</c>, else its <c>mesh</c>, else <c>steel1.mesh</c> (<c>FUN_140760300</c>, <b>Verified</b>). Not modelled: a weapon that exists bare
+    /// takes its <c>bare sword</c> in place of <c>mesh</c> there (the flag from a save's <c>bare weapon</c>; for a drop <b>Unknown</b>).
+    /// </summary>
+    public static string ItemMesh(GameRecord item) =>
+        item.GetPath("ground mesh") is { Length: > 0 } ground ? ground : item.GetPath("mesh") is { Length: > 0 } mesh ? mesh : "steel1.mesh";
 
     /// <summary>
     /// Meshes of a placed building and of the doors it lists. <paramref name="worldPosition"/> is the absolute position
@@ -170,6 +183,18 @@ public static class WorldObjectLayout
         return result;
     }
 
+    /// <summary>
+    /// A wind generator's rotor as this placement spawns it (<c>getWindRotationPower</c> reads only the parts the layout created, <b>Verified</b>, FUN_1404cbd90): the first laid-out part that
+    /// turns with the wind speed (rotation function 3, no collision file) and its wind range; null when the position's part choice spawns none.
+    /// </summary>
+    public static (float Min, float Max)? WindRotor(GameDatabase db, GameRecord building, Vector3 worldPosition)
+    {
+        foreach (var mesh in Building(db, building, building.StringId, worldPosition, Quaternion.Identity))
+            if (mesh.Joints is { Count: > 0 } joints && joints[^1] is { Rotor.Function: RotorSpec.WindSpeed } own && own.PartId == mesh.Source.StringId)
+                return (own.Rotor.WindMin, MathF.Max(own.Rotor.WindMin, own.Rotor.WindMax));
+        return null;
+    }
+
     sealed class Assembly(GameDatabase db, GameRecord building, string placementId, BuildingState state, List<PlacedMesh> result, List<PlacedLight>? lights, List<PlacedEffect>? effects)
     {
         public readonly GameDatabase Db = db;
@@ -189,12 +214,22 @@ public static class WorldObjectLayout
         public bool Interior;
         /// <summary>Laying out door i of the parent's <c>doors</c> list; -1 for the building itself.</summary>
         public int DoorIndex = -1;
+        /// <summary>The last position-marker part's marker (<see cref="PositionMarker"/>).</summary>
+        public Vector3? Marker;
     }
 
-    static void AddBuilding(GameDatabase db, GameRecord building, string placementId, Vector3 position, Quaternion rotation, BuildingState state,
+    /// <summary>
+    /// The building's position marker (<c>getPositionMarker</c> of a building with fewer than two use nodes, FUN_14054b850; <b>Verified</b>, FUN_14055f6e0:376-425): a part with a mesh
+    /// flagged <c>is for position marker</c> sets it to the building's position plus its orientation applied to the part's offset times the building's scale (the mesh itself is not
+    /// offset); the last such part wins. Null when the placement spawns none (the marker is then the building's position).
+    /// </summary>
+    public static Vector3? PositionMarker(GameDatabase db, GameRecord building, Vector3 worldPosition, Quaternion rotation) =>
+        AddBuilding(db, building, building.StringId, worldPosition, rotation, new BuildingState(), [], null, null)?.Marker;
+
+    static Assembly? AddBuilding(GameDatabase db, GameRecord building, string placementId, Vector3 position, Quaternion rotation, BuildingState state,
         List<PlacedMesh> result, List<PlacedLight>? lights, List<PlacedEffect>? effects, int doorIndex = -1, float? parentScale = null)
     {
-        if (building.GetBool("is node")) return;
+        if (building.GetBool("is node")) return null;
         float scale = parentScale ?? building.GetFloat("scale", 1);
         var a = new Assembly(db, building, placementId, state, result, lights, effects)
         {
@@ -216,6 +251,7 @@ public static class WorldObjectLayout
             a.Interior = true;
             AddParts(a, building, a.Node, 0, "interior");
         }
+        return a;
     }
 
     /// <summary>One level of the game's part creation: choose from <paramref name="holder"/>'s parts, create each, recurse, then the holder's instances.</summary>
@@ -240,25 +276,20 @@ public static class WorldObjectLayout
     {
         below = joints;
         var mesh = part.GetPath("phs or mesh");
-        bool entity = true;
-        if (a.State.Destroyed)
-        {
-            // fcs.def: "Ground floor will use normal mesh if blank. Upper floors will be removed if blank."; stairs go too.
-            var destroyed = part.GetPath("destroyed mesh");
-            if (destroyed.Length > 0) mesh = destroyed;
-            else if (part.GetBool("is stairs")) return null;
-            else if (part.GetInt("building floor") != 0) entity = false;
-        }
+        bool entity = true, blankCollision = false;
+        if (a.State.Destroyed && !DestroyedPart(part, ref mesh, out entity, out blankCollision)) return null;
         if (mesh.Length == 0 || !mesh.Contains(".mesh", StringComparison.Ordinal)) return null;
 
         var offset = part.GetBool("is for position marker")
             ? Vector3.Zero
             : new Vector3(part.GetFloat("offset X"), part.GetFloat("offset Y"), part.GetFloat("offset Z")) * a.Scale;
         var local = Matrix4x4.CreateScale(a.Scale);
+        if (part.GetBool("is for position marker"))
+            a.Marker = Vector3.Transform(new Vector3(part.GetFloat("offset X"), part.GetFloat("offset Y"), part.GetFloat("offset Z")) * a.Scale, a.Node);
 
         // Rotating parts (no collision file, a rotation function on the part or its holder; RotatingEnt's constructor) roll a speed variation (unless
         // ROTATION_WIND_SPEED) and a start angle about their axis. The viewer leaves turret parts (ROTATION_TARGET) unrotated.
-        string collision = a.State.Destroyed && part.GetPath("destroyed collision") is { Length: > 0 } dc ? dc : part.GetPath("xml collision");
+        string collision = DestroyedCollision(part, a.State.Destroyed, blankCollision);
         RotorSpec? rotor = null;
         var rotorAxis = Vector3.Zero;
         if (collision.Length == 0 && (part.GetInt("rotation function") > 0 || holder.GetInt("rotation function") > 0))
@@ -281,7 +312,13 @@ public static class WorldObjectLayout
         }
         local *= Matrix4x4.CreateTranslation(offset);
         var node = local * parentNode;
-        if (!entity) return null;
+        if (!entity)
+        {
+            // A part of an upper floor with no destroyed mesh keeps its mesh as collision only (FUN_14055f6e0 mode 2: render skipped, collision made); children hang from the building.
+            a.Result.Add(new PlacedMesh(mesh, node, part, a.Building, a.Identity, PlacedKind.BuildingPart)
+                { Material = PartMaterial(a, part), Floor = Math.Clamp(part.GetInt("building floor"), 0, 3), Interior = a.Interior, DoorIndex = a.DoorIndex, RenderHidden = true });
+            return null;
+        }
         // A part that turns by itself is a joint too: it and everything hanging from it turn about its node's axis.
         if (rotor is not null)
         {
@@ -295,9 +332,41 @@ public static class WorldObjectLayout
             var axis = yaw ? new Vector3(node.M21, node.M22, node.M23) : new Vector3(node.M11, node.M12, node.M13);
             if (axis.LengthSquared() > 1e-12f) below = [.. joints ?? [], new TurnJoint(part.StringId, node.Translation, Vector3.Normalize(axis), yaw)];
         }
-        a.Result.Add(new PlacedMesh(mesh, node, part, a.Building, a.Identity, PlacedKind.BuildingPart) { Material = PartMaterial(a, part), Floor = Math.Clamp(part.GetInt("building floor"), 0, 3), Interior = a.Interior, DoorIndex = a.DoorIndex, Joints = below });
+        a.Result.Add(new PlacedMesh(mesh, node, part, a.Building, a.Identity, PlacedKind.BuildingPart) { Material = PartMaterial(a, part), Floor = Math.Clamp(part.GetInt("building floor"), 0, 3), Interior = a.Interior, DoorIndex = a.DoorIndex, Joints = below, BlankXmlCollision = blankCollision });
         return node;
     }
+
+    /// <summary>
+    /// A destroyed building's part (FUN_14055f6e0:144-176, <b>Verified</b>; fcs.def: "Ground floor will use normal mesh if blank. Upper floors will be removed if blank."). Returns false when the part
+    /// is dropped (stairs without a destroyed mesh). <paramref name="mesh"/> becomes the destroyed mesh when it has one. <paramref name="entity"/> is false for a non-stairs part above the ground floor
+    /// with no destroyed mesh: its normal mesh stays for collision only, not drawn. <paramref name="blankXmlCollision"/>: a stairs or upper-floor part whose destroyed mesh replaces a blank own mesh
+    /// loses its <c>xml collision</c> (the original blanks it in the shared record, so the intact building's part loses it too once any destroyed one was made; not modelled).
+    /// </summary>
+    static bool DestroyedPart(GameRecord part, ref string mesh, out bool entity, out bool blankXmlCollision)
+    {
+        entity = true;
+        blankXmlCollision = false;
+        var destroyed = part.GetPath("destroyed mesh");
+        bool stairs = part.GetBool("is stairs");
+        if (stairs && destroyed.Length == 0) return false;
+        bool upper = part.GetInt("building floor") != 0;
+        if (!stairs && !upper)
+        {
+            if (destroyed.Length > 0) mesh = destroyed;
+            return true;
+        }
+        if (destroyed.Length == 0) entity = false;
+        else
+        {
+            blankXmlCollision = mesh.Length == 0;
+            mesh = destroyed;
+        }
+        return true;
+    }
+
+    /// <summary>A part's collision file: the destroyed building's <c>destroyed collision</c> when it has one, else <c>xml collision</c> (blank when <paramref name="blankXml"/>).</summary>
+    public static string DestroyedCollision(GameRecord part, bool destroyed, bool blankXml) =>
+        destroyed && part.GetPath("destroyed collision") is { Length: > 0 } dc ? dc : blankXml ? "" : part.GetPath("xml collision");
 
     /// <summary>
     /// A record's instances after its parts, with the rolls the game draws for them: two per LIGHT (its brightness variance, then a
@@ -391,52 +460,40 @@ public static class WorldObjectLayout
     }
 
     /// <summary>
-    /// The <c>parts</c> entries the game uses, drawing from <paramref name="random"/> exactly as it does (val0 group, val1 chance):
-    /// a group 0 entry with chance 0 is always kept; any other group 0 entry rolls an int 0..99 (even at chance ≥ 100 and for
-    /// missing targets) and is kept if the roll is below its chance. Other groups collect their entries with chance &gt; 0 and an
-    /// existing target; afterwards each group, in the iteration order of the game's hash map, keeps its only entry or rolls a
-    /// float in [0, total) and keeps the entry whose running total first exceeds it. Group 0 picks come first, in list order.
+    /// The <c>parts</c> entries the game uses, drawing from <paramref name="random"/> exactly as it does (<c>FUN_140848950</c>, val0 group, val1 chance). A group 0 entry is kept
+    /// without a draw at chance 0 or 100, else when an int roll 0..100 is at most its chance (a missing target rolls too). Every other group, in ascending group number, draws one float in
+    /// [0, total) (total: the chance of every entry, 0 counting as 100, missing targets too), then walks its entries in list order: one whose chance (0 as 100) is below the roll
+    /// takes it off and goes on, else it is taken (a missing target yields no part) and the walk stops; a roll past the sum takes nothing. Group 0 picks come first, in list order.
     /// </summary>
     public static List<GameReference> ChooseParts(IReadOnlyList<GameReference> parts, Func<string, bool> exists, BuildingRandom random)
     {
         var result = new List<GameReference>();
-        var groups = new Dictionary<int, List<(GameReference Ref, float Total)>>();
-        var order = new List<int>();
+        var groups = new SortedDictionary<int, List<GameReference>>();
         foreach (var p in parts)
         {
             int group = p.Values.Value0, chance = p.Values.Value1;
-            if (group == 0)
+            if (group != 0)
             {
-                if (chance == 0 || random.NextInt(0, 99) < chance) result.Add(p);
-                continue;
+                if (!groups.TryGetValue(group, out var list)) groups[group] = list = [];
+                list.Add(p);
             }
-            if (!groups.TryGetValue(group, out var list))
-            {
-                groups[group] = list = [];
-                InsertInMapOrder(order, group);
-            }
-            if (chance > 0 && exists(p.TargetStringId))
-                list.Add((p, (list.Count > 0 ? list[^1].Total : 0) + chance));
+            else if (chance == 0 || chance == 100 || random.NextInt(0, 100) <= chance) result.Add(p);
         }
-        foreach (int group in order)
+        foreach (var list in groups.Values)
         {
-            var list = groups[group];
-            if (list.Count == 0) continue; // the game appends an empty entry here
-            if (list.Count == 1) { result.Add(list[0].Ref); continue; }
-            float roll = random.NextFloat(0, list[^1].Total);
-            result.Add(list.FirstOrDefault(e => e.Total > roll, list[^1]).Ref);
+            float roll = random.NextFloat(0, list.Sum(e => GroupChance(e)));
+            foreach (var entry in list)
+            {
+                if (GroupChance(entry) < roll) { roll -= GroupChance(entry); continue; }
+                if (exists(entry.TargetStringId)) result.Add(entry);
+                break;
+            }
         }
         return result;
     }
 
-    /// <summary>Group order of the game's <c>boost::unordered_map&lt;int, ...&gt;</c> (17 buckets, key % 17): a key in a new bucket goes to the front, else before its bucket's first key.</summary>
-    static void InsertInMapOrder(List<int> order, int key)
-    {
-        const ulong buckets = 17; // boost's next prime from the default 11
-        ulong bucket = (ulong)(long)key % buckets;
-        int at = order.FindIndex(k => (ulong)(long)k % buckets == bucket);
-        order.Insert(at < 0 ? 0 : at, key);
-    }
+    /// <summary>An entry's chance in a non-zero group: 0 stands for 100.</summary>
+    static int GroupChance(GameReference entry) => entry.Values.Value1 == 0 ? 100 : entry.Values.Value1;
 
     /// <summary>
     /// A building's <c>distant mesh</c> at the building's position, rotation and <c>scale</c> (the transform the game's

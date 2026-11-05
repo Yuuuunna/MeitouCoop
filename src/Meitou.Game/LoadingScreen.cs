@@ -151,6 +151,12 @@ sealed class LoadingScreen : IDisposable
     double slideStart;
     bool skipSlide;
 
+    /// <summary>
+    /// A splash slide's height: the image height × the GUI's horizontal scale (<c>DAT_1421337ec</c> = screen width / the 1920 px width of <c>Kenshi_UI.png</c>, set by
+    /// <c>FUN_1406e3c30</c>) × the slide's factor, capped at the screen height.
+    /// </summary>
+    internal static int SplashSlideHeight(float imageHeight, int screenWidth, int screenHeight, float factor) => (int)Math.Min(imageHeight * (screenWidth / 1920f) * factor, screenHeight);
+
     /// <summary>Plays the splash from its first picture (the Faithful start, which opens on the title); the loading screen shows once it is over.</summary>
     public void StartSplash()
     {
@@ -180,8 +186,7 @@ sealed class LoadingScreen : IDisposable
             && set.Element("Group")?.Attribute("size")?.Value.Split(' ') is [var w, var h]
             && float.TryParse(w, CultureInfo.InvariantCulture, out float imageWidth) && float.TryParse(h, CultureInfo.InvariantCulture, out float imageHeight) && imageHeight > 0)
         {
-            // The scale is Unknown (DAT_1421337ec, beside the UI scale DAT_1421337f0): taken as the UI scale, height / 1080 (engine choice).
-            int shownHeight = (int)Math.Min(imageHeight * (height / 1080f) * SplashSlides[splashSlide].Scale, height);
+            int shownHeight = SplashSlideHeight(imageHeight, width, height, SplashSlides[splashSlide].Scale);
             int shownWidth = (int)(imageWidth / imageHeight * shownHeight);
             var bounds = new UiRect((int)(width * 0.5f - shownWidth * 0.5f), (int)(height * 0.5f - shownHeight * 0.5f), shownWidth, shownHeight);
             var properties = new Dictionary<string, string>
@@ -195,7 +200,18 @@ sealed class LoadingScreen : IDisposable
     }
 
     /// <summary>Starts the bar again (a new load between scenes), with a new tip and picture.</summary>
-    public void Restart() { shown = 0; from = to = 0; exitStart = null; drawn = false; Pick(); }
+    public void Restart() { shown = 0; from = to = 0; exitStart = null; drawn = false; released = false; Pick(); }
+
+    bool released;
+
+    /// <summary>Once the screen has gone, frees its pictures (the picture and the UI atlas, about 17 MB at 1080p); the next showing loads them again.
+    /// The host calls it on frames the screen is not drawn.</summary>
+    public void ReleaseWhenGone()
+    {
+        if (released || exitStart is null || ExitProgress < 1) return;
+        painter?.ReleaseTextures();
+        released = true;
+    }
 
     public void Draw(int width, int height, bool background = true)
     {

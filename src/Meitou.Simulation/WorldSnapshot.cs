@@ -193,6 +193,8 @@ public sealed record CharacterSnapshot(CharacterId Id, CharacterAppearance? Appe
     public ulong JobsRevision { get; init; }
     /// <summary>The path being followed from the next waypoint, for selected characters only (the host draws it).</summary>
     public IReadOnlyList<Vector3> Path { get; init; } = [];
+    /// <summary>The number of exact navmesh points from the start of <see cref="Path"/>; the remaining points are provisional.</summary>
+    public int PathExact { get; init; }
     /// <summary>Null for a character without a body (an animal).</summary>
     public BodyStatus? Body { get; init; }
     /// <summary>The stat-driven body of a person (not a robot, not an animal), from its current stats and hunger; null for the others.</summary>
@@ -449,6 +451,8 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
 /// </summary>
 public readonly record struct ProjectileSnapshot(int Id, Vector3 Position, Vector3 Direction, float Stretch, bool Stuck, string Mesh)
 {
+    /// <summary>The authoritative bolt speed in world units per second, for tracer presentation.</summary>
+    public float Speed { get; init; }
     /// <summary>Who fired it (the renderer starts the drawn bolt at that character's crossbow).</summary>
     public CharacterId Shooter { get; init; }
 }

@@ -8,7 +8,7 @@ namespace Meitou.Rendering;
 /// </summary>
 static class StageClock
 {
-    public static readonly string[] Names = ["upd-terrain", "upd-objects", "upd-foliage", "sky-prepare", "reflection", "sky-draw", "terrain", "objects", "foliage", "water", "post", "ui", "shadows", "particles", "gi", "uploads", "cull", "bake", "shafts", "fog", "characters", "upd-chars", "submit", "driver-wait", "host", "blood", "sim"];
+    public static readonly string[] Names = ["upd-terrain", "upd-objects", "upd-foliage", "sky-prepare", "reflection", "sky-draw", "terrain", "objects", "foliage", "water", "post", "ui", "shadows", "particles", "gi", "uploads", "cull", "bake", "shafts", "fog", "characters", "upd-chars", "submit", "driver-wait", "host", "blood", "sim", "birds"];
 
     // Stages 15 to 17 exist on the GPU only: the pre-frame command buffer's uploads (what it holds besides the next two), the foliage and grass culls and the
     // impostor bakes, timed by stamps in that buffer (FrameProfiler.PreStamp). The render thread has no lap for them. 18 and 19 are the light shafts and the fog volumes, 20 and 21 the characters' colour and motion draws and their update.
@@ -18,6 +18,8 @@ static class StageClock
     public const int Host = 24, Blood = 25;
     // 26 is the game's simulation ticks: on the render thread, before the frame's clock starts (FrameProfiler.Outside); the viewer has none.
     public const int Sim = 26;
+    // 27 is the game host's birds (the step runs on its own thread; this is the host's share: collecting the last step's flocks and starting the next).
+    public const int Birds = 27;
     public static int LastStage { get; private set; }
     public static bool SubmissionStarted { get; private set; }
     public static bool CpuOnly(int stage) => stage is DriverWait or Sim;
@@ -47,6 +49,25 @@ static class StageClock
     }
 
     /// <summary>
+    /// The parts of the interface stage (<see cref="Ui"/>, everything from the world's last stage to the submission) the spike log lists under it (render
+    /// thread only): the end of the world's draw after its last stage, the markers, the walk steering, the HUD and panels, the debug overlays, the settings
+    /// panel, the cinema's layer, the loading screen, the pointer and the composite of the interface over the world.
+    /// </summary>
+    public static readonly string[] UiPartNames = ["world end", "markers", "steer", "hud", "debug", "settings", "cinema", "loading", "pointer", "composite"];
+    public const int UiWorldEnd = 0, UiMarkers = 1, UiSteer = 2, UiHud = 3, UiDebug = 4, UiSettings = 5, UiCinema = 6, UiLoading = 7, UiPointer = 8, UiComposite = 9;
+    /// <summary>This frame's render-thread ms per interface part (<see cref="UiPart"/>).</summary>
+    public static readonly double[] UiPartMs = new double[UiPartNames.Length];
+
+    /// <summary>Ends <paramref name="part"/> of the interface stage: the time since the last lap or part goes to it.</summary>
+    public static void UiPart(int part)
+    {
+        if (!Active) return;
+        long now = Stopwatch.GetTimestamp();
+        UiPartMs[part] += (now - partLast) * 1000.0 / Stopwatch.Frequency;
+        partLast = now;
+    }
+
+    /// <summary>
     /// The pass meter's hook (<c>MEITOU_PASS_STATS=1</c>, the viewer's PassMeter; docs/engine.md "Frame cost breakdown"): called with the label of
     /// what just ended and whether it is a part (<see cref="Sub"/>) of the enclosing stage or a stage of its own (<see cref="Lap"/>,
     /// <see cref="Phase"/>); null (the default) costs one compare. <see cref="OnStart"/> is called when a frame's clock starts.
@@ -66,7 +87,7 @@ static class StageClock
         if (Active && (uint)stage < (uint)JobMs.Length) JobMs[stage] += ticks * 1000.0 / Stopwatch.Frequency;
     }
 
-    public static void Start() { Active = true; SubmissionStarted = false; LastStage = -1; Array.Clear(Ms); Array.Clear(JobMs); Array.Clear(PartMs); last = partLast = Stopwatch.GetTimestamp(); OnStart?.Invoke(); }
+    public static void Start() { Active = true; SubmissionStarted = false; LastStage = -1; Array.Clear(Ms); Array.Clear(JobMs); Array.Clear(PartMs); Array.Clear(UiPartMs); last = partLast = Stopwatch.GetTimestamp(); OnStart?.Invoke(); }
 
     // Called before the window copy, or before submission for an offscreen frame.
     public static void BeginSubmission()

@@ -393,7 +393,7 @@ sealed partial class GameHost
         if (characters is not null) Console.WriteLine($"metal     crowd ready ({characters.Assets} appearances)");
         else if (scene.Database is { } characterDb && !g.NoPopulation)
         {
-            characters = new CharacterRenderer(ctx, install, characterDb, assets, characterRigs) { Source = FillWorldDrawList, SettleFirst = true, LoadBudget = 0, GeneratedLod = o.CharacterLod, SkinShading = o.SkinShading, SkinRaces = config.SkinRaces, EnhancedIcons = o.MeitouIcons, PoseClock = () => realTime.Elapsed.TotalSeconds };
+            characters = new CharacterRenderer(ctx, install, characterDb, assets, characterRigs) { DrawDistance = GameplaySettings.NpcRange(install), Source = FillWorldDrawList, SettleFirst = true, LoadBudget = 0, GeneratedLod = o.CharacterLod, SkinShading = o.SkinShading, SkinRaces = config.SkinRaces, EnhancedIcons = o.MeitouIcons, PoseClock = () => realTime.Elapsed.TotalSeconds };
             worldGpu.Characters = characters;
             Console.WriteLine("metal     characters ready (population draw list)");
         }
@@ -470,6 +470,9 @@ sealed partial class GameHost
             hud.BuildingMoveHit = (origin, direction, distance) => objects?.MoveHit(origin, direction, viewedFloor, distance);
             hud.SurfaceMoveHit = SurfaceMoveHit;
             hud.ClosedBuildingHit = (origin, direction, distance) => objects?.ClosedBuildingHit(origin, direction, distance);
+            hud.HiddenInWorld = hiddenIndoors.Contains;
+            hud.ShownInteriorHit = (origin, direction, distance) => objects?.ShownInteriorHit(origin, direction, distance);
+            hud.GroundItemHidden = hiddenGround.Contains;
             hoverOutline = new HoverOutlineRenderer(ctx);
             moveMarker = MarkerRenderer.Create(ctx, assets.Find);
             hud.Markers = moveMarker;
@@ -543,11 +546,11 @@ sealed partial class GameHost
                 "VSync", "Full screen", SettingsMenu.MetalPresetSlider, WorldFrame.UpscalerSliders[1],
             };
             foreach (var slider in settingsValues.Sliders)
-                if (!SessionSliders.Contains(slider.Label) && !metalDisplayKeys.Contains(slider.Label) &&
+                if (!RunOnlyKeys().Contains(slider.Label) && !metalDisplayKeys.Contains(slider.Label) &&
                     config.Graphics.TryGetValue(slider.Label, out float value))
                     slider.Set(Math.Clamp(value, slider.Min, slider.Max));
             foreach (var toggle in settingsValues.Toggles)
-                if (config.Graphics.TryGetValue(SettingsMenu.SwitchKeyPrefix + toggle.Label, out float value) && (value >= 0.5f) != toggle.Get())
+                if (!SettingsMenu.HiddenSwitch(toggle.Label) && !RunOnlyKeys().Contains(SettingsMenu.SwitchKeyPrefix + toggle.Label) && config.Graphics.TryGetValue(SettingsMenu.SwitchKeyPrefix + toggle.Label, out float value) && (value >= 0.5f) != toggle.Get())
                     toggle.Set(value >= 0.5f);
             settings.ApplySavedPreset();
             // The impostor atlas path is re-enabled after the frame-slot fence. Keep the diagnostic off switch as a
@@ -694,6 +697,8 @@ sealed partial class GameHost
                 v => sky.HazeStrength = v, "0.00", Faithful: 1, Meitou: Enhancements.MeitouHazeStrength));
             sliders.Add(new Slider("Planetshine strength (x physical)", 0, 200, () => sky.PlanetshineStrength,
                 v => sky.PlanetshineStrength = MathF.Round(v), "0"));
+            sliders.Add(new Slider(WorldFrame.CloudHeightSlider, Meitou.Data.World.VolumetricClouds.MinBottom, Meitou.Data.World.VolumetricClouds.MaxBottom,
+                () => sky.CloudHeight, v => sky.CloudHeight = MathF.Round(v / 100) * 100, "0", Logarithmic: true));
             sliders.Add(new Slider("Ambient light strength (1 = game)", 0, 3, () => sky.AmbientStrength,
                 v => sky.AmbientStrength = MathF.Round(v * 20) / 20, "0.00"));
             sliders.Add(new Slider("Night ambient light strength (1 = game)", 0, 5, () => sky.NightAmbientStrength,
@@ -750,7 +755,7 @@ sealed partial class GameHost
 
             // Effects: the composite already supports the game's exposure/tone-map/grading path, even before the rest of
             // the Vulkan post chain is ported.
-            sliders.Add(new Slider("Tone map (0 = game)", 0, 3, () => (int)o.Post.ToneMap,
+            sliders.Add(new Slider("Tone map (0 = game)", 1, 3, () => (int)o.Post.ToneMap,
                 v => o.Post.ToneMap = (ToneMapOperator)(int)MathF.Round(v), "0",
                 Text: v => (ToneMapOperator)(int)MathF.Round(v) switch
                 {
@@ -806,7 +811,7 @@ sealed partial class GameHost
         using var input = Silk.NET.Input.InputWindowExtensions.CreateInput(window);
         if (hud is not null)
         {
-            hud.ClipboardRead = () => input.Keyboards.Count > 0 ? input.Keyboards[0].ClipboardText : null;
+            hud.ClipboardRead = () => input.Keyboards.Count > 0 ? ClipboardText.Read(input.Keyboards[0]) : null;
             hud.ClipboardWrite = text => { if (input.Keyboards.Count > 0) input.Keyboards[0].ClipboardText = text; };
         }
         bool shiftDown = false, statsVisible = false, frameStatsVisible = showFrameStats, screenshotNow = false, gpuCaptureRequested = false;
@@ -846,7 +851,13 @@ sealed partial class GameHost
                     }
                     return;
                 }
-                if (hud is not null && DebugToggle(key)) { debugMenuOpen = !debugMenuOpen; return; }
+                // The sandbox animation list, while open, takes every key too.
+                if (sandboxPicker is { Open: true })
+                {
+                    if ((key == SilkKey.KeypadEnter ? EngineKey.Enter : KeyMap.Map(key)) is { } pickerKey) sandboxPicker.KeyDown(pickerKey);
+                    return;
+                }
+                if (hud is not null && DebugToggle(key)) { debugMenuOpen = !debugMenuOpen; debugParts = null; return; }
                 if (debugMenuOpen)
                 {
                     if ((key == SilkKey.KeypadEnter ? EngineKey.Enter : KeyMap.Map(key)) is { } menuKey) DebugMenuKey(menuKey);
@@ -874,7 +885,7 @@ sealed partial class GameHost
                         keyboard.ClipboardText = code;
                         Console.WriteLine($"camera    copied {code} ({WorldCameraCode.Describe(camera)})");
                     }
-                    else if (WorldCameraCode.Decode(keyboard.ClipboardText) is { } pose)
+                    else if (WorldCameraCode.Decode(ClipboardText.Read(keyboard)) is { } pose)
                     {
                         Vector3 back = new(MathF.Cos(pose.Pitch) * MathF.Sin(pose.Yaw), MathF.Sin(pose.Pitch),
                             MathF.Cos(pose.Pitch) * MathF.Cos(pose.Yaw));
@@ -919,6 +930,7 @@ sealed partial class GameHost
             {
                 if (Covered) return;
                 if (settings?.Visible == true) settings.TextInput(value);
+                else if (sandboxPicker is { Open: true }) sandboxPicker.TextInput(value);
                 else if (debugMenuOpen) DebugMenuText(value);
                 else hud?.UiText(value);
             };
@@ -943,6 +955,9 @@ sealed partial class GameHost
                 if (KeyMap.Map(button) is not { } mapped) return;
                 var at = Pixels(mouse.Position);
                 if (settings?.Visible == true) { settings.MouseDown(at, mapped); return; }
+                bool select = mapped == Meitou.Engine.Input.MouseButton.Left;
+                if (hud is { UiVisible: true } && select && !config.SandboxPanelCollapsed && sandboxPicker?.MouseDown(at) == true) return;
+                if (hud is { UiVisible: true } && select && SandboxToggleClick(at)) return;
                 // PlayerInterface sees every click: it takes the HUD's controls, selects, starts a drag box or gives a move order.
                 if (hud is not null && hud.MouseDown(mapped, at, shiftDown, Ctrl(), Alt())) return;
                 session.Input.SetMouseButton(mapped, true);
@@ -960,6 +975,7 @@ sealed partial class GameHost
                 if (Covered) return;
                 if (settings?.Visible == true) { settings.Scroll(wheel.Y); return; }
                 var at = Pixels(mouse.Position);
+                if (hud is { UiVisible: true } && !config.SandboxPanelCollapsed && sandboxPicker?.Scroll(wheel.Y) == true) return;
                 // A panel's own scroll wins; over any HUD rectangle the wheel does not zoom the camera, as in the Vulkan host.
                 if (hud is not null && (hud.UiScroll(at, wheel.Y) || hud.ContainsUi(at))) return;
                 session.Input.AddWheel(wheel.Y);
@@ -1117,12 +1133,14 @@ sealed partial class GameHost
             loadBar.Update(faithfulUi ? PendingLoads() : 0);
             if (hud is not null) hud.LoadBar = loadBar;
             if (loading is not null) (loading.LoadBar, loading.Faithful) = (loadBar, faithfulUi);
-            // The counter is the mean over the last quarter second, so one late frame does not read as a drop.
+            // The counter is the mean over the last quarter second, so one late frame does not read as a drop; then a frame's work
+            // (its time without the waits) and its whole time in brackets.
             fpsWindow += dt;
             fpsFrames++;
             if (fpsWindow >= 0.25)
             {
-                fpsText = $"{fpsFrames / fpsWindow:0} fps";
+                fpsText = string.Create(CultureInfo.InvariantCulture,
+                    $"{fpsFrames / fpsWindow:0} fps  ({fpsWindow * 1000 / fpsFrames:0.0} ms)");
                 fpsWindow = 0;
                 fpsFrames = 0;
             }
@@ -1166,7 +1184,7 @@ sealed partial class GameHost
                 // The merged character editor is shared with Vulkan: a new game opens it once the squad is in the snapshot, and the world resumes when it closes.
                 OpenPendingEditor();
                 ResumeAfterCreation();
-                if (hud is not { EditorOpen: true }) ClearEditorStage();
+                if (hud is not { EditorOpen: true }) { ClearEditorStage(); }
                 if (!tourHolds && hud is not null) ApplyTitleCamera();
                 // A flight puts the focus where it lands, so the towns there populate during the flight; otherwise the
                 // followed character's pivot is already in the rig.
@@ -1254,7 +1272,8 @@ sealed partial class GameHost
             }
             // A live resize can leave the layer without a drawable for a moment: wait for the next one instead of spinning
             // the main thread (the window would stop responding to its own resize).
-            if (!ctx.BeginFrame())
+            bool began = ctx.BeginFrame();
+            if (!began)
             {
                 if (gpuCapture is not null)
                 {
@@ -1280,7 +1299,6 @@ sealed partial class GameHost
             double drawableWait = display.LastDrawableWaitMilliseconds;
             long recordStart = Stopwatch.GetTimestamp();
             var backbuffer = ctx.Backbuffer;
-            // The editor's own scene replaces the world picture: the shared host draws the character and its platform into the stage texture the interface shows.
             if (hud is { EditorOpen: true }) DrawEditorStage(size.X, size.Y);
             // The still's objects are all resident before the first picture, as the Vulkan screenshot path settles them (its Settle
             // opens its own frame; here the frame is the first one's).
@@ -1449,6 +1467,7 @@ sealed partial class GameHost
                     overlay.Target = backbuffer;
                     loading.Draw(size.X, size.Y);
                 }
+                else loading?.ReleaseWhenGone();
             }
             ctx.EndFrame();
             if (gpuCapture is not null)
@@ -1527,7 +1546,10 @@ sealed partial class GameHost
             }
             // The Vulkan loop's cap: only without vsync (vsync already paces the present); the same 30 fps cap in
             // both comparison runs isolates tearing from the much higher uncapped frame rate.
-            if (!display.VSync && fpsLimit > 0) Limit(clock, frameStart, 1.0 / fpsLimit);
+            if (!display.VSync && fpsLimit > 0)
+            {
+                Limit(clock, frameStart, 1.0 / fpsLimit);
+            }
             if (g.QuitAfter is { } quitAfter && now >= quitAfter) break;
         }
         void SaveSettings()
@@ -1537,19 +1559,19 @@ sealed partial class GameHost
             config.FullScreen = BorderlessFullScreen.IsOn(window);
             config.MetalUpscaler = mode;
             config.MetalRenderScale = ctx.RenderScale;
-            if (hud is not null) config.UiMode = hud.UiMode;
+            if (hud is not null && (!g.LowEnd || hud.UiMode != Meitou.Data.Ui.UiMode.Faithful)) config.UiMode = hud.UiMode;   // --low-end's Faithful UI is for the run
             config.Bindings = session.Bindings.ToDictionary();
             if (settingsValues is not null)
             {
                 foreach (var slider in settingsValues.Sliders)
                 {
                     // These have their own config fields; the rest use the same graphics keys as the Vulkan settings.
-                    if (SessionSliders.Contains(slider.Label) || slider.Label is SettingsMenu.MetalPresetSlider ||
+                    if (RunOnlyKeys().Contains(slider.Label) || slider.Label is SettingsMenu.MetalPresetSlider ||
                         slider.Label == WorldFrame.UpscalerSliders[1]) continue;
                     config.Graphics[slider.Label] = slider.Get();
                 }
                 foreach (var toggle in settingsValues.Toggles)
-                    config.Graphics[SettingsMenu.SwitchKeyPrefix + toggle.Label] = toggle.Get() ? 1 : 0;
+                    if (!RunOnlyKeys().Contains(SettingsMenu.SwitchKeyPrefix + toggle.Label)) config.Graphics[SettingsMenu.SwitchKeyPrefix + toggle.Label] = toggle.Get() ? 1 : 0;
                 settings?.SavePreset();
             }
             config.Save();

@@ -5,9 +5,13 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Meitou.Networking;
 
-/// <summary>Production game transport. The host supplies handshake deadlines; certificate pinning is explicit, never an accept-all fallback.</summary>
+/// <summary>TLS game transport. The host supplies handshake deadlines; pre-release builds temporarily skip server identity verification.</summary>
 public static class GameTls
 {
+    // TEMPORARILY DISABLED at the user's request for all pre-release builds (including Release).
+    // Restore to true before the official release. TLS encryption and account/token authentication stay enabled.
+    public static bool VerifyServerCertificates { get; } = false;
+
     public static X509Certificate2 LoadServerCertificate(string path, string? password = null)
         => X509CertificateLoader.LoadPkcs12FromFile(path, password,
             OperatingSystem.IsWindows() ? X509KeyStorageFlags.UserKeySet : X509KeyStorageFlags.EphemeralKeySet);
@@ -38,6 +42,7 @@ public static class GameTls
         }
         bool Validate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors errors)
         {
+            if (!VerifyServerCertificates) return true;
             if (pin is null) return errors == SslPolicyErrors.None;
             if (certificate is null) return false;
             using var copy = X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
@@ -51,7 +56,7 @@ public static class GameTls
             await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
             {
                 TargetHost = targetHost, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13, AllowRenegotiation = false,
-                CertificateRevocationCheckMode = pin is null ? X509RevocationMode.Online : X509RevocationMode.NoCheck,
+                CertificateRevocationCheckMode = VerifyServerCertificates && pin is null ? X509RevocationMode.Online : X509RevocationMode.NoCheck,
             }, cancellationToken).ConfigureAwait(false);
             return tls;
         }

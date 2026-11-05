@@ -18,6 +18,13 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     readonly Func<float, float, float> terrain;
     readonly ConcurrentDictionary<ZoneCoordinate, Task<Dictionary<(int, int), List<Vector3>>>> zones = new();
     readonly object gatherLock = new();
+    readonly object cacheLock = new();
+    readonly List<Task> pending = [];
+    readonly NavRuntimeBuildings? runtime;
+    NavRuntimeBuildings? runtimeSnapshot;
+    long cachedRevision = long.MinValue;
+    bool disposed;
+    public long Generation => runtime?.Revision ?? 0;
     /// <summary>Zones kept at most; the least recently asked for goes first (engine choice).</summary>
     const int MaxZones = 16;
     /// <summary>How far a building's collision may reach from its placement (the navmesh gatherer's reach).</summary>
@@ -31,9 +38,11 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     readonly Dictionary<(int, int), HeightWindow> blocks = [];
 
     /// <param name="terrainHeight">The simulation's ground height, used only where the full heightmap cannot be opened: it is the coarse world grid away from the loaded area.</param>
-    public RagdollGeometry(GameInstall install, GameDatabase db, WorldLevelData levels, Func<float, float, float> terrainHeight)
+    /// <param name="runtime">The shared navigation overlay; each collision gather uses an immutable snapshot of its revision.</param>
+    public RagdollGeometry(GameInstall install, GameDatabase db, WorldLevelData levels, Func<float, float, float> terrainHeight, NavRuntimeBuildings? runtime = null)
     {
         gatherer = new ZoneGeometryGatherer(install, db, levels, new CollisionCache(install)) { IncludeFoliage = false };
+        this.runtime = runtime;
         terrain = terrainHeight;
         try { map = TerrainHeightmap.Open(install); }
         catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException) { }
@@ -58,6 +67,23 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
 
     public bool Buildings(Vector3 min, Vector3 max, List<Vector3> triangles)
     {
+        lock (cacheLock)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            pending.RemoveAll(t => t.IsCompleted);
+            if (cachedRevision != Generation)
+            {
+                runtimeSnapshot = runtime?.Snapshot();
+                cachedRevision = runtimeSnapshot?.Revision ?? 0;
+                zones.Clear();
+                used.Clear();
+            }
+            return Collect(min, max, triangles) && cachedRevision == Generation;
+        }
+    }
+
+    bool Collect(Vector3 min, Vector3 max, List<Vector3> triangles)
+    {
         bool ready = true;
         int cx0 = Cell(min.X), cx1 = Cell(max.X - 1e-3f), cz0 = Cell(min.Z), cz1 = Cell(max.Z - 1e-3f);
         // A building's triangles are kept with the zone it is placed in and may reach into the next one: the zones within a building's reach of the box.
@@ -69,7 +95,13 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
                 var zone = new ZoneCoordinate(zx, zy);
                 if (!zone.IsInsideGrid) continue;
                 used[zone] = Interlocked.Increment(ref clock);
-                var task = zones.GetOrAdd(zone, z => Task.Run(() => Gather(z)));
+                if (!zones.TryGetValue(zone, out var task))
+                {
+                    var snapshot = runtimeSnapshot;
+                    task = Task.Run(() => Gather(zone, snapshot));
+                    zones[zone] = task;
+                    pending.Add(task);
+                }
                 if (!task.IsCompletedSuccessfully) { ready &= !task.IsFaulted && task.IsCompleted; continue; }
                 for (int x = cx0; x <= cx1; x++)
                     for (int z = cz0; z <= cz1; z++)
@@ -81,10 +113,14 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
 
     static int Cell(float v) => (int)MathF.Floor(v / RagdollSystem.TileSize);
 
-    Dictionary<(int, int), List<Vector3>> Gather(ZoneCoordinate zone)
+    Dictionary<(int, int), List<Vector3>> Gather(ZoneCoordinate zone, NavRuntimeBuildings? snapshot)
     {
         var all = new List<Vector3>();
-        lock (gatherLock) gatherer.RagdollTriangles(zone, all);
+        lock (gatherLock)
+        {
+            gatherer.UseRuntimeSnapshot(snapshot);
+            gatherer.RagdollTriangles(zone, all);
+        }
         var cells = new Dictionary<(int, int), List<Vector3>>();
         for (int t = 0; t + 2 < all.Count; t += 3)
         {
@@ -110,7 +146,15 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
 
     public void Dispose()
     {
-        foreach (var task in zones.Values) try { task.Wait(); } catch (AggregateException) { }
+        Task[] tasks;
+        lock (cacheLock)
+        {
+            if (disposed) return;
+            disposed = true;
+            tasks = pending.ToArray();
+        }
+        // Invalidated jobs can still be queued behind gatherLock; wait before disposing their reader too.
+        foreach (var task in tasks) try { task.Wait(); } catch (AggregateException) { }
         map?.Dispose();
         lock (gatherLock) gatherer.Dispose();
     }

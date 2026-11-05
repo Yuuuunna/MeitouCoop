@@ -60,16 +60,16 @@ public static class ServerDiscovery
         await tcp.ConnectAsync(host, port, deadline.Token).ConfigureAwait(false);
         SslStream tls;
         string? observed = knownCertificate;
-        if (knownCertificate is not null) tls = await GameTls.ConnectAsync(tcp.GetStream(), host, knownCertificate, deadline.Token).ConfigureAwait(false);
+        if (knownCertificate is not null && GameTls.VerifyServerCertificates) tls = await GameTls.ConnectAsync(tcp.GetStream(), host, knownCertificate, deadline.Token).ConfigureAwait(false);
         else
         {
-            // TOFU is limited to public discovery. No credential is sent until a second, pinned connection.
+            // Public discovery records the presented certificate; the shared pre-release policy also applies here.
             tls = new SslStream(tcp.GetStream(), false, (_, certificate, _, _) =>
             {
                 if (certificate is null) return false;
                 using var copy = X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
                 var now = DateTime.UtcNow;
-                if (now < copy.NotBefore.ToUniversalTime() || now > copy.NotAfter.ToUniversalTime()) return false;
+                if (GameTls.VerifyServerCertificates && (now < copy.NotBefore.ToUniversalTime() || now > copy.NotAfter.ToUniversalTime())) return false;
                 observed = copy.GetCertHashString(HashAlgorithmName.SHA256);
                 return true;
             });

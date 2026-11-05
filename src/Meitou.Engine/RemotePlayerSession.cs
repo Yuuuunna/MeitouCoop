@@ -31,7 +31,7 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     ulong requestCounter;
     bool disposed;
     Task? disposal;
-    double elapsed, lastPublicationAt, blendSeconds = .1, blendAge;
+    double elapsed, lastPublicationAt, blendSeconds = .1, blendAge, blendStartTick;
     double lastGameHours;
     bool clockReady;
 
@@ -55,8 +55,8 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     public WorldSnapshot CurrentSnapshot { get; private set; } = WorldSnapshot.Empty;
     public WorldSnapshot PreviousSnapshot { get; private set; } = WorldSnapshot.Empty;
     public float SimulationAlpha => (float)Math.Clamp(blendAge / blendSeconds, 0, 1);
-    public double PresentationTick => CurrentSnapshot.Tick < 0 ? 0 : PreviousSnapshot.Tick < 0 ? CurrentSnapshot.Tick
-        : PreviousSnapshot.Tick + (CurrentSnapshot.Tick - (double)PreviousSnapshot.Tick) * SimulationAlpha;
+    public double PresentationTick => CurrentSnapshot.Tick < 0 ? 0
+        : blendStartTick + (CurrentSnapshot.Tick - blendStartTick) * SimulationAlpha;
     public double PresentationSeconds => Math.Max(0, Clock.GameSeconds - Math.Max(0, CurrentSnapshot.Tick - PresentationTick) / SimulationClock.TickRate);
     public long CommandTick => Math.Max(0, CurrentSnapshot.Tick);
     public float SimulationStepSeconds => view?.SimulationStepSeconds ?? 1f / 30;
@@ -159,6 +159,9 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
         else if (view?.Publication != next.Publication)
         {
             var previous = CurrentSnapshot;
+            var previousFrom = PreviousSnapshot;
+            float previousAlpha = SimulationAlpha;
+            double displayedTick = PresentationTick;
             bool first = view is null;
             view = next;
             if (eventBaseline && floatersEnabled)
@@ -187,9 +190,20 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             RefreshPresentation();
             // Only retain old poses for still-visible entities. Previous frames never retain revoked private details.
             var old = previous.Characters.ToDictionary(c => c.Id);
-            PreviousSnapshot = CurrentSnapshot with { Tick = previous.Tick, Characters = CurrentSnapshot.Characters.Select(c => old.TryGetValue(c.Id, out var before)
-                ? c with { Position = before.Position, Yaw = before.Yaw, DrawYaw = before.DrawYaw, Animations = before.Animations,
-                    Carry = before.Carry, Ragdoll = before.Ragdoll } : c).ToArray() };
+            var oldFrom = previousFrom.Characters.ToDictionary(c => c.Id);
+            blendStartTick = first ? CurrentSnapshot.Tick : Math.Min(displayedTick, CurrentSnapshot.Tick);
+            PreviousSnapshot = CurrentSnapshot with { Tick = (long)blendStartTick, Characters = CurrentSnapshot.Characters.Select(c =>
+            {
+                if (!old.TryGetValue(c.Id, out var before)) return c;
+                var from = oldFrom.GetValueOrDefault(c.Id, before);
+                // A packet may arrive before the previous blend finishes. Start at the pose actually
+                // being displayed, not its unreached endpoint, or bursty delivery makes actors jump.
+                return c with { Position = Vector3.Lerp(from.Position, before.Position, previousAlpha),
+                    Yaw = Interp.LerpAngle(from.Yaw, before.Yaw, previousAlpha),
+                    DrawYaw = Interp.LerpAngle(float.IsNaN(from.DrawYaw) ? from.Yaw : from.DrawYaw,
+                        float.IsNaN(before.DrawYaw) ? before.Yaw : before.DrawYaw, previousAlpha),
+                    Animations = before.Animations, Carry = before.Carry, Ragdoll = before.Ragdoll };
+            }).ToArray() };
             blendSeconds = Math.Clamp(elapsed - lastPublicationAt, 1.0 / 30, .25);
             blendAge = first || previous.Tick >= CurrentSnapshot.Tick ? blendSeconds : 0;
             lastPublicationAt = elapsed;

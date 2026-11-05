@@ -11,6 +11,17 @@ namespace Meitou.Game;
 /// <summary>Shared settings layout and interaction; the current UI mode selects only its presentation.</summary>
 sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBindings bindings, Action save, Slider frameLimit, UserConfig config)
 {
+    internal static bool HiddenSwitch(string label) => label is "Anti-aliasing" or "Weather particles";
+    internal void ApplyBenchmarkBaseline()
+    {
+        ApplyPreset(1);
+        string[] off = ["Indirect light", "Indoor GI", WorldFrame.GroundParallaxSwitch, WorldFrame.GroundDisplaceSwitch, WorldFrame.RockSmoothingSwitch, WorldFrame.OutlineRefineSwitch];
+        foreach (var toggle in values.Toggles.Where(t => off.Contains(t.Label) && t.Get())) toggle.Set(false);
+        if (values.Sliders.FirstOrDefault(s => s.Label == WorldFrame.UpscalerSliders[0]) is { } antiAliasing) antiAliasing.Set(2);   // SMAA
+        if (values.Sliders.FirstOrDefault(s => s.Label == WorldFrame.UpscalerSliders[1]) is { } scale) scale.Set(1);
+        notice = "";
+    }
+
     static readonly string[] Pages = ["Display", "Graphics", "Interface", "Controls", "Advanced", "Audio", "Gameplay", "Fixes"];
     internal static readonly string[] GraphicsPages = ["World", "Lighting", "Water", "Effects", "Skin"];
     /// <summary>The Metal-only preset row (Native / MetalFX quality, balanced, performance / TAA), edited by the Metal settings panel.</summary>
@@ -109,6 +120,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
     public IReadOnlyList<Slider> Sliders => values.Sliders;
     public IReadOnlyList<Toggle> Toggles => values.Toggles;
     public Func<string>? UpscalerStatus { get; init; }
+    public Func<string>? FrameGenerationStatus { get; init; }
     /// <summary>Applies a new attackers-per-target setting to the running combat system.</summary>
     public Action<int>? AttackSlotsChanged { get; init; }
     /// <summary>Applies the late-dodges setting to the running combat system.</summary>
@@ -214,6 +226,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
                         if (v == byDefault) config.SkinRaces.Remove(id); else config.SkinRaces[id] = v;
                         SkinRacesChanged?.Invoke();
                     }, OnOff: true)));
+        if (page == 0) result.Add(new("FSR3 frame generation", "Requires a restart. Status: " + (FrameGenerationStatus?.Invoke() ?? "off"), Toggle: new("FSR3 frame generation", () => config.FrameGeneration, v => config.FrameGeneration = v, OnOff: true)));
         if (page == 0) result.Insert(2, new("Frame limit", "Used while vertical sync is off; 0 is unlimited.", Slider: frameLimit));
         if (page == 0)
             result.Insert(3, new("World tick alongside drawing", "Faithful runs the world, then draws it, as the game does. Meitou runs the next world tick while the frame is drawn "

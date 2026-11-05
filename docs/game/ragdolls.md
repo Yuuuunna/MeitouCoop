@@ -44,6 +44,14 @@ Pairs disabled in `FUN_1407dbee0` (third argument hidden on a few calls, assumed
 So ragdolls hit each other, items, building floors/stairs/furniture/roofs (9–22, 27), but not doors,
 foliage group 6 or passable parts.
 
+Meitou runtime collision (**Observed**, source review): graphical and dedicated hosts share
+`WorldContent`'s navigation overlay with `RagdollGeometry`. Its `IRagdollEnvironment.Generation`
+is the overlay's `long Revision`; changes discard cached zones, and workers gather frozen overlay
+snapshots. Covered physics tiles retry older revisions, retaining old building meshes until the
+replacement is ready; an empty result removes the old mesh. Disposal waits for obsolete gathers too.
+Frozen ragdolls do not request coverage until unfrozen. **Unknown**: live added/removed/ruined-house
+collision regression on this implementation; existing tests do not exercise overlay-driven refresh.
+
 ## RagdollPart and requests
 
 `enum RagdollPart { NONE=0, WHOLE=1, RIGHT_ARM=2, LEFT_ARM=4, HEAD=8, RIGHT_LEG=16, LEFT_LEG=32,

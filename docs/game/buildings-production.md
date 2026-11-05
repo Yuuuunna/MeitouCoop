@@ -777,8 +777,7 @@ and `power capacity` (battery store, "in seconds" per fcs.def), plus research ([
   `DAT_142134110`) instead, replayed by `FUN_1407b65b0` from the GameWorld update `FUN_140786e30` (**Observed**, decompile), so it adds no source; the first build step on it ruins the building ([construction tick](#construction-tick)). Dismantle (slot 73, its
   only damage path for machines) is offered only when slot 79 (`FUN_14029c380`) holds: the owner is a player faction. So raids and fights never break a
   machine, and a town's own turret (owned by the town's faction) breaks only through a loaded `broken` (none set in the owner's six saves, **Observed**: no
-  `broken` true in their zone files). `Task_UseTurret` asks only slot 107, a free place (slot 159) and slot 97, not completion or destroyed. Meitou: an NPC gunner does not man a town turret whose saved state has `broken` (`CombatSystem.Manning`); town buildings
-  have no machines otherwise, which this rule makes unnecessary.
+  `broken` true in their zone files). `Task_UseTurret` asks only slot 107, a free place (slot 159) and slot 97, not completion or destroyed. Meitou: an NPC gunner does not man a town turret whose saved state has `broken` (`CombatSystem.Manning`); ordinary town machines retain their native `broken` state through the shared machine save path.
 - **Status strings** (`GeneratorBuilding::vfunc_114`): "Out of fuel", battery "Charging" / "Draining" / "Stored" / "Empty".
 - Data (**Verified**, probe): Small Generator 40, Generator II 100, Wind Generator 50, Small Wind 25, Wind II 100,
   Battery Bank 40 / capacity 60; Weapon Smith -8, refineries -10 to -40, Research Bench III-VI -10 to -30. Power
@@ -827,8 +826,7 @@ CONTAINER (backpacks). Shop counters (function 9) have no type limit in Meitou (
 ### Hauling
 
 - **Tasks** (**Verified** classes, **Observed** meaning): `Task_EmptyMachine` (92 "Collecting resource", 284 "Looting")
-  moves a building's output into the character's inventory while it has room (`FUN_14033cd10`). No GOAP row has "output not
-  full" (!63) as its effect, so a full output blocks operating (87) rather than leading the planner to 92 (**Observed**, table). `Task_FillMachine`
+  moves a building's output into the character's inventory while it has room (`FUN_14033cd10`). **Observed** (Meitou `TaskDataTable`/`TaskPlanner`): row 92 lists !63 among its achieved states; the provider map uses these list-A states, so a full output can lead goal 189 from row 87 to 92 when state 82 (inventory room) and arrival hold. Original planner parity of that transition is **Unknown**. `Task_FillMachine`
   (93 "Filling machine", 124 "Hauling to") puts carried items, main grid and backpack, into a machine or a storage
   (`FUN_140344510`). GOAP rows: [ai-tasks](ai-tasks.md); states 62 machineHasEmptyInputs, 63 isMachineOutputFull,
   66 haveSomeResourcesFrom, 67 haveSomeResourcesFor, 82 gotInventoryRoomForResources, 169 isMachineInputInvalid.
@@ -841,6 +839,14 @@ CONTAINER (backpacks). Shop counters (function 9) have no type limit in Meitou (
 - **Unknown:** how the original picks the storage (nearest, same town, a range), when an operator leaves a
   machine to haul, where a 124 job takes its items from, and whether 152 / 124 on an automatic machine ever empty its output
   (152's goal is only "no empty inputs", !62).
+
+## NPC town machines
+
+**Observed** (upstream `0d5e98d7` `Production/Machines.cs` queries): an empty consuming input has `Rate > 0`, no stock and residual level at most 0.001; output blocking requires status 1 and a producer output, excluding farms, crafting benches and storages. A jam is either condition. Meitou's planner reads these shared queries; physical output capacity alone does not select collection.
+
+**Observed** (Meitou runtime contract; `ProductionTests.An_npc_worker_operates_its_town_buildings_machine_and_then_empties_its_output`): goal 189 signals row 87 operation or row 92 output collection; goal 190 only animates. A first worker lazily creates the machine. Registering a town alone starts no automatic production. Operators use normal production, skill and XP; collectors transfer units while their main inventory/backpack has room. Research, crafting queues, farm operation and NPC power networks remain outside this worker path.
+
+Ordinary machines share `World.Buildings`/`World.Machines`, keyed by `BuildingKey` (source zone plus raw instance), with the true `LevelPlacement` and fixture-resolved owner (saved owner, level owner, then town faction). `LevelMachine` distinguishes these sites from purchased houses and repair overlays; registration grants neither purchase nor construction state. Existing command permissions still apply. Machines remain with the registered fixtures across region unloading; repeat registration reuses stock. Purchase transfers ownership and clears worker signals. Town replacement discards/reset-invalidates machines in the town's source zone; other placements retain stock and follow the new owner. Missing content, invalid owner, destroyed or incomplete placements create no worker machine. Original-game lifecycle parity beyond the documented production rules is **Unknown**.
 
 ## House sales
 

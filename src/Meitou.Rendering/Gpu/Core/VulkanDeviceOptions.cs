@@ -31,6 +31,9 @@ public sealed class VulkanDeviceOptions
         };
     }
 
+    /// <summary>More queues of the graphics family to create beyond the one every device gets (frame generation's swapchain wants separate present, acquire and compute queues); the family may offer fewer, see <see cref="VulkanDevice.ExtraQueues"/>.</summary>
+    public int ExtraGraphicsQueues { get; set; }
+
     /// <summary>Prefer a discrete GPU over an integrated one.</summary>
     public bool PreferDiscrete { get; set; } = true;
 

@@ -103,6 +103,7 @@ public sealed partial class FixtureRegistry
         if (!funds.TryDebit(price)) { world.Post(order.Issuer ?? PlayerId.Local, Meitou.Localisation.Loc.Tr("You can't afford that.")); return; }
         p.Owner = funds.Index;
         p.Purchased = true;
+        TransferTownMachine(world, order.Building, p.Owner);
         p.Revision = NextPropertyRevision();
         resetBuildings.Remove(order.Building);
         ownedProperties = null;
@@ -139,6 +140,8 @@ public sealed partial class FixtureRegistry
             if (reset.Contains(b.Key))
             {
                 resetBuildings[b.Key] = (b, data, LevelOwner(b));
+                townMachines.Remove(b.Key);
+                ClearTownWorkers(world, b.Key);
                 world.SavedMachines?.Invalidate(b.Key);
                 if (world.Buildings.Find(b.Key) is { LevelPlacement: not null } old)
                 {
@@ -157,6 +160,7 @@ public sealed partial class FixtureRegistry
             }
             else if (Players(b)) continue;
             int owner = LevelOwner(b);
+            TransferTownMachine(world, b.Key, owner);
             if (properties.TryGetValue(b.Key, out var p)) { p.Owner = owner; p.Revision = NextPropertyRevision(); }
             foreach (var f in OfBuilding(b.Key)) { f.Owner = owner; RevisionOf(f); }
             world.ItemSlots.TransferBuilding(world, b, owner);
@@ -249,6 +253,7 @@ public sealed partial class FixtureRegistry
             Materials = data.Materials.Select((m, i) => new MaterialSlot(m.Item, m.Required)
                 { Delivered = Math.Clamp(Float($"{i}construction mats", complete ? m.Required : 0), 0, m.Required) }).ToArray(),
         };
+        if (world.Buildings.Find(b.Key) is { LevelMachine: true } ordinary) world.Buildings.Remove(ordinary);
         p.Construction = site;
         world.Buildings.Add(site);
         world.SystemOf<Production.ProductionSystem>()?.Ensure(world, site);

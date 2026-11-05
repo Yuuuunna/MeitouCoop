@@ -16,7 +16,19 @@ namespace Meitou.Rendering.Upscalers;
 /// </summary>
 public sealed unsafe class FsrUpscaler : IUpscaler
 {
-    public static readonly string LibraryName = OperatingSystem.IsMacOS() ? "libamd_fidelityfx_vk.dylib" : "amd_fidelityfx_vk.dll";
+    public static readonly string LibraryName = OperatingSystem.IsMacOS() ? "libamd_fidelityfx_vk.dylib" : OperatingSystem.IsLinux() ? "libamd_fidelityfx_vk.so" : "amd_fidelityfx_vk.dll";
+
+    /// <summary>The Vulkan loader the process is bound to (FFX calls <c>vkGetDeviceProcAddr</c> through it).</summary>
+    internal static string VulkanLoaderName => OperatingSystem.IsMacOS() ? "libvulkan.1.dylib" : OperatingSystem.IsLinux() ? "libvulkan.so.1" : "vulkan-1.dll";
+
+    /// <summary>A null-terminated <c>wchar_t</c> string of the library (UTF-16 on Windows, UTF-32 on Linux and macOS).</summary>
+    internal static string WideString(char* s)
+    {
+        if (OperatingSystem.IsWindows()) return new string(s);
+        var sb = new System.Text.StringBuilder();
+        for (int* p = (int*)s; *p != 0; p++) sb.Append(char.ConvertFromUtf32(*p is >= 0 and <= 0x10FFFF and not (>= 0xD800 and <= 0xDFFF) ? *p : 0xFFFD));
+        return sb.ToString();
+    }
 
     // ffx_api: type constants, flags, states (FidelityFX SDK headers, MIT).
     const ulong CreateUpscaleType = 0x00010000, DispatchUpscaleType = 0x00010001, BackendVkType = 0x00000003;
@@ -88,7 +100,7 @@ public sealed unsafe class FsrUpscaler : IUpscaler
         return null;
     }
 
-    static IEnumerable<string> Candidates()
+    internal static IEnumerable<string> Candidates()
     {
         if (Environment.GetEnvironmentVariable("MEITOU_FFX_PATH") is { Length: > 0 } env)
             yield return Directory.Exists(env) ? Path.Combine(env, LibraryName) : env;
@@ -96,7 +108,7 @@ public sealed unsafe class FsrUpscaler : IUpscaler
     }
 
     [UnmanagedCallersOnly]
-    static void OnMessage(uint type, char* message) => Console.WriteLine($"fsr       {(type == 0 ? "error" : "warning")}: {new string(message)}");
+    static void OnMessage(uint type, char* message) => Console.WriteLine($"fsr       {(type == 0 ? "error" : "warning")}: {WideString(message)}");
 
     bool EnsureContext(UpscaleInputs i)
     {
@@ -109,7 +121,7 @@ public sealed unsafe class FsrUpscaler : IUpscaler
             Device = device.Device.Handle,
             PhysicalDevice = device.PhysicalDevice.Handle,
             // FFX calls vkGetDeviceProcAddr through the loader the process is already bound to.
-            DeviceProcAddr = NativeLibrary.GetExport(NativeLibrary.Load(OperatingSystem.IsMacOS() ? "libvulkan.1.dylib" : "vulkan-1.dll"), "vkGetDeviceProcAddr"),
+            DeviceProcAddr = NativeLibrary.GetExport(NativeLibrary.Load(VulkanLoaderName), "vkGetDeviceProcAddr"),
         };
         *createDesc = new CreateUpscaleDesc
         {

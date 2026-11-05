@@ -5,9 +5,11 @@ using Meitou.Rendering.Gpu.Core;
 namespace Meitou.Rendering.Upscalers;
 
 /// <summary>
-/// NVIDIA NGX on Linux, the runtime behind DLSS that Streamline wraps on Windows. NGX's documented Vulkan API comes from NVIDIA's NGX client
+/// NVIDIA NGX, the runtime behind DLSS that Streamline wraps on Windows. On Linux it is the only DLSS path; on Windows (and Proton) it is used instead
+/// of Streamline when frame generation is on, because Streamline's interposer must see every present and the FFX swapchain owns it. NGX's documented Vulkan API comes from NVIDIA's NGX client
 /// library (the DLSS SDK's static <c>libnvsdk_ngx.a</c>, built into <c>libmeitou_ngx.so</c> by tools/scripts/build-ngx-shim.sh), which talks
-/// to the NVIDIA driver's <c>libnvidia-ngx.so.1</c>; the DLSS model (<c>libnvidia-ngx-dlss.so.*</c>) and the client library are looked for in
+/// to the NVIDIA driver's <c>libnvidia-ngx.so.1</c> (on Windows <c>meitou_ngx.dll</c>, tools/scripts/build-ngx-shim-win.sh, finds the driver's NGX itself);
+/// the DLSS model (<c>libnvidia-ngx-dlss.so.*</c>, <c>nvngx_dlss.dll</c> on Windows) and the client library are looked for in
 /// <see cref="VendorUpscalers.DlssPath"/> and the executable's folder, neither is in the repository.
 /// <see cref="TryInit"/> loads the client library before the Vulkan instance exists and reports the extensions DLSS needs (<see cref="Apply"/>
 /// adds them to the device), the device is handed over once it exists, and <see cref="DlssSupported"/> says whether the model loaded.
@@ -15,7 +17,8 @@ namespace Meitou.Rendering.Upscalers;
 /// </summary>
 public sealed unsafe class Ngx : IDisposable
 {
-    public const string LibraryName = "libmeitou_ngx.so";
+    public static string LibraryName => OperatingSystem.IsWindows() ? "meitou_ngx.dll" : "libmeitou_ngx.so";
+    static string ModelPattern => OperatingSystem.IsWindows() ? "nvngx_dlss.dll" : "libnvidia-ngx-dlss.so.*";
     const string DriverLibraryName = "libnvidia-ngx.so.1";
     const uint ApiVersion = 0x15;   // NVSDK_NGX_VERSION_API_MACRO (nvsdk_ngx_defs.h)
     internal const int ResultSuccess = 1;
@@ -68,9 +71,9 @@ public sealed unsafe class Ngx : IDisposable
         // MEITOU_DLSS=0 keeps NGX out entirely.
         if (Environment.GetEnvironmentVariable("MEITOU_DLSS") == "0") { reason = "MEITOU_DLSS=0: NGX not loaded"; return null; }
         // Only with the DLSS model in place (as Streamline only with nvngx_dlss.dll): without it DLSS cannot run, so NGX is not loaded.
-        if (Find("libnvidia-ngx-dlss.so.*") is null) { reason = "libnvidia-ngx-dlss.so.* not found (set MEITOU_DLSS_PATH or put it next to the executable); NGX not loaded"; return null; }
-        if (Find(LibraryName) is not { } client) { reason = $"{LibraryName} not found (tools/scripts/build-ngx-shim.sh builds it; next to the executable or in MEITOU_DLSS_PATH); NGX not loaded"; return null; }
-        if (!NativeLibrary.TryLoad(DriverLibraryName, out _)) { reason = $"{DriverLibraryName} does not load (NGX needs the NVIDIA driver)"; return null; }
+        if (Find(ModelPattern) is null) { reason = $"{ModelPattern} not found (set MEITOU_DLSS_PATH or put it next to the executable); NGX not loaded"; return null; }
+        if (Find(LibraryName) is not { } client) { reason = $"{LibraryName} not found (tools/scripts/build-ngx-shim{(OperatingSystem.IsWindows() ? "-win" : "")}.sh builds it; next to the executable or in MEITOU_DLSS_PATH); NGX not loaded"; return null; }
+        if (!OperatingSystem.IsWindows() && !NativeLibrary.TryLoad(DriverLibraryName, out _)) { reason = $"{DriverLibraryName} does not load (NGX needs the NVIDIA driver)"; return null; }
         nint lib;
         try { lib = NativeLibrary.Load(client); }
         catch (Exception e) when (e is DllNotFoundException or BadImageFormatException) { reason = $"{client} does not load: {e.Message.ReplaceLineEndings(" ")}"; return null; }
@@ -88,7 +91,7 @@ public sealed unsafe class Ngx : IDisposable
             Console.WriteLine($"ngx       {client}: DLSS needs instance [{string.Join(", ", instance)}], device [{string.Join(", ", device)}]");
             return ngx;
         }
-        catch (EntryPointNotFoundException e) { reason = $"{client}: {e.Message} (rebuild it with tools/scripts/build-ngx-shim.sh)"; return null; }
+        catch (EntryPointNotFoundException e) { reason = $"{client}: {e.Message} (rebuild it with tools/scripts/build-ngx-shim{(OperatingSystem.IsWindows() ? "-win" : "")}.sh)"; return null; }
     }
 
     /// <summary>The first file matching <paramref name="pattern"/> in <see cref="VendorUpscalers.DlssPath"/> or the executable's folder, or null.</summary>
@@ -154,7 +157,9 @@ public sealed unsafe class Ngx : IDisposable
             PathList = new PathListInfo { Paths = (nint)pathPointers, Length = (uint)paths.Length },
             Logging = new LoggingInfo { Callback = (nint)(delegate* unmanaged<byte*, int, int, void>)&OnLog, MinimumLevel = Verbose ? 2 : 1, DisableOtherSinks = 1 },
         };
-        int? initialised = InitFromNativeCaller(init, project, 0, version, dataPath, d.Instance.Handle, d.PhysicalDevice.Handle, d.Device.Handle, &info, ApiVersion);
+        int? initialised = OperatingSystem.IsWindows()
+            ? ((delegate* unmanaged<byte*, int, byte*, byte*, nint, nint, nint, nint, nint, FeatureCommonInfo*, uint, int>)init)(project, 0, version, dataPath, d.Instance.Handle, d.PhysicalDevice.Handle, d.Device.Handle, 0, 0, &info, ApiVersion)
+            : InitFromNativeCaller(init, project, 0, version, dataPath, d.Instance.Handle, d.PhysicalDevice.Handle, d.Device.Handle, &info, ApiVersion);
         if (initialised is null) return false;
         if (initialised != ResultSuccess) { Console.WriteLine($"ngx       init failed ({initialised:x}) on {d.DeviceName}"); return false; }
         device = d.Device.Handle;
@@ -226,10 +231,10 @@ public sealed unsafe class Ngx : IDisposable
         return p;
     }
 
-    /// <summary>A null-terminated <c>wchar_t</c> string (UTF-32 on Linux), freed with <see cref="NativeMemory.Free"/>.</summary>
+    /// <summary>A null-terminated <c>wchar_t</c> string (UTF-16 on Windows, UTF-32 on Linux), freed with <see cref="NativeMemory.Free"/>.</summary>
     static byte* WideString(string s)
     {
-        var bytes = Encoding.UTF32.GetBytes(s + "\0");
+        var bytes = (OperatingSystem.IsWindows() ? Encoding.Unicode : Encoding.UTF32).GetBytes(s + "\0");
         var p = (byte*)NativeMemory.Alloc((nuint)bytes.Length);
         bytes.AsSpan().CopyTo(new Span<byte>(p, bytes.Length));
         return p;

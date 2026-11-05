@@ -25,7 +25,7 @@ public unsafe class PostProcessNativeTests
         {
             var options = PostOptions.Create("meitou");
             options.Upscale.Kind = upscaler;
-            options.Upscale.Scale = 1;   // render at the display size (the Meitou default with an upscaler is 0.83)
+            options.Upscale.Scale = 1;   // render at the display size (the Meitou default with an upscaler is 0.67)
             (options.ToneMap, options.Grade) = (ToneMapOperator.Clamp, false);   // the plain clip, so the grey below is exact
             using var post = new PostProcess(ctx, options) { AutoExposure = (0.01f, 10f), InstantAdaptation = true };
             foreach (var (w, h) in new[] { (64, 36), (80, 48) })
@@ -39,28 +39,29 @@ public unsafe class PostProcessNativeTests
                 {
                     post.Begin(w, h);
                     post.SetCamera(Vector3.Zero, Matrix4x4.Identity, 1, w / (float)h);
-                    post.BeginFarSlice(1000, 10000);
-                    post.BeginNearSlice(1, 1000);
+                    post.BeginScene(1, 1000, 1, w / (float)h);
                     // A grey scene: luminance 0.5 everywhere, so the measured mean and the adapted value are 0.5.
                     var t = post.SceneTargets;
                     var cmd = ctx.BeginNative("test scene clear");
                     cmd.BeginRendering(new RenderingDesc(
                         t.Colour with { Load = LoadOp.Clear, Clear = new ClearColour(0.5f, 0.5f, 0.5f, 1) },
-                        t.Depth with { Load = LoadOp.Clear, DepthClear = 1f },
+                        t.Depth with { Load = LoadOp.Clear, DepthClear = DepthConvention.Clear },
                         t.Width, t.Height));
                     cmd.EndRendering();
                     ctx.EndNative(cmd);
-                    post.SetNearSlice(1, 1000, 1, w / (float)h);
                     post.End();
                     ctx.Finish();
                 }
                 Assert.Equal((w, h), (post.RenderWidth, post.RenderHeight));
 
                 var names = device!.Allocator.Breakdown().Select(o => o.Name).ToList();
-                foreach (var name in new[] { "post scene colour", "post scene depth", "post ldr", "post ssao", "post luminance", "post exposure adapted" })
+                foreach (var name in new[] { "post scene colour", "post scene depth", "post ssao", "post luminance", "post exposure adapted" })
                     Assert.Contains(name, names);
+                // FXAA reads the LDR picture; a temporal upscaler bypasses it, so without haze its target is never made.
+                if (upscaler == UpscalerKind.Off)
+                    Assert.Contains("post ldr", names);
                 if (upscaler != UpscalerKind.Off)
-                    foreach (var name in new[] { "post far slice depth", "post motion", "post upscale depth", "post reactive", "post taa history" })
+                    foreach (var name in new[] { "post motion", "post upscale depth", "post reactive", "post taa history" })
                         Assert.Contains(name, names);
 
                 var (adapted, mean) = post.ReadExposure();

@@ -69,7 +69,7 @@ static class Program
             Console.WriteLine("Loading headless world; this may take several minutes.");
             using var host = HeadlessWorld.Open(install, new WorldSettings
             {
-                Seed = config.WorldSeed, Threads = config.SimulationThreads,
+                Seed = config.WorldSeed, Threads = config.SimulationThreads, PublishSnapshots = false,
             });
             host.Population.Relations.PlayerFaction = -1;
             var store = new CheckpointStore(Path.Combine(config.DataDirectory, "world"));
@@ -112,14 +112,17 @@ static class Program
             Console.CancelKeyPress += cancel;
             Console.WriteLine($"Listening on {listener.Endpoint}; maximum {config.MaximumPlayers} connections. Enter stop or save.");
             Console.WriteLine("Compatibility covers database merge order and " + config.GameplayAssets.Length + " configured gameplay assets.");
+            using var saves = new SemaphoreSlim(1, 1);
             async Task Save()
             {
-                bool result = await loop.InvokeAsync(() =>
+                await saves.WaitAsync().ConfigureAwait(false);
+                try
                 {
-                    if (host.World.HasPendingDurableMutation) return false;
-                    checkpoints.Commit(checkpoints.Capture()); return true;
-                }).ConfigureAwait(false);
-                Console.WriteLine(result ? "Checkpoint saved." : "Checkpoint deferred: a critical persistence operation is pending.");
+                    var captured = await loop.InvokeAsync(() => host.World.HasPendingDurableMutation ? null : checkpoints.Capture()).ConfigureAwait(false);
+                    if (captured is not null) await Task.Run(() => checkpoints.Commit(captured)).ConfigureAwait(false);
+                    Console.WriteLine(captured is not null ? "Checkpoint saved." : "Checkpoint deferred: a critical persistence operation is pending.");
+                }
+                finally { saves.Release(); }
             }
             var input = Task.Run(async () =>
             {
@@ -127,7 +130,9 @@ static class Program
                 {
                     while (!stop.IsCancellationRequested)
                     {
-                        var line = await Console.In.ReadLineAsync(stop.Token).ConfigureAwait(false);
+                        // Console readers can ignore cancellation while blocked in native input.
+                        // Cancel the wait too, so shutdown can join this task and any active save.
+                        var line = await Task.Run(Console.ReadLine).WaitAsync(stop.Token).ConfigureAwait(false);
                         if (line is null) break;
                         if (line.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase)) { stop.Cancel(); break; }
                         if (line.Trim().Equals("save", StringComparison.OrdinalIgnoreCase)) await Save().ConfigureAwait(false);
@@ -163,6 +168,7 @@ static class Program
                 Console.CancelKeyPress -= cancel;
                 stop.Cancel();
                 await listener.DisposeAsync().ConfigureAwait(false);
+                await input.ConfigureAwait(false);
             }
             await Save().ConfigureAwait(false);
             if (host.World.HasPendingDurableMutation) throw new IOException("Shutdown retains the last committed checkpoint; a critical persistence operation could not finish.");

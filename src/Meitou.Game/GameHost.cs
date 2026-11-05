@@ -142,6 +142,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         }
         finally
         {
+            birdStep?.Dispose(); birdStep = null;
             player?.DisposeOnline();
             DisposeAudio(); DisposeTitleScene(); DisposeClientSession();
             if (session is not RemotePlayerSession) OnlineConnection?.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -174,7 +175,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
             return (Grid: grid, Parts: BootSimulation(grid, interactive));
         });
         gpu = WorldFrame.CreateGpu(context, install, scene, assets, o, interactive, LoadingStep, AwaitLoading);
-        if (!o.NoParticles) titleParticleFactory = () => ParticleRenderer.Create(context, install, gpu.Particles?.Library);
+        if (!o.NoParticles) titleParticleFactory = () => ParticleRenderer.Create(context, assets, gpu.Particles?.Library);
         if (gpu.Post is { } vendorPost) vendorPost.UpscalerFactory = Meitou.Rendering.Upscalers.VendorUpscalers.Factory(display.Context, streamline, ngx);
         (camera, render) = WorldFrame.Setup(scene, o);
         render.Grid = IsFlat;
@@ -323,9 +324,11 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         player.MeshHit = (id, origin, direction) => gpu.Characters?.RayHit(DrawKey(id), origin, direction);
         player.Floor = (() => viewedFloor, StepFloor);
         player.HiddenInWorld = hiddenIndoors.Contains;
+        player.GroundItemHidden = hiddenGround.Contains;
         player.BuildingMoveHit = (origin, direction, distance) => gpu.Objects?.MoveHit(origin, direction, viewedFloor, distance);
         player.SurfaceMoveHit = SurfaceMoveHit;
         player.ClosedBuildingHit = (origin, direction, distance) => gpu.Objects?.ClosedBuildingHit(origin, direction, distance);
+        player.ShownInteriorHit = (origin, direction, distance) => gpu.Objects?.ShownInteriorHit(origin, direction, distance);
         ConfigurePlayerInterface(player);
         if (IsSandbox) player.ReservedKeys.UnionWith([Meitou.Engine.Input.Key.Z, Meitou.Engine.Input.Key.X, Meitou.Engine.Input.Key.C, Meitou.Engine.Input.Key.Y, Meitou.Engine.Input.Key.P, Meitou.Engine.Input.Key.G]);
         player.ConfigureFrontend(scene.Database,
@@ -360,7 +363,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         if (!IsSandbox && crowd > 0 && population is not null) SpawnCrowd(target, crowd);
         LoadingStep("characters");
         if (scene.Database is { } characterDb && !g.NoPopulation && gpu.Characters is null)
-            gpu.Characters = new CharacterRenderer(context, install, characterDb, assets, characterRigs) { Source = FillDrawList, Guard = gpu.Guard, GeneratedLod = o.CharacterLod, SkinShading = o.SkinShading, SkinRaces = config.SkinRaces, EnhancedIcons = o.MeitouIcons,
+            gpu.Characters = new CharacterRenderer(context, install, characterDb, assets, characterRigs) { DrawDistance = GameplaySettings.NpcRange(install), Source = FillDrawList, Guard = gpu.Guard, GeneratedLod = o.CharacterLod, SkinShading = o.SkinShading, SkinRaces = config.SkinRaces, EnhancedIcons = o.MeitouIcons,
                 PoseClock = () => animClock ? animSeconds : realTime.Elapsed.TotalSeconds };   // the frame clock DrawWorld gives the foliage sway: a recorded flight poses the same every take
         var rig = session.Camera;
         rig.Place(new Vector2(target.X, target.Z), (o.Yaw ?? 30) * MathF.PI / 180,
@@ -460,6 +463,9 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Host);   // the profiler: the host's frame so far, then the blood marks apart from the terrain's update
         UpdateBlood();
         Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Blood, "blood marks");
+        birdAspect = width / (float)Math.Max(height, 1);
+        UpdateBirds();
+        Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Birds, "birds");
         UpdateWeatherSource();
         UpdateInteriorView();
         // The frame's animation time (particles, water, wet surfaces) is game time: still while paused, faster at higher speeds.

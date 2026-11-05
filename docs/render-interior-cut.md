@@ -28,7 +28,7 @@ grows through a bar's floorboards. `InteriorMaskRenderer`; consumers: terrain, f
 
 ## Meitou
 
-- The mask: masks of loaded buildings within 3000 of the eye, drawn before the scene with the near slice's camera into
+- The mask: masks of loaded buildings within 3000 of the eye, drawn before the scene with the scene's camera into
   RGBA16F; every face writes depth + 1, min into R, max into A (the nearest and farthest face, the same as the game's facing
   split for a closed mesh seen from outside; not dependent on the meshes' winding). With the eye inside a building's
   trigger hull its masks write R = 0 (the game's value there: every face seen is a back face). `Boxes` are the drawn mask
@@ -44,6 +44,13 @@ grows through a bar's floorboards. `InteriorMaskRenderer`; consumers: terrain, f
   - TERRAIN-mode features and rocks (the terrain's mesh path): placements over a box are drawn with the meshes' full
     colour program with `TerrainConstants.interiorCut` on (features and CPU-culled rocks in their own list; GPU-culled
     rocks get the fade 1.5 too and are drawn by the fading draw).
-- Only the main view's near slice; not shadows, the water reflection or farther slices.
+  - other buildings' parts (Fixes settings, `Walls inside buildings`, on; off draws them, as the game): a part whose sphere overlaps the mask box of a
+    building in the interior view takes the map features' cut batch (`WorldObjectRenderer.CutsIntoViewed`), so the Hub's wall stays out of the Shinobi
+    Thieves tower ([data](formats/zones.md#interior-masks), issue #111). Not cut: parts of a building whose mask is drawn (the viewed one's own), doors,
+    layout objects, contained buildings, stand-ins. Their shadows: in the shadow passes the same parts (sphere over a viewed building's hull) cast
+    nothing inside the hull (convex footprint and height range of up to 4 viewed buildings, 32 edges in all, in `ViewConstants.cutPlanes`; the
+    objects' depth program discards). Limits: the mask is shared, so such a part between two masks along a ray, or in a non-convex mask's concavity, is
+    cut too; a far cascade cached before the view opened keeps the shadow until it is redrawn.
+- Only the main view; not shadows or the water reflection.
 - Engine limits: "inside" is decided by the hull, not per ray; foliage impostors and the grass motion pass (TAA velocity)
   are not cut.

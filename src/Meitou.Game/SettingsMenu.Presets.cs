@@ -21,9 +21,8 @@ sealed partial class SettingsMenu
     static readonly PresetSlider[] PresetSliders =
     [
         new(WorldFrame.ObjectDistanceSlider, WorldOptions.LowEndObjectDistance, 0.6f, 2, Mode: "Draw distances", LowFixed: true),
-        // --low-end's landmarks follow its object distance, at the Meitou defaults' ratio.
-        new(WorldFrame.LandmarkDistanceSlider, WorldOptions.LowEndObjectDistance * (Enhancements.MeitouLandmarkDistance / Enhancements.MeitouObjectDistance), 0.6f, 1.5f,
-            Scale: true, LowFixed: true),
+        // Landmarks follow the object-distance multiplier in the selected look.
+        new(WorldFrame.LandmarkDistanceSlider, WorldOptions.LowEndObjectDistance / Enhancements.MeitouObjectDistance, 0.6f, 1.5f, Mode: "Draw distances"),
         new(WorldFrame.DistantTownsSlider, float.NaN, 6, float.NaN),
         new(WorldFrame.ObjectLodSlider, WorldOptions.LowEndObjectLod, 0.6f, 2),
         new(WorldFrame.TerrainErrorSlider, float.NaN, 1.5f, 0.6f, Mode: "Draw distances"),
@@ -48,6 +47,8 @@ sealed partial class SettingsMenu
         new(WorldFrame.FilteringSlider, 0, 2, 4, High: 4),
         // The start default is the saved level (applied before the menu exists), so High names the full size.
         new(WorldFrame.TextureQualitySlider, WorldOptions.LowEndTextureQuality, 1, 0, High: 0),
+        new(WorldFrame.GroundDisplaceDistanceSlider, 0.5f, 0.75f, 1.5f, Scale: true),
+        new(WorldFrame.GroundParallaxDistanceSlider, 0.5f, 0.75f, 1.5f, Scale: true),
     ];
 
     /// <summary>The Meitou effects Low sets Faithful, as <c>--low-end</c> does; no preset turns a switch on.</summary>

@@ -8,6 +8,8 @@ public readonly record struct PlanTarget(byte Kind, Vector3 Position)
 {
     public const byte None = 0;
     public bool IsNone => Kind == None;
+    /// <summary>A canonical building key when the target is a placed machine.</summary>
+    public string? Building { get; init; }
 }
 
 /// <summary>One step of a plan: the row's type and its target.</summary>

@@ -10,6 +10,19 @@ namespace Meitou.Game;
 
 sealed partial class GameHost
 {
+    bool onlineDisconnectShown;
+
+    void ReportOnlineDisconnection()
+    {
+        if (onlineDisconnectShown || session is not RemotePlayerSession remote || remote.Connection.State.Disconnection is null) return;
+        onlineDisconnectShown = true;
+        warming = false;
+        skyArrival = null; presentationHour = null;
+        if (gpu.Characters is { } characters) characters.LoadingFocus = null;
+        loading?.Finish();
+        player.Notice("Connection lost. Return to the main menu and reconnect. See log.txt for details.", true);
+    }
+
     void BootOnline(VulkanDisplay display, bool interactive, RemoteGameSession connection)
     {
         LoadingStep("online scene");

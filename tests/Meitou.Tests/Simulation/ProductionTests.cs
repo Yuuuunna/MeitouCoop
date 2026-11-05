@@ -582,6 +582,43 @@ public partial class ProductionTests
         return hashes;
     }
 
+    /// <summary>Goal 189's operator and collector use the same lazily created, canonically named level machine.</summary>
+    [Fact]
+    public void An_npc_worker_operates_its_town_buildings_machine_and_then_empties_its_output()
+    {
+        var db = Database();
+        using var rig = new Rig(db, Constants, []);
+        const int Town = 1;
+        var building = new TownBuilding("well", Well, "Well", At, 0, false, false, [])
+            { Zone = WorldLayout.ZoneOf(At.X, At.Z), OwnerFactionId = "faction-1" };
+        var baseData = PersistenceData(db);
+        var data = new PopulationData
+        {
+            Db = db, Factions = baseData.Factions, Relations = baseData.Relations, PlayerFaction = PlayerFaction,
+            Sites = [new TownSite(0, new TownData { Id = "town", Name = "Town" }, At, building.Zone) { Buildings = [building] }],
+            SiteFactions = [3],
+        };
+        rig.World.Fixtures.RegisterSite(rig.World, data, 0);
+        Assert.Null(ProductionSystem.TownWorkOf(rig.World, building));
+        var stats = new CharacterStats(); stats[StatsEnumerated.Labouring] = Unit;
+        var squad = new Squad { Id = 1, TemplateId = "t", Faction = Town };
+        var cold = new CharacterCold { Name = "miner", Race = Human, Stats = stats, Medical = MedicalState.Create(Human, 50), Inventory = new Inventory(), Faction = Town };
+        cold.Ai = new Meitou.Simulation.Ai.AiMind { Squad = squad, Behaviour = Meitou.Simulation.Ai.AiBehaviour.Work, WorkBuilding = building, WorkOperate = building };
+        rig.World.Characters.Spawn(new CharacterHot { Position = At + new Vector3(0, 0, 10), MaxSpeed = 40, WalkSpeed = 15, Task = (byte)CharacterTask.Idle }, cold, 0);
+        rig.World.RunTicks(600);
+        var machine = rig.World.Machines.Find(ProductionSystem.TownWorkId(building));
+        Assert.NotNull(machine);
+        var site = rig.World.Buildings.Find(building.Key)!;
+        Assert.True(site.LevelMachine); Assert.NotNull(site.LevelPlacement); Assert.Equal(Town, site.Owner);
+        Assert.True(machine.Output!.Count > 0);
+        int made = machine.Output.Count;
+        machine.Status = 1;
+        cold.Ai.WorkOperate = null; cold.Ai.CollectFrom = building;
+        rig.World.RunTicks(2);
+        Assert.Equal(0, machine.Output.Count); Assert.Equal(2, machine.Status);
+        Assert.Equal(made, cold.Inventory!.All().Where(i => i.Record == Water).Sum(i => i.Quantity));
+    }
+
     // ------------------------------------------------------------------ items and research costs
 
     /// <summary>
@@ -718,6 +755,60 @@ public partial class ProductionTests
         {
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
         }
+    }
+
+    /// <summary>A town machine restores native zone state and inventory on first use after checkpoint binding.</summary>
+    [Fact]
+    public void A_town_machine_round_trips_through_the_save_keys()
+    {
+        var db = Database();
+        var zone = WorldLayout.ZoneOf(At.X, At.Z);
+        var state = Rec("farm-state", FcsRecordType.GAMESTATE_BUILDING, "0");
+        state.Bools["is complete"] = true;
+        state.Strings["owner faction ID"] = "faction-1";
+        var list = Rec(WorldLevelData.BuildingListId, FcsRecordType.INSTANCE_COLLECTION, "0");
+        list.Instances.Add(new FcsInstance { Id = "farm", Target = Farm, Position = At, Rotation = Quaternion.Identity, States = { state.StringId } });
+        var file = new FcsFile(); file.Records.AddRange([state, list]);
+        var levelZone = new GameDatabase(); levelZone.Apply(file, "zone.level");
+        var levels = new WorldLevelData(); levels.Zones[zone] = levelZone;
+        var placement = new BuildingPlacement(zone, "farm", Farm, At, Quaternion.Identity, state.StringId, At.Y);
+        var building = new TownBuilding("farm", Farm, "Farm", At, 0, false, false, [])
+        {
+            Zone = zone, OwnerFactionId = "faction-1", LevelState = levelZone.Find(state.StringId),
+            Resolved = new ResolvedBuilding(placement, db.Find(Farm)!, At, false),
+        };
+        var factions = PersistenceData(db);
+        var town = new TownData { Id = "town", Name = "Town", Faction = "faction-3" };
+        var data = new PopulationData
+        {
+            Db = db, Factions = factions.Factions, Relations = factions.Relations, PlayerFaction = PlayerFaction,
+            Sites = [new TownSite(0, town, At, zone) { Buildings = [building] }], SiteFactions = [3],
+        };
+        using var rig = new Rig(db, Constants, []);
+        rig.World.Fixtures.RegisterSite(rig.World, data, 0);
+        rig.World.VisitedZones.Add(zone);
+        var machine = rig.Production.TownWork(rig.World, building)!;
+        machine.Output!.Count = 4;
+        machine.Output.Progress = 0.25f;
+        machine.Inputs[0].Count = 3;
+        machine.Inputs[0].Level = 0.5f;
+        var save = Meitou.Simulation.Saving.SaveCapture.Capture(rig.World, data, new(1, 12, 0), options: new() { Levels = levels });
+        var instance = Assert.Single(save.Zones[zone].BuildingList!.Instances);
+        Assert.Equal("farm", instance.Id);
+        Assert.Contains(instance.States, id => save.Zones[zone].File.Records.Any(r => r.StringId == id && r.RecordType == FcsRecordType.INVENTORY_STATE));
+
+        using var back = new Rig(db, Constants, []);
+        Meitou.Simulation.Saving.MachineSave.Read(save, back.World, back.Production, back.Items);
+        Assert.Empty(back.World.Machines.All);
+        back.World.Fixtures.RegisterSite(back.World, data, 0);
+        var read = back.Production.TownWork(back.World, building)!;
+        Assert.Equal(1, back.World.Buildings.Find(building.Key)!.Owner);
+        Assert.Equal((4, 0.25f), (read.Output!.Count, read.Output.Progress));
+        Assert.Equal((Water, 3, 0.5f), (read.Inputs[0].Item, read.Inputs[0].Count, read.Inputs[0].Level));
+        read.Output.Count--;
+        Assert.Same(read, back.Production.TownWork(back.World, building));
+        Assert.Equal(3, read.Output.Count);
+        Assert.Single(back.World.Machines.All);
     }
 
     // ------------------------------------------------------------------ power

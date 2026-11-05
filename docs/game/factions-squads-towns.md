@@ -6,6 +6,9 @@ checks. Tables/expressions retain fields and event values. Runtime: [simulation]
 
 ## Relations and world states
 
+**Observed** (installed merged database via `GameDatabase.Load`): player-faction record `204-gamedata.base`
+has base name `Nameless`, translated here to `无名者`; this name already belongs to content, not a new multiplayer faction.
+
 **Verified** initial A→B: explicit A.relations v0, otherwise min(A.default,B.default); self100.
 Hostile<=-30, ally>=50; directional flags/coexistence and event changes are distinct. Storage,
 trust/known/player-faction branches and dialogue/reaction events remain scoped Observed where

@@ -86,7 +86,7 @@ public sealed unsafe partial class SkyRenderer : IDisposable
         }
         """;
 
-    const string SimpleFragment = "#version 330 core\n" + """
+    const string SimpleFragment = "#version 330 core\n" + DepthConvention.Glsl + """
 
         in vec2 vNdc;
         out vec4 fragColour;
@@ -98,8 +98,8 @@ public sealed unsafe partial class SkyRenderer : IDisposable
         uniform float uSkyTwilight;
         void main()
         {
-            vec4 a = uInverseViewProjection * vec4(vNdc, 0.0, 1.0);
-            vec4 b = uInverseViewProjection * vec4(vNdc, 1.0, 1.0);
+            vec4 a = uInverseViewProjection * vec4(vNdc, DEPTH_NEAREST, 1.0);   // the near plane, then the far one, under either depth convention
+            vec4 b = uInverseViewProjection * vec4(vNdc, DEPTH_SKY, 1.0);
             vec3 dir = normalize(b.xyz / b.w - a.xyz / a.w);
             float up = clamp(dir.y, 0.0, 1.0);
             float t = pow(up, 0.45);
@@ -236,7 +236,7 @@ public sealed unsafe partial class SkyRenderer : IDisposable
 
         """;
 
-    static readonly string SkyFragment = "#version 330 core\n" + AtmosphereShaders.Functions + StarShader + $$"""
+    static readonly string SkyFragment = "#version 330 core\n" + DepthConvention.Glsl + AtmosphereShaders.Functions + StarShader + $$"""
 
         in vec2 vNdc;
         out vec4 fragColour;
@@ -286,8 +286,8 @@ public sealed unsafe partial class SkyRenderer : IDisposable
         float cloudsTileRed(vec2 uv) { if (uCloudMeitou.x > 0.5) return texture(uCloudsTileSmooth, uv).r; return texture(uCloudsTile, uv).r; }
         void main()
         {
-            vec4 a = uInverseViewProjection * vec4(vNdc, 0.0, 1.0);
-            vec4 b = uInverseViewProjection * vec4(vNdc, 1.0, 1.0);
+            vec4 a = uInverseViewProjection * vec4(vNdc, DEPTH_NEAREST, 1.0);   // the near plane, then the far one, under either depth convention
+            vec4 b = uInverseViewProjection * vec4(vNdc, DEPTH_SKY, 1.0);
             vec3 dir = normalize(b.xyz / b.w - a.xyz / a.w);
             float night;
             vec3 col = atmoSky(dir, night);
@@ -472,6 +472,8 @@ public sealed unsafe partial class SkyRenderer : IDisposable
     /// The viewer's haze strength (not the game's; 1 = the game's haze): scales how far the atmosphere haze is blended in (the game's ramp,
     /// or the physical haze's amount), not the weather's fog.
     /// </summary>
+    /// <summary>The Meitou haze switch: the haze at <see cref="HazeStrength"/>; Faithful is the game's (1).</summary>
+    public bool MeitouHaze { get; set; } = true;
     public float HazeStrength { get; set; } = Enhancements.MeitouHazeStrength;
     /// <summary>
     /// The Meitou <c>night</c> switch, "night air" (viewer, not the game's; docs/formats/sky.md "Night air"): the game's haze colour is SkyX's sunlit
@@ -597,6 +599,9 @@ public sealed unsafe partial class SkyRenderer : IDisposable
     /// </summary>
     public bool CloudShadows { get; set; } = true;
 
+    /// <summary>The volumetric clouds' base height in world units (a Meitou slider; the slab keeps <see cref="VolumetricClouds.Thickness"/>).</summary>
+    public float CloudHeight { get; set; } = VolumetricClouds.Bottom;
+
     /// <summary>The eye in world units, for the Meitou clouds' parallax (the sky pass's matrix is a rotation only); the frame sets it.</summary>
     public Vector3 Eye { get; set; }
 
@@ -610,7 +615,7 @@ public sealed unsafe partial class SkyRenderer : IDisposable
     Vector4 CloudShadowUniform()
     {
         if (VolumeShadows)
-            return new Vector4(MeitouClouds.ShadowAt(state.Sun.Y) * FogScale, CloudDensity, VolumetricClouds.Bottom, 1);
+            return new Vector4(MeitouClouds.ShadowAt(state.Sun.Y) * FogScale, CloudDensity, CloudHeight, 1);
         bool on = CloudShadows && Physical && cloudsSmooth is not null && cloudsTileSmooth is not null && CloudDensity > 0;
         float strength = on ? MeitouClouds.ShadowAt(state.Sun.Y) * FogScale : 0;
         return new Vector4(strength, CloudLayer.DensityOffset(CloudDensity), MeitouClouds.PlaneHeight, 0);
@@ -649,6 +654,21 @@ public sealed unsafe partial class SkyRenderer : IDisposable
     /// <c>fogColour.a</c>), the colour and the distance where it is complete; null takes the forced <see cref="Weather"/> record's.
     /// </summary>
     public (float Weight, Vector3 Colour, float Distance)? FogInput { get; set; }
+    /// <summary>
+    /// The weather fog's share by the eye's height over the ground under it: 1 up to <see cref="FlightFogFade"/> below <see cref="KenshiCamera.FlightHeight"/>
+    /// (the platoons' gate), easing to 0 at it, where the weather's effects stop too. Set each frame by <see cref="SetFlightHeight"/>.
+    /// </summary>
+    public float WeatherFogScale { get; private set; } = 1;
+    /// <summary>How far below the flight height the weather fog starts to thin (viewer choice).</summary>
+    public const float FlightFogFade = 500;
+
+    /// <summary>Sets <see cref="WeatherFogScale"/> for an eye <paramref name="height"/> above the ground under it (1 with the ground unknown, not finite).</summary>
+    public void SetFlightHeight(float height)
+    {
+        if (!float.IsFinite(height)) { WeatherFogScale = 1; return; }
+        float t = Math.Clamp((KenshiCamera.FlightHeight - height) / FlightFogFade, 0, 1);
+        WeatherFogScale = t * t * (3 - 2 * t);
+    }
 
     (double X, double Z) cloudOffset;
     readonly Stopwatch cloudClock = new();
@@ -933,6 +953,7 @@ public sealed unsafe partial class SkyRenderer : IDisposable
         // The fog the weather system gives (weight, colour, distance), else the forced record's (on or off, complete at fog distance max).
         var (fogWeight, fogRgb, fogDistance) = FogInput ?? (w.FogEnabled ? 1f : 0f, w.FogColour, w.FogMax);
         float fogStart = FogInput is null ? w.FogMin : (w.FogMax > 0 ? fogDistance * w.FogMin / w.FogMax : 0f);
+        fogWeight *= WeatherFogScale;
         // The weather fog's colour times sunColour.w, the daylight scale (the game's global fog term).
         var fog = fogRgb * (Physical ? KenshiLighting.Daylight(s.Sun.Y) : 1f);
         var hc = s.Colours.Horizon;
@@ -952,7 +973,7 @@ public sealed unsafe partial class SkyRenderer : IDisposable
             // The weather fog is complete at a distance between `fog distance min` and `max` by the wind; the viewer has no wind and takes max.
             new Vector4(KenshiHaze ? 1f : 0f, hazeStart, hazeEnd, fogWeight > 0 && fogDistance > 1 ? 1f / fogDistance : 0f),
             new Vector4(cloud.X, cloud.Y, cloud.Z, pull),
-            new Vector4(KenshiHaze ? AltitudeWeight : 1f, MathF.Max(HazeStrength, 0), AltitudeWeight, 0),
+            new Vector4(KenshiHaze ? AltitudeWeight : 1f, MathF.Max(MeitouHaze ? HazeStrength : 1, 0), AltitudeWeight, 0),
             new Vector4(irradianceCube is not null ? 1f : 0f, specularCube is not null ? 1f : 0f,
                 ambientMap is not null ? 1f + (Planetshine ? NightAmbientFloor * (1 - Math.Clamp(s.Sun.Y * 5, 0, 1)) : 0f) : 0f, AmbientMap.HalfWorld),
             s.Night);
@@ -1300,16 +1321,24 @@ internal sealed class SampledImage : IDisposable
     /// <summary>
     /// A 2D DDS file with every level it has: BC1 blocks as they are (half a byte a texel), any other format decoded to RGBA8; trilinear,
     /// repeating or clamped to the edge. The sky's starfield and planet maps (4096² and 4096 × 2048 BC1: 11 and 6 MB instead of 85 and 43 MB as RGBA8).
+    /// <paramref name="bc3Blocks"/>: BC2 and BC3 as blocks too, which the GPU decodes to the same channels (the debris' limb and item maps: decoding them on the
+    /// render thread held the first frame of a town's loading screen 0.3 s).
     /// </summary>
-    public static SampledImage FromDds(IGpuContext ctx, Meitou.Data.Textures.DdsFile dds, bool repeat, string name)
+    public static SampledImage FromDds(IGpuContext ctx, Meitou.Data.Textures.DdsFile dds, bool repeat, string name, bool bc3Blocks = false)
     {
-        bool bc1 = dds.Format == Meitou.Data.Textures.DdsFormat.Bc1;
-        var format = bc1 ? InternalFormat.CompressedRgbaS3TCDxt1Ext : InternalFormat.Rgba8;
+        var format = dds.Format switch
+        {
+            Meitou.Data.Textures.DdsFormat.Bc1 => InternalFormat.CompressedRgbaS3TCDxt1Ext,
+            Meitou.Data.Textures.DdsFormat.Bc2 when bc3Blocks => InternalFormat.CompressedRgbaS3TCDxt3Ext,
+            Meitou.Data.Textures.DdsFormat.Bc3 when bc3Blocks => InternalFormat.CompressedRgbaS3TCDxt5Ext,
+            _ => InternalFormat.Rgba8,
+        };
+        bool blocks = format != InternalFormat.Rgba8;
         using var batch = ctx.Uploads.Begin();
         var t = batch.Create(new TextureDesc(format, dds.Width, dds.Height, dds.MipCount, Name: name));
         for (int level = 0; level < dds.MipCount; level++)
         {
-            if (bc1)
+            if (blocks)
             {
                 var s = dds.Surface(0, level);
                 batch.Write(t, level, 0, Rect(s.Width, s.Height), dds.Data.AsSpan(s.Offset, s.Length));

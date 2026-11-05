@@ -152,7 +152,7 @@ public sealed partial class ProductionSystem : ITickSystem
     {
         var reg = world.Buildings;
         foreach (var site in reg.All)
-            if (site.Complete && world.IsPlayerFaction(site.Owner) && site.WallParent is null && world.Machines.Find(site.Id) is null && Data(site.Record) is not null) Ensure(world, site);
+            if (site.Complete && !site.LevelMachine && world.IsPlayerFaction(site.Owner) && site.WallParent is null && world.Machines.Find(site.Id) is null && Data(site.Record) is not null) Ensure(world, site);
         if (world.Machines.Count == 0) return;
         List<(Machine, BuildSite)>? swapped = null;
         foreach (var m in world.Machines.All)
@@ -539,6 +539,8 @@ public sealed partial class ProductionSystem : ITickSystem
     public void SlowWorld(World world)
     {
         ProspectStep(world);
+        // Worker signals can create the first machine before the empty-registry fast path.
+        PrepareTownWorkers(world);
         Sync(world);
         Errands(world);
         researchBenches.Clear();
@@ -582,6 +584,7 @@ public sealed partial class ProductionSystem : ITickSystem
                 if (metal != m.Metal) { m.Metal = metal; world.Machines.Touch(); }
             }
 
+        TownWorkers(world, dt);
         var table = world.Characters;
         for (int i = 0; i < table.HighWater; i++)
         {

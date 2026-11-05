@@ -53,7 +53,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         public Vector3 Position;
         public float G, F;
         public long Parent = -1;
-        public bool Closed;
+        public bool Closed, HasExit;
     }
 
     /// <summary>A thread's A* state, reused by every search on it.</summary>
@@ -61,6 +61,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     {
         public readonly Dictionary<long, Node> Nodes = [];
         public readonly PriorityQueue<Node, float> Open = new();
+        public bool Exhaustive;
         readonly List<Node> made = [];
         int used;
 
@@ -71,13 +72,14 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
             Nodes.Clear();
             Open.Clear();
             used = 0;
+            Exhaustive = false;
         }
 
         public Node Take(NavRef at, Vector3 position, float g, float f)
         {
             if (used == made.Count) made.Add(new Node());
             var node = made[used++];
-            (node.Ref, node.Position, node.G, node.F, node.Parent, node.Closed) = (at, position, g, f, -1, false);
+            (node.Ref, node.Position, node.G, node.F, node.Parent, node.Closed, node.HasExit) = (at, position, g, f, -1, false, false);
             return node;
         }
     }
@@ -92,11 +94,21 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     /// </summary>
     public PathResult FindPath(Vector3 from, Vector3 to, NavAgent agent, Func<NavRef, bool>? skipStart, out NavRef start)
     {
+        if (searchScratch is { } previous) previous.Exhaustive = false;
         if (!World.TryFindPolygon(from, StartSnap, out start, out var startPoint, skipStart)) { start = new NavRef(-1, -1); return PathResult.NotFound; }
         if (!World.TryFindPolygon(to, GoalSnap, out var goal, out var goalPoint)) return PathResult.NotFound;
         var corridor = FindCorridor(start, startPoint, goal, goalPoint, agent);
         if (corridor is null) return PathResult.NotFound;
         return new PathResult(Pull(corridor, agent));
+    }
+
+    /// <summary>Adds starts whose exhaustive failed search cannot be improved by retrying from a reached polygon.
+    /// Dead ends are excluded: starting there may allow the narrow-exit squeeze that intermediate polygons cannot use.</summary>
+    public static void AddReachedByFailed(HashSet<long> into)
+    {
+        if (searchScratch is { Exhaustive: true } state)
+            foreach (var (key, node) in state.Nodes)
+                if (node.Closed && node.HasExit) into.Add(key);
     }
 
     /// <summary>
@@ -106,6 +118,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     public PathResult FindPathToward(Vector3 from, Vector3 to, NavAgent? agent = null)
     {
         agent ??= NavAgent.Human;
+        if (searchScratch is { } previous) previous.Exhaustive = false;
         if (!World.TryFindPolygon(from, StartSnap, out var start, out var startPoint)) return PathResult.NotFound;
         if (!World.TryFindPolygon(to, GoalSnap, out var goal, out var goalPoint)) (goal, goalPoint) = (new NavRef(-1, -1), to);
         var corridor = FindCorridor(start, startPoint, goal, goalPoint, agent, partial: true);
@@ -164,6 +177,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
                 open.Enqueue(first, first.F);
             }
         }
+        scratch.Exhaustive = last is null && open.Count == 0 && iterations <= MaxIterations;
         if (last is null && partial && nearest != first)
         {
             last = nearest;
@@ -189,7 +203,9 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
             if (!Portal(from.Ref, edge, to, out var left, out var right, out bool leftWall, out bool rightWall)) return;
             // Only an end on a wall takes the radius off the portal (as Pull insets it); a tile-border, seam or area-change end has walkable ground beyond.
             float width = Vector2.Distance(new(left.X, left.Z), new(right.X, right.Z));
-            if (width < ((leftWall ? 1 : 0) + (rightWall ? 1 : 0)) * agent.Radius && !(squeezeOut && from == first)) return;
+            bool clears = !(width < ((leftWall ? 1 : 0) + (rightWall ? 1 : 0)) * agent.Radius);
+            if (!clears && !(squeezeOut && from == first)) return;
+            if (clears) from.HasExit = true;
             var mid = BestCrossing(from.Position, left, right, goalPoint);
             float g = from.G + Vector3.Distance(from.Position, mid) * factor;
             if (area == NavArea.Door) g += OpenDoorCost;

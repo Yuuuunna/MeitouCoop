@@ -25,13 +25,16 @@ public sealed class VolumetricCloudRenderer : IDisposable
     public Vector2 ShadowOrigin { get; private set; }
     public SampledTexture ShadowMap => shadowMap is null ? default : Sample(shadowMap);
 
+    /// <summary>The slab's base height (the cloud height setting); the top follows at <see cref="VolumetricClouds.Thickness"/> above it.</summary>
+    public float Bottom { get; set; } = VolumetricClouds.Bottom;
+
     sealed class ViewHistory : IDisposable
     {
         public GpuTexture? Current, Distance, A, B;
         public Matrix4x4 Previous;
         public Vector3 Eye, Key, Light, Ambient, Forward;
         public Vector2 Wind;
-        public float Coverage;
+        public float Coverage, Bottom;
         public long Frame = -10;
         public void Dispose()
         {
@@ -72,6 +75,7 @@ public sealed class VolumetricCloudRenderer : IDisposable
         p.Bind(p.Sampler("uNoise"), noise.Sampled());
         p.Set(p.Uniform("uVolume"), coverage, wind.X, wind.Y, (gpu.Frame.Number % 16) * 0.618033989f);
         p.Set(p.Uniform("uEye"), eye);
+        p.Set(p.Uniform("uCloudSlab"), Bottom, Bottom + VolumetricClouds.Thickness);
     }
 
     void Draw(LegacyProgram p, NativeSegment segment, GpuTexture target, GpuTexture? extra = null)
@@ -87,10 +91,17 @@ public sealed class VolumetricCloudRenderer : IDisposable
         gpu.EndNative(cmd);
     }
 
-    public void Invalidate() { main.Frame = mirror.Frame = -10; }
+    public void Invalidate() { main.Frame = mirror.Frame = -10; MainMotion = null; }
 
     /// <summary>The main view's history only (its sky left out this frame; the reflection keeps marching).</summary>
-    public void InvalidateMain() => main.Frame = -10;
+    public void InvalidateMain() { main.Frame = -10; MainMotion = null; }
+
+    /// <summary>
+    /// The main view's clouds for the upscalers' motion vectors (<see cref="PostProcess"/>'s cloud motion pass, docs/render-clouds.md "Temporal, fog and
+    /// shadows"): the resolved image (opacity in alpha), the opacity-weighted distance along each ray, the wind's shift since the last frame in world units
+    /// and the frame they were made in; null when the main view's history restarted.
+    /// </summary>
+    public CloudMotion? MainMotion { get; private set; }
 
     /// <summary>Texels (half-size) round a texel's centre whose rays must all be hidden for the fog early-out to leave it out.</summary>
     public const float FogSkipReach = 1.5f;
@@ -106,6 +117,7 @@ public sealed class VolumetricCloudRenderer : IDisposable
         if (!Matrix4x4.Invert(viewProjection, out var inverse)) return default;
         var h = reflection ? mirror : main;
         var timer = reflection ? mirrorTimer : mainTimer;
+        if (!reflection) MainMotion = null;
         samples.Clear();
         if (timer.Poll(samples) is { } ms) { if (reflection) ReflectionGpuMs = ms; else MainGpuMs = ms; }
         timer.Begin();
@@ -134,7 +146,7 @@ public sealed class VolumetricCloudRenderer : IDisposable
         var rayB = Vector4.Transform(new Vector4(0, 0, 1, 1), inverse);
         var forward = Vector3.Normalize(new Vector3(rayB.X, rayB.Y, rayB.Z) / rayB.W - new Vector3(rayA.X, rayA.Y, rayA.Z) / rayA.W);
         bool valid = gpu.Frame.Number - h.Frame <= 2 && Vector3.DistanceSquared(eye, h.Eye) < 4000000
-            && MathF.Abs(coverage - h.Coverage) < 0.03f && Vector3.DistanceSquared(key, h.Key) < 0.0025f
+            && MathF.Abs(coverage - h.Coverage) < 0.03f && Bottom == h.Bottom && Vector3.DistanceSquared(key, h.Key) < 0.0025f
             && Vector3.Dot(light, h.Light) > 0.999f && Vector3.Dot(forward, h.Forward) > 0.9f
             && Vector3.DistanceSquared(ambient, h.Ambient) < 0.0025f && windDelta.LengthSquared() < 0.0001f;
         resolve.Bind(resolve.Sampler("uCurrent"), Sample(h.Current));
@@ -147,8 +159,10 @@ public sealed class VolumetricCloudRenderer : IDisposable
         resolve.Set(resolve.Uniform("uHistoryWeight"), valid ? 0.85f : 0);
         Draw(resolve, resolveSegment, h.B!);
         (h.A, h.B) = (h.B, h.A);
-        (h.Previous, h.Eye, h.Key, h.Light, h.Ambient, h.Forward, h.Wind, h.Coverage, h.Frame) =
-            (viewProjection, eye, key, light, ambient, forward, wind, coverage, gpu.Frame.Number);
+        if (!reflection && valid)
+            MainMotion = new CloudMotion(Sample(h.A!), Sample(h.Distance!), windDelta * VolumetricClouds.PatternPeriod, gpu.Frame.Number);
+        (h.Previous, h.Eye, h.Key, h.Light, h.Ambient, h.Forward, h.Wind, h.Coverage, h.Bottom, h.Frame) =
+            (viewProjection, eye, key, light, ambient, forward, wind, coverage, Bottom, gpu.Frame.Number);
         timer.End();
         return Sample(h.A!);
     }
@@ -176,3 +190,6 @@ public sealed class VolumetricCloudRenderer : IDisposable
         march.Dispose(); resolve.Dispose(); shadow.Dispose();
     }
 }
+
+/// <summary>One frame's volumetric clouds for the motion vectors (<see cref="VolumetricCloudRenderer.MainMotion"/>).</summary>
+public readonly record struct CloudMotion(SampledTexture Clouds, SampledTexture Distance, System.Numerics.Vector2 Wind, long Frame);

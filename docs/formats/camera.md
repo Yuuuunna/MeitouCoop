@@ -86,7 +86,9 @@ not the game speed, so the camera works while the game is paused. Several inputs
   leaves the height alone (**Observed**). Placing the camera finds the goal at once. Engine: every building's floor-0 ordinary parts
   within 400 units are the pivot's ground, and a building in the interior view's parts up to the viewed floor (others stay at floor
   0, the +0x330 re-cast read as "not the viewed building"); the highest at the point, without the 3000 cap, the sweep, the group-14
-  ray or the eye's lowering ray. A building's collision is read on a worker, so the first frames near it keep to the terrain.
+  ray or the eye's lowering ray. A building's collision is read on a worker, so the first frames near it keep to the terrain; a runtime placement
+  added or removed (a building; not a ground item's drop or pick-up, which leaves the lists alone, issue #204, **Observed** by code, not measured) lists the zone's buildings again while the known floors keep answering
+  (the pivot does not drop to the terrain meanwhile), and an unchanged building keeps its collision.
 - **Default keys** (`controls.cfg`): `camera_forward` W, Up; `camera_back` S, Down; `camera_left` A, Left; `camera_right` D, Right;
   `camera_rotate_left` Q; `camera_rotate_right` E; `camera_tilt+` `,`; `camera_tilt-` `.`; `camera_zoom_in` Home; `camera_zoom_out`
   End; `mouse_rotate` Left Control or Mouse3; `toggle_fps_camera` `;`; `focus_char` F (held flags and events:
@@ -139,3 +141,6 @@ marker drawn); `mouse_rotate` is the middle button or Ctrl (Ctrl+right click is 
 engine feel (its Q/E turn the view left/right as named, not as the strategy camera's). The sea height clamps the camera's ground
 (**Observed**: the water node's height is the water height, 100). The settings above are constants of `CameraSettings`, not read
 from `settings.cfg`; `.`/`,` are no longer the time-step keys (they tilt, as in the game).
+The free camera more than 3000 above the ground under its eye stops moving the world's focus (`KenshiCamera.FlightHeight`, engine choice; the
+strategy camera never gets that high): the loaded zones, their squads and navmesh stay where the flight left the ground and load round the
+focus again once it comes down, so a high flight spawns and builds nothing.

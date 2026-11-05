@@ -107,6 +107,9 @@ internal sealed class MetalProgram : IDisposable
 /// </summary>
 public sealed class MetalShaders : IGpuShaders
 {
+    /// <summary>The shaded character cut-outs must reject alpha before committing depth (docs/metal-backend.md).</summary>
+    public bool DiscardNeedsLateDepth => true;
+
     /// <summary>
     /// Metal's stages have one binding table per kind (<c>[[buffer(n)]]</c>, <c>[[texture(n)]]</c>), and its mapping is by
     /// the binding decoration alone — set included, since sets are not namespaced (docs/metal-backend.md). Every resource's
@@ -220,7 +223,8 @@ public sealed class MetalShaders : IGpuShaders
         if (FastMath is { } fast) Console.WriteLine($"metal     shaders fast math {fast.ToString().ToLowerInvariant()} (MEITOU_METAL_FAST_MATH)");
     }
 
-    /// <summary>The compiler the programs go through: Metal's own options (per-stage bindings at 0, no cache shared with Vulkan's).</summary>
+    /// <summary>The compiler the programs go through: Metal's own options (per-stage bindings at 0, no cache shared with Vulkan's; no
+    /// <c>DepthReversed</c>: Metal's scene depth is conventional).</summary>
     public GlslProgramCompiler Compiler { get; } = new(new ShaderCompileOptions { FragmentBindingBase = 0, UseDiskCache = false });
 
     /// <summary>The backend's identity of a program handle (the internals resolve through this).</summary>

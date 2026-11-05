@@ -147,8 +147,12 @@ public sealed class SecureServerPeer
                             var ack = StateTransport.DecodeAck(frame);
                             if (ack.Identity != new ReplicationIdentity(session.Connection.World, session.Connection.Player, session.Connection.Generation))
                                 throw new InvalidDataException("State acknowledgement belongs to another connection.");
-                            await loop.InvokeAsync(() => { if (!publisher.Acknowledge(frame)) publisher.RequestBaseline(); }, stop.Token).ConfigureAwait(false);
-                            await Send([await Status().ConfigureAwait(false)], stop.Token).ConfigureAwait(false);
+                            var acknowledgedStatus = await loop.InvokeAsync(() =>
+                            {
+                                if (!publisher.Acknowledge(frame)) publisher.RequestBaseline();
+                                return SessionProtocol.Admission(session.Connection, source.Authority.ReadAdmission(session.Connection) ?? throw new IOException("Connection was replaced."));
+                            }, stop.Token).ConfigureAwait(false);
+                            await Send([acknowledgedStatus], stop.Token).ConfigureAwait(false);
                             break;
                         case WireMessage.StateResync:
                             if (!await loop.InvokeAsync(() => publisher.RequestBaseline(frame), stop.Token).ConfigureAwait(false)) throw new InvalidDataException("Invalid state resync request.");
@@ -210,12 +214,20 @@ public sealed class SecureServerPeer
                         using var timer = new PeriodicTimer(options.PublicationInterval);
                         while (await timer.WaitForNextTickAsync(stop.Token).ConfigureAwait(false))
                         {
-                            var frames = await loop.InvokeAsync<IReadOnlyList<WireFrame>>(() =>
+                            var prepared = await loop.InvokeAsync(() =>
                             {
                                 if (!sessions.IsCurrent(session)) throw new IOException("Authenticated connection was revoked or replaced.");
                                 var phase = source.Authority.GetPhase(session.Connection);
-                                if (phase == AdmissionPhase.Preparing && !hadWorld) return [];
-                                var captured = publisher.Capture(observation, options.Observation, loop.Runtime.Speed) ?? throw new IOException("Connection was replaced.");
+                                if (phase == AdmissionPhase.Preparing && !hadWorld) return (Work: (PublicationWork?)null, Frames: (IReadOnlyList<WireFrame>?)Array.Empty<WireFrame>());
+                                var work = publisher.Prepare(observation, options.Observation, loop.Runtime.Speed, out var ready);
+                                return (Work: work, Frames: ready);
+                            }, stop.Token).ConfigureAwait(false);
+                            if (prepared.Work is { } encoding) await Task.Run(encoding.Encode, stop.Token).ConfigureAwait(false);
+                            var frames = await loop.InvokeAsync<IReadOnlyList<WireFrame>>(() =>
+                            {
+                                if (!sessions.IsCurrent(session)) throw new IOException("Authenticated connection was revoked or replaced.");
+                                var captured = (prepared.Work is { } work ? publisher.Complete(work) : prepared.Frames) ?? throw new IOException("Connection was replaced.");
+                                if (captured.Count == 0) return captured;
                                 bool withdrawn = captured.Any(f => f.Kind == WireMessage.StateWithdrawn);
                                 hadWorld = !withdrawn;
                                 return withdrawn ? [.. captured, SessionProtocol.Admission(session.Connection, source.Authority.ReadAdmission(session.Connection)!)] : captured;

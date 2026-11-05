@@ -7,10 +7,14 @@ Original exposure/FXAA/haze rules: [formats/post-processing.md](formats/post-pro
 ## Frame contract
 
 Scene shaders write unclamped HDR. Colour/depth/motion targets belong to PostProcess; scenes
-must preserve requested attachments and near/far depth history. Scene rendering is at render
+must preserve requested attachments and the scene depth's history (one depth, [renderer-native](renderer-native.md) "Depth"). Scene rendering is at render
 scale; reconstruction precedes display-sized composite/exposure/grading. Single sampling with
 TAA/FSR/DLSS; jitter scene/sky, never shadow maps or reused reflections. Fade/dither/noise must
 agree across colour/depth/velocity passes. Transparent layers do not overwrite opaque depth.
+**Observed** (source: `WorldWeather` and `ParticleRenderer.Authority`): simulation/remote weather frames
+replace presentation schedules; camera updates never advance their regional schedules. Authoritative
+effect roots replace local affecting weather/map roots; only their cosmetic particle pools step locally.
+Owner changes clear those roots. Local rain, non-affecting effects and explicit visual bursts remain local.
 
 Faithful uses the game's FXAA, exposure, haze and flat ambient where selected. Meitou switches
 independently select SSAO, TAA/upscalers, tone/colour/night grading, particle quality and GI.
@@ -38,7 +42,7 @@ Linux runs DLSS through NGX (`Upscalers/Ngx.cs`): NVIDIA's NGX client library (t
 built into `libmeitou_ngx.so` by `tools/scripts/build-ngx-shim.sh`) over the driver's `libnvidia-ngx.so.1`, with the DLSS
 model `libnvidia-ngx-dlss.so.<version>`; each file is looked for in `MEITOU_DLSS_PATH`, then beside the executable, and
 NGX gets the same two folders to find the model. The client library is linked on Ubuntu 22.04 for releases, so it
-loads on glibc 2.35 and newer; on an older glibc the game logs the loader's error and runs without DLSS. FSR stays Windows-only. `MEITOU_NGX_LOG=1` prints NGX's whole log (its verbose level).
+loads on glibc 2.35 and newer; on an older glibc the game logs the loader's error and runs without DLSS. FSR on Linux needs our build of the FidelityFX library ("Frame generation"). `MEITOU_NGX_LOG=1` prints NGX's whole log (its verbose level).
 NGX is loaded only when the model and the client library are in one of those folders and `MEITOU_DLSS` is not `0`, and
 handed only a device on NVIDIA's own driver (not NVK); without DLSS (other GPU, no NVIDIA driver, no libffi) it is shut
 down at once and the game runs on. Builds copy both to the output folder, never into a publish; the Linux release zip
@@ -56,17 +60,83 @@ scaled by −render size; inputs need sampled use, the output storage use, all l
 K for Quality, M for Performance, L for Ultra Performance: each headless screenshot is byte-identical to the one with
 that preset set and differs from K's (repeat runs are identical).
 
+## Frame generation
+
+The `FrameGeneration` setting (off by default, read at start-up) presents through AMD's FSR 3 frame-interpolation swapchain
+(`Upscalers/FfxSwapchain.cs`) and interpolates one frame between each two rendered ones (`Upscalers/FrameGeneration.cs`), on top
+of TAA, FSR or DLSS. Library: `amd_fidelityfx_vk.dll` (AMD's prebuilt, Windows/Proton) or `libamd_fidelityfx_vk.so` (Linux:
+`tools/scripts/build-ffx-linux.sh`, AMD's SDK 1.1.4 source plus `tools/patches/fidelityfx-sdk-1.1.4-linux.patch`; AMD's
+swapchain code needs Vulkan headers 1.3.237+, so the script uses Khronos' 1.3.296). Struct layouts and type ids follow the SDK
+1.1.4 headers (`ffx_api.h`, `ffx_api_vk.h`, `ffx_framegeneration.h`).
+
+- **Interface:** overlays draw into their own transparent RGBA8 layer (`UiLayer`, premultiplied alpha). Without frame generation it is
+  composited onto the world into a top-down final picture that the present copies as is. With it the present shows the world alone
+  (flipped) and the layer is registered with AMD's swapchain every frame (it forgets it at each present), flipped top-down, so it is laid
+  over generated frames too. Cost of the separate layer: about 0.1 ms GPU (**Observed**, Iris Xe, play bench, frame generation off).
+- **Inputs:** depth (`upscaleDepth`, now also made with TAA) and motion are bottom-up, so they are blitted flipped; motion scale
+  (-render width, +render height), jitter y negated, view-space-to-metres 0.1 as for the upscalers.
+- **Frame id:** steps by 1 per rendered frame; any other step restarts the interpolation (`ffx_framegeneration.h`), so it skips one
+  after a cut, after frames without frame generation and on a new context. Off under the loading screen and for screenshots.
+- **Generation rect:** left zero, which the SDK's provider turns into the whole display (**Verified**, SDK 1.1.4
+  `ffx_provider_framegeneration.cpp`).
+- **Layouts:** at the end of the present the replacement back buffer is left in shader-read layout, which AMD's UI composition
+  samples (**Observed**: validation VUID-vkCmdDraw-None-09600 otherwise).
+- **Teardown:** the frame-generation context is destroyed before the swapchain context, also when a failed swapchain remake falls
+  back to the plain swapchain.
+- **Queues:** AMD's swapchain takes four queues (game, present, image acquire, async compute); we take them all from the graphics
+  family and need at least 3. **Observed** (Iris Xe, Windows, 2026-10-30): the family has 1 queue, so frame generation stays off
+  with a log line. Typical AMD and Intel drivers also expose one graphics queue (**Unknown** here: untested); AMD's samples take
+  present and async compute from other families.
+- **DLSS:** Streamline must see every present, which AMD's swapchain owns, so on Windows with frame generation on DLSS goes through
+  NGX (`meitou_ngx.dll`, the SDK's static `nvsdk_ngx_s.lib` linked into a DLL by `package-release.ps1` or
+  `tools/scripts/build-ngx-shim-win.sh`) and Streamline is not loaded; without the FidelityFX library Streamline stays.
+- **AMD SDK bugs** the validation layer reports, fixed in the Linux patch only (AMD's Windows DLL keeps them): line width 0 in the
+  swapchain's pipelines, a descriptor pool size list that drops `STORAGE_BUFFER` (**Observed**, PR #133).
+- **Performance** (**Observed**, single runs, RTX 3070, PR #133): about 1.4 ms more per rendered frame (Proton, TAA),
+  presented fps 1.5-1.75x that without it; for about 8 s after it starts the present is slow (31-60 fps).
+
 ## SSAO, fog and layers
 
-SSAO reads near depth; character mask controls character occlusion (default strength0.25).
+SSAO reads the scene depth; character mask controls character occlusion (default strength0.25).
 `ssao-mask-skip` may omit a mask read only when no character was drawn. The taps read the mask from a half-size R8 copy of the scene colour's
 alpha (`SsaoMask`), not the scene colour: **Observed** (Nsight, 2560x1440) SSAO 0.35 ms, L2-bound, 0.2 ms of it the scattered scene-colour reads;
 GPU frame -0.15 ms, the picture within 4 levels. Sky/far-depth edges and
-transparent water/particles require explicit exclusion/compositing rules.
+transparent water/particles require explicit exclusion/compositing rules. The water writes no depth, so a surface below the
+water plane fades out of the occlusion over the water's last 2 units along the ray, as the water's edge does
+([water](render-water.md) "Edges"). Passes rebuild view depth through `DepthConvention.Glsl` (`depthViewZ`, `depthIsSky`):
+reversed on Vulkan, conventional on Metal; no shader hand-writes the mapping.
+SSAO: radius 6 units or 3 % of the distance, fade from 1600 to 6600 units.
 `layer-merge`, `fog-half`, `shafts-half`, `layers-lean` combine shafts apply, placed fog and SSAO,
 using reduced targets plus depth-aware reconstruction/mask fallback. A texel that does not fit
 must use the full-resolution path. [Fog volumes](formats/fogfeatures.md), [shafts](render-shafts.md).
 `post-merge` fuses velocity/exposure compute groups while preserving ordering and dependencies.
+
+## Fog
+
+The `fog` switch (`PostOptions.MeitouFog`) changes the particle sprites only; the haze and weather fog are [sky](formats/sky.md)'s,
+the fog volumes [fogfeatures](formats/fogfeatures.md)'s (their half size is `fog-half`, above, whatever the switch).
+The game's sprites: **Verified** (the install's `materials/forward/basic.hlsl` `basic_fp`, `particles.hlsl`, the particle
+materials): its particle materials use `Basic_Texture_FP` / `Basic_Texture_Clipped_FP_HLSL`, texture times colour times vertex
+colour, depth-tested with no fade, except `Kenshi_mist_cloud` (the `fogislands`, `islandfog`, `Kenshi_Mist_Cloud`,
+`Kenshi_Rising_Steam(_slow)` and `SkyBeam` scripts), whose `Particle_Blend_Depth` scales alpha by `saturate(w / 10)` near the eye and by
+`saturate((scene - 100 - w) / 100)` before a surface (gbuffer depth; 0 within 100 units, full from 200). Faithful draws every
+sprite hard-edged, so those mist sprites are not the game's yet (**Unknown** how visible). The game draws fog volumes and particles
+into the full-size HDR target (**Verified**, `materials/compositors/main.compositor` `Lighting_HDR`, queues 82 to 85).
+Meitou fades each sprite over its last stretch before the surface behind it: a quarter of its larger
+side, 2 to 300 units (0.2 to 30 m), on alpha (alpha sprites), colour (additive) or towards white (modulate); the reactive mask
+fades the same. A draw cannot read the depth it tests against, so the fade reads a colour copy: an R32F copy of the scene depth
+for full-size sprites (`PrepareSoftParticleDepth`, only when some are drawn) and, for the low-resolution ones, the depth pass's
+nearest or farthest depth written to an R32F target beside it.
+**Observed** (the Eye's storm, quarter-size particles): the row of dark beads where the dust meets a dune ridge is fainter.
+The game's sprites are flat (texture × colour × vertex colour × the material's ambient factor) and not fogged, so a dust cloud had one
+brightness in sun and in shade, near and far, and showed through fog banks. With the same switch Meitou lights alpha sprites
+(`ParticleRenderer.Lit`): the sun's visibility at each fragment (one bilinear compare in its cascade) takes the light shafts' darkening
+(the sun's share of the light) where it is shadowed, a glow towards the sun (1 + 0.5 cos⁸) where it is not, then the haze and the
+placed fog volumes in front of each corner (`atmoApplyCoefficients`, `fogVolumesAccumulate`) as `colour · mul + add`; additive
+sprites take only the haze's and the volumes' `mul`. **Observed** (mec-tou-nu save): distant clouds fade into the haze like the land
+behind them, dust over shaded slopes darker; mec-tou-nu2 (Skinner's Roam, a fog bank): the dark dust that showed through it gone;
+the Hub at 14:00 within 0.7/255 (99th percentile).
+The Metal chain has no copy: its sprites stay hard-edged.
 
 Fog shading rate (`FogShadingRate`): build tile rates from completed scene depth/fog; frame N's
 R8_UINT rate image drives frame N+1 opaque scene shading. Requires device fragment-shading-rate
@@ -84,11 +154,66 @@ terrain can be original ambient-map colour rather than lamp/emissive input. Haze
 and sun; Meitou default strength0.5, game1, slider0..3.
 
 Weather particle resolution: off/quarter/half/auto/full; density multiplies emission and changes
-appearance/population, not just shading cost. Reduced-resolution particles test against a
-checkerboard of each block's nearest/farthest depth, and both the composite and the reactive mask
-upsample by depth match; a farthest-only reduction let dust behind thin characters bleed onto
-their silhouettes, flickering under jitter. Texture anisotropy caps mipmapped samplers, distinct from texture
+appearance/population, not just shading cost. Both chains draw the reduced-resolution particles twice, against each block's
+nearest depth and against its farthest (`ParticleTargetsFar`), and the composite and the reactive mask take, from each of the four
+nearest texels, both draws weighted bilinearly and by how close each draw's depth is to the pixel's (`ParticleUpsample`): on a
+ridge the near draw's, on the land behind it the far draw's, which holds what lies between them. A farthest-only reduction let dust
+behind thin characters bleed onto their silhouettes; one draw against a checkerboard of the two depths (with a joint bilateral 4x4
+filter at depth edges) left the matching texels every other one along an edge, so the dust behind a dune ridge followed it in steps
+(**Observed**, mec-tou-nu save, Vulkan: the ridge's outline in front of the far dust stepped, then smooth; the Metal chain's is not run).
+Where a block's two depths lie within 4 % (or it is all sky) its farthest is written as 0, so the second draw rejects every fragment there and
+shades only along depth edges; likewise the filtered composite evaluates the four render pixels' surfaces only where they differ by
+more than 4 %. **Observed** (mec-tou-nu, 2560 x 1440, DLSS, 4090): the particle draws 0.05 → 0.04 ms (master 0.02, the rest the
+lighting below), the picture within 1/255 (99th percentile); the particle passes together within the run-to-run noise of master's.
+A draw's size follows its sprites' mean screen size (half from 20 px, quarter from 80) and a size is only used from 6 screens of
+overdraw: each is left 15 % past its threshold and a size below half its overdraw, so dust near one does not flip between looks as the
+view moves; with a vendor upscaler the overdraw rule is off (full-size dust would be in what DLSS upscales, and trail). With a vendor upscaler (DLSS, FSR) the low-resolution particles are
+blended over its output instead of the scene it upscales (`PostProcess.ParticlesAfterUpscale`, half then quarter size, the composite reading
+the render-size depth at `uScale` render pixels per output pixel), drawn with the unjittered projection, and left out of the reactive mask:
+DLSS took drifting see-through dust as standing still (its default preset ignores the reactive mask) and trailed it in rows of streaks
+(motion vectors for the dust left about half of them). Over the output both sizes go in one pass with their own temporal filter
+(`CompositeLateParticlesFiltered`, `ParticleLate`): each display pixel takes the particles at the surfaces of the four render pixels round
+it (the jitter undone), weighted bilinearly, then last frame's result (reprojected by the closest surface's motion, kept within the four
+values, widened by the layer at the nearest and farthest surface of the 3 x 3 render pixels round them) blended in at 0.1. From the four
+alone, a pixel beside an outline whose four all fell on one side (as the jitter decides) clamped its history to that side and the outline
+kept a one-pixel staircase (**Observed**, mec-tou-nu save, still camera: hard steps, then intermediate shades as the upscaler's own edge). One surface per pixel (the nearest of the 2 x 2, before) put a hard pixel edge back on the upscaler's smooth
+outline wherever a ridge stood in front of the dust: a staircase. Off an outline the four agree, so drifting dust does not trail.
+**Observed** (mec-tou-nu save, DLSS, 1600 x 900): flicker between frames in the dust (99.9th percentile of the second difference) still
+camera 6.5 → 2.5/255, 0.25°-a-frame orbit 25 → 20.5; turning 1.5° and panning 30 units a frame, no trails. A vendor upscaler that fails
+that frame gets them in the scene before the TAA. Effect units beyond 4000 units are stepped at 20 Hz, beyond 9000 at 10 Hz (the cost);
+their particles are drawn ahead along their velocity by the time queued since the unit's last step (up to 0.1 s), so they move every
+frame instead of in jumps (**Observed**, mec-tou-nu save: the far dust's change from frame to frame, its spread over its mean 0.45 → 0.26;
+stepping every unit every frame gave 0.36). An effect is simulated only while the camera is within the active radius (6912) plus its view
+distance of its bounds, and stopped past 1.15 times that: a unit coming into range appeared with its whole cloud (its age caught up at
+once) and one leaving vanished. With the Meitou `fog` switch each unit is drawn faded by its distance, full to 85 % of that range and
+gone at it (`EffectUnit.RangeFade`), so both happen out of sight (**Observed**, mec-tou-nu save, the camera moving 40 units a frame: every
+unit stopped was at fade 0, every one started with an age at fade 0.2 or less). **Observed** (a Hub
+storm, DLSS): the dust the same as blended in the scene (mean difference 1.2/255, the dust's shapes only). TAA keeps them in the scene: its
+output is its next history. Texture anisotropy caps mipmapped samplers, distinct from texture
 resolution/LOD bias. [Particle simulation](formats/particle-universe.md).
+
+Particle coverage (FSR's reactive mask, DLSS's bias hint, TAA's motion alpha): alpha, or brightness times alpha for additive
+sprites, depth-tested. Rain (`CAMERA_RAIN`/`CAMERA_ACID_RAIN`) counts 30x, saturating; fire (placed effects' additive draws)
+as it is, capped at 0.9 (AMD's guidance); the rest as it is. Rain and fire stay full size at every particle setting.
+**Observed** (FSR and TAA at 1080p): 30x on every sprite leaves the scene behind dust grainy under TAA and blurred under FSR;
+without its gain rain's streaks fade; a distant torch a few pixels high flickers at 30x.
+
+## Bloom
+
+An optional effect (`PostOptions.Bloom`, Off | On), off in the Meitou look as in the game (magnitude 0), with its strength under it, 0..0.25 (0.13 by
+default; KenshiNative's 0.04); the example look "Hot and dry" turns it on. `--bloom <s>` sets the strength and turns it on for one run.
+Port of KenshiNative's `docs/features/bloom-rewrite.md`, which has the derivation and its checks.
+`PostProcess.Bloom.cs` runs after the upscaler on the picture the composite reads; no history.
+The composite mixes, `lerp(scene, psf ⊗ scene, strength)`, in linear light before exposure, so a
+uniform image is unchanged. The scene is gamma-encoded (no sRGB step), so the prefilter decodes
+each texel (power 2.2) before a 4x4 box to 1/2, with a firefly ceiling of 64 linear units
+(`c (1 + (L/F)^4)^-1/4`). Then Jimenez 13-tap downs to 1/128 (stops before a side drops under 4)
+and 3x3 tent ups `U_i = w_i L_i + tent(U_i+1)` into the 1/4 level. Weights for levels 2..7:
+0.41405, 0.21190, 0.10986, 0.10064, 0.04074, 0.12281 (sum 1; a missing level's weight goes to the
+coarsest). They are KenshiNative's fit to the eye's photopic PSF (Spencer et al. 1995) at a 45°
+fovY. The composite reads the 1/4 level through a 4-tap cubic B-spline (no square around small lights).
+R11G11B10 targets. **Observed** (Hub, 02:00, 1600x900, DLSS): a round halo centred on the lamp
+at 0.25, frame mean linear luminance within 2.5% of off; GPU 0.07 ms on the run's average.
 
 ## SMAA
 
@@ -116,5 +241,5 @@ upside down, so depth rectangles must be mirrored in Y.
 named swamp screenshot test; DLSS/FSR outputs require baseline-noise comparison. Other layer,
 mask, half-resolution and fog-rate changes are not blanket pixel-parity claims. Compare still
 and moving views at matched time/weather/upscaler. [bench.md](bench.md).
-**Limits:** near-only SSAO, screen-space information, temporal disocclusion, coarse fog shading,
+**Limits:** screen-space information, temporal disocclusion, coarse fog shading,
 and lost GI specular occlusion on resolved surfaces; see feature docs for uncertainty.

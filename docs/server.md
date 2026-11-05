@@ -39,7 +39,7 @@ per minute per process and the account store retains its 10000-account limit. On
 stored; account-to-player binding still crosses the durable checkpoint boundary. Retrying after a lost
 registration reply reuses the client's saved credential. Discovery publishes rules/assets/Hello only.
 **Verified** by `SecureServerTests.Devices`: TLS discovery, registration/reconnect identity, wrong-token
-and disabled-account rejection, certificate pin mismatch and existing login with registration closed.
+and disabled-account rejection, changed-certificate discovery under the pre-release policy and existing login with registration closed.
 
 `TokenAccountStore` issues a random 256-bit bearer token and GUID account ID. The label is not an identity.
 Only SHA-256 token digests are stored; comparisons use fixed-time byte comparison. Credential/request
@@ -55,9 +55,12 @@ contract, not a hardware/power-loss durability guarantee. Store files and certif
 in server state outside source control. There is no password login or public registration endpoint.
 
 `AuthenticationProtocol` accepts only account GUID/token, at most 512 bytes, with no PlayerId. Production
-hosts must accept it after TLS and compatibility. `GameTls` allows TLS 1.2/1.3 and validates the server using
-normal system trust/hostname checks, or an explicitly supplied SHA-256 certificate pin plus validity dates.
-There is no plaintext/accept-all fallback. Hosts supply handshake/IO deadlines and connection/rate limits.
+hosts must accept it after TLS and compatibility. `GameTls` allows TLS 1.2/1.3. **Observed** (source):
+`GameTls.VerifyServerCertificates` is temporarily false in every pre-release configuration, including Release,
+at the user's request. Discovery and authentication skip certificate identity/validity checks; encryption and
+account authentication remain enabled. Restore the flag and strict-pin test expectations before official release.
+The retained validation path checks system trust/hostname, or a SHA-256 pin plus validity dates.
+Hosts supply handshake/IO deadlines and connection/rate limits.
 PFX loading uses a temporary user-key container on Windows (Schannel rejects ephemeral keys), ephemeral
 keys elsewhere. Callers own/dispose certificates and streams.
 
@@ -80,16 +83,38 @@ an old world does not restore a revoked token. Ordinary world/checkpoint rollbac
 rotation/revocation, failed replacement, corruption rejection, save-failure retry across resolver replacement,
 persistent account-to-player mapping (including an empty world's first account), authenticated login after a
 complete checkpoint restore, conservative migration, duplicate binding rejection, encrypted credential
-frames and wrong-pin rejection.
+frames and encrypted transport with changed pins under the temporary pre-release policy.
 
 ## Connection host
 
 `ServerWorldLoop` serializes synchronous runtime operations through a bounded 256-job channel, draining at
-most 64 per scheduler pass. It calls shared Runtime.Advance and retains tick debt; a durable mutation
+most 64 per scheduler pass. It calls shared Runtime.Advance with a one-tick budget and retains tick debt,
+servicing command/ACK work between owed ticks; a durable mutation
 suspends stepping while queued recovery work remains possible. Request failure does not stop the loop;
 simulation failure stops it and cancels peers. Cancellation prevents queued work starting; running synchronous
 mutations finish before returning. Network IO and arrival geometry preparation run outside the owner.
 Stop resolves pending callers; concurrent disposal awaits the same task. Caller owns final save/runtime disposal.
+
+**Observed** (installed-content CPU profiling and weather-only comparison): global weather ground queries
+thrash a 256-tile terrain cache, repeatedly reading full TIFF rows. `TerrainSource` defaults to 4096 tiles
+(~33 MiB of samples), retaining full-resolution interpolation and bounded LRU eviction. Parallel edge/eviction
+correctness is covered by `HeadlessContentTests.TerrainCachePreservesHeightsAtTileBoundariesAndEvictionUnderParallelReads`.
+Local latency results and remaining graphical measurement limits are in
+[networking acceptance](networking.md#local-latency-acceptance). Slow owner passes and peer exceptions are logged.
+
+
+**Observed** (source review): `Program` disables local whole-world display snapshots; network capture
+independently projects each recipient. Queued work wakes the owner immediately. A tick's runtime-service
+boundary is not repeated by the loop. `SecureServerPeer` captures/detaches on the owner, encodes/diffs/hashes/
+chunks on a worker, then rechecks grants and commits history on the owner. Resync/withdrawal fences discard
+obsolete encodings; ACKs never wait for worker encoding under a shared lock. One encoding job per peer bounds
+worker backlog. Appearances and turret angle arrays detach before encoding.
+Ordinary saves serialize capture/commit requests: capture remains on the owner, while weather JSON/Brotli
+encoding and checkpoint disk IO run on a worker. The weather pool copy retains the capture tick; world
+replacement/disposal and durable creation retain their coordinator fences. Shutdown awaits saves. Save files
+clone their ordered records, references, instances, slot lists and header metadata directly rather than
+serializing and parsing them twice during capture; mutable collections remain detached. Capture itself still
+costs world-thread time; see [local acceptance](networking.md#local-latency-acceptance).
 
 `TcpGameServer` bounds concurrent connections including unauthenticated sockets (default 32, configurable
 1–1024). `SecureServerPeer` requires TLS -> one compatibility hello -> authentication -> private admission.
@@ -145,7 +170,7 @@ it was committed. Creation replies are bounded to one 1 MiB frame; oversized pre
 
 **Verified** by creation service/protocol tests and TLS creation cases: preview/committed member parity,
 server-field spoof rejection, private result lookup, independent/sponsored resources, save-failure reconnect
-and resumption, and deduplication. `FirstNetworkAccountCreatesAndEntersInstalledWorldWithoutALocalPlayerStart`
+and resumption, and deduplication. `InstalledCreationAndReconnectKeepAuthorizedViewsAcrossTwentyPublications`
 verifies real installed content over TLS from an empty server through creation, checkpoint, baseline and Active
 without creating a legacy local player. Graphical editor/menu integration remains pending.
 

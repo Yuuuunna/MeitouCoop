@@ -89,6 +89,14 @@ public sealed class CharacterCold
     /// set only with the asynchronous path service, so not hashed.
     /// </summary>
     public long PathApplied { get; set; }
+    /// <summary>Active local replacement of Path through SpliceEnd for SpliceGoal; cleared when the path or order changes. Not saved.</summary>
+    public Vector3[]? SplicePath { get; set; }
+    public int SpliceEnd { get; set; }
+    public Vector2 SpliceGoal { get; set; }
+    public byte SpliceTask { get; set; }
+    public long SpliceRequest { get; set; }
+    /// <summary>Highest submitted splice id: obsolete splice answers must never become whole-goal paths. Retained across cancellation.</summary>
+    public long LastSplice { get; set; }
     /// <summary>Belongs to the player's faction: can be selected and ordered.</summary>
     public bool IsPlayer { get; set; }
     /// <summary>Queued move orders (X/Z) after the current one (shift + right click); changed only by the character's own partition or a serial phase.</summary>
@@ -632,6 +640,12 @@ public sealed class CharacterTable
             if (c.Task == (byte)CharacterTask.Follow) { hasher.Add(k.FollowHeading); hasher.Add(k.FollowSpeed); }
             hasher.Add(k.Path.Length);
             hasher.Add(k.PathRequest);
+            if (k.LastSplice != 0) { hasher.Add(0x53706C63); hasher.Add(k.LastSplice); }
+            if (k.SplicePath is not null)
+            {
+                hasher.Add(0x53706C41); hasher.Add(k.SpliceEnd); hasher.Add(k.SpliceGoal); hasher.Add((int)k.SpliceTask); hasher.Add(k.SpliceRequest);
+                hasher.Add(ReferenceEquals(k.SplicePath, k.Path));
+            }
             if (k.NavigationWaiting) { hasher.Add(0x4E617657); hasher.Add(k.NavigationRetryTick); }
             hasher.Add(k.IsPlayer);
             hasher.Add(k.OrderQueue.Count);

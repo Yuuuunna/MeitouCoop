@@ -3,12 +3,17 @@ using System.IO.Compression;
 
 namespace Meitou.Data.Textures;
 
-/// <summary>Minimal PNG encoder (8-bit RGBA, no filtering) for screenshots.</summary>
+/// <summary>Minimal PNG encoder (8-bit RGBA) for screenshots: each row takes the filter that leaves the smallest sum of residuals (the PNG spec's heuristic).</summary>
 public static class PngWriter
 {
     public static void Write(string path, int width, int height, ReadOnlySpan<byte> rgba)
     {
         using var file = File.Create(path);
+        Write(file, width, height, rgba);
+    }
+
+    public static void Write(Stream file, int width, int height, ReadOnlySpan<byte> rgba)
+    {
         file.Write([0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A]);
 
         var header = new byte[13];
@@ -19,14 +24,48 @@ public static class PngWriter
         Chunk(file, "IHDR", header);
 
         using var raw = new MemoryStream();
+        int stride = width * 4;
+        var rows = new byte[5][];
+        for (int f = 0; f < 5; f++) rows[f] = new byte[stride];
         using (var z = new ZLibStream(raw, CompressionLevel.Optimal, leaveOpen: true))
             for (int y = 0; y < height; y++)
             {
-                z.WriteByte(0); // filter: none
-                z.Write(rgba.Slice(y * width * 4, width * 4));
+                var row = rgba.Slice(y * stride, stride);
+                var above = y > 0 ? rgba.Slice((y - 1) * stride, stride) : default;
+                int best = 0;
+                long bestSum = long.MaxValue;
+                for (int f = 0; f < 5; f++)
+                {
+                    long sum = Filter(f, row, above, rows[f]);
+                    if (sum < bestSum) (best, bestSum) = (f, sum);
+                }
+                z.WriteByte((byte)best);
+                z.Write(rows[best]);
             }
         Chunk(file, "IDAT", raw.ToArray());
         Chunk(file, "IEND", []);
+    }
+
+    /// <summary>The row through PNG filter <paramref name="f"/> (none, sub, up, average, Paeth; 4 bytes a pixel) into <paramref name="output"/>; returns the sum of the residuals as signed bytes.</summary>
+    static long Filter(int f, ReadOnlySpan<byte> row, ReadOnlySpan<byte> above, byte[] output)
+    {
+        long sum = 0;
+        for (int i = 0; i < row.Length; i++)
+        {
+            int a = i >= 4 ? row[i - 4] : 0, b = above.IsEmpty ? 0 : above[i], c = i >= 4 && !above.IsEmpty ? above[i - 4] : 0;
+            int predicted = f switch { 0 => 0, 1 => a, 2 => b, 3 => (a + b) / 2, _ => Paeth(a, b, c) };
+            byte value = (byte)(row[i] - predicted);
+            output[i] = value;
+            int residual = (sbyte)value;
+            sum += residual < 0 ? -residual : residual;
+        }
+        return sum;
+    }
+
+    static int Paeth(int a, int b, int c)
+    {
+        int p = a + b - c, pa = Math.Abs(p - a), pb = Math.Abs(p - b), pc = Math.Abs(p - c);
+        return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
     }
 
     static void Chunk(Stream s, string type, byte[] data)

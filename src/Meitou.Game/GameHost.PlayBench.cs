@@ -29,6 +29,8 @@ sealed partial class GameHost
         public double GpuTotal;
         public int Gc0, Gc1, Gc2;
         public double AllocMb, PauseMs, WorkingSetMb;
+        /// <summary>This process's video memory (<c>VulkanDevice.VideoMemory</c>), MB: read every 30 frames (a driver call), carried between; NaN on Metal.</summary>
+        public double VramMb = double.NaN;
         public double[] Sections = new double[BenchSections.Length];
         public double CameraMs, HandlersMs, StartMs;
         /// <summary>The frame's slowest system phase ("System.phase") and its time.</summary>
@@ -72,6 +74,7 @@ sealed partial class GameHost
     int benchLateAt;
     int[] benchGcAt = new int[3];
     TimeSpan benchPauseAt;
+    double benchVramMb = double.NaN;
     BenchFrame? benchCurrent;
     Vector2 benchOrigin, benchDirection;
     CharacterId benchLeader;
@@ -173,6 +176,8 @@ sealed partial class GameHost
         }
         (benchGcAt, benchAllocAt, benchPauseAt) = (gc, alloc, pause);
         f.WorkingSetMb = Environment.WorkingSet / 1048576.0;
+        if (benchFrames.Count % 30 == 0 && gpu.Sky.Gpu is Meitou.Rendering.Gpu.GpuContext vk) benchVramMb = vk.Device.VideoMemory().Used / 1048576.0;
+        f.VramMb = benchVramMb;
         benchFrames.Add(f);
         benchCurrent = null;
     }
@@ -323,10 +328,22 @@ sealed partial class GameHost
                 player.ShowUiPanel(null);
                 Look(benchOrigin, yaw0, 1.2f, Meitou.Data.World.KenshiCamera.MaxDistance);
             }),
+            // Every player character in turn, twice, 6 s each, as a double click on its portrait does (a character flight with "Character flights" on, else a cut).
+            new("flights", 6 * 2 * Math.Max(1, session.CurrentSnapshot.PlayerSquads.Sum(s => s.Members.Count)), (t, dt) =>
+            {
+                var members = session.CurrentSnapshot.PlayerSquads.SelectMany(s => s.Members).ToList();
+                int hop = (int)(t / 6);
+                if (members.Count == 0 || hop == flightHop) return;
+                flightHop = hop;
+                var id = members[hop % members.Count];
+                if (player.FlyTo?.Invoke(id) != true) player.Follow = id;
+                Console.WriteLine($"bench     flight {hop + 1} to {id}");
+            }, Begin: () => { player.ShowUiPanel(null); flightHop = -1; }),
         ];
     }
 
     string? benchPanel;
+    int flightHop = -1;
 
     /// <summary>Writes frames.csv and summary.md into the bench directory (after the loop).</summary>
     void WritePlayBench(Silk.NET.Maths.Vector2D<int> size)
@@ -336,7 +353,7 @@ sealed partial class GameHost
         var ci = CultureInfo.InvariantCulture;
         var stages = StageClock.Names;
         var csv = new StringBuilder();
-        csv.Append("frame,segment,t,frame_ms,update_ms,busy_ms,ticks,characters,gpu_total_ms,gc0,gc1,gc2,alloc_mb,gc_pause_ms,working_set_mb");
+        csv.Append("frame,segment,t,frame_ms,update_ms,busy_ms,ticks,characters,gpu_total_ms,gc0,gc1,gc2,alloc_mb,gc_pause_ms,working_set_mb,vram_mb");
         foreach (var s in BenchSections) csv.Append(",loop_").Append(s);
         csv.Append(",control_camera_ms,control_handlers_ms,top_system,top_system_ms,late_pipelines");
         foreach (var s in TickProfile.PhaseNames) csv.Append(",sim_").Append(s.Replace(' ', '-'));
@@ -346,7 +363,7 @@ sealed partial class GameHost
         for (int i = 0; i < benchFrames.Count; i++)
         {
             var f = benchFrames[i];
-            csv.Append(ci, $"{i},{benchScript[f.Segment].Name},{f.T:0.000},{f.FrameMs:0.00},{f.UpdateMs:0.00},{f.Busy:0.00},{f.Ticks},{f.Characters},{f.GpuTotal:0.00},{f.Gc0},{f.Gc1},{f.Gc2},{f.AllocMb:0.00},{f.PauseMs:0.00},{f.WorkingSetMb:0}");
+            csv.Append(ci, $"{i},{benchScript[f.Segment].Name},{f.T:0.000},{f.FrameMs:0.00},{f.UpdateMs:0.00},{f.Busy:0.00},{f.Ticks},{f.Characters},{f.GpuTotal:0.00},{f.Gc0},{f.Gc1},{f.Gc2},{f.AllocMb:0.00},{f.PauseMs:0.00},{f.WorkingSetMb:0},{(double.IsNaN(f.VramMb) ? "" : f.VramMb.ToString("0", ci))}");
             foreach (var v in f.Sections) csv.Append(ci, $",{v:0.000}");
             csv.Append(ci, $",{f.CameraMs:0.000},{f.HandlersMs:0.000},{f.TopSystem},{f.TopSystemMs:0.000},{f.LatePipelines}");
             foreach (var v in f.Steps) csv.Append(ci, $",{v:0.000}");
@@ -403,6 +420,7 @@ sealed partial class GameHost
         var stages = StageClock.Names;
         string device = gpu.Sky.Gpu is Meitou.Rendering.Gpu.GpuContext vk ? vk.Device.DeviceName : "Metal";
         sb.Append(ci, $"# Play benchmark\n\n{benchFrames.Count} frames, {sz.X}x{sz.Y}, {device}, upscaler {o.Post.Upscale.Kind} at {o.Post.Upscale.EffectiveScale:0.00}; frame limit and vsync off.\n\n");
+        if (gpu.Shadow is { Meitou: true } shadowPass) sb.Append(ci, $"Shadows: {shadowPass.DescribeMeitou()}.\n\n");
         sb.Append("| segment | frames | fps | frame ms p50 | p95 | p99 | max | update ms | ticks/frame | sim ms/tick | gpu ms | render cpu ms | alloc MB/s | gen2 |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
         for (int s = 0; s < benchScript!.Length; s++)
         {
@@ -451,6 +469,8 @@ sealed partial class GameHost
         }
         var last = benchFrames.Count > 0 ? benchFrames[^1] : null;
         sb.Append(ci, $"\nCollections over the run: gen0 {benchFrames.Sum(f => f.Gc0)}, gen1 {benchFrames.Sum(f => f.Gc1)}, gen2 {benchFrames.Sum(f => f.Gc2)}, pauses {benchFrames.Sum(f => f.PauseMs):0} ms; allocated {benchFrames.Sum(f => f.AllocMb):0} MB; working set at the end {last?.WorkingSetMb:0} MB.\n");
+        var vram = benchFrames.Where(f => !double.IsNaN(f.VramMb)).ToList();
+        if (vram.Count > 0) sb.Append(ci, $"Video memory: peak {vram.Max(f => f.VramMb):0} MB, at the end {vram[^1].VramMb:0} MB.\n");
         return sb.ToString();
     }
 }

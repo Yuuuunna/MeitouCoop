@@ -27,6 +27,8 @@ public readonly record struct CharacterInstance(long Key, CharacterAppearance Ap
     public Quaternion? Rotation { get; init; }
     /// <summary>Uniform size the body is drawn at (an animal's age-dependent size; 1 for people).</summary>
     public float Scale { get; init; } = 1;
+    /// <summary>The factor the draw distance is multiplied by for this body (7 for a gigantic race, <c>FUN_140539020</c>); 1 for the rest.</summary>
+    public float DrawDistanceScale { get; init; } = 1;
     /// <summary>Not drawn in the world (still posed for its portrait): on a floor of a building that the interior view hides (docs/formats/zones.md "Interior view").</summary>
     public bool Hidden { get; init; }
     /// <summary>Pose every frame regardless of distance, for presentation actors whose animation must stay smooth.</summary>
@@ -41,17 +43,35 @@ public readonly record struct CharacterInstance(long Key, CharacterAppearance Ap
     public Meitou.Data.Characters.BodyBuild? Build { get; init; }
     /// <summary>The blood each of the first 8 body parts shows, a byte each (<c>CharacterSnapshot.BloodAmounts</c>).</summary>
     public ulong Blood { get; init; }
+    /// <summary>The whole placement, in place of <see cref="Position"/>, <see cref="Yaw"/> and <see cref="Rotation"/> (a falling head's); <see cref="Position"/> still places it for culling.</summary>
+    public Matrix4x4? World { get; init; }
+    /// <summary>
+    /// Holds the bones of the character with this key as it was last posed, taken the first time this one is drawn and never posed again (a cut-off head keeps the pose of the
+    /// moment it was cut); <see cref="Poses"/> are then ignored.
+    /// </summary>
+    public long? FreezeFrom { get; init; }
 }
 
 /// <summary>
 /// The characters of one frame. The renderers know nothing of the simulation (docs/engine.md): the host fills this list from the
-/// simulation's snapshots each frame, as it copies the camera into <see cref="WorldCamera"/>.
+/// simulation's snapshots each frame, as it copies the camera into <see cref="WorldCamera"/>; those beyond reach only when the snapshot changes (<see cref="Distant"/>).
 /// </summary>
 public sealed class CharacterDrawList
 {
+    /// <summary>The characters that may be drawn or posed this frame: emptied by the renderer (<see cref="Clear"/>) and filled again each frame.</summary>
     public List<CharacterInstance> Items { get; } = [];
+    /// <summary>
+    /// The characters beyond the renderer's reach (<see cref="Characters.CharacterRenderer.InReach"/>), with only their look, place and what loading reads: kept across
+    /// frames and filled again by the host when its simulation snapshot changes (<see cref="BeginDistant"/>), as nothing in them moves between ticks. Read only to build
+    /// looks ahead and to keep the textures round kept points; a character that came within reach since is in <see cref="Items"/> as well.
+    /// </summary>
+    public List<CharacterInstance> Distant { get; } = [];
+    /// <summary>Counts the refills of <see cref="Distant"/>.</summary>
+    public int DistantVersion { get; private set; }
     public void Clear() => Items.Clear();
     public void Add(in CharacterInstance instance) => Items.Add(instance);
+    /// <summary>Empties <see cref="Distant"/> to be filled again.</summary>
+    public void BeginDistant() { Distant.Clear(); DistantVersion++; }
 }
 
 /// <summary>A bolt stuck in a character: its mesh, the bone it is on and its flight direction in the character's frame (its yaw taken off) when it struck.</summary>

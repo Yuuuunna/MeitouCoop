@@ -50,14 +50,14 @@ public class LevelFileTests
         var install = GameInstall.Locate();
         Assert.SkipWhen(install is null, $"No Kenshi install configured ({GameInstall.EnvironmentVariable}).");
 
-        var world = WorldLevelData.Load(install!);
+        var world = WorldLevelData.LoadBaseGame(install!);
         Assert.Equal(["(base)", "Newwworld", "Dialogue", "rebirth"], world.Layers.Select(l => l.ToString()));
         Assert.Equal(500, world.Zones.Count);
         Assert.All(world.Zones.Keys, z => Assert.True(z.IsInsideGrid));
 
-        // Every placed building lies inside the zone whose file places it.
+        // Every placed building lies inside the zone whose file places it (six more lie under the ground: left out, as the original deletes them).
         var buildings = world.Buildings().ToList();
-        Assert.Equal(11714, buildings.Count);
+        Assert.Equal(11708, buildings.Count);
         Assert.All(buildings, b => Assert.Equal(b.Zone, WorldLayout.ZoneOf(b.Position.X, b.Position.Z)));
         // The other building-list entries sit at the origin and point at records of their own zone file.
         var local = world.BuildingListEntries().Where(e => e.TargetsZoneRecord).ToList();

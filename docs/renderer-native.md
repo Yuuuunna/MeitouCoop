@@ -19,6 +19,28 @@ handles it. Staging can shed unused chunks; descriptor-referenced constants reta
 PipelineLibrary caches explicit descriptions and records late creation (LatePipelines). `Prepare` has no caller: the loading warm-up draws what makes them, with the reflection and cloud passes forced on ([bench](bench.md) "Play benchmark").
 CommandList records bindings/draw/dispatch/transfer/dynamic rendering, preserving host pass order.
 
+**Observed** (current `GpuAllocator`): streamed textures use separate fixed-size pools, rounded to
+64 KB, with approximately 16 MB blocks; allocations of at least 4 MB are dedicated. Empty blocks
+are released, keeping transient textures apart from long-lived render targets.
+
+## Scene depth and presentation
+
+**Observed** (current `DepthConvention`): clip depth is 0..1. Vulkan scene targets use reversed
+float depth (clear 0, near 1, far 0, Greater/Gequal); Metal remains conventional. Shadows,
+previews, icons and bakes remain conventional. Use `DepthConvention` for scene projections,
+comparisons, sky detection, reconstruction and bias; shader compilation and cache keys include
+the reversed-depth option.
+
+**Observed** (current `GpuVertex`): uploaded object vertices occupy 44 bytes, character vertices
+64 bytes; both store UV at byte 20. CPU vertices retain their float layout. Mesh welding preserves
+attributes required by the destination layout.
+
+**Observed** (current `FfxSwapchain`, `FrameGeneration`, `VulkanPresenter`): FSR3's Vulkan layer
+owns swapchain acquisition/presentation and interpolation; the presenter falls back to its ordinary
+swapchain when layer creation fails. FFX loads through `MEITOU_FFX_PATH` or beside the executable.
+Windows DLSS with frame generation uses NGX to coexist with FFX; ordinary Windows DLSS can use
+Streamline. Linux uses NGX for DLSS and the FFX shared library for FSR3.
+
 ## Synchronization and shaders
 
 The engine's words for the synchronization: `Access` says how a pass uses a resource, `PassUse` says

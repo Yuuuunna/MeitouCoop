@@ -93,3 +93,5 @@ generated LOD, Hi-Z/fog culls and atlas residency live in the renderer reference
   saves to compare with.
 - Treat the mesh placement as the decompiled rules, **not** as compared against the game.
 - **Observed:** user screenshot near the Hub, 2026-10-04, supports the executable noise hash and relative JunkSat01/JunkBall01/arch layout. Exact camera position was unavailable; this is not a measured placement-parity test.
+
+**Observed** (upstream `0d5e98d7`, `FUN_1406d2410`): resource meshes with a `building type` may grow within a player-owned town's exclusion range. `FoliageTown.Owned` carries this flag. `ReadTowns` and `FoliageWorld` take an explicit ownership snapshot, empty by default; the world copies it into immutable state. Each layout-cache instance snapshots its town inputs and keys all owned flags; a world bypasses a cache whose complete ownership set differs, including same-count changes. No renderer or global state changes CPU resource placement. Later ownership changes require a fresh world/layout.

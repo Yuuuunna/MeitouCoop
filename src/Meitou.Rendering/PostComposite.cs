@@ -181,7 +181,7 @@ sealed class PostComposite : IDisposable
         // The composite: auto exposure (0.55 / adapted), the game's tone map, grade and dither.
         bool smaaOn = o.Smaa && !temporal && ldr is not null;
         bool fxaaOn = o.Fxaa && !smaaOn && !temporal && ldr is not null;
-        bool hazeOn = o.HeatHaze && HasHeatHaze && HeatHazeAmount * o.HeatHazeStrength > 0 && ldr is not null;
+        bool hazeOn = o.HeatHaze && HasHeatHaze && HeatHazeAmount * o.HeatHazeScale > 0 && ldr is not null;
         var compositeTarget = fxaaOn || smaaOn || hazeOn ? ldr! : target;
         var p = composite;
         p.Bind(sceneSlot, sceneSampler with { View = scene.View() });
@@ -191,12 +191,12 @@ sealed class PostComposite : IDisposable
         p.Set(useAo, 0);
         p.Set(dither, o.Dither ? 1 : 0);
         p.Set(auto, 1);
-        p.Set(tone, (int)o.ToneMap);
+        p.Set(tone, (int)o.ToneMapUsed);
         p.Set(toneMix, Math.Clamp(o.ToneMix, 0, 1));
-        p.Set(grade, o.Grade ? 1 : 0);
+        p.Set(grade, o.GradeUsed ? 1 : 0);
         p.Set(saturation, PostOptions.Saturation);
         p.Set(contrast, PostOptions.Contrast);
-        p.Set(night, Math.Clamp(o.NightGradeStrength, 0, 1));
+        p.Set(night, Math.Clamp(o.NightGradeAmount, 0, 1));
         p.Set(balance, o.Balance);
         p.Set(sceneSize, 0f, 0f);
         Fullscreen(cmd, composite, compositeTarget, compositeTarget.Desc.Width, compositeTarget.Desc.Height);
@@ -225,9 +225,9 @@ sealed class PostComposite : IDisposable
             h.P.Bind(h.Image, plainSampler with { View = picture.View() });
             double phase = HeatHazeHours * 100;
             h.P.Set(h.Phase, (float)(phase - Math.Floor(phase)));
-            h.P.Set(h.Amount, HeatHazeAmount * o.HeatHazeStrength);
+            h.P.Set(h.Amount, HeatHazeAmount * o.HeatHazeScale);
             float tanY = MathF.Tan(inputs.FieldOfView * 0.5f);
-            h.P.Set(h.Tan, tanY * inputs.Aspect, tanY);
+            h.P.Set(h.Tan, ViewWindow.Tan(tanY * inputs.Aspect, tanY));
             h.P.Set(h.NearFar, inputs.Near, inputs.Far);
             h.P.Set(h.FarClip, HeatHazeFarClip);
             h.P.Set(h.HasDepth, 1f);
@@ -251,22 +251,23 @@ sealed class PostComposite : IDisposable
 
     /// <summary>
     /// The low-resolution particles' coverage into <paramref name="target"/>'s <paramref name="mask"/> channels: the
-    /// accumulation's opacity or brightest channel, 30 times, saturating, upsampled by depth so a near edge does not mark
+    /// accumulation's opacity or brightest channel (no gain: rain and fire are always full size), upsampled by depth so a near edge does not mark
     /// itself reactive. The full-size particles write their own coverage; <see cref="PostTaa"/> calls this for the
     /// low-resolution accumulations after that pass.
     /// </summary>
-    public void ParticleCoverage(IGpuCommandList cmd, GpuTexture accum, GpuTexture lowDepth, GpuTexture sceneDepth, GpuTexture target,
-        int divisor, float near, float far, ColorMask mask)
+    public void ParticleCoverage(IGpuCommandList cmd, GpuTexture accum, GpuTexture lowDepth, GpuTexture accumFar, GpuTexture lowDepthFar, GpuTexture sceneDepth,
+        GpuTexture target, int divisor, float near, float far, ColorMask mask)
     {
         var c = particleCoverageP;
         c.P.Bind(c.Accum, plainSampler with { View = accum.View() });
         c.P.Bind(c.LowDepth, pointSampler with { View = lowDepth.View() });
+        c.P.Bind(c.AccumFar, plainSampler with { View = accumFar.View() });
+        c.P.Bind(c.LowDepthFar, pointSampler with { View = lowDepthFar.View() });
         c.P.Bind(c.Depth, pointSampler with { View = sceneDepth.View() });
         c.P.Set(c.LowSize, (float)accum.Desc.Width, (float)accum.Desc.Height);
         c.P.Set(c.NearPlanes, near, far);
         c.P.Set(c.Div, (float)divisor);
         c.P.Set(c.FullSize, (float)target.Desc.Width, (float)target.Desc.Height);
-        c.P.Set(c.ClipDepthZeroToOne, ctx.ClipDepthZeroToOne ? 1 : 0);
         c.P.Set(c.Limit, mask == ColorMask.A ? 2f : 1f);   // the TAA takes half the motion target's alpha, so 2 is "all current frame"
         var formats = new AttachmentFormats(target.Desc.Format, InternalFormat.None);
         // The MetalFX reactive mask must stay in [0, 1]; several particle accumulations/overlaps must not add past
@@ -349,14 +350,11 @@ sealed class PostComposite : IDisposable
         var apply = shaftApplyP;
         Common(apply);
         apply.P.Bind(apply.NearDepth, pointSampler with { View = depth.View() });
-        apply.P.Bind(apply.FarDepth, ctx.Dummy(apply.P.SamplerInfo(apply.FarDepth)));
         apply.P.Bind(apply.Light, plainSampler with { View = shaftLight!.View() });
         apply.P.Bind(apply.Scatter, withAir ? plainSampler with { View = shaftScatter!.View() } : ctx.Dummy(apply.P.SamplerInfo(apply.Scatter)));
         apply.P.Set(apply.Air, air);
         apply.P.Set(apply.NearPlanes, i.Near, i.Far);
-        apply.P.Set(apply.FarPlanes, i.Near, i.Far);
         apply.P.Set(apply.WaterY, i.WaterHeight ?? float.MinValue);
-        apply.P.Set(apply.HasFar, 0);
         apply.P.Set(apply.Atlas, aw, ah);
         apply.P.Set(apply.Params, Math.Clamp(darkening, 0, 1), PostOptions.ShaftSky, 0f, 0f);
         apply.P.ApplyGlobals();
@@ -373,17 +371,14 @@ sealed class PostComposite : IDisposable
     {
         var f = fog;
         f.P.Bind(f.NearDepth, pointSampler with { View = depth.View() });
-        f.P.Bind(f.FarDepth, ctx.Dummy(f.P.SamplerInfo(f.FarDepth)));
         f.P.Set(f.NearPlanes, i.Near, i.Far);
-        f.P.Set(f.FarPlanes, i.Near, i.Far);
         float tanY = MathF.Tan(i.FieldOfView * 0.5f);
-        f.P.Set(f.Tan, tanY * i.Aspect, tanY);
+        f.P.Set(f.Tan, ViewWindow.Tan(tanY * i.Aspect, tanY));
         var r = i.View with { M41 = 0, M42 = 0, M43 = 0 };
         f.P.Set(f.Right, r.M11, r.M21, r.M31);
         f.P.Set(f.Up, r.M12, r.M22, r.M32);
-        f.P.Set(f.Back, r.M13, r.M23, r.M33);
+        f.P.Set(f.Back, ViewWindow.BackFor(r, i.FieldOfView, i.Aspect));
         f.P.Set(f.WaterY, i.WaterHeight ?? float.MinValue);
-        f.P.Set(f.HasFar, 0);
         var shaft = shaftFrame;
         bool injected = shaft.Darkening > 0 && shaftInjected is not null;
         f.P.Bind(f.ShaftInjected, injected ? plainSampler with { View = shaftInjected!.View() } : ctx.Dummy(f.P.SamplerInfo(f.ShaftInjected)));
@@ -420,18 +415,19 @@ sealed class PostComposite : IDisposable
         s.P.Bind(s.Mask, i.CharactersDrawn ? sceneSampler with { View = scene.View() } : ctx.Dummy(s.P.SamplerInfo(s.Mask)));
         s.P.Set(s.CharacterOccluder, i.CharactersDrawn ? PostOptions.SsaoCharacterOccluder : 1f);
         float tanY = MathF.Tan(i.FieldOfView * 0.5f);
-        s.P.Set(s.Tan, tanY * i.Aspect, tanY);
+        s.P.Set(s.Tan, ViewWindow.Tan(tanY * i.Aspect, tanY));
         s.P.Set(s.NearFar, i.Near, i.Far);
         s.P.Set(s.Size, (float)scene.Desc.Width, (float)scene.Desc.Height);
         s.P.Set(s.Radius, PostOptions.SsaoRadius);
         s.P.Set(s.Strength, PostOptions.SsaoStrength);
-        s.P.Set(s.FadeStart, 3000f);
-        s.P.Set(s.FadeEnd, 10000f);
+        s.P.Set(s.FadeStart, PostOptions.SsaoFadeStart);
+        s.P.Set(s.FadeEnd, PostOptions.SsaoFadeEnd);
         var r = i.View with { M41 = 0, M42 = 0, M43 = 0 };
         s.P.Set(s.Right, r.M11, r.M21, r.M31);
         s.P.Set(s.Up, r.M12, r.M22, r.M32);
-        s.P.Set(s.Back, r.M13, r.M23, r.M33);
+        s.P.Set(s.Back, ViewWindow.BackFor(r, i.FieldOfView, i.Aspect));
         s.P.Set(s.Eye, i.Eye);
+        s.P.Set(s.WaterY, i.WaterHeight ?? float.MinValue);
         s.P.ApplyGlobals();
         Fullscreen(cmd, s.P, aoA, w, h);
 
@@ -559,31 +555,37 @@ sealed class PostComposite : IDisposable
     }
 
     /// <summary>
-    /// The low-resolution particles' depth pass: the scene's depth reduced to the target's size. The caller opens the
-    /// native segment and gives the target; this draws a fullscreen triangle with no colour attachment.
+    /// The low-resolution particles' depth pass: the scene's depth reduced to the target's size, each block's nearest (<paramref name="layer"/> 1) or
+    /// farthest (2) depth (<see cref="PostProcessShaders.ParticleDepth"/>). The caller opens the native segment and gives the target; this draws a
+    /// fullscreen triangle with no colour attachment.
     /// </summary>
     public void ParticleDepth(IGpuCommandList cmd, GpuTexture sceneDepth, GpuTexture target, int fullWidth, int fullHeight, int divisor,
-        GpuTexture? colour = null)
+        GpuTexture? colour = null, int layer = 1, float near = 1, float far = 1000)
     {
         var d = particleDepthP;
         d.P.Bind(d.Depth, pointSampler with { View = sceneDepth.View() });
         d.P.Set(d.FullSize, (float)fullWidth, (float)fullHeight);
         d.P.Set(d.Div, (float)divisor);
+        d.P.Set(d.Layer, layer);
+        d.P.Set(d.Planes, near, far);
         FullscreenDepth(cmd, d.P, target, colour, target.Desc.Width, target.Desc.Height);
     }
 
-    /// <summary>The low-resolution accumulation upsampled over the scene (depth-aware, as the Vulkan chain).</summary>
-    public void ParticleComposite(IGpuCommandList cmd, GpuTexture accum, GpuTexture lowDepth, GpuTexture sceneDepth, GpuTexture scene,
-        int divisor, float near, float far)
+    /// <summary>The low-resolution accumulations (drawn against each block's nearest and farthest depth) upsampled over the scene (depth-aware, as the Vulkan chain).</summary>
+    public void ParticleComposite(IGpuCommandList cmd, GpuTexture accum, GpuTexture lowDepth, GpuTexture accumFar, GpuTexture lowDepthFar, GpuTexture sceneDepth,
+        GpuTexture scene, int divisor, float near, float far)
     {
         var c = particleCompositeP;
         c.P.Bind(c.Accum, plainSampler with { View = accum.View() });
         c.P.Bind(c.LowDepth, pointSampler with { View = lowDepth.View() });
+        c.P.Bind(c.AccumFar, plainSampler with { View = accumFar.View() });
+        c.P.Bind(c.LowDepthFar, pointSampler with { View = lowDepthFar.View() });
         c.P.Bind(c.Depth, pointSampler with { View = sceneDepth.View() });
         c.P.Set(c.LowSize, (float)accum.Desc.Width, (float)accum.Desc.Height);
         c.P.Set(c.NearPlanes, near, far);
         c.P.Set(c.Div, (float)divisor);
-        c.P.Set(c.ClipDepthZeroToOne, ctx.ClipDepthZeroToOne ? 1 : 0);
+        c.P.Set(c.Scale, 1f);   // over the scene, at its size
+        c.P.Set(c.Footprint, 0);
         var formats = new AttachmentFormats(scene.Desc.Format, InternalFormat.None);
         var state = DrawState.For(formats, false) with
         {
@@ -602,7 +604,7 @@ sealed class PostComposite : IDisposable
             pipelines[(program.Program, formats.Colour, state)] = desc = state.Pipeline(program.Program, program.VertexLayout([]),
                 PrimitiveType.Triangles, formats, program.Name);
         cmd.BeginRendering(new RenderingDesc(colour is null ? default : new RenderTarget(colour.Attachment(), LoadOp.Clear, default),
-            new RenderTarget(target.Attachment(), LoadOp.Clear, default, 1f), w, h));
+            new RenderTarget(target.Attachment(), LoadOp.Clear, default, DepthConvention.Clear), w, h));
         cmd.SetViewport(new PixelViewport(0, 0, w, h, 0, 1));
         cmd.SetScissor(new PixelRect(0, 0, (uint)w, (uint)h));
         cmd.SetRaster(CullMode.None, FrontFaceDirection.Ccw);
@@ -658,10 +660,10 @@ sealed class PostComposite : IDisposable
     sealed class SsaoPass : Pass
     {
         public readonly SamplerSlot Depth, Mask;
-        public readonly UniformHandle Tan, NearFar, Size, Radius, Strength, FadeStart, FadeEnd, Right, Up, Back, Eye, CharacterOccluder;
+        public readonly UniformHandle Tan, NearFar, Size, Radius, Strength, FadeStart, FadeEnd, Right, Up, Back, Eye, CharacterOccluder, WaterY;
         public SsaoPass(IGpuContext ctx, string vertex) : base(ctx, vertex, PostProcessShaders.Ssao, "post ssao")
         {
-            (Depth, Mask, CharacterOccluder) = (P.Sampler("uDepth"), P.Sampler("uMask"), P.Uniform("uCharacterOccluder"));
+            (Depth, Mask, CharacterOccluder, WaterY) = (P.Sampler("uDepth"), P.Sampler("uMask"), P.Uniform("uCharacterOccluder"), P.Uniform("uWaterY"));
             (Tan, NearFar, Size, Radius, Strength, FadeStart, FadeEnd) = (P.Uniform("uTan"), P.Uniform("uNearFar"), P.Uniform("uSize"),
                 P.Uniform("uRadius"), P.Uniform("uStrength"), P.Uniform("uFadeStart"), P.Uniform("uFadeEnd"));
             (Right, Up, Back, Eye) = (P.Uniform("uRight"), P.Uniform("uUp"), P.Uniform("uBack"), P.Uniform("uSsaoEye"));
@@ -685,14 +687,14 @@ sealed class PostComposite : IDisposable
 
     sealed class FogPass : Pass
     {
-        public readonly SamplerSlot NearDepth, FarDepth, ShaftInjected;
-        public readonly UniformHandle NearPlanes, FarPlanes, Tan, Right, Up, Back, WaterY, HasFar;
+        public readonly SamplerSlot NearDepth, ShaftInjected;
+        public readonly UniformHandle NearPlanes, Tan, Right, Up, Back, WaterY;
         public readonly UniformHandle ShaftGrid, ShaftRange, ShaftTan, ShaftRight, ShaftUp, ShaftBack, ShaftFog;
         public FogPass(IGpuContext ctx, string vertex) : base(ctx, vertex, PostProcessShaders.FogVolumes, "post fog volumes")
         {
-            (NearDepth, FarDepth) = (P.Sampler("uNearDepth"), P.Sampler("uFarDepth"));
-            (NearPlanes, FarPlanes, Tan, Right, Up, Back, WaterY, HasFar) = (P.Uniform("uNearPlanes"), P.Uniform("uFarPlanes"), P.Uniform("uTan"),
-                P.Uniform("uRight"), P.Uniform("uUp"), P.Uniform("uBack"), P.Uniform("uWaterY"), P.Uniform("uHasFar"));
+            NearDepth = P.Sampler("uNearDepth");
+            (NearPlanes, Tan, Right, Up, Back, WaterY) = (P.Uniform("uNearPlanes"), P.Uniform("uTan"),
+                P.Uniform("uRight"), P.Uniform("uUp"), P.Uniform("uBack"), P.Uniform("uWaterY"));
             ShaftInjected = P.Sampler("uShaftInjected");
             (ShaftGrid, ShaftRange, ShaftTan, ShaftFog) = (P.Uniform("uShaftGrid"), P.Uniform("uShaftRange"), P.Uniform("uShaftTan"), P.Uniform("uShaftFog"));
             (ShaftRight, ShaftUp, ShaftBack) = (P.Uniform("uShaftRight"), P.Uniform("uShaftUp"), P.Uniform("uShaftBack"));
@@ -733,13 +735,12 @@ sealed class PostComposite : IDisposable
 
     sealed class ShaftApplyPass : ShaftPass
     {
-        public readonly SamplerSlot NearDepth, FarDepth, Light, Scatter;
-        public readonly UniformHandle NearPlanes, FarPlanes, WaterY, HasFar, Atlas, Params, Air;
+        public readonly SamplerSlot NearDepth, Light, Scatter;
+        public readonly UniformHandle NearPlanes, WaterY, Atlas, Params, Air;
         public ShaftApplyPass(IGpuContext ctx, string vertex) : base(ctx, vertex, LightShaftShaders.Apply, "post shafts apply")
         {
-            (NearDepth, FarDepth, Light, Scatter) = (P.Sampler("uNearDepth"), P.Sampler("uFarDepth"), P.Sampler("uShaftLight"), P.Sampler("uShaftScatter"));
-            (NearPlanes, FarPlanes, WaterY, HasFar, Atlas, Params) = (P.Uniform("uNearPlanes"), P.Uniform("uFarPlanes"), P.Uniform("uWaterY"),
-                P.Uniform("uHasFar"), P.Uniform("uShaftAtlas"), P.Uniform("uShaftParams"));
+            (NearDepth, Light, Scatter) = (P.Sampler("uNearDepth"), P.Sampler("uShaftLight"), P.Sampler("uShaftScatter"));
+            (NearPlanes, WaterY, Atlas, Params) = (P.Uniform("uNearPlanes"), P.Uniform("uWaterY"), P.Uniform("uShaftAtlas"), P.Uniform("uShaftParams"));
             Air = P.Uniform("uShaftAir");
         }
     }
@@ -783,33 +784,34 @@ sealed class PostComposite : IDisposable
     sealed class ParticleDepthPass : Pass
     {
         public readonly SamplerSlot Depth;
-        public readonly UniformHandle FullSize, Div;
+        public readonly UniformHandle FullSize, Div, Layer, Planes;
         public ParticleDepthPass(IGpuContext ctx, string vertex) : base(ctx, vertex, PostProcessShaders.ParticleDepth, "post particle depth") =>
-            (Depth, FullSize, Div) = (P.Sampler("uDepth"), P.Uniform("uFullSize"), P.Uniform("uDiv"));
+            (Depth, FullSize, Div, Layer, Planes) = (P.Sampler("uDepth"), P.Uniform("uFullSize"), P.Uniform("uDiv"), P.Uniform("uLayer"), P.Uniform("uPlanes"));
     }
 
     sealed class ParticleCompositePass : Pass
     {
-        public readonly SamplerSlot Accum, LowDepth, Depth;
-        public readonly UniformHandle LowSize, NearPlanes, Div, ClipDepthZeroToOne;
+        public readonly SamplerSlot Accum, LowDepth, AccumFar, LowDepthFar, Depth;
+        public readonly UniformHandle LowSize, NearPlanes, Div, Scale, Footprint;
         public ParticleCompositePass(IGpuContext ctx, string vertex) : base(ctx, vertex, PostProcessShaders.ParticleComposite, "post particle composite")
         {
             (Accum, LowDepth, Depth) = (P.Sampler("uAccum"), P.Sampler("uLowDepth"), P.Sampler("uDepth"));
+            (AccumFar, LowDepthFar) = (P.Sampler("uAccumFar"), P.Sampler("uLowDepthFar"));
             (LowSize, NearPlanes, Div) = (P.Uniform("uLowSize"), P.Uniform("uNearPlanes"), P.Uniform("uDiv"));
-            ClipDepthZeroToOne = P.Uniform("uClipDepthZeroToOne");
+            (Scale, Footprint) = (P.Uniform("uScale"), P.Uniform("uFootprint"));
         }
     }
 
     sealed class ParticleCoveragePass : Pass
     {
-        public readonly SamplerSlot Accum, LowDepth, Depth;
-        public readonly UniformHandle LowSize, NearPlanes, Div, FullSize, ClipDepthZeroToOne, Limit;
+        public readonly SamplerSlot Accum, LowDepth, AccumFar, LowDepthFar, Depth;
+        public readonly UniformHandle LowSize, NearPlanes, Div, FullSize, Limit;
         public ParticleCoveragePass(IGpuContext ctx, string vertex) : base(ctx, vertex, PostProcessShaders.ParticleCoverage, "post particle coverage")
         {
             (Accum, LowDepth, Depth) = (P.Sampler("uAccum"), P.Sampler("uLowDepth"), P.Sampler("uDepth"));
+            (AccumFar, LowDepthFar) = (P.Sampler("uAccumFar"), P.Sampler("uLowDepthFar"));
             (LowSize, NearPlanes, Div, FullSize, Limit) = (P.Uniform("uLowSize"), P.Uniform("uNearPlanes"), P.Uniform("uDiv"),
                 P.Uniform("uFullSize"), P.Uniform("uLimit"));
-            ClipDepthZeroToOne = P.Uniform("uClipDepthZeroToOne");
         }
     }
 }

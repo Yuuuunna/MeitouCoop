@@ -81,7 +81,7 @@ Building state writer/reader (**Verified** by code, no player-built building in 
 | `interior layout name`, `exterior layout name` | string | only with an interior |
 | `player furniture Y offset` | float | height above the parent building's origin for furniture, else 0 |
 | `version` | int | |
-| `world Y pos` | float | absolute height |
+| `world Y pos` | float | written absolute height; placement uses ground/parent height (below) |
 | `foliage` | bool | |
 | `squad template` | string | |
 | `isInsideBuilding` | handle | parent building |
@@ -93,7 +93,7 @@ New instance ids are `<n>-<container name>-INGAME`, n from the container's id co
 e.g. `19765-zone39.16-INGAME`). Instance ids are unique only within one zone file: **Observed** (base load order, scratch probe over
 `WorldLevelData.Buildings()`) 8,754 of 11,714 placements share their id with one in another zone, 580 ids within two zones of each other
 (`2-Newwworld-INGAME` is a Y-House in 19.29 and another house in 19.28). Meitou names a building at run time by `BuildingKey`
-`"<zone x>.<zone z>:<id>"` (doors, fixtures, renderer placements, saved-state lookup); the raw id stays in files and in the material seed. Their instance Y equals the state's `world Y pos` (**Observed**: 11405 of 11405 in the sample saves). On import, non-player buildings are rebuilt complete
+`"<zone x>.<zone z>:<id>"` (doors, fixtures, renderer placements, saved-state lookup); the raw id stays in files and in the material seed. Instance Y is height above ground or parent (see placement ground below). On import, non-player buildings are rebuilt complete
 ([construction](../game/buildings-production.md#construction-tick)). A `creates player town` building makes a TOWN
 "Your Outpost" ([placement](../game/buildings-production.md#placement)), saved in `quick.save`'s town list, not in a
 zone file ([player outposts](save.md#player-outposts)); the buildings' `town` handle names it.
@@ -175,3 +175,13 @@ Evidence scopes below apply only to their named sources/checks.
 - `data/newland/land/fogfeatures.dat` (Observed, not decoded)
 - `data/globalPathing.path` (Observed, not decoded)
 - Legacy world: `data/leveldata/` (Observed)
+
+## Placement ground and mod layers
+
+**Observed** (upstream `0d5e98d7`, 1.0.68 analysis: `FUN_1405547f0`, `FUN_1405609e0`, `FUN_1409b3720`): `world Y pos` is written but not read. Outdoor buildings stand at max(100, bilinear ground from every other heightmap sample) plus instance Y; a nonzero `player furniture Y offset` replaces instance Y. Mounted/contained children use the parent height; missing parents keep the stored height in Meitou. Instance Y below -1000 is skipped. `WorldLevelData.Load(install)` resolves these heights through `PlacementHeights`.
+
+**Observed** (upstream `0d5e98d7`, 179 mod folders): a mod's flat `leveldata/` beside its `.mod` supplies zone/interior/world layers in load order. Unreadable files are skipped with `LevelFileNotLoaded`; duplicate record definitions are normal placement overrides.
+
+**Observed** (upstream `0d5e98d7`, `FUN_14055f6e0`): destroyed stairs without a destroyed mesh disappear; other upper-floor parts without one retain collision but are hidden. A replacement for an empty original stairs/upper mesh uses only its destroyed collision. `WorldObjectLayout` preserves this per-placement state without mutating shared records. Its weighted part groups run in numeric order, with zero chance treated as 100; group zero chance 0/100 needs no draw.
+
+**Observed** (upstream `0d5e98d7`, `FUN_14039c7e0`): MAP_FEATURES effect instances spawn regardless of `hidden`; that flag controls only geometry.

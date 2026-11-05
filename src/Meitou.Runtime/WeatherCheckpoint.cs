@@ -23,22 +23,30 @@ internal static class WeatherCheckpoint
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
     };
 
-    internal static void Capture(World world, PopulationData data, SaveGame save)
+    internal static SimulationWeatherState? Capture(World world, PopulationData data, SaveGame save)
     {
         if (world.Systems.OfType<SimulationWeather>().SingleOrDefault() is not { } weather)
-        { save.Camera.Record.Strings.Remove(Key); save.Camera.Record.Strings.Remove(EffectsKey); return; }
+        { save.Camera.Record.Strings.Remove(Key); save.Camera.Record.Strings.Remove(EffectsKey); return null; }
         var frame = weather.CaptureWeather(); frame.Validate();
         if (frame.Time != WeatherTime.FromHours(world.GameHours)) throw new InvalidOperationException("Weather is not synchronized with the checkpoint clock.");
+        if (save.Biomes is { } biomes) SaveWeather.Write(biomes, frame.Regions, frame.Time, data.Db);
+        return weather.CaptureState();
+    }
+
+    // The pools captured above own their arrays. Encoding/compression belongs to the writer,
+    // not the world boundary; no live simulation state is read here.
+    internal static void Encode(SimulationWeatherState state, SaveGame save)
+    {
+        var frame = state.Weather;
         string encoded = JsonSerializer.Serialize(new Document(2, frame), json);
         if (encoded.Length > MaximumCharacters) throw new InvalidDataException("Weather checkpoint is too large.");
         using var expanded = new LimitedMemoryStream(MaximumExpandedBytes);
-        JsonSerializer.Serialize(expanded, weather.CaptureState(), json);
+        JsonSerializer.Serialize(expanded, state, json);
         using var compressed = new LimitedMemoryStream(MaximumEffectCharacters / 4 * 3);
         using (var compressor = new BrotliStream(compressed, CompressionLevel.Optimal, leaveOpen: true))
         { expanded.Position = 0; expanded.CopyTo(compressor); }
         save.Camera.Record.Strings[EffectsKey] = Convert.ToBase64String(compressed.GetBuffer(), 0, checked((int)compressed.Length));
         save.Camera.Record.Strings[Key] = encoded;
-        if (save.Biomes is { } biomes) SaveWeather.Write(biomes, frame.Regions, frame.Time, data.Db);
     }
 
     internal static void Restore(World candidate, SaveGame save, double hours)

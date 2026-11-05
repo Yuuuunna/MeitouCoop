@@ -14,7 +14,7 @@ samplers, 0 being the null one) and the backend resolves it where it writes a de
 views are the same: a `GpuView` (an index into the backend's views), and the backend resolves it
 where it makes a render pass. The textures and the buffers are the same: a `GpuTexture` (an index
 into the backend's textures, with the description) and a `GpuBuffer` (an index into the backend's
-buffers, with the size). The DLSS paths (Streamline on Windows, NGX on Linux) ask for the native image and view themselves:
+buffers, with the size). The DLSS paths (Streamline on Windows, NGX on Linux and Windows with frame generation) ask for the native image and view themselves:
 that path is NVIDIA's and stays Vulkan's.
 
 What is left: the seam (the context as the interface).

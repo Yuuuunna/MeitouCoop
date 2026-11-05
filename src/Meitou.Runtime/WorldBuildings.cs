@@ -36,6 +36,7 @@ public sealed class WorldBuildings(GameDatabase db, IRuntimeBuildingSink sink) :
         var current = new Dictionary<string, BuildingPlacement>(StringComparer.Ordinal);
         foreach (var site in world.Buildings.All)
         {
+            if (site.LevelMachine) continue;
             if (!data.TryGetValue(site.Record, out var build)) data[site.Record] = build = db.Find(site.Record) is { Type: Meitou.Data.Fcs.FcsRecordType.BUILDING } r ? BuildingBuildData.From(r) : null;
             if (build is null || build.PathMode == 0 || site.LevelPlacement is null && !site.Complete && !site.Destroyed && build.BuildThreshold != 0) continue;
             current.Add(site.Id, Placement(site));

@@ -56,14 +56,15 @@ public partial class SecureServerTests
     }
 
     [Fact]
-    public async Task DiscoveryRejectsAChangedCertificateWithoutRegisteringAnAccount()
+    public async Task PreReleaseDiscoveryAcceptsAChangedCertificateWithoutRegisteringAnAccount()
     {
         await using var scene = new Scene(information: DeviceInformation());
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var previous = GameTlsTests.Certificate();
         int count = scene.Accounts.List().Count;
-        await Assert.ThrowsAsync<AuthenticationException>(() => ServerDiscovery.QueryAsync("localhost", scene.Server.Endpoint.Port,
-            previous.GetCertHashString(HashAlgorithmName.SHA256), timeout.Token));
+        var discovered = await ServerDiscovery.QueryAsync("localhost", scene.Server.Endpoint.Port,
+            previous.GetCertHashString(HashAlgorithmName.SHA256), timeout.Token);
+        Assert.Equal(scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256), discovered.Certificate);
         Assert.Equal(count, scene.Accounts.List().Count);
     }
 

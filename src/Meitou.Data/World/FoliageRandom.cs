@@ -46,16 +46,21 @@ public sealed class FoliageRandom
         Count = 0;
     }
 
+    // The block in three runs, so no index wraps (a modulo per word was 40% of a grass page's time; grass reseeds per page and patch).
     void Twist()
     {
-        for (int i = 0; i < N; i++)
-        {
-            uint y = (state[i] & 0x80000000u) | (state[(i + 1) % N] & 0x7FFFFFFFu);
-            uint v = state[(i + M) % N] ^ (y >> 1);
-            if ((y & 1) != 0) v ^= 0x9908B0DFu;
-            state[i] = v;
-        }
+        var s = state.AsSpan();
+        int i = 0;
+        for (; i < N - M; i++) s[i] = Mix(s[i], s[i + 1], s[i + M]);
+        for (; i < N - 1; i++) s[i] = Mix(s[i], s[i + 1], s[i + M - N]);
+        s[N - 1] = Mix(s[N - 1], s[0], s[M - 1]);
         index = 0;
+    }
+
+    static uint Mix(uint current, uint next, uint far)
+    {
+        uint y = (current & 0x80000000u) | (next & 0x7FFFFFFFu);
+        return far ^ (y >> 1) ^ (0u - (y & 1) & 0x9908B0DFu);
     }
 
     /// <summary>The next tempered 32-bit result.</summary>

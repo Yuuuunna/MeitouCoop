@@ -145,3 +145,5 @@ shadow filter off change it by 0.1 ms at most, anisotropy off by 0.12.
 
 Detailed logs/screenshots belong outside the repository. Evidence for original-game claims
 belongs with the corresponding research and its Verified/Observed/Unknown label.
+
+**Observed** (implementation): the play benchmark includes two six-second visits per roster member through the normal character flight/follow interface. CSV and summary report VRAM sampled every 30 frames; Metal reports no VRAM sample. `--log-spikes` includes sampled allocation types and collection pauses.

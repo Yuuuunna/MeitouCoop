@@ -8,22 +8,29 @@ using Vk = Silk.NET.Vulkan;
 namespace Meitou.Rendering;
 
 /// <summary>
-/// Reads a target back into a PNG (screenshots). Native (docs/renderer-native.md 7.5, 8.9): the frame so far is submitted and waited for
+/// Reads a target back into a picture file (screenshots; always PNG). Native (docs/renderer-native.md 7.5, 8.9): the frame so far is submitted and waited for
 /// (<see cref="GpuContext.Finish"/>), then the target's image is copied to host memory. The target is RGBA8 with one sample, at least
 /// <c>w</c> × <c>h</c>.
 /// </summary>
 public static unsafe class FramebufferCapture
 {
-    public static void SavePng(GpuContext ctx, GpuTexture target, string path, int w, int h)
+    public static void SavePng(GpuContext ctx, GpuTexture target, string path, int w, int h, bool topDown = false)
     {
-        var pixels = Read(ctx, target, w, h);
-        // The picture's rows start at the bottom (the GL convention it is drawn with); PNG rows at the top. Also force opaque alpha.
-        var flipped = new byte[pixels.Length];
-        for (int y = 0; y < h; y++) pixels.AsSpan((h - 1 - y) * w * 4, w * 4).CopyTo(flipped.AsSpan(y * w * 4));
-        for (int i = 3; i < flipped.Length; i += 4) flipped[i] = 255;
+        var picture = ReadPicture(ctx, target, w, h, topDown);
         var dir = Path.GetDirectoryName(Path.GetFullPath(path));
         if (dir is not null) Directory.CreateDirectory(dir);
-        PngWriter.Write(path, w, h, flipped);
+        Meitou.Data.Textures.PngWriter.Write(path, w, h, picture);
+    }
+
+    /// <summary>The target as a picture: RGBA8 rows from the top, alpha opaque.</summary>
+    public static byte[] ReadPicture(GpuContext ctx, GpuTexture target, int w, int h, bool topDown = false)
+    {
+        var pixels = Read(ctx, target, w, h);
+        // The picture's rows start at the bottom (the GL convention it is drawn with; not when topDown); PNG rows at the top. Also force opaque alpha.
+        var flipped = new byte[pixels.Length];
+        for (int y = 0; y < h; y++) pixels.AsSpan((topDown ? y : h - 1 - y) * w * 4, w * 4).CopyTo(flipped.AsSpan(y * w * 4));
+        for (int i = 3; i < flipped.Length; i += 4) flipped[i] = 255;
+        return flipped;
     }
 
     /// <summary>The target's RGBA8 texels in the lower-left <paramref name="w"/> × <paramref name="h"/> (rows in the image's own order).</summary>

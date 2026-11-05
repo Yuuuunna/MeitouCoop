@@ -62,6 +62,8 @@ z = rotation (short, rad × 1000), qw = colour ABGR, qx = cell key, qy = type | 
 Meitou (`SaveDecals`) reads it into the blood store on load and writes the store back on save, bit-identical for both saves (**Verified**, read → write → read in a
 scratch harness; pinned by `SaveReadTests`); with `Blood` off the loaded record is kept as it was.
 
+**Surface blood** (Meitou-only, `SaveSurfaceDecals`; **Observed**, source `0d5e98d7`): extra TERRAIN_DECALS keys are `meitou sd<i>` vec3 centre, `meitou sdS<i>` vec4 (angle, size, life, 0), `meitou sdK<i>` int (type | variant << 8 | floor flag << 16), and `meitou sdC<i>` int (raw ABGR). Read consecutively until the centre is missing, skipping unsupported types; writing replaces only these prefixed keys. Original terrain-decal instances remain independent. This helper serializes marks; authority/checkpoint permissions remain the caller's responsibility.
+
 **Player-built buildings** (Meitou `Saving/BuildingSave`): an instance in the zone's `0-buildinglist` with id `<n>-zone<X>.<Y>-INGAME` and a
 GAMESTATE_BUILDING `<id>-S23` carrying `name`, `owner faction ID`, `floornum`, `destroyed`, `flags`, `is complete`, `pause`, `construction progress`,
 `<i>construction mats`, `world Y pos`, `handle`, `isInsideBuilding` (key set from the original's writer `FUN_1405547f0`, **Verified** by code; no
@@ -420,15 +422,22 @@ has an override world state (its lists are then replaced) or `0-buildinglist` ho
 
 **Meitou** (`Saving/ZoneSave`, `Data/Save/SaveZoneBuilder`): every zone the population had active, and every zone of a town it made but another town's centre zone (engine choice:
 a town is made and saved whole; three such zones, e.g. Black Desert City's buildings in Scraphouse's 34.28), is visited (`World.VisitedZones`, not hashed). A save keeps the loaded save's zone files (locks, doors and player buildings are written into them) and makes
-the missing ones from the level data as above, with `town` set to the save's town state `hand` and a new save's town states taking their level `hand`; it writes no
-`serialised interior`, no furniture or inventories (not modelled), so the original makes each interior as for a fresh zone (only the residents differ: the
+the missing ones from the level data as above, with `town` set to the save's town state `hand` and a new save's town states taking their level `hand`; zone creation writes no
+`serialised interior`, generated furniture or inventories (machine inventories are written separately below), so the original makes each interior as for a fresh zone (only the residents differ: the
 saved platoons). **Observed** (headless new game, the player moved to Squin and Stack): 8 visited zones, 8 files, every handle in its slot list, 300 of 300 `town` handles
 name a town state; key set = the real saves' minus the runtime-only keys (`serialised interior`, `internalbuildings`, farm, craft and lock keys of buildings that have none
 here) plus `meitou lock <i>`; doors and an interior chest locked before the save are locked after reload, and a second save writes the same zone files. Base saves 1, 3,
 wade and 2 (moved to Admag) keep every zone file byte for byte except door keys added to buildings whose saved state has none (3 files in save 2, 1 in save 1).
+
+**Meitou town machines** (**Observed**, `MachineSave.Bind/Apply/Write`, `SaveCapture.Capture`): NPC-owned level machines use the same zone-instance `GAMESTATE_BUILDING` keys and referenced
+`INVENTORY_STATE` as constructed machines; no CAMERA payload or purchase flag is needed. `LevelPlacement.InstanceId` locates the raw zone entry, while the registry uses
+its zone-qualified `BuildingKey`. Capture creates missing visited-zone files from level data before writing machines. Load binds the checkpoint before town registration;
+the first later `Ensure` restores progress and input/output contents once. Repeated creation requests do not replay items. Town replacement invalidates pending restoration
+and clears the old machine keys and referenced inventory. Runtime-derived `Status` is recomputed, not saved. Original machine key meanings: [production](../game/buildings-production.md).
+
 Loose items (`Saving/GroundItemSave`, `Data/Save/SaveGroundItems`): a load puts every `1-itemlist` item the data can make on the ground at its saved position and rotation;
 a save writes each zone's list from the items lying in it, a read item with its own record (unmodelled keys kept), a new one with the key set above minus `uniform`,
-`persist` and the limb keys, id `<n>-zone<X>.<Y>-INGAME` above every such number of the file; entries whose item the data lacks are written back as read; a zone whose
+`persist` and the limb keys, id `<n>-zone<X>.<Y>-INGAME` above every such number of the file and of the read items written back (a reused id loads as the other item); entries whose item the data lacks are written back as read; a zone whose
 list is unchanged is left as it is, an empty list is not written, a file left empty goes. **Observed** (headless, METARU with the install's load order): 285 of 285 items
 loaded; a capture with nothing changed keeps all 123 zone files byte for byte; an item dropped, saved and reloaded lies where it was, and a second save writes the
 same 124 files.

@@ -17,7 +17,7 @@ namespace Meitou.Tests.Engine;
 public class HeadlessContentTests
 {
     [Fact, Slow]
-    public async Task FirstNetworkAccountCreatesAndEntersInstalledWorldWithoutALocalPlayerStart()
+    public async Task InstalledCreationAndReconnectKeepAuthorizedViewsAcrossTwentyPublications()
     {
         var install = GameInstall.Locate();
         Assert.SkipWhen(install is null, $"No Kenshi install configured ({GameInstall.EnvironmentVariable}).");
@@ -48,8 +48,11 @@ public class HeadlessContentTests
             var offered = await client.CatalogAsync(new(Guid.NewGuid()), timeout.Token);
             Assert.Equal(Meitou.Networking.CreationOutcome.Catalog, offered.Outcome);
             var grant = offered.Catalog!.Qualification.Grant;
-            var request = new PlayerCreationRequest(Guid.NewGuid(), grant.Id, grant.Revision, start.Id, "First online faction", [new(0, "First online role")]);
+            var request = new PlayerCreationRequest(Guid.NewGuid(), grant.Id, grant.Revision, start.Id, null, [new(0, "First online role")]);
             var draft = new Meitou.Networking.CreationDraftQuery(Guid.NewGuid(), 1, request);
+            var duplicateName = await client.PreviewAsync(draft with { Query = Guid.NewGuid(), Request = request with { FactionName = data.Factions[data.PlayerFaction].Name } }, timeout.Token);
+            Assert.Equal(CreationOutcome.Rejected, duplicateName.Outcome);
+            Assert.Equal(CreationFailure.InvalidRequest, duplicateName.Failure);
             var preview = await client.PreviewAsync(draft, timeout.Token);
             Assert.Equal(Meitou.Networking.CreationOutcome.Preview, preview.Outcome);
             Assert.NotNull(preview.Preview!.Members[0].Appearance); Assert.NotNull(preview.Preview.Members[0].Editor);
@@ -96,6 +99,18 @@ public class HeadlessContentTests
                 {
                     Assert.Null(state.Disconnection);
                     state = await session.WaitForChangeAsync(state.Version, timeout.Token);
+                }
+                // Admission alone is not a stable loaded view. Observe more than two history windows,
+                // both on first entry and after restoring the checkpoint.
+                ulong publication = state.View!.Publication;
+                for (int updates = 0; updates < 20;)
+                {
+                    state = await session.WaitForChangeAsync(state.Version, timeout.Token);
+                    Assert.Null(state.Disconnection);
+                    Assert.True(state.CanControl);
+                    Assert.NotNull(state.View);
+                    Assert.NotEmpty(state.View.Snapshot.Characters);
+                    if (state.View.Publication > publication) { publication = state.View.Publication; updates++; }
                 }
             }
         }

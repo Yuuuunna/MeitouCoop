@@ -9,7 +9,7 @@ Engine LOD/streaming rules below; GPU lifetime: [renderer-native.md](renderer-na
 CDLOD chooses patches by error in rendered pixels, morphing between levels without cracks.
 Whole-world coarse heights keep the horizon; a fine moving window follows the eye. Use fine
 height directly at weight1, blend at edges. Height/normal sampling must agree between terrain,
-objects, water/shore bakes and collision queries. Near/far slices retain consistent depth.
+objects, water/shore bakes and collision queries.
 TERRAIN-mode rock geometry is foliage work, not terrain-patch stage timing.
 
 Biome materials resolve blendinfo slots, mask/overlay/colour maps and layer colour/normal inputs.
@@ -18,6 +18,49 @@ world coordinates. `terrain-layer-skip` can omit insignificant layer work; thres
 choices requiring boundary/material checks. `terrain-late-colour` separates depth from shading
 where occluders justify it. A depth prepass is extra geometry, not automatically a speedup.
 
+**Layer arrays** (`TerrainTextures`), two tiers per texture pair (a BC3 diffuse and a BC1 normal):
+- **Far arrays** hold every pair of the biomes within the material distance at a quarter of the layer size (512² at 2048, about 0.5 MB a pair),
+  at a fixed index per pair, at most 256 (the array layers every Vulkan device has; a pair past that stays in ground colour). The R8 height array
+  and the relief texture use the same index. A biome is drawn once all its pairs are in.
+- **Near arrays** have 32 slots at the full size (about 270 MB at 2048²), 32 per kept place (`Areas`, render-objects.md "Kept points") up to 128 when
+  the guard allows: growing reallocates both arrays (no image copy), so every pair drops to far and loads near again; they never shrink, and a refused size is not asked again. A slot goes to a pair within its near range of the eye, then of a kept point while slots are left
+  ([render-objects.md](render-objects.md#kept-points)), least recently needed first: the range is the pair's tile × pixels per radian ÷ layer size × 11.3, with an upscaler's negative bias widening it.
+  When no slot is left, a pair stays far.
+- Per sample the shader works out the near arrays' level (8x anisotropic: the long axis over up to 8 taps, never under the short axis). Below
+  `FarShift` (2) less the sampler bias it reads the near slot; otherwise, or without a slot, it reads the far array. For a DDS layer taken as stored,
+  both tiers read the file's own mips, so from that level down they are the same texels. A resized layer is filtered separately at each size, so
+  a faint seam is possible there (**Unknown** until seen in game).
+- Params texels 0 and 1 hold the far indices (the relief code reads these too), texel 1's W the biome's relief factor; texels 13 and 14 hold the near slots, -1 for none.
+- Before this the arrays held a full-size slot per pair within the 30 km material distance: 128 slots, about 1.07 GB, in the Great Desert
+  (**Observed**, VRAM pie and log 2026-11-01).
+
+**World colour map** (`TerrainTextures.PrepareWorld`): the 8 × 8 colour tiles box-filtered into one 2048² RGBA map for the far terrain
+and foliage. Cached raw (16 MB, no header) in `%LOCALAPPDATA%\Meitou\terrain\worldcolour_<hash>.bin`: hash of a version tag, the size and
+each tile's path, length and write time, so a mod's tile gets its own file; a file of the wrong length is rebuilt. Decoding the tiles
+took over a second a start. Old files are never deleted; bump the tag when the filtering changes. `--no-load-cache` skips it.
+
+**Colour window** (`MapWindows`, `TerrainColourCache`): the colour map near the eye, a 4096² texture addressed toroidally (the overlay
+window beside it is 2048² RGBA8). It is BC3 (21 MB instead of 85 MB RGBA8), not BC1: the colour tiles' alpha is gloss (**Observed**: all 256
+values, 30 % at 255). The 64 tiles are encoded once with 7 levels into `%LOCALAPPDATA%\Meitou\terrain\colour\<hash>.bc3` (magic `MTC3`, side,
+the levels' blocks; ~5.6 MB a tile, 342 MB in all), hash of a version tag and the tile's path, length and write time. A start with tiles
+missing from it encodes them on workers in the loading step "terrain colour map (first start only)" (**Observed** 5.8 s on a 2026 desktop);
+the window then reads only the block rows it needs from those files (`TerrainColourCache.ReadBlocks`; no whole tile is loaded, which cost 11 MB of fresh arrays a tile per window move) instead of decoding PNGs (**Observed** at The Hub: first window 0.6 s instead of 1.6-3 s, a move 0.15 s instead of
+0.85 s). Every piece must start on a block at every level, so the window origin is aligned to 128 overlay pixels (256 colour pixels). Tiles
+that are not square multiples of 256 keep the RGBA8 path. The overlay window's decoded tiles (1024², the window's 3 x 3) stay between moves,
+so a move decodes a PNG only when the window reaches a new tile (**Observed**, headless: a move 13-45 ms and ~0.1 MB allocated, was 170-320 ms
+and 17-29 MB with the tiles dropped after each).
+
+**Standby windows** ("Keep textures at characters", [render-objects.md](render-objects.md#kept-points)): a kept point outside the middle of the
+drawn window gets a standby copy, uploaded but not drawn, which is swapped in when the eye arrives there (the shaders read whichever is current, so
+nothing is composed or uploaded on the jump); the replaced copy stays as the standby for where the eye was. Colour/overlay
+(`TerrainTextures.MapStandby`, one per kept place, 2 to 6, ~45 MB each): for a point more than a quarter window from the drawn origin. Fine heights
+(`TerrainRenderer.FineStandby`, `TerrainStreamer`, one per kept place, 3 to 8, ~5 MB each at step 1): for a point beyond 0.3 of the window's width from its
+centre; the bounds take a standby's patch at its first swap (they only widen). A standby goes when a new point needs its place and no kept point is
+in its middle. None is made under `VramGuard` pressure; once made they stay until exit. A standby's read or compose does not hold up the loading screen (its
+upload slabs do, for a few frames); a jump while one is read or uploaded waits for it. The first swap-in of a new pair may hitch once (a fresh
+texture's first use stalled the driver ~50 ms, see the window comment in `TerrainTextures`). A standby compose shares the nine-tile overlay cache, so the eye's next move may
+decode its tiles again.
+
 ## Ground relief
 
 Meitou look, not in the game (`GroundRelief`). The parallax and the displacement are Faithful/Meitou switches `parallax` and
@@ -25,7 +68,8 @@ Meitou look, not in the game (`GroundRelief`). The parallax and the displacement
 refinement (tessellation)", "Rock smoothing (tessellation)"; sliders "Ground relief quality" (High by default; Medium and Low reduce
 the march; compiled into the colour programs, one set per quality made on first use: a uniform quality cost High 12% of the terrain's
 GPU time, **Verified** by swamp-low A/B), "Ground relief depth (cm, typical ground)" (default 30), "Ground displacement distance (m)" (100), "Ground parallax
-distance (m)" (60); viewer K toggles the parallax. The other values are tuned constants, expressed at a 20 cm reference depth and
+distance (m)" (60); all on the settings' Graphics > World page, where quality and depth hide while parallax and displacement are both
+off and each distance while its effect is off; viewer K toggles the parallax. The other values are tuned constants, expressed at a 20 cm reference depth and
 settable for a run with the viewer's `--relief Name=value`: target slope 0.2, scale follow 0.5, max depth 80 cm (120 at the default
 30), cliff scale 1, overlay relief 1, self-shadow 0.6, tessellation detail 0.5, refinement 0.5 px, tilt 0.5, broad cut 2 m.
 
@@ -52,11 +96,19 @@ flat, coarse ones not metres deep), capped at the max depth, times the depth sli
 scale. **Observed** (field tour): the integrated range or normal-map strength as the depth made broad noise deep
 (`BurntWoodLike`, `SharpblockLoop`) and fine textures flat or spiky; this rule gives at 20 cm e.g. `WadiGravel` 13–15 cm,
 `Rocksurface01` 13 cm, `BurntWoodLike` 29 cm, `SharpblockLoop` 30 cm (1.5× that at the default 30).
+A biome's ground and cliff depth are then times its `GroundRelief.BiomeDepth` factor (by BIOMES string id; 1 for the rest), so a
+biome's depth can be cut without touching textures other biomes share. ForestLand (`4442-Newwworld.mod`, all of Shark's ground,
+also Ancient Labs, Farm Ruin and patches north of Shark) has 1/3: **Observed** (blend and overlay maps sampled round Shark; depths
+from `LayerDepthCm` at 30 cm) its layers came out base 37 cm (`GrassBadTestNML`), slope and dirt 67–70 (`Lichen_Rock`), cliff 85,
+the swamp biomes round it about 26; those textures are shared by 9–12 other biomes.
 
 **Composite.** Every ground layer adds material; the relief height keeps the heaviest ground layers (base, grass, slope, dirt,
 road) by how much of the pixel each shows, from the blend map, overlay window and slope per pixel, not per patch, so neighbouring
-patches meet on the same heights: five at High quality, two at Medium, one at Low. The cliff over all has its own march. A biome
-under 10% of the pixel is not marched (fading in to 30%), a layer under 5% is left out (to 15%).
+patches meet on the same heights: five at High quality, two at Medium, one at Low. One march a pixel (`pixelRelief`): the layers of every
+biome blended are gathered by their share of the pixel times the biome's factor (a layer two biomes share is one entry), so all biomes'
+ground coordinates move alike. The cliff has its own march, on the projections of the biome whose cliff weighs most, its moves applied to
+every biome's cliff. A layer under 5% of the pixel is left out (fading in to 15%). A biome under 3% of the pixel is not shaded at all
+(`BiomeEps`, ramping in to 6%; the rest renormalised): each costs up to 14 layer samples.
 
 **Displacement** (needs `tessellationShader`): main-view patches within the displacement distance + 10 units (interior-cut ones
 too) draw with tessellated colour and prepass programs (patch lists of 3, culling off, `fractional_odd_spacing`). The vertex
@@ -110,9 +162,10 @@ depth test off. Their prepass already discards the cut, so the late colour draws
 run the same vertex and tessellation stages, invariant positions): GPU frame 6.14 -> 5.80 ms, the picture unchanged (one pixel over 8 levels at a town view).
 With the parallax on (60 m, displacement 60 m), nearly all the visible terrain is relief patches. The march held their pixel warps to 12% (21% without it) at the
 same register file use, with the SM throughput at 20% (39%). On the RTX path the march's sampling hardly counts: no self-shadow, or the base layer alone,
-changed nothing. Every biome's march now runs before any is shaded (`biomeRelief`, then `biome` with its result), so the march's state no longer sits on
-the shading's: terrain 4.4 -> 4.0 ms, the picture unchanged. Without the march (`NO_MARCH`) that loop and its results' array are left out; kept with
-constants, they cost 0.28 ms. Drawing patches beyond the parallax's end with the march-free program saved nothing there.
+changed nothing. The march runs before any biome is shaded, so its state does not sit on the shading's: terrain 4.4 -> 4.0 ms, the picture
+unchanged. One march a pixel instead of one a biome, the biome threshold and the layer derivatives taken once from the point's (chain rule):
+terrain 3.90 -> 3.77 ms (**Observed**, `--play-bench` idle/orbit on save "stutter final boss", RTX 4070 1080p DLSS; screenshot diff 0.001% of pixels
+over 12/255). Drawing patches beyond the parallax's end with the march-free program saved nothing there.
 **Metal (Observed, 2026-10-25, a town view at 1024x640 scene / 2560x1600 output):** the interior-cut colour draw took 11.25 ms of a 31.03 ms frame,
 with a 6.2 KB register spill. With the march off it took 4.28 ms and the frame 19.75 ms, the spill 48 B. That run used an 8/4-step, three-layer march; High's 5 layers and
 16/8 steps are **Unknown** on Metal (Medium or Low cut the cost); Metal's shader compiler and tile-memory architecture make the march much more expensive than the RTX path.
@@ -128,6 +181,33 @@ over 800, the steadiest steep face found), the camera below it. The patches' mat
 and layer (`fieldTile`/`fieldMask`) instead of the blend; the relief fades to 0 over a tile's outer 8%. The tile under the camera
 is named at the top left with its tile size and depth. In the game's sandbox Esc opens the settings. The viewer's `--field-tour
 <dir> [--tour-distance u] [--tour-pitch deg]` saves a picture of every tile and an index.html (105 tiles in about 30 s).
+
+## Material cache
+
+Meitou, not in the game (`TerrainRenderer.MaterialCache`, A/B `terrain-material-cache`, B: every pixel shades the layers). The patches' layered
+material is baked into world-space levels round the eye, and a patch pixel within them reads the cache instead of shading up to five biomes of up
+to 14 layer samples each.
+- **Levels**: 4 of 2048² texels, level k's texel 0.25 × 2^k units (51, 102, 205, 410 m squares), RGBA8 albedo + gloss and RGBA8 tangent-space
+  normal x, y (z follows), rain absorbance, relief height: 128 MB, not made when `VramGuard` refuses it. Each is addressed toroidally (repeat
+  sampler, texel = world mod side), its origin snapped to 64 texels round the eye; as the eye moves a level bakes only the strips it gains, and is
+  built again only after moving a whole side. A first bake takes 256 rows a frame (its pixels shade the layers until it is whole).
+- **Bake** (`TerrainShaders.MaterialBakeFragmentNative`): the colour shader run per texel at its world point (terrain height and normal, the texel as
+  the sampling footprint, distance 0, no march), both targets in one pass, written before the blood, wetness and lighting. Its relief height is one
+  height field over `BakeSpan` (parallax depth × max depth × cliff scale): the ground's (the march's gather, depth × height) mixed by the cliff's
+  share with the cliff's (its projections' heights along the normal, ÷ n.y, held at n.y 0.3).
+- **Refresh**: the inputs (bindless indices, overlay window, `TerrainTextures.MaterialVersion` = writes to the biomes' parameter rows, relief settings)
+  are hashed each frame; a change re-bakes every level 64 rows a frame, finest first, drawn from meanwhile.
+- **Draw**: the level whose texel is the pixel's footprint (short axis, as the layers' 8x anisotropic sampling), blended with the next coarser;
+  beyond the levels, beyond 0.3 × the nearest resident biome's fade distance (the bake has no distance fade), or on faces with n.y ≤ 0.5
+  (an xz texel spans 1 / n.y of the face: **Observed**, cliffs smeared into vertical streaks, their parallax wavy), the layers are shaded. The
+  parallax marches the cached height with the march's steps and self-shadow (the sun's from two levels coarser; where displaced, only what the level
+  holds finer than one at half the mesh spacing): one read a step, no per-biome work. A per-pixel gather (cliff layers live over a cached ground,
+  per-biome fade) cost as much as it saved: terrain 4.0 ms against 3.9 live.
+- **Differences** (**Observed**, viewer A/B stills, 1920x1080 DLSS): mean 0.8-1.1 / 255, 0.35-1.4% of pixels over 12; the ripples' parallax phase
+  and self-shadow shift slightly; a slope's parallax (n.y over 0.5) follows the height field instead of the cliff's projections. After a 90 m flight at 12 units a
+  frame: mean 1.27 against the live picture, no stale strips. The game's `--screenshot` does not run the cache (its frames skip the hook).
+- **Cost** (**Observed**, `--play-bench` on save "stutter final boss", RTX 4070, 1080p DLSS 0.83, interleaved with master): terrain 3.94 -> 2.33 ms
+  idle, orbit 3.98 -> 2.23, pan 3.77 -> 1.77; GPU frame 7.85 -> 6.20; frame p99 unchanged. Viewer A/B at two views: terrain -0.39 and -0.88 ms.
 
 ## Rocks
 

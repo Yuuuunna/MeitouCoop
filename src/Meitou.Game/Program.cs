@@ -58,15 +58,15 @@ static class Program
             return 1;
         }
         // Steamworks must start before Vulkan creates its device so Steam can hook the renderer for Shift+Tab. Not for pictures or a
-        // listing: those must not count as Kenshi play time or get the overlay.
-        using var steam = world.Screenshot is null && !game.ListStarts && !game.ConnectionCheck ? SteamSession.TryStart(install) : null;
-        // A native splash at once, until the game window draws (docs/engine.md "Loading"); not for pictures or a listing.
-        using var splash = world.Screenshot is null && !game.ListStarts && !game.ConnectionCheck ? SplashWindow.Show(install.DataDirectory) : null;
+        // listing or hidden run: those must not count as Kenshi play time or get the overlay.
+        using var steam = world.Screenshot is null && !world.HiddenWindow && !game.ListStarts && !game.ConnectionCheck ? SteamSession.TryStart(install) : null;
+        // A native splash until the game window draws; not for pictures, listings or hidden runs.
+        using var splash = world.Screenshot is null && !world.HiddenWindow && !game.ListStarts && !game.ConnectionCheck ? SplashWindow.Show(install.DataDirectory) : null;
         var config = UserConfig.Load();
         Meitou.Localisation.Loc.Use(install);   // the language of settings.cfg: texts from locale/<code>/LC_MESSAGES/main.mo (docs/formats/localisation.md)
         // The saved texture quality before the world loads: the terrain's layer arrays are sized from it once (the Tab panel's restore after
         // the boot reaches only the other textures). --texture-quality and --low-end choose it for this run instead.
-        if (!args.Contains("--texture-quality") && !args.Contains("--low-end") && config.Graphics.TryGetValue(WorldFrame.TextureQualitySlider, out float savedQuality))
+        if (!args.Contains("--texture-quality") && !args.Contains("--low-end") && !game.BenchmarkBaseline && config.Graphics.TryGetValue(WorldFrame.TextureQualitySlider, out float savedQuality))
             world.TextureQuality = Math.Clamp((int)MathF.Round(savedQuality), 0, Meitou.Data.Textures.TextureQuality.Maximum);
         if (game.Connect is not null) return RunOnline(install, world, game, config, splash);
         if (game.ConnectionCheck || game.CreateFaction is not null || game.OnlineRole is not null)

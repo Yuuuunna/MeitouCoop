@@ -8,9 +8,22 @@ materials: [runtime-materials](formats/runtime-materials.md); geometry: [Ogre me
 
 Resolve building/part/feature instances from merged records, seeded part choice and placement
 transforms. Preserve interior/exterior, materials, destroyed states, doors, offsets and scale.
+**Part choice** (`FUN_140848950`, **Verified**; `WorldObjectLayout.ChooseParts`): a `parts` entry of group 0 is kept without a draw at chance 0 or 100, else when the int roll `FUN_1409b3b40(0, 100)` (0..100, 101 values; its scale is max - min + 1) is at most its chance. Non-zero groups sit in a std::map keyed by group and are visited in ascending key order after group 0; each draws exactly one float (`FUN_1409b1c80`, scale: the group's total, **Observed**), the total adding every entry's chance with 0 counted as 100, missing targets included; the entries are walked in list order, an entry whose chance is below the roll takes it off and the walk goes on, else it is taken (a missing target yields no part); a roll past the sum takes nothing. The 'Unable to find key in unordered_map' strings in that function belong to other record maps.
 Workers prepare resident mesh/texture content; render thread publishes GPU objects. Shared meshes
 and per-instance state have separate lifetimes. A resident mesh can change finest LOD: refresh
 all draw/ray-geometry references before retiring replaced buffers.
+
+Mesh vertex buffers use `GpuVertex` layouts, packed at upload from the CPU's 84-byte `Vertex`: objects, foliage, debris and impostor
+bakes 44 bytes (normal and tangent snorm16, colour half), characters 64 (colour stays float: its X carries the morph slot bits).
+**Verified** (viewer, The Hub, two cameras): renders differ from the float layout less than two float-layout runs differ from each
+other; resident object meshes 174 → 98 MB.
+
+Switch `weld` (Meitou): objects, foliage, characters and debris weld their meshes as they load (`OgreMeshWeld`): vertices equal in
+everything but the tangent frame (same handedness, bone assignments and pose offsets) become one with the normalized sum of their
+tangents; indices, generated LOD levels, bone assignments and poses are renumbered. Faithful keeps the files' vertices. Read at
+decode, so a change applies to meshes loaded after it; LOD caches key on it (`MeshWeld.CacheVariant`). **Verified** (viewer, The
+Hub, TAA off): Faithful matches the build without the switch within run-to-run noise; Meitou changes buildings by 0.06/255 mean,
+object meshes 98 → 50 MB. About 115 ns per vertex on the decode thread.
 
 Faithful uses researched object/part distances; Meitou `reach` extends size-aware ranges and
 distant landmarks/towns. Distant town stand-ins fade separately from real parts. Source/manual
@@ -33,14 +46,47 @@ biome pairs and foliage layouts rank by distance from the arrival, and what is o
 (`WorldTextureCache.Urgent`, `BackgroundWork.RunUrgent`). The terrain height window and the grass pages still follow only the eye.
 The simulation focus moves to the landing character at once, so its towns populate during the flight.
 
+## Shared texture images
+
+The object, foliage and character texture caches share images (`TextureShare`, per GPU context): a file one cache holds at the current quality
+level is taken by another instead of loaded when it drops no more top levels than that cache's mip streaming would, and two loads of the same file
+and levels that land together keep one. An image goes with its last user; each cache still counts its bytes. **Observed** (VRAM dump, 2026-11-01):
+about 150 MB of the same files were resident twice before this.
+Debris (severed limbs, bolts) takes its textures from the character cache rather than loading its own copies (~30 MB of skins were held twice, VRAM dump 2026-11-01).
+
+The sharing caches also have one high-water mark together (`TextureShare.ResidentBytes` against `MarkMb`, 2 GB at full quality), not one each.
+Above it, textures unused for 8 s are unloaded, least recently used first, until the total is under three quarters of the mark. Below it,
+a texture is unloaded after 20 s unused.
+
+Under `VramGuard` pressure no texture is refined, but one that something draws still loads *lean*: top side at most 256
+(`WorldTextureCache.LeanSize`), while the use stays under 94.5% of the budget (`AllowsLean`). It is refined once the pressure ends. Before this, a
+6 GB laptop (3.5 GB budget, never back under 80%) drew characters with no texture at all (**Observed**, issue #135 log).
+An allocation the driver refuses is retried after the spare blocks are freed, then (render thread only) after the submitted frames are waited for,
+their deferred frees run and the empty blocks are given back (`GpuAllocator.Reclaim`). A refusal that survives puts the guard into pressure.
+The post targets of a resize can't use that path (the old ones are released in the same frame), so when they can't be made the frame draws no world
+and the next frame tries again (`PostProcess.Unallocated`). Before this, a 3840 → 1920 resize at 96% of a 3.5 GB budget crashed (**Observed**, #135 log).
+
 ## Kept points
 
 Advanced "Keep textures at characters" (Meitou, default on, `UserConfig.KeepTexturesAtCharacters`): the host sets `WorldFrame` `Kept` to
 the drawn position of every squad bar member each frame; its sub-option "Keep textures at all squads" (default off, shown only while the
 main one is on, `KeepTexturesAtAllSquads`) takes every player squad's members instead. `ObjectStreamer.Near` / zone layout count the nearest of eye, `Ahead` and `Kept`,
 so object meshes and texture mips stay loaded round each character (a resolving instance's first texture need is measured the same way, else
-its textures load coarse for the far eye and wait for refines); terrain biome textures gather cells round each (ranked after the
-eye's). `Kept` ranks after the eye in the load order. Foliage and grass pages follow only the eye and `Ahead`. Costs video memory
+its textures load coarse for the far eye and wait for refines). Detail (texture mips, mesh levels) counts a kept point from at least the camera's
+distance to its target (`KeptViewDistance`), the view a jump there would have; residency counts from the point itself. **Observed** (VRAM dump
+2026-11-01, squad member at a town gate): 189 MB of object textures at need 0; whether from the kept point or the bounding sphere is
+**Unknown** (that dump did not list the points; the dump's header now does). Terrain biome pairs gather cells round each (ranked after the
+eye's); a pair within its near range of a point, measured from the point, takes a full-size near slot while the eye's leave one free.
+Foliage zones within the near reach of a point are laid out and kept, ranked after the eye's, and their meshes and textures stay resident
+(texture needs from at least `KeptViewDistance`); their waiting layouts do not hold up the loading screen. `Kept` ranks after the eye in the load order. The colour, overlay and fine height windows keep
+standby copies round far points ([render-terrain.md](render-terrain.md#geometry-and-material) "Standby windows"). Grass pages are made round the points too,
+after the eye's, sharing the one store: while an eye page waits for room, the kept page farthest from its point is freed (one a frame). The ground
+relief needs nothing more (its heights come with the biome pairs' far tier). Built characters within `KeptReach` of a point but beyond the
+eye's reach offer their textures from the point (at least `KeptViewDistance`) each budget pass; before, nothing read them and the 20 s idle
+limit unloaded them whatever the mark. **Areas** (`WorldFrame` `Areas`): 1 + the merged points, held at its highest for 30 s. The shared texture
+mark and the mesh mark are that many times larger, their shares of the memory budget at most 0.5 and 0.2 (`MaxAreaShare`; together under the budget), so the
+character `NeedScale` blur also starts later; the grass store, standby counts and terrain near slots scale too (render-foliage.md, render-terrain.md).
+Costs video memory
 (the VRAM guard still applies). `WorldFrame` merges the points first (`ObjectStreamer.MergeKept`): one within 500 units of the eye or of an
 earlier point is dropped, so a squad standing together is one point. Every distance test walks the kept points, and `ObjectStreamer.Scan`
 tests each unresolved instance every frame. Out-of-range instances (stand-ins and unknown part distances included) are therefore parked per
@@ -103,6 +149,10 @@ open amounts (`WorldObjectRenderer.Doors`, by placement id and index); `DrawReal
 `DoorLeaf.LocalOffset` ([motion](game/locks.md#doors)) along the axes of the part's collision box (`DoorFrame`, the first box of its
 `xml collision`, PhysX Z-up mapped to the part's Y-up), in world units, when its amount changed. Colour and shadow passes see the moved leaf; the GI acceleration structures take
 the instance transform only when they gather instances (not checked for leaves in motion).
+The interior view's floor never hides a door part (`WorldObjectRenderer.InteriorHidden`). **Verified** (probe over the base game's BUILDING `doors`): 15 of
+47 door entries have a leaf part with `building floor` 1 (Storm Houses A-H, the shacks, the swamp houses), so hiding by floor left their doorway empty at
+floor 0 (issue #170). In the game a door is a building of its own (`Building::createPhysical` makes one per entry); that its parent's floor view
+leaves it shown is **Unknown** in code, inferred from those common houses.
 
 ## Turrets
 
@@ -130,7 +180,7 @@ motion vectors of moving parts not checked.
 
 **Original** (**Verified** by code, Ghidra, unless marked):
 - A building with an `interior` list owns an interior object, open or closed.
-- **Opening.** `FUN_1407f7230` runs every frame. Each player character whose location is a non-destroyed building sets that interior's keep-open timer to 10. The timer falls by the game-time step (`FUN_14054a790`), and the interior closes below 0 (`FUN_14054b690`). A building just left shows every floor (floor 4) until then.
+- **Opening.** `FUN_1407f7230` runs every frame. Each player character whose location is a non-destroyed building sets that interior's keep-open timer to 10. The timer falls by the game-time step (`FUN_14054a790`) only while the building is complete (its vtable slot 69 returns the building's is-complete byte `+0x160`, **Verified**; Meitou: a construction site is held open), and the interior closes below 0 (`FUN_14054b690`). A building just left shows every floor (floor 4) until then.
 - **Closing** (`FUN_14054b130`) hides the interior's contained objects in every pass, except those flagged outside (`RootObject+0x240`). Their entities are destroyed and the lights go off.
 - **Contained objects** are registered by `FUN_14054f3d0`. They are interior-layout furniture and buildings with a parent building: a saved `isInsideBuilding`, or player ghosts placed inside.
 - **The outside flag:**
@@ -147,6 +197,8 @@ motion vectors of moving parts not checked.
   - In the install's interior layouts, 10 170 objects without the flag are `is exterior furniture` (barrels, cages, camp beds, Stack's rooftop awnings); these are now hidden while closed.
   - 1 820 objects with the flag (yard tents, torches) stay.
 - A building inside another (`PlacedMesh.Contained`) is hidden while the building whose hull holds it is closed (`ClosedAround`); a player site takes its parent's hull over a neighbour's within the 2-unit margin (`PlacedMesh.ContainerId`). These are player sites with a parent (saved with `flags` 0), and zone states with `is inside building` and no outside flag.
+- Shadow passes keep what the floor view hides above the viewed floor (parts, objects standing above it; `WorldObjectRenderer.DrawReal`), so a lower
+  floor stays shaded under its ceiling (a watchtower's floor 0 was sunlit). Whether the game's hidden floors cast shadows is **Unknown**.
 - **Not done:** interior lamps still light a closed interior.
 
 ## Validation

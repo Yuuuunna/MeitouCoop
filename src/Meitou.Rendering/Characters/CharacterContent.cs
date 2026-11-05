@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using Meitou.Content;
 using Meitou.Data;
 using Meitou.Data.Characters;
@@ -111,12 +114,16 @@ internal sealed class PartMaterial
     public bool HasShirtColour;
     public Vector4 HairAlpha, HairMult, BeardAlpha, DiffuseChannel = new(1, 0, 0, 0), AlphaChannel = new(1, 0, 0, 0), Colour1, Colour2;
     public float AlphaThreshold;
-    /// <summary>An item's gloss multiplier (an icon's material <c>specular mult</c>, rtticons.hlsl's <c>glossMult</c>); 1 for the others.</summary>
+    /// <summary>Hair's attachment <c>specular</c>, or an item's gloss multiplier (an icon's material <c>specular mult</c>); 1 for the others.</summary>
     public float GlossMult = 1;
+    /// <summary>Hair attachment mipmap bias, added to the sampler's upscaler bias in each hair cut-out pass.</summary>
+    public float MipmapBias;
     /// <summary>An icon whose mesh has vertex colours: they multiply the albedo (the game's <c>RTTIcons_Coloured</c>).</summary>
     public bool VertexColoured;
     /// <summary>Takes blood (<see cref="CharacterShaders.Bloody"/>; <see cref="BloodFull"/>: the whole mesh at the full amount, a stump): <see cref="Colour1"/> holds the blood colour, <see cref="Colour2"/> x and y the race's <c>blood horizontal</c> and <c>blood vertical</c>.</summary>
     public bool Bloody, BloodFull;
+    /// <summary>A headless body's neck cap (<see cref="CharacterShaders.Wound"/>): <see cref="Colour1"/> the race's blood colour, the diffuse slot the splatter map; <see cref="Mechanical"/> a robot race's.</summary>
+    public bool Wound, Mechanical;
     /// <summary>The body's normal blend weight towards <see cref="CharacterShaders.SlotBlendNormal"/> (the original's <c>muscleBlend</c>).</summary>
     public float MuscleBlend;
     /// <summary>The record last written for it and the renderer's material epoch it holds for (<see cref="CharacterRenderer"/>); 0 after a field above changed: written again.</summary>
@@ -200,15 +207,15 @@ internal sealed class CharacterContent : IDisposable
 
     /// <param name="FirstMaterialName">The first submesh's material (script) name, which is all the material resolver takes of a submesh; null: no submesh.</param>
     sealed record LoadedMesh(GpuObjectMesh Gpu, string? FirstMaterialName, Vector3 Centre, float Radius, MeshMorphs? Morphs = null, float[]? ShadowDistances = null, int ShadowFirst = 0, PickBox[]? PickBoxes = null,
-        float[]? FileDistances = null, int FileFirst = 0, float FileRadius = 0);
+        float[]? FileDistances = null, int FileFirst = 0, float FileRadius = 0, PreparedMesh? NeckCap = null, PreparedMesh? HeadCap = null);
 
     public CharacterContent(IGpuContext gpu, GameInstall install, GameDatabase db, AssetLocator assets, CharacterRigs? rigs = null)
     {
         this.gpu = gpu;
         this.assets = assets;
         this.db = db;
-        resolver = new MaterialResolver(db, OgreMaterialLibrary.LoadConfigured(install, out _), assets);
-        Textures = new WorldTextureCache(gpu, assets, "character textures");
+        resolver = new MaterialResolver(db, assets.Materials, assets);
+        Textures = new WorldTextureCache(gpu, assets, "character textures") { Share = TextureShare.For(gpu) };
         Morphs = new MorphArena(gpu);
         Materials = new CharacterMaterialTable(gpu);
         Rigs = rigs ?? CreateRigs(db, assets);
@@ -256,7 +263,7 @@ internal sealed class CharacterContent : IDisposable
 
     /// <summary>What a worker makes of a mesh file (<see cref="PrepareMesh"/>): everything but the GPU buffers.</summary>
     sealed record PreparedMesh(PreparedPart[] Parts, float[] Distances, string? FirstMaterialName, Vector3 Centre, float Radius, MeshMorphs? Morphs, float[]? ShadowDistances, int ShadowFirst, PickBox[] PickBoxes,
-        float[]? FileDistances, int FileFirst, float FileRadius);
+        float[]? FileDistances, int FileFirst, float FileRadius, PreparedMesh? NeckCap = null, PreparedMesh? HeadCap = null);
     /// <summary>A prepared mesh (null: it could not be read) and the messages its reading left.</summary>
     sealed record Prepared(PreparedMesh? Mesh, List<string> Messages);
     static readonly Prepared Uploaded = new(null, []);
@@ -280,6 +287,7 @@ internal sealed class CharacterContent : IDisposable
         try
         {
             var mesh = OgreMeshReader.ReadFile(path);
+            if (MeshWeld.Enabled) OgreMeshWeld.Apply(mesh);
             var model = Model.Build(mesh, boneCount, gameBinormals: !icon, tangentSign: icon);
             var morphs = MeshMorphs.From(mesh, model, messages, Path.GetFileName(path));
             if (limbs is not null || partMap is not null) MarkBody(model, limbs, partMap is null ? null : PartMapImage(partMap, messages));
@@ -292,12 +300,12 @@ internal sealed class CharacterContent : IDisposable
             // 116 for a 20 unit tall body), which would keep them at full detail for another hundred units: the model's own extent bounds it.
             radius = Math.Min(radius, Math.Max(model.Radius, 1));
             // Hair and beards (HairLodScale) are alpha-tested cards: a collapse merges cards and strands go while the surface hardly moves, so the deviation underrates it.
-            var levels = close ? [FullLevel(mesh)] : GeneratedLevels(mesh, model, radius, pixelsPerRadian * lodScale, LodSettings);
+            var levels = close ? [FullLevel(mesh)] : GeneratedLevels(path, mesh, model, radius, pixelsPerRadian * lodScale, LodSettings);
             // Shadow-only levels (the body, which has no cut-outs): built without the texture guard, whose refusals stop the body at about 1300 triangles, so a crowd's
             // shadows can be coarser than its picture; never picked by the picture (distance infinity), the depth pass chooses among them by ShadowDistances.
             float[]? shadowDistances = null;
             int shadowFirst = levels.Count;
-            if (shadowLevels && !close && GeneratedLevels(mesh, model, radius, pixelsPerRadian, ShadowSettings) is { Count: > 1 } shadow)
+            if (shadowLevels && !close && GeneratedLevels(path, mesh, model, radius, pixelsPerRadian, ShadowSettings) is { Count: > 1 } shadow)
             {
                 shadowDistances = [.. shadow.Select(l => l.Distance)];
                 levels.AddRange(shadow.Skip(1).Select(l => l with { Distance = float.PositiveInfinity }));
@@ -314,7 +322,8 @@ internal sealed class CharacterContent : IDisposable
             var decoded = new DecodedObjectMesh { Model = model, Levels = levels, Manual = [], Centre = centre, Radius = radius };
             var parts = model.Parts.Select(part => ObjectMeshCache.PreparePart(decoded, part, keepLevels: false)).ToArray();
             return new(new PreparedMesh(parts, [.. levels.Select(l => l.Distance)], mesh.SubMeshes.FirstOrDefault()?.MaterialName, centre, radius, morphs, shadowDistances, shadowFirst,
-                PickBox.From(model), fileDistances, fileFirst, fileRadius), messages);
+                PickBox.From(model), fileDistances, fileFirst, fileRadius,
+                limbs is not null && !close && !icon ? CapMesh(model, head: false) : null, limbs is not null && !close && !icon ? CapMesh(model, head: true) : null), messages);
         }
         catch (Exception e) when (e is OgreFormatException or IOException or EndOfStreamException or InvalidDataException)
         {
@@ -342,23 +351,25 @@ internal sealed class CharacterContent : IDisposable
         foreach (var made in ready.Parts)
         {
             var part = made.Part;
-            int vertexBytes = part.Vertices.Length * Vertex.Size, indexBytes = made.All.Length * 4;
-            var vertices = DeviceBuffer.Create(gpu, (ulong)vertexBytes, BufferUse.Vertex, AllocationName);
+            var packed = GpuVertex.PackCharacter(part.Vertices);
+            int vertexBytes = packed.Length, indexBytes = made.All.Length * 4;
+            // One vertex of slack: each attribute is bound at its own offset, and AMD reads the last vertex of an exactly sized buffer as zeros, a spike from its bind pose (VlcekM/MeitouClient#168).
+            var vertices = DeviceBuffer.Create(gpu, (ulong)(vertexBytes + Vertex.Size), BufferUse.Vertex, AllocationName);
             var indices = DeviceBuffer.Create(gpu, (ulong)indexBytes, BufferUse.Index, AllocationName);
-            uploads.Write(vertices, 0, MemoryMarshal.AsBytes(part.Vertices.AsSpan()));
+            uploads.Write(vertices, 0, packed);
             uploads.Write(indices, 0, MemoryMarshal.AsBytes(made.All.AsSpan()));
             var gp = new GpuObjectPart
             {
                 SubMeshIndex = part.SubMeshIndex, MaterialName = part.MaterialName, HasTangents = part.HasTangents, HasColours = part.HasColours,
                 Vertices = vertices, Indices = indices, Offset = made.Offset, Count = made.Count, UvScale = made.UvScale,
-                Attributes = ObjectMeshCache.VertexAttributes(vertices),
+                Attributes = GpuVertex.CharacterAttributes(vertices), Stride = GpuVertex.CharacterSize,
             };
             gpuMesh.Parts.Add(gp);
             gpuMesh.Bytes += vertexBytes + indexBytes;
         }
         MeshBytes += gpuMesh.Bytes;
         return new LoadedMesh(gpuMesh, ready.FirstMaterialName, ready.Centre, ready.Radius, ready.Morphs, ready.ShadowDistances, ready.ShadowFirst, ready.PickBoxes,
-            ready.FileDistances, ready.FileFirst, ready.FileRadius);
+            ready.FileDistances, ready.FileFirst, ready.FileRadius, ready.NeckCap, ready.HeadCap);
     }
 
     /// <summary>
@@ -403,6 +414,8 @@ internal sealed class CharacterContent : IDisposable
     {
         if (fetching.TryGetValue(c, out var task)) return task.IsCompleted;
         if (!urgent && Volatile.Read(ref fetchesRunning) >= FetchLimit) return false;
+        // Every mesh prepared already (a look that only lost a limb or its head, or changed what it carries): built at once, so the character is not left undrawn a frame.
+        if (AllPrepared(c, closeUp.Contains(c))) return true;
         if (Start(c, urgent, closeUp.Contains(c)) is not { } started) return true;   // no body mesh: Build reports it
         fetching[c] = started;
         return false;
@@ -414,9 +427,12 @@ internal sealed class CharacterContent : IDisposable
     /// </summary>
     public void Warm(CharacterAppearance c, bool urgent, bool close)
     {
-        if (FindMesh(c.BodyMesh) is { } body && IsPrepared(body, close) && c.Parts.All(p => FindMesh(p.Mesh) is not { } path || IsPrepared(path, close))) return;
-        Start(c, urgent, close);
+        if (!AllPrepared(c, close)) Start(c, urgent, close);
     }
+
+    /// <summary>Whether <paramref name="c"/>'s body and part meshes are all prepared (or uploaded) already.</summary>
+    bool AllPrepared(CharacterAppearance c, bool close) =>
+        FindMesh(c.BodyMesh) is { } body && IsPrepared(body, close) && c.Parts.All(p => FindMesh(p.Mesh) is not { } path || IsPrepared(path, close));
 
     /// <summary>Looks to build as close-ups (<see cref="PrepareMesh"/>: their meshes without generated levels), from <see cref="Prefetch"/> until <see cref="Build"/>.</summary>
     readonly HashSet<CharacterAppearance> closeUp = [];
@@ -471,7 +487,10 @@ internal sealed class CharacterContent : IDisposable
         return urgent ? BackgroundWork.RunUrgent(Fetch) : BackgroundWork.Run(Fetch);
     }
 
-    /// <summary>Which bone handle belongs to which limb slot (-1: none) and the bind-pose heights below which a limb's vertices are its hideable part.</summary>
+    /// <summary>The head's entry in <see cref="LimbHide.LimbOfBone"/> (the limb slots are 0 to 3) and its body-vertex hide bit (between the part-map bits 4 to 13 and the part index from 16).</summary>
+    internal const int HeadLimb = 4, HeadBit = 1 << 14;
+
+    /// <summary>Which bone handle belongs to which limb slot (-1: none; <see cref="HeadLimb"/> the head) and the bind-pose heights below which a limb's vertices are its hideable part.</summary>
     internal sealed record LimbHide(int[] LimbOfBone, float ArmBelow, float LegBelow, int[] PartOfBone);
 
     /// <summary>
@@ -490,7 +509,7 @@ internal sealed class CharacterContent : IDisposable
         {
             var part = anatomy[partIndex];
             bool right = (part.GetInt("collapse part") & 0x12) != 0;
-            int limb = part.GetInt("body part type") switch { 2 => right ? 1 : 0, 1 => right ? 3 : 2, _ => -1 };
+            int limb = part.GetInt("body part type") switch { 2 => right ? 1 : 0, 1 => right ? 3 : 2, 3 => HeadLimb, _ => -1 };
             foreach (var key in new[] { "bone name", "bone name 2", "bone name 3" })
                 if (part.GetString(key) is { Length: > 0 } bone) { claimed.TryAdd(bone, limb); claimedPart.TryAdd(bone, rank[partIndex]); }
         }
@@ -529,7 +548,8 @@ internal sealed class CharacterContent : IDisposable
     }
 
     /// <summary>
-    /// Writes each body vertex's hide bits into its colour's Y (<c>FUN_140071f90</c>): bits 0 to 3 the limb of its heaviest bone, when the vertex lies below that limb's height;
+    /// Writes each body vertex's hide bits into its colour's Y (<c>FUN_140071f90</c>): bits 0 to 3 the limb of its heaviest bone, when the vertex lies below that limb's height
+    /// (bit 14 for a head bone's vertex, Meitou's: <see cref="HeadBit"/>);
     /// from bit 4 the part-map bit of the texel under its UV (texel floor(size × uv), clamped; an exact colour of the table, alpha above 0; any other colour marks nothing).
     /// </summary>
     static void MarkBody(Model model, LimbHide? hide, RgbaImage? partMap)
@@ -549,7 +569,9 @@ internal sealed class CharacterContent : IDisposable
                         if (w > best) { best = w; bone = (int)((v.Bones >> (8 * k)) & 0xFF); }
                     }
                     int limb = (uint)bone < (uint)hide.LimbOfBone.Length ? hide.LimbOfBone[bone] : -1;
-                    if (limb >= 0 && v.Position.Y < (limb < 2 ? hide.ArmBelow : hide.LegBelow)) bits = 1 << limb;
+                    // The head (Meitou decapitation): every vertex of its bones, bit 14; the neck is the chest's.
+                    if (limb == HeadLimb) bits = HeadBit;
+                    else if (limb >= 0 && v.Position.Y < (limb < 2 ? hide.ArmBelow : hide.LegBelow)) bits = 1 << limb;
                     // The part of the heaviest bone (the blood amounts are the first 8 parts', FUN_140530b30): bits 16 to 19, its index + 1.
                     int owner = (uint)bone < (uint)hide.PartOfBone.Length ? hide.PartOfBone[bone] : -1;
                     if ((uint)owner < 8) bits |= (owner + 1) << 16;
@@ -628,11 +650,11 @@ internal sealed class CharacterContent : IDisposable
     /// <summary>A mesh's own triangles, its full level.</summary>
     static MeshLodLevel FullLevel(OgreMesh mesh) => new(0, mesh.SubMeshes.Select(s => (uint[]?)s.Indices.Indices).ToList());
 
-    static List<MeshLodLevel> GeneratedLevels(OgreMesh mesh, Model model, float radius, float pixelsPerRadian, FoliageLodBuilder.Settings settings)
+    static List<MeshLodLevel> GeneratedLevels(string path, OgreMesh mesh, Model model, float radius, float pixelsPerRadian, FoliageLodBuilder.Settings settings)
     {
         var levels = new List<MeshLodLevel> { FullLevel(mesh) };
         var parts = model.Parts.Where(p => p.Indices.Length > 0).ToList();
-        if (parts.Count == 0 || FoliageLodBuilder.Build(model, radius, settings) is not { } set) return levels;
+        if (parts.Count == 0 || BuildLevels(path, model, parts, radius, settings) is not { } set) return levels;
         var distances = ObjectLodGen.Distances(set, ObjectLodGen.TriangleExtent(parts), radius, pixelsPerRadian);
         for (int k = 1; k < set.Levels; k++)
         {
@@ -641,6 +663,42 @@ internal sealed class CharacterContent : IDisposable
             levels.Add(new MeshLodLevel(distances[k], subs));
         }
         return levels;
+    }
+
+    /// <summary>
+    /// The disk cache of the generated levels, <c>%LOCALAPPDATA%\Meitou\charlods</c> (<c>MEITOU_CHARACTER_LOD_CACHE</c>; neither read nor written with <c>--no-load-cache</c>), as
+    /// the objects' (<see cref="ObjectLodGen.Root"/>): building the levels is nearly all of a mesh's preparation, and a town's crowd took about 40 s of worker time at every load.
+    /// </summary>
+    public static string LodRoot { get; set; } = Environment.GetEnvironmentVariable("MEITOU_CHARACTER_LOD_CACHE")
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "charlods");
+
+    /// <summary>Bumped when what the character levels are built from changes (with <see cref="FoliageLodBuilder.Version"/>, the cache's key).</summary>
+    const int LodVersion = 1;
+
+    /// <summary>
+    /// <see cref="FoliageLodBuilder.Build(Model, float, FoliageLodBuilder.Settings)"/> through <see cref="LodRoot"/>, keyed by all the build reads: the parts' vertices and
+    /// indices, the radius and the settings (a mesh read for another bone count or limb marking has an entry of its own).
+    /// </summary>
+    static FoliageLodSet? BuildLevels(string path, Model model, List<ModelPart> parts, float radius, FoliageLodBuilder.Settings settings)
+    {
+        if (Meitou.Data.World.LoadCaches.Disabled) return FoliageLodBuilder.Build(model, radius, settings);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var part in parts)
+        {
+            hash.AppendData(MemoryMarshal.AsBytes(part.Vertices.AsSpan()));
+            hash.AppendData(MemoryMarshal.AsBytes(part.Indices.AsSpan()));
+        }
+        string Number(float f) => f.ToString("R", CultureInfo.InvariantCulture);
+        hash.AppendData(Encoding.UTF8.GetBytes($"{Number(radius)} {string.Join(',', settings.Fractions.Select(Number))} {settings.Floor} {Number(settings.MaxRelativeError)} " +
+            $"{Number(settings.MaxNormalAngle)} {Number(settings.MinGain)} {settings.UvAware} {settings.TwoSided}"));
+        int version = FoliageLodBuilder.Version * 100 + LodVersion;
+        // The file is named by the mesh and a hash of that key (PathFor hashes the bytes it is given).
+        string file = FoliageLodCache.PathFor(path, hash.GetHashAndReset(), LodRoot, version);
+        var (hit, cached) = FoliageLodCache.TryLoad(file, parts.Count, version);
+        if (hit) return cached;
+        var built = FoliageLodBuilder.Build(model, radius, settings);
+        FoliageLodCache.Save(file, built, parts.Count, version);
+        return built;
     }
 
     /// <summary>Assembles the asset for <paramref name="c"/>; null when its body mesh or skeleton cannot be found.</summary>
@@ -686,6 +744,13 @@ internal sealed class CharacterContent : IDisposable
             Morphed = asset.MorphBase != 0, ShadowDistances = body.ShadowDistances, ShadowFirst = body.ShadowFirst, IsBody = true,
             FileDistances = body.FileDistances, FileFirst = body.FileFirst, FileRadius = body.FileRadius,
         });
+        // A headless body's neck, and a cut-off head's, is closed by a cap made from the body (NeckCap), in the race's wound look.
+        if ((c.Headless || c.HeadOnly) && NeckCapMesh(bodyPath, body, rig.BoneCount, c.HeadOnly) is { } cap)
+            asset.Parts.Add(new AssetPart
+            {
+                Label = $"neck cap {Path.GetFileName(bodyPath)}", Mesh = cap.Gpu, Shared = true, Material = WoundMaterial(c),
+                BoundsCentre = cap.Centre, BoundsRadius = cap.Radius, Morphed = asset.MorphBase != 0,
+            });
         foreach (var part in c.Parts)
         {
             var path = FindMesh(part.Mesh);
@@ -750,6 +815,44 @@ internal sealed class CharacterContent : IDisposable
         m.Tex[CharacterShaders.SlotBlood] = Texture("bloody.png", false);
     }
 
+    /// <summary>
+    /// The neck cap's look (Meitou decapitation): a wound in the race's <c>blood colour</c> splattered by <c>bloody.png</c> over its planar coordinates, flesh with a bone at
+    /// the centre, or for a race with <c>is robot</c> (skeletons; a mod's mechanical race the same way) a metal socket with the fluid over it (<see cref="CharacterShaders.Wound"/>).
+    /// </summary>
+    PartMaterial WoundMaterial(CharacterAppearance c)
+    {
+        var m = new PartMaterial
+        {
+            Shading = CharacterShaders.ShadeItem, Description = $"RACE '{c.Race.Name}' neck wound", Wound = true, Mechanical = c.Race.GetBool("is robot"),
+            Colour1 = new Vector4(CharacterAppearance.Rgb(c.Race.GetInt("blood colour", 0x800000) & 0xFFFFFF), 1),
+        };
+        m.Tex[CharacterShaders.SlotDiffuse] = Texture("bloody.png", false);
+        return m;
+    }
+
+    /// <summary>
+    /// The neck cap of a body mesh (<see cref="NeckCap"/>; <paramref name="head"/>: the cut-off head's), prepared on the worker with the body (<see cref="PrepareMesh"/>) and uploaded
+    /// the first time a look needs it; null when the body has no head vertices.
+    /// </summary>
+    LoadedMesh? NeckCapMesh(string bodyPath, LoadedMesh body, int bones, bool head)
+    {
+        var key = (bodyPath.ToLowerInvariant() + (head ? "#head cap" : "#neck cap"), bones, false, (string?)null);
+        if (meshes.TryGetValue(key, out var cached)) return cached;
+        return meshes[key] = (head ? body.HeadCap : body.NeckCap) is { } ready ? Upload(ready) : null;
+    }
+
+    /// <summary>A body's cap (<see cref="NeckCap"/>) ready for upload, from the body's model as <see cref="PrepareMesh"/> marked it (its face-morph slots and head bits); null: none.</summary>
+    static PreparedMesh? CapMesh(Model body, bool head)
+    {
+        if (NeckCap.Build(body, head) is not { } part) return null;
+        var min = part.Vertices.Aggregate(new Vector3(float.MaxValue), (a, v) => Vector3.Min(a, v.Position));
+        var max = part.Vertices.Aggregate(new Vector3(float.MinValue), (a, v) => Vector3.Max(a, v.Position));
+        var model = new Model();
+        model.Parts.Add(part);
+        var decoded = new DecodedObjectMesh { Model = model, Levels = [new MeshLodLevel(0, [part.Indices])], Manual = [], Centre = (min + max) / 2, Radius = Math.Max((max - min).Length() / 2, 0.5f) };
+        return new PreparedMesh([ObjectMeshCache.PreparePart(decoded, part, keepLevels: false)], [0], "neck cap", decoded.Centre, decoded.Radius, null, null, 0, [], null, 0, decoded.Radius);
+    }
+
     PartMaterial BodyMaterial(CharacterAppearance c)
     {
         string f = c.Female ? " female" : "";
@@ -798,6 +901,8 @@ internal sealed class CharacterContent : IDisposable
         {
             // Hair and beards: brightness and alpha are channels of the diffuse texture.
             m.Shading = CharacterShaders.ShadeHair;
+            m.GlossMult = item.GetFloat("specular");
+            m.MipmapBias = item.GetFloat("mipmap bias");
             string? diffuse = Tex(item, "texture map" + f) ?? Tex(item, "texture map");
             m.Description = $"hair texture {Path.GetFileName(diffuse ?? "-")}";
             m.Tex[CharacterShaders.SlotDiffuse] = Texture(diffuse, false);

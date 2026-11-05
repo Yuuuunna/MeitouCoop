@@ -43,19 +43,73 @@ public sealed class WorldLevelData
     /// <summary>Merge problems over all files (records defined twice, ...), tagged with the layer file.</summary>
     public List<GameDataIssue> Issues { get; } = [];
 
+    /// <summary>
+    /// The <see cref="Issues"/> worth a warning: not a record defined again, which is how a later layer replaces placements (Observed: the
+    /// unmodded 1.0.68 layers give 4047, all of that kind, and the game plays as shipped).
+    /// </summary>
+    public List<GameDataIssue> Problems() => [.. Issues.Where(i => i.Kind != GameDataIssueKind.RecordAlreadyDefined)];
+
+    /// <summary>
+    /// The height the original stands each outdoor level building at, by <see cref="BuildingKey"/> (docs/formats/zones.md "Placement height"); filled by
+    /// <see cref="PlaceOnGround"/>. A building without one keeps its state's <c>world Y pos</c>.
+    /// </summary>
+    readonly Dictionary<string, float> groundHeights = new(StringComparer.Ordinal);
+
+    /// <summary>The original deletes a building whose instance Y is below this when it makes it ("under the ground", docs/formats/zones.md "Placement height").</summary>
+    public const float UnderGround = -1000;
+
+    /// <summary>Loads the install's world with its outdoor buildings stood on the ground (<see cref="PlaceOnGround"/>).</summary>
     public static WorldLevelData Load(GameInstall install, bool includeInteriors = false) =>
-        Load(Path.Combine(install.DataDirectory, RelativeDirectory), LoadOrder.FromInstall(install).Entries.Select(e => e.Name), includeInteriors);
+        OnGround(Load(Path.Combine(install.DataDirectory, RelativeDirectory), LoadOrder.FromInstall(install).Entries, includeInteriors), install);
+
+    /// <summary>The base game's world alone (the core files' layers, no mod's): what the install tests are written against.</summary>
+    public static WorldLevelData LoadBaseGame(GameInstall install, bool includeInteriors = false) =>
+        OnGround(Load(Path.Combine(install.DataDirectory, RelativeDirectory), LoadOrder.BaseGame(install).Entries, includeInteriors), install);
+
+    static WorldLevelData OnGround(WorldLevelData world, GameInstall install)
+    {
+        string path = GameFiles.Resolve(Path.Combine(install.DataDirectory, TerrainHeightmap.RelativePath));
+        if (!File.Exists(path)) return world;
+        using var map = TerrainHeightmap.Open(path);
+        world.PlaceOnGround(map.BuildingGroundAt);
+        return world;
+    }
+
+    /// <summary>
+    /// Stands every outdoor level building on <paramref name="ground"/> (<see cref="TerrainHeightmap.BuildingGroundAt"/>) plus its instance Y, and one inside
+    /// or mounted on another of its zone on that one's height plus its instance Y, as the original does whatever its state's <c>world Y pos</c> says
+    /// (docs/formats/zones.md "Placement height"). One whose parent is not found keeps its state's height.
+    /// </summary>
+    public void PlaceOnGround(Func<double, double, float> ground)
+    {
+        groundHeights.Clear();
+        foreach (var (zone, db) in Zones)
+            if (db.Find(BuildingListId) is { } list)
+                new PlacementHeights(zone, db, list, ground, groundHeights).Resolve();
+    }
+
+    /// <summary>A mod's own world layer, under its folder (docs/formats/zones.md "Mods").</summary>
+    public const string ModDirectory = "leveldata";
 
     /// <summary>Loads from <paramref name="directory"/>, with sub-folder layers named after <paramref name="loadOrder"/> files (extension dropped).</summary>
-    public static WorldLevelData Load(string directory, IEnumerable<string> loadOrder, bool includeInteriors = false)
+    public static WorldLevelData Load(string directory, IEnumerable<string> loadOrder, bool includeInteriors = false) =>
+        Load(directory, loadOrder.Select(name => new LoadOrderEntry(name, "")), includeInteriors);
+
+    /// <summary>
+    /// Loads from <paramref name="directory"/>, then one layer per <paramref name="loadOrder"/> file that has one, in load order: a core file's sub-folder named after it
+    /// (extension dropped), a mod's <c>leveldata</c> folder beside its <c>.mod</c> file (Workshop or <c>mods/</c>).
+    /// </summary>
+    public static WorldLevelData Load(string directory, IEnumerable<LoadOrderEntry> loadOrder, bool includeInteriors = false)
     {
         var world = new WorldLevelData();
         world.Layers.Add(new WorldLevelLayer("", directory));
-        foreach (var name in loadOrder)
+        foreach (var entry in loadOrder)
         {
-            var sub = Path.Combine(directory, Path.GetFileNameWithoutExtension(name));
+            string name = Path.GetFileNameWithoutExtension(entry.Name);
+            bool core = entry.Path.Length == 0 || LoadOrder.BaseFiles.Contains(entry.Name, StringComparer.OrdinalIgnoreCase);
+            var sub = core ? Path.Combine(directory, name) : GameFiles.Resolve(Path.Combine(Path.GetDirectoryName(entry.Path)!, ModDirectory));
             if (Directory.Exists(sub))
-                world.Layers.Add(new WorldLevelLayer(Path.GetFileNameWithoutExtension(name), sub));
+                world.Layers.Add(new WorldLevelLayer(name, sub));
         }
         if (includeInteriors) world.Interiors = new GameDatabase();
 
@@ -80,7 +134,14 @@ public sealed class WorldLevelData
     {
         var name = layer.Name.Length == 0 ? Path.GetFileName(path) : $"{layer.Name}/{Path.GetFileName(path)}";
         int before = db.Issues.Count;
-        var file = LevelFile.ReadFile(path);
+        LevelFile file;
+        try { file = LevelFile.ReadFile(path); }
+        catch (Exception e) when (e is FcsFormatException or EndOfStreamException or InvalidDataException or IOException)
+        {
+            // A mod's file the reader refuses is left out (Observed: Great Frontiers' interiors.level has every zero byte turned to a space; the game plays on).
+            Issues.Add(new GameDataIssue(GameDataIssueKind.LevelFileNotLoaded, name, null, e.Message));
+            return;
+        }
         if (zone is { } z)
         {
             if (!ZoneInfo.TryGetValue(z, out var info)) ZoneInfo[z] = info = new ZoneLevelInfo();
@@ -112,8 +173,10 @@ public sealed class WorldLevelData
             foreach (var instance in list.Instances.Values)
             {
                 if (instance.IsCleared) continue; // emptied by a later layer
+                if (instance.Position.Y < UnderGround) continue;   // the original deletes it on load
                 string? stateId = instance.States.Count > 0 ? instance.States[0] : null;
-                float? worldY = stateId is not null && db.Find(stateId) is { } state && state.Floats.TryGetValue("world Y pos", out var y) ? y : null;
+                float? worldY = groundHeights.TryGetValue(BuildingKey.Of(zone, instance.Id), out float onGround) ? onGround
+                    : stateId is not null && db.Find(stateId) is { } state && state.Floats.TryGetValue("world Y pos", out var y) ? y : null;
                 yield return new BuildingPlacement(zone, instance.Id, instance.Target, instance.Position, instance.Rotation, stateId, worldY)
                 {
                     TargetsZoneRecord = db.Find(instance.Target) is not null,
@@ -180,11 +243,27 @@ public sealed class WorldLevelLayer(string name, string directory)
 /// <param name="Position">X and Z are world coordinates; Y is the height above the terrain (Observed).</param>
 /// <param name="BuildingId">String id of the placed <see cref="FcsRecordType.BUILDING"/> record.</param>
 /// <param name="StateId">String id of its <see cref="FcsRecordType.GAMESTATE_BUILDING"/> record in the same zone file.</param>
-/// <param name="WorldY">The state's <c>world Y pos</c>: absolute height (terrain height + <c>Position.Y</c> for most).</param>
+/// <param name="WorldY">Absolute height: for an outdoor level building the original's building ground + <c>Position.Y</c> (<see cref="WorldLevelData.PlaceOnGround"/>),
+/// else its state's <c>world Y pos</c>.</param>
 public sealed record BuildingPlacement(ZoneCoordinate Zone, string InstanceId, string BuildingId, Vector3 Position, Quaternion Rotation, string? StateId, float? WorldY)
 {
     /// <summary>Runtime repair state; null leaves the level/save flag in control.</summary>
     public bool? DestroyedOverride { get; init; }
+    /// <summary>Its state's interior layout is not laid out: a town house the player bought, whose furniture the purchase destroyed (docs/simulation.md "Town house purchases").</summary>
+    public bool WithoutInterior { get; init; }
+    /// <summary>
+    /// Its interior and exterior layout names when not its state's: a town override's or a loaded save's residents named them (runtime layout overrides,
+    /// docs/game/factions-squads-towns.md "Town residents"); null leaves the state's.
+    /// </summary>
+    public string? InteriorLayout { get; init; }
+    public string? ExteriorLayout { get; init; }
+
+    /// <summary>The name of its interior or exterior layout: its own (<see cref="InteriorLayout"/>), else its state's; "" for none.</summary>
+    public string LayoutName(GameRecord? state, bool exterior) =>
+        (exterior ? ExteriorLayout : InteriorLayout) ?? state?.GetString(exterior ? "exterior layout name" : "interior layout name") ?? "";
+    /// <summary>A loose item's mesh and scale when not its record's own (a nest's numbered debris piece, docs/game/factions-squads-towns.md "Nest furniture").</summary>
+    public string? ItemMesh { get; init; }
+    public float ItemScale { get; init; } = 1;
     readonly string? key;
 
     /// <summary>The run-time name of the building (<see cref="BuildingKey.Of"/>); a player-placed building, whose id is unique already, is given its own.</summary>
@@ -195,6 +274,8 @@ public sealed record BuildingPlacement(ZoneCoordinate Zone, string InstanceId, s
     public bool Contained { get; init; }
     /// <summary>The building it was placed in (<see cref="PlacedMesh.ContainerId"/>), when known.</summary>
     public string? ContainerId { get; init; }
+    /// <summary>The zone file holding <see cref="StateId"/> when it is not <see cref="Zone"/>: a copy of a level building placed elsewhere (the Meitou editor's bar) keeps its state and layouts.</summary>
+    public ZoneCoordinate? StateZone { get; init; }
 }
 
 /// <param name="TownId">String id of the placed <see cref="FcsRecordType.TOWN"/> record.</param>

@@ -143,7 +143,7 @@ public sealed class PlayerCreationService
         var proposal = PrepareRequest(connection, request);
         var grant = proposal.Grant; var start = proposal.Start;
         bool initial = grant.Kind == CreationQualificationKind.InitialStart;
-        string? name = initial ? ValidName(request.FactionName) : null;
+        string? name = initial ? InitialFactionName(request.FactionName, proposal.Faction, player) : null;
         if (!initial && request.FactionName is not null) throw new InvalidOperationException("Faction-approved creation cannot rename its faction.");
         int faction = proposal.Faction;
         if (initial && data.Relations.PlayerFaction != -1) throw new InvalidOperationException("Initial multiplayer creation requires directed diplomacy.");
@@ -206,17 +206,37 @@ public sealed class PlayerCreationService
         return operation.Receipt with { Roles = operation.Receipt.Roles.ToArray() };
     }
 
+    string InitialFactionName(string? requested, int template, PlayerId player)
+    {
+        if (requested is not null) return ValidName(requested);
+        string prefix = data.Factions[template].Name.Trim();
+        if (prefix.Length is < 1 or > 32 || prefix.Any(c => char.IsControl(c) || "<>:\"/\\|?*".Contains(c))) prefix = "Nameless";
+        // The owner boundary serializes this choice and faction registration. Replays return the durable receipt first.
+        for (int suffix = 0; ; suffix++)
+        {
+            string candidate = suffix == 0 ? FormattableString.Invariant($"{prefix} {player.Value}")
+                : FormattableString.Invariant($"{prefix} {player.Value}-{suffix}");
+            if (!FactionNameInUse(candidate)) return candidate;
+        }
+    }
+
     string ValidName(string? value)
     {
         string name = value?.Trim() ?? "";
         if (name.Length is < 1 or > 64 || name.Any(c => char.IsControl(c) || "<>:\"/\\|?*".Contains(c)))
             throw new ArgumentException("Invalid faction name.");
+        if (FactionNameInUse(name)) throw new InvalidOperationException("Faction name is already in use.");
+        return name;
+    }
+
+    bool FactionNameInUse(string name)
+    {
         // Empty reserved rows left by failed assembly are not active faction names.
         for (int i = 0; i < data.Factions.Count; i++)
             if ((i < data.Relations.ContentCount || world.Factions.Find(i) is not null) &&
                 string.Equals(world.Factions.Find(i)?.Name ?? data.Factions[i].Name, name, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Faction name is already in use.");
-        return name;
+                return true;
+        return false;
     }
 
     static PlayerCreationRequest Freeze(PlayerCreationRequest request)

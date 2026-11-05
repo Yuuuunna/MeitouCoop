@@ -14,6 +14,8 @@ public sealed record CharacterDisplay
     public GameRecord? Hair { get; init; }
     public GameRecord? Beard { get; init; }
     public bool Female { get; init; }
+    public bool Headless { get; init; }
+    public bool HeadOnly { get; init; }
     public required string BodyMesh { get; init; }
     public string? BodyTexture { get; init; }
     public string? BodyNormal { get; init; }
@@ -38,7 +40,7 @@ public sealed partial class CharacterAppearance
     public CharacterDisplay CaptureDisplay(GameDatabase db) => new()
     {
         Race = Race, Character = Character, Animal = Animal, Faction = Faction, Head = Head, Hair = Hair, Beard = Beard,
-        Female = Female, BodyMesh = BodyMesh, BodyTexture = BodyTexture, BodyNormal = BodyNormal,
+        Female = Female, Headless = Headless, HeadOnly = HeadOnly, BodyMesh = BodyMesh, BodyTexture = BodyTexture, BodyNormal = BodyNormal,
         BodyNormalStrong = BodyNormalStrong, BodyNormalSkinny = BodyNormalSkinny, BodyMask = BodyMask, PartMap = PartMap,
         Shape = Shape ?? CharacterShape.InputFor(db, this), SkinToneParameter = SkinToneParameter, HairColour = HairColour,
         HiddenLimbs = HiddenLimbs, HiddenParts = HiddenParts, Parts = [.. Parts], BodyLayers = [.. BodyLayers], Lights = [.. Lights],
@@ -54,7 +56,7 @@ public sealed partial class CharacterAppearance
         var appearance = new CharacterAppearance
         {
             Race = d.Race, Character = d.Character, Animal = d.Animal, Faction = d.Faction, Head = d.Head, Hair = d.Hair, Beard = d.Beard,
-            Female = d.Female, BodyMesh = d.BodyMesh, BodyTexture = d.BodyTexture, BodyNormal = d.BodyNormal,
+            Female = d.Female, Headless = d.Headless, HeadOnly = d.HeadOnly, BodyMesh = d.BodyMesh, BodyTexture = d.BodyTexture, BodyNormal = d.BodyNormal,
             BodyNormalStrong = d.BodyNormalStrong, BodyNormalSkinny = d.BodyNormalSkinny, BodyMask = d.BodyMask, PartMap = d.PartMap,
             Shape = d.Shape, SkinToneParameter = d.SkinToneParameter, HairColour = d.HairColour, HiddenLimbs = d.HiddenLimbs, HiddenParts = d.HiddenParts,
         };

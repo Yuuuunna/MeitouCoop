@@ -1,0 +1,1342 @@
+diff --git a/README-linux.md b/README-linux.md
+new file mode 100644
+index 0000000..ed23b94
+--- /dev/null
++++ b/README-linux.md
+@@ -0,0 +1,61 @@
++# FidelityFX SDK 1.1.4: native Linux port of the Vulkan `ffx_api` library (milestone 1)
++
++> **Unofficial build.** This is an unofficial build of AMD FidelityFX SDK 1.1.4, modified to build on Linux. It is not
++> made, endorsed or supported by AMD. AMD's copyright and MIT licence (`LICENSE.txt`) apply to AMD's code; our changes
++> are under the same MIT licence. FidelityFX and FSR are AMD trademarks, used here only to name the software.
++
++Base: `GPUOpen-LibrariesAndSDKs/FidelityFX-SDK` tag `v1.1.4`, commit `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`
++(MIT licence, see `LICENSE.txt`). Branch `linux-port`; every change is either `#ifdef _WIN32`-guarded or
++harmless on Windows, so the commits can be exported as a patch series onto the pinned upstream commit.
++
++Result: `libamd_fidelityfx_vk.so`, a drop-in for `amd_fidelityfx_vk.dll`. It exports exactly
++`ffxCreateContext`, `ffxDestroyContext`, `ffxConfigure`, `ffxQuery`, `ffxDispatch` and has the providers
++FSR3 upscaler, frame generation (frame interpolation + optical flow) and the Vulkan frame-generation
++swapchain. FSR2 is left out (`FFX_DISABLE_FSR2`). It links the system `libvulkan.so.1`, libc and libm;
++libstdc++/libgcc are linked statically.
++
++## Build
++
++    linux/build.sh            # configure, generate shaders, build, into ./build-linux
++    build-linux/ffx_smoke build-linux/libamd_fidelityfx_vk.so
++
++Needs cmake, ninja, gcc or clang, `glslangValidator` (tested with 16.6.0) and the Vulkan headers/loader.
++Heavy compiles: run under `systemd-run --user --scope -p MemoryMax=6G ...` (about 1.5 GB peak here).
++
++## What was changed
++
++- **Shaders.** The repo has no prebuilt SPIR-V. AMD's shader compiler front end `FidelityFX_SC` is built on
++  Linux from the repo's own source (`sdk/tools/ffx_shader_compiler`, GLSL path only, HLSL/DXC/FXC `#ifdef _WIN32`),
++  and `linux/CMakeLists.txt` drives it with AMD's own `CMakeShaders*.txt` lists, so the permutation matrix is
++  AMD's. `linux/shaders` is a symlink to `sdk/src/backends/vk/shaders` (their globs are relative).
++  `CMakeCompileShaders.txt`: on UNIX the `-DOPT={0,1}` arguments are single-quoted, because `/bin/sh` may be bash
++  and would brace-expand them. `glsl_compiler.cpp` only strips a trailing `\r` from glslang messages.
++- **Win32 compat layer** `linux/compat/ffx_linux_compat.h` (force-included with `-include`; `Windows.h` etc. in
++  that folder resolve to it): `CRITICAL_SECTION` = `std::recursive_mutex`, auto-reset events =
++  mutex + condition variable, `CreateThread`/`WaitForSingleObject` = `std::thread`,
++  `QueryPerformanceCounter` = `steady_clock` ns with frequency 1e9, `SetThreadDescription` = `pthread_setname_np`,
++  `SetThreadPriority` = no-op, `wcscpy_s`/`sprintf_s`/`swprintf_s`/`_countof`. This keeps the swapchain diff tiny.
++- **Source edits:** `FFX_API_ENTRY` (visibility attribute), `ffx_provider.cpp` (no D3D12/external providers
++  on Linux, FSR2 optional), `ui64` literals -> `ULL`, `%s` -> `%ls` for wide strings, full-screen-exclusive
++  structs under `_WIN32`, `static_cast` of `void*` to function pointer -> `reinterpret_cast`, two rvalue-to-reference
++  calls, `FFX_UNUSED` include, `FFX_SDK_DEFAULT_CONTEXT_SIZE` doubled on Linux (`wchar_t` is 4 bytes, the private
++  contexts outgrew the public blob), and `ffx_vk.cpp` scratch-memory arrays aligned to 16 bytes (gcc emits `movaps`
++  for them; the 4-byte alignment faulted only in optimised builds).
++- Export control: `linux/ffx_api.map` (version script) + `-fvisibility=hidden`.
++
++## Measured
++
++- 28 shader files x 4 variants (wave32/wave64, fp32/fp16) = 112 header sets, 2968 permutations requested,
++  252 unique SPIR-V blobs; 0 failures; all 252 pass `spirv-val --target-env vulkan1.2`.
++- `nm -D` shows only the five exports. gcc 16 warnings: 4 (deprecated `wstring_convert`, one `-Wwrite-strings`).
++- `ffx_smoke` (headless, RTX 3070): FSR3 upscaler create/query/destroy and frame generation create/destroy all return OK.
++
++## Not tested / known gaps
++
++- The swapchain provider (`FGSWAPCHAIN_VK`): compiled and linked only; never created, presented or paced.
++  Presenter threads run at normal priority (no RT rights); the pacer busy-waits on a CPU core, as on Windows.
++- No dispatch (`ffxDispatch`) of any effect, so no shader has run on a GPU; no Vulkan validation layer was installed here.
++- FSR2 provider omitted; HLSL path of SC not ported; clang build not tried; `wstring_convert` (deprecated) is AMD's own Linux fallback.
++- The app must enable `VK_KHR_get_memory_requirements2` and `VK_KHR_dedicated_allocation` on its device when the driver
++  offers them: the backend loads the KHR-named entry points by name and calls them without a null check (same on Windows).
++- Not AMD's binary: ship `LICENSE.txt` with it, and name it as your own build.
+diff --git a/ffx-api/include/ffx_api/ffx_api.h b/ffx-api/include/ffx_api/ffx_api.h
+index e136191..a0189fe 100644
+--- a/ffx-api/include/ffx_api/ffx_api.h
++++ b/ffx-api/include/ffx_api/ffx_api.h
+@@ -26,7 +26,11 @@
+ extern "C" {
+ #endif  // #if defined(__cplusplus)
+ 
++#if defined(_WIN32)
+ #define FFX_API_ENTRY __declspec(dllexport)
++#else
++#define FFX_API_ENTRY __attribute__((visibility("default")))
++#endif
+ #include <stdint.h>
+ 
+ enum FfxApiReturnCodes
+diff --git a/ffx-api/src/ffx_provider.cpp b/ffx-api/src/ffx_provider.cpp
+index d7c0e64..2d50a8a 100644
+--- a/ffx-api/src/ffx_provider.cpp
++++ b/ffx-api/src/ffx_provider.cpp
+@@ -22,7 +22,9 @@
+ 
+ #include "ffx_provider.h"
+ 
++#ifndef FFX_DISABLE_FSR2
+ #include "ffx_provider_fsr2.h"
++#endif
+ #include "ffx_provider_fsr3upscale.h"
+ #include "ffx_provider_framegeneration.h"
+ #include "ffx_provider_external.h"
+@@ -30,7 +32,9 @@
+ #include <array>
+ #include <optional>
+ 
++#ifdef _WIN32
+ #include <d3d12.h>
++#endif
+ 
+ #ifdef FFX_BACKEND_DX12
+ #include "dx12/ffx_provider_framegenerationswapchain_dx12.h"
+@@ -42,7 +46,9 @@
+ 
+ static constexpr ffxProvider* providers[] = {
+     &ffxProvider_FSR3Upscale::Instance,
++#ifndef FFX_DISABLE_FSR2
+     &ffxProvider_FSR2::Instance,
++#endif
+     &ffxProvider_FrameGeneration::Instance,
+ #ifdef FFX_BACKEND_DX12
+     &ffxProvider_FrameGenerationSwapChain_DX12::Instance,
+@@ -51,10 +57,12 @@ static constexpr ffxProvider* providers[] = {
+     &ffxProvider_FrameGenerationSwapChain_VK::Instance,
+ #endif // FFX_BACKEND_VK
+ };
+-static constexpr size_t providerCount = _countof(providers);
++static constexpr size_t providerCount = sizeof(providers) / sizeof(providers[0]);
+ 
+ static std::array<std::optional<ffxProviderExternal>, 10> externalProviders = {};
+ 
++#ifdef _WIN32
++typedef ID3D12Device ID3D12DeviceOrOpaque;
+ MIDL_INTERFACE("b58d6601-7401-4234-8180-6febfc0e484c")
+ IAmdExtFfxApi : public IUnknown
+ {
+@@ -131,10 +139,16 @@ void GetExternalProviders(ID3D12Device* device, uint64_t descType)
+     
+ }
+ 
++#else
++// No driver-side (external) providers on Linux.
++typedef void ID3D12DeviceOrOpaque;
++static void GetExternalProviders(ID3D12DeviceOrOpaque*, uint64_t) {}
++#endif
++
+ const ffxProvider* GetffxProvider(ffxStructType_t descType, uint64_t overrideId, void* device)
+ {
+     // check driver-side providers
+-    GetExternalProviders(reinterpret_cast<ID3D12Device*>(device), descType);
++    GetExternalProviders(reinterpret_cast<ID3D12DeviceOrOpaque*>(device), descType);
+ 
+     // If we are overriding, do not make the best provider choice decision
+     if (overrideId)
+@@ -217,7 +231,7 @@ uint64_t GetProviderVersions(ffxStructType_t descType, void* device, uint64_t ca
+     uint64_t count = 0;
+ 
+     // check driver-side providers
+-    GetExternalProviders(reinterpret_cast<ID3D12Device*>(device), descType);
++    GetExternalProviders(reinterpret_cast<ID3D12DeviceOrOpaque*>(device), descType);
+ 
+     for (const auto& provider : externalProviders)
+     {
+diff --git a/ffx-api/src/ffx_provider_framegeneration.cpp b/ffx-api/src/ffx_provider_framegeneration.cpp
+index 5b6e9d7..70a2528 100644
+--- a/ffx-api/src/ffx_provider_framegeneration.cpp
++++ b/ffx-api/src/ffx_provider_framegeneration.cpp
+@@ -77,7 +77,7 @@ struct InternalFgContext
+ uint64_t ffxProvider_FrameGeneration::GetId() const
+ {
+     // FG, version from header
+-    return 0xF600'0000ui64 << 32u | (FFX_SDK_MAKE_VERSION(FFX_FRAMEINTERPOLATION_VERSION_MAJOR, FFX_FRAMEINTERPOLATION_VERSION_MINOR, FFX_FRAMEINTERPOLATION_VERSION_PATCH) & 0xFFFF'FFFF);
++    return 0xF600'0000ULL << 32u | (FFX_SDK_MAKE_VERSION(FFX_FRAMEINTERPOLATION_VERSION_MAJOR, FFX_FRAMEINTERPOLATION_VERSION_MINOR, FFX_FRAMEINTERPOLATION_VERSION_PATCH) & 0xFFFF'FFFF);
+ }
+ 
+ const char* ffxProvider_FrameGeneration::GetVersionName() const
+@@ -150,7 +150,7 @@ ffxReturnCode_t ffxProvider_FrameGeneration::CreateContext(ffxContext* context,
+             for (FfxUInt32 i = 0; i < 2; i++)
+             {
+                 FfxCreateResourceDescription dilD = fiResourceDescs.dilatedDepth;
+-                swprintf(Name, 255, L"%s%d", fiResourceDescs.dilatedDepth.name, i);
++                swprintf(Name, 255, L"%ls%d", fiResourceDescs.dilatedDepth.name, i);
+                 dilD.name = Name;
+                 TRY2(internal_context->backendInterfaceShared.fpCreateResource(
+                     &internal_context->backendInterfaceShared,
+@@ -159,7 +159,7 @@ ffxReturnCode_t ffxProvider_FrameGeneration::CreateContext(ffxContext* context,
+                     &internal_context->sharedResources[FFX_FSR3_RESOURCE_IDENTIFIER_DILATED_DEPTH_0 + (i * FFX_FSR3_RESOURCE_IDENTIFIER_UPSCALED_COUNT)]));
+ 
+                 FfxCreateResourceDescription dilMVs = fiResourceDescs.dilatedMotionVectors;
+-                swprintf(Name, 255, L"%s%d", fiResourceDescs.dilatedMotionVectors.name, i);
++                swprintf(Name, 255, L"%ls%d", fiResourceDescs.dilatedMotionVectors.name, i);
+                 dilMVs.name = Name;
+                 TRY2(internal_context->backendInterfaceShared.fpCreateResource(
+                     &internal_context->backendInterfaceShared,
+@@ -168,7 +168,7 @@ ffxReturnCode_t ffxProvider_FrameGeneration::CreateContext(ffxContext* context,
+                     &internal_context->sharedResources[FFX_FSR3_RESOURCE_IDENTIFIER_DILATED_MOTION_VECTORS_0 + (i * FFX_FSR3_RESOURCE_IDENTIFIER_UPSCALED_COUNT)]));
+ 
+                 FfxCreateResourceDescription recND = fiResourceDescs.reconstructedPrevNearestDepth;
+-                swprintf(Name, 255, L"%s%d", fiResourceDescs.reconstructedPrevNearestDepth.name, i);
++                swprintf(Name, 255, L"%ls%d", fiResourceDescs.reconstructedPrevNearestDepth.name, i);
+                 recND.name = Name;
+                 TRY2(internal_context->backendInterfaceShared.fpCreateResource(
+                     &internal_context->backendInterfaceShared,
+diff --git a/ffx-api/src/ffx_provider_fsr2.cpp b/ffx-api/src/ffx_provider_fsr2.cpp
+index 1c9e551..ba0c2cb 100644
+--- a/ffx-api/src/ffx_provider_fsr2.cpp
++++ b/ffx-api/src/ffx_provider_fsr2.cpp
+@@ -79,7 +79,7 @@ bool ffxProvider_FSR2::CanProvide(uint64_t type) const
+ uint64_t ffxProvider_FSR2::GetId() const
+ {
+     // FSR Scale, version from header
+-    return 0xF5A5'CA1Eui64 << 32 | (FFX_SDK_MAKE_VERSION(FFX_FSR2_VERSION_MAJOR, FFX_FSR2_VERSION_MINOR, FFX_FSR2_VERSION_PATCH) & 0xFFFF'FFFF);
++    return 0xF5A5'CA1EULL << 32 | (FFX_SDK_MAKE_VERSION(FFX_FSR2_VERSION_MAJOR, FFX_FSR2_VERSION_MINOR, FFX_FSR2_VERSION_PATCH) & 0xFFFF'FFFF);
+ }
+ 
+ const char* ffxProvider_FSR2::GetVersionName() const
+diff --git a/ffx-api/src/ffx_provider_fsr3upscale.cpp b/ffx-api/src/ffx_provider_fsr3upscale.cpp
+index c1e140c..3e2908a 100644
+--- a/ffx-api/src/ffx_provider_fsr3upscale.cpp
++++ b/ffx-api/src/ffx_provider_fsr3upscale.cpp
+@@ -69,7 +69,7 @@ bool ffxProvider_FSR3Upscale::CanProvide(uint64_t type) const
+ uint64_t ffxProvider_FSR3Upscale::GetId() const
+ {
+     // FSR Scale, version from header
+-    return 0xF5A5'CA1Eui64 << 32 | (FFX_SDK_MAKE_VERSION(FFX_FSR3UPSCALER_VERSION_MAJOR, FFX_FSR3UPSCALER_VERSION_MINOR, FFX_FSR3UPSCALER_VERSION_PATCH) & 0xFFFF'FFFF);
++    return 0xF5A5'CA1EULL << 32 | (FFX_SDK_MAKE_VERSION(FFX_FSR3UPSCALER_VERSION_MAJOR, FFX_FSR3UPSCALER_VERSION_MINOR, FFX_FSR3UPSCALER_VERSION_PATCH) & 0xFFFF'FFFF);
+ }
+ 
+ const char* ffxProvider_FSR3Upscale::GetVersionName() const
+diff --git a/ffx-api/src/vk/ffx_provider_framegenerationswapchain_vk.cpp b/ffx-api/src/vk/ffx_provider_framegenerationswapchain_vk.cpp
+index 9239318..46ce089 100644
+--- a/ffx-api/src/vk/ffx_provider_framegenerationswapchain_vk.cpp
++++ b/ffx-api/src/vk/ffx_provider_framegenerationswapchain_vk.cpp
+@@ -92,7 +92,7 @@ bool ffxProvider_FrameGenerationSwapChain_VK::CanProvide(uint64_t type) const
+ uint64_t ffxProvider_FrameGenerationSwapChain_VK::GetId() const
+ {
+     // FG SwapChain VK, version 1.1.3
+-    return 0xF65D'564B'01'001'003ui64;
++    return 0xF65D'564B'01'001'003ULL;
+ }
+ 
+ const char* ffxProvider_FrameGenerationSwapChain_VK::GetVersionName() const
+diff --git a/linux/CMakeLists.txt b/linux/CMakeLists.txt
+new file mode 100644
+index 0000000..44e7157
+--- /dev/null
++++ b/linux/CMakeLists.txt
+@@ -0,0 +1,96 @@
++# Linux build of the FidelityFX Vulkan ffx_api library (FSR3 upscaler, frame
++# interpolation, optical flow, frame interpolation swapchain).
++# Own build system: AMD's CMake is Windows-only. Shaders are generated with the
++# Linux build of FidelityFX_SC (see sc/) from AMD's own CMakeShaders*.txt lists.
++cmake_minimum_required(VERSION 3.17)
++project(ffx_linux CXX C)
++
++if(NOT CMAKE_BUILD_TYPE)
++    set(CMAKE_BUILD_TYPE Release)
++endif()
++
++set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++
++get_filename_component(FFX_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
++set(FFX_SDK_PATH "${FFX_ROOT}/sdk")
++set(FFX_GPU_PATH "${FFX_SDK_PATH}/include/FidelityFX/gpu")
++set(FFX_PASS_SHADER_OUTPUT_PATH "${CMAKE_BINARY_DIR}/shaders")
++file(MAKE_DIRECTORY "${FFX_PASS_SHADER_OUTPUT_PATH}")
++
++# ---- shader compiler (Linux build of FidelityFX_SC, uses system glslangValidator)
++add_subdirectory(sc)
++find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
++set(FFX_SC_EXECUTABLE "$<TARGET_FILE:FidelityFX_SC>")
++
++include("${FFX_GPU_PATH}/CMakeCompileShaders.txt")
++
++# AMD's CMakeShaders*.txt glob "shaders/<effect>/*" relative to this directory;
++# linux/shaders is a symlink to sdk/src/backends/vk/shaders.
++# (add_shader_output() appends to FFX_SC_PERMUTATION_OUTPUTS in the caller's scope.)
++function(ffx_generate_effect_shaders FILE)
++    include("${FILE}")
++endfunction()
++
++set(FFX_SC_PERMUTATION_OUTPUTS)
++set(VKCFG "${FFX_SDK_PATH}/src/backends/vk")
++ffx_generate_effect_shaders("${VKCFG}/CMakeShadersFrameinterpolation.txt")
++ffx_generate_effect_shaders("${VKCFG}/CMakeShadersOpticalflow.txt")
++ffx_generate_effect_shaders("${VKCFG}/CMakeShadersFSR3Upscaler.txt")
++# compile_shaders_with_depfile() leaves the variable name itself as the first list entry
++list(FILTER FFX_SC_PERMUTATION_OUTPUTS INCLUDE REGEX "\\.h$")
++add_custom_target(ffx_shaders DEPENDS ${FFX_SC_PERMUTATION_OUTPUTS})
++
++# ---- the library -----------------------------------------------------------
++find_package(Vulkan REQUIRED)
++set(API ${FFX_ROOT}/ffx-api)
++set(SDKSRC ${FFX_SDK_PATH}/src)
++
++set(FFX_LIB_SOURCES
++    ${API}/src/ffx_api.cpp
++    ${API}/src/ffx_provider.cpp
++    ${API}/src/backends.cpp
++    ${API}/src/validation.cpp
++    ${API}/src/ffx_provider_framegeneration.cpp
++    ${API}/src/ffx_provider_fsr3upscale.cpp
++    ${API}/src/vk/ffx_provider_framegenerationswapchain_vk.cpp
++    ${SDKSRC}/backends/vk/ffx_vk.cpp
++    ${SDKSRC}/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK.cpp
++    ${SDKSRC}/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_Helpers.cpp
++    ${SDKSRC}/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_UiComposition.cpp
++    ${SDKSRC}/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_DebugPacing.cpp
++    ${SDKSRC}/backends/shared/ffx_shader_blobs.cpp
++    ${SDKSRC}/backends/shared/blob_accessors/ffx_frameinterpolation_shaderblobs.cpp
++    ${SDKSRC}/backends/shared/blob_accessors/ffx_opticalflow_shaderblobs.cpp
++    ${SDKSRC}/backends/shared/blob_accessors/ffx_fsr3upscaler_shaderblobs.cpp
++    ${SDKSRC}/components/frameinterpolation/ffx_frameinterpolation.cpp
++    ${SDKSRC}/components/opticalflow/ffx_opticalflow.cpp
++    ${SDKSRC}/components/fsr3upscaler/ffx_fsr3upscaler.cpp
++    ${SDKSRC}/shared/ffx_assert.cpp
++    ${SDKSRC}/shared/ffx_message.cpp
++    ${SDKSRC}/shared/ffx_breadcrumbs_list.cpp
++    ${SDKSRC}/shared/ffx_object_management.cpp)
++
++add_library(amd_fidelityfx_vk SHARED ${FFX_LIB_SOURCES})
++add_dependencies(amd_fidelityfx_vk ffx_shaders)
++target_include_directories(amd_fidelityfx_vk PRIVATE
++    ${CMAKE_CURRENT_LIST_DIR}/compat ${FFX_SDK_PATH}/src/shared
++    ${API}/include ${API}/src ${FFX_SDK_PATH}/include ${SDKSRC} ${SDKSRC}/backends ${SDKSRC}/backends/shared
++    ${SDKSRC}/components ${SDKSRC}/backends/vk ${FFX_PASS_SHADER_OUTPUT_PATH})
++target_compile_definitions(amd_fidelityfx_vk PRIVATE
++    FFX_BACKEND_VK FFXDLL_VERSION_MAJOR=1 FFXDLL_VERSION_MINOR=0 FFXDLL_VERSION_PATCH=1
++    FFXDLL_VERSION_API=VK CI_PIPELINE_ID=0 FFX_FSR3UPSCALER FFX_FI FFX_OF FFX_DISABLE_FSR2
++    _UNICODE UNICODE)
++target_compile_options(amd_fidelityfx_vk PRIVATE -include ${CMAKE_CURRENT_LIST_DIR}/compat/ffx_linux_compat.h -fvisibility=hidden -fvisibility-inlines-hidden -fPIC -Wno-unused-result)
++find_package(Threads REQUIRED)
++# Link the system Vulkan loader (libvulkan.so.1); export only the five ffx_api entry points;
++# bundle libstdc++/libgcc so the .so can sit next to the game as a vendor file.
++target_link_libraries(amd_fidelityfx_vk PRIVATE Vulkan::Vulkan Threads::Threads ${CMAKE_DL_LIBS}
++    -static-libstdc++ -static-libgcc
++    -Wl,--no-undefined -Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/ffx_api.map)
++set_target_properties(amd_fidelityfx_vk PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/ffx_api.map)
++
++# ---- smoke test (headless Vulkan; run: ffx_smoke ./libamd_fidelityfx_vk.so) -----
++add_executable(ffx_smoke test/ffx_smoke.cpp)
++target_include_directories(ffx_smoke PRIVATE ${API}/include)
++target_link_libraries(ffx_smoke PRIVATE Vulkan::Vulkan ${CMAKE_DL_LIBS})
+diff --git a/linux/build.sh b/linux/build.sh
+new file mode 100755
+index 0000000..eabb366
+--- /dev/null
++++ b/linux/build.sh
+@@ -0,0 +1,11 @@
++#!/usr/bin/env bash
++# Build libamd_fidelityfx_vk.so (and the smoke test) on Linux.
++# usage: linux/build.sh [build-dir]   (default: ./build-linux, outside git tracking via .git/info/exclude)
++# Needs: cmake, ninja, gcc or clang, glslangValidator, Vulkan headers + loader.
++set -euo pipefail
++here="$(cd "$(dirname "$0")" && pwd)"
++build="${1:-$here/../build-linux}"
++cmake -S "$here" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release
++cmake --build "$build" -j"$(nproc)"
++echo "built: $build/libamd_fidelityfx_vk.so"
++echo "test:  $build/ffx_smoke $build/libamd_fidelityfx_vk.so"
+diff --git a/linux/compat/FidelityFx b/linux/compat/FidelityFx
+new file mode 120000
+index 0000000..b40ed88
+--- /dev/null
++++ b/linux/compat/FidelityFx
+@@ -0,0 +1 @@
++../../sdk/include/FidelityFX
+\ No newline at end of file
+diff --git a/linux/compat/Windows.h b/linux/compat/Windows.h
+new file mode 100644
+index 0000000..9ff537a
+--- /dev/null
++++ b/linux/compat/Windows.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "ffx_linux_compat.h"
+diff --git a/linux/compat/ffx_linux_compat.h b/linux/compat/ffx_linux_compat.h
+new file mode 100644
+index 0000000..d476635
+--- /dev/null
++++ b/linux/compat/ffx_linux_compat.h
+@@ -0,0 +1,195 @@
++// Linux compatibility layer for the AMD FidelityFX SDK 1.1.4 Vulkan sources.
++//
++// The SDK uses a small set of Win32 / MSVC CRT facilities (critical sections,
++// auto-reset events, threads, QueryPerformanceCounter, *_s string functions).
++// Instead of editing every call site, this header provides Linux equivalents
++// with the same names, built on the C++ standard library. It is force-included
++// (-include) in every translation unit and is also what the stub <Windows.h> in
++// this directory resolves to. Not used on Windows.
++//
++// Copyright (c) 2024 Advanced Micro Devices, Inc. (SDK); compat layer under the same MIT licence.
++#pragma once
++
++#ifndef _WIN32
++
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cmath>
++#include <codecvt>
++#include <locale>
++#include <cstdlib>
++#include <cstdarg>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <cwchar>
++#include <mutex>
++#include <thread>
++#include <pthread.h>
++
++// ---- MSVC CRT ---------------------------------------------------------------
++#ifndef _countof
++#define _countof(a) (sizeof(a) / sizeof((a)[0]))
++#endif
++
++template <size_t N>
++inline int wcscpy_s(wchar_t (&dst)[N], const wchar_t* src)
++{
++    std::wcsncpy(dst, src, N - 1);
++    dst[N - 1] = L'\0';
++    return 0;
++}
++inline int wcscpy_s(wchar_t* dst, size_t n, const wchar_t* src)
++{
++    std::wcsncpy(dst, src, n - 1);
++    dst[n - 1] = L'\0';
++    return 0;
++}
++template <size_t N>
++inline int strcpy_s(char (&dst)[N], const char* src)
++{
++    std::strncpy(dst, src, N - 1);
++    dst[N - 1] = '\0';
++    return 0;
++}
++inline int strcpy_s(char* dst, size_t n, const char* src)
++{
++    std::strncpy(dst, src, n - 1);
++    dst[n - 1] = '\0';
++    return 0;
++}
++#define sprintf_s(buf, size, ...)   std::snprintf((buf), (size), __VA_ARGS__)
++#define swprintf_s(buf, size, ...)  std::swprintf((buf), (size), __VA_ARGS__)
++
++// ---- Win32 basics -------------------------------------------------------------
++typedef uint32_t DWORD;
++typedef uint64_t UINT64;
++typedef int32_t  LONG;
++typedef int      BOOL;
++typedef void*    LPVOID;
++typedef void*    HANDLE;
++#ifndef TRUE
++#define TRUE 1
++#define FALSE 0
++#endif
++#define WINAPI
++#define INFINITE 0xFFFFFFFFu
++#define TEXT(x) x
++#define THREAD_PRIORITY_HIGHEST 2
++
++inline void OutputDebugStringA(const char* s) { std::fputs(s, stderr); }
++inline void OutputDebugStringW(const wchar_t* s) { std::fputws(s, stderr); }
++
++union LARGE_INTEGER
++{
++    struct
++    {
++        DWORD LowPart;
++        LONG  HighPart;
++    };
++    int64_t QuadPart;
++};
++
++// QueryPerformanceCounter: nanoseconds from CLOCK_MONOTONIC (frequency 1e9).
++inline BOOL QueryPerformanceCounter(LARGE_INTEGER* c)
++{
++    c->QuadPart = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
++    return TRUE;
++}
++inline BOOL QueryPerformanceFrequency(LARGE_INTEGER* f)
++{
++    f->QuadPart = 1000000000ll;
++    return TRUE;
++}
++
++// ---- critical section: Win32 critical sections are recursive ---------------
++struct CRITICAL_SECTION
++{
++    std::recursive_mutex m;
++};
++inline void InitializeCriticalSection(CRITICAL_SECTION*) {}
++inline void DeleteCriticalSection(CRITICAL_SECTION*) {}
++inline void EnterCriticalSection(CRITICAL_SECTION* cs) { cs->m.lock(); }
++inline void LeaveCriticalSection(CRITICAL_SECTION* cs) { cs->m.unlock(); }
++
++// ---- events and threads share one HANDLE type ---------------------------------
++struct FfxLinuxHandle
++{
++    bool                    isThread = false;
++    // event
++    std::mutex              mutex;
++    std::condition_variable cv;
++    bool                    signaled  = false;
++    bool                    autoReset = true;
++    // thread
++    std::thread             thread;
++};
++
++// Name argument is ignored (events are process-local here).
++inline HANDLE CreateEvent(void*, BOOL manualReset, BOOL initialState, const char*)
++{
++    auto* h      = new FfxLinuxHandle();
++    h->autoReset = !manualReset;
++    h->signaled  = initialState != 0;
++    return h;
++}
++inline BOOL SetEvent(HANDLE handle)
++{
++    auto* h = static_cast<FfxLinuxHandle*>(handle);
++    {
++        std::lock_guard<std::mutex> lock(h->mutex);
++        h->signaled = true;
++    }
++    h->cv.notify_all();
++    return TRUE;
++}
++inline DWORD WaitForSingleObject(HANDLE handle, DWORD ms)
++{
++    auto* h = static_cast<FfxLinuxHandle*>(handle);
++    if (h->isThread)
++    {
++        if (h->thread.joinable())
++            h->thread.join();
++        return 0;
++    }
++    std::unique_lock<std::mutex> lock(h->mutex);
++    if (ms == INFINITE)
++        h->cv.wait(lock, [h] { return h->signaled; });
++    else if (!h->cv.wait_for(lock, std::chrono::milliseconds(ms), [h] { return h->signaled; }))
++        return 0x102;  // WAIT_TIMEOUT
++    if (h->autoReset)
++        h->signaled = false;
++    return 0;
++}
++inline BOOL CloseHandle(HANDLE handle)
++{
++    auto* h = static_cast<FfxLinuxHandle*>(handle);
++    if (h->isThread && h->thread.joinable())
++        h->thread.detach();
++    delete h;
++    return TRUE;
++}
++typedef DWORD (*LPTHREAD_START_ROUTINE)(LPVOID);
++inline HANDLE CreateThread(void*, size_t, LPTHREAD_START_ROUTINE fn, LPVOID param, DWORD, DWORD*)
++{
++    auto* h     = new FfxLinuxHandle();
++    h->isThread = true;
++    h->thread   = std::thread([fn, param] { fn(param); });
++    return h;
++}
++// Raising thread priority needs RT privileges on Linux; best effort only (ignored).
++inline BOOL SetThreadPriority(HANDLE, int) { return TRUE; }
++inline BOOL SetThreadDescription(HANDLE handle, const wchar_t* wname)
++{
++    auto*       h = static_cast<FfxLinuxHandle*>(handle);
++    char        name[16] = {};  // pthread names are limited to 15 characters
++    size_t      j = 0;
++    for (size_t i = 0; wname[i] != 0 && j < 15; ++i)
++        if (wname[i] != L' ')
++            name[j++] = (wname[i] < 128) ? static_cast<char>(wname[i]) : '?';
++    pthread_setname_np(h->thread.native_handle(), name);
++    return TRUE;
++}
++
++#endif  // !_WIN32
+diff --git a/linux/compat/synchapi.h b/linux/compat/synchapi.h
+new file mode 100644
+index 0000000..9ff537a
+--- /dev/null
++++ b/linux/compat/synchapi.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "ffx_linux_compat.h"
+diff --git a/linux/compat/windows.h b/linux/compat/windows.h
+new file mode 100644
+index 0000000..9ff537a
+--- /dev/null
++++ b/linux/compat/windows.h
+@@ -0,0 +1,2 @@
++#pragma once
++#include "ffx_linux_compat.h"
+diff --git a/linux/ffx_api.map b/linux/ffx_api.map
+new file mode 100644
+index 0000000..7c543b1
+--- /dev/null
++++ b/linux/ffx_api.map
+@@ -0,0 +1,10 @@
++{
++  global:
++    ffxCreateContext;
++    ffxDestroyContext;
++    ffxConfigure;
++    ffxQuery;
++    ffxDispatch;
++  local:
++    *;
++};
+diff --git a/linux/sc/CMakeLists.txt b/linux/sc/CMakeLists.txt
+new file mode 100644
+index 0000000..7f83191
+--- /dev/null
++++ b/linux/sc/CMakeLists.txt
+@@ -0,0 +1,14 @@
++# Linux build of FidelityFX_SC (GLSL / glslangValidator path only).
++cmake_minimum_required(VERSION 3.17)
++project(FidelityFX_SC_Linux CXX C)
++set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++find_package(Threads REQUIRED)
++set(SC ${CMAKE_CURRENT_LIST_DIR}/../../sdk/tools/ffx_shader_compiler)
++add_executable(FidelityFX_SC
++    ${SC}/src/ffx_sc.cpp ${SC}/src/glsl_compiler.cpp ${SC}/src/utils.cpp ${SC}/src/pch.cpp
++    ${SC}/libs/MD5/md5.cpp ${SC}/libs/SPIRV-Reflect/spirv_reflect.c
++    ${SC}/libs/tiny-process-library/process.cpp ${SC}/libs/tiny-process-library/process_unix.cpp)
++target_include_directories(FidelityFX_SC PRIVATE ${SC}/src ${SC}/libs/MD5 ${SC}/libs/SPIRV-Reflect ${SC}/libs/tiny-process-library)
++target_link_libraries(FidelityFX_SC Threads::Threads)
++target_compile_options(FidelityFX_SC PRIVATE -w)
+diff --git a/linux/shaders b/linux/shaders
+new file mode 120000
+index 0000000..64618f6
+--- /dev/null
++++ b/linux/shaders
+@@ -0,0 +1 @@
++../sdk/src/backends/vk/shaders
+\ No newline at end of file
+diff --git a/linux/test/ffx_smoke.cpp b/linux/test/ffx_smoke.cpp
+new file mode 100644
+index 0000000..4263ec5
+--- /dev/null
++++ b/linux/test/ffx_smoke.cpp
+@@ -0,0 +1,143 @@
++// Smoke test for libamd_fidelityfx_vk.so: dlopen, headless Vulkan device, create and
++// destroy the FSR3 upscaler and frame generation contexts (no window, no swapchain).
++// usage: ffx_smoke /path/to/libamd_fidelityfx_vk.so
++#include <dlfcn.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <vulkan/vulkan.h>
++#include <ffx_api/ffx_api.h>
++#include <ffx_api/ffx_upscale.h>
++#include <ffx_api/ffx_framegeneration.h>
++#include <ffx_api/vk/ffx_api_vk.h>
++
++typedef ffxReturnCode_t (*PfnCreate)(ffxContext*, ffxCreateContextDescHeader*, const ffxAllocationCallbacks*);
++typedef ffxReturnCode_t (*PfnDestroy)(ffxContext*, const ffxAllocationCallbacks*);
++typedef ffxReturnCode_t (*PfnQuery)(ffxContext*, ffxQueryDescHeader*);
++
++static int failures = 0;
++#define CHECK(cond, what) do { if (!(cond)) { printf("FAIL: %s\n", what); failures++; } else printf("ok:   %s\n", what); } while (0)
++
++static void onMessage(uint32_t type, const wchar_t* msg) { fprintf(stderr, "ffx message (%u): %ls\n", type, msg); }
++
++int main(int argc, char** argv)
++{
++    const char* path = argc > 1 ? argv[1] : "./libamd_fidelityfx_vk.so";
++    void* lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (!lib) { printf("dlopen failed: %s\n", dlerror()); return 2; }
++    PfnCreate  create  = (PfnCreate)dlsym(lib, "ffxCreateContext");
++    PfnDestroy destroy = (PfnDestroy)dlsym(lib, "ffxDestroyContext");
++    PfnQuery   query   = (PfnQuery)dlsym(lib, "ffxQuery");
++    CHECK(create && destroy && query && dlsym(lib, "ffxConfigure") && dlsym(lib, "ffxDispatch"), "dlsym of the five entry points");
++    if (!create || !destroy || !query) return 2;
++
++    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
++    app.apiVersion = VK_API_VERSION_1_3;
++    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
++    ici.pApplicationInfo = &app;
++    const char* layers[] = {"VK_LAYER_KHRONOS_validation"};
++    if (getenv("FFX_SMOKE_VALIDATION")) { ici.enabledLayerCount = 1; ici.ppEnabledLayerNames = layers; }
++    VkInstance inst;
++    CHECK(vkCreateInstance(&ici, NULL, &inst) == VK_SUCCESS, "vkCreateInstance");
++
++    uint32_t n = 0;
++    vkEnumeratePhysicalDevices(inst, &n, NULL);
++    VkPhysicalDevice devs[8];
++    if (n > 8) n = 8;
++    vkEnumeratePhysicalDevices(inst, &n, devs);
++    VkPhysicalDevice pd = VK_NULL_HANDLE;
++    for (uint32_t i = 0; i < n; i++)
++    {
++        VkPhysicalDeviceProperties p;
++        vkGetPhysicalDeviceProperties(devs[i], &p);
++        printf("device %u: %s\n", i, p.deviceName);
++        if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && !pd) pd = devs[i];
++    }
++    if (!pd) pd = devs[0];
++
++    uint32_t qn = 0;
++    vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, NULL);
++    VkQueueFamilyProperties qf[16];
++    if (qn > 16) qn = 16;
++    vkGetPhysicalDeviceQueueFamilyProperties(pd, &qn, qf);
++    uint32_t family = 0;
++    for (uint32_t i = 0; i < qn; i++) if (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { family = i; break; }
++
++    float prio = 1.0f;
++    VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
++    qci.queueFamilyIndex = family; qci.queueCount = 1; qci.pQueuePriorities = &prio;
++    VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
++    f12.timelineSemaphore = VK_TRUE; f12.shaderFloat16 = VK_TRUE; f12.storageBuffer8BitAccess = VK_FALSE;
++    VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
++    f2.pNext = &f12;
++    f2.features.shaderInt16 = VK_TRUE;
++    VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
++    dci.pNext = &f2; dci.queueCreateInfoCount = 1; dci.pQueueCreateInfos = &qci;
++    // FFX's Vulkan backend loads these KHR-named entry points whenever the driver *supports*
++    // the extensions, so the application must enable them (Meitou does the same on Windows).
++    const char* wanted[] = {"VK_KHR_get_memory_requirements2", "VK_KHR_dedicated_allocation", "VK_KHR_swapchain"};
++    const char* enabled[8];
++    uint32_t    nEnabled = 0, nExt = 0;
++    vkEnumerateDeviceExtensionProperties(pd, NULL, &nExt, NULL);
++    VkExtensionProperties* exts = (VkExtensionProperties*)calloc(nExt, sizeof(VkExtensionProperties));
++    vkEnumerateDeviceExtensionProperties(pd, NULL, &nExt, exts);
++    for (uint32_t w = 0; w < sizeof(wanted) / sizeof(wanted[0]); w++)
++        for (uint32_t e = 0; e < nExt; e++)
++            if (!strcmp(wanted[w], exts[e].extensionName)) { enabled[nEnabled++] = wanted[w]; break; }
++    free(exts);
++    dci.enabledExtensionCount = nEnabled;
++    dci.ppEnabledExtensionNames = enabled;
++    VkDevice dev;
++    CHECK(vkCreateDevice(pd, &dci, NULL, &dev) == VK_SUCCESS, "vkCreateDevice (headless)");
++
++    ffxCreateBackendVKDesc backend = {};
++    backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
++    backend.vkDevice = dev;
++    backend.vkPhysicalDevice = pd;
++    backend.vkDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetInstanceProcAddr(inst, "vkGetDeviceProcAddr");
++
++    // FSR3 upscaler
++    ffxCreateContextDescUpscale up = {};
++    up.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
++    up.header.pNext = &backend.header;
++    up.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
++    up.maxRenderSize.width = 1280; up.maxRenderSize.height = 720;
++    up.maxUpscaleSize.width = 1920; up.maxUpscaleSize.height = 1080;
++    up.fpMessage = onMessage;
++    ffxContext upCtx = NULL;
++    ffxReturnCode_t rc = create(&upCtx, &up.header, NULL);
++    printf("FSR3 upscaler create rc=%u\n", rc);
++    CHECK(rc == FFX_API_RETURN_OK && upCtx, "ffxCreateContext FSR3 upscaler");
++    if (upCtx)
++    {
++        ffxQueryDescUpscaleGetJitterPhaseCount jq = {};
++        jq.header.type = FFX_API_QUERY_DESC_TYPE_UPSCALE_GETJITTERPHASECOUNT;
++        int32_t phases = 0;
++        jq.pOutPhaseCount = &phases; jq.displayWidth = 1920; jq.renderWidth = 1280;
++        rc = query(&upCtx, &jq.header);
++        printf("jitter phase count = %d (rc=%u)\n", phases, rc);
++        CHECK(rc == FFX_API_RETURN_OK && phases > 0, "ffxQuery jitter phase count");
++        CHECK(destroy(&upCtx, NULL) == FFX_API_RETURN_OK, "ffxDestroyContext FSR3 upscaler");
++    }
++
++    // Frame generation (not the swapchain: that needs a surface)
++    ffxCreateContextDescFrameGeneration fg = {};
++    fg.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
++    fg.header.pNext = &backend.header;
++    fg.flags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED;
++    fg.displaySize.width = 1920; fg.displaySize.height = 1080;
++    fg.maxRenderSize.width = 1920; fg.maxRenderSize.height = 1080;
++    fg.backBufferFormat = FFX_API_SURFACE_FORMAT_B8G8R8A8_UNORM;
++    ffxContext fgCtx = NULL;
++    rc = create(&fgCtx, &fg.header, NULL);
++    printf("frame generation create rc=%u\n", rc);
++    CHECK(rc == FFX_API_RETURN_OK && fgCtx, "ffxCreateContext frame generation");
++    if (fgCtx)
++        CHECK(destroy(&fgCtx, NULL) == FFX_API_RETURN_OK, "ffxDestroyContext frame generation");
++
++    vkDestroyDevice(dev, NULL);
++    vkDestroyInstance(inst, NULL);
++    dlclose(lib);
++    printf(failures ? "RESULT: %d failure(s)\n" : "RESULT: all passed\n", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt b/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt
+index ac1088d..e9ef7ab 100644
+--- a/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt
++++ b/sdk/include/FidelityFX/gpu/CMakeCompileShaders.txt
+@@ -74,6 +74,20 @@ function(compile_shaders_with_depfile
+ 		set(FFX_GDK_OPTION )
+ 	endif()
+ 
++	# Linux: the generator hands the command to /bin/sh, which may be bash and would
++	# brace-expand -DOPTION={0,1}. Single-quote those arguments (not VERBATIM: CMake does not quote braces).
++	if (UNIX)
++		set(QUOTED_PERMUTATION_ARGS )
++		foreach(ARG ${PERMUTATION_ARGS})
++			if (ARG MATCHES "[{]")
++				list(APPEND QUOTED_PERMUTATION_ARGS "'${ARG}'")
++			else()
++				list(APPEND QUOTED_PERMUTATION_ARGS "${ARG}")
++			endif()
++		endforeach()
++		set(PERMUTATION_ARGS ${QUOTED_PERMUTATION_ARGS})
++	endif()
++
+ 	foreach(PASS_SHADER ${SHADER_FILES})
+ 		get_filename_component(PASS_SHADER_FILENAME ${PASS_SHADER} NAME_WE)
+ 		get_filename_component(PASS_SHADER_TARGET ${PASS_SHADER} NAME_WLE)
+diff --git a/sdk/include/FidelityFX/host/ffx_types.h b/sdk/include/FidelityFX/host/ffx_types.h
+index ca9bc37..ad0cae7 100644
+--- a/sdk/include/FidelityFX/host/ffx_types.h
++++ b/sdk/include/FidelityFX/host/ffx_types.h
+@@ -77,7 +77,12 @@
+ #define FFX_API __declspec(dllexport)
+ #endif // #if defined (FFX_GCC)
+ 
++#ifdef _WIN32
+ #define FFX_SDK_DEFAULT_CONTEXT_SIZE (1024 * 128)
++#else
++// wchar_t is 4 bytes on Linux (2 on Windows): the private contexts hold wchar_t name tables and grow.
++#define FFX_SDK_DEFAULT_CONTEXT_SIZE (1024 * 256)
++#endif
+ 
+ /// Maximum supported number of simultaneously bound SRVs.
+ ///
+diff --git a/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK.cpp b/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK.cpp
+index 5c47b25..9a8b70d 100644
+--- a/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK.cpp
++++ b/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK.cpp
+@@ -660,7 +660,7 @@ FfxErrorCode ffxConfigureFrameInterpolationSwapchainVK(FfxSwapchain gameSwapChai
+         switch (key)
+         {
+             case FFX_FI_SWAPCHAIN_CONFIGURE_KEY_WAITCALLBACK:
+-                pSwapChainVK->setWaitCallback(static_cast<FfxWaitCallbackFunc>(valuePtr));
++                pSwapChainVK->setWaitCallback(reinterpret_cast<FfxWaitCallbackFunc>(valuePtr));
+             break;
+             case FFX_FI_SWAPCHAIN_CONFIGURE_KEY_FRAMEPACINGTUNING:
+                 if (valuePtr != nullptr)
+@@ -1184,7 +1184,8 @@ DWORD WINAPI composeAndPresent_presenterThread(LPVOID pParam)
+                     // if no frame was presented, we still need to update the semaphore
+                     if (toWait.count > 0)
+                     {
+-                        presenter->presentQueue.submit(VK_NULL_HANDLE, toWait, SubmissionSemaphores());
++                        SubmissionSemaphores noSignal;
++                        presenter->presentQueue.submit(VK_NULL_HANDLE, toWait, noSignal);
+                     }
+ 
+                     numFramesSentForPresentation = entry.numFramesSentForPresentationBase + entry.numFramesToPresent;
+@@ -1357,8 +1358,10 @@ struct SwapchainCreationInfo
+ 
+     VkImageCompressionControlEXT             imageCompressionControl;
+     VkImageFormatListCreateInfo              imageFormatList;
++#ifdef _WIN32
+     VkSurfaceFullScreenExclusiveInfoEXT      surfaceFullScreenExclusive;
+     VkSurfaceFullScreenExclusiveWin32InfoEXT surfaceFullScreenExclusiveWin32;
++#endif  // _WIN32
+     VkSwapchainCounterCreateInfoEXT          swapchainCounter;
+     VkSwapchainDisplayNativeHdrCreateInfoAMD swapchainDisplayNativeHdr;
+     VkSwapchainPresentModesCreateInfoEXT     swapchainPresentModes;
+@@ -1392,6 +1395,7 @@ VkResult getRealSwapchainCreateInfo(const VkSwapchainCreateInfoKHR* pCreateInfo,
+         case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO:
+             FFX_USE_PNEXT_AS_IS(imageFormatList, VkImageFormatListCreateInfo);
+             break;
++#ifdef _WIN32
+         case VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT:
+             realSwapchainCreateInfo.surfaceFullScreenExclusive       = *reinterpret_cast<const VkSurfaceFullScreenExclusiveInfoEXT*>(pCurrent);
+             realSwapchainCreateInfo.surfaceFullScreenExclusive.pNext = const_cast<void*>(realSwapchainCreateInfo.swapchain.pNext);  // because pNext is void* instead of const void* in vulkan header
+@@ -1400,6 +1404,7 @@ VkResult getRealSwapchainCreateInfo(const VkSwapchainCreateInfoKHR* pCreateInfo,
+         case VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT:
+             FFX_USE_PNEXT_AS_IS(surfaceFullScreenExclusiveWin32, VkSurfaceFullScreenExclusiveWin32InfoEXT);
+             break;
++#endif  // _WIN32 (full screen exclusive is Win32 only)
+         case VK_STRUCTURE_TYPE_SWAPCHAIN_COUNTER_CREATE_INFO_EXT:
+             FFX_USE_PNEXT_AS_IS(swapchainCounter, VkSwapchainCounterCreateInfoEXT);
+             break;
+@@ -2823,7 +2828,8 @@ VkResult FrameInterpolationSwapChainVK::submitCompositionOnGameQueue(const Pacin
+         // if no frame was presented, we still need to update the semaphore
+         if (toWait.count > 0)
+         {
+-            res = presentInfo.gameQueue.submit(VK_NULL_HANDLE, toWait, SubmissionSemaphores());
++            SubmissionSemaphores noSignal;
++            res = presentInfo.gameQueue.submit(VK_NULL_HANDLE, toWait, noSignal);
+         }
+     }
+ 
+diff --git a/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_DebugPacing.cpp b/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_DebugPacing.cpp
+index 48af082..24f2275 100644
+--- a/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_DebugPacing.cpp
++++ b/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_DebugPacing.cpp
+@@ -214,7 +214,7 @@ VkResult CreateDebugPacingPipeline(VkDevice device, VkFormat fmt, const VkAlloca
+         rasterizationStateCreateInfo.depthBiasConstantFactor                = 0.0f;
+         rasterizationStateCreateInfo.depthBiasClamp                         = 0.0f;
+         rasterizationStateCreateInfo.depthBiasSlopeFactor                   = 0.0f;
+-        rasterizationStateCreateInfo.lineWidth                              = 0.0f;
++        rasterizationStateCreateInfo.lineWidth                              = 1.0f;
+ 
+         VkPipelineDepthStencilStateCreateInfo depthStencilStateCreateInfo = {};
+         depthStencilStateCreateInfo.sType                                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+diff --git a/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_UiComposition.cpp b/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_UiComposition.cpp
+index eb88430..0345667 100644
+--- a/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_UiComposition.cpp
++++ b/sdk/src/backends/vk/FrameInterpolationSwapchain/FrameInterpolationSwapchainVK_UiComposition.cpp
+@@ -242,7 +242,7 @@ VkResult CreateUiCompositionPipeline(VkDevice device, VkFormat fmt, const VkAllo
+         rasterizationStateCreateInfo.depthBiasConstantFactor                = 0.0f;
+         rasterizationStateCreateInfo.depthBiasClamp                         = 0.0f;
+         rasterizationStateCreateInfo.depthBiasSlopeFactor                   = 0.0f;
+-        rasterizationStateCreateInfo.lineWidth                              = 0.0f;
++        rasterizationStateCreateInfo.lineWidth                              = 1.0f;
+ 
+         VkPipelineDepthStencilStateCreateInfo depthStencilStateCreateInfo = {};
+         depthStencilStateCreateInfo.sType                                 = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+diff --git a/sdk/src/backends/vk/ffx_vk.cpp b/sdk/src/backends/vk/ffx_vk.cpp
+index d914479..ddabe87 100644
+--- a/sdk/src/backends/vk/ffx_vk.cpp
++++ b/sdk/src/backends/vk/ffx_vk.cpp
+@@ -272,6 +272,10 @@ typedef struct BackendContext_VK {
+ 
+ } BackendContext_VK;
+ 
++// The scratch buffer is carved into arrays of structs; keep every array 16-byte aligned. Compilers other
++// than MSVC may emit aligned SSE moves (movaps) for them, which fault on a 4-byte aligned address.
++#define FFX_VK_SCRATCH_ALIGNMENT 16
++
+ FFX_API size_t ffxGetScratchMemorySizeVK(VkPhysicalDevice physicalDevice, size_t maxContexts)
+ {
+     uint32_t numExtensions = 0;
+@@ -280,16 +284,16 @@ FFX_API size_t ffxGetScratchMemorySizeVK(VkPhysicalDevice physicalDevice, size_t
+         vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &numExtensions, nullptr);
+ 
+     uint32_t extensionPropArraySize = sizeof(VkExtensionProperties) * numExtensions;
+-    uint32_t gpuJobDescArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), sizeof(uint32_t));
+-    uint32_t resourceViewArraySize = FFX_ALIGN_UP(((maxContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), sizeof(uint32_t));
+-    uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(maxContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, sizeof(uint32_t));
+-    uint32_t pipelineArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), sizeof(uint32_t));
+-    uint32_t resourceArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), sizeof(uint32_t));
+-    uint32_t contextArraySize = FFX_ALIGN_UP(maxContexts * sizeof(BackendContext_VK::EffectContext), sizeof(uint32_t));
++    uint32_t gpuJobDescArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), FFX_VK_SCRATCH_ALIGNMENT);
++    uint32_t resourceViewArraySize = FFX_ALIGN_UP(((maxContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), FFX_VK_SCRATCH_ALIGNMENT);
++    uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(maxContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, FFX_VK_SCRATCH_ALIGNMENT);
++    uint32_t pipelineArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), FFX_VK_SCRATCH_ALIGNMENT);
++    uint32_t resourceArraySize = FFX_ALIGN_UP(maxContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), FFX_VK_SCRATCH_ALIGNMENT);
++    uint32_t contextArraySize = FFX_ALIGN_UP(maxContexts * sizeof(BackendContext_VK::EffectContext), FFX_VK_SCRATCH_ALIGNMENT);
+     
+-    return FFX_ALIGN_UP(sizeof(BackendContext_VK) + extensionPropArraySize + gpuJobDescArraySize + resourceViewArraySize + stagingRingBufferArraySize +
++    return FFX_ALIGN_UP(FFX_ALIGN_UP(sizeof(BackendContext_VK), FFX_VK_SCRATCH_ALIGNMENT) + extensionPropArraySize + gpuJobDescArraySize + resourceViewArraySize + stagingRingBufferArraySize +
+                             pipelineArraySize + resourceArraySize + contextArraySize,
+-                        sizeof(uint64_t));
++                        FFX_VK_SCRATCH_ALIGNMENT);
+ }
+ 
+ // Create a FfxDevice from a VkDevice
+@@ -1402,13 +1406,13 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+         new (&backendContext->uniformBufferMutex) std::mutex();
+ 
+         // Map all of our pointers
+-        uint32_t gpuJobDescArraySize   = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), sizeof(uint32_t));
+-        uint32_t resourceViewArraySize = FFX_ALIGN_UP(((backendContext->maxEffectContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), sizeof(uint32_t));
+-        uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, sizeof(uint32_t));
+-        uint32_t pipelineArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), sizeof(uint32_t));
+-        uint32_t resourceArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), sizeof(uint32_t));
+-        uint32_t contextArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * sizeof(BackendContext_VK::EffectContext), sizeof(uint32_t));
+-        uint8_t* pMem = (uint8_t*)((BackendContext_VK*)(backendContext + 1));
++        uint32_t gpuJobDescArraySize   = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_GPU_JOBS * sizeof(FfxGpuJobDescription), FFX_VK_SCRATCH_ALIGNMENT);
++        uint32_t resourceViewArraySize = FFX_ALIGN_UP(((backendContext->maxEffectContexts * FFX_MAX_QUEUED_FRAMES * FFX_MAX_RESOURCE_COUNT * 2) + FFX_MAX_BINDLESS_DESCRIPTOR_COUNT) * sizeof(BackendContext_VK::VkResourceView), FFX_VK_SCRATCH_ALIGNMENT);
++        uint32_t stagingRingBufferArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_CONSTANT_BUFFER_RING_BUFFER_SIZE, FFX_VK_SCRATCH_ALIGNMENT);
++        uint32_t pipelineArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_PASS_COUNT * sizeof(BackendContext_VK::PipelineLayout), FFX_VK_SCRATCH_ALIGNMENT);
++        uint32_t resourceArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * sizeof(BackendContext_VK::Resource), FFX_VK_SCRATCH_ALIGNMENT);
++        uint32_t contextArraySize = FFX_ALIGN_UP(backendContext->maxEffectContexts * sizeof(BackendContext_VK::EffectContext), FFX_VK_SCRATCH_ALIGNMENT);
++        uint8_t* pMem = (uint8_t*)backendContext + FFX_ALIGN_UP(sizeof(BackendContext_VK), FFX_VK_SCRATCH_ALIGNMENT);
+ 
+         // Map gpu job array
+         backendContext->pGpuJobs = (FfxGpuJobDescription*)pMem;
+@@ -1521,7 +1525,6 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+             { VK_DESCRIPTOR_TYPE_SAMPLER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+             { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+             { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+-            { VK_DESCRIPTOR_TYPE_SAMPLER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+         };
+@@ -1529,7 +1532,7 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
+         descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+         descriptorPoolCreateInfo.pNext = nullptr;
+         descriptorPoolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+-        descriptorPoolCreateInfo.poolSizeCount = 5;
++        descriptorPoolCreateInfo.poolSizeCount = (uint32_t)FFX_ARRAY_ELEMENTS(poolSizes);
+         descriptorPoolCreateInfo.pPoolSizes = poolSizes;
+         descriptorPoolCreateInfo.maxSets = backendContext->maxEffectContexts * FFX_MAX_PASS_COUNT * MAX_PIPELINE_USAGE_PER_FRAME * FFX_MAX_QUEUED_FRAMES;
+ 
+diff --git a/sdk/src/shared/ffx_message.cpp b/sdk/src/shared/ffx_message.cpp
+index 7dd5127..5aa08b2 100644
+--- a/sdk/src/shared/ffx_message.cpp
++++ b/sdk/src/shared/ffx_message.cpp
+@@ -21,6 +21,7 @@
+ // THE SOFTWARE.
+ 
+ #include <FidelityFX/host/ffx_message.h>
++#include <FidelityFX/host/ffx_util.h>  // FFX_UNUSED
+ 
+ #ifdef _WIN32
+ #ifndef WIN32_LEAN_AND_MEAN
+diff --git a/sdk/tools/ffx_shader_compiler/src/ffx_sc.cpp b/sdk/tools/ffx_shader_compiler/src/ffx_sc.cpp
+index c3ec37f..7b86578 100644
+--- a/sdk/tools/ffx_shader_compiler/src/ffx_sc.cpp
++++ b/sdk/tools/ffx_shader_compiler/src/ffx_sc.cpp
+@@ -20,12 +20,16 @@
+ // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ // THE SOFTWARE.
+ 
++#ifdef _WIN32
+ #include "hlsl_compiler.h"
++#endif
+ #include "glsl_compiler.h"
+ #include "utils.h"
+ 
++#ifdef _WIN32
+ #include <Windows.h>
+ #include <pathcch.h>
++#endif
+ #include <vector>
+ #include <string_view>
+ #include <filesystem>
+@@ -34,12 +38,25 @@
+ #include <stdexcept>
+ 
+ 
++#ifdef _WIN32
+ #pragma comment(lib, "pathcch.lib")
++#endif
+ 
+ static const wchar_t* const APP_NAME    = L"FidelityFX-SC";
+ static const wchar_t* const EXE_NAME    = L"FidelityFX_SC";
+ static const wchar_t* const APP_VERSION = L"1.0.0";
+ 
++#ifdef _WIN32
++static void OpenFileW(FILE** fp, const std::wstring& path) { _wfopen_s(fp, path.c_str(), L"wb"); }
++#else
++static void OpenFileW(FILE** fp, const std::wstring& path)
++{
++    *fp = fopen(WCharToUTF8(path).c_str(), "wb");
++    if (!*fp)
++        throw std::runtime_error("cannot open output file " + WCharToUTF8(path));
++}
++#endif
++
+ inline bool Contains(std::wstring_view s, std::wstring_view subS)
+ {
+     return s.find(subS) != s.npos;
+@@ -307,6 +324,7 @@ void LaunchParameters::ParseCommandLine(int argCount, const wchar_t* const* args
+     EnsureOutputPathExistsAndMakeCanonical(ouputPath);
+ }
+ 
++#ifdef _WIN32
+ void LaunchParameters::EnsureOutputPathExistsAndMakeCanonical(std::wstring& inoutOutputPath)
+ {
+     std::replace(inoutOutputPath.begin(), inoutOutputPath.end(), L'/', L'\\');
+@@ -344,6 +362,18 @@ void LaunchParameters::EnsureOutputPathExistsAndMakeCanonical(std::wstring& inou
+     }
+ }
+ 
++#else
++void LaunchParameters::EnsureOutputPathExistsAndMakeCanonical(std::wstring& inoutOutputPath)
++{
++    fs::path p = fs::absolute(fs::path(WCharToUTF8(inoutOutputPath))).lexically_normal();
++    fs::create_directories(p);
++    std::string str = p.string();
++    if (str.empty() || str.back() != '/')
++        str += '/';
++    inoutOutputPath = UTF8ToWChar(str);
++}
++#endif
++
+ void LaunchParameters::ParsePermutationOption(PermutationOption& outPermutationOption, const std::wstring arg)
+ {
+     size_t equalPos                 = arg.find_first_of(L"=", 0);
+@@ -435,6 +465,7 @@ void Application::Process()
+     }
+ }
+ 
++#ifdef _WIN32
+ std::wstring Application::MakeFullPath(const std::wstring & outputPath, const std::wstring & fileName)
+ {
+     // Append file name, optionally converting to long path again, because the outputPath alone could be normal path, but when filename is added -- it could become a long path
+@@ -450,6 +481,13 @@ std::wstring Application::MakeFullPath(const std::wstring & outputPath, const st
+     return fileName;
+ }
+ 
++#else
++std::wstring Application::MakeFullPath(const std::wstring& outputPath, const std::wstring& fileName)
++{
++    return UTF8ToWChar((fs::path(WCharToUTF8(outputPath)) / WCharToUTF8(fileName)).string());
++}
++#endif
++
+ void Application::GenerateMacroPermutations(std::deque<Permutation>& permutations)
+ {
+     Permutation temp;
+@@ -557,16 +595,24 @@ void Application::OpenSourceFile()
+         size_t       extensionPos = m_Params.inputFile.find_last_of('.');
+         std::wstring extension    = m_Params.inputFile.substr(extensionPos + 1, m_Params.inputFile.size() - extensionPos - 1);
+ 
++#ifdef _WIN32
+         if (extension == L"hlsl")
+             m_Compiler = std::unique_ptr<HLSLCompiler>(
+                 new HLSLCompiler(HLSLCompiler::DXC, dxcDll, shaderPath, shaderName, shaderFileName, outputPath, m_Params.disableLogs, m_Params.debugCompile));
+-        else if (extension == L"glsl")
++        else
++#else
++        if (extension == L"hlsl")
++            throw std::runtime_error("HLSL is not supported in the Linux build of FidelityFX_SC.");
++        else
++#endif
++        if (extension == L"glsl")
+             m_Compiler = std::unique_ptr<GLSLCompiler>(new GLSLCompiler(glslangExe, shaderPath, shaderName, shaderFileName, outputPath, m_Params.disableLogs, m_Params.debugCompile));
+         else
+             throw std::runtime_error("Unknown shader source file extension. Please use the -compiler option to specify which compiler to use.");
+     }
+     else
+     {
++#ifdef _WIN32
+         if (m_Params.compiler == L"dxc")
+             m_Compiler = std::unique_ptr<HLSLCompiler>(
+                 new HLSLCompiler(HLSLCompiler::DXC, dxcDll, shaderPath, shaderName, shaderFileName, outputPath, m_Params.disableLogs, m_Params.debugCompile));
+@@ -579,7 +625,13 @@ void Application::OpenSourceFile()
+         else if (m_Params.compiler == L"fxc")
+             m_Compiler = std::unique_ptr<HLSLCompiler>(
+                 new HLSLCompiler(HLSLCompiler::FXC, d3dDll, shaderPath, shaderName, shaderFileName, outputPath, m_Params.disableLogs, m_Params.debugCompile));
+-        else if (m_Params.compiler == L"glslang")
++        else
++#else
++        if (m_Params.compiler == L"dxc" || m_Params.compiler == L"fxc" || StartsWith(m_Params.compiler, L"gdk."))
++            throw std::runtime_error("Only the glslang compiler is supported in the Linux build of FidelityFX_SC.");
++        else
++#endif
++        if (m_Params.compiler == L"glslang")
+             m_Compiler = std::unique_ptr<GLSLCompiler>(new GLSLCompiler(glslangExe, shaderPath, shaderName, shaderFileName, outputPath, m_Params.disableLogs, m_Params.debugCompile));
+         else
+             throw std::runtime_error("Unknown compiler requested (valid options: dxc, fxc or glslang)");
+@@ -782,7 +834,7 @@ void Application::WriteShaderBinaryHeader(Permutation& permutation)
+ 
+     std::wstring outputPath = MakeFullPath(m_Params.ouputPath, headerFileName);
+ 
+-    _wfopen_s(&fp, outputPath.c_str(), L"wb");
++    OpenFileW(&fp, outputPath);
+ 
+     // ------------------------------------------------------------------------------------------------
+     // Write autogen comment
+@@ -919,7 +971,7 @@ void Application::WriteShaderPermutationsHeader()
+ 
+     std::wstring outputPath = MakeFullPath(m_Params.ouputPath, m_ShaderName + L"_permutations.h");
+ 
+-    _wfopen_s(&fp, outputPath.c_str(), L"wb");
++    OpenFileW(&fp, outputPath);
+ 
+     // ------------------------------------------------------------------------------------------------
+     // Write header includes
+@@ -1061,7 +1113,7 @@ void Application::DumpDepfileGCC()
+     std::wstring outputFilename = MakeFullPath(m_Params.ouputPath, m_ShaderName + L"_permutations.h");
+     std::wstring depfilePath = outputFilename + L".d";
+ 
+-    _wfopen_s(&fp, depfilePath.c_str(), L"wb");
++    OpenFileW(&fp, depfilePath);
+ 
+     fs::path output = WCharToUTF8(outputFilename);
+ 
+@@ -1084,7 +1136,11 @@ void Application::DumpDepfileMSVC()
+     printf("MSVC depfile not implemented yet.\n");
+ }
+ 
++#ifdef _WIN32
+ int wmain(int argc, wchar_t** argv)
++#else
++int main(int argc, char** argv_utf8)
++#endif
+ {
+     try
+     {
+@@ -1094,6 +1150,15 @@ int wmain(int argc, wchar_t** argv)
+             return 1;
+         }
+ 
++#ifndef _WIN32
++        std::vector<std::wstring> wargs;
++        std::vector<const wchar_t*> argvStore;
++        for (int i = 0; i < argc; i++)
++            wargs.push_back(UTF8ToWChar(argv_utf8[i]));
++        for (auto& w : wargs)
++            argvStore.push_back(w.c_str());
++        const wchar_t* const* argv = argvStore.data();
++#endif
+         LaunchParameters params;
+         params.ParseCommandLine(argc - 1, argv + 1);
+ 
+diff --git a/sdk/tools/ffx_shader_compiler/src/glsl_compiler.cpp b/sdk/tools/ffx_shader_compiler/src/glsl_compiler.cpp
+index 532b192..81fc970 100644
+--- a/sdk/tools/ffx_shader_compiler/src/glsl_compiler.cpp
++++ b/sdk/tools/ffx_shader_compiler/src/glsl_compiler.cpp
+@@ -66,6 +66,12 @@ size_t GLSLShaderBinary::BufferSize()
+     return spirv.size();
+ }
+ 
++#ifdef _WIN32
++#define GLSLANG_DEFAULT_EXE "glslangValidator.exe"
++#else
++#define GLSLANG_DEFAULT_EXE "glslangValidator"
++#endif
++
+ GLSLCompiler::GLSLCompiler(const std::string& glslangExe,
+                            const std::string& shaderPath,
+                            const std::string& shaderName,
+@@ -74,7 +80,7 @@ GLSLCompiler::GLSLCompiler(const std::string& glslangExe,
+                            bool               disableLogs,
+                            bool               debugCompile)
+     : ICompiler(shaderPath, shaderName, shaderFileName, outputPath, disableLogs, debugCompile)
+-    , m_GlslangExe(glslangExe.empty() ? "glslangValidator.exe" : glslangExe)
++    , m_GlslangExe(glslangExe.empty() ? GLSLANG_DEFAULT_EXE : glslangExe)
+ {
+     fs::create_directory(m_OutputPath + "/" + m_ShaderName + "_temp");
+ }
+@@ -251,7 +257,8 @@ bool GLSLCompiler::GLSLCompiler::Compile(Permutation& permutation, const std::ve
+                         token.erase(0, end + 2);
+                     }
+                 }
+-                token.pop_back();
++                if (!token.empty() && token.back() == '\r')
++                    token.pop_back();
+                 errors.push_back(ErrorData{token, lineNumber});
+             }
+         }
+diff --git a/sdk/tools/ffx_shader_compiler/src/pch.hpp b/sdk/tools/ffx_shader_compiler/src/pch.hpp
+index c017698..a2307f0 100644
+--- a/sdk/tools/ffx_shader_compiler/src/pch.hpp
++++ b/sdk/tools/ffx_shader_compiler/src/pch.hpp
+@@ -22,13 +22,19 @@
+ 
+ #pragma once
+ 
++#ifdef _WIN32
+ #define NOMINMAX
+ #define WIN32_LEAN_AND_MEAN
+ #include <Windows.h>
+ #include <atlcomcli.h>
+ #include <dxcapi.h>
+ #include <d3dcompiler.h>
++#include <d3d12shader.h>
++#endif
+ #include <assert.h>
++#include <math.h>
++#include <memory>
++#include <cstring>
+ #include <stdio.h>
+ #include <exception>
+ #include <string>
+@@ -44,7 +50,6 @@
+ #include <iostream>
+ #include <algorithm>
+ #include <fstream>
+-#include <d3d12shader.h>
+ 
+ #include <filesystem>
+ namespace fs = std::filesystem;
+diff --git a/sdk/tools/ffx_shader_compiler/src/utils.cpp b/sdk/tools/ffx_shader_compiler/src/utils.cpp
+index 0b92936..2ab9ca2 100644
+--- a/sdk/tools/ffx_shader_compiler/src/utils.cpp
++++ b/sdk/tools/ffx_shader_compiler/src/utils.cpp
+@@ -22,6 +22,7 @@
+ 
+ #include "utils.h"
+ 
++#ifdef _WIN32
+ std::string WCharToUTF8(const std::wstring& wstr)
+ {
+     if (wstr.empty())
+@@ -49,3 +50,55 @@ std::wstring UTF8ToWChar(const std::string& str)
+ 
+     return wstr;
+ }
++#else
++// Linux: wchar_t is UTF-32.
++std::string WCharToUTF8(const std::wstring& wstr)
++{
++    std::string out;
++    for (wchar_t wc : wstr)
++    {
++        uint32_t c = static_cast<uint32_t>(wc);
++        if (c < 0x80)
++            out += static_cast<char>(c);
++        else if (c < 0x800)
++        {
++            out += static_cast<char>(0xC0 | (c >> 6));
++            out += static_cast<char>(0x80 | (c & 0x3F));
++        }
++        else if (c < 0x10000)
++        {
++            out += static_cast<char>(0xE0 | (c >> 12));
++            out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
++            out += static_cast<char>(0x80 | (c & 0x3F));
++        }
++        else
++        {
++            out += static_cast<char>(0xF0 | (c >> 18));
++            out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
++            out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
++            out += static_cast<char>(0x80 | (c & 0x3F));
++        }
++    }
++    return out;
++}
++
++std::wstring UTF8ToWChar(const std::string& str)
++{
++    std::wstring out;
++    for (size_t i = 0; i < str.size();)
++    {
++        unsigned char b = static_cast<unsigned char>(str[i]);
++        uint32_t c;
++        int n;
++        if (b < 0x80)      { c = b;        n = 0; }
++        else if (b < 0xE0) { c = b & 0x1F; n = 1; }
++        else if (b < 0xF0) { c = b & 0x0F; n = 2; }
++        else               { c = b & 0x07; n = 3; }
++        ++i;
++        for (; n > 0 && i < str.size(); --n, ++i)
++            c = (c << 6) | (static_cast<unsigned char>(str[i]) & 0x3F);
++        out += static_cast<wchar_t>(c);
++    }
++    return out;
++}
++#endif
+diff --git a/sdk/tools/ffx_shader_compiler/src/utils.h b/sdk/tools/ffx_shader_compiler/src/utils.h
+index ff57b45..88b735a 100644
+--- a/sdk/tools/ffx_shader_compiler/src/utils.h
++++ b/sdk/tools/ffx_shader_compiler/src/utils.h
+@@ -23,7 +23,9 @@
+ #pragma once
+ 
+ #include "pch.hpp"
++#ifdef _WIN32
+ #include "DXBCChecksum.h"
++#endif
+ 
+ std::string WCharToUTF8(const std::wstring& wstr);
+ std::wstring UTF8ToWChar(const std::string& str);

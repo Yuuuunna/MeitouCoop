@@ -35,7 +35,10 @@ public sealed class NavmeshWalkability : IWalkability
     public NavWorld World => world;
 
     /// <summary>Replaces the loaded meshes; only <see cref="NavMeshService"/> calls it, under its publish lock.</summary>
-    internal void SetWorld(NavWorld value) => world = value;
+    internal void SetWorld(NavWorld value)
+    {
+        lock (unreachableGate) { world = value; unreachable = null; }
+    }
 
     /// <summary>Keeps the pruned region a point stands on (<see cref="NavMeshService.KeepAt"/>); true when the world changed. Set by <see cref="NavSystem"/>.</summary>
     internal Func<Vector3, long, bool>? KeepStanding { get; set; }
@@ -220,8 +223,18 @@ public sealed class NavmeshWalkability : IWalkability
     {
         long incarnation = NavigationIncarnation?.Invoke() ?? 0;
         var w = world;
+        int doorVersion = Doors.Version;
+        var cache = UnreachableFor(w, incarnation, doorVersion);
         bool fromLoaded = w.Contains(WorldLayout.ZoneOf(from.X, from.Z));
         if (!fromLoaded || !w.Contains(WorldLayout.ZoneOf(to.X, to.Z))) return Authoritative(LongRoute(w, from, to, agent, fromLoaded, incarnation));
+        var key = (to, agent);
+        bool Current() => ReferenceEquals(w, world) && doorVersion == Doors.Version
+            && incarnation == (NavigationIncarnation?.Invoke() ?? 0);
+        // Strict authority must distinguish real no-path answers from missing navigation; its route checks run below.
+        if (AllowUnloadedFallback && cache is not null && cache.Found.TryGetValue(key, out var hit)
+            && System.Diagnostics.Stopwatch.GetElapsedTime(hit.At).TotalSeconds < UnreachableSeconds
+            && Exact(w, from, hit.Nearest, agent) is { Found: true } near && Current())
+            return Provisional(w, near, to, incarnation);
         var exact = Exact(w, from, to, agent);
         if (exact.Found) return exact;
         // A walker on a region its zone's pruning dropped (its way to a seed leads through a zone not loaded): that region is kept, and the path asked again.
@@ -245,6 +258,50 @@ public sealed class NavmeshWalkability : IWalkability
         var part = Toward(w, from, to, agent);
         if (!part.Found) return exact;
         if (Vector2.Distance(new(part.Points[^1].X, part.Points[^1].Z), new(to.X, to.Z)) <= NavQuery.GoalSnap) return part;
+        // Only remember a result while its mesh, incarnation and door version remain current.
+        if (cache is not null && Current())
+        {
+            // Publishing can detach this bucket while a search runs. An old search can only write its own detached bucket.
+            if (cache.Found.Count >= UnreachableLimit) cache.Found.Clear();
+            cache.Found[key] = (part.Points[^1], System.Diagnostics.Stopwatch.GetTimestamp());
+        }
+        return Provisional(w, part, to, incarnation);
+    }
+
+    /// <summary>Seconds to remember a provisional nearest-point answer (engine choice).</summary>
+    public const double UnreachableSeconds = 10;
+    const int UnreachableLimit = 4096;
+    readonly object unreachableGate = new();
+    UnreachableCache? unreachable;
+
+    sealed class UnreachableCache(NavWorld world, long incarnation, int doors)
+    {
+        // Idle caches must not keep a retired mesh alive; only an active query holds its snapshot strongly.
+        public readonly WeakReference<NavWorld> World = new(world);
+        public readonly long Incarnation = incarnation;
+        public readonly int Doors = doors;
+        public readonly long At = System.Diagnostics.Stopwatch.GetTimestamp();
+        public readonly System.Collections.Concurrent.ConcurrentDictionary<(Vector3 Goal, NavAgent Agent), (Vector3 Nearest, long At)> Found = new();
+    }
+
+    UnreachableCache? UnreachableFor(NavWorld w, long incarnation, int doors)
+    {
+        lock (unreachableGate)
+        {
+            // SetWorld uses this lock: an old search cannot reinstall a bucket after a publication.
+            if (!ReferenceEquals(w, world) || doors != Doors.Version) return null;
+            var cache = unreachable;
+            if (cache is not null && cache.Incarnation > incarnation) return null;
+            if (cache is null || cache.Incarnation != incarnation || cache.Doors != doors
+                || !cache.World.TryGetTarget(out var cachedWorld) || !ReferenceEquals(cachedWorld, w)
+                || System.Diagnostics.Stopwatch.GetElapsedTime(cache.At).TotalSeconds >= UnreachableSeconds)
+                unreachable = cache = new UnreachableCache(w, incarnation, doors);
+            return cache;
+        }
+    }
+
+    PathResult Provisional(NavWorld w, PathResult part, Vector3 to, long incarnation)
+    {
         List<Vector3> points = [.. part.Points, to];
         Ahead(w, points, part.Points.Count, incarnation);
         return Authoritative(new PathResult(points) { Exact = part.Points.Count });
@@ -310,8 +367,11 @@ public sealed class NavmeshWalkability : IWalkability
         return path.Found ? FromWalker(from, path) : path;
     }
 
+    [ThreadStatic] static HashSet<long>? failedRegions;
+
     PathResult Exact(NavWorld w, Vector3 from, Vector3 to, NavAgent agent)
     {
+        int doorVersion = Doors.Version;
         var query = new NavQuery(w, Doors);
         var path = OnGround(query.FindPath(from, to, agent, null, out var start));
         // A walker off the mesh (pushed beside a stair) can be nearest to a polygon it cannot step onto: the corner of the stair over it, whose simplified
@@ -319,11 +379,16 @@ public sealed class NavmeshWalkability : IWalkability
         // step along taken (docs/game/pathfinding.md "Own builder").
         if (start.Zone < 0 || IsOnMesh(w, from) || path.Found && Steppable(from, path.Points)) return path;
         var tried = new HashSet<NavRef> { start };
+        var failed = failedRegions ??= [];
+        failed.Clear();
+        if (doorVersion == Doors.Version) NavQuery.AddReachedByFailed(failed);
         for (int k = 0; k < OffMeshStarts; k++)
         {
-            var other = OnGround(query.FindPath(from, to, agent, tried.Contains, out start));
+            if (doorVersion != Doors.Version) { failed.Clear(); doorVersion = Doors.Version; }
+            var other = OnGround(query.FindPath(from, to, agent, at => tried.Contains(at) || failed.Contains(at.Key), out start));
             if (start.Zone < 0) break;
             tried.Add(start);
+            if (doorVersion == Doors.Version) NavQuery.AddReachedByFailed(failed);
             if (other.Found && Steppable(from, other.Points)) return other;
         }
         return path;

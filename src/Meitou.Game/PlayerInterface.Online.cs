@@ -20,7 +20,6 @@ sealed partial class PlayerInterface
     Action? onlineDone;
     bool onlineCancelling;
     string onlineStatus = "Enter the server address. Your identity is created automatically and remembered on this computer.";
-    string onlineFaction = "";
     string sentAppearance = "";
     long lastOnlinePreview;
     readonly Dictionary<CharacterId, int> onlineMembers = [];
@@ -65,7 +64,6 @@ sealed partial class PlayerInterface
         if (e.Widget == "OnlineCancel") { CancelOnline(); return true; }
         if (e.Widget != "OnlineConnect" || onlineWork is not null || lobby is not null || OnlineInstall is null || gameData is null) return true;
         string address = faithfulScreens.GetText("online", "ServerAddress").Trim();
-        onlineFaction = Loc.Tr("Nameless");
         if (address.Length == 0) { onlineStatus = "Enter the server address."; return true; }
         lobby = new(OnlineInstall, gameData);
         StartOnlineWork(() => lobby.ConnectAsync(address), "Connecting and checking content…", () =>
@@ -121,6 +119,7 @@ sealed partial class PlayerInterface
             {
                 if (!onlineCancelling)
                 {
+                    Console.Error.WriteLine($"online    {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
                     onlineStatus = ex.Message;
                     // Reconnect recovers the durable request if a commit's outcome was lost.
                     onlineCancelling = true;
@@ -172,10 +171,8 @@ sealed partial class PlayerInterface
     void BeginOnlineStart()
     {
         if (lobby?.Catalog is not { } catalog || onlineWork is not null) return;
-        if (onlineFaction.Length is < 1 or > 30 || onlineFaction.Any(char.IsControl))
-        { onlineStatus = "Enter a faction name of 1–30 characters, then reconnect."; CancelOnline(); faithfulScreens.Open("online"); return; }
         var grant = catalog.Qualification.Grant;
-        var request = new PlayerCreationRequest(Guid.NewGuid(), grant.Id, grant.Revision, starts[startIndex].Id, onlineFaction);
+        var request = new PlayerCreationRequest(Guid.NewGuid(), grant.Id, grant.Revision, starts[startIndex].Id);
         StartOnlineWork(() => lobby.PreviewAsync(request), "Preparing the selected beginning…", OpenOnlineEditor);
     }
 

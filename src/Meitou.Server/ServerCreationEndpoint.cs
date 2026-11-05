@@ -131,7 +131,7 @@ public sealed class ServerCreationEndpoint
             if (eligibility != CreationFailure.None) return (Reply: Failure(c, query.Query, query.Request.Id, query.DraftRevision, eligibility), Centre: default(Vector2));
             try { return (Reply: (CreationReply?)null, Centre: service.Arrival(c, query.Request)); }
             catch (Exception e) when (e is ArgumentException or InvalidDataException or InvalidOperationException)
-            { return (Reply: Failure(c, query.Query, query.Request.Id, query.DraftRevision, CreationFailure.InvalidRequest), Centre: default(Vector2)); }
+            { LogRejection("arrival", query, e); return (Reply: Failure(c, query.Query, query.Request.Id, query.DraftRevision, CreationFailure.InvalidRequest), Centre: default(Vector2)); }
         }, cancellation).ConfigureAwait(false);
         if (ready.Reply is not null) return ready.Reply;
         try
@@ -152,7 +152,7 @@ public sealed class ServerCreationEndpoint
             if (commit) return Execute(c, query);
             try { return new CreationReply(Identity(c), query.Query, query.Request.Id, query.DraftRevision, CreationOutcome.Preview, Preview: service.Preview(c, query.Request)); }
             catch (Exception e) when (e is ArgumentException or InvalidDataException or InvalidOperationException)
-            { return Failure(c, query.Query, query.Request.Id, query.DraftRevision, CreationFailure.InvalidRequest); }
+            { LogRejection("preview", query, e); return Failure(c, query.Query, query.Request.Id, query.DraftRevision, CreationFailure.InvalidRequest); }
         }, cancellation).ConfigureAwait(false);
     }
 
@@ -168,6 +168,7 @@ public sealed class ServerCreationEndpoint
         }
         catch (Exception e) when (e is ArgumentException or InvalidDataException or InvalidOperationException)
         {
+            LogRejection("commit", query, e);
             if (loop.Runtime.Faulted) throw;
             if (source.HasPendingDurableMutation && service.PendingRequest(c) == query.Request.Id)
                 return Result(c, query.Query, query.Request.Id, query.DraftRevision, service.Lookup(c, query.Request.Id), CreationFailure.Persistence);
@@ -175,4 +176,7 @@ public sealed class ServerCreationEndpoint
                 before.Status is CreationRequestStatus.Committed or CreationRequestStatus.PendingPersistence ? CreationFailure.Conflict : CreationFailure.InvalidRequest);
         }
     }
+    static void LogRejection(string stage, CreationDraftQuery query, Exception error) =>
+        Console.Error.WriteLine($"creation  {stage} rejected request={query.Request.Id}: {error.GetType().Name}: {error.Message}");
+
 }

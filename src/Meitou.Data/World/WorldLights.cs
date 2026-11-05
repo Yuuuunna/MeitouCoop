@@ -101,14 +101,14 @@ public static class WorldLights
         var result = new List<WorldLight>();
         if (building.Destroyed) return result;
         var b = building.Placement;
-        var state = b.StateId is not null && levels.Zones.TryGetValue(b.Zone, out var zoneDb) ? zoneDb.Find(b.StateId) : null;
+        var state = b.StateId is not null && levels.Zones.TryGetValue(b.StateZone ?? b.Zone, out var zoneDb) ? zoneDb.Find(b.StateId) : null;
         bool? powerOn = state is not null && state.Bools.TryGetValue("power on", out var on) ? on : null;
         var placed = new List<PlacedLight>();
         WorldObjectLayout.Building(db, building.Record, b.InstanceId, building.Position, b.Rotation, new BuildingState { Identity = b.Key }, placed);
         foreach (var p in placed) result.Add(FromPlaced(p, interior: false, powerOn));
         if (layouts is null || state is null) return result;
-        AddLayout(db, layouts, building, state.GetString("exterior layout name"), exterior: true, result);
-        if (includeInteriors) AddLayout(db, layouts, building, state.GetString("interior layout name"), exterior: false, result);
+        AddLayout(db, layouts, building, b.LayoutName(state, exterior: true), exterior: true, result);
+        if (includeInteriors && !b.WithoutInterior) AddLayout(db, layouts, building, b.LayoutName(state, exterior: false), exterior: false, result);
         return result;
     }
 

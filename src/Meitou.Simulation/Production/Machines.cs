@@ -179,6 +179,12 @@ public sealed class Machine
     /// <summary>An item furnace's grid metal (<see cref="ProductionSystem.FurnaceMetal"/>), for its panel; derived each tick, not saved, not hashed.</summary>
     public float Metal { get; set; }
 
+    /// <summary>A consuming input has neither stock nor more than the residual tolerance (Observed: upstream Machines.cs).</summary>
+    public bool HasEmptyInputs => Array.Exists(Inputs, input => input.Rate > 0 && input.Count == 0 && input.Level <= 0.001f);
+    /// <summary>The producer reports a full output; farms, crafting benches and storages have their own blocking rules.</summary>
+    public bool OutputBlocked => Status == 1 && Output is not null && Farm is null && Craft is null && !Data.IsStorage;
+    public bool Jammed => HasEmptyInputs || OutputBlocked;
+
     internal void Hash(ref StateHasher h)
     {
         h.Add(Rng.StableHash(Site));

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.Numerics;
@@ -57,14 +58,19 @@ public sealed class FoliageLayoutCache
     readonly string directory;
     readonly byte[] key;
     int hits, misses, rejected, written, maintained;
+    // Immutable ownership represented by the town inputs used to compute this instance's cache key.
+    readonly FrozenSet<(int X, int Z)> ownership;
+    internal bool MatchesOwnership(IReadOnlySet<(int X, int Z)> requested) => ownership.SetEquals(requested);
     long loadTicks, computeTicks, savedMicros, bytesRead, bytesWritten;
 
-    public FoliageLayoutCache(GameInstall install, FoliageCatalog catalog, IEnumerable<(Vector2 At, float Range)> towns, string? root = null, long? maxBytes = null)
+    public FoliageLayoutCache(GameInstall install, FoliageCatalog catalog, IEnumerable<FoliageTown> towns, string? root = null, long? maxBytes = null)
     {
         this.catalog = catalog;
         Root = root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "foliage");
         MaxBytes = maxBytes ?? DefaultMaxBytes;
-        key = ComputeKey(install, catalog, towns);
+        var list = towns.ToArray();
+        ownership = list.Where(t => t.Owned).Select(t => FoliageWorld.TownKey(t.At.X, t.At.Y)).ToFrozenSet();
+        key = ComputeKey(install, catalog, list);
         KeyName = Convert.ToHexString(key.AsSpan(0, 8)).ToLowerInvariant();
         directory = Path.Combine(Root, KeyName);
     }
@@ -83,7 +89,7 @@ public sealed class FoliageLayoutCache
     // ------------------------------------------------------------------ key
 
     /// <summary>The 32-byte key (see the class summary).</summary>
-    public static byte[] ComputeKey(GameInstall install, FoliageCatalog catalog, IEnumerable<(Vector2 At, float Range)> towns)
+    public static byte[] ComputeKey(GameInstall install, FoliageCatalog catalog, IEnumerable<FoliageTown> towns)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var text = new StringBuilder();

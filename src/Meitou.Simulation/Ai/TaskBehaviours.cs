@@ -27,7 +27,7 @@ public enum AiBehaviour : byte
     GoHome = 8,
     /// <summary>Walks to the turret of its town it claimed and stands at its gun (docs/simulation.md "AI"), where the combat system fires it.</summary>
     Turret = 9,
-    /// <summary>Walks to a general node of a random building of its town and stands there (WANDER_TOWN, docs/game/ai-tasks.md "Town goals", Observed); PATROL_TOWN too (its <c>Task_PatrolTown</c> is not decoded: engine choice).</summary>
+    /// <summary>Walks to a general node of a random building of its town and stands there (WANDER_TOWN, docs/game/ai-tasks.md "Town goals", Observed).</summary>
     TownNode = 10,
     /// <summary>Walks into a shop of its town and stands at a node in it (SHOPPING; buying is not modelled).</summary>
     Shop = 11,
@@ -50,6 +50,11 @@ public enum AiBehaviour : byte
     /// about there and clears it, attacking criminals it sees on the way (<see cref="Crime.CrimeSystem"/>'s serial step). Wanted only while an alarm is in reach.
     /// </summary>
     Investigate = 16,
+    /// <summary>
+    /// PATROL_TOWN (36, <c>Task_PatrolTown</c>, docs/game/ai-tasks.md "Town goals"): walks to a random point round its town's centre, and draws the next one each time a walk is over,
+    /// so it keeps strolling about the town (an occupier: round the complete buildings of the player town it holds).
+    /// </summary>
+    PatrolTown = 22,
 }
 
 /// <summary>The engine's table from <see cref="TaskType"/> to <see cref="AiBehaviour"/>, and the TaskData display text (docs/game/ai-tasks.md "TaskData registry", Verified) of the types it acts out.</summary>
@@ -60,7 +65,7 @@ public static class TaskBehaviours
         [TaskType.IDLE] = (AiBehaviour.Mill, "Idleness"),
         [TaskType.WANDERER] = (AiBehaviour.ToTown, "Wandering"),
         [TaskType.WANDER_TOWN] = (AiBehaviour.TownNode, "Wandering town"),
-        [TaskType.PATROL_TOWN] = (AiBehaviour.TownNode, "Patrolling town"),
+        [TaskType.PATROL_TOWN] = (AiBehaviour.PatrolTown, "Patrolling town"),
         [TaskType.PATROL] = (AiBehaviour.Patrol, "Patrolling"),
         [TaskType.RELAX_IN_TOWN_PACKAGE] = (AiBehaviour.Relax, "Relaxing"),
         [TaskType.SHOPPING] = (AiBehaviour.Shop, "Shopping"),

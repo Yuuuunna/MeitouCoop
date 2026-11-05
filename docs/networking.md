@@ -23,7 +23,7 @@ multiple consecutive frames; only EOF before a new header is a clean close. Part
 unknown kind/version or invalid size is an error. Writes freeze payload bytes. The host serializes writes,
 uses one reader, supplies cancellation/deadlines and closes a connection after framing/partial-write errors.
 Message kinds cover compatibility/authentication/admission, commands/receipts, observation filters,
-state chunks, ACK/resync, withdrawal, creation/invitation messages and talk hints. Application protocol: 17.
+state chunks, ACK/resync, withdrawal, creation/invitation messages and talk hints. Application protocol: 19.
 
 `ClientCommandBinding` expands selection-based intents into explicit actors and binds grants/membership
 revisions from the displayed view. `PlayerCommandRouting` supplies the shared actor/faction scope; building
@@ -43,11 +43,11 @@ the bound connection. Bodies retain session, inventory, job, machine, site and t
 JSON rejects duplicate keys at every depth, non-finite floats, unknown enum values/bits, null array elements,
 arrays over 4096 elements, strings over 4096 encoded bytes, depth over 16 and over 100000 tokens.
 Optional nullable scalar fields retain their command semantics; domain validation still runs at execution.
-**Observed** (source review, no new tests): protocol 17 also carries custody, pickup, loot/carry/medical/facility
+**Observed** (source review, no new tests): protocol 19 also carries custody, pickup, loot/carry/medical/facility
 orders, editor sessions, player barter and scoped inspection. Fixture/group, loot-window and held serial
 revisions survive binding. Editor intent uses a bounded race/gender/control/colour/style DTO rather than
 mutable FCS definitions. Barter views reach only participants; visible characters expose controller identity.
-**Observed** (source review, no new tests): protocol 17 also carries custody, pickup, loot/carry/medical/facility
+**Observed** (source review, no new tests): protocol 19 also carries custody, pickup, loot/carry/medical/facility
 orders, editor sessions, player barter and scoped inspection. Fixture/group, loot-window and held serial
 revisions survive binding. Editor intent uses a bounded race/gender/control/colour/style DTO rather than
 mutable FCS definitions. Barter views reach only participants; visible characters expose controller identity.
@@ -85,16 +85,50 @@ View JSON is limited to 32 MiB/depth 48/two million tokens; duplicate fields, nu
 numbers are rejected, except CharacterSnapshot.DrawYaw's explicit NaN fallback. Payloads are presentation,
 never a source of server commands or simulation state.
 
-`ServerStateReplicator` freezes keyed character/building/machine/projectile/public-faction/survey/message entries plus a remaining-view
+**Observed** (source review): protocol 19 adds authoritative projectile speed for tracers (finite, nonnegative)
+and `PathExact`, the exact navmesh point count from the first published waypoint (0 through `Path.Count`).
+Paths retain selected-owned authorization; public character projection clears both path fields. Projectile
+speed retains the existing nearby-projectile filter. Compatibility rejects earlier application protocols.
+
+`ServerStateReplicator` freezes keyed appearance/character/building/machine/projectile/public-faction/survey/message entries plus a remaining-view
 entry. Deltas compare against an acknowledged publication, replacing whole changed entries so removed
 private fields cannot persist. Ordered key/byte framing produces a SHA-256 document hash. ACKs must name a
 retained publication/hash and the same world/player/connection generation. Server/client each retain at most
 eight history documents and 64 MiB of encoded state (server includes its acknowledged base); encoding/
 decoding adds bounded temporary allocations. These are safety limits, not measured capacity guarantees.
 
+Projection streams UTF-8 through envelope fields without mutable JSON trees. Trusted serialized replication
+output is not parsed merely to validate the serializer; inbound patches/views retain structural/domain checks.
+Validation reuses depth-local field sets and a bounded per-document name cache; escaped duplicate names still
+fail. Appearance reuse compares component bytes before decoding unchanged descriptors. **Verified** by
+codec/replication/transport tests.
+
+**Observed** (source review): protocol 19 separates `a:slot:generation` appearance entries from `c:`
+character state. Components serialize directly; unchanged appearance descriptors reuse acknowledged encoded
+bytes after content comparison. Clients decode only changed components and rebuild the small view envelope;
+Whole-component replacement preserves private-field removal; optional character fields equal to their declared
+defaults are omitted and reset on replacement. Patch structure is checked once, before typed component decoding. Typed caches contain only the current authorized
+view and clear on withdrawal/resync. Orphan appearances and embedded character appearances are rejected.
+`RemotePlayerSession` still caps interpolation at 250 ms; longer publication gaps can leave poses stationary.
+
 `ClientWorldReplica` has no Simulation.World. It commits a typed view only after the entire patch and hash
 validate. Missing bases clear usable state and require a new baseline. Reordered/duplicate older publications
 never roll it back, including after clear/resync. Historical documents are internal and not exposed as UI views.
+**Observed** (source review): `network` diagnostics use UTC timestamps and record missing-base history IDs/bytes,
+replica restoration size/count, server withdrawal, invalid-state exception type and session availability/phase/busy/speed
+transitions. The graphical client writes these to `log.txt`; no credentials or state payloads are logged.
+Repeated missing-base/withdrawal messages are suppressed until a replica recovers. Missing views display speed zero
+and empty character snapshots in `RemotePlayerSession`; this is not evidence that the server clock paused.
+**Verified** by `StateTransportTests.SlowReceiverKeepsItsViewAcrossDelayedAcksAndRevocationStillBypassesBackpressure`:
+the publisher permits at most two unacknowledged ordinary publications, overlapping decoding with transport while
+staying below the eight-document history/grant limits. It waits for ACKs before capturing more. Every attempt
+still checks role/membership authority and persistence barriers; revocation bypasses the wait. Resync releases the
+wait and requests a full baseline. This bounds slow-client backlog without expiring its unacknowledged grant stamp.
+**Observed** (creation-fix release log, 2026-11-02): without this backpressure, publication 14 referenced evicted
+base 5; repeated resyncs kept referencing base 5 through publication 159, followed by disconnect and endless loading.
+**Verified** by `StateReplicationTests.MovingSnapshotsReuseUnchangedAppearancesButOutfitChangesAndWithdrawalInvalidateThem`:
+equal encoded appearance data for the same character retains its object reference across snapshots, so renderer
+preparation can finish. The cache contains only current authorized characters and clears on withdrawal/reset.
 Successive baselines retain bounded history because an ACK for an older baseline can cross a newer full
 publication; subsequent deltas may legitimately use that older base. Full publication still replaces the view.
 Absence means OutOfScope unless the authority supplies confirmed destruction. CharacterTable keeps at most
@@ -104,6 +138,8 @@ component disappearance currently has no destruction journal and remains OutOfSc
 State packets (at most 36 MiB) split into 256 KiB chunks. The 84-byte chunk header contains world/player/
 generation/publication, index/count/total bytes and packet SHA-256. The assembler buffers one publication,
 accepts identical duplicates/out-of-order chunks, rejects conflicts, and replaces incomplete older transfers.
+The receiver decodes each completed patch once, checking its identity/publication against the chunk envelope
+before replica mutation; `StateTransportTests.ChunkPublicationMustMatchTheDecodedPacketBeforeCommittingAView` covers this fence.
 An ACK frame is 72 bytes; resync/withdrawal frames are 40. All retain the outer WireFrame limits. Hosts still
 provide transport deadlines, authentication, serialized scheduling and connection-rate policy.
 Loss of current admission or a durable-write barrier emits a monotonic withdrawal, clearing usable client
@@ -123,6 +159,10 @@ deadline; at most 128 requests remain outstanding. Replies match command IDs or 
 belong to this world/connection. Callers supply stable mutation IDs and fresh query GUIDs.
 
 `State` supplies coherent admission/view references; consumers treat their data as read-only.
+Decoding uses a separate replica lock, released before publishing under the state/command lock; UI reads and
+input submissions do not wait for JSON decoding. Stop/reset serialize against the replica. **Verified** by
+`SecureServerTests.ReadingDisplayedStateDoesNotWaitForLargeSnapshotDecoding` (Bench, 400 NPCs).
+**Observed** (local TLS probe, 2026-11-02): state-read p99 fell from 98.5 ms to 0.022 ms; this is not a frame-rate measurement.
 `WaitForChangeAsync` avoids missed notifications without executing UI callbacks on the receive thread.
 Preparing/busy admission hides the view. Control requires active admission and a validated usable replica.
 ACKs/resyncs are automatic. Withdrawal, protocol failure or disconnect removes usable state; disconnect
@@ -134,7 +174,7 @@ invitation outcomes through their original identity and lookup/resume. Disposal 
 views and deduplicated receipts; a roleless account creates, enters and recovers the same roles on reconnect;
 replacement and membership revocation remove control; cancelled waits consume late replies; disposal cancels
 entry preparation; a false server compatibility claim cannot obtain credentials.
-`HeadlessContentTests.FirstNetworkAccountCreatesAndEntersInstalledWorldWithoutALocalPlayerStart` uses this
+`HeadlessContentTests.InstalledCreationAndReconnectKeepAuthorizedViewsAcrossTwentyPublications` uses this
 production client against installed content, including appearance/editor previews and deferred-role recovery
 after checkpoint restore. This is transport/session coverage, not graphical gameplay acceptance.
 
@@ -266,7 +306,8 @@ appearances and private inventory. These checks do not constitute final multi-cl
 public compatibility metadata, validates local content and atomically persists a random per-endpoint
 GUID/256-bit credential before registration. LocalApplicationData/Meitou/identities is private client state;
 missing state creates a new identity, but malformed state or rejected credentials never silently replace it.
-The initial faction uses the localized Nameless name. Vulkan only; Metal online entry remains unsupported.
+The menu omits the initial faction name; the server derives a unique name from its player-faction template
+and player ID, adding a suffix on collision. Explicit names still reject duplicates. Vulkan only; Metal online entry remains unsupported.
 
 Discovery sends no credentials. First contact trusts the presented, unexpired TLS certificate and pins it
 only after metadata/content validation (TOFU, not independently verified server identity). Subsequent
@@ -290,6 +331,39 @@ Reconnect queries/resumes that exact request; unknown outcomes retain it, defini
 rejections release it. Once admitted, the lobby transfers connection ownership to a fresh graphical host;
 the online exit menu disposes that host and returns to the title.
 
-**Verified** by the existing installed-content `HeadlessContentTests.FirstNetworkAccountCreatesAndEntersInstalledWorldWithoutALocalPlayerStart`:
+**Verified** by the existing installed-content `HeadlessContentTests.InstalledCreationAndReconnectKeepAuthorizedViewsAcrossTwentyPublications`:
 production TLS creation, appearance preview and entry. **Unknown**: complete graphical mouse/keyboard
 acceptance of the new lobby/editor/host transition.
+
+**Verified** by `SecureServerTests.UnnamedNewPlayersReceiveDistinctFactionsAndCreationReplayKeepsTheName`
+and installed-content creation/entry: omitted names commit, consecutive players get distinct factions,
+explicit duplicate names reject, and receipt replay preserves the faction. Creation validation failures
+log the phase/request ID and reason on the server; graphical connection failures log their exception locally.
+
+## Local latency acceptance
+
+Project budgets, not an industry standard: 30 Hz simulation and 10 Hz publications imply mean scheduling
+waits of about 16.7 + 50 ms before processing/presentation. Sources:
+[Riot server budgets](https://www.riotgames.com/en/news/valorants-128-tick-servers) and
+[Fiedler snapshot interpolation](https://gafferongames.com/post/snapshot_interpolation/).
+Loopback retains TCP/TLS/scheduling costs; do not subtract an invented network delay. Use Release, the copied
+~230-character installed-content save, 110 s of existing move-command probing, discard the first 15 s,
+include autosaves (60 s during acceptance), and avoid concurrent builds/tests/profilers in the final run.
+
+| Metric | Mean | P95 | P99 |
+|---|---:|---:|---:|
+| Command submission to authority receipt | <=50 ms | <=100 ms | <=150 ms |
+| Publication arrival interval | <=110 ms | <=150 ms | <=250 ms |
+| Command to first changed authoritative snapshot | <=100 ms | <=150 ms | unmeasured |
+| Command to visible response including interpolation | <=200 ms | <=250 ms | unmeasured |
+
+The existing probe measures only the first two rows. The latter two remain **Unknown** without corresponding
+instrumentation; publication intervals/receipts cannot establish input-to-display latency. Require no unexpected
+disconnect, missing baseline or withdrawal during active play. Report startup and maximum stalls separately.
+
+**Observed** (2026-11-04, above probe; 227–259 visible characters): 95 warmed command receipts averaged
+12.38 ms (P95 20.2, P99 24.2, max 24.4); 949 publication gaps averaged 100.18 ms (P95 131, P99 222,
+max 294). Both measured budgets pass, including two autosaves; no unexpected disconnect/baseline loss.
+The probe closes its connection normally at 110 s. Initial simulation warm-up included a 777 ms tick;
+these results do not establish graphical input-to-display latency or multi-client capacity. A separate existing
+25 s state-read probe recorded a 0.142 ms maximum (1,757 reads, none over 10 ms).

@@ -9,7 +9,8 @@ using Buffer = Silk.NET.Vulkan.Buffer;
 
 namespace Meitou.Rendering.Gpu;
 
-/// <summary>An attachment of a <see cref="RenderingDesc"/>: a view in GENERAL layout, its load op and clear value (stores always).</summary>
+/// <summary>An attachment of a <see cref="RenderingDesc"/>: a view in GENERAL layout, its load op and clear value (stores always). The depth
+/// clear defaults to 1 (conventional targets rely on it); scene-convention targets pass <see cref="DepthConvention.Clear"/>.</summary>
 public readonly record struct RenderTarget(GpuView View, LoadOp Load = LoadOp.Load, ClearColour Clear = default, float DepthClear = 1f)
 {
     public bool IsNull => View.IsNull;
@@ -483,6 +484,9 @@ public sealed unsafe class CommandList : IGpuCommandList
     /// recorded into this command list (so the frame's own work sees it in order).
     /// </summary>
     public GpuTexture CreateTexture(TextureDesc desc) => ctx.CreateTexture(desc, Handle);
+
+    /// <inheritdoc/>
+    public void InitTexture(GpuTexture texture) => ctx.InitTexture(texture, Handle);
 
     /// <summary>(Added for the Meitou water's ocean.) Copies tightly packed texels from <paramref name="src"/> at <paramref name="offset"/> over a
     /// whole level and layer of <paramref name="dst"/> (GENERAL layout). The caller orders it against the writes before and the reads after.</summary>

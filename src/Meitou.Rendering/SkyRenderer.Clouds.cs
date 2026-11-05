@@ -7,6 +7,9 @@ namespace Meitou.Rendering;
 public sealed unsafe partial class SkyRenderer
 {
     VolumetricCloudRenderer? volume;
+
+    /// <summary>This frame's main-view volumetric clouds for the motion vectors, or null (no volume, or not marched this frame).</summary>
+    public CloudMotion? CloudMotion => volume?.MainMotion is { } m && m.Frame == Gpu.Frame.Number ? m : null;
     SampledTexture volumeImage;
     bool volumeShadowsReady;
     bool VolumeEnabled => LitClouds && Physical && state.Valid && (CloudDensity > 0 || Warm);
@@ -24,6 +27,7 @@ public sealed unsafe partial class SkyRenderer
         volumeShadowsReady = false;
         if (!VolumeEnabled || !CloudShadows || state.Sun.Y <= 0.03f && !Warm) return;
         volume ??= new VolumetricCloudRenderer(Gpu);
+        volume.Bottom = CloudHeight;
         volume.RenderShadow(Eye, CloudDensity, CloudLayer.TextureShift(cloudOffset), state.Sun);
         volumeShadowsReady = true;
     }
@@ -89,6 +93,7 @@ public sealed unsafe partial class SkyRenderer
             return;
         }
         volume ??= new VolumetricCloudRenderer(Gpu);
+        volume.Bottom = CloudHeight;
         var ambient = state.CloudAmbient;
         float grey = MeitouClouds.AmbientGreyAt(CloudDensity);
         float luma = Vector3.Dot(ambient, new Vector3(0.2126f, 0.7152f, 0.0722f));

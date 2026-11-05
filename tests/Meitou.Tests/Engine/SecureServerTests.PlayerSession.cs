@@ -9,6 +9,69 @@ namespace Meitou.Tests.Engine;
 public partial class SecureServerTests
 {
     [Fact]
+    public async Task EarlyRemotePublicationContinuesFromTheDisplayedPoseWithoutJumpingToTheOldTarget()
+    {
+        await using var scene = new Scene(); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = timeout.Token; var actor = scene.Actors[0];
+        await using var connection = await ConnectRemote(scene, actor.Credential, token);
+        await using var session = new RemotePlayerSession(connection, (_, _) => 300);
+        connection.RequestEntry(actor.Grant.Entity);
+        await PumpPlayer(session, () => session.CanControl, token);
+        async Task PublishPosition(float x)
+        {
+            long tick = await scene.Loop.InvokeAsync(() =>
+            {
+                var table = scene.Runtime.World.Characters;
+                table.BeginTick(); table.Next[actor.Role.Slot].Position = new(x, 300, 0); table.EndTick();
+                scene.Runtime.Step();
+                return scene.Runtime.World.Tick;
+            }, token);
+            await WaitRemote(connection, s => s.View?.Snapshot.Tick >= tick, token);
+        }
+        await PublishPosition(10); session.Advance(0);
+        // Both publications arrive without presentation time advancing: the first endpoint has
+        // not been drawn yet, so a second publication must not move the displayed actor to x=10.
+        var shown = Vector3.Lerp(session.PreviousSnapshot.Characters.Single(c => c.Id == actor.Role).Position,
+            session.CurrentSnapshot.Characters.Single(c => c.Id == actor.Role).Position, session.SimulationAlpha);
+        double shownTick = session.PresentationTick;
+        await PublishPosition(20); session.Advance(0);
+        Assert.Equal(shown, session.PreviousSnapshot.Characters.Single(c => c.Id == actor.Role).Position);
+        Assert.Equal(shownTick, session.PresentationTick);
+        Assert.Equal(20, session.CurrentSnapshot.Characters.Single(c => c.Id == actor.Role).Position.X);
+    }
+
+    [Fact, Bench]
+    public async Task ReadingDisplayedStateDoesNotWaitForLargeSnapshotDecoding()
+    {
+        await using var scene = new Scene(); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var token = timeout.Token; var actor = scene.Actors[0];
+        await scene.Loop.InvokeAsync(() =>
+        {
+            for (int i = 0; i < 400; i++)
+                scene.Runtime.World.Characters.Spawn(new CharacterHot { Position = new(1, 300, 0) },
+                    new CharacterCold { Faction = actor.Grant.Faction, Name = "Nearby NPC " + i }, 0);
+        }, token);
+        await using var connection = await ConnectRemote(scene, actor.Credential, token);
+        connection.RequestEntry(actor.Grant.Entity);
+        await WaitRemote(connection, s => s.CanControl, token);
+        Assert.True(connection.State.View!.Snapshot.Characters.Count >= 400);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        double longest = 0;
+        int samples = 0;
+        while (clock.Elapsed.TotalSeconds < 3)
+        {
+            long before = System.Diagnostics.Stopwatch.GetTimestamp();
+            var state = connection.State;
+            longest = Math.Max(longest, System.Diagnostics.Stopwatch.GetElapsedTime(before).TotalMilliseconds);
+            Assert.Null(state.Disconnection); Assert.NotNull(state.View);
+            samples++;
+            await Task.Delay(1, token);
+        }
+        Assert.True(samples > 100);
+        Assert.True(longest < 50, $"Reading displayed state blocked for {longest:F1} ms while decoding snapshots.");
+    }
+
+    [Fact]
     public async Task CommonRemoteLoopUsesServerClockWithoutResettingAnimationTimeOrAcceptingLocalPause()
     {
         await using var scene = new Scene(); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));

@@ -34,7 +34,14 @@ static class CharacterShaders
         // Blood on the surface (character.hlsl "Bloodyness"): the part is covered at full amount (a severed limb's stump), docs/game/blood-decals.md "On the body".
         Bloody = 1 << 20,
         // With Bloody: the whole mesh at the full amount (a stump) instead of its parts' damage (the instance carries them).
-        BloodFull = 1 << 21;
+        BloodFull = 1 << 21,
+        // A headless body's neck cap (NeckCap, Meitou decapitation): the wound; with Mechanical, a robot race's metal socket.
+        Wound = 1 << 22, Mechanical = 1 << 23;
+    // Instance flag (CharInstance.Flags; bit 0 interior, 12-15 hidden limbs, 16-17 the boots' side, 18-27 hidden parts): a headless body (Meitou decapitation): its head
+    // vertices (CharacterContent.HeadBit) are hidden.
+    public const uint Headless = 1u << 28;
+    // A cut-off head (CharacterAppearance.HeadOnly): only the head vertices are drawn.
+    public const uint HeadOnly = 1u << 29;
     // Shading modes.
     public const uint ShadeItem = 0, ShadeBody = 1, ShadeHair = 2;
     // Texture slots (CharacterMaterialRecord.Tex).
@@ -56,9 +63,9 @@ static class CharacterShaders
             uint vestCount;
             float alphaThreshold;
             uint tex[{{TextureSlotCount}}];
-            vec4 shirtColour;    // w: an item's gloss multiplier (an icon's material `specular mult`; 1 otherwise)
+            vec4 shirtColour;    // w: hair's attachment specular, or an item's gloss multiplier
             vec4 skinTone;
-            vec4 hairColour;
+            vec4 hairColour;     // rgb: tint; w: attachment mipmap bias
             vec4 hairAlpha;
             vec4 hairMult;
             vec4 beardAlpha;
@@ -137,7 +144,8 @@ static class CharacterShaders
             // Hidden limbs and parts (docs/characters.md "Hidden body parts"): the body's vertices of a limb whose bit 12 + k the instance carries, or of a part-map part whose
             // bit 18 + p it carries (the vertex's limb bits 0-3, part bits from 4: CharacterContent.MarkBody); the fragments discard where it is above 0.
             uint marks = uint(aColour.y + 0.5);
-            vHidden = ((marks & (aInstanceData.z >> 12) & 15u) | ((marks >> 4) & (aInstanceData.z >> 18) & 1023u)) != 0u ? 1.0 : 0.0;
+            vHidden = ((marks & (aInstanceData.z >> 12) & 15u) | ((marks >> 4) & (aInstanceData.z >> 18) & 1023u) | ((marks >> 14) & (aInstanceData.z >> 28) & 1u)) != 0u ? 1.0 : 0.0;
+            if ((aInstanceData.z & {{HeadOnly}}u) != 0u) vHidden = (marks & {{CharacterContent.HeadBit}}u) == 0u ? 1.0 : 0.0;   // a cut-off head: its vertices only
             // The part of the vertex (bits 16-19: its index + 1, CharacterContent.MarkBody) and its blood amount (the instance: part k in byte k & 1 of the w of row k / 2).
             uint bloodPart = (marks >> 16) & 15u;
             vBloodAmount = 0.0;
@@ -182,6 +190,7 @@ static class CharacterShaders
     // derivatives of the quad are fine. The cut-outs discard after every lookup (no derivatives after an OpKill).
     const string Lookup = """
         vec4 tex(uint i, vec2 uv) { return texture(textures2D[nonuniformEXT(i)], uv); }
+        vec4 hairTex(CharMaterial m, vec2 uv) { return texture(textures2D[nonuniformEXT(m.tex[0])], uv, m.hairColour.w); }
         """;
 
     /// <summary>
@@ -198,7 +207,7 @@ static class CharacterShaders
 
     static string F(float v) => v.ToString("0.0########", System.Globalization.CultureInfo.InvariantCulture);
 
-    public static string Fragment() => "#version 450\n" + NativeShaders.Prelude(PushMembers) + "#define LAMP_SKIN\n" + NativeShaders.AtmosphereFunctions + Structs + Lookup + $$"""
+    public static string Fragment(bool lateDepth = false) => "#version 450\n" + NativeShaders.Prelude(PushMembers) + "#define LAMP_SKIN\n" + NativeShaders.AtmosphereFunctions + Structs + Lookup + $$"""
         in vec3 vWorld;
         in float vCurvature;
         in vec3 vNormal;
@@ -253,6 +262,8 @@ static class CharacterShaders
 
         void main()
         {
+            // The backend's discard workaround: preserve the rasterized depth, with writes deferred until after alpha rejection.
+            {{(lateDepth ? "gl_FragDepth = gl_FragCoord.z;" : "")}}
             vec3 geometric = normalize(vNormal);
             float curvature = vCurvature;
             if (vHidden > 0.0) discard;
@@ -261,7 +272,7 @@ static class CharacterShaders
             uint f = m.flags;
             if (flag(f, 32768u)) discard;   // its cut-out is still streaming in: a solid card would show
             vec3 n = geometric;
-            if (!gl_FrontFacing) n = -n;
+            if (m.shading != 2u && !gl_FrontFacing) n = -n;
             bool icon = view.fogDistance < 0.0 && view.fogDistance > -1.5;   // an inventory icon (CharacterRenderer.DrawIcon)
             vec2 uv = vUv;
             vec3 albedo = vec3(0.72);
@@ -274,11 +285,11 @@ static class CharacterShaders
 
             if (m.shading == 2u)
             {
-                vec4 t = flag(f, 1u) ? tex(m.tex[0], uv) : vec4(1.0);
+                vec4 t = flag(f, 1u) ? hairTex(m, uv) : vec4(1.0);
                 cut = flag(f, 1u) && dot(t, m.alphaChannel) < m.alphaThreshold;
                 float brightness = dot(t, m.diffuseChannel);
                 albedo = brightness * m.hairColour.rgb;
-                gloss = brightness * 0.3;
+                gloss = brightness * m.shirtColour.w;
             }
             else if (m.shading == 1u)
             {
@@ -346,6 +357,29 @@ static class CharacterShaders
                 vec4 blood = tex(m.tex[19], bc) * vec4(m.colour1.rgb, 1.0);
                 float amount = flag(f, 2097152u) ? 1.0 : vBloodAmount;
                 albedo = mix(albedo, blood.rgb, clamp(blood.a - 1.0 + clamp(amount, 0.0, 1.0), 0.0, 1.0));
+            }
+            // A headless body's neck cap (NeckCap): uv is (0, 0) at its centre and 1 at the rim; colour1 the race's blood colour, the diffuse slot the splatter map.
+            // Flesh: the fluid darkening into the cut, a bone at the centre. Mechanical (a robot race): a dark metal socket, its core darker, the fluid over it.
+            if (flag(f, {{Wound}}u))
+            {
+                float r = length(uv);
+                float splat = flag(f, 1u) ? tex(m.tex[0], uv * 0.5 + 0.5).a : 0.5;
+                vec3 fluid = m.colour1.rgb;
+                if (flag(f, {{Mechanical}}u))
+                {
+                    albedo = mix(vec3(0.17, 0.16, 0.15), vec3(0.05), 1.0 - smoothstep(0.25, 0.45, r));
+                    albedo = mix(albedo, fluid, splat * 0.6 * smoothstep(0.3, 0.9, r));
+                    gloss = 0.6;
+                    metal = 0.85;
+                }
+                else
+                {
+                    albedo = mix(fluid * 0.35, fluid, splat * smoothstep(0.0, 1.0, r));
+                    albedo = mix(vec3(0.75, 0.70, 0.60), albedo, smoothstep(0.12, 0.18, r));
+                    gloss = 0.7;
+                }
+                skin = 0.0;
+                nm = vec4(0.5, 0.5, 1.0, 0.5);
             }
             if (cut) discard;
             // The game writes character albedo darkened: 0.7 for bodies, heads and hair (character.hlsl DARKEN), 0.8 for worn items (skin.hlsl); not its icons (rtticons.hlsl,
@@ -441,7 +475,7 @@ static class CharacterShaders
             if ((f & 32768u) != 0u) discard;
             bool cut = false;
             if (m.shading == 2u && (f & 1u) != 0u)
-                cut = dot(tex(m.tex[0], vUv), m.alphaChannel) < m.alphaThreshold;
+                cut = dot(hairTex(m, vUv), m.alphaChannel) < m.alphaThreshold;
             else if (m.shading == 0u && (f & 512u) != 0u)
                 cut = tex(m.tex[1], vUv).a < 0.6;
             if (cut) discard;
@@ -454,7 +488,7 @@ static class CharacterShaders
 
     /// <summary>
     /// The motion pass (<c>IWorldPostChain.ObjectMotion</c>): the character's own motion, as the grass writes its sway (UV units, this frame minus last, jitter removed), where
-    /// the character is what the near depth shows (<c>pc.depthIndex</c> carries the depth texture's bindless index in this pass).
+    /// the character is what the scene depth shows (<c>pc.depthIndex</c> carries the depth texture's bindless index in this pass).
     /// </summary>
     public static string MotionFragment() => "#version 450\n" + NativeShaders.Prelude(PushMembers) + Structs + Lookup + """
         in vec2 vUv;
@@ -463,18 +497,18 @@ static class CharacterShaders
         flat in uint vMaterial;
         in float vHidden;
         layout(location = 0) out vec4 fragColour;
-        float viewZ(float d) { float zd = 2.0 * d - 1.0; return view.nearPlanes.x * view.nearPlanes.y / (view.nearPlanes.y - zd * (view.nearPlanes.y - view.nearPlanes.x)); }
+        """ + DepthConvention.Glsl + """
         void main()
         {
             if (vHidden > 0.0) discard;
             CharMaterial m = materials.items[vMaterial];
             uint f = m.flags;
             if ((f & 32768u) != 0u) discard;
-            if (m.shading == 2u && (f & 1u) != 0u) { if (dot(tex(m.tex[0], vUv), m.alphaChannel) < m.alphaThreshold) discard; }
+            if (m.shading == 2u && (f & 1u) != 0u) { if (dot(hairTex(m, vUv), m.alphaChannel) < m.alphaThreshold) discard; }
             else if (m.shading == 0u && (f & 512u) != 0u) { if (tex(m.tex[1], vUv).a < 0.6) discard; }
             float stored = texelFetch(textures2D[nonuniformEXT(pc.depthIndex)], ivec2(gl_FragCoord.xy), 0).r;
-            if (stored >= 1.0) discard;
-            float zs = viewZ(stored), zf = viewZ(gl_FragCoord.z);
+            if (depthIsSky(stored)) discard;
+            float zs = depthViewZ(stored, view.nearPlanes), zf = depthViewZ(gl_FragCoord.z, view.nearPlanes);
             if (abs(zs - zf) > 0.002 * zs + 0.05) discard;
             vec2 now = vNow.xy / vNow.w - view.jitterNdc, previous = vPrevious.xy / vPrevious.w;
             fragColour = vec4((now - previous) * 0.5, 0.0, 0.0);
@@ -498,7 +532,7 @@ struct CharacterMaterialRecord
 [InlineArray(CharacterShaders.TextureSlotCount)]
 struct TextureSlots { uint first; }
 
-/// <summary>The C# side of the push block (<c>flatColour</c>, <c>depthIndex</c>, <c>fill</c>, <c>skinLut</c>): 36 bytes. <c>DepthIndex</c> is the near depth texture's bindless index in the motion pass and 0 otherwise.</summary>
+/// <summary>The C# side of the push block (<c>flatColour</c>, <c>depthIndex</c>, <c>fill</c>, <c>skinLut</c>): 36 bytes. <c>DepthIndex</c> is the scene depth texture's bindless index in the motion pass and 0 otherwise.</summary>
 [StructLayout(LayoutKind.Sequential)]
 struct CharacterPush
 {

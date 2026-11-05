@@ -12,6 +12,7 @@ sealed partial class PlayerInterface
 {
     /// <summary>How near the pointer an item's projected middle must be, in pixels (an engine choice: the items have no pick mesh).</summary>
     const float GroundItemPickPixels = 24;
+    public Func<int, bool>? GroundItemHidden { get; set; }
 
     /// <summary>The camera's focus while the Highlight key is held (the host sets it; null otherwise): the item labels show round it.</summary>
     public Vector3? HighlightFocus;
@@ -36,6 +37,7 @@ sealed partial class PlayerInterface
         float bestDistance = GroundItemPickPixels;
         foreach (var g in session.CurrentSnapshot.GroundItems)
         {
+            if (GroundItemHidden?.Invoke(g.Id) == true) continue;
             var middle = g.Position + new Vector3(0, 0.5f, 0);
             if (Project(middle) is not { } at) continue;
             float d = Vector2.Distance(at, pixel), t = Vector3.Distance(ray.Origin, middle);
@@ -71,6 +73,7 @@ sealed partial class PlayerInterface
         var near = new List<(Meitou.Simulation.Items.GroundItemSnapshot Item, float Distance, Vector2 At)>();
         foreach (var g in session.CurrentSnapshot.GroundItems)
         {
+            if (GroundItemHidden?.Invoke(g.Id) == true) continue;
             if (g.Name.Length == 0 || Vector3.DistanceSquared(focus, g.Position) > HighlightRadius * HighlightRadius) continue;
             var middle = g.Position + new Vector3(0, 0.5f, 0);
             if (Project(middle) is not { } at || Ray(at) is not { } ray) continue;

@@ -7,6 +7,9 @@ namespace Meitou.Runtime;
 public sealed class TerrainSource : IDisposable
 {
     const int Cells = 64;
+    // World-wide weather queries more than 256 tiles per sweep. Keep a bounded ~33 MiB
+    // sample working set so every tick does not reread the same TIFF rows from disk.
+    const int DefaultCapacity = 4096;
     readonly TerrainHeightmap map;
     readonly int capacity;
     readonly object gate = new();
@@ -14,7 +17,7 @@ public sealed class TerrainSource : IDisposable
     readonly LinkedList<(int, int)> lru = [];
     bool disposed;
 
-    public TerrainSource(TerrainHeightmap map, int capacity = 256)
+    public TerrainSource(TerrainHeightmap map, int capacity = DefaultCapacity)
     {
         ArgumentNullException.ThrowIfNull(map);
         ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
@@ -23,7 +26,7 @@ public sealed class TerrainSource : IDisposable
         this.capacity = capacity;
     }
 
-    public static TerrainSource Open(GameInstall install, int capacity = 256) => new(TerrainHeightmap.Open(install), capacity);
+    public static TerrainSource Open(GameInstall install, int capacity = DefaultCapacity) => new(TerrainHeightmap.Open(install), capacity);
     public int CachedTiles { get { lock (gate) return tiles.Count; } }
 
     public float HeightAt(float x, float z)

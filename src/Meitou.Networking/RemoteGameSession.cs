@@ -24,6 +24,7 @@ public sealed class RemoteGameSession : IAsyncDisposable
     readonly WorldViewCodec codec;
     readonly ClientStateReceiver receiver;
     readonly object gate = new();
+    readonly object replicaGate = new();
     readonly CancellationTokenSource lifetime = new();
     readonly Channel<WireFrame> outbound = Channel.CreateBounded<WireFrame>(new BoundedChannelOptions(64)
     { SingleReader = true, FullMode = BoundedChannelFullMode.Wait, AllowSynchronousContinuations = false });
@@ -172,6 +173,10 @@ public sealed class RemoteGameSession : IAsyncDisposable
     }
     void Publish(RemoteSessionState next)
     {
+        if ((state.View is null) != (next.View is null) || state.Admission.State.Phase != next.Admission.State.Phase ||
+            state.Admission.State.Busy != next.Admission.State.Busy || state.View?.TimeScale != next.View?.TimeScale ||
+            (state.Disconnection is null) != (next.Disconnection is null))
+            Console.WriteLine($"network   {DateTime.UtcNow:O} session view={(next.View is null ? "unavailable" : "ready")} publication={next.View?.Publication} phase={next.Admission.State.Phase} busy={next.Admission.State.Busy} characters={next.View?.Snapshot.Characters.Count ?? 0} speed={next.View?.TimeScale ?? 0} disconnected={next.Disconnection is not null}");
         state = next with { Version = checked(state.Version + 1) };
         var previous = changed; changed = NewSignal(); previous.TrySetResult();
     }
@@ -188,6 +193,20 @@ public sealed class RemoteGameSession : IAsyncDisposable
             while (true)
             {
                 var frame = await WireFrame.ReadAsync(stream, lifetime.Token).ConfigureAwait(false) ?? throw new EndOfStreamException("Server closed the connection.");
+                ReplicaResult? replicaResult = null;
+                WireFrame? acknowledgement = null, resync = null;
+                if (frame.Kind is WireMessage.StateChunk or WireMessage.StateWithdrawn)
+                {
+                    // Decode away from the gate used by State, input submission and the render thread.
+                    // Never acquire gate while holding replicaGate: Stop/Admission use the reverse order.
+                    lock (replicaGate)
+                    {
+                        lifetime.Token.ThrowIfCancellationRequested();
+                        replicaResult = receiver.Receive(frame);
+                        if (replicaResult == ReplicaResult.Applied) acknowledgement = receiver.Acknowledgement;
+                        if (replicaResult == ReplicaResult.NeedsBaseline && frame.Kind != WireMessage.StateWithdrawn) resync = receiver.ResyncRequest();
+                    }
+                }
                 lock (gate)
                 {
                     EnsureConnected();
@@ -198,16 +217,16 @@ public sealed class RemoteGameSession : IAsyncDisposable
                             CheckIdentity(admission.Identity);
                             if (admission.State.Sequence > state.Admission.State.Sequence)
                             {
-                                if (admission.State.Busy || admission.State.Phase == AdmissionPhase.Preparing) receiver.Replica.Reset();
+                                if (admission.State.Busy || admission.State.Phase == AdmissionPhase.Preparing)
+                                    lock (replicaGate) receiver.Replica.Reset();
                                 Publish(state with { Admission = admission, View = VisibleView(admission) });
                             }
                             break;
                         case WireMessage.StateChunk:
                         case WireMessage.StateWithdrawn:
-                            var result = receiver.Receive(frame);
-                            if (result == ReplicaResult.Applied && receiver.Acknowledgement is { } ack) Queue(ack);
-                            if (result == ReplicaResult.NeedsBaseline && frame.Kind != WireMessage.StateWithdrawn) Queue(receiver.ResyncRequest());
-                            if (result is not null) Publish(state with { View = VisibleView(state.Admission) });
+                            if (acknowledgement is not null) Queue(acknowledgement);
+                            if (resync is not null) Queue(resync);
+                            if (replicaResult is not null) Publish(state with { View = VisibleView(state.Admission) });
                             break;
                         case WireMessage.CommandReceipt:
                             var receipt = CommandProtocol.DecodeReceipt(frame);
@@ -262,7 +281,9 @@ public sealed class RemoteGameSession : IAsyncDisposable
         lock (gate)
         {
             if (state.Disconnection is not null) return;
-            receiver.Replica.Reset();
+            if (error is not ObjectDisposedException && disposal is null)
+                Console.Error.WriteLine($"network   {DateTime.UtcNow:O} disconnected: {error}");
+            lock (replicaGate) receiver.Replica.Reset();
             Publish(state with { View = null, Disconnection = error });
             foreach (var waiter in pending.Values) waiter.TrySetException(new IOException("Remote request interrupted; its server outcome may be unknown.", error));
             pending.Clear();

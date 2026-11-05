@@ -153,6 +153,7 @@ public sealed unsafe class MetalContext : IGpuContext, IDisposable
         this.device = device;
         this.queue = queue;
         this.presentFormat = presentFormat;
+        Meitou.Rendering.DepthConvention.Reversed = false;   // Metal keeps the conventional scene depth (docs/renderer-native.md)
         // Metal supports 2x/4x (and 8x on some discrete Macs) for the colour and depth targets the reflection uses. Ask the
         // device rather than assuming 4: the same reflection pass must fall back cleanly on a Mac without MSAA support.
         int supportedSamples = 1;
@@ -639,9 +640,6 @@ public sealed unsafe class MetalContext : IGpuContext, IDisposable
     public bool DepthClamp => true;
 
     /// <inheritdoc/>
-    public bool ClipDepthZeroToOne => true;   // Metal's NDC depth is 0..1
-
-    /// <inheritdoc/>
     public bool RecordsSecondaries => false;
 
     public void EndHostPass(IGpuCommandList cmd)
@@ -727,7 +725,7 @@ public sealed unsafe class MetalContext : IGpuContext, IDisposable
     /// programs write it, so the pass has the attachment they expect).</summary>
     public GpuTexture Albedo => albedo ?? throw new InvalidOperationException("no frame is open");
 
-    /// <summary>The scene's render scale (the Vulkan path's TAA/upscaler scale): 1 = native, 0.83 = the Meitou default.</summary>
+    /// <summary>The scene's render scale (the Vulkan path's TAA/upscaler scale): 1 = native, 0.67 = the Vulkan path's Meitou default.</summary>
     public float RenderScale { get; set; } = 1f;
     public int SceneWidth { get; private set; }
     public int SceneHeight { get; private set; }
@@ -953,9 +951,28 @@ public sealed unsafe class MetalContext : IGpuContext, IDisposable
     /// <inheritdoc/>
     public bool FrameCompleted(long frame) => frameNumber - frame >= FrameRingDepth;
 
-    /// <summary>A texture copied into another, scaled (the impostor bake's supersampled row halved): a sampling pass into the destination.</summary>
-    internal void BlitScaled(MTLCommandBuffer command, GpuTexture src, GpuTexture dst, TextureMinFilter filter) =>
+    /// <summary>
+    /// A texture copied into another: depth by a native copy (same size, format and kind only), colour by a sampling pass, which
+    /// can scale (the impostor bake's supersampled row halved).
+    /// </summary>
+    internal void Blit(MTLCommandBuffer command, GpuTexture src, GpuTexture dst, TextureMinFilter filter)
+    {
+        if (src.Desc.IsDepth || dst.Desc.IsDepth)
+        {
+            if (src.Desc.Format != dst.Desc.Format || src.Desc.Width != dst.Desc.Width || src.Desc.Height != dst.Desc.Height
+                || src.Desc.Kind != TextureKind.Texture2D || dst.Desc.Kind != TextureKind.Texture2D
+                || src.Desc.Samples != 1 || dst.Desc.Samples != 1)
+                throw new NotSupportedException("Metal depth blits require matching single-sample 2D textures of the same size and format");
+            // The sampling pass below writes a colour attachment; depth formats cannot be bound there.
+            var blit = command.BlitCommandEncoder();
+            blit.CopyFromTexture(TextureAt(src), 0, 0, new MTLOrigin(),
+                new MTLSize { width = (ulong)src.Desc.Width, height = (ulong)src.Desc.Height, depth = 1 },
+                TextureAt(dst), 0, 0, new MTLOrigin());
+            blit.EndEncoding();
+            return;
+        }
         BlitScaled(command, TextureAt(src), TextureAt(dst), MetalConventions.Pixel(dst.Desc.Format), dst.Desc.Width, dst.Desc.Height, filter);
+    }
 
     /// <summary>
     /// A texture's level over another level of the same texture (the mip chain's step): a blit when the two levels are the same

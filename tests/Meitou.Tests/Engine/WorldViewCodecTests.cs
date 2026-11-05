@@ -15,6 +15,20 @@ namespace Meitou.Tests.Engine;
 
 public class WorldViewCodecTests
 {
+    [Fact]
+    public void ReusedValidationSetsAllowSiblingSchemasButRejectEscapedDuplicateFields()
+    {
+        var db = Database(); var codec = new WorldViewCodec(db); var view = View(db);
+        view = view with { Snapshot = view.Snapshot with { Characters = Enumerable.Range(1, 100)
+            .Select(i => view.Snapshot.Characters[0] with { Id = new(i, 2) }).ToArray() } };
+        var bytes = codec.Encode(view);
+        Assert.Equal(100, codec.Decode(bytes).Snapshot.Characters.Count);
+        string json = Encoding.UTF8.GetString(bytes);
+        string duplicate = json.Replace("\"World\":", $"\"\\u0057orld\":\"{view.World}\",\"World\":", StringComparison.Ordinal);
+        Assert.NotEqual(json, duplicate);
+        Assert.Throws<InvalidDataException>(() => codec.Decode(Encoding.UTF8.GetBytes(duplicate)));
+    }
+
     internal static GameDatabase Database() => SyntheticTown.Database(extra:
         [SyntheticTown.Rec("wire-race", FcsRecordType.RACE, "Race"), SyntheticTown.Rec("wire-clothes", FcsRecordType.ARMOUR, "Clothes")]);
     internal static PlayerWorldView View(GameDatabase db)

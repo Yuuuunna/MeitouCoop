@@ -71,6 +71,7 @@ public sealed class NavRuntimeBuildings
         lock (gate)
         {
             var copy = new NavRuntimeBuildings();
+            copy.revision = revision;
             foreach (var pair in all) copy.all.Add(pair.Key, pair.Value);
             copy.byZone = byZone;
             return copy;

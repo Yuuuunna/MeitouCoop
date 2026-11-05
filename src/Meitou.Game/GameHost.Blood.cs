@@ -33,13 +33,15 @@ sealed partial class GameHost
     /// <summary>Makes the store and the renderer when the install's <c>Blood</c> setting is on (missing: on).</summary>
     void SetUpBlood(IGpuContext context)
     {
-        gpu.Debris ??= new DebrisRenderer(context, gpu.Objects?.Resolver, assets.Find);   // made now: its shaders compile here, not at the first burst
+        gpu.Debris ??= new DebrisRenderer(context, gpu.Objects?.Resolver, assets.Find) { SharedTextures = () => gpu.Characters?.Textures };   // made now: its shaders compile here, not at the first burst
         gpu.Particles?.PrepareBursts(BurstSplash, BurstSpray, SparksSystem);
         if (gpu.Decals is not null || AudioSystem.Setting(install, "Blood", 1) == 0) return;
         var files = BloodTextureFiles(assets.Configured);
         decalStore = new TerrainDecalStore([.. files.Select(list => (IReadOnlyList<(int, int)>)[.. list.Select(DdsSize)])]);
         gpu.Decals = TerrainDecalRenderer.Create(context, files);
         gpu.Decals.Meitou = o.MeitouBlood;
+        gpu.Decals.GroundHeight = (x, z) => gpu.Terrain.HeightAt(x, z);
+        gpu.Decals.Surfaces = o.MeitouBloodSurfaces;
         gpu.Decals.Resolution = (int)AudioSystem.Setting(install, "Decal Resolution", 1024, 512, 2048);
         gpu.Decals.Range = AudioSystem.Setting(install, "Decal Range", 1000, 0, 5000);
         gpu.DecalStore = decalStore;
@@ -65,6 +67,7 @@ sealed partial class GameHost
         {
             gpu.DebrisPieces.Clear();
             AddBolts();   // the bolts are drawn whatever the Blood setting
+            AddTracers();
             UpdateFalls();   // and the severed limbs falling
             return;
         }
@@ -78,9 +81,10 @@ sealed partial class GameHost
                 continue;
             }
             if (decalStore is not { } store) continue;
-            if (m.Position.Y > gpu.Terrain.HeightAt(m.Position.X, m.Position.Z) + BloodAboveGround) continue;
             uint opaque = 0xFF000000 | Abgr(m.Colour);
             long who = (long)(uint)m.Who.Slot << 32 | (uint)m.Who.Generation;
+            if (gpu.Decals is { Surfaces: true } surfaces) SurfaceMark(surfaces, m, who, opaque, visual.TickSeconds);
+            if (m.Position.Y > gpu.Terrain.HeightAt(m.Position.X, m.Position.Z) + BloodAboveGround) continue;
             switch (m.Kind)
             {
                 case BloodMarkKind.Pool: store.Bleed(who, m.Position, m.Amount, visual.TickSeconds, opaque, bloodRandom); break;
@@ -93,11 +97,25 @@ sealed partial class GameHost
         }
         long ticks = session.CommandTick - bloodTick;
         bloodTick = session.CommandTick;
-        if (ticks > 0 && decalStore is { } aging && gpu.Decals is { } decals) aging.Age(ticks * tick, decals.Drawn);
+        if (ticks > 0 && decalStore is { } aging && gpu.Decals is { } decals) { aging.Age(ticks * tick, decals.Drawn); decals.AgeSurfaces(ticks * tick); }
         // The pieces move by the game time between frames, the tick count plus the simulation's alpha, so they fly smoothly at the display rate, not in tick steps.
         double clock = session.PresentationTick;   // the shown tick: one run ahead is not on screen yet
         UpdateDebris((float)Math.Clamp((clock - debrisClock) * tick, 0, 0.5));
         debrisClock = clock;
+    }
+
+    /// <summary>One mark as the <c>bloodsurfaces</c> switch's decals (<see cref="TerrainDecalRenderer.Surfaces"/>); the same marks and sizes as the terrain's.</summary>
+    void SurfaceMark(TerrainDecalRenderer surfaces, BloodMark m, long who, uint opaque, float tick)
+    {
+        switch (m.Kind)
+        {
+            case BloodMarkKind.Pool: surfaces.BleedSurface(who, m.Position, m.Amount, tick, opaque, bloodRandom); break;
+            case BloodMarkKind.Smear:
+                surfaces.AddSurface(TerrainDecalType.Smear, m.Position, m.Direction, 0.2f, (uint)(Math.Clamp(m.Amount, 0, 1) * 255) << 24 | Abgr(m.Colour), bloodRandom);
+                break;
+            case BloodMarkKind.Drip: surfaces.AddSurface(TerrainDecalType.Pool, m.Position, m.Direction, m.Amount, opaque, bloodRandom); break;
+            case BloodMarkKind.Splash: surfaces.AddSurface(TerrainDecalType.Splash, m.Position, m.Direction, m.Amount, opaque, bloodRandom); break;
+        }
     }
 
     /// <summary>The EFFECT `small- sparks1` (5463-nodes_furniture1_otto.mod) the original throws on a parry: its particle system.</summary>
@@ -134,14 +152,25 @@ sealed partial class GameHost
         session.EnableBlood(decalStore is not null || session.IsRemote || config.LuckyrenMode);
         if (decalStore is not { } store) return;
         store.Clear();
-        if (saved is not null) store.Load(SaveDecals.Read(saved));
+        gpu?.Decals?.ClearSurfaces();
+        if (saved is not null) { store.Load(SaveDecals.Read(saved)); gpu?.Decals?.LoadSurfaces(SaveSurfaceDecals.Read(saved)); }
     }
 
     /// <summary>The store's decals into the save's TERRAIN_DECALS record (with <c>Blood</c> off the record keeps what the loaded save had).</summary>
     void WriteDecals(SaveGame game)
     {
-        if (decalStore is { } store && game.Decals is { } record) SaveDecals.Write(record, store.All);
+        if (decalStore is { } store && game.Decals is { } record) { SaveDecals.Write(record, store.All); if (gpu?.Decals is { } decals) SaveSurfaceDecals.Write(record, decals.SavedSurfaces); }
     }
+
+    /// <summary>The default <c>blood colour</c> (RACE, 0x800000), the red the blood particles' textures already are.</summary>
+    const uint DefaultBloodColour = 0x800000;
+
+    /// <summary>
+    /// The recolour a blood particle burst takes for a race's <c>blood colour</c> <paramref name="rgb"/> (<see cref="ParticleRenderer.Burst"/>): none for the default red, which the
+    /// textures show as they are; else the colour scaled as the default would be to full red, so a race's blood is as bright against its hue as red blood is.
+    /// </summary>
+    static Vector3? BloodRecolour(uint rgb) =>
+        rgb == DefaultBloodColour ? null : new Vector3(rgb >> 16 & 0xFF, rgb >> 8 & 0xFF, rgb & 0xFF) / 0x80;
 
     /// <summary>0xRRGGBB as the decal's ABGR colour bytes (alpha 0).</summary>
     static uint Abgr(uint rgb) => (rgb >> 16 & 0xFF) | (rgb & 0xFF00) | (rgb & 0xFF) << 16;

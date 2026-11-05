@@ -118,12 +118,13 @@ public sealed partial class FixtureRegistry
 
     void RegisterBuilding(World world, PopulationData data, int site, TownBuilding b, int townFaction)
     {
-        if (byBuilding.ContainsKey(b.Key)) return;
         var db = data.Db;
         int levelOwner = b.OwnerFactionId is { } o && data.FactionIndex(o) is var fi and >= 0 ? fi : townFaction;
         int owner = levelOwner;
         if (Saved?.GetValueOrDefault(b.Key)?.Strings.GetValueOrDefault("owner faction ID") is { Length: > 0 } savedOwner && data.FactionIndex(savedOwner) is >= 0 and var savedFaction)
             owner = savedFaction;
+        RegisterTownMachine(world, data, site, b, owner);
+        if (byBuilding.ContainsKey(b.Key)) return;
         bool purchased = Saved?.GetValueOrDefault(b.Key)?.Bools.TryGetValue(PurchasedKey, out bool savedPurchase) == true
             ? savedPurchase : owner != levelOwner && owner == data.PlayerFaction;
         RegisterProperty(world, data, site, b, owner, purchased);

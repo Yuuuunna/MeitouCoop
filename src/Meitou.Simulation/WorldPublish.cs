@@ -185,6 +185,8 @@ public sealed partial class World
                 Build = cold is { Stats: { } buildStats, Medical: { } fed, Race.IsRobot: false, Appearance: { Animal: null } look }
                     ? Meitou.Data.Characters.CharacterShape.BuildFromStats(look.Female, buildStats, static (stats, s) => stats[s], fed.Hunger) : null,
                 Path = selected && (state[i].Flags & (ushort)MoveFlags.HasPath) != 0 ? cold!.Path.Skip(state[i].PathCursor).ToArray() : [],
+                PathExact = selected && (state[i].Flags & (ushort)MoveFlags.HasPath) != 0
+                    ? Math.Clamp(cold!.PathExact - state[i].PathCursor, 0, Math.Max(0, cold.Path.Length - state[i].PathCursor)) : 0,
                 CarriedBy = cold?.CarriedBy ?? CharacterId.None,
                 Carry = cold is { CarriedBy.IsNone: false } ? cold.CarryAttach ?? Carrying.CarryPose.Fallback : null,
                 Carrying = cold?.Carrying ?? CharacterId.None,

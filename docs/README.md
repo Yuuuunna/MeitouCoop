@@ -92,6 +92,7 @@ used as a naming reference for our 1.0.68 analysis; they are **Observed** until 
 - [blood-decals](game/blood-decals.md): blood pools, smears and splashes on the terrain
 - [luckyren](game/luckyren.md): Meitou luckyren Mode, characters bursting on a fatal hit (gear, blood, flying bones)
 - [animals](game/animals.md)
+- [birds](game/birds.md): wildlife flocks and their presentation
 - [buildings-production](game/buildings-production.md)
 - [carry-loot](game/carry-loot.md)
 - [locks](game/locks.md): cages, beds, doors, lockable containers, lockpicking, shackles

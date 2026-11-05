@@ -13,7 +13,7 @@ along the view; k is strength (default0.8) times sun/(sun+sky) luminance share. 
 horizon; do not darken night ambient or double-apply haze over the sky.
 
 Froxel injection samples cascaded sun visibility; integration/air scatter share a compute scan
-walking each column once. Distances, projection and depth slices must match scene reconstruction.
+walking each column once. Distances and projection must match the scene depth's reconstruction (`depthViewZ`).
 Prepared depth/shadow/global constants and barriers precede compute/apply. Half-resolution
 scene-layer integration needs depth-aware fallback at discontinuities.
 
@@ -28,6 +28,17 @@ Placed fog volumes receive their own shadowed scattering, respecting plane/spher
 geometry and colour/additive/alpha. Cloud cover reduces appropriate sun contribution; actual
 volumetric cloud-shadow-map sampling is incomplete. Air layer is an engine near-ground term,
 separate from original distance haze, with day/key-light-dependent strength.
+
+## Temporal
+
+With a temporal upscaler the injection's samples move every frame (`uShaftRange.w`); left to the upscaler, TAA (which clamps its history to
+the picture's neighbourhood) showed the noise as a shimmer in motion, DLSS less, and no temporal AA a still pattern. The grid averages them
+itself (`LightShaftShaders.Resolve`): each cell's centre is taken into last frame's grid (its camera and slices), the filtered sun share read
+there (bilinear in the slice, linear between slices), clamped to this frame's 3x3 neighbourhood in the slice and blended at
+`ShaftTemporalBlend` (0.1) of this frame's; no history on a cut (a frame skipped, the eye 2000 units on). The raw injection goes to its own
+target and the filtered atlas to `shaftInjected`, which every reader keeps using (two targets swapped each frame). Vulkan chain only.
+**Observed** (the live main menu, TAA, a capture a second): the fine grain in consecutive frames' difference over the shafts gone, broad
+changes (clouds, light) left; its high-pass measure 1.72 to 1.58 (the rest is TAA's own jitter on edges).
 
 ## Water and limits
 

@@ -26,7 +26,7 @@ CharacterShaders set0 bindings: bones6, materials7 (persistent), morphs8, previo
 slots. CharacterLayoutTests pins CPU/GLSL layouts. Push depthIndex is near-depth bindless index
 for motion,0 otherwise. Camera-relative transforms preserve precision; previous bone/transform
 state must match motion history. Skin/body/head/hair/item modes share world lighting/haze.
-The colour and motion views use the near slice's rotation-only view-projection (`WorldFrame` passes it, jittered and unjittered; the
+The colour and motion views use the scene's rotation-only view-projection (`WorldFrame` passes it, jittered and unjittered; the
 previous frame's is moved by the eye difference in double), not the world one with the eye's position cancelled afterwards
 (`FromOrigin`, still used by the other views): the world matrix's translation already holds the eye's rounding.
 **Observed** (sandbox hero spawned at x = -50874, `--upscaler off`, camera locked on the leader at the minimum boom 10, CPU replay of the
@@ -36,6 +36,10 @@ noise into the characters' velocity (median of a walker's vectors, second differ
 matrix). The error scales with 1/boom and with the distance from the origin; terrain and objects still use world matrices.
 Head uses UV+(0,1); dye/vest/overlays and cutout rules come from research. Same-instance caster
 pass preserves alpha coverage. Face morphs and body shape precede skinning.
+
+**Observed** (current renderer): character vertices use `GpuVertex.CharacterSize` packed attributes; uploads reserve one unpacked vertex of buffer slack for AMD attribute reads. Bone palettes are copied directly into frame-allocated mapped constants, including previous palettes for motion. Scene colour/motion and overlay passes use `DepthConvention` for reversed depth.
+
+**Observed** (`CharacterContent`, `CharacterShaders`): presentation-only `Headless` hides body head vertices (vertex bit 14, instance flag 28), while `HeadOnly` draws those vertices alone (flag 29). Prepared neck caps close either cut using the race blood colour and mechanical wound material. These renderer capabilities do not introduce simulation severing rules.
 
 ### Skin (Meitou `skin` switch)
 
@@ -63,16 +67,33 @@ translucency (ears).
 `CharacterContent` owns buffers/textures/morph arena; worker fetching/preparation precedes render
 uploads. Reuse appearances/content; replace only after ready and retire after GPU consumers.
 `CharacterTextureBudget` shares mip/VRAM pressure policy; unavailable content uses a stand-in.
-Loading readiness includes used textures deferred by memory pressure, not just queued decodes/uploads.
-Generated four-level reductions are always enabled; with 100+ characters drawn in the world, pose rates fall with the character's size on screen
+Loading readiness includes used textures deferred by memory pressure, not just queued decodes/uploads, but not the governor's coarser
+replacements (`WorldTextureCache.AwaitedCount`: the finer image is drawn until one lands). Under the loading screen (`CharacterRenderer.Covered`)
+textures upload and appearances build for up to 16 ms a frame instead of the play budgets.
+Generated four-level reductions are always enabled; their index lists are cached on disk (`%LOCALAPPDATA%\Meitou\charlods`, keyed by the parts'
+vertices and indices, radius and settings; `--no-load-cache` bypasses it), as building them is most of a mesh's preparation; with 100+ characters drawn in the world, pose rates fall with the character's size on screen
 (its diameter in pixels at the view's projection, so resolution and field of view count and big animals keep their rate farther): 100 px and more every
 frame, then at most 30/15/7.5 poses/s below 100/50/25 px (in time, the game's animation clock, each on its own phase); at most 48 characters, the largest first,
 take the full rate by size, the next ones at least 30/s (`CharacterRenderer.PosePixelSteps`, `FullRateBudget`; engine choices). `CharacterInstance.FullRateAnimation` bypasses
 the throttling for presentation actors, the first 10 of the player's characters (squad bar, then the
 other squads in order) and the first selected one (`PlayerInterface.FullRateCharacters`). Shadow LOD doubles choice with cascade floors.
+A character that cannot show (`CharacterRenderer.Shown`: its sphere, its shadow swept from the light, its water mirror image all outside the view; no portrait) is not
+posed at all, its held palette still drawn (far cascades are reused for up to 32 frames), and is posed without motion the frame it returns; the host fills no poses or
+ragdoll beyond the draw distance + 2000 (`InReach`): it lists those in `CharacterDrawList.Distant`, once a tick, which the renderer scans only when it changes (looks to build, kept-point textures). Engine choices. **Observed** (stutter final boss save, ~1000 characters, ~400 in reach, ~280 of them off screen).
+F11's characters line counts what the last colour view culled in (frustum and fog only: those behind terrain or buildings and sub-pixel ones count too);
+its `[ ] boxes` checkbox outlines those over everything (`CountedBoxes`).
 Clamp stored bounds to real mesh extent. Animation rendering does not independently integrate
 walk-loop root movement; simulation owns relocation. Quads/morph and motion buffers retain
 correct previous-frame data across skipped poses and content changes.
+
+### Tiny characters (Meitou engine choice)
+
+The original draws every character within its distance, a gigantic race out to 7x it, however small it shows. Meitou does not draw, pose or build one whose
+projected height (`asset.Height x scale`, over the distance to the eye, in render pixels: `LodPixelsPerRadian` follows the render size, so before the upscaler) is under 1.5 px,
+and draws it again from 2.0 px (`CharacterRenderer.CullTiny`; the hysteresis keeps one at the edge from flickering). A look not built yet is judged by the tallest asset built
+for its body mesh, so the first of a body mesh is still built. Never the player's characters, a portrait's, a hidden one, nor a look wanted by a kept point. It leaves the live list, so
+no shadow, motion or reflection pass sees it either; the simulation, the host's lists, sight, sounds and selection are untouched (picking reads the live list: a speck is not clickable).
+**Observed**: far giants of a mod-heavy install cost 0.6-1.2 ms a frame in a camera flight before this; **Unknown**: popping under DLSS at 1.5 px (not seen at the far zoom).
 
 ## Animals and portraits
 

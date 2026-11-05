@@ -1,13 +1,12 @@
 using Meitou.Content;
-using Meitou.Data;
 using Meitou.Data.Ogre;
 
 namespace Meitou.Data;
 
 /// <summary>
-/// Finds art files the way the viewer needs them: an existing path, a path relative to the install (FCS stores
-/// <c>.\data\...</c>), then the bare file name through the <c>resources.cfg</c> and enabled mod folders (Ogre's lookup, not
-/// recursive), then the bare name anywhere under data/ (for files outside those folders).
+/// Finds art files the way the viewer needs them: an existing absolute path; else the bare file name through the
+/// <c>resources.cfg</c> and enabled mod folders (Ogre's lookup, not recursive; the game cuts FCS's <c>.\data\...</c> paths to
+/// it), then the path relative to the install, then the bare name anywhere under data/ (for files outside those folders).
 /// </summary>
 public class GameAssets
 {
@@ -17,19 +16,40 @@ public class GameAssets
     public GameAssets(GameInstall install)
     {
         this.install = install;
-        Configured = OgreScriptResources.ForInstall(install, LoadOrder.FromInstall(install));
+        Configured = GameResources.For(install);
         everything = new(() => OgreScriptResources.FromDirectory(install.DataDirectory));
+        materials = new(() => OgreMaterialLibrary.Load(Configured));
     }
 
     public OgreScriptResources Configured { get; }
 
+    readonly Lazy<OgreMaterialLibrary> materials;
+
+    /// <summary>The material scripts the game compiles (<see cref="OgreMaterialLibrary.Load(OgreScriptResources)"/>), parsed once on first use and shared; read only.</summary>
+    public OgreMaterialLibrary Materials => materials.Value;
+
+    /// <summary>The successful names found so far: a town's characters asked
+    /// for the same animation and skeleton files thousands of times while loading. A name not found is looked for again next time.</summary>
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Path, string How)> found = new();
+
     /// <summary>Full path of <paramref name="name"/>, or null. <paramref name="how"/> says which rule found it.</summary>
     public string? Find(string name, out string how)
+    {
+        if (found.TryGetValue(name, out var known)) { how = known.How; return known.Path; }
+        var path = Search(name, out how);
+        if (path is not null) found.TryAdd(name, (path, how));
+        return path;
+    }
+
+    string? Search(string name, out string how)
     {
         how = "";
         if (string.IsNullOrWhiteSpace(name)) return null;
         name = name.Trim().Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
         if (Path.IsPathRooted(name) && GameFiles.Exists(name)) { how = "path"; return Path.GetFullPath(GameFiles.Resolve(name)); }
+        var bare = Path.GetFileName(name);
+        // A record's .\data\... path is cut to its bare name before Ogre's index is asked (docs/formats/overview.md), so a mod's file of the same name wins.
+        if (!Path.IsPathRooted(name) && Configured.Find(bare) is { } configured) { how = "resources.cfg"; return configured; }
         if (!Path.IsPathRooted(name))
         {
             var underInstall = GameFiles.Resolve(Path.GetFullPath(Path.Combine(install.Root, name)));
@@ -37,16 +57,24 @@ public class GameAssets
             var local = GameFiles.Resolve(name);
             if (File.Exists(local)) { how = "path"; return Path.GetFullPath(local); }
         }
-        var bare = Path.GetFileName(name);
-        if (Configured.Find(bare) is { } configured) { how = "resources.cfg"; return configured; }
+        if (Configured.Find(bare) is { } named) { how = "resources.cfg"; return named; }
         if (everything.Value.Find(bare) is { } anywhere) { how = "data/ (outside resources.cfg)"; return anywhere; }
         return null;
     }
 
     public string? Find(string name) => Find(name, out _);
 
-    /// <summary>Mesh lookup uses configured resource folders before an FCS relative path.</summary>
-    public string? FindMesh(string fcsPath) => Configured.Find(Path.GetFileName(fcsPath.Replace('\\', '/'))) ?? Find(fcsPath);
+    /// <summary>
+    /// The file a record's path names, by its bare name in resource group <paramref name="group"/> alone (Ogre's <c>resourceExists(group, name)</c>), or null.
+    /// A bare name may be in several groups: an item's <c>Water.png</c> is in Icons, and <c>data/materials/water.png</c> in General.
+    /// </summary>
+    public string? FindInGroup(string name, string group)
+    {
+        string bare = Path.GetFileName(name.Trim().Replace('\\', '/'));
+        return Configured.Contains(bare, group) ? Configured.Find(bare, group) : null;
+    }
+
+    public string? FindMesh(string fcsPath) => Find(fcsPath);
 
     public Characters.CharacterRigs CreateRigs(GameDatabase db) => new(db, FindMesh, Find);
 

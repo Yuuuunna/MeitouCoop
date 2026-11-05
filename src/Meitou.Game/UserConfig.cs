@@ -29,7 +29,7 @@ sealed class UserConfig
     /// retyped or read with a new meaning, and convert older files in <see cref="Migrate"/>. A Tab panel slider whose numbering changes
     /// takes a new label instead (<c>WorldFrame.UpscalerSliders</c>), so its old value is not misread.
     /// </summary>
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
     /// <summary>The file's layout: <see cref="CurrentVersion"/>, or the newer one of a later release whose file this is (kept, so that
     /// release does not convert its own keys again).</summary>
     public int Version { get; set; } = CurrentVersion;
@@ -40,6 +40,11 @@ sealed class UserConfig
     /// <summary>Frames per second when vsync is off; 0 = unlimited. Engine default 150.</summary>
     public int FpsLimit { get; set; } = 150;
     public bool VSync { get; set; }
+    /// <summary>Frame generation (FSR 3): the swapchain goes through AMD's frame-interpolation layer (Windows, Proton and Linux, needs <c>amd_fidelityfx_vk.dll</c> / <c>libamd_fidelityfx_vk.so</c>; read at start-up), which
+    /// presents a generated frame between each two rendered ones (<c>FrameGeneration</c>). Off by default.</summary>
+    public bool FrameGeneration { get; set; }
+    /// <summary>The green ring under each selected character (Advanced settings; default on).</summary>
+    public bool SelectionRings { get; set; } = true;
     /// <summary>The Metal display default: MetalFX balanced (temporal at 0.50); Native is used when MetalFX is unavailable.</summary>
     public MetalUpscalerMode MetalUpscaler { get; set; } = MetalUpscalerMode.Temporal;
     /// <summary>The Metal render scale; the default 0.50 is the balanced profile. The Metal settings panel edits it live.</summary>
@@ -103,6 +108,8 @@ sealed class UserConfig
     public bool FixGunnerFacing { get; set; } = true;
     /// <summary>"ma badpunch"'s attack distance -4 reads as 4 (Fixes settings; off: as written, as the game does).</summary>
     public bool FixPunchReach { get; set; } = true;
+    /// <summary>Other buildings' parts (the Hub's wall in the Shinobi Thieves tower) are cut inside a building in the interior view (Fixes settings; off: drawn, as the game does; docs/render-interior-cut.md).</summary>
+    public bool FixPartsInBuildings { get; set; } = true;
     /// <summary>The strategy camera's turn and tilt rate in degrees per second per unit of input (Controls settings): the original's
     /// <c>mouse speed pan</c> / <c>mouse speed tilt</c> (slider 2 … 50, default 6), one value for both here.</summary>
     public float CameraRotateSpeed { get; set; } = Meitou.Data.World.KenshiCamera.DefaultRotateSpeed;
@@ -112,18 +119,19 @@ sealed class UserConfig
     public bool? EdgeScroll { get; set; }
     /// <summary>The in-game tutorials (the original's <c>tutorials</c>, default on; Gameplay settings); null until first used, then taken from the install's settings.cfg.</summary>
     public bool? Tutorials { get; set; }
+
     /// <summary>Sounds are heard from the first selected character instead of the camera (Audio settings; off, the default: the camera, as the game does).</summary>
     public bool HearFromSelected { get; set; }
     /// <summary>The Windows cursor instead of the game's drawn pointer (the original's <c>hardware_mouse</c>, default off; Interface settings).</summary>
     public bool HardwareMouse { get; set; }
     /// <summary>Outline and tint the character under the cursor (Advanced settings; Meitou only, the game has none).</summary>
     public bool HoverOutline { get; set; } = true;
-    /// <summary>The green ring under each selected character (Advanced settings; default on).</summary>
-    public bool SelectionRings { get; set; } = true;
     /// <summary>A character that takes a fatal hit explodes, covers everything around in blood and sends bones flying (Advanced settings; an easter egg, off by default, not part of the all Faithful / all Meitou switches; docs/game/luckyren.md).</summary>
     public bool LuckyrenMode { get; set; }
     /// <summary>How many items dropped in play stay on the ground before the oldest goes (Advanced settings; <see cref="Meitou.Simulation.Items.GroundItems.Limit"/>).</summary>
     public int GroundItemLimit { get; set; } = Meitou.Simulation.Items.GroundItems.DefaultLimit;
+    /// <summary>The <c>--sandbox</c> debug panel at the top right is folded to its button (a down arrow); a click on the button toggles it.</summary>
+    public bool SandboxPanelCollapsed { get; set; }
     /// <summary>The audio sliders (Audio settings): the original's six volumes and the music frequency; null until first used, then taken from the install's settings.cfg.</summary>
     public Meitou.Audio.AudioSettings? Audio { get; set; }
     /// <summary>The original's Gameplay options (Gameplay settings); null until first used, then taken from the install's settings.cfg.</summary>
@@ -136,6 +144,13 @@ sealed class UserConfig
     /// <summary>The Graphics quality preset (Low, Medium, High, Ultra, Custom): the game saves the one its settings sit at; one the launcher chose is applied at start
     /// unless the settings already sit at it (<c>SettingsMenu.ApplySavedPreset</c>). Null: nothing saved yet.</summary>
     public string? GraphicsPreset { get; set; }
+    /// <summary>The active look preset's name (Graphics; null: Meitou); the presets are files in the <c>presets</c> folder beside this file (docs/native-ui.md "Settings").</summary>
+    public string? LookPreset { get; set; }
+    /// <summary>Whether the look is Faithful (the game as it ships, a starting point the player may change) rather than a Meitou preset (Graphics); null: decided
+    /// from the switches (all on the game's side: Faithful).</summary>
+    public bool? FaithfulLook { get; set; }
+    /// <summary>The costly look switches kept on at Low quality (their labels); at Low the others are held off.</summary>
+    public List<string> KeepAtLow { get; set; } = [];
     public Dictionary<string, string> Bindings { get; set; } = [];
     /// <summary>The Meitou skin per race, where chosen against the default (RACE string id to on or off; Graphics > Skin): <c>CharacterRenderer.SkinRaces</c>.</summary>
     public Dictionary<string, bool> SkinRaces { get; set; } = [];
@@ -209,8 +224,26 @@ sealed class UserConfig
     /// missing: the launcher may already have written it.</summary>
     static void Migrate(JsonObject json, int from)
     {
-        // No steps yet: 1 is the first layout. A raise to 2 adds `if (from < 2) { ... }`, and so on.
-        _ = (json, from);
+        if (from < 2 && json["graphics"] is JsonObject graphics)
+        {
+            // 2: haze, heat haze, night grading and the tone map became a switch and a Meitou strength kept while it is off. Layout 1 stored Faithful as the
+            // strength at the game's value, which would leave the switch's Meitou side looking the same: such a strength goes, so Meitou's default is used.
+            // The tone map slider lost its 0 (the clamp is the switch's Faithful side); a saved 0 goes, so it is not clamped to the shoulder curve.
+            float? Get(string key) => graphics[key] is JsonValue v && v.TryGetValue(out double d) ? (float)d : null;
+            bool AtGame(string key, float game) => Get(key) is { } v && MathF.Abs(v - game) < 1e-3f;
+            void Strength(string switchKey, float game, params string[] keys)
+            {
+                if (!keys.All(k => AtGame(k, game) || Get(k) is null) || !keys.Any(k => Get(k) is not null)) return;
+                float? on = Get(switchKey);
+                if (on is null) graphics[switchKey] = 0;   // layout 1 read the switch from the strength: at the game's value it was Faithful
+                if (on is null or < 0.5f) foreach (var k in keys) graphics.Remove(k);
+            }
+            Strength("Meitou: Haze", 1, "Haze strength (1 = game)");
+            Strength("Meitou: Heat haze", 1, "Heat haze strength (1 = game)");
+            Strength("Meitou: Night grading", 0, "Night grading strength (0 = game)");
+            Strength("Meitou: Tone map and grade", 0, "Tone map (0 = game)", "Grading (0 = game)");
+            if (AtGame("Tone map (0 = game)", 0)) graphics.Remove("Tone map (0 = game)");
+        }
     }
 
     /// <summary>Copies the file to <c>meitou.user.&lt;time&gt;.bak.json</c> beside it.</summary>

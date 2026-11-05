@@ -49,7 +49,7 @@ public static class Enhancements
     /// The switches, in key order (Shift+F1 upwards in the game, the Tab panel's checkboxes in the viewer), over the post-processing options and the haze strength
     /// (docs/formats/post-processing.md and sky.md for what the game does).
     /// </summary>
-    public static IReadOnlyList<Enhancement> Create(PostOptions post, Func<float> hazeStrength, Action<float> setHazeStrength, Func<bool> meitouShadows, Action<bool> setMeitouShadows,
+    public static IReadOnlyList<Enhancement> Create(PostOptions post, Func<bool> meitouHaze, Action<bool> setMeitouHaze, Func<bool> meitouShadows, Action<bool> setMeitouShadows,
         Func<bool> meitouRange, Action<bool> setMeitouRange, Func<bool> impostors, Action<bool> setImpostors, Func<bool> meitouReach, Action<bool> setMeitouReach,
         Func<bool> meitouWater, Action<bool> setMeitouWater, Func<bool> foliageLod, Action<bool> setFoliageLod, Func<bool>? gi = null, Action<bool>? setGi = null,
         Func<bool>? nightHaze = null, Action<bool>? setNightHaze = null, Func<bool>? planetshine = null, Action<bool>? setPlanetshine = null,
@@ -57,14 +57,15 @@ public static class Enhancements
         Func<bool>? cloudFog = null, Action<bool>? setCloudFog = null,
         Func<bool>? interiorGi = null, Action<bool>? setInteriorGi = null, Func<bool>? characterLod = null, Action<bool>? setCharacterLod = null,
         Func<bool>? skin = null, Action<bool>? setSkin = null, Func<bool>? interiorLamps = null, Action<bool>? setInteriorLamps = null,
-        Func<bool>? icons = null, Action<bool>? setIcons = null, Func<bool>? blood = null, Action<bool>? setBlood = null) =>
+        Func<bool>? icons = null, Action<bool>? setIcons = null, Func<bool>? blood = null, Action<bool>? setBlood = null,
+        Func<bool>? bloodSurfaces = null, Action<bool>? setBloodSurfaces = null, Func<bool>? tracers = null, Action<bool>? setTracers = null) =>
     [
         new("ao", "Ambient occlusion", "off", "SSAO",
             () => post.Ssao, v => post.Ssao = v, "the game ships SSAO but has it disabled"),
         new("dither", "Dithering", "off", "on",
             () => post.Dither, v => post.Dither = v, "against banding in smooth gradients; the game has none"),
         new("haze", "Haze", "strength 1", $"strength {MeitouHazeStrength}",
-            () => MathF.Abs(hazeStrength() - 1) > 1e-3f, v => setHazeStrength(v ? MeitouHazeStrength : 1), "lighter haze keeps far mountains visible"),
+            meitouHaze, setMeitouHaze, "lighter haze keeps far mountains visible"),
         new("aa", "Anti-aliasing", "FXAA", "temporal",
             () => post.Upscale.Kind != UpscalerKind.Off, v => { post.Upscale.Kind = v ? post.Upscale.Preferred : UpscalerKind.Off; if (!v) post.Fxaa = true; },
             "the game uses FXAA; Meitou uses a temporal method (TAA, FSR or DLSS: the Tab panel chooses, FSR and DLSS need their libraries)",
@@ -94,13 +95,13 @@ public static class Enhancements
             gi ?? (() => false), setGi ?? (_ => { }),
             "the game lights every surface's shadow side with one flat sky ambient per biome; Meitou traces rays from a grid of probes around the camera (needs a GPU with ray tracing; --no-gi leaves it out), so corners, interiors and the ground under overhangs darken and sunlit ground lights what faces it (docs/render-gi.md)"),
         new("tonemap", "Tone map and grade", "clip", "hybrid, graded",
-            () => post.ToneMap != ToneMapOperator.Clamp || post.Grade, v => { post.ToneMap = v ? ToneMapOperator.Hybrid : ToneMapOperator.Clamp; post.Grade = v; },
+            () => post.ToneMapping, v => post.ToneMapping = v,
             "the game has no tone curve (bright skies and sunlit sand clip flat at white) and no grading; Meitou blends the clip with ACES (the Tab slider sets the share, 0.75) so highlights roll off, then grades saturation 1.06 and contrast 1.05"),
         new("shafts", "Light shafts", "flat haze", "shadowed haze",
             () => post.LightShafts, v => post.LightShafts = v,
             "the game lights its haze and weather fog the same everywhere, so shadows end at the ground; Meitou darkens the air the sun does not reach (a froxel grid of shadow samples along the view), so mountains, rock stacks and buildings cast shafts through the haze and the fog (docs/render-shafts.md)"),
         new("heathaze", "Heat haze", "strength 1", $"strength {MeitouHeatHazeStrength}",
-            () => MathF.Abs(post.HeatHazeStrength - 1) > 1e-3f, v => post.HeatHazeStrength = v ? MeitouHeatHazeStrength : 1,
+            () => post.MeitouHeatHaze, v => post.MeitouHeatHaze = v,
             "the game's heat haze shifts distant objects by several pixels in hot weather, which reads as blur; Meitou halves it (the Tab slider sets any strength)"),
         new("night", "Night air", "black haze", "airglow",
             nightHaze ?? (() => false), setNightHaze ?? (_ => { }),
@@ -112,7 +113,7 @@ public static class Enhancements
             stars ?? (() => false), setStars ?? (_ => { }),
             "the game lays one 4096 pixel starfield texture over the dome (blobby purple stars, a smeared brown nebula, blurred when it is magnified); Meitou draws point stars (a few thousand naked-eye ones and a faint background, colours from blackbody temperatures, one or two pixels wide at any resolution), turning about the sun's axis once a game day, dimming and reddening towards the horizon, the low ones twinkling (docs/formats/sky.md, \"Meitou night sky\")"),
         new("nightgrade", "Night grading", "none", "scotopic blue",
-            () => post.NightGradeStrength > 0, v => post.NightGradeStrength = v ? Meitou.Data.World.NightGrade.MeitouStrength : 0,
+            () => post.NightGrade, v => post.NightGrade = v,
             "the game has no grading, so night is the day's saturated browns and oranges, darkened; Meitou shifts dim colour towards the rods' blue-grey as the scene's adapted luminance falls (the Purkinje shift), keeping lamps, fires and the moon in colour (the Tab slider sets the strength)"),
         new("clouds", "Clouds", "flat", "volumetric",
             clouds ?? (() => false), setClouds ?? (_ => { }),
@@ -141,6 +142,9 @@ public static class Enhancements
         new("blood", "Blood cells", "8 nearest", $"up to {TerrainDecalRenderer.MaxSlots}",
             blood ?? (() => false), setBlood ?? (_ => { }),
             $"the game draws the blood of only the 8 terrain cells (288 units square) nearest the camera, so a big battle's blood ends at a straight cell edge and the cells past it dry up unseen; Meitou draws every cell within Decal Range, up to {TerrainDecalRenderer.MaxSlots} (docs/game/blood-decals.md)"),
+        new("bloodsurfaces", "Blood on surfaces", "terrain only", "walls, floors, objects",
+            bloodSurfaces ?? (() => false), setBloodSurfaces ?? (_ => { }),
+            "the game leaves blood only on the terrain, so a fight beside a wall or inside a building marks nothing there; Meitou also sprays splashes over walls, buildings, rocks and other static objects, and leaves pools and drips on floors, never up a wall (docs/game/blood-decals.md \"Blood on surfaces\")"),
         // The ground relief's settings are static (GroundRelief), so these two need no delegates. The labels are the saved keys of the on/off toggles they replace.
         new("parallax", "Ground parallax", "off", "relief march",
             () => GroundRelief.ParallaxActive, v => GroundRelief.ParallaxActive = v,
@@ -148,6 +152,15 @@ public static class Enhancements
         new("displace", "Ground displacement (tessellation)", "off", "tessellated",
             () => GroundRelief.DisplaceActive, v => GroundRelief.DisplaceActive = v,
             "the game's ground is its height map's mesh; Meitou tessellates the ground near the eye and raises it by the same relief (needs tessellation shaders; visual only: characters walk on the undisplaced ground)"),
+        new("weld", "Mesh welding", "per-face tangents", "welded, averaged tangents",
+            () => MeshWeld.Enabled, v => MeshWeld.Enabled = v,
+            "stores the game's 3D models more compactly, so they take about half the video memory and look practically the same; in detail, the game's meshes store most corners once for every triangle that uses them, each copy with its own triangle's tangent; Meitou merges the copies that differ only in that tangent into one vertex with their averaged tangent, so meshes keep about 60% fewer vertices (object meshes at The Hub take 50 MB of video memory instead of 98) and the bump lighting barely changes (tangents move 4° on average); applies to meshes loaded after the change (docs/render-objects.md)"),
+        new("tracers", "Bolt tracers", "none", "streaks",
+            tracers ?? (() => false), setTracers ?? (_ => { }),
+            "the game draws a bolt in flight as its mesh alone, stretched a little with its speed, which is hard to follow at a distance; Meitou draws a faint streak behind it that grows out of the crossbow and shrinks into where the bolt stops; drawn with the particles, so none with --no-particles (docs/game/combat.md \"Bolt visuals\")"),
+        new("fog", "Fog", "hard-edged, flat", "soft, lit",
+            () => post.MeitouFog, v => post.MeitouFog = v,
+            "the game's dust and smoke sprites cut straight into the ground and walls they cross (all but its mist and steam, which fade; Faithful draws those hard-edged too); Meitou fades each sprite out over the last stretch before a surface (a quarter of its size, 0.2 to 30 m), so dust clouds meet the ground softly; the game's sprites are also flat and not fogged (one brightness in sun and shade, near and far, seen through fog banks), Meitou darkens dust and smoke where the sun is shadowed, brightens them towards the sun and puts the haze and the fog volumes in front of them over them; and it fades each effect out before the distance it stops being simulated at, where its whole cloud popped in and out (docs/render-post.md \"Fog\")"),
     ];
 
     /// <summary><c>--meitou</c> / <c>--faithful &lt;all|id,id...&gt;</c>: turns those switches to Meitou or to Faithful.</summary>

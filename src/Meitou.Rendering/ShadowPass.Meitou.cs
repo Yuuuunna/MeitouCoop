@@ -131,6 +131,12 @@ public sealed unsafe partial class ShadowPass
     Vector3 storedSun;
     int storedMapSize, meitouFrame;
     bool meitouValid;
+    // The camera's flight (docs/render-shadows.md "Flights"): a far cascade drawn before a flight is stale until drawn again, and the published cascades stop before the first stale one.
+    readonly bool[] stale = new bool[ShadowSettings.MaxCascades];
+    /// <summary>The host flies the camera this frame (a character flight or squad tour hop, set by the frame before <see cref="Render"/>): the far cascades are not drawn.</summary>
+    public bool CameraFlying { get; set; }
+    /// <summary>Frames the far cascades were skipped for the camera's flight (the log).</summary>
+    public int FlightFrames { get; private set; }
     readonly FrameBlock meitouBlock;
     ushort[]? coarse;
     int coarseSize;
@@ -163,7 +169,7 @@ public sealed unsafe partial class ShadowPass
     /// <summary>One line on the schedule: how often each cascade was drawn, and the terrain map's rebuilds.</summary>
     public string DescribeMeitou() =>
         $"drawn {string.Join("/", CascadeDraws.Take(MeitouCascades))} times in {MeitouFrames} frames (because the view left the box / the sun turned / the cadence / all at once: {string.Join(" ", Enumerable.Range(0, MeitouCascades).Select(i => $"c{i} {RedrawReasons[i, 0]}/{RedrawReasons[i, 1]}/{RedrawReasons[i, 2]}/{RedrawReasons[i, 3]}"))}); " +
-        $"all at once: splits changed {AllReasons[0]}, sun jumped {AllReasons[1]}; " +
+        $"all at once: splits changed {AllReasons[0]}, sun jumped {AllReasons[1]}; far cascades skipped for the camera's flight in {FlightFrames} frames; " +
         $"terrain shadow rebuilt {terrainMap?.Builds ?? 0} times (cpu {terrainMap?.LastBuildCpuMs ?? 0:0.00} ms); " +
         $"landmark shadow map drawn {LandmarkDraws} times ({LandmarkCount} landmarks, {(landmarkBox is { } b ? $"{b.Texel:0} units per texel" : "off")})";
 
@@ -208,7 +214,7 @@ public sealed unsafe partial class ShadowPass
         }
         var host = BeginHost("landmark shadows", clear: true, landmarkMap);
         SetTile(0, 0, LandmarkMapSize);
-        SetCasterBias(new Vector4(box.FixedBias, KenshiShadows.SlopeBias, KenshiShadows.MaxSlopeBias, DepthScale));
+        SetCasterBias(new Vector4(box.FixedBias, KenshiShadows.SlopeBias, KenshiShadows.MaxSlopeBias, 1f));
         l.Draw(box, box.WorldToClip(), box.CullPlanes(), view.Eye);
         EndHost(host);
         (landmarkBox, landmarkKey, landmarkSun) = (box, key, toSun);
@@ -244,7 +250,7 @@ public sealed unsafe partial class ShadowPass
             bool stale = stored[i] is not null && !all && !due;
             bool uncovered = stored[i] is not null && !MeitouShadowFit.Covers(stored[i]!, view, splits, SearchRadius(stored[i]!) + 2 * stored[i]!.Texel);
             bool sunTurned = stored[i] is not null && Vector3.Dot(toSun, storedSunDir[i]) < MathF.Cos(SunTolerance(stored[i]!));
-            want[i] = all || stored[i] is null || due || uncovered || sunTurned || owed[i];
+            want[i] = all || stored[i] is null || due || uncovered || sunTurned || owed[i] || this.stale[i];   // stale: drawn before a flight, wherever its box is now
             mustDraw[i] = stored[i] is null;
             if (stale && uncovered) RedrawReasons[i, 0]++;
             if (stale && !uncovered && sunTurned) RedrawReasons[i, 1]++;
@@ -253,8 +259,23 @@ public sealed unsafe partial class ShadowPass
         }
         // At most FarBudget far cascades are drawn per frame; the others wait (longest first) and are owed, forced after MaxWait frames. The far
         // cascades are the last three (the costly ones); the nearer ones are never deferred (ShadowSchedule.NearCascades).
-        ShadowSchedule.Pick(want[..count], mustDraw[..count], waited, FarBudget, MaxWait, drawNow, ShadowSchedule.NearCascades(count));
-        for (int i = 0; i < count; i++) owed[i] = want[i] && !drawNow[i];
+        int nearCount = ShadowSchedule.NearCascades(count);
+        ShadowSchedule.Pick(want[..count], mustDraw[..count], waited, FarBudget, MaxWait, drawNow, nearCount);
+        // While the host flies the camera (a character flight, a squad tour hop) the far cascades are not drawn: a map drawn now covers the wrong ground the next frame, and the
+        // ones drawn before the flight shadow the ground kilometres back, so they are stale and not published until drawn again, once the camera lands (uncovered, over the budget's frames).
+        bool flying = CameraFlying;
+        if (flying)
+        {
+            FlightFrames++;
+            for (int i = nearCount; i < count; i++)
+            {
+                stale[i] = true;
+                if (mustDraw[i]) continue;
+                drawNow[i] = false;
+                waited[i] = 0;
+            }
+        }
+        for (int i = 0; i < count; i++) owed[i] = want[i] && !drawNow[i] && !flying;
 
         timer.Begin();
         int drawn = 0;
@@ -269,11 +290,12 @@ public sealed unsafe partial class ShadowPass
             int i = c.Index;
             var host = BeginHost("shadow cascade", clear: true, layer: i);
             SetTile(0, 0, atlasSize);
-            SetCasterBias(new Vector4(c.FixedBias, MeitouShadowFit.Slope, c.MaxSlopeBias, DepthScale));
+            SetCasterBias(new Vector4(c.FixedBias, MeitouShadowFit.Slope, c.MaxSlopeBias, 1f));
             draw(c, worldToClip, planes, lodEye);
             EndHost(host);
             stored[i] = c;
             storedSunDir[i] = toSun;
+            stale[i] = false;
             CascadeDraws[i]++;
         }
         Array.Clear(casterViews);
@@ -288,8 +310,11 @@ public sealed unsafe partial class ShadowPass
         timer.End();
         if (all) { storedSun = toSun; storedSplits = splits; storedMapSize = Settings.MapSize; }
         meitouValid = true;
-        var cascades = new ShadowCascade[count];
-        for (int i = 0; i < count; i++) cascades[i] = stored[i]!;
+        // The receivers read the cascades before the first stale one (the receiver's range ends with the last published; the terrain and landmark maps go on).
+        int published = count;
+        for (int i = 0; i < count; i++) if (stale[i]) { published = i; break; }
+        var cascades = new ShadowCascade[published];
+        for (int i = 0; i < published; i++) cascades[i] = stored[i]!;
         Cascades = cascades;
         PublishMeitou(view, cascades, toSun, blockers);
         CpuMs = watch.Elapsed.TotalMilliseconds;

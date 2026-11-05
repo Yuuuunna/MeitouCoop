@@ -49,6 +49,11 @@ dotnet run -c Release --project tools/Meitou.ModelViewer -- --world --town "The 
 dotnet run -c Release --project tools/Meitou.Tools
 ```
 
+To export both Windows x64 multiplayer packages, run `pwsh -File ./export-packages.ps1` (PowerShell 7).
+It publishes Release self-contained builds and writes client/server ZIPs, launch scripts, instructions and
+SHA256SUMS into `artifacts/releases/multiplayer-<timestamp>`; use `-Output <folder>` for a new destination
+(relative to the repository). Published staging files remain in `artifacts/multiplayer-stage/`.
+
 For live UI iteration, run `dotnet watch --project src/Meitou.Game -c Debug -- --ui meitou --windowed`.
 Saving supported C# edits updates the running game; Ctrl+R in the watch terminal restarts it.
 Startup code, static initializers and already-baked UI textures need a restart to show changes.

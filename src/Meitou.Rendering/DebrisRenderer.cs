@@ -11,7 +11,11 @@ namespace Meitou.Rendering;
 /// One loose mesh in the world: its file, its size and where it is (rotation and translation, the mesh's middle at the translation); <paramref name="Stretch"/> lengthens
 /// it along its own z (a bolt in flight).
 /// </summary>
-public readonly record struct DebrisPiece(string Mesh, float Scale, Quaternion Rotation, Vector3 Position, float Stretch = 1, LimbLook? Limb = null);
+public readonly record struct DebrisPiece(string Mesh, float Scale, Quaternion Rotation, Vector3 Position, float Stretch = 1, LimbLook? Limb = null)
+{
+    /// <summary>A mesh named <c>file</c> + this + <c>texture</c> is drawn with that diffuse texture on every part (the birds' <c>HWBirds</c> material clone, docs/game/birds.md).</summary>
+    public const char TextureMark = '?';
+}
 
 /// <summary>
 /// How a severed limb is drawn (the original's <c>SeveredLimb</c> material, docs/game/blood-decals.md "On the body and on severed limbs"): the item's MATERIAL record's texture map and
@@ -24,7 +28,7 @@ public sealed record LimbLook(string Diffuse, string? Mask, Vector3 SkinTone, Ve
 /// Loose meshes thrown about by the host (luckyren Mode's bones and limbs, docs/game/luckyren.md): each a static mesh, centred on its bounds, textured with
 /// its first resolved diffuse map and lit as the world's objects (<c>kenshiLight</c> under the game sky, the plain light otherwise, then the haze). The same
 /// fragment runs on Vulkan and Metal: every atmosphere/shadow texture and the debris diffuse map come through the bindless table, so Metal's 16 direct
-/// fragment samplers are no longer a constraint. Drawn in the scene pass of the near slice before the characters (colour only, leaving the alpha to them); they
+/// fragment samplers are no longer a constraint. Drawn in the scene pass before the characters (colour only, leaving the alpha to them); they
 /// cast no shadow. A mesh is loaded the first time its <see cref="Extent"/> is asked for.
 /// </summary>
 public sealed unsafe class DebrisRenderer : IDisposable
@@ -170,11 +174,14 @@ public sealed unsafe class DebrisRenderer : IDisposable
     };
 
     /// <summary>A loaded diffuse texture and its stable bindless entry. The sampler can change with the upscaler's LOD bias; the index
-    /// stays, so a draw recorded earlier in the frame keeps its view (the table's update-after-bind rules).</summary>
+    /// stays, so a draw recorded earlier in the frame keeps its view (the table's update-after-bind rules). Or a texture of a shared cache
+    /// (<see cref="SharedTextures"/>: the characters' own image, kept while drawn), whose index is the cache's.</summary>
     sealed class DebrisTexture : IDisposable
     {
         readonly IGpuContext gpu;
-        readonly SampledImage image;
+        readonly SampledImage? image;
+        readonly WorldTextureCache? cache;
+        readonly WorldTexture? shared;
         BindlessHandle handle;
         SampledTexture registered;
         bool hasEntry;
@@ -185,11 +192,24 @@ public sealed unsafe class DebrisRenderer : IDisposable
             this.image = image;
         }
 
-        /// <summary>The bindless index for <see cref="SampledImage.Sampled"/> now, registering or updating the entry.</summary>
+        public DebrisTexture(IGpuContext gpu, WorldTextureCache cache, WorldTexture shared)
+        {
+            this.gpu = gpu;
+            this.cache = cache;
+            this.shared = shared;
+        }
+
+        /// <summary>The bindless index for <see cref="SampledImage.Sampled"/> now, registering or updating the entry (a shared texture's: the
+        /// cache's entry, the stand-in until it is resident; reading it counts as use).</summary>
         public uint Index
         {
             get
             {
+                if (image is null)
+                {
+                    CachedIndex = cache!.Index(shared!.Key, gpu.LodBias, gpu.StandIn2D);
+                    return CachedIndex;
+                }
                 var sampled = image.Sampled();
                 if (!hasEntry)
                 {
@@ -212,7 +232,7 @@ public sealed unsafe class DebrisRenderer : IDisposable
         public void Dispose()
         {
             if (hasEntry) gpu.Bindless.Free(handle);
-            image.Dispose();
+            image?.Dispose();
         }
     }
 
@@ -238,6 +258,10 @@ public sealed unsafe class DebrisRenderer : IDisposable
     readonly Dictionary<string, Mesh?> meshes = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, DebrisTexture?> textures = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>The cache whose images the debris textures share (the characters', which hold the same skins and items), when there is one by
+    /// the time a texture is first asked for; else each is loaded here and kept.</summary>
+    public Func<WorldTextureCache?>? SharedTextures { get; init; }
+
     /// <param name="resolver">Finds a mesh's textures (null: every mesh untextured).</param>
     /// <param name="find">A file name to its path in the install (the configured resource locations).</param>
     public DebrisRenderer(IGpuContext gpu, MaterialResolver? resolver, Func<string, string?> find)
@@ -249,14 +273,15 @@ public sealed unsafe class DebrisRenderer : IDisposable
         string vertex = NativeShaders.Port(Vertex, NativeShaders.Map(NativeOwn), PushMembers);
         string fragment = Gi.GiResolveShaders.WithAlbedo(NativeShaders.Port(Fragment, NativeShaders.Map(NativeOwn), PushMembers));
         program = new NativeProg(gpu, frame, vertex, fragment, "debris");
-        uint stride = (uint)Rendering.Vertex.Size;
+        // The object layout (GpuVertex), its colour at 3 and tangent at 4.
+        uint stride = GpuVertex.ObjectSize;
         layout = program.Layout(
         [
             new LegacyProgram.Attribute(default, InternalFormat.Rgb32f, stride, false),
-            new LegacyProgram.Attribute(default, InternalFormat.Rgb32f, stride, false),
+            new LegacyProgram.Attribute(default, InternalFormat.Rgba16Snorm, stride, false),
             new LegacyProgram.Attribute(default, InternalFormat.RG32f, stride, false),
-            new LegacyProgram.Attribute(default, InternalFormat.Rgba32f, stride, false),
-            new LegacyProgram.Attribute(default, InternalFormat.Rgba32f, stride, false),
+            new LegacyProgram.Attribute(default, InternalFormat.Rgba16f, stride, false),
+            new LegacyProgram.Attribute(default, InternalFormat.Rgba16Snorm, stride, false),
         ]);
         // The native model's bindless table is what keeps the full atmosphere inside Metal's direct-sampler budget.
         if (program.P.Info.FragmentReflection is { } reflection)
@@ -302,12 +327,19 @@ public sealed unsafe class DebrisRenderer : IDisposable
         // The bindless table is bound once per segment: register/update the debris textures before that bind. On Metal the
         // argument buffer must already name them when the encoder takes it.
         var standIn = gpu.StandIn2D;
+        // Pieces of one mesh come in runs (a flock of birds): the lookup is made once per run.
+        string? runName = null;
+        Mesh? runMesh = null;
         foreach (var piece in pieces)
+        {
+            if (piece.Limb is null && ReferenceEquals(piece.Mesh, runName)) continue;
             if (meshes.TryGetValue(Key(piece.Mesh, piece.Limb), out var known) && known is not null)
             {
+                if (piece.Limb is null) runName = piece.Mesh;
                 foreach (var part in known.Parts) _ = part.Diffuse?.Index;
                 if (known.Limb) { _ = known.Mask?.Index; _ = known.Normal?.Index; _ = (bloodMap ??= Texture("bloody.png"))?.Index; if (piece.Limb is { } first) _ = skinTable?.Invoke(first); }
             }
+        }
 
         // The view block carries the camera-relative projection/eye and the light direction; the frame block carries the atmosphere.
         var view = new ViewConstants
@@ -327,15 +359,22 @@ public sealed unsafe class DebrisRenderer : IDisposable
             AmbientSky = light.AmbientSky,
             AmbientGround = light.AmbientGround,
         };
+        (runName, runMesh) = (null, null);
         foreach (var piece in pieces)
         {
             // Only meshes loaded before (Extent): nothing is uploaded inside the pass.
-            if (!meshes.TryGetValue(Key(piece.Mesh, piece.Limb), out var mesh) || mesh is null) continue;
+            Mesh? mesh;
+            if (piece.Limb is null && ReferenceEquals(piece.Mesh, runName) && runMesh is not null) mesh = runMesh;
+            else
+            {
+                if (!meshes.TryGetValue(Key(piece.Mesh, piece.Limb), out mesh) || mesh is null) continue;
+                if (piece.Limb is null) (runName, runMesh) = (piece.Mesh, mesh);
+            }
             // A limb's piece is at its mesh's origin (its blood mapping reads the mesh's own x); the others are centred on their bounds.
             var middle = mesh.Limb ? piece.Position + Vector3.Transform(mesh.Centre * piece.Scale, piece.Rotation) : piece.Position;
             if (!FrustumTests.SphereVisible(frustum, middle, mesh.Extent.Length() * piece.Scale * MathF.Max(piece.Stretch, 1))) continue;
             var m = Matrix4x4.CreateScale(piece.Scale, piece.Scale, piece.Scale * piece.Stretch) * Matrix4x4.CreateFromQuaternion(piece.Rotation) * Matrix4x4.CreateTranslation(piece.Position - eye);
-            for (int k = 0; k < 5; k++) bindings[k] = new GpuBufferBinding(mesh.Vertices.Handle, (ulong)(k == 3 ? 48 : k == 4 ? 32 : k * 12));
+            for (int k = 0; k < 5; k++) bindings[k] = new GpuBufferBinding(mesh.Vertices.Handle, (ulong)(k switch { 0 => 0, 1 => 12, 2 => 20, 3 => 36, _ => 28 }));
             cmd.BindVertexBuffers(0, bindings);
             cmd.BindIndexBuffer(new GpuBufferBinding(mesh.Indices.Handle, 0), IndexKind.U32);
             foreach (var part in mesh.Parts)
@@ -368,9 +407,15 @@ public sealed unsafe class DebrisRenderer : IDisposable
         string key = Key(file, limb);
         if (meshes.TryGetValue(key, out var known)) return known;
         Mesh? mesh = null;
+        string? diffuse = null;
+        if (file.IndexOf(DebrisPiece.TextureMark) is >= 0 and var mark) (file, diffuse) = (file[..mark], file[(mark + 1)..]);
         try
         {
-            if (find(Path.GetFileName(file.Replace('\\', '/'))) is { } path) mesh = Build(file, materialOf ?? file, OgreMeshReader.ReadFile(path), limb);
+            if (find(Path.GetFileName(file.Replace('\\', '/'))) is { } path) {
+                var ogre = OgreMeshReader.ReadFile(path);
+                if (MeshWeld.Enabled) OgreMeshWeld.Apply(ogre);
+                mesh = Build(file, materialOf ?? file, ogre, limb, diffuse);
+            }
         }
         catch (Exception e) when (e is IOException or InvalidDataException or NotSupportedException)
         {
@@ -380,7 +425,7 @@ public sealed unsafe class DebrisRenderer : IDisposable
         return mesh;
     }
 
-    Mesh? Build(string file, string materialOf, OgreMesh ogre, LimbLook? limb)
+    Mesh? Build(string file, string materialOf, OgreMesh ogre, LimbLook? limb, string? diffuse = null)
     {
         var built = Model.Build(ogre, null, tangentSign: limb is not null);   // a limb: the tangent's own w, the game's severed_limb_vs
         if (limb is not null) Characters.CharacterContent.MarkCurvature(built);   // a limb's skin scatters light by its curvature
@@ -393,15 +438,16 @@ public sealed unsafe class DebrisRenderer : IDisposable
         {
             var material = limb is null ? resolver?.Candidates(materialOf, new OgreSubMesh { MaterialName = part.MaterialName }).FirstOrDefault() : null;
             float threshold = material is { Alpha: AlphaSource.DiffuseAlpha } ? MathF.Max(material.AlphaThreshold, 0.5f) : 0;
-            parts.Add(((uint)indices.Count, (uint)part.Indices.Length, vertices.Count, Texture(limb is null ? material?.Diffuse : limb.Diffuse), threshold));
+            parts.Add(((uint)indices.Count, (uint)part.Indices.Length, vertices.Count, Texture(diffuse ?? (limb is null ? material?.Diffuse : limb.Diffuse)), threshold));
             foreach (var v in part.Vertices) vertices.Add(limb is null ? v with { Position = v.Position - centre } : v);   // a limb keeps the mesh's own space (its blood mapping reads x)
             indices.AddRange(part.Indices);
         }
-        var vb = DeviceBuffer.Create(gpu, (ulong)(vertices.Count * Rendering.Vertex.Size), BufferUse.Vertex, "debris " + file);
+        var packed = GpuVertex.PackObject(CollectionsMarshal.AsSpan(vertices));
+        var vb = DeviceBuffer.Create(gpu, (ulong)packed.Length, BufferUse.Vertex, "debris " + file);
         var ib = DeviceBuffer.Create(gpu, (ulong)indices.Count * sizeof(uint), BufferUse.Index, "debris " + file);
         using (var batch = gpu.Uploads.Begin())
         {
-            batch.Write(vb, 0, MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(vertices)));
+            batch.Write(vb, 0, packed);
             batch.Write(ib, 0, MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(indices)));
         }
         var result = new Mesh(vb, ib, [.. parts], (built.Max - built.Min) / 2) { Centre = centre };
@@ -414,12 +460,18 @@ public sealed unsafe class DebrisRenderer : IDisposable
         if (name is null) return null;
         if (textures.TryGetValue(name, out var known)) return known;
         DebrisTexture? texture = null;
+        if (SharedTextures?.Invoke() is { } cache)
+        {
+            if (cache.Get(name, border: false) is { } t && t.State != WorldTexture.Residency.Missing) texture = new DebrisTexture(gpu, cache, t);
+            textures[name] = texture;
+            return texture;
+        }
         try
         {
             if (find(name) is { } path)
                 texture = new DebrisTexture(gpu, path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
                     ? SampledImage.Rgba8(gpu, TextureLoader.LoadFile(path, false).Levels[0], repeat: true, mipmaps: true, "debris " + name)
-                    : SampledImage.FromDds(gpu, DdsReader.ReadFile(path), repeat: true, "debris " + name));
+                    : SampledImage.FromDds(gpu, DdsReader.ReadFile(path), repeat: true, "debris " + name, bc3Blocks: true));
         }
         catch (Exception e) when (e is IOException or InvalidDataException or NotSupportedException)
         {

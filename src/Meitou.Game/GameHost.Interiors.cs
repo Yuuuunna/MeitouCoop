@@ -56,6 +56,8 @@ sealed partial class GameHost
                 viewed.Add(building);
         HoldLeftOpen(objects);
         objects.InteriorView = interiorView;
+        objects.CutIntoViewed = config.FixPartsInBuildings;
+        objects.HiddenItems = hiddenGroundKeys;
         session.Camera.Floors ??= CameraFloor;
         foreach (var c in characters)
         {
@@ -68,6 +70,7 @@ sealed partial class GameHost
             // Strictly inside (no margin): one on the doorstep stays drawn.
             else if (objects.InteriorAt(at, ref InteriorMemo(c.Id.Slot)) is { } closed && objects.Construction?.ContainsKey(closed.PlacementId) != true) hiddenIndoors.Add(c.Id);
         }
+        UpdateGroundVisibility();
     }
 
     // By character slot, the last answer of the test above (asked again once the character moves; a slot's new character only inherits a place's answer).
@@ -79,6 +82,9 @@ sealed partial class GameHost
         return ref interiorMemos[slot];
     }
 
+    /// <summary>Whether a place is above the shown floor of a building in the interior view, so what stands there is not drawn (as a character there).</summary>
+    bool AboveViewedFloor(System.Numerics.Vector3 at) => ViewedAt(at) is { } inView && interiorView[inView.PlacementId] is var shown && shown < 3 && inView.FloorAt(at) > shown;
+
     /// <summary>The viewed or held-open building <paramref name="at"/> is in (a loop: a lambda here made a closure and a delegate per character per frame).</summary>
     InteriorVolume? ViewedAt(System.Numerics.Vector3 at)
     {
@@ -89,7 +95,7 @@ sealed partial class GameHost
 
     /// <summary>
     /// The keep-open time: the occupied buildings' last occupied time is now; a building left within 10 s of game time of it is put in the interior view with every
-    /// floor shown (<see cref="held"/>), and one past it, or no longer loaded (unloaded, removed, destroyed), closes. Game time is the simulation's (it stops while
+    /// floor shown (<see cref="held"/>), and one past it (the timer runs only while the building is complete, a construction site stays open: <c>FUN_14054a790</c> reads the owner's is-complete byte, <b>Verified</b>), or no longer loaded (unloaded, removed, destroyed), closes. Game time is the simulation's (it stops while
     /// paused and runs faster at higher speeds); a time ahead of now (a loaded save's clock went back) closes at once.
     /// </summary>
     void HoldLeftOpen(Meitou.Rendering.WorldObjectRenderer objects)
@@ -101,7 +107,7 @@ sealed partial class GameHost
         foreach (var (id, open) in keepOpen)
         {
             if (interiorView.ContainsKey(id)) continue;   // occupied: in the view already
-            if (now - open.Occupied > KeepOpenSeconds || open.Occupied > now || objects.LoadedInterior(open.Room) is not { } room) expired.Add(id);
+            if (now - open.Occupied > KeepOpenSeconds && objects.Construction?.ContainsKey(id) != true || open.Occupied > now || objects.LoadedInterior(open.Room) is not { } room) expired.Add(id);
             else
             {
                 interiorView.Add(id, 3);

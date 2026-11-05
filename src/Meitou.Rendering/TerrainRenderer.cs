@@ -186,7 +186,7 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
     public int DrawnChunks { get; private set; }
     public long DrawnTriangles { get; private set; }
 
-    /// <summary>Starts counting drawn nodes and triangles for a new frame (several depth slices add up).</summary>
+    /// <summary>Starts counting drawn nodes and triangles for a new frame (several views add up).</summary>
     public void BeginFrame()
     {
         (DrawnChunks, DrawnTriangles) = (0, 0);
@@ -229,7 +229,44 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
     /// Replaces the fine window: a new texture is filled in slabs through <paramref name="uploads"/> while the old
     /// one stays in use, then swapped in (so no frame waits for the whole upload).
     /// </summary>
-    public void BeginFineUpload(HeightWindow window, TerrainHeightBounds.Patch patch, UploadQueue uploads, Action? done = null)
+    public void BeginFineUpload(HeightWindow window, TerrainHeightBounds.Patch patch, UploadQueue uploads, Action? done = null) =>
+        UploadFine(window, patch, uploads, texture => { retired.Add((fineTexture, frameNumber)); Swap(new FineStandby(texture, window, patch)); }, done);
+
+    /// <summary>A fine window uploaded but not drawn ("Keep textures at characters": one round a character far from the eye), ready for <see cref="SwapFine"/>.</summary>
+    public sealed class FineStandby
+    {
+        internal FineStandby(TerrainTexture texture, HeightWindow window, TerrainHeightBounds.Patch? patch) => (Texture, Window, Patch) = (texture, window, patch);
+        internal TerrainTexture Texture { get; }
+        public HeightWindow Window { get; }
+        /// <summary>Applied to the bounds at the first swap (null once applied: the bounds only widen, so a window once drawn stays covered).</summary>
+        internal TerrainHeightBounds.Patch? Patch { get; set; }
+    }
+
+    /// <summary>Uploads a fine window as <see cref="BeginFineUpload"/> does, but hands it to <paramref name="ready"/> instead of drawing it.</summary>
+    public void BeginFineStandby(HeightWindow window, TerrainHeightBounds.Patch patch, UploadQueue uploads, Action<FineStandby> ready) =>
+        UploadFine(window, patch, uploads, texture => ready(new FineStandby(texture, window, patch)), null);
+
+    /// <summary>Draws <paramref name="next"/> from now on (no upload: it is resident) and returns the window it replaces as a standby.</summary>
+    public FineStandby SwapFine(FineStandby next)
+    {
+        var old = new FineStandby(fineTexture, fine, null);
+        Swap(next);
+        return old;
+    }
+
+    /// <summary>Lets a standby go (its texture is freed after the frames in flight).</summary>
+    public void DropFine(FineStandby standby) => retired.Add((standby.Texture, frameNumber));
+
+    void Swap(FineStandby next)
+    {
+        fineTexture = next.Texture;
+        fine = next.Window;
+        fineBand = BandOf(next.Window);
+        if (next.Patch is { } patch) bounds.Apply(patch);
+        next.Patch = null;
+    }
+
+    void UploadFine(HeightWindow window, TerrainHeightBounds.Patch patch, UploadQueue uploads, Action<TerrainTexture> finish, Action? done)
     {
         const int slabRows = 192;
         TerrainTexture? texture = null;
@@ -250,11 +287,7 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
         }
         uploads.Add(() =>
         {
-            retired.Add((fineTexture, frameNumber));
-            fineTexture = texture!;
-            fine = window;
-            fineBand = BandOf(window);
-            bounds.Apply(patch);
+            finish(texture!);
             done?.Invoke();
         }, "height swap");
     }
@@ -341,7 +374,7 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
     }
 
     /// <summary>
-    /// The interior cut of the main view (docs/render-interior-cut.md; set by the world frame around its near slice's terrain draws, null otherwise): the
+    /// The interior cut of the main view (docs/render-interior-cut.md; set by the world frame around its scene's terrain draws, null otherwise): the
     /// mask's depth range, read by the cut programs, which only the patches overlapping a drawn building take (a <c>discard</c> costs the early depth test).
     /// </summary>
     internal InteriorMaskRenderer? InteriorCut { get; set; }
@@ -451,7 +484,8 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
         {
             lastGlState = pass;
             lastPatchState = pass with { Cull = CullMode.Back, Front = FrontFaceDirection.Ccw };
-            lastWireState = lastPatchState with { Polygon = PolygonKind.Line, BiasEnable = true, BiasConstant = -1, BiasSlope = -1 };
+            var (biasConstant, biasSlope) = DepthConvention.TowardViewer(1);   // GL's PolygonOffset(-1, -1), in the scene's convention
+            lastWireState = lastPatchState with { Polygon = PolygonKind.Line, BiasEnable = true, BiasConstant = biasConstant, BiasSlope = biasSlope };
             lastPrepassState = lastPatchState with { ColourMask = 0 };   // depth only
             lastLateState = lastPatchState with { DepthWrite = false };   // the prepass wrote it; equal depths pass (less-or-equal)
             lastLateEqualState = lastLateState with { Compare = DepthFunction.Equal };   // only where the prepass's own depth stayed
@@ -671,6 +705,7 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
             c.InteriorMask = !cut ? standIn2D : patches ? cutMask : meshCut!.Index;
             c.InteriorCut = cut ? 1u : 0u;
             if (patches) Decals?.Apply(ref c);
+            if (patches) ApplyMaterialCache(ref c);
             c.FarStart = options.MaterialDistance * 0.8f;
             c.FarEnd = options.MaterialDistance;
             var t = textures;
@@ -688,6 +723,9 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
                 var set = t.Textures;
                 c.Diffuse = Index(set.Diffuse, BindlessKind.Texture2DArray, standInArray);
                 c.Normal = Index(set.Normal, BindlessKind.Texture2DArray, standInArray);
+                c.DiffuseFar = Index(set.DiffuseFar, BindlessKind.Texture2DArray, standInArray);
+                c.NormalFar = Index(set.NormalFar, BindlessKind.Texture2DArray, standInArray);
+                c.FarLod = set.FarLod;
                 c.Height = Index(set.Height, BindlessKind.Texture2DArray, standInArray);
                 c.Relief = Index(set.Relief, BindlessKind.Texture2D, standIn2D);
                 c.Parallax = textured && GroundRelief.ParallaxActive && set.Height is not null ? GroundRelief.Depth : 0;
@@ -1323,6 +1361,7 @@ public sealed unsafe partial class TerrainRenderer : IDisposable
 
     public void Dispose()
     {
+        DisposeMaterialCache();
         gridVertices.Dispose();
         gridIndices.Dispose();
         coarseTexture.Dispose();

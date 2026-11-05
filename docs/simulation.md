@@ -846,7 +846,8 @@ every 15 ticks, by `PopulationSystem.GoalDuty` (facts: [ai-tasks](game/ai-tasks.
   container of its own faction (engine reading of the own-shop skip), and takes every food item that fits (`Task_EmptyMachine` moves items while there is room).
 - **212 Confiscating goods** (`AI::findPrisonerWithContraband`): in its town, the first occupied cage (list order) whose prisoner's inventory (not its bag) holds an item stolen for it; at the cage it waits 0.8 s and
   confiscates as a police looter does ([NPC looting](#carrying-rescue-and-looting)); engine choice: whatever the runner's class (base data: only law-enforcement packages list 212).
-- Occupiers' **36 / 37** town goals walk to a random complete building of the player town (`AiSystem.OccupiedSpot`; the original's target is **Unknown**).
+- Occupiers' **36 / 37** town goals walk to a random complete building of the player town (`AiSystem.OccupiedSpot`, engine choice; the original's 36 scatters round the
+  occupied town's centre, [town goals](game/ai-tasks.md#town-goals)), 36 drawing again after every walk.
 - Engine choices: sight `AggroSystem.OutdoorSight`, arrival 40 (a cage: its `use range` + 15), 4 short walks before giving up; nothing is hashed until one runs.
 - **Observed** (headless, an owner save, Starving Bandits occupying an outpost whose buildings reach 253 from its centre): the knocked-out player character lying 566 out is left alone; moved
   into the base, one bandit lifts it and puts it down 413 out, nobody lifts it again in 6000 ticks; with two food items in a storage, two bandits take one each.
@@ -1271,6 +1272,7 @@ crafting benches, generators and batteries. Facts: [production](game/buildings-p
   weight), Rescue Allies (above), Share Food (`FeedSystem`: a player character with no food takes it from a squad mate's backpack within 200,
   only with the option), Feed Animals (off: the player's animals do not eat), Shoot first (`SquadAiRules.ShootsFirstAt`: with no enemy in its
   sights a player turret gunner also takes dangerous neutrals at weight 0.6).
+- **NPC town workers** (**Observed**, runtime contract): AI runs before production in the standard systems. Goal 189's at-building row 87/92 signals are applied serially after automatic production and before player operators. The first signal creates a canonical level machine through fixture ownership metadata; `LevelMachine` sites carry their original zone/instance and placement, stay out of construction rendering/navigation overlays and construction serialization, and reuse `Ensure`'s one-time native save restoration. Goal 190 only animates. Town registration alone does not create machines; purchase/reset clears obsolete work signals.
 - **Saves** (`Saving/MachineSave`, `ResearchSave`). Each building's production and farm keys go into its
   GAMESTATE_BUILDING. Items go into an INVENTORY_STATE `<site>-inventory`, listed first by the building, with sections
   `in<k>`, `out` and `main` (a furnace's grid `in1`).
@@ -1421,9 +1423,10 @@ the other PROTECT goals still join any fighting enemy (engine).
 
 Scoring follows the original (`TaskProfiles`: desire, commitment, crowding per goal type); a desire
 the original computes in a function of its own counts as 1. Town goals ([ai-tasks.md](game/ai-tasks.md#town-goals)):
-wandering and patrolling in town walk to a general node of a public town building in the walker's zone
+wandering in town walks to a general node of a public town building in the walker's zone
 (public: the residents' template's `public day`, else the level state's `is public day`, else public; drawn
-among those with a general node, engine choice), shopping to a node of a
+among those with a general node, engine choice), patrolling town from one random point round the town's centre to the next
+(`AiSystem.Patrol`, as `Task_PatrolTown`), shopping to a node of a
 public shop (as the original's finders, [ai-tasks](game/ai-tasks.md#town-goals); no faction test), relaxing under a bar package, sitting around (275) and staying home (43; the home is the bar under a bar package) sit on a seat claimed per
 member on the package cadence, and the wanderer walks to the nearest town. A bar package (both kinds) reserves
 one table per squad as the original (`AiSystem.PickTable`: public bars tried from a random one, first table no
@@ -1458,8 +1461,7 @@ origin, else the ground there (raised Swamp Houses and Cannibal Shacks: floor 25
 floor near it puts them on the nearest meshed storey below (`PopulationSystem.HomeFloor`, engine choices). **Observed** (headless probe of every
 town, 600 ticks): characters on the ground under a building floor went from 278 to 128 of 9060; ~80 of those are gate guards, the rest mostly
 homeless squads placed under unmeshed platforms. The Storm House's upper storey (+66) is on the navmesh except under its beds, whose
-spots therefore stand on the floor below (Observed, 2026-10-18 probe). Engine choices: patrolling town acts as
-wandering (its task class is undecoded); a committed goal chosen again after its commitment ran out
+spots therefore stand on the floor below (Observed, 2026-10-18 probe). Engine choices: a committed goal chosen again after its commitment ran out
 starts over with a new target; training and throne furniture of 275's mask are not used; shops stand customers at a general
 node, else a guard post, else any node; a home or seat given up
 after three failed walks is tried again when a new goal is taken up, and a member that gave its seat up

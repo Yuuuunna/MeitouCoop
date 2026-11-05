@@ -75,3 +75,15 @@ public static class TerrainDecalCells
         return v & 0x3FF;
     }
 }
+
+/// <summary>
+/// One blood decal on the walls, floors and objects (the Meitou <c>bloodsurfaces</c> switch, docs/game/blood-decals.md "Blood on surfaces"), as a save holds it
+/// (<see cref="Save.SaveSurfaceDecals"/>).
+/// </summary>
+/// <param name="Centre">Its 3D centre (a splash's lifted above the feet).</param>
+/// <param name="Angle">Radians: the texture's width axis points along (sin, cos) in X/Z.</param>
+/// <param name="Size">The game's decal size (half extents = size × texels × 288 / 4096).</param>
+/// <param name="Life">Seconds of game time left.</param>
+/// <param name="Colour">ABGR, as <see cref="TerrainDecal.Colour"/>.</param>
+/// <param name="Floor">Drawn only on up-facing pixels at its height (a pool, drip or smear); else on any surface facing it (a splash).</param>
+public readonly record struct SurfaceBloodDecal(TerrainDecalType Type, byte Variant, System.Numerics.Vector3 Centre, float Angle, float Size, float Life, uint Colour, bool Floor);

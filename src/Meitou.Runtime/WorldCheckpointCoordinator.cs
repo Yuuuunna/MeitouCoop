@@ -10,11 +10,12 @@ public readonly record struct CheckpointPoint(long Tick, ulong Revision, double 
 /// <summary>Opaque detached payload. Only its originating coordinator may commit it.</summary>
 public sealed class CapturedCheckpoint
 {
-    internal CapturedCheckpoint(WorldCheckpointCoordinator producer, long sequence, CheckpointPoint point, SaveGame world, byte[] metadata)
-        => (Producer, Sequence, Point, World, Metadata) = (producer, sequence, point, world, metadata);
+    internal CapturedCheckpoint(WorldCheckpointCoordinator producer, long sequence, CheckpointPoint point, SaveGame world, byte[] metadata, SimulationWeatherState? weather)
+        => (Producer, Sequence, Point, World, Metadata, Weather) = (producer, sequence, point, world, metadata, weather);
     internal WorldCheckpointCoordinator Producer { get; }
     internal SaveGame World { get; }
     internal byte[] Metadata { get; }
+    internal SimulationWeatherState? Weather { get; }
     public long Sequence { get; }
     public CheckpointPoint Point { get; }
 }
@@ -79,7 +80,7 @@ public sealed class WorldCheckpointCoordinator
         var save = SaveCapture.Capture(source, data, clock, Loaded, options);
         // Make record/item/portrait ownership independent of the running world before handing work to a writer.
         save = save.Clone();
-        WeatherCheckpoint.Capture(source, data, save);
+        var weather = WeatherCheckpoint.Capture(source, data, save);
         if (options.Levels is null)
             foreach (var zone in source.VisitedZones)
                 if (!save.Zones.ContainsKey(zone)) throw new InvalidDataException("A visited region has no saved zone; provide its level data when capturing.");
@@ -92,7 +93,7 @@ public sealed class WorldCheckpointCoordinator
         save.Camera.Record.Strings[TickKey] = point.Tick.ToString(CultureInfo.InvariantCulture);
         save.Camera.Record.Strings[RevisionKey] = point.Revision.ToString(CultureInfo.InvariantCulture);
         save.Camera.Record.Bools[DaytimeKey] = point.Daytime;
-        return new CapturedCheckpoint(this, checked(++nextCapture), point, save, metadata);
+        return new CapturedCheckpoint(this, checked(++nextCapture), point, save, metadata, weather);
     }
 
     public Guid Commit(CapturedCheckpoint captured)
@@ -103,6 +104,7 @@ public sealed class WorldCheckpointCoordinator
         {
             if (captured.Sequence < committed) throw new InvalidOperationException("A newer capture has already committed.");
             if (captured.Sequence == committed) return committedId;
+            if (captured.Weather is { } weather) WeatherCheckpoint.Encode(weather, captured.World);
             var id = store.Commit(captured.World, captured.Metadata);
             committed = captured.Sequence;
             committedId = id;

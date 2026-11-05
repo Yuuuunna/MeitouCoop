@@ -19,7 +19,9 @@ thread during the world draw ([simulation](simulation.md#tick-ahead)).
 Simulation, save, warm-up and diagnostic paths explicitly require `LocalSession`. Building/turret/audio
 caches use the opaque session identity. Tick-ahead is available only to WorldSession; local modal pause
 remains distinct from speed zero. `PresentationTick` and `PresentationSeconds` follow the displayed timeline,
-including network snapshot gaps. The remote clock accumulates authoritative time changes rather than resetting animation seconds on
+including network snapshot gaps. Early packets rebase position/yaw interpolation at the displayed pose/time, not the unreached
+previous target (**Verified** by `SecureServerTests.EarlyRemotePublicationContinuesFromTheDisplayedPoseWithoutJumpingToTheOldTarget`).
+The remote clock accumulates authoritative time changes rather than resetting animation seconds on
 every publication; local pause keys do not change the server clock. **Verified** by `TickAheadTests` and
 `SecureServerTests.PlayerSession`. Windows Vulkan `--connect <profile.json>` boots a RemotePlayerSession
 with static presentation content and no local World. Optional `--create-faction` uses the server's default
@@ -40,6 +42,11 @@ unchanged baselines retain the revisions. Per-record authority stamps stay untou
 and re-entry gets fresh display revisions. **Verified** by `SecureServerTests.Projection` over TLS.
 Covered host frames still ingest remote state with zero control time; loading readiness uses the authorized
 view instead of preparing local population. Local autosaves/news/profiling do not run against remote worlds.
+**Observed** (source review): remote disconnect dismisses any loading cover and shows one reconnect notice during
+loading or play. Client logs include the disconnect exception; server console logs include peer failures.
+Snapshot appearance reuse is specified in [networking](networking.md#state-replication).
+**Observed** (2026-11-02, published Windows Vulkan client, creation-fix checkpoint copy, 231 characters):
+the loading guard completed in 18.4 s with no missing-base diagnostics; window capture was unavailable, so this is log-based verification.
 
 KenshiCamera follows pivot/boom/zoom/pitch/ground constraints from [camera](formats/camera.md).
 Engine choices: pivot500*clamp(boom/600,0.1,1), keys1.5rad/s, mouse0.005rad/pixel; terrain-ground

@@ -87,6 +87,7 @@ public sealed class StateChunkAssembler(ReplicationIdentity identity)
     int total, received;
     ulong publication;
     public int BufferedBytes { get; private set; }
+    internal ulong Publication => publication;
     public byte[]? Receive(WireFrame frame)
     {
         try
@@ -117,9 +118,7 @@ public sealed class StateChunkAssembler(ReplicationIdentity identity)
             byte[] result = new byte[total];
             for (int i = 0; i < chunks.Length; i++) chunks[i]!.CopyTo(result, i * StateTransport.ChunkBytes);
             if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(result), digest!)) throw new InvalidDataException("Publication checksum failed.");
-            // The packet is independently decoded and identity-checked before replica mutation.
-            var patch = StatePatchProtocol.Decode(result);
-            if (patch.Identity != identity || patch.Publication != publication) throw new InvalidDataException("Chunk identity disagrees with publication.");
+            // The receiver decodes once and checks this envelope's publication before replica mutation.
             Clear(); return result;
         }
         catch { Clear(); throw; }
@@ -147,7 +146,7 @@ public sealed class ClientStateReceiver
                 if (withdrawal.Identity != identity) throw new InvalidDataException("Withdrawal addressed to another connection.");
                 chunks.Withdraw(withdrawal.AfterPublication); return Replica.Withdraw(withdrawal.AfterPublication);
             }
-            return chunks.Receive(frame) is { } complete ? Replica.Receive(complete) : null;
+            return chunks.Receive(frame) is { } complete ? Replica.Receive(complete, chunks.Publication) : null;
         }
         catch { chunks.Clear(); Replica.Reset(); throw; }
     }
@@ -160,27 +159,59 @@ public sealed class AuthoritativeStatePublisher
     readonly AuthorityConnection connection;
     readonly ReplicationIdentity identity;
     readonly ServerStateReplicator replicator;
+    readonly WorldViewCodec codec;
+    readonly Queue<ulong> awaitingAcknowledgement = new();
+    const int MaximumInFlight = 2;
     public AuthoritativeStatePublisher(AuthorityGateway authority, AuthorityConnection connection, WorldViewCodec codec)
     {
-        this.authority = authority; this.connection = connection;
+        this.authority = authority; this.connection = connection; this.codec = codec;
         identity = new(connection.World, connection.Player, connection.Generation); replicator = new(identity, codec);
     }
     public IReadOnlyList<WireFrame>? Capture(PlayerViewRequest request, PlayerObservationRules rules, double timeScale = 1)
     {
+        var work = Prepare(request, rules, timeScale, out var frames);
+        if (work is null) return frames;
+        work.Encode();
+        return Complete(work);
+    }
+    public PublicationWork? Prepare(PlayerViewRequest request, PlayerObservationRules rules, double timeScale, out IReadOnlyList<WireFrame>? frames)
+    {
+        frames = [];
         if (timeScale is not (0 or 1 or 2 or 5)) throw new ArgumentOutOfRangeException(nameof(timeScale));
+        // TCP is reliable, but decoding/loading can lag arbitrarily far behind the publication timer.
+        // Pipeline at most two ordinary updates, below both eight-entry history limits.
+        // Authority changes must still bypass this backpressure.
+        if (awaitingAcknowledgement.Count >= MaximumInFlight && authority.CanRetainPublishedView(connection, awaitingAcknowledgement.Last())) return null;
         var view = authority.CaptureView(connection, request, rules);
         if (view is null)
         {
-            if (authority.WithdrawView(connection) is not { } publication) return null; // replaced/closed handles must close their transport
-            replicator.Withdraw(publication); return [StateTransport.EncodeWithdrawal(identity, publication)];
+            if (authority.WithdrawView(connection) is not { } publication) { frames = null; return null; }
+            awaitingAcknowledgement.Clear();
+            replicator.Withdraw(publication); frames = [StateTransport.EncodeWithdrawal(identity, publication)]; return null;
         }
-        return StateTransport.Split(identity, replicator.Publish(view with { TimeScale = timeScale }, id => authority.ConfirmedDestroyed(connection, id)));
+        return replicator.Prepare(codec.Detach(view with { TimeScale = timeScale }), id => authority.ConfirmedDestroyed(connection, id));
+    }
+    public IReadOnlyList<WireFrame>? Complete(PublicationWork work)
+    {
+        // A grant can change while the worker encodes. Never send that stale private projection.
+        if (!authority.CanRetainPublishedView(connection, work.Publication))
+        {
+            if (authority.WithdrawView(connection) is not { } publication) return null;
+            awaitingAcknowledgement.Clear(); replicator.Withdraw(publication);
+            return [StateTransport.EncodeWithdrawal(identity, publication)];
+        }
+        if (replicator.Commit(work) is null) return [];
+        // Superseded authority stamps need not occupy the transport window indefinitely.
+        while (awaitingAcknowledgement.Count >= MaximumInFlight) awaitingAcknowledgement.Dequeue();
+        awaitingAcknowledgement.Enqueue(work.Publication);
+        return work.Frames;
     }
     public bool Acknowledge(WireFrame frame)
     {
         if (authority.GetPhase(connection) is null) return false;
         var ack = StateTransport.DecodeAck(frame);
         if (!replicator.Acknowledge(ack)) return false;
+        while (awaitingAcknowledgement.TryPeek(out var publication) && publication <= ack.Publication) awaitingAcknowledgement.Dequeue();
         if (authority.GetPhase(connection) == AdmissionPhase.Synchronizing && !authority.ActivateAfterView(connection, ack.Publication))
             replicator.RequestBaseline();
         return true;
@@ -188,7 +219,7 @@ public sealed class AuthoritativeStatePublisher
     public bool RequestBaseline(WireFrame frame)
     {
         if (authority.GetPhase(connection) is null || StateTransport.DecodeResync(frame).Identity != identity) return false;
-        replicator.RequestBaseline(); return true;
+        RequestBaseline(); return true;
     }
-    public void RequestBaseline() => replicator.RequestBaseline();
+    public void RequestBaseline() { awaitingAcknowledgement.Clear(); replicator.RequestBaseline(); }
 }

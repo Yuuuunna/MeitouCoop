@@ -96,6 +96,10 @@ public sealed partial class CharacterAppearance
     public GameRecord? Animal { get; private init; }
     public required GameRecord Race { get; init; }
     public bool Female { get; private init; }
+    /// <summary>Visual cut at the neck; no gameplay state.</summary>
+    public bool Headless { get; init; }
+    /// <summary>Draw only the head; no gameplay state.</summary>
+    public bool HeadOnly { get; init; }
     public AppearanceFile? Body { get; private init; }
     public string? BodyFile { get; private init; }
     /// <summary>The rolled character this was built from (with <see cref="CharacterOptions.Seed"/> or <see cref="CharacterOptions.Loadout"/>).</summary>

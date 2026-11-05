@@ -80,6 +80,13 @@ public sealed class CharacterRigs(GameDatabase db, Func<string, string?> findMes
     public CharacterPoseSetup? For(CharacterAppearance c) =>
         setups.GetOrAdd(c, static (a, self) => new Lazy<CharacterPoseSetup?>(() => self.Build(a)), this).Value;   // a static factory: nothing allocated on a hit
 
+    /// <summary>
+    /// Whether the body of <paramref name="c"/> can play the ANIMATION record <paramref name="record"/>: its skeleton, with the animation files its race and record link, has the clip
+    /// (the renderer finds a layer for it, <see cref="SkeletonRig.Layer"/>). True for an animal (its clips are checked by the animation plan) or a body that cannot be read.
+    /// </summary>
+    public bool Plays(CharacterAppearance c, string record) =>
+        For(c) is not { Animal: false } setup || setup.Rig.Layer(db, record) is not null;
+
     CharacterPoseSetup? Build(CharacterAppearance c)
     {
         var bodyPath = findMesh(c.BodyMesh);
@@ -100,16 +107,18 @@ public sealed class CharacterRigs(GameDatabase db, Func<string, string?> findMes
                 if (bodyFile.Floats.ContainsKey(slider) && rig.Layer(db, animation) is { } def)
                     setup.Add((def, def.Clip.Length * bodyFile.Get(slider) / 100));
         }
-        return new CharacterPoseSetup { Rig = rig, Shape = shape, GroundOffset = GroundOffset(rig, shape), Fixed = setup, Idle = idle, Animal = animal };
+        return new CharacterPoseSetup { Rig = rig, Shape = shape, GroundOffset = animal ? 0 : GroundOffset(c, rig, shape), Fixed = setup, Idle = idle, Animal = animal };
     }
 
     /// <summary>Body-shape sliders as bone sizes (docs/animation.md, "Body shape sliders"); only skeletons with exactly 30 bones, as in Kenshi.</summary>
     /// <param name="build">The stat-driven body (its muscle and starvation) in place of the appearance's own.</param>
-    BodyShapeData? Shape(CharacterAppearance c, SkeletonRig rig, BodyBuild? build = null)
+    /// <param name="whole">With every limb (<see cref="CharacterShapeInput.Missing"/> empty): the shape the ground offset is measured on.</param>
+    BodyShapeData? Shape(CharacterAppearance c, SkeletonRig rig, BodyBuild? build = null, bool whole = false)
     {
         if (rig.BoneCount != CharacterShape.HumanBoneCount) return null;
         var input = c.Shape ?? CharacterShape.InputFor(db, c);
         if (build is { } b) input = input with { Muscle = b.Muscle, Starvation = b.Starvation };
+        if (whole && input.Missing.Count > 0) input = input with { Missing = new HashSet<Limb>() };
         var shape = CharacterShape.Compute(input, name => rig.Handle(name) is not null);
         return rig.Shape(shape.BoneSize, shape.PositionalSize, shape.MovementScale);
     }
@@ -122,7 +131,7 @@ public sealed class CharacterRigs(GameDatabase db, Func<string, string?> findMes
     {
         if (For(c) is not { Animal: false, Rig: { BoneCount: CharacterShape.HumanBoneCount } rig }) return null;
         var data = Shape(c, rig, build);
-        return (data, GroundOffset(rig, data));
+        return (data, GroundOffset(c, rig, data, build));
     }
 
     static readonly string[] FootBones = ["Bip01 L Foot", "Bip01 R Foot", "Bip01 L Toe0", "Bip01 R Toe0"];
@@ -130,8 +139,13 @@ public sealed class CharacterRigs(GameDatabase db, Func<string, string?> findMes
     /// <summary>
     /// How far <paramref name="shape"/> raises the lowest foot bone in the bind pose over the neutral shape (docs/animation.md, "Body shape sliders"): the bone sizes
     /// scale the legs about the hips while <c>Bip01</c> keeps its height, so a short body floats and a tall one sinks. What grounds them in Kenshi was not found;
-    /// lowering the character by this is an engine choice.
+    /// lowering the character by this is an engine choice. It is measured with every limb: a lost leg's foot shrinks to its knee, and a body with no legs lowered by
+    /// that would lie under the ground while it crawls and sit low on a carrier's shoulder. Less the game's lift from boots and prosthetic legs
+    /// (<see cref="CharacterShape.FeetLiftOf"/>): high-heeled boots raise the body.
     /// </summary>
+    float GroundOffset(CharacterAppearance c, SkeletonRig rig, BodyShapeData? shape, BodyBuild? build = null) =>
+        (shape is not null && (c.Shape ?? CharacterShape.InputFor(db, c)).Missing.Count > 0 ? GroundOffset(rig, Shape(c, rig, build, whole: true)) : GroundOffset(rig, shape))
+        - CharacterShape.FeetLiftOf(c.Parts);
 
     static float GroundOffset(SkeletonRig rig, BodyShapeData? shape)
     {

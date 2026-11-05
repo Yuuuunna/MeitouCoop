@@ -87,7 +87,7 @@ public sealed class WorldContent : IDisposable
             if (levels is not null)
             {
                 nav = new NavSystem(install, db, levels, height, deferPublication: true);
-                geometry = new RagdollGeometry(install, db, levels, height);
+                geometry = new RagdollGeometry(install, db, levels, height, nav.Runtime);
                 walkability = new NavAdapter(nav.Walkability);
             }
             var towns = levels?.Towns().ToList() ?? [];

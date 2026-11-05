@@ -135,6 +135,63 @@ static class LightShaftShaders
         }
         """;
 
+    /// <summary>
+    /// The sun's share averaged over frames (docs/render-shafts.md "Temporal"): with a temporal upscaler the injection's samples move every frame, and
+    /// TAA, which clamps its history to the picture's neighbourhood, showed their noise as a shimmer in motion. Each cell's centre is taken back into
+    /// last frame's grid (its camera and slices), the filtered share read there (bilinear in the slice, linear between slices), clamped to this frame's
+    /// 3 x 3 neighbourhood in the slice (no trails where shadows move) and blended with this frame's (<c>uShaftBlend</c> of it; 1: no history). Out:
+    /// the injection's layout, the share replaced.
+    /// </summary>
+    public static readonly string Resolve = "#version 330 core\n" + Common + """
+
+        out vec4 fragColour;
+        uniform sampler2D uShaftCurrent, uShaftHistory;
+        uniform vec4 uShaftPrevRange;
+        uniform vec3 uShaftPrevEye, uShaftPrevRight, uShaftPrevUp, uShaftPrevBack;
+        uniform vec2 uShaftPrevTan;
+        uniform float uShaftBlend;
+
+        float historyShare(vec2 uv, int slice)
+        {
+            ivec2 grid = ivec2(uShaftGrid.xy);
+            int perRow = int(uShaftGrid.w);
+            vec2 tile = vec2(slice % perRow, slice / perRow) * vec2(grid);
+            vec2 at = tile + clamp(uv * vec2(grid), vec2(0.5), vec2(grid) - 0.5);
+            return textureLod(uShaftHistory, at / vec2(textureSize(uShaftHistory, 0)), 0.0).b;
+        }
+
+        void main()
+        {
+            ivec2 p = ivec2(gl_FragCoord.xy);
+            ivec2 grid = ivec2(uShaftGrid.xy);
+            int column = p.x / grid.x, row = p.y / grid.y;
+            int k = row * int(uShaftGrid.w) + column;
+            vec4 now = texelFetch(uShaftCurrent, p, 0);
+            fragColour = now;
+            if (k >= int(uShaftGrid.z) || uShaftBlend >= 1.0) return;
+            ivec2 cell = p - ivec2(column, row) * grid;
+            vec3 point = shaftRay((vec2(cell) + 0.5) / uShaftGrid.xy) * shaftDistance(float(k) + 0.5) + uShaftEye - uShaftPrevEye;
+            float z = -dot(point, uShaftPrevBack);
+            if (z <= 1e-3) return;
+            vec2 uv = vec2(dot(point, uShaftPrevRight) / (z * uShaftPrevTan.x), dot(point, uShaftPrevUp) / (z * uShaftPrevTan.y)) * 0.5 + 0.5;
+            float s = log(max(length(point), 1e-3) / uShaftPrevRange.x) / uShaftPrevRange.z * uShaftGrid.z - 0.5;
+            if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))) || s < 0.0 || s > uShaftGrid.z - 1.0) return;
+            int s0 = int(floor(s));
+            float history = mix(historyShare(uv, s0), historyShare(uv, min(s0 + 1, int(uShaftGrid.z) - 1)), s - float(s0));
+            float lo = 1.0, hi = 0.0;
+            for (int y = -1; y <= 1; y++)
+                for (int x = -1; x <= 1; x++)
+                {
+                    ivec2 q = clamp(cell + ivec2(x, y), ivec2(0), grid - 1);
+                    float share = texelFetch(uShaftCurrent, ivec2(column, row) * grid + q, 0).b;
+                    lo = min(lo, share);
+                    hi = max(hi, share);
+                }
+            float lit = mix(clamp(history, lo, hi), now.b, uShaftBlend);
+            fragColour = vec4(now.g * lit, now.g, lit, 0.0);
+        }
+        """;
+
     /// <summary>The second pass, into a second atlas (R32F): per cell, the sun's share of the haze gathered from the eye to the far end of its slice
     /// (the first pass's two sums over this slice and every nearer one; 1 where no haze has gathered yet).</summary>
     public static readonly string Integrate = "#version 330 core\n" + Common + """
@@ -351,7 +408,7 @@ static class LightShaftShaders
 
     /// <summary>
     /// The apply pass over the scene colour, blended as <c>scene * alpha + colour</c> (the fog volumes' state). The pixel's distance is rebuilt as the
-    /// fog volumes pass rebuilds it (the near slice's depth, else the far slice's, the water plane where it lies in front); the sun's share there
+    /// fog volumes pass rebuilds it (the scene depth, the water plane where it lies in front); the sun's share there
     /// is read from the second atlas (bilinear across the cells, linear between the slices' far ends). A surface loses
     /// <c>darkening × (1 − share)</c> of its haze colour (a negative colour); the sky, which no haze covers, is scaled by
     /// <c>1 − darkening × (1 − share) × sky weight × alpha at the grid's end</c>.
@@ -360,35 +417,27 @@ static class LightShaftShaders
 
         in vec2 vUv;
         out vec4 fragColour;
-        uniform sampler2D uNearDepth, uFarDepth;
-        uniform vec2 uNearPlanes, uFarPlanes;
+        uniform sampler2D uNearDepth;
+        uniform vec2 uNearPlanes;   // near, far of the scene depth
         uniform float uWaterY;
-        uniform int uHasFar;
-
-        float viewZ(float d, vec2 nf) { float zd = 2.0 * d - 1.0; return nf.x * nf.y / (nf.y - zd * (nf.y - nf.x)); }
+        """ + DepthConvention.Glsl + """
 
         void main()
         {
             float d = textureLod(uNearDepth, vUv, 0.0).r;
-            vec2 planes = uNearPlanes;
-            if (d >= 1.0 && uHasFar != 0)
-            {
-                d = textureLod(uFarDepth, vUv, 0.0).r;
-                planes = uFarPlanes;
-            }
             vec2 ndc = vUv * 2.0 - 1.0;
             vec3 perZ = uShaftRight * ndc.x * uShaftTan.x + uShaftUp * ndc.y * uShaftTan.y - uShaftBack;
             float len = length(perZ);
             vec3 dir = perZ / len;
-            bool sky = d >= 1.0;
-            float dist = sky ? uShaftRange.y : viewZ(d, planes) * len;
+            bool sky = depthIsSky(d);
+            float dist = sky ? uShaftRange.y : depthViewZ(d, uNearPlanes) * len;
             float waterWeight = 1.0;
             if (uWaterY > -1e30 && abs(dir.y) > 1e-6)
             {
                 float tw = (uWaterY - uShaftEye.y) / dir.y;
                 // Water does not write depth. Rebuild its hit only inside the rendered frustum;
                 // an infinite plane otherwise turns the sky below the horizon into a hazed surface.
-                float waterFar = (uHasFar != 0 ? uFarPlanes.y : uNearPlanes.y) * len;
+                float waterFar = uNearPlanes.y * len;
                 if (tw > 0.0 && tw < waterFar && (sky || tw < dist))
                 {
                     dist = tw;

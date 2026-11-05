@@ -61,7 +61,7 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
     /// <summary>Unloads <paramref name="coordinate"/>'s zone; a new <see cref="InteriorVersion"/> only when it had interiors.</summary>
     void Drop(ZoneCoordinate coordinate)
     {
-        if (zones.Remove(coordinate, out var gone) && gone.Interiors.Count > 0) InteriorVersion++;
+        if (zones.Remove(coordinate, out var gone) && gone.Interiors.Length > 0) InteriorVersion++;
     }
 
     public sealed class Zone
@@ -77,7 +77,10 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
         public float ParkedLimit;
         public bool ParkedStand;
         /// <summary>The indoor volumes of the zone's buildings (<see cref="ZoneObjects.Interiors"/>).</summary>
-        public IReadOnlyList<InteriorVolume> Interiors = [];
+        /// <summary>An array, so the per-frame interior walks (camera, audio, lamps, GI) enumerate without allocating.</summary>
+        public InteriorVolume[] Interiors = [];
+        /// <summary>The gateway hulls of the zone (<see cref="ZoneObjects.GateHulls"/>): only the audio's indoor ray tests them.</summary>
+        public InteriorVolume[] GateHulls = [];
     }
 
     /// <summary>Zones laid out at once.</summary>
@@ -172,9 +175,10 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
         z.Stand.RemoveAll(Match);
         z.Unresolved.RemoveAll(Match);
         z.Parked.RemoveAll(Match);
-        int had = z.Interiors.Count;
+        int had = z.Interiors.Length;
         z.Interiors = [.. z.Interiors.Where(v => v.PlacementId != instanceId)];
-        if (z.Interiors.Count != had) InteriorVersion++;
+        if (z.Interiors.Length != had) InteriorVersion++;
+        z.GateHulls = [.. z.GateHulls.Where(v => v.PlacementId != instanceId)];
     }
 
     void EnsurePopulated(ZoneCoordinate zone)
@@ -213,6 +217,7 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
             foreach (var item in laid.Items) z.Real.Add(Make(item, stand: false, z));
             foreach (var item in laid.Stand) z.Stand.Add(Make(item, stand: true, z));
             if (laid.Interiors.Count > 0) { z.Interiors = [.. z.Interiors, .. laid.Interiors]; InteriorVersion++; }
+            if (laid.GateHulls.Count > 0) z.GateHulls = [.. z.GateHulls, .. laid.GateHulls];
         }
     }
 
@@ -223,7 +228,7 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
     readonly List<Zone> near = [];
 
     public int Loaded => zones.Count;
-    public IEnumerable<Zone> AllZones => zones.Values;
+    public Dictionary<ZoneCoordinate, Zone>.ValueCollection AllZones => zones.Values;   // a struct enumerator: walked every frame
     public Zone? ZoneAt(ZoneCoordinate coordinate) => zones.GetValueOrDefault(coordinate);
     /// <summary>Zones in range not laid out yet, and those being laid out.</summary>
     public int Pending => jobs.Count + Wanted + fills.Count;
@@ -277,9 +282,21 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
     /// only from <see cref="Ahead"/> and <see cref="Kept"/>, so the flight path keeps what it has and loads nothing (docs/render-objects.md "Arrival prefetch").
     /// </summary>
     public float LoadNear(Vector3 eye, Vector3 p) => Ahead is { } a ? MathF.Min(Vector3.Distance(a, p), NearKept(p)) : Near(eye, p);
+
+    /// <summary>The camera's distance to its target: a kept point's detail (texture mips, mesh levels) is measured from at least this far, the view a
+    /// jump to that character would have, instead of from the ground at its feet. What is loaded and kept still counts from the point itself.</summary>
+    public float KeptViewDistance { get; set; }
+
+    /// <summary><see cref="LoadNear"/> for detail: a kept point counts from at least <see cref="KeptViewDistance"/>.</summary>
+    public float DetailNear(Vector3 eye, Vector3 p)
+    {
+        float kept = MathF.Max(NearKept(p), KeptViewDistance);
+        if (Ahead is { } a) return MathF.Min(Vector3.Distance(a, p), kept);
+        return MathF.Min(Vector3.Distance(eye, p), kept);
+    }
     float NearZone(double x0, double z0, Vector3 eye)
     {
-        float d = MathF.Min(ZoneDistance(x0, z0, eye), NearKeptZone(x0, z0));
+        float d = MathF.Min(EyeLift.Apply(ZoneDistance(x0, z0, eye), EyeLift.Of(eye, GroundUnderEye)), NearKeptZone(x0, z0));
         return Ahead is { } a ? MathF.Min(d, ZoneDistance(x0, z0, a)) : d;
     }
 
@@ -301,6 +318,10 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
     }
 
     /// <summary>Distance on the ground plane from <paramref name="eye"/> to a zone's square.</summary>
+    /// <summary>The ground's height under the eye (set each frame; unknown: none): which zones are laid out, kept and unparked counts the eye's height
+    /// over it beyond the game's cameras (<see cref="EyeLift"/>), the kept points and a flight's arrival not.</summary>
+    public float GroundUnderEye { get; set; } = float.NegativeInfinity;
+
     public static float ZoneDistance(double x0, double z0, Vector3 eye)
     {
         double dx = Math.Max(Math.Max(x0 - eye.X, eye.X - (x0 + WorldLayout.ZoneSize)), 0);
@@ -308,8 +329,9 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
         return (float)Math.Sqrt(dx * dx + dz * dz);
     }
 
-    /// <summary>Starts laying out the zones within <paramref name="range"/> (nearest first), takes finished ones in, drops far ones.</summary>
-    public void Update(Vector3 eye, float range, int maxNew)
+    /// <summary>Starts laying out the zones within <paramref name="range"/> (nearest first), takes finished ones in, drops far ones. <paramref name="covered"/>: under the
+    /// loading screen, layouts run on every streaming thread and taken zones are filled for up to 16 ms a frame (frames need not be smooth there).</summary>
+    public void Update(Vector3 eye, float range, int maxNew, bool covered = false)
     {
         TakeRuntime();
         int taken = 0;
@@ -329,7 +351,7 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
         }
         foreach (var (coordinate, _) in wanted.OrderBy(w => w.Distance))
         {
-            if (jobs.Count >= MaxJobs || Paused || WaitForLandmarks) break;
+            if (jobs.Count >= (covered ? Math.Max(MaxJobs, BackgroundWork.Threads) : MaxJobs) || Paused || WaitForLandmarks) break;
             var landmarkClass = Landmarks;
             var extra = staged;
             jobs[coordinate] = BackgroundWork.Run(() =>
@@ -343,7 +365,7 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
         Wanted = wanted.Count(w => !jobs.ContainsKey(w.Coordinate));
         foreach (var zone in zones.Values.ToArray())
             if (NearZone(zone.X0, zone.Z0, eye) > range + WorldLayout.ZoneSize) Drop(zone.Coordinate);
-        FillZones(maxNew > 8 ? double.MaxValue : 1.0);
+        FillZones(maxNew > 8 ? double.MaxValue : covered ? 16 : 1.0);
     }
 
     /// <summary>A zone laid out by a worker whose instances are being made, a few at a time (<see cref="FillZones"/>).</summary>
@@ -359,8 +381,8 @@ sealed class ObjectStreamer(WorldObjects objects, ObjectMeshCache meshes) : IDis
     void Add(ZoneObjects laid)
     {
         var (x0, z0) = WorldLayout.ZoneOrigin(laid.Zone);
-        var zone = new Zone { Coordinate = laid.Zone, X0 = x0, Z0 = z0, Interiors = laid.Interiors };
-        if (laid.Interiors.Count > 0 || zones.TryGetValue(laid.Zone, out var old) && old.Interiors.Count > 0) InteriorVersion++;
+        var zone = new Zone { Coordinate = laid.Zone, X0 = x0, Z0 = z0, Interiors = [.. laid.Interiors], GateHulls = [.. laid.GateHulls] };
+        if (laid.Interiors.Count > 0 || zones.TryGetValue(laid.Zone, out var old) && old.Interiors.Length > 0) InteriorVersion++;
         zones[laid.Zone] = zone;
         fills.Enqueue(new Fill { Zone = zone, Laid = laid });
     }

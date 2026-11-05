@@ -93,3 +93,9 @@ Inventory drags draw the cell's icon/count at its footprint size and original gr
 above windows without intercepting drops; the source hides until release/cancellation.
 Escape/right click cancels; changing the source snapshot or closing its window cancels too.
 [Host](engine.md), [saves](simulation.md#quicksave-and-quickload).
+
+## Painter cache
+
+**Observed** (current `UiPainter.Cache` implementation): controls replay cached quads, glyphs, opaque areas and edit boxes when content and hover/pressed state match. Recording starts on the second frame; caret, loading icons and renderer-owned pictures remain volatile. Texture/font changes, dimensions, minimum text size or UI mode invalidate all records; unused records expire after 120 frames.
+
+**Observed** (`UiPainter.ReadStoredTop`): eligible DDS textures upload their stored top surface in BC1/2/3 compression. The large GUI map reads only that surface on demand; prefetch reads other DDS files on workers.

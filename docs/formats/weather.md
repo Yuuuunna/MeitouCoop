@@ -23,7 +23,7 @@ the minimum key twice, hence always minimum. Weather can follow itself.
 into top-to-bottom rows; cell `(floor(x/4608)+32,floor(z/4608)+32)` reads `(4cx+2,4cz+2)` and
 RGB packed `R<<16|G<<8|B`. All 71 colours match BIOME_GROUP indices; no offset/flip. Match by
 StringId/colour, never name (two NONE records). **Observed:** whether original sampling chooses
-exactly the centre on mixed border blocks. Seasonless regions use Default.
+exactly the centre on mixed border blocks. The camera's region lookup (`FUN_1408f56b0`, `FUN_1409e8f70`:64,72; **Observed** (upstream `0d5e98d7` evidence), constants read from the exe) uses cell `(int)((coord + 147465) / 4608)` truncated toward zero and clamped to 0..63 per axis (off-map positions take the edge cell); 147465 = 32 x 4608 + 9, so its boundaries sit 9 units from the `floor(x/4608)+32` cells above. Meitou applies it to the camera lookup only (`WeatherAreas.CameraCellOf`); other lookups keep the town-verified cells. Seasonless regions use Default.
 
 ## Wind and camera transitions
 
@@ -88,7 +88,8 @@ remains unexplained. Gameplay effects: [Effects on characters](#effects-on-chara
 ## Effects on characters
 
 **Verified (decompiled)**, the character's weather update `FUN_1405cf790` (CharacterHuman vtable +0x288, called from the
-character update `FUN_1405d00b0` with the character's dt, seconds of character time). Each call, in order:
+character update `FUN_1405d00b0` with the character's dt, seconds of character time). Meitou (engine choice, `WeatherSystem.EveryTicks`)
+calls it every 5th tick per character, on its slot's turn, with 5 ticks of time. Each call, in order:
 
 1. Clear the character's weather (animation holder `+0x198` kind, `+0x1a0` strength, `+0x190` overlay flag). Skip all while
    `DAT_142134690+0x2f0` is set (**Unknown** switch); stop (also skipping step 5's smoke) when the position has no BIOME_GROUP.
@@ -159,7 +160,7 @@ character at most every 8 s per event (`WeatherSystem.EventPause`, **engine choi
 `is shelter` stops acid rain (the holder is still set). **Verified** probe: 3 of 603 buildings in the merged data have the flag, all tents of the mod `small_changes_otto` (`Tente
 Mercenaire`, `Abri Plat`, `Tente de fortune`; no function, 2 parts, no interior mask), so the base game has no shelter. Meitou (`WeatherSystem.Sheltered`, **engine choice**): the
 collision query does not say which building a triangle belongs to, so a complete shelter of the player's within 120 units of the character is assumed to be the one hit, and the ray
-counts when it meets any building's collision more than 10 over the feet; town buildings are not asked.
+counts when it meets the collision of groups 23..26 more than 10 over the feet (the ray's include mask is 0x7800000, **Observed** (upstream `0d5e98d7` evidence): the passable parts and every part of a path-mode IGNORE building, not the ragdoll set; `ZoneGeometryGatherer.RoofTriangles`, `IRagdollEnvironment.Roofs`); town buildings are not asked.
 
 ### WEATHER (type 80; Verified: fcs.def and the loader FUN_1409de7b0)
 
@@ -266,6 +267,6 @@ Evidence scopes below apply only to their named sources/checks.
 - Spawning (Verified (decompiled), FUN_1409dcaf0, FUN_140103210; behaviour from fcs.def where marked)
 - The groups in detail (Verified (decompiled) where marked; the rest Observed)
 - The particle scripts (Observed: `data/particles/scripts/*.pu`; the format, the survey and the implementation: [particle-universe.md](particle-universe.md))
-- Effect placers on the map (Verified: records and `features.dat`)
+- Effect placers on the map (Verified: records and `features.dat`); a hidden MAP_FEATURES record still makes its effects: [zones.md](zones.md#placement-files-and-assembly)
 - Base-game data (Verified: merged base records, 2026-10-05)
 - Effects on characters (Verified (decompiled), FUN_1405cf790 and the functions named there; Verified probe of the merged data, 2026-10-23)

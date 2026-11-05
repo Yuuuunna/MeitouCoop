@@ -434,6 +434,10 @@ public sealed class AiMind
     /// </summary>
     public int WorkEpoch { get; set; }
     public bool WorkActive { get; set; }
+    /// <summary>The chosen canonical level placement and this think's operation/collection signal (derived, not hashed).</summary>
+    public Meitou.Data.World.TownBuilding? WorkBuilding { get; set; }
+    public Meitou.Data.World.TownBuilding? WorkOperate { get; set; }
+    public Meitou.Data.World.TownBuilding? CollectFrom { get; set; }
     /// <summary>The clip it plays at its work (the ANIMATION its building's functionality names), cleared with <see cref="CharacterCold.ActionClip"/> when it stops; null when not working.</summary>
     public string? WorkClip { get; set; }
     /// <summary>Its work building's functionality <c>hunger rate</c> (1 by default), what <c>Task_OperateMachine</c> gives its operator. Set with <see cref="WorkClip"/>, so not hashed.</summary>

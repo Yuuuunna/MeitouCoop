@@ -201,6 +201,9 @@ public sealed partial class EffectUnit
         }
     }
 
+    /// <summary>Presentation fade at the edge of the active range.</summary>
+    public float RangeFade { get; set; } = 1;
+
     public void Activate()
     {
         Simulation = new ParticleSimulation(System, Seed, Persistent) { EmissionStopped = Stopped, Orientation = Orientation, Size = Size, LifeScale = LifeScale };
@@ -223,6 +226,7 @@ public sealed partial class EffectUnit
         }
         sim.WorldOffset = Anchor;
         sim.Origin = local;
+        sim.Orientation = Orientation;
         sim.EmissionStopped = Stopped;
         float left = Pending;
         Pending = 0;
@@ -387,6 +391,7 @@ public abstract partial class EffectGroup
         float reach = float.IsPositiveInfinity(u.Radius) ? 0 : u.Radius;
         bool near = alwaysActive || u.DistanceToCamera - reach <= range;
         bool far = !alwaysActive && u.DistanceToCamera - reach > range * 1.15f;
+        u.RangeFade = alwaysActive ? 1 : Math.Clamp((range - (u.DistanceToCamera - reach)) / (0.15f * range), 0, 1);
         if (!u.Active && near && !u.Done)
         {
             u.Activate();
@@ -746,14 +751,16 @@ public sealed class BurstEffectGroup(PuSystemDef system, int seed, EffectWorld w
 {
     public void Clear() => units.Clear();
     /// <summary>A unit at <paramref name="position"/>, turned by <paramref name="orientation"/>, emitting for <paramref name="seconds"/>, its particles <paramref name="size"/> times as big and <paramref name="lifeScale"/> times as long-lived.</summary>
-    public void Spawn(Vector3 position, Quaternion orientation, float seconds, float size, float lifeScale)
+    public EffectUnit Spawn(Vector3 position, Quaternion orientation, float seconds, float size, float lifeScale, Vector3? recolour = null)
     {
         var u = NewUnit(position);
+        if (recolour is { } colour) u.Tint = -Vector3.Max(colour, new Vector3(1e-4f));
         u.Orientation = orientation;
         u.Life = seconds;
         u.Size = size;
         u.LifeScale = lifeScale;
         u.Radius *= size * lifeScale;
+        return u;
     }
 
     public override void Update(float dt, in EffectCamera camera, WeatherEffectInput weather)

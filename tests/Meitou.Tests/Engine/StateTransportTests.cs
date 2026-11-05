@@ -10,6 +10,90 @@ namespace Meitou.Tests.Engine;
 
 public class StateTransportTests
 {
+    [Fact]
+    public void ChunkPublicationMustMatchTheDecodedPacketBeforeCommittingAView()
+    {
+        var (identity, codec, view) = LargeView();
+        var receiver = new ClientStateReceiver(identity, codec);
+        var frames = StateTransport.Split(identity, new ServerStateReplicator(identity, codec).Publish(view));
+        Assert.Throws<InvalidDataException>(() =>
+        {
+            foreach (var frame in frames)
+            {
+                byte[] changed = frame.Payload.ToArray();
+                BinaryPrimitives.WriteUInt64LittleEndian(changed.AsSpan(32), view.Publication + 1);
+                receiver.Receive(frame with { Payload = changed });
+            }
+        });
+        Assert.Null(receiver.Replica.Current);
+    }
+
+    [Fact]
+    public void SlowReceiverKeepsItsViewAcrossDelayedAcksAndRevocationStillBypassesBackpressure()
+    {
+        var codec = new WorldViewCodec(WorldViewCodecTests.Database());
+        using var world = new SimWorld(new WorldSettings { PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 0), []);
+        var player = new PlayerId(2); world.Players.Register(player); world.Players.SetMembership(player, 7, FactionPermission.All);
+        var role = world.Characters.Spawn(new CharacterHot(), new CharacterCold { Faction = 7, IsPlayer = true }, 0);
+        world.Players.AssignInitial(player, role);
+        var connection = world.Authority.Open(player); Assert.True(world.Authority.BeginSynchronization(connection));
+        var publisher = new AuthoritativeStatePublisher(world.Authority, connection, codec);
+        var receiver = new ClientStateReceiver(new(connection.World, player, connection.Generation), codec);
+        WireFrame? oldAck = null;
+        for (int round = 0; round < 24; round++)
+        {
+            var frames = publisher.Capture(new(), new(), 1)!;
+            Assert.NotEmpty(frames);
+            foreach (var frame in frames) receiver.Receive(frame);
+            // A second update may overlap decoding/ACK of the first, but never an unbounded backlog.
+            var second = publisher.Capture(new(), new(), 1)!;
+            Assert.NotEmpty(second);
+            foreach (var frame in second) receiver.Receive(frame);
+            var view = receiver.Replica.Current!;
+            Assert.Contains(view.Snapshot.Characters, c => c.Id == role);
+            Assert.Equal(1, view.TimeScale); Assert.False(receiver.Replica.NeedsBaseline);
+            // An already acknowledged update must not release the newer outstanding publication.
+            if (oldAck is not null) Assert.True(publisher.Acknowledge(oldAck));
+            // Far beyond the eight-publication history/grant limit, without relying on wall-clock timing.
+            for (int missed = 0; missed < 64; missed++)
+            {
+                Assert.Empty(publisher.Capture(new(), new())!);
+                Assert.Same(view, receiver.Replica.Current);
+            }
+            oldAck = receiver.Acknowledgement!;
+            Assert.True(publisher.Acknowledge(oldAck));
+            Assert.Equal(AdmissionPhase.Active, world.Authority.GetPhase(connection));
+        }
+        foreach (var frame in publisher.Capture(new(), new())!) receiver.Receive(frame);
+        world.Players.RemoveMembership(player, 7);
+        var withdrawn = publisher.Capture(new(), new())!;
+        Assert.Equal(WireMessage.StateWithdrawn, Assert.Single(withdrawn).Kind);
+        foreach (var frame in withdrawn) receiver.Receive(frame);
+        Assert.Null(receiver.Replica.Current);
+    }
+
+    [Fact]
+    public void ResyncRequestReleasesAnUnacknowledgedPublicationAndSuppliesAFullBaseline()
+    {
+        var codec = new WorldViewCodec(WorldViewCodecTests.Database());
+        using var world = new SimWorld(new WorldSettings { PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 0), []);
+        var player = new PlayerId(2); world.Players.Register(player); world.Players.SetMembership(player, 7, FactionPermission.All);
+        var role = world.Characters.Spawn(new CharacterHot(), new CharacterCold { Faction = 7, IsPlayer = true }, 0);
+        world.Players.AssignInitial(player, role);
+        var connection = world.Authority.Open(player); Assert.True(world.Authority.BeginSynchronization(connection));
+        var publisher = new AuthoritativeStatePublisher(world.Authority, connection, codec);
+        var receiver = new ClientStateReceiver(new(connection.World, player, connection.Generation), codec);
+        foreach (var frame in publisher.Capture(new(), new())!) receiver.Receive(frame);
+        receiver.Replica.Reset();
+        Assert.True(publisher.RequestBaseline(receiver.ResyncRequest()));
+        var replacement = publisher.Capture(new(), new())!;
+        Assert.NotEmpty(replacement);
+        foreach (var frame in replacement) receiver.Receive(frame);
+        Assert.NotNull(receiver.Replica.Current);
+        Assert.True(publisher.Acknowledge(receiver.Acknowledgement!));
+        Assert.Equal(AdmissionPhase.Active, world.Authority.GetPhase(connection));
+    }
+
     static (ReplicationIdentity Identity, WorldViewCodec Codec, PlayerWorldView View) LargeView()
     {
         var db = WorldViewCodecTests.Database(); var codec = new WorldViewCodec(db); var view = WorldViewCodecTests.View(db);

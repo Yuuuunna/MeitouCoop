@@ -6,7 +6,7 @@ using Silk.NET.Vulkan;
 namespace Meitou.Rendering.Upscalers;
 
 /// <summary>
-/// NVIDIA DLSS Super Resolution through <see cref="Ngx"/> directly (Linux; <see cref="DlssUpscaler"/> is the Streamline path on Windows).
+/// NVIDIA DLSS Super Resolution through <see cref="Ngx"/> directly (Linux, and Windows with frame generation; <see cref="DlssUpscaler"/> is the Streamline path on Windows otherwise).
 /// One DLSS feature per (mode, render size, display size), remade when they change; per frame the four images (colour, depth, motion,
 /// output) and the water hint go in as <c>NVSDK_NGX_Resource_VK</c>, with the jitter, motion scale and reset, and the evaluation is
 /// recorded into the <see cref="GpuContext"/>'s frame. Conventions as for FSR (<see cref="UpscaleInputs"/>): images are bottom-up and

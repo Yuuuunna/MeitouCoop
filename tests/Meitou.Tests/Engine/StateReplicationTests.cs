@@ -9,6 +9,32 @@ namespace Meitou.Tests.Engine;
 public class StateReplicationTests
 {
     [Fact]
+    public void MovingSnapshotsReuseUnchangedAppearancesButOutfitChangesAndWithdrawalInvalidateThem()
+    {
+        var db = WorldViewCodecTests.Database(); var codec = new WorldViewCodec(db); var view = WorldViewCodecTests.View(db);
+        var identity = ReplicationIdentity.Of(view); var server = new ServerStateReplicator(identity, codec); var client = new ClientWorldReplica(identity, codec);
+        client.Receive(server.Publish(view).Payload); server.Acknowledge(client.Acknowledgement!);
+        var preparedLook = client.Current!.Snapshot.Characters[0].Appearance;
+        for (ulong publication = 2; publication < 22; publication++)
+        {
+            view = view with { Publication = publication, Snapshot = view.Snapshot with
+                { Characters = [view.Snapshot.Characters[0] with { Position = new Vector3(publication, 0, 0) }] } };
+            Assert.Equal(ReplicaResult.Applied, client.Receive(server.Publish(view).Payload));
+            Assert.Same(preparedLook, client.Current!.Snapshot.Characters[0].Appearance);
+            Assert.True(server.Acknowledge(client.Acknowledgement!));
+        }
+        view.Snapshot.Characters[0].Appearance!.Parts.Clear();
+        view = view with { Publication = 22 };
+        client.Receive(server.Publish(view).Payload);
+        Assert.NotSame(preparedLook, client.Current!.Snapshot.Characters[0].Appearance);
+        Assert.Empty(client.Current.Snapshot.Characters[0].Appearance!.Parts);
+        client.Withdraw(23); server.Withdraw(23);
+        view = WorldViewCodecTests.View(db) with { World = identity.World, Publication = 24 };
+        client.Receive(server.Publish(view).Payload);
+        Assert.NotSame(preparedLook, client.Current!.Snapshot.Characters[0].Appearance);
+    }
+
+    [Fact]
     public void BaselineDeltaAndRevocationReplacePrivateFieldsRatherThanMergingThem()
     {
         var db = WorldViewCodecTests.Database(); var codec = new WorldViewCodec(db); var view = WorldViewCodecTests.View(db);

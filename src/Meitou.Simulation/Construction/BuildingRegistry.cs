@@ -24,6 +24,8 @@ public sealed class BuildSite
     public required string Id { get; init; }
     /// <summary>Existing town placement, replaced in place during repairs; never a new save instance.</summary>
     public BuildingPlacement? LevelPlacement { get; init; }
+    /// <summary>An ordinary level machine, not a purchased house or construction overlay.</summary>
+    public bool LevelMachine { get; set; }
     public string? LevelTownName { get; init; }
     /// <summary>The BUILDING record; an upgrade or downgrade swaps it in place (<see cref="ConstructionSystem"/> "Upgrades").</summary>
     public required string Record { get; set; }
@@ -63,7 +65,7 @@ public sealed class BuildSite
     /// <summary>A builder has taken it apart this tick (derived; the snapshot's flag).</summary>
     public bool Dismantling { get; set; }
     /// <summary>The zone the site stands in (its id and save file).</summary>
-    public ZoneCoordinate Zone => WorldLayout.ZoneOf(Position.X, Position.Z);
+    public ZoneCoordinate Zone => LevelPlacement?.Zone ?? WorldLayout.ZoneOf(Position.X, Position.Z);
 
     /// <summary>The materials are all delivered and built: <c>sum(min(delivered, required))</c>, what progress may reach (<b>Verified</b>, <c>FUN_14054a3f0</c>).</summary>
     public float Deliverable
@@ -79,12 +81,13 @@ public sealed class BuildSite
     /// <summary>A site that is not complete and has built all it was given: the builder waits for more materials (<c>sum(min(delivered, required)) &lt;= progress</c>).</summary>
     public bool Stalled => !Complete && Deliverable <= Progress;
     /// <summary>Unfinished, or complete with progress below the target (damaged: Building slot 101 <c>FUN_1400f6b70</c>, <b>Verified</b>); building work (orders 2 and 95) applies.</summary>
-    public bool NeedsWork => Destroyed || !Complete || Progress < Target;
+    public bool NeedsWork => !LevelMachine && (Destroyed || !Complete || Progress < Target);
 
     internal void Hash(ref StateHasher h)
     {
         h.Add(Rng.StableHash(Id));
         if (LevelPlacement is not null) h.Add(0x4c657665);
+        if (LevelMachine) h.Add(0x4c4d6163);
         h.Add(Rng.StableHash(Record));
         h.Add(Position);
         h.Add(Rotation.X); h.Add(Rotation.Y); h.Add(Rotation.Z); h.Add(Rotation.W);
@@ -284,6 +287,7 @@ public sealed partial class BuildingRegistry
         var list = new List<BuildingSnapshot>(sites.Count);
         foreach (var s in sites)
         {
+            if (s.LevelMachine) continue;
             var materials = new MaterialView[s.Materials.Length];
             for (int i = 0; i < materials.Length; i++) materials[i] = new MaterialView(s.Materials[i].Item, s.Materials[i].Required, s.Materials[i].Delivered);
             list.Add(new BuildingSnapshot(s.Id, s.Record, s.Position, s.Rotation, s.Floor, s.Parent, s.Owner, s.Progress, s.Target, materials, s.Complete, s.Paused) { SiteRevision = revision?.Invoke(s) ?? 0, RootRevision = revision is not null && ConstructionSystem.Root(this, s) is { } root ? revision(root) : 0, Dismantling = s.Dismantling, WallParent = s.WallParent, Public = s.Public, TownName = s.LevelTownName ?? FindTown(s.Town)?.Name, LevelPlacement = s.LevelPlacement, Destroyed = s.Destroyed, Name = s.Name });

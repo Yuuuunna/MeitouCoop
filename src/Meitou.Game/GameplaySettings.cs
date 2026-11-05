@@ -13,6 +13,13 @@ sealed record GameplaySettings(float SquadSize = 1, float Population = 1, float 
     public const float MinSquadSize = 0.5f, MaxSquadSize = 3, MinPopulation = 0.5f, MaxPopulation = 4,
         MinRaidSize = 0.25f, MaxRaidSize = 4, MinRaidFrequency = 0.25f, MaxRaidFrequency = 3, MinAutoSaveMinutes = 1, MaxAutoSaveMinutes = 30;
 
+    /// <summary>The original NPC rendering range; values below 1000 use its 3000-unit fallback.</summary>
+    public static float NpcRange(GameInstall install)
+    {
+        float range = Meitou.Audio.AudioSystem.Setting(install, "npc range", 3250);
+        return range < 1000 ? 3000 : range;
+    }
+
     /// <summary>The drop-downs' items, by the stored number.</summary>
     public static readonly string[] TownAttackLabels = ["Bombardment", "High", "Normal", "Fewer", "Rare", "Never"];
     public static readonly string[] DismembermentLabels = ["Never", "Rare", "Frequent"];

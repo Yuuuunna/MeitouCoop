@@ -1,3 +1,4 @@
+using Meitou.Rendering;
 using System.Numerics;
 using Meitou.Simulation;
 
@@ -33,8 +34,8 @@ sealed partial class PlayerInterface
             var p = Vector4.Transform(new Vector4(pixel.X / Width * 2 - 1, 1 - pixel.Y / Height * 2, z, 1), inverse);
             return new Vector3(p.X, p.Y, p.Z) / p.W;
         }
-        var near = At(0);
-        var far = At(1);
+        var near = At(DepthConvention.NearZ);
+        var far = At(DepthConvention.FarZ);
         return (near, Vector3.Normalize(far - near));
     }
 
@@ -172,9 +173,10 @@ sealed partial class PlayerInterface
 
     /// <summary>The host's test for where a ray enters a building seen from outside (its interior not shown), within a distance; null when none is in the way.</summary>
     public Func<Vector3, Vector3, float, float?>? ClosedBuildingHit { get; set; }
+    public Func<Vector3, Vector3, float, float?>? ShownInteriorHit { get; set; }
 
     /// <summary>Whether a building seen from outside stands on the ray before <paramref name="distance"/>: what lies inside or behind it is not pointed at.</summary>
-    bool Hidden((Vector3 Origin, Vector3 Direction) ray, float distance) => ClosedBuildingHit?.Invoke(ray.Origin, ray.Direction, distance) is not null;
+    bool Hidden((Vector3 Origin, Vector3 Direction) ray, float distance) => ClosedBuildingHit?.Invoke(ray.Origin, ray.Direction, distance) is not null || ShownInteriorHit?.Invoke(ray.Origin, ray.Direction, distance) is not null;
 
     IReadOnlyList<CharacterId> InBox(Vector2 a, Vector2 b)
     {

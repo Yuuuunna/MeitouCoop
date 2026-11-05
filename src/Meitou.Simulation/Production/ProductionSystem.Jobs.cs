@@ -387,9 +387,9 @@ public sealed partial class ProductionSystem
         m.Output is { } o && (!o.Full || Settings.AutoHaul && items.Create(o.Recipe.Item, 1) is { } one && NearestStorage(world, site, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null);
 
     /// <summary>A carried item a "Hauling to" job takes to its storage: a loose stack of something a player machine makes (not the character's own kit), that the storage takes and has room for.</summary>
-    static bool Takes(World world, Machine store, Items.ItemInstance item) =>
+    bool Takes(World world, Machine store, Items.ItemInstance item) =>
         item.Section is "main" or "backpack_content" && !item.LockedOn && item.Contents is null && store.Data.Accepts(item.Record, item.Type) && Fits(store.Storage!, item)
-        && world.Machines.All.Any(s => !s.Data.IsStorage && s.Output?.Recipe.Item == item.Record);
+        && world.Machines.All.Any(s => !s.Data.IsStorage && Site(world, s.Site) is not { LevelMachine: true } && s.Output?.Recipe.Item == item.Record);
 
     /// <summary>The player's complete machine (not a storage) nearest a storage within <see cref="ProductionSettings.HaulRange"/> whose output holds items the storage takes (ties: the lower site id).</summary>
     string? HaulSource(World world, BuildSite storage, Machine store)

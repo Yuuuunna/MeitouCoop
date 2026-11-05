@@ -39,7 +39,10 @@ public static class BackgroundWork
     sealed class UrgentMark;
     static readonly UrgentMark Urgent = new();
 
-    static readonly Scheduler scheduler = new(Math.Max(2, Environment.ProcessorCount - 3));
+    /// <summary>The streaming threads.</summary>
+    public static readonly int Threads = Math.Max(2, Environment.ProcessorCount - 3);
+
+    static readonly Scheduler scheduler = new(Threads);
 
     public static Task<T> Run<T>(Func<T> work) =>
         Task.Factory.StartNew(work, CancellationToken.None, TaskCreationOptions.None, scheduler);

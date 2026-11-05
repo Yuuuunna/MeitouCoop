@@ -41,7 +41,7 @@ public sealed unsafe class MarkerRenderer : IDisposable
         }
         """;
 
-    // The scene's near-slice depth decides which pass a fragment belongs to (the game's depth tests, against the scene only).
+    // The scene's depth decides which pass a fragment belongs to (the game's depth tests, against the scene only).
     const string Fragment = """
         #version 330 core
         in vec4 vColour;
@@ -49,10 +49,12 @@ public sealed unsafe class MarkerRenderer : IDisposable
         uniform sampler2D uSceneDepth;
         uniform vec2 uDepthScale;
         uniform int uHidden;
+        """ + DepthConvention.Glsl + """
         void main()
         {
             float scene = texelFetch(uSceneDepth, ivec2(gl_FragCoord.xy * uDepthScale), 0).r;
-            if ((gl_FragCoord.z > scene) != (uHidden != 0)) discard;
+            bool behind = depthNearerThan(scene, gl_FragCoord.z);
+            if (behind != (uHidden != 0)) discard;
             fragColour = vec4(vColour.rgb * vColour.a, vColour.a);   // premultiplied, over a clear target
         }
         """;
@@ -70,8 +72,8 @@ public sealed unsafe class MarkerRenderer : IDisposable
         void main() { fragColour = texelFetch(uMarker, ivec2(gl_FragCoord.xy), 0); }
         """;
 
-    /// <summary>Samples per pixel of the markers (anti-aliasing: the meshes have many triangles under a pixel; at most what the device allows).</summary>
-    const int WantedSamples = 8;
+    /// <summary>Samples per pixel of the markers (anti-aliasing: the meshes have many triangles under a pixel; at most what the device allows). 4, not 8: 8 took 127 MB at 1080p.</summary>
+    const int WantedSamples = 4;
 
     readonly IGpuContext gpu;
     readonly LegacyProgram program;
@@ -87,6 +89,9 @@ public sealed unsafe class MarkerRenderer : IDisposable
     // The markers drawn multisampled with a depth of their own, at the picture's size, and resolved.
     GpuTexture? msColour, msDepth, resolved;
     int samples;
+    /// <summary>Milliseconds without a marker before the targets are freed (about 70 MB multisampled at 1080p; markers show only for a while after an order).</summary>
+    const long IdleReleaseMs = 10_000;
+    long idleSince;
     // The vertex ranges of the two meshes in the buffer (count 0: the mesh is missing).
     readonly (int First, int Count) marker, arrow, ring;
 
@@ -186,16 +191,18 @@ public sealed unsafe class MarkerRenderer : IDisposable
 
     /// <summary>
     /// Draws over the finished <paramref name="picture"/> (after the tone map, so the colours come out as the material gives them, whatever the
-    /// exposure): the visible parts, then the parts behind the scene, each fragment sorted by the near slice's <paramref name="nearDepth"/>
+    /// exposure): the visible parts, then the parts behind the scene, each fragment sorted by the scene's <paramref name="sceneDepthTexture"/>
     /// (<paramref name="renderWidth"/> × <paramref name="renderHeight"/> of it used). The markers are drawn multisampled into targets of their own
-    /// (their own depth hides their far sides), resolved, and blended over the picture. Depth is clamped, so a marker beyond the near slice is drawn whole.
+    /// (their own depth hides their far sides), resolved, and blended over the picture. Depth is clamped, so a marker beyond the far plane is drawn whole.
     /// </summary>
-    public void Record(GpuTexture picture, int width, int height, GpuTexture nearDepth, int renderWidth, int renderHeight, Matrix4x4 nearViewProjection, Vector3 eye, Vector3 sunDirection)
+    public void Record(GpuTexture picture, int width, int height, GpuTexture sceneDepthTexture, int renderWidth, int renderHeight,
+        Matrix4x4 sceneViewProjection, Vector3 eye, Vector3 sunDirection)
     {
         if (!Active || width <= 0 || height <= 0) return;
+        idleSince = 0;
         if (msColour is null || msColour.Desc.Width != width || msColour.Desc.Height != height)
         {
-            msColour?.Dispose(); msDepth?.Dispose(); resolved?.Dispose();
+            ReleaseTargets();
             var sampled = samples > 1 ? TextureUse.TransferSrc : TextureUse.Sampled;
             msColour = gpu.CreateTexture(new TextureDesc(InternalFormat.Rgba8, width, height, Samples: samples, Use: TextureUse.ColourTarget | sampled, Name: "markers colour"));
             msDepth = gpu.CreateTexture(new TextureDesc(InternalFormat.DepthComponent24, width, height, Samples: samples, Use: TextureUse.DepthTarget, Name: "markers depth"));
@@ -208,20 +215,20 @@ public sealed unsafe class MarkerRenderer : IDisposable
         t = t with
         {
             Colour = t.Colour with { Load = LoadOp.Clear, Clear = new ClearColour(0f, 0f, 0f, 0f) },
-            Depth = t.Depth with { Load = LoadOp.Clear, DepthClear = 1 },
+            Depth = t.Depth with { Load = LoadOp.Clear, DepthClear = DepthConvention.Clear },
         };
         cmd.BeginRendering(t.Rendering);
-        var vp = Matrix4x4.CreateTranslation(eye) * nearViewProjection;
+        var vp = Matrix4x4.CreateTranslation(eye) * sceneViewProjection;
         program.Set(viewProjection, in vp);
         program.Set(sun, sunDirection);
         program.Set(depthScale, renderWidth / (float)width, renderHeight / (float)height);
-        program.Bind(sceneDepth, new SampledTexture(Nearest(), nearDepth.View()));
+        program.Bind(sceneDepth, new SampledTexture(Nearest(), sceneDepthTexture.View()));
         var premultiplied = new BlendState(true, BlendingFactor.One, BlendingFactor.OneMinusSrcAlpha);
         for (int pass = 0; pass < 2; pass++)
         {
             bool hidden = pass == 1;
             var state = DrawState.For(t.Formats, gpu.DepthClamp, cull: CullMode.Back, depthTest: true, depthWrite: !hidden,
-                compare: DepthFunction.Lequal, blend: premultiplied, depthClamp: gpu.DepthClamp, front: FrontFaceDirection.Ccw);
+                compare: DepthConvention.SceneCompare, blend: premultiplied, depthClamp: gpu.DepthClamp, front: FrontFaceDirection.Ccw);
             program.Set(hiddenPass, hidden ? 1 : 0);
             state.Record(cmd, t);
             cmd.BindPipeline(segment.Get(state, t.Formats, vertexSource));
@@ -238,7 +245,7 @@ public sealed unsafe class MarkerRenderer : IDisposable
                 Draw(cmd, ring, pivot - eye, Matrix4x4.CreateScale(RotationScale), Visible);
             if (arrow.Count > 0)
                 foreach (var a in arrows)
-                    Draw(cmd, arrow, a.At - eye, PointAlong(a.Direction), new Vector4(a.Colour, hidden ? ArrowHiddenAlpha : 1));
+                    Draw(cmd, arrow, a.At - eye, ArrowScale * PointAlong(a.Direction), new Vector4(a.Colour, hidden ? ArrowHiddenAlpha : 1));
         }
         cmd.EndRendering();
         cmd.Order();
@@ -268,6 +275,12 @@ public sealed unsafe class MarkerRenderer : IDisposable
         cmd.Draw((uint)mesh.Count, 1, (uint)mesh.First, 0);
     }
 
+    /// <summary>
+    /// The sneak arrow's node scale in its own frame, before the turn: half as long (its X) and 0.35 as thick, about 5 units long with a head of ±0.42
+    /// (<c>FUN_1405dc7d0</c> <c>setScale(0.5, 0.35, 0.35)</c>; docs/game/perception.md).
+    /// </summary>
+    static readonly Matrix4x4 ArrowScale = Matrix4x4.CreateScale(0.5f, 0.35f, 0.35f);
+
     /// <summary>The turn taking the arrow mesh's −X (its tip) onto <paramref name="direction"/> (Ogre's <c>getRotationTo</c>; opposite: half a turn about Y).</summary>
     static Matrix4x4 PointAlong(Vector3 direction)
     {
@@ -280,6 +293,24 @@ public sealed unsafe class MarkerRenderer : IDisposable
 
     GpuSampler Nearest() => gpu.Samplers.Get(SamplerDesc.FromGl(TextureMinFilter.Nearest, TextureMagFilter.Nearest, TextureWrapMode.ClampToEdge,
         TextureWrapMode.ClampToEdge, TextureWrapMode.ClampToEdge, false, DepthFunction.Lequal, false, 1, false, 0));
+
+    /// <summary>A frame that draws no marker: the targets are freed once none has been drawn for <see cref="IdleReleaseMs"/>.</summary>
+    public void Idle()
+    {
+        if (msColour is null) return;
+        long now = Environment.TickCount64;
+        if (idleSince == 0) idleSince = now;
+        else if (now - idleSince >= IdleReleaseMs) ReleaseTargets();
+    }
+
+    void ReleaseTargets()
+    {
+        if (resolved != msColour) resolved?.Dispose();
+        msColour?.Dispose();
+        msDepth?.Dispose();
+        msColour = msDepth = resolved = null;
+        idleSince = 0;
+    }
 
     public void Dispose()
     {

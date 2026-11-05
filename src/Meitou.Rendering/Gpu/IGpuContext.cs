@@ -14,6 +14,12 @@ public interface IGpuContext
     GpuTexture CreateTexture(TextureDesc desc);
 
     /// <summary>
+    /// A new texture made on any thread, with nothing recorded: it is not used before <see cref="IGpuCommandList.InitTexture"/> records its
+    /// layout on the render thread. Null where the backend has no such path (the caller makes it with <see cref="IGpuCommandList.CreateTexture"/>).
+    /// </summary>
+    GpuTexture? CreateTextureOffThread(TextureDesc desc) => null;
+
+    /// <summary>
     /// A view of a texture's level and layer range: the backend cuts it (or its own equivalent) and
     /// keeps it.
     /// </summary>
@@ -152,13 +158,6 @@ public interface IGpuContext
 
     /// <summary>The device clamps depth instead of clipping it (the shadow casters' state).</summary>
     bool DepthClamp { get; }
-
-    /// <summary>
-    /// Whether window depth equals clip depth (0..1, Metal) rather than the −1..1 clip-depth mapping the Vulkan path uses. A
-    /// shader that recovers a cascade matrix's depth from <c>gl_FragCoord.z</c> must undo the mapping: 2·z−1 on Vulkan (its
-    /// depth-clip-control path and the shader remap fallback both expose that window mapping), z itself on Metal.
-    /// </summary>
-    bool ClipDepthZeroToOne { get; }
 
     /// <summary>Hosts may open their rendering with secondaries (Vulkan's parallel recording; Metal records one encoder).</summary>
     bool RecordsSecondaries { get; }

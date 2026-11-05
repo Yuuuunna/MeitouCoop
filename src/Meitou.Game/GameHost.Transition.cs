@@ -117,6 +117,16 @@ sealed partial class GameHost
         loadingFrames++;
         if (seconds * 1000 > longestGap.Ms) longestGap = (seconds * 1000, currentStep);
         if (!warming) return;
+        if (session is Meitou.Engine.RemotePlayerSession remote && remote.Connection.State.Disconnection is { } disconnect)
+        {
+            warming = false;
+            skyArrival = null; presentationHour = null;
+            if (gpu.Characters is { } pendingCharacters) pendingCharacters.LoadingFocus = null;
+            loading?.Finish();
+            Console.Error.WriteLine($"network   loading aborted: {disconnect.GetType().Name}");
+            player.Notice("Connection lost while loading the world. Return to the main menu and reconnect.", true);
+            return;
+        }
         warmSeconds += seconds;
         // The Faithful title is the original's opaque picture: nothing of the world shows behind it, so its view is not warmed (the original loads the world only for
         // a game). The start's splash plays out first.

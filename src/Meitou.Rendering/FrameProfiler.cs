@@ -7,7 +7,7 @@ namespace Meitou.Rendering;
 
 /// <summary>
 /// Where the frame time goes, per <see cref="StageClock"/> stage: the render thread's time (stopwatch laps) and the GPU's (a
-/// timestamp at every lap; a stage's time is the gap since the stamp before, summed when a stage runs once per depth slice).
+/// timestamp at every lap; a stage's time is the gap since the stamp before, summed when a stage runs more than once).
 /// Keeps the last <see cref="History"/> frames and draws them with the <see cref="DebugOverlay"/> as one chart, a line per stage.
 /// GPU timings are read a few frames late, without waiting.
 /// </summary>
@@ -16,7 +16,7 @@ public sealed class FrameProfiler : IDisposable
     public enum Mode { Off, Gpu, Cpu }
 
     public const int History = 300;
-    const int Slots = 4, MaxStamps = 128, MaxPre = 96, Stages = 27;
+    const int Slots = 4, MaxStamps = 128, MaxPre = 96, Stages = 28;
     // Series: the stages by StageClock index, then the GPU time outside the stamped stages (uploads, overlay), then the total.
     const int Other = Stages, Total = Stages + 1, Series = Stages + 2;
     // The legend's top rows: a stage of its own, or a group of stages (shown as their sum) that a click on its row opens. The GPU's submit span
@@ -24,7 +24,7 @@ public sealed class FrameProfiler : IDisposable
     static readonly (string Name, int[] Stages)[] Groups =
     [
         ("sim", [StageClock.Sim]),
-        ("update", [StageClock.Host, StageClock.Blood, 0, 1, 2, StageClock.UpdChars, 3]),
+        ("update", [StageClock.Host, StageClock.Blood, StageClock.Birds, 0, 1, 2, StageClock.UpdChars, 3]),
         ("pre-frame", [StageClock.Uploads, StageClock.Cull, StageClock.Bake]),
         ("shadows", [12]), ("gi", [14]), ("reflection", [4]),
         ("scene", [5, 6, 7, 8, StageClock.Characters, 9, StageClock.Shafts, StageClock.Fog, 13]),
@@ -46,6 +46,7 @@ public sealed class FrameProfiler : IDisposable
         new(0.95f, 0.45f, 0.65f, 1), new(0.70f, 0.50f, 0.95f, 1),
         new(0.30f, 0.80f, 0.70f, 1), new(0.90f, 0.65f, 0.35f, 1),
         new(0.75f, 0.75f, 0.55f, 1), new(0.85f, 0.15f, 0.15f, 1), new(0.20f, 0.95f, 0.60f, 1),
+        new(0.95f, 0.90f, 0.55f, 1),
         new(0.50f, 0.50f, 0.50f, 1), new(1.00f, 1.00f, 1.00f, 1),
     ];
 
@@ -82,7 +83,7 @@ public sealed class FrameProfiler : IDisposable
     // --log-spikes (SpikeLog): per slot the frame number, its notes and its render-thread stages, kept until the GPU times arrive.
     readonly long[] slotFrame = new long[Slots];
     readonly string?[] slotNotes = new string?[Slots], slotCpu = new string?[Slots];
-    readonly double[] slotCpuTotal = new double[Slots];
+    readonly double[] slotCpuTotal = new double[Slots], slotCpuMedian = new double[Slots];
     readonly (QuerySlot Begin, QuerySlot PreEnd)[] slotStamps = new (QuerySlot, QuerySlot)[Slots];
     readonly (QuerySlot Begin, QuerySlot End)[] slotWhole = new (QuerySlot, QuerySlot)[Slots];   // each profiled frame's own first and last stamps (its GPU total)
     long frameCounter;
@@ -220,7 +221,8 @@ public sealed class FrameProfiler : IDisposable
             slotFrame[slot] = ++frameCounter;
             slotStamps[slot] = native.LastFrameStamps;
             slotCpuTotal[slot] = sum;
-            slotCpu[slot] = StageList(StageClock.Ms, 0.5);
+            slotCpuMedian[slot] = CpuMedian();
+            slotCpu[slot] = StageList(StageClock.Ms, 0.5) + PartList("ui", StageClock.UiPartNames, StageClock.UiPartMs) + PartList("upd-chars", StageClock.PartNames, StageClock.PartMs);
             long uploaded = native.Frame.Stats.UploadBytes;
             slotNotes[slot] = (uploaded > 0 ? $"uploads total {uploaded / 1048576.0:0.00} MB; " : "") + SpikeLog.TakeFrame();
         }
@@ -286,10 +288,41 @@ public sealed class FrameProfiler : IDisposable
         var slices = owners.Take(8).Select(o => (o.Name, o.DeviceLocal)).ToList();
         ulong ours = (ulong)owners.Sum(o => (double)o.DeviceLocal), shown = (ulong)slices.Sum(s => (double)s.DeviceLocal);
         if (ours > shown) slices.Add(("other of ours", ours - shown));
-        ulong blocks = alloc.TotalAllocatedBytes, used = alloc.TotalUsedBytes;
-        if (blocks > used) slices.Add(("free in our blocks", blocks - used));
+        // Device-local blocks only: the host-visible ones (staging, constants) are system memory, not in the driver's VRAM figure.
+        var (empty, spare, scattered, _) = alloc.Slack();
+        ulong free = empty + spare + scattered, blocks = ours + free;
+        if (free > 0) slices.Add(("free in our blocks", free));
         if (vram.Used > blocks) slices.Add(("driver and others", vram.Used - blocks));
         return slices;
+    }
+
+    /// <summary>
+    /// Writes what is in video memory now to <paramref name="path"/> (Ctrl+Shift+F12 in the game): the driver's usage and budget, the room in our
+    /// blocks, the owners, then every resource and block (<see cref="GpuAllocator.WriteReport"/>). What the driver counts beyond our blocks
+    /// (swapchain, DLSS, its own) is only a total here: a RenderDoc or Nsight capture lists it.
+    /// </summary>
+    public void DumpVram(string path, Action<TextWriter>? more = null)
+    {
+        var alloc = native.Device.Allocator;
+        var (used, budget) = native.Device.VideoMemory();
+        var (empty, spare, scattered, partBlocks) = alloc.Slack();
+        ulong blocks = alloc.TotalAllocatedBytes;
+        using var w = new StreamWriter(path);
+        w.WriteLine($"VRAM dump {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        w.WriteLine($"driver: used {used / 1048576.0:0.0} MB of budget {budget / 1048576.0:0.0} MB (memory budget extension: {native.Device.HasMemoryBudget})");
+        var heaps = native.Device.Heaps();
+        for (int i = 0; i < heaps.Count; i++)
+            w.WriteLine($"  heap {i}: {heaps[i].Size / 1048576.0:0} MB, ours {heaps[i].Usage / 1048576.0:0.0} MB of budget {heaps[i].Budget / 1048576.0:0.0} MB ({heaps[i].Flags})");
+        ulong local = (ulong)alloc.Breakdown().Sum(o => (double)o.DeviceLocal) + empty + spare + scattered;
+        w.WriteLine($"ours: {blocks / 1048576.0:0.0} MB in {alloc.BlockCount} blocks ({local / 1048576.0:0.0} MB device-local), {alloc.TotalUsedBytes / 1048576.0:0.0} MB used by {alloc.AllocationCount} allocations; "
+            + $"driver and others {(used > local ? used - local : 0) / 1048576.0:0.0} MB");
+        w.WriteLine($"room in device-local blocks: empty {empty / 1048576.0:0.0} MB, spare {spare / 1048576.0:0.0} MB, scattered {scattered / 1048576.0:0.0} MB in {partBlocks} blocks");
+        w.WriteLine();
+        w.WriteLine("owners (MB, device-local MB, count):");
+        foreach (var o in alloc.Breakdown()) w.WriteLine($"{o.Bytes / 1048576.0,10:0.0}  {o.DeviceLocal / 1048576.0,10:0.0}  {o.Count,6}  {o.Name}");
+        w.WriteLine();
+        more?.Invoke(w);
+        alloc.WriteReport(w);
     }
 
     /// <summary>The VRAM pie at the top right is shown (Shift+F12 in the game), with the profiler chart or without it.</summary>
@@ -422,12 +455,23 @@ public sealed class FrameProfiler : IDisposable
             medianScratch.Sort();
             double median = have >= 30 ? medianScratch[have / 2] : 0;
             double pre = native.Frame.Timestamps.TryRead(slotStamps[s].Begin, out ulong pb) && native.Frame.Timestamps.TryRead(slotStamps[s].PreEnd, out ulong pe) && pe >= pb ? (pe - pb) / 1e6 : -1;
-            SpikeLog.Report(slotFrame[s], total, median, (pre >= 0 ? $"pre-frame {pre:0.0}, " : "") + StageList(gpuFrame, 0.3) + (total - sum >= 0.3 ? $", other {total - sum:0.0}" : ""), slotCpu[s] ?? "", notes, slotCpuTotal[s]);
+            SpikeLog.Report(slotFrame[s], total, median, (pre >= 0 ? $"pre-frame {pre:0.0}, " : "") + StageList(gpuFrame, 0.3) + (total - sum >= 0.3 ? $", other {total - sum:0.0}" : ""), slotCpu[s] ?? "", notes, slotCpuTotal[s], slotCpuMedian[s]);
             slotNotes[s] = null;
         }
         gpuHead = (gpuHead + 1) % History;
         gpuCount = Math.Min(gpuCount + 1, History);
         pending[s] = false;
+    }
+
+    /// <summary>The render thread's median frame total over the history (0 before 30 frames), the frame just kept included.</summary>
+    double CpuMedian()
+    {
+        int have = Math.Min(cpuCount + 1, History);
+        if (have < 30) return 0;
+        medianScratch.Clear();
+        for (int i = 0; i < have; i++) medianScratch.Add(cpu[Total][i]);
+        medianScratch.Sort();
+        return medianScratch[have / 2];
     }
 
     readonly List<float>[] runGpu = Enumerable.Range(0, Series).Select(_ => new List<float>()).ToArray();
@@ -449,6 +493,14 @@ public sealed class FrameProfiler : IDisposable
             double mean = keep.Length == 0 ? 0 : keep.Average(i => v[i]);
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"gpu-run     {Label(s),-12} {mean,6:0.00} {sorted[sorted.Length / 2],6:0.00} {sorted[(int)(sorted.Length * 0.95)],6:0.00} {sorted[^1],7:0.00}"));
         }
+    }
+
+    // A stage's parts of 1 ms or more, for the spike log: "; ui: hud 25.0, composite 3.1".
+    static string PartList(string stage, string[] names, double[] ms)
+    {
+        var parts = new List<string>();
+        for (int k = 0; k < names.Length; k++) if (ms[k] >= 1) parts.Add(string.Create(CultureInfo.InvariantCulture, $"{names[k]} {ms[k]:0.0}"));
+        return parts.Count == 0 ? "" : $"; {stage}: {string.Join(", ", parts)}";
     }
 
     static string StageList(double[] ms, double least)

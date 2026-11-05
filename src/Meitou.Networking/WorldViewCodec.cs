@@ -17,15 +17,30 @@ public sealed partial class WorldViewCodec
 {
     public const int MaximumBytes = 32 * 1024 * 1024;
     readonly JsonSerializerOptions json;
+    readonly GameDatabase database;
     public WorldViewCodec(GameDatabase database)
     {
+        this.database = database;
         var resolver = new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(info =>
         {
             for (int i = info.Properties.Count - 1; i >= 0; i--)
                 if (info.Properties[i].Set is null) info.Properties.RemoveAt(i);
             if (info.Type == typeof(CharacterSnapshot))
+            {
                 info.Properties.Single(p => p.Name == nameof(CharacterSnapshot.DrawYaw)).CustomConverter = new SingleNumber(allowNaN: true);
+                // Entries replace whole characters, so omitted optional fields reset to their
+                // declared defaults. Do not serialize dozens of absent HUD fields for every NPC.
+                var defaults = new CharacterSnapshot(default, null, default, 0, []);
+                foreach (var property in info.Properties)
+                {
+                    if (property.Name is nameof(CharacterSnapshot.Id) or nameof(CharacterSnapshot.Appearance) or
+                        nameof(CharacterSnapshot.Position) or nameof(CharacterSnapshot.Yaw) or nameof(CharacterSnapshot.Animations)) continue;
+                    var defaultValue = property.Get!(defaults);
+                    property.ShouldSerialize = (_, value) => !Equals(value, defaultValue) &&
+                        !(value is System.Collections.ICollection { Count: 0 } && defaultValue is System.Collections.ICollection { Count: 0 });
+                }
+            }
         });
         json = new()
         {
@@ -40,12 +55,52 @@ public sealed partial class WorldViewCodec
         json.Converters.Add(new SurveyMap());
     }
 
+    // Views contain value projections; appearances and turret angle arrays are the remaining
+    // mutable presentation objects. Detach them on the owner before a worker serializes the view.
+    internal PlayerWorldView Detach(PlayerWorldView view) => view with
+    {
+        Snapshot = view.Snapshot with { Characters = view.Snapshot.Characters.Select(c => c with
+        {
+            Appearance = c.Appearance is { } look ? CharacterAppearance.FromDisplay(CaptureAppearance(look)) : null,
+            Turret = c.Turret is { } turret ? turret with { Angles = turret.Angles?.ToArray() } : null,
+        }).ToArray() },
+    };
+
+    internal CharacterDisplay CaptureAppearance(CharacterAppearance look)
+    {
+        var display = look.CaptureDisplay(database);
+        return display with { Shape = display.Shape with { Sliders = new Dictionary<string, float>(display.Shape.Sliders), Missing = display.Shape.Missing.ToHashSet() } };
+    }
+
     public byte[] Encode(PlayerWorldView view)
+    {
+        var bytes = EncodeReplicationView(view);
+        ValidateJson(bytes); return bytes;
+    }
+
+    internal byte[] EncodeComponent<T>(T value)
+    {
+        using var buffer = new BoundedBuffer(MaximumBytes);
+        JsonSerializer.Serialize(buffer, value, json);
+        return buffer.ToArray();
+    }
+    internal T DecodeComponent<T>(ReadOnlySpan<byte> bytes)
+    {
+        // Replication components came from a structurally validated patch (or our own writer).
+        // Rewalking every component repeats the patch's duplicate/token/depth checks and allocates
+        // a field-name cache for each actor. Typed deserialization and final view checks still run.
+        return JsonSerializer.Deserialize<T>(bytes, json) ?? throw new InvalidDataException("Missing state component.");
+    }
+
+    // Trusted typed snapshots are already domain-checked and the serializer writes valid JSON with
+    // a depth/byte bound. Do not parse our own output again before splitting it into state entries.
+    // Incoming packets and reconstructed views still receive the full structural validation.
+    internal byte[] EncodeReplicationView(PlayerWorldView view)
     {
         Validate(view);
         using var stream = new BoundedBuffer(MaximumBytes);
         JsonSerializer.Serialize(stream, view, json);
-        var bytes = stream.ToArray(); ValidateJson(bytes); return bytes;
+        return stream.ToArray();
     }
 
     internal byte[] EncodePresentation<T>(T value)
@@ -77,7 +132,14 @@ public sealed partial class WorldViewCodec
     internal static void ValidateJson(ReadOnlySpan<byte> bytes)
     {
         var reader = new Utf8JsonReader(bytes, new JsonReaderOptions { MaxDepth = 48 });
-        var objects = new Stack<HashSet<string>>();
+        // Reuse sets by nesting depth and canonicalize repeated field names within this document.
+        // A snapshot repeats the same schema for every character; allocating every field string
+        // and every object's set used to dominate both encoding checks and incoming validation.
+        var objects = new HashSet<string>?[48];
+        int objectDepth = -1;
+        var fields = new Dictionary<string, string>(StringComparer.Ordinal);
+        var fieldLookup = fields.GetAlternateLookup<ReadOnlySpan<char>>();
+        Span<char> fieldBuffer = stackalloc char[4096];
         var arrays = new Stack<bool>();
         int tokens = 0;
         while (reader.Read())
@@ -87,12 +149,19 @@ public sealed partial class WorldViewCodec
                 throw new InvalidDataException("Null state array element.");
             switch (reader.TokenType)
             {
-                case JsonTokenType.StartObject: objects.Push(new(StringComparer.Ordinal)); arrays.Push(false); break;
-                case JsonTokenType.EndObject: objects.Pop(); arrays.Pop(); break;
+                case JsonTokenType.StartObject: objects[++objectDepth] ??= new(StringComparer.Ordinal); arrays.Push(false); break;
+                case JsonTokenType.EndObject: objects[objectDepth--]!.Clear(); arrays.Pop(); break;
                 case JsonTokenType.StartArray: arrays.Push(true); break;
                 case JsonTokenType.EndArray: arrays.Pop(); break;
                 case JsonTokenType.PropertyName:
-                    if (reader.ValueSpan.Length > 4096 || !objects.Peek().Add(reader.GetString()!)) throw new InvalidDataException("Duplicate or oversized state field.");
+                    if (reader.ValueSpan.Length > 4096) throw new InvalidDataException("Duplicate or oversized state field.");
+                    var field = fieldBuffer[..reader.CopyString(fieldBuffer)];
+                    if (!fieldLookup.TryGetValue(field, out string? name))
+                    {
+                        name = new string(field);
+                        if (fields.Count < 8192) fieldLookup.TryAdd(field, name);
+                    }
+                    if (!objects[objectDepth]!.Add(name)) throw new InvalidDataException("Duplicate or oversized state field.");
                     break;
                 case JsonTokenType.String:
                     if (reader.ValueSpan.Length > 65536) throw new InvalidDataException("State text is too long.");
@@ -101,7 +170,7 @@ public sealed partial class WorldViewCodec
         }
     }
 
-    static void Validate(PlayerWorldView view)
+    internal static void Validate(PlayerWorldView view)
     {
         if (view.World == Guid.Empty || view.Player.IsNone || view.ConnectionGeneration == 0 || view.Publication == 0 ||
             !double.IsFinite(view.GameHours) || view.TimeScale is not (0 or 1 or 2 or 5) || view.ActiveFaction < -1 ||
@@ -113,12 +182,15 @@ public sealed partial class WorldViewCodec
         if (!float.IsFinite(view.SimulationStepSeconds) || view.SimulationStepSeconds is <= 0 or > 1 || view.Events.Blood is null || view.Events.Sparks is null)
             throw new InvalidDataException("Invalid simulation presentation timing.");
         if (view.Snapshot.Characters is null || view.Snapshot.Characters.Count > 65536 ||
-            view.Snapshot.Characters.Any(c => c is null || c.Id.IsNone || !Finite(c.Position) || !float.IsFinite(c.Yaw) || float.IsInfinity(c.DrawYaw)) ||
+            view.Snapshot.Characters.Any(c => c is null || c.Id.IsNone || !Finite(c.Position) || !float.IsFinite(c.Yaw) || float.IsInfinity(c.DrawYaw) ||
+                c.Path is null || c.PathExact < 0 || c.PathExact > c.Path.Count) ||
             view.Snapshot.Characters.Select(c => c.Id).Distinct().Count() != view.Snapshot.Characters.Count ||
             view.Roles.Any(r => r is null || r.Entity.IsNone) || view.Roles.Select(r => r.Entity).Distinct().Count() != view.Roles.Count ||
             view.Factions.Any(f => f is null || f.Faction < 0 || f.UnlockedBuildings is null || !Enum.IsDefined((SquadFormation)f.Formation)) || view.Factions.Select(f => f.Faction).Distinct().Count() != view.Factions.Count ||
             view.ActiveFaction >= 0 && !view.Factions.Any(f => f.Faction == view.ActiveFaction))
             throw new InvalidDataException("Invalid view records.");
+        if (view.Snapshot.Projectiles is null || view.Snapshot.Projectiles.Any(p => !float.IsFinite(p.Speed) || p.Speed < 0))
+            throw new InvalidDataException("Invalid projectile presentation speed.");
         if (view.FactionCatalogue.Count > 65536 || view.FactionCatalogue.Any(f => f is null || f.Faction < 0 || f.Name is null ||
             f.Name.Length > 4096 || f.RecordId is { Length: > 4096 }) ||
             view.FactionCatalogue.Select(f => f.Faction).Distinct().Count() != view.FactionCatalogue.Count ||

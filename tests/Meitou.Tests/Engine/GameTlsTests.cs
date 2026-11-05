@@ -36,14 +36,15 @@ public class GameTlsTests
         Assert.Equal(request, AuthenticationProtocol.Decode((await WireFrame.ReadAsync(serverTls, timeout.Token))!));
     }
     [Fact]
-    public async Task WrongCertificatePinFailsInsteadOfFallingBackToUnverifiedTransport()
+    public async Task PreReleaseAcceptsChangedCertificateButKeepsTlsEncryption()
     {
         using var certificate = Certificate(); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); using var client = new TcpClient();
         await client.ConnectAsync((IPEndPoint)listener.LocalEndpoint, timeout.Token); using var server = await listener.AcceptTcpClientAsync(timeout.Token);
         var accepting = GameTls.AcceptAsync(server.GetStream(), certificate, timeout.Token);
-        await Assert.ThrowsAsync<AuthenticationException>(() => GameTls.ConnectAsync(client.GetStream(), "localhost", new string('0', 64), timeout.Token));
-        try { await using var accepted = await accepting; }
-        catch (Exception e) when (e is AuthenticationException or IOException) { }
+        Assert.False(GameTls.VerifyServerCertificates); // Restore the strict-pin assertion before the official release.
+        await using var connected = await GameTls.ConnectAsync(client.GetStream(), "localhost", new string('0', 64), timeout.Token);
+        await using var accepted = await accepting;
+        Assert.True(connected.IsEncrypted); Assert.True(accepted.IsEncrypted);
     }
 }

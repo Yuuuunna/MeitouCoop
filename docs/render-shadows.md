@@ -10,6 +10,8 @@ ranges, stable grids and soft filtering, plus terrain-horizon shadow beyond loca
 Shadow-quality default2 uses4096²; Tab supports1024/2048/4096. Cascade arrays include a fifth
 Meitou cascade; consumers must use current layer count/splits, not assume four tiles everywhere.
 Depth-array views, samplers, receiver blocks and frame-global publication must agree.
+Shadow maps keep conventional depth (cleared to 1, compared Less), unlike the scene's reversed one; casters write the
+cascade matrix's 0..1 depth as `gl_FragCoord.z` on both backends (no depth scale; `uShadowBias.w` is written 1, unused).
 
 Meitou bias and stability (`MeitouShadowFit`, `ShadowPass.Meitou`): caster bias in the cascade's
 texels, 1 fixed plus 2 x the slope capped at 4 (the game's 0.75 world units and up to 2 % of the
@@ -29,6 +31,8 @@ Object casters keep only what the colour pass draws: the dither range at its mid
 blending levels; a distant town only beyond the camera's fade). Ignoring it, the Hub's baked distant
 mesh (the intact town) cast roof shadows into its ruins and platforms at every distance (**Observed**,
 Hub 14:00: matches `--distant-range 0` after the fix, not before).
+
+**Flights** (Meitou, engine choice): while the host flies the camera (a character flight or a squad tour hop under way, `WorldFrame.CameraFlying`, not the hold between hops, nor a cut or a pan) the far cascades are not drawn, a map drawn now covering the wrong ground the next frame; the near cascade (and cascade 1 of five) is. A far cascade drawn before the flight is stale: the published cascades stop before the first stale one, so the receivers shadow only within the near cascade's depth (plus the terrain and landmark maps) until the camera lands and the far cascades are drawn again as uncovered, over the budget's frames (one a frame, forced after three). The log's shadow line and the play bench's summary count the frames skipped (**Observed**: the flight phases of the flights segment, 0 on the settle, idle, orbit, zoom, pan, travel and overview segments). An eye-speed rule was tried first (15,000 units a second on two frames running) and fired on eased camera cuts.
 
 `shadow-coarse` / generated object levels select geometry against cascade texel size, not colour
 pixel size. Preserve silhouette and alpha coverage; impostor casters have their own fade/plane.

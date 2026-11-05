@@ -42,13 +42,36 @@ public sealed class ServerWorldLoop : IAsyncDisposable
         try
         {
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(10));
+            Task<bool> timerReady = timer.WaitForNextTickAsync(stop.Token).AsTask();
+            Task<bool> workReady = work.Reader.WaitToReadAsync(stop.Token).AsTask();
             long previous = Stopwatch.GetTimestamp();
-            while (await timer.WaitForNextTickAsync(stop.Token).ConfigureAwait(false))
+            while (!stop.IsCancellationRequested)
             {
+                // Queued owner work wakes immediately; it need not wait another scheduler interval
+                // for each phase of capture/encode/commit or command/ACK dispatch.
+                await Task.WhenAny(timerReady, workReady).ConfigureAwait(false);
+                if (timerReady.IsCompleted)
+                {
+                    if (!await timerReady.ConfigureAwait(false)) break;
+                    timerReady = timer.WaitForNextTickAsync(stop.Token).AsTask();
+                }
+                if (workReady.IsCompleted && !await workReady.ConfigureAwait(false)) break;
                 long now = Stopwatch.GetTimestamp(); double seconds = Stopwatch.GetElapsedTime(previous, now).TotalSeconds; previous = now;
                 for (int i = 0; i < 64 && !stop.IsCancellationRequested && work.Reader.TryRead(out var item); i++) item.Execute();
+                if (workReady.IsCompleted) workReady = work.Reader.WaitToReadAsync(stop.Token).AsTask();
+                long tickStarted = Stopwatch.GetTimestamp();
                 if (runtime.Faulted) throw new InvalidOperationException("The authoritative runtime has faulted.");
-                if (!stop.IsCancellationRequested && !runtime.World.HasPendingDurableMutation) { runtime.Advance(seconds); runtime.Synchronize(); }
+                // Service commands and ACKs between owed ticks instead of monopolizing the owner
+                // for eight expensive simulation steps. Advance retains all remaining time debt.
+                if (!stop.IsCancellationRequested && !runtime.World.HasPendingDurableMutation)
+                {
+                    // RunTick already synchronizes runtime services at its boundary.
+                    if (runtime.Advance(seconds, maxTicks: 1) == 0) runtime.Synchronize();
+                }
+                double workMs = Stopwatch.GetElapsedTime(now, tickStarted).TotalMilliseconds;
+                double tickMs = Stopwatch.GetElapsedTime(tickStarted).TotalMilliseconds;
+                if (workMs >= 500 || tickMs >= 500)
+                    Console.WriteLine($"server    {DateTime.UtcNow:O} slow owner pass: workMs={workMs:F0} tickMs={tickMs:F0} tick={runtime.World.Tick} debtSeconds={runtime.PendingGameSeconds:F2}");
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
