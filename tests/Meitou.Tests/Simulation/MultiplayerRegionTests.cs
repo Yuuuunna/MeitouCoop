@@ -45,7 +45,7 @@ public class MultiplayerRegionTests
     {
         using var s = new Scene();
         Assert.False(s.World.Player.Exists);
-        s.World.RunTicks(3); Assert.Equal(SiteStatus.Loaded, s.Population.StatusOf(0));
+        s.World.RunTicks((int)Math.Ceiling(1 / s.World.TickSeconds) + 1); Assert.Equal(SiteStatus.Loaded, s.Population.StatusOf(0));
         var before = s.Residents(); Assert.NotEmpty(before);
         s.World.Characters.Place(s.First.Slot, Away, 0); s.World.RunTicks(220);
         Assert.Equal(SiteStatus.Loaded, s.Population.StatusOf(0)); Assert.Equal(before, s.Residents());
@@ -61,7 +61,7 @@ public class MultiplayerRegionTests
         using var s = new Scene(sameFaction, apart: true);
         var spectator = s.World.Players.Register(new PlayerId(4));
         s.World.Players.SetMembership(spectator.Id, s.A.State.Faction, FactionPermission.None);
-        s.World.RunTicks(3);
+        s.World.RunTicks((int)Math.Ceiling(1 / s.World.TickSeconds) + 1);
         Assert.True(Knows(s.A.State, 0)); Assert.False(Knows(s.A.State, 1));
         Assert.True(Knows(s.B.State, 1)); Assert.False(Knows(s.B.State, 0));
         Assert.Empty(s.World.Player.Towns); Assert.Empty(spectator.State.Towns);
@@ -77,7 +77,7 @@ public class MultiplayerRegionTests
         using var s = new Scene();
         s.B.State.InCreation = true;
         s.World.Commands.Enqueue(new FocusCommand(Far) { Tick = 0 });
-        s.World.RunTicks(3);
+        s.World.RunTicks((int)Math.Ceiling(1 / s.World.TickSeconds) + 1);
         Assert.Equal(SiteStatus.Unloaded, s.Population.StatusOf(1));
         Assert.DoesNotContain(WorldLayout.ZoneOf(Far.X, Far.Z), s.World.ActiveZones!);
         Assert.True(Knows(s.A.State, 0)); Assert.False(Knows(s.B.State, 0));
@@ -88,7 +88,7 @@ public class MultiplayerRegionTests
     {
         using var s = new Scene();
         using var preparing = s.World.Regions.Retain(ZoneActivation.ZonesAround(Far, 0));
-        s.World.RunTicks(3);
+        s.World.RunTicks((int)Math.Ceiling(1 / s.World.TickSeconds) + 1);
         Assert.Equal(SiteStatus.Loaded, s.Population.StatusOf(1)); Assert.False(Knows(s.A.State, 1)); Assert.False(Knows(s.B.State, 1));
         preparing.Dispose(); s.World.RunTicks(220); Assert.Equal(SiteStatus.Unloaded, s.Population.StatusOf(1));
     }
@@ -96,7 +96,7 @@ public class MultiplayerRegionTests
     [Fact]
     public void LosingAllLivingRolesExpiresRegionsWithoutErasingDeadRoleOwnership()
     {
-        using var s = new Scene(); s.World.RunTicks(3);
+        using var s = new Scene(); s.World.RunTicks((int)Math.Ceiling(1 / s.World.TickSeconds) + 1);
         s.World.Characters.Cold(s.First.Slot)!.DiedTick = s.World.Tick;
         s.World.Characters.Cold(s.Second.Slot)!.DiedTick = s.World.Tick;
         s.World.RunTicks(220);

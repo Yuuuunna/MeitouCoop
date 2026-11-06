@@ -60,6 +60,7 @@ public sealed class AuthorityGateway : IDisposable
     {
         public ulong Generation, HighWater;
         public AuthorityConnection? Connection;
+        public bool NeedsCleanup;
         public readonly Dictionary<ulong, Entry> Receipts = [];
         public readonly Queue<ulong> Completed = [];
     }
@@ -85,10 +86,17 @@ public sealed class AuthorityGateway : IDisposable
             if (world.Players.Find(player) is null) throw new ArgumentException("Unknown player.", nameof(player));
             if (!players.TryGetValue(player, out var ledger)) players.Add(player, ledger = new Ledger());
             var connection = new AuthorityConnection(incarnation, player, checked(++ledger.Generation));
-            if (ledger.Generation > 1) world.ResetPlayerInteractions(player);
+            if (ledger.Generation > 1) ledger.NeedsCleanup = true;
             ledger.Connection = connection;
             return connection;
         }
+    }
+
+    void Cleanup(PlayerId player, Ledger ledger)
+    {
+        if (!ledger.NeedsCleanup || world.HasPendingDurableMutation) return;
+        world.ResetPlayerInteractions(player);
+        ledger.NeedsCleanup = false;
     }
 
     public AdmissionPhase? GetPhase(AuthorityConnection connection)
@@ -133,6 +141,7 @@ public sealed class AuthorityGateway : IDisposable
             if (!Current(connection)) return null;
             ulong sequence = connection.AdmissionSequence = checked(connection.AdmissionSequence + 1);
             if (world.HasPendingDurableMutation) return new(sequence, connection.Phase, true, null, [], [], players[connection.Player].HighWater);
+            Cleanup(connection.Player, players[connection.Player]);
             if (connection.Phase != AdmissionPhase.Preparing && !HasRole(connection.Player)) connection.Phase = AdmissionPhase.Preparing;
             return new(sequence, connection.Phase, false, world.Players.AssessEntry(connection.Player), DescribeRoles(connection.Player),
                 world.CreationQualifications.For(connection.Player).ToArray(), players[connection.Player].HighWater);
@@ -265,6 +274,7 @@ public sealed class AuthorityGateway : IDisposable
             EnsureOwnerBoundary();
             if (world.HasPendingDurableMutation) return false;
             if (!Current(connection) || connection.Phase != AdmissionPhase.Preparing || !HasRole(connection.Player)) return false;
+            Cleanup(connection.Player, players[connection.Player]);
             connection.Phase = AdmissionPhase.Synchronizing;
             return true;
         }
@@ -279,6 +289,7 @@ public sealed class AuthorityGateway : IDisposable
             if (world.HasPendingDurableMutation) return false;
             if (!Current(connection) || connection.Phase != AdmissionPhase.Synchronizing) return false;
             if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return false; }
+            Cleanup(connection.Player, players[connection.Player]);
             connection.Phase = AdmissionPhase.Active;
             return true;
         }
@@ -351,6 +362,7 @@ public sealed class AuthorityGateway : IDisposable
                 if (players.TryGetValue(player, out var ledger) && ledger.Generation == generation && ledger.Connection is null)
                     world.ResetPlayerInteractions(player);
             closed.Clear();
+            foreach (var (player, ledger) in players) Cleanup(player, ledger);
             processing = true;
             int count = pending.Count;
             try

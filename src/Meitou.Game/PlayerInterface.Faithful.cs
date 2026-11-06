@@ -22,13 +22,23 @@ sealed partial class PlayerInterface
     public bool UiKey(Key key, bool ctrl = false, bool shift = false)
     {
         if (key == Meitou.Engine.Input.Key.Escape) pendingTalk = null;
+        uiInput++;
         if (!UiVisible) return false;
         if (key == Meitou.Engine.Input.Key.Escape && CancelInventoryDrag()) return true;
+        // toggle_camera_grid (Shift+; fixed: a binding carries no modifier, and ; alone is the free camera's).
+        if (shift && key == Meitou.Engine.Input.Key.Semicolon && !faithfulScreens.HasKeyboardFocus) { cameraGrid = !cameraGrid; return true; }
         if (key == Meitou.Engine.Input.Key.Escape)
         {
             if (lobby is not null && !faithfulScreens.IsOpen("message")) { CancelOnline(); return true; }
             if (advancedOpen && faithfulScreens.OpenScreens.LastOrDefault() == "new-game") { advancedOpen = false; return true; }
-            if (faithfulScreens.IsOpen("title") && faithfulScreens.OpenScreens.Count == 1) { showCredits = false; return true; }
+            // The bare title: Esc hides the credits and quits at once, no confirmation (FUN_14082b010 sets the quit flag unless FUN_140914a90 closed a title
+            // window; hiding the credits does not count as closing one). With a title window open the generic Esc below closes it.
+            if (faithfulScreens.IsOpen("title") && faithfulScreens.OpenScreens.Count == 1)
+            {
+                showCredits = false;
+                ScreenAction?.Invoke(new("menu", "ExitGameButton", "exit"));
+                return true;
+            }
             // The editor stays under the game menu (the original's Esc in the editor; it has no cancel: CONFIRM closes it).
             if (EditorOpen && faithfulScreens.OpenScreens[^1] == "editor") { faithfulScreens.Open("menu"); UpdateMenuPause(); return true; }
             // Esc presses the last button of the top message box (Return the first, docs/game/ui-input.md section 5).
@@ -42,8 +52,8 @@ sealed partial class PlayerInterface
             return true;
         }
         if (faithfulScreens.HasKeyboardFocus && EditFocusKey(key, ctrl, shift)) return true;
-        // Delete or Backspace deletes the save selected in the load window (LoadSaveWindow::keyPressed, docs/game/ui-screens.md "Deleting a save").
-        if (key is Meitou.Engine.Input.Key.Delete or Meitou.Engine.Input.Key.Backspace && faithfulScreens.OpenScreens is [.., "load"] && selectedSlot is { } doomed) { AskDeleteSave(doomed); return true; }
+        // Delete or Backspace deletes the save selected in the load, save or import window (LoadSaveWindow::keyPressed, docs/game/ui-screens.md "Deleting a save").
+        if (key is Meitou.Engine.Input.Key.Delete or Meitou.Engine.Input.Key.Backspace && faithfulScreens.OpenScreens is [.., "load" or "save" or "import"] && selectedSlot is { } doomed) { AskDeleteSave(doomed); return true; }
         if (key == Meitou.Engine.Input.Key.Tab && faithfulScreens.FocusNext(shift)) return true;
         if (key == Meitou.Engine.Input.Key.Enter && faithfulScreens.Submit()) return true;
         if (key == Meitou.Engine.Input.Key.Space && faithfulScreens.ActivateFocused()) return true;
@@ -55,7 +65,10 @@ sealed partial class PlayerInterface
                 Meitou.Engine.Input.Key.Enter => UiListKey.Accept, _ => (UiListKey?)null,
             } is { } listKey && faithfulScreens.ListKey(listKey)) return true;
         if (DialogueKey(key)) return true;
-        if (faithfulScreens.HasModal) return true;
+        // A modal screen (the menu, a message box, the character editor) takes the keys, except the host's own: quicksave / quickload, the screenshot and the debug overlays.
+        if (faithfulScreens.HasModal)
+            return !(Bound(InputAction.QuickSave, key) || Bound(InputAction.QuickLoad, key) || Bound(InputAction.Screenshot, key) ||
+                Bound(InputAction.ToggleStats, key) || Bound(InputAction.ToggleFps, key) || Bound(InputAction.CycleProfiler, key));
         // change_squad (Tab by default): the squad bar shows the next squad with members (docs/game/ui-input.md section 6).
         if (Bound(InputAction.ChangeSquad, key) && !TitleOpen && !EditorOpen) { Say(new ActiveSquadCommand(-1) { Faction = session.ActiveFaction, Tick = session.CommandTick }); return true; }
         if (ReservedKeys.Contains(key)) return false;
@@ -64,7 +77,7 @@ sealed partial class PlayerInterface
         // toggle_help (F1, event 7): the Tutorials window (docs/game/ui-input.md section 6).
         if (Bound(InputAction.ToggleHelp, key) && !TitleOpen && !EditorOpen)
         {
-            if (faithfulScreens.IsOpen("tutorials")) faithfulScreens.Close("tutorials"); else faithfulScreens.Open("tutorials");
+            ToggleHelpWindow();
             return true;
         }
         // toggle_map / toggle_faction / toggle_research / toggle_crafting (M / unbound / T / Y) ask for overview tabs 0 / 1 / 2 / 3 (docs/game/ui-input.md section 6).
@@ -78,9 +91,15 @@ sealed partial class PlayerInterface
         }
         return false;
     }
-    public void UiText(char value) { if (UiVisible) faithfulScreens.TextInput(value); }
+    public void UiText(char value)
+    {
+        uiInput++;
+        if (UiVisible) faithfulScreens.TextInput(value);
+    }
+
     public bool UiScroll(Vector2 p, float steps)
     {
+        uiInput++;
         if (!UiVisible) return false;
         ArrangeUi();
         if (InventoryWheel(p, steps)) return true;
@@ -100,6 +119,7 @@ sealed partial class PlayerInterface
         { ScrollInventoryPage(e.Screen, float.Parse(e.Action[22..], CultureInfo.InvariantCulture)); return; }
         if (e.Screen == "editor") EditorAction(e);
         else if (e.Screen == "file") FileDialogAction(e);
+        else if (e.Screen == FeedbackScreen) FeedbackFormAction(e);
         else if (HandleFrontendAction(e)) UpdateMenuPause();
         else if (e.Screen == "stats" && e.Action == "select") selectedStat = e.Text;
         else if (e.Screen == "stats" && e.Action.StartsWith("stat:", StringComparison.Ordinal)) selectedStat = e.Action[5..];
@@ -132,6 +152,7 @@ sealed partial class PlayerInterface
         if (pinned) id = "inventory";   // a pinned window binds as the inventory, for its own character
         var lead = pinned || id == "limbs" ? WindowCharacter(screen) : id is "inventory" or "bag" ? InventoryOwner() : Selected().FirstOrDefault();
         foreach (var button in layout.Widgets.Where(w => w.Type == "Button" && !w.Properties.ContainsKey("TemplateEvent"))) b.Disabled.Add(button.Name);
+        if (id == FeedbackScreen) { BindFeedbackScreen(b); return b; }
         if (BindFrontend(id, b)) return b;
         if (id == "editor") { BindEditor(b); return b; }
         if (id == "file") { BindFileDialog(b); return b; }
@@ -221,7 +242,7 @@ sealed partial class PlayerInterface
     };
     void AddFaithfulContent(string id, List<UiControl> controls)
     {
-        if (id == "title" && UiMode == UiMode.Meitou) { MeitouTitleMenu(controls); return; }
+        if (id == "title") { if (UiMode == UiMode.Meitou) MeitouTitleMenu(controls); AddDataProblems(controls); return; }
         if (id == "stats") { AddStatsContent(controls); return; }
         if (id == "new-game") { AddStartLines(controls); AddAdvancedContent(controls); return; }
         if (id == "message") { StyleMessageBox(controls); return; }
@@ -314,11 +335,13 @@ sealed partial class PlayerInterface
             if (job.Type == Meitou.Data.Gameplay.Ai.TaskType._SLAVE_OBEDIENCE && obedienceJob < 0) obedienceJob = i;
             string text = Loc.Tr(Meitou.Simulation.Production.PermaJobs.Text(job.Type) ?? job.Type.ToString());
             if (job.Site is { } id && session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == id) is { } site) text += ": " + SiteName(site);
+            else if (job.Site is { } dummyId && session.CurrentSnapshot.Dummies.FirstOrDefault(d => d.Id == dummyId) is { } dummy) text += ": " + (buildHost?.ItemName(dummy.Record) ?? dummy.Record);
             jobs.Add(new(FormattableString.Invariant($"job:{lead.Id.Slot}:{lead.Id.Generation}:{lead.JobsRevision}:{i}"), text));
         }
         b.Lists["JobsPanel"] = jobs;
         if (jobs.Count > 0) b.Hidden.Add("JobsPanelInfo");
-        else b.Text["JobsPanelInfo"] = Loc.Tr("[No jobs assigned]") + "\n" + Loc.Tr("[To add jobs, hold shift key when giving an order]");
+        // The brackets are the panel's, not the catalog's (its keys have none: "No jobs assigned", "To add jobs, hold shift key when giving an order").
+        else b.Text["JobsPanelInfo"] = "[" + Loc.Tr("No jobs assigned") + "]\n[" + Loc.Tr("To add jobs, hold shift key when giving an order") + "]";
     }
 
     /// <summary>The X at the right end of each jobs row (the original's remove button, its tutorial: "remove a job at any time by pressing the X button").</summary>

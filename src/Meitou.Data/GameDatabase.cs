@@ -12,11 +12,14 @@ public sealed class GameDatabase
 
     public IReadOnlyDictionary<string, GameRecord> Records => records;
 
-    /// <summary>Changes when record application or post-processing can invalidate a derived index.</summary>
+    /// <summary>Changes whenever a file, a translation or a post-pass adds, removes or changes records: what an index built over them checks.</summary>
     public int Version { get; private set; }
 
     /// <summary>Files applied so far, in order.</summary>
     public List<string> Files { get; } = [];
+
+    /// <summary>The header of each file applied (version, author, description), by file name.</summary>
+    public Dictionary<string, FileHeader> Headers { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Problems found while applying files. None of them stop loading.</summary>
     public List<GameDataIssue> Issues { get; } = [];
@@ -163,6 +166,7 @@ public sealed class GameDatabase
     {
         Version++;
         Files.Add(fileName);
+        Headers[fileName] = new(file.Version, file.Author, file.Description);
         foreach (var record in file.Records)
             Apply(record, fileName);
     }
@@ -259,9 +263,12 @@ public enum GameDataIssueKind
     RecordAlreadyDefined,
     /// <summary>A record has a different type than the record it changes; the original type is kept.</summary>
     ChangedRecordType,
-    /// <summary>A malformed world level file was skipped.</summary>
+    /// <summary>A world level file could not be read (a mod's file with its zero bytes turned to spaces); it is left out.</summary>
     LevelFileNotLoaded,
 }
+
+/// <summary>A data file's version, author and description.</summary>
+public sealed record FileHeader(int Version, string Author, string Description);
 
 public sealed record GameDataIssue(GameDataIssueKind Kind, string File, string? StringId, string Message)
 {

@@ -287,20 +287,22 @@ public sealed partial class PlayerSystem
     };
 
     /// <summary>
-    /// The stolen mark a held item gets when it goes to <paramref name="taker"/>'s faction: from a loot that is a theft (<see cref="Crime.CrimeSystem.IsLootTheft"/>) the body's faction, from
-    /// another faction's container that faction (engine choice, as the container's take), else unchanged. Handed to its owner's faction it loses the mark (the engine clears the owner when
-    /// the item goes to its owner or a member of the owner's faction).
+    /// The stolen mark a held item gets when it goes to <paramref name="taker"/>'s faction: from a take that marks (<see cref="Crime.CrimeSystem.MarksTheft"/>) the body (its faction, itself and its squad), from
+    /// another faction's container that faction (engine choice, as the container's take), else unchanged; a drag marks only an unmarked item, a give (<paramref name="overwrite"/>) any
+    /// (<c>Item::notifyTheftFrom</c> call sites). Handed to its owner's faction it loses the mark (the engine clears the owner when the item goes to its owner or a member of the owner's faction).
     /// </summary>
-    static int MarkFor(World world, HeldItem held, CharacterCold? taker)
+    static StolenMark MarkFor(World world, HeldItem held, CharacterCold? taker, bool overwrite)
     {
         var item = held.Item;
         var table = world.Characters;
-        if (taker is null) return item.StolenFrom;
-        if (item.StolenFrom >= 0 && item.StolenFrom == taker.Faction) return -1;
+        if (taker is null) return item.Mark;
+        if (item.StolenFrom >= 0 && item.StolenFrom == taker.Faction) return StolenMark.None;
+        bool open = overwrite || item.Mark == StolenMark.None;
         if (held.From.Holder == ItemHolder.Character && table.TryResolveNext(held.From.Character, out int v) && table.Cold(v) is { } victim
-            && table.TryResolveNext(held.Actor, out int a) && Crime.CrimeSystem.IsLootTheft(table.Cold(a)!, victim)) return victim.Faction;
-        if (held.From.Holder == ItemHolder.Site && world.Fixtures.Find(held.From.Site) is { Owner: >= 0 } box && box.Owner != taker.Faction) return box.Owner;
-        return item.StolenFrom;
+            && table.TryResolveNext(held.Actor, out int a) && Crime.CrimeSystem.MarksTheft(world, table.Cold(a)!, victim) && open) return StolenMark.Of(victim, table.IdOf(v));
+        if (held.From.Holder == ItemHolder.Site && world.Fixtures.Find(held.From.Site) is { Owner: >= 0 } box && box.Owner != taker.Faction
+            && Crime.CrimeSystem.IsStealing(world, box) && open) return StolenMark.OfFaction(box.Owner);
+        return item.Mark;
     }
 
     /// <summary>
@@ -335,6 +337,16 @@ public sealed partial class PlayerSystem
         return true;
     }
 
+    /// <summary>A player's character window other than the customer's takes the trade over when in reach; false (after "Out of trading range.") when it is too far.</summary>
+    bool PassTrade(World world, Trading.TradeSystem trade, ItemOwner window, ref CharacterId customer, SimCommand command)
+    {
+        if (window.Holder != ItemHolder.Character || window.Character == customer) return true;
+        if (!world.Characters.TryResolveNext(window.Character, out int w) || world.Characters.Cold(w) is not { IsPlayer: true }) return true;
+        if (!trade.TradeWith(world, window.Character, heldPlayerId, command)) return false;
+        customer = window.Character;
+        return true;
+    }
+
     /// <summary>
     /// Places the held item (<c>FUN_140715560</c>, <b>Observed</b>): the section must take it (<see cref="InventoryCommands.SlotRefusal(string, FcsRecordType, string, Inventory?, bool)"/>, a worn slot only what the owner's race may wear, a limited storage its items, a prosthetic slot a
     /// stump of its side); the cell is the drop's, moved inside the section (a footprint larger than the section is refused); two or more items under it refuse it; one locked on refuses it
@@ -352,6 +364,7 @@ public sealed partial class PlayerSystem
         var trade = world.SystemOf<Trading.TradeSystem>();
         CharacterId customer = CharacterId.None;
         if ((buy || sell) && trade?.OpenStock(world, out customer, heldPlayerId) is null) { ReturnHeldItem(world); return; }
+        if ((buy || sell) && !PassTrade(world, trade!, buy ? into : held.From, ref customer, place)) { ReturnHeldItem(world); return; }
         // The stock trades with its customer only: stock goes into the customer's windows, the customer's own items onto the stock.
         if (buy && into != ItemOwner.Of(customer) || sell && held.From != ItemOwner.Of(customer) || Resolve(world, held, place) is not { } target)
         {
@@ -408,9 +421,9 @@ public sealed partial class PlayerSystem
         int limit = target.Columns == 0 ? 1 : target.Grid.LimitOf(item);
         // Leaving its window for another owner's: no longer a death item, maybe stolen. Put back on a refusal; the units that stay on the mouse keep the old marks.
         bool changes = into != held.From, death = item.Death;
-        int mark = item.StolenFrom;
-        if (changes) (item.Death, item.StolenFrom) = (false, MarkFor(world, held, target.Owner));
-        void Undo(ItemInstance i) => (i.Death, i.StolenFrom) = (death, mark);
+        var mark = item.Mark;
+        if (changes) (item.Death, item.Mark) = (false, MarkFor(world, held, target.Owner, overwrite: false));
+        void Undo(ItemInstance i) => (i.Death, i.Mark) = (death, mark);
         // The units the trade lets through (all of them outside a trade); 0: refused, put back.
         int Exchange(int units, bool all)
         {
@@ -550,18 +563,19 @@ public sealed partial class PlayerSystem
         if (Caught(world, held, Crime.CrimeSystem.TakeKind.Give)) { ReturnHeldItem(world); return; }
         var item = held.Item;
         bool death = item.Death;
-        int mark = item.StolenFrom, before = item.Quantity;
-        (item.Death, item.StolenFrom) = (false, MarkFor(world, held, taker));
+        var mark = item.Mark;
+        int before = item.Quantity;
+        (item.Death, item.Mark) = (false, MarkFor(world, held, taker, overwrite: true));
         bool all = into.Add(item);
         if (item.Quantity == before)
         {
-            (item.Death, item.StolenFrom) = (death, mark);
+            (item.Death, item.Mark) = (death, mark);
             world.Post(heldPlayerId, "No room for that item.");
             ReturnHeldItem(world);
             return;
         }
         if (all) player.Held = null;
-        else (item.Death, item.StolenFrom) = (death, mark);
+        else (item.Death, item.Mark) = (death, mark);
         LeftLoot(world, held, death);
         if (held.From.Holder == ItemHolder.Site) world.Machines.Touch();
     }
@@ -583,12 +597,20 @@ public sealed partial class PlayerSystem
     {
         var table = world.Characters;
         int s = held.From.Holder == ItemHolder.Character && table.TryResolveNext(held.From.Character, out int o) ? o : table.TryResolveNext(held.Actor, out int a) ? a : -1;
-        if (s < 0) return null;
-        ref var hot = ref table.Next[s];
+        return s < 0 ? null : (AheadOf(world, s), s);
+    }
+
+    /// <summary>The ground ahead of a character where an item it drops lands.</summary>
+    static Vector3 AheadOf(World world, int slot)
+    {
+        ref var hot = ref world.Characters.Next[slot];
         var at = hot.Position + new Vector3(MathF.Sin(hot.Yaw), 0, MathF.Cos(hot.Yaw)) * 3;
         at.Y = world.Walkability.GroundHeight(at.X, at.Z, hot.Position.Y);
-        return (at, s);
+        return at;
     }
+
+    /// <summary>Drops an item the character wore in front of it (<c>FUN_1405ca740</c>, character vtable slot 53: the item is placed ahead of the character and leaves its inventory).</summary>
+    internal static void DropAhead(World world, int slot, ItemInstance item) => Ground(world, item, AheadOf(world, slot), slot);
 
     /// <summary>An item on the ground, turned at random (the original's physics tumbles it) by a roll of the character and the tick.</summary>
     static void Ground(World world, ItemInstance item, Vector3 at, int slot)
@@ -720,7 +742,7 @@ public sealed partial class PlayerSystem
     /// <summary>
     /// A right click on an item of a player character's own window (<c>FUN_140714a20</c>, <b>Observed</b>), one unit (all with <see cref="QuickMoveItem.All"/>, repeated until a move fails):
     /// money becomes cats; a worn item goes to the main grid (else the open bag); a grid item to the slot that takes it, else a prosthetic onto its stump, else from the main grid into the open
-    /// bag. A blueprint of the player's faction is read (<see cref="Production.ProductionSystem.Learn"/>) and used up when it taught something; map items are <see cref="ReadMapItem"/>.
+    /// bag, and a bag item to the main grid. A blueprint of the player's faction is read (<see cref="Production.ProductionSystem.Learn"/>) and used up when it taught something; map items are <see cref="ReadMapItem"/>.
     /// </summary>
     void QuickMove(World world, QuickMoveItem quick)
     {
@@ -730,6 +752,7 @@ public sealed partial class PlayerSystem
         var item = root.All().ElementAtOrDefault(quick.Item.Index);
         if (!Matches(item, quick.Item) || !(InventoryCommands.IsMovableSection(item!.Section) || InventoryCommands.IsLimbSection(item.Section)) || HolderOf(root, item) is not { } holder) return;
         if (item.LockedOn) { world.Post(quick.Issuer ?? PlayerId.Local, LockedText); return; }
+        if (quick.Into != CharacterId.None) { QuickMoveInto(world, quick, cold, holder, item); return; }
         if (item.ItemFunction == MoneyFunction && cold.Faction >= 0)
         {
             long cats = (long)(data?.Items.Info(item.Record)?.Value ?? 0) * item.Quantity;
@@ -778,6 +801,8 @@ public sealed partial class PlayerSystem
                 (unit.LimbDamage, unit.LimbWear, unit.LimbStun) = (0, 0, 0);
                 return true;
             }
+            if (from == "backpack_content") return root.AddTo("main", unit);   // out of the open bag into the main grid
+
             return from == "main" && bag is not null && bag.AddTo("backpack_content", unit);
         }
         int want = quick.All ? item.Quantity : 1, moved = 0;
@@ -797,5 +822,25 @@ public sealed partial class PlayerSystem
             moved++;
         }
         if (moved > 0) assembly?.RefreshEquipment(cold);
+    }
+
+    /// <summary>
+    /// A right click into another player character's open window (<c>FUN_140713d20</c>): units into its bag window first when open, then its slots, then its grid
+    /// (<see cref="InventoryCommands.MoveInto"/>), money as one stack; no range limit, as a drag between the two windows. A worn bag with contents stays.
+    /// </summary>
+    void QuickMoveInto(World world, QuickMoveItem quick, CharacterCold from, Inventory holder, ItemInstance item)
+    {
+        var table = world.Characters;
+        if (quick.Into == quick.Character || !table.TryResolveNext(quick.Into, out int t) || table.Cold(t) is not { IsPlayer: true, Inventory: { } into } taker) return;
+        if (!world.MayOrder(quick, quick.Into) || quick.Issuer is not null && (quick.TargetRevision == 0 || world.InventoryRevision(into) != quick.TargetRevision)) return;
+        if (!InventoryCommands.IsMovableSection(item.Section) || item.Contents is not null && item.Section == "backpack_attach") return;
+        bool worn = InventoryCommands.IsEquipmentSection(item.Section);
+        if (InventoryCommands.MoveInto(holder, item, InventoryCommands.ClickCount(item, quick.All ? 0 : 1), into, quick.IntoBag, out bool wear, taker) == 0)
+        {
+            world.Post(quick.Issuer ?? PlayerId.Local, $"{taker.Name} has no room for {item.Name}.");
+            return;
+        }
+        if (worn) assembly?.RefreshEquipment(from);
+        if (wear) assembly?.RefreshEquipment(taker);
     }
 }

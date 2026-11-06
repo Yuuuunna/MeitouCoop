@@ -165,6 +165,10 @@ sealed partial class PlayerInterface
             b.Progress["OutputProgressBar"] = current?.Progress ?? 0;
         }
         else b.Hidden.Add("OutputColumn");
+        // BuildInventoryLayout's constructor (FUN_140155f90) sets both column titles: "Input" / "Inputs" by the number of inputs (hidden at 0) and "Output", over the layout's INPUTS / OUTPUT.
+        int inputCount = FurnaceGrid(m) is not null ? 1 : m.Inputs.Count;
+        if (inputCount > 0) b.Text["InputTitleText"] = Loc.Plural("Input", "Inputs", inputCount);
+        b.Text["OutputTitleText"] = Loc.Tr("Output");
         if (m.Inputs.Count == 0 && FurnaceGrid(m) is null) b.Hidden.Add("InputTitleText");
         if (m is { Inputs.Count: 0, Craft: null, Output: not null } && FurnaceGrid(m) is null) OutputOnlyGeometry(b);
     }
@@ -310,7 +314,7 @@ sealed partial class PlayerInterface
             verbs.Add(("Auto-Haul", () => Say(SlowModifier
                 ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_AUTOMATIC_MACHINERY, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
                 : new OperateOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
-        else if (site.Complete && Machine(site.Id) is { Operable: true })
+        else if (site.Complete && Machine(site.Id) is { Operable: true } or { Function: Meitou.Data.World.TownBuildings.ChairFunction or Meitou.Data.World.TownBuildings.ThroneFunction })
             verbs.Add(("Use", () => Say(SlowModifier
                 ? (Meitou.Simulation.SimCommand)new AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
                 : new OperateOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
@@ -345,11 +349,12 @@ sealed partial class PlayerInterface
     const string InkTag = "#140806", BadTag = "#59231a", GoodTag = "#a8b774";
 
     /// <summary>
-    /// The status word of a mine or rock (<c>ProductionBuilding</c> slot 114, <c>FUN_140300090</c>): Output full, then No workers while nobody works a machine that takes workers, else
-    /// Working. Its other words (Switched off, No power, Out of resource) come from the power lines or do not occur for a mine.
+    /// The status word of a production machine (<c>ProductionBuilding</c> slot 114, <c>FUN_140300090</c>): Output full (status 1), Out of resource (status 0 with an empty input), then No workers
+    /// while nobody works a machine that takes workers, else Working. Its other words (Switched off, No power) come from the power lines.
     /// </summary>
-    static (string Status, bool Bad) ProductionStatus(byte machineStatus, Meitou.Simulation.Production.EfficiencyView e) =>
-        machineStatus == 1 ? ("Output full", true) : e.MaxOperators > 0 && e.Operators == 0 ? ("No workers", true) : ("Working", false);
+    static (string Status, bool Bad) ProductionStatus(byte machineStatus, Meitou.Simulation.Production.EfficiencyView e, bool inputsEmpty = false) =>
+        machineStatus == 1 ? ("Output full", true) : machineStatus == 0 && inputsEmpty ? ("Out of resource", true)
+            : e.MaxOperators > 0 && e.Operators == 0 ? ("No workers", true) : ("Working", false);
 
     /// <summary>
     /// The Workers line (<c>FUN_1403075b0</c>): <c>-</c> for an automatic machine (raw <c>max operators</c> 0), else operators / max; the value in ink, Bad while nobody works it; the tooltip
@@ -499,7 +504,7 @@ sealed partial class PlayerInterface
         string N(int v) => v.ToString(CultureInfo.InvariantCulture);
         string P(float v) => ((int)(Math.Clamp(v, 0, 1) * 100)).ToString(CultureInfo.InvariantCulture) + "%";
         // A mine or rock: the ProductionBuilding status word, and no Output line (the original has none).
-        if (m.Farm is null && rich is not null && m.Efficiency is { } mine) (status, bad) = ProductionStatus(m.Status, mine);
+        if (m.Farm is null && rich is not null && m.Efficiency is { } mine) (status, bad) = ProductionStatus(m.Status, mine, m.InputsEmpty);
         else if (m.Farm is { } f)
         {
             status = f.Status switch { FarmStatus.NoWater => "No water", FarmStatus.OutputFull => "Output full", FarmStatus.Harvest => "Ready to harvest", _ => "Growing" };
@@ -510,8 +515,13 @@ sealed partial class PlayerInterface
         }
         else if (m.Output is { } o)
         {
-            status = m.Status switch { 2 => "Working", 1 => "Output full", _ => "Idle" };
-            bad = m.Status == 1;
+            // A production machine (refinery, well) reads FUN_140300090's chain; a bench or furnace keeps Meitou's own words for its status.
+            if (m.Craft is null && m.Furnace is null && m.Efficiency is { } producer) (status, bad) = ProductionStatus(m.Status, producer, m.InputsEmpty);
+            else
+            {
+                status = m.Status switch { 2 => "Working", 1 => "Output full", _ => "Idle" };
+                bad = m.Status == 1;
+            }
             stats.Add(new("Output:", $"{o.Name} {N(o.Count)}/{N(o.Capacity)}", MainColour));
         }
         // RainCollectorBuilding slot 114 (FUN_140301410): unless the output is full, Collecting while it rains, else Not Raining.

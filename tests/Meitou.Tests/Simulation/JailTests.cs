@@ -2,6 +2,7 @@ using System.Numerics;
 using Meitou.Data;
 using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Simulation;
 using Meitou.Simulation.Ai;
@@ -134,6 +135,11 @@ public class JailTests
     {
         using var j = new Jail(locks: true);
         var police = j.Npc(new Vector2(-100, 0), j.City, FundamentalType.LawEnforcement, Strong, mind: true);
+        // Only a holder of goal 211 frees prisoners (FUN_1408cf3c0): in every role list, always in its hours.
+        var free = new AiGoal(new AiTask("t", "free", TaskType.POLICE_FREE_PRISONERS_WHEN_DONE, TaskPriority.Urgent, TaskTargetType.Specific, TaskEndEvent.Nothing), 0, 100, 1);
+        var board = new Blackboard([new(0, new AiPackage { Id = "police", Name = "police", Roles = [[free], [free], [free], [], []] })]);
+        board.Update();
+        j.World.Squads.Find(j.Cold(police).SquadId)!.Ai = board;
         var hero = j.Hero(new Vector2(200, 30), "hero", Weak, bounty: 5000);
         Assert.True(j.World.Fixtures.Imprison(j.World, hero, j.CageA));
         Assert.True(j.CageA.Lock!.Locked);
@@ -183,11 +189,11 @@ public class JailTests
         j.World.Fixtures.SetLocked(j.CageA, false);
         j.Say(new PickUpOrder([lifter], prisoner) { Tick = j.World.Tick });
         j.RunUntil(() => j.Cold(lifter).Carrying == prisoner, 300, "the lift");
-        // The lifter is booked for code 7 (against the cage owner), the freed one for Escaping Prison, and it is an escaped prisoner.
+        // The lifter is booked for code 7 (against the cage owner); the freed one gets no crime (its code 0xc is set while still held, which the setter refuses) but is an escaped prisoner.
         Assert.Equal(CrimeCode.Terrorism, j.Cold(lifter).Pending?.Code);
         Assert.Equal(7, (int)j.Cold(lifter).Pending!.Code);
         Assert.Equal(j.City, j.Cold(lifter).Pending!.VictimFaction);
-        Assert.Equal(CrimeCode.EscapingPrison, j.Cold(prisoner).Pending?.Code);
+        Assert.Null(j.Cold(prisoner).Pending);
         Assert.True(j.Cold(prisoner).Escaped);
         Assert.False(j.Cold(prisoner).IsImprisoned);
         Assert.True(j.CageA.Occupant.IsNone);

@@ -230,7 +230,7 @@ public class RangedInstallTests(ITestOutputHelper output)
         var constants = GameConstants.FromDatabase(db);
         var race = RaceData.From(db.OfType(FcsRecordType.RACE).First(r => r.Name == "Greenlander"), db);
         var combat = new CombatSystem(combatData.Techniques, combatData.Constants, constants, BodyOptions.Default, new AnimationLengths(), new CombatOptions { RecordLog = true });
-        using var world = new SimWorld(new WorldSettings { Seed = 3, PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 150), [combat]);
+        using var world = new SimWorld(new WorldSettings { Seed = 3, PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 150), [combat, CombatFixtures.Senses(combat)]);
         var items = new ItemFactory(db, constants);
         var ranger = combatData.Crossbows.Single(x => x.Name == "Ranger");
         CharacterCold Make(bool shooter, int faction)

@@ -130,6 +130,15 @@ internal sealed class RagdollPhysics : IDisposable
         Simulation.Deterministic = true;
     }
 
+    /// <summary>The longest step the original's physics takes (<c>FUN_1407dd060</c>: <c>DAT_1416fb690</c> = 0.04 s, <b>Verified</b>).</summary>
+    public const float MaxStep = 0.04f;
+
+    /// <summary>
+    /// The step of one world tick (docs/game/ragdolls.md "Stepping"): the original's physics gets the frame's real elapsed time, not the game-speed-scaled one (<c>FUN_140788a00</c>), so a
+    /// tick of <paramref name="tickSeconds"/> game seconds at <paramref name="speed"/> times real time is a real step of tickSeconds / speed, clamped to <see cref="MaxStep"/>.
+    /// </summary>
+    public static float StepOf(float tickSeconds, float speed) => MathF.Min(tickSeconds / (speed >= 1 ? speed : 1), MaxStep);
+
     /// <summary>Steps the bodies, on <paramref name="threads"/> when given (<see cref="BepuPhysics.Simulation.Deterministic"/> is on, so the result does not depend on them).</summary>
     public void Step(float dt, IThreadDispatcher? threads = null) => Simulation.Timestep(dt, threads);
 
@@ -301,7 +310,7 @@ internal sealed class RagdollPhysics : IDisposable
         var (x0, x1, z0, z1) = Span(centre, reach);
         for (int x = x0; x <= x1; x++)
             for (int z = z0; z <= z1; z++)
-                if (!tiles.ContainsKey((x, z))) return false;
+                if (!tiles.TryGetValue((x, z), out var tile) || tile.BuildingsPending) return false;
         return true;
     }
 
@@ -411,6 +420,8 @@ public interface IRagdollEnvironment
     /// <summary>Adds the triangles (three points each, world space, any winding) of the building collision between <paramref name="min"/> and <paramref name="max"/> (X and Z).</summary>
     /// <returns>False while some of them are not known yet (being read): the tile asks again.</returns>
     bool Buildings(Vector3 min, Vector3 max, List<Vector3> triangles);
+    /// <summary>The triangles of collision groups 23..26 only (passable parts, buildings paths ignore) between the corners, what the weather's shelter ray tests; the same meaning of the result. Environments without them answer with the ordinary buildings.</summary>
+    bool Roofs(Vector3 min, Vector3 max, List<Vector3> triangles) => Buildings(min, max, triangles);
 }
 
 /// <summary>The stand-in environment: the world's walkable ground, no buildings.</summary>

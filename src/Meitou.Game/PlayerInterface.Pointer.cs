@@ -10,8 +10,11 @@ sealed partial class PlayerInterface
     public bool CtrlHeld, AltHeld;
     // Whether the mouse was over a control in the last arranged UI (ArrangeUi), so the pointer needs no arrange of its own.
     bool pointerOverUi;
-    // The pointer and the character it is over, chosen again only when the tick, the mouse or a modifier changed (the picks walk every character).
+    // The pointer and the character it is over, chosen again when the mouse, the camera or a modifier changed, and every RepickTicks ticks while only the
+    // world moves (the picks walk every character, item and building near the ray: 0.5 ms).
     (long Tick, Vector2 Mouse, bool Ctrl, bool Alt, string Name, CharacterId? Target) pointer = (-1, default, false, false, "arrow", null);
+    Matrix4x4 pointerView;
+    const long RepickTicks = 3;
 
     /// <summary>
     /// The mouse pointer (kenshi_pointers.xml) for what the right button would do under the cursor (docs/game/ui-input.md, pointers): the quick order's pointer
@@ -56,22 +59,16 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>Another faction's hostile character on its feet (not downed, dead or carried): the attack pointer and red outline whatever is selected.</summary>
-    bool StandingHostile(CharacterSnapshot c) => !c.IsPlayer && c.Body is not ({ Dead: true } or { Unconscious: true }) && c.CarriedBy.IsNone && Hostile(c);
+    bool StandingHostile(CharacterSnapshot c) => !c.IsPlayer && c.Conscious && c.HostileToPlayer;
 
     static readonly Vector4 WhiteOutline = new(0.95f, 0.93f, 0.85f, 0.85f);
-
-    /// <summary>Whether a faction is hostile to the player's (the world's relations); set by the host. Without it every other faction counts as hostile.</summary>
-    public Func<int, bool>? HostileFaction { get; set; }
-
-    /// <summary>Whether a faction is allied to the player's (the Kidnap rule's "friendly", docs/game/ui-input.md "Context menu verbs"); set by the host. Without it none is.</summary>
-    public Func<int, bool>? AlliedFaction { get; set; }
 
     /// <summary>
     /// Whether the character's faction is hostile to the player's, or it is fighting one of the player's characters (a neutral squad robbing them): only a hostile one gets
     /// the attack pointer, the red outline and the quick-attack right click.
     /// </summary>
     bool Hostile(CharacterId id) => session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is not { } c || Hostile(c);
-    bool Hostile(CharacterSnapshot c) => c.FightsPlayer || HostileFaction?.Invoke(c.Faction) != false;
+    bool Hostile(CharacterSnapshot c) => c.HostileToPlayer;
 
     (long Tick, Vector2 Mouse, bool Ctrl, bool Alt, string Name, CharacterId? Target) Point()
     {
@@ -79,7 +76,8 @@ sealed partial class PlayerInterface
         if (UiVisible && pointerOverUi || UiCapturesPointer || ContextMenuOpen || ModalOpen || dragging || settingsOpen || TitleOpen) return (-1, mouse, CtrlHeld, AltHeld, "arrow", null);
         if (BuildPointer() is { } building) return (-1, mouse, CtrlHeld, AltHeld, building, null);
         var snapshot = session.CurrentSnapshot;
-        if (pointer.Tick == snapshot.Tick && pointer.Mouse == mouse && pointer.Ctrl == CtrlHeld && pointer.Alt == AltHeld) return pointer;
+        if (pointer.Tick >= 0 && (ulong)(snapshot.Tick - pointer.Tick) < RepickTicks && pointer.Mouse == mouse && pointer.Ctrl == CtrlHeld && pointer.Alt == AltHeld
+            && pointerView == ViewProjection) return pointer;
         (string Name, CharacterId? Target) chosen = ("arrow", null);
         if (SelectedIds().Count > 0)
         {
@@ -89,10 +87,10 @@ sealed partial class PlayerInterface
                 switch (PickAt(mouse).Kind)
                 {
                     case Picked.Character when QuickOrder(mouse) is { } order: chosen = (order.Pointer, order.Target); break;
-                    case Picked.GroundItem: chosen = ("pick_item", null); break;
+                    case Picked.GroundItem: chosen = (StealsGroundItem(mouse) ? "steal" : "pick_item", null); break;
                     case Picked.Container when PickContainer(mouse) is { } container: chosen = (ContainerPointer(container), null); break;
                     case Picked.Door when PickDoor(mouse) is { } door: chosen = (DoorPointer(door), null); break;
-                    case Picked.Bed or Picked.Cage: chosen = ("use", null); break;   // a bed's slot 130 pointer (UseableStuff, no inventory)
+                    case Picked.Bed or Picked.Cage or Picked.Dummy or Picked.Seat: chosen = ("use", null); break;   // a bed's slot 130 pointer (UseableStuff, no inventory)
                     case Picked.Rock: chosen = ("mine", null); break;   // a resource rock a right click would mine (the original's `mine` pointer)
                     case Picked.Site when SitePointer(mouse) is { } siteMode: chosen = (siteMode, null); break;
                 }
@@ -102,6 +100,8 @@ sealed partial class PlayerInterface
         // A hostile character shows the attack pointer and the red outline even with nobody selected to send at it.
         if (chosen.Name == "arrow" && chosen.Target is { } over && snapshot.Characters.FirstOrDefault(c => c.Id == over) is { } overChar && StandingHostile(overChar))
             chosen.Name = "attk";
+        session.SetPointed(chosen.Target ?? CharacterId.None);
+        pointerView = ViewProjection;
         return pointer = (snapshot.Tick, mouse, CtrlHeld, AltHeld, chosen.Name, chosen.Target);
     }
 

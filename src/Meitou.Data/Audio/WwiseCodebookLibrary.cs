@@ -5,7 +5,7 @@ namespace Meitou.Data.Audio;
 
 /// <summary>
 /// The Vorbis codebooks Wwise Vorbis setup headers refer to by a 10-bit index (docs/formats/wwise-bnk.md#codebook-library). The game's
-/// Wwise decoder carries them in <c>kenshi_x64.exe</c>: a table of pointers in <c>.data</c> to the packed codebooks in <c>.rdata</c>, one more
+/// Wwise decoder carries them in <c>kenshi_x64.exe</c>: a table of pointers (in <c>.data</c> in the Steam exe) to the packed codebooks in <c>.rdata</c>, one more
 /// pointer than codebooks (the end). Nothing is shipped: the table is found in the install's exe by its shape and checked by parsing every
 /// codebook, so any build of the exe works.
 /// </summary>
@@ -90,10 +90,28 @@ public sealed class WwiseCodebookLibrary
         }
     }
 
-    public static WwiseCodebookLibrary? FromExecutable(byte[] exe)
+    public static WwiseCodebookLibrary? FromExecutable(byte[] exe) => FromExecutable(exe, out _);
+
+    /// <summary>
+    /// Why <paramref name="exePath"/> has no library, for the log: missing, not PE32+, or its size, sections and the longest pointer run found
+    /// (with the codebook a candidate table failed at). Reads the exe again; call it only after a failed <see cref="Load"/>.
+    /// </summary>
+    public static string Diagnose(string exePath)
+    {
+        if (!File.Exists(exePath)) return "the exe is missing";
+        var exe = File.ReadAllBytes(exePath);
+        FromExecutable(exe, out var why);
+        return $"{exe.Length:N0} bytes, {why}";
+    }
+
+    static WwiseCodebookLibrary? FromExecutable(byte[] exe, out string why)
     {
         var sections = Sections(exe, out ulong imageBase);
-        if (sections is null) return null;
+        if (sections is null)
+        {
+            why = "not a 64-bit Windows executable";
+            return null;
+        }
         long ToFile(ulong va)
         {
             if (va < imageBase) return -1;
@@ -103,7 +121,10 @@ public sealed class WwiseCodebookLibrary
             return -1;
         }
 
-        foreach (var data in sections.Where(s => s.Name == ".data"))
+        int longest = 0, failedAt = -1;
+        string longestIn = "";
+        // Kenshi's Steam exe keeps the table in .data; any section that is not code is scanned, as another build may link it elsewhere.
+        foreach (var data in sections.Where(s => (s.Flags & 0x20000000) == 0))
         {
             long end = data.Raw + data.RawSize - 8;
             for (long p = data.Raw; p < end; p += 8)
@@ -120,18 +141,30 @@ public sealed class WwiseCodebookLibrary
                     prev = v;
                     n++;
                 }
-                if (n >= 200 && TryRead(exe, p, n, ToFile) is { } library) return library;
+                if (n >= 200)
+                {
+                    if (TryRead(exe, p, n, ToFile, out int failed) is { } library)
+                    {
+                        why = "";
+                        return library;
+                    }
+                    failedAt = failed;
+                }
+                if (n > longest) (longest, longestIn) = (n, data.Name);
                 p += 8 * (n - 1);
             }
         }
+        why = $"sections {string.Join(' ', sections.Select(s => s.Name))}, the longest pointer run {longest} in {longestIn}"
+            + (failedAt >= 0 ? $", the last table of 200+ failed at codebook {failedAt}" : "");
         return null;
     }
 
-    static WwiseCodebookLibrary? TryRead(byte[] exe, long table, int pointers, Func<ulong, long> toFile)
+    static WwiseCodebookLibrary? TryRead(byte[] exe, long table, int pointers, Func<ulong, long> toFile, out int failedAt)
     {
         var books = new byte[pointers - 1][];
-        for (int i = 0; i < books.Length; i++)
+        for (failedAt = 0; failedAt < books.Length; failedAt++)
         {
+            int i = failedAt;
             ulong a = BinaryPrimitives.ReadUInt64LittleEndian(exe.AsSpan((int)(table + 8 * i)));
             ulong b = BinaryPrimitives.ReadUInt64LittleEndian(exe.AsSpan((int)(table + 8 * i + 8)));
             long from = toFile(a);
@@ -151,7 +184,7 @@ public sealed class WwiseCodebookLibrary
         return new WwiseCodebookLibrary(books);
     }
 
-    sealed record Section(string Name, ulong Va, long Raw, long RawSize);
+    sealed record Section(string Name, ulong Va, long Raw, long RawSize, uint Flags);
 
     static List<Section>? Sections(byte[] exe, out ulong imageBase)
     {
@@ -169,7 +202,8 @@ public sealed class WwiseCodebookLibrary
             int o = pe + 24 + optional + i * 40;
             if (o + 40 > exe.Length) return null;
             list.Add(new Section(Encoding.ASCII.GetString(exe, o, 8).TrimEnd('\0'), BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(o + 12)),
-                BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(o + 20)), BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(o + 16))));
+                BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(o + 20)), BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(o + 16)),
+                BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(o + 36))));
         }
         return list;
     }

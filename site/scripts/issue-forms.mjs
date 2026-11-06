@@ -131,6 +131,7 @@ ${options(platforms)}
     { name: 'parity', color: 'c5def5', description: 'Differs from the original game' },
     { name: 'confirmed-works', color: '0e8a16', description: 'Seen working in play' },
     { name: 'roadmap-drift', color: 'fbca04', description: 'The roadmap no longer matches GitHub' },
+    { name: 'feedback', color: 'bfd4f2', description: 'Sent with the in-game feedback button' },
     ...data.categories.map((c) => ({ name: `area:${c.id}`, color: 'ededed', description: `Roadmap category: ${c.name}` })),
   ];
   return {

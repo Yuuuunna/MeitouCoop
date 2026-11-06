@@ -22,7 +22,8 @@ public class HubNavigationTests
     {
         var install = GameInstall.Locate();
         Assert.SkipWhen(install is null, "Kenshi install not found");
-        var db = InstallData.FullLoadOrder!;
+        // Fixed English names and base-world placements require the unmodded record set.
+        var db = InstallData.BaseGame!;
         var levels = InstallData.Levels!;
         var dir = Path.Combine(Path.GetTempPath(), "meitou-longnav-" + Guid.NewGuid().ToString("N"));
         try
@@ -90,7 +91,8 @@ public class HubNavigationTests
     {
         var install = GameInstall.Locate();
         Assert.SkipWhen(install is null, "Kenshi install not found");
-        var db = InstallData.FullLoadOrder!;
+        // Fixed English names and base-world placements require the unmodded record set.
+        var db = InstallData.BaseGame!;
         var levels = InstallData.Levels!;
         var dir = Path.Combine(Path.GetTempPath(), "meitou-roadnav-" + Guid.NewGuid().ToString("N"));
         try

@@ -48,6 +48,55 @@ public static class MyGuiColours
         for (int i = 0; i < parts.Length; i++) if (!float.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out n[i]) || !float.IsFinite(n[i])) return fallback;
         return new(n[0], n[1], n[2], parts.Length == 4 ? n[3] : 1);
     }
+    /// <summary>
+    /// The text colour a widget made from layout resource <paramref name="template"/> gets, as "r g b": the template's own <c>TextColour</c> property, else the normal-state colour of its skin's text part,
+    /// else that of its <c>Client</c> child's template or skin (an EditBox template holds its text in one); a mod such as a Palette UI recolours these together with the window's background.
+    /// <paramref name="template"/> may also name a skin. Null when the data names none.
+    /// </summary>
+    public static string? TemplateText(MyGuiResources resources, string template, int depth = 0)
+    {
+        if (!resources.Templates.TryGetValue(template, out var resource) || resource.Element("Widget") is not { } root) return SkinText(resources, template);
+        var own = root.Elements("Property").FirstOrDefault(p => (string?)p.Attribute("key") == "TextColour")?.Attribute("value")?.Value;
+        if (own is not null && Parse(own, default) != default) return own;
+        if (SkinText(resources, (string?)root.Attribute("skin") ?? "") is { } fromSkin) return fromSkin;
+        if (depth < 3 && root.Elements("Widget").FirstOrDefault(w => (string?)w.Attribute("name") == "Client") is { } client && (string?)client.Attribute("skin") is { Length: > 0 } clientSkin)
+            return TemplateText(resources, clientSkin, depth + 1);
+        return null;
+    }
+
+    static string? SkinText(MyGuiResources resources, string skinName)
+    {
+        if (!resources.Skins.TryGetValue(skinName, out var skin)) return null;
+        string? colour = null;
+        foreach (var part in skin.Parts.Where(p => p.Type is "SimpleText" or "EditText"))
+            colour = part.StateProperties?.GetValueOrDefault("normal")?.GetValueOrDefault("colour") ?? colour;
+        return colour;
+    }
+
+    static MyGuiResources? inkOwner;
+    static readonly Dictionary<string, string?> inkCache = new(StringComparer.Ordinal);
+    static readonly Vector4 gameSecondary = Parse(Hex("140806"), default);
+    /// <summary>
+    /// The ink of the text that sits on <paramref name="template"/> (a template or skin name): <see cref="TemplateText"/> when a skin mod recoloured it (it differs from the game's
+    /// Secondary), else the palette's <see cref="InkText"/>, so a mod that changes only the palette (Dark UI) still recolours the text. The lookup is cached per name
+    /// (these run every frame), and the cache is dropped when the resources change.
+    /// </summary>
+    public static string TemplateInk(MyGuiResources resources, string template)
+    {
+        string? found;
+        lock (inkCache)
+        {
+            if (!ReferenceEquals(inkOwner, resources)) { inkCache.Clear(); inkOwner = resources; }
+            if (!inkCache.TryGetValue(template, out found))
+            {
+                found = TemplateText(resources, template);
+                if (found is not null && Vector3.DistanceSquared(Parse(found, default).AsVector3(), gameSecondary.AsVector3()) < 1e-5f) found = null;
+                inkCache[template] = found;
+            }
+        }
+        return found ?? InkText;
+    }
+
     public static Vector4 Text(MyGuiResources resources, UiControl control, string state, Vector4 fallback)
     {
         // A text-only button (no background to tint) shows its hover colour on the text: dialogue choices, research and crafting lists.

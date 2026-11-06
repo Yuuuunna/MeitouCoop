@@ -48,8 +48,9 @@ static class Program
             using var certificate = ServerCertificate.Open(config.DataDirectory, config.AdvertisedHost);
             var install = GameInstall.Locate() ?? throw new DirectoryNotFoundException("Kenshi installation was not found. Set KENSHI_PATH or meitou.local.json.");
             Console.WriteLine("Meitou experimental server: computing local compatibility manifest.");
-            var rules = config.Rules();
-            var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets);
+            if (config.ModsCfg is not null) ModList.UseModsCfg(config.ModsCfg);
+            var rules = ServerCompatibility.WithCodeSettings(config.Rules(), install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
+            var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
             var accounts = new TokenAccountStore(Path.Combine(config.DataDirectory, "accounts.json"));
             if (accountName is not null)
             {
@@ -70,7 +71,8 @@ static class Program
             using var host = HeadlessWorld.Open(install, new WorldSettings
             {
                 Seed = config.WorldSeed, Threads = config.SimulationThreads, PublishSnapshots = false,
-            });
+            }, trustedCodeMods: config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), modSettings: config.ModSettings, gameplay: config.Gameplay);
+
             host.Population.Relations.PlayerFaction = -1;
             var store = new CheckpointStore(Path.Combine(config.DataDirectory, "world"));
             var checkpoints = host.CreateCheckpointCoordinator(store);
@@ -82,6 +84,10 @@ static class Program
                 if (restored.CleanupFailure is not null) throw new IOException("Old-world cleanup failed after restore.", restored.CleanupFailure);
                 Console.WriteLine("Restored checkpoint " + saved.Id);
             }
+            rules = ServerCompatibility.WithCodeSettings(config.Rules(GameplayRules.Capture(host.World)), install,
+                config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
+            hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets,
+                config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
             host.Population.Relations.PlayerFaction = -1;
             var starts = NewGameStart.LoadAll(host.Population.Db);
             var start = NewGameStart.Find(starts, config.DefaultStart) ?? throw new InvalidDataException("Configured default start was not found.");
@@ -144,7 +150,7 @@ static class Program
             _ = input;
             try
             {
-                var nextSave = DateTime.UtcNow.AddSeconds(config.SaveIntervalSeconds);
+                var nextSave = DateTime.UtcNow.AddSeconds(config.Gameplay.AutoSaveSeconds);
                 while (!stop.IsCancellationRequested)
                 {
                     var delay = Task.Delay(1000, stop.Token);
@@ -153,12 +159,12 @@ static class Program
                     if (completed == listener.Completion) { await listener.Completion.ConfigureAwait(false); throw new IOException("Listener stopped unexpectedly."); }
                     await delay.ConfigureAwait(false);
                     await loop.InvokeAsync(() => host.Runtime.Speed = config.PauseWhenEmpty && !host.World.Players.All.Any(p => host.World.Authority.IsActive(p.Id)) ? 0 : 1, stop.Token).ConfigureAwait(false);
-                    if (DateTime.UtcNow >= nextSave)
+                    if (config.Gameplay.AutoSaveSeconds > 0 && DateTime.UtcNow >= nextSave)
                     {
                         try { await Save().ConfigureAwait(false); }
                         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
                         { Console.Error.WriteLine("Autosave failed; previous checkpoint retained: " + error.Message); }
-                        nextSave = DateTime.UtcNow.AddSeconds(config.SaveIntervalSeconds);
+                        nextSave = DateTime.UtcNow.AddSeconds(config.Gameplay.AutoSaveSeconds);
                     }
                 }
             }

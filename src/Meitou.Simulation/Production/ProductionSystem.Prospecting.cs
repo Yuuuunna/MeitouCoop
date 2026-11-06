@@ -1,3 +1,4 @@
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Gameplay.Construction;
 
@@ -21,14 +22,19 @@ public sealed partial class ProductionSystem
     /// <summary>The order: the character stops where it stands and starts the task (serial phase). A character already at it keeps its progress.</summary>
     void ProspectBegin(World world, ProspectOrder order)
     {
+        if (world.Characters.TryResolveNext(order.Character, out int slot)) PlayerOrders.Give(world, slot, world.BindOrder(order, new OrderEntry(TaskType.PROSPECTING, this)), order.Queued);
+    }
+
+    /// <summary>The prospecting's start: the character stops where it stands.</summary>
+    void ProspectStart(World world, int slot)
+    {
         var table = world.Characters;
-        if (!table.TryResolveNext(order.Character, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold ||
-            !world.MayOrder(order, order.Character) || !Able(cold) || cold.WaterState == 3) return;
-        var grant = world.Players.ControlOf(order.Character);
-        if (world.Players.RequiresExplicitControl && grant is null) return;
+        var cold = table.Cold(slot)!;
+        var grant = world.Players.ControlOf(table.IdOf(slot));
+        if (!cold.IsPlayer || !Able(cold) || cold.WaterState == 3 || world.Players.RequiresExplicitControl && grant is null) return;
         ref var n = ref table.Next[slot];
         if (n.Task == (byte)CharacterTask.Prospect && cold.ProspectControl == grant && cold.ProspectPlayer == (grant?.Player ?? PlayerId.Local)) return;
-        MovementSystem.Stop(table, slot);
+        TaskStart.Stand(table, slot);
         n.Task = (byte)CharacterTask.Prospect;
         n.TaskTime = 0;
         cold.Prospecting = 0;
@@ -39,7 +45,7 @@ public sealed partial class ProductionSystem
 
     /// <summary>
     /// Once a tick (serial): each prospector adds the tick's game seconds; at <see cref="ProspectSeconds"/> the task ends and the results are published (<see cref="World.Prospected"/>). Another
-    /// order (a changed task) or a downed, fighting or carried character ends it without a result.
+    /// order (a changed task) or a downed, carried or caged character ends it without a result.
     /// </summary>
     void ProspectStep(World world)
     {
@@ -53,6 +59,7 @@ public sealed partial class ProductionSystem
             if (n.Task != (byte)CharacterTask.Prospect || !Able(cold) ||
                 (cold.ProspectControl is { } authority ? !world.Players.Validate(authority) : world.Players.RequiresExplicitControl))
             {
+                if (n.Task == (byte)CharacterTask.Prospect) TaskStart.End(world, i, TaskEnd.Done);
                 cold.Prospecting = null;
                 cold.ProspectControl = null;
                 if (n.Task == (byte)CharacterTask.Prospect) n.Task = (byte)CharacterTask.Idle;
@@ -66,7 +73,7 @@ public sealed partial class ProductionSystem
                 continue;
             }
             cold.Prospecting = null;
-            n.Task = (byte)CharacterTask.Idle;
+            TaskStart.End(world, i, TaskEnd.Done);
             if (world.Players.Find(cold.ProspectPlayer) is { } recipient) PublishProspect(world, recipient.State, cold, n.Position);
             cold.ProspectControl = null;
         }

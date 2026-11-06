@@ -35,6 +35,30 @@ public static class InventoryCommands
         "boots" => race.NoShoes || wearer.Medical is { } m && m.LimbPart(2) is { Limb: not Bodies.LimbState.Original } && m.LimbPart(3) is { Limb: not Bodies.LimbState.Original },
         _ => false,
     };
+    /// <summary>
+    /// <c>validateInventorySections</c> (<c>FUN_1406218f0</c>, character vtable slot 130; <b>Verified</b> body): a section <see cref="SectionClosed"/> for the character empties itself. The
+    /// first worn boots of a character whose race may wear shoes are dropped in front of it (slot 53, <c>FUN_1405ca740</c>); every other item of a closed section is destroyed
+    /// (<c>FUN_140749c20</c> with its delete flag). The original runs it when it builds a human's inventory, when a leg is severed (<c>FUN_14064edc0</c>, parts 2 and 3) and for every
+    /// character when the new game's editor closes (<c>FUN_1405f5d10</c>); Meitou calls it for the last two (<see cref="PopulationSystem"/>'s limb queue,
+    /// <see cref="Editing.CharacterEditing.EndCreation"/>: a race switched in the editor keeps the old race's clothes until then), as a built inventory never has a worn item in a closed section.
+    /// </summary>
+    public static void ValidateSections(World world, int slot, CharacterCold cold)
+    {
+        if (cold.Inventory is not { } inventory) return;
+        foreach (string section in ClosableSections)
+        {
+            if (!SectionClosed(cold, section)) continue;
+            if (section == "boots" && cold.Race is { NoShoes: false } && inventory.Items.Find(i => i.Section == section) is { } boots)
+            {
+                inventory.Items.Remove(boots);
+                PlayerSystem.DropAhead(world, slot, boots);
+            }
+            inventory.Items.RemoveAll(i => i.Section == section);
+        }
+    }
+
+    static readonly string[] ClosableSections = ["shirt", "head", "boots"];
+
     public static bool IsMovableSection(string section) => section is "main" or "backpack_content" || IsEquipmentSection(section);
     /// <summary>A fitted prosthetic's section (<see cref="Meitou.Data.Gameplay.Bodies.LimbReplacement.SlotOf"/>): the limbs window's slots; not traded, not saved with the inventory.</summary>
     public static bool IsLimbSection(string section) => LimbSlotOf(section) >= 0;
@@ -84,6 +108,9 @@ public static class InventoryCommands
     }
 
     public static bool Move(Inventory root, InventoryItemToken token, string section, int x, int y, CharacterCold? wearer = null) => Transfer(root, token, root, section, x, y, limbs: true, wearer);
+
+    /// <summary>A right click's unit count for <paramref name="item"/>: money is never split (<c>FUN_140713d20</c> skips the one-unit split for item function 14), so 0, the whole stack, whatever Shift says.</summary>
+    public static int ClickCount(ItemInstance item, int count) => item.ItemFunction == PlayerSystem.MoneyFunction ? 0 : count;
 
     /// <summary>
     /// Moves at most <paramref name="count"/> units (0: all) of <paramref name="item"/>, held directly by <paramref name="owner"/>, into <paramref name="into"/> where they first fit
@@ -197,7 +224,7 @@ public static class InventoryCommands
     /// and unique items apart, as <see cref="Inventory.Add"/> does.
     /// </summary>
     public static bool Stackable(ItemInstance a, ItemInstance b) => !NeverStacks(a.Type) && a.Record == b.Record && a.MaterialId == b.MaterialId && a.Quality == b.Quality
-        && a.StolenFrom == b.StolenFrom && a.Death == b.Death && a.Unique == b.Unique && a.Contents is null && b.Contents is null;
+        && a.Mark == b.Mark && a.Death == b.Death && a.Unique == b.Unique && a.Contents is null && b.Contents is null;
 
     /// <summary>
     /// Moves <paramref name="units"/> of <paramref name="from"/> onto the stack <paramref name="into"/>. Partial charges combine: a stack is full units and one partly used one (its
@@ -247,8 +274,9 @@ public static class InventoryCommands
     /// The right click's move into another character (<c>FUN_140713d20</c>, its target <c>FUN_14070dcd0</c>): one unit at a time, at most <paramref name="count"/> (0: until one fails), each
     /// into the target's open bag window first (<paramref name="bagFirst"/>), then its character window: the slots of the item's type (<see cref="TryEquip"/>), then the main grid, stacks of it
     /// first (<see cref="Inventory.AddTo"/>). Leaving its owner a unit is no longer a death item. Returns the units moved; <paramref name="equipped"/>: one was worn.
+    /// <paramref name="bagOnly"/>: only into the target's worn bag, nowhere else.
     /// </summary>
-    public static int MoveInto(Inventory owner, ItemInstance item, int count, Inventory into, bool bagFirst, out bool equipped, CharacterCold? wearer = null)
+    public static int MoveInto(Inventory owner, ItemInstance item, int count, Inventory into, bool bagFirst, out bool equipped, CharacterCold? wearer = null, bool bagOnly = false)
     {
         equipped = false;
         int want = count <= 0 ? item.Quantity : Math.Min(count, item.Quantity), moved = 0;
@@ -263,7 +291,8 @@ public static class InventoryCommands
             if (last) owner.Items.RemoveAt(at);
             unit.Death = false;
             bool worn = false;
-            bool placed = bagFirst && into.Backpack?.Contents is { } bag && bag.AddTo("backpack_content", unit) || (worn = TryEquip(into, unit, wearer)) || into.AddTo("main", unit);
+            bool placed = bagOnly ? into.Backpack?.Contents is { } only && only.AddTo("backpack_content", unit)
+                : bagFirst && into.Backpack?.Contents is { } bag && bag.AddTo("backpack_content", unit) || (worn = TryEquip(into, unit, wearer)) || into.AddTo("main", unit);
             if (!placed)
             {
                 unit.Death = death;

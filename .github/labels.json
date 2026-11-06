@@ -20,6 +20,11 @@
     "description": "The roadmap no longer matches GitHub"
   },
   {
+    "name": "feedback",
+    "color": "bfd4f2",
+    "description": "Sent with the in-game feedback button"
+  },
+  {
     "name": "area:startup",
     "color": "ededed",
     "description": "Roadmap category: Startup and saves"

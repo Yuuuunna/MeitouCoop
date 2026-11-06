@@ -75,15 +75,18 @@ public static class SquadManagement
     }
 
     /// <summary>
-    /// A new, empty squad of the player's faction at <paramref name="at"/>, of the SQUAD_TEMPLATE "blank squad" (the original's <c>FUN_1407f4420</c> with no template), last in
+    /// A new, empty squad of the player's faction at <paramref name="at"/>, of the SQUAD_TEMPLATE "blank squad" (the original's <c>FUN_1407f4420</c> with no template; <paramref name="templateId"/>: that template), last in
     /// the order and named like the original's platoons, the faction's name and a number (<c>Nameless_1</c>).
     /// </summary>
     public static Squad NewSquad(World world, GameDatabase db, Vector3 at, string factionName)
         => NewSquad(world, db, at, factionName, world.Player.Faction);
 
-    public static Squad NewSquad(World world, GameDatabase db, Vector3 at, string factionName, int faction)
+    public static Squad NewSquad(World world, GameDatabase db, Vector3 at, string factionName, string? templateId)
+        => NewSquad(world, db, at, factionName, world.Player.Faction, templateId);
+
+    public static Squad NewSquad(World world, GameDatabase db, Vector3 at, string factionName, int faction, string? templateId = null)
     {
-        var template = db.OfType(FcsRecordType.SQUAD_TEMPLATE).FirstOrDefault(r => r.BaseName == "blank squad");
+        var template = templateId is not null ? db.Find(templateId) : db.OfType(FcsRecordType.SQUAD_TEMPLATE).FirstOrDefault(r => r.BaseName == "blank squad");
         var squads = PlayerSquads(world, faction);
         int n = squads.Count;
         while (squads.Any(s => s.Name == $"{factionName}_{n}")) n++;
@@ -104,7 +107,10 @@ public static class SquadManagement
         return squad;
     }
 
-    /// <summary>Keeps the active squad one of the player's: when it is gone, the first in order with members, else the first.</summary>
+    /// <summary>
+    /// Keeps the active squad one of the player's with members: when it is gone, or has none, the first in order with members (the squad tab refresh, <c>FUN_140416140</c>,
+    /// <b>Verified</b>); when no squad has members the active one stays, or the first when it is gone.
+    /// </summary>
     internal static void KeepActive(World world)
     {
         foreach (var player in world.Players.All) KeepActive(world, player.State);
@@ -113,7 +119,8 @@ public static class SquadManagement
     static void KeepActive(World world, PlayerState player)
     {
         if (!player.Exists) { player.Squad = -1; return; }
-        if (world.Squads.Find(player.Squad) is { } active && Mine(world, player.Faction, active)) return;
+        if (world.Squads.Find(player.Squad) is { } active && Mine(world, player.Faction, active)
+            && (world.Players.RequiresExplicitControl || active.Members.Count > 0)) return;
         var squads = PlayerSquads(world, player.Faction);
         player.Squad = (squads.FirstOrDefault(s => s.Members.Count > 0) ?? squads.FirstOrDefault())?.Id ?? -1;
     }
@@ -142,6 +149,7 @@ public static class SquadManagement
                 if (doomed.Members.Count > 0 || world.StoredPlayerRoles?.PendingCount(doomed.Id) > 0) { Notice("The squad needs to be empty before it can be removed."); return; }
                 if (PlayerSquads(world, faction).Count == 1) { Notice("You must have at least one squad."); return; }
                 world.Squads.Remove(doomed.Id);
+                world.SystemOf<PopulationSystem>()?.ForgetSquad(doomed.Id);
                 Renumber(PlayerSquads(world, faction));
                 KeepActive(world);
                 break;
@@ -262,13 +270,21 @@ public static class SquadManagement
         {
             var other = target.Members[move.Index];
             if (!world.MayOrder(move, other)) return;
-            if (source == target) (source.Members[from], source.Members[move.Index]) = (other, move.Character);
+            if (source == target)
+            {
+                (source.Members[from], source.Members[move.Index]) = (other, move.Character);
+                ResetRoles(table, source, Math.Min(from, move.Index), Math.Max(from, move.Index));
+            }
+
             else
             {
                 source.Members[from] = other;
                 target.Members[move.Index] = move.Character;
                 Join(table, other, source);
                 Join(table, move.Character, target);
+                // Engine choice: the original's cross-squad swap is two puts (FUN_140796620), which reset the roles from the put place on; here the two swapped places.
+                ResetRoles(table, source, from, from);
+                ResetRoles(table, target, move.Index, move.Index);
             }
         }
         else
@@ -277,6 +293,7 @@ public static class SquadManagement
             int at = move.Index < 0 || move.Index > target.Members.Count ? target.Members.Count : move.Index;
             target.Members.Insert(at, move.Character);
             if (source != target) Join(table, move.Character, target);
+            ResetRoles(table, target, at, target.Members.Count - 1);
         }
         Relead(table, source);
         if (source != target) Relead(table, target);
@@ -311,6 +328,17 @@ public static class SquadManagement
         from.Leader = CharacterId.None;
         if (into.Leader.IsNone && into.Members.Count > 0) into.Leader = into.Members[0];
         world.Squads.Remove(from.Id);
+        world.SystemOf<PopulationSystem>()?.ForgetSquad(from.Id);
+    }
+
+    /// <summary>
+    /// A put or swap resets the member type of the places <paramref name="first"/> to <paramref name="last"/> to 0 (<c>FUN_140796620</c>, <c>FUN_140792e60</c>), so a Squad2 or Slave
+    /// member dropped there, and whoever shifted behind it, becomes a plain member. Place 0 is left to <see cref="Relead"/>.
+    /// </summary>
+    static void ResetRoles(CharacterTable table, Squad squad, int first, int last)
+    {
+        for (int i = Math.Max(first, 1); i <= last && i < squad.Members.Count; i++)
+            if (table.TryResolveNext(squad.Members[i], out int slot)) table.Cold(slot)!.Role = (int)SquadRole.Squad1;
     }
 
     /// <summary>The first member leads (role 2), the one that led before goes back to role 0 (<c>FUN_140796620</c> / <c>FUN_140792e60</c>: index 0 is made the leader).</summary>
@@ -373,7 +401,7 @@ public static class SquadManagement
         cold.Jobs.Clear();
         cold.Save = null;   // no longer in the player's platoon file
         table.Next[slot].Mode = SpeedMode.Walk;
-        MovementSystem.Stop(table, slot);
+        TaskStart.Stand(table, slot);
         squad.Members.Add(id);
         squad.Leader = id;
         world.Squads.Add(squad);

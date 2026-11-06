@@ -200,7 +200,7 @@ sealed partial class PlayerInterface
             Confirm("Create characters", $"Create {preview.Members.Length} character(s) and enter the server?", CommitOnlineEditor);
             return;
         }
-        editor = new(EditKind.Creation, drafts.Keys.ToArray(), CharacterId.None);
+        editor = new(EditKind.Creation, drafts.Keys.ToArray(), new HashSet<CharacterId>(), CharacterId.None);
         foreach (var (id, draft) in drafts) { editor.Drafts[id] = draft; editor.StartNames[id] = draft.Name; }
         sentAppearance = JsonSerializer.Serialize(OnlineChoices());
         previews.Clear();

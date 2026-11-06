@@ -15,58 +15,135 @@ public sealed partial class CombatSystem
         public int Self, Current;
         public CharacterCold Cold;
         public bool Player, Hold, Prone, Animal;
-        public Vector2 HoldPoint;
+        public Vector3 HoldPoint;
+        /// <summary>The AI task's target whose attackers the chooser protects (a bodyguard's), -1: none.</summary>
+        public int Protectee;
         public int Best;
         public float BestScore;
+        /// <summary>Fights started this tick by target, counted as attackers (the AI's serial step, <see cref="BestAttackerOf"/>; null: none).</summary>
+        public IReadOnlyDictionary<int, int>? Pending;
     }
 
+    /// <summary>The score a candidate of the lists must beat (<c>chooseAttackTarget</c>'s floor <c>DAT_1416abef4</c> = -100, <b>Verified</b>).</summary>
+    const float PickFloor = -100;
+
     /// <summary>
-    /// A fighter's target choice (<c>CombatClassAI::chooseAttackTarget</c>, scored by <see cref="TargetScore"/>): its current target (when <paramref name="keep"/>), the ones
-    /// fighting it, and, unless it is Passive, the ones fighting its squad mates within <see cref="RetaliationSystem.JoinRange"/> (engine reading of the protectee's attackers:
-    /// every mate counts). Every candidate fights someone of its side, so the leave-alone test holds. Reads the last tick's state only; -1 when none qualifies.
+    /// A fighter's target choice (<c>CombatClassAI::chooseAttackTarget</c> <c>FUN_140666ee0</c>, <b>Verified</b>; docs/game/combat.md "Target selection"), scored by <see cref="TargetScore"/>:
+    /// the best over its lists that scores above <see cref="PickFloor"/>. The lists: the attackers of its AI task's target, which the original holds only for the goals 45 Bodyguard, 17, 87,
+    /// 152 and 124 (<c>FUN_14050ca70</c>; Meitou: a bodyguard's protectee), the chooser's own attackers and its threats (<see cref="SenseBlock.Threats"/>); a candidate must be sensed by the
+    /// chooser or the protectee (<see cref="CharacterFacts.Knows"/>) and not crippled. When none qualifies, the sensed-enemy finder (<c>FUN_14059fa70</c>, gated on <c>numEnemies</c>; the aggro
+    /// mode it also tests is 0 by construction): the entries tagged enemy, not down or imprisoned, seen or heard at the last look. The current target is scored as any other (its
+    /// stubbornness keeps it). Reads the last tick's state and the senses of the last look; -1 when none qualifies.
     /// </summary>
-    int ChooseTarget(World world, int i, in CombatSlot s, CharacterCold cold, bool keep)
+    int ChooseTarget(World world, int i, in CombatSlot s, CharacterCold cold)
     {
         var table = world.Characters;
         var prev = table.Previous;
         bool hold = Orders.Holding(cold) && !s.Ranged;
+        int protectee = cold.Guarding && table.TryResolveNext(cold.FollowOrder, out int p) && p != i ? p : -1;
         var q = new Choice
         {
             Self = i, Current = s.TargetSlot, Cold = cold, Player = cold.IsPlayer, Hold = hold, Prone = cold.Medical!.Prone, Animal = cold.Fighter!.IsAnimal,
-            HoldPoint = hold ? Orders.HoldPointOf(cold, prev[i].Position) : default, Best = -1, BestScore = float.NegativeInfinity,
+            HoldPoint = hold ? Orders.HoldPointOf(cold, prev[i].Position) : default, Protectee = protectee, Best = -1, BestScore = PickFloor,
         };
-        // The current target first, so a tie keeps it (the caller's sense test; the others are sensed: an attacker is put in the senses of whom it attacks).
-        if (keep) Consider(world, ref q, s.TargetSlot, false);
-        int generation = prev[i].Generation;
-        foreach (var (_, _, _, a) in index.AttackersOf(i)) if (read[a].TargetGeneration == generation) Consider(world, ref q, a, false);
-        if (!Orders.Has(cold, CharacterOrders.Passive) && cold.SquadId >= 0 && world.Squads.Find(cold.SquadId) is { } squad)
+        bool Known(int a)
         {
-            foreach (var m in squad.Members)
-            {
-                int ms = m.Slot;
-                if (ms == i || !table.IsAlive(m)) continue;
-                float dx = prev[ms].Position.X - prev[i].Position.X, dz = prev[ms].Position.Z - prev[i].Position.Z;
-                if (dx * dx + dz * dz > RetaliationSystem.JoinRange * RetaliationSystem.JoinRange) continue;
-                foreach (var (_, _, _, a) in index.AttackersOf(ms))
-                    if (read[a].TargetGeneration == m.Generation) Consider(world, ref q, a, read[ms].TargetSlot != a);
-            }
+            var id = new CharacterId(a, table.Previous[a].Generation);
+            return CharacterFacts.Knows(world, i, id) || protectee >= 0 && CharacterFacts.Knows(world, protectee, id);
         }
+        if (protectee >= 0)
+        {
+            int pg = prev[protectee].Generation;
+            foreach (var (_, _, _, a) in index.AttackersOf(protectee))
+                if (read[a].TargetGeneration == pg && !Crippled(table, a) && Known(a)) Consider(world, ref q, a, false);
+        }
+        int generation = prev[i].Generation;
+        foreach (var (_, _, _, a) in index.AttackersOf(i)) if (read[a].TargetGeneration == generation && !Crippled(table, a) && Known(a)) Consider(world, ref q, a, false);
+        var senses = CharacterFacts.Senses(world, i);
+        if (senses is not null)
+            foreach (var t in senses.Threats)
+                if ((uint)t.Slot < (uint)prev.Length && prev[t.Slot].Generation == t.Generation && !Crippled(table, t.Slot)) Consider(world, ref q, t.Slot, false);
+        if (q.Best >= 0 || senses is not { Enemies: > 0 }) return q.Best;
+        q.BestScore = float.NegativeInfinity;
+        foreach (var e in senses.Entries)
+            if (e.Now && (e.Tags & (SenseTag.Enemy | SenseTag.Ko | SenseTag.Imprisoned)) == SenseTag.Enemy && (uint)e.Target < (uint)prev.Length && prev[e.Target].Generation == e.Generation)
+                Consider(world, ref q, e.Target, false);
         return q.Best;
     }
+
+    /// <summary>The chooser's lists leave out a crippled candidate (Character vslot 0x360, the crippled flag: <see cref="Bodies.MedicalState.Crawling"/>).</summary>
+    static bool Crippled(CharacterTable table, int c) => table.Cold(c)?.Medical is { Crawling: true };
+
+    /// <summary>
+    /// Whether a fighter without a target leaves its fight (<c>Task_MeleeAttack</c> update <c>FUN_14034ca40</c>, <b>Verified</b>; docs/game/combat.md "Leaving a fight"): its senses count no
+    /// enemy (<see cref="SenseBlock.Enemies"/>) and no threat to its allies (<see cref="SenseBlock.ThreatToAllies"/>), nobody fights it (<see cref="AttackerCount"/>, the engaged list), and
+    /// its task target (<see cref="CombatSlot.TaskSlot"/>) is gone or down (dead or knocked out; carried too, engine reading). Engine choice: a task target its senses hold no entry of counts as
+    /// gone, so a fighter does not wait for ever on a live target it lost (the entry decays 30 to 120 sense units after it was last sensed); a world without senses never holds it.
+    /// Reads the last tick's fights and the senses of the last look.
+    /// </summary>
+    bool NothingLeft(World world, int i, in CombatSlot s)
+    {
+        if (AttackerCount(world, i) > 0) return false;
+        var senses = CharacterFacts.Senses(world, i);
+        if (senses is { Enemies: > 0 } or { ThreatToAllies: > 0 }) return false;
+        var table = world.Characters;
+        var prev = table.Previous;
+        int t = s.TaskSlot;
+        if ((uint)t >= (uint)prev.Length || !prev[t].Alive || prev[t].Generation != s.TaskGeneration || read[t].Down
+            || table.Cold(t) is not { Medical.Incapacitated: false, CarriedBy.IsNone: true }) return true;
+        return senses is null || !senses.Knows(new CharacterId(t, s.TaskGeneration));
+    }
+
+    /// <summary>
+    /// <c>AI::findAttackerOf</c> (<c>FUN_14099c3b0</c>, <b>Verified</b>) for a character joining <paramref name="subject"/>'s fight: of those fighting the subject, and the
+    /// subject's own target while it fights, the best by <see cref="TargetScore"/> for <paramref name="looker"/>; for a looker other than the subject only those within
+    /// <see cref="RetaliationSystem.ProtectReach"/> of the subject, and never one the looker counts as an ally (the subject's own target also only when either side is
+    /// the other's enemy). -1 when none. The finder's sense tests and its fallback to the subject's threats are left out (an attacker is put in the senses of whom it attacks).
+    /// <paramref name="pending"/>: fights started this tick by target, counted as attackers of theirs (the AI's serial step).
+    /// </summary>
+    public int BestAttackerOf(World world, int subject, int looker, IReadOnlyDictionary<int, int>? pending = null)
+    {
+        var table = world.Characters;
+        var prev = table.Previous;
+        if ((uint)subject >= (uint)prev.Length || table.Cold(looker) is not { Fighter: { } fighter, Medical: { } medical } cold) return -1;
+        var q = new Choice { Self = looker, Current = -1, Cold = cold, Player = cold.IsPlayer, Prone = medical.Prone, Animal = fighter.IsAnimal, Protectee = -1, Best = -1, BestScore = float.NegativeInfinity, Pending = pending };
+        bool Joinable(int c)
+        {
+            if (table.Cold(c) is not { } tc) return false;
+            if (looker != subject)
+            {
+                var gap = table.Previous[c].Position - table.Previous[subject].Position;
+                if (gap.X * gap.X + gap.Z * gap.Z > RetaliationSystem.ProtectReach * RetaliationSystem.ProtectReach) return false;
+            }
+            return Relations is not { } r || !(r.Contains(tc.Faction) && r.Contains(cold.Faction) && r.IsAlly(cold.Faction, tc.Faction));
+        }
+        int generation = prev[subject].Generation;
+        foreach (var (_, _, _, a) in index.AttackersOf(subject))
+            if (read[a].TargetGeneration == generation && Joinable(a)) Consider(world, ref q, a, looker != subject);
+        int own = read[subject].TargetSlot;
+        if (own >= 0 && own != looker && (uint)own < (uint)prev.Length && prev[own].Generation == read[subject].TargetGeneration && Joinable(own)
+            && table.Cold(own) is { } oc && Relations is { } rel
+            && (AggroSystem.IsEnemy(rel, cold.Faction, oc.Faction) || AggroSystem.IsEnemy(rel, oc.Faction, cold.Faction)))
+            Consider(world, ref q, own, looker != subject);
+        return q.Best;
+    }
+
+    /// <summary>The crippled flag of the target score (<c>FUN_14059e300</c> :249-252): vslot 0x360 (<c>isCrippled</c>: crawling, or unable to attack, stand-in) or the maimed test <c>FUN_140644170</c> (<see cref="Bodies.MedicalState.Maimed"/>).</summary>
+    public static bool IsCrippled(CharacterCold c) => c.Medical is { Crawling: true } or { Maimed: true } || c.Fighter is not { CanAttack: true };
 
     void Consider(World world, ref Choice q, int c, bool protect)
     {
         var table = world.Characters;
         var prev = table.Previous;
         int i = q.Self;
-        if (c == i || (uint)c >= (uint)prev.Length || !prev[c].Alive || read[c].Down || table.Cold(c) is not { Medical.Incapacitated: false, IsImprisoned: false } tc) return;
+        if (c == i || (uint)c >= (uint)prev.Length || !prev[c].Alive || read[c].Down || table.Cold(c) is not { Medical.Incapacitated: false, IsImprisoned: false, CarriedBy.IsNone: true } tc) return;   // a carried one is dropped by Act's target test
         // One it found no path to lately is left out (AITaskSytem::isPathImpossible).
         if (PursuitSystem.PathImpossible(q.Cold, new CharacterId(c, prev[c].Generation), world.Tick)) return;
         // The current target is whoever the order named, of any faction.
         if (c != q.Current && (tc.Faction == q.Cold.Faction || q.Cold.SquadId >= 0 && tc.SquadId == q.Cold.SquadId)) return;
         ref readonly var o = ref read[c];
-        if (q.Hold && !Orders.HoldPost(prev[i].Position, q.HoldPoint, prev[c].Position, prev[c].Velocity, false, o.TargetSlot == i)) return;
-        int attackers = AttackerCount(world, c);
+        if (q.Hold && !Orders.HoldPost(prev[i].Position, q.HoldPoint, prev[c].Position, prev[c].Velocity, prev[c].Yaw, tc.Medical is { Crawling: true } || o.AttackTech >= 0, o.TargetSlot >= 0)) return;
+        int attackers = AttackerCount(world, c) + (q.Pending is { } pending ? pending.GetValueOrDefault(c) : 0);
         float dx = prev[c].Position.X - prev[i].Position.X, dz = prev[c].Position.Z - prev[i].Position.Z;
         var candidate = new TargetCandidate
         {
@@ -76,20 +153,46 @@ public sealed partial class CombatSystem
             ChooserAttacks = c == q.Current,
             Taunt = Orders.Has(tc, CharacterOrders.Taunt),
             Passive = Orders.Has(tc, CharacterOrders.Passive),
-            Protect = protect && attackers < 2,
+            // +10 for one on the AI task's target (the protectee) that does not fight it back, with under two attackers (FUN_14059e300).
+            Protect = (protect || q.Protectee >= 0 && o.TargetSlot == q.Protectee && read[q.Protectee].TargetSlot != c) && attackers < 2,
             Distance = MathF.Sqrt(dx * dx + dz * dz),
             Fighting = o.TargetSlot >= 0,
             Gunner = tc.Gunning is not null,
-            Crippled = tc.Medical.Crawling || tc.Fighter is not { CanAttack: true },
+            Crippled = IsCrippled(tc),
             Peaceful = o.TargetSlot < 0 && Relations is { } relations && !AggroSystem.IsEnemy(relations, tc.Faction, q.Cold.Faction),
-            GettingUp = tc.GettingUpUntil > world.Tick,
+            GettingUp = CharacterFacts.GettingUp(tc, world.Tick),
         };
-        if (TargetScore.Score(candidate, q.Player, q.Hold, q.Prone, q.Animal) is { } score && score > q.BestScore)
+        if (TargetScore.Score(candidate, q.Player, q.Hold, q.Prone, q.Animal, q.Cold.Manoeuvre) is { } score && score > q.BestScore)
         {
             q.Best = c;
             q.BestScore = score;
         }
     }
+
+    /// <summary>
+    /// The fight threat of a character (<c>FUN_14099a190</c> on its <c>CombatClassAI</c>, <b>Verified</b>; docs/game/ai-tasks.md "Combat goals"), the value the protect finders give an ally or
+    /// squad mate (143, 15, 288): 0 when it is down; 0.01 when exactly one attacker fights it and someone else already fights that attacker; else 0.25 n - 0.2 for n attackers (at most 5;
+    /// none: 0), raised to 0.1 x the threat sum of its senses (<see cref="SenseBlock.ThreatToMe"/>, <paramref name="senses"/>, its own); and 0.01 at least while it is in a fight. Engine
+    /// reading: n is every standing fighter whose target it is (<see cref="AttackerCount"/>; the original counts its engaged list of askers, at most 5), and "someone else fights the attacker"
+    /// is that attacker's own count above 1 (the original adds its refused askers, an approximation); Meitou's threat sum adds 1 per threat where the original adds its aggression.
+    /// As of the last tick; any thread after Schedule.
+    /// </summary>
+    public float FightThreat(World world, int slot, SenseBlock? senses)
+    {
+        var table = world.Characters;
+        var prev = table.Previous;
+        if ((uint)slot >= (uint)table.HighWater || !prev[slot].Alive || table.Cold(slot) is not { } c || CharacterFacts.Down(c) || c.Medical is { Dead: true }) return 0;
+        int n = 0, only = -1, generation = prev[slot].Generation;
+        foreach (var (_, _, _, a) in index.AttackersOf(slot))
+            if (read[a].TargetGeneration == generation && !read[a].Down) { n++; only = a; }
+        if (n == 1 && AttackerCount(world, only) > 1) return 0.01f;
+        float v = n > 0 ? 0.25f * Math.Min(n, 5) - 0.2f : 0;
+        if (senses is not null) v = MathF.Max(v, 0.1f * senses.ThreatToMe);
+        return v <= 0 && c.InCombat ? 0.01f : v;
+    }
+
+    /// <summary>The protect finders cap their value at this (<c>DAT_1416852f0</c>, <b>Verified</b>).</summary>
+    public const float ProtectCap = 1.2f;
 
     /// <summary>How many fight the character in <paramref name="slot"/> (standing fighters whose target it is), as of the last tick; any thread after Schedule.</summary>
     public int AttackerCount(World world, int slot)
@@ -97,59 +200,6 @@ public sealed partial class CombatSystem
         int n = 0, generation = world.Characters.Previous[slot].Generation;
         foreach (var (_, _, _, a) in index.AttackersOf(slot)) if (read[a].TargetGeneration == generation && !read[a].Down) n++;
         return n;
-    }
-
-    /// <summary>
-    /// Whether fighter <paramref name="i"/> senses <paramref name="c"/> (the chooser's sense test, engine reading of the sense entries): one attacking it always; else within its
-    /// sight range (<see cref="SenseRange"/>, the race's multiplier and the weather, 500 indoors), and a sneaker only while in view (<see cref="SightMap.Sees"/> with its stealth).
-    /// </summary>
-    bool Senses(World world, int i, CharacterCold cold, int c)
-    {
-        var prev = world.Characters.Previous;
-        if ((uint)c >= (uint)prev.Length || !prev[c].Alive || world.Characters.Cold(c) is not { } tc) return false;
-        if (read[c].TargetSlot == i) return true;
-        float outdoor = AggroSystem.RangeOf(cold, SenseRange);
-        float range = world.Sight.MaxRange(i, outdoor);
-        if (Vector3.DistanceSquared(prev[c].Position, prev[i].Position) > range * range) return false;
-        return (tc.Orders & CharacterOrders.Sneak) == 0 || world.Sight.Sees(i, c, prev[i].Position, prev[i].Yaw, prev[c].Position, outdoor, Orders.Stealth(tc)) > 0;
-    }
-
-    /// <summary>The original's sense-age unit in seconds (hours x 3600 / 33 x 0.5, <see cref="AggroSystem.GiveUpSenseSeconds"/> = 12 of them).</summary>
-    public const float SenseUnitSeconds = AggroSystem.GiveUpSenseSeconds / 12;
-    /// <summary>How long a sense entry lasts unsensed, in sense units (<c>SensoryData::decay</c>): 30, 60 for some targets, 120 for an intruder in the home (<see cref="SenseLife"/>).</summary>
-    public const int SenseLifeUnits = 30, SenseLifeLongUnits = 60, SenseLifeHomeUnits = 120;
-    /// <summary>The long-term squad memory tags that keep an entry 60 units: intruder, stole from me, captor, killed my friend (mask 0x232).</summary>
-    const uint LongSenseTags = 0x232;
-
-    /// <summary>
-    /// The chooser's sense test on its current target (a sense entry, docs/game/combat.md "Target selection"): it passes while the chooser <see cref="Senses"/> the target and
-    /// for <see cref="SenseLife"/> after (an NPC's chase may give it up sooner, <see cref="AggroSystem"/>, 24 s unsensed).
-    /// </summary>
-    bool CurrentSensed(World world, int i, ref CombatSlot s, CharacterCold cold, int now)
-    {
-        if (Senses(world, i, cold, s.TargetSlot))
-        {
-            s.SensedTick = now;
-            return true;
-        }
-        return (now - s.SensedTick) * world.TickSeconds <= SenseLife(world, i, cold, s.TargetSlot) * SenseUnitSeconds;
-    }
-
-    /// <summary>
-    /// The lifetime of looker <paramref name="i"/>'s sense entry of <paramref name="t"/> in sense units (<c>SensoryData::decay</c> <c>FUN_140859010</c>, <b>Observed</b>): 120 when the
-    /// looker's faction is real and <paramref name="t"/> is a player character inside the looker's home building; 60 when it is fighting, its squad remembers it as an intruder, thief,
-    /// captor or friend killer, or it is the looker's faction's slave; else 30.
-    /// </summary>
-    int SenseLife(World world, int i, CharacterCold cold, int t)
-    {
-        if (world.Characters.Cold(t) is not { } tc) return SenseLifeUnits;
-        var squad = cold.SquadId >= 0 ? world.Squads.Find(cold.SquadId) : null;
-        bool real = Relations is not { } relations || !relations.Contains(cold.Faction) || !relations.Factions[cold.Faction].NotReal;
-        if (real && world.Player.Faction >= 0 && tc.Faction == world.Player.Faction && squad?.HomeBuilding is { } home && world.Sight.BuildingOf(t) == home.Key) return SenseLifeHomeUnits;
-        if (tc.InCombat || tc.SlaveState == 1 && tc.SlaveOwner == cold.Faction) return SenseLifeLongUnits;
-        if (squad is not null && world.SystemOf<AggroSystem>()?.Memory?.Find(world, squad.Id, world.Characters.IdOf(t)) is { } memory && (memory.Long & LongSenseTags) != 0)
-            return SenseLifeLongUnits;
-        return SenseLifeUnits;
     }
 
     /// <summary>How far apart in height two characters inside one building may stand and still be on the same floor (engine reading of the floor test).</summary>
@@ -187,7 +237,7 @@ public sealed partial class CombatSystem
         var prev = world.Characters.Previous;
         if (read[c].TargetSlot == me && read[c].TargetGeneration == prev[me].Generation) return true;
         if (read[me].TargetSlot == c && read[me].TargetGeneration == prev[c].Generation) return true;
-        return Relations is { } relations ? AggroSystem.IsEnemy(relations, oc.Faction, myFaction) : oc.Faction != myFaction;
+        return CharacterFacts.RegardsEnemy(Relations, oc.Faction, myFaction);
     }
 
     /// <summary>The spacing of the points the steering's line test stands on (engine choice: under a footprint, so a wall's gap of a body width is not skipped).</summary>
@@ -211,10 +261,21 @@ public sealed partial class CombatSystem
         return true;
     }
 
-    /// <summary>Turns a fighter on a new target: it asks its target again for a place and weighs its techniques afresh.</summary>
+    /// <summary>
+    /// Whether <paramref name="a"/> at <paramref name="from"/> and <paramref name="t"/> at <paramref name="to"/> stand on different floors (engine reading, #292): either is in or on a
+    /// building (<see cref="SightMap.Outdoors"/>) and they are over <see cref="SameFloorHeight"/> apart in height. A fighter does not swing through a floor or stop its chase there; outdoors a
+    /// ledge is reached by the 3D gap alone (<see cref="CombatTuning.Gap"/>). Last tick's places; any thread after Sight's update.
+    /// </summary>
+    public static bool OtherFloor(World world, int a, Vector3 from, int t, Vector3 to) =>
+        (!world.Sight.Outdoors(a) || !world.Sight.Outdoors(t)) && MathF.Abs(to.Y - from.Y) > SameFloorHeight;
+
+    /// <summary>
+    /// Turns a fighter on a new target: it asks its target again for a place and weighs its techniques afresh. A crossbowman closing in on the old one has its closing timer
+    /// set to <see cref="RangedTuning.NewTargetClear"/> (<c>FUN_1404371f0</c>), so the first closing ray to pass stops it.
+    /// </summary>
     static void Retarget(ref CombatSlot s, int target, int generation, int now)
     {
-        s.SensedTick = now;
+        if (s.RangedState == (byte)RangedStates.Closing && (s.TargetSlot != target || s.TargetGeneration != generation)) s.ClearTime = RangedTuning.NewTargetClear;
         s.TargetSlot = target;
         s.TargetGeneration = generation;
         s.Engaged = false;

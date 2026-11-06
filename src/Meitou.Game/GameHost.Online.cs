@@ -32,9 +32,14 @@ sealed partial class GameHost
         var db = scene.Database ?? throw new InvalidDataException("Online presentation requires compatible game content.");
         var levels = scene.Objects?.Levels ?? WorldLevelData.Load(install, includeInteriors: true);
         // Static tooltip/editor/map content only. No World, navigation owner or simulation systems exist on this client.
-        popData = PopulationData.Create(db, levels.Towns(), new GeneratedAppearances(db, install.Root));
+        var layouts = scene.Objects?.Layouts ?? new BuildingLayouts(db, levels.Interiors);
+        levels.ConfigurePreparedLayouts(layouts);
+        var buildings = TownBuildings.Build(db, levels, layouts, (x, z) => gpu.Terrain.HeightAt((float)x, (float)z));
+        popData = PopulationData.Create(db, levels.Towns(), new GeneratedAppearances(db, install.Root), buildings: buildings);
         var constants = GameConstants.FromDatabase(db);
         session = new RemotePlayerSession(connection, gpu.Terrain.HeightAt, clock: GameClockFor(constants, o.Hour, o.Day ?? 0), tickRate: config.TickRate);
+        StartMods(db, popData);
+        StartDeferredWarmup();
         session.Advance(0);
         if (!session.HasWorldView) throw new IOException("The server withdrew the world while scene content loaded. Reconnect to prepare entry again.");
         BootPlayer(display, interactive);

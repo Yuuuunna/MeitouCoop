@@ -9,16 +9,17 @@ public readonly record struct ZoneBlood(float Value, Vector2 Position);
 
 /// <summary>
 /// The blood smell of the zones (<c>ZoneSmell</c>, <b>Verified</b> decompile) and the blood hunters that follow it (goal 176 HUNTING_BLOODSMELL, <c>Task_HuntingSmell</c>). Serial, in
-/// <c>SlowWorld</c> every <see cref="EveryTicks"/> ticks: each zone's target is its corpses with flies (1 each) plus 0.25 per bleeding character; its position is the corpses' centroid, or
-/// the bleeders' when there are no corpses or at most 0.25 of the bleeders; the value rises toward the target at 1/60 a game second and falls at 1/240. An animal whose squad's package
+/// <c>SlowWorld</c> every <see cref="EveryTicks"/> ticks, the zones stepping once per <see cref="StepSeconds"/> with the elapsed time: each zone's target is its corpses with flies (1 each; the bleeders the original posts are skipped by its accumulation); its
+/// position is the corpses' centroid, or (0, 0) without corpses (the original's zero vector); the value rises toward the target at 1/60 a game second and falls at 1/240. A zone
+/// not loaded is dropped once its target is 0 (<c>FUN_1408f85f0</c>). An animal whose squad's package
 /// lists 176 hunts the zone with the best weighted value (its own x1, a neighbour x0.8, any other x0.5) above its race's ANIMAL_CHARACTER <c>smell blood</c>, keeps it while the value stays
-/// at the threshold, and runs to its position. Engine choices: every loaded zone is a candidate (the original's active zone island); the source pass runs on this cadence, not every frame.
+/// at the threshold, and runs to its position. Engine choices: every loaded zone is a candidate (the original's active zone island); all zones step together, the original one zone per kick in a cycle.
 /// </summary>
 public sealed class SmellSystem(PopulationData data, PopulationSystem? population) : ITickSystem, IStateHashed
 {
     public const int EveryTicks = 30;
-    /// <summary>The blood channel's rates per game second (<b>Verified</b>: rise 1/60, decay 1/240), and a bleeder's share.</summary>
-    public const float Rise = 1f / 60, Decay = 1f / 240, BleederShare = 0.25f;
+    /// <summary>The blood channel's rates per game second (<b>Verified</b>: rise 1/60, decay 1/240).</summary>
+    public const float Rise = 1f / 60, Decay = 1f / 240;
     /// <summary>The weights of a neighbouring and any other zone in the hunters' pick (<b>Verified</b> literals).</summary>
     public const float NeighbourWeight = 0.8f, FarWeight = 0.5f;
 
@@ -35,38 +36,44 @@ public sealed class SmellSystem(PopulationData data, PopulationSystem? populatio
     public void SlowWorld(World world)
     {
         if (world.Tick % EveryTicks != 0) return;
-        Update(world, EveryTicks * world.TickSeconds);
+        // The sources step once per 10 game seconds with the whole time since the last step as dt (FUN_1408f85f0: its timer runs to DAT_14167fad4 = 10 and the step takes the frozen value).
+        elapsed += EveryTicks * world.TickSeconds;
+        if (elapsed >= StepSeconds)
+        {
+            Update(world, elapsed);
+            elapsed = 0;
+        }
         if (population is not null) Hunt(world);
     }
+
+    /// <summary>Game seconds between the zone steps (Verified literal 10), and the time gathered towards the next. Not saved.</summary>
+    public const float StepSeconds = 10;
+    float elapsed;
 
     void Update(World world, float dt)
     {
         var table = world.Characters;
-        var sums = new Dictionary<int, (int Corpses, Vector2 CorpseSum, int Bleeders, Vector2 BleedSum)>();
+        var sums = new Dictionary<int, (int Corpses, Vector2 CorpseSum)>();
         for (int s = 0; s < table.HighWater; s++)
         {
-            if (!table.Next[s].Alive || table.Cold(s) is not { Medical: { } m } c) continue;
-            bool corpse = c.HasFlies && m.Dead, bleeder = !m.Dead && m.Bleeding > 0;
-            if (!corpse && !bleeder) continue;
+            if (!table.Next[s].Alive || table.Cold(s) is not { Medical: { Dead: true } } c || !c.HasFlies) continue;
             var p = table.Next[s].Position;
             var zone = WorldLayout.ZoneOf(p.X, p.Z);
             if (zone.X is < 0 or >= WorldLayout.ZoneCount || zone.Y is < 0 or >= WorldLayout.ZoneCount) continue;
             int key = Key(zone);
             var a = sums.GetValueOrDefault(key);
             var at = new Vector2(p.X, p.Z);
-            sums[key] = corpse ? (a.Corpses + 1, a.CorpseSum + at, a.Bleeders, a.BleedSum) : (a.Corpses, a.CorpseSum, a.Bleeders + 1, a.BleedSum + at);
+            sums[key] = (a.Corpses + 1, a.CorpseSum + at);
         }
         foreach (int key in zones.Keys.Union(sums.Keys).ToList())
         {
-            var (value, position) = zones.GetValueOrDefault(key);
-            float target = 0;
-            if (sums.TryGetValue(key, out var a))
-            {
-                target = a.Corpses + BleederShare * a.Bleeders;
-                position = a.Corpses == 0 || a.Corpses <= BleederShare * a.Bleeders ? a.BleedSum / a.Bleeders : a.CorpseSum / a.Corpses;
-            }
+            var (value, _) = zones.GetValueOrDefault(key);
+            var a = sums.GetValueOrDefault(key);
+            float target = a.Corpses;
+            var position = a.Corpses > 0 ? a.CorpseSum / a.Corpses : Vector2.Zero;
             value = value < target ? MathF.Min(target, value + dt * Rise) : MathF.Max(target, value - dt * Decay);
-            if (value <= 0 && target <= 0) zones.Remove(key);
+            bool unloaded = world.LoadedZones is { } loaded && !loaded.Contains(new ZoneCoordinate(key % WorldLayout.ZoneCount, key / WorldLayout.ZoneCount));
+            if (target <= 0 && (value <= 0 || unloaded)) zones.Remove(key);
             else zones[key] = (value, position);
         }
     }
@@ -120,7 +127,7 @@ public sealed class SmellSystem(PopulationData data, PopulationSystem? populatio
                 c.Engaged = true;
                 ref var n = ref table.Next[s];
                 if (Vector2.Distance(new Vector2(n.Position.X, n.Position.Z), to) > HuntArrive && (n.Task != (byte)CharacterTask.GoTo || Vector2.Distance(n.Goal, to) > HuntArrive))
-                    MovementSystem.GoTo(table, s, to, SpeedMode.Run);
+                    TaskStart.Walk(world, s, to, SpeedMode.Run, Meitou.Data.Gameplay.Ai.TaskType.HUNTING_BLOODSMELL, TaskSource.Goal);
             }
         }
     }
@@ -140,5 +147,6 @@ public sealed class SmellSystem(PopulationData data, PopulationSystem? populatio
         hasher.Add(0x536D656C);
         foreach (var (k, z) in zones) { hasher.Add(k); hasher.Add(z.Value); hasher.Add(z.Position); }
         foreach (var (s, z) in hunts) { hasher.Add(s); hasher.Add(z); }
+        hasher.Add(elapsed);
     }
 }

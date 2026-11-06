@@ -43,6 +43,12 @@ public interface IWalkability
         y = GroundHeight(x, z, nearY);
         return IsWalkable(x, z, nearY);
     }
+    /// <summary>
+    /// The part of a free move (root motion, combat footwork) a body of <paramref name="radius"/> at <paramref name="from"/> can make along <paramref name="step"/> (X, Z): the
+    /// original's nav agent sweeps its circle against the walls of the walkable surface and slides along the one it meets (docs/game/pathfinding.md "Walls").
+    /// Default: the whole step (the caller still tests where it ends).
+    /// </summary>
+    Vector2 Slide(Vector3 from, Vector2 step, float radius) => step;
     /// <summary>The terrain's own height at world X/Z, also under the water (where <see cref="GroundHeight(float, float)"/> is the flat water surface): the depth of the water is the water level minus this.</summary>
     float TerrainHeight(float x, float z) => GroundHeight(x, z);
 

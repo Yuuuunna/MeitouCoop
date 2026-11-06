@@ -51,8 +51,9 @@ public sealed partial class MedicalState
     public DeathCause Cause { get; private set; }
 
     /// <summary>
-    /// Set when blood reached 0 (<c>+0x163 bloodlossTrauma</c>); clears above 25 (the original only on an update that found blood below capacity, docs/game/character-stats.md
-    /// "Blood and KO"). While set, a conscious character goes down only under -25, and the HUD's Toughness XP shows "Blood loss trauma: +2x".
+    /// Set when blood reached 0 or while a limb is freshly cut off (<c>+0x163 bloodlossTrauma</c>, <see cref="HasFreshStump"/>); clears only on a tick that finds blood below
+    /// capacity and then above 25 (docs/game/character-stats.md "Blood and KO"). While set, a conscious character goes down only under -25, and the HUD's Toughness XP shows
+    /// "Blood loss trauma: +2x".
     /// </summary>
     public bool BloodKo { get; private set; }
 
@@ -74,6 +75,24 @@ public sealed partial class MedicalState
     bool legKoKnown;
 
     /// <summary>
+    /// The injuries make an NPC medic pass the patient by, and count it crippled in the target score (<c>FUN_140644170</c>, <b>Verified</b>): a stump on a leg, or on both arms.
+    /// </summary>
+    public bool Maimed
+    {
+        get
+        {
+            int arms = 0;
+            foreach (var p in Parts)
+            {
+                if (p.Limb != LimbState.Stump) continue;
+                if (p.Template.Type == BodyPartType.Leg) return true;
+                if (p.Template.Type == BodyPartType.Arm) arms++;
+            }
+            return arms >= 2;
+        }
+    }
+
+    /// <summary>
     /// The original's forced crawl (posture 2, <c>FUN_140649320</c>, <b>Observed</b>): a conscious character with a stats object (not an animal) any of whose legs is down by
     /// <see cref="HealthPart.LegDown"/>. One leg is enough; it moves at <see cref="Speed.CrawlSpeed"/> and plays the grounded clips. Read live, so a hit shows at once.
     /// </summary>
@@ -83,15 +102,48 @@ public sealed partial class MedicalState
         {
             // The original's flag (medical +0x160) is only set by the medical tick: before the first one (KO point not yet known) nobody is crippled, where a KO point of 0
             // would ground anyone with a leg merely below 0 (between 0 and the KO point a leg only limps).
-            if (Incapacitated || !HasStatsObject || !legKoKnown) return false;
+            return !Incapacitated && LegsDown;
+        }
+    }
+
+    /// <summary>A leg is down by <see cref="HealthPart.LegDown"/> whether or not the character is conscious (the original's flag +0x160 is set by the tick either way); needs the KO point known.</summary>
+    bool LegsDown
+    {
+        get
+        {
+            if (!HasStatsObject || !legKoKnown) return false;
             foreach (var p in parts) if (p.IsLeg && p.LegDown(LegKoPoint)) return true;
             return false;
         }
     }
 
     /// <summary>
-    /// Posture 0 (<c>PS_NORMAL</c>, docs/game/ragdolls.md "Forced crawl"): conscious, neither staying low nor crawling. Only a standing character loses a leg into a knock-out
-    /// (<see cref="Sever"/>, <b>Verified</b>: the original tests the posture before it sets the knock-out). Read before a blow or a tick changes the legs.
+    /// Set by <see cref="Tick"/> on the update that finds a leg down where the last one did not (the original's first set of the crippled flag, which calls <c>FUN_1405c8330</c>:
+    /// the character stops and its orders and tasks are cleared, docs/game/ragdolls.md "Forced crawl"); <see cref="BodySystem"/> takes it in a serial phase. The first tick after a
+    /// load only learns the state. Not saved.
+    /// </summary>
+    public bool CollapseOnset { get; set; }
+    int legsWereDown = -1;
+
+    /// <summary>
+    /// The planner's <c>myLegsAreMessedUp</c> (state 103, <c>FUN_1409980c0</c>, docs/game/ai-tasks.md "Planner states"): false when a leg is a stump (the limb-state table's legs, <c>FUN_14002a6e9</c>);
+    /// else true when a leg is down by <see cref="HealthPart.LegDown"/> (<c>FUN_140644450</c>) and the KO point is under its maximum health less its stun, i.e. the leg could still be fixed.
+    /// The original names its two leg parts (<c>+0x4d8</c>, <c>+0x4e0</c>); here they are the parts with a leg <c>collapse part</c>. Like <see cref="Crawling"/> it needs the KO point known.
+    /// </summary>
+    public bool LegsMessedUp
+    {
+        get
+        {
+            if (!legKoKnown) return false;
+            foreach (var p in parts) if (p.IsLeg && p.Limb == LimbState.Stump) return false;
+            foreach (var p in parts) if (p.IsLeg && p.LegDown(LegKoPoint) && LegKoPoint < p.MaxHp - p.Stun) return true;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Posture 0 (<c>PS_NORMAL</c>, docs/game/ragdolls.md "Forced crawl"): conscious, neither staying low nor crawling, read live. A leg going down at posture 0 knocks the
+    /// character out (<see cref="LegCollapse"/>, which reads the posture as of the last tick).
     /// </summary>
     public bool Standing => !Unconscious && !StayingLow && !Crawling;
 
@@ -108,7 +160,24 @@ public sealed partial class MedicalState
     public bool PlayingDead { get; private set; }
 
     /// <summary>Knocked out with nothing but the KO timer keeping it down (vital parts and blood allow waking): whether it may wake within <paramref name="dt"/> seconds.</summary>
-    public bool WakesWithin(float dt) => Unconscious && !Dead && KoTimer <= dt && !VitalPartsKeepDown(LegKoPoint) && Blood >= 0;
+    public bool WakesWithin(float dt) => Unconscious && !Dead && KoTimer <= dt && !VitalPartsKeepDown(LegKoPoint) && Blood >= WakeBloodFloor;
+
+    /// <summary>
+    /// An arm or leg stump whose h - s is still under -M (M of the stump's base HP 5), as right after the cut (<c>hasFreshlySeveredALimb</c> <c>FUN_140645350</c>, <b>Verified</b>
+    /// decompile). While one is, each tick sets <see cref="BloodKo"/> and blood holds an unconscious character down only under -25, as a conscious one.
+    /// </summary>
+    public bool HasFreshStump
+    {
+        get
+        {
+            foreach (var p in parts)
+                if (p.Limb == LimbState.Stump && p.Template.Type is BodyPartType.Leg or BodyPartType.Arm && p.Flesh - p.Stun < -p.MaxHp) return true;
+            return false;
+        }
+    }
+
+    /// <summary>The blood an unconscious character needs to wake: 0, or -25 with a <see cref="HasFreshStump"/> (<c>reassessCollapseMode</c> then takes the conscious rule).</summary>
+    float WakeBloodFloor => HasFreshStump ? -25 : 0;
 
     /// <summary>How <see cref="StandUp"/> ended playing dead (staying low or not) for the get-up to take, instead of the sneak order; null when it did not.</summary>
     public bool? WokenLow { get; set; }
@@ -217,7 +286,52 @@ public sealed partial class MedicalState
     public bool BothArmsWork => ArmWorks(left: true) && ArmWorks(left: false);
 
     /// <summary>The aggregates of <c>FUN_140644e60</c>; <paramref name="exemptFromWear"/> gives the arm aggregate 1.0 (characters with the slot-0x248 object).</summary>
-    public BodyAggregates Aggregates(bool exemptFromWear = false)
+    public BodyAggregates Aggregates(bool exemptFromWear = false) => exemptFromWear ? Summary.Aggregates with { Arm = 1 } : Summary.Aggregates;
+
+    /// <summary>The lowest part fraction (1 for a body without parts), the way <c>Enumerable.Min</c> reads floats: a NaN wins.</summary>
+    public float WorstPart => Summary.Worst;
+
+    /// <summary>The blood the first 8 parts show, a byte each (<see cref="BloodAmounts(MedicalState)"/>).</summary>
+    public ulong ShownBlood => Summary.Blood;
+
+    // The part figures, kept while no part changed (HealthPart.Version only grows, so the sum moves with every change). A value under a lock: the publish reads it from several
+    // threads, and a new record on every change (a bleeding or healing character's every tick) was garbage.
+    readonly record struct PartSummary(int Version, BodyAggregates Aggregates, float Worst, ulong Blood);
+    PartSummary summary;
+    bool summaryKnown;
+    readonly Lock summaryLock = new();
+
+    PartSummary Summary
+    {
+        get
+        {
+            int version = 0;
+            foreach (var p in parts) version += p.Version;
+            lock (summaryLock)
+            {
+                if (summaryKnown && summary.Version == version) return summary;
+                summary = new(version, ComputeAggregates(), ComputeWorstPart(), BloodAmounts(this));
+                summaryKnown = true;
+                return summary;
+            }
+        }
+    }
+
+    float ComputeWorstPart()
+    {
+        if (parts.Length == 0) return 1;
+        float worst = parts[0].Fraction;
+        if (float.IsNaN(worst)) return worst;
+        for (int k = 1; k < parts.Length; k++)
+        {
+            float f = parts[k].Fraction;
+            if (f < worst) worst = f;
+            else if (float.IsNaN(f)) return f;
+        }
+        return worst;
+    }
+
+    BodyAggregates ComputeAggregates()
     {
         float arm = 0, head = 1, torso = float.MaxValue;
         bool anyArm = false, anyTorso = false, left = false, right = false;
@@ -239,7 +353,7 @@ public sealed partial class MedicalState
                 case BodyPartType.Torso: anyTorso = true; torso = MathF.Min(torso, f); break;
             }
         }
-        return new BodyAggregates(exemptFromWear || !anyArm ? 1 : arm, head, anyTorso ? torso : 1, left, right);
+        return new BodyAggregates(!anyArm ? 1 : arm, head, anyTorso ? torso : 1, left, right);
     }
 
     /// <summary>The stat multiplier in [0, 1] (<c>FUN_1406457e0</c>); see <see cref="StatMultiplier"/>.</summary>
@@ -310,17 +424,21 @@ public sealed partial class MedicalState
     /// <summary>The passing-out point of starvation (<c>FUN_140657620</c>): (100 - K x f) / 100, K = lerp(min, max toughness ko point, toughness / 100), f 1 with an empty stomach and 2 with food.</summary>
     public static float StarvationKoThreshold(GameConstants c, float toughness, bool foodInStomach)
     {
-        float k = c.MinToughnessKoPoint + (c.MaxToughnessKoPoint - c.MinToughnessKoPoint) * Math.Clamp(toughness * 0.01f, 0, 1);
+        float k = c.MinToughnessKoPoint + (c.MaxToughnessKoPoint - c.MinToughnessKoPoint) * (toughness * 0.01f);
         return (100 - k * (foodInStomach ? 2 : 1)) / 100;
     }
 
-    /// <summary>The negative HP at which a character goes into a coma (<c>FUN_140643ae0</c>): -lerp(min, max toughness ko point, toughness x 0.01); -10 at toughness 0 and -85 at 100 in the base game. Clamped to toughness 0 to 100 here.</summary>
+    /// <summary>
+    /// The negative HP at which a character goes into a coma (<c>FUN_140643ae0</c>, <b>Verified</b>): -lerp(min, max toughness ko point, toughness x stats multiplier x 0.01) with the plain
+    /// unclamped lerp (<c>FUN_140015b63</c>), so toughness past 100 goes past the max; -10 at toughness 0 and -85 at 100 in the base game. <paramref name="toughness"/> is the stat times the
+    /// stats multiplier.
+    /// </summary>
     public static float KoPoint(GameConstants c, float toughness) =>
-        -(c.MinToughnessKoPoint + (c.MaxToughnessKoPoint - c.MinToughnessKoPoint) * Math.Clamp(toughness * 0.01f, 0, 1));
+        -(c.MinToughnessKoPoint + (c.MaxToughnessKoPoint - c.MinToughnessKoPoint) * (toughness * 0.01f));
 
     /// <summary>The wound degeneration multiplier lerp(<c>degeneration mult 1</c>, <c>degeneration mult 99</c>, toughness / 100): toughness 1 deteriorates about 57 times faster than 99.</summary>
     public static float DegenerationMult(GameConstants c, float toughness) =>
-        c.DegenerationMult1 + (c.DegenerationMult99 - c.DegenerationMult1) * Math.Clamp(toughness * 0.01f, 0, 1);
+        c.DegenerationMult1 + (c.DegenerationMult99 - c.DegenerationMult1) * (toughness * 0.01f);
 
     /// <summary>
     /// The untreated damage fraction D of a part (<c>FUN_14064f5c0</c>): clamp(((M - h - b) x 100 / M - 20) / (90 - 20), 0, 1), x0.25 if h + b &gt; 0. Damage under 20% of M does nothing; 90% or more is full speed.
@@ -333,11 +451,19 @@ public sealed partial class MedicalState
     }
 
     /// <summary>
-    /// The hunger-rate situation factor (<c>FUN_1408837a0</c>): resting, knocked out or dead <c>bed hunger rate</c>; the AI flag (<paramref name="usingMachine"/>) 0.8; idle on a machine or chair its
-    /// functionality's <c>hunger rate</c>; else 1 + (1 - e) x <c>encumbrance hunger rate</c> (the original's rule moving or fighting; Meitou's idle without a machine too).
+    /// The hunger-rate situation factor (<c>FUN_1408837a0</c>, <b>Verified</b>): resting, knocked out or dead <c>bed hunger rate</c>; moving or fighting (not <paramref name="still"/>)
+    /// 1 + (1 - e) x <c>encumbrance hunger rate</c>; else on a machine or chair its functionality's <c>hunger rate</c> (<paramref name="useRate"/>), idle (<paramref name="idle"/>)
+    /// <see cref="IdleHungerRate"/>, otherwise 1 (CharStats <c>+0x178</c>'s default).
     /// </summary>
-    public static float HungerSituationFactor(GameConstants c, bool resting, bool usingMachine, float encumbranceFactor, float? useRate = null) =>
-        resting ? c.BedHungerRate : usingMachine ? 0.8f : useRate ?? 1 + (1 - encumbranceFactor) * c.EncumbranceHungerRate;
+    public static float HungerSituationFactor(GameConstants c, bool resting, bool still, bool idle, float encumbranceFactor, float? useRate = null)
+    {
+        if (resting) return c.BedHungerRate;
+        if (!still) return 1 + (1 - encumbranceFactor) * c.EncumbranceHungerRate;
+        return useRate ?? (idle ? IdleHungerRate : 1);
+    }
+
+    /// <summary>The hunger factor of a character standing still with no task (<c>FUN_1408837a0</c> literal; <b>Verified</b> in game, #134: the HUD's "Idle: 0.80x").</summary>
+    public const float IdleHungerRate = 0.8f;
 
     // ------------------------------------------------------------------ KO time
 
@@ -348,7 +474,7 @@ public sealed partial class MedicalState
     public float KoTerms(in MedicalContext ctx)
     {
         var c = ctx.Constants;
-        float k = c.KnockoutMult1 + (c.KnockoutMult99 - c.KnockoutMult1) * Math.Clamp(ctx.Toughness / 100, 0, 1);
+        float k = c.KnockoutMult1 + (c.KnockoutMult99 - c.KnockoutMult1) * (ctx.Toughness / 100);
         float sum = 0;
         foreach (var p in parts)
         {

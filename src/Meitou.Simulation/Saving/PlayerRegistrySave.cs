@@ -116,7 +116,8 @@ public static class PlayerRegistrySave
         if (document.Authority.Retired is null) throw new InvalidDataException("Missing retired-role state.");
         if (document.Version < 9)
         {
-            if (document.Campaigns is not null || document.AreaArrivals is not null)
+            if (document.Campaigns is { } campaigns && (campaigns.Clocks is null || campaigns.Clocks.Length != 0)
+                || document.AreaArrivals is { Length: > 0 })
                 throw new InvalidDataException("Legacy metadata cannot introduce campaign target clocks or arrival memory.");
             document = document with { Version = 9, Campaigns = new CampaignTargetState([]), AreaArrivals = [] };
         }

@@ -43,7 +43,10 @@ sealed partial class PlayerInterface
     /// <summary>The screens that show items: the held item goes back when none of them is open.</summary>
     static readonly string[] ItemScreens = ["inventory", "bag", "limbs", "loot", "loot-bag", "trader", "building", "bench", "storage"];
 
-    /// <summary>The character the inventory window (and its bag and limbs) shows: the lead selected character (a pinned window is its own screen, <see cref="SyncPinnedInventories"/>).</summary>
+    /// <summary>
+    /// The character the inventory window (and its bag and limbs) shows: the lead selected character, also while trading, as the original's (a trade passes to the window's character,
+    /// <see cref="Meitou.Simulation.Trading.TradeSystem.TradeWith"/>; a pinned window is its own screen, <see cref="SyncPinnedInventories"/>).
+    /// </summary>
     CharacterSnapshot? InventoryOwner() => Selected().FirstOrDefault();
 
     /// <summary>The character a character window shows: a pinned window's, the loot's body, else the inventory owner.</summary>
@@ -371,8 +374,7 @@ sealed partial class PlayerInterface
                 }
                 if (sale && session.CurrentSnapshot.Trade?.Held is { FenceOdds: { } odds })
                 {
-                    int caught = 100 - (int)MathF.Floor(odds * 100 + 0.5f);
-                    Confirm("FENCING ITEM", $"You have a {caught}% chance of getting caught selling this stolen item.\nFence it anyway?", Send);
+                    Confirm("FENCING ITEM", FenceQuestion(odds), Send);
                     UpdateMenuPause();
                     return;
                 }

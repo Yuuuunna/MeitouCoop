@@ -152,7 +152,7 @@ sealed partial class PlayerInterface
             switch (e.Widget)
             {
                 case "ResumeButton": faithfulScreens.Close("menu"); break;
-                case "NewGameButton": if (!wasOpen) { NewGameOptions = new(); advancedOpen = false; faithfulScreens.Open("new-game"); } break;
+                case "NewGameButton": if (!wasOpen) { advancedOpen = false; faithfulScreens.Open("new-game"); } break;
                 case "SaveGameButton": if (session.CanSaveWorld) OpenSlots("save"); break;
                 case "LoadGameButton": if (!(title && wasOpen)) OpenSlots("load"); break;
                 case "ImportGameButton": if (!wasOpen) { advancedOpen = false; OpenSlots("import"); } break;
@@ -230,7 +230,7 @@ sealed partial class PlayerInterface
                 try { SaveCatalog.ValidateName(name); }
                 catch (ArgumentException ex) { Notice(ex.Message, true); return true; }
                 void Save() { ScreenAction?.Invoke(new("save", "SaveButton", "save", name)); faithfulScreens.Close("save"); }
-                if (slots.Any(s => s.Writable && string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase))) Confirm("OVERWRITE SAVE", Loc.Tr("Overwrite save '{1}'?", name), Save); else Save();
+                if (slots.Any(s => s.Writable && string.Equals(s.Name, name, StringComparison.Ordinal))) Confirm("OVERWRITE SAVE", Loc.Tr("Overwrite save '{1}'?", name), Save); else Save();
             }
             return true;
         }
@@ -254,7 +254,7 @@ sealed partial class PlayerInterface
     bool BindFrontend(string id, UiBindings b)
     {
         void Enable(params string[] names) { foreach (string name in names) { b.Disabled.Remove(name); b.Actions[name] = name; } }
-        void Paragraph(string name, string text) { b.Text[name] = text; b.Properties[name] = new Dictionary<string, string> { ["WordWrap"] = "true", ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.InkText, ["TextPadding"] = name == "InfoPanel" ? "8 8 8 8" : "12 10 12 10" }; }
+        void Paragraph(string name, string text) { b.Text[name] = text; b.Properties[name] = new Dictionary<string, string> { ["WordWrap"] = "true", ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.TemplateInk(uiResources, "Kenshi_GenericTextBox"), ["TextPadding"] = name == "InfoPanel" ? "8 8 8 8" : "12 10 12 10" }; }
         if (BindOnline(id, b)) return true;
         if (id is "title" or "menu")
         {

@@ -203,7 +203,7 @@ public class KidnapTests
     }
 
     [Fact]
-    public void A_slave_serves_no_sentence_escapes_as_an_escaped_slave_is_reenslaved_by_its_owners_cage_and_freed_by_a_release_and_the_save_keeps_it()
+    public void A_slave_serves_no_sentence_escapes_as_an_escaped_slave_is_reenslaved_by_its_owners_cage_stays_one_through_a_release_and_the_save_keeps_it()
     {
         var data = ArrestTests.Town();
         using var world = new SimWorld(new WorldSettings { PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 150));
@@ -234,10 +234,12 @@ public class KidnapTests
         SlaveSave.Read(record, loaded, data);
         Assert.Equal((2, city), (loaded.SlaveState, loaded.SlaveOwner));
 
-        // Caged again by an owner: a slave again; a release frees it.
+        // Caged again by an owner: a slave again; a release leaves it one (FUN_1403570a0 never sets the slave state), bail's clear frees it (FUN_1406ae170).
         Assert.True(world.Fixtures.Imprison(world, slave, cage));
         Assert.Equal((1, city), (cold.SlaveState, cold.SlaveOwner));
         Assert.True(world.Fixtures.Release(world, slave));
+        Assert.Equal((1, city), (cold.SlaveState, cold.SlaveOwner));
+        FixtureRegistry.ClearSlave(world, cold);
         Assert.Equal((0, -1), (cold.SlaveState, cold.SlaveOwner));
         SlaveSave.Write(record, cold, data);
         Assert.False(record.Strings.ContainsKey(SlaveSave.OwnerKey));
@@ -326,23 +328,37 @@ public class KidnapTests
 [Slow]
 public class KidnapInstallTests(ITestOutputHelper output)
 {
+    /// <summary>How far round a cage the test's ground is the cage's floor: past its still reach (use range 15, doubled).</summary>
+    const float CageFloorRadius = 40;
+
     [Fact]
     public void A_cannibal_raid_lifts_downed_player_characters_and_cages_them_and_a_save_keeps_them_kidnapped()
     {
         Assert.SkipWhen(InstallData.Install is null, "Kenshi install not found");
         var install = InstallData.Install!;
-        var db = InstallData.FullLoadOrder!;
-        var levels = WorldLevelData.Load(install, includeInteriors: true);
+        // Fixed English names and base-world placements require the unmodded record set.
+        var db = InstallData.BaseGame!;
+        var levels = WorldLevelData.LoadBaseGame(install, includeInteriors: true);
         using var map = TerrainHeightmap.Open(install);
         var buildings = TownBuildings.Build(db, levels, new BuildingLayouts(db, levels.Interiors), (x, z) => map.HeightAt((float)x, (float)z));
         var data = PopulationData.Create(db, levels.Towns(), new GeneratedAppearances(db, install.Root), buildings: buildings);
-        var walk = new OpenGroundWalkability((_, _) => 300);
+        // The terrain, with the floor the navmesh would give round each cage of the raiders' town: Skinhouse HQ's cages stand on upper floors, 87 to 95 above the
+        // ground, and a cage is reached only within 15 of its height (FixtureRegistry.AtCage). The heightmap's file reader is not thread-safe.
+        var cageFloors = new List<Fixture>();
+        var heightGate = new object();
+        float Ground(float x, float z)
+        {
+            foreach (var c in cageFloors)
+                if (Vector2.Distance(new(x, z), new(c.Position.X, c.Position.Z)) < CageFloorRadius) return c.Position.Y;
+            lock (heightGate) return map.HeightAt(x, z);
+        }
+        var walk = new OpenGroundWalkability(Ground);
         SimWorld NewWorld(PopulationSettings settings, out StandardSystemSet set)
         {
             set = StandardSystems.Build(data, walk, new StandardSystemOptions
             {
                 Parts = StandardParts.Population | StandardParts.Player | StandardParts.Pursuit | StandardParts.Movement | StandardParts.Body | StandardParts.Combat | StandardParts.Retaliation
-                    | StandardParts.FirstAid | StandardParts.Aggro | StandardParts.Flee | StandardParts.Carry | StandardParts.Crime,
+                    | StandardParts.FirstAid | StandardParts.Aggro | StandardParts.Flee | StandardParts.Carry | StandardParts.Crime | StandardParts.Ai,
                 SynchronousPaths = true,
                 Population = settings,
                 Kidnap = new KidnapSettings { RecordLog = true },
@@ -363,6 +379,7 @@ public class KidnapInstallTests(ITestOutputHelper output)
             if (world.Fixtures.All.Any(x => x.Kind == FixtureKind.Cage && x.Site == t.Index)) { home = t; break; }
         }
         Assert.NotNull(home);
+        cageFloors.AddRange(world.Fixtures.All.Where(x => x.Kind == FixtureKind.Cage && x.Site == home.Index));
         var outpost = world.Buildings.AddTown(home.Position + new Vector3(1500, 0, 0), data.PlayerFaction);
         world.RunTicks(15);
         var war = population.Wars[faction];

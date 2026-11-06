@@ -11,7 +11,7 @@ public enum AiBehaviour : byte
 {
     /// <summary>Not built: the goal scores 0.</summary>
     None = 0,
-    /// <summary>Stands about near its post, stepping a few metres now and then (<see cref="CharacterTask.Wander"/> in <see cref="AiSettings.MillRadius"/>).</summary>
+    /// <summary>Idleness (14): stands where it is, as the original's blank task (<see cref="CharacterTask.Idle"/>).</summary>
     Mill = 1,
     /// <summary>Walks to its node in the home building (shopkeeper, guard, throne or general, by goal), else to its post, and stands there.</summary>
     Post = 3,
@@ -19,7 +19,7 @@ public enum AiBehaviour : byte
     Follow = 4,
     /// <summary>Walks to its bed in the home building (else the home, else its post) and lies down there (<see cref="CharacterTask.Rest"/>).</summary>
     Sleep = 5,
-    /// <summary>Sits down (<see cref="CharacterTask.Rest"/>): at a bar or general node of its home, else inside it; without a home where it is.</summary>
+    /// <summary>Sits down (<see cref="CharacterTask.Rest"/>) at the seat it claimed (<see cref="Blackboard.SeatClaims"/>); wanted only while it has one.</summary>
     Sit = 6,
     /// <summary>While a patrol package runs, the leader walks the patrol's route and the others follow it; otherwise wanders about the town (<see cref="CharacterTask.Wander"/>).</summary>
     Patrol = 7,
@@ -51,10 +51,46 @@ public enum AiBehaviour : byte
     /// </summary>
     Investigate = 16,
     /// <summary>
+    /// Attacks the best-scoring standing member of the squad its running contract is aimed at (DEFEAT_SQUAD 101, the contract's mission target; finder <c>FUN_140793eb0</c>,
+    /// docs/game/ai-tasks.md "Combat goals"): the serial step orders the attack, the combat system fights it. Wanted only while such a member is left.
+    /// </summary>
+    Assault = 17,
+    /// <summary>
+    /// SELF_PRESERVATION (32, every NPC's urgent goal, <see cref="SelfPreservation"/>): wanted at the threat level (<see cref="Combat.CombatSystem.ThreatLevel"/>), planned as [35, 32] when its
+    /// provider is 35 Running away (a crippled NPC, or one with no working arm; acted out as <see cref="Flee"/>), else [13, 32] on its own attacker (acted out as a <see cref="Fight"/>).
+    /// </summary>
+    SelfPreserve = 18,
+    /// <summary>
+    /// RUN_AWAY (35, <c>Task_Runaway</c>): asks <see cref="FleeSystem"/> to run the character from its enemies (its first run, then hops, until it is safe); a goal of the packages that list it
+    /// ("Leader flees while guards fight", the police stations' slaves), wanted at row 35's desire (<see cref="SelfPreservation.RunDesire"/>) while an enemy is near.
+    /// </summary>
+    Flee = 19,
+    /// <summary>
+    /// The combat goals that start a fight by their own finder (docs/game/ai-tasks.md "Combat goals"): 16 and 21 attack on sight, 144 in its home territory, 34 a trouble maker in its town,
+    /// 143 the attacker of a squad mate in a fight, 15 and 288 the attacker of a sensed ally in a fight. Wanted at the goal's desire times its finder's factor (1 with a target, else 0;
+    /// <see cref="AiSystem"/>, AiSystem.Fights.cs); the think asks for the fight (<see cref="AiMind.FightTarget"/>) and the serial step starts it, which the combat system fights.
+    /// </summary>
+    Fight = 20,
+    /// <summary>
+    /// JOB_MEDIC (58, the Medic goal of most packages, docs/game/ai-tasks.md "Medic jobs"): wanted at the patient finder's score (<see cref="FirstAid.FirstAidSystem.FindPatient"/>, run on the
+    /// NPC's sweep turn and kept in <see cref="AiMind.MedicScore"/>); the think asks for the treatment (<see cref="AiMind.MedicAsk"/>) and the serial step starts it, row 58's Treat.
+    /// </summary>
+    Medic = 21,
+    /// <summary>
     /// PATROL_TOWN (36, <c>Task_PatrolTown</c>, docs/game/ai-tasks.md "Town goals"): walks to a random point round its town's centre, and draws the next one each time a walk is over,
     /// so it keeps strolling about the town (an occupier: round the complete buildings of the player town it holds).
     /// </summary>
     PatrolTown = 22,
+    /// <summary>
+    /// Find and rescue leader (142, finder <c>FUN_140598540</c>, list B 101 <c>isLeaderDown</c>): wanted while the squad's leader (not the character, not dead) is down and can be lifted
+    /// (<see cref="Carrying.CarrySystem.LeaderToRescue"/>); the serial carry sweep lifts it (row 213, the snatch lift) once the goal is chosen.
+    /// </summary>
+    RescueLeader = 23,
+    /// <summary>
+    /// Crouches (CROUCH 27, <c>Task_Crouch</c>) or stands up from a crouch (STAND_UP 28, <c>Task_UnCrouch</c>) where it stands: the <c>squat T</c> clip plays forwards or backwards and the animation
+    /// stance's crouched byte is set once it passes 0.9 or cleared under 0.1 (<see cref="AnimationSystem"/>). The base data lists neither goal; modded packages may.
+    /// </summary>
+    Crouch = 24,
 }
 
 /// <summary>The engine's table from <see cref="TaskType"/> to <see cref="AiBehaviour"/>, and the TaskData display text (docs/game/ai-tasks.md "TaskData registry", Verified) of the types it acts out.</summary>
@@ -81,11 +117,13 @@ public static class TaskBehaviours
         [TaskType.MAN_A_TURRET_ON_BUILDING] = (AiBehaviour.Turret, "Turret home guard"),
         [TaskType.MAN_A_TURRET_PLAYER_JOB] = (AiBehaviour.Turret, "Turret guard"),
         [TaskType.USE_TURRET] = (AiBehaviour.Turret, "Turret gunner"),
-        [TaskType.SIT_ON_THRONE] = (AiBehaviour.Post, "Reigning"),
+        [TaskType.SIT_ON_THRONE] = (AiBehaviour.Sit, "Reigning"),
         [TaskType.FOLLOW_SQUADLEADER] = (AiBehaviour.Follow, "Following leader"),
         [TaskType.FOLLOW_SLAVEMASTER] = (AiBehaviour.Follow, "Following master"),
-        [TaskType.BODYGUARD] = (AiBehaviour.Follow, "Bodyguard"),
+        // 45 Bodyguard has no behaviour of its own (FUN_14032ebd0 builds Task_Blank for it): the following of a bodyguard contract is goal 44's.
         [TaskType.FOLLOW_PLAYER_ORDER] = (AiBehaviour.Follow, "Following"),
+        // 253 Following (urgent escape): a Task_Follow like 31 / 44 / 289 (FUN_14032ebd0 case 253, list B !7 60 90 59); one package lists it as a Leader goal.
+        [TaskType.FOLLOW_URGENT_ESCAPE] = (AiBehaviour.Follow, "Following"),
         [TaskType.GO_HOME_AND_GO_TO_BED] = (AiBehaviour.Sleep, "Going to bed"),
         [TaskType.GO_HOME_AND_GO_TO_BED_SECURE] = (AiBehaviour.Sleep, "Going to bed"),
         [TaskType.SLEEP_ON_FLOOR] = (AiBehaviour.Sleep, "Sleeping on ground"),
@@ -105,29 +143,28 @@ public static class TaskBehaviours
         [TaskType.RUN_AROUND_TOWN_LOOKING_FOR_PEOPLE] = (AiBehaviour.Patrol, "Ransacking town"),
         [TaskType.INVESTIGATE_ALARMS] = (AiBehaviour.Investigate, "Investigating"),
         [TaskType.INVESTIGATE_ALARMS_ALLIES_ONLY] = (AiBehaviour.Investigate, "Investigating"),
-    };
-
-    /// <summary>
-    /// The combat goals and the stance each gives (<b>engine reading</b>: how the original turns a sighting into an attack is <b>Unknown</b>, docs/game/perception.md;
-    /// these goals are the urgent ones its packages list for it). SELF_PRESERVATION (in the <c>AI Goals</c> of 30 races) is not one: fighting back when attacked is the retaliation rule's.
-    /// </summary>
-    static readonly Dictionary<TaskType, AiStance> Stances = new()
-    {
-        [TaskType.ATTACK_ENEMIES] = AiStance.Aggressive,
-        [TaskType.ATTACK_ENEMIES_AND_NEUTRALS] = AiStance.AggressiveNeutrals,
-        [TaskType.TERRITORIAL_AGGRESSION_BUT_DONT_LEAVE_HOME] = AiStance.Territorial,
-        [TaskType.PROTECT_ALLIES] = AiStance.Defensive,
-        [TaskType.PROTECT_OWN_SQUAD] = AiStance.ProtectSquad,
-        [TaskType.PROTECT_ALLIES_STAY_IN_TOWN] = AiStance.Defensive,
-        [TaskType.ATTACK_TROUBLE_MAKERS] = AiStance.Defensive,
-        [TaskType.ATTACK_ENEMIES_OF_MY_SLAVEMASTER] = AiStance.Defensive,
-        [TaskType.BODYGUARD] = AiStance.Defensive,
+        [TaskType.DEFEAT_SQUAD] = (AiBehaviour.Assault, "Assault"),
+        // 248 Attacking Squad: the same finder as 101 (FUN_140793eb0, stub LAB_140006d25), the same flags and effect; no base package lists it, a mod can.
+        [TaskType.DEFEAT_SQUAD_LIMIT_CHASE_RANGE] = (AiBehaviour.Assault, "Attacking squad"),
+        [TaskType.FIND_AND_RESCUE_LEADER] = (AiBehaviour.RescueLeader, "Rescuing leader"),
+        [TaskType.CROUCH] = (AiBehaviour.Crouch, "Crouching"),
+        [TaskType.STAND_UP] = (AiBehaviour.Crouch, "Standing"),
+        [TaskType.SELF_PRESERVATION] = (AiBehaviour.SelfPreserve, "Self preservation"),
+        [TaskType.RUN_AWAY] = (AiBehaviour.Flee, "Running away"),
+        [TaskType.ATTACK_ENEMIES] = (AiBehaviour.Fight, "Attacking enemies"),
+        [TaskType.ATTACK_ENEMIES_AND_NEUTRALS] = (AiBehaviour.Fight, "Attacking others"),
+        [TaskType.TERRITORIAL_AGGRESSION_BUT_DONT_LEAVE_HOME] = (AiBehaviour.Fight, "Home territory aggression"),
+        [TaskType.ATTACK_TROUBLE_MAKERS] = (AiBehaviour.Fight, "Attacking trouble makers"),
+        [TaskType.ATTACK_ENEMIES_OF_MY_SLAVEMASTER] = (AiBehaviour.Fight, "Attacking enemies of my master"),
+        [TaskType.PROTECT_OWN_SQUAD] = (AiBehaviour.Fight, "Protect close allies"),
+        [TaskType.PROTECT_ALLIES] = (AiBehaviour.Fight, "Protect allies"),
+        [TaskType.PROTECT_ALLIES_STAY_IN_TOWN] = (AiBehaviour.Fight, "Protect allies"),
+        [TaskType.JOB_MEDIC] = (AiBehaviour.Medic, "Medic"),
     };
 
     // Flat tables by type number for the think's hot loop (a dictionary lookup per goal was a third of the think).
     internal const int TypeCount = 291;
     static readonly AiBehaviour[] Behaviours = BuildBehaviours();
-    static readonly sbyte[] StanceTable = BuildStances();
 
     static AiBehaviour[] BuildBehaviours()
     {
@@ -136,24 +173,10 @@ public static class TaskBehaviours
         return a;
     }
 
-    static sbyte[] BuildStances()
-    {
-        var a = new sbyte[TypeCount];
-        Array.Fill(a, (sbyte)-1);
-        foreach (var (type, s) in Stances) a[(int)type] = (sbyte)s;
-        return a;
-    }
-
-    /// <summary>The stance a combat goal gives; null for a goal that is not one.</summary>
-    public static AiStance? StanceOf(TaskType type) => (uint)type < TypeCount && StanceTable[(int)type] >= 0 ? (AiStance)StanceTable[(int)type] : null;
-
-    /// <summary>The goal types that are combat goals.</summary>
-    public static IEnumerable<TaskType> CombatGoals => Stances.Keys;
-
     public static AiBehaviour Of(TaskType type) => (uint)type < TypeCount ? Behaviours[(int)type] : AiBehaviour.None;
 
     /// <summary>The game's display text of a type the engine acts out; the enum name for the rest.</summary>
-    public static string Text(TaskType type) => Table.TryGetValue(type, out var e) ? e.Text : type.ToString();
+    public static string Text(TaskType type) => Table.TryGetValue(type, out var e) ? e.Text : type == TaskType.STUMBLE_TASK_FORCED ? "Stumbling" : type.ToString();
 
     /// <summary>Every type the engine acts out.</summary>
     public static IEnumerable<TaskType> Built => Table.Keys;

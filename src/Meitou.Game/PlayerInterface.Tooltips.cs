@@ -20,8 +20,12 @@ sealed partial class PlayerInterface
 {
     /// <summary>The item records of the game data (for the item tooltip's lines); the host sets it.</summary>
     public Func<string, GameRecord?>? ItemRecordOf { get; set; }
+    /// <summary>The "-Only for:" text of a special food record (<see cref="Meitou.Data.Gameplay.Bodies.SpecialFood.EatenBy"/>); the host sets it.</summary>
+    public Func<string, string>? SpecialFoodRaces { get; set; }
     /// <summary>The combat tables (weapon and armour records); the host sets it.</summary>
     public Func<CombatDatabase?>? CombatOf { get; set; }
+    /// <summary>The game's global damage multiplier (scales a crossbow's damage on its tooltip); the host sets it. Null: 1.</summary>
+    public Func<float>? RangedDamageMultiplier { get; set; }
 
     /// <summary>The control property that makes an item cell show an item tooltip: the key of its <see cref="ItemTip"/>.</summary>
     const string ItemTipKey = "tooltip_item";
@@ -281,6 +285,7 @@ sealed partial class PlayerInterface
         "Broken" => "This machine has broken down as a result of damage. Send one of your engineers to repair it.",
         "Output full" when machine?.Farm is not null => "The output is full. Empty out the items and put them in a storage box or something.",
         "Output full" => "The machine output is full. Empty out the items and put them in a storage box or something.",
+        "Out of resource" => "The machine has run out of raw materials to work with. Find some more and fill it up.",
         "Growing" => "Your crops are growing nicely. You don't have to do anything.",
         "No water" => "Out of water. Growth rate will be significantly reduced and your plants may die.",
         "Ready to harvest" => "Nobody is working at this farm at the present moment, you need to hurry up and harvest them before they die.",
@@ -470,11 +475,13 @@ sealed partial class PlayerInterface
         public bool Goods { get; init; }
         /// <summary>The smith who crafted the item ("" none); its tooltip ends with the crafted-by block.</summary>
         public string Crafter { get; init; } = "";
+        /// <summary>The item's <c>unique</c> flag: the [Unique] marker row.</summary>
+        public bool Unique { get; init; }
         public static ItemTip NameOnly(string record, string material, string name, int quantity) => new(record, material, name, quantity, 0, 0, "", 0, 0, 0, -1, null, null) { Brief = true };
         public static ItemTip Of(InventoryItemView v, TradeItemView? trade = null, string? mapNote = null) =>
-            new(v.Record, v.Material, v.Name, v.Quantity, v.Weight, v.Quality, v.Company, v.Level, v.Charges, v.MaxCharges, v.StolenFrom, trade, mapNote) { Goods = trade is not null, Crafter = v.Crafter };
+            new(v.Record, v.Material, v.Name, v.Quantity, v.Weight, v.Quality, v.Company, v.Level, v.Charges, v.MaxCharges, v.StolenFrom, trade, mapNote) { Goods = trade is not null, Crafter = v.Crafter, Unique = v.Unique };
         public static ItemTip Of(TradeItemView v) =>
-            new(v.Record, v.Material, v.Name, v.Quantity, v.Weight, v.Quality, v.Company, v.Level, v.Charges, v.MaxCharges, v.StolenFrom, v, null);
+            new(v.Record, v.Material, v.Name, v.Quantity, v.Weight, v.Quality, v.Company, v.Level, v.Charges, v.MaxCharges, v.StolenFrom, v, null) { Unique = v.Unique };
     }
 
     static string Number(float v) => v.ToString("0.#", CultureInfo.InvariantCulture);
@@ -591,17 +598,25 @@ sealed partial class PlayerInterface
         int function = type == Meitou.Data.Fcs.FcsRecordType.ITEM ? record!.GetInt("item function") : 0;
         float unitWeight = t.Quantity > 0 ? t.Weight / t.Quantity : t.Weight;
         TooltipLine Row(string label, string value, TooltipTone valueTone = TooltipTone.Ink) => new("-" + label, value, TooltipTone.Ink, valueTone);
-        if (function == 3)
+        // The kind markers in the original's order (FUN_1407ae130): Ammunition, Research Artifact (the record's artifact flag), Unique (the item's flag; both Special, #14ffdc), Book, Food.
+        if (function == 16) lines.Add(new("[Ammunition]", "", TooltipTone.Main));
+        if (record?.GetBool("artifact") == true) lines.Add(new("[Research Artifact]", "", TooltipTone.Cyan));
+        if (t.Unique) lines.Add(new("[Unique]", "", TooltipTone.Cyan));
+        if (function == 13) lines.Add(new("[Book]", "", TooltipTone.Main));
+        if (function is 3 or 15)
         {
-            // One unit's charges left, truncated, then the record's ingredients by name (", "-joined, empty for raw food); no leading hyphen.
-            lines.Add(new("[Food]", "", TooltipTone.Good));
+            // Special food (15) skips the marker for "Possibly Edible" and the races it is for; both then share Nutrition (one unit's charges left, truncated) and the record's
+            // ingredients by name (", "-joined, empty for raw food); no leading hyphen.
+            if (function == 3) lines.Add(new("[Food]", "", TooltipTone.Good));
+            else
+            {
+                lines.Add(new("Possibly Edible", "", TooltipTone.Good));
+                if (SpecialFoodRaces?.Invoke(t.Record) is { Length: > 0 } eaters) lines.Add(new("-" + Loc.Tr("Only for:"), eaters, TooltipTone.Title, TooltipTone.Title));
+            }
             lines.Add(new("Nutrition", ((int)t.Charges).ToString(CultureInfo.InvariantCulture) + " nu", TooltipTone.Ink, TooltipTone.Ink));
             var ingredients = string.Join(", ", record!.GetReferences("ingredients").Select(r => RecordName?.Invoke(r.TargetStringId)).Where(n => n is { Length: > 0 }));
             lines.Add(new("Ingredients", ingredients, TooltipTone.Ink, TooltipTone.Ink));
         }
-        else if (function == 15) lines.Add(new("Possibly Edible", "", TooltipTone.Good));
-        else if (function == 13) lines.Add(new("[Book]", "", TooltipTone.Main));
-        else if (function == 16) lines.Add(new("[Ammunition]", "", TooltipTone.Main));
         if (t.StolenFrom >= 0)
             lines.Add(FactionName?.Invoke(t.StolenFrom) is { Length: > 0 } owner ? new("Stolen from:", owner, TooltipTone.Bad, TooltipTone.Bad) : new("Stolen", "", TooltipTone.Bad));
         if (function == 16)
@@ -611,7 +626,36 @@ sealed partial class PlayerInterface
             lines.Add(new("-Shots", $"{(int)t.Charges}/{(int)t.MaxCharges}", TooltipTone.Main, TooltipTone.Main));
         }
         string weightText;
-        if (type == Meitou.Data.Fcs.FcsRecordType.WEAPON && combat?.Weapon(t.Record) is { } weapon)
+        string Fixed2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+        // Signed percent rows (FUN_14079f650): (int) of the value truncated, none at 0, +N% Good or N% Bad.
+        void Signed(string label, float value)
+        {
+            int n = (int)value;
+            if (n != 0) lines.Add(Row(label, (n > 0 ? "+" : "") + n.ToString(CultureInfo.InvariantCulture) + "%", n > 0 ? TooltipTone.Good : TooltipTone.Bad));
+        }
+        if (type == Meitou.Data.Fcs.FcsRecordType.CROSSBOW && combat?.Crossbow(t.Record) is { } bow)
+        {
+            // A crossbow's own rows (FUN_1407b0750, Observed): the gun's numbers at the item's level x 0.01 (CrossbowData.At), the weight whole kg truncated.
+            var gun = CrossbowInstance.Create(t.Level * 0.01f, bow, combat.Constants, RangedDamageMultiplier?.Invoke() ?? 1).Stats;
+            string I(float v) => ((int)v).ToString(CultureInfo.InvariantCulture);
+            lines.Add(new("Crossbow class", "", TooltipTone.Main));
+            lines.Add(Row("Damage:", I(gun.PierceMin) + "-" + I(gun.PierceMax), TooltipTone.Main));
+            lines.Add(Row("Accuracy deviation:", Fixed2(gun.AccuracyDeviation) + " degrees", TooltipTone.Main));
+            lines.Add(Row("Reload time:", Fixed2(gun.ReloadMin) + "-" + Fixed2(gun.ReloadMax) + "s", TooltipTone.Main));
+            lines.Add(Row("Range:", I(gun.Range * 0.1f) + "m", TooltipTone.Main));
+            lines.Add(Row("Velocity:", I(gun.ShotSpeed * 0.23f) + "m/s", TooltipTone.Main));
+            lines.Add(Row("Blood loss:", Fixed2(bow.BleedMult) + "x", TooltipTone.Main));
+            lines.Add(Row("Required skill:", bow.AccuracyPerfectSkill.ToString(CultureInfo.InvariantCulture), TooltipTone.Main));
+            lines.Add(new("---------------", "", TooltipTone.Grey));
+            lines.Add(Row("Ammunition type:", bow.AmmoId.Length > 0 && RecordName?.Invoke(bow.AmmoId) is { Length: > 0 } ammo ? ammo : "???", TooltipTone.Main));
+            Signed("Damage vs robots", (bow.RobotDamageMult - 1) * 100);
+            Signed("Damage vs humans", (bow.HumanDamageMult - 1) * 100);
+            Signed("Damage vs animals", (bow.AnimalDamageMult - 1) * 100);
+            lines.Add(new("----------------", "", TooltipTone.Grey));
+            weightText = I(unitWeight) + " kg";
+            lines.Add(Row("Weight", weightText));
+        }
+        else if (type == Meitou.Data.Fcs.FcsRecordType.WEAPON && combat?.Weapon(t.Record) is { } weapon)
         {
             var maker = combat.Manufacturer(t.Company) ?? WeaponManufacturer.Neutral;
             var stats = WeaponStats.Compute(t.Level * 0.01f, weapon, maker, combat.WeaponMaterial(t.Material) ?? WeaponMaterial.None, combat.Constants);
@@ -622,16 +666,9 @@ sealed partial class PlayerInterface
                 (int)WeaponCategory.Polearms => "Polearm class", _ => null,
             };
             if (className is not null) lines.Add(new(className, "", TooltipTone.Main));
-            string Fixed2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
             lines.Add(Row("Cutting damage", Fixed2(stats.CutMultiplier), TooltipTone.Main));
             lines.Add(Row("Blunt damage", Fixed2(stats.BluntMultiplier), TooltipTone.Main));
             lines.Add(Row("Blood loss", Fixed2(weapon.BleedMult), TooltipTone.Main));
-            // Signed percent rows (FUN_14079f650): (int) of the value truncated, none at 0, +N% Good or N% Bad.
-            void Signed(string label, float value)
-            {
-                int n = (int)value;
-                if (n != 0) lines.Add(Row(label, (n > 0 ? "+" : "") + n.ToString(CultureInfo.InvariantCulture) + "%", n > 0 ? TooltipTone.Good : TooltipTone.Bad));
-            }
             Signed("Armour penetration", weapon.ArmourPenetration * 100);
             Signed("Damage vs robots", (weapon.RobotDamageMult - 1) * 100);
             Signed("Damage vs humans", (weapon.HumanDamageMult - 1) * 100);
@@ -712,7 +749,8 @@ sealed partial class PlayerInterface
         if (type == Meitou.Data.Fcs.FcsRecordType.ITEM && function is not (3 or 16))
         {
             if (t.MaxCharges > 1) lines.Add(Row("Charges", $"{Number(t.Charges)}/{Number(t.MaxCharges)}"));
-            if (t.Quality > 0 && t.Quality != 100) lines.Add(Row("Quality", $"{Number(t.Quality)}/100"));
+            // FUN_1407ae130: shown whenever the quality is not 1 (an ITEM carries its record's quality, 1 unless the data sets it).
+            if (t.Quality != 1) lines.Add(Row("Quality", $"{Number(t.Quality)}/100"));
         }
         if (t.MapNote is { Length: > 0 } note)
             foreach (string row in note.Split('\n')) lines.Add(new(row, "", row.StartsWith("[Right", StringComparison.Ordinal) || row.StartsWith("[Location", StringComparison.Ordinal) ? TooltipTone.Cyan : TooltipTone.Ink));

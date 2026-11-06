@@ -23,13 +23,14 @@ public sealed partial class CarrySystem
         Asleep(table, slot) && table.Cold(slot) is { Race.Carriable: true, IsImprisoned: false } c && c.CarriedBy.IsNone;
 
     /// <summary>
-    /// The chance in per cent that a kidnap takes <paramref name="target"/> (<c>Character::getKidnappingChance</c>, <b>Verified</b> literals): 100 for a downed target; else the stealth
+    /// The chance in per cent that a kidnap takes <paramref name="target"/> at <paramref name="tick"/> (<c>Character::getKidnappingChance</c>, <b>Verified</b> literals): 100 for a down target
+    /// (<see cref="CharacterFacts.Down"/>: out, playing dead, carried or ragdolled) that is not getting up (+0x278); else the stealth
     /// knock-out's formula (<see cref="StealthKoChance"/>) with the target's strength in the place of its toughness and no sense terms: X = the kidnapper's assassination minus the
     /// target's best of assassination, half its thievery, half its stealth term x 100, half its melee defence, its strength; 100 x (X + K) / 2K, K = 30 for X >= 0 else 15, unclamped.
     /// </summary>
-    public static float KidnapChance(CharacterCold kidnapper, CharacterCold target)
+    public static float KidnapChance(CharacterCold kidnapper, CharacterCold target, long tick)
     {
-        if (target.Medical?.Incapacitated == true) return 100;
+        if (CharacterFacts.Down(target) && !CharacterFacts.GettingUp(target, tick)) return 100;
         if (kidnapper.Stats is not { } a || target.Stats is not { } t) return 0;
         float Skill(CharacterCold c, CharacterStats s, StatsEnumerated stat) => s[stat] * (c.Medical?.StatMultiplier(stat) ?? 1) * Combat.CombatSystem.GearFactor(c, stat);
         float defence = Skill(target, t, StatsEnumerated.Assassination);
@@ -46,7 +47,7 @@ public sealed partial class CarrySystem
     /// The kidnap's roll on arrival (<c>Task_Kidnapping</c> vfunc 1, <b>Observed</b>); true when the lift goes on. First the victim's squad tags the kidnapper TEMP_ENEMY and the
     /// kidnapping becomes a pending crime on it. A hit (roll &lt;= chance) knocks an awake victim out (<see cref="KidnapKoMin"/>..<see cref="KidnapKoMax"/>) and trains assassination by 100.
     /// A miss: the victim's town alarm is raised at the kidnapper; its squad remembers it (long-term intruder) and says event 8 to it; assassination trains by 300; a sleeping victim
-    /// wakes and goes for the kidnapper. Engine: the original's perception mark and the kidnapper's field +0x110 = 250 (<b>Unknown</b>) are not modelled.
+    /// wakes and goes for the kidnapper. The victim notices the kidnapper for 5 s (<see cref="AggroSystem.Alarm"/>). Engine: the kidnapper's field +0x110 = 250 (<b>Unknown</b>) are not modelled.
     /// </summary>
     bool Kidnap(World world, CharacterTable table, int i)
     {
@@ -57,22 +58,27 @@ public sealed partial class CarrySystem
         var talk = world.SystemOf<Dialogue.DialogueSystem>();
         talk?.TagEnemy(world, b, i);
         Crimes?.SetPending(world, i, Crime.CrimeCode.Kidnapping, victim.Faction, victimId, Crime.CrimeSystem.MinTimer);
-        float chance = KidnapChance(cold, victim);
+        float chance = KidnapChance(cold, victim, world.Tick);
         float roll = Rng.Float(Rng.Hash(world.Seed, Rng.Key(kidnapperId), RngPurpose.Kidnap, (ulong)world.Tick)) * 100;
         bool success = roll <= chance;
-        if (cold.Stats is { } stats && cold.Race is { } race)
-            (xp ??= new XpService(Constants, bodyOptions)).Continuous(stats, race, StatsEnumerated.Assassination, 1, success ? 100 : 300);
+        // A miss always trains assassination by 300; a hit by 100 only on a victim neither out nor dead (the branch that knocks it out, FUN_14034ffa0).
+        void Train(float amount)
+        {
+            if (cold.Stats is { } stats && cold.Race is { } race) (xp ??= new XpService(Constants, bodyOptions)).Continuous(stats, race, StatsEnumerated.Assassination, 1, amount);
+        }
         if (success)
         {
             if (victim.Medical is { Incapacitated: false } medical)
             {
                 float assassination = cold.Stats?[StatsEnumerated.Assassination] ?? 0;
                 medical.KnockOut(KidnapKoMin + (KidnapKoMax - KidnapKoMin) * assassination * 0.01f);
-                MovementSystem.Stop(table, b);
+                TaskStart.Stand(table, b);
                 table.Next[b].Velocity = System.Numerics.Vector3.Zero;
+                Train(100);
             }
             return true;
         }
+        Train(300);
         bool asleep = Asleep(table, b);
         int town = victim.SquadId >= 0 ? world.Squads.Find(victim.SquadId)?.Town ?? -1 : -1;
         Crimes?.TownAlarm(world, i, town, Crime.CrimeCode.Kidnapping, victim.Faction);
@@ -80,11 +86,19 @@ public sealed partial class CarrySystem
         if (table.Cold(i) is { } kidnapper) kidnapper.RecentlyWanted = Crime.CrimeSystem.RecentlyWantedSeconds;
         if (talk is not null && victim.SquadId >= 0) talk.Memory.Remember(world, victim.SquadId, kidnapperId, Dialogue.MemoryTag.Intruder);
         world.Defer(new Dialogue.DialogueEvent(victimId, kidnapperId, 8) { Tick = world.Tick + 1 });
+        // Every victim notices the kidnapper for 5 s: the forced sense with the alarm flag (FUN_14034ffa0:73 -> FUN_140858f40, entry seen flag set, timer +0x3c = 5), then the step decides what a player character does (CarrySystem.Engage).
+        bool decides = DecisionSystem.Decides(victim);
+        Aggro?.Alarm(world, victimId, kidnapperId);
         if (asleep)
         {
             if (victim.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, victimId);
-            table.Next[b].Task = (byte)CharacterTask.Idle;
-            world.Defer(new Combat.AttackOrder([victimId], kidnapperId) { Tick = world.Tick + 1 });
+            TaskStart.Become(world, b, CharacterTask.Idle, Meitou.Data.Gameplay.Ai.TaskType.IDLE, TaskSource.Reaction);
+            if (decides)
+            {
+                victim.OrderQueue.Clear();   // order 116 Getting out of bed replaces the whole queue (FUN_1405d20d0, clear flag 1)
+                Engage(world, b, i);
+            }
+            else world.Defer(new Combat.AttackOrder([victimId], kidnapperId) { Tick = world.Tick + 1, Source = TaskSource.Reaction });
         }
         return false;
     }

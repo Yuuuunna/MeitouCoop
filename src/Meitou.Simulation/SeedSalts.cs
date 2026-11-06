@@ -27,6 +27,8 @@ internal static class SeedSalts
     public const ulong NestSquad = 0x4E57UL;
     /// <summary>XORed into the key of the layout of the nests of a biome group (which nest, which cell, which spots).</summary>
     public const ulong NestLayout = 0x1A70UL;
+    /// <summary>XORed into the key of a nest's <c>debris building</c> scatter (with its place: the original seeds it from the nest's X/Z).</summary>
+    public const ulong NestFurniture = 0x4E5FUL;
 
     /// <summary>Counter of the roll that picks the template of a homeless squad.</summary>
     public const ulong HomelessPick = 6;
@@ -41,6 +43,8 @@ internal static class SeedSalts
     public const ulong BarChance = 77;
     /// <summary>Counter (under <see cref="RngPurpose.Think"/>) of the roll that picks which of a town's bars a squad starting a bar package goes to.</summary>
     public const ulong BarPick = 78;
+    /// <summary>Counter base (under <see cref="RngPurpose.Think"/>, xor the mind's node epoch) of the roll that draws which node a standing goal takes in its building (FUN_14099f280: uniform among the free nodes, kept until the goal is renewed).</summary>
+    public const ulong NodePick = 0x4E6F6465_50696B21;
     /// <summary>Counter of the roll that picks which squad template a town's roaming pool draws.</summary>
     public const ulong RoamingPick = 5;
     /// <summary>Counter base of the roll for the look of member n of a town squad (n is added).</summary>
@@ -55,14 +59,18 @@ internal static class SeedSalts
     public const ulong AiPatrol = 0x5041UL;
     /// <summary>The AI's desire rolls, commitment lengths and town targets (<see cref="Ai.AiSystem"/>; the tick and goal type are mixed in).</summary>
     public const ulong AiDesire = 0x5043UL, AiCommit = 0x5044UL, AiTarget = 0x5045UL;
+    /// <summary>The pick of the house a squad moves to when the player buys its home (<see cref="Ai.AiSystem.Evict"/>; the tick is mixed in).</summary>
+    public const ulong AiRehome = 0x504BUL;
     /// <summary>The package classes' rolls (<see cref="Ai.AiSystem"/>; the tick is mixed in): a trader's stay and its next town, a passing-by assault's wait.</summary>
     public const ulong AiTraderWait = 0x5046UL, AiTraderTown = 0x5047UL, AiAssaultWait = 0x5048UL;
+    /// <summary>The rolls of a shopper's purchase (<see cref="Ai.AiSystem"/>, under <see cref="RngPurpose.Trade"/>; the tick and the attempt are mixed in): which item, and whether the buyer keeps it.</summary>
+    public const ulong AiShop = 0x504AUL;
     /// <summary>A platoon's short-range patrol point off screen (<see cref="Ai.PlatoonJobs"/>).</summary>
     public const ulong PlatoonPatrol = 0x5050UL;
 
-    /// <summary>Town residents in their buildings (<c>PopulationHomes.cs</c>): counter base of the shuffle of a town's buildings, the counter of the node a squad is
-    /// made at, counter base of the housemate counts, and the salt XORed into a housed squad's key.</summary>
-    public const ulong HomeOrder = 0x40DE00UL, HomeSpot = 0x40DE5UL, Housemates = 0x40A7E00UL, ResidentHome = 0x2E51DUL;
+    /// <summary>Town residents in their buildings (<c>PopulationHomes.cs</c>): the counter of the node a squad is made at, of a member's own node, counter base of the housemate counts, and
+    /// the salt XORed into a housed squad's key.</summary>
+    public const ulong HomeSpot = 0x40DE5UL, MemberSpot = 0x40DE6UL, Housemates = 0x40A7E00UL, ResidentHome = 0x2E51DUL;
     /// <summary>A housed squad's <c>prisoners</c> (<c>PopulationSystem.MakePrisoners</c>): the salt XORed into a prisoner squad's key, and counter base of the cage picks.</summary>
     public const ulong PrisonerSquad = 0x9215EUL, PrisonerCage = 0x921CA00UL;
     /// <summary>A housed squad's <c>slaves</c> (<c>PopulationSystem.MakeSlaves</c>): counter base of the slaves' looks, and of their cage picks.</summary>

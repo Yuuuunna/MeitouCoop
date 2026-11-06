@@ -39,6 +39,12 @@ public sealed class SaveItem
     /// <summary>A container's contents (the INVENTORY_STATE its one instance names); null for other items.</summary>
     public List<SaveItem>? Contents { get; init; }
     public FcsRecord? Source { get; init; }
+    /// <summary>The <c>ownedby</c> handle (the character the item was stolen from) written over the source's; null keeps the source's (the null handle for an item without one).</summary>
+    public Hand? OwnedBy { get; init; }
+    /// <summary>The record the item was last written as, so a handle known only once every character has one can be put on it.</summary>
+    public FcsRecord? Written { get; private set; }
+
+    internal void WrittenAs(FcsRecord r) => Written = r;
 }
 
 /// <summary>An item's lock as saved; <see cref="Locked"/> is written true only while the lock is effectively locked (as the original's writer, <c>FUN_14029ffd0</c>).</summary>
@@ -164,7 +170,9 @@ public static class SaveInventory
             r.Bools["broken"] = l.Broken;
             r.Floats["hardness"] = l.Hardness;
         }
+        item.OwnedBy?.Write(r, "ownedby");
         r.Bools["in inventory"] = true;
+        item.WrittenAs(r);
         return r;
     }
 

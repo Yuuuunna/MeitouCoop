@@ -12,7 +12,7 @@ public partial class DialogueTests
     public void RevocationStopsPendingPrivateBubbleLinesBeforeExpansionAndLogging()
     {
         var data = PopulationData.Create(Db([
-            Rec("p-d", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
             Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
             Rec("npc-d", FcsRecordType.CHARACTER, r => r.Name = "Speaker"),
             Rec("mono-d", FcsRecordType.DIALOGUE, r => { r.Bools["monologue"] = true; r.References["lines"] = [Ref("first-l")]; }),
@@ -48,7 +48,7 @@ public partial class DialogueTests
     public void FollowupInterruptBelongsToItsPlayerEvenWhenAnotherMemberSharesTheFaction()
     {
         var data = PopulationData.Create(Db([
-            Rec("p-d", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
             Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
             Rec("npc-d", FcsRecordType.CHARACTER, r => r.References["dialogue"] = [Ref("intro-d")]),
             Rec("intro-d", FcsRecordType.DIALOGUE, r => r.References["lines"] = [Ref("intro-l")]),

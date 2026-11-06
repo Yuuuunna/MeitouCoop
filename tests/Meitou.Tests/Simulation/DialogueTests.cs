@@ -22,7 +22,7 @@ public partial class DialogueTests
     /// "plain" (score 0) says hello.
     /// </summary>
     static PopulationData Data() => PopulationData.Create(Db([
-        Rec("p-d", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+        Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
         Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
         Rec("npc-d", FcsRecordType.CHARACTER, r => { r.Name = "Villager"; r.References["dialogue"] = [Ref("rich-d"), Ref("plain-d")]; }),
         Rec("money-d", FcsRecordType.DIALOG_ACTION, r => r.Ints["condition name"] = DialogueConditions.PlayerMoney),
@@ -48,7 +48,7 @@ public partial class DialogueTests
     /// (c.10,000 and DA_INCREASE_FACTION_RANK capped at 1); at rank 1 (checked with `who` 1, which the game ignores) it offers to buy.
     /// </summary>
     static PopulationData Guild() => PopulationData.Create(Db([
-        Rec("p-d", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+        Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
         Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Thieves"),
         Rec("npc-d", FcsRecordType.CHARACTER, r => { r.Name = "Villager"; r.References["dialogue"] = [Ref("stranger-d"), Ref("member-d")]; }),
         Rec("rank-d", FcsRecordType.DIALOG_ACTION, r => r.Ints["condition name"] = 10),
@@ -411,7 +411,7 @@ public partial class DialogueTests
         v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
         v.World.RunTicks(2);
         Assert.Equal("Well met, rich hero.", v.Talk!.Text);
-        Assert.Equal(["Here, c.100.", "Bye."], v.Talk.Choices);
+        Assert.Equal(["Here, c.100. [c.100]", "Bye."], v.Talk.Choices);   // one " [c.N]" per take-money effect (FUN_140675320)
         v.Say(new DialogueChoice(0) { Tick = 0 });
         v.World.RunTicks(1);
         Assert.Null(v.Talk);   // nothing follows the reply
@@ -432,6 +432,33 @@ public partial class DialogueTests
         Assert.True(loaded.DialogueLocks!["rich-d"]);
     }
 
+    /// <summary>A dumb villager (Agnu, Ray) with one dialogue; <paramref name="listed"/>: the dialogue's <c>is character</c> names it.</summary>
+    static PopulationData Dumb(bool listed) => PopulationData.Create(Db([
+        Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+        Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
+        Rec("npc-d", FcsRecordType.CHARACTER, r => { r.Name = "Villager"; r.Bools["dumb"] = true; r.References["dialogue"] = [Ref("plain-d")]; }),
+        Rec("plain-d", FcsRecordType.DIALOGUE, r => { r.References["lines"] = [Ref("plain-l")]; if (listed) r.References["is character"] = [Ref("npc-d")]; }),
+        Rec("plain-l", FcsRecordType.DIALOGUE_LINE, r => r.Strings["text0"] = "Hello."),
+    ]), []);
+
+    [Fact]
+    public void A_dumb_character_speaks_only_a_dialogue_whose_is_character_list_names_it()
+    {
+        // FUN_14067e060 / FUN_140684d70: for a dumb record an empty list fails.
+        using (var v = new Village(data: Dumb(listed: false)))
+        {
+            v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
+            v.World.RunTicks(2);
+            Assert.Null(v.Talk);
+        }
+        using (var v = new Village(data: Dumb(listed: true)))
+        {
+            v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
+            v.World.RunTicks(2);
+            Assert.Equal("Hello.", v.Talk!.Text);
+        }
+    }
+
     [Fact]
     public void Joining_the_guild_raises_its_rank_to_the_cap_and_switches_its_dialogue()
     {
@@ -440,7 +467,7 @@ public partial class DialogueTests
         v.World.Player.Money = 12000;
         v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
         v.World.RunTicks(2);
-        Assert.Equal(("I don't know you.", "I'll join."), (v.Talk!.Text, v.Talk.Choices.Single()));
+        Assert.Equal(("I don't know you.", "I'll join. [c.10,000]"), (v.Talk!.Text, v.Talk.Choices.Single()));
         v.Say(new DialogueChoice(0) { Tick = 0 });
         v.World.RunTicks(1);
         Assert.Equal((1, 2000), (v.Data.Relations.Rank(guild), v.World.Player.Money));
@@ -460,7 +487,7 @@ public partial class DialogueTests
     public void A_greeting_between_npcs_sets_off_the_crowd_and_the_target_answers()
     {
         var data = PopulationData.Create(Db([
-            Rec("p-d", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
             Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
             Rec("guard-c", FcsRecordType.CHARACTER, r => { r.Name = "Guard"; r.References["dialogue package"] = [Ref("guard-p")]; }),
             Rec("guard-p", FcsRecordType.DIALOGUE_PACKAGE, r => r.References["dialogs"] = [Ref("hail-d", 3)]),
@@ -519,7 +546,7 @@ public partial class DialogueTests
     public void Talk_to_leader_sends_the_leader_to_open_a_conversation()
     {
         var data = PopulationData.Create(Db([
-            Rec("p-d", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
             Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
             Rec("guard-c", FcsRecordType.CHARACTER, r => { r.Name = "Guard"; r.References["dialogue"] = [Ref("ask-d")]; }),
             Rec("boss-c", FcsRecordType.CHARACTER, r => { r.Name = "Boss"; r.References["dialogue"] = [Ref("boss-d")]; }),
@@ -697,7 +724,7 @@ public class DialogueInstallTests
         Assert.SkipWhen(InstallData.Install is null, "Kenshi install not found");
         var install = InstallData.Install!;
         var db = InstallData.BaseGame!;
-        var levels = WorldLevelData.Load(install, includeInteriors: true);
+        var levels = WorldLevelData.LoadBaseGame(install, includeInteriors: true);
         using var map = TerrainHeightmap.Open(install);
         var buildings = TownBuildings.Build(db, levels, new BuildingLayouts(db, levels.Interiors), (x, z) => map.HeightAt((float)x, (float)z));
         var data = PopulationData.Create(db, levels.Towns(), buildings: buildings);

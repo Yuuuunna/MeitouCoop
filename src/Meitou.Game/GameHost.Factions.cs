@@ -8,9 +8,7 @@ sealed partial class GameHost
         ui.FactionNameTaken = name => session.FactionCatalogue.Any(f => f.Faction != session.ActiveFaction && f.Name == name);
         ui.PlayerFactionName = () => ui.FactionName?.Invoke(session.ActiveFaction) ?? "";
         ui.FactionInfo = () => session.FactionInformation;
-        ui.AlliedFaction = faction => session.StandingTowards(faction)?.Ally == true;
         // Unknown remote identities never become an implicit enemy. Explicit attack commands still undergo server rules.
-        ui.HostileFaction = faction => session.StandingTowards(faction)?.Hostile ?? !session.IsRemote;
         ui.FactionRelations = () => session.ActiveFaction < 0 ? [] : session.FactionCatalogue
             .Where(f => f.Faction != session.ActiveFaction && session.CurrentSnapshot.KnownFactions.Contains(f.Faction) && !f.NotReal && f.RecordId != "GENERATION_TEMPLATE_FACTION")
             .Select(f => (Faction: f, Standing: session.StandingTowards(f.Faction))).Where(p => p.Standing is not null)

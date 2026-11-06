@@ -15,7 +15,7 @@ public class HubNavmeshTests
     static readonly Dictionary<ZoneCoordinate, (ZoneGeometry Geometry, ZoneNavMesh Full)> built = [];
 
     // With the zones' interior files, as the game and `meitou-tools navmesh --fingerprint` load them (the pins come from the latter).
-    static readonly Lazy<WorldLevelData?> levels = new(() => InstallData.Install is { } i ? WorldLevelData.Load(i, includeInteriors: true) : null);
+    static readonly Lazy<WorldLevelData?> levels = new(() => InstallData.Install is { } i ? WorldLevelData.LoadBaseGame(i, includeInteriors: true) : null);
 
     static (GameInstall Install, GameDatabase Db, WorldLevelData Levels)? Load() =>
         InstallData.Install is { } install ? (install, InstallData.FullLoadOrder!, levels.Value!) : null;
@@ -64,5 +64,17 @@ public class HubNavmeshTests
         Assert.Equal(HubPathPins.CentreToEast.ReplaceLineEndings("\n"), Pin(query.FindPath(centre, outsideEast)));
         Assert.Equal(HubPathPins.WestToEast.ReplaceLineEndings("\n"), Pin(query.FindPath(outsideWest, outsideEast)));
         Assert.Equal(HubPathPins.WestToCentreDoorsClosed.ReplaceLineEndings("\n"), Pin(query.FindPath(outsideWest, centre, new NavAgent { DoorsClosed = true })));
+    }
+
+    /// <summary>
+    /// A polygon over a hollow north of the Hub, its corners on the ground, reads the ground where it leaves its plane by ~40 (the original's mesh: 1246.5),
+    /// not the plane (docs/game/pathfinding.md "Polygon heights"; a walker there was blocked on every step north).
+    /// </summary>
+    [Fact]
+    public void A_polygon_over_a_hollow_reads_the_ground_not_its_plane()
+    {
+        Assert.SkipWhen(Load() is null, "Kenshi install not found");
+        Assert.True(Zone(West).Full.TryHighestAt(-50695, 807, out float height));
+        Assert.InRange(height, 1242, 1251);
     }
 }

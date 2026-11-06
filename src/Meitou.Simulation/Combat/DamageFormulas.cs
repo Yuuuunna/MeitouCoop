@@ -2,8 +2,8 @@ using Meitou.Data.Gameplay.Combat;
 
 namespace Meitou.Simulation.Combat;
 
-/// <summary>What the target is, for the weapon's damage multipliers against robots, humans and animals.</summary>
-public enum TargetKind { Human, Animal, Robot }
+/// <summary>What the target is, for the weapon's damage multipliers against robots, humans and animals; <see cref="None"/> for a blow with no character target (a wall, a door, the HUD's figure), multiplier 1.</summary>
+public enum TargetKind { Human, Animal, Robot, None }
 
 /// <summary>
 /// A blow as it leaves the weapon, before armour and toughness (<c>FUN_1408868b0</c>): cut, blunt and pierce damage, the stun it carries (0 for weapons), the bleed
@@ -52,8 +52,8 @@ public static class DamageFormulas
 
     /// <summary>
     /// The rating a fist blow is scaled by (<c>FUN_140884e00</c>, <b>Verified</b>): lerp(e, 0.2, 1) x (martial arts + the gear's <c>unarmed bonus</c> - the dust's attack penalty), e the
-    /// encumbrance factor (1 unburdened). <paramref name="martialArts"/> is the stat times the stats' read-time scale, without the injury multiplier. The owner's slot 0x398 factor
-    /// (<b>Unknown</b>) is taken as 1.
+    /// encumbrance factor (1 unburdened). <paramref name="unarmedBonus"/> carries the indoors modifier inside (<c>FUN_140884580</c> with the flag every combat caller sets).
+    /// <paramref name="martialArts"/> is the stat times the stats' read-time scale, without the injury multiplier (the owner's slot 0x398 factor is 1 for a person, <c>FUN_1405e5990</c>).
     /// </summary>
     public static float UnarmedRating(float martialArts, float unarmedBonus, float dustPenalty, float encumbrance) =>
         Lerp(Math.Clamp(encumbrance, 0, 1), 0.2f, 1f) * (martialArts + unarmedBonus - dustPenalty);
@@ -104,6 +104,7 @@ public static class DamageFormulas
     {
         TargetKind.Robot => weapon.RobotDamageMult,
         TargetKind.Animal => weapon.AnimalDamageMult,
+        TargetKind.None => 1,
         _ => weapon.HumanDamageMult,
     };
 

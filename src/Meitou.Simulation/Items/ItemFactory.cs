@@ -68,7 +68,7 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
             : item.RecordWeight;
     };
 
-    /// <summary>A new instance of an item record (null for an unknown record). Food gets its charges scaled by <c>food quality mult</c>; weapons weigh <c>weapon inventory weight mult</c> of their weight.</summary>
+    /// <summary>A new instance of an item record (null for an unknown record). Food and raw meat get their charges scaled by <c>food quality mult</c> (<see cref="ItemInfo.ScalesCharges"/>); weapons weigh <c>weapon inventory weight mult</c> of their weight.</summary>
     public ItemInstance? Create(string? recordId, int quantity = 1, float quality = 0)
     {
         // A reference to a record the data lacks (a mod's) has no id.
@@ -95,6 +95,7 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
     ItemInstance Make(ItemInfo info, FcsRecordType type, int quantity, float quality)
     {
         bool weapon = info.Type is FcsRecordType.WEAPON or FcsRecordType.CROSSBOW;
+        float maxCharges = info.ScalesCharges ? info.Charges * Constants.FoodQualityMult : info.Charges;
         return new ItemInstance
         {
             Record = info.Id,
@@ -110,11 +111,13 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
                 ? new Locks.LockState { Level = Math.Clamp(shackles.Ints.GetValueOrDefault("lock level"), 0, 100), Hardness = shackles.Floats.GetValueOrDefault("hardness"), Locked = true }
                 : null,
             Quantity = Math.Max(quantity, 1),
-            Quality = quality,
-            Level = info.Type == FcsRecordType.ARMOUR ? (int)quality : 0,   // an armour piece's stats follow its level, which a made piece takes from its grade quality
+            // An ITEM keeps its record's quality (Item::Item, FUN_14075faf0); the other kinds take the maker's grade.
+            Quality = type == FcsRecordType.ITEM ? info.Quality : quality,
+            // An armour piece's stats follow its level, which a made piece takes from its grade quality; so do a crossbow's and a limb's (FUN_140580750 hands the grade to those constructors).
+            Level = info.Type is FcsRecordType.ARMOUR or FcsRecordType.CROSSBOW or FcsRecordType.LIMB_REPLACEMENT ? (int)quality : 0,
             ItemFunction = info.Function,
-            Charges = info.IsFood ? info.Charges * Constants.FoodQualityMult : info.Charges,
-            MaxCharges = info.IsFood ? info.Charges * Constants.FoodQualityMult : info.Charges,
+            Charges = info.Type == FcsRecordType.ITEM ? maxCharges : 1,   // only an ITEM starts full
+            MaxCharges = maxCharges,
             Width = info.Width,
             Height = info.Height,
             UnitWeight = weapon ? info.Weight * Constants.WeaponInventoryWeightMult : info.Weight,
@@ -130,19 +133,20 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
 
     /// <summary>
     /// The main grid of a character of <paramref name="record"/>: an ANIMAL_CHARACTER's <c>inventory w</c> x <c>inventory h</c> (Skimmer and Garru 4 x 8, Beak Thing 8 x 8; <b>Verified</b>
-    /// by probe), a person's <see cref="Inventory.MainWidth"/> x <see cref="Inventory.MainHeight"/>.
+    /// by probe), each below 1 on its own becoming 4 and 8 (<c>FUN_14062a130</c>, <b>Verified</b>); a person's <see cref="Inventory.MainWidth"/> x <see cref="Inventory.MainHeight"/>.
     /// </summary>
     public static (int Width, int Height) MainSize(GameRecord? record) =>
-        record is { Type: Meitou.Data.Fcs.FcsRecordType.ANIMAL_CHARACTER } animal && animal.GetInt("inventory w") > 0 && animal.GetInt("inventory h") > 0
-            ? (animal.GetInt("inventory w"), animal.GetInt("inventory h"))
+        record is { Type: Meitou.Data.Fcs.FcsRecordType.ANIMAL_CHARACTER } animal
+            ? (animal.GetInt("inventory w") is var w and >= 1 ? w : 4, animal.GetInt("inventory h") is var h and >= 1 ? h : 8)
             : (Inventory.MainWidth, Inventory.MainHeight);
 
     /// <summary>
     /// The inventory of a new character: what the generator rolled to wear and carry (clothing in its slot's section, a backpack, the crossbow and weapons at hip/back), then a blueprint per CHARACTER <c>blueprints</c> entry, then the CHARACTER
     /// record's <c>inventory</c> list (an ITEM reference whose first value is the quantity; entries with 0 never spawn, <b>Observed</b>), and last its <c>death items</c> the same way,
-    /// marked <see cref="ItemInstance.Death"/> (docs/game/animals.md "Death items").
+    /// marked <see cref="ItemInstance.Death"/> (docs/game/animals.md "Death items"). With a <paramref name="seed"/> (a new character's, keyed by <paramref name="key"/>) a single unit of the
+    /// <c>inventory</c> list that holds more than one charge starts with a random part of them; without one the items start full.
     /// </summary>
-    public Inventory Build(GameRecord? character, Meitou.Data.Characters.Loadout? loadout)
+    public Inventory Build(GameRecord? character, Meitou.Data.Characters.Loadout? loadout, ulong? seed = null, ulong key = 0)
     {
         var (width, height) = MainSize(character);
         var inventory = new Inventory(width, height);
@@ -172,11 +176,19 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
             foreach (var r in character.GetReferences("blueprints"))
                 if (r.Values.Value0 > 0 && Db.Find(r.TargetStringId) is { Type: FcsRecordType.RESEARCH } research && Blueprint(research) is { } blueprint) inventory.Add(blueprint);
         if (character is not null)
+        {
+            int index = 0;
             foreach (var r in character.GetReferences("inventory"))
             {
+                index++;
                 if (r.Values.Value0 <= 0) continue;
-                if (Create(r.TargetStringId, r.Values.Value0) is { } item) inventory.Add(item);
+                if (Create(r.TargetStringId, r.Values.Value0) is not { } item) continue;
+                // A person's single starting unit that holds more than one charge starts part used (CharacterHuman::setupInventorySections, Verified): a whole number in [1, trunc(max)]. An animal's list is not rolled.
+                if (seed is { } s && character.Type != FcsRecordType.ANIMAL_CHARACTER && r.Values.Value0 == 1 && item.Charges > 1)
+                    item.Charges = 1 + Rng.Int(Rng.Hash(s, key, RngPurpose.Spawn, 0x496E_764C_6F61_6400UL + (ulong)index), Math.Max((int)item.MaxCharges, 1));
+                inventory.Add(item);
             }
+        }
         if (loadout?.Crossbow is { } bow) AddAmmo(inventory, bow.Weapon);
         if (character is not null)
             foreach (var r in character.GetReferences("death items"))
@@ -250,10 +262,11 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
     }
 
     /// <summary>
-    /// The section a worn ARMOUR goes to by its <c>slot</c> (the save's section names); an ITEM only to <c>belt</c>, the slot of the two lanterns (the only ITEMs with slot 14 in the
-    /// merged data, docs/formats/lights.md "Carried lanterns").
+    /// The section a worn ARMOUR or ITEM goes to by its <c>slot</c> (the save's section names; <c>FUN_14075faf0</c> stores the slot of every item type and a section takes an item whose
+    /// slot is its type, <c>FUN_14074bc30</c>, <b>Verified</b>). An ARMOUR with another slot goes to "main"; an ITEM with slot 7 (none) or another slot has no section (in the base data
+    /// only the two lanterns, slot 14, have one).
     /// </summary>
-    static string SectionOf(GameRecord worn) => worn.Type == FcsRecordType.ITEM && worn.GetInt("slot") != (int)Meitou.Data.Characters.AttachSlot.Belt ? "" : (Meitou.Data.Characters.AttachSlot)worn.GetInt("slot") switch
+    static string SectionOf(GameRecord worn) => (Meitou.Data.Characters.AttachSlot)worn.GetInt("slot") switch
     {
         Meitou.Data.Characters.AttachSlot.Shirt => "shirt",
         Meitou.Data.Characters.AttachSlot.Hat => "head",
@@ -261,6 +274,6 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
         Meitou.Data.Characters.AttachSlot.Body => "armour",
         Meitou.Data.Characters.AttachSlot.Legs => "legs",
         Meitou.Data.Characters.AttachSlot.Belt => "belt",
-        _ => "main",
+        _ => worn.Type == FcsRecordType.ITEM ? "" : "main",
     };
 }

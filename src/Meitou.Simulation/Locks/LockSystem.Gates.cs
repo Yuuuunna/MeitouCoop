@@ -40,24 +40,32 @@ public sealed partial class LockSystem
         return state == 0 ? 1 : state;
     }
 
+    readonly object gateGraphLock = new();
+
+    // Built on first use; the combat step asks from its workers (CombatSystem.ImmediateThreat), so the graph is built under a lock and published whole.
     Dictionary<int, List<(int To, int State, GateLink Gate)>> GateGraph(World world)
     {
-        if (gateGraph is not null) return gateGraph;
-        gateGraph = [];
-        if (Regions is null) return gateGraph;
-        foreach (var gate in Regions.Gates)
+        if (Volatile.Read(ref gateGraph) is { } built) return built;
+        lock (gateGraphLock)
         {
-            if (gate.Codes.Length < 2) continue;
-            int state = GateState(world.Fixtures, gate.Building);
-            for (int i = 0; i < gate.Codes.Length; i++)
-                for (int j = 0; j < gate.Codes.Length; j++)
+            if (gateGraph is { } raced) return raced;
+            var graph = new Dictionary<int, List<(int To, int State, GateLink Gate)>>();
+            if (Regions is not null)
+                foreach (var gate in Regions.Gates)
                 {
-                    if (i == j) continue;
-                    if (!gateGraph.TryGetValue(gate.Codes[i], out var list)) gateGraph[gate.Codes[i]] = list = [];
-                    list.Add((gate.Codes[j], state, gate));
+                    if (gate.Codes.Length < 2) continue;
+                    int state = GateState(world.Fixtures, gate.Building);
+                    for (int i = 0; i < gate.Codes.Length; i++)
+                        for (int j = 0; j < gate.Codes.Length; j++)
+                        {
+                            if (i == j) continue;
+                            if (!graph.TryGetValue(gate.Codes[i], out var list)) graph[gate.Codes[i]] = list = [];
+                            list.Add((gate.Codes[j], state, gate));
+                        }
                 }
+            Volatile.Write(ref gateGraph, graph);
+            return graph;
         }
-        return gateGraph;
     }
 
     /// <summary>
@@ -118,6 +126,37 @@ public sealed partial class LockSystem
         return a == b || a < 0 || b < 0 || RouteState(world, a, b, Flat(from), out _) == 1;
     }
 
+    /// <summary>
+    /// Whether a character at <paramref name="at"/> is shut in: it stands inside town walls (gate code above 0) and the state from its code to the open world (code 0) is locked
+    /// (<c>FUN_1402eb070</c> = 3, <b>Verified</b>: <c>FUN_1405a34e0</c> and <c>FUN_1405a3710</c> give no desire then; the stand-in for the location test <c>FUN_1405a2710</c>'s gate half).
+    /// </summary>
+    public bool WallsLocked(World world, Vector3 at)
+    {
+        if (Regions is null) return false;
+        int code = Regions.CodeAt(at);
+        return code > 0 && RouteState(world, code, 0, Flat(at), out _) == 3;
+    }
+
+    /// <summary>
+    /// Whether the town's walls are locked up (<c>Town</c> vfunc <c>0x300</c> = <c>FUN_140929820</c>, <b>Verified</b>): the town has at least one gate (a gateway building with a door) and no gate door is
+    /// open (door state 1; a broken one counts as open); closed, opening and closing doors all count as locked.
+    /// </summary>
+    public static bool TownLockedUp(World world, TownSite site) =>
+        GatesLockedUp(site.Buildings.Where(b => !b.Destroyed).SelectMany(b => world.Fixtures.OfBuilding(b.Key)));
+
+    /// <summary>The rule of <see cref="TownLockedUp"/> over a town's door fixtures: shared with the campaign assault's breach test.</summary>
+    public static bool GatesLockedUp(IEnumerable<Fixture> doors)
+    {
+        bool any = false;
+        foreach (var gate in doors)
+        {
+            if (gate.Kind != FixtureKind.Door || !gate.IsGate) continue;
+            if (gate.DoorBroken || gate.Motion == DoorMotion.Open) return false;
+            any = true;
+        }
+        return any;
+    }
+
     /// <summary>A gate's main door (lowest door index with a known leaf) and its leaf.</summary>
     internal static (Fixture Door, DoorSpot Spot)? MainGateDoor(World world, string building)
     {
@@ -137,7 +176,10 @@ public sealed partial class LockSystem
         var next = world.Characters.Next;
         int a = Regions.CodeAt(next[s].Position), b = Regions.CodeAt(next[t].Position);
         if (a == b || a < 0 || b < 0) return false;
-        if (RouteState(world, a, b, Flat(next[s].Position), out var gate) == 1 || gate is not { } g || MainGateDoor(world, g.Building) is not { } main) return false;
+        if (RouteState(world, a, b, Flat(next[s].Position), out var gate) == 1) return false;
+        // No gate leads there: 270 falls back to a wall of the attacker's region (FUN_1405a3f60), planned through 272 Smashing.
+        if (gate is null) return FindWallBasher(world, s, t, c, a);
+        if (gate is not { } g || MainGateDoor(world, g.Building) is not { } main) return false;
         if (!gatePlan.PlansBash(world, Combat, this, s, t, g.Building, main.Door, main.Spot)) return false;
         c.Bashing = main.Door.Id;
         c.BashTime = 0;
@@ -145,6 +187,20 @@ public sealed partial class LockSystem
     }
 
     readonly GatePlan gatePlan = new();
+
+    /// <summary>
+    /// How a ransacker (goal 216) at <paramref name="from"/> gets past the gates between it and a building at <paramref name="to"/>, by the planner (<see cref="GatePlan.PlansEntry"/>): a walk when no gate is
+    /// closed on the route (or the codes are unknown), the gate's door to bash (row 123 / 290), or none when the plan finds no way (a locked gate it does not want to bash, or no gate on the route).
+    /// </summary>
+    internal (DoorPlan.Entry Entry, string? Door) GateEntry(World world, int s, Vector3 from, Vector3 to)
+    {
+        if (Regions is null) return (DoorPlan.Entry.Walk, null);
+        int a = Regions.CodeAt(from), b = Regions.CodeAt(to);
+        if (a == b || a < 0 || b < 0 || RouteState(world, a, b, Flat(from), out var gate) == 1) return (DoorPlan.Entry.Walk, null);
+        if (gate is not { } g || MainGateDoor(world, g.Building) is not { } main) return (DoorPlan.Entry.Blocked, null);
+        var entry = gatePlan.PlansEntry(world, Combat, this, s, to, g.Building, main.Door, main.Spot);
+        return (entry, entry == DoorPlan.Entry.Bash ? main.Door.Id : null);
+    }
 
     /// <summary>How many characters bash the gate whose door is <paramref name="doorId"/> now (crowdLimit8).</summary>
     internal static int BashersAt(World world, string doorId)

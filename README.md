@@ -6,11 +6,15 @@
 
 C#/.NET10 reimplementation of [Kenshi](https://lofigames.com/), aiming to run original content,
 mods and saves unchanged. **No game assets are shipped; an installed legal copy is required.**
-Early playable slice: streamed Vulkan world, characters/animation, movement/combat/body state,
-NPC population/partial AI, inventory/trade, saves and native UI. 
+Architecture/research: [docs index](docs/README.md). Website: [meitou.kenshi.wiki](https://meitou.kenshi.wiki/).
 
-Architecture/research: [docs index](docs/README.md)
-Website: [meitou.kenshi.wiki](https://meitou.kenshi.wiki/).
+[![Contributors](assets/branding/contributors.png?v=c3a25112)](https://github.com/VlcekM/MeitouClient/graphs/contributors)
+
+## Modding
+
+MeitouClient should be fully compatible with Forgotten Construction Set Kenshi mods.
+
+We also have a C# modding API, do check out our [Wiki](https://github.com/VlcekM/MeitouClient/wiki/Writing-code-mods) for documentation!
 
 ## Download and requirements
 
@@ -27,11 +31,6 @@ updates the game and manages mods. Download the newest one for
 
 By hand: [releases](https://github.com/VlcekM/MeitouClient/releases) for Windows, Linux and macOS, unzip and run
 
-the game or meitou-viewer (debug world viewer); prebuilt packages need no separate .NET install.
-Needs a Vulkan1.3 GPU with required descriptor-indexing/indirect-draw features (Vulkan path) or an Apple-silicon Mac (Metal path), and Kenshi.
-FSR runs on Windows (and on macOS from a self-built library), not on Linux; DLSS runs on Windows (Streamline) and on Linux with the NVIDIA driver (NGX through NVIDIA's client library, with the DLSS model beside the executable); optional ray-query GI falls back on unsupported GPUs. On Linux (checked on KDE, Wayland and X11, NVIDIA driver) a Steam install is found under ~/.local/share/Steam, ~/.steam/steam or the Flatpak folder; macOS runs through Homebrew MoltenVK or native Metal from the launcher on Apple silicon ([how to get Kenshi on macOS](docs/kenshi-on-macos.md)).
-Building requires the [.NET10 SDK](https://dotnet.microsoft.com/download).
-
 Steam installs, and GOG installs made by GOG Galaxy, Heroic, Lutris or Bottles, are located automatically; otherwise select the Kenshi folder when prompted,
 set KENSHI_PATH, or create git-ignored meitou.local.json in the repo/working/executable directory (on Linux and macOS also `~/.config/meitou/config.json`, the place the prompt saves to when the executable's folder is read-only):
 
@@ -41,12 +40,12 @@ set KENSHI_PATH, or create git-ignored meitou.local.json in the repo/working/exe
 
 ## Build and run
 
+Building requires the [.NET10 SDK](https://dotnet.microsoft.com/download).
+
 ```text
 dotnet build -c Release
 dotnet test -c Release --filter "Category!=Slow&Category!=Bench"
-dotnet run -c Release --project src/Meitou.Game -- --new-game
-dotnet run -c Release --project tools/Meitou.ModelViewer -- --world --town "The Hub"
-dotnet run -c Release --project tools/Meitou.Tools
+dotnet run -c Release --project src/Meitou.Game
 ```
 
 To export both Windows x64 multiplayer packages, run `pwsh -File ./export-packages.ps1` (PowerShell 7).
@@ -67,12 +66,6 @@ timing and need a quiet machine. Game/viewer share the rendering and data librar
 show statistics/profiler. Game F5 saves/F9 loads; F2..F4 select1/2/5 speed, Space pauses,
 F6 cinematic camera, F7 hides UI. [Viewer guide](docs/viewer.md), [simulation](docs/simulation.md),
 [UI compatibility](docs/faithful-ui-parity.md).
-
-Faithful follows original rendering/UI where implemented; independently selectable Meitou
-features improve quality/ranges. FSR/DLSS vendor files are runtime/packaging dependencies,
-never committed. [Third-party notices](THIRD_PARTY_NOTICES.md).
-Both UI modes currently use the original in-game HUD and windows; Meitou retains its custom
-title screen, transitions and settings. Known fidelity gaps: [UI compatibility](docs/faithful-ui-parity.md).
 
 ## Releases and license
 

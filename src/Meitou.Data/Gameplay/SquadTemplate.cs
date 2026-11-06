@@ -27,6 +27,8 @@ public sealed record SquadTemplate
     /// <summary><c>animals</c> / <c>animals2</c> (ANIMAL_CHARACTER; v2 = age 0 to 100).</summary>
     public IReadOnlyList<RecordLink> Animals { get; init; } = [];
     public IReadOnlyList<RecordLink> Animals2 { get; init; } = [];
+    /// <summary><c>animal age random</c>: the template's own range of the random part of its animals' age (not the animal record's; all 961 base templates carry it).</summary>
+    public float AnimalAgeRandom { get; init; }
     /// <summary><c>slaves</c> and <c>prisoners</c>: whole squads created recursively.</summary>
     public IReadOnlyList<RecordLink> Slaves { get; init; } = [];
     public IReadOnlyList<RecordLink> Prisoners { get; init; } = [];
@@ -43,7 +45,11 @@ public sealed record SquadTemplate
     public IReadOnlyList<RecordLink> AiPackages { get; init; } = [];
     public float BloodSmellMult { get; init; }
     public bool PatrolApproachesTowns { get; init; }
-    public int ForceSpeed { get; init; }
+    /// <summary><c>force speed</c> as the platoon keeps it: 0 walk, 1 jog, 2 run replace the members' speed mode (docs/game/pathfinding.md "Force speed"); 4 none (a stored 3 grouped becomes 4, the key absent is taken as 4).</summary>
+    public int ForceSpeed { get; init; } = 4;
+
+    /// <summary>The platoon's <c>force speed</c> of a template record (<c>FUN_1407ee2d0</c>).</summary>
+    public static int ForceSpeedOf(GameRecord r) => RecordReading.Int(r, "force speed", 4) is var speed && speed == 3 ? 4 : speed;
     /// <summary><c>building</c>: the home building a resident squad uses (first entry); <c>building designation</c> is the editor's BuildingDesignation.</summary>
     public RecordLink? Building { get; init; }
     public int BuildingDesignation { get; init; }
@@ -53,10 +59,14 @@ public sealed record SquadTemplate
     /// <summary><c>layout interior</c> / <c>layout exterior</c>: the layout names the home building is given (empty: none).</summary>
     public string LayoutInterior { get; init; } = "";
     public string LayoutExterior { get; init; } = "";
+    /// <summary><c>building name</c>: the home building's display name when set ("The Dancing Skeleton", docs/game/factions-squads-towns.md "Town residents").</summary>
+    public string BuildingName { get; init; } = "";
     /// <summary><c>initial door state</c> (DoorState: 0 CLOSED, 1 OPEN, 2 LOCKED, 3 BROKEN), applied to the home building when it is assigned (docs/game/locks.md "Doors").</summary>
     public int InitialDoorState { get; init; }
     /// <summary><c>public day</c> (fcs.def default true): written over the home building's public flag when it is assigned (docs/game/locks.md "Data").</summary>
     public bool PublicDay { get; init; } = true;
+    /// <summary><c>building ruined</c>: the home building is ruined when assigned, if it can be (docs/game/buildings-production.md "Ruined by residents").</summary>
+    public bool BuildingRuined { get; init; }
     /// <summary><c>nest</c> links.</summary>
     public IReadOnlyList<RecordLink> Nest { get; init; } = [];
 
@@ -109,6 +119,7 @@ public sealed record SquadTemplate
             NumRandomCharsMax = r.GetInt("num random chars max"),
             Animals = Links("animals"),
             Animals2 = Links("animals2"),
+            AnimalAgeRandom = r.GetFloat("animal age random"),
             Slaves = Links("slaves"),
             Prisoners = Links("prisoners"),
             Housemates = Links("housemates"),
@@ -119,15 +130,17 @@ public sealed record SquadTemplate
             AiPackages = Links("AI packages"),
             BloodSmellMult = r.GetFloat("blood smell mult"),
             PatrolApproachesTowns = r.GetBool("patrol approaches towns"),
-            ForceSpeed = r.GetInt("force speed"),
+            ForceSpeed = ForceSpeedOf(r),
             Building = building.Count > 0 ? RecordLink.From(building[0]) : null,
             Buildings = Links("building"),
             BuildingDislike = Links("building dislike"),
             LayoutInterior = r.GetString("layout interior"),
             LayoutExterior = r.GetString("layout exterior"),
+            BuildingName = r.GetString("building name"),
             BuildingDesignation = r.GetInt("building designation"),
             InitialDoorState = r.GetInt("initial door state"),
             PublicDay = RecordReading.Bool(r, "public day", true),
+            BuildingRuined = r.GetBool("building ruined"),
             Nest = Links("nest"),
             IsTrader = RecordReading.Bool(r, "is trader", false),
             Vendors = Links("vendors"),

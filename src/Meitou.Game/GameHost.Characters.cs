@@ -23,13 +23,30 @@ namespace Meitou.Game;
 /// <summary>The draw list from the snapshots, and markers for what has nothing to draw.</summary>
 sealed partial class GameHost
 {
+    /// <summary>The free camera's eye this far above the ground under it keeps the last focus: the zones load again once it comes down.</summary>
+    const float FocusCeiling = Meitou.Data.World.KenshiCamera.FlightHeight;
+
+    /// <summary>The window's aspect ratio, kept by the frame loop for <see cref="SendView"/>.</summary>
+    float viewAspect = 16f / 9;
+
+    /// <summary>The settings' <c>npc range</c>, read once (the drawing takes it once too; reading settings.cfg every frame cost 0.09 ms).</summary>
+    float? npcRange;
+
+    /// <summary>Tells the world the camera it is looked at through, every frame (the update flag of <see cref="Meitou.Simulation.Bodies.MedicalTimeBudget"/> and the sensing hooks, <see cref="Meitou.Simulation.MedicalClock"/>).</summary>
+    void SendView()
+    {
+        if (IsBattle) return;
+        LocalSession.World.Commands.Enqueue(new Meitou.Simulation.CameraViewCommand(camera.Eye, camera.Forward, camera.FieldOfView, viewAspect, npcRange ??= GameplaySettings.NpcRange(install)) { Tick = LocalSession.World.Tick });
+    }
+
     /// <summary>Tells the world where the camera looks, when it has moved enough to matter (the zones follow it).</summary>
     void SendFocus(Vector3? at = null)
     {
         if (session.IsRemote) return; // server observation is anchored to authorized roles, never to the free camera
+        SendView();
         if (IsDuel) return;   // the duel's worlds keep the focus on its spot (DuelSetup), wherever the camera flies
         var current = session.Camera.Current;
-        if (at is null && sentFocus && current.IsFree && current.Eye.Y - session.Camera.EyeGroundAt(current.Eye.X, current.Eye.Z) > Meitou.Data.World.KenshiCamera.FlightHeight) return;
+        if (at is null && sentFocus && current.IsFree && current.Eye.Y - session.Camera.EyeGroundAt(current.Eye.X, current.Eye.Z) > FocusCeiling) return;
         var target = at ?? current.Target;   // the cinema's camera while it holds the view
         if (sentFocus && Vector3.DistanceSquared(target, lastFocus) < 50 * 50) return;
         LocalSession.World.Commands.Enqueue(new Meitou.Simulation.FocusCommand(target) { Tick = LocalSession.World.Tick });
@@ -142,14 +159,24 @@ sealed partial class GameHost
                         }
                 poses[i] = new CharacterPose(layer.Name, time, weight);
             }
-            list.Add(new CharacterInstance(DrawKey(c.Id), c.Appearance, position, yaw, poses)
-            {
-                WeaponDrawn = c.WeaponDrawn, Scale = c.Scale, DrawDistanceScale = DrawDistanceScale(c), Hidden = hiddenIndoors.Contains(c.Id), FullRateAnimation = c.IsPlayer, Rotation = rotation,
-                Bones = Blend(before is null || Reanchored(before, c) ? null : before.Ragdoll, c.Ragdoll, alpha, ref Slot(ref ragdollsBySlot, c.Id.Slot), ref Slot(ref spareRagdollsBySlot, c.Id.Slot)),
-            });
+            var bones = Blend(before is null || Reanchored(before, c) ? null : before.Ragdoll, c.Ragdoll, alpha, ref Slot(ref ragdollsBySlot, c.Id.Slot), ref Slot(ref spareRagdollsBySlot, c.Id.Slot));
+            list.Add(Drawn(c, c.Appearance, position, yaw, poses, rotation, bones, hiddenIndoors.Contains(c.Id), c.IsPlayer));
         }
     }
 
+
+    /// <summary>
+    /// A character as the renderer is handed it, by both draw-list sources (<see cref="FillDrawListCore"/>, the interface-less <see cref="FillWorldDrawList"/> of the Metal loop):
+    /// everything the snapshot says of its look, so a field is added here once (the stuck bolts, the limb in an animal's mouth, the weapon stance, the build, the blood).
+    /// </summary>
+    CharacterInstance Drawn(CharacterSnapshot c, Meitou.Data.Characters.CharacterAppearance look, Vector3 position, float yaw, IReadOnlyList<CharacterPose> poses, Quaternion? rotation,
+        Meitou.Data.Characters.BonePose? bones, bool hidden, bool fullRate) =>
+        new(DrawKey(c.Id), look, position, yaw, poses)
+        {
+            WeaponDrawn = c.WeaponDrawn, RangedDrawn = c.RangedDrawn, BackDrawn = c.BackDrawn, Shots = c.CrossbowShots, Bolts = BoltsOf(c), Mouth = MouthOf(c),
+            Scale = c.Scale, DrawDistanceScale = c.DrawDistanceScale, Hidden = hidden, FullRateAnimation = fullRate, Bones = bones,
+            Build = c.Build, Rotation = rotation, Blood = c.BloodAmounts,
+        };
 
     /// <summary>A character's key in the draw list: stable while it exists, new for every world (the renderer keeps its poses by it).</summary>
     long DrawKey(CharacterId id) => (((long)id.Slot << 32 | (uint)id.Generation) + 1) | (long)worldEpoch << 56;
@@ -186,7 +213,7 @@ sealed partial class GameHost
 
     /// <summary>
     /// The edited character's poses: the chosen idle stance at its record's play speed, as the simulation plays it (0 for the stances: a held pose of a 1-frame clip;
-    /// 0.01 for squat), cross-faded from the stances chosen before at the simulation's blend rate
+    /// 0.01 for squat; a mod's one-shot stance held at its last frame, <see cref="EditorClipTime"/>), cross-faded from the stances chosen before at the simulation's blend rate
     /// (<c>animation blend rate</c>).
     /// </summary>
     CharacterPose[] EditorStancePoses(CharacterId id, string stance)
@@ -203,7 +230,7 @@ sealed partial class GameHost
             if (weight <= 0) editorStances.RemoveAt(i);
             else editorStances[i] = (name, weight);
         }
-        return [.. editorStances.Select(s => new CharacterPose(s.Stance, animationLibrary?.IndexOf(s.Stance) is >= 0 and int k ? (float)now * animationLibrary.Definitions[k].PlaySpeed : 0, s.Weight))];
+        return [.. editorStances.Select(s => new CharacterPose(s.Stance, EditorClipTime(s.Stance, (float)now), s.Weight))];
     }
 
     readonly HashSet<CharacterId> fullRate = [];
@@ -215,6 +242,7 @@ sealed partial class GameHost
     void AddDistant(CharacterDrawList list, CharacterSnapshot c)
     {
         var look = HeldLook(c.Appearance!, c.HeldTool, out var heldPending);
+        CutHead(c, look);
         bool hidden = hiddenIndoors.Contains(c.Id);
         list.Distant.Add(new CharacterInstance(DrawKey(c.Id), look, c.Position, DrawnYaw(c), []) { Scale = c.Scale, Hidden = hidden, Build = c.Build });
         if (heldPending is not null) list.Distant.Add(new CharacterInstance(DrawKey(c.Id) ^ (1L << 55), heldPending, c.Position, DrawnYaw(c), []) { Hidden = true });
@@ -260,9 +288,10 @@ sealed partial class GameHost
         distantFor = reachOf is null ? default : distantKey;
         foreach (var c in current.Characters)
         {
-            if (c.Appearance is null || editing is { } edited && c.Id != edited) continue;
+            var inBar = editing is { } shown ? EditorBarPlace(c.Id, shown) : null;
+            if (c.Appearance is null || editing is { } edited && c.Id != edited && inBar is null) continue;
             // The snapshot's place: a tick's motion is well inside InReach's margin.
-            if (reachOf is not null && !reachOf.InReach(c.Position, eye, DrawDistanceScale(c)) && !portraitKeys.Contains(DrawKey(c.Id)) && c.Id != sandboxHero)
+            if (reachOf is not null && !reachOf.InReach(c.Position, eye, c.DrawDistanceScale) && !portraitKeys.Contains(DrawKey(c.Id)) && c.Id != sandboxHero)
             {
                 if (distant) AddDistant(list, c);
                 continue;
@@ -305,22 +334,31 @@ sealed partial class GameHost
                 poses[i] = new CharacterPose(layer.Name, time, weight);
             }
             if (player.EditorIdle(c.Id) is { } stance) poses = EditorStancePoses(c.Id, stance);
+            // The Meitou editor's bar (GameHost.EditorBar.cs): the shown character stands in it, the others sit on its seats.
+            if (inBar is { } place)
+            {
+                (position, yaw, rotation) = (place.Position, place.Yaw, null);
+                if (place.Clip is { } clip) poses = [new CharacterPose(clip, EditorClipTime(clip, (float)realTime.Elapsed.TotalSeconds), 1)];
+            }
             if (c.Id == sandboxHero && sandboxPicker?.Pose() is { } forced) poses = forced;   // the sandbox drop-down loops a picked clip on the hero
             var held = HeldLook(c.Appearance, c.HeldTool, out var heldPending);
             var look = player.EditorPreview(c.Id, c.Appearance) ?? held;
+            if (editing is null) CutHead(c, look);
             var glide = player.EditorBlend(c.Id);   // after the preview, which may just have swapped the look
-            list.Add(new CharacterInstance(DrawKey(c.Id), look, position, yaw, poses)
-            {
-                WeaponDrawn = c.WeaponDrawn, RangedDrawn = c.RangedDrawn, BackDrawn = c.BackDrawn, Shots = c.CrossbowShots, Bolts = BoltsOf(c), Scale = c.Scale, DrawDistanceScale = DrawDistanceScale(c), Hidden = hiddenIndoors.Contains(c.Id), FullRateAnimation = editing is not null || fullRate.Contains(c.Id) || c.Id == sandboxHero && sandboxPicker?.Current is not null,
-                Bones = !posed ? null : Blend(before is null || Reanchored(before, c) ? null : before.Ragdoll, c.Ragdoll, alpha, ref Slot(ref ragdollsBySlot, c.Id.Slot), ref Slot(ref spareRagdollsBySlot, c.Id.Slot)),
-                BlendFrom = glide?.From, Blend = glide?.Blend ?? 0, Build = c.Build, Rotation = rotation, Blood = c.BloodAmounts,
-            });
+            var bones = !posed ? null : Blend(before is null || Reanchored(before, c) ? null : before.Ragdoll, c.Ragdoll, alpha, ref Slot(ref ragdollsBySlot, c.Id.Slot), ref Slot(ref spareRagdollsBySlot, c.Id.Slot));
+            bool hidden = inBar is null && hiddenIndoors.Contains(c.Id);
+            bool fullRated = editing is not null || fullRate.Contains(c.Id) || c.Id == sandboxHero && sandboxPicker?.Current is not null;
+            var instance = Drawn(c, look, position, yaw, poses, rotation, bones, hidden, fullRated);
+            if (glide is { } mixed) instance = instance with { BlendFrom = mixed.From, Blend = mixed.Blend };
+            list.Add(instance);
             // The editor's next preview look, listed hidden so the renderer prepares it while the last one is still shown.
             if (player.EditorPending(c.Id) is { } pending)
                 list.Add(new CharacterInstance(DrawKey(c.Id) ^ (1L << 55), pending, position, yaw, poses) { Hidden = true });
             else if (heldPending is not null)
                 list.Add(new CharacterInstance(DrawKey(c.Id) ^ (1L << 55), heldPending, position, yaw, poses) { Hidden = true });
         }
+        if (editing is null) AddHeads(list);
+        else AddEditorCrowd(list);
     }
 
     readonly System.Runtime.CompilerServices.ConditionalWeakTable<Meitou.Data.Characters.CharacterAppearance, Dictionary<string, Meitou.Data.Characters.CharacterAppearance>> heldLooks = new();
@@ -340,6 +378,18 @@ sealed partial class GameHost
         return look;
     }
 
+    /// <summary>Whether the look with the operator's tool (<see cref="HeldLook"/>) is made and prepared: then it is the one drawn.</summary>
+    bool HeldPrepared(Meitou.Data.Characters.CharacterAppearance look, string? tool, Meitou.Rendering.Characters.CharacterRenderer characters) =>
+        tool is not null && heldLooks.TryGetValue(look, out var byTool) && byTool.TryGetValue(tool, out var held) && characters.IsPrepared(held);
+
+    /// <summary>
+    /// Whether the character's place changed meaning between the two ticks: a whole ragdoll moves it to its root body the tick it starts and back onto the ground the tick
+    /// it gets up (docs/game/ragdolls.md "Per frame"), and its pose is placed there. Such a tick is drawn where it ends, not between: from the last place, the body sank by its
+    /// hip height into the ground for a frame (or hopped up as it rose).
+    /// </summary>
+    static bool Reanchored(CharacterSnapshot before, CharacterSnapshot now) =>
+        (before.Ragdoll is null) != (now.Ragdoll is null) || before.Ragdoll is { Weight: >= 1 } && now.Ragdoll is { Weight: < 1 };
+
     /// <summary>
     /// Whether the character's place changed meaning between the two ticks: a whole ragdoll moves it to its root body the tick it starts and back onto the ground the tick
     /// it gets up (docs/game/ragdolls.md "Per frame"), and its pose is placed there. Such a tick is drawn where it ends, not between: from the last place, the body sank by its
@@ -347,8 +397,6 @@ sealed partial class GameHost
     /// </summary>
     static float DrawDistanceScale(CharacterSnapshot c) => c.Appearance?.Race.GetBool("gigantic") == true ? 7 : 1;
 
-    static bool Reanchored(CharacterSnapshot before, CharacterSnapshot now) =>
-        (before.Ragdoll is null) != (now.Ragdoll is null) || before.Ragdoll is { Weight: >= 1 } && now.Ragdoll is { Weight: < 1 };
 
     /// <summary>
     /// A ragdoll's bones between the last two ticks: rotations by nlerp, root positions and the get-up weight linearly; a bone only in the newer one as it is. Written into

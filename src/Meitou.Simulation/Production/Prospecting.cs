@@ -6,7 +6,7 @@ namespace Meitou.Simulation.Production;
 /// The HUD's Prospect button: the character stands where it is and prospects (the original's <c>Task_Prospecting</c>, order 150, docs/game/ai-tasks.md "Prospecting"). The host names the one nearest the
 /// camera; a character that already prospects, is down, fighting, carried, caged or swimming ignores it.
 /// </summary>
-public sealed record ProspectOrder(CharacterId Character) : SimCommand;
+public sealed record ProspectOrder(CharacterId Character) : OrderCommand;
 
 /// <summary>One line of the results window: a resource or crop coverage and its value (1 = 100 %).</summary>
 public readonly record struct ProspectLine(string Name, float Value)

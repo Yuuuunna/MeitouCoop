@@ -77,7 +77,7 @@ public class FaithfulInteractionTests(ITestOutputHelper output)
             Assert.Equal(selectedHunger, ui.NewGameOptions[0]);
             Click(ui, "CancelButton");
             Assert.DoesNotContain(ui.UiFrame, c => c.Name == "advanced-track-0");
-            Click(ui, "NewGameButton"); Assert.Equal(1, ui.NewGameOptions[0]);
+            Click(ui, "NewGameButton"); Assert.Equal(selectedHunger, ui.NewGameOptions[0]);   // kept between openings, as the original's globals
         }
         finally { ui.DisposeUi(); }
     }
@@ -193,7 +193,7 @@ public class FaithfulInteractionTests(ITestOutputHelper output)
         {
             var eye = new Vector3(0, 6, -14);
             ui.Eye = eye;
-            ui.ViewProjection = Matrix4x4.CreateLookAt(eye, new(0, 1, 0), Vector3.UnitY) * Matrix4x4.CreatePerspectiveFieldOfView(1, 1600 / 900f, 0.1f, 1000);
+            ui.ViewProjection = Matrix4x4.CreateLookAt(eye, new(0, 1, 0), Vector3.UnitY) * Meitou.Rendering.DepthConvention.Perspective(1, 1600 / 900f, 0.1f, 1000);
             var at = ui.Project(new Vector3(3, 1, 0))!.Value;
             ui.MouseDown(MouseButton.Right, at, false);
             ui.Steer(); Assert.False(ui.ContextMenuOpen);   // not held long enough yet
@@ -252,7 +252,8 @@ public class FaithfulInteractionTests(ITestOutputHelper output)
         var lead = new CharacterSnapshot(new CharacterId(0, 0), null, Vector3.Zero, 0, [])
             { Hud = new HudView(150, 150, 0, 1, [new("Strength:", 99.4f, 100), new("Toughness:", 100, 100), new("Dodge:", 105, 100)]) };
         Assert.Equal(["STRENGTH: 99 (-1)", "TOUGHNESS: 100", "DODGE: 105 (+5)"], PlayerInterface.StatsLines(lead).Select(l => $"{l.Label} {l.Value}"));
-        var extended = lead with { Hud = lead.Hud! with { Extended = new ExtendedStats(1.5f, 0.25f, 3, -37.6f, 30, 40, 1.35f) } };
+        var extended = lead;
+        extended.Hud = lead.Hud! with { Extended = new ExtendedStats(1.5f, 0.25f, 3, -37.6f, 30, 40, 1.35f) };
         Assert.Equal(["Athletics XP: 150%", "Strength XP: 25%", "Toughness XP: 3x", "KO point: -37", "Run speed: 7 (-2) mph", "Hunger Rate: 135%"],
             PlayerInterface.ExtendedLines(extended).Select(l => $"{l.Label} {l.Value}"));
     }
@@ -275,7 +276,7 @@ public class FaithfulInteractionTests(ITestOutputHelper output)
     }
 
     /// <summary>Names the HUD bindings carry for the Meitou mode's native HUD only; the faithful layout has no widget for them.</summary>
-    static readonly HashSet<string> NativeOnly = ["clock", "hunger", "condition", "blood", "body", "bloodFraction", "bodyFraction", "hungerFraction", "squad.count", "members"];
+    static readonly HashSet<string> NativeOnly = ["clock", "hunger", "condition", "blood", "body", "squad.count", "members"];
 
     [Fact, Slow]
     public void EveryWidgetTheFaithfulModeFillsExistsInTheOriginalLayout()

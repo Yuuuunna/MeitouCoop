@@ -25,13 +25,17 @@ public sealed record MachineData
     public required string Name { get; init; }
     /// <summary>The functionality's <c>function</c> (BuildingFunction); -1 without a functionality.</summary>
     public int Function { get; init; } = -1;
+    /// <summary>The BUILDING_FUNCTIONALITY record (string id; null without one): its <c>animation events</c> ride on the operator's clip (docs/audio.md "Character tasks").</summary>
+    public string? Functionality { get; init; }
+    /// <summary>The functionality's <c>flags</c>; a chair's facing rule.</summary>
+    public int FunctionFlags { get; init; }
     /// <summary><c>stat used</c> (a <c>StatsEnumerated</c> value); 0 for none.</summary>
     public int Stat { get; init; }
     /// <summary>How many characters may work it at once: the BUILDING's <c>max operators</c>, else the functionality's (at least 1).</summary>
     public int MaxOperators { get; init; } = 1;
     /// <summary>
-    /// The work per second at skill factor 1, before P: BUILDING <c>output rate</c> x functionality <c>production mult</c>, / (2G) when <c>output per day</c> (<b>Observed</b>, loader <c>FUN_14029e7b0</c>).
-    /// For a research bench it is the bench's <c>output rate</c>.
+    /// The work per second of one operator at skill factor 1, before P: BUILDING <c>output rate</c> x functionality <c>production mult</c>, / (2G) when <c>output per day</c>
+    /// (not for research), / the raw <c>max operators</c> when above 1, so a full crew makes one rate (<b>Verified</b>, loaders <c>FUN_14029e460</c>, <c>FUN_14029e7b0</c>).
     /// </summary>
     public float Rate { get; init; }
     /// <summary><c>use range</c>: how near an operator works.</summary>
@@ -76,13 +80,14 @@ public sealed record MachineData
     /// order is 152 "Operating automatic machine" (Auto-Haul) instead of 87.
     /// </summary>
     public bool IsAutomatic { get; init; }
+    /// <summary>
+    /// Works with nobody at it (the exe's "has operators" flag +0x3a9 clear): the raw <c>max operators</c> is 0, or the BUILDING's and the functionality's are both below 0
+    /// (<b>Verified</b>, <c>FUN_1402a3750</c>, <c>FUN_14029e460</c>; <c>ProductionBuilding::vfunc_28</c> <c>FUN_14029ad90</c>). The menu order follows <see cref="IsAutomatic"/> alone.
+    /// No base-game pair is negative on both (<b>Verified</b>, probe), so only mods.
+    /// </summary>
+    public bool Unattended { get; init; }
     /// <summary>A wind generator: function 5 without <c>consumes</c> (<b>Observed</b>, the factory <c>FUN_14057cc70</c>).</summary>
     public bool IsWind { get; init; }
-    /// <summary>
-    /// The <c>wind speed rotation min/max</c> of the building's first ROTATION_WIND_SPEED part (depth first through <c>parts</c>, collision-less as the layout's rotors; max raised to min): a wind
-    /// generator's output share is <see cref="Meitou.Data.World.RotorSpec.WindShare"/> of the wind there (<c>PhysicsCollection::getWindRotationPower</c>). Null without such a part (the share is 0).
-    /// </summary>
-    public (float Min, float Max)? WindRotor { get; init; }
     /// <summary>The BUILDING's raw <c>output rate</c> (the exe's <c>+0x1a8</c>), a factor of the efficiency its sound emitter is told (docs/audio.md "Point emitters"); 1 without one.</summary>
     public float OutputRate { get; init; } = 1;
     /// <summary>
@@ -99,7 +104,7 @@ public sealed record MachineData
     public bool IsConsumer => PowerOutput < 0;
 
     public bool IsResearch => Function == ResearchFunction;
-    /// <summary>A training dummy (function 7, BF_TRAINING): its user trains <see cref="Stat"/> up to the cap <see cref="OutputRate"/> (the "Max Skill Level" of its panel is one less, docs/game/ai-tasks.md "Finders of the jobs").</summary>
+    /// <summary>A training dummy (function 7, BF_TRAINING): its user trains <see cref="Stat"/> up to the cap <see cref="OutputValue"/> (the "Max Skill Level" of its panel is one less, docs/game/ai-tasks.md "Finders of the jobs").</summary>
     public bool IsTraining => Function == TrainingFunction && Stat > 0;
     /// <summary>A mine, well or refinery: inputs (if any) into one output (functions 1, 4 and 27, <b>Verified</b> enum; the stone and ore processors are 4).</summary>
     public bool IsProducer => Function is MineFunction or RefineryFunction or NaturalMineFunction or RainCollectorFunction && Farm is null && Output is not null;
@@ -128,22 +133,6 @@ public sealed record MachineData
         return (Math.Max(1, building.GetInt("storage size width", 18)), Math.Max(1, building.GetInt("storage size height", 18)));
     }
 
-    static (float Min, float Max)? WindRotorOf(GameDatabase db, GameRecord holder, int depth)
-    {
-        if (depth > 8) return null;
-        foreach (var r in holder.GetReferences("parts"))
-        {
-            if (db.Find(r.TargetStringId) is not { Type: FcsRecordType.BUILDING_PART } part) continue;
-            if (part.GetInt("rotation function") == Meitou.Data.World.RotorSpec.WindSpeed && part.GetPath("xml collision").Length == 0)
-            {
-                float min = part.GetFloat("wind speed rotation min");
-                return (min, MathF.Max(min, part.GetFloat("wind speed rotation max")));
-            }
-            if (WindRotorOf(db, part, depth + 1) is { } below) return below;
-        }
-        return null;
-    }
-
     public static MachineData? From(GameDatabase db, GameRecord building)
     {
         var function = building.GetReferences("functionality") is [var link, ..] ? db.Find(link.TargetStringId) : null;
@@ -152,10 +141,10 @@ public sealed record MachineData
         int fn = function?.GetInt("function", -1) ?? -1;
         var farm = building.GetReferences("farm data") is [var farmLink, ..] && db.Find(farmLink.TargetStringId) is { Type: FcsRecordType.FARM_DATA } fd ? FarmData.From(db, fd) : null;
         float rate = building.GetFloat("output rate", 1);
-        if (fn != ResearchFunction && function is not null)
+        if (function is not null)
         {
             rate *= function.GetFloat("production mult", 1);
-            if (function.GetBool("output per day")) rate /= 2 * DaySeconds;
+            if (fn != ResearchFunction && function.GetBool("output per day")) rate /= 2 * DaySeconds;
         }
         var inputs = new List<RecipeInput>();
         RecipeOutput? output = null;
@@ -170,9 +159,10 @@ public sealed record MachineData
         int rawOperators = maxOperators >= 0 ? maxOperators : function?.GetInt("max operators", -1) ?? -1;
         bool wind = fn == GeneratorFunction && inputs.Count == 0;
         if (maxOperators <= 0) maxOperators = Math.Max(1, function?.GetInt("max operators", 1) ?? 1);
+        // Every machine's rate is shared by its operators: / the raw max operators when above 1, so a machine whose BUILDING says 0 is never divided (Verified, FUN_14029e460,
+        // FUN_14029e7b0, FUN_1402b9aa0; each operator then adds the divided rate).
+        if (rawOperators > 1) rate /= rawOperators;
         var craft = function is not null ? CraftBench.From(db, function) : null;
-        // A crafting bench's rate is shared by its operators (Observed, FUN_1402b9aa0).
-        if (craft is not null && maxOperators > 1) rate /= maxOperators;
         // A bench gets a section per ingredient of its widest recipe when it lists fewer (engine choice: the original's section count for such benches is Unknown).
         if (craft is not null && !craft.OverridesIngredients)
         {
@@ -188,6 +178,8 @@ public sealed record MachineData
             Id = building.StringId,
             Name = building.Name,
             Function = fn,
+            Functionality = function?.StringId,
+            FunctionFlags = function?.GetInt("flags") ?? 0,
             Stat = function?.GetInt("stat used") ?? 0,
             MaxOperators = maxOperators,
             Rate = rate,
@@ -212,8 +204,8 @@ public sealed record MachineData
             PowerCapacity = building.GetInt("power capacity"),
             PowerOperators = Math.Max(0, rawOperators),
             IsAutomatic = rawOperators == 0,
+            Unattended = rawOperators == 0 || function is not null && building.GetInt("max operators", -1) < 0 && function.GetInt("max operators", -1) < 0,
             IsWind = wind,
-            WindRotor = wind ? WindRotorOf(db, building, 0) : null,
             OutputRate = building.GetFloat("output rate", 1),
             OutputValue = building.GetFloat("output rate", 1) * (function?.GetFloat("production mult", 1) ?? 1) / (rawOperators > 1 ? rawOperators : 1),
             InteriorFurniture = building.GetBool("is interior furniture"),
@@ -254,7 +246,10 @@ public sealed record FarmData
     public float Arid { get; init; }
     public float Green { get; init; }
     public float Swamp { get; init; }
-    /// <summary>An indoor farm (<c>fertility effect</c> 0): fertility and biome do not matter (<b>Observed</b>, ctor <c>FUN_1400e8420</c>).</summary>
+    /// <summary>
+    /// An indoor farm (<c>fertility effect</c> 0): the ground counts only at or below <c>minimum fertility</c>, the crop match is 1; the biome's water usage still applies
+    /// (<b>Verified</b>, ctor <c>FUN_1400e8420</c>, <c>FUN_1400e4320</c>).
+    /// </summary>
     public bool Indoor => FertilityEffect == 0;
 
     public static FarmData From(GameDatabase db, GameRecord r) => new()
@@ -413,10 +408,13 @@ public sealed class ResourceField
         return band * r.GetFloat(p + " mult") + r.GetFloat(p + " min");
     }
 
-    /// <summary>The farm's crop match C = <c>arid</c> x the arid coverage + <c>green</c> x green + <c>swamp</c> x swamp (<b>Observed</b>, <c>FUN_1400dfe10</c>); 1 indoors.</summary>
-    public float CropMatch(FarmData farm, float x, float z)
+    /// <summary>
+    /// The farm's crop match C = <c>arid</c> x the arid coverage + <c>green</c> x green + <c>swamp</c> x swamp; 1 when the farm stands inside a building (<b>Verified</b>, <c>FUN_1400dfe10</c>: only
+    /// its isIndoors handle (slot 59) decides, not the farm's fertility effect 0).
+    /// </summary>
+    public float CropMatch(FarmData farm, float x, float z, bool indoors)
     {
-        if (farm.Indoor) return 1;
+        if (indoors || !HasMap) return 1;   // without an areas map (a bare sandbox) there is no biome to match: engine choice
         if (Resources(x, z) is not { } r) return 0;
         return farm.Arid * r.GetFloat("arid") + farm.Green * r.GetFloat("green") + farm.Swamp * r.GetFloat("swamp");
     }

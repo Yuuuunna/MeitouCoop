@@ -28,7 +28,7 @@ public sealed partial class World
                 if (inv.Backpack is not null) blueprint = true;
                 foreach (var item in inv.All())
                 {
-                    stolen |= item.IsStolenFor(c.Faction);
+                    stolen |= item.IsStolenFor(c.Faction, population);
                     uniform |= item.Uniform.Length > 0;
                     blueprint |= item.ItemFunction == BlueprintFunction;
                 }

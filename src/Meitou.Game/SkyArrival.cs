@@ -4,35 +4,35 @@ using Meitou.Rendering;
 namespace Meitou.Game;
 
 /// <summary>
-/// Presentation-only flight through the sky; the simulation clock and camera rig never change. The hour runs forward to the destination's, holds, the view
-/// pans up to the sky and waits there for the load; the destination fades in from black with the camera high over it, which comes down orbiting onto the view.
+/// Presentation-only flight through the sky; the simulation clock and camera rig never change. From the title the hour runs forward to the
+/// destination's, then a hold; in play, or when the hour is near, the view climbs at once, the hour running on as it goes. The view pans
+/// up to the sky and waits there for the load; the destination fades in from black with the camera high over it, which comes down orbiting onto the view.
 /// </summary>
-sealed class SkyArrival(WorldCamera source, float hour, float speed = 1)
+sealed class SkyArrival(WorldCamera source, float hour, float speed = 1, bool immediate = false)
 {
-    internal const double HoldSeconds = 0.5, SitSeconds = 1.8, AscentSeconds = 3.4, DescentSeconds = 3, FadeOutSeconds = 0.3, FadeInSeconds = 1.4;
+    internal const double HoldSeconds = 0.5,AscentSeconds = 3.4, DescentSeconds = 3, FadeOutSeconds = 0.3, FadeInSeconds = 1.4;
     internal const float MinSpeed = 0.25f, MaxSpeed = 4;
     internal const float SkyPitch = -1.45f;
     /// <summary>How far above its view the destination's camera starts, so nothing near blocks the first look; and how far it orbits round on the way down.</summary>
     internal const float ArrivalHeight = 300, ArrivalSweep = 1.2f;
+    /// <summary>The most hours the run forward may take for the title to climb at once, without the hold.</summary>
+    internal const float NearHours = 3;
     enum Phase { Turn, Hold, Ascent, Stars, Arriving }
     readonly Vector3 sourceEye = source.Eye;
     readonly float sourceYaw = source.Yaw, sourcePitch = source.Pitch, sourceDistance = source.Distance, sourceFov = source.FieldOfView;
     readonly float sourceHour = hour;
     readonly float flightSpeed = float.IsFinite(speed) ? Math.Clamp(speed, MinSpeed, MaxSpeed) : 1;
     float? destinationHour;
-    Phase phase;
-    double elapsed;
-    double age;
+    Phase phase = immediate ? Phase.Ascent : Phase.Turn;
+    double elapsed, turnElapsed;
     bool covering;
-    bool climbing;
 
     public bool AtStars => phase >= Phase.Stars;
     public bool Finished => phase == Phase.Arriving && elapsed >= DescentSeconds && Fade == 0;
     public bool Arriving => phase == Phase.Arriving;
     /// <summary>How much of the frame is black, 0..1: drawn over the world while it warms up under it and as it fades in.</summary>
     public float Fade { get; private set; }
-    /// <summary>How far the title's wanderer has sat down, 0..1: from the flight's start, over <see cref="SitSeconds"/>.</summary>
-    public float Sit => climbing ? 0 : Ease((float)(age / SitSeconds), 0.5f, 0.5f);
+    bool Near => destinationHour is { } to && ForwardHours(sourceHour, to) <= NearHours;
 
     /// <summary>The hour the flight runs forward to before it climbs; until it is known (a save still being read) the view holds at the source's.</summary>
     public void SetDestination(float destination)
@@ -46,7 +46,7 @@ sealed class SkyArrival(WorldCamera source, float hour, float speed = 1)
     public void Advance(double seconds)
     {
         seconds = Math.Max(0, seconds);
-        age += seconds * flightSpeed;
+        if (destinationHour is not null) turnElapsed += seconds * flightSpeed;
         Fade = covering ? Math.Min(1, Fade + (float)(seconds * flightSpeed / FadeOutSeconds))
             : phase == Phase.Arriving ? Math.Max(0, Fade - (float)(seconds * flightSpeed / FadeInSeconds)) : Fade;
         // The hold is wall-clock time whatever the speed.
@@ -54,14 +54,15 @@ sealed class SkyArrival(WorldCamera source, float hour, float speed = 1)
         switch (phase)
         {
             case Phase.Turn when destinationHour is null: elapsed = 0; break;
-            case Phase.Turn when elapsed >= TurnSeconds: (phase, elapsed) = (Phase.Hold, 0); break;
+            case Phase.Turn when Near: (phase, elapsed) = (Phase.Ascent, 0); break;
+            case Phase.Turn when turnElapsed >= TurnSeconds: (phase, elapsed) = (Phase.Hold, 0); break;
             case Phase.Hold when elapsed >= HoldSeconds: (phase, elapsed) = (Phase.Ascent, 0); break;
             case Phase.Ascent when elapsed >= AscentSeconds: (phase, elapsed) = (Phase.Stars, 0); break;
         }
     }
 
-    /// <summary>A new game: straight up at the source's hour, no sitting down, hold or run of the hour (the start hour comes in under the black).</summary>
-    public void ClimbAtOnce() => (climbing, destinationHour, phase, elapsed) = (true, sourceHour, Phase.Ascent, 0);
+    /// <summary>A new game: straight up at the source's hour, no hold or run of the hour (the start hour comes in under the black).</summary>
+    public void ClimbAtOnce() => (destinationHour, phase, elapsed) = (sourceHour, Phase.Ascent, 0);
 
     /// <summary>The load is done and the destination warms up under the flight: the sky fades to black over it.</summary>
     public void Cover() => covering = true;
@@ -71,7 +72,7 @@ sealed class SkyArrival(WorldCamera source, float hour, float speed = 1)
     public void Skip()
     {
         if (phase == Phase.Arriving) (elapsed, Fade) = (DescentSeconds, 0);
-        else if (phase < Phase.Stars) (phase, elapsed) = (Phase.Stars, 0);
+        else if (phase < Phase.Stars) (phase, elapsed, turnElapsed) = (Phase.Stars, 0, double.MaxValue);
     }
 
     /// <summary>Places the camera for this frame and returns the hour to light it with. <paramref name="destinationReady"/>: the destination warms up under
@@ -92,9 +93,7 @@ sealed class SkyArrival(WorldCamera source, float hour, float speed = 1)
         }
         float lift = phase switch { Phase.Ascent => Ease((float)(elapsed / AscentSeconds)), Phase.Stars => 1, _ => 0 };
         Place(camera, sourceEye, sourceYaw, float.Lerp(sourcePitch, SkyPitch, lift), sourceDistance, sourceFov);
-        return phase == Phase.Turn
-            ? destinationHour is null ? sourceHour : ForwardHour(sourceHour, to, Ease(TurnSeconds > 0 ? (float)(elapsed / TurnSeconds) : 1, 0.5f, 0.5f))
-            : to;
+        return destinationHour is null ? sourceHour : ForwardHour(sourceHour, to, Ease(TurnSeconds > 0 ? (float)(turnElapsed / TurnSeconds) : 1, 0.5f, 0.5f));
     }
 
     // Descent holds its cruising speed longer and brakes briefly at the end; ascent uses symmetric ramps.

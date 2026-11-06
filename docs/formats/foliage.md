@@ -30,6 +30,11 @@ Algorithm verification does not establish screenshot parity for complete generat
   `zero cutoff`, `brightness boost`, `cap`, `blackout*`).
 - **TOWN** `no-foliage range` (default 2000): meshes with `avoid towns` are rejected within it, measured to the
   nearest town that is not a nest marker (type 8). **Verified (decompiled)**.
+  Exception (**Verified**, `FUN_1406d2410` at the town test, `FUN_140927f10` the nearest town): a mesh with a non-empty `building type` list (the resource rocks) is **not**
+  rejected when the nearest town's owner faction is the player's (faction `+0x250`, see factions-squads-towns.md); every other mesh, and rocks near any other town, are rejected on
+  distance alone. The town list is the live one, so it includes towns the player founded or took, and the test runs when the zone is paged. Not modelled: Meitou places a zone
+  from the level's towns only and caches the layout by content, so ownership (and the player's own towns) never changes a layout; a town the player owns in a loaded save keeps
+  its rocks away. Wiring it needs the layout cache key to carry which towns the player owns.
 
 ## Randomness, noise and ground
 
@@ -76,6 +81,7 @@ generated LOD, Hi-Z/fog culls and atlas residency live in the renderer reference
 
 ## Expression reference
 
+  **Verified** (`FUN_1406d2410` l.146-156): a mesh with a `building type` (a resource rock) is not rejected inside the range of a town whose owner faction is the player's; every other mesh, and rocks near other towns, are. Meitou: `FoliageTown.Owned` from `FoliageWorld.PlayerTowns`, a snapshot of the player's towns taken when a world is made or loaded (`GameHost.SnapshotPlayerTowns`); a town founded or captured later changes resource-rock placement only when its zone is placed again. The layout cache key includes the owned flags and the cache is bypassed when the snapshot differs from the one it was keyed with. No placement test (needs a full zone input).
 - Noise: `n = x + 57 z`; `n ^= n << 13`
 - Materials: `windFactorX/Z = wind factor × 0.25`
 - TERRAIN-mode meshes: `slope = min(1, 1 − normal.y)`

@@ -21,12 +21,67 @@ public sealed partial class ProductionSystem
 
     public static Machine? TownWorkOf(World world, TownBuilding building) => world.Machines.Find(building.Key);
 
+    /// <summary>
+    /// State 66 <c>haveSomeResourcesFrom</c> (<c>FUN_140597530</c>, <b>Observed</b>): the character carries the machine's output item.
+    /// </summary>
+    public static bool CarriesOutputOf(CharacterCold cold, Machine m) => m.Output is { } o && Carries(cold, o.Recipe.Item);
+
+    /// <summary>State 67 <c>haveSomeResourcesFor</c> (<c>FUN_1405a45f0</c>, <b>Observed</b>): the character carries an item one of the machine's inputs takes.</summary>
+    public static bool CarriesInputOf(CharacterCold cold, Machine m) => m.Inputs.Any(input => input.Rate > 0 && Carries(cold, input.Item));
+
+    static bool Carries(CharacterCold cold, string item) => cold.Inventory is { } inv && (inv.All().Any(i => i.Record == item) || inv.Backpack?.Contents?.All().Any(i => i.Record == item) == true);
+
+    /// <summary>
+    /// The finder of row 94 (<c>FUN_14059d9b0</c>, scored by <c>FUN_14059d000</c>, <b>Verified</b>): for each item type the target machine's inputs take, in list order, the nearest other machine whose output holds that item and
+    /// has some; the first item with one decides. <b>Not modelled</b>: the cached earlier pick, loose items on the ground (searched first by the original), and the split of buildings by the owner test of vfunc <c>0x3b0</c>
+    /// (<b>Unknown</b>); the candidates are the town's workplaces (the original's building mask is not decoded).
+    /// </summary>
+    public static TownBuilding? InputSource(World world, Machine target, IEnumerable<TownBuilding> candidates, Vector3 from)
+    {
+        foreach (var input in target.Inputs)
+        {
+            TownBuilding? best = null;
+            float bestD = float.MaxValue;
+            foreach (var b in candidates)
+            {
+                if (TownWorkOf(world, b) is not { Output: { Count: > 0 } o } other || ReferenceEquals(other, target) || o.Recipe.Item != input.Item) continue;
+                float d = Vector3.DistanceSquared(new Vector3(from.X, 0, from.Z), new Vector3(b.Position.X, 0, b.Position.Z));
+                if (d < bestD) (best, bestD) = (b, d);
+            }
+            if (best is not null) return best;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// <c>Task_FillMachine</c> (row 93, <c>FUN_140344510</c>, <b>Verified</b>) at a machine with a production component: the carried items (inventory and worn backpack) its inputs accept go into them up to
+    /// each input's capacity, a unit at a time.
+    /// </summary>
+    void FillInputs(World world, CharacterCold cold, Machine m)
+    {
+        if (cold.Inventory is not { } inv) return;
+        bool moved = false;
+        foreach (var input in m.Inputs)
+        {
+            if (input.Rate <= 0) continue;
+            foreach (var item in inv.All().Concat(inv.Backpack?.Contents?.All() ?? []).Where(i => i.Record == input.Item).ToList())
+            {
+                int n = Math.Min(input.Recipe.Capacity - input.Count, item.Quantity);
+                if (n <= 0) break;
+                input.Count += n;
+                item.Quantity -= n;
+                if (item.Quantity == 0) (inv.Items.Contains(item) ? inv : inv.Backpack!.Contents!).Remove(item);
+                moved = true;
+            }
+        }
+        if (moved) world.Machines.Touch();
+    }
     void PrepareTownWorkers(World world)
     {
         var table = world.Characters;
         for (int i = 0; i < table.HighWater; i++)
             if (table.Next[i].Alive && table.Cold(i) is { Ai: { Behaviour: Ai.AiBehaviour.Work } mind } cold
-                && (mind.WorkOperate ?? mind.CollectFrom) is { } building && Able(cold)
+                && (mind.WorkOperate ?? mind.CollectFrom ?? mind.FillTo) is { } building && Able(cold)
                 && Ai.AiSystem.Holds(table.Next[i], cold) && AtTownWork(table.Next[i], world.Buildings.Find(building.Key)?.Position ?? building.Position)) TownWork(world, building);
     }
 
@@ -40,15 +95,16 @@ public sealed partial class ProductionSystem
         var table = world.Characters;
         for (int i = 0; i < table.HighWater; i++)
         {
-            if (!table.Next[i].Alive || table.Cold(i) is not { Ai: { WorkOperate: not null } or { CollectFrom: not null } } cold) continue;
+            if (!table.Next[i].Alive || table.Cold(i) is not { Ai: { WorkOperate: not null } or { CollectFrom: not null } or { FillTo: not null } } cold) continue;
             ref var n = ref table.Next[i];
             var mind = cold.Ai!;
-            var building = mind.WorkOperate ?? mind.CollectFrom!;
+            var building = mind.WorkOperate ?? mind.CollectFrom ?? mind.FillTo!;
             if (!Able(cold) || !Ai.AiSystem.Holds(n, cold) || mind.Behaviour != Ai.AiBehaviour.Work || !AtTownWork(n, world.Buildings.Find(building.Key)?.Position ?? building.Position)) continue;
             if ((world.Machines.Find(TownWorkId(building)) ?? TownWork(world, building)) is not { } m || !Live(world, m)) continue;
             if (world.Buildings.Find(m.Site) is not { Complete: true, Destroyed: false } site
                 || site.Record != building.BuildingId || site.Owner != cold.Faction && !(cold.SlaveState == 1 && cold.SlaveOwner == site.Owner)) continue;
-            if (mind.CollectFrom is not null) TakeOutput(world, cold, m);
+            if (mind.FillTo is not null) FillInputs(world, cold, m);
+            else if (mind.CollectFrom is not null) TakeOutput(world, cold, m);
             else if (mind.WorkOperate is not null) TownOperate(world, i, cold, m, dt);
         }
     }
@@ -95,7 +151,7 @@ public sealed partial class ProductionSystem
     {
         if (cold.Inventory is not { } inv || m.Output is not { Count: > 0 } output) return;
         bool moved = false;
-        while (output.Count > 0 && items.Create(output.Recipe.Item, 1) is { } unit && inv.Add(unit))
+        while (output.Count > 0 && items.Create(output.Recipe.Item, 1) is { } unit && inv.HasRoomFor(unit) && inv.Add(unit))
         {
             output.Count--;
             moved = true;

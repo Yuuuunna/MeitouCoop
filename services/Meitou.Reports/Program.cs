@@ -15,11 +15,15 @@ builder.Services.AddHttpClient();
 builder.Services.AddSingleton(sp => new Roadmap(sp.GetRequiredService<IHttpClientFactory>().CreateClient(), config, sp.GetRequiredService<ILogger<Roadmap>>()));
 builder.Services.AddSingleton<Intake>();
 builder.Services.AddSingleton<Discord>();
+builder.Services.AddSingleton<GithubAuth>();
+builder.Services.AddSingleton<Feedback>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins(config.Origins).WithMethods("GET", "POST").WithHeaders("Content-Type")));
 builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     o.AddPolicy("post", ctx => RateLimitPartition.GetFixedWindowLimiter(ClientIp(ctx), _ => new() { PermitLimit = 10, Window = TimeSpan.FromMinutes(10) }));
+    // A feedback report is up to five requests (start, three files, send); the 10 a day per person is counted on the forms.
+    o.AddPolicy("feedback", ctx => RateLimitPartition.GetFixedWindowLimiter(ClientIp(ctx), _ => new() { PermitLimit = 30, Window = TimeSpan.FromMinutes(10) }));
 });
 
 var app = builder.Build();
@@ -54,6 +58,31 @@ app.MapPost("/reports", async (HttpContext ctx, ReportBody body, Intake intake, 
     return error is null ? Results.Ok(new Recorded(id)) : Results.BadRequest(new Refused(error));
 }).RequireRateLimiting("post");
 
+// The game's feedback button: start a form, upload each attachment as the raw request body, send it (it becomes a GitHub issue).
+app.MapPost("/feedback", async (HttpContext ctx, FeedbackBody body, Feedback feedback, Intake intake) =>
+{
+    var (token, error) = await feedback.Create(body, intake.Reporter($"ip:{ClientIp(ctx)}"));
+    return error is null ? Results.Ok(new FeedbackCreated(token!)) : Results.BadRequest(new Refused(error));
+}).RequireRateLimiting("feedback");
+app.MapPut("/feedback/{token}/{kind}", async (HttpRequest request, string token, string kind, Feedback feedback) =>
+    await feedback.Upload(token, kind, request) is { } refused ? Results.Json(new Refused(refused.Error), ReportsJson.Default.Refused, statusCode: refused.Status) : Results.NoContent())
+    .RequireRateLimiting("feedback");
+app.MapPost("/feedback/{token}/send", async (string token, Feedback feedback) =>
+{
+    var (issue, error) = await feedback.Submit(token);
+    return issue is not null ? Results.Ok(issue) : Results.BadRequest(new Refused(error!));
+}).RequireRateLimiting("feedback");
+// The issue's links: public, the token is the secret. The log is stored gzipped and sent as such for the browser to unpack.
+app.MapGet("/feedback/{token}/{file}", (string token, string file, Feedback feedback, HttpResponse response) =>
+{
+    string? kind = Feedback.Kinds.FirstOrDefault(k => Feedback.FileName(k) == file);
+    if (kind is null || feedback.FilePath(token, kind) is not { } path) return Results.NotFound();
+    response.Headers.CacheControl = "public, max-age=31536000, immutable";
+    if (kind == "log") response.Headers.ContentEncoding = "gzip";
+    return Results.File(path, kind switch { "screenshot" or "navmesh" => "image/png", "save" => "application/zip", _ => "text/plain; charset=utf-8" },
+        kind == "save" ? $"meitou-feedback-{token[..8]}.zip" : null);
+});
+
 // Admin (Authorization: Bearer REPORTS_ADMIN_TOKEN): the raw reports, a report's log, removing spam, registering the Discord commands.
 var admin = app.MapGroup("").AddEndpointFilter(async (ctx, next) =>
     config.AdminToken is { } token && ctx.HttpContext.Request.Headers.Authorization.ToString() == $"Bearer {token}" ? await next(ctx) : Results.Unauthorized());
@@ -62,6 +91,11 @@ admin.MapGet("/reports", async (Store store, DateTimeOffset? since, string? row,
 admin.MapGet("/reports/{id:long}/log", async (Store store, long id) =>
     await store.Log(id) is { } log ? Results.Text(Intake.Unzip(log), "text/plain; charset=utf-8") : Results.NotFound());
 admin.MapDelete("/reports/{id:long}", async (Store store, long id) => await store.Delete(id) ? Results.NoContent() : Results.NotFound());
+admin.MapDelete("/feedback/{token}", async (Store store, Feedback feedback, string token) =>
+{
+    feedback.DeleteFiles(token);
+    return await store.DeleteFeedback(token) ? Results.NoContent() : Results.NotFound();
+});
 admin.MapPost("/discord/register", async (Discord discord) => Results.Text(await discord.Register()));
 
 app.MapPost("/discord", async (HttpRequest request, Discord discord) =>
@@ -119,4 +153,7 @@ sealed record Refused(string Error);
 [JsonSerializable(typeof(Refused))]
 [JsonSerializable(typeof(RoadmapFile))]
 [JsonSerializable(typeof(List<GithubRelease>))]
+[JsonSerializable(typeof(FeedbackBody))]
+[JsonSerializable(typeof(FeedbackCreated))]
+[JsonSerializable(typeof(FeedbackIssue))]
 sealed partial class ReportsJson : JsonSerializerContext;

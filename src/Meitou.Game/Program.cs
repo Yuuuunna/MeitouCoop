@@ -46,7 +46,7 @@ static class Program
             return 2;
         }
         // Booting to the Meitou title: the world is loaded round the title's view, which it shows first (docs/engine.md).
-        bool toTitle = game.TitlePreview || world.Screenshot is null && !game.NewGame && game.Load is null && game.Sandbox == 0 && !game.Duel && game.Battle is null && !game.NoPopulation;
+        bool toTitle = game.TitlePreview || world.Screenshot is null && !game.NewGame && game.Load is null && !game.Continue && game.Sandbox == 0 && !game.Duel && game.Battle is null && !game.NoPopulation;
         if (world.X is null && world.Zone is null && world.Town is null && toTitle) (world.X, world.Z) = TitleComposition.Focus;
         if (world.X is null && world.Zone is null && world.Town is null) world.Town = "The Hub";
         var install = GameInstall.Locate();
@@ -56,6 +56,31 @@ static class Program
         {
             Console.Error.WriteLine($"Kenshi install not found: set {GameInstall.EnvironmentVariable} or create {GameInstall.LocalConfigFile}.");
             return 1;
+        }
+        if (game.Continue && ContinueSave(game, install) is { } continueExit) return continueExit;
+        try
+        {
+            var modsCfg = game.ModsCfg ?? Environment.GetEnvironmentVariable("MEITOU_MODS_CFG");
+            if (!string.IsNullOrEmpty(modsCfg)) ModList.UseModsCfg(modsCfg);
+        }
+        catch (FileNotFoundException e)
+        {
+            Console.Error.WriteLine(e.Message);
+            return 2;
+        }
+        if (game.DataCheck)
+        {
+            var checkedDb = Meitou.Data.GameDatabase.Load(Meitou.Data.LoadOrder.FromInstall(install));
+            var levels = Meitou.Data.World.WorldLevelData.Load(install, includeInteriors: true);
+            var levelProblems = levels.Problems();
+            Console.WriteLine($"load order: {string.Join(", ", checkedDb.Files)}");
+            foreach (var (what, issues) in new[] { ("game data", checkedDb.Issues), ("world levels", levelProblems) })
+            {
+                Console.WriteLine($"{what}: {issues.Count} problems");
+                foreach (var issue in issues) Console.WriteLine($"  {issue.Kind}: {issue}");
+            }
+            Console.WriteLine($"world levels: {levels.Issues.Count - levelProblems.Count} records a later layer defines again (how layers replace placements; not problems)");
+            return checkedDb.Issues.Count + levelProblems.Count == 0 ? 0 : 1;
         }
         // Steamworks must start before Vulkan creates its device so Steam can hook the renderer for Shift+Tab. Not for pictures or a
         // listing or hidden run: those must not count as Kenshi play time or get the overlay.
@@ -135,6 +160,7 @@ static class Program
             (world.X, world.Z, world.Town) = (spot.X, spot.Y, null);
             world.Distance ??= 150;
             world.Yaw ??= 90;
+            if (!rest.Contains("--time")) world.Hour = GameHost.BattleHour;
         }
         if (game.ListStarts || game.NewGame)
         {
@@ -217,5 +243,26 @@ static class Program
         }
         catch (Exception e) { Console.Error.WriteLine("Online entry failed: " + e.Message); Console.Error.WriteLine(e.StackTrace); return 1; }
         finally { connection?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+    }
+
+    /// <summary><c>--continue</c>: puts the newest save into <see cref="GameOptions.Load"/>; an exit code when it can't.</summary>
+    static int? ContinueSave(GameOptions game, GameInstall install)
+    {
+        if (game.Load is not null)
+        {
+            Console.Error.WriteLine("--continue picks the save itself: drop --load.");
+            return 2;
+        }
+
+        var newest = SaveModList.Scan(SaveModList.Roots(install)).FirstOrDefault();
+        if (newest is null)
+        {
+            Console.Error.WriteLine("--continue: no save found.");
+            return 1;
+        }
+
+        Console.WriteLine($"continue  {newest.Name} ({newest.Source}, {newest.ModifiedUtc.ToLocalTime():g})");
+        game.Load = newest.Folder;
+        return null;
     }
 }

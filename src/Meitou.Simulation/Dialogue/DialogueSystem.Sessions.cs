@@ -13,7 +13,8 @@ public sealed partial class DialogueSystem
         public ulong MembershipRevision;
         public int Faction = -1;
         public CharacterId Talker = CharacterId.None, Target = CharacterId.None;
-        public long ApproachUntil;
+        public long ApproachUntil, NextAim;
+        public System.Numerics.Vector2 AimedAt;
         public Conversation? Open;
         public ConversationView? View;
         public DialogueRequest? Request;
@@ -127,7 +128,7 @@ public sealed partial class DialogueSystem
         foreach (var s in interactions.Values)
         {
             h.Add(s.Actor.Value); h.Add(s.Id); h.Add(s.Attributed); h.Add(s.Faction); h.Add(s.MembershipRevision);
-            h.Add(s.Talker); h.Add(s.Target); h.Add(s.ApproachUntil);
+            h.Add(s.Talker); h.Add(s.Target); h.Add(s.ApproachUntil); h.Add(s.NextAim); h.Add(s.AimedAt.X); h.Add(s.AimedAt.Y);
             if (s.Control is { } grant) { h.Add(grant.Entity.Value); h.Add(grant.Revision); }
             h.Add(s.Open is not null);
             if (s.Open is { } c)

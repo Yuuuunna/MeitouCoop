@@ -170,12 +170,12 @@ public sealed class FactionDeeds(FactionRelations relations, PopulationData? dat
     public Action<World, int, int>? CagedHook { get; set; }
 
     /// <summary>
-    /// One first-aid update of <paramref name="seconds"/> by <paramref name="medic"/> on an unconscious <paramref name="patient"/> (<c>FUN_140649a00</c> / <c>FUN_14064d800</c>):
+    /// One first-aid update of <paramref name="seconds"/> by <paramref name="medic"/> on an unconscious or leg-collapsed (<see cref="Bodies.MedicalState.Crawling"/>, medical <c>+0x160</c>) <paramref name="patient"/> (<c>FUN_140649a00</c> / <c>FUN_14064d800</c>):
     /// <see cref="RelationEventKind.FirstAid"/>, +0.15 x per second up to +5.
     /// </summary>
     public void FirstAid(World world, int medic, int patient, float seconds)
     {
-        if (world.Characters.Cold(patient) is not { Medical: { Unconscious: true, Dead: false } }) return;
+        if (world.Characters.Cold(patient) is not { Medical: { Dead: false } med } || !(med.Unconscious || med.Crawling)) return;
         Apply(world, medic, patient, RelationEventKind.FirstAid, Weight(world, patient) * seconds);
     }
 }

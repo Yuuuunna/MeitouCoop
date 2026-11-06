@@ -64,9 +64,9 @@ static class HudTips
         else if (displayMode == 1 && animal is null)
         {
             // FUN_140884e00 and FUN_140884680: the value lerp(e, 0.2, 1) x (bonus + skill), the change the bonus less 0.8 (1 - e) x skill. The bonus (FUN_140884580) takes the
-            // weapon's indoors field like Attack's (0 for fists), while the row shows a flat +8 in any building.
+            // weapon's indoors field like Attack's (the fists item's: 8), while the row shows a flat +8 in any building.
             float ma = Eff(StatsEnumerated.MartialArts);
-            int gear = (int)(fighter?.UnarmedBonus ?? 0), bonus = Indoors(gear) - dust, encumbrance = (int)-(0.8f * (1 - e) * ma);
+            int gear = (int)(fighter?.UnarmedBonus ?? 0), bonus = Indoors(gear, fighter?.FistsItem?.Stats.IndoorsMod ?? 8) - dust, encumbrance = (int)-(0.8f * (1 - e) * ma);
             int value = (int)((0.2f + 0.8f * e) * (bonus + ma)), change = bonus + encumbrance;
             // The original labels the encumbrance row of this tooltip "Strength XP:".
             var tip = new List<(string, string)> { (Loc.Tr("Total equipment bonuses:"), Signed(gear)), (Loc.Tr("Indoors bonus:"), inBuilding ? Signed(8) : None),
@@ -79,7 +79,7 @@ static class HudTips
         {
             // FUN_1408844c0 / FUN_140884e80: the equipment bonus (indoors with the weapon's indoors modifier) less the dust penalty, then the effective skill, times the age;
             // the change is the bonus. An animal always shows Attack, and no Defense.
-            int gear = (int)((fighter?.AttackBonus ?? 0) + (weapon?.AttackMod ?? 0)), change = Indoors(gear) - dust, value = (int)(change * age + Eff(StatsEnumerated.MeleeAttack));
+            int gear = (int)((fighter?.AttackBonus ?? 0) + (weapon?.AttackMod ?? 0)), change = Indoors(gear, indoorsMod) - dust, value = (int)(change * age + Eff(StatsEnumerated.MeleeAttack));
             lines.Add(new HudStatLine("Attack:", value, value - change)
             {
                 Tip = [(Loc.Tr("Total equipment bonuses:"), Signed(gear)), (Loc.Tr("Weapon indoors penalty:"), inside ? Signed(indoorsMod) : None),
@@ -99,7 +99,7 @@ static class HudTips
         }
 
         // The equipment bonus indoors: a positive bonus is dropped under an indoors penalty, then the modifier is added.
-        int Indoors(int bonus) => !inside ? bonus : (bonus > 0 && indoorsMod < 0 ? 0 : bonus) + indoorsMod;
+        int Indoors(int bonus, int mod) => !inside ? bonus : (bonus > 0 && mod < 0 ? 0 : bonus) + mod;
 
         var strengthTip = new List<(string, string)>();
         if (cold.Extended is { } x) strengthTip.Add((Loc.Tr("Strength XP rate:"), Loc.Tr("{1,num}%", (int)(x.StrengthXp * 100))));
@@ -118,9 +118,9 @@ static class HudTips
         lines.Add(Line("Dexterity:", StatsEnumerated.Dexterity, fighter?.DexterityMult ?? 1) with { Tip = dexterityTip });
 
         var toughnessTip = new List<(string, string)> { (Loc.Tr("Toughness XP rate:"), Loc.Tr("{1,num}x", (int)XpService.ToughnessFactor(med))) };
-        float tough = stats.Toughness * stats.Scale;
+        float tough = stats.ScaledToughness;
         if (constants is not null)
-            toughnessTip.AddRange([(Loc.Tr("Health KO point:"), Int(MedicalState.KoPoint(constants, stats.Toughness))),
+            toughnessTip.AddRange([(Loc.Tr("Health KO point:"), Int(MedicalState.KoPoint(constants, stats.ScaledToughness))),
                 (Loc.Tr("Wound degeneration speed:"), Loc.Tr("{1,num=fix,p=2}x", MedicalState.DegenerationMult(constants, tough)))]);
         if (hc is { } r) toughnessTip.Add((Loc.Tr("Damage resistance:"), Loc.Tr("{1,num}%", (int)(r.Resistance * 100))));
         lines.Add(new HudStatLine("Toughness:", stats.Toughness, stats.Toughness) { Tip = toughnessTip });
@@ -153,7 +153,7 @@ static class HudTips
     {
         float e = cold.Fighter?.EncumbranceFactor ?? 1;
         var factors = (cold.Fighter?.Factors ?? StatFactors.None) with { Stun = med.DustStatFactor };
-        float t = stats.Toughness * stats.Scale * 0.01f;
+        float t = stats.ScaledToughness * 0.01f;
         static float Lerp(float t, float a, float b) => (b - a) * t + a;
         var strength = new List<StatReadout>();
         if (constants is not null)
@@ -171,7 +171,7 @@ static class HudTips
         if (constants is not null)
         {
             toughness.Add(new("Knockout time:", Loc.Tr("{1,num=fix,p=2}", Lerp(t, constants.KnockoutMult1, constants.KnockoutMult99)) + "x"));
-            toughness.Add(new("Knockout point:", Int(MedicalState.KoPoint(constants, stats.Toughness)), Main: true));
+            toughness.Add(new("Knockout point:", Int(MedicalState.KoPoint(constants, stats.ScaledToughness)), Main: true));
             toughness.Add(new("Wound deterioration speed:", Loc.Tr("{1,num=fix,p=2}", Lerp(t, constants.DegenerationMult1, constants.DegenerationMult99)) + "x"));
         }
         if (cold.Extended is { } r)
@@ -304,8 +304,13 @@ static class HudTips
             hunger.Add((Loc.Tr("Encumbrance effect:"), Mult((1 - e) * constants.EncumbranceHungerRate + 1)));
             if (x.Resting) hunger.Add((Loc.Tr("Resting/KO state:"), Mult(constants.BedHungerRate)));
         }
-        // FUN_14088a2b0: with the AI idle flag clear (Meitou does not model it, so no Idle row), the used functionality's hunger rate (CharStats +0x178) when it is not 1.
-        if (x.WorkHungerRate is { } work && work != 1) hunger.Add((Loc.Tr("Current work:"), Mult(work)));
+        // FUN_14088a2b0: the idle flag (CharBody::amIdle) gives the Idle row, else the used functionality's hunger rate (CharStats +0x178) when it is not 1. A Meitou worker at its
+        // work clip may have no task, so its rate goes first, as in the hunger factor.
+        if (x.WorkHungerRate is { } work)
+        {
+            if (work != 1) hunger.Add((Loc.Tr("Current work:"), Mult(work)));
+        }
+        else if (x.Idle) hunger.Add((Loc.Tr("Idle:"), Mult(MedicalState.IdleHungerRate)));
 
         // FUN_140895350's sneak row: t = max((s - 40) / 60, 0) of the stealth term s, which is in 0..1, then lerp(12, S, t), so the cap reads 12.
         float? sneak = (cold.Orders & CharacterOrders.Sneak) != 0 ? 12 + (x.RunSpeed - 12) * MathF.Max((Orders.Stealth(cold) - 40) / 60, 0) : null;

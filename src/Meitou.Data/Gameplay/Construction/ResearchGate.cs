@@ -28,15 +28,23 @@ public static class ResearchGate
         return ids;
     }
 
-    /// <summary>The BUILDING ids the completed research unlocks: the union of each RESEARCH's <c>enable buildings</c> (ids of other records or unknown research are ignored).</summary>
+    /// <summary>
+    /// The BUILDING ids the completed research unlocks (ids of other records or unknown research are ignored). <paramref name="completed"/> holds a research id once per finished repetition.
+    /// With <c>repeats</c> above 0 an <c>enable buildings</c> entry unlocks once repetition v0 is finished; without repeats every entry unlocks when the research is (<b>Verified</b>,
+    /// <c>FUN_1408320a0</c>, <c>FUN_140831e60</c>).
+    /// </summary>
     public static HashSet<string> Unlocked(GameDatabase db, IEnumerable<string> completed)
     {
         var unlocked = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var id in completed)
+        var times = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var id in completed) times[id] = times.GetValueOrDefault(id) + 1;
+        foreach (var (id, finished) in times)
         {
             if (db.Find(id) is not { Type: FcsRecordType.RESEARCH } research) continue;
+            bool repeats = research.GetInt("repeats") > 0;
             foreach (var building in research.GetReferences("enable buildings"))
-                if (db.Find(building.TargetStringId) is { Type: FcsRecordType.BUILDING }) unlocked.Add(building.TargetStringId);
+                if ((!repeats || building.Values.Value0 >= 0 && building.Values.Value0 < finished) && db.Find(building.TargetStringId) is { Type: FcsRecordType.BUILDING })
+                    unlocked.Add(building.TargetStringId);
         }
         return unlocked;
     }

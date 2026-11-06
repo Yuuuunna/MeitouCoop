@@ -6,16 +6,24 @@ public sealed record NavBuildSettings
     /// <summary>Horizontal cell size. Havok has no grid; 2 keeps the 9-unit minimum passage at 4 to 5 cells.</summary>
     public float CellSize { get; init; } = 2f;
     public float CellHeight { get; init; } = 1f;
-    /// <summary>Tile edge in cells; the zone's cells per side must be a multiple of it.</summary>
-    public int TileCells { get; init; } = 48;
+    /// <summary>
+    /// Tile edge in cells (576 units, 8 tiles a zone side); the zone's cells per side must be a multiple of it. Polygons end at tile edges, so large tiles keep open
+    /// ground in few polygons (the original's mesh has none: one tile a zone) and a search expands fewer (docs/game/pathfinding.md "Search cost").
+    /// </summary>
+    public int TileCells { get; init; } = 288;
     /// <summary>characterHeight 1.8 Havok units.</summary>
     public float AgentHeight { get; init; } = 18f;
     /// <summary>edgeMatchingParams.maxStepHeight 0.5 Havok units.</summary>
     public float MaxClimb { get; init; } = 5f;
     /// <summary>Contour simplification error in cells.</summary>
     public float MaxSimplificationError { get; init; } = 1.3f;
-    /// <summary>Longest contour edge in cells (0: unlimited).</summary>
+    /// <summary>
+    /// Longest contour edge in cells (0: unlimited). Unlimited, polygons spanning a canyon floor and its slopes took heights 30..43 off the ground and walkers
+    /// floated on them (docs/game/pathfinding.md "Search cost").
+    /// </summary>
     public int MaxEdgeLength { get; init; } = 24;
+    /// <summary>Watershed regions (chunky polygons) rather than monotone ones (strips; ZoneNavMeshBuilder.Partition).</summary>
+    public bool Watershed { get; init; } = true;
     public int MinRegionArea { get; init; } = 4;
     public int MergeRegionArea { get; init; } = 40;
     /// <summary>Worker threads for tiles; 0 means all but one core.</summary>

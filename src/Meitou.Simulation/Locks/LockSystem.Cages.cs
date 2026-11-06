@@ -1,4 +1,5 @@
 using System.Numerics;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Simulation.Crime;
 
 namespace Meitou.Simulation.Locks;
@@ -7,7 +8,7 @@ namespace Meitou.Simulation.Locks;
 /// Set Free (110, Task_ReleasePrisoner): the nearest of the characters (the selection when empty) who may walks to <see cref="Prisoner"/>'s cage and lets it out; refused while the cage is
 /// locked. Out of another faction's cage it is a crime like lifting the prisoner out.
 /// </summary>
-public sealed record SetFreeOrder(IReadOnlyList<CharacterId> Characters, CharacterId Prisoner) : SimCommand;
+public sealed record SetFreeOrder(IReadOnlyList<CharacterId> Characters, CharacterId Prisoner) : OrderCommand;
 
 /// <summary>Get in (107, Task_UseCage): the nearest of the characters (the selection when empty) who may walks into the free, unlocked <see cref="Cage"/> and is imprisoned there.</summary>
 public sealed record GetInCageOrder(IReadOnlyList<CharacterId> Characters, string Cage) : FixtureCommand;
@@ -21,15 +22,13 @@ public sealed partial class LockSystem
     void SetFreeInput(World world, SetFreeOrder order)
     {
         var table = world.Characters;
-        if (!table.TryResolveNext(order.Prisoner, out int p) || table.Cold(p) is not { IsImprisoned: true, InWhat: { } where } || world.Fixtures.Find(where) is not { } cage) return;
+        if (!table.TryResolveNext(order.Prisoner, out int p) || table.Cold(p) is not { IsImprisoned: true, InWhat: { } where } prisoner || !Conscious(prisoner) || world.Fixtures.Find(where) is not { } cage) return;
         int best = NearestWorker(world, order, order.Characters, cage);
         if (best < 0) return;
-        var walker = table.Cold(best)!;
-        ClearWork(walker);
-        Remember(world, order, table.IdOf(best), cage, order.Prisoner);
-        walker.Freeing = order.Prisoner;
-        MovementSystem.GoToFloor(world, best, cage.Position, walker.RunSpeed);
+        StartWork(world, best, CharacterTask.GoTo, TaskType.RELEASE_PRISONER, cage.Id, order.Prisoner, queued: order.Queued, command: order);
     }
+
+    static bool Conscious(CharacterCold c) => CharacterFacts.Conscious(c);   // Set Free's precondition 125
 
     void GetInInput(World world, GetInCageOrder order)
     {
@@ -37,23 +36,21 @@ public sealed partial class LockSystem
         if (world.Fixtures.Find(order.Cage) is not { Kind: FixtureKind.Cage } cage || !FixtureRegistry.IsFree(table, cage) || !world.Fixtures.Matches(order, cage)) return;
         int best = NearestWorker(world, order, order.Characters, cage);
         if (best < 0) return;
-        var walker = table.Cold(best)!;
-        if (!walker.Carrying.IsNone) return;
-        ClearWork(walker);
-        Remember(world, order, table.IdOf(best), cage);
-        walker.EnteringCage = cage.Id;
-        MovementSystem.GoToFloor(world, best, cage.Position, walker.RunSpeed);
+        if (!table.Cold(best)!.Carrying.IsNone) return;
+        StartWork(world, best, CharacterTask.GoTo, TaskType.USE_CAGE, cage.Id, queued: order.Queued, command: order);
     }
 
     /// <summary>The slot of the player's free, awake, uncarried character nearest <paramref name="where"/> among <paramref name="who"/> (the selection when empty); -1 when none.</summary>
     int NearestWorker(World world, SimCommand order, IReadOnlyList<CharacterId> who, Fixture where)
     {
         var table = world.Characters;
+        var row = order is SetFreeOrder ? TaskType.RELEASE_PRISONER : TaskType.USE_CAGE;
         int best = -1;
         float bestDistance = float.MaxValue;
         foreach (var id in Who(world, order, who))
         {
-            if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
+            if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone
+                || !TaskStart.Eligible(world, c, row)) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(where.Position));
             if (d < bestDistance) (best, bestDistance) = (s, d);
         }
@@ -72,23 +69,24 @@ public sealed partial class LockSystem
         c.PickingLock = null;
         c.Shackles = null;
         c.ForcingLock = null;
+        c.DoorJob = null;
         c.Freeing = CharacterId.None;
         c.EnteringCage = null;
     }
 
     /// <summary>Whether the character's role list in its squad's running package holds one of the goals in its hours.</summary>
-    static bool Lists(Ai.Blackboard board, Squad squad, CharacterId id, CharacterCold c, int hour, Meitou.Data.Gameplay.Ai.TaskType a, Meitou.Data.Gameplay.Ai.TaskType b)
+    static bool Lists(Ai.Blackboard board, Squad squad, CharacterId id, CharacterCold c, int hour, Meitou.Data.Gameplay.Ai.TaskType a, Meitou.Data.Gameplay.Ai.TaskType b, Meitou.Data.Gameplay.Ai.TaskType other = Meitou.Data.Gameplay.Ai.TaskType.None)
     {
         var roles = board.Roles[(int)Ai.AiSystem.RoleOf(squad, id, c)];
         for (int g = 0; g < roles.Count; g++)
-            if (roles[g].Task.Type is var t && (t == a || t == b) && roles[g].InWindow(hour)) return true;
+            if (roles[g].Task.Type is var t && (t == a || t == b || t == other) && roles[g].InWindow(hour)) return true;
         return false;
     }
 
     /// <summary>
     /// 202 Escaping (docs/game/ai-tasks.md "Finders of the jobs"; <c>Task_TakeOffCuffs</c> 219 provides its !134 through 201 / 185 / 186), every <see cref="EscapeEveryTicks"/> ticks: an awake AI
     /// character wearing locked shackles whose role list holds 202 sets to work on them, cutting with a tool, else picking (engine choice: the planner's pick among the three is
-    /// <b>Unknown</b>). Caged, it first needs the cage open (<see cref="OpportunisticEscapes"/>).
+    /// <b>Unknown</b>). Caged, it first needs the cage open (<see cref="OpportunisticEscapes"/>). One that wears shackles no longer locked takes them off (<see cref="TakeOffCuffs"/>).
     /// </summary>
     void ShackleEscapes(World world)
     {
@@ -98,7 +96,12 @@ public sealed partial class LockSystem
         for (int s = 0; s < table.HighWater; s++)
         {
             if (!table.Next[s].Alive || table.Cold(s) is not { IsImprisoned: false, IsPlayer: false, Shackles: null, Medical.Incapacitated: false, CarriedBy.IsNone: true, Ai: { Squad: { Ai: { } board } squad } } c
-                || WornShackles(c) is null || !Lists(board, squad, table.IdOf(s), c, hour, Meitou.Data.Gameplay.Ai.TaskType.TOTAL_ESCAPE, Meitou.Data.Gameplay.Ai.TaskType.TOTAL_ESCAPE)) continue;
+                || !Lists(board, squad, table.IdOf(s), c, hour, Meitou.Data.Gameplay.Ai.TaskType.TOTAL_ESCAPE, Meitou.Data.Gameplay.Ai.TaskType.TOTAL_ESCAPE)) continue;
+            if (WornShackles(c) is null)
+            {
+                TakeOffCuffs(world, c, table.Next[s].Position);
+                continue;
+            }
             c.PickingLock = null;
             c.Shackles = new ShackleJob(table.IdOf(s), Lockpicking.BestTool(c) is null ? ShackleWork.Pick : ShackleWork.Cut);
         }
@@ -107,8 +110,24 @@ public sealed partial class LockSystem
     const int EscapeEveryTicks = 30;
 
     /// <summary>
-    /// 256 Get out of cage (opportunistic; <c>Task_GetOutOfCage</c> with the escape flag, docs/game/ai-tasks.md "Arrest and prison rows"): an AI prisoner, awake, whose role list holds
-    /// the goal in its hours, walks out as soon as its cage is not effectively locked (<see cref="FixtureRegistry.GetOut"/> refuses a locked one; an unserved sentence makes it an escape).
+    /// 219 Removing Shackles (<c>Task_TakeOffCuffs</c>, <b>Verified</b>: its update queues <c>Character::setChainedMode(self, false)</c>, <c>FUN_14032e590</c>): the worn locked-armour item, in the
+    /// boots section else the body one, leaves the equipment whatever its lock state. <b>Engine choice</b>: it goes to the character's inventory, else the ground (where the original
+    /// sends it is <b>Unknown</b>); the planner's chained flag (<c>+0x320</c>) is read as wearing such an item.
+    /// </summary>
+    void TakeOffCuffs(World world, CharacterCold c, Vector3 at)
+    {
+        if (c.Inventory is not { } inv) return;
+        var cuffs = inv.Items.FirstOrDefault(i => i.IsLocked && i.Section == "boots") ?? inv.Items.FirstOrDefault(i => i.IsLocked && i.Section == "armour");
+        if (cuffs is null) return;
+        inv.Items.Remove(cuffs);
+        cuffs.Section = "main";
+        if (!inv.Add(cuffs)) world.GroundItems.Drop(cuffs, at, 0);
+        Assembly?.RefreshEquipment(c);
+    }
+
+    /// <summary>
+    /// 256 Get out of cage and 207 Escape cage (opportunistic; <c>Task_GetOutOfCage</c> with the escape flag, docs/game/ai-tasks.md "Arrest and prison rows"): an AI prisoner, awake, whose role list holds
+    /// the goal in its hours, walks out as soon as its cage is not effectively locked (<see cref="FixtureRegistry.GetOut"/> refuses a locked one; it is an escape unless it is a kidnap victim, whatever the sentence).
     /// </summary>
     void OpportunisticEscapes(World world)
     {
@@ -118,8 +137,8 @@ public sealed partial class LockSystem
         {
             if (f.Kind != FixtureKind.Cage || FixtureRegistry.IsFree(table, f) || f.Lock is { Locked: true } || !table.TryResolveNext(f.Occupant, out int s)) continue;
             if (table.Cold(s) is not { IsImprisoned: true, IsPlayer: false, Medical.Incapacitated: false, Ai: { Squad: { Ai: { } board } squad } } c) continue;
-            // 256, or 202 TOTAL_ESCAPE, whose !79 the cage rows (133 / 207 / 256) provide once the cage is unlocked.
-            if (Lists(board, squad, f.Occupant, c, hour, Meitou.Data.Gameplay.Ai.TaskType.GET_OUT_OF_CAGE_OPPORTUNISTIC, Meitou.Data.Gameplay.Ai.TaskType.TOTAL_ESCAPE))
+            // 256, 207 (Escape cage: A !79, B !54, the same task with the escape flag) or 202 TOTAL_ESCAPE, whose !79 the cage rows (133 / 207 / 256) provide once the cage is unlocked.
+            if (Lists(board, squad, f.Occupant, c, hour, Meitou.Data.Gameplay.Ai.TaskType.GET_OUT_OF_CAGE_OPPORTUNISTIC, Meitou.Data.Gameplay.Ai.TaskType.TOTAL_ESCAPE, Meitou.Data.Gameplay.Ai.TaskType.GET_OUT_OF_CAGE_ESCAPE))
                 world.Fixtures.GetOut(world, f.Occupant, Crimes);
         }
     }
@@ -150,20 +169,41 @@ public sealed partial class LockSystem
                 if (Redirected(next[s], at, reach)) { c.Freeing = CharacterId.None; c.EnteringCage = null; }
                 continue;
             }
-            if (next[s].Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, s);
+            if (next[s].Task == (byte)CharacterTask.GoTo) AtWork(world, s);
             if (c.Freeing.IsNone)
             {
                 c.EnteringCage = null;
-                if (cage.Lock is { EffectivelyLocked: true }) { if (c.IsPlayer) world.Post($"{c.Name}: It's locked."); continue; }
+                if (cage.Lock is { EffectivelyLocked: true }) { if (c.IsPlayer) Say(world, c, "It's locked."); continue; }
                 world.Fixtures.Imprison(world, table.IdOf(s), cage, constants.PrisonTime);
                 continue;
             }
             var prisoner = c.Freeing;
             c.Freeing = CharacterId.None;
-            if (cage.Lock is { EffectivelyLocked: true }) { if (c.IsPlayer) world.Post($"{c.Name}: It's locked."); continue; }
+            // A locked cage of its own faction is opened by the release itself (Task_ReleasePrisoner clears the lock, Verified); another faction's must be opened first.
+            if (cage.Lock is { EffectivelyLocked: true } && cage.Owner != c.Faction) { if (c.IsPlayer) Say(world, c, "It's locked."); continue; }
+            if (!table.TryResolveNext(prisoner, out int ps) || table.Cold(ps) is not { } pc || !Conscious(pc)) continue;
             // Letting a prisoner out of another faction's cage is the crime of lifting it out (FixtureRegistry.LiftOut): a pending code 7 against the cage's owner.
             if (cage.Owner >= 0 && cage.Owner != c.Faction) Crimes?.SetPending(world, s, CrimeCode.Terrorism, cage.Owner, prisoner, CrimeSystem.MinTimer);
-            if (world.Fixtures.Release(world, prisoner, c.Faction, Crimes)) world.EmitSound(SoundKind.Unlocked, s, next[s].Position);
+            if (FreeBy(world, table.IdOf(s), c.Faction, prisoner)) world.EmitSound(SoundKind.Unlocked, s, next[s].Position);
         }
+    }
+
+    /// <summary>
+    /// The start of Task_ReleasePrisoner (<c>FUN_1403570a0</c>, Verified): the prisoner is marked freed (status <c>+0xea</c>, set unconditionally; the status update drops it outside every town, <see cref="Crime.ArrestSystem"/>),
+    /// released, then a releaser of a faction that books bounties tells it it may go (event 46 from the releaser), else a releaser of the player's faction is thanked (event 13 from the prisoner).
+    /// </summary>
+    bool FreeBy(World world, CharacterId releaser, int faction, CharacterId prisoner)
+    {
+        if (world.Characters.TryResolveNext(prisoner, out int p) && world.Characters.Cold(p) is { } pc) pc.Freed = true;
+        if (!world.Fixtures.Release(world, prisoner, faction, Crimes)) return false;
+        var talk = world.SystemOf<Dialogue.DialogueSystem>();
+        if (world.Characters.TryResolveNext(releaser, out int r) && talk is not null)
+        {
+            talk.Forgive(world, p, releaser);   // the prisoner forgives the releaser (FUN_14067aca0, both orders)
+            if (Crimes?.Factions.Books(faction) == true) talk.Forgive(world, r, prisoner);
+        }
+        if (Crimes?.Factions.Books(faction) == true) world.Defer(new Dialogue.DialogueEvent(releaser, prisoner, PrisonerFreeToGo) { Tick = world.Tick + 1 });
+        else if (faction == world.Player.Faction) world.Defer(new Dialogue.DialogueEvent(prisoner, releaser, UnlockMyCageOrShackles) { Tick = world.Tick + 1 });
+        return true;
     }
 }

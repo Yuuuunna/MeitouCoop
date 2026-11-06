@@ -80,6 +80,14 @@ through a browser may be blocked outright.
 - Test the launcher's self-update path while unsigned; if macOS blocks it, a manual update is the fallback.
 - If the project ever gets a Developer ID, notarize the launcher and game binaries; no code change should be needed.
 
+## Unsigned Windows binaries
+
+No Windows exe or DLL we ship has an Authenticode signature (ours and NuGet ones like `DotRecast.*`, `BepuPhysics`).
+**Observed** (issue #127): Smart App Control refused `DotRecast.Recast.dll` (`FileLoadException`, `0x800711C7`) on one Windows 11
+machine while other unsigned files loaded; its verdict is per-file cloud reputation, so any of them can be the one refused. The game
+then shows a message box (`GameConsole.ExplainBlocked`) saying to turn Smart App Control off, and closes. Code signing every Windows
+binary in `package-release.ps1` is the real fix (not set up).
+
 ## Game zips per runtime
 
 `release.yml` and `nightly.yml` run `tools/scripts/package-release.ps1 -Rid <rid>` on one runner per RID (win-x64 on Windows, linux-x64 on Ubuntu,
@@ -165,10 +173,27 @@ every Tab panel slider and switch under `graphics` (a slider by label, `WorldFra
 setting reaches the launcher with its release; the launcher knows none of them. A version without a schema (older), or with a newer
 `format`, gets no page. Rows a computer lacks (tessellation, the Meitou shadows' filter) are listed anyway; the game ignores their keys.
 
-- Each schema section is a tab: Display, then the game's Graphics sub-pages (World, Lighting, Water, Effects, Skin) as
-  `SettingsMenu.Section` / `ToggleSection` place them, switches first.
+- The schema is also the catalogue the game's own Display and Graphics pages are drawn from ([native-ui](native-ui.md)), so the launcher's
+  rows and the game's are the same: names, ranges, value text, choices, impact (`impact`, beside the name) and order.
+- Each schema section is a tab: Display (with `tickAhead`, the world tick alongside drawing), then the game's Graphics sub-pages (Lighting, Sky & weather, Colour, World, Characters)
+  as `SettingsMenu.Section` / `ToggleSection` place them, switches first. Interior lamps is not listed: it changes the stealth sight, so it
+  is on the game's Advanced page only.
+- A section's `groups` (null in older schemas: flat rows) are the menu's features (`SettingsMenu.FeatureGroups`): one row headed by
+  a setting (`header`) or a `title` and `description`, with an arrow folding its `members` under it (closed until opened; open ones stay
+  open while the launcher runs), named without the feature's name they repeat, as in the game.
+- The Look row is the game's look bar: Faithful | Meitou, the preset (`looks.presets`, then the player's files), the changes from it
+  (`looks.keys`, the look tabs' settings: Revert; Save for the player's own), Save as (a name), Share (an `MT1:` code on the clipboard),
+  Paste, Delete (two clicks). Files and codes are the game's (`LookPresetFile`, Meitou.Core); a saved preset holds what differs from
+  `looks.meitou`, marked `looks.made`.
+- `looks` (null in older schemas: no row) is the Look row: Faithful (`faithfulLook` true) or a Meitou look preset (`lookPreset`: one of
+  `looks.presets`, the first saved as no key, or a player's JSON file in `looks.folder` beside `meitou.user.json`, its `name` and
+  `values`). A look is a set of `graphics` values, as the game's menu applies it: `looks.faithful` (every Faithful / Meitou effect
+  switch off but the performance ones, the look sliders at the game's value) or `looks.meitou` with the preset's own values over them (the quality tier's
+  switches are left to the tier). Choosing one writes them, so the rows show it at once and the game counts no change from it; at Low
+  the game still holds the tier's look switches off at start unless kept on (`SettingsMenu.ApplySavedPreset`). No `faithfulLook`
+  reads Faithful when every switch Faithful turns off and Meitou turns on is saved off, as the game does (unsaved, not written back). A look slider's Default writes the look's value.
 - `presets` (null in older schemas: no row) is the Quality preset row over the top-level `graphicsPreset`. The game saves the preset its
-  settings sit at (Custom when none) and at start applies a saved one they do not sit at (not under `--low-end`, `--meitou` or `--faithful`), so a preset chosen in
+  settings sit at (Custom when none) and at start applies a saved one they do not sit at (not under `--low-end`, `--benchmark-baseline`, `--meitou` or `--faithful`), so a preset chosen in
   the launcher takes effect on the next start; the rows show the old values until then. Changing a row the preset sets (`presets.keys`)
   saves Custom, so the game keeps that change. No saved preset shows High without saved graphics, else Custom.
 - Detect (when `presets.detect` names the game's option, `--recommend-preset <file>`) runs the played version's game, which makes a
@@ -180,21 +205,32 @@ setting reaches the launcher with its release; the launcher knows none of them. 
 - The launcher detects once by itself (`PresetDetected` in `launcher.json`): when the version Play starts can detect and the game has no
   graphics settings or preset saved yet, so the first start (or first install) of a fresh setup gets a preset; saved settings are kept.
   A failed detection is tried again at the next start.
-- A missing `graphics` key is the game's default for the mode ("Game default"; a switch offers it as a third choice beside off and
-  on); Default removes it, Reset graphics removes `graphics` and `graphicsPreset`. A top-level Default writes the schema's `default`.
+- Each setting has one control: a switch a Faithful (0) / Meitou (1) drop-down, a slider with `labels` a drop-down of them, a slider with `modes`
+  (named values; render scale's Ultra performance 0.33 to DLAA 1.00) a drop-down of them and Custom with the slider under it, locked to the
+  mode's value but under Custom (the game's Display page alike; a value none of them reads Custom), any other slider a slider with a typed value; unsaved, a row shows the game's start value (`shown`). A look setting that differs from the look's
+  value has its name in brass and a Reset link that writes it, and so does its feature's header (for all of them, as in the game); quality and display settings are never marked (the Quality row reads Custom),
+  as in the game's menu. Reset graphics, in a footer
+  under the scrolling rows, removes `graphics`, `graphicsPreset`, `faithfulLook` and `lookPreset`. A top-level Default writes the schema's `default`.
   Whole values are written as integers.
 - A slider without `labels` takes a typed value (Enter or leaving the box; Esc restores): the suffix may stay, a comma is a decimal
   point, the value is divided by `scale`, snapped to `step` and clamped; `offText` (Unlimited, Off) means the left end.
-- A slider marked `reversed` (texture quality, whose level 0 is Maximum) is drawn mirrored, so right is always the better end; the
-  value written is unchanged. Older schemas lack the flag and show it unmirrored.
+- A slider marked `reversed` (terrain detail's error in pixels) is drawn mirrored (`min + max - value`; logarithmic: `min x max / value`),
+  so right is always the better end; the value written is unchanged. Texture quality, also reversed, is a drop-down, best first.
 - Read-only when the file is unreadable, or its `version` differs from the schema's `settingsVersion` (another layout: the keys may
-  mean something else). Warnings: the game is running (it writes the file on exit), `--low-end` (the game ignores `graphics`).
+  mean something else). Warnings: the game is running (it writes the file on exit), `--low-end` or `--benchmark-baseline` (the game ignores `graphics`).
 
 The Settings page's Language picks the game's and the launcher's language: English, Kenshi's nine languages, the install's `locale/` folders and the
 languages Meitou has texts for, marked when Meitou's own texts are not translated. Choosing one writes only the `language` line of the Kenshi
 folder's `settings.cfg` (encoding and line endings kept) and remembers the code in `launcher.json` (`Language`, used without a Kenshi folder); at
 start the `settings.cfg` value wins. The launcher's labels come from the same `.po` catalogs as the game's Meitou texts
 ([localisation](formats/localisation.md)); a string without a translation stays English. Mod names, news and release notes are data, not translated.
+Labels the layout holds are translated by one walk of the visual and logical trees (texts, button captions, placeholders, tooltips; a control
+never shown has only logical children). Combo box items are data and not walked, except the label items of the Mac renderer and memory
+boxes (`LabelCombos`); the closed box keeps the content its selected item had when chosen, so a selection-box template redraws it in the
+current language rather than a re-selection, which would run the box's change handlers. Texts the code sets later (hints, statuses) go in as
+inlines, which the walk leaves alone, or it would put back the first text it saw. A text the code
+builds with a value in it is a catalog key with the game's `{1}`, `{2}` placeholders (`Tr("Downloading {1}...", title)`), never an
+interpolated string, which no translation could match.
 
 `meitou.user.json` layout (`UserConfig`; **Verified** by loading crafted files through the built game 2026-10-20):
 - `version` (no key: 1) is raised when a key is renamed, retyped or reinterpreted; `UserConfig.Migrate` converts older files step by
@@ -220,7 +256,27 @@ start the `settings.cfg` value wins. The launcher's labels come from the same `.
   and the preset buttons refuse, so an unloaded list never overwrites `mods.cfg`.
 - A preset is a named, ordered list of names with enabled flags. Applying one reorders the list. Mods the preset doesn't name go
   to the end, disabled, and mods it names that aren't on disk are reported. Applying doesn't save.
-- A mod folder with `RE_Kenshi.json` is marked as a plugin mod whose DLLs Meitou ignores ([RE_Kenshi](formats/rekenshi.md)).
+- From save lists the save folders (with `quick.save`) of Meitou's save root, the install's `save` and the per-user Kenshi save folder,
+  newest first and labelled by root, and applies the chosen save's CAMERA `mods` list ([save](formats/save.md#camera-type-56-id-1051-the-world-record))
+  as an all-enabled preset, without `base` and the core mods. `SaveModList` (Meitou.Core) reads it; **Verified** equal to
+  `SaveCamera.Mods` on 22 of the owner's saves (0 to 180 mods).
+- A mod folder with `RE_Kenshi.json` is marked as a plugin mod whose DLLs Meitou ignores ([RE_Kenshi](formats/rekenshi.md)), unless it
+  also has `meitou.json`: then only the code-mod note shows.
+- A mod folder with `meitou.json` is marked as a code mod ([modding](modding.md)). Play asks about the enabled code mods not decided
+  yet; the Code mods button beside Save mod list asks about every code mod in the list, so a choice can be changed or revoked. The
+  question has a box per mod (ticked: allowed now) and three answers: Data only all, Trust all, Apply (the ticks). Escape decides
+  nothing. Allowed names go to `trustedCodeMods` in `meitou.user.json` (kept by game releases since 2026-10-20, which keep unknown
+  keys); data-only names go to the launcher's `DataOnlyCodeMods`, so Play does not ask about them again.
+
+## Continue
+
+**Continue** is the middle part of the Play button, in its larger type,, shown while a save exists, with the newest save's name under it (rescanned
+when the window is activated and when the game exits); Play beside it reads **Main menu** over the version it starts. Continue starts
+the same version with `--load <folder>` (game 0.10.0 and later) for the
+newest slot From save lists (newest `quick.save` over the three roots), only when its CAMERA `mods` list holds the enabled mods, order
+ignored, names compared case-insensitively. Otherwise it starts nothing and the status says why: other mods (which are not enabled,
+which are not in the save), no mod list, an unreadable save, or Launch arguments that already pick a start (`--load`, `--continue`, `--new-game`,
+`--no-population`, `--duel`, `--sandbox`, `--battle`, `--terrain-sandbox`; the game refuses `--load` beside the others).
 
 ## News
 

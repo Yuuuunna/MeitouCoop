@@ -6,7 +6,7 @@ namespace Meitou.Simulation.Items
     /// Open a container (<see cref="Locks.Fixture.Id"/>): the nearest of the characters (the selection when empty) who may walks to it and its window opens. Another faction's locked one:
     /// with <paramref name="Alt"/> its lock is picked (76 PICK_LOCK), else the hint and a walk to it; a shop's without Alt: the steal hint and a walk.
     /// </summary>
-    public sealed record OpenContainerOrder(IReadOnlyList<CharacterId> Characters, string Fixture, bool Alt = false) : SimCommand;
+    public sealed record OpenContainerOrder(IReadOnlyList<CharacterId> Characters, string Fixture, bool Alt = false) : OrderCommand;
 
     /// <summary>Closes the open container's window.</summary>
     public sealed record CloseContainer : SimCommand
@@ -48,6 +48,13 @@ namespace Meitou.Simulation
         /// <summary>A character opens or uses a container within this distance of it (an engine choice).</summary>
         public const float ContainerReach = 20;
 
+        /// <summary>The <see cref="TaskRequest.Detail"/> of a walk to a container that only walks there (the hint to hold Alt was shown).</summary>
+        static readonly object ContainerWalk = new();
+
+        // Saved: a walk to a container (kind 1 only walks there; 0 opens it); a pick-up of a ground item names a runtime id and is not saved.
+        int IOrderOwner.SaveKind(OrderEntry order) => order.Detail is null ? 0 : order.Detail == ContainerWalk ? 1 : -1;
+        object? IOrderOwner.LoadDetail(World world, CharacterId self, Meitou.Data.Gameplay.Ai.TaskType row, int kind, CharacterId target) => kind == 1 ? ContainerWalk : null;
+
         /// <summary>How far above or below a container a character may stand to open or use it (engine choice: a storey is about 66).</summary>
         public const float ContainerFloorSlack = 20;
 
@@ -66,48 +73,63 @@ namespace Meitou.Simulation
             var table = world.Characters;
             int best = -1;
             float bestDistance = float.MaxValue;
+            bool theirs = fixture.Owner >= 0 && fixture.Owner != player.Faction && member?.HasPermission(fixture.Owner, FactionPermission.ManageAssets) != true;
+            bool locked = fixture.Lock is { EffectivelyLocked: true };
+            // Another faction's locked container is picked (76) with Alt (the original's FUN_1407fc6e0); the rest is row 3, a walk to it.
+            var row = locked && theirs && order.Alt ? Meitou.Data.Gameplay.Ai.TaskType.PICK_LOCK : Meitou.Data.Gameplay.Ai.TaskType.PICKUP;
             foreach (var id in world.CommandCharacters(order, order.Characters))
             {
-                if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, Inventory: not null, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
+                if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, Inventory: not null, IsImprisoned: false } c || !c.CarriedBy.IsNone
+                    || !TaskStart.Eligible(world, c, row)) continue;
                 float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(fixture.Position));
                 if (d < bestDistance) (best, bestDistance) = (s, d);
             }
             if (best < 0) return;
             var walker = table.Cold(best)!;
-            bool theirs = fixture.Owner >= 0 && fixture.Owner != walker.Faction && member?.HasPermission(fixture.Owner, FactionPermission.ManageAssets) != true;
             void Notice(string text) => world.Post(order.Issuer ?? PlayerId.Local, text);
-            if (fixture.Lock is { EffectivelyLocked: true })
+            if (locked)
             {
                 if (!theirs)
                 {
                     Notice($"{walker.Name}: It's locked.");
                     return;
                 }
-                // Another faction's locked container (the original's FUN_1407fc6e0): Alt picks the lock, else the hint and a walk to it.
-                walker.Shackles = null;
-                walker.PickingLock = order.Alt ? fixture.Id : null;
+                // Without Alt: the hint and a walk to it.
                 if (!order.Alt) Notice("Hold down the ALT key to pick the lock.");
-                MovementSystem.GoToFloor(world, best, fixture.Position, walker.RunSpeed);
+                PlayerOrders.Give(world, best, world.BindOrder(order, ContainerOrder(row, fixture, walkOnly: !order.Alt)), order.Queued);
                 return;
             }
             if (ShopOf(world, fixture) is not null && !order.Alt && theirs)
             {
                 // A shop's stock without Alt: the original's hint and a move; with Alt (the menu's Loot) the walker steals from it (the window shows that container's part of the shop's stock).
                 Notice("Hold down the ALT key to steal items");
-                MovementSystem.GoToFloor(world, best, fixture.Position, walker.RunSpeed);
+                PlayerOrders.Give(world, best, world.BindOrder(order, ContainerOrder(row, fixture, walkOnly: true)), order.Queued);
                 return;
             }
-            walker.PickingLock = null;
-            walker.Shackles = null;
-            walker.PickingUpItem = null;
-            player.OpenContainer = null;
-            player.OpeningContainer = order.Fixture;
-            player.ContainerWalker = table.IdOf(best);
-            player.ContainerAccess = new(checked(++nextContainerSession), order.Issuer, player.ContainerWalker, fixture, fixture.Owner,
-                order.Issuer is null ? null : world.Players.ControlOf(player.ContainerWalker),
-                member?.MembershipRevision(walker.Faction) ?? 0, member?.MembershipRevision(fixture.Owner) ?? 0);
-            if (bestDistance > ContainerReach || !SameFloor(table.Next[best].Position, fixture.Position)) MovementSystem.GoToFloor(world, best, fixture.Position, walker.RunSpeed);
-            else ContainerWorker(world, player);
+            PlayerOrders.Give(world, best, world.BindOrder(order, ContainerOrder(row, fixture, walkOnly: false)), order.Queued);
+        }
+
+        static bool MayOpenContainer(World world, int slot, Items.OpenContainerOrder command)
+        {
+            if (!world.MayOrder(command, world.Characters.IdOf(slot)) || world.Fixtures.Find(command.Fixture) is not { Contents: not null } fixture) return false;
+            if (command.Issuer is not { } issuer) return true;
+            return world.Players.Find(issuer) is { } member && member.MembershipRevision(fixture.Owner) == command.FactionGrantRevision
+                && (!member.IsMember(fixture.Owner) || member.HasPermission(fixture.Owner, FactionPermission.ManageAssets));
+        }
+
+        /// <summary>The order to open (row 3), pick (76) or only walk to (<paramref name="walkOnly"/>) a container.</summary>
+        OrderEntry ContainerOrder(Meitou.Data.Gameplay.Ai.TaskType row, Locks.Fixture fixture, bool walkOnly) =>
+            new(row, this) { Site = fixture.Id, Point = fixture.Position, Detail = walkOnly ? ContainerWalk : null };
+
+        /// <summary>The start of a container order: the walk to it, or, in reach on its floor, the opening where the character stands.</summary>
+        void StartContainer(World world, int slot, OrderEntry order)
+        {
+            if (!world.ValidOrder(slot, order) || order.SourceCommand is Items.OpenContainerOrder command && !MayOpenContainer(world, slot, command)) return;
+            var request = new TaskRequest(CharacterTask.GoTo, order.Row, TaskSource.Order) { Site = order.Site, Point = order.Point, Detail = order };
+            var at = world.Characters.Next[slot].Position;
+            bool walk = order.Row != Meitou.Data.Gameplay.Ai.TaskType.PICKUP || order.Detail == ContainerWalk
+                || Vector2.Distance(Flat(at), Flat(order.Point)) > ContainerReach || !SameFloor(at, order.Point);
+            TaskStart.Start(world, slot, walk ? request : request with { Task = CharacterTask.Idle });
         }
 
         /// <summary>Each tick: the walker in reach opens its container; one given another order, downed or gone gives up. An open window stays until the player closes it; it closes when its opener is down or gone.</summary>
@@ -129,7 +151,7 @@ namespace Meitou.Simulation
                     var at = Flat(fixture.Position);
                     if (Vector2.Distance(Flat(table.Next[s].Position), at) <= ContainerReach && SameFloor(table.Next[s].Position, fixture.Position))
                     {
-                        if (table.Next[s].Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, s);
+                        if (table.Next[s].Task == (byte)CharacterTask.GoTo) TaskStart.Stand(table, s);
                         (player.OpenContainer, player.ContainerOpener, player.OpeningContainer) = (wanted, player.ContainerWalker, null);
                     }
                     else if (table.Next[s].Task != (byte)CharacterTask.GoTo || Vector2.Distance(table.Next[s].Goal, at) > ContainerReach) player.OpeningContainer = null;

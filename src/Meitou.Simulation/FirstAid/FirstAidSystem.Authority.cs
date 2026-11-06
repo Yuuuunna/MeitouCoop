@@ -3,29 +3,15 @@ namespace Meitou.Simulation.FirstAid;
 public sealed partial class FirstAidSystem
 {
     readonly Dictionary<CharacterId, CharacterControl?> activityAuthority = [];
-    readonly Dictionary<CharacterId, CharacterControl?> jobAuthority = [];
 
     void RememberActivity(World world, int slot) =>
         activityAuthority[world.Characters.IdOf(slot)] = world.Players.ControlOf(world.Characters.IdOf(slot));
 
-    void RememberJobs(World world, int slot) =>
-        jobAuthority[world.Characters.IdOf(slot)] = world.Players.ControlOf(world.Characters.IdOf(slot));
+    bool ActivityAllowed(World world, int slot) =>
+        !world.Players.RequiresExplicitControl || world.Characters.Cold(slot) is { IsPlayer: false } && (!activityAuthority.TryGetValue(world.Characters.IdOf(slot), out var prior) || prior is null)
+        || world.Players.ControlOf(world.Characters.IdOf(slot)) is { } grant && world.Players.Validate(grant);
 
-    bool ActivityAllowed(World world, int slot)
-    {
-        var id = world.Characters.IdOf(slot);
-        if (activityAuthority.TryGetValue(id, out var grant))
-            return grant is { } control ? world.Players.Validate(control) :
-                !world.Players.RequiresExplicitControl || world.Characters.Cold(slot) is { IsPlayer: false };
-        return !world.Players.RequiresExplicitControl || world.Characters.Cold(slot) is { IsPlayer: false };
-    }
-
-    bool JobsAllowed(World world, int slot)
-    {
-        var id = world.Characters.IdOf(slot);
-        if (!jobAuthority.ContainsKey(id)) RememberJobs(world, slot);
-        return jobAuthority[id] is { } grant ? world.Players.Validate(grant) : !world.Players.RequiresExplicitControl;
-    }
+    bool JobsAllowed(World world, int slot) => ActivityAllowed(world, slot);
 
     void PruneAuthority(World world)
     {
@@ -36,13 +22,11 @@ public sealed partial class FirstAidSystem
             var task = (CharacterTask)table.Next[slot].Task;
             if (task is not (CharacterTask.Treat or CharacterTask.Rest)) { activityAuthority.Remove(id); continue; }
             if (ActivityAllowed(world, slot)) continue;
-            End(table, slot);
+            TaskStart.End(world, slot, TaskEnd.Stopped);
             MovementSystem.Stop(table, slot);
             table.Next[slot].Task = (byte)CharacterTask.Idle;
             activityAuthority.Remove(id);
         }
-        foreach (var id in jobAuthority.Keys.ToArray())
-            if (!table.TryResolveNext(id, out _)) jobAuthority.Remove(id);
     }
 
     // A patient's faction does not confer control and does not bar voluntary first aid.

@@ -143,3 +143,17 @@ public class DeterminismTests
         }
     }
 }
+
+/// <summary>Every toughness read of the medical code is stat x stats multiplier through an unclamped lerp (docs/game/character-stats.md "coma point").</summary>
+public class ToughnessReadTests
+{
+    [Fact]
+    public void An_animals_toughness_is_scaled_by_its_stats_multiplier()
+    {
+        var stats = new CharacterStats { Scale = 0.5f };
+        stats[StatsEnumerated.Toughness] = 80;
+        Assert.Equal(40f, stats.ScaledToughness, 3);
+        Assert.Equal(MedicalState.KoPoint(BaseGame, 40), MedicalState.KoPoint(BaseGame, stats.ScaledToughness));
+        Assert.Equal(-40f, MedicalState.KoPoint(BaseGame, stats.ScaledToughness), 3);
+    }
+}

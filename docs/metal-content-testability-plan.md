@@ -166,8 +166,6 @@ flights make it practical to inspect NPCs and squads across the map.
   - `FollowSelected()` after a load;
   - the new-game editor close.
 - Call `EditorCamera()` while the character editor is open.
-- Set `player.SelectionRings = config.SelectionRings` before `hud.Draw`; the setting currently
-  has no effect on Metal.
 - Wire the Advanced camera tools:
   - `SquadTour` on numpad `/`;
   - `player.FlyTo` and `player.SkipFlight` for double-click flights and the same-member
@@ -183,7 +181,6 @@ flights make it practical to inspect NPCs and squads across the map.
 - Double-click a distant squad member: the camera flies or cuts to them consistently with the
   "Character flights" setting.
 - Numpad `/` tours the squad and ends cleanly.
-- Selection rings respect the Advanced toggle.
 - Free-camera Ctrl+C/Ctrl+V round-trips a camera pose.
 
 ### Suggested commit
@@ -226,6 +223,10 @@ miss town discovery, knockouts, fights and wild-squad activity even though the s
 Combat runs and blood decals/debris are wired on Metal, including luckyren Mode. Debris uses the shared
 atmosphere-lit native path (MEP-3); the Hub/desert gameplay check passed, with explicit bone/limb visibility still an
 optional luckyren check.
+
+Ground severed limbs, stuck bolts and an animal's held limb (`mouth` point) are not Metal code: `WorldFrame.Draw` (`CollectBolts`, `DrawSceneLate`),
+`UpdateBlood`/`UpdateBuildings` and `DebrisRenderer` are shared. Both draw-list sources (`FillDrawList`, the no-HUD `FillWorldDrawList`) build each
+`CharacterInstance` through `GameHost.Drawn`, so they carry the same bolts, mouth, stance, build and blood. **Observed** in code only; not run on macOS.
 
 ### Changes
 
@@ -308,7 +309,6 @@ enabled while nothing changes.
   - **weather particles** and **particle density**, using `gpu.WeatherParticles` and
     `gpu.ParticleDensity`.
 - Wire the shared controls that already exist in `SettingsMenu` but have no Metal host hook:
-  - **selection rings** -> `player.SelectionRings = config.SelectionRings`;
   - **camera rotation speed** -> `CameraRotateSpeedChanged` and
     `session.Camera.Settings.RotateSpeedX/Y`;
   - **keep textures at characters** -> `gpu.Kept` from squad positions;
@@ -325,7 +325,7 @@ enabled while nothing changes.
 - Every visible setting changes the running Metal game immediately or is clearly marked
   unsupported.
 - Time of day/time speed moves the sun and weather as expected.
-- Selection rings, camera speed, resident schedule, keep-textures and particle density each show
+- Camera speed, resident schedule, keep-textures and particle density each show
   an observable effect.
 - Character flights and luckyren are not presented as working before their items land.
 - Vulkan's settings and saved keys are unchanged.

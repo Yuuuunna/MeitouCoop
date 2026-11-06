@@ -4,26 +4,26 @@ namespace Meitou.Simulation.Carrying;
 /// Orders one of the carriers (the selection when the list is empty) to pick <see cref="Target"/> up: the nearest one that can carry walks to it and lifts it onto its left shoulder
 /// (the original's <c>LIFT_PERSON_PLAYER_ORDER</c>, context menu verb "Pick Up"). The target must be knocked out or dead, of a <c>carriable</c> race and not carried already.
 /// </summary>
-public sealed record PickUpOrder(IReadOnlyList<CharacterId> Carriers, CharacterId Target) : SimCommand
+public sealed record PickUpOrder(IReadOnlyList<CharacterId> Carriers, CharacterId Target) : OrderCommand
 {
     /// <summary>The verb was Kidnap (246, <c>Task_Kidnapping</c>): a sleeping target may be taken too, and the lift rolls <see cref="CarrySystem.KidnapChance"/> first.</summary>
     public bool Kidnap { get; init; }
 }
 
 /// <summary>Orders the carriers (the selection when the list is empty) that carry someone to set it down where they stand (the original's <c>PUT_DOWN_OBJECT</c>, "Put Down").</summary>
-public sealed record PutDownOrder(IReadOnlyList<CharacterId> Carriers) : SimCommand;
+public sealed record PutDownOrder(IReadOnlyList<CharacterId> Carriers) : OrderCommand;
 
 /// <summary>
 /// Orders one of the looters (the selection when the list is empty) to loot <see cref="Target"/>, a knocked-out or dead character: the nearest walks to it and takes everything from
 /// its inventory and backpack that fits its own (a take-all; worn gear stays, the loot window takes it). Looting someone of another faction in sight of its members is a theft.
 /// </summary>
-public sealed record LootOrder(IReadOnlyList<CharacterId> Looters, CharacterId Target) : SimCommand;
+public sealed record LootOrder(IReadOnlyList<CharacterId> Looters, CharacterId Target) : OrderCommand;
 
 /// <summary>
 /// As <see cref="LootOrder"/>, but in reach the looter opens <see cref="Target"/>'s inventory in a window (<see cref="PlayerState.OpenLoot"/>) instead of taking all: items are then taken one at a
 /// time (<see cref="TakeLootItem"/>). Closed with <see cref="Items.CloseContainer"/>, or when the looter walks off, goes down, or the body comes round or is lifted.
 /// </summary>
-public sealed record OpenLootOrder(IReadOnlyList<CharacterId> Looters, CharacterId Target) : SimCommand;
+public sealed record OpenLootOrder(IReadOnlyList<CharacterId> Looters, CharacterId Target) : OrderCommand;
 
 /// <summary>
 /// A right click on an item of the open loot (<see cref="Item"/>: worn gear and the bag's contents included, <see cref="Items.Inventory.All"/> order): <see cref="Count"/> units (0: until one
@@ -47,7 +47,7 @@ public sealed record PutLootItem(CharacterId Character, Items.InventoryItemToken
 /// Orders one of the attackers (the selection when the list is empty) to knock <see cref="Target"/> out from behind (the original's order 228, verb "Stealth KO", <c>Task_StealthKO</c>):
 /// the nearest sneaking one that can act creeps up behind it and swings; the roll (<see cref="CarrySystem.StealthKoChance"/>) decides between a knock-out and a fight.
 /// </summary>
-public sealed record StealthKoOrder(IReadOnlyList<CharacterId> Attackers, CharacterId Target) : SimCommand;
+public sealed record StealthKoOrder(IReadOnlyList<CharacterId> Attackers, CharacterId Target) : OrderCommand;
 
 /// <summary>A stealth knock-out swing that was rolled: the target was knocked out (<see cref="Success"/>) or turned on the attacker; <see cref="NoXp"/>: a miss that gave no XP.</summary>
 public readonly record struct StealthKoEntry(long Tick, CharacterId Attacker, CharacterId Target, float Chance, bool Success, bool NoXp = false);
@@ -57,18 +57,16 @@ public readonly record struct StealthKoEntry(long Tick, CharacterId Attacker, Ch
 /// "Perma-jobs"): with <see cref="Job"/> (Shift) it is added to their job lists (with its companion 106), where an idle character picks up the nearest downed member of
 /// its faction by itself; else each looks for one once.
 /// </summary>
-public sealed record RescueJobCommand(IReadOnlyList<CharacterId> Characters, bool Job = true) : SimCommand;
+public sealed record RescueJobCommand(IReadOnlyList<CharacterId> Characters, bool Job = true) : OrderCommand;
 
 /// <summary>The numbers of <see cref="CarrySystem"/>: the clip fractions are the original's (<b>Observed</b>), the rest engine choices (docs/game/carry-loot.md, docs/simulation.md "Carrying").</summary>
 public sealed class CarrySettings
 {
     /// <summary>The carrier lifts or loots from this far (X/Z units); the walk there ends here (the first aid reach).</summary>
     public float Reach { get; init; } = 14;
-    /// <summary>Ticks between the rescuers' looks for a downed character (the retaliation and first aid rhythm).</summary>
+    /// <summary>Ticks between the NPCs' looks for a downed character, a body to loot or a weapon (the retaliation and first aid rhythm); a player character's rescue and foraging jobs are the decision step's.</summary>
     public int AutoEveryTicks { get; init; } = 15;
-    /// <summary>NPC squads pick up their knocked-out leader (the original's <c>FIND_AND_RESCUE_LEADER</c>, in 7 AI packages): a stand-in until the AI packages exist.</summary>
-    public bool RescueNpcLeaders { get; init; } = true;
-    /// <summary>The daylight sight R before the race's <c>vision range mult</c>: how far a rescuer looks for a downed character (the original searches its sensed-character list, whose size is <b>Unknown</b>) and how far a witness sees a looter.</summary>
+    /// <summary>The daylight sight R before the race's <c>vision range mult</c>: how far a rescuer looks for a downed character (the original searches its sensed-character list, whose size is <b>Unknown</b>) and how far a witness sees a looter. The leader rescue has no range (FUN_140598540, Verified).</summary>
     public float Sight { get; init; } = AggroSystem.OutdoorSight;
     /// <summary>A body that is put down is placed this far beside its carrier (engine choice).</summary>
     public float PutDownSide { get; init; } = 3;
@@ -79,6 +77,28 @@ public sealed class CarrySettings
     public const float DoneAt = 0.95f;
     /// <summary>Putting down plays the clip backwards and lets go below this fraction (<b>Observed</b>, <c>Task_PutDownObject</c>: 0.2).</summary>
     public const float ReleaseBelow = 0.2f;
+}
+
+/// <summary>
+/// The start flags of an NPC's <see cref="CharacterTask.Loot"/> (<c>Task_Loot_AI</c> +0x80..+0x84, written once by the start <c>FUN_140355ad0</c> and only read by the update
+/// <c>FUN_14034d930</c>, <b>Verified</b>): fixed when the task begins, not re-evaluated while it runs.
+/// </summary>
+[Flags]
+public enum LootStart : byte
+{
+    None = 0,
+    /// <summary>+0x80: the looter has no weapon and the victim has one.</summary>
+    WantsWeapon = 1,
+    /// <summary>+0x81: the victim is not on the player's side (or dead); never set for a police looter.</summary>
+    NotPlayerSide = 2,
+    /// <summary>+0x82: a law-enforcement looter confiscates.</summary>
+    Police = 4,
+    /// <summary>+0x83: the looter is a Bandit or malnourished and takes only food; never set for a police looter.</summary>
+    FoodOnly = 8,
+    /// <summary>+0x84: the victim is an animal.</summary>
+    Animal = 16,
+    /// <summary>Meitou: the loot window of this looter is open; the looter stays in the task until it closes (Task_Loot_Order's update, <c>FUN_140354ef0</c>).</summary>
+    WindowHeld = 32,
 }
 
 /// <summary>What one loot took: the items moved into the looter's inventory, the ones that did not fit and stay, and whether a member of the victim's faction saw it.</summary>

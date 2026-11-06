@@ -9,6 +9,8 @@ used as a naming reference for our 1.0.68 analysis; they are **Observed** until 
 
 ## Implementation
 
+Not built, by design: the original's in-game level editor and fog editor (`Kenshi_LevelEditor`, `Fog_Editor`, Shift+F12; [UI input](game/ui-input.md)); the developer key tools listed there.
+
 - [animation](animation.md)
 - [bench](bench.md)
 - [engine](engine.md)
@@ -19,14 +21,14 @@ used as a naming reference for our 1.0.68 analysis; they are **Observed** until 
 - [impostors](impostors.md)
 - [launch-options](launch-options.md): every command-line option and environment variable
 - [launcher](launcher.md): game release installer, mod list and presets
-- [play-reports](play-reports.md): roadmap upkeep: play reports service, Discord, launcher button, issue forms, drift check
+- [play-reports](play-reports.md): roadmap upkeep: play reports service, in-game feedback button, Discord, launcher button, issue forms, drift check
 - [macos-port](macos-port.md): running on MoltenVK, its constraints and fixes; the native Metal path next to it
 - [metal-backend](metal-backend.md): a native Metal path next to Vulkan - what the spike proved and what a second backend would need
 - [metal-content-testability-plan](metal-content-testability-plan.md): the content/testability gaps and the order to close them
 - [metal-performance-memory](metal-performance-memory.md): the Metal frame-rate and bounded-memory plan (baseline, targets, order)
 - [metal-effects-parity-plan](metal-effects-parity-plan.md): MEP-I, the remaining Metal effect-parity milestones and ship gates
 - [meitou-ui](meitou-ui.md): UI kit for the Meitou UI mode
-- [modding](modding.md): C# modding API, preliminary concept (manifest, per-mod load context, tick systems, sidecar saves)
+- [modding](modding.md): code mods: `meitou.json`, per-mod load context, one game-shipped Harmony, tick anchors, dialogue codes, sidecar saves, UI, F10 rows
 - [native-ui](native-ui.md)
 - [render-clouds](render-clouds.md)
 - [render-distance-benchmark](render-distance-benchmark.md)

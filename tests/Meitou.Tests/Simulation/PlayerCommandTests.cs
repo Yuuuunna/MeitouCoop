@@ -96,7 +96,7 @@ public class PlayerCommandTests
         Assert.Throws<NotSupportedException>(() => scene.World.Commands.Enqueue(scene.A,
             new SandboxMovement(scene.First, null, 10000) { Tick = 0 }));
         Assert.Throws<NotSupportedException>(() => scene.World.Commands.Enqueue(scene.A,
-            new Meitou.Simulation.InspectBuildingCommand("unported") { Tick = 0 }));
+            new RepathCommand { Tick = 0 }));
         Assert.Equal(0, scene.World.Commands.Count);
     }
 }

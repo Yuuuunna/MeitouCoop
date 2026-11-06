@@ -24,7 +24,9 @@ bin in original loader. XML is source of truth. Nonuniform Ogre scale maps(sx,sz
 ## Placement and groups
 
 **Verified** C(x,y,z)=(x,z,-y) wins398-part AABB comparison. World point=building.position+
-building.rotation*(scale*C(globalPose*(localPose*p))). Collision uses BUILDING node, not render
+building.rotation*(scale*C(globalPose*(localPose*p))). **Verified** for a shape with both poses translated (`ShieldBridge_COL.xml`: walkboard triangle
+mesh with localPose translation (845, 124, 0), boxes with globalPose translations; placed tilted at 47.16): the original tile's deck polygons lie at the
+walkboard's deck height to 0.1 ([pathfinding](../game/pathfinding.md), shells). Collision uses BUILDING node, not render
 part offset (**Observed** loader); door uses its own node and parent's scale. File groups are
 not final game groups: loaders assign per part/building/foliage, nav mask0x809de40. Group table
 and shape-to-triangle branches retain floors/stairs/doors/ground/obstacle distinctions. Do not
@@ -74,7 +76,7 @@ use every rendered triangle as collision or infer PhysX actor dynamics from appe
 | 6 | foliage collision, FOLIAGE_MESH `walkable` false (Foliage_PlaceOne FUN_1406d2410) |
 | 9, 10, 11, 12 | ordinary building parts, `building floor` 0, 1, 2, 3 (4 and up use 9, Observed in code: the switch only knows 1..3) |
 | 13 | the `interior mask` part's collision (indoor trigger hull, FUN_140553870) |
-| 14 | walkable foliage (`walkable` true), foliage-placed objects with an owner, and other `collision` users (FUN_140399ac0) |
+| 14 | walkable foliage (`walkable` true), foliage-placed objects with an owner, and map features (`MapFeature`, FUN_140399ac0, **Verified**) |
 | 15, 16, 17, 18 | `is stairs` parts, floor 0..3 |
 | 19, 20, 21, 22 | parts of `is exterior furniture` / `is interior furniture` buildings, by the building's floor |
 | 23, 24, 25, 26 | `passable` parts and every part of a `path mode` IGNORE building, by the building's floor (also FUN_1400dfb80: floor + 23) |
@@ -82,6 +84,8 @@ use every rendered triangle as collision or infer PhysX actor dynamics from appe
 | + 14 | added while the building is under construction and its progress is below `build threshold` × the total (so floor-0 parts become 23, like passable ones) |
 | 2 | the terrain (Observed: the ground-height rays' masks `0x204` and `0x4004` pair it with floors 9 or foliage 14; the interior-ambience ray `0x2004` is 2 + 13, [audio.md](../audio.md#interiors)) |
 | 3, 4 | other physics objects (items, FUN_1407626e0, FUN_1407e7460); not used by the navmesh |
+
+Assignment order (`FUN_14055f6e0`:183-330, **Verified**; later tests win): 9 + floor for floors 0..3, else 9; `is unwalkable roof` 27; `is stairs` 15 + floor for floors 0..3, else unchanged; then `passable` or path mode IGNORE: 23 + object floor, else an owner that is `is exterior furniture` / `is interior furniture`: 19 + object floor (object floor 0..3, else 0). The floor is the part's own `building floor` (raw, not clamped), except that a furniture owner's base and stairs groups, and the passable / IGNORE and furniture groups always, use the placed object's floor (int +0xa4, loaded from `floornum` of the placed building's state, 0 without one; `FUN_140552b70`:48-57). Meitou: `ZoneGeometryGatherer.CollisionGroup`.
 
 The character's ground ray (`FUN_14065f160`, **Verified**: from 20 units above the feet, straight down) uses mask `0x7de04` (groups 2, 9..12, 14, 15..18) outdoors and `0x7f9e00` (groups 9..12, 15..22) when the
 character is in a building; the hit's group and BUILDING decide the footstep surface (`interior material` / `exterior material`, [audio](../audio.md#characters-footsteps-combat-voices)). No per-shape physics material is
@@ -99,7 +103,7 @@ consulted (`FUN_14065df80` reads only the group and the hit object).
 
 ## Item physics
 
-ITEM records with `has collision` true and a `physics file` ending in `.xml` (`.xml` is tested by `FUN_140132570` on `DAT_14170f424`; **Verified**) get a PhysX object of class `SimplePhysXEntity` (**Verified** vtable) from that file. Built in `FUN_1407626e0` (entity callback) at the item's pose: position `+0x48`, orientation `+0xb0`.
+Items with `has collision` true get a PhysX object in `FUN_1407626e0` (entity callback) at the item's pose: position `+0x48`, orientation `+0xb0` (**Verified**, decompile). A WEAPON or a severed item (`+0x1da`, below) whose `physics file` contains `.xml` (`FUN_140132570` on `DAT_14170f424`) gets a `SimplePhysXEntity` from that file; any other a static box the size of its mesh's bounds, centred on them (the mesh: `ground mesh`, else `mesh`, else `steel1.mesh`, `FUN_140760300`; a weapon that exists bare takes its `bare sword` for `mesh`, not modelled: Meitou uses `mesh`) (`StaticBoxEntity`, built by `FUN_1404ccf40` through `FUN_1407e38c0`). Without `has collision` none, so the mouse ray cannot hit it. Base data (**Verified**, probe over the merged records): all but 10 items have collision (2 rugs, 8 limb stumps and legs); 29 of 48 weapons name an `.xml`. Meitou picks a ground item by these shapes where it draws it (`GameHost.GroundShape`; engine choice: a collision file missing from the install falls back to the box); a severed limb by its file only while its fall is known, one loaded from a save by its box, as in the original (**Verified**: only `FUN_14075d9b0` sets `+0x1da`, the item save and load leave it, and `FUN_14036f950` activates loaded items with it false).
 - Placed items (`+0x1d9` 0): raised, then a ray down (`FUN_1409b6a90`, mask `0xf07f9e04`, or `0x7f9e04` when `+0x13c` is 2) turns the up axis to the ground normal (**Verified**). Groups 28–31 (**Observed**).
 - Severed items (`+0x1d9` and `+0x1da` set by the sever, `FUN_14075d660` and `FUN_14075d9b0`): no ground snap, so they keep the bone's pose; group 3, or 4 when the item type is not 0xb (**Verified** the value written to the descriptor's `+0x70`; **Observed** that it is the group). The object is dynamic: the 4th argument of `FUN_1407e30d0` is `+0x1da == 0`, false here, and `FUN_1404cde30` sets its `+0x10` flag from it (**Observed**).
 - No velocity is written on this path (**Observed**: none in `FUN_1407626e0`, `FUN_1404cde30`, `FUN_14075e5d0`, `FUN_140763fa0`). The NxuStream actor loader is not read: its flags and any start velocity are **Unknown**.

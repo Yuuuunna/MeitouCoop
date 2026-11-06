@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Meitou.Data.Ui;
@@ -11,19 +11,14 @@ namespace Meitou.Game;
 /// <summary>Shared settings layout and interaction; the current UI mode selects only its presentation.</summary>
 sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBindings bindings, Action save, Slider frameLimit, UserConfig config)
 {
-    internal static bool HiddenSwitch(string label) => label is "Anti-aliasing" or "Weather particles";
-    internal void ApplyBenchmarkBaseline()
-    {
-        ApplyPreset(1);
-        string[] off = ["Indirect light", "Indoor GI", WorldFrame.GroundParallaxSwitch, WorldFrame.GroundDisplaceSwitch, WorldFrame.RockSmoothingSwitch, WorldFrame.OutlineRefineSwitch];
-        foreach (var toggle in values.Toggles.Where(t => off.Contains(t.Label) && t.Get())) toggle.Set(false);
-        if (values.Sliders.FirstOrDefault(s => s.Label == WorldFrame.UpscalerSliders[0]) is { } antiAliasing) antiAliasing.Set(2);   // SMAA
-        if (values.Sliders.FirstOrDefault(s => s.Label == WorldFrame.UpscalerSliders[1]) is { } scale) scale.Set(1);
-        notice = "";
-    }
-
-    static readonly string[] Pages = ["Display", "Graphics", "Interface", "Controls", "Advanced", "Audio", "Gameplay", "Fixes"];
-    internal static readonly string[] GraphicsPages = ["World", "Lighting", "Water", "Effects", "Skin"];
+    static readonly string[] Pages =
+        ["Display", "Graphics", "Interface", "Controls", "Advanced", "Audio", "Gameplay", "Fixes", "Mods", "Mod settings"];
+    /// <summary>The MODS page (SettingsMenu.Mods.cs): it lists the loaded mods instead of settings.</summary>
+    const int ModsPage = 8;
+    /// <summary>The Mod settings page (SettingsMenu.ModSettings.cs): the settings code mods registered.</summary>
+    const int ModSettingsPage = 9;
+    /// <summary>The Graphics tabs: the look tabs, then the quality tabs (SettingsMenu.Looks.cs).</summary>
+    internal static readonly string[] GraphicsPages = ["Lighting", "Sky & weather", "Colour", "World", "Characters"];
     /// <summary>The Metal-only preset row (Native / MetalFX quality, balanced, performance / TAA), edited by the Metal settings panel.</summary>
     internal const string MetalPresetSlider = "Metal upscaling";
     readonly float[] defaults = values.Sliders.Select(s => s.Get()).ToArray();
@@ -37,6 +32,13 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
     Slider CameraRotateSpeed => cameraRotateSpeed ??= new("Camera rotation speed", UserConfig.MinCameraRotateSpeed, UserConfig.MaxCameraRotateSpeed,
         () => config.CameraRotateSpeed, v => { config.CameraRotateSpeed = MathF.Round(v * 2) / 2; CameraRotateSpeedChanged?.Invoke(config.CameraRotateSpeed); },
         "0.#", Faithful: global::Meitou.Data.World.KenshiCamera.DefaultRotateSpeed);
+    Slider? cameraMoveSpeed, cameraZoomSpeed;
+    Slider CameraMoveSpeed => cameraMoveSpeed ??= CameraSpeedSlider("Camera move speed", UserConfig.MinCameraMoveSpeed, UserConfig.MaxCameraMoveSpeed,
+        () => config.CameraMoveSpeed ?? global::Meitou.Data.World.KenshiCamera.DefaultMoveSpeed, v => config.CameraMoveSpeed = v, global::Meitou.Data.World.KenshiCamera.DefaultMoveSpeed);
+    Slider CameraZoomSpeed => cameraZoomSpeed ??= CameraSpeedSlider("Camera zoom speed", UserConfig.MinCameraZoomSpeed, UserConfig.MaxCameraZoomSpeed,
+        () => config.CameraZoomSpeed ?? global::Meitou.Data.World.KenshiCamera.DefaultZoomSpeed, v => config.CameraZoomSpeed = v, global::Meitou.Data.World.KenshiCamera.DefaultZoomSpeed);
+    Slider CameraSpeedSlider(string label, float min, float max, Func<float> get, Action<float> set, float original) =>
+        new(label, min, max, get, v => { set(MathF.Round(v)); CameraChanged?.Invoke(); }, "0", Faithful: original);
     Slider[]? audioSliders;
     /// <summary>The audio sliders of the original's options (docs/formats/settings.md); each writes <see cref="UserConfig.Audio"/> and calls <see cref="AudioChanged"/>.</summary>
     Slider[] AudioSliders => audioSliders ??= [
@@ -79,17 +81,21 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
     Slider AutoSaveSlider => autoSaveSlider ??= new("Auto save time (minutes)", GameplaySettings.MinAutoSaveMinutes, GameplaySettings.MaxAutoSaveMinutes,
         () => (config.Gameplay ??= new()).AutoSaveMinutes, v => SetGameplay((config.Gameplay ?? new()) with { AutoSaveMinutes = MathF.Round(v) }), "0", Text: v => $"{v:0} min", Faithful: 10);
 
-    void SetGameplay(GameplaySettings value) { config.Gameplay = value; GameplayChanged?.Invoke(); }
+    void SetGameplay(GameplaySettings value) { if (player.IsRemoteSession) return; config.Gameplay = value; GameplayChanged?.Invoke(); }
 
     Slider Volume(string label, Func<AudioSettings, float> get, Func<AudioSettings, float, AudioSettings> set) =>
         new(label, 0, 1, () => get(config.Audio ??= new()), v => { config.Audio = set(config.Audio ?? new(), Math.Clamp(v, 0, 1)); AudioChanged?.Invoke(); },
-            "0.00", Text: v => $"{v * 100:0}%", Faithful: 0.5f);
+            "0.00", Text: v => $"{v * 100:0}%", Faithful: 0.5f, Scale: 100);
     Slider? attackSlotsSlider;
     Slider AttackSlotsSlider => attackSlotsSlider ??= new("Attackers per target", 1, 5, () => config.AttackSlots, v =>
     {
         config.AttackSlots = Math.Clamp((int)MathF.Round(v), 1, 5);
-        AttackSlotsChanged?.Invoke(config.AttackSlots);
+        AttackSlotsChanged?.Invoke(config.AttackSlotsOption);
     }, "0", Faithful: UserConfig.FaithfulAttackSlots, Meitou: UserConfig.MeitouAttackSlots);
+    Slider? harpoonLimitSlider;
+    Slider HarpoonLimitSlider => harpoonLimitSlider ??= new("Harpoon limit", global::Meitou.Simulation.Combat.RangedTuning.MinStuckLimit, global::Meitou.Simulation.Combat.RangedTuning.MaxStuckLimit, () => (config.Gameplay ??= new()).HarpoonLimit,
+        v => SetGameplay((config.Gameplay ?? new()) with { HarpoonLimit = Math.Clamp((int)MathF.Round(v), global::Meitou.Simulation.Combat.RangedTuning.MinStuckLimit, global::Meitou.Simulation.Combat.RangedTuning.MaxStuckLimit) }), "0", Logarithmic: true,
+        Faithful: global::Meitou.Simulation.Combat.RangedTuning.DefaultStuckLimit);
     Slider? groundItemsSlider;
     Slider GroundItemsSlider => groundItemsSlider ??= new("Dropped items kept", 16, global::Meitou.Simulation.Items.GroundItems.MaxLimit, () => config.GroundItemLimit,
         v => config.GroundItemLimit = Math.Clamp((int)MathF.Round(v), 1, global::Meitou.Simulation.Items.GroundItems.MaxLimit), "0", Logarithmic: true,
@@ -114,20 +120,23 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
 
     sealed record Choice(Func<IReadOnlyList<string>> Options, Func<int> Current, Action<int> Choose);
     sealed record Entry(string Label, string Hint = "", Slider? Slider = null, Toggle? Toggle = null, Choice? Choice = null,
-        InputAction? Binding = null, Action? Run = null, string? Picture = null, bool Segmented = false);
+        InputAction? Binding = null, Action? Run = null, string? Picture = null, bool Segmented = false, bool Changed = false,
+        string? Impact = null, bool Warn = false, string? Raw = null, int Depth = 0, bool? Open = null, string? GroupId = null, Action? Reset = null, bool Locked = false);
     sealed record Hit(UiRect Bounds, Action Activate, Slider? Slider = null, UiRect? Track = null);
 
     public IReadOnlyList<Slider> Sliders => values.Sliders;
     public IReadOnlyList<Toggle> Toggles => values.Toggles;
     public Func<string>? UpscalerStatus { get; init; }
+    /// <summary>What the Frame generation row reports as its state ("active", "off", ...); null on a host without that setting.</summary>
     public Func<string>? FrameGenerationStatus { get; init; }
     /// <summary>Applies a new attackers-per-target setting to the running combat system.</summary>
-    public Action<int>? AttackSlotsChanged { get; init; }
+    public Action<int?>? AttackSlotsChanged { get; init; }
     /// <summary>Applies the late-dodges setting to the running combat system.</summary>
     public Action<bool>? LateDefencesChanged { get; init; }
     /// <summary>Applies the turret gunner facing fix to the running combat system.</summary>
     public Action<bool>? GunnerFacingChanged { get; init; }
     public Action<bool>? PunchReachChanged { get; init; }
+    public Action<bool>? BenchFacingChanged { get; init; }
     /// <summary>Called when an off-screen switch changes (the config holds the new values).</summary>
     public Action? OffscreenChanged { get; init; }
     /// <summary>The Tutorials option changed (the config holds it).</summary>
@@ -138,6 +147,8 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
     public Action<bool>? DoorsCloseChanged { get; init; }
     /// <summary>Applies a new camera rotation speed (<see cref="UserConfig.CameraRotateSpeed"/>) to the camera.</summary>
     public Action<float>? CameraRotateSpeedChanged { get; init; }
+    /// <summary>A camera option other than the rotation speed changed (invert X / Y, move speed, zoom speed; <see cref="UserConfig.ApplyCamera"/>).</summary>
+    public Action? CameraChanged { get; init; }
     /// <summary>The person races of the loaded data with their skin default (<c>CharacterRenderer.PersonRaces</c>), listed on Graphics > Skin.</summary>
     public IReadOnlyList<(string Id, string Name, bool Default)> SkinRaceList { get; init; } = [];
     /// <summary>A race's skin was turned on or off (the config's <see cref="UserConfig.SkinRaces"/> holds it); the game hands it to the character renderer.</summary>
@@ -153,14 +164,14 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
         {
             if (visible == value) return;
             visible = value;
-            dragging = null; rebinding = null; openChoice = null; resetPending = false; focus = -1; notice = "";
+            dragging = null; rebinding = null; openChoice = null; resetPending = false; naming = false; focus = -1; notice = "";
             editingNumber = null;
             if (value) { lastFrameAt = 0; player.SetSettingsOpen(true); }
             if (!value) save();
         }
     }
 
-    internal static string Label(string label) => Regex.Replace(label.Split('(')[0].Trim(), @"\s+0-\d+.*$", "")
+    internal static string Label(string label) => label == "Anti-aliasing" ? "Anti-aliasing/upscaling" : Regex.Replace(label.Split('(')[0].Trim(), @"\s+0-\d+.*$", "")
         .Replace(" x", " multiplier", StringComparison.Ordinal).Replace(": error px", "", StringComparison.Ordinal);
 
     /// <summary>The page a Tab panel slider is on: Display, Advanced, or a Graphics sub-page (<see cref="GraphicsPages"/>).</summary>
@@ -168,71 +179,125 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
     {
         if (label is "Time of day" or "Time speed") return "Advanced";
         if (label is "VSync" or "Full screen" or MetalPresetSlider || WorldFrame.UpscalerSliders.Contains(label) || label == WorldFrame.FilteringSlider || label == WorldFrame.TextureQualitySlider) return "Display";
-        if (label.Contains("water", StringComparison.OrdinalIgnoreCase) || label.Contains("Reflection", StringComparison.Ordinal)) return "Water";
-        if (label.StartsWith("Shadow", StringComparison.Ordinal) || label.StartsWith("Light shafts", StringComparison.Ordinal) || label.StartsWith("Planetshine", StringComparison.Ordinal) || label.StartsWith("Haze", StringComparison.Ordinal) || label.StartsWith("Ambient", StringComparison.Ordinal) || label.StartsWith("Night ambient", StringComparison.Ordinal)) return "Lighting";
-        if (label.Contains("Tone", StringComparison.OrdinalIgnoreCase) || label.Contains("Grading", StringComparison.OrdinalIgnoreCase) || label.StartsWith("Heat", StringComparison.Ordinal) || WorldFrame.ParticleSliders.Contains(label)) return "Effects";
-        return "World";
+        return GraphicsSection(label, false);
     }
 
-    internal static string ToggleSection(string label) => label switch
-    {
-        "Foliage ranges" or "Far impostors" or "Draw distances" or "Foliage levels" => "World",
-        "Water" => "Water",
-        "Haze" or "Shadows" or "Indirect light" or "Indoor GI" or "Light shafts" or "Night air" or "Planetshine" or "Night sky" or "Clouds" or "Cloud shadows" or "Cloud shadows in fog" => "Lighting",
-        "Skin" => "Skin",
-        _ when label.StartsWith("Shadow", StringComparison.Ordinal) => "Lighting",
-        _ => "Effects",
-    };
+    /// <summary>The page a Tab panel switch is on: a Graphics sub-page (<see cref="GraphicsPages"/>), or Advanced (Interior lamps).</summary>
+    internal static string ToggleSection(string label) => GraphicsSection(label, true);
 
+    /// <summary>
+    /// A Graphics row, with its performance impact. A look row is marked when it differs from the game's (Faithful) or the active preset's value; a costly look switch
+    /// Low holds off says so, and turning it on keeps it on at Low.
+    /// </summary>
+    Entry LookRow(Entry entry, string key, string label, bool toggle, HashSet<string> changes)
+    {
+        entry = entry with { Impact = ImpactOf(label), Raw = label };
+        if (!IsLook(label, toggle)) return entry;
+        if (toggle && entry.Toggle is { } cut && CutAtLow(label) && !cut.Get())
+            return entry with
+            {
+                Warn = true, Hint = "Off at Low quality. Choose Meitou to keep it on at Low.",
+                Toggle = cut with { Set = v => { if (v && !config.KeepAtLow.Contains(label)) config.KeepAtLow.Add(label); cut.Set(v); } },
+            };
+        if (toggle && entry.Toggle is { } kept && config.KeepAtLow.Contains(label))
+            entry = entry with { Toggle = kept with { Set = v => { if (!v) config.KeepAtLow.Remove(label); kept.Set(v); } } };
+        return entry with { Changed = changes.Contains(key), Reset = () => ResetLook(key) };
+    }
+
+    /// <summary>False for a ground relief slider whose effect is off: quality and depth need the parallax or the displacement, each distance its own.
+    /// The displacement counts only where its switch is offered (tessellation; not on Metal).</summary>
+    bool ReliefSliderShown(string label)
+    {
+        bool displace = GroundRelief.DisplaceActive && values.Toggles.Any(t => t.Label == "Ground displacement (tessellation)");
+        return label switch
+        {
+            WorldFrame.GroundReliefQualitySlider or WorldFrame.GroundReliefDepthSlider => GroundRelief.ParallaxActive || displace,
+            WorldFrame.GroundParallaxDistanceSlider => GroundRelief.ParallaxActive,
+            WorldFrame.GroundDisplaceDistanceSlider => displace,
+            _ => true,
+        };
+    }
+
+    internal const string TickAheadHint = "Faithful runs the world, then draws it, as the game does. Meitou runs the next world tick while the frame is drawn "
+        + "whenever the world is busy (big fights, crowds), Always on every frame: much higher frame rates with many characters, up to 33 ms more input delay.";
+    const string FrameGenerationTemplate = "Shows a generated frame between each two rendered ones through AMD's FSR 3 frame-interpolation layer: "
+        + "nearly twice the frames shown, with a little more input delay. Works with TAA, FSR and DLSS; needs the FidelityFX library. "
+        + "Takes effect after a restart. Now: {1}";
+
+    string FrameGenerationHint() => Loc.Tr(FrameGenerationTemplate, Loc.Tr(FrameGenerationStatus?.Invoke() ?? "off"));
+
+    internal static readonly string[] TickAheadChoices = ["Faithful (in series)", "Meitou (when busy)", "Always on"];
+
+    /// <summary>A Tab panel slider's key in the catalogue (<see cref="LauncherSchema.Find"/>): its label, or the top-level key of the display switches.</summary>
+    static string CatalogueKey(string label) => label switch { "Full screen" => "fullScreen", "VSync" => "vSync", _ => label };
+
+    /// <summary>
+    /// A Tab panel slider's row, as the launcher shows it: name, range, scale direction, value text and choices come from the catalogue
+    /// (<see cref="LauncherSchema.Find"/>); the panel's slider only reads and writes the value (and marks the Faithful / Meitou values).
+    /// </summary>
     Entry SliderEntry(Slider slider)
     {
         string key = slider.Label;
-        if (key is "VSync" or "Full screen" || key.StartsWith("Grading (", StringComparison.Ordinal))
-            return new(key == "Full screen" ? "Borderless full screen" : key == "VSync" ? "Vertical sync" : "Colour grading",
-                SliderHint(slider), Toggle: new(key, () => slider.Get() >= 0.5f, v => slider.Set(v ? 1 : 0)));
+        var d = LauncherSchema.Find(CatalogueKey(key));
+        if (d is { Kind: global::Meitou.Settings.SettingKind.Slider, Labels: null })
+            slider = slider with { Min = d.Min, Max = d.Max, Logarithmic = d.Logarithmic && d.Min > 0, Reversed = d.Reversed, Text = d.Text, Scale = d.Scale };
+        // An on / off setting in the catalogue (full screen, VSync; colour grading's two choices) is a switch, whatever the panel's slider.
+        if (d is { Kind: global::Meitou.Settings.SettingKind.Toggle } or { Labels.Length: 2 })
+            return new(d?.Name ?? Label(key), SliderHint(slider), Toggle: new(key, () => slider.Get() >= 0.5f, v => slider.Set(v ? 1 : 0)), Raw: CatalogueKey(key));
         string[]? options = key == MetalPresetSlider
             ? ["Native 1.00", "MetalFX Super Quality 0.77", "MetalFX Quality 0.67", "MetalFX Balanced 0.59", "MetalFX Performance 0.50", "MetalFX Temporal 0.40", "MetalFX Spatial 0.50 (alternative)", "MetalFX Spatial 0.40 (alternative)", "TAA 0.50 (experimental)", "Custom"]
-            : key == WorldFrame.UpscalerSliders[0] ? ["Off", "FXAA", "SMAA", "TAA", "FSR", "DLSS"]
-            : key == WorldFrame.TextureQualitySlider ? global::Meitou.Data.Textures.TextureQuality.Labels
-            : key == WorldFrame.ParticleSliders[0] ? ["Off", "Quarter resolution", "Half resolution", "Automatic", "Full resolution"]
-            : key.StartsWith("Tone map", StringComparison.Ordinal) ? ["Original", "Shoulder", "ACES", "Hybrid"]
-            : key.StartsWith("Shadow map", StringComparison.Ordinal) ? ["Low · 1024", "Medium · 2048", "High · 4096"]
-            : key == WorldFrame.GroundReliefQualitySlider ? ["Low", "Medium", "High"]
-            : key == WorldFrame.ShaftQualitySlider ? ["Low", "Medium", "High"]
-            : key.StartsWith("Water reflection", StringComparison.Ordinal) ? ["Off", "Landscape", "Characters", "Buildings", "Everything"]
-            : key == WorldFrame.FilteringSlider ? ["1x", "2x", "4x", "8x", "16x"] : null;
-        string label = key == WorldFrame.UpscalerSliders[0] ? "Anti-aliasing" : key == WorldFrame.ParticleSliders[0] ? "Weather particles"
-            : key == WorldFrame.TextureQualitySlider ? "Texture quality" : key == WorldFrame.FilteringSlider ? "Texture filtering" : Label(key);
+            : d?.Labels;
+        string label = d?.Name ?? Label(key);
         string hint = key == MetalPresetSlider
             ? "MetalFX temporal is the default at every tier; spatial rows are explicit alternatives. The preset sets the render scale, so the separate scale slider is disabled."
-            : key == WorldFrame.UpscalerSliders[0] ? "Smooths edges. Active: " + (UpscalerStatus?.Invoke() ?? "unavailable") : SliderHint(slider);
-        return options is { } items ? new(label, hint, Choice: new(() => items, () => (int)MathF.Round(slider.Get()), i => slider.Set(i)))
-            : new(label, hint, Slider: slider);
+            : key == WorldFrame.UpscalerSliders[0] ? Loc.Tr("Smooths edges and upscales the render. Active: {1}", Loc.Tr(UpscalerStatus?.Invoke() ?? "unavailable"))
+            : SliderHint(slider);
+        // The options are the slider's whole values from its left end.
+        float first = d?.Min ?? slider.Min;
+        return options is { } items ? new(label, hint, Choice: new(() => items, () => (int)MathF.Round(slider.Get() - first), i => slider.Set(i + first)), Raw: key)
+            : new(label, hint, Slider: slider, Raw: key);
     }
 
     List<Entry> Entries()
     {
+        if (page == ModSettingsPage) return ModSettingsEntries();
         string section = page == 1 ? GraphicsPages[graphicsPage] : Pages[page];
-        var result = values.Sliders.Where(s => s.Label is not ("Time of day" or "Time speed") && Section(s.Label) == section).Select(SliderEntry).ToList();
+        // In the catalogue's order, the launcher's (LauncherSchema.Order).
+        var result = values.Sliders.Where(s => s.Label is not ("Time of day" or "Time speed") && Section(s.Label) == section && ReliefSliderShown(s.Label))
+            .OrderBy(s => LauncherSchema.Order(CatalogueKey(s.Label))).Select(SliderEntry).ToList();
         if (page == 1)
-            result.InsertRange(0, values.Toggles.Where(toggle => ToggleSection(toggle.Label) == section)
-                .Select(toggle => new Entry(Label(toggle.Label), ToggleHint(toggle.Label), Toggle: toggle)).Prepend(LookEntry).Prepend(PresetEntry));
-        // Graphics > Skin: after the switch, one row per person race of the loaded data (mods too), on or off against its default.
-        if (page == 1 && section == "Skin")
+        {
+            var changes = LookChanges();
+            result = values.Toggles.Where(toggle => ToggleSection(toggle.Label) == section).OrderBy(toggle => LauncherSchema.Order(SwitchKey(toggle.Label)))
+                .Select(toggle => LookRow(new Entry(Label(toggle.Label), ToggleHint(toggle.Label), Toggle: toggle), SwitchKey(toggle.Label), toggle.Label, true, changes))
+                .Concat(values.Sliders.Where(s => s.Label is not ("Time of day" or "Time speed") && Section(s.Label) == section && ReliefSliderShown(s.Label))
+                    .OrderBy(s => LauncherSchema.Order(s.Label)).Select(s => LookRow(SliderEntry(s), s.Label, s.Label, false, changes)))
+                .ToList();
+        }
+        // Graphics > Characters, in the Skin feature: after the switch, one row per person race of the loaded data (mods too), on or off against its default.
+        if (page == 1 && section == "Characters")
             foreach (var (id, name, byDefault) in SkinRaceList)
                 result.Add(new(name, byDefault ? "Skin scatters light on this race (the default)." : "A robot race: no skin scattering unless turned on.",
                     Toggle: new(name, () => config.SkinRaces.TryGetValue(id, out bool on) ? on : byDefault, v =>
                     {
                         if (v == byDefault) config.SkinRaces.Remove(id); else config.SkinRaces[id] = v;
                         SkinRacesChanged?.Invoke();
-                    }, OnOff: true)));
-        if (page == 0) result.Add(new("FSR3 frame generation", "Requires a restart. Status: " + (FrameGenerationStatus?.Invoke() ?? "off"), Toggle: new("FSR3 frame generation", () => config.FrameGeneration, v => config.FrameGeneration = v, OnOff: true)));
-        if (page == 0) result.Insert(2, new("Frame limit", "Used while vertical sync is off; 0 is unlimited.", Slider: frameLimit));
+                    }, OnOff: true), Raw: "race:" + id));
+        if (page == 1) result = Grouped([.. result.OrderBy(e => e.Raw is { } raw ? GroupRank(raw) : FeatureGroups.Length)]);
         if (page == 0)
-            result.Insert(3, new("World tick alongside drawing", "Faithful runs the world, then draws it, as the game does. Meitou runs the next world tick while the frame is drawn "
-                + "whenever the world is busy (big fights, crowds), Always on every frame: much higher frame rates with many characters. "
-                + "Running alongside can add up to 33 ms of input delay (one world tick).",
-                Choice: new(() => ["Faithful (in series)", "Meitou (when busy)", "Always on"], () => (int)config.TickAhead, i => config.TickAhead = (TickAheadMode)i)));
+        {
+            // The Display page in the catalogue's order, as the launcher's: full screen, VSync, frame limit, frame generation, world tick, then the display sliders.
+            var fps = LauncherSchema.Find("fpsLimit");
+            result.Add(new(fps?.Name ?? "Frame limit", fps?.Description ?? "", Slider: fps is null ? frameLimit
+                : frameLimit with { Min = fps.Min, Max = fps.Max, Text = fps.Text }, Raw: "fpsLimit"));
+            result.Add(new("World tick alongside drawing", TickAheadHint, Choice: new(() => TickAheadChoices, () => (int)config.TickAhead, i => config.TickAhead = (TickAheadMode)i),
+                Raw: "tickAhead"));
+            if (!OperatingSystem.IsMacOS())
+                result.Add(new("Frame generation (FSR 3)", FrameGenerationHint(),
+                    Toggle: new("Frame generation (FSR 3)", () => config.FrameGeneration, v => config.FrameGeneration = v, OnOff: true), Raw: "frameGeneration"));
+            result = [.. result.OrderBy(e => LauncherSchema.Order(e.Raw ?? ""))];
+            result = [.. result.SelectMany(ModeEntries)];
+        }
         if (page == 2)
             result.Add(new("UI style", "Choose original Kenshi skins or Meitou materials.", Choice: new(() => ["Faithful", "Meitou"],
                 () => (int)player.UiMode, i => player.SetUiMode((UiMode)i))));
@@ -241,13 +306,45 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
                 () => (int)config.SpeedUnit, i => player.SpeedUnit = config.SpeedUnit = (SpeedUnit)i)));
         if (page == 2)
             result.Add(new("Damage floaters", "Numbers that float over a character when a blow lands, with the damage armour stopped in brackets. Simple shows the total, Full one number per damage type "
-                + "and the part hit. Healing of your own characters floats up in green.", Choice: new(() => ["Off", "Simple info", "Full info"],
+                + "and the part hit.", Choice: new(() => ["Off", "Simple info", "Full info"],
                 () => (int)config.Floaters, i => player.Floaters = config.Floaters = (FloaterMode)i)));
+        if (page == 2)
+            result.Add(new("Font size", "Points added to every interface font's default height (the game: 3).",
+                Slider: new("Font size", UserConfig.MinFontSize, UserConfig.MaxFontSize, () => config.FontSize ?? global::Meitou.Data.Ui.KenshiFontSize.DefaultSetting,
+                    v => { float size = Math.Clamp(MathF.Round(v), UserConfig.MinFontSize, UserConfig.MaxFontSize); config.FontSize = size; player.FontSize = size; }, "0", Faithful: global::Meitou.Data.Ui.KenshiFontSize.DefaultSetting)));
+        if (page == 2)
+            result.Add(new("Show names", "The name over each of your characters (the game's Show names option). Off, only the stealth and light icons stay.",
+                Toggle: new("Show names", () => config.ShowNames, v => player.ShowNames = config.ShowNames = v, OnOff: true)));
+        if (page == 2)
+            result.Add(new("Show movement marker", "The green marker where a move order sends your characters (the game: on).",
+                Toggle: new("Show movement marker", () => config.MovementMarker != false, v => player.MovementMarker = (config.MovementMarker = v) == true, OnOff: true)));
+        if (page == 2)
+            result.Add(new("Show rotation marker", "The green marker on the camera's pivot while you turn it (the game: on).",
+                Toggle: new("Show rotation marker", () => config.RotationMarker != false, v => player.RotationMarker = (config.RotationMarker = v) == true, OnOff: true)));
+        if (page == 2)
+            result.Add(new("Censorship", "Swaps a few strong words in the dialogue for milder ones (the game's censorship option).",
+                Toggle: new("Censorship", () => config.Censorship, v => config.Censorship = v, OnOff: true)));
+        if (page == 2)
+            result.Add(new("Feedback button", "The FEEDBACK button at the top right during play. Off, it still shows on the title screen and in the Esc menu.",
+                Toggle: new("Feedback button", () => config.FeedbackButton, v => player.FeedbackButtonInPlay = config.FeedbackButton = v, OnOff: true)));
         if (page == 2)
             result.Add(new("Hardware mouse", "Use the Windows cursor instead of the game's drawn pointer (no hover pointers).",
                 Toggle: new("Hardware mouse", () => config.HardwareMouse, v => config.HardwareMouse = v)));
         if (page == 3)
             result.Add(new(CameraRotateSpeed.Label, "How fast the rotate and tilt keys and the mouse turn the camera (the game: 6).", Slider: CameraRotateSpeed));
+        if (page == 3)
+            result.Add(new(CameraMoveSpeed.Label, "How fast the arrow keys and the screen edge pan the camera (the game: 500; faster the higher the camera).", Slider: CameraMoveSpeed));
+        if (page == 3)
+            result.Add(new(CameraZoomSpeed.Label, "How fast the wheel and the zoom keys move the camera in and out (the game: 125).", Slider: CameraZoomSpeed));
+        if (page == 3)
+            result.Add(new("Invert mouse X", "Reverses the camera's turn, for the mouse and the keys (the game: off).",
+                Toggle: new("Invert mouse X", () => config.InvertX == true, v => { config.InvertX = v; CameraChanged?.Invoke(); }, OnOff: true)));
+        if (page == 3)
+            result.Add(new("Invert mouse Y", "Reverses the camera's tilt, for the mouse and the keys (the game: on).",
+                Toggle: new("Invert mouse Y", () => config.InvertY != false, v => { config.InvertY = v; CameraChanged?.Invoke(); }, OnOff: true)));
+        if (page == 3)
+            result.Add(new("Swap mouse buttons", "Swap the left and right mouse buttons (the game: off; the game view follows, as in the original).",
+                Toggle: new("Swap mouse buttons", () => config.SwapMouseButtons == true, v => KeyMap.SwapButtons = (config.SwapMouseButtons = v) == true, OnOff: true)));
         if (page == 3)
             result.Add(new("Edge scrolling", "The camera moves when the pointer is at the edge of the screen.",
                 Toggle: new("Edge scrolling", () => config.EdgeScroll != false, v => config.EdgeScroll = v)));
@@ -269,8 +366,8 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
             ];
             for (int i = 0; i < AudioSliders.Length; i++)
                 result.Add(new(AudioSliders[i].Label, hints[i], Slider: AudioSliders[i]));
-            result.Add(new("Hear from", "Where sounds are heard from: the camera, or the first selected character (the camera while none is selected).",
-                Toggle: new("Hear from", () => config.HearFromSelected, v => config.HearFromSelected = v, Text: () => config.HearFromSelected ? "Selected character" : "Camera")));
+            result.Add(new("Hear from", "Camera: you hear the world where the camera is. Character: you hear it where your first selected character stands (from the camera while nobody is selected).",
+                Toggle: new("Hear from", () => config.HearFromSelected, v => config.HearFromSelected = v, Text: () => config.HearFromSelected ? "Character" : "Camera")));
         }
         if (page == 6)
         {
@@ -291,6 +388,8 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
             result.Add(new("Auto save", "Saves the game on its own every few minutes of unpaused play, into three slots in turn (autosave0 to autosave2).",
                 Toggle: new("Auto save", () => (config.Gameplay ??= new()).AutoSave, v => SetGameplay((config.Gameplay ?? new()) with { AutoSave = v }), OnOff: true)));
             result.Add(new(AutoSaveSlider.Label, "Minutes of unpaused play between autosaves (the game: 10).", Slider: AutoSaveSlider));
+            result.Add(new("Fast zone hopping", "Keeps a larger area loaded round each of your characters, so switching between distant ones skips most of the loading (the game: off; uses more memory).",
+                Toggle: new("Fast zone hopping", () => (config.Gameplay ??= new()).FastZoneHopping, v => SetGameplay((config.Gameplay ?? new()) with { FastZoneHopping = v }), OnOff: true)));
             result.Add(new("Tutorials", "Shows the tutorial hints as you play (the game: on).",
                 Toggle: new("Tutorials", () => config.Tutorials != false, v => { config.Tutorials = v; TutorialsChanged?.Invoke(v); }, OnOff: true)));
             result.Add(new("Reset Tutorials", "Every tutorial can show again, the ones already seen included.", Run: () => ResetTutorials?.Invoke()));
@@ -318,10 +417,18 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
             result.Add(new("Weak punch reach", "Fighters with martial arts of 20 or less throw their weak punch from a normal punching distance. "
                 + "The game's data gives it a negative reach, so they throw it only when nearly touching their target.",
                 Toggle: new("Weak punch reach", () => config.FixPunchReach, v => { config.FixPunchReach = v; PunchReachChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
-        }
+            result.Add(new("Bench facing", "A character on a bench with the table behind it sits facing away from the table. "
+                + "The game mirrors the bench's look point through the middle of the world map, so the sitter faces an unrelated direction.",
+                Toggle: new("Bench facing", () => config.FixBenchFacing, v => { config.FixBenchFacing = v; BenchFacingChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+            result.Add(new("Walls inside buildings", "Seen into a building your characters are in, parts of other buildings that run through it are left out, such as the Hub's town wall in the Shinobi Thieves tower. "
+                + "The game's world places them there and draws them inside the room.",
+                Toggle: new("Walls inside buildings", () => config.FixPartsInBuildings, v => config.FixPartsInBuildings = v, Remaster: true, OnOff: true)));        }
         if (page == 4)
         {
+            // A graphics switch that changes play: the stealth sight counts the lamps it lights, so no look preset or Faithful sets it.
+            if (values.Toggles.FirstOrDefault(t => t.Label == "Interior lamps") is { } lamps) result.Add(new("Interior lamps", ToggleHint(lamps.Label), Toggle: lamps));
             result.Add(new(AttackSlotsSlider.Label, "How many enemies may swing at one character at once (the game: 1, plus its race's extra slots); the others wait at reach or circle.", Slider: AttackSlotsSlider));
+            result.Add(new(HarpoonLimitSlider.Label, "How many bolts and harpoons stay stuck in the ground and buildings, per kind of bolt; past it the one that flew longest disappears (the game: 60).", Slider: HarpoonLimitSlider));
             result.Add(new("Late dodges and blocks", "Balance change: a dodge or block that succeeds its roll but starts a moment late still works, "
                 + "instead of failing as in the game. Makes skilled fighters much harder to wear down when several enemies attack at once.",
                 Toggle: new("Late dodges and blocks", () => config.LateDefences, v => { config.LateDefences = v; LateDefencesChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
@@ -342,10 +449,16 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
                 Toggle: new("Production far away", () => config.UnloadedProduction, v => { config.UnloadedProduction = v; OffscreenChanged?.Invoke(); }, Remaster: true, OnOff: true)));
             result.Add(new("Doors close behind", "A door someone opened by walking through it closes again a few seconds after the last person went through. In the game doors stay open.",
                 Toggle: new("Doors close behind", () => config.DoorsCloseBehind, v => { config.DoorsCloseBehind = v; DoorsCloseChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+            result.Add(new("Decapitation", "A blow that destroys a character's head cuts it off, by the same rule the Dismemberment setting cuts off limbs. In the game a destroyed head only kills.",
+                Toggle: new("Decapitation", () => config.Decapitation, v => { config.Decapitation = v; GameplayChanged?.Invoke(); }, Remaster: true, OnOff: true)));
+            result.Add(new("Advanced ragdolls", "A character knocked down or killed by a blow falls with its own momentum and is pushed away from the hit, harder the heavier the blow and most at the part that was struck, its arms and legs flung by it, and a cut-off head flies the same way. Limp bodies have joints that ease to a stop and a slight muscle tone, so they settle into natural poses. In the game a body drops where it stood, its joints stopping hard.",
+                Toggle: new("Advanced ragdolls", () => config.AdvancedRagdolls, v => { config.AdvancedRagdolls = v; GameplayChanged?.Invoke(); }, Remaster: true)));
+            result.Add(new("Pause after loading", "A save starts paused once it has loaded, so nothing happens before you look around. In the game it runs at once.",
+                Toggle: new("Pause after loading", () => config.PauseOnLoad, v => config.PauseOnLoad = v, OnOff: true)));
             result.Add(new("Hover outline", "Outline and tint the character under the cursor, in the colour of what a right click would do.",
                 Toggle: new("Hover outline", () => config.HoverOutline, v => config.HoverOutline = v, Remaster: true, OnOff: true)));
-            result.Add(new("Selection rings", "Draw the green ring on the ground under each selected character.",
-                Toggle: new("Selection rings", () => config.SelectionRings, v => config.SelectionRings = v, Remaster: true, OnOff: true)));
+            result.Add(new("Building outline", "Outline and tint the selected building like a character under the cursor, except while its interior is shown.",
+                Toggle: new("Building outline", () => config.BuildingOutline, v => config.BuildingOutline = v, Remaster: true, OnOff: true)));
             result.Add(new("luckyren Mode", "A character that takes a fatal hit explodes, covers everything around in blood and sends bones flying everywhere. Its gear falls to the ground around the spot.",
                 Toggle: new("luckyren Mode", () => config.LuckyrenMode, v => config.LuckyrenMode = v),
                 Picture: SettingsMenuArt.LuckyrenImage));
@@ -370,19 +483,19 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
             foreach (var action in values.Actions)
                 result.Add(new(action.Label, "Delete cached billboards; they are rebuilt when needed.", Run: () =>
                 {
-                    pendingAction = action.Run; confirmation = action.Question(); focus = -1;
+                    pendingAction = action.Run; confirmTitle = "Clear cached files?"; confirmation = action.Question(); focus = -1;
                 }));
         }
-        if (page == 4)
+        if (page == 4 && !player.IsRemoteSession)
             result.Insert(0, PageSidesEntry(result, "All gameplay changes", "Every change on this page as the game plays, or every Meitou change.", "gameplay change"));
-        if (page == 7)
+        if (page == 7 && !player.IsRemoteSession)
             result.Insert(0, PageSidesEntry(result, "All fixes", "Every bug on this page as the game ships it, or every fix.", "fix"));
-        return result;
+        return player.IsRemoteSession ? result.Select(AuthorityEntry).ToList() : result;
     }
 
-    static string ActionLabel(InputAction action) => Regex.Replace(action.ToString(), "([a-z0-9])([A-Z])", "$1 $2");
+    static string ActionLabel(InputAction action) => Regex.Replace(action.ToString(), "(?<=[a-z0-9])(?=[A-Z])|(?<=[a-z])(?=[0-9])", " ");
     Func<string>? pendingAction;
-    string confirmation = "";
+    string confirmation = "", confirmTitle = "";
 
     public bool Contains(Vector2 _) => Visible;
 
@@ -428,6 +541,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
         if (!Visible) return false;
         if (editingNumber is not null || rebinding is not null || resetPending || pendingAction is not null) return true;
         if (openChoice is { } choice) choiceScroll = Math.Clamp(choiceScroll - (int)steps, 0, Math.Max(0, choice.Options().Count - 6));
+        else if (page == ModsPage && ModsDetail.Contains(pointer.X, pointer.Y)) modsDetailScroll -= steps * 40;
         else scrollTarget = Math.Clamp(scrollTarget - steps * 60 * scale, 0, maxScroll);
         return true;
     }
@@ -467,7 +581,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
         {
             var hit = hits[focus];
             if (hit.Slider is { } slider && key is Key.Left or Key.Right)
-                slider.SetFraction(slider.Fraction + (key == Key.Left ? -1 : 1) * (slider.Max - slider.Min <= 4 ? 1 / (slider.Max - slider.Min) : 0.02f));
+                slider.SetFraction(slider.Fraction + (key == Key.Left ? -1 : 1) * slider.KeyStep);
             else if (key is Key.Enter or Key.Space) hit.Activate();
         }
         return true;
@@ -475,6 +589,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
 
     public bool KeyDown(Key key, bool shift, bool ctrl)
     {
+        if (naming && Visible) return NameKey(key);
         if (editingNumber is null) return KeyDown(key, shift);
         switch (key)
         {
@@ -509,6 +624,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
 
     public void TextInput(char value)
     {
+        if (naming && Visible) { NameText(value); return; }
         if (editingNumber is null || !Visible) return;
         if (value is >= '0' and <= '9' or '.' or ',' or '-' or '+' or 'e' or 'E')
             ReplaceNumberSelection(value == ',' ? "." : value.ToString());
@@ -517,7 +633,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
     void BeginNumber(Slider slider, UiRect at)
     {
         editingNumber = slider;
-        numberText = slider.Get().ToString("G", CultureInfo.InvariantCulture);
+        numberText = MathF.Round(slider.Get() * slider.Scale, 4).ToString("G", CultureInfo.InvariantCulture);
         numberAnchor = 0;
         numberCaret = numberText.Length;
         numberBounds = at;
@@ -543,7 +659,7 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
             notice = "Enter a valid number, or press Esc to cancel.";
             return false;
         }
-        slider.Set(Math.Clamp(value, slider.Min, slider.Max));
+        slider.Set(Math.Clamp(value / slider.Scale, slider.Min, slider.Max));
         editingNumber = null;
         notice = "";
         return true;
@@ -551,13 +667,22 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
 
     void SetBinding(InputAction action, Binding binding)
     {
-        if (binding.IsMouse && binding.Button is MouseButton.Left or MouseButton.Right ||
-            !binding.IsMouse && binding.Key is Key.Escape or Key.F6 or Key.LeftAlt or Key.RightAlt or Key.LeftControl or Key.RightControl or Key.LeftShift or Key.RightShift)
+        if (!binding.IsMouse && binding.Key is Key.Escape or Key.F6 or Key.LeftAlt or Key.RightAlt or Key.LeftControl or Key.RightControl or Key.LeftShift or Key.RightShift)
         {
             notice = "That key is reserved. Choose another key, or Esc to cancel.";
             return;
         }
         var conflicts = Enum.GetValues<InputAction>().Where(a => a != action && bindings.Get(a).Contains(binding)).ToArray();
+        // A mouse button taken from another action is swapped: that action gets this one's old button, so the three buttons can be shuffled (the buttons form a cycle otherwise).
+        if (binding.IsMouse && conflicts.Length == 1 && bindings.Get(action).Where(b => b.IsMouse).Cast<Binding?>().FirstOrDefault() is { } previous)
+        {
+            var other = conflicts[0];
+            bindings.Set(other, [.. bindings.Get(other).Where(b => b != binding), previous]);
+            bindings.Set(action, binding);
+            rebinding = null;
+            notice = $"{ActionLabel(action)} bound to {binding}; {ActionLabel(other)} moved to {previous}.";
+            return;
+        }
         if (conflicts.Length > 0)
         {
             notice = $"{binding} is assigned to {ActionLabel(conflicts[0])}. Choose another key, or Esc to cancel.";
@@ -573,8 +698,9 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
         for (int i = 0; i < values.Sliders.Count; i++)
             if (values.Sliders[i].Label is not ("Time of day" or "Time speed")) values.Sliders[i].Set(defaults[i]);
         for (int i = 0; i < values.Toggles.Count; i++)
-            if (values.Toggles[i].Get() != toggleDefaults[i]) values.Toggles[i].Set(toggleDefaults[i]);
+            if (!(player.IsRemoteSession && values.Toggles[i].Label == "Interior lamps") && values.Toggles[i].Get() != toggleDefaults[i]) values.Toggles[i].Set(toggleDefaults[i]);
         frameLimit.Set(240);
+        ResetModSettings();
         config.SplashScreens = false;
         config.MainMenuTransitions = true;
         config.InGameTransitions = true;
@@ -584,36 +710,67 @@ sealed partial class SettingsMenu(PlayerInterface player, SettingsPanel values, 
         config.KeepTexturesAtCharacters = true;
         config.KeepTexturesAtAllSquads = false;
         config.CharacterFlightSeconds = UserConfig.DefaultFlightSeconds;
-        AttackSlotsSlider.Set(UserConfig.FaithfulAttackSlots);
-        config.LateDefences = false;
-        LateDefencesChanged?.Invoke(false);
-        config.KeepRoamers = config.OffscreenFights = config.OffscreenHealing = config.CampaignAncestorsOnce = config.KeepWild = config.ResidentSchedule = config.UnloadedProduction = true;
-        config.DoorsCloseBehind = true;
-        DoorsCloseChanged?.Invoke(true);
+        if (!player.IsRemoteSession)
+        {
+            AttackSlotsSlider.Set(UserConfig.FaithfulAttackSlots);
+            config.LateDefences = false;
+            LateDefencesChanged?.Invoke(false);
+            config.KeepRoamers = config.OffscreenFights = config.OffscreenHealing = config.CampaignAncestorsOnce = config.KeepWild = config.ResidentSchedule = config.UnloadedProduction = true;
+            config.DoorsCloseBehind = true;
+            config.Decapitation = true;
+            config.AdvancedRagdolls = true;
+            DoorsCloseChanged?.Invoke(true);
+        }
+        config.PauseOnLoad = false;
         config.FixDoorBreak = config.FixAmbienceSuffix = config.FixWindStop = true;
         player.FixLoadButton = config.FixLoadButton = true;
-        config.FixGunnerFacing = true;
-        GunnerFacingChanged?.Invoke(true);
-        config.FixPunchReach = true;
-        PunchReachChanged?.Invoke(true);
-        OffscreenChanged?.Invoke();
+        if (!player.IsRemoteSession)
+        {
+            config.FixGunnerFacing = true;
+            GunnerFacingChanged?.Invoke(true);
+        }
+        if (!player.IsRemoteSession)
+        {
+            config.FixPunchReach = true;
+            PunchReachChanged?.Invoke(true);
+            config.FixBenchFacing = true;
+            BenchFacingChanged?.Invoke(true);
+            OffscreenChanged?.Invoke();
+        }
         config.Audio = new();
         AudioChanged?.Invoke();
-        SetGameplay(new());
+        if (!player.IsRemoteSession) SetGameplay(new());
         config.HardwareMouse = false;
         CameraRotateSpeed.Set(global::Meitou.Data.World.KenshiCamera.DefaultRotateSpeed);
         config.EdgeScroll = true;
+        config.InvertX = false;
+        config.InvertY = true;
+        config.CameraMoveSpeed = global::Meitou.Data.World.KenshiCamera.DefaultMoveSpeed;
+        config.CameraZoomSpeed = global::Meitou.Data.World.KenshiCamera.DefaultZoomSpeed;
+        CameraChanged?.Invoke();
         config.Tutorials = true;
+        player.MovementMarker = player.RotationMarker = true;
+        config.MovementMarker = config.RotationMarker = true;
         TutorialsChanged?.Invoke(true);
         config.HoverOutline = true;
-        config.SelectionRings = true;
-        config.LuckyrenMode = false;
-        config.GroundItemLimit = global::Meitou.Simulation.Items.GroundItems.DefaultLimit;
+        config.BuildingOutline = true;
+        if (!player.IsRemoteSession)
+        {
+            config.LuckyrenMode = false;
+            config.GroundItemLimit = global::Meitou.Simulation.Items.GroundItems.DefaultLimit;
+        }
         player.SetUiMode(UiMode.Meitou);
         player.SpeedUnit = config.SpeedUnit = SpeedUnit.Mph;
         player.Floaters = config.Floaters = FloaterMode.Simple;
+        player.ShowNames = config.ShowNames = true;
+        player.FeedbackButtonInPlay = config.FeedbackButton = true;
         config.TickAhead = TickAheadMode.Dynamic;
         bindings.ResetToDefaults();
+        config.LookPreset = null;
+        config.FaithfulLook = false;
+        config.KeepAtLow.Clear();
+        activeLook = null;
+        customModes.Clear();
         resetPending = false;
         notice = "Default settings restored.";
     }

@@ -20,21 +20,35 @@ public enum HomeSpotKind : byte
     General = 5,
     /// <summary>A seat: interior furniture with a BF_CHAIR functionality (stools, benches, sitting pillows); <see cref="HomeSpot.SitClip"/> is how it is sat on.</summary>
     Chair = 6,
+    /// <summary>A seat: furniture with a BF_THRONE functionality ("throne chair"); sat on like a <see cref="Chair"/>. Not the <see cref="Throne"/> node.</summary>
+    ThroneSeat = 7,
+    /// <summary>Furniture with a BF_TRAINING functionality (a training dummy): stood at, not sat on.</summary>
+    Training = 8,
+    /// <summary>Interior furniture with a BF_MINE, BF_RESEARCH, BF_REFINERY or BF_CRAFTING functionality: pretend-operated by a squad member staying home (43, docs/game/ai-tasks.md "Town goals").</summary>
+    Workstation = 9,
+    /// <summary>A node of type 3 (turret), 4 (use) or 5 (light) not named as a bar or throne: no goal stands at it (the general-node finder asks for type 1 only, <c>FUN_14038c2f0</c>).</summary>
+    Other = 10,
 }
 
 /// <summary>A spot inside a building in world space; <paramref name="Yaw"/> as the simulation measures it (0 along +Z, turning towards +X).</summary>
 public readonly record struct HomeSpot(HomeSpotKind Kind, Vector3 Position, float Yaw)
 {
+    /// <summary>The furniture's placed rotation, before the sitter turns towards a table; collision and picking keep this facing.</summary>
+    public float PlacementYaw { get; init; } = Yaw;
+    /// <summary>The sitter's facing as the game has it; differs from <see cref="Yaw"/> only for a bench with its table behind (<see cref="TownBuildings.SeatYaw"/>).</summary>
+    public float FaithfulYaw { get; init; } = Yaw;
     /// <summary>A node's BUILDING <c>node type</c> (NodeType: 0 NODE_SHOPKEEPER, 1 NODE_GENERAL, 2 NODE_GUARD_POST, 3 NODE_TURRET, 4 NODE_USE, 5 NODE_LIGHT); -1 for a bed.</summary>
     public int NodeType { get; init; } = -1;
     /// <summary>A chair's sitting clip: the ANIMATION record its functionality's <c>animation</c> names ("sitting chair", "sitting idle" for floor seats); null otherwise.</summary>
     public string? SitClip { get; init; }
     /// <summary>The seat's functionality <c>hunger rate</c> (chairs 0.66, sit on floor 0.75; 1 by default).</summary>
     public float HungerRate { get; init; } = 1;
-    /// <summary>A bed's furniture (its BUILDING string id: its <c>output rate</c> is how fast it heals, docs/game/character-stats.md "Beds"); null otherwise.</summary>
+    /// <summary>The BUILDING string id of a bed, seat or training dummy; null for other spots. A bed's output rate controls healing (docs/game/character-stats.md "Beds").</summary>
     public string? Record { get; init; }
-    /// <summary>A node a goal may stand at: neither a bed nor a seat.</summary>
-    public bool IsNode => Kind is not (HomeSpotKind.Bed or HomeSpotKind.Chair);
+    /// <summary>A bed's position marker (<see cref="WorldObjectLayout.PositionMarker"/>) when its record flags a part for it; null: the bed's own position.</summary>
+    public Vector3? Marker { get; init; }
+    /// <summary>A node a goal may stand at: neither a bed, a seat nor a dummy.</summary>
+    public bool IsNode => Kind is not (HomeSpotKind.Bed or HomeSpotKind.Chair or HomeSpotKind.ThroneSeat or HomeSpotKind.Training or HomeSpotKind.Workstation or HomeSpotKind.Other);
 }
 
 /// <summary>
@@ -51,6 +65,14 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
 {
     public IEnumerable<HomeSpot> Of(HomeSpotKind kind) => Spots.Where(s => s.Kind == kind);
     public int Beds => Spots.Count(s => s.Kind == HomeSpotKind.Bed);
+    /// <summary>
+    /// Furniture of its interior layout with a BF_THRONE or BF_TRAINING functionality, in layout order, and the building itself when it is a free-standing chair, throne or dummy (its own
+    /// origin and yaw): the pieces sitting around (275) can take besides the chairs in <see cref="Spots"/> (<see cref="SeatAt"/>). Kept apart from <see cref="Spots"/>, which are the home's nodes.
+    /// </summary>
+    public IReadOnlyList<HomeSpot> Furniture { get; init; } = [];
+    /// <summary>The seats of the building: <see cref="Spots"/> then <see cref="Furniture"/>, indexed together (what a seat claim names).</summary>
+    public int SeatCount => Spots.Count + Furniture.Count;
+    public HomeSpot SeatAt(int index) => index < Spots.Count ? Spots[index] : Furniture[index - Spots.Count];
     /// <summary>The placement state's <c>owner faction ID</c> (a FACTION string id); null when the state names none (the town's faction owns it).</summary>
     public string? OwnerFactionId { get; init; }
     /// <summary>The cages, lockable containers and containers with an inventory of its interior layout (docs/game/locks.md "Data"), in layout order.</summary>
@@ -69,8 +91,8 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
     /// </summary>
     public bool CanHouse { get; init; }
     /// <summary>
-    /// It has <c>interior</c> parts and its interior layout, when the level data names one, places at least one object (the original's interior holding internal buildings,
-    /// docs/game/economy.md "Artifacts"; one the level data does not name the original generates on first load, and Meitou counts it).
+    /// It has <c>interior</c> parts, is not a ruin, and its named interior layout places at least one object (the original's interior holding internal buildings,
+    /// docs/game/economy.md "Artifacts"; the name is its residents' since <see cref="ResidentRuins.Apply"/>). Without contents laid out: it has <c>interior</c> parts.
     /// </summary>
     public bool Furnished { get; init; }
     /// <summary><c>is wall gate</c>: a town gate, housing only resident entries that name it in <c>building</c>.</summary>
@@ -81,14 +103,25 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
     public bool HasInterior { get; init; }
     /// <summary>The level-data state's <c>destroyed</c>: a ruin, which has no doors (docs/game/locks.md "Doors").</summary>
     public bool Destroyed { get; init; }
+    /// <summary>A ruin only by its residents (<see cref="ResidentRuins.Apply"/>): its level file has it standing.</summary>
+    public bool RuinedByResidents { get; init; }
     /// <summary>The level data's <c>residents template</c> of its state (a SQUAD_TEMPLATE id; empty when none).</summary>
     public string ResidentsTemplate { get; init; } = "";
     /// <summary>Its level-data GAMESTATE_BUILDING (null when it has none): the lock and door state it starts with when no save has one (docs/game/locks.md "Save keys").</summary>
     public GameRecord? LevelState { get; init; }
     /// <summary>Its turret, when its record has a <c>BUILDING_FUNCTIONALITY</c> function BF_TURRET (a mounted harpoon turret or crossbow); null otherwise.</summary>
     public TurretPost? Turret { get; init; }
-    /// <summary>The state's <c>interior layout name</c> (the one its <see cref="Spots"/> come from); empty when none.</summary>
+    /// <summary>Its interior layout's name (the one its <see cref="Spots"/> come from: its residents', <see cref="LayoutName"/>); empty when none.</summary>
     public string InteriorLayout { get; init; } = "";
+    /// <summary>The interior and exterior layout names its level files give it, before any residents named theirs (<see cref="WorldLevelData.LevelLayoutNames"/>).</summary>
+    public (string Interior, string Exterior) LevelLayouts { get; init; } = ("", "");
+    /// <summary>The name and squad template its level files give it, before any residents named theirs (<see cref="WorldLevelData.LevelNames"/>).</summary>
+    public BuildingNaming LevelNaming { get; init; } = new("", "");
+    /// <summary>The name and squad template a town override's housing gave it (<see cref="TownBuildings.Relay"/>); null leaves its state's.</summary>
+    public BuildingNaming? Naming { get; init; }
+    /// <summary>The name of its interior or exterior layout now: its placement's (<see cref="TownBuildings.Relay"/>), else its level state's; "" for none.</summary>
+    public string LayoutName(bool exterior) =>
+        Resolved?.Placement.LayoutName(LevelState, exterior) ?? LevelState?.GetString(exterior ? ResidentRuins.ExteriorKey : ResidentRuins.InteriorKey) ?? "";
     /// <summary>The names of the interior and exterior layouts its record can take (its own and those of <c>shares interiors with</c>), case ignored.</summary>
     public IReadOnlySet<string> InteriorLayouts { get; init; } = EmptyNames;
     public IReadOnlySet<string> ExteriorLayouts { get; init; } = EmptyNames;
@@ -142,6 +175,13 @@ public static class TownBuildings
     public const int BedFunction = 6, SkeletonBedFunction = 25;
     /// <summary>BUILDING_FUNCTIONALITY <c>function</c> 8, BF_CAGE: cages, the prisoner pole, the peeler (docs/game/locks.md "Data").</summary>
     public const int CageFunction = 8;
+
+    /// <summary>
+    /// Whether a BF_CAGE functionality is a torture rack (the class <c>TortureBuilding</c>; <b>Verified</b>, factory <c>FUN_14057cc70</c>, function 8): its <c>produces</c> list is not empty, or its
+    /// <c>flags</c> are not 0. Base data has none (the peeler, cooking pole, drill and hooks come from mods; docs/game/locks.md "Torture racks").
+    /// </summary>
+    public static bool IsRack(GameRecord functionality) =>
+        functionality.GetInt("function") == CageFunction && (functionality.GetReferences("produces").Count > 0 || functionality.GetInt("flags") != 0);
     /// <summary>BUILDING_FUNCTIONALITY <c>function</c> 21, BF_GATE (docs/game/buildings-production.md "Classes and functions").</summary>
     public const int GateFunction = 21;
 
@@ -153,13 +193,21 @@ public static class TownBuildings
         building.GetBool("is wall gate") || FunctionOf(db, building, cache)?.GetInt("function") == GateFunction;
     /// <summary>BUILDING_FUNCTIONALITY <c>function</c> 17, BF_CHAIR: stools, benches, sitting pillows and spots (docs/game/ai-tasks.md "Town goals").</summary>
     public const int ChairFunction = 17;
+    /// <summary>BF_THRONE ("throne chair", sat on like a chair) and BF_TRAINING (a training dummy): the other furniture sitting around (275) takes (docs/game/ai-tasks.md "Town goals").</summary>
+    public const int ThroneFunction = 24, TrainingFunction = 7;
+    /// <summary>BF_MINE, BF_RESEARCH, BF_CRAFTING: with <see cref="RefineryFunction"/> and the chair and training function, the furniture staying home (43) operates in pretence (mask 0x2049a of <c>FUN_1408cbc00</c>).</summary>
+    public const int MineFunction = 1, ResearchFunction = 3, CraftingFunction = 10;
     /// <summary>BF_TABLE, BF_CORPSE_DISPOSAL, BF_REFINERY: what a free seat faces (<see cref="SeatYaw"/>).</summary>
     public const int TableFunction = 16, CorpseDisposalFunction = 11, RefineryFunction = 4;
     /// <summary>BF_RESOURCE_STORAGE, BF_SHOP, BF_GENERAL_STORAGE: the containers a building shop's stock goes into (<see cref="TownFixture.HoldsShopStock"/>).</summary>
     public const int ResourceStorageFunction = 2, ShopFunction = 9, GeneralStorageFunction = 13;
 
-    /// <summary>The buildings by town placement id (<see cref="TownPlacement.InstanceId"/>), each list in placement order.</summary>
-    public static Dictionary<string, List<TownBuilding>> Build(GameDatabase db, WorldLevelData levels, BuildingLayouts? layouts, Func<double, double, float> terrainHeight)
+    /// <summary>
+    /// The buildings by town placement id (<see cref="TownPlacement.InstanceId"/>), each list in placement order. Without <paramref name="contents"/> their interior
+    /// layouts are not laid out (no spots, fixtures, item slots, tables or furniture, no shop or bar): enough to house residents (<see cref="ResidentHomes.Assign"/>).
+    /// </summary>
+    public static Dictionary<string, List<TownBuilding>> Build(GameDatabase db, WorldLevelData levels, BuildingLayouts? layouts, Func<double, double, float> terrainHeight,
+        bool contents = true)
     {
         var towns = new List<(TownPlacement Placement, Gameplay.TownData Town)>();
         foreach (var t in levels.Towns())
@@ -172,9 +220,6 @@ public static class TownBuildings
             if (b.StateId is not null && levels.Zones.TryGetValue(b.Zone, out var zone) && zone.Find(b.StateId) is { } state && state.GetInt("handleTYPE") == (int)FcsRecordType.BUILDING && state.Ints.ContainsKey("handleI"))
                 instances[(state.GetInt("handleC"), state.GetInt("handleI"))] = b.Key;
         var names = new Dictionary<(string, bool), IReadOnlySet<string>>();
-        List<TownFixture>? fixtures = null;
-        List<TownItemSlot>? itemSlots = null;
-        List<Vector3>? tables = null;
         var result = new Dictionary<string, List<TownBuilding>>(StringComparer.Ordinal);
         foreach (var b in levels.Buildings())
         {
@@ -188,95 +233,180 @@ public static class TownBuildings
                 ? new TurretPost(resolved.Position, YawOf(b.Rotation), fn.GetFloat("use range", 10),
                     record.GetReferences("gun turret").Select(r => r.TargetStringId).FirstOrDefault() ?? "", MountedOn(instances, state))
                 : null;
-            var spots = new List<HomeSpot>();
-            bool shop = false, bar = false, furnished = record.GetReferences("interior").Count > 0;
-            if (layouts is not null && state is not null)
-            {
-                if (layouts.Find(record, state.GetString("exterior layout name")) is { } exterior)
-                {
-                    shop = exterior.GetInt("is shop") != 0;
-                    bar = exterior.GetInt("is bar") != 0;
-                }
-                // A named layout the data lacks gives the original an interior with no objects.
-                if (state.GetString("interior layout name").Length > 0) furnished = false;
-                if (layouts.Find(record, state.GetString("interior layout name"), exterior: false) is { } interior)
-                {
-                    int index = 0;
-                    List<Vector3>? faced = null;
-                    List<(int Spot, int Flags)>? seats = null;
-                    foreach (var item in layouts.Items(interior))
-                    {
-                        var (at, rotation) = BuildingLayouts.Place(resolved.Position, b.Rotation, item);
-                        bool node = item.Building.GetBool("is node");
-                        HomeSpotKind? kind = node ? NodeKind(item.Building) : IsBed(db, item.Building, beds) ? HomeSpotKind.Bed : null;
-                        var function = kind is null ? FunctionOf(db, item.Building, functions) : null;
-                        // A node marker looks along its local -X (docs/game/ai-tasks.md "Town goals"), a bed along +Z.
-                        if (kind is { } k) spots.Add(new HomeSpot(k, at, YawOf(rotation) - (node ? MathF.PI / 2 : 0))
-                        {
-                            NodeType = node ? item.Building.GetInt("node type") : -1,
-                            Record = k == HomeSpotKind.Bed ? item.Building.StringId : null,
-                        });
-                        else if (function?.GetInt("function") == ChairFunction)
-                        {
-                            (seats ??= []).Add((spots.Count, function.GetInt("flags")));
-                            spots.Add(new HomeSpot(HomeSpotKind.Chair, at, YawOf(rotation))
-                            {
-                                SitClip = function.GetReferences("animation").Select(r => db.Find(r.TargetStringId)?.Name).FirstOrDefault(n => n is not null),
-                                HungerRate = function.GetFloat("hunger rate", 1),
-                            });
-                        }
-                        if (function?.GetInt("function") is TableFunction or CorpseDisposalFunction or RefineryFunction) (faced ??= []).Add(at);
-                        else if (FunctionOf(db, item.Building, functions)?.GetInt("function") is var itemFn && (itemFn == CageFunction || item.Building.GetBool("has lock") || item.Building.GetBool("has inventory")))
-                        {
-                            var (storageWidth, storageHeight) = item.Building.GetBool("has inventory") ? MachineData.StorageGrid(db, item.Building) : (0, 0);
-                            (fixtures ??= []).Add(new TownFixture($"{b.Key}/{index}", item.Building.StringId, itemFn == CageFunction, at, YawOf(rotation))
-                            {
-                                Function = itemFn ?? -1,
-                                StorageWidth = storageWidth,
-                                StorageHeight = storageHeight,
-                            });
-                        }
-                        index++;
-                    }
-                    furnished = index > 0;
-                    int slot = 0;
-                    foreach (var group in layouts.ItemGroups(interior))
-                    {
-                        var (at, rotation) = BuildingLayouts.Place(resolved.Position, b.Rotation, group);
-                        (itemSlots ??= []).Add(new TownItemSlot($"{b.Key}/item{slot++}", group.Building.StringId, at, rotation, group.Floor));
-                    }
-                    if (seats is not null && faced is not null)
-                        foreach (var (s, flags) in seats) spots[s] = spots[s] with { Yaw = SeatYaw(spots[s], flags, faced) };
-                    tables = faced;
-                }
-            }
+            var c = contents && layouts is not null && state is not null
+                ? LayContents(db, layouts, resolved, state, beds, functions)
+                : new Contents { Furnished = record.GetReferences("interior").Count > 0 };
+            if (contents) AddAlone(db, resolved, functionality, c);
             if (!result.TryGetValue(town.InstanceId, out var list)) result[town.InstanceId] = list = [];
             string? owner = state?.GetString("owner faction ID") is { Length: > 0 } o ? o : null;
-            list.Add(new TownBuilding(b.InstanceId, record.StringId, record.Name, resolved.Position, YawOf(b.Rotation), shop, bar, spots)
+            list.Add(new TownBuilding(b.InstanceId, record.StringId, record.Name, resolved.Position, YawOf(b.Rotation), c.Shop, c.Bar, c.Spots)
             {
-                OwnerFactionId = owner, Fixtures = fixtures ?? [], ItemSlots = itemSlots ?? [], Zone = b.Zone, Resolved = resolved,
+                OwnerFactionId = owner, Fixtures = c.Fixtures, ItemSlots = c.ItemSlots, Zone = b.Zone, Resolved = resolved,
                 CanHouse = record.GetBool("is wall gate") || record.GetReferences("interior").Count > 0 && !record.GetBool("links together"),
-                Furnished = furnished,
+                Furnished = c.Furnished,
                 IsGate = record.GetBool("is wall gate"),
                 IsWall = record.GetBool("links together"),
                 HasInterior = record.GetReferences("interior").Count > 0,
                 Destroyed = resolved.Destroyed,
+                RuinedByResidents = levels.ResidentRuined.Contains(b.Key),
                 Turret = turret,
                 ResidentsTemplate = state?.GetString("residents template") ?? "",
                 LevelState = state,
                 InteriorLayout = state?.GetString("interior layout name") ?? "",
+                LevelLayouts = levels.LevelLayoutNames.TryGetValue(b.Key, out var raw) ? raw
+                    : (state?.GetString(ResidentRuins.InteriorKey) ?? "", state?.GetString(ResidentRuins.ExteriorKey) ?? ""),
+                LevelNaming = levels.LevelNames.TryGetValue(b.Key, out var named) ? named : BuildingNaming.Of(state),
                 InteriorLayouts = LayoutNames(layouts, record, exterior: false, names),
                 ExteriorLayouts = LayoutNames(layouts, record, exterior: true, names),
                 HandleSlot = state is not null && state.Ints.ContainsKey("handleI") && state.GetInt("handleTYPE") == (int)FcsRecordType.BUILDING ? state.GetInt("handleI") : -1,
                 HandleSerial = state?.GetInt("handleS") ?? 0,
-                Tables = tables ?? [],
+                Tables = c.Tables,
+                Furniture = c.Furniture,
                 Function = functionality?.GetInt("function") ?? -1,
             });
-            fixtures = null;
-            itemSlots = null;
-            tables = null;
         }
         return result;
+    }
+
+    /// <summary>
+    /// <paramref name="b"/> laid out with other layout names (docs/game/factions-squads-towns.md "Town residents", Layouts): a town override's or a loaded save's
+    /// residents name them as the level data's do not. Its contents come from them, and the names ride on its placement
+    /// (<see cref="BuildingPlacement.InteriorLayout"/>) so every reader lays it out alike. A building without a level state or placement stays as it is.
+    /// </summary>
+    public static TownBuilding Relay(GameDatabase db, BuildingLayouts layouts, TownBuilding b, string interior, string exterior, BuildingNaming? naming = null)
+    {
+        if (b.Resolved is not { } resolved || b.LevelState is not { } state) return b;
+        if (b.LayoutName(exterior: false) == interior && b.LayoutName(exterior: true) == exterior) return b with { Naming = naming ?? b.Naming };
+        var placed = resolved with { Placement = resolved.Placement with { InteriorLayout = interior, ExteriorLayout = exterior } };
+        var functions = new Dictionary<string, GameRecord?>(StringComparer.Ordinal);
+        var c = LayContents(db, layouts, placed, state, new(StringComparer.Ordinal), functions);
+        AddAlone(db, placed, FunctionOf(db, resolved.Record, functions), c);
+        return b with
+        {
+            IsShop = c.Shop, IsBar = c.Bar, Spots = c.Spots, Fixtures = c.Fixtures, ItemSlots = c.ItemSlots, Tables = c.Tables, Furniture = c.Furniture,
+            Furnished = c.Furnished, InteriorLayout = interior, Resolved = placed, Naming = naming ?? b.Naming,
+        };
+    }
+
+    /// <summary>What a building's layouts put in it (<see cref="TownBuilding"/>'s spots, fixtures, item slots, tables, furniture, shop and bar flags).</summary>
+    sealed class Contents
+    {
+        public List<HomeSpot> Spots = [];
+        public bool Shop, Bar, Furnished;
+        public List<TownFixture> Fixtures = [];
+        public List<TownItemSlot> ItemSlots = [];
+        public List<Vector3> Tables = [];
+        public List<HomeSpot> Furniture = [];
+    }
+
+    /// <summary>
+    /// The contents of a placed building's layouts, named by its placement or else its state (<see cref="BuildingPlacement.LayoutName"/>): the exterior's shop and
+    /// bar flags, the interior's beds, nodes, seats, furniture, tables, fixtures and item slots. Its interior holds objects only from a named layout the data has (none
+    /// named, or one the data lacks, loads nothing); a ruin holds none, as destroying it clears them (docs/game/buildings-production.md "Ruined by residents").
+    /// </summary>
+    static Contents LayContents(GameDatabase db, BuildingLayouts layouts, ResolvedBuilding resolved, GameRecord state, Dictionary<string, bool> beds,
+        Dictionary<string, GameRecord?> functions)
+    {
+        var c = new Contents();
+        var record = resolved.Record;
+        var b = resolved.Placement;
+        if (layouts.Find(record, b.LayoutName(state, exterior: true)) is { } exterior)
+        {
+            c.Shop = exterior.GetInt("is shop") != 0;
+            c.Bar = exterior.GetInt("is bar") != 0;
+        }
+        if (resolved.Destroyed || layouts.Find(record, b.LayoutName(state, exterior: false), exterior: false) is not { } interior) return c;
+        LayInterior(db, layouts, resolved, interior, beds, functions, c);
+        return c;
+    }
+
+    static void LayInterior(GameDatabase db, BuildingLayouts layouts, ResolvedBuilding resolved, GameRecord interior, Dictionary<string, bool> beds,
+        Dictionary<string, GameRecord?> functions, Contents c)
+    {
+        var b = resolved.Placement;
+        var spots = c.Spots;
+        int index = 0;
+        List<(int Spot, int Flags)>? seats = null;
+        foreach (var item in layouts.Items(interior, b))
+        {
+            var (at, rotation) = BuildingLayouts.Place(resolved.Position, b.Rotation, item);
+            bool node = item.Building.GetBool("is node");
+            HomeSpotKind? kind = node ? NodeKind(item.Building) : IsBed(db, item.Building, beds) ? HomeSpotKind.Bed : null;
+            var function = kind is null ? FunctionOf(db, item.Building, functions) : null;
+            // A node marker looks along its local -X (docs/game/ai-tasks.md "Town goals"), a bed along +Z.
+            if (kind is { } k) spots.Add(new HomeSpot(k, at, YawOf(rotation) - (node ? MathF.PI / 2 : 0))
+            {
+                NodeType = node ? item.Building.GetInt("node type") : -1,
+                Record = k == HomeSpotKind.Bed ? item.Building.StringId : null,
+                Marker = k == HomeSpotKind.Bed ? WorldObjectLayout.PositionMarker(db, item.Building, at, rotation) : null,
+            });
+            else if (function?.GetInt("function") == ChairFunction)
+            {
+                (seats ??= []).Add((spots.Count, function.GetInt("flags")));
+                spots.Add(new HomeSpot(HomeSpotKind.Chair, at, YawOf(rotation))
+                {
+                    Record = item.Building.StringId,
+                    SitClip = function.GetReferences("animation").Select(r => db.Find(r.TargetStringId)?.Name).FirstOrDefault(n => n is not null),
+                    HungerRate = function.GetFloat("hunger rate", 1),
+                });
+            }
+            else if (function is not null && FurnitureOf(db, item.Building, function, at, YawOf(rotation), inside: true) is { } piece) c.Furniture.Add(piece);
+            if (function?.GetInt("function") is TableFunction or CorpseDisposalFunction or RefineryFunction) c.Tables.Add(at);
+            else AddFixture(db, functions, item, $"{b.Key}/{index}", at, rotation, c);
+            index++;
+        }
+        c.Furnished = index > 0;
+        int slot = 0;
+        foreach (var group in layouts.ItemGroups(interior))
+        {
+            var (at, rotation) = BuildingLayouts.Place(resolved.Position, b.Rotation, group);
+            c.ItemSlots.Add(new TownItemSlot($"{b.Key}/item{slot++}", group.Building.StringId, at, rotation, group.Floor));
+        }
+        if (seats is null || c.Tables.Count == 0) return;
+        foreach (var (s, flags) in seats)
+            spots[s] = spots[s] with
+            {
+                Yaw = SeatYaw(spots[s].Position, spots[s].Yaw, flags, c.Tables),
+                FaithfulYaw = SeatYaw(spots[s].Position, spots[s].Yaw, flags, c.Tables, faithful: true),
+            };
+    }
+
+    /// <summary>A cage, a lockable object or a container with an inventory of the interior layout (<see cref="TownFixture"/>); nothing for anything else.</summary>
+    static void AddFixture(GameDatabase db, Dictionary<string, GameRecord?> functions, LayoutItem item, string id, Vector3 at, Quaternion rotation, Contents c)
+    {
+        var itemFn = FunctionOf(db, item.Building, functions)?.GetInt("function");
+        if (itemFn != CageFunction && !item.Building.GetBool("has lock") && !item.Building.GetBool("has inventory")) return;
+        var (storageWidth, storageHeight) = item.Building.GetBool("has inventory") ? MachineData.StorageGrid(db, item.Building) : (0, 0);
+        c.Fixtures.Add(new TownFixture(id, item.Building.StringId, itemFn == CageFunction, at, YawOf(rotation))
+        {
+            Function = itemFn ?? -1,
+            StorageWidth = storageWidth,
+            StorageHeight = storageHeight,
+        });
+    }
+
+    /// <summary>Standing alone in the town, a chair, throne or dummy is a piece of furniture itself.</summary>
+    static void AddAlone(GameDatabase db, ResolvedBuilding resolved, GameRecord? functionality, Contents c)
+    {
+        if (functionality is not null && FurnitureOf(db, resolved.Record, functionality, resolved.Position, YawOf(resolved.Placement.Rotation)) is { } alone)
+            c.Furniture.Add(alone);
+    }
+
+    /// <summary>
+    /// A seat-like piece for sitting around (275, <see cref="TownBuilding.Furniture"/>) from a functionality: BF_CHAIR and BF_THRONE are sat on (its <c>animation</c> and <c>hunger rate</c>), BF_TRAINING
+    /// is stood at (and keeps its BUILDING, the dummy's stat and cap), and an interior piece of function MINE, RESEARCH, REFINERY or CRAFTING is a <see cref="HomeSpotKind.Workstation"/>; null for any other function.
+    /// </summary>
+    static HomeSpot? FurnitureOf(GameDatabase db, GameRecord building, GameRecord function, Vector3 at, float yaw, bool inside = false)
+    {
+        var kind = function.GetInt("function") switch { ChairFunction => HomeSpotKind.Chair, ThroneFunction => HomeSpotKind.ThroneSeat, TrainingFunction => HomeSpotKind.Training,
+            MineFunction or ResearchFunction or RefineryFunction or CraftingFunction when inside => HomeSpotKind.Workstation, _ => (HomeSpotKind?)null };
+        if (kind is not { } k) return null;
+        return new HomeSpot(k, at, yaw)
+        {
+            Record = building.StringId,
+            SitClip = k is HomeSpotKind.Training or HomeSpotKind.Workstation ? null : function.GetReferences("animation").Select(r => db.Find(r.TargetStringId)?.Name).FirstOrDefault(n => n is not null),
+            HungerRate = function.GetFloat("hunger rate", 1),
+        };
     }
 
     /// <summary>
@@ -313,12 +443,16 @@ public static class TownBuildings
         state is not null && state.GetInt("mountedTYPE") == (int)FcsRecordType.BUILDING && state.Ints.ContainsKey("mountedI") &&
         instances.TryGetValue((state.GetInt("mountedC"), state.GetInt("mountedI")), out string? instance) ? instance : null;
 
-    /// <summary>The kind of a node: by its <c>node type</c> (0 shopkeeper, 2 guard post), else by its record's name.</summary>
+    /// <summary>
+    /// The kind of a node from its <c>node type</c> alone (<c>FUN_14038c2f0</c>): 0 shopkeeper, 1 general, 2 guard post, whatever the name. Types 3 (turret), 4 (use) and 5 (light) are never
+    /// general: the record's name only gives the engine's bar and throne stand-ins, else <see cref="HomeSpotKind.Other"/>.
+    /// </summary>
     public static HomeSpotKind NodeKind(GameRecord node) => node.GetInt("node type") switch
     {
         0 => HomeSpotKind.Shopkeeper,
+        1 => HomeSpotKind.General,
         2 => HomeSpotKind.Guard,
-        _ => NodeKind(node.Name),
+        _ => NodeKind(node.Name) is var named && named is HomeSpotKind.Bar or HomeSpotKind.Throne ? named : HomeSpotKind.Other,
     };
 
     /// <summary>The layout names a building record can take (case ignored), cached by record and side; empty without layouts.</summary>
@@ -370,17 +504,28 @@ public static class TownBuildings
     }
 
     /// <summary>
-    /// The way a seat is sat facing (docs/game/ai-tasks.md "Chairs"): by its functionality's <c>flags</c>, 0 its own facing (<paramref name="seat"/>'s yaw), 1 towards
-    /// the nearest of <paramref name="faced"/> (the building's tables, corpse disposals and refineries), 2 its own facing or the opposite one, whichever has that one in front.
+    /// The way a seat is sat facing (docs/game/ai-tasks.md "Chairs"): by its functionality's <c>flags</c>, 0 its own <paramref name="yaw"/>, 1 towards
+    /// the nearest of <paramref name="faced"/> (the building's tables, corpse disposals and refineries), 2 its own facing when that one is in front, else the opposite one. <paramref name="faithful"/>: behind it, as the game does, the absolute look point negated (generally towards the world origin).
     /// </summary>
-    static float SeatYaw(HomeSpot seat, int flags, List<Vector3> faced)
+    public static float SeatYaw(Vector3 position, float yaw, int flags, IEnumerable<Vector3> faced, bool faithful = false)
     {
-        if (flags is not (1 or 2)) return seat.Yaw;
-        var nearest = faced.MinBy(p => Vector3.DistanceSquared(p, seat.Position));
-        var to = new Vector2(nearest.X - seat.Position.X, nearest.Z - seat.Position.Z);
-        if (to.LengthSquared() < 1e-6f) return seat.Yaw;
+        if (flags is not (1 or 2)) return yaw;
+        Vector3 nearest = position;
+        float gap = float.MaxValue;
+        foreach (var p in faced)
+        {
+            float d = Vector3.DistanceSquared(p, position);
+            if (d < gap) (nearest, gap) = (p, d);
+        }
+        var to = new Vector2(nearest.X - position.X, nearest.Z - position.Z);
+        if (to.LengthSquared() < 1e-6f) return yaw;
         if (flags == 1) return MathF.Atan2(to.X, to.Y);
-        return Vector2.Dot(new Vector2(MathF.Sin(seat.Yaw), MathF.Cos(seat.Yaw)), to) >= 0 ? seat.Yaw : MathF.IEEERemainder(seat.Yaw + MathF.PI, MathF.Tau);
+        var forward = new Vector3(MathF.Sin(yaw), 0, MathF.Cos(yaw));
+        if (Vector2.Dot(new Vector2(forward.X, forward.Z), to) >= 0) return yaw;
+        if (!faithful) return MathF.IEEERemainder(yaw + MathF.PI, MathF.Tau);
+        // The game negates the world-space look point, not the forward vector (docs/game/ai-tasks.md "Seat facing").
+        var reflected = -(position + forward) - position;
+        return MathF.Atan2(reflected.X, reflected.Z);
     }
 
     /// <summary>The simulation's yaw (0 along +Z, turning towards +X) of a rotation.</summary>

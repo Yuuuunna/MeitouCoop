@@ -97,6 +97,22 @@ public sealed class Inventory(int width, int height)
     }
 
     /// <summary>
+    /// Whether one unit of <paramref name="item"/> would find a place in <see cref="Add"/> (a dry run, nothing changes): a stack of it in the main grid or the backpack with room
+    /// left, or a free cell in either. The state <c>gotInventoryRoomForResources</c> (82, <c>FUN_14059bd80</c>: the inventory, else the worn backpack's).
+    /// </summary>
+    public bool HasRoomFor(ItemInstance item) => Room(this, "main", item) || Backpack?.Contents is { } bag && Room(bag, "backpack_content", item);
+
+    static bool Room(Inventory inv, string section, ItemInstance item)
+    {
+        int limit = inv.LimitOf(item);
+        if (limit > 1)
+            foreach (var other in inv.Items)
+                if (other.Section == section && other.Record == item.Record && other.Quality == item.Quality && other.Mark == item.Mark && other.Death == item.Death && other.Unique == item.Unique
+                    && other.Contents is null && other.Quantity < limit) return true;
+        return inv.FindCell(section, item.Width, item.Height, out _, out _);
+    }
+
+    /// <summary>
     /// The original's auto-add into one section (<c>FUN_14074c8b0</c>): tops up the stacks of <paramref name="section"/> first, then takes the first free cells row by row from the top, left to
     /// right, a full stack per cell. True when every unit found a place; what did not fit stays in <paramref name="item"/>.
     /// </summary>
@@ -112,7 +128,7 @@ public sealed class Inventory(int width, int height)
         if (limit <= 1) return false;
         foreach (var other in into.Items)
         {
-            if (ReferenceEquals(other, item) || other.Record != item.Record || other.Quality != item.Quality || other.StolenFrom != item.StolenFrom || other.Death != item.Death || other.Unique != item.Unique || other.Contents is not null
+            if (ReferenceEquals(other, item) || other.Record != item.Record || other.Quality != item.Quality || other.Mark != item.Mark || other.Death != item.Death || other.Unique != item.Unique || other.Contents is not null
                 || (section is null ? other.Section is not ("main" or "backpack_content") : other.Section != section)) continue;
             var (kept, coming) = (other.Buyback, item.Buyback);
             if (kept is null ? coming is not null && !dropReceipt : coming is null || !kept.Joins(coming)) continue;

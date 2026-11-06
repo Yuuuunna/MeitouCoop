@@ -13,12 +13,15 @@ namespace Meitou.Data.World;
 public sealed class FoliageWorld : IDisposable
 {
     readonly GameInstall install;
-    readonly FoliageLayoutCache? cache;
+    FoliageLayoutCache? cache;
+    readonly GameDatabase database;
+    readonly WorldLevelData source;
     // Opened on the first zone that is actually placed: a zone read from the layout cache needs none of them.
     TerrainHeightmap? map;
     BlendInfoFile? blend;
     FoliageBiomeMap? biomes;
     readonly List<FoliageTown> towns;
+    public System.Collections.Frozen.FrozenSet<(int X, int Z)> Ownership { get; private set; }
     readonly Dictionary<(int, int), byte[]> tiles = [];
     readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), Lazy<byte[]>>? sharedTiles;
 
@@ -27,10 +30,24 @@ public sealed class FoliageWorld : IDisposable
     {
         this.sharedTiles = sharedTiles;
         this.install = install;
-        var ownership = (ownedTowns ?? []).ToFrozenSet();
+        database = db; source = world;
+        var ownership = (ownedTowns ?? world.FoliageOwnership).ToFrozenSet();
+        Ownership = ownership;
         towns = ReadTowns(db, world, ownership);
         this.cache = cache is not null && cache.MatchesOwnership(ownership) ? cache : null;
         Catalog = catalog ?? FoliageCatalog.Load(db);
+    }
+
+    /// <summary>Refreshes derived placement inputs after the owning world's snapshot changes. Call while no placement worker uses this instance.</summary>
+    public bool RefreshOwnership()
+    {
+        var next = source.FoliageOwnership;
+        if (Ownership.SetEquals(next)) return false;
+        Ownership = next;
+        towns.Clear();
+        towns.AddRange(ReadTowns(database, source, next));
+        if (cache is not null && !cache.MatchesOwnership(next)) cache = null;
+        return true;
     }
 
     public FoliageCatalog Catalog { get; }
@@ -41,7 +58,7 @@ public sealed class FoliageWorld : IDisposable
     /// <summary>The towns that keep foliage away (not nest markers): X/Z and <c>no-foliage range</c>.</summary>
     public static List<FoliageTown> ReadTowns(GameDatabase db, WorldLevelData world, IEnumerable<(int X, int Z)>? ownedTowns = null)
     {
-        var ownership = (ownedTowns ?? []).ToFrozenSet();
+        var ownership = (ownedTowns ?? world.FoliageOwnership).ToFrozenSet();
         var list = new List<FoliageTown>();
         foreach (var t in world.Towns())
             if (db.Find(t.TownId) is { } record && record.GetInt("type") != BuildingTowns.NestMarkerType)

@@ -9,23 +9,25 @@ namespace Meitou.Simulation.Kidnap;
 /// <summary>
 /// The slavers' dealings with the downed and with their slaves at work (docs/game/ai-tasks.md "Prisoner fate and slave rows" and "Slave work, shout and capture"; docs/simulation.md "Captives"):
 /// <list type="bullet">
-/// <item><b>Capture</b> (167 "Capturing slave", finder <c>FUN_1408cdd00</c>, <b>Observed</b>): the nearest downed, uncarried, uncaged character in sight that is no animal, not of the capturer's
-/// faction or an ally (<b>engine reading</b> of the sensed-class masks), no slave already (slave state 1), of NPC class other than law enforcement, trader and diplomat, and not in shackles. The
+/// <item><b>Capture</b> (167 "Capturing slave", finder <c>FUN_1408cdd00</c>, <b>Observed</b>): the nearest downed (<see cref="Down"/>: a crawler out of combat mode too), uncarried, uncaged character
+/// on its sensed list (seen, so in its building or in the open; <see cref="NearestDown"/>) that is no animal, not of the capturer's faction or an ally (<b>engine reading</b> of the sensed-class masks), no slave already (slave state 1), of NPC class other than law
+/// enforcement, trader and diplomat, not maimed, and not in shackles (engine guard). The
 /// capturer walks to it, strips its weapons (the <c>hip</c> and <c>back</c> sections go to the capturer, after 0.8 s of <c>medic</c>, <c>Task_StripWeapons</c>), cuffs it
 /// (<c>Task_CuffTarget</c>: a "Restraining" bar, <c>medic</c>, event 37 to the captive when it is full; the shackles are an <b>engine choice</b>, their source in the original is <b>Unknown</b>)
 /// and carries it to a cage of its faction (goal 112 in the original, here <see cref="KidnapSystem.Carry"/>).</item>
 /// <item><b>Carry</b> (168 "Carrying slaves", finder <c>FUN_1408cdf50</c>): the same for a downed slave owned by the carrier's faction, with no strip or cuff.</item>
 /// <item><b>Shout</b> (188 "Working the slaves", finder <c>FUN_1408cd940</c>): the worker says event 38 SHOUT_AT_SLAVE_WORKER to a random slave of its squad that is alive, uncarried and uncaged
-/// (the row's TaskData event, <b>Verified</b>: the registration of 188 stores 0x26 at <c>+0x130</c>), then walks towards it until the line is over (<c>Task_TalktoPlayer</c> fires the event when
-/// it starts and walks on to the target). A worker shouts again after <see cref="CaptiveSettings.ShoutCooldownSeconds"/> (engine pacing: the original scores the goal at 0.25 per slave
-/// against the others).</item>
+/// (the row's TaskData event, <b>Verified</b>: the registration of 188 stores 0x26 at <c>+0x130</c>) and keeps with it, saying the event
+/// again every <see cref="CaptiveSettings.ShoutSeconds"/>, until it says a line: the row's B list is <c>isDialogDelivered</c>, and the
+/// original's worker stays on 188 with one slave as target for long spells (<b>Observed</b>). The next sweep then picks a slave again, with no
+/// pause between.</item>
 /// </list>
 /// A job that gives up puts its target on the capturer's give-up list for <see cref="CaptiveSettings.GiveUpHours"/> (engine: the writer of the original's list is not traced).
 /// </summary>
 public sealed partial class CaptiveSystem
 {
-    /// <summary>The downed and cuffed or carried: the AI's give-up list entries and the shouters' pacing (hashed while any exist).</summary>
-    readonly List<(CharacterId Who, double Until)> givenUp = [], shoutUntil = [];
+    /// <summary>The downed and cuffed or carried: the AI's give-up list entries (hashed while any exist).</summary>
+    readonly List<(CharacterId Who, double Until)> givenUp = [];
 
     /// <summary>The kidnapping system that carries a captive to a cage once it is cuffed (null: captives are cuffed and left).</summary>
     public KidnapSystem? Kidnap { get; set; }
@@ -56,10 +58,26 @@ public sealed partial class CaptiveSystem
     void ExpireWaits(double now)
     {
         givenUp.RemoveAll(e => e.Until <= now);
-        shoutUntil.RemoveAll(e => e.Until <= now);
     }
 
-    static bool Down(CharacterCold c) => c.Medical is { Incapacitated: true, Dead: false };
+    /// <summary>
+    /// Down for the capture and carry finders (<c>FUN_1408cdd00</c> / <c>FUN_1408cdf50</c>, <b>Verified</b>): alive, and unconscious or, out of combat mode, crawling or staying low (the
+    /// KO and CRAWLING sense tags); the dead are excluded by the finders' tag mask.
+    /// </summary>
+    static bool Down(CharacterCold c) => c.Medical is { Dead: false } m && (m.Unconscious || (m.Crawling || m.StayingLow) && !c.InCombat);
+
+    /// <summary>Maimed (<c>FUN_140644170</c>, <b>Verified</b>): a leg is a stump, or both arms are. The capture finder leaves such a character.</summary>
+    static bool Maimed(Bodies.MedicalState m)
+    {
+        int arms = 0;
+        foreach (var p in m.Parts)
+        {
+            if (p.Limb != Bodies.LimbState.Stump) continue;
+            if (p.Template.LimbSlot is 2 or 3) return true;
+            if (p.Template.LimbSlot is 0 or 1) arms++;
+        }
+        return arms >= 2;
+    }
 
     // ------------------------------------------------------------------ finders
 
@@ -67,6 +85,7 @@ public sealed partial class CaptiveSystem
     {
         public CaptiveSystem System;
         public World World;
+        public SenseBlock? Senses;
         public int Self;
         public CharacterCold Me;
         public bool Capture;
@@ -75,22 +94,49 @@ public sealed partial class CaptiveSystem
     }
 
     /// <summary>
-    /// The nearest character the capturer takes (see the class remarks): within its sight, down (alive: engine choice, the original's finder also takes the dead), uncarried and uncaged, no
-    /// animal, not already a job's or given up; for a capture not of its own side, no slave of state 1, not law enforcement, trader or diplomat, not shackled; for a carry a slave of its faction.
+    /// The nearest character the capturer takes (see the class remarks) among those on its sensed list (the finders walk it with no range limit, <b>Verified</b>; so only one it saw,
+    /// which needs the same building or the open unless either stands on top, docs/game/perception.md "Sight"): <see cref="Down"/>, uncarried and uncaged, no animal, not already a job's
+    /// or given up; for a capture not of its own side, no slave of state 1, not law enforcement, trader or diplomat, not <see cref="Maimed"/>, not shackled (an engine guard so it is
+    /// never cuffed twice); for a carry a slave of its faction that is not just staying low (the carry finder refuses posture 1). The entries its mask keeps (<see cref="ConsiderSensed"/>) come first, then whoever
+    /// within its sight the capped block lacks (<see cref="CharacterFacts.Perceives"/>); nearest by 3D distance to where it stands now.
     /// </summary>
     int NearestDown(World world, int slot, CharacterCold me, bool capture)
     {
-        var scan = new DownScan { System = this, World = world, Self = slot, Me = me, Capture = capture, Best = -1, BestD2 = float.MaxValue };
+        var scan = new DownScan { System = this, World = world, Senses = CharacterFacts.Senses(world, slot), Self = slot, Me = me, Capture = capture, Best = -1, BestD2 = float.MaxValue };
+        ConsiderSensed(ref scan);
+
         var p = world.Characters.Next[slot].Position;
         world.Grid.Query(p.X, p.Z, AggroSystem.RangeOf(me, AggroSystem.OutdoorSight), ref scan, static (int v, ref DownScan st) =>
         {
-            if (!st.System.Eligible(st.World, st.Self, st.Me, v, st.Capture)) return;
-            var a = st.World.Characters.Next[st.Self].Position;
-            var b = st.World.Characters.Next[v].Position;
-            float d2 = Vector2.DistanceSquared(new Vector2(a.X, a.Z), new Vector2(b.X, b.Z));
-            if (d2 < st.BestD2) (st.Best, st.BestD2) = (v, d2);
+            if (st.Senses?.Knows(st.World.Characters.IdOf(v)) == true || !CharacterFacts.Perceives(st.World, st.Self, v)) return;
+            Consider(ref st, v);
         });
         return scan.Best;
+    }
+
+    /// <summary>
+    /// The worker's sense entries whose character is still that slot's, less those its finder's exclude mask leaves out: for a capture ally or dead (0x11), for a carry dead or
+    /// imprisoned (0x210; its include mask 0x20 is slave state 1, which <see cref="Eligible"/> tests on the current state).
+    /// </summary>
+    static void ConsiderSensed(ref DownScan scan)
+    {
+        if (scan.Senses is not { } senses) return;
+
+        var table = scan.World.Characters;
+        var excluded = scan.Capture ? SenseTag.Ally : SenseTag.Imprisoned;
+        foreach (var e in senses.Entries)
+        {
+            if ((e.Tags & excluded) != 0 || (uint)e.Target >= (uint)table.HighWater || table.Next[e.Target].Generation != e.Generation) continue;
+            Consider(ref scan, e.Target);
+        }
+    }
+
+    static void Consider(ref DownScan st, int v)
+    {
+        if (!st.System.Eligible(st.World, st.Self, st.Me, v, st.Capture)) return;
+
+        float d2 = Vector3.DistanceSquared(st.World.Characters.Next[st.Self].Position, st.World.Characters.Next[v].Position);
+        if (d2 < st.BestD2) (st.Best, st.BestD2) = (v, d2);
     }
 
     bool Eligible(World world, int self, CharacterCold me, int v, bool capture)
@@ -100,10 +146,18 @@ public sealed partial class CaptiveSystem
         if (!c.CarriedBy.IsNone || c.InSomething != HeldState.None || c.IsImprisoned || c.Fighter is { IsAnimal: true } || c.Appearance?.Animal is not null || c.Race is null) return false;
         var id = table.IdOf(v);
         if (Busy(id) || Waiting(givenUp, id, world.GameHours) || Kidnap is { } k && k.Abductions.Any(a => a.Victim == id)) return false;
-        if (!capture) return c.SlaveState != 0 && c.SlaveOwner == me.Faction;
-        if (c.SlaveState == 1 || c.NpcClass is FundamentalType.LawEnforcement or FundamentalType.Trader or FundamentalType.Diplomat || LockSystem.WornShackles(c) is not null) return false;
+        if (!capture) return c.SlaveState != 0 && c.SlaveOwner == me.Faction && c.Medical is not { Unconscious: false, Crawling: false, StayingLow: true };
+        if (c.SlaveState == 1 || c.NpcClass is FundamentalType.LawEnforcement or FundamentalType.Trader or FundamentalType.Diplomat || Maimed(c.Medical!) || LockSystem.WornShackles(c) is not null) return false;
         return c.Faction != me.Faction && !Allied(me.Faction, c.Faction);
     }
+
+    /// <summary>
+    /// Whether a character may start 167: awake, free, with one working arm (either: the planner's 38 <c>hasOneWorkingArm</c> for 166 Restraining and 181 Stripping weapons, <b>Verified</b>, ai-tasks.md;
+    /// only the later lift, <see cref="CarrySystem.CanCarry"/>, needs the left arm) and in posture 0, which the slot-61 desire of a goal without a target reads.
+    /// </summary>
+    static bool CanCapture(CharacterCold cold) =>
+        cold is { Medical: { Incapacitated: false, Standing: true } m, Race: not null, InCombat: false, IsImprisoned: false } && cold.Carrying.IsNone && cold.CarriedBy.IsNone
+        && (m.ArmWorks(left: true) || m.ArmWorks(left: false));
 
     /// <summary>A job for goals 167 / 168 / 188, null when the member finds no target (or cannot carry one).</summary>
     CaptiveJob? TryStartSlaveWork(World world, Squad squad, int slot, CharacterCold cold, TaskType type)
@@ -116,24 +170,29 @@ public sealed partial class CaptiveSystem
         {
             case TaskType.WORK_THE_SLAVES:
             {
-                if (Waiting(shoutUntil, worker, now)) return null;
                 var slaves = new List<int>();
                 foreach (int s in SlavesOf(world, squad))
                     if (table.Cold(s) is { CarriedBy.IsNone: true, InSomething: HeldState.None } && !Waiting(givenUp, table.IdOf(s), now) && !Busy(table.IdOf(s))) slaves.Add(s);
                 if (slaves.Count == 0) return null;
                 ulong roll = Rng.Hash(world.Seed, Rng.Key(worker), RngPurpose.Slow, ShoutSalt + (ulong)world.Tick);
                 int pick = slaves[Rng.Int(roll, slaves.Count)];
-                // 0.5 to 1.5 times the cooldown, so the workers do not shout together.
-                SetWait(shoutUntil, worker, now + Settings.ShoutCooldownSeconds * (0.5 + Rng.Float(Rng.Mix(roll))) / World.SecondsPerGameHour);
                 return new CaptiveJob { Kind = CaptiveJobKind.Shout, Worker = worker, Captive = table.IdOf(pick), Cage = "", Faction = cold.Faction };
             }
             case TaskType.CAPTURE_NEW_SLAVES or TaskType.CARRY_WOUNDED_SLAVES:
             {
-                if (Kidnap is null || !CarrySystem.CanCarry(cold)) return null;
                 bool capture = type == TaskType.CAPTURE_NEW_SLAVES;
+                if (Kidnap is null || !(capture ? CanCapture(cold) : CarrySystem.CanCarry(world, cold, type))) return null;
+                // 168's desire is the rescue one (FUN_140599480): 0 on the raw Hold bit (also while sneaking) or while carrying. 167 has no Hold test.
+                if (!capture && (cold.Orders & CharacterOrders.Hold) != 0) return null;
                 int v = NearestDown(world, slot, cold, capture);
+                // Row 170 (the lift 168 plans through) wants !22: a victim that needs first aid is treated first (row 25, with a kit and an arm), else the plan fails and nothing is lifted.
+                if (!capture && v >= 0 && table.Cold(v) is { } hurt && FirstAid.FirstAidSystem.NeedsFirstAid(world, hurt))
+                {
+                    FirstAid.FirstAidSystem.TreatBeforeLift(world, slot, v);
+                    return null;
+                }
                 // No cage to take it to: not started, so no one is cuffed and left (engine; the carry, goal 112, needs a free cage as the arrest goal does).
-                return v < 0 || !Kidnap.HasCage(world, table.Next[v].Position, cold.Faction) ? null : new CaptiveJob
+                return v < 0 || !Kidnap.HasCage(world, table.Next[v].Position, cold) ? null : new CaptiveJob
                 {
                     Kind = capture ? CaptiveJobKind.Capture : CaptiveJobKind.Carry, Worker = worker, Captive = table.IdOf(v), Cage = "", Faction = cold.Faction,
                 };
@@ -146,26 +205,65 @@ public sealed partial class CaptiveSystem
 
     // ------------------------------------------------------------------ one job
 
+    /// <summary>
+    /// One tick of a Shout job (188, <c>Task_TalktoPlayer</c>): event 38 as it starts, as the task fires it, and again every
+    /// <see cref="CaptiveSettings.ShoutSeconds"/> while the worker is quiet (engine choice: the original's re-plan rate is not decoded). The job
+    /// ends once the worker speaks after an event went out (engine choice, see <c>docs/simulation.md</c>: the original's B list
+    /// <c>isDialogDelivered</c> is true without a Dialogue object, else the event delivered in its town), so a line still showing from the last
+    /// job neither ends this one nor is talked over. A worker with no line never ends it: <see cref="CaptiveSettings.GiveUpSeconds"/> does.
+    /// </summary>
+    bool StepShout(World world, CaptiveJob j, int w, Vector2 to)
+    {
+        bool speaking = (talk ??= world.SystemOf<Dialogue.DialogueSystem>())?.Engages(j.Worker) == true;
+        if (j.Blows > 0 && speaking) return End(world, j, CaptiveEventKind.Shouted);
+
+        if (!speaking && (j.Blows == 0 || j.Time >= Settings.ShoutSeconds))
+        {
+            j.Blows++;
+            j.Time = 0;
+            world.Defer(new Dialogue.DialogueEvent(j.Worker, j.Captive, ShoutAtSlaveWorker) { Tick = world.Tick + 1 });
+        }
+
+        FollowSlave(world, j, w, to);
+        return true;
+    }
+
+    /// <summary>The worker walks to its slave and stands within <see cref="CaptiveSettings.ShoutReach"/> of it, walking on when the slave moves off.</summary>
+    void FollowSlave(World world, CaptiveJob j, int w, Vector2 to)
+    {
+        var table = world.Characters;
+        var here = new Vector2(table.Next[w].Position.X, table.Next[w].Position.Z);
+        bool walking = table.Next[w].Task == (byte)CharacterTask.GoTo;
+
+        if (Vector2.Distance(here, to) <= Settings.ShoutReach)
+        {
+            if (walking) TaskStart.Stand(table, w);
+            return;
+        }
+
+        if (!walking || Vector2.Distance(table.Next[w].Goal, to) > 5)
+        {
+            TaskStart.Walk(world, w, to, SpeedMode.Walk, RowOf(j.Kind), TaskSource.Goal);
+        }
+    }
+
+    // The dialogue a Shout job asks whether its worker said a line (null until first asked, or without one).
+    Dialogue.DialogueSystem? talk;
+
     bool StepSlaveWork(World world, CaptiveJob j, int w, CharacterCold wc)
     {
         var table = world.Characters;
         float dt = world.TickSeconds;
-        if (!table.TryResolveNext(j.Captive, out int c) || table.Cold(c) is not { } cc || cc.Medical is not { Dead: false } || !cc.CarriedBy.IsNone || cc.IsImprisoned)
+        if (!table.TryResolveNext(j.Captive, out int c) || table.Cold(c) is not { } cc || cc.Medical is not { Dead: false })
             return End(world, j, CaptiveEventKind.GaveUp);
-        var to = new Vector2(table.Next[c].Position.X, table.Next[c].Position.Z);
-        if (j.Kind == CaptiveJobKind.Shout)
+        if (!cc.CarriedBy.IsNone || cc.IsImprisoned)
         {
-            if (j.Blows == 0)
-            {
-                // The task fires its event as it starts (Task_TalktoPlayer slot 1) and walks to the target while the line lasts.
-                j.Blows = 1;
-                world.Defer(new Dialogue.DialogueEvent(j.Worker, j.Captive, ShoutAtSlaveWorker) { Tick = world.Tick + 1 });
-            }
-            var here = new Vector2(table.Next[w].Position.X, table.Next[w].Position.Z);
-            if (Vector2.Distance(here, to) <= Settings.ShoutReach || j.Age > Settings.ShoutSeconds) return End(world, j, CaptiveEventKind.Shouted);
-            if (table.Next[w].Task != (byte)CharacterTask.GoTo || Vector2.Distance(table.Next[w].Goal, to) > 5) MovementSystem.GoTo(table, w, to, SpeedMode.Walk);
-            return true;
+            // A capture whose target someone else took (a guard carrying it to jail): left alone for a while, so the next sweep does not send the worker after it again at once (engine choice).
+            if (j.Kind == CaptiveJobKind.Capture) SetWait(givenUp, j.Captive, world.GameHours + Settings.GiveUpHours);
+            return End(world, j, CaptiveEventKind.GaveUp);
         }
+        var to = new Vector2(table.Next[c].Position.X, table.Next[c].Position.Z);
+        if (j.Kind == CaptiveJobKind.Shout) return StepShout(world, j, w, to);
         // It got up: a caged one is beaten down first (196 Beat prisoner, Task_KillPrisoner: B list 78 imprisoned, 5 weapon drawn; effect 7 target down) by an armed worker;
         // any other is given up.
         if (!Down(cc) && j.Kind == CaptiveJobKind.Capture && (!cc.IsImprisoned || combat is null || wc.Fighter is not { Unarmed: false })) return End(world, j, CaptiveEventKind.GaveUp);
@@ -182,10 +280,10 @@ public sealed partial class CaptiveSystem
                     SetWait(givenUp, j.Captive, world.GameHours + Settings.GiveUpHours);
                     return End(world, j, CaptiveEventKind.GaveUp);
                 }
-                MovementSystem.GoTo(table, w, to, SpeedMode.Walk);
+                TaskStart.Walk(world, w, to, SpeedMode.Walk, RowOf(j.Kind), TaskSource.Goal);
                 return true;
             }
-            MovementSystem.Stop(table, w);
+            TaskStart.Stand(table, w);
             if (j.Kind == CaptiveJobKind.Carry) return Hand(world, j, w);
             j.Phase = CaptivePhase.Work;
             j.Time = 0;
@@ -207,11 +305,12 @@ public sealed partial class CaptiveSystem
         if (j.Blows == 0)
         {
             if (j.Time < Settings.StripSeconds) return true;
-            Strip(world, c, wc, cc);
+            StripWeapons(world, c, wc, cc);
             j.Blows = 1;
             j.Time = 0;
             return true;
         }
+        EnslavingCrime(world, w, c, cc);
         if (j.Time < Settings.CuffSeconds) return true;
         Cuff(world, c, cc);
         world.Defer(new Dialogue.DialogueEvent(j.Worker, j.Captive, RecapturedSlave) { Tick = world.Tick + 1 });   // FUN_140684990(dialogue, target, 0x25) when the bar is full
@@ -230,21 +329,36 @@ public sealed partial class CaptiveSystem
 
     /// <summary>
     /// <c>Task_StripWeapons</c> once its 0.8 s are up: the items of the target's <c>hip</c> and <c>back</c> sections go to the stripper's inventory (the ground when it is full; engine choice).
-    /// The original then sets the stripper's squad's short-term tag 6 on the target (a tag nothing reads, <b>Unknown</b> name).
+    /// After each item moved the original sets the stripper's squad's short-term tag 6 on the target (<c>FUN_14034e7b0</c> calling <c>FUN_1406744a0</c>, <b>Verified</b>): <see cref="Dialogue.MemoryTag.Looted"/>, which the NPC looting finder skips.
     /// </summary>
-    void Strip(World world, int c, CharacterCold wc, CharacterCold cc)
+    public void StripWeapons(World world, int c, CharacterCold wc, CharacterCold cc)
     {
         if (cc.Inventory is not { } inv) return;
         var at = world.Characters.Next[c].Position;
+        bool moved = false;
         foreach (var item in inv.Items.ToList())
         {
             if (item.LockedOn || !IsWeaponSection(item.Section)) continue;
             inv.Items.Remove(item);
             item.Section = "main";
             if (wc.Inventory is not { } into || !into.Add(item)) world.GroundItems.Drop(item, at, 0);
+            moved = true;
         }
+        if (moved && wc.SquadId >= 0) world.SystemOf<Dialogue.DialogueSystem>()?.Memory.Flag(world, wc.SquadId, world.Characters.IdOf(c), Dialogue.MemoryTag.Looted);
         cc.DrawnWeapon = WeaponKinds.None;
         assembly.RefreshEquipment(cc);
+    }
+
+    /// <summary>
+    /// Each update of <c>Task_CuffTarget</c> (<c>FUN_14034af20</c>, <b>Verified</b>): a captive in slave state 0 with no bounty for the null faction, whose squad's faction is the player's or
+    /// anti-slavery, makes the cuffer the culprit of a pending Enslaving crime against the captive's faction.
+    /// </summary>
+    void EnslavingCrime(World world, int w, int c, CharacterCold cc)
+    {
+        if (cc.SlaveState != 0 || cc.Bounties?.AmountFor(-1) > 0 || cc.SquadId < 0 || world.Squads.Find(cc.SquadId) is not { } squad) return;
+
+        bool enslaves = squad.Faction == world.Player.Faction || (uint)squad.Faction < (uint)data.Factions.Count && data.Factions[squad.Faction].AntiSlavery;
+        if (enslaves) world.SystemOf<Crime.CrimeSystem>()?.SetPending(world, w, Crime.CrimeCode.Enslaving, cc.Faction, world.Characters.IdOf(c), Crime.CrimeSystem.MinTimer);
     }
 
     /// <summary>The cuffing's result: locked shackles worn (engine choice, see the class remarks).</summary>
@@ -268,7 +382,5 @@ public sealed partial class CaptiveSystem
     {
         hasher.Add(givenUp.Count);
         foreach (var (who, until) in givenUp) { hasher.Add(who); hasher.Add(until); }
-        hasher.Add(shoutUntil.Count);
-        foreach (var (who, until) in shoutUntil) { hasher.Add(who); hasher.Add(until); }
     }
 }

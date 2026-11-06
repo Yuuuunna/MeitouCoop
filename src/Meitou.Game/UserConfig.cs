@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
@@ -43,8 +43,6 @@ sealed class UserConfig
     /// <summary>Frame generation (FSR 3): the swapchain goes through AMD's frame-interpolation layer (Windows, Proton and Linux, needs <c>amd_fidelityfx_vk.dll</c> / <c>libamd_fidelityfx_vk.so</c>; read at start-up), which
     /// presents a generated frame between each two rendered ones (<c>FrameGeneration</c>). Off by default.</summary>
     public bool FrameGeneration { get; set; }
-    /// <summary>The green ring under each selected character (Advanced settings; default on).</summary>
-    public bool SelectionRings { get; set; } = true;
     /// <summary>The Metal display default: MetalFX balanced (temporal at 0.50); Native is used when MetalFX is unavailable.</summary>
     public MetalUpscalerMode MetalUpscaler { get; set; } = MetalUpscalerMode.Temporal;
     /// <summary>The Metal render scale; the default 0.50 is the balanced profile. The Metal settings panel edits it live.</summary>
@@ -54,6 +52,12 @@ sealed class UserConfig
     public SpeedUnit SpeedUnit { get; set; } = SpeedUnit.Mph;
     /// <summary>The damage floaters (Interface settings): the original's <c>floaters</c> option, Simple by default; Meitou also floats a green "+N" over a player character that heals.</summary>
     public FloaterMode Floaters { get; set; } = FloaterMode.Simple;
+    /// <summary>The original's <c>censorship</c> option (Interface settings, off by default): five words swapped in the displayed dialogue.</summary>
+    public bool Censorship { get; set; }
+    /// <summary>The original's <c>Show names</c> option (Interface settings, on by default): the name over the player's characters; off, the tag keeps only its stealth and light icons.</summary>
+    public bool ShowNames { get; set; } = true;
+    /// <summary>The FEEDBACK button at the top right during play (Interface settings, default on); off, it shows only on the title and with the game menu open.</summary>
+    public bool FeedbackButton { get; set; } = true;
     /// <summary>The original's splash at startup in the Faithful UI (Advanced settings: the switch's Faithful side), off by default; off, the menu shows as soon as the game has loaded.</summary>
     public bool SplashScreens { get; set; }
     public bool MainMenuTransitions { get; set; } = true;
@@ -80,6 +84,9 @@ sealed class UserConfig
     /// <summary>How many enemies may swing at one target at once (Advanced settings, 1-5; plus the race's extra slots): Faithful 1 (the game's CONSTANTS, the default), Meitou 3.</summary>
     public int AttackSlots { get; set; } = FaithfulAttackSlots;
     public const int FaithfulAttackSlots = 1, MeitouAttackSlots = 3;
+
+    /// <summary>The setting for the combat system: null (the loaded CONSTANTS <c>max num attack slots</c>, 1 in the base game) at the Faithful value, else the chosen 1 to 5.</summary>
+    public int? AttackSlotsOption => AttackSlots == FaithfulAttackSlots ? null : Math.Clamp(AttackSlots, 1, 5);
     /// <summary>A late but successfully rolled dodge or block still counts (Advanced settings; off by default and in both presets, so fights feel as the game's): a balance change for fights against several enemies.</summary>
     public bool LateDefences { get; set; } = false;
     /// <summary>The off-screen switches (Advanced settings; Faithful off, Meitou on; docs/simulation.md "Off-screen tier"): roaming squads keep their characters off screen,
@@ -97,6 +104,12 @@ sealed class UserConfig
     public bool UnloadedProduction { get; set; } = true;
     /// <summary>Doors a walker opened close behind it after 5 s (Advanced settings; Faithful off: they stay open, as in the game; docs/simulation.md "Cages, beds and locks").</summary>
     public bool DoorsCloseBehind { get; set; } = true;
+    /// <summary>A blow that destroys the head cuts it off, under the limbs' rule (Advanced settings; Faithful off: the game never does; docs/game/character-stats.md "Decapitation").</summary>
+    public bool Decapitation { get; set; } = true;
+    /// <summary>A new ragdoll keeps the character's motion and the downing blow's push, its joints have soft limits and a relaxed pull, and a cut-off head is thrown with it (Advanced settings; Faithful off: the game starts a ragdoll at rest; docs/game/ragdolls.md "Initial state").</summary>
+    public bool AdvancedRagdolls { get; set; } = true;
+    /// <summary>A loaded or imported save starts paused (Advanced settings, a plain on/off switch outside the Faithful / Meitou sides; off by default: it runs at once, as in the game). <c>--load</c> is not paused.</summary>
+    public bool PauseOnLoad { get; set; }
     /// <summary>Fixes of the game's own bugs (Fixes settings; on: fixed, off: as the game does; docs/audio.md): doors and gates sound when they break,
     /// a biome entered before its bank loads gets the right day or night ambience, and the wind bed stops when the wind does.</summary>
     public bool FixDoorBreak { get; set; } = true;
@@ -108,6 +121,8 @@ sealed class UserConfig
     public bool FixGunnerFacing { get; set; } = true;
     /// <summary>"ma badpunch"'s attack distance -4 reads as 4 (Fixes settings; off: as written, as the game does).</summary>
     public bool FixPunchReach { get; set; } = true;
+    /// <summary>A bench with its table behind is sat facing away from it (Fixes settings; off: towards the world origin, as the game does; docs/game/ai-tasks.md "Town goals").</summary>
+    public bool FixBenchFacing { get; set; } = true;
     /// <summary>Other buildings' parts (the Hub's wall in the Shinobi Thieves tower) are cut inside a building in the interior view (Fixes settings; off: drawn, as the game does; docs/render-interior-cut.md).</summary>
     public bool FixPartsInBuildings { get; set; } = true;
     /// <summary>The strategy camera's turn and tilt rate in degrees per second per unit of input (Controls settings): the original's
@@ -119,13 +134,50 @@ sealed class UserConfig
     public bool? EdgeScroll { get; set; }
     /// <summary>The in-game tutorials (the original's <c>tutorials</c>, default on; Gameplay settings); null until first used, then taken from the install's settings.cfg.</summary>
     public bool? Tutorials { get; set; }
+    /// <summary>The original's `invert X` (default off) and `invert Y` (default on); Controls settings. Null until first used, then taken from the install's settings.cfg.</summary>
+    public bool? InvertX { get; set; }
+    public bool? InvertY { get; set; }
+    /// <summary>The original's `swap mouse buttons` (default off; Controls settings): the left and right buttons trade places in the GUI and the game view. Null until first used, then taken from the install's settings.cfg.</summary>
+    public bool? SwapMouseButtons { get; set; }
+    /// <summary>The original's `font size2` (slider -10 … 32, default 3; Interface settings): points added to every GUI font's default height (<see cref="Meitou.Data.Ui.KenshiFontSize"/>). Null until first used, then taken from the install's settings.cfg.</summary>
+    public float? FontSize { get; set; }
+    /// <summary>The original's `camera speed` (150 … 1000, default 500) and `camera zoom` (10 … 200, default 125); Controls settings. Null until first used, then taken from the install's settings.cfg.</summary>
+    public float? CameraMoveSpeed { get; set; }
+    public float? CameraZoomSpeed { get; set; }
+    public const float MinFontSize = -10, MaxFontSize = 32;
+    public const float MinCameraMoveSpeed = 150, MaxCameraMoveSpeed = 1000, MinCameraZoomSpeed = 10, MaxCameraZoomSpeed = 200;
 
+    /// <summary>Fills the camera options still unset from the install's settings.cfg (the original's missing-key defaults).</summary>
+    public void SeedCamera(Meitou.Content.GameInstall install)
+    {
+        InvertX ??= Meitou.Audio.AudioSystem.Setting(install, "invert X", 0) != 0;
+        InvertY ??= Meitou.Audio.AudioSystem.Setting(install, "invert Y", 1) != 0;
+        SwapMouseButtons ??= Meitou.Audio.AudioSystem.Setting(install, "swap mouse buttons", 0) != 0;
+        FontSize ??= Meitou.Audio.AudioSystem.Setting(install, "font size2", Meitou.Data.Ui.KenshiFontSize.DefaultSetting, MinFontSize, MaxFontSize);
+        CameraMoveSpeed ??= Meitou.Audio.AudioSystem.Setting(install, "camera speed", Meitou.Data.World.KenshiCamera.DefaultMoveSpeed, MinCameraMoveSpeed, MaxCameraMoveSpeed);
+        CameraZoomSpeed ??= Meitou.Audio.AudioSystem.Setting(install, "camera zoom", Meitou.Data.World.KenshiCamera.DefaultZoomSpeed, MinCameraZoomSpeed, MaxCameraZoomSpeed);
+    }
+
+    /// <summary>Hands the camera options to the strategy camera's settings (unset ones keep the camera's own defaults, which are the original's).</summary>
+    public void ApplyCamera(Meitou.Engine.Cameras.CameraSettings camera)
+    {
+        camera.InvertX = InvertX ?? camera.InvertX;
+        camera.InvertY = InvertY ?? camera.InvertY;
+        camera.MoveSpeed = CameraMoveSpeed ?? camera.MoveSpeed;
+        camera.ZoomSpeed = CameraZoomSpeed ?? camera.ZoomSpeed;
+    }
+    /// <summary>The green marker where a move order was given (the original's `Movement marker`, default on; Interface settings); null until first used, then taken from the install's settings.cfg.</summary>
+    public bool? MovementMarker { get; set; }
+    /// <summary>The marker on the camera's pivot while it is turned (the original's `Rotation marker`, default on; Interface settings); null until first used, then taken from the install's settings.cfg.</summary>
+    public bool? RotationMarker { get; set; }
     /// <summary>Sounds are heard from the first selected character instead of the camera (Audio settings; off, the default: the camera, as the game does).</summary>
     public bool HearFromSelected { get; set; }
     /// <summary>The Windows cursor instead of the game's drawn pointer (the original's <c>hardware_mouse</c>, default off; Interface settings).</summary>
     public bool HardwareMouse { get; set; }
     /// <summary>Outline and tint the character under the cursor (Advanced settings; Meitou only, the game has none).</summary>
     public bool HoverOutline { get; set; } = true;
+    /// <summary>Outline and tint the selected building the same way, except while its interior is shown (Advanced settings; Meitou only).</summary>
+    public bool BuildingOutline { get; set; } = true;
     /// <summary>A character that takes a fatal hit explodes, covers everything around in blood and sends bones flying (Advanced settings; an easter egg, off by default, not part of the all Faithful / all Meitou switches; docs/game/luckyren.md).</summary>
     public bool LuckyrenMode { get; set; }
     /// <summary>How many items dropped in play stay on the ground before the oldest goes (Advanced settings; <see cref="Meitou.Simulation.Items.GroundItems.Limit"/>).</summary>
@@ -140,6 +192,14 @@ sealed class UserConfig
     public int? SimThreads { get; set; }
     /// <summary>The autosave slot written last (the original's <c>settings.cfg</c> <c>autosaveindex</c>); the next autosave takes the one after.</summary>
     public int AutosaveIndex { get; set; }
+    /// <summary>The code mods (by mod name) the player allowed to run their own code (docs/modding.md "Trust"); the launcher asks and adds them. Others load as data only.</summary>
+    public List<string> TrustedCodeMods { get; set; } = [];
+    /// <summary>
+    /// The code mods' settings the player changed (docs/modding.md "Settings"): mod id to setting key to the value as text; a default is not kept.
+    /// </summary>
+    public Dictionary<string, Dictionary<string, string>> ModSettings { get; set; } = [];
+    /// <summary>The feedback form's ticks and Discord name, as last used; null until the form first opens.</summary>
+    public FeedbackSettings? Feedback { get; set; }
     public Dictionary<string, float> Graphics { get; set; } = [];
     /// <summary>The Graphics quality preset (Low, Medium, High, Ultra, Custom): the game saves the one its settings sit at; one the launcher chose is applied at start
     /// unless the settings already sit at it (<c>SettingsMenu.ApplySavedPreset</c>). Null: nothing saved yet.</summary>
@@ -312,6 +372,9 @@ sealed class UserConfig
         MetalRenderScale = Math.Clamp(MetalRenderScale, 0.33f, 1f);
         if (!Enum.IsDefined(MetalUpscaler)) MetalUpscaler = MetalUpscalerMode.Temporal;
         if (MetalUpscaler is MetalUpscalerMode.Temporal or MetalUpscalerMode.Spatial) MetalRenderScale = Math.Clamp(MetalRenderScale, 0.4f, 1f);
+        ModSettings ??= [];
+        foreach (var (mod, saved) in ModSettings.ToList())
+            if (saved is null) ModSettings.Remove(mod);
     }
 
     public void Save()

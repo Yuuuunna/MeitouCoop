@@ -14,6 +14,13 @@ Wanderer as the first offered start, persistent random world seed, pause without
 **Observed** (executable source): the initial ruleset offers every loaded `NEW_GAME_STARTOFF`, including mods;
 `DefaultStart` controls ordering, while `CharacterLimit` and server validation still constrain creation.
 
+**Observed** (source review): `ServerConfiguration.Gameplay` owns global `GameplayRules`, applied to every fresh or restored world
+before mod save-data restoration. Clients receive the effective rules as read-only projection; only administrator configuration
+changes them. Compatibility hashes `gameplay/*` values captured from the active world after checkpoint restoration.
+`Gameplay.AutoSaveSeconds` is 0 (periodic saving disabled) or 10..86400; manual and shutdown saves still run. Legacy
+`SaveIntervalSeconds`, when present, wins during loading, is normalized into `Gameplay.AutoSaveSeconds`, and is omitted from new
+configuration output. Gameplay values use the same bounded finite ranges as their game settings; invalid values reject configuration.
+
 `--create-account NAME [--output FILE]` issues a random credential and writes a private connection JSON,
 then exits without loading a world; tokens never enter logs. Do not include these files in release archives.
 Set `BindAddress` and `AdvertisedHost` for LAN/remote access before issuing profiles. `--help` needs no assets.

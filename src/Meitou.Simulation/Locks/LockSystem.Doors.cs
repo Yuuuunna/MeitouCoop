@@ -1,4 +1,5 @@
 using System.Numerics;
+using Meitou.Data.Gameplay.Ai;
 
 namespace Meitou.Simulation.Locks;
 
@@ -15,6 +16,20 @@ public sealed record ToggleDoorLocksOrder(string Building) : FactionCommand { pu
 /// </summary>
 public sealed record DoorOrder(IReadOnlyList<CharacterId> Characters, string Door, bool PickLock = false) : FixtureCommand;
 
+/// <summary>
+/// The context menu's Lock (77) or Unlock (140) on one of the player's doors, or Lock (77) / Unlock (78) on one of its cages (<c>FUN_1407a6bc0</c>): the nearest of the characters (the selection
+/// when empty) walks to it and works the lock for <see cref="LockSystem.LockWorkSeconds"/> (Task_LockDoor / Task_UnlockDoor, whose update closes the target's door only when it has one,
+/// <c>FUN_140337670</c>); not the panel's instant toggle (<see cref="ToggleDoorLocksOrder"/>). A cage's unlock runs row 140, whose conditions are 78's.
+/// </summary>
+public sealed record DoorLockOrder(IReadOnlyList<CharacterId> Characters, string Door, bool Lock) : FixtureCommand;
+
+/// <summary>A character's running <see cref="DoorLockOrder"/>: the door, whether it is being locked, and the game seconds worked at it.</summary>
+public sealed class DoorLockJob(string door, bool locking)
+{
+    public string Door { get; } = door;
+    public bool Lock { get; } = locking;
+    public float Work { get; set; }
+}
 /// <summary>
 /// The doors (docs/simulation.md "Cages, beds and locks"; the original's rules in docs/game/locks.md "Doors"): every tick the opening and closing leaves move (<see cref="FixtureRegistry.StepDoors"/>);
 /// every <see cref="WalkerEveryTicks"/> ticks a character whose path runs through a closed door opens it, or stops at a locked one ("It's locked."); the player's finished buildings
@@ -90,7 +105,7 @@ public sealed partial class LockSystem
     }
 
     /// <summary>Where a character works a fixture from, and how near counts: a door's side nearer <paramref name="from"/>, out from the leaf; anything else its own place.</summary>
-    static (Vector2 At, float Reach) WorkSpot(World world, Fixture f, Vector2 from)
+    internal static (Vector2 At, float Reach) WorkSpot(World world, Fixture f, Vector2 from)
     {
         if (f.Kind != FixtureKind.Door || world.Fixtures.DoorSpotOf(f) is not { } spot) return (Flat(f.Position), f.UseRange + Reach);
         var outside = StandSpot(f, spot);
@@ -105,27 +120,87 @@ public sealed partial class LockSystem
         var table = world.Characters;
         int best = -1;
         float bestDistance = float.MaxValue;
+        // Another faction's locked door is picked (76) with Alt, else only walked to; any other is opened (72) or, open, closed (73).
+        bool barred = door.Lock is { EffectivelyLocked: true } && door.Motion == DoorMotion.Closed && !MayManageDoor(world, order, door.Owner);
+        var row = barred && order.PickLock ? TaskType.PICK_LOCK : door.Motion is DoorMotion.Open or DoorMotion.Opening ? TaskType.CLOSE_DOOR : TaskType.OPEN_DOOR;
         foreach (var id in Who(world, order, order.Characters))
         {
-            if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
+            if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone || !TaskStart.Eligible(world, c, row)) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), WorkSpot(world, door, Flat(table.Next[s].Position)).At);
             if (d < bestDistance) (best, bestDistance) = (s, d);
         }
         if (best < 0) return;
-        var walker = table.Cold(best)!;
-        var actor = table.IdOf(best);
-        var (at, _) = WorkSpot(world, door, Flat(table.Next[best].Position));
-        walker.Shackles = null;
-        walker.PickingLock = null;
-        doorWalkers.Remove(actor);
-        if (door.Lock is { EffectivelyLocked: true } && door.Motion == DoorMotion.Closed && !MayManageDoor(world, order, door.Owner))
+        if (barred && !order.PickLock) world.Post(order.Issuer ?? PlayerId.Local, "Hold down the ALT key to pick the lock.");
+        StartWork(world, best, CharacterTask.GoTo, row, door.Id, queued: order.Queued, command: order);
+    }
+
+    void DoorLockInput(World world, DoorLockOrder order)
+    {
+        if (world.Fixtures.Find(order.Door) is not { Kind: FixtureKind.Door or FixtureKind.Cage, DoorBroken: false, Lock: { } l } door || !MayManageDoor(world, order, door.Owner) || !world.Fixtures.Matches(order, door)
+            || l.EffectivelyLocked == order.Lock)
         {
-            if (order.PickLock) walker.PickingLock = door.Id;
-            else world.Post("Hold down the ALT key to pick the lock.");
+            return;
         }
-        else doorWalkers[actor] = door;
-        Remember(world, order, actor, door);
-        MovementSystem.GoToFloor(world, best, new Vector3(at.X, door.Position.Y, at.Y), walker.RunSpeed);
+
+        var table = world.Characters;
+        int best = -1;
+        float bestDistance = float.MaxValue;
+        var row = order.Lock ? TaskType.LOCK_DOOR : TaskType.UNLOCK_DOOR_PLAYER_ORDER;
+        foreach (var id in Who(world, order, order.Characters))
+        {
+            if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone || !TaskStart.Eligible(world, c, row)) continue;
+            float d = Vector2.Distance(Flat(table.Next[s].Position), WorkSpot(world, door, Flat(table.Next[s].Position)).At);
+            if (d < bestDistance) (best, bestDistance) = (s, d);
+        }
+        if (best >= 0) StartWork(world, best, CharacterTask.GoTo, row, door.Id, queued: order.Queued, command: order);
+    }
+
+    /// <summary>
+    /// Each tick: a character in reach of the door it was ordered to lock or unlock works the lock 0.3 per game second (<see cref="LockWorkSeconds"/>, Task_LockDoor / Task_UnlockDoor update
+    /// <c>FUN_140337670</c>, <b>Verified</b>); when the work reaches 1 the lock is set (a closing door first starts closing, <c>FUN_140298c50</c>) or cleared, with the lock or unlock sound.
+    /// One given another order, downed, fighting or gone gives up.
+    /// </summary>
+    static void DoorLockJobs(World world)
+    {
+        var table = world.Characters;
+        var next = table.Next;
+        for (int s = 0; s < table.HighWater; s++)
+        {
+            if (!next[s].Alive || table.Cold(s) is not { DoorJob: { } job } c) continue;
+            ref var n = ref next[s];
+            if (world.Fixtures.Find(job.Door) is not { Kind: FixtureKind.Door or FixtureKind.Cage, DoorBroken: false, Lock: { } l } door || job.Lock == l.EffectivelyLocked
+                || c.Medical is { Incapacitated: true } || !c.CarriedBy.IsNone || c.IsImprisoned || c.InCombat || n.Task is not ((byte)CharacterTask.Idle or (byte)CharacterTask.GoTo))
+            {
+                c.DoorJob = null;
+                continue;
+            }
+            var (at, reach) = WorkSpot(world, door, Flat(n.Position));
+            if (Vector2.Distance(Flat(n.Position), at) > reach)
+            {
+                // Still walking; another order (a new goal) or a failed path ends it, and so does being led away from the work.
+                if (job.Work > 0 || Redirected(n, at, reach)) c.DoorJob = null;
+                continue;
+            }
+            if (n.Task == (byte)CharacterTask.GoTo)
+            {
+                // Arrived: stand and start. A move order given since the arrival is a new goal, not this walk.
+                if (job.Work > 0) { c.DoorJob = null; continue; }
+                AtWork(world, s);
+            }
+            if (c.StaggeredUntil > world.Tick) continue;   // a stagger interrupts the work
+            job.Work += world.TickSeconds;
+            if (job.Work < LockWorkSeconds) continue;
+            c.DoorJob = null;
+            if (job.Lock && door.Kind == FixtureKind.Door)
+            {
+                // Task_LockDoor closes an open door and sets the lock at once (the door finishes closing locked); `wants lock` is not touched.
+                if (door.Motion == DoorMotion.Opening) door.Motion = DoorMotion.Closing;
+                else FixtureRegistry.CloseDoor(door);
+                door.AutoOpened = false;
+            }
+            world.Fixtures.SetLocked(door, job.Lock);
+            world.EmitSound(job.Lock ? SoundKind.Locked : SoundKind.Unlocked, s, n.Position);
+        }
     }
 
     /// <summary>Each tick: the door walker in reach opens or closes its door; one given another order, downed or gone gives up.</summary>
@@ -140,7 +215,7 @@ public sealed partial class LockSystem
             var (at, reach) = WorkSpot(world, door, Flat(n.Position));
             if (Vector2.Distance(Flat(n.Position), at) > reach)
             { if (Redirected(n, at, reach)) doorWalkers.Remove(actor); continue; }
-            if (n.Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, s);
+            if (n.Task == (byte)CharacterTask.GoTo) AtWork(world, s);
             doorWalkers.Remove(actor);
             if (door.Motion is DoorMotion.Open or DoorMotion.Opening) { if (door.Motion == DoorMotion.Open) FixtureRegistry.CloseDoor(door); }
             else if (door.Lock is { EffectivelyLocked: true }) world.Post($"{c.Name}: It's locked.");
@@ -202,6 +277,8 @@ public sealed partial class LockSystem
         public Fixture Door;
         public DoorSpot Spot;
         public bool Opened;
+        /// <summary>The faction of the walker that opened the door (-1: none).</summary>
+        public int OpenerFaction;
         /// <summary>The door is open (or opening): the scan only notes who goes through or stands in it.</summary>
         public bool Watch;
         public bool Passed;
@@ -220,7 +297,7 @@ public sealed partial class LockSystem
             bool watch = f.Motion is DoorMotion.Open or DoorMotion.Opening;
             if (watch && !f.AutoOpened) continue;
             if (fixtures.DoorSpotOf(f) is not { } spot) continue;
-            var scan = new WalkerScan { World = world, Door = f, Spot = spot, Watch = watch };
+            var scan = new WalkerScan { World = world, Door = f, Spot = spot, Watch = watch, OpenerFaction = -1 };
             world.Grid.Query(spot.Centre.X, spot.Centre.Z, OpenReach, ref scan, static (int slot, ref WalkerScan s) =>
             {
                 if (s.Opened || s.Passed) return;
@@ -241,19 +318,28 @@ public sealed partial class LockSystem
                 {
                     // Task_OpenDoor fails at a locked door for anyone, the owner too (docs/game/locks.md "Doors").
                     if (away > LockedReach || !Crosses(n.Position, c.Path, n.PathCursor, s.Spot, legs: 1)) return;
-                    MovementSystem.Stop(table, slot);
-                    if (c.IsPlayer) s.World.Post($"{c.Name}: It's locked.");
+                    TaskStart.Stand(table, slot);
+                    c.WalkEnd = WalkEnd.Failed;
+                    if (c.IsPlayer) Say(s.World, c, "It's locked.");
                     return;
                 }
                 if (!Crosses(n.Position, c.Path, n.PathCursor, s.Spot, legs: 2)) return;
                 s.Opened = FixtureRegistry.OpenDoor(s.Door) || s.Door.Motion == DoorMotion.Opening;
+                if (s.Opened) s.OpenerFaction = c.Faction;
             });
+            if (scan.Opened) NoteDoorOpened(world, f, scan.OpenerFaction);
             if (scan.Opened && !watch) { f.AutoOpened = true; f.LastPass = world.Tick; }
             else if (watch && scan.Passed) f.LastPass = world.Tick;
             // A door that wants its lock is left open: closing it would lock it, and a locked gate shuts its building for every path.
             else if (watch && DoorsCloseBehind && !f.WantsLock && f.Motion == DoorMotion.Open && (world.Tick - f.LastPass) * world.TickSeconds >= AutoCloseSeconds)
                 FixtureRegistry.CloseDoor(f);
         }
+    }
+
+    /// <summary>Task_OpenDoor (<c>FUN_1403370f0</c>, <b>Verified</b>) clears the door owner's "house locked" flag whenever a character outside the player's faction opens a door (docs/game/locks.md "Doors").</summary>
+    internal void NoteDoorOpened(World world, Fixture door, int openerFaction)
+    {
+        if (openerFaction != world.Player.Faction && !world.IsPlayerFaction(openerFaction)) houseLocked.Remove(door.Building);
     }
 
     /// <summary>The open amount from which a door lets walkers through (the original's navmesh treats it as open from 0.6, docs/game/locks.md "Navigation").</summary>

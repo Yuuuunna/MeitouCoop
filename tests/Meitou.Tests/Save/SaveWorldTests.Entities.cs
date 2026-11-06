@@ -59,7 +59,7 @@ public partial class SaveWorldTests
         Assert.Equal(PlayerRoleHistory.Unknown, restored.Players.Find(unknown.Id)!.RoleHistory);
         Assert.Equal(PlayerEntryRoute.AwaitingAssignment, restored.Players.AssessEntry(unknown.Id).Route);
         var captured = JsonNode.Parse(PlayerRegistrySave.Capture(restored, game.Data))!;
-        Assert.Equal(8, captured["Version"]!.GetValue<int>());
+        Assert.Equal(9, captured["Version"]!.GetValue<int>());
         Assert.Equal(4, captured["Authority"]!["Version"]!.GetValue<int>());
         Assert.All(restored.Players.All, player => Assert.Null(player.Account));
     }

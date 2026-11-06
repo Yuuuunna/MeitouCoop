@@ -27,6 +27,38 @@ public static class ZoneActivation
     /// <summary>How long a zone of the player's box stays loaded once nothing asks for it (timer index 1: the table default, 6 s; docs/game/character-stats.md "Corpses").</summary>
     public const float BoxLingerSeconds = 6;
 
+    /// <summary>The activation box's trim at a side facing an inactive zone (<b>Verified</b>, 170 at <c>DAT_1416e2bc0</c>, <c>FUN_1407ebf30</c>).</summary>
+    public const float ActivationTrim = 170;
+
+    /// <summary>
+    /// A zone's test box (<c>FUN_140a09770</c>, <b>Verified</b>): its bounds widened by 10 on every side, then each side facing one of its four neighbours (not diagonals) that
+    /// exists and is not active moved in by <paramref name="trim"/>.
+    /// </summary>
+    public static (float MinX, float MinZ, float MaxX, float MaxZ) TrimmedBox(ZoneCoordinate zone, Func<ZoneCoordinate, bool> isActive, float trim)
+    {
+        var (x, z) = WorldLayout.ZoneOrigin(zone);
+        float minX = (float)x - 10, minZ = (float)z - 10, maxX = (float)x + WorldLayout.ZoneSize + 10, maxZ = (float)z + WorldLayout.ZoneSize + 10;
+        bool Inactive(int dx, int dz) => new ZoneCoordinate(zone.X + dx, zone.Y + dz) is var n
+            && n.X is >= 0 and < WorldLayout.ZoneCount && n.Y is >= 0 and < WorldLayout.ZoneCount && !isActive(n);
+        if (Inactive(-1, 0)) minX += trim;
+        if (Inactive(1, 0)) maxX -= trim;
+        if (Inactive(0, -1)) minZ += trim;
+        if (Inactive(0, 1)) maxZ -= trim;
+        return (minX, minZ, maxX, maxZ);
+    }
+
+    /// <summary>
+    /// Whether a position is inside the loaded box (<c>FUN_140a09770</c> as used by the relevance test <c>FUN_1404febd0</c>, <b>Verified</b>): the zone at the position is active and the
+    /// position lies in that zone's <see cref="TrimmedBox"/> (trim <see cref="ActivationTrim"/>, inclusive).
+    /// </summary>
+    public static bool InLoadedBox(float x, float z, HashSet<ZoneCoordinate> active)
+    {
+        var zone = WorldLayout.ZoneOf(x, z);
+        if (zone.X is < 0 or >= WorldLayout.ZoneCount || zone.Y is < 0 or >= WorldLayout.ZoneCount || !active.Contains(zone)) return false;
+        var (minX, minZ, maxX, maxZ) = TrimmedBox(zone, active.Contains, ActivationTrim);
+        return x >= minX && x <= maxX && z >= minZ && z <= maxZ;
+    }
+
     /// <summary>The middle of a zone, X and Z.</summary>
     public static Vector2 CentreOf(ZoneCoordinate zone)
     {

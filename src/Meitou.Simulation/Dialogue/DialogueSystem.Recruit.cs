@@ -7,7 +7,7 @@ public sealed partial class DialogueSystem
 {
     /// <summary>
     /// DA_JOIN_SQUAD_WITH_EDIT (3) / DA_JOIN_SQUAD_FAST (18) with the player character as the target (docs/game/dialogue.md "Recruiting"): the speaker leaves its squad and joins the
-    /// player's active squad (<see cref="PlayerState.Squad"/>, else the selection's, else the talker's) as a player character; when that squad already holds CONSTANTS <c>max squad size</c>
+    /// player's active squad (<see cref="ActiveSquad"/>) as a player character; when that squad already holds CONSTANTS <c>max squad size</c>
     /// members, a new squad of the "blank squad" template takes it. At the faction's head cap (<c>max faction size</c>) the conversation ends with "It looks like your squad is a
     /// little full." and the line's remaining effects are skipped (false). DA 3 then opens the character editor on the recruit (engine: the conversation ends for it).
     /// </summary>
@@ -41,6 +41,28 @@ public sealed partial class DialogueSystem
         return heads;
     }
 
+    /// <summary>
+    /// The player's active squad (<c>FUN_1407f5520</c>): the cached one (<see cref="PlayerState.Squad"/>), else the squad of the first selected character, else the first squad of the
+    /// player's faction (the squad of the dead is skipped: the original takes the second squad when the first is it, <c>FUN_1407f4960</c>); null with none. The talker's squad is never a fallback.
+    /// </summary>
+    internal static Squad? ActiveSquad(World world)
+    {
+        if (world.Players.RequiresExplicitControl) return null;
+        if (world.Squads.Find(world.Player.Squad) is { } cached) return cached;
+        if (world.Player.Selection.Select(id => Cold(world, id)).FirstOrDefault(s => s is { IsPlayer: true }) is { } selected && world.Squads.Find(selected.SquadId) is { } selectedSquad) return selectedSquad;
+        return SquadManagement.PlayerSquads(world).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// <c>FUN_1407ff8b0</c>: with the faction under its head cap, a recruit that overfills the active squad and the squad count at its cap make one extra, empty squad of the active squad's
+    /// template at its position before the recruit is added (the recruit does not join it, so it stays empty, docs/game/dialogue.md "Recruiting").
+    /// </summary>
+    void ExtraSquadAtTheCap(World world, Squad active, Meitou.Data.Gameplay.GameConstants limits)
+    {
+        if (PlayerHeads(world, active.Faction) >= limits.MaxFactionSize || active.Members.Count + 1 <= limits.MaxSquadSize || SquadManagement.PlayerSquads(world, active.Faction).Count < limits.MaxSquads) return;
+        SquadManagement.NewSquad(world, data.Db, active.Position, data.Factions[active.Faction].Name is { Length: > 0 } f ? f : "Nameless", active.Faction, active.TemplateId);
+    }
+
     /// <summary>The character at <paramref name="slot"/> leaves its squad and joins the player's active squad (or a new blank squad when it is full) as a player character.</summary>
     bool JoinPlayer(World world, Conversation context, int slot, CharacterCold talker)
     {
@@ -52,6 +74,8 @@ public sealed partial class DialogueSystem
         if (!CanJoin(world, context, talker)) return false;
         var owner = Player(world, context);
         if (JoiningSquad(world, context, talker) is not { } squad) return false;
+
+        if (!world.Players.RequiresExplicitControl) ExtraSquadAtTheCap(world, squad, limits);
         if (squad.Members.Count >= limits.MaxSquadSize)
         {
             squad = SquadManagement.NewSquad(world, data.Db, table.Next[slot].Position, data.Factions[context.Faction].Name is { Length: > 0 } f ? f : "Nameless", context.Faction);
@@ -74,7 +98,7 @@ public sealed partial class DialogueSystem
         if (mc.Inventory is { } kit) foreach (var piece in kit.All()) piece.Uniform = "";   // a recruit's clothes are no longer a faction's uniform (economy.md "Unknowns", Observed)
         mc.Save = null;   // written as a new member of the player's platoon; the save's old slot of it is removed
         table.Next[slot].Mode = SpeedMode.Free;   // the original's speed mode 2
-        MovementSystem.Stop(table, slot);
+        TaskStart.Stand(table, slot);
         squad.Members.Add(me);
         if (squad.Leader.IsNone) squad.Leader = me;
         if (context.Actor is { } actor) world.Players.AssignInitial(actor, me);
@@ -98,6 +122,7 @@ public sealed partial class DialogueSystem
         if (context.Faction < 0 || !CanManage(world, context) || JoiningSquad(world, context, talker) is not { } chosen) return 0;
         var squads = SquadManagement.PlayerSquads(world, context.Faction);
         var limits = data.Bodies.Constants;
+        if (!world.Players.RequiresExplicitControl) return Math.Max(0, limits.MaxFactionSize - PlayerHeads(world, context.Faction));
         long capacity = Math.Max(0, limits.MaxSquadSize - chosen.Members.Count) + (long)Math.Max(0, limits.MaxSquads - squads.Count) * limits.MaxSquadSize;
         return (int)Math.Max(0, Math.Min(capacity, limits.MaxFactionSize - PlayerHeads(world, context.Faction)));
     }
@@ -120,7 +145,10 @@ public sealed partial class DialogueSystem
         if (mc.SquadId < 0 || world.Squads.Find(mc.SquadId) is not { } squad) return;
         foreach (var id in squad.Members.ToArray())
         {
-            if (id == me || !table.TryResolveNext(id, out int s) || table.Cold(s) is not { SlaveState: not 0, Medical.Dead: false } slave) continue;
+            if (id == me || !table.TryResolveNext(id, out int s) || table.Cold(s) is not { SlaveState: 1 or 2, Medical.Dead: false } slave) continue;
+            bool joining = tc.IsPlayer || world.IsPlayerFaction(tc.Faction);
+            if (joining && (c.Faction != tc.Faction || !CanJoin(world, c, tc)
+                || c.Actor is not null && world.Players.KnownControl(slave.Entity) is not null)) break;
             byte state = slave.SlaveState;
             if (slave.IsImprisoned) world.Fixtures.Release(world, id);   // it clears the slave state; restored below
             if (tc.IsPlayer || world.IsPlayerFaction(tc.Faction))

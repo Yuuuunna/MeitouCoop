@@ -48,6 +48,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
     /// <summary>The zone layout cache (null with <c>--no-load-cache</c>); see <see cref="FoliageLayoutCache"/>.</summary>
     public FoliageLayoutCache? LayoutCache { get; }
     readonly List<FoliageWorld> allWorlds = [];
+    System.Collections.Frozen.FrozenSet<(int X, int Z)> ownership;
     readonly Dictionary<ZoneCoordinate, ZoneState> zones = [];
     readonly Dictionary<FoliageMesh, MeshAsset> assetsByMesh = [];
     readonly List<MeshAsset> decoding = [];
@@ -112,12 +113,33 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
     public bool Covered { get; set; }
     const double CoveredBudgetMs = 16;
 
+    /// <summary>Called on the render thread at a world admission/load boundary after Levels.FoliageOwnership changes.</summary>
+    public void RefreshOwnership()
+    {
+        ownership = levels.FoliageOwnership;
+        foreach (var state in zones.Values)
+            if (state.Job is { } job)
+            {
+                try { job.Wait(); } catch (AggregateException) { }
+                if (state.JobTier != Tier.Far) runningWhole--; else runningFar--;
+                state.Job = null;
+            }
+        foreach (var state in zones.Values.ToArray()) Drop(state);
+        while (worlds.TryTake(out _)) { }
+        lock (allWorlds)
+        {
+            foreach (var world in allWorlds) world.Dispose();
+            allWorlds.Clear();
+        }
+    }
+
     public FoliageRenderer(IGpuContext gpu, GameInstall install, GameDatabase db, WorldLevelData levels, AssetLocator assets)
     {
         Gpu = gpu;
         this.install = install;
         this.db = db;
         this.levels = levels;
+        ownership = levels.FoliageOwnership;
         this.assets = assets;
         var watch = Stopwatch.StartNew();
         catalog = FoliageCatalog.Load(db);
@@ -474,6 +496,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
 
     void Update(Vector3 eye, bool settling)
     {
+        if (!ownership.SetEquals(levels.FoliageOwnership)) RefreshOwnership();
         updates++;
         var watch = Stopwatch.StartNew();
         // Uploads get 2 ms a frame (texture decodes are never waited for) except while settling for a screenshot.

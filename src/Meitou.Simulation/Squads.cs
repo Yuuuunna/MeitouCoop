@@ -35,9 +35,9 @@ public sealed class Squad
     /// </summary>
     public Meitou.Data.World.TownBuilding? HomeBuilding { get; set; }
     /// <summary>The roaming platoon this loaded squad is the active half of (-1: a resident or other squad).</summary>
-    public int PlatoonId { get; init; } = -1;
+    public int PlatoonId { get; set; } = -1;
     /// <summary>The active half of a pinned saved platoon (<see cref="Platoon.Pinned"/>): a town's own squad from a save, treated as the town's squads are (AI, guards).</summary>
-    public bool Pinned { get; init; }
+    public bool Pinned { get; set; }
     /// <summary>One of its town's own squads: the town made it, or a save holds it as the town's.</summary>
     public bool TownOwn => Town >= 0 && (PlatoonId < 0 || Pinned);
     /// <summary>The player faction's hidden <c>__DEAD_SQUAD__</c> its characters move to when they die (<see cref="SquadManagement.BuryDead"/>): no tab, never one of the player's squads.</summary>
@@ -46,11 +46,21 @@ public sealed class Squad
     public bool PlayerManaged { get; set; }
     /// <summary>Back from its town's time unloaded: its members' minds take up their schedule where it puts them (<see cref="PopulationSettings.ResidentSchedule"/>); cleared once they have minds.</summary>
     public bool Resume { get; set; }
+    /// <summary>
+    /// Its members came back from a save or from their time out of the world (kept characters), not made now: their <c>wages</c> do not set its purse when it appears, as
+    /// <c>Character::giveBirth</c> pays them only to a character made without saved state (<c>FUN_14062b210</c>, docs/game/economy.md "Wages"). Not saved or hashed.
+    /// </summary>
+    public bool Restored { get; init; }
     /// <summary>How many it was made with (its town's regeneration measures losses against it; not part of the state).</summary>
     public int SpawnSize { get; set; }
     public List<CharacterId> Members { get; } = [];
     /// <summary>The member the others follow (the role-2 leader, else the first member); <see cref="CharacterId.None"/> when none is alive.</summary>
     public CharacterId Leader { get; set; } = CharacterId.None;
+    /// <summary>
+    /// The cached backup leader (the original's <c>backupLeader</c> <c>+0xa8</c>, found by <see cref="PopulationSystem"/>'s effective-leader rule when the leader is down or held); the
+    /// platoon's place follows the effective leader. Not saved; hashed while set.
+    /// </summary>
+    public CharacterId Backup { get; set; } = CharacterId.None;
     /// <summary>The squad's purse in cats (save key <c>money</c> of the platoon; a roaming squad carries it over its unloading). The economy stage spends it.</summary>
     public long Money { get; set; }
     /// <summary>The squad's shop, when it is a trader (<see cref="Trading.TradeSystem"/>); null otherwise.</summary>
@@ -72,29 +82,37 @@ public sealed class Squad
     /// changes. Derived state: not saved or hashed.
     /// </summary>
     public Dictionary<CharacterId, Vector2> FormationSlots { get; set; } = [];
+    /// <summary>
+    /// Its template's <c>force speed</c> when 0 (walk), 1 (jog) or 2 (run), else 4 (none): the movement raises its NPC members' speed mode to it.
+    /// Derived from <see cref="World.ForcedSpeeds"/> by the movement's serial step: not saved or hashed.
+    /// </summary>
+    public byte ForceSpeed { get; set; } = NoForceSpeed;
+    public const byte NoForceSpeed = 4;
     public ulong FormationKey { get; set; }
 }
 
 /// <summary>
 /// A campaign squad's extra enemies while it assaults (docs/game/factions-squads-towns.md "Campaigns", the packages): <paramref name="Faction"/>'s characters (the base package
-/// in a hostile campaign's phase 1), or with <paramref name="Everyone"/> every character not of its own faction within the target town's circle (Package_WarAssault; engine
-/// reading of its "not of another town" exception).
+/// in a hostile campaign's phase 1), or with <paramref name="Everyone"/> every character the Package_WarAssault sensing hook takes (<c>FUN_14028a3f0</c>, see
+/// <c>AggroSystem.WarEnemy</c>): not of its own faction, and in no town or in <paramref name="Town"/>, the campaign's target (the package's mission town).
 /// </summary>
-public readonly record struct WarTargets(int Faction, bool Everyone, Vector2 Centre, float Radius)
+public readonly record struct WarTargets(int Faction, bool Everyone, CampaignTown Town)
 {
-    public static readonly WarTargets None = new(-1, false, default, 0);
+    public static readonly WarTargets None = new(-1, false, CampaignTown.None);
     public bool IsSet => Everyone || Faction >= 0;
 }
 
 /// <summary>The squads of a world, by id. Ids are never reused.</summary>
 public sealed class SquadRegistry
 {
+    // In id order for the walks (hash, refresh), and a hash index for the lookups: a find in the tree walked it, and the publish asks several per character.
     readonly SortedDictionary<int, Squad> squads = [];
+    readonly Dictionary<int, Squad> byId = [];
     int nextId;
 
     public int Count => squads.Count;
     public IEnumerable<Squad> All => squads.Values;
-    public Squad? Find(int id) => squads.GetValueOrDefault(id);
+    public Squad? Find(int id) => byId.GetValueOrDefault(id);
 
     public int NextAvailableId => Math.Max(nextId, squads.Count == 0 ? 0 : squads.Keys.Last() + 1);
     public int NextId()
@@ -107,6 +125,7 @@ public sealed class SquadRegistry
     {
         if (squad.Id < 0 || squad.Id == int.MaxValue) throw new ArgumentOutOfRangeException(nameof(squad));
         if (!squads.TryAdd(squad.Id, squad)) throw new InvalidOperationException("The squad identity is already loaded.");
+        byId.Add(squad.Id, squad);
     }
     internal void RestoreAllocation(int next)
     {
@@ -114,7 +133,7 @@ public sealed class SquadRegistry
         nextId = next;
     }
 
-    public bool Remove(int id) => squads.Remove(id);
+    public bool Remove(int id) => byId.Remove(id) & squads.Remove(id);
 
     /// <summary>After deaths and removals: drops dead members, and picks a new leader (the first member alive) when the old one is gone. Serial phases only.</summary>
     public void Refresh(CharacterTable table)
@@ -155,6 +174,7 @@ public sealed class SquadRegistry
             hasher.Add(s.HomeRadius);
             hasher.Add(s.Position);
             hasher.Add(s.Leader);
+            if (!s.Backup.IsNone) hasher.Add(s.Backup);   // nothing for a squad that never needed one, so the pinned hashes stay
             if (s.Index != 0) hasher.Add(0x51647800 + s.Index);   // nothing for a squad in the first place, so the pinned hashes stay
             if (s.Resume) hasher.Add(0x52657375);
             if (s.Dead) hasher.Add(0x44656164);
@@ -166,7 +186,7 @@ public sealed class SquadRegistry
             }
             s.Shop?.Hash(ref hasher);   // nothing for squads that do not trade, so the pinned hashes of worlds without shops stay
             s.Ai?.Hash(ref hasher);     // nor for squads without AI packages
-            if (s.War.IsSet) { hasher.Add(s.War.Faction); hasher.Add(s.War.Everyone); hasher.Add(s.War.Centre); hasher.Add(s.War.Radius); }   // nor for squads not assaulting
+            if (s.War.IsSet) { hasher.Add(s.War.Faction); hasher.Add(s.War.Everyone); hasher.Add(s.War.Town.Site); hasher.Add(s.War.Town.PlayerTown); }   // nor for squads not assaulting
         }
     }
 }

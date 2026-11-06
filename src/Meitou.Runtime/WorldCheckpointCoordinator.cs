@@ -1,4 +1,5 @@
 using System.Globalization;
+using Meitou.Modding;
 using Meitou.Data.Save;
 using Meitou.Simulation;
 using Meitou.Simulation.Saving;
@@ -37,10 +38,11 @@ public sealed class WorldCheckpointCoordinator
     readonly CheckpointStore store;
     readonly SaveCaptureOptions options;
     readonly long owner;
+    readonly ModHost? mods;
     long nextCapture, committed;
     Guid committedId;
 
-    public WorldCheckpointCoordinator(WorldRuntime runtime, PopulationData data, CheckpointStore store, SaveCaptureOptions options, LoadedSave? loaded = null)
+    public WorldCheckpointCoordinator(WorldRuntime runtime, PopulationData data, CheckpointStore store, SaveCaptureOptions options, LoadedSave? loaded = null, ModHost? mods = null)
     {
         ArgumentNullException.ThrowIfNull(runtime); ArgumentNullException.ThrowIfNull(data);
         ArgumentNullException.ThrowIfNull(store); ArgumentNullException.ThrowIfNull(options);
@@ -49,6 +51,7 @@ public sealed class WorldCheckpointCoordinator
         if (source.Systems.OfType<PopulationSystem>().Any(p => !ReferenceEquals(p.Data, data)))
             throw new ArgumentException("The checkpoint catalogue must belong to the active world.", nameof(data));
         Loaded = loaded;
+        this.mods = mods;
         owner = runtime.ClaimCheckpointOwner(source);
     }
 
@@ -79,6 +82,7 @@ public sealed class WorldCheckpointCoordinator
         var clock = Clock(point.GameHours);
         var save = SaveCapture.Capture(source, data, clock, Loaded, options);
         // Make record/item/portrait ownership independent of the running world before handing work to a writer.
+        mods?.CaptureSaveData(source, save.ModData, strict: true);
         save = save.Clone();
         var weather = WeatherCheckpoint.Capture(source, data, save);
         if (options.Levels is null)
@@ -115,7 +119,7 @@ public sealed class WorldCheckpointCoordinator
     /// <summary>Candidate data must be independent of the live catalogue; factory runs after dynamic faction reconstruction.</summary>
     public CheckpointRestoreResult Restore(StoredCheckpoint checkpoint, PopulationData candidateData,
         Func<PopulationData, IEnumerable<ITickSystem>> systems, SaveCaptureOptions candidateOptions,
-        IAppearanceSource? appearances = null, bool deferPlayerRoles = false)
+        IAppearanceSource? appearances = null, bool deferPlayerRoles = false, Action<World>? configureWorld = null)
     {
         ArgumentNullException.ThrowIfNull(checkpoint); ArgumentNullException.ThrowIfNull(candidateData);
         ArgumentNullException.ThrowIfNull(systems); ArgumentNullException.ThrowIfNull(candidateOptions);
@@ -124,7 +128,9 @@ public sealed class WorldCheckpointCoordinator
         var save = checkpoint.World.Clone();
         var metadata = checkpoint.Metadata.ToArray();
         var point = ReadPoint(save);
-        return runtime.WithCheckpointOwner(source, owner, () =>
+        return mods is null ? RestoreCandidate() : mods.PrepareWorld(candidateData, RestoreCandidate);
+
+        CheckpointRestoreResult RestoreCandidate() => runtime.WithCheckpointOwner(source, owner, () =>
         {
             PlayerRegistrySave.PrepareCatalogue(candidateData, metadata);
             LoadedSave? loaded = null;
@@ -137,10 +143,12 @@ public sealed class WorldCheckpointCoordinator
                     prepared = world;
                     world.GameHours = point.GameHours;
                     world.Daytime = point.Daytime;
-                    loaded = SaveLoader.Load(world, save, candidateData, new SaveLoadOptions { MultiplayerMetadata = metadata, Appearances = appearances, DeferPlayerRoles = deferPlayerRoles });
+                    loaded = SaveLoader.Load(world, save, candidateData, new SaveLoadOptions { GameHoursOverride = point.GameHours, MultiplayerMetadata = metadata, Appearances = appearances, DeferPlayerRoles = deferPlayerRoles });
                     if (loaded.MissingMods.Count != 0) throw new InvalidDataException("Checkpoint content files are missing from the candidate.");
                     PlayerRegistrySave.Restore(world, candidateData, metadata);
                     WeatherCheckpoint.Restore(world, save, point.GameHours);
+                    configureWorld?.Invoke(world);
+                    mods?.RestoreSaveData(world, save.ModData, strict: true);
                 });
             }
             catch (Exception e) when (prepared is not null && ReferenceEquals(runtime.World, prepared))
@@ -148,7 +156,7 @@ public sealed class WorldCheckpointCoordinator
                 // Replacement already succeeded. Preserve access to the valid new world and report disposal failure to the host.
                 cleanup = e;
             }
-            return new CheckpointRestoreResult(new WorldCheckpointCoordinator(runtime, candidateData, store, candidateOptions, loaded), cleanup);
+            return new CheckpointRestoreResult(new WorldCheckpointCoordinator(runtime, candidateData, store, candidateOptions, loaded, mods), cleanup);
         });
     }
 

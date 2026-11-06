@@ -46,7 +46,13 @@ internal sealed partial class ZoneGeometryGatherer
             hash = Combine(hash, (uint)BitConverter.SingleToInt32Bits(b.Rotation.W));
             hash = Combine(hash, (uint)BitConverter.SingleToInt32Bits(b.Rotation.Y));
             hash = Combine(hash, destroyed ? 1u : 0u);
-            if (StateOf(b) is { } state) hash = Combine(hash, (uint)Stable(state.GetString("exterior layout name") + "|" + state.GetString("interior layout name")));
+            if (StateOf(b) is { } state) hash = Combine(hash, (uint)Stable(b.LayoutName(state, exterior: true) + "|" + b.LayoutName(state, exterior: false)));
+            if (b.WithoutInterior) hash = Combine(hash, 0x1e7e1u);   // only then, so the other zones' keys stay as they were
+        }
+        foreach (var (x, z) in (ownershipSnapshot ?? levels.FoliageOwnership).OrderBy(p => p.X).ThenBy(p => p.Z))
+        {
+            hash = Combine(hash, unchecked((uint)x));
+            hash = Combine(hash, unchecked((uint)z));
         }
         return hash;
     }
@@ -57,9 +63,12 @@ internal sealed partial class ZoneGeometryGatherer
         foreach (var (b, record, position, destroyed) in NearBuildings(g.Zone, g.ZoneMin, g.ZoneMax, g.Margin))
         {
             g.Stats.Buildings++;
-            AddBuilding(g, record, b.Key, position, b.Rotation, destroyed);
+            var kind = InteriorOf(record);
+            bool open = kind != InteriorKind.Real;
+            bool upper = kind == InteriorKind.Blank && !record.GetBool("is wall gate") && !record.GetBool("links together");
+            AddBuilding(g, record, b.Key, position, b.Rotation, destroyed, open: open, upper: upper);
             foreach (var (item, at, rotation) in LayoutObjects(b, record, position, destroyed))
-                AddBuilding(g, item.Building, $"{b.Key}/{item.InstanceId}", at, rotation, destroyed: false, floor: item.Floor);
+                AddBuilding(g, item.Building, $"{b.Key}/{item.InstanceId}", at, rotation, destroyed: false, floor: item.Floor, open: open, upper: upper);
         }
         g.BuildingLastTriangle = g.TriangleCount;
         g.BuildingHash = knownHash ?? BuildingHash(g.Zone, g.Margin);
@@ -82,15 +91,48 @@ internal sealed partial class ZoneGeometryGatherer
 
     /// <summary>
     /// The objects of a building's layouts placed in the world (docs/formats/zones.md, "Building layouts"): the signs and stalls of its exterior layout and the
-    /// furniture of its interior layout, as the renderer lays them out. None for a destroyed building, whose layouts are not drawn either.
+    /// furniture of its interior layout, as the renderer lays them out. None for a destroyed building, whose layouts are not drawn either; no furniture for a bought town house
+    /// (<see cref="BuildingPlacement.WithoutInterior"/>).
     /// </summary>
+    /// <summary>Debug (the interior survey): an interior layout name per placement key in place of its level state's, "" for none.</summary>
+    internal Dictionary<string, string> InteriorLayoutOverrides { get; } = [];
+
+    /// <summary>
+    /// Debug (the interior survey): each interior layout the building offers, with the middle of each collision shape of its objects that are no IGNORE
+    /// (x and z of its box's middle, y of its base).
+    /// </summary>
+    internal IEnumerable<(string Name, List<Vector3> Shapes)> InteriorLayouts(InteriorSite site)
+    {
+        foreach (var name in layouts.Names(site.Record, exterior: false))
+            if (layouts.Find(site.Record, name, exterior: false) is { } layout)
+                yield return (name, layouts.Items(layout).SelectMany(i => ShapeMiddles(site, i)).ToList());
+    }
+
+    IEnumerable<Vector3> ShapeMiddles(InteriorSite site, LayoutItem item)
+    {
+        if ((PathMode)item.Building.GetInt("path mode", (int)PathMode.Obstacle) == PathMode.Ignore) yield break;
+        var (at, rotation) = BuildingLayouts.Place(site.Position, site.Placement.Rotation, item);
+        var node = NodeMatrix(item.Building, at, rotation);
+        foreach (var mesh in WorldObjectLayout.Building(db, item.Building, item.InstanceId, at, rotation, new BuildingState(false)))
+        {
+            if (mesh.CollisionPath(false) is not { Length: > 0 } path || collision.Get(path) is not { } prepared || mesh.Source.GetBool("passable")) continue;
+            foreach (var shape in prepared.Shapes)
+            {
+                var pts = shape.Vertices.Select(v => Vector3.Transform(v, node)).ToArray();
+                yield return new Vector3((pts.Min(p => p.X) + pts.Max(p => p.X)) / 2, pts.Min(p => p.Y), (pts.Min(p => p.Z) + pts.Max(p => p.Z)) / 2);
+            }
+        }
+    }
+
     IEnumerable<(LayoutItem Item, Vector3 Position, Quaternion Rotation)> LayoutObjects(BuildingPlacement b, GameRecord record, Vector3 position, bool destroyed)
     {
         if (destroyed || StateOf(b) is not { } state) yield break;
         foreach (bool exterior in (bool[])[true, false])
         {
-            if (state.GetString(exterior ? "exterior layout name" : "interior layout name") is not { Length: > 0 } name || layouts.Find(record, name, exterior) is not { } layout) continue;
-            foreach (var item in layouts.Items(layout))
+            if (!exterior && b.WithoutInterior) continue;
+            string? name = !exterior && InteriorLayoutOverrides.TryGetValue(b.Key, out var chosen) ? chosen : b.LayoutName(state, exterior);
+            if (name is not { Length: > 0 } || layouts.Find(record, name, exterior) is not { } layout) continue;
+            foreach (var item in layouts.Items(layout, b))
             {
                 var (at, rotation) = BuildingLayouts.Place(position, b.Rotation, item);
                 yield return (item, at, rotation);
@@ -98,8 +140,17 @@ internal sealed partial class ZoneGeometryGatherer
         }
     }
 
-    /// <param name="floor">For a layout object: the floor it stands on (its state's <c>floornum</c>), which takes the place of its parts' own <c>building floor</c>.</param>
-    void AddBuilding(ZoneGeometry g, GameRecord building, string placementId, Vector3 position, Quaternion rotation, bool destroyed, InteriorContext? interior = null, int? floor = null)
+    /// <summary>Shape groups of a building's upper-floor contents: stairs on floor 2 (17), floor-3 stairs (18) and furniture on floors 1..3 (20..22).</summary>
+    public const uint UpperContentsMask = 0x760000;
+
+    /// <param name="floor">For a layout object: the floor it stands on (its state's <c>floornum</c>), the object floor of <see cref="CollisionGroup"/>.</param>
+    /// <param name="open">
+    /// Exterior gather: the placed building (for a layout object, its building) has no real interior (<see cref="InteriorOf"/>), so every shape of a WALKABLE
+    /// building is walkable, not only its floor-0 parts and furniture (docs/game/pathfinding.md, "Generator", building shapes; Observed: Heft's Shield Bridge,
+    /// an `is stairs` part, was an obstacle, issue #141).
+    /// </param>
+    /// <param name="upper">Exterior gather: its interior is blank and it is no wall or gate, so its upper-floor contents (<see cref="UpperContentsMask"/>) are gathered too.</param>
+    void AddBuilding(ZoneGeometry g, GameRecord building, string placementId, Vector3 position, Quaternion rotation, bool destroyed, InteriorContext? interior = null, int? floor = null, bool open = false, bool upper = false)
     {
         var node = NodeMatrix(building, position, rotation);
 
@@ -109,36 +160,46 @@ internal sealed partial class ZoneGeometryGatherer
         foreach (var mesh in placed)
         {
             var part = mesh.Source;
-            string path = CollisionPathOf(part, destroyed);
+            string path = mesh.CollisionPath(destroyed);
             if (path.Length == 0) continue;
             // Every part of a building placed from a `doors` list is a door, flagged or not (Observed: the level 4 and 5 gates' door parts lack `is door`).
             bool isDoor = part.GetBool("is door") || mesh.Owner.GetBool("is door") || doors.Contains(mesh.Owner.StringId);
-            AddPart(g, mesh.Owner, part, path, node, isDoor, interiorMask: false, instanceId: placementId, interior, floor);
+            AddPart(g, mesh.Owner, part, path, node, isDoor, interiorMask: false, instanceId: placementId, interior, floor, open, upper);
         }
         // The interior mask part is created apart from the parts list; its collision is the indoor hull.
-        // Gateways (is gateway: walk underneath) are not shells with an interior: their hull must not close the passage (Observed: the Hub's gates).
-        if (interior is null && !building.GetBool("is gateway"))
+        // Only a shell carves with its hull (wall gates such as the Hub's gates and Heft's Ancient Lab Ramp have a mask over a passage, issue #140).
+        if (interior is null && IsShellWithInterior(building))
         foreach (var r in building.GetReferences("interior mask"))
             if (db.Find(r.TargetStringId) is { Type: FcsRecordType.BUILDING_PART } mask && mask.GetPath("xml collision") is { Length: > 0 } maskPath)
                 AddPart(g, building, mask, maskPath, node, isDoor: false, interiorMask: true, instanceId: placementId);
     }
 
-    void AddPart(ZoneGeometry g, GameRecord owner, GameRecord part, string path, Matrix4x4 node, bool isDoor, bool interiorMask, string instanceId, InteriorContext? interior = null, int? floorOverride = null)
+    /// <summary>
+    /// The navmesh collision group of a building part (<c>FUN_14055f6e0</c>, docs/formats/collision.md; later tests win): 9 + floor for floors 0..3 (else 9), unwalkable roof 27, stairs
+    /// 15 + floor for floors 0..3 (else unchanged), then a passable part or an IGNORE owner 23 + object floor, else furniture 19 + object floor (the object floor 0..3, else 0). A furniture
+    /// owner's base and stairs groups use the placed object's floor (<paramref name="objectFloor"/>, its state's <c>floornum</c>), any other part its own <c>building floor</c>, unclamped.
+    /// </summary>
+    static int CollisionGroup(GameRecord owner, GameRecord part, PathMode mode, int objectFloor)
+    {
+        bool furniture = owner.GetBool("is exterior furniture") || owner.GetBool("is interior furniture");
+        int floor = furniture ? objectFloor : part.GetInt("building floor");
+        bool inRange = floor is >= 0 and <= 3, objectInRange = objectFloor is >= 0 and <= 3;
+        int group = inRange ? 9 + floor : 9;
+        if (part.GetBool("is unwalkable roof")) group = 27;
+        if (part.GetBool("is stairs") && inRange) group = 15 + floor;
+        if (mode == PathMode.Ignore || part.GetBool("passable")) return 23 + (objectInRange ? objectFloor : 0);
+        return furniture ? 19 + (objectInRange ? objectFloor : 0) : group;
+    }
+
+    void AddPart(ZoneGeometry g, GameRecord owner, GameRecord part, string path, Matrix4x4 node, bool isDoor, bool interiorMask, string instanceId, InteriorContext? interior = null, int? floorOverride = null, bool open = false, bool upper = false)
     {
         var prepared = collision.Get(path);
         if (prepared is null) return;
         g.Stats.PartsWithCollision++;
         var mode = (PathMode)owner.GetInt("path mode", (int)PathMode.Obstacle);
-        int floor = floorOverride ?? Math.Clamp(part.GetInt("building floor"), 0, 3);
-        int group;
-        if (isDoor) group = 5;
-        else if (interiorMask) group = 13;
-        else if (mode == PathMode.Ignore || part.GetBool("passable")) group = 23 + floor;
-        else if (part.GetBool("is unwalkable roof")) group = 27;
-        else if (part.GetBool("is stairs")) group = 15 + floor;
-        else if (owner.GetBool("is exterior furniture") || owner.GetBool("is interior furniture")) group = 19 + floor;
-        else group = 9 + floor;
+        int group = isDoor ? 5 : interiorMask ? 13 : CollisionGroup(owner, part, mode, floorOverride ?? 0);
 
+        int firstTriangle = g.TriangleCount, firstSolid = g.Solids.Count;
         foreach (var shape in prepared.Shapes)
         {
             if (interior is not null)
@@ -160,17 +221,21 @@ internal sealed partial class ZoneGeometryGatherer
                 AddDoorSeeds(g, owner, shape, node);
                 continue;
             }
-            if ((IncludedGroupMask & (1u << group)) == 0) continue;
+            if (((IncludedGroupMask | (upper ? UpperContentsMask : 0)) & (1u << group)) == 0) continue;
             g.Stats.Shapes++;
-            bool walkable = mode == PathMode.Walkable && group != 27 && (group == 9 || group == 19);
+            bool walkable = mode == PathMode.Walkable && group != 27 && (open || group == 9 || group == 19);
+            int shapeFirst = g.TriangleCount;
             AddShape(g, shape, node, walkable ? BuildingSlopeDegrees : 0, carve: CarveConvexObstacles && !walkable);
+            if (group is 9 or 10 && g.TriangleCount > shapeFirst) g.FloorRanges.Add((shapeFirst, g.TriangleCount));
         }
+        if (g.TrackParts && g.TriangleCount > firstTriangle) g.PartRanges.Add((owner.Name, part.Name, path, firstTriangle, g.TriangleCount));
+        for (int i = firstSolid; i < g.Solids.Count; i++) g.Solids[i].Owner = $"{instanceId} {owner.Name} / {part.Name} (group {group}, mode {(int)mode})";
     }
     // ---- shape placement ----
 
     /// <summary>
     /// Places a prepared shape. <paramref name="walkableSlope"/> 0: a cutting obstacle (all its triangles are <see cref="NavArea.Null"/>);
-    /// otherwise a triangle is walkable up to that slope.
+    /// otherwise a triangle is walkable up to that slope. <paramref name="carve"/>: a convex obstacle also removes the floor inside its volume (<see cref="NavSolid"/>).
     /// </summary>
     /// <summary>A door painter reaches this far below its hull and is grown by <see cref="DoorPainterGrow"/> on each side (engine choice).</summary>
     const float DoorPainterDrop = 10, DoorPainterGrow = 3;
@@ -182,7 +247,8 @@ internal sealed partial class ZoneGeometryGatherer
     /// </summary>
     const float CarverDrop = 60;
 
-    void AddShape(ZoneGeometry g, PreparedShape shape, Matrix4x4 node, float walkableSlope, bool carve)
+    /// <param name="meshSolid">A triangle mesh that encloses a volume (a map feature's rock, walkable foliage) also removes the floor inside it (<see cref="NavMeshSolid"/>).</param>
+    void AddShape(ZoneGeometry g, PreparedShape shape, Matrix4x4 node, float walkableSlope, bool carve, bool meshSolid = false)
     {
         var pts = new Vector3[shape.Vertices.Length];
         var lo = new Vector3(float.MaxValue);
@@ -195,15 +261,17 @@ internal sealed partial class ZoneGeometryGatherer
         }
         if (hi.X < g.ZoneMin.X - g.Margin || lo.X > g.ZoneMax.X + g.Margin || hi.Z < g.ZoneMin.Y - g.Margin || lo.Z > g.ZoneMax.Y + g.Margin) return;
         EmitTriangles(g, pts, shape.Indices, walkableSlope);
-        if (walkableSlope > 0 && shape.IsConvex && Solid(pts, shape.Indices, lo, hi) is { } solid)
+        // A convex obstacle is a solid too, not a prism over its footprint: a prism cut the ground under a leaning shape whose volume is in the air
+        // (docs/game/pathfinding.md, "Solids"; Observed: Shark's Giant_BigWood, a tilted 2,000-unit box over a hemp farm, issue #155).
+        if ((walkableSlope > 0 || carve) && shape.IsConvex && Solid(pts, shape.Indices, lo, hi) is { } solid)
         {
             g.Solids.Add(solid);
             g.Stats.Solids++;
         }
-        if (carve && shape.IsConvex)
+        if (meshSolid && !shape.IsConvex && MeshSolid(pts, shape.Indices, lo, hi) is { } mesh)
         {
-            g.Carvers.Add(NavGeometry.Footprint(pts, lo.Y, hi.Y, 0));
-            g.Stats.Carvers++;
+            g.MeshSolids.Add(mesh);
+            g.Stats.Solids++;
         }
     }
 
@@ -268,34 +336,44 @@ internal sealed partial class ZoneGeometryGatherer
 internal sealed partial class ZoneGeometryGatherer
 {
     /// <summary>
-    /// The collision triangles of the buildings placed in <paramref name="zone"/> (each placement once, in its own zone; its triangles may reach past the zone) that ragdolls land
+    /// The collision triangles of the buildings placed in <paramref name="zone"/> and of the map features whose triangles lie in it (<see cref="AddRagdollFeatures"/>) (each placement once, in its own zone; its triangles may reach past the zone) that ragdolls land
     /// on and hit (docs/game/ragdolls.md "Collision groups"): walls and floors, stairs, furniture and roofs; not doors, interior masks or passable parts. Three points per
     /// triangle, world space.
     /// </summary>
-    public void RagdollTriangles(ZoneCoordinate zone, List<Vector3> output)
+    public void RagdollTriangles(ZoneCoordinate zone, List<Vector3> output) => BuildingTriangles(zone, output, roofs: false);
+
+    /// <summary>
+    /// The collision triangles of collision groups 23..26 only, the parts the weather's shelter ray tests (<c>FUN_1405cf790</c>, include mask 0x7800000, <b>Verified</b>): the passable parts and every
+    /// part of the buildings that paths ignore, the complement of <see cref="RagdollTriangles"/> (no map features, no doors). Three points per triangle, world space.
+    /// </summary>
+    public void RoofTriangles(ZoneCoordinate zone, List<Vector3> output) => BuildingTriangles(zone, output, roofs: true);
+
+    void BuildingTriangles(ZoneCoordinate zone, List<Vector3> output, bool roofs)
     {
         var (ox, oz) = WorldLayout.ZoneOrigin(zone);
         var min = new Vector2((float)ox, (float)oz);
         foreach (var (b, record, position, destroyed) in NearBuildings(zone, min, min + new Vector2(WorldLayout.ZoneSize), 0))
         {
             if (b.Zone != zone) continue;
-            AddRagdollBuilding(record, b.Key, position, b.Rotation, destroyed, output);
+            AddRagdollBuilding(record, b.Key, position, b.Rotation, destroyed, output, roofs);
             foreach (var (item, at, rotation) in LayoutObjects(b, record, position, destroyed))
-                AddRagdollBuilding(item.Building, $"{b.Key}/{item.InstanceId}", at, rotation, false, output);
+                AddRagdollBuilding(item.Building, $"{b.Key}/{item.InstanceId}", at, rotation, false, output, roofs);
         }
+        if (!roofs) AddRagdollFeatures(zone, output);
     }
 
-    void AddRagdollBuilding(GameRecord building, string placementId, Vector3 position, Quaternion rotation, bool destroyed, List<Vector3> output)
+    void AddRagdollBuilding(GameRecord building, string placementId, Vector3 position, Quaternion rotation, bool destroyed, List<Vector3> output, bool roofs)
     {
         var node = NodeMatrix(building, position, rotation);
         var doors = building.GetReferences("doors").Select(r => r.TargetStringId).ToHashSet();
         foreach (var mesh in WorldObjectLayout.Building(db, building, placementId, position, rotation, new BuildingState(destroyed)))
         {
             var part = mesh.Source;
-            string path = CollisionPathOf(part, destroyed);
+            string path = mesh.CollisionPath(destroyed);
             if (path.Length == 0 || part.GetBool("is door") || mesh.Owner.GetBool("is door") || doors.Contains(mesh.Owner.StringId)) continue;
             // Groups 23..26: a building that is ignored by paths, or a passable part (ragdolls do not collide with them).
-            if ((PathMode)mesh.Owner.GetInt("path mode", (int)PathMode.Obstacle) == PathMode.Ignore || part.GetBool("passable")) continue;
+            bool passable = (PathMode)mesh.Owner.GetInt("path mode", (int)PathMode.Obstacle) == PathMode.Ignore || part.GetBool("passable");
+            if (passable != roofs) continue;
             if (collision.Get(path) is not { } prepared) continue;
             foreach (var shape in prepared.Shapes)
                 foreach (int i in shape.Indices) output.Add(Vector3.Transform(shape.Vertices[i], node));

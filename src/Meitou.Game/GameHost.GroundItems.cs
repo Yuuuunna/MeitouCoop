@@ -87,10 +87,49 @@ sealed partial class GameHost
         }
     }
 
-    /// <summary>Where each shown ground item is drawn (a falling limb: where it comes to rest), for floor visibility.</summary>
+    /// <summary>Where each shown ground item is drawn (a falling limb: where it comes to rest), for <see cref="GroundShape"/>.</summary>
     readonly Dictionary<int, (Vector3 At, Quaternion Rotation, string Key)> groundPoses = [];
-    /// <summary>The bounds of a record's item mesh (its ground mesh, else its mesh), read once; null when it has none.</summary>
+    readonly Dictionary<(string Record, bool File), IReadOnlyList<(Vector3[] Vertices, int[] Indices)>> groundShapes = [];
+
+    /// <summary>
+    /// What the pointer's ray meets of a ground item, where it is drawn (docs/game/ui-input.md "Building picking and selection"): its record's collision as the original makes it
+    /// (<c>FUN_1407626e0</c>, <b>Verified</b>): a weapon's or a severed limb's <c>physics file</c> when that names an <c>.xml</c>, otherwise its mesh's bounds box. Null without
+    /// <c>has collision</c> (it is then picked only by its label).
+    /// </summary>
+    (IReadOnlyList<(Vector3[] Vertices, int[] Indices)> Mesh, Vector3 At, Quaternion Rotation)? GroundShape(GroundItemSnapshot g)
+    {
+        if (!groundPoses.TryGetValue(g.Id, out var pose) || GroundCollisionOf(g.Record) is not { } collision) return null;
+        bool file = collision.Xml is not null && (collision.Weapon || g.Fall is not null);
+        if (!groundShapes.TryGetValue((g.Record, file), out var mesh))
+        {
+            mesh = file ? player.BuildHost?.Placement.CollisionFile(collision.Xml!) ?? [] : [];
+            if (mesh.Count == 0 && BoundsOf(g.Record) is { } box) mesh = Box(box.Min, box.Max);   // engine choice: a collision file missing from the install falls back to the box
+            groundShapes[(g.Record, file)] = mesh;
+        }
+        return mesh.Count == 0 ? null : (mesh, pose.At, pose.Rotation);
+    }
+
+    readonly Dictionary<string, (bool Weapon, string? Xml)?> groundCollision = [];
+
+    /// <summary>What <see cref="GroundShape"/> reads of a record, once: whether it is a WEAPON and its <c>physics file</c> when that names an <c>.xml</c>; null without <c>has collision</c>.</summary>
+    (bool Weapon, string? Xml)? GroundCollisionOf(string record)
+    {
+        if (groundCollision.TryGetValue(record, out var known)) return known;
+        if (scene.Database?.Find(record) is not { } item) return null;   // not kept: the database may not be loaded yet
+        string physics = item.GetPath("physics file");
+        return groundCollision[record] = item.GetBool("has collision") ? (item.Type == Meitou.Data.Fcs.FcsRecordType.WEAPON, physics.Contains(".xml") ? physics : null) : null;
+    }
+
+    /// <summary>The twelve triangles of a box.</summary>
+    static IReadOnlyList<(Vector3[] Vertices, int[] Indices)> Box(Vector3 min, Vector3 max)
+    {
+        var v = new Vector3[8];
+        for (int i = 0; i < 8; i++) v[i] = new((i & 1) == 0 ? min.X : max.X, (i & 2) == 0 ? min.Y : max.Y, (i & 4) == 0 ? min.Z : max.Z);
+        return [(v, [0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 2, 6, 0, 6, 4, 1, 5, 7, 1, 7, 3])];
+    }
+
     readonly Dictionary<string, OgreBounds?> groundBounds = [];
+
     OgreBounds? BoundsOf(string record)
     {
         if (groundBounds.TryGetValue(record, out var bounds)) return bounds;

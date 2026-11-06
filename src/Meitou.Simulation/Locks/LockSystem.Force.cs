@@ -1,4 +1,5 @@
 using System.Numerics;
+using Meitou.Data.Gameplay.Ai;
 
 namespace Meitou.Simulation.Locks;
 
@@ -26,13 +27,12 @@ public sealed partial class LockSystem
         float bestDistance = float.MaxValue;
         foreach (var id in Who(world, order, order.Characters))
         {
-            if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone) continue;
+            if (!table.TryResolveNext(id, out int s) || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, IsImprisoned: false } c || !c.CarriedBy.IsNone || !TaskStart.Eligible(world, c, RowOf(order.Force))) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(fixture.Position));
             if (d < bestDistance) (best, bestDistance) = (s, d);
         }
         if (best < 0) return;
         var walker = table.Cold(best)!;
-        Vector2 at;
         switch (order.Force)
         {
             case LockForce.Tools when Lockpicking.BestTool(walker) is null:
@@ -45,24 +45,15 @@ public sealed partial class LockSystem
                     world.Post($"{walker.Name}: I need a weapon to smash that");
                     return;
                 }
-                if (world.Fixtures.DoorSpotOf(fixture) is not { } spot) return;
-                at = StandSpot(fixture, spot);
-                break;
-            default:
-                at = WorkSpot(world, fixture, Flat(table.Next[best].Position)).At;
+                if (world.Fixtures.DoorSpotOf(fixture) is null || SmashRefused(walker, fixture)) return;
                 break;
         }
-        walker.PickingLock = null;
-        walker.Shackles = null;
-        walker.ForcingLock = null;
-        walker.Bashing = null;
-        walker.BashOrdered = false;
-        doorWalkers.Remove(table.IdOf(best));
-        Remember(world, order, table.IdOf(best), fixture);
-        if (order.Force == LockForce.Smash) (walker.Bashing, walker.BashOrdered, walker.BashTime) = (fixture.Id, true, 0);
-        else (walker.ForcingLock, walker.Force) = (fixture.Id, order.Force);
-        MovementSystem.GoToFloor(world, best, new Vector3(at.X, fixture.Position.Y, at.Y), walker.RunSpeed);
+        StartWork(world, best, CharacterTask.GoTo, RowOf(order.Force), fixture.Id, detail: order.Force, queued: order.Queued, command: order);
     }
+
+    /// <summary>Row 226's own conditions (!70 isObjectMine, !128 isAlly): a door of the smasher's faction or of an ally's is never smashed on an order.</summary>
+    bool SmashRefused(CharacterCold walker, Fixture door) =>
+        door.Owner == walker.Faction || Combat?.Relations is { } r && r.Contains(walker.Faction) && r.Contains(door.Owner) && r.IsAlly(walker.Faction, door.Owner);
 
     /// <summary>Each tick: a character in reach of the lock it was ordered to force cuts or breaks it; one given another order, downed or gone gives up.</summary>
     void ForcedLocks(World world)
@@ -84,20 +75,20 @@ public sealed partial class LockSystem
                 if (Redirected(next[s], at, reach)) c.ForcingLock = null;
                 continue;
             }
-            if (next[s].Task == (byte)CharacterTask.GoTo) MovementSystem.Stop(table, s);
+            if (next[s].Task == (byte)CharacterTask.GoTo) AtWork(world, s);
             if (c.Force == LockForce.Strength)
             {
                 c.ForcingLock = null;
-                if (Picking.Break(world, s, f, Crimes)) { world.EmitSound(SoundKind.Unlocked, s, next[s].Position); if (c.IsPlayer) world.Post($"{c.Name}: *Crunck*"); }
-                else if (c.IsPlayer) world.Post($"{c.Name}: I'm not strong enough to do that");
+                if (Picking.Break(world, s, f, Crimes)) BruteForced(world, s, c, f.Kind == FixtureKind.Cage ? f.Occupant : CharacterId.None);
+                else if (c.IsPlayer) Say(world, c, "I'm not strong enough to do that");
                 continue;
             }
-            if (Lockpicking.BestTool(c) is null) { c.ForcingLock = null; if (c.IsPlayer) world.Post($"{c.Name}: I don't have any tools"); continue; }
+            if (Lockpicking.BestTool(c) is null) { c.ForcingLock = null; if (c.IsPlayer) Say(world, c, "I don't have any tools"); continue; }
             if (Picking.CutLock(world, s, f, world.TickSeconds, Crimes))
             {
                 c.ForcingLock = null;
                 world.EmitSound(SoundKind.Unlocked, s, next[s].Position);
-                if (c.IsPlayer) world.Post($"{c.Name}: Shackles broken!");
+                if (c.IsPlayer) Say(world, c, "Shackles broken!");
             }
         }
     }

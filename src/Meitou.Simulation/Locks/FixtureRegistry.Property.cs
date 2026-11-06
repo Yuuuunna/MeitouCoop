@@ -47,6 +47,8 @@ public sealed partial class FixtureRegistry
     public int? PropertyOwner(string building) => properties.TryGetValue(building, out var p) ? p.Owner : null;
     public ulong PropertyRevision(string building) => properties.TryGetValue(building, out var p) ? p.Revision : 0;
 
+    internal Vector3? PropertyPosition(string building) => properties.TryGetValue(building, out var p) ? p.Building.Position : null;
+
     /// <summary>Whether <paramref name="faction"/> owns a house in the town site <paramref name="site"/> (a registered site's properties only).</summary>
     public bool OwnsPropertyIn(int site, int faction)
     {
@@ -74,7 +76,7 @@ public sealed partial class FixtureRegistry
         if (player < 0 || !properties.TryGetValue(building, out var p) || p.Owner < 0 || p.Owner == player || p.Purchased) return null;
         var data = p.Data;
         if (data.Sites[p.Site].Town.Type is not (TownType.Outpost or TownType.Town or TownType.Village)
-            || data.SiteFactions[p.Site] == player || data.Relations.IsAlly(p.Owner, player)) return null;
+            || data.SiteFactions[p.Site] == player || data.Relations.IsHostile(p.Owner, player)) return null;
         var saved = Saved?.GetValueOrDefault(building);
         var state = p.Building.LevelState;
         bool sale = saved?.Bools.TryGetValue("sell home", out bool savedSale) == true ? savedSale
@@ -82,12 +84,16 @@ public sealed partial class FixtureRegistry
             : data.Db.Find(p.Building.ResidentsTemplate)?.GetBool("sell home") ?? (saved is null && state is null);
         bool inside = saved is not null ? saved.Bools.GetValueOrDefault("is inside building") : state?.GetBool("is inside building") ?? false;
         if (!sale || inside || data.Db.Find(p.Building.BuildingId) is not { } record) return null;
-        bool destroyed = saved?.Bools.GetValueOrDefault("destroyed") ?? p.Building.Destroyed;
+        bool destroyed = IsDestroyed(p.Building);
         float multiplier = data.Db.Find(data.FactionTemplate(p.Owner))?.GetFloat("building cost mult", 1) ?? 1;
         float price = (destroyed ? 0.375f : 1) * BuildingBuildData.From(record).Target * multiplier * 400;
         return float.IsFinite(price) && price >= 0 && price <= int.MaxValue ? (long)price : null;
     }
 
+    /// <summary>
+    /// Buys a town house at its quoted price (docs/simulation.md "Town house purchases"): it becomes the player's and private, its furniture and loose items go
+    /// (<see cref="EmptyInterior"/>, <see cref="Meitou.Simulation.Items.ItemSlots.EmptyBuilding"/>) and the squads living in it move out (<see cref="Meitou.Simulation.Ai.AiSystem.Evict"/>).
+    /// </summary>
     public void Buy(World world, BuyBuilding order)
     {
         if (!properties.TryGetValue(order.Building, out var p) || world.CommandFaction(order, FactionPermission.SpendFunds | FactionPermission.ManageAssets) is not { } funds) return;
@@ -111,7 +117,12 @@ public sealed partial class FixtureRegistry
         containerSpots = null; doorPicks = null; bedSpots = null; cageList = null;
         world.ItemSlots.TransferBuilding(world, p.Building, p.Owner);
         SetPublic(order.Building, false);
+        foreach (var f in OfBuilding(order.Building).ToList()) OpenDoor(f);
         RegisterTownConstruction(world, p);
+        DropRuin(order.Building);
+        world.ItemSlots.EmptyBuilding(world, p.Building);
+        EmptyInterior(world, order.Building, spill: false);
+        world.SystemOf<Ai.AiSystem>()?.Evict(world, order.Building);
     }
 
     /// <summary>
@@ -132,8 +143,10 @@ public sealed partial class FixtureRegistry
             : properties.TryGetValue(b.Key, out var p) ? p.Purchased || p.Owner == player
             : sites.Contains(site) ? OfBuilding(b.Key).Any(f => f.Owner == player)
             : Saved?.GetValueOrDefault(b.Key)?.Strings.GetValueOrDefault("owner faction ID") is { Length: > 0 } id && data.FactionIndex(id) == player;
-        int LevelOwner(TownBuilding b) => b.OwnerFactionId is { } o && data.FactionIndex(o) is var fi and >= 0 ? fi : townFaction;
+        int LevelOwner(TownBuilding b) => PlacementOwner(data, b, townFaction);
         var reset = town.Buildings.Where(b => b.Zone == town.Zone && !Players(b)).Select(b => b.Key).ToHashSet(StringComparer.Ordinal);
+        RelayTown(world, data, site, reset);
+        ApplyTownRuins(world, data, site, reset);
         if (Saved is { } saved && reset.Any(saved.ContainsKey))
             Saved = saved.Where(s => !reset.Contains(s.Key)).ToDictionary(s => s.Key, s => s.Value, StringComparer.Ordinal);
         foreach (var b in town.Buildings)
@@ -161,13 +174,14 @@ public sealed partial class FixtureRegistry
             else if (Players(b)) continue;
             int owner = LevelOwner(b);
             TransferTownMachine(world, b.Key, owner);
+            TransferSeats(b.Key, owner);
             if (properties.TryGetValue(b.Key, out var p)) { p.Owner = owner; p.Revision = NextPropertyRevision(); }
             foreach (var f in OfBuilding(b.Key)) { f.Owner = owner; RevisionOf(f); }
             world.ItemSlots.TransferBuilding(world, b, owner);
         }
         Bind(world);
         ownedProperties = null;
-        containerSpots = null; doorPicks = null; bedSpots = null; cageList = null;
+        containerSpots = null; doorPicks = null; bedSpots = null; bedList = null; cageList = null; dummySpots = null;
     }
 
     // The buildings a town override reset to the level, with their level owner then: their saved record (patched, not rewritten, by a save) must not bring the old state back.
@@ -182,7 +196,7 @@ public sealed partial class FixtureRegistry
         int owner = OfBuilding(building).FirstOrDefault()?.Owner ?? reset.Owner;
         if ((uint)owner < (uint)reset.Data.Factions.Count) state.Strings["owner faction ID"] = reset.Data.Factions[owner].Id;
         else state.Strings.Remove("owner faction ID");
-        state.Bools["destroyed"] = reset.Building.Destroyed;
+        state.Bools["destroyed"] = IsDestroyed(reset.Building);
         state.Bools.Remove(PurchasedKey);
     }
 
@@ -198,6 +212,7 @@ public sealed partial class FixtureRegistry
                 WriteReset(building, state);
                 if (!byBuilding.ContainsKey(building)) ClearResetContainers(building, state);
             }
+        WriteRuins(states);
     }
 
     void ClearResetContainers(string building, FcsRecord state)
@@ -205,6 +220,13 @@ public sealed partial class FixtureRegistry
         if (!resetBuildings.ContainsKey(building)) return;
         foreach (var key in state.Strings.Keys.Where(k => k.StartsWith(ContainerSave.KeyPrefix, StringComparison.Ordinal)).ToArray()) state.Strings.Remove(key);
     }
+
+    /// <summary>
+    /// Whether a town building is a ruin: its saved <c>destroyed</c>, but a level ruin stays one unless the player's repair saved it (<c>meitou town construction</c>):
+    /// a save from before the residents' ruins were laid out (docs/game/buildings-production.md "Ruined by residents") wrote those buildings intact.
+    /// </summary>
+    public bool SavedDestroyed(TownBuilding b) => Saved?.GetValueOrDefault(b.Key) is not { } saved ? b.Destroyed
+        : saved.Bools.GetValueOrDefault("destroyed", b.Destroyed) || b.Destroyed && !saved.Bools.GetValueOrDefault("meitou town construction");
 
     void WriteProperty(string building, FcsRecord state)
     {
@@ -227,7 +249,7 @@ public sealed partial class FixtureRegistry
         state.Bools["is public night"] = false;
     }
 
-    void RegisterTownConstruction(World world, Property p)
+    void RegisterTownConstruction(World world, Property p, bool? ruin = null)
     {
         if (p.Owner < 0 || p.Construction is not null) return;
         var b = p.Building;
@@ -237,12 +259,13 @@ public sealed partial class FixtureRegistry
         bool Bool(string key, bool fallback) => saved?.Bools.GetValueOrDefault(key, fallback) ?? b.LevelState?.GetBool(key, fallback) ?? fallback;
         float Float(string key, float fallback) => saved?.Floats.GetValueOrDefault(key, fallback) ?? b.LevelState?.GetFloat(key, fallback) ?? fallback;
         var data = BuildingBuildData.From(p.Data.Db.Find(b.BuildingId)!);
-        bool destroyed = Bool("destroyed", b.Destroyed), complete = Bool("is complete", true);
+        bool destroyed = ruin ?? IsDestroyed(b), complete = Bool("is complete", true);
         float progress = Math.Clamp(Float("construction progress", data.Target), 0, data.Target);
         // Keep a repaired level ruin in the overlay even after completion, to replace its original ruin mesh.
         if (!destroyed && complete && progress >= data.Target && !b.Destroyed && !(saved?.Bools.GetValueOrDefault("meitou town construction") ?? false)) return;
         var placement = b.Resolved?.Placement ?? new BuildingPlacement(b.Zone, b.InstanceId, b.BuildingId, b.Position,
             Quaternion.CreateFromAxisAngle(Vector3.UnitY, b.Yaw), b.LevelState?.StringId, b.Position.Y);
+        placement = placement with { WithoutInterior = p.Purchased };   // a bought house's furniture is gone (EmptyInterior)
         var site = new BuildSite
         {
             Id = b.Key, Record = b.BuildingId, Name = b.Name, Position = b.Position, Rotation = placement.Rotation,

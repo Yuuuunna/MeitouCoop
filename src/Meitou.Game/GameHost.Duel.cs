@@ -148,7 +148,6 @@ sealed partial class GameHost
         var built = BuildSystems(interactive: true);
         LocalSession.ReplaceWorld(built.Systems, world => DuelSetup(world, built.Population!));
         population = built.Population;
-        aggro = built.Aggro;
         worldEpoch++;
         session.Clock.SetTime(o.Day ?? Meitou.Engine.Time.GameClock.DefaultStartDay, duelHour);
         LocalSession.Simulation.ResetPhase();

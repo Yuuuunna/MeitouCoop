@@ -96,10 +96,6 @@ public sealed partial class CharacterAppearance
     public GameRecord? Animal { get; private init; }
     public required GameRecord Race { get; init; }
     public bool Female { get; private init; }
-    /// <summary>Visual cut at the neck; no gameplay state.</summary>
-    public bool Headless { get; init; }
-    /// <summary>Draw only the head; no gameplay state.</summary>
-    public bool HeadOnly { get; init; }
     public AppearanceFile? Body { get; private init; }
     public string? BodyFile { get; private init; }
     /// <summary>The rolled character this was built from (with <see cref="CharacterOptions.Seed"/> or <see cref="CharacterOptions.Loadout"/>).</summary>
@@ -189,8 +185,11 @@ public sealed partial class CharacterAppearance
         GameRecord? race = loadout?.Race ?? (record.Type == FcsRecordType.RACE ? record : null);
         race ??= Pick(db, character!.GetReferences("race"), random, r => r.Values.Value0);
         if (race is null && body?.RaceId is { } bodyRace) race = db.Find(bodyRace);
-        race ??= Find(db, "Greenlander", FcsRecordType.RACE);
-        if (race is null) throw new KeyNotFoundException($"'{record.Name}' has no race.");
+        if (race is null)
+        {
+            race = Find(db, CharacterGenerator.DefaultRaceId, FcsRecordType.RACE) ?? throw new KeyNotFoundException($"'{record.Name}' ({record.StringId}) has no race.");
+            notes.Add($"no race: default {CharacterGenerator.DefaultRaceId}");
+        }
 
         bool female = options.Female ?? loadout?.Female ?? body?.Female ?? (character is not null && character.GetInt("female chance") >= 50);
         if (female && race.GetBool("single gender")) { female = false; notes.Add("race is single gender: male mesh used"); }
@@ -260,6 +259,10 @@ public sealed partial class CharacterAppearance
             worn.RemoveAll(w => w.GetInt("slot", 5) == item.GetInt("slot", 5));
             worn.Add(item);
         }
+        // A cut-off head (Meitou decapitation) takes its hat along; the hat stays in the inventory.
+        bool headless = loadout?.Decapitated == true;
+        result.Headless = headless;
+        if (headless) worn.RemoveAll(w => (AttachSlot)w.GetInt("slot", 5) == AttachSlot.Hat);
         // fcs.def: "hide hair" (default true) is for hats only.
         bool hideHair = worn.Any(w => (AttachSlot)w.GetInt("slot", 5) == AttachSlot.Hat && w.GetBool("hide hair", true));
         bool hideBeard = worn.Any(w => w.GetBool("hide beard"));
@@ -268,8 +271,8 @@ public sealed partial class CharacterAppearance
         var hair = body?.HairId is { } hairId ? db.Find(hairId) : character is null || body is null ? PickHair(db, race, AttachSlot.Hair, random) : null;
         var beard = body?.BeardId is { } beardId ? db.Find(beardId) : null;
         if (character?.GetBool("shaved") == true) { hair = null; result.Notes.Add("shaved: no hair"); }
-        result.Hair = hideHair ? null : hair;
-        result.Beard = hideBeard ? null : beard;
+        result.Hair = hideHair || headless ? null : hair;
+        result.Beard = hideBeard || headless ? null : beard;
         if (hideHair && hair is not null) result.Notes.Add($"hair '{hair.Name}' hidden by a hat");
 
         foreach (var attachment in new[] { result.Hair, result.Beard })
@@ -278,18 +281,9 @@ public sealed partial class CharacterAppearance
         foreach (var item in worn) result.AddWorn(item, female, worn, materials.GetValueOrDefault(item), Dye(item));
         foreach (var item in items.Where(i => i.Type is FcsRecordType.ATTACHMENT or FcsRecordType.CONTAINER))
             result.AddWorn(item, female, worn, colour: Dye(item));
-        foreach (var item in items.Where(i => i.Type == FcsRecordType.LIMB_REPLACEMENT))
-            result.AddLimb(item, female);
-        if (loadout is not null)
-        {
-            result.AddLimbs(db, race, female, loadout.Limbs);
-            // Boots (not `is locked`) over exactly one prosthetic leg lose that leg's half.
-            bool left = loadout.Limbs[2]?.State == 2, right = loadout.Limbs[3]?.State == 2;
-            if (left != right)
-                for (int i = 0; i < result.Parts.Count; i++)
-                    if (result.Parts[i] is { Slot: AttachSlot.Boots } boots && boots.Record.Type == FcsRecordType.ARMOUR && !boots.Record.GetBool("is locked"))
-                        result.Parts[i] = boots with { HideSide = left ? 1 : 2 };
-        }
+        // A limb's item is dyed like clothing: its own colour (a new one's: its record's), else the wearer's scheme.
+        GameRecord? LimbDye(GameRecord limb, GameRecord? own) => Gameplay.ItemColours.Shown(db, limb, own ?? Gameplay.ItemColours.Of(db, limb), character, faction);
+        result.AddLimbParts(db, race, female, items.Where(i => i.Type == FcsRecordType.LIMB_REPLACEMENT), loadout, LimbDye);
 
         // Weapons: the loadout's, else the likeliest: the first entry with quantity > 0 of the hip pool (val1 = 0) and of
         // the back pool (val1 ≠ 0), whose absolute chances make the first one win (docs/characters.md). Then --equip weapons.
@@ -359,6 +353,27 @@ public sealed partial class CharacterAppearance
     /// </summary>
     public int HiddenLimbs { get; private set; }
 
+    /// <summary>The head was cut off (<see cref="Loadout.Decapitated"/>): the body's head vertices are hidden and its hat, hair and beard left out.</summary>
+    public bool Headless { get; private set; }
+
+    /// <summary>A cut-off head (<see cref="SeveredHead"/>): only the body's head vertices are drawn, with the hair, beard and hat.</summary>
+    public bool HeadOnly { get; private set; }
+
+    /// <summary>The head of this look as it falls when cut off (Meitou decapitation): the body (drawn head only, <see cref="HeadOnly"/>) with its hair, beard and hat.</summary>
+    public CharacterAppearance SeveredHead()
+    {
+        var copy = new CharacterAppearance
+        {
+            Character = Character, Animal = Animal, Race = Race, Female = Female, Body = Body, BodyFile = BodyFile, Loadout = Loadout, Faction = Faction,
+            BodyMesh = BodyMesh, BodyTexture = BodyTexture, BodyNormal = BodyNormal, BodyNormalStrong = BodyNormalStrong, BodyNormalSkinny = BodyNormalSkinny, BodyMask = BodyMask, PartMap = PartMap, Head = Head, Hair = Hair,
+            Shape = Shape, Beard = Beard, SkinToneParameter = SkinToneParameter, HairColour = HairColour, HeadOnly = true,
+        };
+        copy.Parts.AddRange(Parts.Where(p => p.Record == Hair || p.Record == Beard || p.Slot == AttachSlot.Hat));
+        copy.BodyLayers.AddRange(BodyLayers);
+        foreach (var (name, weight) in PoseWeights) copy.PoseWeights[name] = weight;
+        return copy;
+    }
+
     /// <summary>The part-map regions the worn ARMOUR hides: the OR of their <c>hide parts</c> (bit per part-map colour, docs/characters.md "Hidden body parts").</summary>
     public int HiddenParts { get; private set; }
 
@@ -366,7 +381,7 @@ public sealed partial class CharacterAppearance
     /// The non-natural limbs of <paramref name="limbs"/> (<c>FUN_1400d0190</c>, <c>uses_limb_replacement</c>): a stump shows the race's <c>limb replacement</c> entry whose
     /// <c>slot</c> is 50 + k, a replaced limb its prosthetic (a stump's without one); a crushed limb gets no mesh (the original attaches none for state 3) but stays hidden.
     /// </summary>
-    void AddLimbs(GameDatabase db, GameRecord race, bool female, IReadOnlyList<LoadoutLimb?> limbs)
+    void AddLimbs(GameDatabase db, GameRecord race, bool female, IReadOnlyList<LoadoutLimb?> limbs, Func<GameRecord, GameRecord?, GameRecord?> dye)
     {
         for (int k = 0; k < limbs.Count; k++)
         {
@@ -376,17 +391,39 @@ public sealed partial class CharacterAppearance
             var record = limb.State == 2 ? limb.Prosthetic : null;
             record ??= race.GetReferences("limb replacement").Select(r => db.Find(r.TargetStringId))
                 .FirstOrDefault(r => r is { Type: FcsRecordType.LIMB_REPLACEMENT } && r.GetInt("slot") == 50 + k);
-            if (record is not null) AddLimb(record, female);
+            if (record is not null) AddLimb(record, female, dye(record, limb.State == 2 ? limb.Colour : null));
         }
     }
 
-    /// <summary>A LIMB_REPLACEMENT mesh on the body's skeleton (<c>mesh</c> / <c>mesh female</c>); hides its slot's natural limb.</summary>
-    void AddLimb(GameRecord limb, bool female)
+    /// <summary>
+    /// The limbs: the <c>--equip</c> LIMB_REPLACEMENTs in <paramref name="equipped"/>, then <paramref name="loadout"/>'s stumps and prosthetics, each dyed by
+    /// <paramref name="dye"/> (record, the item's own colour). Boots (not <c>is locked</c>) over exactly one prosthetic leg lose that leg's half.
+    /// </summary>
+    void AddLimbParts(GameDatabase db, GameRecord race, bool female, IEnumerable<GameRecord> equipped, Loadout? loadout, Func<GameRecord, GameRecord?, GameRecord?> dye)
+    {
+        foreach (var item in equipped)
+            AddLimb(item, female, dye(item, null));
+        if (loadout is null) return;
+
+        AddLimbs(db, race, female, loadout.Limbs, dye);
+        bool left = loadout.Limbs[2]?.State == 2, right = loadout.Limbs[3]?.State == 2;
+        if (left == right) return;
+
+        for (int i = 0; i < Parts.Count; i++)
+            if (Parts[i] is { Slot: AttachSlot.Boots } boots && boots.Record.Type == FcsRecordType.ARMOUR && !boots.Record.GetBool("is locked"))
+                Parts[i] = boots with { HideSide = left ? 1 : 2 };
+    }
+
+    /// <summary>
+    /// A LIMB_REPLACEMENT mesh on the body's skeleton (<c>mesh</c> / <c>mesh female</c>), dyed with <paramref name="colour"/> when its material has a <c>color map</c>
+    /// (docs/characters.md "Clothing colours"); hides its slot's natural limb.
+    /// </summary>
+    void AddLimb(GameRecord limb, bool female, GameRecord? colour)
     {
         if (limb.GetInt("slot") - 50 is >= 0 and < 4 and var k) HiddenLimbs |= 1 << k;
         string field = female && limb.GetPath("mesh female").Length > 0 ? "mesh female" : "mesh";
         if (limb.GetPath(field) is { Length: > 0 } mesh)
-            Parts.Add(new CharacterPart { Record = limb, Mesh = mesh, Field = field, Mode = AttachMode.SharedSkeleton });
+            Parts.Add(new CharacterPart { Record = limb, Mesh = mesh, Field = field, Mode = AttachMode.SharedSkeleton, Colour = colour });
     }
 
     void AddWorn(GameRecord item, bool female, List<GameRecord> worn, GameRecord? material = null, GameRecord? colour = null)
@@ -481,7 +518,7 @@ public sealed partial class CharacterAppearance
         {
             Character = Character, Animal = Animal, Race = Race, Female = Female, Body = Body, BodyFile = BodyFile, Loadout = Loadout, Faction = Faction,
             BodyMesh = BodyMesh, BodyTexture = BodyTexture, BodyNormal = BodyNormal, BodyNormalStrong = BodyNormalStrong, BodyNormalSkinny = BodyNormalSkinny, BodyMask = BodyMask, PartMap = PartMap, Head = Head, Hair = Hair,
-            Shape = Shape, Beard = Beard, SkinToneParameter = SkinToneParameter, HairColour = HairColour, HiddenLimbs = HiddenLimbs, HiddenParts = HiddenParts,
+            Shape = Shape, Beard = Beard, SkinToneParameter = SkinToneParameter, HairColour = HairColour, HiddenLimbs = HiddenLimbs, HiddenParts = HiddenParts, Headless = Headless,
         };
         copy.Parts.AddRange(Parts);
         copy.Parts.Add(new CharacterPart { Record = item, Mesh = mesh, Field = "mesh", Mode = AttachMode.Bone, Slot = AttachSlot.Weapon, Point = "hands" });

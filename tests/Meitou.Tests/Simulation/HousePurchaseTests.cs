@@ -17,7 +17,7 @@ public partial class HousePurchaseTests
     internal static (PopulationData Data, TownBuilding House) Setup(bool destroyed = false, bool sale = true, int townType = 2, bool inside = false)
     {
         var db = Db(
-            Rec("player", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
             Rec("owner", FcsRecordType.FACTION, r => r.Floats["building cost mult"] = 1),
             Rec("town", FcsRecordType.TOWN, r => { r.Ints["type"] = townType; r.References["faction"] = [new("owner", 0, 0, 0)]; }),
             Rec("shell", FcsRecordType.BUILDING_FUNCTIONALITY, r => r.Ints["function"] = 19),
@@ -52,11 +52,12 @@ public partial class HousePurchaseTests
         Assert.Null(world.Snapshot.InspectedBuilding.SalePrice);
         Assert.Contains(house.Key, world.Snapshot.OwnedTownBuildings);
         Assert.All(world.Fixtures.OfBuilding(house.Key), f => Assert.Equal(data.PlayerFaction, f.Owner));
+        Assert.All(world.Fixtures.OfBuilding(house.Key).Where(f => f.Kind == FixtureKind.Door), d => Assert.NotEqual(DoorMotion.Closed, d.Motion));   // FUN_1407ad6c0 opens every door
         world.Commands.Enqueue(new BuyBuilding(house.Key, price) { Tick = world.Tick }); world.RunTick();
         Assert.Equal(20000 - price, world.Player.Money);
         var state = Rec("saved", FcsRecordType.GAMESTATE_BUILDING);
         Assert.True(world.Fixtures.WriteBuilding(house.Key, state));
-        Assert.Equal("player", state.Strings["owner faction ID"]); Assert.False(state.Bools["sell home"]);
+        Assert.Equal("204-gamedata.base", state.Strings["owner faction ID"]); Assert.False(state.Bools["sell home"]);
         using var loaded = World(data);
         loaded.Player.Faction = data.PlayerFaction;
         loaded.Fixtures.Saved = new Dictionary<string, FcsRecord> { [house.Key] = state };
@@ -74,13 +75,13 @@ public partial class HousePurchaseTests
     [InlineData("sale")]
     [InlineData("town")]
     [InlineData("inside")]
-    [InlineData("ally")]
+    [InlineData("hostile")]
     public void Invalid_purchases_do_not_take_money_or_change_ownership(string reason)
     {
         var (data, house) = Setup(sale: reason != "sale", townType: reason == "town" ? 4 : 2, inside: reason == "inside");
         using var world = World(data);
         world.Player.Faction = data.PlayerFaction; world.Player.Money = reason == "money" ? 12799 : 20000;
-        if (reason == "ally") data.Relations.Set(data.FactionIndex("owner"), data.PlayerFaction, 100);
+        if (reason == "hostile") data.Relations.Set(data.FactionIndex("owner"), data.PlayerFaction, -100);
         world.Fixtures.RegisterSite(world, data, 0);
         long money = world.Player.Money;
         world.Commands.Enqueue(new BuyBuilding(house.Key, reason == "price" ? 1 : 12800) { Tick = 0 }); world.RunTick();

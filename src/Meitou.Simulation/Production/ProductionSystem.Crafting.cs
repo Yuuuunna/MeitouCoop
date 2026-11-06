@@ -1,3 +1,4 @@
+using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Gameplay.Construction;
 using Meitou.Simulation.Items;
 
@@ -58,11 +59,13 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// Sets the input sections for the first craft (<b>Observed</b>, <c>CraftingBuilding::vfunc_182</c> "setProductionItem"): section k takes ingredient k at its per-item amount;
     /// sections it does not use draw nothing. Done when the first craft changes (queued, cancelled, finished). Items of another kind in a section fall on the ground (engine choice; the
-    /// original hands them back to the bench).
+    /// original hands them back to the bench). Each section's level moves with its item (<b>Verified</b>, <c>FUN_1402bb470</c>): all sections store their level under their old item first, then a
+    /// section taking an item gets the level stored for it (0 when none), so switching to another recipe and back returns the partly drawn ingredient.
     /// </summary>
     void Bind(World world, Machine m, CraftState state, CraftJob job)
     {
         if (state.Bound == job.Option.Key) return;
+        foreach (var held in m.Inputs) Remember(state, held.Item, held.Level);
         for (int k = 0; k < m.Inputs.Length; k++)
         {
             var slot = m.Inputs[k];
@@ -74,6 +77,22 @@ public sealed partial class ProductionSystem
             }
         }
         Apply(m, state, job);
+        for (int k = 0; k < job.Recipe.Inputs.Count && k < m.Inputs.Length; k++)
+            if (state.Partial.Remove(m.Inputs[k].Item, out float level)) m.Inputs[k].Level = level;
+            else m.Inputs[k].Level = 0;
+    }
+
+    /// <summary>Stores a section's level under its item (a level of 0 forgets it).</summary>
+    static void Remember(CraftState state, string item, float level)
+    {
+        if (level > 0) state.Partial[item] = level;
+        else state.Partial.Remove(item);
+    }
+
+    /// <summary>A remembered level read from a save (an item that is not in the game is dropped).</summary>
+    internal void RestorePartial(Machine m, string item, float level)
+    {
+        if (m.Craft is { } state && level > 0 && items.Info(item) is not null) state.Partial[item] = level;
     }
 
     static string ItemOf(Machine m, CraftJob job, int k) => k < job.Recipe.Inputs.Count ? job.Recipe.Inputs[k].Item : m.Inputs[k].Recipe.Item;
@@ -157,10 +176,7 @@ public sealed partial class ProductionSystem
                 if (made is not null) made.Level = Math.Min(CraftBench.ArmourQuality(skill, critical), bench.TechLevel);
                 break;
             case CraftKind.Weapon:
-                var model = option;
-                if (skill < option.Level && !critical)
-                    model = bench.Options.Where(o => o.Kind == CraftKind.Weapon && o.Item == option.Item && o.Level <= skill).OrderByDescending(o => o.Level).FirstOrDefault()
-                        ?? bench.Options.Where(o => o.Kind == CraftKind.Weapon && o.Item == option.Item).OrderBy(o => o.Level).First();
+                var model = WeaponModel(bench, option, skill, critical);
                 made = items.Create(option.Item, 1);
                 if (made is not null)
                 {
@@ -182,6 +198,59 @@ public sealed partial class ProductionSystem
         }
         if (state.Repeat) state.Queue.Add(new CraftJob(RecipeOf(m, option)));
         world.Machines.Touch();
+    }
+
+    /// <summary>The model a weapon craft comes out as: the queued one, or below the crafter's skill with no critical the best model of the bench at or below the skill (else its lowest).</summary>
+    static CraftOption WeaponModel(CraftBench bench, CraftOption option, float skill, bool critical) =>
+        skill >= option.Level || critical ? option
+            : bench.Options.Where(o => o.Kind == CraftKind.Weapon && o.Item == option.Item && o.Level <= skill).OrderByDescending(o => o.Level).FirstOrDefault()
+                ?? bench.Options.Where(o => o.Kind == CraftKind.Weapon && o.Item == option.Item).OrderBy(o => o.Level).First();
+
+    IReadOnlyDictionary<string, CraftSmithView>? publishedSmiths;
+    long smithsVersion = -1;
+
+    /// <summary>
+    /// The Craft tab's Current Smith per bench (<c>FUN_1402bcf60</c>): the bench's last operator (<see cref="Machine.Smith"/>) while it is alive with stats, his effective level of the bench's
+    /// stat and the penalty of its multiplier, and for each queued craft what that smith would make (<see cref="CraftPrediction"/>). Rebuilt when the machines changed.
+    /// </summary>
+    public IReadOnlyDictionary<string, CraftSmithView> SmithsView(World world)
+    {
+        if (publishedSmiths is not null && smithsVersion == world.Machines.Version) return publishedSmiths;
+        smithsVersion = world.Machines.Version;
+        var map = new Dictionary<string, CraftSmithView>(StringComparer.Ordinal);
+        foreach (var m in world.Machines.All)
+        {
+            if (m.Craft is not { } state || m.Data.Craft is not { } bench || m.Data.Stat <= 0 || !world.Characters.IsAlive(m.Smith)
+                || world.Characters.Cold(m.Smith.Slot) is not { Stats: { } stats, Medical: { } medical } cold) continue;
+            var (level, penalty) = World.EffectiveSkill(cold, medical, stats, (StatsEnumerated)m.Data.Stat);
+            // FUN_1402b5900 reads the first queued craft whichever one is hovered.
+            int critical = state.Queue.Count == 0 ? 0 : Math.Clamp((int)(CraftBench.CriticalChance(level, m.Data.Stat, state.Queue[0].Option.Level) * 100), 0, 100);
+            var entries = new List<CraftPrediction>(state.Queue.Count);
+            foreach (var job in state.Queue)
+            {
+                var option = job.Option;
+                var none = new CraftPrediction(-1, null, false, 0, -1);
+                switch (option.Kind)
+                {
+                    case CraftKind.Armour or CraftKind.Crossbow:
+                        entries.Add(none with { Quality = CraftBench.ArmourQuality(level, false), Critical = critical });
+                        break;
+                    case CraftKind.Weapon:
+                        var model = WeaponModel(bench, option, level, false);
+                        entries.Add(none with
+                        {
+                            Model = model.Model is { } id ? db.Find(id)?.Name ?? id : "", ModelChanged = model.Model != option.Model,
+                            MaterialCost = db.Find(option.Item)?.GetInt("material cost", 4) ?? 4, Critical = critical,
+                        });
+                        break;
+                    default:
+                        entries.Add(none);
+                        break;
+                }
+            }
+            map[m.Site] = new CraftSmithView(cold.Name, (int)level, penalty, entries);
+        }
+        return publishedSmiths = map;
     }
 
     IReadOnlyDictionary<string, IReadOnlyList<CraftOptionView>>? publishedCrafts;

@@ -15,7 +15,7 @@ namespace Meitou.Simulation.Saving;
 /// and, for the storage grid, <c>main</c> (the original's storage section name is <b>Unknown</b>; no sample save holds a player building with items, so the original reading these is unverified).
 /// A loaded farm's plants all take the farm's growth (the harvested ones -10): the stagger between plants is not saved.
 /// </summary>
-public static class MachineSave
+public static partial class MachineSave
 {
     const string InventorySuffix = "-inventory";
     /// <summary>The item furnace's input section (<b>Verified</b>, <c>FurnaceBuilding::setupFromData</c>), Meitou's storage grid of a furnace.</summary>
@@ -25,15 +25,25 @@ public static class MachineSave
     public static void Write(SaveGame game, World world)
     {
         ClearResetMachines(game, world);
+        world.SavedMachines?.WritePending(game.Camera.Record, world);
         if (world.Machines.Count == 0) return;
         foreach (var m in world.Machines.All)
         {
-            if (world.Buildings.Find(m.Site) is not { } site || !game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list) continue;
+            if (world.Buildings.Find(m.Site) is not { } site) continue;
+            if (!game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list)
+            {
+                world.SavedMachines?.RequireNativeCapture(m.Site);
+                continue;
+            }
             var file = zone.File;
             string rawId = site.LevelPlacement?.InstanceId ?? site.Id;
             var instance = list.Instances.FirstOrDefault(i => i.Id == rawId);
             var state = instance?.States.Select(id => file.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.GAMESTATE_BUILDING)).FirstOrDefault(r => r is not null);
-            if (state is null || instance is null) continue;
+            if (state is null || instance is null)
+            {
+                world.SavedMachines?.RequireNativeCapture(m.Site);
+                continue;
+            }
             WriteKeys(state, m, world.GameHours);
             var saveItems = Items(m);
             string inventoryId = rawId + InventorySuffix;
@@ -57,6 +67,8 @@ public static class MachineSave
 
     static void WriteKeys(FcsRecord state, Machine m, double gameHours)
     {
+        state.Bools["meitou machine state"] = true;
+        state.Ints["meitou machine status"] = m.Status;
         state.Floats["resource mult"] = m.Yield;
         // The power keys (Observed, vfunc_17/18 of the building classes FUN_1402a14b0 / FUN_1402a1750).
         state.Bools["power on"] = m.PowerOn;
@@ -66,7 +78,7 @@ public static class MachineSave
         if (m.Output is { } o) state.Floats["production amount"] = o.Progress;
         for (int k = 0; k < m.Inputs.Length; k++) state.Floats["consumption amount-" + k.ToString(CultureInfo.InvariantCulture)] = m.Inputs[k].Level;
         if (m.Data.IsFurnace) state.Floats["consumption amount-0"] = m.BurnLevel;   // its one input, the burn level
-        if (m.Craft is { } c) WriteCraft(state, c);
+        if (m.Craft is { } c) WriteCraft(state, m, c);
         if (m.Farm is not { } f) return;
         state.Floats["plant growth"] = f.Growth;
         state.Floats["plant death"] = f.Death;
@@ -76,12 +88,15 @@ public static class MachineSave
     }
 
     /// <summary>The crafting keys (<b>Observed</b>, <c>CraftingBuilding::vfunc_17</c>): <c>num crafts</c> (a float), <c>repeat</c>, and per queued craft k <c>current&lt;k&gt;</c> (the item),
-    /// <c>currentExtraData&lt;k&gt;</c> (a weapon's model, else empty), <c>current prog&lt;k&gt;</c> and <c>crit&lt;k&gt;</c>. The original's partly drawn items (<c>craft partial item ...</c>) are not written.</summary>
-    static void WriteCraft(FcsRecord state, CraftState c)
+    /// <c>currentExtraData&lt;k&gt;</c> (a weapon's model, else empty), <c>current prog&lt;k&gt;</c> and <c>crit&lt;k&gt;</c>, then the partly drawn items (<b>Verified</b>, <c>FUN_1402b8440</c>): every remembered level above 0, with the sections' own levels stored first, as
+    /// strings <c>craft partial item sid &lt;k&gt;</c> (the item), floats <c>craft partial item val &lt;k&gt;</c> and the int <c>craft partial item size</c> (how many).</summary>
+    static void WriteCraft(FcsRecord state, Machine m, CraftState c)
     {
         foreach (var key in state.Strings.Keys.Where(k => k.StartsWith("current", StringComparison.Ordinal)).ToList()) state.Strings.Remove(key);
         foreach (var key in state.Floats.Keys.Where(k => k.StartsWith("current prog", StringComparison.Ordinal)).ToList()) state.Floats.Remove(key);
         foreach (var key in state.Ints.Keys.Where(k => k.StartsWith("crit", StringComparison.Ordinal)).ToList()) state.Ints.Remove(key);
+        foreach (var key in state.Strings.Keys.Where(k => k.StartsWith(PartialSid, StringComparison.Ordinal)).ToList()) state.Strings.Remove(key);
+        foreach (var key in state.Floats.Keys.Where(k => k.StartsWith(PartialVal, StringComparison.Ordinal)).ToList()) state.Floats.Remove(key);
         state.Floats["num crafts"] = c.Queue.Count;
         state.Bools["repeat"] = c.Repeat;
         for (int k = 0; k < c.Queue.Count; k++)
@@ -92,7 +107,23 @@ public static class MachineSave
             state.Floats["current prog" + n] = c.Queue[k].Progress;
             state.Ints["crit" + n] = c.Queue[k].Critical;
         }
+        var partialLevels = new Dictionary<string, float>(c.Partial, StringComparer.Ordinal);
+        foreach (var input in m.Inputs)
+            if (input.Level > 0) partialLevels[input.Item] = input.Level;
+            else partialLevels.Remove(input.Item);
+        int written = 0;
+        foreach (var (item, level) in partialLevels)
+        {
+            if (level <= 0) continue;
+            string n = written++.ToString(CultureInfo.InvariantCulture);
+            state.Strings[PartialSid + n] = item;
+            state.Floats[PartialVal + n] = level;
+        }
+        state.Ints["craft partial item size"] = written;
     }
+
+    const string PartialSid = "craft partial item sid ";
+    const string PartialVal = "craft partial item val ";
 
     static List<SaveItem> Items(Machine m)
     {
@@ -121,7 +152,14 @@ public static class MachineSave
     {
         public SaveGame Source { get; } = source;
         readonly Dictionary<string, string> consumed = new(StringComparer.Ordinal);
-        internal void Invalidate(string key) => consumed.TryAdd(key, key);
+        readonly LegacyTownMachines legacy = new(source);
+        readonly HashSet<string> importedLegacy = new(StringComparer.Ordinal);
+        internal void RequireNativeCapture(string site)
+        {
+            if (importedLegacy.Contains(site)) throw new InvalidOperationException("Capturing a migrated town machine requires its native zone state; supply the world's level data.");
+        }
+        internal void Invalidate(string key) { consumed.TryAdd(key, key); legacy.Invalidate(key); }
+        internal void WritePending(FcsRecord camera, World world) => legacy.WritePending(camera, world.Fixtures.ResetBuildings);
         internal IEnumerable<string> Retired(World world) => consumed.Where(p => world.Machines.Find(p.Value) is null).Select(p => p.Key);
 
         internal void Apply(World world, ProductionSystem production, BuildSite site, Machine machine)
@@ -129,13 +167,25 @@ public static class MachineSave
             string rawId = site.LevelPlacement?.InstanceId ?? site.Id;
             string key = BuildingKey.Of(site.Zone, rawId);
             if (!consumed.TryAdd(key, site.Id)) return;
-            // A town override may discard a level building's saved state before its machine is ever created.
-            if (site.LevelPlacement is not null && world.Fixtures.Saved?.ContainsKey(key) != true) return;
-            if (!Source.Zones.TryGetValue(site.Zone, out var zone) ||
-                zone.BuildingList?.Instances.FirstOrDefault(i => i.Id == rawId && !i.IsRemoved) is not { } instance) return;
-            if (instance.Target != site.Record) throw new InvalidDataException("A saved machine's building record differs from the restored site.");
-            RestoreSite(zone, instance, machine, production, factory);
-            world.Machines.Touch();
+            var row = legacy.Take(key);
+            Source.Zones.TryGetValue(site.Zone, out var zone);
+            var instance = zone?.BuildingList?.Instances.FirstOrDefault(i => i.Id == rawId);
+            if (instance is { IsRemoved: true }) return;
+            if (instance is not null && instance.Target != site.Record)
+                throw new InvalidDataException("A saved machine's building record differs from the restored site.");
+            bool restoreNative = instance is not null && zone is not null
+                && (site.LevelPlacement is null || world.Fixtures.Saved?.ContainsKey(key) == true);
+            // Preserve the original native reader even for a state with only a lock/broken flag.
+            if (restoreNative) RestoreSite(zone!, instance!, machine, production, factory);
+            // Payload detection only decides precedence over the obsolete CAMERA row, never whether native fields may load.
+            bool nativePayload = restoreNative && HasNativeMachineState(zone!, instance!);
+            bool importLegacy = row is not null && !nativePayload && site.LevelPlacement is not null && site.Id == key;
+            if (importLegacy)
+            {
+                row!.Apply(machine);
+                importedLegacy.Add(site.Id);
+            }
+            if (restoreNative || importLegacy) world.Machines.Touch();
         }
     }
 
@@ -209,8 +259,8 @@ public static class MachineSave
                     {
                         foreach (var key in record.Floats.Keys.Where(k => k is "resource mult" or "production amount" or "batterycharge" or "plant growth" or "plant death" or "plant start" or "save time" or "num crafts"
                             || Numbered(k, "consumption amount-") || Numbered(k, "current prog")).ToArray()) record.Floats.Remove(key);
-                        foreach (var key in new[] { "power on", "gets battery", "broken", "repeat" }) record.Bools.Remove(key);
-                        foreach (var key in record.Ints.Keys.Where(k => k == "plants harvested" || Numbered(k, "crit")).ToArray()) record.Ints.Remove(key);
+                        foreach (var key in new[] { "power on", "gets battery", "broken", "repeat", "meitou machine state" }) record.Bools.Remove(key);
+                        foreach (var key in record.Ints.Keys.Where(k => k is "plants harvested" or "meitou machine status" || Numbered(k, "crit")).ToArray()) record.Ints.Remove(key);
                         foreach (var key in record.Strings.Keys.Where(k => Numbered(k, "current") || Numbered(k, "currentExtraData")).ToArray()) record.Strings.Remove(key);
                     }
                 }
@@ -223,6 +273,12 @@ public static class MachineSave
     static void ReadCraft(FcsRecord state, Machine m, ProductionSystem production)
     {
         m.Craft!.Repeat = state.Bools.GetValueOrDefault("repeat");
+        // The remembered ingredient levels, read before any bind so the sections keep their saved levels (consumption amount-k).
+        for (int k = 0, size = state.Ints.GetValueOrDefault("craft partial item size"); k < size; k++)
+        {
+            string p = k.ToString(CultureInfo.InvariantCulture);
+            if (state.Strings.TryGetValue(PartialSid + p, out var sid)) production.RestorePartial(m, sid, state.Floats.GetValueOrDefault(PartialVal + p));
+        }
         int count = (int)state.Floats.GetValueOrDefault("num crafts");
         for (int k = 0; k < count; k++)
         {
@@ -235,6 +291,7 @@ public static class MachineSave
 
     static void ReadKeys(FcsRecord state, Machine m)
     {
+        if (state.Ints.TryGetValue("meitou machine status", out int status)) m.Status = (byte)Math.Clamp(status, 0, byte.MaxValue);
         if (state.Floats.TryGetValue("resource mult", out float y)) m.Yield = y;
         m.PowerOn = state.Bools.GetValueOrDefault("power on", true);
         m.GetsBattery = state.Bools.GetValueOrDefault("gets battery", true);

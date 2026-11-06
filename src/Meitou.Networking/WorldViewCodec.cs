@@ -24,6 +24,10 @@ public sealed partial class WorldViewCodec
         var resolver = new DefaultJsonTypeInfoResolver();
         resolver.Modifiers.Add(info =>
         {
+            if (info.Type == typeof(CharacterSnapshot))
+                foreach (var property in info.Properties)
+                    if (property.Set is null && typeof(CharacterSnapshot).GetProperty(property.Name)?.SetMethod is { } setter)
+                        property.Set = (instance, value) => setter.Invoke(instance, [value]);
             for (int i = info.Properties.Count - 1; i >= 0; i--)
                 if (info.Properties[i].Set is null) info.Properties.RemoveAt(i);
             if (info.Type == typeof(CharacterSnapshot))
@@ -49,10 +53,12 @@ public sealed partial class WorldViewCodec
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         };
         json.Converters.Add(new RecordReference(database));
+        json.Converters.Add(new TownBuildingDisplay(database));
         json.Converters.Add(new SingleNumber()); json.Converters.Add(new DoubleNumber());
         json.Converters.Add(new Appearance(database));
         json.Converters.Add(new Pose()); json.Converters.Add(new Sets()); json.Converters.Add(new Doors()); json.Converters.Add(new Job());
         json.Converters.Add(new SurveyMap());
+        json.Converters.Add(new CharacterMaps());
     }
 
     // Views contain value projections; appearances and turret angle arrays are the remaining
@@ -61,10 +67,46 @@ public sealed partial class WorldViewCodec
     {
         Snapshot = view.Snapshot with { Characters = view.Snapshot.Characters.Select(c => c with
         {
+            Animations = c.Animations.ToArray(),
+            Ragdoll = c.Ragdoll is { } pose ? CopyPose(pose) : null,
             Appearance = c.Appearance is { } look ? CharacterAppearance.FromDisplay(CaptureAppearance(look)) : null,
             Turret = c.Turret is { } turret ? turret with { Angles = turret.Angles?.ToArray() } : null,
         }).ToArray() },
     };
+
+    static BonePose CopyPose(BonePose source)
+    {
+        var target = new BonePose(source.Set.Length) { Weight = source.Weight };
+        source.Set.CopyTo(target.Set, 0); source.Position.CopyTo(target.Position, 0); source.Rotation.CopyTo(target.Rotation, 0);
+        return target;
+    }
+
+    sealed record TownDisplay(string Instance, string Record, string Name, Meitou.Data.World.BuildingPlacement Placement,
+        bool Destroyed, string? Owner, string Interior, string Exterior, Meitou.Data.World.BuildingNaming? Naming);
+    sealed class TownBuildingDisplay(GameDatabase database) : JsonConverter<Meitou.Data.World.TownBuilding>
+    {
+        public override Meitou.Data.World.TownBuilding Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
+        {
+            var d = JsonSerializer.Deserialize<TownDisplay>(ref reader, options) ?? throw new JsonException("Missing town building display.");
+            var record = database.Find(d.Record) ?? throw new JsonException("Missing building content.");
+            var p = d.Placement;
+            var position = p.Position with { Y = p.WorldY ?? p.Position.Y };
+            return new(d.Instance, d.Record, d.Name, position, 2 * MathF.Atan2(p.Rotation.Y, p.Rotation.W), false, false, [])
+            {
+                Zone = p.Zone, OwnerFactionId = d.Owner, Destroyed = d.Destroyed, Naming = d.Naming,
+                InteriorLayout = d.Interior, LevelLayouts = (d.Interior, d.Exterior),
+                Resolved = new(p, record, position, d.Destroyed),
+            };
+        }
+        public override void Write(Utf8JsonWriter writer, Meitou.Data.World.TownBuilding value, JsonSerializerOptions options)
+        {
+            var placement = value.Resolved?.Placement ?? new(value.Zone, value.InstanceId, value.BuildingId, value.Position,
+                Quaternion.CreateFromAxisAngle(Vector3.UnitY, value.Yaw), null, value.Position.Y);
+            placement = placement with { InteriorLayout = value.LayoutName(false), ExteriorLayout = value.LayoutName(true) };
+            JsonSerializer.Serialize(writer, new TownDisplay(value.InstanceId, value.BuildingId, value.Name, placement,
+                value.Destroyed, value.OwnerFactionId, placement.InteriorLayout ?? "", placement.ExteriorLayout ?? "", value.Naming), options);
+        }
+    }
 
     internal CharacterDisplay CaptureAppearance(CharacterAppearance look)
     {
@@ -183,7 +225,7 @@ public sealed partial class WorldViewCodec
             throw new InvalidDataException("Invalid simulation presentation timing.");
         if (view.Snapshot.Characters is null || view.Snapshot.Characters.Count > 65536 ||
             view.Snapshot.Characters.Any(c => c is null || c.Id.IsNone || !Finite(c.Position) || !float.IsFinite(c.Yaw) || float.IsInfinity(c.DrawYaw) ||
-                c.Path is null || c.PathExact < 0 || c.PathExact > c.Path.Count) ||
+                c.Path is null || c.PathExact < 0 || c.PathExact != int.MaxValue && c.PathExact > c.Path.Count) ||
             view.Snapshot.Characters.Select(c => c.Id).Distinct().Count() != view.Snapshot.Characters.Count ||
             view.Roles.Any(r => r is null || r.Entity.IsNone) || view.Roles.Select(r => r.Entity).Distinct().Count() != view.Roles.Count ||
             view.Factions.Any(f => f is null || f.Faction < 0 || f.UnlockedBuildings is null || !Enum.IsDefined((SquadFormation)f.Formation)) || view.Factions.Select(f => f.Faction).Distinct().Count() != view.Factions.Count ||

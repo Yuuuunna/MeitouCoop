@@ -46,7 +46,7 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
         float surface;
         if (plan.Parent is not null)
         {
-            if (parentSurface(world, faction, plan) is not { } parent || !parent.Floor.Owned) return PlacementFailure.NotOwnedBuilding;
+            if (parentSurface(world, faction, plan) is not { } parent || !PlacementRules.MayBuildIn(data, parent.Floor.Owned, parent.Floor.Destroyed, parent.Floor.OwnerNotReal)) return PlacementFailure.NotOwnedBuilding;
             if (parent.Floor.Floor != plan.Floor) return PlacementFailure.InvalidFloor;
             floor = parent.Floor;
             if (data.CeilingPlacement && floor.Ceiling is not { }) return PlacementFailure.InvalidFloor;
@@ -78,8 +78,11 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
             return Vector3.DistanceSquared(plan.Position, otherEnd) <= ConstructionSystem.JoinDistanceSquared
                 || Vector3.DistanceSquared(end, other.Position) <= ConstructionSystem.JoinDistanceSquared;
         }
-        return PlacementCheck.Evaluate(new(data, plan.Position, plan.Rotation, PlacementCheck.YawOf(plan.Rotation), plan.Floor,
-            layout, [], characters, sites, towns(), factionRecord(faction), service) { On = floor, WallPiece = data.LinksTogether, IgnoreSite = Joint });
+        var query = new PlacementQuery(data, plan.Position, plan.Rotation, PlacementCheck.YawOf(plan.Rotation), plan.Floor,
+            layout, [], characters, sites, towns(), factionRecord(faction), service) { On = floor, WallPiece = data.LinksTogether, IgnoreSite = Joint };
+        // The submitted transform is already the preview's settled transform. A hypothetical corrective nudge must not authorize a floating or buried site.
+        if (PlacementCheck.Margins(query) is { Down: < -0.001f } or { Up: < -0.001f }) return PlacementFailure.NotLevel;
+        return PlacementCheck.Evaluate(query);
     }
 
     static bool Finite(Vector3 p) => float.IsFinite(p.X) && float.IsFinite(p.Y) && float.IsFinite(p.Z);

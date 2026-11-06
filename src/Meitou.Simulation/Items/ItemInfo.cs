@@ -24,12 +24,18 @@ public sealed record ItemInfo(string Id, string Name, FcsRecordType Type)
     /// <summary>A CONTAINER's <c>stackable bonus minimum</c> and <c>stackable bonus mult</c>: inside it an item's stack limit is trunc(max(limit, minimum) x mult) (1 and 1 for other items).</summary>
     public int StackBonusMinimum { get; init; } = 1;
     public float StackBonusMult { get; init; } = 1;
-    /// <summary><c>item function</c> (3 food, 15 raw meat, 8 drugs, 1 first aid kit, ...).</summary>
+    /// <summary>
+    /// The item function a made item holds (<see cref="FunctionOf"/>): an ITEM's <c>item function</c> (3 food, 15 raw meat, 8 drugs, 1 first aid kit, ...; 7 reads as 0, and 3 with a
+    /// single charge as 0), 5 for a weapon, 6 for armour, 4 for a container, else 0.
+    /// </summary>
     public int Function { get; init; }
-    /// <summary>The record's <c>charges</c> (default 1).</summary>
+    /// <summary>The record's <c>charges</c> before food scaling, at least 1 (the constructor lifts anything below 1 to 1).</summary>
     public float Charges { get; init; } = 1;
     public int Value { get; init; }
-    /// <summary><c>trade item</c>: sells for its full price unless stolen (docs/game/economy.md section 5).</summary>
+    /// <summary>
+    /// <c>trade item</c>: sells for its full price unless stolen (docs/game/economy.md section 5). Cleared for the food that <see cref="ScalesCharges"/> (the constructor drops it with the
+    /// scaling).
+    /// </summary>
     public bool TradeItem { get; init; }
     /// <summary>
     /// The record's <c>quality</c> (1 to 100). For a first aid kit this is the quality that caps the medic's skill in the bandaging rate (character-stats.md "First aid, medkits and robot
@@ -62,26 +68,53 @@ public sealed record ItemInfo(string Id, string Name, FcsRecordType Type)
     /// <summary>A robot repair kit (<c>item function</c> 12): repairs robotic parts.</summary>
     public const int RobotKitFunction = 12;
 
-    public static ItemInfo From(GameRecord r) => new(r.StringId, r.Name, r.Type)
+    /// <summary>
+    /// The item constructor's charges and function (<c>FUN_14075faf0</c>, then <c>FUN_140763810</c> for a container, <b>Verified</b>): charges below 1 become 1; a weapon holds function 5, armour 6, a
+    /// container 4 (set after the base constructor), an ITEM its record's <c>item function</c>; function 7 reads as 0 (not the container's 4); food (3) with a single charge is no food (0), a
+    /// raw meat (15) of one charge stays.
+    /// </summary>
+    public static (int Function, float Charges) FunctionOf(GameRecord r)
     {
-        BaseName = r.BaseName,
-        Weight = r.GetFloat("weight kg"),
-        Width = Math.Max(r.GetInt("inventory footprint width", 1), 1),
-        Height = Math.Max(r.GetInt("inventory footprint height", 1), 1),
-        StackLimit = StackLimitOf(r),
-        Function = r.GetInt("item function"),
-        Charges = r.GetFloat("charges", 1),
-        Value = r.GetInt("value"),
-        TradeItem = r.GetBool("trade item"),
-        Quality = r.GetFloat("quality"),
-        StorageWidth = r.GetInt("storage size width"),
-        StorageHeight = r.GetInt("storage size height"),
-        EncumbranceEffect = r.Type == FcsRecordType.CONTAINER ? r.GetFloat("encumbrance effect", 1) : 1,
-        StackBonusMinimum = r.Type == FcsRecordType.CONTAINER ? r.GetInt("stackable bonus minimum", 1) : 1,
-        StackBonusMult = r.Type == FcsRecordType.CONTAINER ? r.GetFloat("stackable bonus mult", 1) : 1,
-        WornOnlyBy = [.. r.GetReferences("races").Select(x => x.TargetStringId)],
-        WornNeverBy = r.GetReferences("races").Count > 0 ? [] : [.. r.GetReferences("races exclude").Select(x => x.TargetStringId)],
-    };
+        float charges = Math.Max(r.GetFloat("charges", 1), 1);
+        if (r.Type == FcsRecordType.CONTAINER) return (4, charges);
+        int function = r.Type switch { FcsRecordType.WEAPON => 5, FcsRecordType.ARMOUR => 6, FcsRecordType.ITEM => r.GetInt("item function"), _ => 0 };
+        if (function == 7) function = 0;
+        if (function == 3 && charges <= 1) function = 0;
+        return (function, charges);
+    }
+
+    /// <summary>
+    /// Whether the item's charges are scaled by <c>food quality mult</c> at construction (<c>FUN_14075faf0</c>, <b>Verified</b>): an ITEM of function 3 or 15 with more than one charge. Its
+    /// <c>trade item</c> flag is cleared and its current charges start at the scaled maximum.
+    /// </summary>
+    public bool ScalesCharges => Scales(Type, Function, Charges);
+
+    static bool Scales(FcsRecordType type, int function, float charges) => type == FcsRecordType.ITEM && function is 3 or 15 && charges > 1;
+
+    public static ItemInfo From(GameRecord r)
+    {
+        var (function, charges) = FunctionOf(r);
+        return new(r.StringId, r.Name, r.Type)
+        {
+            BaseName = r.BaseName,
+            Weight = r.GetFloat("weight kg"),
+            Width = Math.Max(r.GetInt("inventory footprint width", 1), 1),
+            Height = Math.Max(r.GetInt("inventory footprint height", 1), 1),
+            StackLimit = StackLimitOf(r),
+            Function = function,
+            Charges = charges,
+            Value = r.GetInt("value"),
+            TradeItem = r.GetBool("trade item") && !Scales(r.Type, function, charges),
+            Quality = r.GetFloat("quality"),
+            StorageWidth = r.GetInt("storage size width"),
+            StorageHeight = r.GetInt("storage size height"),
+            EncumbranceEffect = r.Type == FcsRecordType.CONTAINER ? Math.Max(r.GetFloat("encumbrance effect", 1), 0) : 1,
+            StackBonusMinimum = r.Type == FcsRecordType.CONTAINER ? r.GetInt("stackable bonus minimum", 1) : 1,
+            StackBonusMult = r.Type == FcsRecordType.CONTAINER ? r.GetFloat("stackable bonus mult", 1) : 1,
+            WornOnlyBy = Meitou.Data.Gameplay.RaceLimiter.Of(r).Only,
+            WornNeverBy = Meitou.Data.Gameplay.RaceLimiter.Of(r).Never,
+        };
+    }
 
     /// <summary>The stack limit of an item record (<see cref="StackLimit"/>): 1 for the types that never stack, else the record's <c>stackable</c> (at least 1).</summary>
     public static int StackLimitOf(GameRecord r) => r.Type is FcsRecordType.WEAPON or FcsRecordType.ARMOUR or FcsRecordType.CONTAINER or FcsRecordType.MAP_ITEM

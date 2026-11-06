@@ -12,11 +12,37 @@ sealed class GameLog : TextWriter
 
     readonly FileStream file;
     readonly StreamWriter writer;
+    /// <summary>The output and the error both write here, each through its own synchronised writer; the flushing thread too.</summary>
+    readonly object gate = new();
+    readonly AutoResetEvent lineEnded = new(false);
+    bool disposed;
 
     GameLog(FileStream file)
     {
         this.file = file;
         writer = new StreamWriter(file, new UTF8Encoding(false)) { AutoFlush = true };   // flushed per write: a crash keeps its last lines
+        new Thread(FlushToDisk) { IsBackground = true, Name = "log flush" }.Start();
+    }
+
+    /// <summary>
+    /// A finished line goes to the disk, not just the OS cache: a hard reset (a GPU driver taking the PC down, #55) keeps it. On a thread of its own, at once: the
+    /// flush took milliseconds a line on the thread that wrote it, and a save's load logs hundreds (a fifth of a second in one frame).
+    /// </summary>
+    void FlushToDisk()
+    {
+        while (true)
+        {
+            lineEnded.WaitOne();
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle;
+            lock (gate)
+            {
+                if (disposed) return;
+                handle = file.SafeFileHandle;   // the writes are already with the OS (AutoFlush): writers need not wait for the disk
+            }
+            try { RandomAccess.FlushToDisk(handle); }
+            catch (ObjectDisposedException) { return; }
+            catch (IOException) { }
+        }
     }
 
     public override Encoding Encoding => writer.Encoding;
@@ -35,15 +61,14 @@ sealed class GameLog : TextWriter
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    public override void Write(char value) { writer.Write(value); Trim(value == '\n'); }
-    public override void Write(string? value) { writer.Write(value); Trim(value is { Length: > 0 } && value[^1] == '\n'); }
-    public override void Write(char[] buffer, int index, int count) { writer.Write(buffer, index, count); Trim(count > 0 && buffer[index + count - 1] == '\n'); }
-    public override void WriteLine(string? value) { writer.WriteLine(value); Trim(true); }
+    public override void Write(char value) { lock (gate) { writer.Write(value); Trim(value == '\n'); } }
+    public override void Write(string? value) { lock (gate) { writer.Write(value); Trim(value is { Length: > 0 } && value[^1] == '\n'); } }
+    public override void Write(char[] buffer, int index, int count) { lock (gate) { writer.Write(buffer, index, count); Trim(count > 0 && buffer[index + count - 1] == '\n'); } }
+    public override void WriteLine(string? value) { lock (gate) { writer.WriteLine(value); Trim(true); } }
 
     void Trim(bool lineEnd)
     {
-        // A finished line goes to the disk, not just the OS cache: a hard reset (a GPU driver taking the PC down, #55) keeps it.
-        if (lineEnd) file.Flush(flushToDisk: true);
+        if (lineEnd) lineEnded.Set();   // FlushToDisk
         if (file.Length <= Cap) return;
         var tail = new byte[Keep];
         file.Seek(-Keep, SeekOrigin.End);
@@ -55,7 +80,15 @@ sealed class GameLog : TextWriter
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) writer.Dispose();
+        if (disposing)
+            lock (gate)
+            {
+                disposed = true;
+                writer.Flush();
+                file.Flush(flushToDisk: true);
+                writer.Dispose();
+                lineEnded.Set();
+            }
         base.Dispose(disposing);
     }
 }

@@ -13,6 +13,24 @@ public sealed partial class ProductionSystem
 {
     const string NaturalPrefix = "natural:";
 
+    readonly Dictionary<string, int> naturalClaims = new(StringComparer.Ordinal);
+
+    internal IEnumerable<(string Id, int Owner)> NaturalClaims => naturalClaims
+        .Concat(naturalSites.Where(pair => pair.Value is { Owner: >= 0 }).Select(pair => new KeyValuePair<string, int>(pair.Key, pair.Value!.Owner)))
+        .GroupBy(pair => pair.Key, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal).Select(group => (group.Key, group.Last().Value));
+
+    internal void RestoreNaturalClaim(World world, string id, int owner)
+    {
+        if (owner >= 0 && IsNatural(id)) naturalClaims.TryAdd(id, owner);
+    }
+
+    void ApplyNaturalClaim(World world, BuildSite site)
+    {
+        if (!naturalClaims.TryGetValue(site.Id, out int owner) || !world.IsPlayerFaction(owner)) return;
+        if (site.Owner < 0) site.Owner = owner;
+        naturalClaims.Remove(site.Id);
+    }
+
     readonly Dictionary<string, BuildSite?> naturalSites = new(StringComparer.Ordinal);
     /// <summary>
     /// A rock site's centre and bounds radius from the host's rock source, with its mesh's bounds box and the instance's transform when the source has the mesh: an operator inside
@@ -51,17 +69,40 @@ public sealed partial class ProductionSystem
     /// <summary>Whether a site id names a rock (<see cref="NaturalId"/>).</summary>
     public static bool IsNatural(string id) => id.StartsWith(NaturalPrefix, StringComparison.Ordinal);
 
-    /// <summary>A player site of the registry, else the rock a natural id names; null for neither.</summary>
-    BuildSite? Site(World world, string id) => world.Buildings.Find(id) ?? Natural(id);
+    /// <summary>A player site of the registry, else the rock a natural id names, else a town seat or training dummy; null for none.</summary>
+    BuildSite? Site(World world, string id) => world.Buildings.Find(id) ?? Seat(world, id) ?? Natural(world, id) ?? TownDummy(world, id);
+
+    readonly Dictionary<string, (Locks.Fixture Source, BuildSite Site)> dummySites = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// A town training dummy (<see cref="Locks.FixtureKind.Training"/>, docs/simulation.md "Production"): like a rock, no BuildSite of the registry, so it is neither drawn, saved nor built
+    /// again; a complete site of the town building's owner, made from the fixture once its town has registered. Its machine lives in World.Machines and is not saved.
+    /// </summary>
+    BuildSite? TownDummy(World world, string id)
+    {
+        if (world.Fixtures.Find(id) is not { Kind: Locks.FixtureKind.Training } f || db.Find(f.RecordId) is not { Type: FcsRecordType.BUILDING } building) return null;
+        if (dummySites.TryGetValue(id, out var known) && ReferenceEquals(known.Source, f) && known.Site.Owner == f.Owner) return known.Site;
+        var site = new BuildSite
+        {
+            Id = id, Record = f.RecordId, Name = building.Name, Position = f.Position, Rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitY, f.Yaw), Owner = f.Owner,
+            Materials = [], Complete = true,
+        };
+        dummySites[id] = (f, site);
+        return site;
+    }
 
     /// <summary>
     /// The rock a natural id names: a BUILDING with <c>is foliage</c> whose machine is an operable mine of a <c>world resource mining</c>; with a rock source, one of that BUILDING must
     /// stand within a unit of the position. Owned by no faction (-1: the original's <c>nofac</c> of its town NO_TOWN) until a player character works it; complete.
     /// </summary>
-    BuildSite? Natural(string id)
+    BuildSite? Natural(World world, string id)
     {
         if (!IsNatural(id)) return null;
-        if (naturalSites.TryGetValue(id, out var known)) return known;
+        if (naturalSites.TryGetValue(id, out var known))
+        {
+            if (known is not null) ApplyNaturalClaim(world, known);
+            return known;
+        }
         BuildSite? site = null;
         int at = id.LastIndexOf('@');
         var parts = at > 0 ? id[(at + 1)..].Split(',') : [];
@@ -81,6 +122,7 @@ public sealed partial class ProductionSystem
                 site = new BuildSite { Id = id, Record = record, Name = building.Name, Position = position, Owner = -1, Materials = [], Complete = true };
             }
         }
+        if (site is not null) ApplyNaturalClaim(world, site);
         return naturalSites[id] = site;
     }
 
@@ -94,8 +136,8 @@ public sealed partial class ProductionSystem
     {
         if (instance is null) return null;
         if (world.Machines.Find(instance) is { } m)
-            return m.Data is { Function: MachineData.MineFunction or MachineData.NaturalMineFunction, Resource: not 0 and var r } ? new(instance, r, m.Yield) { SiteRevision = WorkSiteRevision(world, instance), Owner = Natural(instance)?.Owner ?? -1, TownName = TownNameOf(world, Natural(instance)) } : null;
-        if (Natural(instance) is not { } site || Data(site.Record) is not { Resource: not 0 and var resource } data) return null;
+            return m.Data is { Function: MachineData.MineFunction or MachineData.NaturalMineFunction, Resource: not 0 and var r } ? new(instance, r, m.Yield) { SiteRevision = WorkSiteRevision(world, instance), Owner = Natural(world, instance)?.Owner ?? -1, TownName = TownNameOf(world, Natural(world, instance)) } : null;
+        if (Natural(world, instance) is not { } site || Data(site.Record) is not { Resource: not 0 and var resource } data) return null;
         if (!naturalYields.TryGetValue(instance, out float y)) naturalYields[instance] = y = resources.NodeYield(resource, site.Position);
         // A rock nobody has mined yet: no machine, so nobody works it; whole, no power draw; research counts only for the player's buildings (FUN_14082ec70).
         return new(instance, resource, y) { SiteRevision = world.BuildingRevision(site), Owner = site.Owner, TownName = TownNameOf(world, site), Efficiency = new(0, data.PowerOperators, 1, 1, data.IsConsumer,

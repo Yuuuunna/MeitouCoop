@@ -16,6 +16,9 @@ otherwise own value. Apply armour/clothing category, relative-price and slot fac
 hat3=0.3, legs6=0.5, shirt8=1.5, boots9=0.2, others1. Quality0 uses own value, not low endpoint.
 Crossbow107/limb111: s² between value/value1, category multipliers are swapped (robotics for107,
 crossbow for111). Container46 uses own integer value without multipliers.
+The runtime price passes the item's level (vfunc 0x2b8, called first in `FUN_1407a8f90`) as the quality, never the saved `quality`
+(**Verified**, vtables): Weapon, Armour, Crossbow and RobotLimbItem share `FUN_1400d31c0` (the Gear level int `+0x224`); Item, MapItem,
+NestItem, MoneyItem, BlueprintItem, SeveredLimbItem and ContainerItem return 0. So armour at level 0 is worth its own `value`.
 
 Ingredients recursively price same quality with category flag1; sum rounded
 ingredientValue*(v0/100)*(1+profitability). **Observed** v0 interpretation; other steps verified
@@ -43,6 +46,14 @@ factors/default1 within distance/1e6*m*10. Actual setup-list membership/order re
 save factors span0.7..1.3. Only generic items use market factors; save v0=trunc(factor*10000),
 load /10000, accepting legacy goods-key layout (**Verified**).
 
+**Item construction** (**Verified**, `FUN_14075faf0`; container `FUN_140763810`; `ItemInfo.From`, `ItemFactory.Make`): max charges = record `charges`, lifted to 1 when below 1 (K = 1.0f,
+`.rdata`). Current charges start at 1 and are set to the max for an ITEM only. Item function (saved, `FUN_1407609e0`): WEAPON 5, ARMOUR 6, CONTAINER 4 (set after the base
+constructor), ITEM its record value, others 0; 7 reads as 0. An ITEM of function 3 or 15 with max charges above 1 has max and current multiplied by `food quality mult` (0.5; raw
+meat included) and its `trade item` flag cleared (so it always sells at the loot fraction, no "Avg. Price"); function 3 with a single charge becomes 0 (no food), 15 stays.
+Base data: 17 of the 18 food and raw-meat ITEMs lose their `trade item` flag (Human Teeth, 15 with one charge, keeps it). **Starting items** (**Verified**, `CharacterHuman::setupInventorySections` `FUN_14062c4e0`, `FUN_14075d570`): a
+single unit (v0 = 1) of a CHARACTER `inventory` entry with current charges above 1 starts with a random whole number in [1, trunc(max)]; stacks, blueprints, loadout gear and death items stay
+full, and an ANIMAL_CHARACTER's list (`FUN_14062a130`) is not rolled. Meitou: `ItemFactory.Build` with the spawn seed, key and entry index (`Rng` Spawn).
+
 ## Shops and transactions
 
 Stock derives vendor/item lists and template count/money/restock fields, with culture-forbidden
@@ -66,10 +77,10 @@ An item may move between two inventories of different owners only within an X/Z 
 with the sound `gui_notrade` (`FUN_14070f7e0`). The limit is 1000 unless a flag is set: the caller's flag (the one-unit move sets it when the target is a building's
 inventory, `uses_building_category`), or an owner of type 1 whose +0x2f8 is 2, or of type 0x5b whose +0xc0 object has +0x2f8 = 2, or the source owner's +0x78 object passing
 its slot +0x260 (meanings **Unknown**). Flagged: the owners must not be enemies (faction test) and must be on the same floor, and the limit is 60, or the source owner's bounds radius + 40
-when the source is a building (class 0). Same owner: always allowed. **Unknown**: which windows the three drop callers flag; whether take-all uses the check.
+when the source is a building (class 0). The limits are stored squared (1e6, 3600). Same owner: always allowed. **Unknown**: which windows the three drop callers flag; whether take-all uses the check.
 
 Meitou (engine choices): window moves to and from a machine or storage need the character within `ProductionSettings.TransferReach` 40 of the building's footprint hull (for the
-bounds radius + 40), to and from a container within `PlayerSystem.TradingRange` 60; both post "Out of trading range.". The loot window closes beyond 1.5 x the carry reach. A held item given to a
+bounds radius + 40), to and from a container within `PlayerSystem.TradingRange` 60; both post "Out of trading range.". The loot window closes beyond 1.5 x the carry reach, or over 20 units apart in height (Meitou: the reach is on the body's floor, and the looter walks to that floor, #292). A held item given to a
 character: within `PlayerSystem.GiveRange` 1000 of its window's owner, `StealRange` 60 out of a non-player window. No faction or floor test, no sound (`gui_notrade` is in no bank, [audio](../audio.md)).
 
 ### Who trades
@@ -79,30 +90,62 @@ character: within `PlayerSystem.GiveRange` 1000 of its window's owner, `StealRan
 - A trade is opened by a dialogue line with effect 1 (DA_TRADE). In the data only the shopkeeper's dialogue has one (**Observed**, walk of the dialogue references): Thieves Guild, Shinobi
   Trader 3 lines, Thief Boss, Thief, Ninja Guard and the squad's `dialog squad` (TOUGH 1234) none; Skeleton Barman, Smuggler Barman, Stone Camp Trader yes; Shop Guard, Traders Guard, Slaver,
   Samurai no. Of 125 trader templates with vendors in the probe load order, 89 mark a member CHARACTER `is trader`.
-- Meitou (the right-click Trade verb, engine): a member of a shop squad whose record sets `is trader` or whose dialogue reaches a Trade line (`DialogueSet.Trades`, conditions not checked).
+- DA_TRADE needs no stock: the window shows the trader's squad stock, for a squad with no home building its members' worn bags merged ([trader window](ui-screens.md#6-inventory-trade-dialogue-build)),
+  so a squad that was never filled trades what those bags hold and buys with its purse. `Caravan` (1161, Traders Guild) and `Caravan NW` (43970) have `vendors` (`caravan (survival
+  items)`) but no `is trader`, and their boss's Trade line (48150) has no condition: in the unmodded game they open an unfilled window (**Verified**: the factory and the restock reach the
+  squad filler only through `FUN_1404ff5e0`, which refuses a homeless squad without `is trader`; the filler without that test, `FUN_1404fe970`, has no caller: no call, jump or pointer
+  to it or its thunk in the exe). **Observed**: the owner's saves with ~100 mods (1.0.65, 1.0.68) hold Caravans stocked from that list with an `inventory refresh time`, which the saver
+  writes only for `is trader` (`FUN_140372ef0`), so a mod sets it; which one is **Unknown**. Meitou (`TradeSystem.StockFor`): such a squad gets an empty shop, never filled, at its first trade; a
+  housed squad without a shop trades from its home's stock containers, lent to the trade and handed back when it ends (none without containers).
+- Meitou (the right-click Trade verb, engine): a member of a shop squad, or of a homeless squad whose template has `vendors` (a Caravan), whose record sets `is trader` or whose
+  dialogue reaches a Trade line (`DialogueSet.Trades`, conditions not checked).
+- A shop squad can have several traders: Flotsam Village's armoury (50348-rebirth.mod, 3 Flotsam Ninja + 3 Flotsam Refugee) has three same-named Flotsam Refugee traders, since the
+  refugee's dialogue package reaches Trade under `IS_A_TRADER` and `IN_MY_BUILDING` only (**Verified**: the original's METARU save holds the same 6 members, and the dialogue data; #180).
+- The context menu's pick-up verb tests "not a trader" with `FUN_1405cff70` itself (`FUN_140796f80`, **Verified**), so any member of a trader squad counts, guards included. Meitou: `World.VerbFactsOf` reads the squad template's `is trader`.
 - Shop squads with no such member (8 in the probe load order: bank, armory UC, holy Armoury, holy General storage, farm shop UC, Crab Man Shop, Shop bar black desert, Cannibal
   hunter hq) cannot be bought from in the original either (**Observed**, owner's play); their stock is only in their home's containers.
 - **Wages** (CHARACTER `wages`, 108 non-zero; `Character::giveBirth` / `Character::dailyUpdate`, **Verified**): a character not of the player's faction with wages >= 1 *sets* its squad's money to them
-  when made and every day (the last waged member wins). Meitou (`TradeSystem.PayWages`): on each game-day change, and once for a squad first seen after the system's first pass.
+  when made and every day (the last waged member wins). "Made" is a character born without saved state: `giveBirth` (`FUN_14062b210`) skips the wages, like the bounty
+  roll and `slave`, when it is given one (**Observed**, decompile), so a character coming back from a save or from out of the world keeps its squad's purse. Meitou
+  (`TradeSystem.PayWages`): on each game-day change, and once for a squad first seen after the system's first pass unless it is `Squad.Restored`.
 - **Spawn money** (CHARACTER `money item prob` / `min` / `max`; `RootObjectFactory::process`, **Verified**): a newly made non-player character gets money items worth U[min, max]
   when a [0, 1) roll is at most prob (so 80-100 always pass); what does not fit is lost. Meitou: one stack of the `Cats` item (`ItemFactory.AddSpawnMoney`).
+
+### NPC purchases
+
+Goal 118/119 shoppers: the sale is `FUN_14074a630`, called by [`FUN_1409a14b0`](ai-tasks.md#town-goals). One unit per sale; the buyer is the shopper's character, the seller the inventory of a container in the shop building (kind 9 objects only, `FUN_14054add0`: a trader's carried stock is not a seller).
+- **Price** (**Verified**): the item's slot 82 `FUN_1407915b0` (stack price) of the single unit, called with the sell flag = "buyer's faction has `+0x250`" (the player's faction), so an NPC pays the buying
+  price. The trader factor `FUN_14079e6d0` takes its culture price and `buy mult` from an open trade window only (`FUN_14070e2d0` / `FUN_140710e10` read the trade-window set `DAT_142132be8` and answer
+  null/1.0 with fewer than 2 entries), so with none open it is 1, and the market factor needs a town from `FUN_14070d170` (**Observed**: none outside a trade, the tooltip prices of ui-screens.md; the context
+  that function reads, `DAT_142133f90` + type descriptor `141f396a0`, is **Unknown**). A window the player has open at that instant would price the NPC's unit by the player's trader (**Observed**, not modelled).
+  The stolen x0.5 of `FUN_14079e6d0` (stolen from the player's faction) applies in any case; not modelled (**Unknown** whether such stock exists).
+- **Money** (**Verified**): the buyer's purse is `Character` slot 55 `FUN_140791660` (player's faction: the player's purse; else the squad's `Ownerships` at platoon `+0x88`, no squad: 0); it must be at least
+  the price ("I can't afford that.", nothing moves). Spending is slot 54 `FUN_1407965f0` -> `Ownerships` slot 0 `FUN_1407cbaa0`. The seller's is the building's (`FUN_14054e560`: the squad registered on the
+  building, else the owner faction's); the price is added there. Meitou: `Squad.Money` of the buyer's squad, of the squad living in the building (none: lost).
+- **The item** (**Verified** flow, **Observed** names): the stack of 2+ is split (a clone of quantity 1, the original -1), a single item is removed from its section. When the seller inventory's owner is not of
+  the player's faction **and** `rand()/32768 > 0.2` (`DAT_1416885d8`), the add-to-buyer call is skipped: the unit is paid for and gone, the buyer gets nothing (80 %). Otherwise `Character` slot 45 `FUN_1405cb400`
+  puts it into the buyer's inventory; it is never equipped or used here; without room: "No room for that item.", the unit goes back to the stock and nothing is paid.
+- Not modelled: the speech text on failure (slot 56 `FUN_1405c9950`), and the gold floater and "Sell_Item" sound that only show with the GUI option `DAT_142133ae0`. Engine choices: unique items are never sold; a house's
+  goods (`FillHome`) are sellers too.
 
 ### Building shops (**Observed**, decompile)
 
 - **Which** (squad factory `FUN_140583a10`): a squad whose template has vendor lists (`FUN_140959420`, **Verified**: its `vendors`, else by its building designation the owner
-  FACTION's 2/5 `item spawns armoury`, 3 `bar`, 6 `treasure`, 8 `HQ`, 9 `resident`, 11 `resident small` (`FUN_140958560`); `is trader` is not tested; Meitou `ShopFiller.VendorLinks`) with a home building that made no
-  prisoner or slave squads is filled by `FUN_14095b210` into its home; any other by `FUN_1404ff5e0`, which fills a squad stock only for `is trader` and otherwise the home's containers.
-  A faction test (`+0x250 == 0`, meaning **Unknown**) gates both. So a resident without `is trader` (e.g. `flotsam refuge`, vendors `house contents`) gets its home's containers stocked.
+  FACTION's 2/5 `item spawns armoury`, 3 `bar`, 6 `treasure`, 8 `HQ`, 9 `resident`, 11 `resident small` (`FUN_140958560`); `is trader` is not tested; Meitou `ShopFiller.VendorLinks`) with a home building is filled by
+  `FUN_14095b210` into its home; one that also made prisoner or slave squads goes through `FUN_1404ff5e0(squad, 1)` instead, whose branch is chosen by the home handle's type (**Verified**): no home (0xb) fills a squad
+  stock only for `is trader`; a home building (0) never makes a squad stock, it fills the home's containers (`FUN_14095b9d0`) and returns, retried next update, when the building or its interior is missing. So a housed
+  trader with prisoners stocks its home like one without (Meitou `TradeSystem.Stock`). **Verified** (`FUN_14095b210`): it gathers the building's containers (`FUN_1409562f0`) and returns when there are none, so a home without stock containers gets nothing and Meitou makes no squad shop for it either (the base and mod data in the install: 268 shop templates with a level-data home, all with containers).
+  A faction test (`+0x250 == 0`, meaning **Unknown**) gates both. `FUN_14095b210` also refuses a child object (door, mounted turret; [squad factory](factions-squads-towns.md)). So a resident without `is trader` (e.g. `flotsam refuge`, vendors `house contents`) gets its home's containers stocked. A trader template with no `vendors` but a designation list is filled the same way (`TradeSystem.HomeTemplateOf` accepts a trader whose vendors are empty; one with vendors goes through the shop path); in the merged base and mod data one template is affected (Ninja Gang of rebirth.mod: `is trader`, designation list, no `vendors`), none of the base game.
 - **Restock** (`ActivePlatoon::vfunc_4` calls `FUN_1404ff5e0(platoon, 0)` once `inventory refresh time` passes): the home branch skips a building whose interior object's `+0x10` is set
   (meaning **Unknown**); the first fill passes 1 and never skips.
 - Meitou, non-traders (`TradeSystem.FillHome`, engine choices): the stock rolls as a building shop's, then each unit goes into the first stock container with room (their own grids and
   stack bonus), what fits nowhere is lost, the containers are unlocked, the purse is untouched; refilled every `vendors refresh time` only while the containers hold nothing but unique items ([artifacts](#artifacts)).
 - **Containers** (`FUN_1409562f0`): the home's interior objects whose functionality is 2 BF_RESOURCE_STORAGE, 9 BF_SHOP or 13 BF_GENERAL_STORAGE and that have an inventory.
   The filler unlocks their locks, sorts them (key **Unknown**), optionally clears them, puts special items first, then the vendor items; what fits nowhere is destroyed.
-- **Special items** (`FUN_140958740`, **Verified**): on a refresh with specials, the template's `special items` (ITEM, 34 templates), else `special map items` (MAP_ITEM, 10): v0 of each,
-  in stacks of at most `stackable`, flagged unique with their quantity, offered to the building inventories first; what fits nowhere is destroyed. Meitou: on a squad's first fill, into
+- **Special items** (`FUN_140958740`, **Verified**): on a refresh with specials, the template's `special items` (ITEM, 34 templates) and then its `special map items` (MAP_ITEM, 10), both when both exist: v0 of each,
+  in stacks of at most the record's raw `stackable` (a map item too; the stack limit of 1 for map items is not used here), flagged unique with their quantity, offered to the building inventories first; what fits nowhere is destroyed. Meitou: on a squad's first fill, into
   the stock before the vendor items; the unique flag is not modelled.
-- **Count**: n = round(U(0.8, 1.2) x `vendors fill total amount` x wealth), at least 1. Items: the vendor lists share n by weight as for squads (`FUN_140959800`), but every list's
+- **Count**: n = round(U(0.8, 1.2) x `vendors fill total amount` x wealth), at least 1. Items: the vendor lists share n by weight as for squads (`FUN_140959800`, **Verified**: each list's share is (v / sum) x n rounded half away from zero, and the last list takes max(what is left, its own share), so the total can exceed n; Meitou `ShopFiller.Fill`), but every list's
   money roll (`money item prob` against U(0, 1), then U[`money item min`, `money item max`]) is summed into one stack of the money item first.
 - **Purse** (the platoon's money): `vendor money` < 1: trunc(clamp(0.25 x value of the placed items, 3000, 25000) x wealth); else trunc((`vendor money` + r) x wealth) with r an int from
   -0.4 x `vendor money` (the upper bound is not shown by the decompile).
@@ -166,10 +209,9 @@ interior object with an inventory of the trader's home (`FUN_140953850`, `FUN_14
 `unique`, written only when set (`FUN_1407609e0` / `FUN_140761550`).
 
 **Meitou** (`Artifacts`, `PopulationSystem.Artifacts.cs`): the lists are made for a new game and an import (`SaveImport.Filter` writes them into the town states), kept per town,
-saved and read back with the keys above, and given out when a town makes its residents. Engine choices: the candidates are all the town's buildings with `interior` parts whose interior layout,
-when the level data names one, places an object, and whose template Meitou housed there ([town residents](factions-squads-towns.md#town-residents)); ties keep the buildings' placement order, the entries' order and the containers' layout order, and the buildings
-draw in placement order; an entry of 0 or fewer units is skipped. A building whose interior layout the level data does not name has no interior in Meitou (the original
-generates one on first load, which is not modelled), so what it is given is lost; what goes to a building in another town's centre zone is placed, but a save made before
+saved and read back with the keys above, and given out when a town makes its residents. Engine choices: the candidates are all the town's standing buildings with `interior` parts whose named interior layout (their residents', [layouts](factions-squads-towns.md#town-residents))
+places an object, and whose template Meitou housed there ([town residents](factions-squads-towns.md#town-residents)); ties keep the buildings' placement order, the entries' order and the containers' layout order, and the buildings
+draw in placement order; an entry of 0 or fewer units is skipped. A building with no interior objects is no candidate, as in the original; what goes to a building in another town's centre zone is placed, but a save made before
 that zone is visited writes no file for it, so loses it. Items flagged unique (`ItemInstance.Unique`) do not stack with others; a shop
 fill and `FillHome` keep them, and a building shop takes its containers' items into its stock when it is made and gives its unique items back to them when its squad is
 dropped or made afresh; once nobody of its squad is alive the shop closes and its whole stock goes back into the containers, which a save keeps with the building. Not modelled: the shop fill's container choice and relocking,
@@ -179,6 +221,7 @@ no artifacts, as Meitou adds no state for a town a loaded save lacks. Tests: `Ar
 ## Crimes, bounties and prisoners
 
 Ledgers are per wanted faction; crimes pending at deed time and witness booking are distinct.
+The per-character crime tick `FUN_1405cbb80` (bounty expiry, skipped while imprisoned; then the pending timer at ledger `+0x90`: at or below 0.0 clears the code and victim, else it is reduced by the tick delta) is jumped over by the character tick `FUN_1405d00b0` for a dead character (`+0x5bc`): **Verified**. A dead body's bounties never expire and its pending crime stays frozen.
 CONSTANTS categories define theft/assault/murder/looting values. Expiry is0.04 hours/cat and
 permanent from10000; capture, claiming, bail and prison sentences use separate paths.
 Witness/innocence details remain partly unknown; a killing is no crime (11.6), only relation events.
@@ -274,8 +317,10 @@ Per-character hash map keyed by faction (`Character+0xf0`). Entry (`FUN_1405e7ee
   character's **`NPC class`** (`+0x1a0 -> +0xdc`, the same read as the police test, carry-loot.md 4.3) is not 8 (BANDIT),
   5 (DIPLOMAT) or 1 (LAW_ENFORCEMENT), then the crime's amount is **added** to a ledger entry chosen by `FUN_140852010` from the given faction: a caged character's prison
   owner's, else the given faction's **`legal system`** (`+0x38`, the first FACTION `legal system` reference; **Observed**, its only reader `FUN_1407f4f40`
-  stores it there; e.g. Bounty Hunters and Medics Guild -> United Cities) when it has one, else the given faction itself when its `+0x40` flag is set (else none).
-  `FUN_140851fb0(faction)` is the same choice without the cage rule ("booking faction" below).
+  stores it there; e.g. Bounty Hunters and Medics Guild -> United Cities) when it has one, else the given faction itself when its `+0x40` flag is set (else a null key that
+  nothing reads: the flag is still set and the culprit marked recently wanted, but no bounty is kept). `FUN_140851fb0(faction)` is the same choice without the cage rule ("booking
+  faction" below). **Verified** (decompile of `FUN_140853ec0`, `FUN_140852010`, `FUN_140851fb0`, `FUN_140853e20`): every ledger read, claim and erase by a faction goes through the
+  same key. Meitou: `CrimeSystem.Book` (cage owner while imprisoned, `CrimeFactions.BookingOf`), every lookup through `BountyLedger.BookedFor` / `BookedAmount`, the release's erase of the releaser's and the jail's entries too (`FUN_1408539f0`).
   The given faction is the **booking police witness's** (or the police in the hit rule of 11.6), not the victim's (**Observed**: both callers pass their own faction); the crime bit is set, the timestamp is reset to now, and the "wanted" UI is refreshed. The very first crime
   code (1, Enslaving) sets the flag but adds nothing (**Observed**; the code returns before the add). The same function also sets the status float `Character+0x1a0 -> +0x110` to 250.0: the **"recently wanted" marker** that makes a bounty
   visible at once (11.8); setting or witnessing a pending crime (`FUN_140852e10`, `FUN_140851f40`) sets it too. Its decrement was not traced.
@@ -300,6 +345,12 @@ Per-character hash map keyed by faction (`Character+0xf0`). Entry (`FUN_1405e7ee
 | 6 | Treason | 50000 |
 | 5, 10 (Looting), 0xe (14, Crop Theft), others | Assault, Looting, Crop Theft, default | 500 |
 
+- **Crime names are catalogue messages** (**Verified**: the zh_CN `main.po` source references cite the name table, `sensoryData.cpp` 145-177, for each name).
+  Each name is a plain `msgid`, so the player's language shows it (zh_CN: Burglary 入室偷窃, Escaping Prison 越狱). **Observed**: `Assault`, `Looting` and `Kidnapping` share their
+  `msgid` with the AI task names (zh_CN 攻击, 抢劫中, 绑架中), and the zh_CN catalogue renders `Fencing` as 剑术 (the sword skill; the translator note says "selling stolen goods"), so the
+  original shows those as well. Meitou: `CrimeTable.Name` translates at the point a message or the HUD is built;
+  the ledger and saves keep the code (the bit mask `crimes<n>`), the world hash never sees the text.
+
 - **Trespassing** (perception `FUN_140859680` -> test `FUN_140852350`, **Observed**): an NPC seeing a player character inside a
   building sets a pending Trespassing (code 11) against **its own** faction (victim: itself), fires dialogue event 17 and gives its
   faction's memory of the player (`FUN_140673a20` -> `FUN_140673930`: one entry for the whole player faction, a `SubjectiveTags`
@@ -317,14 +368,17 @@ Per-character hash map keyed by faction (`Character+0xf0`). Entry (`FUN_1405e7ee
   event-17 lines' data (**Verified** by probe: "Intruder!" with DA 6, "Leave my abode" with DA 12 then DA 33/34, "/GUARDS/!" with DA 33).
 - **Spawn bounties** (`FUN_14062b210`, **Observed**): CHARACTER `bounty chance` vs an inclusive roll 0..100 (`roll < chance`);
   amount `trunc(bounty amount + 0.5*k)`, `k` an integer in `[0, 2*bounty amount fuzz]` (the fuzz only adds), for each
-  `bounty factions` entry (else `defaultEmpireFactionSID`), added without a crime bit (`FUN_140853e20`). fcs.def: "Defaults to the
+  `bounty factions` entry (else the faction whose string id is the literal `defaultEmpireFactionSID`, looked up by `FUN_1402e7a20`; in gamedata.base that is United Cities, **Verified** by the install's bytes), added without a crime bit (`FUN_140853e20`), under that faction's booking key
+  (`FUN_140852010`: its legal system, else itself when it books, else a null key nothing reads; argument passing read from registers, **Observed**). fcs.def: "Defaults to the
   empire"; 117 base CHARACTER records have a chance, 64 of them no `bounty factions` (**Verified** by probe). Whether the fuzz is rolled
   per faction is **Unknown**.
+  An amount of 0 or less is booked too (`FUN_140853e20` adds and stamps the time unconditionally): the entry stays at 0, since the expiry sweep
+  `FUN_1405cbb80` and "has a bounty" only consider amounts above 0 (**Verified**, decompile).
 
 ### 11.3 Lifetime
 
 `FUN_140851f10`: `0.04 * amount` hours below 10000, else never ("Notorious"). The character tick `FUN_1405cbb80` removes at most
-one expired entry per tick and is skipped while `Character+0x2f8 == 2` (imprisoned); each crime resets the timestamp (**Observed**).
+one expired entry per tick and is skipped while `Character+0x2f8 == 2` (imprisoned); each crime resets the timestamp (**Verified**, `FUN_1405cbb80`). Meitou: `CrimeSystem.Expire`, at most one per tick of its sweep period.
 
 ### 11.4 Claiming
 
@@ -338,9 +392,12 @@ money, mark the entry claimed (it never pays twice) and show "Received c.{1} rew
   player's, not `not real` and not BANDIT (`fundamental type` 8, `CharacterTypeEnum`), neither carrier nor captive has the escaped flag
   (status `+0xe8`), and not (cage faction SLAVER 7 or `FarmBuilding::vfunc_15(cage) +0xd8 == 5`, read as a town of type 5 `TOWN_SLAVE_CAMP`: the function walks the
   cage's parent chain to its root, not verified as the town) unless the carrier's status type (`FUN_1405c8aa0`: status `+0`, 1 slave, 2 escaped) is 0.
-  The amount is the captive's bounty for the cage owner's faction; plays `Bounty_Fulfilled`. The same put-in also sets the sentence (11.5).
+  The amount is the captive's bounty for the cage owner's faction; plays `Bounty_Fulfilled`. The same put-in also sets the sentence (11.5). The "carrier of the player faction" test reads the carrier's FACTION object (`+0x250`), not whether
+  the carrier is player-controlled; every cage put-in by the task also has the captive's squad remember the carrier as captor (`FUN_140673a20(captive, carrier, 5)`) and sends a kind-12 relation event. Meitou: `ArrestSystem.Claim` tests the carrier's faction;
+  `TownDutySystem` raises `FactionDeeds.Caged` and calls `Claim` after its cage put-in.
 - **Dialogue** `DA_PAY_BOUNTY` (10) (`FUN_140680560` case 10): pays for the body the talking player carries, with the speaker's
-  booking faction; then the speaker takes the body (tasks 213 `LIFT_PERSON_SNATCHING_ALLOWED` and 112 `FIND_CAGE_AND_PUT_IN`).
+  booking faction; then the speaker takes the body (tasks 213 `LIFT_PERSON_SNATCHING_ALLOWED` and 112 `FIND_CAGE_AND_PUT_IN`, memory flag 5 on both),
+  **whether or not a bounty was paid and in any town** (**Verified**, `FUN_140680560` case 10: the tail runs once the carried body resolves; Meitou hands the body over for DA 10 alone too).
   Base data uses it in `EV_PLAYER_TALK_TO_ME` dialogues gated by `DC_CARRYING_BOUNTY_ALIVE` / `_DEAD` (e.g. "shek bounty desk"),
   together with `DA_ARREST_TARGETS_CARRIED_PERSON` (30) and +relations (**Verified** by probe of the merged data). The two effects come in either
   order (shek desk: alive 10, 30, 4; dead 30, 10, 4; **Verified** same probe), so the body is still carried when 10 runs. Meitou: [simulation](../simulation.md#arrest-and-jail).
@@ -351,27 +408,29 @@ money, mark the entry claimed (it never pays twice) and show "Received c.{1} rew
   `Task_PutInSomething` (`PUT_IN_CAGE` 108) only when the captive has a bounty with the cage owner's faction. It stores the start
   (now, double game hours) at ledger `+0x98` and the length at ledger `+0xa0` (float): `trunc(bounty * 0.02 * prison time)` hours,
   999999 above 25000, 16 when the bounty lookup returns 0. Saved as character keys `sentence` (start, truncated int) and `psts` (length,
-  float) by `FUN_1406262b0` / `FUN_140625e60`.
+  float) by `FUN_1406262b0` / `FUN_140625e60`. Its one caller is the cage mode (0x6b) of `FUN_140358670`, so every carry-a-body-into-a-cage flow uses the constant (**Verified**; Meitou: arrest, bounty hunters, kidnap `KidnapSystem` and the town duty `TownDutySystem` pass `prison time`; a slave's own entry and the delivery handover are not that task). The squad factory's spawn-time caging (`FUN_140583a10` calling `FUN_140330600` / `FUN_14032e2f0` directly) never reaches `FUN_140854950` (it is the only function that does, **Verified** by a search of the whole decompile), so a spawned prisoner or slave gets no sentence; Meitou's two `PopulationSystem` cagings call `Imprison` with the default `prisonTime`, which only matters for a captive with a bounty, and a spawned one has none: the same result.
 - **Served** when `start + length <= now` (`FUN_1405c9f00`, also false for a character with a nonzero status type, e.g. a slave);
   nothing counts down. A prisoner caged without a bounty gets no sentence: whether the ledger then reads start 0 / length 0 (served at
   once, so goal 211 frees them immediately) is **Unknown** (the ledger constructor was not checked); Meitou should treat it as served. The status panel (`FUN_1405d2da0`) shows "Imprisoned, sentence time remaining: ceil(length - elapsed) hrs",
   "FOREVER" for a length >= 2000, else "Waiting to be released" (**Observed**). Bounty expiry is paused meanwhile (11.3).
 - **Release** (`Task_ReleasePrisoner` 110, `FUN_1403570a0`; **Observed**): the jailer goal is AI_TASK "police free prisoners" (enum 211,
   only in AI_PACKAGE "addon- law enforcement"; the "- no freeing prisoners" variant lacks it; **Verified** by probe). Its finder
-  `FUN_1408cf3c0` picks an occupied `BF_CAGE` the jailer may use whose occupant is not down, served and not an enemy. For every releaser the
+  `FUN_1408cf3c0` picks an occupied `BF_CAGE` whose occupant is not down, served and not an enemy of the jailer (**Verified**: vfunc `0x3e8` = `isEnemy`, `FUN_14079c950`, called with the occupant and 1; Meitou `LockSystem.Served` reads its faction part, `CharacterFacts.RegardsEnemy`, and frees no enemy prisoner, not even by the booking-jail fallback), among the buildings of the jailer's own town (status `+0x88`) and faction in the 3 x 3 zone cells round the jailer (`FUN_1409fc450`, `FUN_1409fb880`, **Verified**; the faction argument is the jailer's AI object's vfunc 8, read as its faction, **Observed**), the first in list order: no radius, no nearest-jailer choice. For every releaser the
   cage is unlocked and status `+0xea = 1`; then, if the releaser's faction has `+0x40`, the prisoner's entries for the releaser's booking faction and for the
   jail's booking faction are **erased** (`FUN_1408539f0`), the releaser says `EV_PRISONER_FREE_TO_GO`; if the releaser is a player
   (non-`+0x40` player faction), the prisoner says `EV_UNLOCK_MY_CAGE_OR_SHACKLES`. In those two cases the prisoner gets 133
-  `GET_OUT_OF_CAGE_LEGIT`. Always: the restraint is freed; "{1} has been released from prison." for a player-faction prisoner of status type 0.
+  `GET_OUT_OF_CAGE_LEGIT`. Meitou `LockSystem.FreeBy` does the mark and both events for the Set Free walk and the goal-211 rounds alike (the mark is set for every prisoner, a kidnapped one included, **Verified** `FUN_1403570a0`: byte `+0xea` set with no test; the status update clears it outside towns). Always: the restraint is freed; "{1} has been released from prison." for a player-faction prisoner of status type 0.
 - **Bail** (dialogue action 43 `CHOOSE_PRISONER_BAIL` opens `CharacterTrading_PrisonerBailout` `FUN_1406ab890`, "Pay Bounty", **Observed**): the list
   is the living occupants of `BF_CAGE` furniture in the speaker's home town's buildings that are player-faction, or not hostile to
   the speaker under further tests (`FUN_1405995d0`, `FUN_140599590`, `FUN_14059a920 < 36`). Price `2 * bounty` with a zero faction,
   which through the cage rule of 11.2 is the jail's booking faction; at least 2000 when the prisoner is not of the player's faction.
-  Paying (`FUN_1406ae170`) unlocks the cage, erases the jail's entry (`FUN_1408539f0(ledger, 0)`), sets `+0xea = 1`, the prisoner says
-  `EV_BOUGHT_ME_FROM_SLAVERY` and gets 133 `GET_OUT_OF_CAGE_LEGIT`. Only two base dialogues carry DA 43 (**Verified** by probe, 2026-10-21): "Shek law
+  Paying (`FUN_1406ae170`) unlocks the cage, erases the jail's entry (`FUN_1408539f0(ledger, 0)`), sets `+0xea = 1` (freed: [perception](perception.md#sense-tags-who-is-an-enemy), Meitou `Freed`), the prisoner says
+  `EV_BOUGHT_ME_FROM_SLAVERY` (event 51, `FUN_140684990` with the payer, the conversation's player character, as target; **Verified**) and gets 133 `GET_OUT_OF_CAGE_LEGIT` (**Verified**, `FUN_1405d20d0(prisoner, 0, 0x85, 0)` unconditionally; one whose event call returned 0, who could not speak, first gets 128 `RETREAT_HOMETOWN`; whether a later give replaces or queues is **Unknown**);
+  its squad's memory also takes the payer as FREED_ME (long tag 3, `FUN_140673930`; **Verified**), for every freed prisoner whose character resolved. Meitou: `ArrestSystem.Bail`
+  writes both, and `SendOut` walks a prisoner that spoke out of the cage to its payer (133, the walk of a bought slave) and one that did not to its squad's home (128 standing for the pair). Only two base dialogues carry DA 43 (**Verified** by probe, 2026-10-21): "Shek law
   bounty" (shek bounty desk, the reply "I'm here to bail out a friend.") and "Inquisitor heretic bounty" (Holy Nation Inquisitor); no United Cities law
   dialogue offers bail.
-- **Escape**: leaving by 207/256, or being lifted out, gives a pending Escaping Prison (0xc) and the escaped flag ([locks](locks.md#cages-and-beds));
+- **Escape**: leaving by 207/256 gives a pending Escaping Prison (0xc) and the escaped flag; being lifted out gives the flag only (the crime call is refused while still held, [locks](locks.md#cages-and-beds)) ([locks](locks.md#cages-and-beds));
   a pending crime becomes a bounty only when a booking witness sees it (11.2). Spotting the flag: 11.8.
 - `FUN_140851d10` (a lerp of 350/600 and 450/80-based values by a health fraction) is a different, undecoded function.
 
@@ -379,11 +438,11 @@ money, mark the entry claimed (it never pays twice) and show "Received c.{1} rew
 
 - **Faction `+0x40`** (FACTION loader `FUN_1407fe270`): `fundamental type` 1 (LAW_ENFORCEMENT), else `offers bounties`. Base data:
   Police, Mercenary Police, United Cities, The Holy Nation, Shek Kingdom, Republic of Tertius (**Verified** by `CrimeInstallTests`).
-  The loader also stores `fundamental type` at `+0x34` and `not real` at `+0x1d0` (the setter's "lawless" tests).
+  The loader also stores `fundamental type` at `+0x34` and `not real` at `+0x1d0` (the setter's "lawless" tests). The setter `FUN_140852c80` also refuses a culprit that is law enforcement, in state `+0x2f8` 2, or whose faction is the victim's, and one whose apparent faction (`FUN_140852c20`: the disguise faction while its level is above 0.6 and the recently-wanted marker is zero, else the slave owner for status type 1, else its own) is the victim's unless its slave state is nonzero (**Verified**; Meitou keeps only the own-faction test, the disguise term is **not modelled**).
 - **Hitting the police** (`FUN_140665fa0`): a landed blow between a police-like and a non-police character gives the non-police one a
   pending Assault (timer 30) against the police faction, booked with it at once, whichever struck.
 - **Attack order** (`FUN_140334070`): a pending Assault against the victim's faction unless the victim has a bounty with the attacker's
-  faction, its status flag `+0x114` is set, it is a BANDIT, it has a pending crime, or the victim is fighting (`Character::isInCombatMode` `FUN_140436610(victim, 1)`: CombatClass +0x130).
+  faction, its status flag `+0x114` is set, it is a BANDIT, it has a pending crime, or the victim is fighting (`Character::isInCombatMode` `FUN_140436610(victim, 1)`: CombatClass +0x130), tested in that order (**Verified**); the attacker's own +0x114 is then set (before the setter, whether or not it accepts). No faction-hostility test. **`+0x114` ("ordered")** lifecycle: set by the ordered attack task starts (`FUN_140334050`, `FUN_14033bf70`, `FUN_14033c1e0`, when the task's option byte `+8` is set: meaning **Unknown**), by this booking, and for every member of the active squad by each update of the cannibal assault package (`FUN_14028a4e0` from `FUN_14028fdf0`; Meitou `PopulationCampaigns.CannibalsLoaded` sets `CharacterCold.Ordered`); cleared when the character's task target is cleared (`FUN_1405c91c0`, at task end); read only here, on the victim (`FUN_140795b30` and `FUN_1404ffad0` read a platoon object's own `+0x114`). The caller is the attack task's start with its flag set, which only row 61 Attack Unprovoked has (and the +0x114 mark is then also set unconditionally, `FUN_14033c1e0`; [fight task](combat.md)). Meitou: `CrimeSystem.Assault` (run only for `AttackOrder.Unprovoked`) and `CharacterCold.Ordered` (set by the booking, cleared in `CombatSystem.EndFight` as the stand-in for the task end; the other two setters are not modelled: a cannibal victim is a lawless faction, so its booking is refused anyway); a hostile victim faction is skipped as well (engine choice).
 - **Murder**: no caller of the setter `FUN_140852c80` (26 callers, plus the 7 of its wrapper `FUN_140852e10`) passes code 4, and no
   variable-code caller can yield 4 (task finders pass 2/7, 3/10; dialogue DA 49 passes 0 to clear). A killing therefore sets **no
   crime**: its consequences are the relation events of [factions 3.5](factions-squads-towns.md#35-what-fires-relation-changes-observed-decompile)
@@ -404,21 +463,20 @@ money, mark the entry claimed (it never pays twice) and show "Received c.{1} rew
 - **Raising** (`FUN_1409335e0(town, code, position, culprit, faction, raiser)`): nothing for code 0. Called only by DA 33 CRIME_ALARM (the
   target's pending crime code and victim faction, at the target) and a failed kidnap ([carry-loot](carry-loot.md#kidnapping): code 15, the
   victim's faction, at the kidnapper). The town keeps its alarms per code; one of the same code and faction is moved (position, building,
-  floor), else a new one is made; both set `+0x24` = 8.0, a life in game seconds that the town update counts down (`FUN_14092bfe0`, `Town::periodicUpdate` dt), the alarm being
-  deleted below 0 whether answered or not (**Verified**). So an investigation ends about 8 game s after the last raise. "Alarm raised" when the culprit is the player's, at most every 30 s.
+  floor), else a new one is made; only the new one sets `+0x24` = 8.0 (the merge path leaves it alone), a life in game seconds that the town update counts down (`FUN_14092bfe0`, `Town::periodicUpdate` dt), the alarm being
+  deleted below 0 whether answered or not (**Verified**). So an alarm dies 8 game s after it was created, however often it is raised again; the next raise then makes a new one. "Alarm raised" when the culprit is the player's, at most every 30 s.
 - **Investigators**: goals 209 INVESTIGATE_ALARMS and 210 (the task's flag: only alarms of its own faction), Urgent, weight 0.1, 0-24 h, in 51
   packages of the merged load order (town and gate guards, police, shops, residents, throne rooms; **Verified** by probe). Row 209: effect
-  !130 ALARMS_IN_THE_VICINITY, needs 86 atATown. Finder `FUN_14092a810(town, 0, 375, me, faction or 0)`: the nearest alarm of the
-  investigator's squad's town within 375 for a trespass (code 11), 187.5 otherwise; halved again when it is in a closed building the
-  investigator is not in; skipped across floors (building flag +0xc2 or more than one floor apart).
+  !130 ALARMS_IN_THE_VICINITY, needs 86 atATown. Finder `FUN_14092a810(town, 0, 375, me, faction or 0)`: the nearest alarm of the An alarm raised in a building whose every entrance is closed (`FUN_1405499a0` false: doors present and none open or passable) is skipped for an investigator in the same building and halves the reach a second time otherwise (`FUN_14092a810`:52-62, **Verified**; Meitou `CrimeSystem.AlarmFor`, `FixtureRegistry.HasOpenDoor`).
+  investigator's squad's town within 375 (**Verified**: the reach is halved to 187.5 when the alarm's location handle `+0x48` is not type 0xb, i.e. it was raised in a building, whatever the crime code, which the finder never reads; the location is the culprit's own `vfunc 0x1d8`, set on create and overwritten on merge with the floor `+0x60`); halved again when that building resolves, has no open door (`FUN_1405499a0`) and the investigator is not at the same location (otherwise skipped); skipped across floors (alarm floor differs and the building byte `+0xc2` is set, or more than one floor apart).
 - **Update** (`FUN_140354260`): no town or no alarm ends the task. Within 100 of it: faces it and counts down (15 s at the start, 10
   after any walk); at 0 the alarm is deleted and the task ends (the only remover found). Farther: runs (mode 2) to 30 short of it on its
   own side, the count set to 10, and every sensed character (neutral or enemy, not down: `SenseItr(6, 8)`) with a pending crime whose
   victim faction is an ally of the investigator's (`FactionRelations::isAlly`: same, or 50+) is tagged TEMP ENEMY and attacked
-  (`Character::attackTarget`).
+  (`Character::attackTarget`, which only stores the target). **Verified** (decompile; `FUN_140354260`): the whole sense list is walked with no early exit and no can-attack test (the goal system decides who is offered the task), on every update while it walks; each qualifying entry is tagged and the AI's attack hand is overwritten, so the last one scanned is the target (Meitou `CrimeSystem.Investigate`: all tagged, one order for the last; the sight scan stands in for the sense list).
 
-Meitou (`CrimeSystem.TownAlarm` / `AlarmFor` / `Investigate`, `AiBehaviour.Investigate`): as above; alarms are not saved; the building and
-floor tests are not modelled; "sensed" is the witnesses' sight test.
+Meitou (`CrimeSystem.TownAlarm` / `AlarmFor` / `Investigate`, `AiBehaviour.Investigate`): as above (reach by `TownAlarm.Place`, the culprit's `SightMap.PlaceOf`, and the more-than-one-floor skip by `Floor`); alarms are not saved; the closed-building
+halving and the `+0xc2` floor skip (meaning **Unknown**) are not modelled; "sensed" is the witnesses' sight test.
 
 ### 11.7 Arrest
 
@@ -444,11 +502,12 @@ decompile's `DialogActionEnum` / `DialogConditionEnum` / `EventTriggerEnum`, com
   `DA_TAKE_MONEY` (8, the fine) + `DA_CLEAR_BOUNTY` (49); the 1100 line also runs `DA_PAY_BOUNTY` (10). 49 erases two entries, the speaker's booking faction's and the target's town's (or jailer's) ([dialogue](dialogue.md#effects));
   As built: [simulation](../simulation.md#arrest-and-jail).
 - **`DA_ARREST_TARGET`** (`FUN_140680560` case 0x1d, **Observed**): when the speaker's ownership town (`Character+0x658 -> +0x30`) is set
-  and equals the speaker's status `+0x88` (read as "he is in his own town"), and the target is not an animal (slot `0x248` is `asAnimal`): the speaker gets tasks 240 `LIFT_PERSON_SNATCHING_ALLOWED_IN_TOWN_ONLY`
+  and equals the speaker's status `+0x88` by pointer (**Verified**: `+0x88` is the character's current town, `vfunc 0x78` = `FUN_1405c89b0`, written as "the town the status stands in"; "he is standing in his own town", no distance; event 45 in `FUN_140859680` makes the same compare, plus further tests not modelled), and the target is not an animal (slot `0x248` is `asAnimal`): the speaker gets tasks 240 `LIFT_PERSON_SNATCHING_ALLOWED_IN_TOWN_ONLY`
   ("Capture Target", needs `isTargetDown`) and 112 `FIND_CAGE_AND_PUT_IN` on the target, and the target's squad marks the speaker
   (flag 5). Otherwise the speaker's squad marks the target (flag 4) and the speaker attacks it (task 4 `MELEE_ATTACK`). Either way the
   guard fights until the target is down, then carries it. `DA_ARREST_TARGETS_CARRIED_PERSON` (30, case 0x1e) does the same for the body
-  the target carries (it is dropped and taken over). `DA_ASSIGN_BOUNTY` (32) adds its value as a bounty with the speaker's booking
+  the target carries (it is dropped and taken over), but only when the speaker's ownership town is set and equals the town it stands in (cases 0x1d and 0x1e share the test; **Verified**), else nothing happens;
+  `DA_ENSLAVE_TARGETS_CARRIED_PERSON` (40, case 0x28) takes the same tail with no town test (**Verified**). Meitou: the town test is `ArrestSystem.InOwnTown`. `DA_ASSIGN_BOUNTY` (32) adds its value as a bounty with the speaker's booking
   faction, or books the pending crime when the value is 0.
 - **Arrest goal** (AI_TASK "Arrest bounties", enum 204 `HUNT_BOUNTIES`, in "addon- law enforcement" and the "Gate guard ... -arrests"
   packages; **Verified** by probe): desire 1 when the cage finder finds a free cage, else 0 (AI slot 33 `FUN_140598a90`); target finder
@@ -458,11 +517,10 @@ decompile's `DialogActionEnum` / `DialogConditionEnum` / `EventTriggerEnum`, com
   129 leads the planner to 203 Arresting (list B: target down, unarmed, carried) and then the cage goals.
 - **Caging** (goals 112 / 281 "Find and put in cage", subtask 108 `PUT_IN_CAGE`): desire `FUN_1405a1140` (0 unless carrying;
   0.1 / 0.5 / 1.4 / 2.0 by status, death and bounty tests in `FUN_1405a0f10`); cage finder `FUN_1408d0770(ai, wantFree 1, function 8)`
-  over the buildings the AI knows (interiors included): usable (`FUN_140621230`, `Ownerships::canIUseThisBuilding`; **Verified** by decompile: true when the
-  building's town is the carrier's occupied town or the building is of its faction, else not when the building's faction is hostile, then further tests, last the ally test
-  `FUN_1406b2630`), not reserved, free; weight
-  `clamp(1 - d^2 / 4608^2, 1e-5, 1)`, x100 if the cage is of the carrier's faction (otherwise it must be usable), x100 if in the
-  carrier's home, x1e-5 for a police carrier when the cage's building fails slot 0x290; the **highest** weight wins (**Observed**).
+  over the candidates `FUN_1408cbea0` gathers (interiors included): the town in the character's status (`+0x88`), else its faction's nearest town (`FUN_140927f10`, nest markers left out) when within squared `DAT_14172dd88` = 1.5625e7, the buildings within that town's radius x `DAT_1416b1640` = 1.1 of its position (`FUN_140a00690`, each passing the usable test with no character, only complete ones), plus those of the home building's town when it differs; with no town at all every zone is searched, i.e. every building (**Verified**): usable (`FUN_140621230`, `Ownerships::canIUseThisBuilding`, full rule in [locks](locks.md#beds); **Verified** by decompile), not reserved, free; weight
+  `clamp(1 - d^2 / 4608^2, 1e-5, 1)`, x100 if the cage is of the carrier's faction (any other must be usable or is skipped), x100 if in the
+  carrier's home (the squad's Ownerships home), x1e-5 for a law-enforcement carrier when the cage stands inside a building that is not public (`isPublic`); the **highest** weight wins (**Verified**, `FUN_1408d0770`).
+  Meitou: `FixtureRegistry.FindCage` with `CanUse` (all callers: arrests, bounty cagings, kidnapping, town duty; a player character's automatic pick skips `CanUse`, as it is the AI's Ownerships test: engine reading) and, for kidnapping and town duty, `CageCandidates` (the gatherer's town rule; arrests keep their own range); every caller passes the squad's home (`FixtureRegistry.HomeOf`) for the x100; a building's public flag is its state's `is public day`, public when absent.
   No free cage: the finder returns nothing; what the carrier then does is **Unknown**.
 
 ### 11.8 Bounty spotting and bounty hunters
@@ -527,7 +585,7 @@ Meitou's reading: [simulation, slave trading](../simulation.md#arrest-and-jail).
   owning faction vs. the holder's, expiry) is not decoded. The `0.5`
   stolen factor in `T` is therefore only roughly defined (the fence chance's own halvings are in [Fencing, stealing and smuggling](#fencing-stealing-and-smuggling)). *Partly resolved 2026-10-13* ([carry-loot.md 4.4](carry-loot.md#stolen-ownership)):
   `+0x140` is the owner the item was taken from, `+0x160` its current holder (a backpack's owner for a backpack); stolen = the from-owner is set,
-  differs from the holder and is of another faction, unless the holder's faction is lawless; the type list is the lootable item kinds. Expiry and
+  differs from the holder and is of another faction, unless the holder's faction is lawless (**Verified**, `FUN_14079e550`: the holder's faction (an item in a CONTAINER, type 0x2e, takes the container owner's) has `fundamental type` 8 or `not real` set; Meitou `ItemInstance.IsStolenFor` takes `PopulationData.IsLawless`, false for no valid faction, as the original skips the test with no holder faction); the type list is the lootable item kinds. Expiry and
   the halving condition remain open.
 - **Uniform and crafter** (`Armour::vfunc_81` `FUN_1408a9c20`, `Weapon::vfunc_81` `FUN_1408a52f0`, **Verified**): `+0x1e8` is the faction a uniform piece belongs to (the item state's
   `uniform` key, a FACTION id resolved through the faction manager; an unresolved id leaves it null), `+0x208` the length of the `crafter` string at `+0x1f8` (the item writer `FUN_140761c00` writes
@@ -567,9 +625,11 @@ Meitou's reading: [simulation, slave trading](../simulation.md#arrest-and-jail).
   `weapon manufacturers`), `armours` / `clothing` ARMOUR, `containers` CONTAINER, `blueprints` RESEARCH (a blueprint item), `crossbows` CROSSBOW, `robotics`
   LIMB_REPLACEMENT, `maps` MAP_ITEM; `armour blueprints` / `crossbow blueprints` / `backpack blueprints` name gear and give its `<id>.TECH.1` research's blueprint
   (skipped when missing), never the gear. Merged base data: `armour blueprints` 318, `blueprints` 141, `crossbow blueprints` 20, `backpack blueprints` 0 entries.
+  A `weapons` entry is stocked only when it is a `weapon types` entry of one of the list's `weapon manufacturers` (**Verified**, `FUN_140956ba0`: the types of every listed
+  manufacturer form a set, a weapon outside it logs "No valid manufacturer found for weapon" and is dropped, an empty set skips the whole weapons branch); other lists are not gated.
 - **The FACTION field names of the armour vendor quality chances** (`armors 0..5` in section 9.2): read as the ints `armors 0` .. `armors 5`, falling back to the editor defaults; not
   checked against the data.
-- **Opening a trade**: Meitou opens it within 30 units; the original's opening distance is not traced (the item check is in [Trading range](#trading-range)).
+- **Opening a trade**: Meitou opens it within 30 units and passes it to the character whose window a buy or sell uses within 1000 ([simulation](../simulation.md#trade)); the original's opening distance is not traced (the item check is in [Trading range](#trading-range)).
 
 ## Expression reference
 
@@ -592,11 +652,22 @@ Character virtual slots (CharacterAnimal/CharacterHuman vtables, **Verified** by
 ([carry-loot](carry-loot.md#theft-and-witnesses)), `0x298` steal attempt `FUN_140794810`, `0x2a8` smuggling check `FUN_140794e80`. Constants read from the exe: 1.0, 1.1, 0.4, 1.25, 0.5, 0.3, 2.25, 0.75, 1.5, 2.0, 0.98, 20, 80, 200.
 Roll convention: a `rand()` draw in [0, 1) against the chance p; the thief gets away when p >= the draw, so p >= 1 never fails.
 
-- **Fence chance** (`FUN_140793490(trader, item, thief)`, **Observed**, the early-outs read from the decompile). 1.0 (never caught) when the trader's faction is the player's, the item has no
-  owner, or the item's owner is the thief. When the owner is a character of another faction than the trader's: 1.0 when the trader's squad buys stolen goods (`+0xec`, via `FUN_140792830`, false for goods
-  stolen from that squad itself) or the owner's faction `fundamental type` is 8 (Bandit) or 9 (Adventurer); 1.1 when the trader's faction is not allied to the owner's (`FUN_1406b2630`) and the owner's
-  town is not the trader's town. Otherwise p = lerp(thievery/100, 0.4, 1.25), x0.5 when the owner's faction is the trader's, x0.5 again when the owner is the trader himself (Meitou keeps only
-  the item's faction: it lacks the second halving and reads "the owner's town is the trader's" as false, `TradeSystem.FenceOdds`).
+- **Owner tests** (**Observed**, decompile and the handle layout): the item's owner handle (`ownedby`, item vfunc 0x2a8 = item+0x140) is compared by its `C` (+0xc) and `CS` (+0x10) with an
+  object's own handle (+0x64, +0x68). A character's `C`/`CS` are its platoon's container ([save.md](../formats/save.md#object-handles-and-slot-lists)), so each test asks whether the owner is in
+  that platoon. `FUN_140792830(squad, item)` ("does not fence it"): false when the squad does not buy stolen goods (`+0xec`), else false only when the owner is in that squad (`C` and `CS`).
+- **Fence chance** (`FUN_140793490(trader, item, thief)`, **Observed**). 1.0 (never caught) when the trader's faction is the player's (faction +0x250), the item has no owner, the owner is in
+  the thief's platoon (`C` only), or the owner is not a character (type 1 or 0x22) that still resolves. When the owner's faction is not the trader's: 1.0 when the trader's squad does not fence
+  it (`FUN_140792830`) or the owner's faction `fundamental type` is 8 (Bandit) or 9 (Adventurer); 1.1 when the trader's faction is not allied to the owner's (`FUN_1406b2630`) and the owner's
+  home town (vfunc 0x98, `Ownerships::_homeTown` +0x30) is not the town the trader is in (vfunc 0x78, `getCurrentTownLocation`). Otherwise p = lerp(thievery/100, 0.4, 1.25), x0.5 when the
+  owner's faction is the trader's, x0.5 again when the owner is in the trader's platoon (`C` only).
+  Meitou (`TradeSystem.FenceOdds`): the owner is `ItemInstance.Owner` with the squad it was in when robbed (`OwnerSquad`, standing for `C`/`CS`), set where taking from a character is a
+  theft (`CarrySystem`, `HeldItems`). A mark from a container or the ground names only a faction: no owner early-out applies and the home-town test reads it as another town (what the
+  original's handle is there is **Unknown**). The trader's town is `AiSystem.TownAt`, the owner's home town its squad's `Town`. Saved as the robbed character's handle in `ownedby` (the
+  null handle when that character is not saved); loading marks an item whose `ownedby` names a character of another faction than its holder's as stolen from that faction, and from the
+  character once it is in the world (`SavedPopulation.NoteOwners`).
+- **Prompt and roll** (`FUN_140715290`, `FUN_140793770`, **Observed**): both skip an item whose owner is in the seller's platoon, that the trader's squad does not fence, or whose owner does
+  not resolve to a character; so a shop that buys stolen goods asks and rolls only for goods stolen from its own squad. Meitou: `TradeSystem.Fences`; the prompt and the hover box
+  ([ui-screens](ui-screens.md)) show the same p the roll uses.
 - **Fence attempt** (`FUN_140793770`, **Observed**): caught when p < the draw: dialogue event 8 on the trader and a pending Fencing (0xd) against the trader's faction with timer 30 (`FUN_140852e10`).
   Thievery XP whenever p < 0.98 (and the trader is not imprisoned): the generic entry (dt 1) with 5 x 2 when the fence works, 20 x 2 when caught (`CrimeSystem.FenceXp`). Meitou: `TradeSystem.Caught`.
 - **Steal chance** (`FUN_1407944d0(thief, victim, item)`, **Observed**): 1.0 for a dead or knocked-out thief (`+0x5b9`, `+0x5bc`) or one in posture 3. A victim that is a character: p = 1.1 x thievery/100. A victim that is a

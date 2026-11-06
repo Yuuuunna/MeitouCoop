@@ -10,6 +10,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Meitou.Tests" />
     <InternalsVisibleTo Include="Meitou.Runtime" />
+    <InternalsVisibleTo Include="Meitou.Engine" />
+    <InternalsVisibleTo Include="Meitou.Networking" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BepuPhysics" Version="2.4.0" />

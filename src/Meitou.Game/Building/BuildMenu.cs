@@ -9,26 +9,29 @@ namespace Meitou.Game.Building;
 /// <summary>A group of the build menu: the members that share a <c>building group</c> (or stand alone under their own name), the way the original lists variants.</summary>
 public sealed record BuildGroup(string Name, IReadOnlyList<BuildingBuildData> Members)
 {
-    /// <summary>The group's default pick: the member with the highest <c>build materials</c> (the first of them in data order).</summary>
-    public BuildingBuildData Default => Members.MaxBy(m => m.BuildMaterials) ?? Members[0];
+    /// <summary>The group's default pick: the member with the highest <c>build materials</c>, the first of the sorted members (<see cref="BuildMenu.Groups"/>).</summary>
+    public BuildingBuildData Default => Members[0];
 }
 
 /// <summary>
 /// The build menu's lists (docs/game/buildings-production.md "Build menu"): every BUILDING is a candidate; the category is <c>building category</c> (default "misc"), the group
-/// <c>building group</c> or the building's name; one is offered when the player's research unlocked it, and a category shows when one of its members does. The sort order of the
-/// original is <b>Unknown</b>: the lists keep the database's order.
+/// <c>building group</c> or the building's name; one is offered when the player's research unlocked it, and a category shows when one of its members does.
 /// </summary>
 public sealed class BuildMenu(IReadOnlyList<BuildingBuildData> catalog)
 {
     public IReadOnlyList<BuildingBuildData> Catalog { get; } = catalog;
 
-    /// <summary>The categories with a member the set unlocks, in the order they first appear in the database.</summary>
+    /// <summary>The categories with a member the set unlocks, by name in byte order (the original keeps them in a <c>std::map</c> of names, <c>FUN_1404e4480</c>).</summary>
     public IReadOnlyList<string> Categories(IReadOnlySet<string> unlocked) =>
-        [.. Catalog.Where(b => unlocked.Contains(b.Id)).Select(b => b.Category).Distinct(StringComparer.Ordinal)];
+        [.. Catalog.Where(b => unlocked.Contains(b.Id)).Select(b => b.Category).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
 
-    /// <summary>The groups of a category that have a member the set unlocks (only the unlocked members are in them).</summary>
+    /// <summary>
+    /// The groups of a category that have a member the set unlocks, by name in byte order (<c>FUN_1404e4480</c>); a group holds only the unlocked members, taken from the last
+    /// in the database to the first and sorted by <c>build materials</c> descending, equal ones staying in that order (<c>FUN_1404e4210</c>, comparator <c>FUN_1404d6060</c>).
+    /// </summary>
     public IReadOnlyList<BuildGroup> Groups(string category, IReadOnlySet<string> unlocked) =>
-        [.. Catalog.Where(b => b.Category == category && unlocked.Contains(b.Id)).GroupBy(b => b.Group, StringComparer.Ordinal).Select(g => new BuildGroup(g.Key, [.. g]))];
+        [.. Catalog.Where(b => b.Category == category && unlocked.Contains(b.Id)).GroupBy(b => b.Group, StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => new BuildGroup(g.Key, [.. g.Reverse().OrderByDescending(m => m.BuildMaterials)]))];
 
     /// <summary>
     /// The hours the window estimates (<c>FUN_14055bf10</c>): the materials over the build speed, the same as an engineering 41.2 builder takes. The Building speed option is taken as 1
@@ -54,9 +57,9 @@ public sealed class BuildMenu(IReadOnlyList<BuildingBuildData> catalog)
 
 /// <summary>
 /// A level-data building as the selection panel names it: <paramref name="Name"/> is the placement state's own name (else the record's), <paramref name="Type"/> the record's name when it
-/// differs; <paramref name="Town"/> and <paramref name="Owner"/> are null when it is in no town or the town gives none; <paramref name="PublicDay"/> / <paramref name="PublicNight"/> are the state's flags; <paramref name="Sells"/> is what a generically named shop sells (its first vendor list), for the Meitou UI to name it by, else null.
+/// differs; <paramref name="Town"/> and <paramref name="Owner"/> are null when it is in no town or the town gives none; <paramref name="PublicDay"/> / <paramref name="PublicNight"/> are the state's flags.
 /// </summary>
-public sealed record WorldBuildingInfo(string Name, string? Type, string? Town, string? Owner, bool PublicDay = false, bool PublicNight = false, string? Sells = null, bool Destroyed = false);
+public sealed record WorldBuildingInfo(string Name, string? Type, string? Town, string? Owner, bool PublicDay = false, bool PublicNight = false, bool Destroyed = false);
 
 /// <summary>What the game interface needs from the host to run build mode: the catalog, names, the parts of a building, the placement services and the ghost drawing.</summary>
 public sealed class BuildServices

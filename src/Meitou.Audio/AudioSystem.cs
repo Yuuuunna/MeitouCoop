@@ -94,7 +94,7 @@ public sealed class AudioSystem : IDisposable
         var library = WwiseCodebookLibrary.Load(exe);
         if (library is null)
         {
-            error = $"no Wwise codebook library in {exe}";
+            error = $"no Wwise codebook library in {exe} ({WwiseCodebookLibrary.Diagnose(exe)})";
             return null;
         }
         var player = new WwisePlayer(library, Path.Combine(install.DataDirectory, "audio"), SampleRate);

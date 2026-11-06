@@ -17,8 +17,8 @@ public static class HitResolver
         WeaponStats.Lerp(Math.Clamp(toughness * 0.01f, 0, 1), c.DamageResistanceMin, c.DamageResistanceMax);
 
     /// <summary>
-    /// cut' = cut (1 - cutRed); blunt' = blunt (1 - bluntRed); pierce' = max(0, pierce - flat); stun = the packet's stun + cut x stun fraction + the same fraction of the pierce the armour
-    /// absorbed; then cut, blunt, pierce and stun are each multiplied by (1 - r), cut and blunt floored at 0, and all four by the global damage multiplier of the difficulty options.
+    /// cut' = cut (1 - cutRed); blunt' = blunt (1 - bluntRed); pierce' = max(0, pierce - flat); stun = cut x stun fraction + the same fraction of the pierce the armour absorbed (the
+    /// packet's own stun is discarded, <c>FUN_1406508d0</c> zeroes it before the armour loop); then cut, blunt, pierce and stun are each multiplied by (1 - r), cut and blunt floored at 0, and all four by the global damage multiplier of the difficulty options.
     /// The packet's bleed multiplier becomes the hit's scale.
     /// </summary>
     public static HitDamage Resolve(in DamagePacket packet, in ArmourEffect armour, float toughness, float globalDamageMultiplier, CombatConstants c)
@@ -26,7 +26,7 @@ public static class HitResolver
         float cut = packet.Cut * (1 - armour.CutReduction);
         float blunt = packet.Blunt * (1 - armour.BluntReduction);
         float pierce = MathF.Max(0, packet.Pierce - armour.PierceFlat);
-        float stun = packet.Stun + packet.Cut * armour.StunFraction + armour.StunFraction * (packet.Pierce - pierce);
+        float stun = packet.Cut * armour.StunFraction + armour.StunFraction * (packet.Pierce - pierce);
         float resist = 1 - ToughnessResistance(toughness, c);
         cut = MathF.Max(0, cut * resist) * globalDamageMultiplier;
         blunt = MathF.Max(0, blunt * resist) * globalDamageMultiplier;

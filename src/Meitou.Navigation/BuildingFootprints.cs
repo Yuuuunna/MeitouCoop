@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Numerics;
 using Meitou.Content;
 using Meitou.Data;
+using Meitou.Data.Fcs;
 using Meitou.Data.World;
 
 namespace Meitou.Navigation;
@@ -72,12 +73,14 @@ public sealed class BuildingFootprints
     readonly GameDatabase db;
     readonly CollisionCache collision;
     readonly Lazy<Dictionary<ZoneCoordinate, List<BuildingPlacement>>> index;
+    readonly WorldLevelData? levels;
     readonly ConcurrentDictionary<string, Task<BuildingFootprint?>> byRecord = new(StringComparer.Ordinal);
 
     public BuildingFootprints(GameInstall install, GameDatabase db, WorldLevelData? levels)
     {
         this.install = install;
         this.db = db;
+        this.levels = levels;
         collision = new CollisionCache(install);
         index = new(() =>
         {
@@ -144,6 +147,83 @@ public sealed class BuildingFootprints
         return result;
     }
 
+    /// <summary>Spacing (units) of the samples a map feature's footprint is taken at (engine choice: a quarter of a coarse route cell).</summary>
+    public const float FeatureSample = 48;
+
+    /// <summary>
+    /// The map features' footprints (<c>features.dat</c> placements with a MAP_FEATURES <c>collision</c>, docs/game/pathfinding.md "Map features"): the long-range
+    /// grid's obstacles beside the buildings'. A feature is no convex block (Mourn's tube is an arch over the town, a cliff has bays), so it is sampled every
+    /// <see cref="FeatureSample"/> units: a sample is solid where the nearest of the feature's faces above the terrain faces up (the terrain is inside it, the
+    /// navmesh's rule) and lies more than the agent height over the terrain (lower tops are walked over, as low WALKABLE buildings). Each row's run of solid
+    /// samples becomes one rectangle.
+    /// </summary>
+    public IReadOnlyList<Vector2[]> FeatureObstacles(Func<double, double, float> terrainHeight)
+    {
+        var path = Path.Combine(install.DataDirectory, MapFeatureFile.RelativePath);
+        if (!System.IO.File.Exists(path)) return [];
+        var features = MapFeatureFile.Open(install).All().Select(t => t.Feature).ToList();
+        float agentHeight = new NavBuildSettings().AgentHeight;
+        var result = new ConcurrentBag<Vector2[]>();
+        var terrainGate = new object();
+        Parallel.ForEach(features, f =>
+        {
+            if (db.Find(f.StringId) is not { Type: FcsRecordType.MAP_FEATURES } record || record.GetPath("collision") is not { Length: > 0 } file
+                || collision.Get(file) is not { } prepared) return;
+            var node = WorldObjectLayout.InstanceTransform(f.Position, f.Rotation, f.Scale);
+            var tris = new List<Vector3>();
+            foreach (var shape in prepared.Shapes)
+                foreach (int i in shape.Indices) tris.Add(Vector3.Transform(shape.Vertices[i], node));
+            if (tris.Count == 0) return;
+            float x0 = tris.Min(v => v.X), x1 = tris.Max(v => v.X), z0 = tris.Min(v => v.Z), z1 = tris.Max(v => v.Z);
+            int columns = (int)MathF.Floor((x1 - x0) / FeatureSample) + 1, rows = (int)MathF.Floor((z1 - z0) / FeatureSample) + 1;
+            // The faces over each sample: height and whether it faces up.
+            var hits = new List<(float Y, bool Up)>?[columns * rows];
+            for (int t = 0; t < tris.Count; t += 3)
+            {
+                Vector3 a = tris[t], b = tris[t + 1], c = tris[t + 2];
+                float area = (b.X - a.X) * (c.Z - a.Z) - (b.Z - a.Z) * (c.X - a.X);
+                if (MathF.Abs(area) < 1e-6f) continue;
+                int i0 = Math.Max(0, (int)MathF.Ceiling((MathF.Min(a.X, MathF.Min(b.X, c.X)) - x0) / FeatureSample)), i1 = Math.Min(columns - 1, (int)MathF.Floor((MathF.Max(a.X, MathF.Max(b.X, c.X)) - x0) / FeatureSample));
+                int j0 = Math.Max(0, (int)MathF.Ceiling((MathF.Min(a.Z, MathF.Min(b.Z, c.Z)) - z0) / FeatureSample)), j1 = Math.Min(rows - 1, (int)MathF.Floor((MathF.Max(a.Z, MathF.Max(b.Z, c.Z)) - z0) / FeatureSample));
+                for (int j = j0; j <= j1; j++)
+                    for (int i = i0; i <= i1; i++)
+                    {
+                        float px = x0 + i * FeatureSample, pz = z0 + j * FeatureSample;
+                        if (!NavGeometry.Barycentric(px, pz, a, b, c, out float u, out float v, out float w) || u < 0 || v < 0 || w < 0) continue;
+                        (hits[j * columns + i] ??= []).Add((u * a.Y + v * b.Y + w * c.Y, area < 0));
+                    }
+            }
+            for (int j = 0; j < rows; j++)
+            {
+                int run = -1;
+                for (int i = 0; i <= columns; i++)
+                {
+                    bool solid = false;
+                    if (i < columns && hits[j * columns + i] is { } list && MathF.Abs(x0 + i * FeatureSample) < WorldLayout.HalfWorldSize && MathF.Abs(z0 + j * FeatureSample) < WorldLayout.HalfWorldSize)
+                    {
+                        float px = x0 + i * FeatureSample, pz = z0 + j * FeatureSample, ground, nearest = float.MaxValue, top = float.MinValue;
+                        lock (terrainGate) ground = terrainHeight(px, pz);   // the caller's height function need not be thread-safe (a heightmap file)
+                        bool up = false;
+                        foreach (var (y, faceUp) in list)
+                        {
+                            if (y > ground && y < nearest) { nearest = y; up = faceUp; }
+                            if (faceUp) top = MathF.Max(top, y);
+                        }
+                        solid = up && top - ground > agentHeight;
+                    }
+                    if (solid && run < 0) run = i;
+                    if (!solid && run >= 0)
+                    {
+                        float half = FeatureSample / 2, ax = x0 + run * FeatureSample - half, bx = x0 + (i - 1) * FeatureSample + half, z = z0 + j * FeatureSample;
+                        result.Add([new(ax, z - half), new(bx, z - half), new(bx, z + half), new(ax, z + half)]);
+                        run = -1;
+                    }
+                }
+            }
+        });
+        return [.. result];
+    }
+
     /// <summary>
     /// The triangles of a building record's collision shapes in its own space (scale applied, as the hull is): what a click on a building is tested against after its hull. Read from the
     /// cache on demand, not kept; empty without a database record or collision files.
@@ -162,6 +242,10 @@ public sealed class BuildingFootprints
         }
         return result;
     }
+
+    /// <summary>The triangles of a collision file in its own space (an item's <c>physics file</c>), unscaled; empty when it is not in the install or cannot be read.</summary>
+    public IReadOnlyList<(Vector3[] Vertices, int[] Indices)> File(string recordPath) =>
+        collision.Get(recordPath) is { } prepared ? [.. prepared.Shapes.Select(s => (s.Vertices, s.Indices))] : [];
 
     readonly ConcurrentDictionary<string, BuildingFootprint?> plots = new(StringComparer.Ordinal);
 
@@ -184,10 +268,16 @@ public sealed class BuildingFootprints
         return hull.Length < 3 ? null : new BuildingFootprint(hull, points.Min(p => p.Y), points.Max(p => p.Y));
     });
 
+    readonly ConcurrentDictionary<string, (Vector3 Min, Vector3 Max)?> partBounds = new(StringComparer.Ordinal);
+
+    /// <summary>The bounds box of a building part's mesh in its own space (the mesh file's bounds chunk, read once); null when the file is not found or has none.</summary>
+    public (Vector3 Min, Vector3 Max)? PartBounds(string meshPath) => partBounds.GetOrAdd(meshPath, path =>
+        Meitou.Data.Physics.CollisionPaths.Resolve(install, path) is { } file && Meitou.Data.Ogre.OgreMeshReader.TryReadBounds(file, out var b) && b.Max.X >= b.Min.X ? (b.Min, b.Max) : null);
+
     /// <summary>Whether a BUILDING is a farm (it names a <c>farm data</c>): the level buildings without collision that a click still selects, by their <see cref="Plot"/>.</summary>
     bool IsFarm(string buildingId) => db.Find(buildingId)?.GetReferences("farm data") is [_, ..];
 
-    Task<BuildingFootprint?> Request(string buildingId) => byRecord.GetOrAdd(buildingId, id => Task.Run(() => Compute(id)));
+    Task<BuildingFootprint?> Request(string buildingId) => byRecord.GetOrAdd(buildingId, static (id, self) => Task.Run(() => self.Compute(id)), this);   // a static factory: nothing allocated on a hit
 
     BuildingFootprint? Compute(string buildingId)
     {
@@ -249,6 +339,28 @@ public sealed class BuildingFootprints
                 yield return b;
             }
         }
+    }
+
+    /// <summary>
+    /// The level data's buildings with <c>links together</c> (town walls, whatever their owner or state) placed within <paramref name="radius"/> of <paramref name="centre"/> (X, Z), with
+    /// their absolute position and turn: the wall pieces a player's wall can snap to. <paramref name="terrainHeight"/> sets a placement that has no height of its own.
+    /// </summary>
+    public IEnumerable<(string Key, string Record, Vector3 Position, Quaternion Rotation)> LinkedAround(Vector2 centre, float radius, Func<double, double, float> terrainHeight)
+    {
+        if (levels is null) yield break;
+        var map = index.Value;
+        var home = WorldLayout.ZoneOf(centre.X, centre.Y);
+        int span = (int)MathF.Ceiling(radius / WorldLayout.ZoneSize);
+        for (int dz = -span; dz <= span; dz++)
+            for (int dx = -span; dx <= span; dx++)
+            {
+                if (!map.TryGetValue(new ZoneCoordinate(home.X + dx, home.Y + dz), out var list)) continue;
+                foreach (var b in list)
+                {
+                    if (b.TargetsZoneRecord || b.Position == Vector3.Zero || Vector2.DistanceSquared(new Vector2(b.Position.X, b.Position.Z), centre) > radius * radius) continue;
+                    if (db.Find(b.BuildingId)?.GetBool("links together") == true && BuildingPlacements.Resolve(b, db, levels, terrainHeight) is { } r) yield return (b.Key, b.BuildingId, r.Position, b.Rotation);
+                }
+            }
     }
 
     /// <summary>The footprints (those already read; the others are being read) of the level data's buildings with a placement within <paramref name="radius"/> of <paramref name="centre"/> (X, Z).</summary>

@@ -93,7 +93,7 @@ public sealed partial class PopulationSystem
                 if (site.Town.Type == TownType.Town && data.BiomeGroupAt(new Vector2(site.Position.X, site.Position.Z)) == group) world.Player.Know(site.Index, TownKnowledge.Discovered);
 
         var built = BuildPlayerStart(world, start, data.PlayerFaction, world.Seed, at);
-        var squad = SpawnSquad(world, built, null, town is null ? 100 : town.Town.SizeRadius * town.Town.TownRadiusMult, player: true);
+        var squad = SpawnSquad(world, built, null, town is null ? 100 : town.Town.SizeRadius * town.Town.TownRadiusMult, player: true, gated: built.TemplateMembers);
         // CHARACTER `slave` (fcs.def "sets initial slave state", SlaveStateEnum NOT_SLAVE 0, IS_SLAVE 1, ESCAPING_SLAVE 2, EX_SLAVE 3): The Slaves start's "start slave" is 1. The owner is
         // the start town's faction (engine choice: the original's is Unknown); an escaped one is stamped now (lie low, FixtureRegistry.LayLow); an ex-slave start is left free.
         int owner = town is not null && town.Index < data.SiteFactions.Count ? data.SiteFactions[town.Index] : -1;
@@ -122,6 +122,7 @@ public sealed partial class PopulationSystem
         // One squad of everything the start lists.
         var members = new List<BuiltMember>();
         var first = new List<MemberPlan>();
+        var fromTemplate = new HashSet<int>();
         SquadTemplate? template = null;
         void AddTemplate(GameRecord record)
         {
@@ -130,7 +131,9 @@ public sealed partial class PopulationSystem
             var planned = SquadFactory.Plan(data.Db, t, settings.SquadSizeMultiplier, seed, Rng.Mix(key ^ (uint)first.Count), States,
                 memberLimit: limit is { } maximum ? maximum - first.Count : null, includeSlaves: !strict);
             if (strict && planned.Problems.Count != 0) throw new InvalidDataException(string.Join("; ", planned.Problems));
+            int before = first.Count;
             first.AddRange(planned.Members);
+            for (int i = before; i < first.Count; i++) fromTemplate.Add(i);
         }
         // A CHARACTER entry's characters stand up to 50 from the place on x and z, as the original's do.
         Vector2 Scatter(int i) => new(Rng.Float(Rng.Hash(seed, key, RngPurpose.Spawn, SeedSalts.PlayerScatter + 2 * (ulong)i)) * 100 - 50,
@@ -164,6 +167,6 @@ public sealed partial class PopulationSystem
             members.Add(new BuiltMember(m, look));
         }
         var plan = new SquadPlan(template ?? new SquadTemplate { Id = start.Id, Name = start.Name }, first, [], []);
-        return new BuiltSquad(plan, at, faction, members);
+        return new BuiltSquad(plan, at, faction, members, TemplateMembers: fromTemplate);
     }
 }

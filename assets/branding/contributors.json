@@ -1,0 +1,50 @@
+{
+  "doublevoid": {
+    "commits": 44,
+    "areas": "Navmesh, Navmesh tool, Interior joins, Ragdoll collision, Tests, Docs"
+  },
+  "asc3ns10n": {
+    "commits": 17,
+    "areas": "New game, Linux, Picking"
+  },
+  "rockchinq": {
+    "commits": 12,
+    "areas": "Towns, trading, New game"
+  },
+  "hazzael": {
+    "commits": 6,
+    "areas": "Localization, Pause, UI"
+  },
+  "bgasm": {
+    "commits": 2,
+    "areas": "Audio, Saves"
+  },
+  "gosuboy": {
+    "commits": 7,
+    "areas": "Metal rendering, Materials, Seat interaction, Mesh paths"
+  },
+  "crockmr": {
+    "commits": 26,
+    "areas": "Slaves, Prisoners, Saves"
+  },
+  "dmlen": {
+    "commits": 1,
+    "areas": "Projectile tracers"
+  },
+  "lucasskrewer": {
+    "commits": 6,
+    "areas": "Benchmarks, Animals"
+  },
+  "dxseba": {
+    "commits": 2,
+    "areas": "Combat, Mesh buffers"
+  },
+  "dfdffish": {
+    "commits": 17,
+    "areas": "Localisation, Launcher"
+  },
+  "roscatoday": {
+    "commits": 1,
+    "areas": "Mod settings"
+  }
+}

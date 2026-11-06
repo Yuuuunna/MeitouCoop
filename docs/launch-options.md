@@ -18,7 +18,10 @@ The Vulkan title also offers [Multiplayer](networking.md#graphical-admission): e
 |---|---|---|---|
 | `--new-game [start]` | start name | Wanderer | New game: squad at its town, camera on it. |
 | `--list-starts` | | | Print the available starts and exit. |
+| `--mods-cfg <file>` | file | `data/mods.cfg` | Read the enabled mods (load order, language, code mods) from this file instead of `data/mods.cfg`; a relative path is taken from the working directory; a missing file stops the game with exit code 2. The Settings window's Mods page lists the mods of this list. Also `MEITOU_MODS_CFG` (the option wins). Read-only: the launcher still writes `data/mods.cfg`. |
+| `--data-check` | | | Print every game data and level file problem of the load order (missing mod, changed record type...) and exit: 0 none, 1 some. |
 | `--load <folder>` | save folder | none | Start in a save, Meitou's or the original game's. With `--screenshot` too. |
+| `--continue` | | off | Start in the newest save of the folders the game lists saves from (`SaveModList.Roots`), as `--load` would; no check that its mods are the enabled ones. Excludes `--load`; exit 1 without a save. |
 | `--seed <n>` | integer | 0 | World seed. A new game from the menu keeps it once given. |
 | `--no-population` | | off | No residents or movement. |
 | `--move-to <x> <z>` | two numbers | none | With `--new-game`: select the squad and walk it there (pictures). |
@@ -52,7 +55,7 @@ The Vulkan title also offers [Multiplayer](networking.md#graphical-admission): e
 | `--terrain-sandbox [cliffs] [x,z]` | | flattest spot (38376,-8280); cliffs spot (92164,123124) | Empty world on a field of ground-texture tiles; `cliffs` uses cliff textures on a steep face. |
 | `--duel [x,z]` | | dune crest | Looping two-Samurai duel at sunset, on rails. Time held at 22:00 and weather clear unless `--time` or `--weather` is given. |
 | `--battle <n> <unit> <m> <unit> [rows]` | counts of 1 or more; CHARACTER or ANIMAL_CHARACTER name or id | rows of 25 | Two NPC blocks fight, facing each other. Excludes `--new-game`, `--load`, `--no-population`, `--duel`, `--sandbox`. Backspace restarts. |
-| `--battle-map <map>` | plateau, mesa, sandbox, or x,z | plateau | Where the battle is fought. `mesa` is the duel spot; `sandbox` is the flat floor. |
+| `--battle-map <map>` | plateau, mesa, fog, sandbox, or x,z | plateau | Where the battle is fought. `mesa` is the duel spot; `fog` a plateau in the Fog Islands; `sandbox` is the flat floor. |
 | `--battle-width <a>[,<b>]` | counts | rows as given | Fighters per row for each side (one value: both). |
 | `--battle-no-fear` | | off | Nobody in the battle runs away. |
 | `--scene <name>` | fight, turret, bed, acid, menu | none | With `--screenshot` (and `--load`): stage a scene and save frames. |
@@ -103,12 +106,13 @@ Authority: `src/Meitou.Rendering/WorldFrame.cs` (`Parse`, `Usage`), `src/Meitou.
 | `--at <x>,<z>` | world X,Z | world centre | Look at this point. |
 | `--zone <i>,<j>` | zone indices | | Centre of zone i,j (i along +X, j along +Z). |
 | `--town <name>` | part of a town name | The Hub (game) | A town whose name contains this. |
-| `--camera-code <hex>` | camera code | | Start at a camera code (the viewer's Ctrl+C); the world loads round it. |
+| `--camera-code <hex>` | camera code | | Start at a camera code (the viewer's Ctrl+C) or a feedback report's camera location ("target x, y, z; ...; yaw a, pitch b, boom d"); the world loads round it. |
 | `--radius <zones>` | zones | 1.5 | Half-size of the loaded square (4608 units per zone). |
 | `--yaw <deg>` / `--pitch <deg>` | degrees | 30 / 35 | Start heading and pitch above the horizon. |
 | `--distance <u>` | units | radius | Camera boom. |
 | `--fly-to <x>,<z>` | world X,Z | | With `--screenshot`: fly there first, then take the picture. |
 | `--windowed` | | off (full screen) | Bordered window; maximised unless `--size` is given. |
+| `--hidden-window` | | off | Window never shown (implies `--windowed`): for unattended runs such as `--play-bench`; frames are drawn and presented as usual. |
 | `--monitor <n>` | 1-based | not set | Window on monitor n. |
 | `--show-keys` | | off | Start with the key list open (F10). |
 | `--play-shots` | | off | Fly the saved camera keys on a loop. |
@@ -121,7 +125,7 @@ Authority: `src/Meitou.Rendering/WorldFrame.cs` (`Parse`, `Usage`), `src/Meitou.
 | `--screenshot <out.png>` | file | none | Render offscreen to a PNG and exit. |
 | `--size <W>x<H>` | pixels | 1280x960 (1280x720 for bench and A/B runs) | Render size. |
 | `--no-vsync` | | vsync on (viewer) | Start with vsync off. The game takes it as its own option. |
-| `--log-spikes` | | off | Log frames whose GPU time is over 1.5 times the median. |
+| `--log-spikes` | | off | Log frames whose GPU time, or render-thread time (over 20 ms), is over 1.5 times its median; every 5 s a `simprof` line: speed, ticks/s, sim ms a frame (in frame, ahead) and ms a tick by system and part. |
 | `--sway-step <s>` | seconds | | Grass sway advanced per frame (motion check, with screenshot or bench). |
 | `--orbit-step <deg>` | degrees | | With `--screenshot`: the camera orbits this much per frame (upscaler motion vectors). |
 | `--wireframe` | | off | Wireframe view. |
@@ -165,8 +169,9 @@ Authority: `src/Meitou.Rendering/WorldFrame.cs` (`Parse`, `Usage`), `src/Meitou.
 | `--range-large <u>` | units | 50000 | Foliage draw range of the large size class. |
 | `--distant-range <zones>` | zones | 10 | How far distant towns are drawn; 0 for none. |
 | `--impostor-budget <MB>` | MB | 8% of video memory (5% integrated), 48 to 1024 | Video memory for resident impostor atlases. |
-| `--no-load-cache` | | off | Do not read or write the load caches (foliage layout cache). |
-| `--low-end` | | off | Potato-PC preset: short draw distances, no shadows, reflections, AO, relief, light shafts or AA, 0.83 render scale, sparse grass and particles. Options after it override it. |
+| `--no-load-cache` | | off | Do not read or write the load caches (foliage layout, character LOD, world colour map and terrain colour tile caches). |
+| `--low-end` | | off | Potato-PC preset: short draw distances, no shadows, reflections, AO, relief, light shafts or AA, 0.83 render scale, sparse grass and particles, Faithful UI (over `--ui` and the saved mode, which it leaves as saved). Options after it override the graphics. |
+| `--benchmark-baseline` | | off | The settings of benchmarks for the [benchmarks page](../bench/README.md): a 1920x1080 window (implies `--windowed` and `--size 1920x1080`; a later `--size` overrides), the Medium tier, then no GI (indirect light and indoor GI; the device is made without ray queries), ground parallax or tessellation (displacement, rock smoothing, outline refinement), no upscaler, SMAA at render scale 1. Like `--low-end`, the saved graphics are neither applied nor overwritten. Fixed for the run in the game: later graphics options it covers do not take effect (the viewer, which has no tier, honours them). Vulkan only: the Metal renderer applies the saved graphics over it. |
 
 ### Post-processing and upscaling (`PostProcessOptions.cs`)
 
@@ -174,11 +179,11 @@ Authority: `src/Meitou.Rendering/WorldFrame.cs` (`Parse`, `Usage`), `src/Meitou.
 |---|---|---|---|
 | `--post <meitou\|kenshi\|off>` | preset | meitou | Post chain preset; applied before the rows below. |
 | `--upscaler <off\|taa\|fsr\|dlss\|metalfx>` | | taa (Meitou), off (Faithful) | Temporal upscaler. FSR and DLSS need their vendor libraries; MetalFX is Metal only, else TAA. |
-| `--render-scale <0.25..1 or name>` | 0.25 to 1; native, ultra-quality, quality, balanced, performance, ultra | 0.83 with an upscaler (Meitou), else 1 | Render size per axis. |
+| `--render-scale <0.25..1 or name>` | 0.25 to 1; native, ultra-quality, quality, balanced, performance, ultra | 0.67 (Quality) with an upscaler (Meitou), else 1 | Render size per axis. |
 | `--no-fxaa` | | FXAA on | Game's FXAA off when no upscaler runs. |
 | `--smaa` | | off | SMAA instead of FXAA when no upscaler runs. |
 | `--no-heat-haze` | | on | No heat haze. |
-| `--particle-divisor <0\|1\|2\|4>` | | 0 | Weather particles drawn at 1/n of render size; 0 sizes by sprite. |
+| `--particle-divisor <0\|1\|2\|4>` | | 0 | Weather particles drawn at 1/n of render size; 0 sizes by sprite. Rain and fire stay full size. |
 
 ### Meitou and Faithful switches
 
@@ -187,7 +192,7 @@ Authority: `src/Meitou.Rendering/WorldFrame.cs` (`Parse`, `Usage`), `src/Meitou.
 | `--meitou <ids>` | comma list of ids, or `all` | all | Turns the listed Meitou enhancements on. |
 | `--faithful <ids>` | comma list of ids, or `all` | | Turns the listed enhancements off, giving the game's look. |
 
-Ids (`Enhancements.cs`): `ao`, `dither`, `haze`, `aa`, `shadows`, `range`, `impostors`, `reach`, `water`, `particles`, `lod`, `gi`, `tonemap`, `shafts`, `heathaze`, `night`, `planetshine`, `stars`, `nightgrade`, `clouds`, `cloudshadows`, `cloudfog`, `interiorgi`, `charlod`, `skin`, `interiorlamps`, `icons`, `blood`. The strength of each is a Tab slider.
+Ids (`Enhancements.cs`): `ao`, `dither`, `haze`, `aa`, `shadows`, `range`, `impostors`, `reach`, `water`, `particles`, `lod`, `gi`, `tonemap`, `shafts`, `heathaze`, `night`, `planetshine`, `stars`, `nightgrade`, `clouds`, `cloudshadows`, `cloudfog`, `interiorgi`, `charlod`, `skin`, `interiorlamps`, `icons`, `blood`, `bloodsurfaces`, `parallax`, `displace`, `weld`, `tracers`, `fog`. The strength of each is a Tab slider.
 
 ### Benchmarks and A/B (`--screenshot`, offscreen)
 
@@ -207,6 +212,7 @@ Ids (`Enhancements.cs`): `ao`, `dither`, `haze`, `aa`, `shadows`, `range`, `impo
 | `--fly-radius <u>` | units | 12000 | Radius of the fly benchmark circle. |
 | `--fly-speed <u/frame>` | units per frame | 150 | Speed of the fly benchmark. |
 | `--fly-pipelined` | | off | No GPU wait per frame; two frames in flight. |
+| `--fly-csv <file>` | file | off | Per-frame CSV of frame times and video memory; allocator owners every 30 frames in `<file>.owners.csv`. |
 
 ## Meitou.Tools (`meitou-tools`)
 
@@ -231,7 +237,7 @@ Authority: `tools/Meitou.Tools/Program.cs` (dispatch and usage), with the option
 | `image-diff <a.png> <b.png> [diff.png]` | | Mean difference and share of pixels over 12/255. |
 | `world-map <png> [step]` | step, default 16 | Top-down world map. |
 
-`navmesh` options: `--zone x,z`, `--town name`, `--around n`, `--geometry`, `--obj f.obj`, `--png f.png`, `--scale u`, `--box x0,z0,x1,z1`, `--path x0,z0,x1,z1` with `--from-y y`, `--to-y y`, `--closed`, `--near x,z,radius`, `--no-interiors`, `--repeat n`, `--fingerprint` (SHA-256 of the cache files), `--compare x,z ...`, `--verbose`.
+`navmesh` options: `--zone x,z`, `--town name`, `--around n`, `--geometry`, `--obj f.obj`, `--png f.png`, `--scale u`, `--box x0,z0,x1,z1`, `--path x0,z0,x1,z1` with `--from-y y`, `--to-y y`, `--closed`, `--near x,z,radius` (the buildings, map features, carvers and solids reaching the point), `--probe x,z[;x,z...]` (the column at each point: gathered triangles, solids, our and the original's polygons), `--probe x,z,radius,step` (a map of ground both meshes keep), `--feature-tops` (per map feature of the zone: walkable top samples the original and we keep), `--route x0,z0,x1,z1` (the long-range route with building footprints, then with map features too), `--ragdoll` (the zone's ragdoll collision triangles, map features' among them), `--no-interiors`, `--interior key` (one building's interior: parts, components, coverage), `--compare-interiors x,z ... | towns` (the original tiles' interior faces our kept polygons cover, and per group whether the original connects it and ours is reached from the street, SEALED where only the original is; `towns` adds every zone with a town; per group under 90 % the building and its uncovered faces by height, pruned or absent; with `--around n` the neighbours resolved too; `--verbose` each face and the furniture standing on original faces), `--repeat n`, `--fingerprint` (SHA-256 of the cache files), `--compare x,z ...`, `--own-only` (the building's own shapes only, no furniture or neighbouring buildings), `--verbose` (a failed `--path` also prints the polygons that reach the goal without clearance); build settings (`NavBuildSettings`): `--cell u`, `--climb u`, `--tile n` (cells per tile), `--min-region n`, `--merge-region n` (region areas in cells), `--simplify e` (contour error in cells).
 
 `weather` options: `--region name`, `--at x,z`, `--days d0 d1`, `--seed n`, `--list` (regions and calendars), `--extents`.
 
@@ -241,7 +247,7 @@ Authority: `tools/Meitou.Tools/Program.cs` (dispatch and usage), with the option
 
 The launcher takes no command-line options of its own. It passes to the game:
 
-- the user's launch arguments from its settings (`LauncherConfig`), split on spaces; the Graphics page warns that `--low-end` makes the game ignore the graphics sliders;
+- the user's launch arguments from its settings (`LauncherConfig`), split on spaces; the Graphics page warns that `--low-end` or `--benchmark-baseline` makes the game ignore the graphics sliders;
 - `--renderer <vulkan|metal>`, appended last, so it wins over a hand-written one (`MainWindow.axaml.cs`).
 
 Environment it sets for the game: `KENSHI_PATH`; on Windows with `steam_api64.dll` and **Launch as Kenshi on Steam** on, `SteamAppId` and `SteamGameId` (and a temporary `steam_appid.txt`); on macOS `MEITOU_METAL_GPU_BUDGET_MB` (Metal) or the Vulkan loader path. It removes any inherited `MEITOU_METAL_GPU_CULL` and `MEITOU_METAL_GPU_BUDGET_MB` first. It reads `DYLD_LIBRARY_PATH` on macOS (`MacSupport.cs`).
@@ -258,6 +264,7 @@ These have no user-facing docs; options are from their top-level argument loops.
 | Variable | Read by (file) | Effect |
 |---|---|---|
 | `KENSHI_PATH` | `src/Meitou.Core/Content/GameInstall.cs`, `tools/scripts/*.ps1` | Kenshi install folder. Also used by the test suite through `GameInstall.Locate`; tests skip when it is missing. |
+| `MEITOU_MODS_CFG` | `src/Meitou.Game/Program.cs` | Same as `--mods-cfg <file>`; the option wins. |
 | `DYLD_LIBRARY_PATH` | `src/Meitou.Rendering/Gpu/Core/VulkanDevice.cs`, `launcher/Meitou.Launcher/MacSupport.cs` | macOS Vulkan loader search path; only named in the error message the viewer prints. The launcher sets it. |
 | `SteamAppId` | `src/Meitou.Game/SteamSession.cs` | Steam app id; the launcher sets it on Windows. |
 | `SteamGameId` | launcher only | Set for Steam's overlay; not read by project code. |
@@ -276,8 +283,13 @@ These have no user-facing docs; options are from their top-level argument loops.
 | `MEITOU_FORCE_INTEGRATED` | `src/Meitou.Rendering/Gpu/Core/VulkanDevice.cs` | `1`: treat any GPU as integrated (budgets for integrated GPUs). |
 | `MEITOU_VRAM_BUDGET_MB` | `src/Meitou.Rendering/Gpu/Core/VulkanDevice.cs` | Caps the video memory reported, for testing the memory guard. |
 | `MEITOU_VK_VALIDATION` | `src/Meitou.Rendering/Gpu/Core/VulkanDeviceOptions.cs` | `1` validation; `sync` adds synchronisation checks; `gpu` adds GPU-assisted checks; `0` off. Unset: caller's default. |
+| `MEITOU_DIAG_SUBMIT` | `src/Meitou.Rendering/Gpu/FrameLoop.cs`, `src/Meitou.Game/GameHost.Interactive.cs` | `1`: diagnostic (issue #108): the world is submitted and waited for before the interface draws, and the interface before the present. Slower frames. |
+| `MEITOU_DIAG_IDLE` | `src/Meitou.Rendering/Gpu/FrameLoop.cs` | `1`: diagnostic (issue #108): each frame waits for every frame in flight before it begins. Slower frames. |
+| `MEITOU_DIAG_NO_MATERIAL_CACHE` | `src/Meitou.Rendering/Gpu/FrameLoop.cs` | `1`: diagnostic (issue #319): the terrain material cache starts off; every pixel shades the layers. |
+| `MEITOU_DIAG_NO_GROW` | `src/Meitou.Rendering/Gpu/FrameLoop.cs` | `1`: diagnostic (issue #319): the terrain near layer arrays and the grass store keep their first size (no growth for kept places or a longer grass distance). |
 | `MEITOU_VRAM_GUARD` | `src/Meitou.Rendering/WorldFrame.cs`, `src/Meitou.Game/GameHost.Metal.cs` | `0` turns the memory-pressure guard off. On by default. |
 | `MEITOU_OBJECT_LOD_CACHE` | `src/Meitou.Rendering/ObjectLodGen.cs` | Folder for the object LOD cache (default under `%LOCALAPPDATA%\Meitou`). |
+| `MEITOU_CHARACTER_LOD_CACHE` | `src/Meitou.Rendering/Characters/CharacterContent.cs` | Folder for the character LOD cache (default under `%LOCALAPPDATA%\Meitou`). |
 | `MEITOU_IMPOSTOR_CACHE` | `src/Meitou.Rendering/Impostors/ImpostorCache.cs` | Impostor cache folder. |
 | `MEITOU_SSAO_STAMPS` | `src/Meitou.Rendering/PostProcess.cs` | `1`: GPU timestamps around the SSAO pass (diagnostic). |
 | `MEITOU_SHAFT_STAMPS` | `src/Meitou.Rendering/PostProcess.Shafts.cs` | `1`: GPU timestamps around the light-shaft pass (diagnostic). |

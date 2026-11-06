@@ -105,6 +105,7 @@ public sealed class FoliageResourceNodes(FoliageWorld world, GameDatabase db, Fu
         var found = new List<ResourceNode>();
         lock (gate)
         {
+            if (world.RefreshOwnership()) zones.Clear();
             var first = WorldLayout.ZoneOf(x - range, z - range);
             var last = WorldLayout.ZoneOf(x + range, z + range);
             for (int zx = first.X; zx <= last.X; zx++)

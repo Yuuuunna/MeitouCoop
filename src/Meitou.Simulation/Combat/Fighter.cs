@@ -65,6 +65,8 @@ public sealed class Fighter
     public float UnarmedBonus { get; }
     /// <summary>Product of the pieces' <c>damage output mult</c>.</summary>
     public float DamageOutput { get; }
+    /// <summary>Product of the pieces' <c>fist injury mult</c> (CharStats <c>+0x4c</c>): scales the damage a fist blow does to the puncher's own limb.</summary>
+    public float FistInjury { get; }
     /// <summary>Product of the pieces' <c>dexterity mult</c>; 1.1 with no armour and no backpack (<see cref="Naked"/>).</summary>
     public float DexterityMult => Naked ? NakedBonus : dexterity;
     /// <summary>Product of the pieces' <c>dodge mult</c> (the gear's dodge value for <see cref="DefenceFormulas.DodgeSkill"/>, x 100); 1.1 when <see cref="Naked"/>.</summary>
@@ -90,7 +92,7 @@ public sealed class Fighter
     /// </summary>
     public bool Naked => !IsAnimal && armour.Length == 0 && !backpack;
     readonly bool backpack;
-    /// <summary>Product of the pieces' <c>combat speed mult</c>: scales the speed attack animations play at.</summary>
+    /// <summary>Product of the pieces' combat speed factors (<see cref="ArmourPiece.CombatSpeed"/>) and the backpack's: scales the speed attack animations play at.</summary>
     public float CombatSpeed { get; }
 
     /// <summary>
@@ -103,13 +105,15 @@ public sealed class Fighter
 
     /// <param name="backpackStealth">The worn backpack's <c>stealth mult</c>, null without one (a negative value counts as 1).</param>
     /// <param name="backpackAthletics">The worn backpack's <c>athletics mult</c> (1 without one).</param>
-    public Fighter(WeaponInstance? weapon, IEnumerable<ArmourPiece>? armour = null, float? backpackStealth = null, float backpackAthletics = 1)
+    /// <param name="backpackSkill">The worn backpack's <c>combat skill bonus</c> (0 without one): it seeds both the attack and the defence bonus sums (<c>FUN_140887030</c>, <b>Verified</b>).</param>
+    /// <param name="backpackSpeed">The worn backpack's <c>combat speed mult</c> (1 without one): it seeds the combat speed product.</param>
+    public Fighter(WeaponInstance? weapon, IEnumerable<ArmourPiece>? armour = null, float? backpackStealth = null, float backpackAthletics = 1, int backpackSkill = 0, float backpackSpeed = 1)
     {
         hip = weapon;
         this.armour = armour is null ? [] : [.. armour];
         backpack = backpackStealth is not null;
         float seed = backpackStealth is { } b ? b < 0 ? 1 : b : 1;
-        float def = 0, atk = 0, unarmed = 0, output = 1, dex = 1, dodge = seed, speed = 1, sneak = seed, runMax = 1, runMin = backpackAthletics;
+        float def = backpackSkill, atk = backpackSkill, unarmed = 0, output = 1, fist = 1, dex = 1, dodge = seed, speed = backpackSpeed, sneak = seed, runMax = 1, runMin = backpackAthletics;
         int perception = 0;
         assassin = ranged = 1;
         foreach (var p in this.armour)
@@ -121,9 +125,10 @@ public sealed class Fighter
             runMax = MathF.Max(runMax, p.Athletics);
             runMin = MathF.Min(runMin, p.Athletics);
             output *= p.Data.DamageOutputMult;
+            fist *= p.Data.FistInjuryMult;
             dex *= p.Data.DexterityMult;
             dodge *= p.Data.DodgeMult;
-            speed *= p.Data.CombatSpeedMult;
+            speed *= p.CombatSpeed;
             assassin *= p.Data.AssassinationMult;
             ranged *= p.Data.RangedSkillMult;
             sneak *= p.Stealth;
@@ -133,6 +138,7 @@ public sealed class Fighter
         AttackBonus = atk;
         UnarmedBonus = unarmed;
         DamageOutput = output;
+        FistInjury = fist;
         dexterity = dex;
         dodgeMult = dodge;
         CombatSpeed = speed;

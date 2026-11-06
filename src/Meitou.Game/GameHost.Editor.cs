@@ -78,8 +78,9 @@ sealed partial class GameHost
     /// The frame of the character editor, in place of the world's: the original draws the edited character alone, lit plainly, over the plain ground texture
     /// (compositor <c>Kenshi_Character_Editor</c>, docs/characters.md). The renderer draws the character into the stage picture from the editor's orbit; the interface puts
     /// <c>SandyGround.dds</c> and the picture behind its panels (<c>PlayerInterface.EditorBackdrop</c>).
+    /// <paramref name="posed"/>: the world pass has just updated the characters this frame (the Meitou bar's), so they are not updated again.
     /// </summary>
-    void DrawEditorStage(int width, int height)
+    void DrawEditorStage(int width, int height, bool posed = false)
     {
         if (ActiveCharacters is not { } characters) return;
         editorStaged = true;
@@ -88,7 +89,7 @@ sealed partial class GameHost
         if (!player.OnlineEditor && c is null) { characters.StageRequest = null; return; }
         characters.StageRequest = new EditorStageRequest(DrawKey(view.Character), width, height, view.Yaw, view.Elevation, view.Distance, view.Head, camera.FieldOfView, EditorStageShift);
         characters.SetView(width, height, camera.FieldOfView);
-        characters.Update(player.OnlineEditor ? Vector3.Zero : DrawnPosition(c!));
+        if (!posed) characters.Update(player.OnlineEditor ? Vector3.Zero : DrawnPosition(c!));
         characters.DrawStage();
         DrawEditorPlatform(view.Character, characters);
         characters.ResolveStage();

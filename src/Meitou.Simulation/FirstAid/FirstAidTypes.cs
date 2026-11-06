@@ -5,22 +5,22 @@ namespace Meitou.Simulation.FirstAid;
 /// is used up. A patient among the medics treats itself. The player's first aid order (the original's context menu verb "First Aid", <c>FIRST_AID_ORDER</c>); ignored for a medic that
 /// is knocked out or fighting.
 /// </summary>
-public sealed record TreatOrder(IReadOnlyList<CharacterId> Medics, CharacterId Patient) : SimCommand;
+public sealed record TreatOrder(IReadOnlyList<CharacterId> Medics, CharacterId Patient) : OrderCommand;
 
 /// <summary>
 /// Orders the medics (the selection when the list is empty) to splint <see cref="Patient"/> with a splint kit (the original's verb "Splint", <c>SPLINT_ORDER</c>): walk to it, then splint
 /// part after part until none is left or the kit is used up. A patient among the medics splints itself; a medic without a splint kit in its own inventory or backpack refuses.
 /// </summary>
-public sealed record SplintOrder(IReadOnlyList<CharacterId> Medics, CharacterId Patient) : SimCommand;
+public sealed record SplintOrder(IReadOnlyList<CharacterId> Medics, CharacterId Patient) : OrderCommand;
 
 /// <summary>Orders the characters (the selection when the list is empty) to sit down and rest. Any other order ends it.</summary>
-public sealed record RestOrder(IReadOnlyList<CharacterId> Characters) : SimCommand;
+public sealed record RestOrder(IReadOnlyList<CharacterId> Characters) : OrderCommand;
 
 /// <summary>
 /// The Medic button for the characters (the selection when the list is empty), the original's order 58 <c>JOB_MEDIC</c> (docs/game/ai-tasks.md "Perma-jobs"): with
 /// <see cref="Job"/> (Shift) it is added to their job lists, where an idle character with a kit treats hurt squad mates by itself; else each looks for a patient once.
 /// </summary>
-public sealed record MedicJobCommand(IReadOnlyList<CharacterId> Characters, bool Job = true) : SimCommand;
+public sealed record MedicJobCommand(IReadOnlyList<CharacterId> Characters, bool Job = true) : OrderCommand;
 
 /// <summary>The numbers of <see cref="FirstAidSystem"/>; all engine choices (the original's first aid task is only partly decoded, docs/game/character-stats.md "First aid").</summary>
 public sealed class FirstAidSettings
@@ -37,7 +37,7 @@ public sealed class FirstAidSettings
     public float StillSpeed { get; init; } = 1;
     /// <summary>A kit in a squad mate's inventory is used when this close (the same reach as sharing food).</summary>
     public float KitReach { get; init; } = 60;
-    /// <summary>Ticks between looks for a patient by characters that treat by themselves (the retaliation system's rhythm).</summary>
+    /// <summary>Ticks between looks for a patient by NPCs that treat by themselves (the retaliation system's rhythm); a player character's medic jobs are the decision step's.</summary>
     public int AutoEveryTicks { get; init; } = 15;
     /// <summary>Characters that treat by themselves look for a patient this far (X/Z units) from them, in their own squad.</summary>
     public float AutoReach { get; init; } = 250;

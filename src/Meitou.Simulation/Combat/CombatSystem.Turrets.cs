@@ -284,7 +284,7 @@ public sealed partial class CombatSystem
         if (t.Steady > 0) return;
         var (from, forward) = TurretRig.Barrel(t.Gun, t.Angles, t.Position, t.Yaw);
         float reach = Vector3.Distance(from, t.Aim ?? prev[target].Position);
-        if (LineOfFire(world, g, target, from, from + forward * reach, cold.Faction) != 1) return;
+        if (LineOfFire(world, g, target, from, from + forward * reach, cold.Faction, gun.Range) != 1) return;
         FireTurret(world, t, g, cold, target, from, forward);
         t.Loaded--;
         t.Shots++;
@@ -354,10 +354,11 @@ public sealed partial class CombatSystem
         var at = prev[g].Position;
         float range = t.Gun.Gun.Range;
         int current = t.Target >= 0 && t.Target < prev.Length && prev[t.Target].Alive && prev[t.Target].Generation == t.TargetGeneration ? t.Target : -1;
-        // Shoot At: the ordered target is kept while it lives and is free (out of range or blocked, the turret waits).
+        // Shoot At (FUN_140437f40, Verified): the ordered target is kept while it lives, is free, is not down and the gunner does not regard it as friendly; otherwise the order is dropped and the gunner chooses as it always does (row 235 list A state 7, which counts a crawler; out of range or blocked, the turret waits).
         if (!gc.TurretTarget.IsNone)
         {
-            if (table.TryResolveNext(gc.TurretTarget, out int ordered) && prev[ordered].Alive && table.Cold(ordered) is { Medical.Dead: false, IsImprisoned: false } oc0 && oc0.CarriedBy.IsNone) return ordered;
+            var talk = world.SystemOf<Dialogue.DialogueSystem>();
+            if (table.TryResolveNext(gc.TurretTarget, out int ordered) && prev[ordered].Alive && !ScoresZero(world, gc, table.Cold(ordered)) && !CharacterFacts.TargetDown(table.Cold(ordered)) && (talk is null || !talk.RegardsFriendly(world, g, ordered))) return ordered;   // row 235 ends on state 7 (isTargetDown: crawling too)
             gc.TurretTarget = CharacterId.None;
         }
         var found = turretCandidates ??= [];
@@ -371,12 +372,13 @@ public sealed partial class CombatSystem
         float Score(int o, float rangeFactor)
         {
             var oc = table.Cold(o);
-            if (oc?.Medical is not { } med || med.Dead || !oc.CarriedBy.IsNone || oc.IsImprisoned) return 0;
-            bool down = med.Incapacitated;
-            if (down && !gc.IsPlayer) return 0;
+            if (ScoresZero(world, gc, oc)) return 0;
+            var med = oc!.Medical!;
             var there = table.Previous[o].Position;
             float distance = Vector3.Distance(at, there);
-            float s = TurretFormulas.Closeness(distance, range, rangeFactor, down);
+            // x0.1 for a crippled target and x0.1 more for one not upright (FUN_140435d70, Verified; "crippled" is the engine reading of vfunc 0x360: crawling or unable to attack).
+            float f = (med.Crawling || oc.Fighter is { CanAttack: false } ? 0.1f : 1) * (med.Prone ? 0.1f : 1);
+            float s = TurretFormulas.Closeness(distance, range, rangeFactor, f);
             if (distance >= rangeFactor * range) return s;
             s *= TurretFormulas.Arc(facing, there - t.Position, Indoors(world, g, o));
             if (s <= 0) return 0;
@@ -385,6 +387,15 @@ public sealed partial class CombatSystem
             return s;
         }
 
+        // Shoot At (FUN_140437f40, Verified): the ordered target is kept while it scores above 0 (closeness x arc: in range and not blocked) and the gunner does not regard it as friendly;
+        // otherwise the order is dropped and the gunner chooses as it always does. A target out of range still scores 0.001 (kept, never fired at); one blocked (inside elsewhere) scores 0.
+        if (!gc.TurretTarget.IsNone)
+        {
+            var talk = world.SystemOf<Dialogue.DialogueSystem>();
+            if (table.TryResolveNext(gc.TurretTarget, out int ordered) && prev[ordered].Alive && Score(ordered, TurretFormulas.FullRange) > 0
+                && (talk is null || !talk.RegardsFriendly(world, g, ordered))) return ordered;
+            gc.TurretTarget = CharacterId.None;
+        }
         // The current target is dropped when it no longer scores.
         if (current >= 0 && Score(current, TurretFormulas.FullRange) <= 0) current = -1;
         int best = -1;
@@ -405,15 +416,14 @@ public sealed partial class CombatSystem
         if (best >= 0 || Relations is null) return best;
         if (gc.IsPlayer)
         {
-            // Shoot first (the squad AI option): with no enemy in its sights a player gunner also takes dangerous neutrals, at 0.6 of an enemy's weight.
-            var options = world.SquadOptions(gc);
-            if ((options & SquadAi.ShootFirst) == 0) return best;
+            // Shoot first (the squad AI option): with no enemy in its sights a player gunner also takes dangerous neutrals, scored at range factor 0.6 (no extra weight).
+            if ((world.SquadOptions(gc) & SquadAi.ShootFirst) == 0) return best;
             foreach (int o in found)
             {
                 if (o == g || !prev[o].Alive || table.Cold(o) is not { } oc || !Relations.Contains(oc.Faction)) continue;
                 var faction = Relations.Factions[oc.Faction];
-                if (!SquadAiRules.ShootsFirstAt(options, (int)faction.FundamentalType, faction.DefaultRelation)) continue;
-                float s = Score(o, TurretFormulas.FullRange) * SquadAiRules.ShootFirstWeight;
+                if (!SquadAiRules.ShootsFirstAt(world.SquadOptions(gc), (int)faction.FundamentalType, faction.DefaultRelation)) continue;
+                float s = Score(o, TurretFormulas.ShootFirstRange);
                 if (s > bestScore) (best, bestScore) = (o, s);
             }
             return best;
@@ -473,4 +483,11 @@ public sealed partial class CombatSystem
         ShotAt(world, target, cold.Faction);
         Sound(world, SoundKind.TurretShot, g, -1, muzzle);
     }
+    /// <summary>
+    /// A target every turret scores 0 (<c>FUN_140435d70</c>, <b>Verified</b>): down for every gunner (out, dead, playing dead, carried), in a bed or cage, and for a gunner not of the
+    /// player's faction one that is not upright. An ordered target that scores 0 is dropped (<c>FUN_140437f40</c>).
+    /// </summary>
+    static bool ScoresZero(World world, CharacterCold gunner, CharacterCold? target) =>
+        target?.Medical is not { } med || med.Incapacitated || med.PlayingDead || !target.CarriedBy.IsNone || target.InSomething != global::Meitou.Simulation.Locks.HeldState.None
+        || !(gunner.IsPlayer || world.IsPlayerFaction(gunner.Faction)) && med.Prone;
 }

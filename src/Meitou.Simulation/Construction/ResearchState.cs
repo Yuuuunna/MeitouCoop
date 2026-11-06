@@ -37,7 +37,10 @@ public sealed class ResearchState
     public IReadOnlyDictionary<string, float> Partial => partial;
     /// <summary>The manager's tech level: 1, raised to L + 1 by each finished level upgrade of level L (<b>Observed</b>, <c>FUN_140830880</c>).</summary>
     public int TechLevel { get; private set; } = 1;
-    /// <summary>The highest <c>tech level</c> of the player's complete research benches (set by the production system each tick; not saved, not hashed).</summary>
+    /// <summary>
+    /// The highest <c>tech level</c> the player's complete research benches reached: raised by the production system, never lowered, 0 again on <see cref="Set(GameDatabase, IEnumerable{string}, IEnumerable{ValueTuple{string, float}}, IEnumerable{string}, IEnumerable{ValueTuple{string, float}})"/>
+    /// (<c>FUN_140834390</c>; not saved, not hashed).
+    /// </summary>
     public int BenchLevel { get; internal set; }
     /// <summary>The research rate of the last tick: the sum of the bench contributions after the 0.6 falloff (the window's CURRENT RATE).</summary>
     public float Rate { get; internal set; }
@@ -61,12 +64,13 @@ public sealed class ResearchState
     public void Set(GameDatabase db, IEnumerable<string> ids, IEnumerable<(string Id, float Seconds)> queued, IEnumerable<string> paidIds, IEnumerable<(string Id, float Seconds)> kept)
     {
         completed.Clear();
-        // A repeatable research is listed once per time it was finished (engine reading: the save format of repetitions is Unknown).
+        BenchLevel = 0;
+        // A repeatable research is listed once per time it was finished (engine reading: the save format of repetitions is Unknown); extra listings are dropped.
         foreach (var id in ids)
-            if (Times(id) <= RepeatsOf(db, id)) completed.Add(id);
+            if (Times(id) < RepetitionsOf(db, id)) completed.Add(id);
         queue.Clear();
         foreach (var (id, s) in queued)
-            if (db.Find(id) is { Type: FcsRecordType.RESEARCH } && Times(id) <= RepeatsOf(db, id) && queue.TrueForAll(q => q.Id != id)) queue.Add(new ResearchItem(id, s));
+            if (db.Find(id) is { Type: FcsRecordType.RESEARCH } && Times(id) < RepetitionsOf(db, id) && queue.TrueForAll(q => q.Id != id)) queue.Add(new ResearchItem(id, s));
         paid.Clear();
         foreach (var id in paidIds)
             if (!paid.Contains(id, StringComparer.Ordinal)) paid.Add(id);
@@ -84,9 +88,11 @@ public sealed class ResearchState
         foreach (var id in completed.Distinct(StringComparer.Ordinal))
             if (db.Find(id) is { Type: FcsRecordType.RESEARCH } record)
             {
+                // With repeats above 0 repetition j keeps the entries whose v0 is j; without repeats the lists are not filtered (Verified, FUN_1408320a0, FUN_140831e60).
                 int times = Times(id);
-                foreach (var (kind, item, repetition) in ResearchData.From(record).EnableCrafts)
-                    if (repetition < times) crafts.Add((kind, item));
+                var data = ResearchData.From(record);
+                foreach (var (kind, item, repetition) in data.EnableCrafts)
+                    if (data.Repeats <= 0 || repetition >= 0 && repetition < times) crafts.Add((kind, item));
             }
         UnlockedCrafts = crafts;
         // Each finished repetition applies its improvements in finishing order: the multiplier is replaced, the increases add (Observed, FUN_140831a60).
@@ -108,12 +114,12 @@ public sealed class ResearchState
     /// <summary>Finishes one research (nothing when it has no repetition left): it leaves the queue and its unlocks apply; a repeatable one is charged again next time (engine reading).</summary>
     public bool Complete(GameDatabase db, string id)
     {
-        int repeats = RepeatsOf(db, id);
-        if (Times(id) > repeats) return false;
+        int repetitions = RepetitionsOf(db, id);
+        if (Times(id) >= repetitions) return false;
         completed.Add(id);
         queue.RemoveAll(q => q.Id == id);
         partial.Remove(id);
-        if (repeats > 0) paid.Remove(id);
+        if (repetitions > 1) paid.Remove(id);
         Refresh(db);
         Touch();
         return true;
@@ -125,7 +131,7 @@ public sealed class ResearchState
         int n = 0;
         foreach (var record in db.Records.Values)
             if (record.Type == FcsRecordType.RESEARCH)
-                for (int repeats = RepeatsOf(db, record.StringId); Times(record.StringId) <= repeats; n++) completed.Add(record.StringId);
+                for (int repetitions = RepetitionsOf(db, record.StringId); Times(record.StringId) < repetitions; n++) completed.Add(record.StringId);
         if (n == 0) return 0;
         queue.Clear();
         partial.Clear();
@@ -144,15 +150,18 @@ public sealed class ResearchState
         return n;
     }
     /// <summary>Every repetition is finished.</summary>
-    public bool Exhausted(GameDatabase db, string id) => Times(id) > RepeatsOf(db, id);
+    public bool Exhausted(GameDatabase db, string id) => Times(id) >= RepetitionsOf(db, id);
     /// <summary>The finished research's <c>improve buildings</c> by BUILDING record.</summary>
     public IReadOnlyDictionary<string, BuildingUpgrade> Upgrades { get; private set; } = new Dictionary<string, BuildingUpgrade>();
     public BuildingUpgrade Upgrade(string building) => Upgrades.GetValueOrDefault(building, BuildingUpgrade.None);
+    /// <summary>The upgrade of a building owned by <paramref name="owner"/>: only the player's buildings have one, others the default (<b>Verified</b>, <c>FUN_14082ec70</c>).</summary>
+    public BuildingUpgrade Upgrade(World world, string building, int owner) => owner >= 0 && owner == world.Player.Faction ? Upgrade(building) : BuildingUpgrade.None;
 
     /// <summary>The crafts the finished research unlocks (kind and record; a weapon type or model by its own id).</summary>
     public IReadOnlySet<(CraftKind Kind, string Id)> UnlockedCrafts { get; private set; } = new HashSet<(CraftKind, string)>();
 
-    static int RepeatsOf(GameDatabase db, string id) => db.Find(id) is { Type: FcsRecordType.RESEARCH } r ? Math.Max(0, r.GetInt("repeats")) : 0;
+    /// <summary>How many times a research can be finished in all: its <c>repeats</c>, at least 1 (<b>Verified</b>, <c>FUN_140834b70</c>).</summary>
+    static int RepetitionsOf(GameDatabase db, string id) => db.Find(id) is { Type: FcsRecordType.RESEARCH } r ? Math.Max(1, r.GetInt("repeats")) : 1;
     public bool IsQueued(string id) => queue.Exists(q => q.Id == id);
 
     internal void Enqueue(string id)

@@ -39,6 +39,7 @@ sealed partial class GameHost
         public bool Resting, Landed, Flesh;
         public long Born, CorpseTicks;
         public uint Colour;
+        /// <summary>The splash particles' colour for a race whose blood is not red (<see cref="BloodRecolour"/>).</summary>
         public Vector3? Recolour;
     }
 

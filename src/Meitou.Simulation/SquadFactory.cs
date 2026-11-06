@@ -45,8 +45,9 @@ public sealed record SquadPlan(SquadTemplate Template, IReadOnlyList<MemberPlan>
 /// then n' = trunc(n x M), at least 1 when n is above 0, M the Squad size multiplier unless the template has <c>dont multiply</c>.</item>
 /// <item>Order and roles: the first <c>leader</c> (role 2); <c>num random chars</c> picks from <c>choosefrom list</c> (weighted by v0, 0 counts
 /// as 100, entries gated by a world state that does not hold are skipped; role 0, or 2 when there is no leader yet); <c>squad</c> (role 0);
-/// <c>squad2</c> (role 1); <c>animals</c> (role 0, the first becomes the leader when nothing is); <c>animals2</c> (role 1); <c>slaves</c> as
-/// squads of their own (role 4).</item>
+/// <c>squad2</c> (role 1); <c>animals</c> (role 0, the first leads when it is the first member); <c>animals2</c> (role 1); <c>slaves</c> as
+/// squads of their own (role 4). The platoon's first member leads, so a shop guard before its animals (the squad's leader is then
+/// <see cref="SquadRegistry.Successor"/>'s first non-animal).</item>
 /// <item>Layout: member number i (every member so far; the leader is 0) stands at (3 x (i mod 8), 3 x floor(i / 8) + (i mod 2)) from the squad
 /// position; animals2 use spacing 5.</item>
 /// <item>Not made yet (Unknown or later stages): <c>prisoners</c> (they need cages in the home building), <c>housemates</c> and the squad's AI
@@ -71,7 +72,7 @@ public static class SquadFactory
     public static Vector2 Offset(int i, float spacing = 3) => new(spacing * (i % 8), spacing * (i / 8) + (i % 2));
 
     public static SquadPlan Plan(GameDatabase db, SquadTemplate template, float multiplier, ulong seed, ulong key, IWorldStates? states = null,
-        int? memberLimit = null, bool includeSlaves = true)
+        int? memberLimit = null, bool includeSlaves = true, bool checkWorldState = true)
     {
         states ??= IWorldStates.None;
         var members = new List<MemberPlan>();
@@ -91,8 +92,8 @@ public static class SquadFactory
 
         bool Gated(string recordId) => db.Find(recordId) is { } r && r.GetReferences("world state").Any(w => !IWorldStates.Passes(states, db, w.TargetStringId, w.Values.Value0));
 
-        // The squad itself can be gated by its own world state (section 4: the AND gate for the spawn).
-        if (template.WorldState.Any(w => !IWorldStates.Passes(states, db, w.Id, w.V0)))
+        // The squad itself can be gated by its own world state (section 4: the AND gate for the spawn); not a slave squad made by its owner's recursion (FUN_140583a10 never tests it).
+        if (checkWorldState && template.WorldState.Any(w => !IWorldStates.Passes(states, db, w.Id, w.V0)))
         {
             problems.Add($"squad '{template.Name}' is gated by a world state that does not hold");
             return new SquadPlan(template, [], [], problems);
@@ -128,8 +129,9 @@ public static class SquadFactory
                 for (int k = 0; k < n; k++)
                 {
                     float age = 1;
-                    if (animals) age = Math.Max(0, Rng.Float(Next()) * Math.Max(0, record.GetFloat("animal age random")) - 0.1f + entry.V2 / 100f);
-                    var memberRole = animals && !haveLeader && role == SquadRole.Squad1 ? SquadRole.Leader : role;
+                    if (animals) age = Math.Max(0, Rng.Float(Next()) * template.AnimalAgeRandom - 0.1f + entry.V2 / 100f);
+                    // The platoon's first member leads: an animal only when nothing was made before it.
+                    var memberRole = animals && members.Count == 0 && role == SquadRole.Squad1 ? SquadRole.Leader : role;
                     Add(entry.Id, memberRole, animals, age, spacing);
                 }
             }
@@ -147,7 +149,7 @@ public static class SquadFactory
                 problems.Add($"Missing squad slaves data reference ({slave.Id}) for squad '{template.Name}'");
                 continue;
             }
-            slaves.Add(Plan(db, SquadTemplate.From(record), multiplier, seed, Rng.Mix(key ^ (ulong)slaves.Count + SeedSalts.SlaveSquad), states));
+            slaves.Add(Plan(db, SquadTemplate.From(record), multiplier, seed, Rng.Mix(key ^ (ulong)slaves.Count + SeedSalts.SlaveSquad), states, checkWorldState: false));
         }
         return new SquadPlan(template, members, slaves, problems);
     }

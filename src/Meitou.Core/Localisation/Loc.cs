@@ -43,10 +43,28 @@ public static class Loc
     public static string Tr(string english) => !Translating ? english : catalog.Find(english) ?? meitou.Find(english) ?? english;
 
     /// <summary>
+    /// <paramref name="english"/> under the message context <paramref name="context"/> (<c>msgctxt</c>, <c>pgettext</c>): a Meitou text whose msgid the
+    /// game's catalog already translates with another sense ("Loaded" is its ranged-weapon label). The context's entry in either catalog, else <see cref="Tr(string)"/>.
+    /// </summary>
+    public static string TrIn(string context, string english) =>
+        !Translating ? english : catalog.Find(english, context) ?? meitou.Find(english, context) ?? Tr(english);
+
+    /// <summary>
     /// <see cref="Tr(string)"/> followed by <see cref="Format"/>: the boost-style placeholders <c>{1}</c>, <c>{1,num}</c> and <c>{1,num=fix,p=2}</c>
     /// of the pot (1-based), so a translation may reorder them.
     /// </summary>
     public static string Tr(string english, params object?[] args) => Format(Tr(english), args);
+
+    /// <summary>
+    /// A UI layout's caption in the active language (<c>docs/native-ui.md</c>): the exact <c>msgid</c>, else the same text ignoring case — the layouts
+    /// caption a section in capitals (<c>"SKILLS"</c>, <c>"WEAPON I"</c>) while the catalog keys are written normally (<c>"Skills"</c>, <c>"Weapon I"</c>).
+    /// Anything with no translation passes through.
+    /// </summary>
+    public static string TrCaption(string english)
+    {
+        if (!Translating || english.Length == 0) return english;
+        return catalog.Find(english) ?? meitou.Find(english) ?? catalog.FindIgnoringCase(english) ?? meitou.FindIgnoringCase(english) ?? english;
+    }
 
     /// <summary>
     /// The plural message <paramref name="singular"/> / <paramref name="plural"/> for <paramref name="n"/> (<c>ngettext</c>): the catalog's form for

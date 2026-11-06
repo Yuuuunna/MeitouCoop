@@ -76,11 +76,12 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
     /// A combat event for one character (<c>FUN_1408c6980</c>). <paramref name="opponentSkill"/> is the opponent's defence for the attacker's events
     /// (<see cref="XpEvent.HitDealt"/>, <see cref="XpEvent.GlancingHit"/>) and the opponent's attack for <see cref="XpEvent.Defended"/> and
     /// <see cref="XpEvent.HitTaken"/>. <paramref name="weaponStat"/> is the current weapon's skill (none when unarmed); <paramref name="strengthFactor"/>
-    /// is <see cref="WeaponWeightStrengthFactor"/>, or for unarmed (1 - the encumbrance factor). The gains are scaled by the Global damage multiplier option.
-    /// <b>Verified</b> coefficients (decompile, docs/game/character-stats.md "Levelling"): per event, which stats gain and by how much. Toughness from a hit taken is <see cref="ToughnessFromDamage"/>.
+    /// is <see cref="WeaponWeightStrengthFactor"/>, or for unarmed (1 - the encumbrance factor). <paramref name="damageTaken"/> is the incoming packet's cut + blunt + pierce + stun
+    /// (<see cref="XpEvent.HitTaken"/> only). The gains are scaled by the Global damage multiplier option.
+    /// <b>Verified</b> coefficients (decompile, docs/game/character-stats.md "Levelling"): per event, which stats gain and by how much.
     /// </summary>
     public void Combat(CharacterStats stats, RaceData race, XpEvent ev, bool unarmed, StatsEnumerated weaponStat, float opponentSkill, float strengthFactor,
-        float damageKind = 0)
+        float damageTaken = 0)
     {
         var attackStat = unarmed ? StatsEnumerated.MartialArts : StatsEnumerated.MeleeAttack;
         float g = options.GlobalDamageMultiplier;
@@ -114,17 +115,22 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
         // Strength tail of every event: core(0.075 x 0.55 x 2 x xp rate strength x race[1]), scaled per event and by the weight factor.
         stats.Gain(StatsEnumerated.Strength,
             0.075f * 0.55f * 2 * constants.XpRateStrength * race.StatMultiplier(StatsEnumerated.Strength) * strengthScale * strengthFactor * g);
-        if (ev == XpEvent.HitTaken) ToughnessFromDamage(stats, race, damageKind);
+        if (ev == XpEvent.HitTaken)
+        {
+            // Verified (FUN_1408c6980 event 4): toughness x CharStats +0x34 (the stat scale) against the packet's four terms, x xp rate toughness.
+            stats.Gain(StatsEnumerated.Toughness, EventUnit * g * constants.XpRateToughness
+                * SkillDifferenceFactor(stats.ScaledToughness, damageTaken) * race.StatMultiplier(StatsEnumerated.Toughness));
+        }
     }
 
     /// <summary>
-    /// Toughness per damage received (<c>FUN_1408c68e0</c>): 0.075 x k x <c>xp rate toughness</c> x race[toughness], k = 0.05 normally, 0.25 for damage kind
-    /// 1 and 0.5 for kind 5 (the kinds are not decoded).
+    /// Toughness from a martial artist's own punch (<c>FUN_1408c68e0</c>, called only from <c>MedicalSystem::punchSomething</c>): 0.075 x k x <c>xp rate toughness</c> x
+    /// race[toughness] x the Global damage multiplier, k = 0.25 for hit material 1 (metal), 0.5 for 5 (blocked), else 0.05.
     /// </summary>
-    public float ToughnessFromDamage(CharacterStats stats, RaceData race, float damageKind = 0)
+    public float ToughnessFromDamage(CharacterStats stats, RaceData race, int material)
     {
-        float k = damageKind == 1 ? 0.25f : damageKind == 5 ? 0.5f : 0.05f;
-        return stats.Gain(StatsEnumerated.Toughness, 0.075f * k * constants.XpRateToughness * race.StatMultiplier(StatsEnumerated.Toughness));
+        float k = material == 1 ? 0.25f : material == 5 ? 0.5f : 0.05f;
+        return stats.Gain(StatsEnumerated.Toughness, 0.075f * k * constants.XpRateToughness * race.StatMultiplier(StatsEnumerated.Toughness) * options.GlobalDamageMultiplier);
     }
 
     /// <summary>Toughness from losing a limb (<c>FUN_14064edc0</c>): the generic entry with dt 1 and amount 300, a large one-off gain.</summary>
@@ -147,12 +153,12 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
         MathF.Max(encumbranceFactor, 0) * (runValue * 0.8f < speed ? 1.5f : 1);
 
     /// <summary>
-    /// Athletics from running (<c>FUN_1408c6660</c>): the encumbrance factor (x1.5 when the speed is over 80% of the character's maximum) times
-    /// <c>xp rate athletics</c> through the continuous entry.
+    /// Athletics from moving (<c>FUN_1408c6660</c>, <c>FUN_1408c5ec0</c>, <b>Verified</b>): <see cref="AthleticsRate"/> (x1.5 when the speed is over 80% of the run value
+    /// <paramref name="runValue"/>, not the current maximum) times <c>xp rate athletics</c> through the continuous entry.
     /// </summary>
-    public float AthleticsFromRunning(CharacterStats stats, RaceData race, float encumbranceFactor, float speedFractionOfMax, float dtSeconds)
+    public float AthleticsFromRunning(CharacterStats stats, RaceData race, float encumbranceFactor, float speed, float runValue, float dtSeconds)
     {
-        float amount = encumbranceFactor * (speedFractionOfMax > 0.8f ? 1.5f : 1) * constants.XpRateAthletics;
+        float amount = AthleticsRate(encumbranceFactor, speed, runValue) * constants.XpRateAthletics;
         return Continuous(stats, race, StatsEnumerated.Athletics, dtSeconds, amount);
     }
 
@@ -163,13 +169,28 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
     /// <summary>
     /// Stealth while sneaking (<c>FUN_1408c65a0</c>, from the sneaker's sense update): the continuous entry with amount 0.2 when no hostile NPC is about, 0.9 when one has it
     /// within sight range unseen, 1.5 when a looker's spot meter on it is filling or full (Verified literals; the "about" and "seen" gates are <b>Observed</b> readings of
-    /// the original's flags). The per-hearing-check gain of <c>FUN_1408c7330</c> is not modelled.
+    /// the original's flags). The per-hearing-check gain of <c>FUN_1408c7330</c> is <see cref="HearingCheck"/>.
     /// </summary>
-    public float Sneaking(CharacterStats stats, RaceData race, StealthExposure exposure, float dtSeconds) =>
-        Continuous(stats, race, StatsEnumerated.Stealth, dtSeconds, SneakRate(exposure));
+    public float Sneaking(CharacterStats stats, RaceData race, StealthExposure exposure, float dtSeconds, bool moving = true) =>
+        Continuous(stats, race, StatsEnumerated.Stealth, dtSeconds, SneakRate(exposure) * (moving ? 1 : NotMovingFactor));
+
+    /// <summary>The factor on the sneak rate while the sneaker is not moving (<c>FUN_1408c65a0</c>, double <c>DAT_14168a318</c> = 0.1, <b>Verified</b>).</summary>
+    public const float NotMovingFactor = 0.1f;
 
     /// <summary>The amount <see cref="Sneaking"/> feeds the continuous entry (<c>CharStats +0x170</c>, which the Stealth line's tooltip shows as "XP rate:").</summary>
     public static float SneakRate(StealthExposure exposure) => exposure switch { StealthExposure.Unobserved => 0.2f, StealthExposure.Near => 0.9f, _ => 1.5f };
+
+    /// <summary>The factor after each hearing check (<c>FUN_1408c7330</c>: <c>DAT_1416ae650</c> = 0.7, <b>Verified</b>).</summary>
+    public const float HearingFactorDecay = 0.7f;
+
+    /// <summary>
+    /// The amount of one hearing check's stealth XP before the exposure factor (<c>FUN_1408c7330</c>, <b>Verified</b>): 2 when the listener regards the heard character as an enemy, 2 more when
+    /// <paramref name="home"/> (<see cref="AggroSystem"/> reads the rule), x20 (<c>DAT_141683188</c>) when it was heard.
+    /// </summary>
+    public static float HearingAmount(bool enemy, bool home, bool heard) => ((enemy ? 2 : 0) + (home ? 2 : 0)) * (heard ? 20 : 1);
+
+    /// <summary>Stealth from the hearing checks: the generic entry with dt 1 (<c>DAT_14167c308</c>) and the summed amounts.</summary>
+    public float HearingCheck(CharacterStats stats, RaceData race, float amount) => Continuous(stats, race, StatsEnumerated.Stealth, 1, amount);
 
     /// <summary>Lockpicking (<c>FUN_1408c62e0</c>): 1.2 x race[37] on success, 0.24 x on failure, straight into the core curve.</summary>
     public float Lockpicking(CharacterStats stats, RaceData race, bool success) =>
@@ -196,7 +217,7 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
 
     /// <summary>Mass combat (<c>FUN_1408c5e80</c>, <b>Verified</b> decompile): +0x9c rises by the exp gain multiplier x 0.05 per call, added straight (no core curve). Its one caller is the answer to
     /// a slot ask (<c>FUN_140666a30</c>, docs/game/combat.md "Attack slots and circling"): the asked character's, when it is stumbling or already fighting. The stat is save-only (nothing
-    /// reads it), so nothing calls this.</summary>
+    /// reads it). Called from <c>CombatSystem.MassCombatEffect</c>.</summary>
     public float MassCombat(CharacterStats stats) =>
         stats[StatsEnumerated.MassCombat] += constants.ExpGainMultiplier * 0.05f;
 

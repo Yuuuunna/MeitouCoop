@@ -16,6 +16,12 @@ recording affects the whole submitted frame; never overwrite a used DeviceBuffer
 Buffers/Textures/Samplers define owned/borrowed resource bindings. FrameScratch per-slot bump
 allocation tracks120-frame maximum+25%headroom, shrinks at>2x need; Cap overflow fails and caller
 handles it. Staging can shed unused chunks; descriptor-referenced constants retain storage.
+GpuAllocator carves 64 MB blocks; a block goes back to the driver only when empty. Streamed textures (`TextureDesc.Streamed`: world
+textures, impostor atlases) never share blocks with long-lived images: each is made on a worker (`CreateTextureOffThread`: the world texture
+caches' decode, `ImpostorTextures.MakeOffThread`), so new memory costs no frame; one of 4 MB or more gets memory of its own, freed the moment it is unloaded; the rest take slots in pools of one size each
+(rounded to 64 KB, blocks of about 16 MB, filled fullest first, given back once empty), so a freed slot fits the next texture of its size.
+Texture sizes cluster (2026-11-01 town: 541 world textures in 15 sizes, 216 atlas maps in 8). **Observed** (VRAM dump, 2026-11-01, ~40 min
+of play): with variable-size carving in shared 64 MB blocks, 1286 MB was free but scattered over 64 blocks that long-lived images pinned.
 PipelineLibrary caches explicit descriptions and records late creation (LatePipelines). `Prepare` has no caller: the loading warm-up draws what makes them, with the reflection and cloud passes forced on ([bench](bench.md) "Play benchmark").
 CommandList records bindings/draw/dispatch/transfer/dynamic rendering, preserving host pass order.
 
@@ -65,6 +71,18 @@ BlendOperation, ColorMask, PrimitiveType, PixelViewport, PixelRect, InternalForm
 ClearColour, IndexKind, TextureMinFilter, TextureMagFilter, TextureWrapMode. GlConventions maps
 them to Vulkan (the front face flips: GL's counter-clockwise is Vulkan's clockwise; GL's 24-bit
 depth is a 32-bit float). A second backend maps them to itself.
+Depth: clip depth is 0..1 on both backends (no `VK_EXT_depth_clip_control`, no vertex remap); the stored depth is z/w. The scene
+targets (scene depth, reflection, hover mask, markers, the particle and water depth copies derived from the scene's) are one
+reversed 32-bit float buffer on Vulkan: cleared to 0, near plane 1, far plane (the view distance) 0, compared GREATER/GEQUAL.
+`DepthConvention` is the one place for the clear, the compare, the projection (`Perspective`, `Apply`), the wireframe bias
+(`TowardViewer`) and the GLSL helper (`Glsl`: `depthIsSky`, `depthViewZ`, `depthOf`, `depthStep`, `DEPTH_SKY`/`DEPTH_NEAREST`, selected
+by the `MEITOU_DEPTH_REVERSED` define the Vulkan compiler adds). Renderers keep stating GL compare semantics; `GlConventions` maps them
+literally. Shadow maps, previews, icons and bakes stay conventional (clear 1, Less). Metal is conventional (`DepthConvention.Reversed`
+false). View-depth step of one float ulp, derived: reversed `1.2e-7 z` at any distance; conventional `1.2e-7 z^2 / near`.
+The scene's near clip plane is `WorldCamera.ClipNear` = `n f / (2 f - n)` (about half of `Near`): **Verified** (swamp-low screenshot,
+master against the branch, mean difference 4.0 -> 0.04) that the former -1..1 clip volume over a 0..1 depth matrix drew down to there, and a
+near chimney vanished when the reversed scene clipped at `Near`. Metal (always 0..1) keeps `Near`. `Near` stays the rule for the shadows'
+fit and the close particles.
 The resources and the commands below them are the same question: [resource-layer](resource-layer.md).
 
 BindlessTable has seven typed sampler arrays (BindlessKind bindings0..6). Per-slot descriptor

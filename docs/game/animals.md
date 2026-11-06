@@ -79,6 +79,8 @@ Pose/LOD distances can scale by animal size in engine, not original scheduler pr
 | Cage Beast | cage_beast (41) | **walk** 1.6 | **idle1** 15.9 | gotosleep 2.5, sleep 1.5 | attack1 1.4 | run 0.67, strafeleft |
 | Skimmer | skimmer (32) | **walk** 2.67 | none: its `idle1` record names a clip the skeleton lacks (it has `idle01` 0.17) | **sleep** 0.17 | **attack1** 1.83 (its `eat (attack1)` record too) | strafe |
 
+Clip filter (`FUN_14051d660`, **Verified** for the strafe list, Inferred for walk and run): a clip with `stealth mode` 1 is kept only while the animal sneaks; animals never sneak (the stealth flag is written only by the Character sneak setter), so such a clip is never picked. Meitou drops it in `AnimationLibrary.BuildAnimals`.
+
 ## Death items
 
 The meat, skins, teeth (animals) and cores/CPUs (robots, Gurglers) a body yields. Not dropped at death: they are in the inventory
@@ -94,14 +96,15 @@ from the start.
   (Electrical Components 4, Iron Plates 6, `stackable` 1), and a stack of the same record without the flag stays a separate stack
   (**Verified**, METARU and quicksave platoon files: 144 / 187 flagged items, none overlapping).
 - Item lookups by type (`FUN_1407465d0`, used by `Task_grabOneFood` and `CharacterAnimal::vfunc_94`) skip flagged items while the
-  owner is alive (`+0x5bc`) (**Observed**).
+  owner is alive (`+0x5bc`) (**Observed**); a dead owner's count (**Verified**, `FUN_140748d70` and `FUN_1407465d0` read the owner's dead byte), so a squad mate eats from a dead mate's backpack (`FeedSystem.Best`).
 - Taking one out (`FUN_14075e7e0`, from the inventory's remove functions) clears the flag; when the owner is alive and down
-  (`isDown`, [carry-loot.md](carry-loot.md)) the owner dies (the death function) with "{1} has been butchered" (**Observed**).
+  (`isDown`, [carry-loot.md](carry-loot.md): unconscious, playing dead, carried or ragdolled, so an awake carried body too) the owner dies (the death function) with "{1} has been butchered"
+  (**Verified**, `FUN_14075e7e0`: not dead, then `isDown` or posture 3+, which `isDown` already covers; the flag clears either way).
 - No inventory-window filter on the flag was found: the items show while the owner lives (**Observed**, absence in the decompile).
 - Unknown: `FUN_1405a59a0` (reads record 3979's `death items`); whether the flag changes weight.
 
 Meitou: `ItemFactory.Build` adds them (`ItemInstance.Death`), stacks merge only with the same flag, the feed search skips them,
-moving an item out of its inventory clears it, and a loot take that removes flagged units from a live body butchers it.
+moving an item out of its inventory clears it, and a loot take (or an item moved out of the open loot) that removes flagged units from a live down body (`CharacterFacts.Down`) butchers it.
 
 ## Ageing
 
@@ -114,19 +117,24 @@ moving an item out of its inventory clears it, and a loot take that removes flag
   `dt / 2618.18 / lifespan`, dt the update's elapsed time (`+0xcc`, the same value the base update passes on) and 2618.18 s the day length
   (`FUN_14066cd50`). So `lifespan` is the game days from age 0 to 1. When the age has moved more than 0.05 past `+0x6fc`, `+0x6fc` takes it and,
   below 0.95, the look's size is refreshed (appearance vfunc 0x30); slot 0x390 is read live by the body each tick ([Body](#3-body)).
+  The update is lumpy in the original (8 characters a frame round robin for the logic tick, 6 for the full update with the accumulated time) and, while paused, one flagged character a frame still ages at 0.01 game-s a rendered frame (**Verified**, `FUN_140786a40`); Meitou steps every animal every tick and ages nothing while paused ([engine choices](../simulation.md#engine-choices-against-the-originals-frame-loop)).
 - So the stats multiplier (= age) keeps growing to 1.1, the size to lerp(1.1). Spawn ages come from the squad template ([factions 5.1](factions-squads-towns.md));
   ages above 1.1 do not grow.
 - Saves: GAMESTATE_CHARACTER float `age` = slot 0x398 (`FUN_1406280a0`), read back through slot 0x388 (**Verified**: 159 828 vanilla platoon
   records all have it, people 1, animals 0.00002 .. 2.07). Loading an animal below 0.99 rebuilds its look (`FUN_140627b30`).
 - Age word (slot 0x3a0, `FUN_1408882b0`): below 0.4 "Pup", below 0.6 "Teen", up to 1.1 "Adult", above "Elder".
 
-Meitou: `BodySystem.Age` grows `CharacterStats.Scale` and resets the body's size each tick, `CharacterCold.ShownAge` is `+0x6fc` (the drawn
-size), the save writes and reads `age`.
+- `+0x6fc` is only the step gate of that look refresh (**Verified**: the decompile reads it only in `FUN_1405cdf00` and sets it in the constructor
+  `FUN_1405c8150`). Gameplay reads the live age (slot 0x398, `FUN_1405e2010` returns `+0x700`): the mouth-food update `FUN_1405dc650`, the dog-play scores
+  `FUN_140599720` / `FUN_140599800` and the limb finder `FUN_1409993a0`.
+
+Meitou: `BodySystem.Age` grows `CharacterStats.Scale` (`CharacterCold.Age`, what gameplay reads) and resets the body's size each tick, `CharacterCold.ShownAge`
+is `+0x6fc` (the drawn size only; it is not refreshed above 0.95, unlike the original), the save writes and reads `age`.
 
 ## Pack animals
 
-- A new animal's inventory (`FUN_14062a130`, slot 0x2c0, **Observed**): a 5 x 4 `backpack_attach` section, the main grid `inventory w` x
-  `inventory h` (4 x 8 when either is below 1), then every `backpack` list entry is made and added equipped, whatever its values (Pack Bull's
+- A new animal's inventory (`FUN_14062a130`, slot 0x2c0, **Observed**; the grid size **Verified**, :79-107): a 5 x 4 `backpack_attach` section, the main grid `inventory w` x
+  `inventory h` (each below 1 becomes 4 and 8 on its own: w=6, h=0 gives 6 x 8; neither set 4 x 8), then every `backpack` list entry is made and added equipped, whatever its values (Pack Bull's
   entry is (0, 0, 0)); a saved inventory replaces this. Pack Beast and Pack Bull carry their CONTAINER this way.
 - Nothing else ties the bag to the squad: it is an ordinary inventory (feeding from squad mates reads it, [simulation](../simulation.md#items-and-eating)).
 
@@ -151,11 +159,14 @@ package loaders (**Observed**). 243's desire and what Meitou runs of these for t
 
 No goal makes an owned animal follow anyone (above). The player orders it like a person: the context menu offers "Follow" (verb 31,
 STAY_CLOSE_TO_TARGET) on one of the player's own characters who is up, uncaged and not selected (`FUN_1407a6bc0`, beside "Inventory" 26 and
-"Bodyguard" 45, **Observed**). The order giver (`FUN_1405c8da0`) then drops one follow order closing a circle back to the ordered character
-(`FUN_1405c8c10`, for orders 31 and 45). The follower moves as in [squads travelling together](pathfinding.md#squads-travelling-together) (a squad mate takes its formation slot, anyone else is kept 20..40 away).
+"Bodyguard" 45, **Observed**). Giving a 31 or 45 order or job runs the circle break `FUN_1405c8c10` (**Verified**; callers: `FUN_1405c8da0` after it adds the order or job, walking from the
+ordered character, and `FUN_1405d1940` for a plain 31 order, walking from the target; never when a job later starts). It walks the followed chain: a character with a 31 order in its queue whose
+front order targets the ordered character loses the whole queue, else the walk recurses into that front order's target; a character with any 31 job loses every 31 / 45 job targeting the ordered
+character and the walk recurses into the targets of the other 31 / 45 jobs. Jobs 289 (an animal's companion) are never removed, and a character with only 45 / 289 jobs is not looked at. The follower moves as in [squads travelling together](pathfinding.md#squads-travelling-together) (a squad mate takes its formation slot, anyone else is kept 20..40 away).
 
 Meitou: `FollowOrder` (`MovementSystem.Follow`) sets `CharacterCold.FollowOrder` and the follow task (the squad formation slot behind that character); a move or stop
-order clears it; when the followed one is gone the follower stands (engine choice).
+order clears it; when the followed one is gone the follower stands (engine choice). `MovementSystem.BreakCircle` is the walk, run after a one-shot follow and after `AddOrderJob`
+for 31 / 45 (a one-shot follow is `FollowOrder` unless a follow job is running; the walk is cut at 64 characters and never visits one twice, an engine guard).
 
 ## Buying animals
 
@@ -174,9 +185,15 @@ Confirm (`FUN_1406aac20`, **Observed**):
 - each bought animal: its AI orders cleared, toughness, athletics, melee defence, melee attack, martial arts, dodge, stealth, mass combat and
   swimming x 0.25 (`FUN_1406aa730`), recruited as by DA 3/18 (`FUN_140692820`, [dialogue](dialogue.md#recruiting)).
 - each item in the bought animals' backpacks goes into the backpack of the seller's platoon members (tried from the last), else is destroyed.
-- the total is taken from the player's money; the character editor opens on the bought animals (`FUN_1406e32f0` -> `FUN_1405f4dd0`, mode 1).
+- the total is taken from the player's money (the backpack items already moved); then, only when at least one animal was bought, the character
+  editor opens at once on exactly the bought animals, in mode 1 (in play; `FUN_1406e32f0(window, list, 1)` -> `FUN_1405f4dd0`), replacing any
+  editor already open. **Verified** (decompile: the call follows the money write and is skipped when the bought list is empty; mode argument 1).
+  The animal page ([characters.md](../characters.md#character-editor)) then lets the player name each one. The other mode-1 callers are
+  DA 3 recruiting (`FUN_1407ff8b0`) and `FUN_1407f3670`.
 
-Meitou: `DialogueSystem` `CharacterTradeKind.AnimalBuying`; the town test is `Squad.Town`; the editor is not opened.
+Meitou: `DialogueSystem` `CharacterTradeKind.AnimalBuying`; the town test is `Squad.Town`; the confirm publishes a `DialogueRequestKind.AnimalEditor`
+request listing the bought animals and the host opens the editor (`EditKind.Recruit`, the in-play kind) on them; the names are saved by the
+name-only `EditCharacter` ([characters.md](../characters.md#character-editor)).
 
 ## Breeding and eggs
 

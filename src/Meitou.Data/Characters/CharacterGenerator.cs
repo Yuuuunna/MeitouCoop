@@ -14,6 +14,9 @@ namespace Meitou.Data.Characters;
 /// </summary>
 public static class CharacterGenerator
 {
+    /// <summary>The RACE the original falls back to when a character has none (by id, so a mod that renames Greenlander keeps it; docs/characters.md).</summary>
+    public const string DefaultRaceId = "17-gamedata.quack";
+
     /// <summary>Kenshi's float-to-int rounding for sliders: halves round away from zero.</summary>
     public static int Round(float value) => value < 0 ? (int)MathF.Ceiling(value - 0.5f) : (int)MathF.Floor(value + 0.5f);
 
@@ -46,17 +49,21 @@ public static class CharacterGenerator
         }
 
         // Race (Faction::chooseARace, Verified in outline): the squad template's "race override", else the CHARACTER's "race" list (val0 = relative weight, entries with
-        // val0 > 0), else the body file's, else the faction's "races" (the original takes the faction's before any body file; engine order for characters with one).
+        // val0 > 0), else the faction's "races" (Faction::chooseARace reads no body file: the loader fills the chosen race's appearance afterwards), else the body file's race (engine fallback).
         GameRecord? race = record.Type == FcsRecordType.RACE ? record : null;
         if (race is null && character is not null && raceOverride is { Count: > 0 })
             race = PickRelative(rng, raceOverride.Where(r => r.Values.Value0 > 0).Select(r => (db.Find(r.TargetStringId), (float)r.Values.Value0)));
         if (race is null && character is not null)
             race = PickRelative(rng, character.GetReferences("race").Where(r => r.Values.Value0 > 0)
                 .Select(r => (db.Find(r.TargetStringId), (float)r.Values.Value0)));
-        if (race is null && bodyFile?.RaceId is { } bodyRace) race = db.Find(bodyRace);
         if (race is null && (faction ?? (character?.GetReferences("faction") is { Count: > 0 } own ? db.Find(own[0].TargetStringId) : null)) is { } races)
-            race = PickRelative(rng, races.GetReferences("races").Select(r => (db.Find(r.TargetStringId), r.Values.Value0 > 0 ? (float)r.Values.Value0 : 1f)));
-        race ??= CharacterAppearance.Find(db, "Greenlander", FcsRecordType.RACE) ?? throw new KeyNotFoundException($"'{record.Name}' has no race.");
+            race = PickRelative(rng, races.GetReferences("races").Where(r => r.Values.Value0 > 0).Select(r => (db.Find(r.TargetStringId), (float)r.Values.Value0)));   // FUN_1407fe270: weight <= 0 never drawn
+        if (race is null && bodyFile?.RaceId is { } bodyRace) race = db.Find(bodyRace);   // engine fallback where the original has no race at all (it logs an error)
+        if (race is null)
+        {
+            race = CharacterAppearance.Find(db, DefaultRaceId, FcsRecordType.RACE) ?? throw new KeyNotFoundException($"'{record.Name}' ({record.StringId}) has no race.");
+            notes.Add($"no race: default {DefaultRaceId}");
+        }
 
         // Gender: "female chance" percent, never for a single-gender race.
         bool isFemale = female ?? bodyFile?.Female ?? (!race.GetBool("single gender") && rng.Unit() < (character?.GetInt("female chance") ?? 50) * 0.01f);
@@ -253,8 +260,9 @@ public static class CharacterGenerator
         GameRecord? Colour(GameRecord item) => Gameplay.ItemColours.Of(db, item) ?? Gameplay.ItemColours.Scheme(db, character, loadout.Faction);
         // Backpack: entries with val0 > 0; val1 is an absolute chance (out of 100).
         var pack = PickAbsolute(rng, character.GetReferences("backpack").Where(r => r.Values.Value0 > 0)
-            .Select(r => (db.Find(r.TargetStringId), (float)r.Values.Value1)).Where(p => p.Item1 is not null && RaceAllowed(p.Item1, race)));
+            .Select(r => (db.Find(r.TargetStringId), (float)r.Values.Value1)).Where(p => p.Item1 is not null && Gameplay.RaceLimiter.Allows(p.Item1, race)));
         if (pack is not null) loadout.Backpack = new LoadoutItem(pack) { Colour = Colour(pack) };
+        RollRobotLimbs(db, character, race, rng, loadout);
 
         // Clothing, one per slot in the game's order; race flags drop hats, shirts and shoes.
         int grade = character.GetInt("armour grade", 1), upgrade = character.GetInt("armour upgrade chance", 5);
@@ -270,7 +278,7 @@ public static class CharacterGenerator
             // quantity is a "no item" option.
             var options = clothing.Where(r => r.Values.Value0 != 0 && r.Values.Value1 > 0)
                 .Select(r => (Ref: r, Item: db.Find(r.TargetStringId)))
-                .Where(o => o.Item is { Type: FcsRecordType.ARMOUR } && o.Item.GetInt("slot", (int)AttachSlot.Body) == (int)slot && RaceAllowed(o.Item, race))
+                .Where(o => o.Item is { Type: FcsRecordType.ARMOUR } && o.Item.GetInt("slot", (int)AttachSlot.Body) == (int)slot && Gameplay.RaceLimiter.Allows(o.Item, race))
                 .ToList();
             var chosen = PickRelative(rng, options.Select(o => ((GameReference?)o.Ref, (float)o.Ref.Values.Value1)));
             if (chosen is not { } c || c.Values.Value0 < 1) continue;
@@ -326,6 +334,28 @@ public static class CharacterGenerator
             loadout.Weapons.Reverse();   // equip order: hip first, then back
     }
 
+    /// <summary>
+    /// CHARACTER <c>robot limbs</c> (<c>CharacterHuman::setupInventorySections</c>, <b>Verified</b>; docs/game/character-stats.md "Limb replacements and robots"): the
+    /// LIMB_REPLACEMENT entries are grouped by their <c>slot</c>, v1 the relative weight. An entry with v0 &lt; 0 is a "keep the natural limb" option; one with v0 &gt;= 0 counts
+    /// only when its record has a <c>material</c> (a prosthetic, not a stump) and the race may wear it. Each limb picks one option; a prosthetic is fitted at level v0.
+    /// </summary>
+    static void RollRobotLimbs(GameDatabase db, GameRecord character, GameRecord race, MsvcRandom rng, Loadout loadout)
+    {
+        var options = new List<(GameReference? Ref, float Weight)>[loadout.Limbs.Length];
+        foreach (var r in character.GetReferences("robot limbs"))
+        {
+            if (db.Find(r.TargetStringId) is not { Type: FcsRecordType.LIMB_REPLACEMENT } limb) continue;
+            if (r.Values.Value0 >= 0 && (limb.GetReferences("material").Count == 0 || !Gameplay.RaceLimiter.Allows(limb, race))) continue;
+            int slot = limb.GetInt("slot") - Gameplay.Bodies.LimbReplacement.FirstSlot;
+            if ((uint)slot < (uint)options.Length) (options[slot] ??= []).Add((r, r.Values.Value1));
+        }
+        for (int k = 0; k < options.Length; k++)
+        {
+            if (options[k] is not { } list || PickRelative(rng, list) is not { } pick || pick.Values.Value0 < 0) continue;
+            loadout.Limbs[k] = new LoadoutLimb(2, db.Find(pick.TargetStringId), pick.Values.Value0);
+        }
+    }
+
     /// <summary>Manufacturer from CHARACTER "weapon level" (val0 relative, 0 = 100; none listed: "Ancient"), model from its "weapon models" (val1).</summary>
     static LoadoutWeapon? MakeWeapon(GameDatabase db, GameRecord character, GameRecord weapon, MsvcRandom rng, Loadout loadout)
     {
@@ -342,19 +372,21 @@ public static class CharacterGenerator
         if (modelRef is { } m && m.Values.Value0 != 0)
             return new LoadoutWeapon(weapon) { Section = "hip", Manufacturer = maker, Model = db.Find(m.TargetStringId), Level = m.Values.Value0 };
         // No model or level 0: the game falls back to a fixed manufacturer and model.
-        var fallbackMaker = db.Find("1057-gamedata.base") ?? maker;
-        var fallbackModel = db.Find("1058-gamedata.base");
-        int level = fallbackMaker.GetReferences("weapon models").Where(r => r.TargetStringId == fallbackModel?.StringId).Select(r => r.Values.Value0).FirstOrDefault();
-        level += (int)(fallbackModel?.GetFloat("overall level") ?? 0);
+        var (fallbackMaker, fallbackModel, level) = FallbackWeaponMaker(db, maker);
         return new LoadoutWeapon(weapon) { Section = "hip", Manufacturer = fallbackMaker, Model = fallbackModel, Level = level };
     }
 
-    /// <summary>ARMOUR / item <c>races</c> (only these may equip it) and <c>races exclude</c>.</summary>
-    static bool RaceAllowed(GameRecord item, GameRecord race)
+    /// <summary>
+    /// The weapon factory's substitute when the picked manufacturer has no model or its model's level is 0 (<c>FUN_140580750</c>, <b>Verified</b>): manufacturer <c>1057-gamedata.base</c> with model
+    /// <c>1058-gamedata.base</c>, the level that manufacturer's <c>weapon models</c> entry for the model gives plus the manufacturer's <c>overall level</c> (cut to an int; neither base record has it).
+    /// <paramref name="orElse"/> stands in for a missing 1057 (a stripped data set).
+    /// </summary>
+    public static (GameRecord Maker, GameRecord? Model, int Level) FallbackWeaponMaker(GameDatabase db, GameRecord orElse)
     {
-        var only = item.GetReferences("races");
-        if (only.Count > 0 && !only.Any(r => r.TargetStringId == race.StringId)) return false;
-        return !item.GetReferences("races exclude").Any(r => r.TargetStringId == race.StringId);
+        var maker = db.Find("1057-gamedata.base") ?? orElse;
+        var model = db.Find("1058-gamedata.base");
+        int level = maker.GetReferences("weapon models").Where(r => r.TargetStringId == model?.StringId).Select(r => r.Values.Value0).FirstOrDefault();
+        return (maker, model, (int)(level + maker.GetFloat("overall level")));   // the float is added before the cut
     }
 
     // ---- Weighted picks ----------------------------------------------------------------------------------------

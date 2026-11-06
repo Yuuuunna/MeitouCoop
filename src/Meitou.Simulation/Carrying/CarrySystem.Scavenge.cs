@@ -18,7 +18,7 @@ public sealed partial class CarrySystem
     public const float FoodOnlyFloor = 2.8f;
 
     /// <summary>
-    /// Every <see cref="CarrySettings.AutoEveryTicks"/> ticks (serial, slot order): each member of an NPC squad whose running package lists goal 177 for its role in the hour's window
+    /// Each tick (serial, slot order), every <see cref="CarrySettings.AutoEveryTicks"/> ticks per character on its slot's turn (slot mod the period, so the looks spread over the ticks): each member of an NPC squad whose running package lists goal 177 for its role in the hour's window
     /// (<see cref="PopulationSystem.GoalDuty"/>) and that the AI runs now (<see cref="Ai.AiSystem.Holds"/>) walks to the body <see cref="LootTarget"/> picks and loots it
     /// (<see cref="CharacterTask.Loot"/>, <see cref="NpcLoot"/>).
     /// </summary>
@@ -26,7 +26,9 @@ public sealed partial class CarrySystem
     {
         if (world.SystemOf<PopulationSystem>() is not { } population) return;
         var memory = world.SystemOf<DialogueSystem>()?.Memory;
-        HashSet<int>? taken = null;
+        int every = world.Every(Settings.AutoEveryTicks);
+        SquadGoals? goals = null;
+        List<int>? bodies = null;
         Span<int> duty = stackalloc int[5];
         foreach (var squad in world.Squads.All)
         {
@@ -34,65 +36,98 @@ public sealed partial class CarrySystem
             duty.Fill(-1);
             foreach (var member in squad.Members)
             {
-                if (!table.TryResolveNext(member, out int slot) || table.Cold(slot) is not { IsPlayer: false, Inventory: not null } cold || !Ai.AiSystem.Holds(table.Next[slot], cold)) continue;
+                if (!table.TryResolveNext(member, out int slot) || !world.Turn(slot, every) || table.Cold(slot) is not { IsPlayer: false, Inventory: not null } cold || !Ai.AiSystem.Holds(table.Next[slot], cold)) continue;
                 int role = (int)Ai.AiSystem.RoleOf(squad, member, cold);
                 if (duty[role] < 0) duty[role] = population.GoalDuty(world, squad, (AiRole)role, TaskType.LOOT_THE_DEAD) ? 1 : 0;
                 if (duty[role] == 0) continue;
-                taken ??= Looting(table);
-                int target = LootTarget(world, table, slot, cold, taken, memory);
+                goals ??= SquadGoals.Of(world);
+                bodies ??= LootableBodies(table);
+                if (!TaskStart.Eligible(world, cold, TaskType.LOOT_THE_DEAD)) continue;
+                int target = LootTarget(world, table, slot, cold, goals, bodies, memory);
                 if (target < 0) continue;
-                taken.Add(target);
+                goals.Add(cold.SquadId, table.IdOf(slot), GoalTarget.Of(table.IdOf(target)));
                 var task = (CharacterTask)table.Next[slot].Task;
-                Begin(table, slot, table.IdOf(target), CharacterTask.Loot, task is CharacterTask.Wander or CharacterTask.Follow ? task : CharacterTask.Idle);
+                Start(world, slot, CharacterTask.Loot, TaskType.LOOT_THE_DEAD, TaskSource.Npc, table.IdOf(target), TaskStart.Standing(cold, task));
             }
         }
     }
 
     /// <summary>
-    /// Goal 177's finder (<c>FUN_14099ae10(ai, 0)</c>): within <see cref="ScavengeRange"/>, not carried, not looted by another and not tagged <see cref="MemoryTag.Looted"/> by the looter's squad;
+    /// Goal 177's finder (<c>FUN_14099ae10(ai, 0)</c>): within <see cref="ScavengeRange"/> in 3D (<c>FUN_14099ae10</c> :42, :88), not carried, not worked by a squad mate (the squad's goal list) and not tagged <see cref="MemoryTag.Looted"/> by the looter's squad;
     /// first the dead, then the downed living of factions neither its own nor allied (the kidnap finder's masks), not of the player's faction unless <see cref="PlayerState.BanditsLoot"/>,
-    /// whom <see cref="ScrewsOver"/> allows. Engine choices: the nearest of each pass (the original takes its sensed-list order); a dead body of the looter's own faction is left. -1: none.
+    /// whom <see cref="ScrewsOver"/> allows. Engine choices: the nearest of each pass (the original takes its sensed-list order); the dead pass has no faction test, so a body of the looter's own faction is looted too (Verified). -1: none.
     /// </summary>
-    int LootTarget(World world, CharacterTable table, int slot, CharacterCold cold, HashSet<int> taken, SquadMemory? memory)
+    int LootTarget(World world, CharacterTable table, int slot, CharacterCold cold, SquadGoals goals, List<int> bodies, SquadMemory? memory)
     {
         var next = table.Next;
-        var at = new Vector2(next[slot].Position.X, next[slot].Position.Z);
+        var at = next[slot].Position;
         int dead = -1, down = -1;
         float dead2 = ScavengeRange * ScavengeRange, down2 = dead2;
-        for (int s = 0; s < table.HighWater; s++)
+        foreach (int s in bodies)
         {
-            if (s == slot || !next[s].Alive || taken.Contains(s) || table.Cold(s) is not { } body || !CanBeLooted(body) || !body.CarriedBy.IsNone || body.IsImprisoned) continue;
-            float d2 = Vector2.DistanceSquared(at, new Vector2(next[s].Position.X, next[s].Position.Z));
+            if (s == slot || !next[s].Alive || goals.Working(cold.SquadId, table.IdOf(slot), GoalTarget.Of(table.IdOf(s))) > 0 || table.Cold(s) is not { } body || !CanBeLooted(body) || !body.CarriedBy.IsNone) continue;   // no imprisoned test in either pass (FUN_14099ae10): a downed prisoner in a cage is scavenged
+            float d2 = Vector3.DistanceSquared(at, next[s].Position);   // Ogre squaredDistance: full 3D, strict bound
             if (d2 > down2 && d2 > dead2) continue;
             if (memory is not null && memory.HasShort(world, cold.SquadId, table.IdOf(s), MemoryTag.Looted)) continue;
             if (body.Medical!.Dead)
             {
-                if (body.Faction != cold.Faction && d2 <= dead2) (dead, dead2) = (s, d2);
+                if (d2 <= dead2 && Reachable(world, slot, s)) (dead, dead2) = (s, d2);
                 continue;
             }
-            if (d2 > down2 || Friendly(cold, body) || PlayerSide(world, body) && !BanditsMayLoot(world, body) || !ScrewsOver(world, cold, body, table.IdOf(s), memory)) continue;
+            if (d2 > down2 || PlayerSide(world, body) && !BanditsMayLoot(world, body) || !Reachable(world, slot, s) || !ScrewsOver(world, slot, cold, s, body, memory)) continue;
             (down, down2) = (s, d2);
         }
         return dead >= 0 ? dead : down;
     }
 
-    static bool PlayerSide(World world, CharacterCold c) => c.IsPlayer || world.IsPlayerFaction(c.Faction);
+    /// <summary>The bodies the characters are lifting or looting, in the squad's goal list (<see cref="SquadGoals"/>).</summary>
+    void IGoalSource.Publish(World world, SquadGoals goals)
+    {
+        var table = world.Characters;
+        for (int i = 0; i < table.HighWater; i++)
+            if (table.Next[i].Alive && table.Next[i].Task is (byte)CharacterTask.PickUp or (byte)CharacterTask.Loot && table.Cold(i) is { CarryTarget.IsNone: false } c)
+                goals.Add(c.SquadId, table.IdOf(i), GoalTarget.Of(c.CarryTarget));
+    }
 
-    static bool BanditsMayLoot(World world, CharacterCold body) => world.PlayerOf(body)?.BanditsLoot
-        ?? (!world.Players.RequiresExplicitControl && world.Player.BanditsLoot);
+    /// <summary>The lootable characters (carried ones too: a looter that starts may drop its load), in slot order: what <see cref="LootTarget"/> tests, collected once a pass.</summary>
+    static List<int> LootableBodies(CharacterTable table)
+    {
+        var bodies = new List<int>();
+        for (int s = 0; s < table.HighWater; s++)
+            if (table.Next[s].Alive && table.Cold(s) is { } body && CanBeLooted(body)) bodies.Add(s);
+        return bodies;
+    }
 
     /// <summary>
-    /// <c>Character::shouldIScrewThisGuyOver</c> (<c>FUN_14059a7b0</c>, <b>Observed</b>), each rule overriding the ones before: yes when either is of NPC class Bandit; no for the same class; yes for
-    /// a Military looter; no when it regards the target as friendly (vfunc <c>0x3f0</c>, <b>Unknown</b>; engine reading); no for a Law enforcement looter; no when its squad loves the target, yes
-    /// when it hates it; yes when the target is dead. The slave-owner rule (status <c>+0xe0</c>) is not modelled.
+    /// The finder's two per-body tests, both passes (<c>FUN_14099ae10</c>, <b>Verified</b>): <c>FUN_140597160</c> (DESTINATION_NOT_BLOCKED_BY_FORTIFICATIONS: the gate codes of the two match, or
+    /// the route between them is open, <see cref="Locks.LockSystem.NotBlocked"/>) and <c>FUN_140597030</c> (<c>AI::isDestinationAccessible</c>: a body in a building the looter is not in
+    /// needs that building to have an open door, <c>Building::hasAnOpenDoor</c>; a human looter's "may use it" test, slot 0x328, is always true). Not modelled: the building-link branch of the first,
+    /// the animal looter's slot 0x328, a body in a part building with a parent.
     /// </summary>
-    bool ScrewsOver(World world, CharacterCold looter, CharacterCold target, CharacterId targetId, SquadMemory? memory)
+    static bool Reachable(World world, int looter, int body)
     {
+        var next = world.Characters.Next;
+        if (world.SystemOf<Locks.LockSystem>() is { } locks && !locks.NotBlocked(world, next[looter].Position, next[body].Position)) return false;
+        return world.Sight.BuildingOf(body) is not { } building || world.Sight.BuildingOf(looter) == building || world.Fixtures.HasOpenDoor(building);
+    }
+
+    static bool BanditsMayLoot(World world, CharacterCold body) => (world.PlayerOf(body) ?? (!world.Players.RequiresExplicitControl ? world.Player : null))?.BanditsLoot == true;
+
+    internal static bool PlayerSide(World world, CharacterCold c) => c.IsPlayer || world.IsPlayerFaction(c.Faction);
+
+    /// <summary>
+    /// <c>Character::shouldIScrewThisGuyOver</c> (<c>FUN_14059a7b0</c>, <b>Verified</b>), the only test of a downed body in the loot finder (no friendliness filter before it): the dialogue
+    /// system's DC 54 (personality, slave owner; docs/game/dialogue.md). Without it: yes when either is a bandit; no for the same class; no when friendly; yes when the looter's
+    /// slave owner is the target's faction; no when its squad loves the target, yes when it hates it; yes when the target is dead.
+    /// </summary>
+    bool ScrewsOver(World world, int looterSlot, CharacterCold looter, int targetSlot, CharacterCold target, SquadMemory? memory)
+    {
+        if (world.SystemOf<Dialogue.DialogueSystem>() is { } dialogue) return dialogue.ScrewOver(world, looterSlot, targetSlot);
+        var targetId = world.Characters.IdOf(targetSlot);
         bool yes = looter.NpcClass == FundamentalType.Bandit || target.NpcClass == FundamentalType.Bandit;
         if (looter.NpcClass == target.NpcClass) yes = false;
-        if (looter.NpcClass == FundamentalType.Military) yes = true;
         if (Friendly(looter, target)) yes = false;
-        if (looter.NpcClass == FundamentalType.LawEnforcement) yes = false;
+        if (looter.SlaveOwner >= 0 && looter.SlaveOwner == target.Faction) yes = true;
         if (memory?.Find(world, looter.SquadId, targetId) is { } known)
         {
             if ((known.Long & MemoryTag.LoveMask) != 0) yes = false;
@@ -106,22 +141,21 @@ public sealed partial class CarrySystem
     /// An NPC at the body it loots (<c>Task_Loot_AI</c>, <b>Observed</b>): kneels at the medic clip while <see cref="CharacterCold.LiftTime"/> counts (from its arrival). Past
     /// <see cref="NpcWeaponGrabSeconds"/>, a looter without a weapon that takes more than food from a living player-side body takes one weapon of its hip and back and is done; else past
     /// <see cref="NpcLootSeconds"/> (an animal: <see cref="NpcLootAnimalSeconds"/>) it takes (<see cref="NpcTake"/>). Then its squad tags the body <see cref="MemoryTag.Looted"/> and the task ends.
+    /// What it takes follows <see cref="CharacterCold.LootFlags"/>, fixed when the task starts (the update only reads them, <b>Verified</b> <c>FUN_14034d930</c>).
     /// </summary>
     void NpcLoot(World world, CharacterTable table, int i, int t, float dt)
     {
         var cold = table.Cold(i)!;
         var victim = table.Cold(t)!;
-        bool animal = victim.Fighter?.IsAnimal ?? victim.Appearance?.Animal is not null;
-        // A law-enforcement looter confiscates: no food-only or not-player-side take (the start clears both).
-        bool police = Crimes?.IsPoliceLike(world, cold) == true;
-        bool notPlayerSide = !police && (!PlayerSide(world, victim) || victim.Medical!.Dead);
-        bool foodOnly = !police && (cold.NpcClass == FundamentalType.Bandit || cold.Medical is { } own && world.SystemOf<BodySystem>() is { } bodies && bodies.HungerFloor(world, cold, own) < FoodOnlyFloor);
         if (cold.LiftTime < 0)
         {
             cold.LiftTime = 0;
-            Crimes?.NpcLooting(world, i, t, notPlayerSide || foodOnly, !HasWeapon(cold) && HasWeapon(victim));
-            if (animal && PlayerSide(world, victim)) PostActor(world, t, $"{cold.Name} is butchering {victim.Name} for meat!!");
+            var start = cold.LootFlags = LootStartFlags(world, cold, victim);
+            Crimes?.NpcLooting(world, i, t, (start & (LootStart.NotPlayerSide | LootStart.FoodOnly)) != 0, (start & LootStart.WantsWeapon) != 0);
+            if ((start & LootStart.Animal) != 0 && PlayerSide(world, victim)) world.Post($"{cold.Name} is butchering {victim.Name} for meat!!");
         }
+        var flags = cold.LootFlags;
+        bool animal = (flags & LootStart.Animal) != 0, police = (flags & LootStart.Police) != 0, notPlayerSide = (flags & LootStart.NotPlayerSide) != 0, foodOnly = (flags & LootStart.FoodOnly) != 0;
         cold.LiftTime += dt;
         int death = DeathUnits(victim.Inventory!);
         int moved;
@@ -132,17 +166,32 @@ public sealed partial class CarrySystem
             Looted(world, table, i, t, moved, 0, crime: false);
             // Tagged only when it found nothing to take.
             if (moved == 0 && cold.SquadId >= 0) world.SystemOf<DialogueSystem>()?.Memory.Flag(world, cold.SquadId, table.IdOf(t), MemoryTag.Looted);
-            End(table, i);
+            End(world, i);
             return;
         }
-        if (!foodOnly && !notPlayerSide && !animal && cold.LiftTime > NpcWeaponGrabSeconds && !HasWeapon(cold) && HasWeapon(victim))
+        if (!foodOnly && !notPlayerSide && !animal && cold.LiftTime > NpcWeaponGrabSeconds && (flags & LootStart.WantsWeapon) != 0)
             moved = Take(cold, victim, victim.Inventory!.Items.Where(x => x.Type == FcsRecordType.WEAPON && x.Section is "hip" or "back").Take(1).ToList());
         else if (cold.LiftTime > (animal ? NpcLootAnimalSeconds : NpcLootSeconds)) moved = NpcTake(cold, victim, notPlayerSide && !foodOnly);
         else return;
         Butcher(world, i, t, death);
         Looted(world, table, i, t, moved, 0, crime: false);   // the crime was set at the start (CrimeSystem.NpcLooting)
         if (!police && cold.SquadId >= 0) world.SystemOf<DialogueSystem>()?.Memory.Flag(world, cold.SquadId, table.IdOf(t), MemoryTag.Looted);
-        End(table, i);
+        End(world, i);
+    }
+
+    /// <summary>
+    /// The flags the loot task fixes at its start (<c>FUN_140355ad0</c>): the victim an animal; not on the player's side or dead; a Bandit or malnourished looter (food only); a looter without a weapon
+    /// facing a victim with one; a law-enforcement looter confiscates and then has neither of the middle two. The original also clears "not player side" from a value of the looter's senses (<b>Unknown</b>, not modelled).
+    /// </summary>
+    LootStart LootStartFlags(World world, CharacterCold looter, CharacterCold victim)
+    {
+        var flags = LootStart.None;
+        if (victim.Fighter?.IsAnimal ?? victim.Appearance?.Animal is not null) flags |= LootStart.Animal;
+        if (!HasWeapon(looter) && HasWeapon(victim)) flags |= LootStart.WantsWeapon;
+        if (Crimes?.IsPoliceLike(world, looter) == true) return flags | LootStart.Police;
+        if (!PlayerSide(world, victim) || victim.Medical!.Dead) flags |= LootStart.NotPlayerSide;
+        if (looter.NpcClass == FundamentalType.Bandit || looter.Medical is { } own && world.SystemOf<BodySystem>() is { } bodies && bodies.HungerFloor(world, looter, own) < FoodOnlyFloor) flags |= LootStart.FoodOnly;
+        return flags;
     }
 
     /// <summary>Seconds at the body before a law-enforcement looter confiscates (<b>Observed</b>, <c>Task_Loot_AI</c> update: the 0.8 s branch).</summary>
@@ -159,7 +208,7 @@ public sealed partial class CarrySystem
         var into = looter.Inventory!;
         int moved = 0;
         bool worn = false, wear = false;
-        foreach (var item in from.Items.Where(x => x.IsStolenFor(victim.Faction)).ToList())
+        foreach (var item in from.Items.Where(x => x.IsStolenFor(victim.Faction, Data)).ToList())
         {
             if (item.LockedOn || !InventoryCommands.IsMovableSection(item.Section)) continue;
             bool gear = InventoryCommands.IsEquipmentSection(item.Section);
@@ -174,7 +223,8 @@ public sealed partial class CarrySystem
     }
 
     /// <summary>
-    /// The take (<c>FUN_14034d930</c> / <c>FUN_140342de0</c>): the body's weapons when the looter has none equipped (the original also from an imprisoned body, which the finder never picks here); its food (<c>item function</c> 3, then 15),
+    /// The take (<c>FUN_14034d930</c> / <c>FUN_140342de0</c>): the body's weapons when the looter has none equipped, each only while a weapon section of the looter is empty (the original
+    /// also from an imprisoned body, which the finder never picks here); its food (<c>item function</c> 3, then 15),
     /// then its backpack's food; with <paramref name="everything"/> also every item and armour of it and every item of its backpack. Returns the items moved.
     /// </summary>
     int NpcTake(CharacterCold looter, CharacterCold victim, bool everything)
@@ -182,17 +232,49 @@ public sealed partial class CarrySystem
         var from = victim.Inventory!;
         var bag = from.Backpack?.Contents;
         var items = new List<ItemInstance>();
-        if (!WeaponEquipped(looter)) items.AddRange(from.Items.Where(x => x.Type == FcsRecordType.WEAPON));
+        int moved = 0;
+        // One weapon at a time, each only while one of the looter's weapon sections is still empty (FUN_140342de0 mode 2; its police and imprisoned exceptions never reach here).
+        if (!WeaponEquipped(looter))
+            foreach (var weapon in from.Items.Where(x => x.Type == FcsRecordType.WEAPON).ToList())
+                if (WeaponSectionFree(looter)) moved += Take(looter, victim, [weapon]);
         foreach (int function in (ReadOnlySpan<int>)[FeedSystem.FoodFunction, FeedSystem.RawFoodFunction])
             items.AddRange(from.Items.Where(x => x.Type == FcsRecordType.ITEM && x.ItemFunction == function));
         if (bag is not null) items.AddRange(bag.Items.Where(x => x.Type == FcsRecordType.ITEM && x.ItemFunction == FeedSystem.FoodFunction));
         if (everything)
         {
-            items.AddRange(from.Items.Where(x => x.Type is FcsRecordType.ITEM or FcsRecordType.ARMOUR && !items.Contains(x)));
+            items.AddRange(from.Items.Where(x => x.Type is FcsRecordType.ITEM or FcsRecordType.ARMOUR && !items.Contains(x) && !(x.Type == FcsRecordType.ARMOUR && x.Uniform.Length > 0)));   // a uniform piece is skipped outright (FUN_140342de0 mode 3)
             if (bag is not null) items.AddRange(bag.Items.Where(x => x.Type == FcsRecordType.ITEM && !items.Contains(x)));
         }
-        return Take(looter, victim, items);
+        moved += Take(looter, victim, items);
+        if (everything) foreach (var piece in items.Where(x => x.Type == FcsRecordType.ARMOUR)) WearIfBetter(looter, piece);
+        return moved;
     }
+
+    /// <summary>
+    /// A taken armour piece that was not worn replaces a worn non-uniform piece of its section with a lower level (<c>FUN_140342de0</c> mode 3, :128-157; the worn piece's unknown +0x2c8 term is taken as false): the old
+    /// piece goes into the looter's inventory.
+    /// </summary>
+    void WearIfBetter(CharacterCold looter, ItemInstance piece)
+    {
+        var inv = looter.Inventory!;
+        if (!inv.Items.Contains(piece) || InventoryCommands.IsEquipmentSection(piece.Section) || !InventoryCommands.IsEquipmentSection(piece.EquipmentSection)) return;
+        var worn = inv.Items.FirstOrDefault(i => i.Section == piece.EquipmentSection);
+        if (worn is null || worn.Uniform.Length > 0 || worn.LockedOn || worn.Level >= piece.Level || !piece.WearableBy(looter.Race?.StringId)) return;
+        inv.Remove(worn);
+        inv.Remove(piece);
+        if (InventoryCommands.TryEquip(inv, piece, looter) && inv.Add(worn)) { Assembly?.RefreshEquipment(looter); return; }
+        inv.Remove(piece);
+        inv.Items.Remove(worn);
+        worn.Section = piece.EquipmentSection;
+        inv.Items.Add(worn);
+        inv.Add(piece);
+    }
+
+    /// <summary>One of the looter's weapon sections (back, hip; not those its race closes) holds nothing.</summary>
+    static bool WeaponSectionFree(CharacterCold looter) =>
+        looter.Inventory is { } inv && WeaponSections.Any(s => !InventoryCommands.SectionClosed(looter, s) && !inv.Items.Any(i => i.Section == s));
+
+    static readonly string[] WeaponSections = ["back", "hip"];
 
     /// <summary>Moves <paramref name="items"/> of the body (its inventory or backpack) to the looter: its inventory (equipping where a slot is free), else its backpack; what fits nowhere stays.</summary>
     int Take(CharacterCold looter, CharacterCold victim, List<ItemInstance> items)

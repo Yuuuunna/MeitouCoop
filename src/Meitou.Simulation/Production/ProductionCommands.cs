@@ -5,7 +5,7 @@ namespace Meitou.Simulation.Production;
 /// <summary>Sends characters (the selection when empty) to work a complete player building: operate a well, harvest a farm, research at a bench.</summary>
 public sealed record OperateOrder(IReadOnlyList<CharacterId> Characters, string Site) : SiteWorkCommand;
 
-public abstract record SiteWorkCommand : SimCommand
+public abstract record SiteWorkCommand : OrderCommand
 {
     public ulong SiteRevision { get; init; }
 }
@@ -14,7 +14,7 @@ public abstract record SiteWorkCommand : SimCommand
 /// Gives characters (the selection when empty) the job an order of <paramref name="Type"/> on a player building becomes, at the end of their job lists (the original's Shift with an order;
 /// <see cref="PermaJobs.Add"/>).
 /// </summary>
-public sealed record AddJob(IReadOnlyList<CharacterId> Characters, Meitou.Data.Gameplay.Ai.TaskType Type, string Site) : SiteWorkCommand;
+public sealed record AddJob(IReadOnlyList<CharacterId> Characters, Meitou.Data.Gameplay.Ai.TaskType Type, string Site) : SiteWorkCommand { public ulong RootRevision { get; init; } }
 
 /// <summary>
 /// Gives characters (the selection when empty) the job an order of <paramref name="Ordered"/> on a character becomes, untargeted, at the end of their job lists (Shift with First Aid,

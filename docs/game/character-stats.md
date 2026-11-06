@@ -12,6 +12,12 @@ CHARACTER `stats randomise` is an int (Hundred Guardian and Shek Warrior: 10, no
 int, default 3, "+/- this amount". Meitou reads the int, falling back to a float for mods. The original's
 random distribution is **Unknown**.
 
+**Observed** (base records): CHARACTER `stats` is a list of STATS records, one record plus three numbers per entry.
+Those numbers are the list slot, not a filter: of the 80 characters in `gamedata.base` that name one, 72 carry
+`(0, 100, 0)` and 8 `(0, 0, 0)` (`Dialogue.mod` 60/43, `rebirth.mod` 10/7, `Newwworld.mod` 2/0), and every character names
+exactly one. A character naming none uses the five group fields (`combat stats`...). What the original does with a
+character that names several is **Unknown**; Meitou takes the first that resolves.
+
 **Observed:** skills are floats, not discrete levels plus XP counters. Factory combines record
 values/randomness, race modifiers and derived stats. Core gain: `f=((cap-stat)/cap)^2`, cap101;
 add amount*f only for 0<amount<=20, 0<f<=20, reject new NaN; old NaN becomes20 (exe).
@@ -27,7 +33,7 @@ L=lerp(l0,1,limb), m=H*L; optional light factor lerp(p0,1,clamp(2.5*P,0,1)); out
 clamp(lerp(f0,1,m),0,1), then requested limb-item/gear factors. **Verified** (decompile): P is the
 character's light level (Character +0xd8, [perception](perception.md#sight); the multiplier also sets
 +0xdc, the resample request), so crafting, science, perception and crossbows suffer in the dark and a
-light of 0.4 or more costs nothing. Limb aggregates: A best arm, Hd head, T lowest torso health
+light of 0.4 or more costs nothing. Building and dismantling read the raw Engineering instead (no multiplier, `FUN_14034a440`, `FUN_1403518c0`). Limb aggregates: A best arm, Hd head, T lowest torso health
 fraction. Perception/friendly-fire add the dust storm factor ([gear factors](#gear-factors)). Table
 preserves each stat row; fall-through matters. Limb-item product includes0.66 if either arm disabled.
 **Verified** in game (#46: `CharStats::getStat` with and without the multiplier, new games, hunger 3 to 1.0,
@@ -67,11 +73,18 @@ CLOTH and LEATHER 1..1, CHAIN 0.3..0.7, METAL_PLATE 0.1..0.8; GEAR_CLOTH and LIG
 HEAVY 0..0.4. **Verified** (same disassembly, 2026-10-26): CharStats +0x18, the run speed factor (`Speed.Run`,
 the Athletics tooltip's gear row), is max(1, largest piece factor) x min(backpack, smallest piece factor), the
 backpack's raw `athletics mult` (CONTAINER +0x238; +0x240 `combat speed mult`, +0x244 `combat skill bonus`,
-+0x248 `stealth mult`, all from `FUN_140763810`) or 1 without one. A piece's factor (ARMOUR +0x248): lerp(t,
++0x248 `stealth mult`, all from `FUN_140763810`) or 1 without one. The backpack (back slot, type CONTAINER, `FUN_1405cb320`) also seeds the
+gear totals (`FUN_140887030`, **Verified**): its `combat skill bonus` starts both the attack and the defence bonus sums (CharStats +0x20 / +0x24;
+0 without one) and its `combat speed mult` the combat speed product (+0x1c; 1 without one); each armour piece adds or multiplies on top
+(vanilla: Large Backpack -10 / x0.8, Medium -5 / x0.9, Small -2 / x0.95). Meitou: the `Fighter` constructor. A piece's factor (ARMOUR +0x248): lerp(t,
 class column +0x10) x `athletics mult`, 1 for `slot` 3, 5 and 8; column +0x10 is GEAR_CLOTH and LIGHT 1..1,
 MEDIUM 0.85..1, HEAVY 0.8..0.95. `perception bonus` is an int (ARMOUR +0x254); the effective perception
 `FUN_140884ac0(0x18, 0)` is (trained + CharStats +0x30) x the stat multiplier. Meitou: `Fighter.AthleticsFactor`,
-`Fighter.PerceptionBonus` (added in `CombatSystem.Eff`), `ArmourPiece.AthleticsOf`. The stun row factor `FUN_1406439f0`
+`Fighter.PerceptionBonus` (added in `CombatSystem.Eff`), `ArmourPiece.AthleticsOf`. A piece's combat speed factor (ARMOUR +0x258,
+**Verified**: `FUN_140898e90` stores it next to +0x248 and `FUN_140887030` multiplies it into the product above) is lerp(t, class column) x
+`combat speed mult`, forced to 1 for a hat (`slot` 3, whatever its mult); the class column is **Observed** by elimination (the one column the
+athletics and stealth blocks leave unused): heavy 0.9..1, else 1 (the tooltip's "Combat speed effect"). Meitou: `ArmourPiece.CombatSpeed`,
+the `Fighter` product. The stun row factor `FUN_1406439f0`
 is the dust storm: lerp(1, 0.5, v) while medical +0x148 = 1, v = medical +0x14c = the storm strength x (1 -
 the gear's protection), clamped 0..1 (`FUN_140648ef0`, which also posts "You are in a dust storm, it affects
 your accuracy in combat."). Meitou: `Fighter.Factors` / `Naked` / `StealthMult`, `ArmourPiece.Stealth` (the dust value is `MedicalState.DustStatFactor`,
@@ -89,20 +102,37 @@ starve; robot flag alone does not imply zero rate. Eating: [Eating](#eating); NP
 [Free food](#free-food). Starvation KO threshold uses toughness10..85 and doubles with food;
 actual transition timing is not fully decoded.
 
+The medical update gets dt twice in the original (every frame, plus again for each character with a budgeted visit: about x(1 + visits / frames), x2 while the budget covers everyone); Meitou models these visits with `MedicalTimeBudget` (below).
+
 Medical parts retain flesh h, bandage b, stun s, wear w, maximum M and hit/rig/replacement state.
 Effective part health, coverage/hit choice and body aggregates are distinct. Apply blunt/cut,
 bandaging and stun to the correct quantities; do not heal untreated flesh directly.
 
 ### Time
 
-**Verified** (decompile): the character adds `DAT_142133794` (real seconds x game speed, [game-loop](game-loop.md#the-three-time-values))
-to Character +0xc8 every frame (`FUN_1405c7ae0`, `FUN_1405cfd90`); `FUN_1405c7d40` hands the sum to the medical update
-`FUN_140652000` and clears it. So part, blood, clot and KO-timer rates are per second of that time (a game hour is 1200/11 of them).
-Hunger instead reads the game clock's elapsed time (`FUN_14064da70` via `FUN_140791ca0`). Meitou: `MedicalState.Tick(TickSeconds)`.
+**Verified** (decompile): `FUN_1405c7d40` (Character slot 0x278) hands Character +0xc8 to the medical update `FUN_140652000` and clears it,
+so part, blood, clot and KO-timer rates are per second of that sum. Hunger instead reads the game clock's elapsed time (`FUN_14064da70` via `FUN_140791ca0`).
+
+**Verified** (decompile of the character loop `FUN_140786e30` and the job runner `FUN_140787940`): +0xc8 (KenshiLib `frameTIMEfour`) gets `DAT_142133794`
+(real seconds x game speed, [game-loop](game-loop.md#the-three-time-values)) twice. `FUN_1405c7ae0` adds it for every listed character every frame;
+`FUN_1405cfd90` adds it again only on a frame where the character has a turn in its update budget, and exactly those frames queue its slot 0x278
+(`threadedUpdate4`, list `+0x1c0` of the back thread's job; that job runs it is **Observed**, [game-loop](game-loop.md#the-character-update-budget)). So the medical time is dt x (1 + s), s the character's share of frames with a turn: 1 to 2 x dt.
+The budgets and the shares they give: [game-loop](game-loop.md#the-character-update-budget). A player's character is always in the flagged budget, so with
+fewer than 4 flagged characters its medical time is 2 x dt, and in a list with many unflagged characters (a town) 1.5 x dt with 4 to 7 flagged, 1.33 x dt
+with 8 to 11 (**Observed**, by simulating the decoded rule; characters near the list's head can get more).
+**Verified** in game for the KO timer (1.0.65, issue #134, 25 knock-outs over nine runs): it fell 1.44 to 2.0 x dt, steady within a knock-out,
+1.44 to 1.5 in 15 of them, which fits those steps (the readings between, 1.59 to 1.83, fit a flagged count that changed during the knock-out or a frame
+time that differs between the frames with and without a turn; not checked). The part and blood rates share the factor (same sum; not measured). Hunger
+is not on it (game clock). Meitou (`MedicalTimeBudget`, run by `BodySystem.Schedule`): one tick stands for one frame of the loop, the occupied slots in slot
+order for its list (the original's is a hash map's order, **Unknown**); a turn adds `TickSeconds` to `CharacterCold.MedicalBudgetSeconds`, which the body step
+adds to its own time (`MedicalContext.BudgetSeconds`) for the part, blood and KO-timer rates. The share depends only on the counts and the order, not on how long
+a frame is, so the mapping keeps the factor at any frame rate or speed. Flagged (`FUN_1405c9f60`, **Verified**: the squared distance to the camera against `npc range`, then the view frustum planes; `FUN_1405c79c0`: the player's faction always):
+the player's characters, and NPCs on screen by `MedicalClock.OnScreen` (the host's camera, `CameraViewCommand` -> `World.View`; the sphere round the body is an engine choice), else within `npc range` (3250) of `World.ViewPosition`;
+NPCs never without a camera in legacy local worlds. **Observed** (implementation, `MedicalTimeBudget.Flagged`): explicit-control server worlds flag every loaded character; medical time never depends on one client camera. Not modelled: an NPC engaged with a player (always flagged in the game), the building and town refinements of the flag.
 
 ### Part tick (`FUN_14064f5c0`, **Verified** decompile)
 
-In order, per part: the hit multiplier falls 0.01 a second while h >= 0 (reset to 1 below). Self healing (RACE, conscious, alive,
+In order, per part: the hit multiplier falls 0.01 a second while h >= 0 (reset to 1 below). Self healing (RACE `self healing`: in the base data only animal races and the robot spiders, no playable race, **Verified** merged data probe; conscious, alive,
 h - s < M - b) adds 0.05 dt `heal rate mult` R 0.4 to b and skips degeneration that tick; otherwise, while h < M and h > -3M,
 h -= 0.05 dt `bodypart degeneration rate` ChanceOfDeath degMult D 1.2 with D = clamp(((M-h-b)100/M - 20)/70, 0, 1), quartered
 when h + b > 0; degMult lerps 1.7..0.03 by toughness and is 0 for a non-vital robotic part (robot race or limb replacement)
@@ -130,15 +160,19 @@ clamped to capacity every tick, and with no bleeding recovers `blood recovery ra
 (`FUN_140652000`). The wound is opened whatever the race's `bleed rate` (no race read in `FUN_1406508d0`; a bloodless race
 gets wounds that drain nothing). Bleeding has no per-part term but a stump's: a bandage never closes a wound (first aid closes
 the newest one first, see [First aid update](#first-aid-update)); a bandaged stump stops bleeding once h + b is back at 0.
-The KO timer +0xa0 falls by dt.
+The KO timer +0xa0 falls by the medical update's time ([Time](#time): 1 to 2 x dt).
 
 **worstDamage** (medical `+0xa4`, KenshiLib 1ce4a16; **Verified** decompile of the aggregates `FUN_140644e60`): the minimum over the organic parts
 (no `robotLimb`, and a byte `+0x7c` clear on an object the part returns, by offset the race's `robot`, **Observed**) of (`flesh` + `bandaging`) / M (M = `_maxHealth` x `age` x `HPMult` - `wearDamage`), computed as a percentage and scaled back, set to 1 above 0.999;
 starts at 1.0 (constructor `FUN_1406409f0`). So it is at most 1 and under 0 only while a part is below zero. Read by the HUD's health word, the hunger
 word and the Toughness XP multiplier ([ui-screens.md](ui-screens.md#4-hud-mainbargui)). Meitou: no single field; `HealthPart.Fraction` is per part.
 
-**Verified** coma point=-lerp(10,85,toughness/100). **Verified** KO time of a blood or vital knock-out (`FUN_1406447d0`):
-base20 + the vital and negative-part terms + the missing-blood term. Leg loss uses only the blood term ([cut-off and leg loss](#cut-off-and-leg-loss)).
+**Verified** coma point = -lerp(10, 85, toughness x stats multiplier / 100) (`FUN_140643ae0`: CharStats `+0x90` x `+0x34`, 1 for people and the age for animals, through the plain unclamped lerp `FUN_140015b63`, so toughness past 100 goes past 85). Every toughness read of the medical code uses the same stat x multiplier x 0.01 (**Verified**: `FUN_1406447d0`, `FUN_140644980`, `FUN_140652000` degeneration, `FUN_140657620` starvation point; the leg-loss factor `FUN_14064edc0` and `FUN_1406508d0` clamp it to 0..1, the lerps do not). Meitou: `CharacterStats.ScaledToughness` is stat x multiplier and every `MedicalContext` is built from it; `MedicalState.KoPoint`, `KoTerms`, `DegenerationMult`, `StarvationKoThreshold` use the unclamped lerp. **Verified** KO time of a blood or vital knock-out (`FUN_1406447d0`, KenshiLib
+`startKnockoutTimer`): `knockout time base` (20, not scaled) + k x (per vital part 25 (M - h - s)/M + per part with h - s < 0 its
+`KO mult` x 100 |h - s|/M + 50 x missing blood / capacity), k as in the [expression reference](#expression-reference). So a part n % below 0 adds
+k x (25 + 2.25 n) for the head, k x (25 + 1.25 n) for the chest or stomach, k x 0.5 n for a limb. In game (1.0.65, issue #134: whole body 20 at
+toughness 0/50/100; head, chest, stomach, arm, leg rows, two parts at once and missing blood, toughness 0/50/100) every reading fits within 0.02
+(0.2 for a part still sinking). Meitou: `MedicalState.KoTime`.
 Death: vital h-s<-M, blood<=-capacity or hunger<=0. Preserve KO/coma/death distinctions.
 
 **Observed** (decompile; names KenshiLib 1ce4a16). The KO point (`pointOfNoReturn`, `140643ae0`) is read only by
@@ -149,19 +183,22 @@ Death: vital h-s<-M, blood<=-capacity or hunger<=0. Preserve KO/coma/death disti
   conscious character. A part going under 0 in the tick starts nothing.
 - `reassessCollapseMode` (`140649320`) rebuilds `+0x161` each update: set by a hunger KO, a KO timer > 0, a vital part at
   collapse stage 2, or blood: for a character unconscious before the update, blood < 0 (and it sets `+0x163`); for a
-  conscious one (or on the update after a fresh limb loss, `hasFreshlySeveredALimb`), blood < 0, or < -25 once `+0x163`.
+  conscious one (or with a fresh stump, below), blood < 0, or < -25 once `+0x163`.
   `+0x163` (`bloodlossTrauma`, KenshiLib 1ce4a16; medical bytes `+0x160 crippled`, `+0x161 unconcious`, `+0x162 sub50KO`, `+0x165 rightArmOk`,
   `+0x166 leftArmOk`) clears in `medicalUpdate` only on an update that finds blood below capacity and then above 25 (**Verified**, decompile of
   `FUN_140652000`: the test sits inside the recovery branch). Natural recovery passes through that window; blood written straight to capacity does not,
-  which is why issue #82 saw the HUD's "Blood loss trauma" term 142 s after the blood was back. So a character wakes once all of those are clear.
-  Meitou clears the flag whenever blood is above 25 (engine choice: the quirk needs a direct write).
+  which is why issue #82 saw the HUD's "Blood loss trauma" term 142 s after the blood was back; the test runs while bleeding too. So a character wakes once all of those are clear.
+  Meitou: the same, in `TickBlood` (and the off-screen `Recover`).
+- Fresh limb loss (**Verified**, decompile of `FUN_14064da70`, `FUN_140645350`): each medical update first checks the four limb slots for a stump
+  (limb state 1) whose h - s is under -M (M from the stump's base HP 5, so the cut part until it heals past that). If one is, it sets `+0x163` and
+  passes the flag to `reassessCollapseMode`, which then applies the conscious blood rule to an unconscious character: blood holds it down only under -25.
 - Stage of a torso/head part, v = h - s + rig: 0 when v >= 0; under the KO point 2, and a vital part sets the coma flag
   `+0x162`; between the KO point and 0, 2 for a non-vital part, and for a vital one 2 only while `+0x162` is set. `+0x162`
   clears on an update where no vital part is at stage 2. So a vital part between the KO point and 0 does not keep a
   character down; one under it does ("Recovery coma") until every vital part is back to 0. Legs use h - s + bandage
   against the KO point ([ragdolls](ragdolls.md)).
 - Save keys: `coma` = `+0x162`, `unconcious` = `+0x161`, `incapacitated` = `+0x160` (a leg-collapse part at stage > 0).
-- Meitou: `MedicalState.VitalPartsKeepDown`, `RestartKo`, the wake test `Blood >= 0`. The fresh-limb-loss case is not modelled.
+- Meitou: `MedicalState.VitalPartsKeepDown`, `RestartKo`, the wake test `Blood >= 0` (-25 with `HasFreshStump`).
 
 ### Cut-off and leg loss
 
@@ -169,18 +206,51 @@ Death: vital h-s<-M, blood<=-capacity or hunger<=0. Preserve KO/coma/death disti
 - A destroyed part that is not vital is cut off: a blow needs h-s+rig < -M, a tick h-s < -M (a worsening wound). A vital part kills instead.
 - Blow: Dismemberment >= Rare, a stats object, limb original or crushed. Tick: Frequent only, limb original only. A prosthetic is never cut off.
 - Sever: the part becomes a stump; blood -= (5 + 25 x U) after the KO below (the roll `FUN_1409b1c80(5, 30)`); toughness XP 300; LOST_LEG / LOST_ARM dialogue.
-- A leg (slot 2 or 3) cut off in posture 0 (conscious, not staying low, not crawling) is knocked out for
-  max(3, (2 x knockout time base + |capacity - blood| x k x 0.5) x (1 - toughness/100) x 4) x U, U uniform in [0, 1),
-  k = lerp(knockout mult 1, knockout mult 99, toughness/100). The 0.5 is 0.25 x 2; blood is read before the sever's loss; the
-  other parts' terms do not enter. Another posture: no KO.
-- A destroyed part not cut off (setting too low; a crushed limb met by a tick): no KO; the leg is down, so the character crawls at once (posture 2).
+- **A leg going down in posture 0** (`PS_NORMAL`: conscious, not staying low, not crawling) knocks the character out for **3 s** of medical time,
+  whether it is cut off, crushed, worn through or under the KO point. The collapse check `FUN_140649320` sets the crippled flag for a part at stage > 0 whose
+  `collapse part` has a leg bit (stage of a leg, `FUN_140644450`: a stump 1, crushed or h - s under -M 2, h - s + b under the KO point 2), and when
+  `getProneState` (slot 0x368) is 0 calls `setProneState(2)` (slot 0x370); the setter `FUN_1405c7e20` writes 3.0 to Character +0x4f8 on a change from 0 to 2,
+  which is the KO timer (KenshiLib 1ce4a16: `MedicalSystem` at Character +0x458, `knockoutTimer` at +0xa0), over whatever it held; the same check then sets
+  unconscious for a timer > 0. The character update `FUN_1405d00b0` makes the same 0 -> 2 change for a crippled character (**Verified**, decompile).
+  So a cut leg's rolled time (the sever's max(3, (2 x knockout time base + |capacity - blood| x k x 0.5) x (1 - toughness/100) x 4) x U, `FUN_140644980`,
+  then the roll) is always overwritten. **Verified** in game for a cut (1.0.65, issue #134): five leg cuts (KenshiLib `amputate`, which is `FUN_14064edc0`, then
+  `reassessCollapseMode`), three of them standing (two with the posture not read), at toughness 0 and 50, full or low blood, all wrote exactly 3; an arm cut wrote nothing.
+  The posture follows the down state (4 for a knock-out) only in `FUN_1405d00b0`, which then runs the collapse check (medical slot 0x10, `FUN_14064da70`), so a
+  knock-out leaves it at 0 until that update: a vital or blood knock-out and a leg going down before it gets its timer overwritten to 3 too (**Verified**, decompile). Another posture
+  (staying low, crawling, knocked out (4), playing dead (3)): no KO; waking with a leg down goes from 4 to 2.
+- A destroyed limb not cut off (setting too low; a crushed limb met by a tick) is down like any other leg: in posture 0 the 3 s KO above, then the crawl (posture 2).
 - The put-down, stealth and shackle knock-outs call the same function with a factor and no roll (the blood term only, **Verified**).
-  Meitou's `PutDownKoSeconds` still uses the general terms: a gap ([carry-loot](carry-loot.md)).
+  Meitou: `MedicalState.KoBlood`, used by `PutDownKoSeconds` ([carry-loot](carry-loot.md)).
 - The KO toughness XP (`FUN_1408c6720`) is paid only on the vital-part branch of `FUN_14064f300`, not for a leg or blood KO (**Verified**).
   Meitou pays it for every KO event: a gap.
 - **Unknown**: the notify codes 0x46 (leg) and 0x47 (arm) and vtable slot 0x410 that `FUN_14064edc0` calls; the fifth argument of
   `FUN_14064f300` (a blow is taken to sever under the setting rule).
-- Meitou: `MedicalState.ApplyHit`, `CheckPart`, `Sever(part, ctx, standing)`, `LegLossKo`, `Standing` (read before the blow, and before the tick's part loop).
+- Meitou: `MedicalState.ApplyHit`, `CheckPart`, `Sever`, `LegCollapse` (after a blow, the tick's part loop and a bite; `LegLossKoSeconds`), the posture of the last
+  tick's end (`Standing` then; not saved, the live `Standing` before the first tick).
+
+### Decapitation (Meitou)
+
+Engine feature, not the original's: a vital part kills before the cut-off rule is read, so the game never cuts a head off, although the Head record has
+`severance` (table below). Meitou's switch "Decapitation" (Advanced settings, on; Faithful off; `BodyOptions.Decapitation`): when a **blow** destroys the
+Head (`body part type` 3) and the blow's rule above holds (Dismemberment >= Rare, a stats object, head original or crushed, `severance`), the character dies
+as before and `MedicalState.Decapitated` is set (event `Decapitated`, after `Died`). Ranged hits and executions take the same path; ticks and being eaten do not.
+No blood loss, XP, dialogue or item: the look loses the head's body vertices (its `bone name` `Bip01 Head`; the neck is the chest's), hair, beard and hat
+(the hat stays in the inventory) ([characters](../characters.md#hidden-body-parts-verified--140075600--140071f90--140531cc0-hlsl-skinhlsl)). No race has a
+neck stump, so the hole is closed by a cap made from the body (`NeckCap`: the rim between visible and head triangles, fanned to its centre, skinned as the rim).
+Its look comes from race data, so a mod's race works the same: `blood colour` tints it; `is robot` (skeletons, robots) makes it a metal socket under that fluid,
+else flesh with a bone at the centre. **Observed** (headless probe of the base bodies): `human_male`, `human_female`, `bone_male` and hive `Stick_person` get one 18 to 22 triangle cap at
+neck height, `robot.mesh` a 5 triangle one; Skeleton MkII and Log Head none (their head is a separate shell, the body stays closed). A race without a Head part (No-Head MkII) is never decapitated.
+
+The head falls (`GameHost.SeveredHeads`, drawing only): when the renderer last drew the character with its head and it is now listed headless, the old look's
+`SeveredHead` (the body's head vertices only, instance flag 29, with hair, beard, hat and its own cap over the rim of its all-head triangles) keeps that frame's bones,
+taken at the cut (`CharacterRenderer.HoldPose`), turns about the head bone and drops (gravity 98.1, as the limbs) 3 to 7 units aside, thrown with the downing blow's ragdoll speed (with "Advanced ragdolls"; `CharacterSnapshot.Knockdown`, [ragdolls](ragdolls.md#initial-state); it then drifts and tumbles that way, spinning 0.1 rad/s faster per unit/s), its clock starting once its look
+is drawn. It lands 1.3 above the walkable ground (sandbox floor, terrain, building floor) or a body lying there (spheres round its bones, as last drawn; not its own
+neck and head, nothing above where it fell from). It is no item and not saved: a load or new game clears the heads (a corpse loaded headless drops none); past the
+dropped-items limit the oldest goes. Both caps are made with each person's body mesh on the loading worker (`CharacterContent.CapMesh`) and uploaded on first use.
+Saved as `meitou decapitated` ([save](../formats/save.md#limbs-medical_state-limbs)).
+The neck spurts (`GameHost.NeckSpurts`, drawing only; with the `Blood` setting on and `bleed rate` > 0): a mist at the cut, then 6 pulses 0.35 s apart, weaker
+each time, of the `HackBlood-system` spray (and the `Bloodsplash01` mist; both in the race's `blood colour` when it is not the default 0x800000: the particles take that hue at their texture's brightness, `ParticleRenderer.Burst` recolour, also for luckyren bursts) along the spine (`Bip01 Spine2` to `Bip01 Neck` as drawn; while a pulse emits, its emitter is moved and turned with the neck each frame, `ParticleRenderer.MoveBurst`, so it follows the falling body), each leaving a splash decal in
+the race's `blood colour` up to 18 units off along it. Timed by the shown tick; not saved.
 
 ## Aid, limbs and load
 
@@ -219,15 +289,18 @@ skill x 0.8 when treating oneself and q = min(skill, kit quality):
   slaves are not modelled. **Unknown**: whether a kit stored on the task earlier is still used then; what +0x330 code 11 is.
 - **Skill.** `Task_FirstAid` (`FUN_1403563a0`) runs a first aid kit phase, then (none left) a robot repair kit phase; the skill is
   CharStats +0x98 (`medic`) in the first, +0xdc (`robotics`) in the second, and the trained stat 9 or 6 likewise; the race's `heal
-  stat` is not read here. Meitou also applies the injury/hunger stat multiplier; the decoded task reads the raw field (**Verified**,
-  `FUN_14033c5a0`, x0.8 for self): a difference left in place.
+  stat` is not read here. The task reads the raw field, no injury/hunger stat multiplier (**Verified**,
+  `FUN_14033c5a0`, x0.8 for self; the splint passes the raw field too, `FUN_14034ef20`); Meitou matches (`FirstAidSystem.SkillOf`).
 - **Kit search** (**Verified**): vtable +0x38 of `Task_FirstAid` and `Task_FirstAidRig` is `FUN_14033c740` (the rig task passes
   function 2). It searches the medic's main grid, else its worn backpack's contents (`FUN_1405cb320`: the item with slot id 12 at +0xb8,
   type 46 CONTAINER; Meitou's `Backpack` is the `backpack_attach` section). `FUN_140746480`
   takes the item of that function with 0 < charges < 99999 and the fewest charges (the first of equals). No squad mates, no buildings.
+  The task keeps the kit it found (task `+0x80`, **Verified**: `FUN_14033c7e0`, called from `FUN_1403563a0`): it searches again only when the stored kit is null or of another
+  function (`+0x124`); a found kit that `FUN_14032dff0` calls invalid (not an item, or no charges: it is then removed from its holder) is dropped and the search runs once more, firing event 0x16 (EV_FIRSTAID_KIT_EMPTY)
+  when that finds none (a first search that finds none is left to `FUN_1403563a0`: the robot phase, else the end); `FUN_14033c5a0` clears it when it is used up. Meitou: `CharacterCold.TreatKit` (`FirstAidSystem.KitOf`; runtime, derived), also dropped when no longer held.
 - **Unknown**: while no wound is open but bleeding (medical +0x78) is positive, `FUN_14064d800` bandages an extra time and lowers it
   by q x 0.01 x dt; it is recomputed every medical tick, so Meitou leaves it out.
-- Meitou: `FirstAidSystem.Apply`, `MedicalState.CloseWound` / `Treat`; dt in game seconds (unit **Unknown**).
+- **dt** (**Verified**, `FUN_1405cf130`): the task update gets the character's update time `+0xc4` = the scaled frame time `DAT_142133794` (0.01 when not positive) plus the time summed while the character was not visited (`+0xc0`, cleared), passed on by `FUN_1403563a0`; so its long run is the scaled frame time once, without the medical clock's extra visits ([Time](#time)). Meitou: `FirstAidSystem.Apply`, `MedicalState.CloseWound` / `Treat`, `dt = TickSeconds`.
 
 **Observed** (`wade`, player Metaru's MEDICAL_STATE): injured parts have flesh + bandage ≈100,
 stun0 and bleeding0; the wounds are already treated. First Aid has nothing left to bandage;
@@ -236,7 +309,7 @@ the HUD's yellow layer shows the treated damage awaiting passive recovery.
 **Observed** (play, 2026-10-21): a first-aid order (self included) given to a character without a medkit is refused before
 any movement or animation, with the bubble "I don't have a medkit." Whether a squad mate's kit nearby or a robot repair kit
 avoids the refusal: the kit search ([below](#first-aid-update)) reads only the medic's own inventory and backpack, so a squad
-mate's kit should not (**Observed**: the same vtable slot). Meitou's first-aid `FindKit` still accepts one within `KitReach` (engine choice, not changed).
+mate's kit should not (**Observed**: the same vtable slot). Meitou's first-aid `FindKit` takes the medic's own kit by this search (`OwnKit`), and still accepts a mate's within `KitReach`, found by the same rule (engine choice).
 
 **Verified** carried person adds CONSTANTS weight30, independent of body/race/inventory.
 **Verified** in game (1.0.65, scripted harness, issue #45; strength -20..45, W 15/16.4/46.4 kg, torso wounds, hunger):
@@ -271,9 +344,9 @@ counts as health in the fraction, the down (h-s+rig<0) and sever tests, so a spl
 - Kit: the rig task takes a splint kit (function 2) from the medic's own inventory or backpack by the [kit search](#first-aid-update),
   keeps it until empty, removes it then and searches again; with none left it says event 22 (**Verified**, `FUN_14034ef20`, `FUN_14032dff0`).
 - Order 249 refuses without such a kit ("I don't have a splint kit."). The job 250 "Splint Rigging" (finder `FUN_14099e240`, may pick the medic
-  itself): [perma-jobs](ai-tasks.md#perma-jobs); Meitou runs it as a splint treatment (`FirstAidSystem.SplintSomeone`).
+  itself): [perma-jobs](ai-tasks.md#perma-jobs); Meitou runs it as a splint treatment (`FirstAidSystem.FindSplint`, the decision step's job).
 - Meitou: `SplintOrder` (the Treat task with `TreatSplint`), `MedicalState.NeedsSplint` / `Splint`, `FirstAidSystem.OwnKit` (own kit,
-  fewest charges); dt in game seconds as for first aid. Left as they are: Meitou's splint skill is `stat x StatMultiplier`, where the rig
+  fewest charges); dt as for first aid. Left as they are: Meitou's splint skill is `stat x StatMultiplier`, where the rig
   task passes the raw CharStats+0x98 (**Verified**); XP only when rig is added.
 
 ### The stat list
@@ -281,7 +354,8 @@ counts as health in the fraction, the down (h-s+rig<0) and sever tests, so a spl
 **Verified.** Three independent places agree on the numbering: the editor's `StatsEnumerated` enum (names), the
 per-stat accessor `FUN_140884190` (stat number to `CharStats` byte offset, a switch), and the stats save writer
 `FUN_14064a8f0` (offset to saved field name; read back by the loader `FUN_14064b6a0`, which stores at the same
-offsets). Stats are `float`s inside `CharStats`. The number is what RACE `heal stat`, `stats good<N>`,
+offsets). **Verified** (`FUN_14064b6a0`): a saved character without a `lockpicking` key loads it as `thievery` x 0.5, and one without `toughness2` loads toughness as its `defence` (+0x90 = +0x124); with the key the stored value is used. Meitou: `CharacterStats.ReadSave`.
+Stats are `float`s inside `CharStats`. The number is what RACE `heal stat`, `stats good<N>`,
 `stats bad<N>`, BUILDING `stat used` and all XP code pass around.
 
 | # | `StatsEnumerated` | STATS field / save name | `CharStats` offset |
@@ -331,18 +405,18 @@ offsets). Stats are `float`s inside `CharStats`. The number is what RACE `heal s
 | --- | --- | --- |
 | Hit landed (events 0 and 1) | `FUN_1408c6980` | **Verified** (decompile): `attack` (or `unarmed` when the stat-set kind at +0x1f0 is 5, still with the race's `map[2]`) gets 0.075 x skill-diff(own attack vs opponent defence) x `map[2]`; the current weapon skill (not for unarmed) gets 0.075 x skill-diff(skill x `map[20]` vs opponent defence), with no race factor in the gain; `dexterity` gets 0.075 x the attack's skill-diff x `map[18]` (unarmed too). Event 1 uses 0.5 (attack, dexterity) and 0.4 (weapon skill). Dexterity is also scaled by a CharStats factor from +0x19c/+0x1a0/+0x1a8 (`(+0x1a8 + +0x19c) / sum` when the sum is above 0, else 1; fields **Unknown**, Meitou uses 1) |
 | Attack defended (event 2) | same | **Verified**: `defence` at 0.25 of base with skill-diff(own defence x `map[19]` vs opponent attack) and no race factor in the gain; weapon skill at 0.1 (diff against the opponent's defence, Meitou uses the attack). No attack or dexterity gain |
-| Being hit (event 4) | same | `defence` 2.0 of base (**Verified**: the stat written is the CharStats slot +0x124, the same slot event 2 uses for `defence`, and [combat.md](character-stats.md#stats-and-xp) lists the same; `FUN_1408c6360` handles stat-set kind 5), and `toughness` = 0.075 x `xp rate toughness` (1.33) x skill-diff(own toughness vs damage) x `map[21]` |
+| Being hit (event 4) | same | `defence` 2.0 of base (**Verified**: the stat written is the CharStats slot +0x124, the same slot event 2 uses for `defence`, and [combat.md](character-stats.md#stats-and-xp) lists the same; `FUN_1408c6360` handles stat-set kind 5), and `toughness` = 0.075 x `xp rate toughness` (1.33) x skill-diff(own, other) x `map[21]`, own = toughness x CharStats `+0x34` (the stat scale), other = cut + blunt + pierce + stun of the packet the hit carries (**Verified** `FUN_1408c6980`; callers the melee hit `FUN_1404394f0`, its copy of the blow's packet, and the bolt hit `FUN_140439c90`, pierce only; that the melee packet is the powered one is **Observed**). Meitou: `XpService.Combat` `damageTaken`; the hit also pays the per-damage gain below |
 | Event 6 | same | **Verified**: `attack`/`unarmed` 0.25 (`map[2]`) and weapon skill 0.1 against the opponent defence; no defence or dexterity gain (meaning of event 6 not decoded) |
 | Strength tail of every event | same | `strength` rises by `core(0.075 * 0.55 * 2*xp rate strength * map[1])` scaled x0.4 for event 2, x0.1 for event 4 (1 for events 0, 1 and 6, **Verified**), and by the weapon-weight factor below; for unarmed (kind 5) the weapon-weight factor is replaced by (1 - encumbrance factor) |
-| Toughness per damage received | `FUN_1408c68e0`, called from `FUN_140666780` | 0.075 x k x `xp rate toughness` x `map[21]`; k = 0.05 normally, 0.25 for damage kind 1, 0.5 for kind 5 (kind meanings not decoded) |
+| Own punch (attacker) | `FUN_1408c68e0`, called only from `MedicalSystem::punchSomething` `FUN_140666780` | **Verified**: 0.075 x k x `xp rate toughness` x `map[21]` x Global damage multiplier; k by hit material: 0.25 for 1 (metal), 0.5 for 5 (blocked), else 0.05. A hit taken does not call it ([punch self-damage](combat.md#punch-self-damage)) |
 | Toughness when knocked out | `FUN_1408c6720` (from the part damage `FUN_14064f300` when a hit knocks out, unless its fourth argument is set) | **Verified**: core(0.075 x `map[21]`) (`DAT_142134edc` = exp gain multiplier x 0.1, set in `FUN_1408c6980`) |
 | Toughness on an ordered get-up (`Task_GetUp` start `FUN_14033ca10`) | `FUN_1408c6780` | **Verified**: core(f x (n + 10) x 0.075 x `map[21]`), f the HUD's Toughness XP multiplier ([ui-screens.md](ui-screens.md#4-hud-mainbargui): 1, +1 left arm crippled, +2 right arm, +2 `bloodlossTrauma`, +2 always since `worstDamage` < 15), n the sensed `numEnemies` (SensoryData +0x94), only when the player ordered the get-up, something is sensed and no conscious ally ([ragdolls](ragdolls.md#playing-dead)); dialogue events 0x17 to 0x19. Meitou: `XpService.ToughnessFromGettingUp` (events not sent) |
 | Toughness from losing a limb | `FUN_14064edc0` via `FUN_1408c7310` | generic entry with dt 1, amount 300 into stat 21 (a large one-off gain) |
 | Weapon-weight strength factor | `FUN_1408838e0` / `FUN_1408839a0` | `min strength xp mult` (0.1) + clamp((weapon weight - strength x injury multiplier) / `weight strength diff 1x` (20), 0, `weight strength diff max` (1)); stored at +0x184 |
 | Strength from carrying | `FUN_1408c60c0` (from the movement tick `FUN_1408c6660`) | (1 - encumbrance factor)^2 capped at 0.5, x2 while carrying something (Character +0x388, the `carryingObject` handle's type, is not 11 NULL_ITEM; KenshiLib 1ce4a16, **Observed**; Meitou: carrying a character), x `xp rate strength from walking` (0.5) |
-| Athletics (running) | `FUN_1408c6660` | `FUN_1408c5ec0` (the encumbrance factor, x1.5 when the speed is over 80% of the character's maximum) x `xp rate athletics` (stored 0.5) via the generic entry; swimming (stat 23) gets 5, or 10 when carrying, while in water |
-| Stealth (sneaking) | `FUN_1408c65a0` (from the sense update `FUN_1408586d0`) | continuous entry into stat 16 with amount 0.2; 1.5 when observed (enemies about, Observed) and a watcher is noticing or detecting, 0.9 when observed but none is; x0.1 when not sneaking (called then only in some other states); 0 when KO'd or in a non-default state. Resets the exposure factor +0x174 to 1 (**Verified** literals) |
-| Stealth (heard check) | `FUN_1408c7330` (from hearing `FUN_140857500`) | generic entry, dt 1, amount (2 if a + 2 if b) x20 if heard, times the exposure factor (then x0.7), 0 when unconscious-type or using something; a = the listener is its enemy, b = the sneaker is inside the listener's home (unless public and not locked up, or it is using something), else is a slave (`SensoryData::canHear` step 10, **Verified**). Not modelled |
+| Athletics (moving) | `FUN_1408c6660` | **Verified** gate (`FUN_140660dc0`): player faction only, not fight steering (movement mode 1) or swinging (+0x37c), moving faster than 2 (walking trains too). `FUN_1408c5ec0` (the encumbrance factor, x1.5 when the speed is over 80% of the run value V, not the current maximum) x `xp rate athletics` (stored 0.5) via the generic entry, with strength from carrying; in deep water only swimming (stat 23): 5, or 10 when carrying. Meitou: `BodySystem.TrainOnTheMove` (the Attack task stands for steering and swings) |
+| Stealth (sneaking) | `FUN_1408c65a0` (from the sense update `FUN_1408586d0`) | continuous entry into stat 16 with amount 0.2; 1.5 when observed (enemies about, Observed) and a watcher is noticing or detecting, 0.9 when observed but none is; x0.1 when not moving (the 5th argument is the moving flag); 0 when down (KO, dead, carried) or in a bed or cage. Gates (`FUN_1408586d0`, **Verified**): the player's faction only, sneaking, someone sensed (enemies + neutrals, or a valid watcher of the last 4 s, `DAT_14168bf24`), and moving, a hostile targeting it, or Character +0x148 (the pending crime code, [ui-screens](ui-screens.md); **Observed** reading of field [0x29]); a pending crime also forces the 'observed' argument. Meitou: `BodySystem.SneakXp` (sensed = a conscious NPC within 1500, engine stand-in; a sneaker standing still gets XP only with a pending crime, at x0.1 and at least the Near rate; the building trigger is not pinned and not modelled; held, carried, down, bed and cage already pay nothing). Resets the exposure factor +0x174 to 1 (**Verified** literals). The rate is stored in +0x170, which is the Stealth tooltip's `XP rate:` (`FUN_1408c73e0`, **Verified**); Meitou shows the exposure's rate from `BodySystem.PaidExposureOf`, the one its XP pays at (no x0.1 for standing still, which the original's stored rate carries) |
+| Stealth (heard check) | `FUN_1408c7330` (from hearing `FUN_140857500`) | generic entry (stat 16), dt 1 (`DAT_14167c308`), amount (2 if a + 2 if b), x20 (`DAT_141683188`) if heard, times the exposure factor `+0x174` (**Verified** `FUN_1408c7330`), then the factor x0.7 (`DAT_1416ae650`); amount 0 when the character is down, carried or in a bed or cage (the factor still falls). `FUN_1408c65a0` resets the factor to 1 (the sneak update, player faction only: any other character's factor only falls). Reached by a check of `canHear` `FUN_140857500` (**Verified**, its end): not by a pair that both belong to the player, a cooldown replay, a building-rule refusal or the sure hearing of a fighter in the listener's place; the heard character must be a mover not in combat mode, or in posture 1 or 2, staying low or crippled (`FUN_1406643d0`; Meitou `MedicalState.Prone`), and its noise range above 0; a miss reaches it too (heard 0). a = the listener regards the heard as an enemy (slot 125 `FUN_14079c950`). b (**Observed**): the heard stands in the building of the listener's home handle unless that building is public and a squad byte `+0xe8` (**Unknown**) is clear, or the heard is in a bed or cage; else b = the heard is a slave (status 1, `FUN_1405c8aa0`). Not gated to the player's side. Meitou: `AggroSystem.Roll` emits the check, `AggroSystem.HearingXp` sums it into `CharacterCold.HearingXp` (factor `StealthFactor`), `BodySystem` pays it; the factor and the pending XP are not saved (no loader writes `+0x174`, **Observed**); every look's sense of an unseen character makes the check; a is `AggroSystem.Regards` or a fight between the two, and the byte `+0xe8` is read as clear |
 | Lockpicking | `FUN_1408c62e0` | stat 37 gains 1.2 x `map[37]` on success, 0.24 x on failure |
 | Engineering | `FUN_1408c6250` | stat 5 gains `0.02 * dt * 0.75 * map[5] * 0.75` |
 | Medic | `FUN_1408c6130` | **Verified**: `dt / T * 0.75 * map[patient race's heal stat]` added straight to the stat (no core curve, no cap); T = lerp(`XP rate medic 1`, `XP rate medic 99`, skill x 0.01) (the ends' order from the field names; editor text "seconds of usage per point"); nothing when T <= 0 |
@@ -414,17 +488,26 @@ eat task, animation or player command (a right click on food does nothing, [ui-s
 - **Mouth** (**Verified**, decompile of `FUN_14034f340`, `FUN_1405d0b50`, `FUN_1405c8240`, `FUN_1405d0d20`, `FUN_1405dc650`; the attach point is the string `mouth`,
   `FUN_141534950`). Only a **limb** (item function 17, item `+0x124`) picked up by an animal (vfunc 0x248 non-null) goes to the mouth; any other item, and a limb picked up
   by a person, goes into the inventory (the pickup task, below). Taking it: the limb held before is let go (`FUN_1405c8240`), the new one is flagged held (`+0xd8` = 1), attached to the
-  `mouth` point and the time is stamped (`+0x6e0`). With no `mouth` attach point on the skeleton the limb is bitten on the spot instead (the same function's other branch).
+  `mouth` point and the time is stamped (`+0x6e0`). With no `mouth` point (looked up by name in the character's attachment points) nothing happens: the other branch bites only what
+  `FUN_14042ee50` calls edible (function 3, or 15), never a limb, so the limb stays on the ground and the pick-up task (`Task_Pickup`, row 3, which registers animals: category 0x20) ends
+  without a sound or message (**Verified**, decompile of `FUN_1405d0b50`, `FUN_14042ee50`, `FUN_14034f340`). In base data only a player's pick-up order reaches it (goal 277 is on
+  the two races with the point); a mod race with 277 and no point would walk to the limb again and again (**Unknown**: not run).
+  The attach (**Verified**, decompile of `FUN_140535d50`, `FUN_14052d850`, `FUN_140537690`, `FUN_14052d480`, `FUN_140536210`): the race's attachment point named `mouth` gives the bone and
+  offset, the item's `mesh` (`mesh female` on a female look) is attached to that bone (`attachObjectToBone`, as a weapon), and an attached ITEM gets its item's slot 0x360, which for `SeveredLimbItem` is the
+  `SeveredLimb` material (`FUN_1400cf490`, [blood-decals](blood-decals.md#on-the-body-and-on-severed-limbs)): it looks as on the ground. Only Bonedog and Boneyard Wolf have the point
+  ([phs](../formats/phs.md#how-kenshi-uses-attachment-points-verified-decompiled)). **Unknown**: whether the limb takes the animal's size (Meitou: it does, as Ogre's tag points inherit scale).
   While the mouth is full, the character update (`FUN_1405dc650`) does nothing else about food (no auto-eat, no Feed Animals check), and t = game minutes since the stamp, f = slot 0x398
   (the age, [animals](animals.md#ageing)): an animal with f > 0.9 of the player's faction (`FACTION +0x250`) eats when the stomach (+0x4bc) is empty and hunger (+0x4b8) below 2.6, or at t > 15;
   any other eats when the stomach is empty and t > 45, or at t > 60 + 120 x (1 - f). Eating clears the mouth, the flag, and bites the limb (whole, 30).
   The goal that sends an animal to a ground limb is 277 (`AI::findLimbOnGround`, [ai-tasks](ai-tasks.md#prisoner-fate-and-slave-rows)); Meitou runs it, and the player's pickup order also fills the mouth.
-  Meitou (`FeedSystem.HoldInMouth`, `MouthDue`; `CharacterCold.Mouth`): as above. Engine choices: every animal has the `mouth` point; a held
-  limb is neither saved nor carried across a load; it goes with the animal if the animal dies or is removed.
+  Meitou (`FeedSystem.HoldInMouth`, `MouthDue`; `CharacterCold.Mouth`): as above. Drawn (`CharacterSnapshot.Mouth`, `GameHost.MouthOf`, `CharacterRenderer.AddMouth`) with the debris
+  renderer's limb look and the cut character's skin tone (`CharacterCold.MouthTone`) at the posed `mouth` point. An animal without the point
+  (`FeedSystem.HasMouth`: its look's attachment points; none without a look) leaves the limb (`PlayerSystem.TakeInMouth`). Engine choices: a held limb is neither saved nor carried
+  across a load; it goes with the animal if the animal dies or is removed.
 - **Food on the ground** (**Verified**, decompile): `Character::setupAI` gives every animal of a player squad goal 259 EAT_FOOD_ON_GROUND (priority 3, weight 0.5; it drops race goal 230)
   and every player character 243. 259's desire: 0 unless the character wants to eat now (needs food, stomach empty, hunger < 2.5) and medical hunger <= 2.4; then 1.0 with no food in
   its inventory and no enemies, 0.1 with enemies only below 1.2. Finder `FUN_14099a930`: the nearest food it may eat (function 3, 15 for an animal or a race that lists it) on
-  the ground within 100 in its own location, accessible, passing the stealing check; else a sensed corpse within 100 with such food. Meitou (`FeedSystem.FetchFood`): the ground pass only.
+  the ground within 100 in its own location, accessible, passing the stealing check; else a sensed corpse within 100 with such food. Meitou (`FeedSystem.GroundFood`): the ground pass only; a player character's 259 is a source of the [decision step](../simulation.md#decision-step).
 - **Food from storage** (**Verified**, decompile; registration of 243 in `FUN_140319a60`, desire `AI` slot 26 → 24 → 25): 243's desire is 0 for an animal while a global
   byte (`DAT_142134690+0x114`) is clear, the byte the eating rule `FUN_1405d29c0` tests for animals, so the squad option Feed Animals (**Observed**: writer not traced); 0 outside a town (status `+0x88`); 0 in a town of another faction unless town slot
   88 (`+0x2c0`) holds for the player faction: the town's owner (`+0x10`) or a member of its `factionsResidentHere` set (`+0xe8`, KenshiLib 1ce4a16). Slot 24 itself adds the player
@@ -432,9 +515,10 @@ eat task, animation or player command (a right click on food does nothing, [ui-s
   (`+0x128`, the size of the `occupiers` set) while the character senses an enemy (`SensoryData::numEnemies` > 0): 0.2 inside the walls (`amInsideTownWalls` > 0), whatever its
   hunger; else 0 when the town has gates (`Town::hasGates`, `+0x3b0` set; always false for TownBase); else 259's desire (slot 25, above). **Verified**, decompile of `AI::vfunc_24`
   `FUN_14059bbd0` and the Town slots. Whether the resident set is saved is **Unknown**. The finder and the take (244, one item): [ai-tasks](ai-tasks.md#arrest-and-prison-rows).
-  Meitou (`TownDutySystem.LookPlayerFood`): idle player-side characters, a store owned by their faction in their own town or one where the player owns a house (engine reading of
-  the resident set, not tied to having stood in it); the occupied branch as above, gates read as a gate building in the town; its 0.2 starts a run for any idle character
-  (the original's competes with the planner's other goals, fighting included, which Meitou's player characters do not have).
+  Meitou (`TownDutySystem.FoodWant`): for a player character a step-4 source of the [decision step](../simulation.md#decision-step) (after its orders, before its jobs; weight 0.5 against
+  Self preservation's 1 and Hold's attack on sight), for the other player-faction characters a pass over those idle or on a job's task; a store owned by their faction in their own town or
+  one where the player owns a house (engine reading of the resident set, not tied to having stood in it); the occupied branch as above, gates read as a gate building in the town. A fight
+  that replaces a player character's food run ends it.
 - Meitou: `FeedSystem` (checks every 30 ticks, engine choice), squad options `SquadAi.Feed` / `Share` (CAMERA
   bools `feed`, `share`, **Verified** reader `FUN_1403ebf50`; default on, **Unknown**).
 
@@ -446,7 +530,7 @@ stomach gets min(floor - hunger, 0.04). Nobody but the player has to feed anyone
 
 | Character | Floor |
 | --- | --- |
-| animal (slot 0x248), unless the byte `142133599` (`GameplayOptions` +0x21, KenshiLib `animalsEat`, default 1; no UI binding) is set | 3 |
+| animal (slot 0x248), only while the byte `142133599` (`GameplayOptions` +0x21, KenshiLib `animalsEat`) is 0: never, it is 1 in every game ([options](#new-game-advanced-options-that-change-these-mechanics)), so animals take the other rows and the player's animals get hungry. Meitou: no animal row | 3 |
 | slave (status 1) | 1 |
 | imprisoned (+0x2f8 = 2): held by the player's faction / free / escaped slave | -10 / 2 / 1.15 |
 | player's faction | -10 (never) |
@@ -454,13 +538,21 @@ stomach gets min(floor - hunger, 0.04). Nobody but the player has to feed anyone
 
 Drain and digestion (same function): stomach empty: hunger -= dt/T x race rate x situation (`FUN_1408837a0`:
 bed/KO/dead `bed hunger rate`; else in combat or moving (movement +0x24) 1 + (1 - e) `encumbrance hunger
-rate`; else an AI flag (AI +0x300 -> +0x70) 0.8; else CharStats +0x178 `currentOperatingMachineHungerRate`, the used BUILDING_FUNCTIONALITY `hunger rate` (chairs 0.66,
+rate`; else `CharBody::amIdle` (Character +0x650 AI -> +0x300 CharBody -> +0x70, KenshiLib 1ce4a16; set by `CharBody::update` `FUN_1405c6d20`
+while the character has no current action) 0.8 (**Verified** in game, 1.0.65, issue #134: 0.8 read for a leader standing still with no job, the
+drain 0.8/T a game hour, the HUD row `Idle: 0.80x`; knocked out 0.33); else CharStats +0x178 `currentOperatingMachineHungerRate`, the used BUILDING_FUNCTIONALITY `hunger rate` (chairs 0.66,
 sit on floor 0.75, mines and sword training 1.2; **Verified** reader; written by `Task_OperateMachine`'s set-up `FUN_14035b430` from the building's `+0x3b0`
 for every operator, real (87) or pretend (221), and set back to 1 by the task's `endAction` (Tasker slot 3, `FUN_140347350`), the only other writer of 1 found; **Verified**
 decompile)); with food: moved = min(stomach,
 dt/T x slot 0x390 x `fed recovery rate mult` x race rate). Hunger is capped at 3 before the update. The tick
 is skipped while `DAT_142134690` +0x2f0 is set (**Unknown** flag). Meitou: `MedicalContext.HungerFloor`
-(`BodySystem.HungerFloor`; no floor in a world without data); Meitou: a character standing still out of combat on a machine it works, a chair, or (an NPC worker, goals 189 / 190) at its town building's work clip takes the functionality's rate (the original keeps it until the operate task ends, so also between strokes; Meitou's tasks end with the work); idle otherwise it keeps 1 + (1 - e) rate.
+(`BodySystem.HungerFloor`; no floor in a world without data); Meitou: a character standing still out of combat on a machine it works, a chair, or (an NPC worker, goals 189 / 190) at its town building's work clip takes the functionality's rate (the original keeps it until the operate task ends, so also between strokes; Meitou's tasks end with the work); standing still out of combat with no task (`CharacterTask.Idle`, `BodySystem.AmIdle`) 0.8; standing still with
+another task 1, the +0x178 default.
+`amIdle` is written only by `CharBody::update` (`FUN_1405c6d20`, **Verified** decompile): cleared, then set when `currentAction` (CharBody +0x68, the running
+task) is null, and left alone while the character is down (`FUN_1407d1440`: dead, or the animation state's +0x59 / +0x5a), so a knock-out keeps the value from
+before it. A get-up is a task (65, queued by `FUN_1405d00b0` on waking and by the posture setter), so `amIdle` is clear during it: the factor is then the
++0x178 default 1 for a character standing still, which fits the 1.0 of the issue's first sample after waking (**Observed**; that the get-up animation does not
+count as down is not checked). Meitou: `CharacterCold.AmIdle`, refreshed only while not knocked out or dead, and false while getting up.
 
 ### Corpses
 
@@ -480,18 +572,18 @@ the zone and every neighbour within r. The camera feeds it: `FUN_140a0f590` asks
 camera focus (`DAT_142134690`, the camera object's node at `+0x30`/`+0x58`) and moves only when the focus is more than 4147.2 (0.9 x 4608) from the centre zone's middle (record `+0xf8`/`+0x100`,
 set by `FUN_140a0b950` as origin + half of 4608) on x or z (`FUN_140a0f820`). Each request (`FUN_140a0e570`) re-arms one of three per-zone timers (`+0xc0`, `+0xc4`, `+0xc8`, indexed by the caller; defaults
 4, 6 and 5 s of real time, table `0x141748740`; a caller may pass its own); `FUN_140a0b830` counts them down by the real dt and unloads the zone (`FUN_140a0a4f0`) once all are 0, so a zone left by the
-camera stays 4 s. Buildings and objects also ask for their own zones (r = 0, index 2, 1 s: `FUN_140929b20`, `FUN_14092dbb0`), and a camera jump (`FUN_140872e00`) asks for the new place at once.
-**The box (Verified**, decompile of `FUN_140a0f640`; constant `DAT_14174a100` = 340.0): every zone overlapping the box of +-340 round a point is asked for with radius r = the `Fast zone hopping` setting (`DAT_142133518`, the storage of that name registered by `FUN_1403eca90`; 1 when on, else 0) and timer index 1 (6 s). Its callers are the character frame update `FUN_1405cfd90` and the character update `FUN_1405c7b20`, each for a living character whose faction is the player's (`FUN_1407916d0`: the character's vtable `0x58` object, its faction (**Observed**), has `+0x250` set), so NPC characters ask for nothing. The unloaded platoon checks `FUN_1407ebf30` and the platoon step `FUN_1404ffad0` ask for the platoon's position on a similar faction test (**Observed**). Timer defaults (**Verified**, the floats of `0x141748740`, `...744`, `...748`): 4, 6, 5 s.
+camera stays 4 s. A Town (not Nest, NestMarker or Null) also asks for its own zone set (r = 0, timer index 2; the requester is the town, not buildings, and there is no fixed 1 s): the zone of its position plus the zone being loaded when that is within one zone on both axes, asked once at load with the 5 s default (`FUN_14092dbb0`), then every frame while its loaded flag `+0x1ac` is set (`FUN_140929b20` from the town update `FUN_140929cf0`): while any zone of the set is requested or loaded (`FUN_140a09360`: flag `+0xb0` or `+0xb1`), every zone of the set is asked again with timer index 2 *set* (not maximised, `FUN_140a0e570`) to the largest of the **index 0 and 1** timers (`+0xc0`, `+0xc4`; `FUN_140a09380` never reads `+0xc8`) among the loaded zones of the set, or to the 5 s default when that is not positive. **Verified** (decompile of `FUN_140929b20`, `FUN_140a09380`, `FUN_140a0e570`, `FUN_140a0b830`): the town only copies the camera's / player's remaining timers onto the other zones of its set, so its zones lapse together with the last of them (the zone update counts all three down and unloads at the first frame all are spent; the town's slot, a copy of that maximum, is spent in the same frame); nothing extends a zone. The 5 s default is written every frame only when no loaded zone of the set has a live index 0 or 1 timer (zones asked by the town alone), which would hold them for good; every load trigger found also covers the town's zone by the camera block or the player box (**Observed**, not provable from the code). With the last zone gone the town clears `+0x1ac` and releases its registrations (`FUN_140929b20`); `+0x1ac` is otherwise written only by the load `FUN_14092dbb0` and the null town's constructor `FUN_140934fe0`. Zones are unloaded by `FUN_140a0b830` alone, and in bulk by the world teardown (`FUN_14036c320`, `FUN_140a0c580`). So the original does **not** keep a visited town loaded until a reload (the earlier reading was wrong): it unloads about 4 s (camera) or 6 s (player box) after the last request, and the town's platoons unload with it ([persistent platoons](factions-squads-towns.md#1-object-model)). While a zone is loaded every character in it is active and updated by the world's tiers ([update budget](game-loop.md#the-character-update-budget): 8 logic ticks and 6 full updates a frame, round robin, for the unflagged, so a far character is visited every N/6 frames with its accumulated time), the original's only LOD. The town list's update (`FUN_14092d850`) runs the town step for every town each frame, and the production step for one loaded town a frame, only while `+0x1ac` is set. Meitou's town sites keep 60 s of grace instead of 4-6 s ([engine choice](../simulation.md#population)); `AskTownZones` copies the same maximum. A camera jump (`FUN_140872e00`) asks for the new place at once.
+**The box (Verified**, decompile of `FUN_140a0f640`; constant `DAT_14174a100` = 340.0): every zone overlapping the box of +-340 round a point is asked for with radius r = the `Fast zone hopping` setting (`DAT_142133518`, the storage of that name registered by `FUN_1403eca90`; 1 when on, else 0) and timer index 1 (6 s). Its callers are the character frame update `FUN_1405cfd90` and the character update `FUN_1405c7b20`, each for a living character whose faction is the player's (`FUN_1407916d0`: the character's vtable `0x58` object, its faction (**Observed**), has `+0x250` set), so NPC characters ask for nothing. The unloaded platoon's activation check `FUN_1407ebf30` asks for the platoon's position every time it runs when the platoon's faction is the player's (**Verified**; Meitou `RefreshLoaded`), and the platoon step `FUN_1404ffad0` calls it too (**Observed**); Meitou asks for every platoon of that faction, loaded or not. Timer defaults (**Verified**, the floats of `0x141748740`, `...744`, `...748`): 4, 6, 5 s.
 A corpse is removed when no request holds its zone: the camera's block 4 s after it last covered the zone, the player's box 6 s after. Corpses are not written to a zone file.
 
 **Corpses in saves**: an NPC platoon keeps its dead in its character list (the death handler `FUN_1407a6200` moves only the player's dead out, into `__DEAD_SQUAD__`). Unloading a platoon
 (`FUN_1407ef4b0`) serialises the whole list with `FUN_1404ff410` (`char count` = the list's size, dead included, **Verified**), then destroys the characters (`FUN_1404feed0`); a save writes the same
 (`FUN_140372ef0`), so a save holds the dead with the medical `dead` flag (census: 8 dead of 49 wild characters). The platoon decides its own relevance (`FUN_1404febd0`): it stays active while the zone of its
-position (the mean of its non-dead members, `FUN_1404fed50`, else the last place) is loaded or requested, and goes after 4-5 s without. A platoon whose members are all dead is declared dead
+position (`FUN_1404fed50`, **Verified**: its effective leader's ([squad leader](factions-squads-towns.md#squad-leader)) while that is not down, else the mean of its members that are not dead, a knocked-out one counting, else the last place; Meitou `PlatoonPosition`) is loaded or requested, and goes after 4-5 s without. A platoon whose members are all dead is declared dead (Meitou `Platoon.Dead`)
 (`FUN_140797090`, `persistent` off, destroyed at its next unload). The character reader restores the `dead` flag; the death clock is not saved, so a restored corpse lies 12 hours from its first update
 (**Observed**: the make-from-record loop was not read; the writer and the first-update clock are **Verified**). A corpse that decays or is unloaded is destroyed and so leaves its platoon's list.
-**Loader (partly traced)**: `FUN_140795b30` (ActivePlatoon vtable `0x1416e2e08` slot 9) reads the platoon file (`platoon/<name>`) into the record, then calls slot 6 `FUN_14036d7e0` to make the characters from it and places them (`FUN_1405ca680`); slot 6 was not read yet, so whether a dead entry is skipped is still **Unknown**. `FUN_1404ffad0` (slot 4 step) makes characters from a template only when the platoon has none (`FUN_140583a10`, "createRandomSquad"). Platoon relevance: `FUN_1404febd0` keeps it while its zone is loaded or requested and inside the zone bounds trimmed by 170 on unloaded sides (`FUN_140a09770`); timer 4 s while relevant, 5 s with no zone record, counts down by game dt otherwise; an unloaded one activates after 2 s inside a ready zone (`FUN_1407ebf30`). Meitou's squads use the same loaded zones as the corpses (below), then `UnloadGraceSeconds`; the 170 trim is not built (open).
-Meitou: `SaveCapture` writes the dead members of the squads it writes, `SavedPopulation.Spawn` makes a save's dead members as corpses where they lay (the player's `__DEAD_SQUAD__` is still not made).
+**Loader (partly traced)**: `FUN_140795b30` (ActivePlatoon vtable `0x1416e2e08` slot 9) reads the platoon file (`platoon/<name>`) into the record, then calls slot 6 `FUN_14036d7e0` to make the characters from it and places them (`FUN_1405ca680`); slot 6 was not read yet, so whether a dead entry is skipped is still **Unknown**. `FUN_1404ffad0` (slot 4 step) makes characters from a template only when the platoon has none (`FUN_140583a10`, "createRandomSquad"). Platoon relevance: `FUN_1404febd0` keeps it while its zone is loaded or requested and inside the zone bounds trimmed by 170 on unloaded sides (`FUN_140a09770`); timer 4 s while relevant, 5 s with no zone record, counts down by game dt otherwise; an unloaded one activates once its dwell runs out inside a ready zone's trimmed box ([platoons](factions-squads-towns.md), `FUN_1407ebf30`). A member carrying a player-faction character holds it too (`PopulationSystem.SquadCarriesPlayer`). Meitou's squads use the same loaded zones as the corpses (below) and must stand in the zone's trimmed box (`ZoneActivation.InLoadedBox`, `PopulationSystem.Wanted`), then `UnloadGraceSeconds` (the original's 4 s / 5 s countdown is an engine choice); the activation box (trim 170) and the stand-in stop test's box (~178.5, `PopulationSystem.StandIn`) are built (`ZoneActivation.TrimmedBox`).
+Meitou: `SaveCapture` writes the dead members of the squads it writes, `SavedPopulation.Spawn` makes a save's dead members as corpses where they lay (the player's `__DEAD_SQUAD__` is still not made). An unloading squad's dead go to `StoredSquad.Dead` (a saved platoon's member keeps its `Dead` mark and medical state) and every body is removed with the squad (`PopulationSystem.RemoveMember`); `SpawnKept` / `SavedPopulation.Spawn` make them again as corpses where they lay, not counted as living members. The corpse timer is the character's `DiedTick`.
 Meitou: `BodySystem.SlowWorld` removes by `World.LoadedZones` (`PopulationSystem.RefreshLoaded`: the camera's 3 x 3 block with the 0.9-zone recentre rule and the 4 s linger, plus the box of the
 player's characters with the 6 s linger and the Fast zone hopping ring; null before the population's first look: nothing is removed). `World.ActiveZones` is that same set, which the population's
 squads, loose items and navmesh use (Meitou's choice to use it for all three). Squad exits (`PopulationRoaming.Despawn`, a town or wild site unloading, `Store`) leave the dead lying (`RemoveMember`); before, they deleted them wherever they lay.
@@ -582,7 +674,15 @@ replaced, 3 crushed) and the fitted item (holder `FUN_1400cd3f0`; **Verified** b
   missing record is skipped, and with no entry nothing drops: no default item) and opens a wound. The item takes that bone's pose and falls from it ([collision](../formats/collision.md#item-physics)).
 - CHARACTER `starting health` (LOCATIONAL_DAMAGE, val0), applied to a new (not loaded) character (`FUN_140645ef0`, **Observed**): with
   M the part's maximum, val0 < -M makes the limb a stump (flesh 0, bandaged pool 5); else flesh = clamp(val0, -M, M) and the
-  bandaged pool M - flesh. **Verified** by probe: Rock Bottom's `Naked dude` has Left Arm -150, a left-arm stump. Meitou ignores it on non-limbs.
+  bandaged pool M - flesh. **Verified** by probe: Rock Bottom's `Naked dude` has Left Arm -150, a left-arm stump. Meitou ignores it on non-limbs. **Verified** (decompile): an arm or leg entry with val0 >= -M also becomes a stump when that limb is already not original (an earlier entry or fit changed it); a non-limb entry below -M is a stump in the original too (it writes past its 4-slot limb table, not copied; the base game has none: all 8 entries are arms or legs).
+- CHARACTER `robot limbs` (LIMB_REPLACEMENT, `fcs.def` default (50, 100)), rolled for a new character after the backpack and before
+  `clothing` (`CharacterHuman::setupInventorySections` `FUN_14062c4e0`, **Verified** by decompile and disassembly): an entry whose record
+  resolves joins the option list of limb `slot` - 50 with weight v1 (weight <= 0 dropped). v0 < 0 is a "natural limb" option; v0 >= 0 counts
+  only when the record has a `material` reference (prosthetics do, stumps do not) and `RaceLimiter::canEquip` (`races`, `races exclude`)
+  passes. Each limb with options picks one by weight (one option: no roll); a pick with v0 >= 0 is made by the item factory with level
+  override v0 and fitted (`setRobotLimbItem`, `FUN_140645690`); **Verified** in the disassembly: the call at `14062d87d` loads v0 (`14062d855`, tested for its sign) into the factory's level argument, so the item is not made at its default level. No base CHARACTER uses the list (**Verified** by probe). Which runs first,
+  this or `starting health`, is **Unknown**: `FUN_140645ef0` makes any entry on a non-natural limb a stump. Meitou: rolled in
+  `CharacterGenerator.RollRobotLimbs`, fitted in `CharacterAssembly.Attach` after `starting health`, so the prosthetic wins.
 - A stump shows the RACE `limb replacement` record whose `slot` is 50 + k (`uses_limb_replacement`); a crushed
   limb attaches no mesh. Hidden body vertices: [characters.md](../characters.md#hidden-body-parts-verified--140075600--140071f90--140531cc0-hlsl-skinhlsl).
 - Meitou in play: fitted items sit in the inventory's `*_replace` sections (the limbs window), weigh nothing, are not traded and
@@ -612,13 +712,15 @@ and a consumer that reads the same offset):
 | `walk speed`, `swim speed mult`, `swim offset`, `water avoidance` | movement; water avoidance a becomes a + 1 if a >= 0 else 1 / (1 - a) | +0x64, +0x60, +0x68, +0x6c | `FUN_140886460`, pathfinding |
 | `vision range mult` | detection range: outdoor vision range = 1500 x this ([perception.md](perception.md#sight)) | +0x74 | AI |
 | `is robot`, `swims`, `carriable`, `single gender`, `gigantic`, `vampiric`, `no hats`, `no shirts`, `no shoes`, `cant enter buildings` (stored inverted) | flags | +0x7c, +0x79, +0x7a, +0x7b, +0x78, +0x7d, +0x7e, +0x7f, +0x80, +0x9c | many |
+
+`gigantic` (race +0x78) raises the Ogre rendering distance of the character to D x 7 (`FUN_140539020` :225-228, constant 7.0, **Verified**), and the per-frame visibility pass `FUN_1405c9f60` :44-52 skips the beyond-D clear for it (see [combat](combat.md)). D is the `npc range` setting ([settings](../formats/settings.md)). Other races are also hidden when the position (feet) is farther than D from the eye (`FUN_1405c9f60`); Ogre's own test uses the bounding sphere (centre minus radius), as Meitou does. Meitou: `RaceData.GiganticDrawScale`, `CharacterInstance.DrawDistanceScale`, the far test in `CharacterRenderer`.
 | `extra attack slots` | added to CONSTANTS `max num attack slots` (1) | +0x84 | combat (`FUN_1406658c0`, ...) |
 | `self healing` | slow healing without bandaging (read per part) | per part | `FUN_14064dd10` |
 | `strength`, `dexterity` | stat multipliers (starting value and XP rate) | map entries 1, 18 | all XP code |
 | `stats good<N>`, `stats bad<N>` | x1.2 / x0.8 for the listed stat numbers | map at +0xa0 | all XP code |
 | `weather immunity<N>` | WeatherAffecting kinds ignored | set at +0xe0 | weather |
 | `special food` | extra ITEMs the race can eat | set at +0x00 | eating |
-| `vampiric` | "when eating, sucks nutrition instead of eating limbs" (editor text) | +0x7d | eating |
+| `vampiric` | "when eating, sucks nutrition instead of eating limbs" (editor text). **Verified** (`FUN_1404356f0` passes the EATER's flag to `FUN_140650370`): no part is eaten; each update d = rate x dt x 0.5 (rate as for limbs), the victim's hunger level (+0x60) loses d x 0.01 and its blood (+0x70) d x 0.07; at hunger -0.5 the eaten-pass count (death past 5) starts. Robots are untouched. Meitou: `MedicalState.BeingEaten` (no starvation death while being eaten) | +0x7d | eating |
 | `combat anatomy`, `severed limbs`, `limb replacement` | body parts, dropped limbs per slot, default prosthetics | references | see above |
 
 
@@ -631,7 +733,10 @@ and a consumer that reads the same offset):
 Saved per world only, in the save's CAMERA record (the "Key" column), never in `settings.cfg` (**Verified**, decompile: `saveGame`
 `FUN_140375360` calls the saver `FUN_1403ee910` on the globals, `loadGame` `FUN_140373f00` calls the loader `FUN_1403eef20` on them; the save list's
 preview `FUN_14047e390` reads a copy; key strings read from the exe at `1416ce7f0..1416ce810`; 6 original saves carry all ten keys, one with `ht` 8):
-- Reset (`FUN_1403e75d0`, new game) and loader start: every float 1, +0x4 0, +0x20 and +0x21 1, +0x22 0.
+- Defaults (`FUN_1403e75d0`, the struct's default setter) and loader start: every float 1, +0x4 0, +0x20 and +0x21 1, +0x22 0. **Verified** (callers of `FUN_1403e75d0`): the
+  globals get the defaults once, from the start-up initialiser `FUN_14037dce0`; the other callers (`FUN_14047b480`, `FUN_140914c40` Continue, `FUN_14047f4a0`) run it on a local copy
+  and `FUN_1403829c0` on an embedded one, and a new game (`FUN_14047c310` kind 4) does not touch the globals. So the New game window (`FUN_1409151d0` binds its sliders to the globals)
+  keeps the last edit, the import window's pick or the last loaded save's values; Meitou: `PlayerInterface.NewGameOptions`, set from the save in `SwapInSave`.
 - Without float `cod` the loader keeps those defaults and reads nothing. With it: `cod gdm ps rs bs` and bool `ep` are read
   unconditionally (a missing one would read 0 / false), `ht`, `nnm`, `bl` and bool `heal` (into +0x22) only when present. No clamping.
 - The saver writes the seven floats and `ep`, `bl`; not `heal` (also a squad-toggle key) nor +0x21. Nothing reads +0x22.
@@ -679,7 +784,7 @@ read and at least one consumer found through the data cross-references; base val
 | `fed recovery rate mult` | 3 | [4.0] | x1 | `FUN_14064da70` |
 | `bed hunger rate` | 0.33 | [0.4] | x1 | `FUN_1408837a0` |
 | `encumbrance hunger rate` | 0.7 | [0.7] | x1 | `FUN_1408837a0` |
-| `food quality mult` | 0.5 | [1.0] | x1 (stored as is; it scales a food item's `charges`. It is `food price mult`, not this field, that is multiplied by `global price mult`: [economy.md](economy.md#3-constants-price-block)) | item constructor `FUN_14075faf0` |
+| `food quality mult` | 0.5 | [1.0] | x1 (stored as is; it scales the `charges` of an ITEM of function 3 or 15 above 1 charge, raw meat included, **Verified** `FUN_14075faf0`. It is `food price mult`, not this field, that is multiplied by `global price mult`: [economy.md](economy.md#3-constants-price-block)) | item constructor `FUN_14075faf0` |
 | `exp gain multiplier` | 3 | [3.0] | x0.25 | all XP |
 | `skill diff xp 2x bonus` / `0x penalty` | 10 / 25 | [10 / 20] | x1 | `FUN_1408c5fa0` |
 | `min strength xp mult` | 0.1 | [0.05] | x1 | `FUN_1408838e0` |
@@ -707,7 +812,6 @@ read and at least one consumer found through the data cross-references; base val
 - In one #46 run (20261021-194120) perception and friendly fire read 0.7414 healthy and 0.6896 with the head at
   0.75; both fit one extra factor of about 0.614 on m: light (p0 0.25) or dust (`FUN_1406439f0`). Crossbows
   (light, no dust) would tell them apart.
-- Whether `food quality mult` scales raw food (function 15).
 - Which callers feed `FUN_1408c7250` / `FUN_1408c7310` for which activity (`DAT_142133794` is the scaled frame time, [game-loop.md](game-loop.md#the-three-time-values)), and the 0.1 floor / 6x cap of the skill-difference factor
   (not in `FUN_1408c5fa0`; maybe clamped by its callers). Meaning of XP event 6.
 - The defaults of the new-game option block (zero in the exe image).
@@ -716,9 +820,12 @@ read and at least one consumer found through the data cross-references; base val
   `FUN_14064d0e0` takes the weight into +0x38, the HP into +0x54 and a scale into +0x58, but the call arguments
   are hidden in the decompile, so the assignment is inferred from consumers and data), and the meaning of the
   character slot +0x248.
+- Why the leader of issue #134 run 20261024-172646 was down before any KO with the stomach at -20 or -40 (toughness 100, KO point -85) and stayed down after
+  the timer ran out, when the chest or head at the same depth left it up: the stage (`FUN_140644450`), collapse (`FUN_140649320`) and KO-time (`FUN_1406447d0`)
+  code read the same vital byte (part +0x32) and the same fields for both torso parts, so the decompile predicts no difference. A coma flag (+0x162) set
+  earlier in the run would do it (it stays set while any vital part is below 0, [Blood and KO](#blood-and-ko)); the run's history does not show it.
 - What the Hive Queen and Crimper (`is robot` races that eat and have blood) are meant to be in the flag semantics:
   whether `is robot` alone selects wear and robotic healing for them (it does in the part code, **Observed**).
-- Damage kinds 1, 5 and 6 passed to `FUN_140666780` / `FUN_1408c68e0`.
 
 ## Expression reference
 
@@ -733,3 +840,5 @@ read and at least one consumer found through the data cross-references; base val
 - First aid, medkits and robot repair: `h + b <= M`; `rate = lerp(1, 15, min(skill, kit quality) * 0.01) * medic speed mult (3)`, one part per update ([First aid update](#first-aid-update))
 - Encumbrance and carrying: `C = carry weight mult * strength * strengthInjuryMultiplier + encumbrance base` (strength's whole stat multiplier); `e = clamp((C - 0.05 W) / (0.95 W), 0, 1)`; `W <= C`
 - CONSTANTS used by this subsystem: `field address = 0x142133dd0 + 4 * index`
+
+**Saved `warrior spirit`** (**Verified**, decompile; no gameplay reader found, **Unknown**): the CharStats constructor `FUN_14064cb30` reads the STATS record's float `warrior spirit` into CharStats +0x13c (a missing key reads 0; 13 base STATS records carry it: 1, 10 or 20) and `FUN_14064a8f0` writes it back under that key. Meitou's save writer gives a new character the template's value, a loaded one keeps its saved value.

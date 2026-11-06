@@ -94,9 +94,8 @@ public sealed partial class PopulationSystem
         EnsureArtifacts(world);
         var list = townArtifacts![town.Site];
         if (list.Count == 0 || town.Homes.Count == 0) return;
-        int player = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
-        if (player >= 0 && town.Site < data.SiteFactions.Count && data.SiteFactions[town.Site] == player) return;
-        string? playerId = player >= 0 && player < data.Factions.Count ? data.Factions[player].Id : null;
+        if (town.Site < data.SiteFactions.Count && world.IsPlayerFaction(data.SiteFactions[town.Site])) return;
+        var playerOwned = PlayerBuildingsIn(world, town.Site);
         var site = data.Sites[town.Site];
 
         var templateOf = new Dictionary<TownBuilding, SquadTemplate>(ReferenceEqualityComparer.Instance);
@@ -105,7 +104,7 @@ public sealed partial class PopulationSystem
         var gearHomes = new List<(uint Base, TownBuilding Building)>();
         foreach (var b in site.Buildings)
         {
-            if (!b.Furnished || playerId is not null && b.OwnerFactionId == playerId || world.Fixtures.OwnsBuilding(b.Key, player) || !templateOf.TryGetValue(b, out var t)) continue;
+            if (!b.Furnished || playerOwned.Contains(b.Key) || !templateOf.TryGetValue(b, out var t)) continue;
             if (t.ItemArtifactsBaseValue != 0) itemHomes.Add(((uint)t.ItemArtifactsBaseValue, b));
             if (t.GearArtifactsBaseValue != 0) gearHomes.Add(((uint)t.GearArtifactsBaseValue, b));
         }

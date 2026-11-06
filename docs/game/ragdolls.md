@@ -22,7 +22,14 @@ the file allows).
 - PhysX call meanings (flags, damping, sleep, forces) come from NxActor/NxScene vtable slots matched
   to the published 2.8 SDK headers.
 - Stepping (`PhysicsActual::vfunc_2` `FUN_1407dd060`, background thread): `simulate(min(dt, 0.04))`
-  (0 while paused), flush, blocking fetch.
+  (0 while paused; `DAT_1416fb690` = 0.04, **Verified** from the exe's data), flush, blocking fetch. **Verified**: dt is the frame's **real** elapsed time, not scaled by the game speed:
+  `FUN_140788a00` stores it as `DAT_142133790` and hands that to the physics kick (`FUN_1403beeb0`), while the speed-scaled value (`DAT_142133794`, `DAT_142133798`) goes to characters and weather.
+  So at 2x and 5x ragdolls fall and settle at the real pace of 1x; the ragdoll's own timers (freeze after 2 to 7 s, the get-up blend) run on the scaled value (`FUN_1405b8180` passes
+  `DAT_142133794` to `FUN_1407d3c00`, the blend `FUN_1407d28e0` adds `DAT_142133798`), so at 5x they run out 5 times sooner in real time. Meitou: `RagdollPhysics.StepOf`, a tick's step is
+  tick seconds / `World.PhysicsSpeed` (the host sets the clock's speed before each tick; 1 headless), clamped to 0.04; the timers stay in game seconds. The real steps add up until they make one of 1x (engine choice: every 2nd tick at 2x, every 5th at 5x), so
+  the physics costs the same per real second at every speed; a step's cost hardly depends on its length (**Observed**, a few ragdolls 0.5 ms a tick at 1x and 5x). The buoyancy (`FUN_1407d3c00`) is an
+  acceleration handed to the actor (`+0x240`, mode 5, not multiplied by dt) that the physics step integrates, so `Buoy` uses the real step too; only the freeze timer's half speed in water
+  (`param_3` x `DAT_14167e8d8`) is on the scaled dt.
 
 ## Collision groups
 
@@ -42,7 +49,20 @@ Pairs disabled in `FUN_1407dbee0` (third argument hidden on a few calls, assumed
 | 28–31 | 0, 1, 3, 4, 14, 23–26, 6 (last pair's group assumed) |
 
 So ragdolls hit each other, items, building floors/stairs/furniture/roofs (9–22, 27), but not doors,
-foliage group 6 or passable parts.
+foliage group 6 or passable parts. A living character's only PhysX shape is its click hull in group 0, which ragdolls skip, and a ragdolled, carried or dead
+body is left out of the movement avoidance list, so it blocks no walker
+([pathfinding](pathfinding.md#bodies-in-the-way)).
+
+Meitou's building floors: **Observed** (`--load` mec-tou-nu2, a knocked-out character on The Hub's gate walkway, root 1636 over terrain 1511, per-part heights against the collision triangles at freeze):
+with the zone's building collision gathered the 13 parts end 0 below the floor (none by more than 0.3), so the group set, the shapes and the transforms are fine. When the body started while its tile
+still had ground only (the zone is gathered on a worker the first time a ragdoll moves near it, 10 ticks here), 2 parts ended up to 3.7 units under the floor. A whole body now starts only
+when every tile near it has its buildings (`RagdollPhysics.Covered`); the character animates until then.
+
+Run-time buildings (**Observed**, `--scene` staging on The Hub with a Storm House placed through `NavSystem.AddRuntimeBuilding`, collision triangles in a 80-unit box at the placement): the ragdoll's
+zone gather had no run-time placements (built, bought or ruined houses: the navmesh's `NavRuntimeBuildings` overlay) and kept a zone's result until evicted, so such a building was not there for bodies:
+609 triangles before, after adding and after removing it. Now the gatherer takes the overlay and a change drops the zone's result and bumps `IRagdollEnvironment.Generation`; a tile built at an older generation
+asks again and swaps its building mesh when the new one is ready. **Unknown**: whether this is what the player saw on town gates (a gate's own floors were fine in every warm and long run here: 0 parts under the
+floor on The Hub's gate, wall walkway, ramp and watchtower, over 2400 ticks with a tile swept and rebuilt).
 
 Meitou runtime collision (**Observed**, source review): graphical and dedicated hosts share
 `WorldContent`'s navigation overlay with `RagdollGeometry`. Its `IRagdollEnvironment.Generation`
@@ -89,12 +109,15 @@ the disassembly where the decompile hides them):
 | Death while down | on WHOLE, or CARRY_MODE if carried | `CharacterAnimal::vfunc_64` |
 | Knockout, bleed-out (blood ≤ 0 / −25) | on WHOLE | damage `FUN_14064f300` |
 | Medical tick while unconscious (`+0x161`) | on WHOLE, or CARRY_MODE if carried | `FUN_140649320` |
-| Limb below its collapse level | on with the part's `collapse part` bits, humans only, not for a robotic limb on that side | `FUN_140649870` |
+| Limb below its collapse level | on with the part's `collapse part` bits, humans only, not for a robotic limb on that side; asked when a non-vital part's h − s + rig falls under 0 (blow `FUN_14064f300`, tick `FUN_140649f50`, `FUN_140666780`) | `FUN_140649870` |
+| Leg bits with no leg crippled | off, each medical tick (so a leg between 0 and the KO point is ragdolled for one tick only: Meitou holds the bits only while a leg is down) | `FUN_140649320` |
 | Limb recovered | off for arm/leg bits no longer collapsed | `FUN_140649320` |
 | Picked up | on CARRY_MODE (replaces a queued WHOLE) | `FUN_1405ce9c0(1)` |
 | Put down / dropped | off CARRY_MODE; the medical tick then re-requests WHOLE | `FUN_1405ce9c0(0)` |
 | Get up | off WHOLE unless carried | `Task_GetUp::vfunc_1` → `FUN_1405c69f0` |
 | Furniture use, entity rebuild, destruction | release all | `FUN_140330600`, `FUN_1405b93a0`, `FUN_140799af0` |
+
+The "on" tail of `FUN_1405ce9c0` also resets the AI task system (`FUN_1405074a0`: the planned tasks are wiped, **Verified**); Meitou `CarrySystem.Link` calls `AiMind.ResetPlan`.
 
 No path from hits, knockback, stagger or explosions: a conscious character is never thrown
 ([combat](combat.md): knockback is root motion). Animals play `VO_Creature_Die` on a WHOLE request.
@@ -103,9 +126,18 @@ No path from hits, knockback, stagger or explosions: a conscious character is ne
 
 **Observed** (decompile). Posture (slot 109/110, field `+0xe0`, setter `FUN_1405c7e20`; KenshiLib 1ce4a16 `ProneState`):
 0 `PS_NORMAL`, 1 `PS_STAYING_LOW` (voluntary crawl, [below](#staying-low)), 2 `PS_CRIPPLED`, 3 `PS_PLAYING_DEAD`, 4 `PS_KO`.
-The character tick `FUN_1405d00b0` resets 2 to 0; the medical tick `FUN_140649320` (while conscious) sets
-it back to 2 when **any one** part with `collapse part` 0x10/0x20 tests down, and keeps those leg ragdoll
-bits on. So it lasts exactly while a leg is down; it does not knock out (the cut-off that takes a leg does: [character-stats](character-stats.md#cut-off-and-leg-loss)).
+The medical tick `FUN_140649320` (while conscious) sets the crippled flag (medical `+0x160` = Character `+0x5b8`, [combat](combat.md#crippled-flag)) and posture 2 when **any one** part with `collapse part` 0x10/0x20 tests down,
+and keeps those leg ragdoll bits on; the character tick `FUN_1405d00b0` sets posture 2 exactly while the flag is set (else 0, unless the character stays low). So it lasts exactly while a leg is down.
+- **Verified** (decompile of `FUN_140649320`, `FUN_140649870`, `FUN_1405c7e20`, `FUN_1405d00b0`): a leg collapse of a conscious human has **no stun and no fall clip**. The tick requests WHOLE only for the unconscious flag `+0x161`
+  (a vital part down, blood, the KO timer), and the leg bits `0x10`/`0x20` are never part of that; the posture setter writes the posture, the repertoire bit and (0 to 2) 3.0 at Character `+0x4f8`.
+  That is the medical KO timer (`MedicalSystem` at +0x458, `knockoutTimer` +0xa0, KenshiLib 1ce4a16), and the same `FUN_140649320` then sets `+0x161` for a timer above 0, so posture 0 to 2 is a
+  3 s knock-out: **Verified** in game for a leg cut off standing (issue #134, [cut-off and leg loss](character-stats.md#cut-off-and-leg-loss)); for a leg only crushed or worn below the KO point it
+  follows from the same path (**Observed**, not measured; Meitou gives that case no knock-out).
+  The body does not fall: a partial ragdoll simulates only the masked bodies, the rest follow the animation ([bodies](#bodies-kinematic-or-simulated)), and posture 2 picks the crawl clips the same tick.
+- The sever's own knock-out (`FUN_14064edc0`, a leg lost at posture 0) is overwritten by that 3 s one ([cut-off and leg loss](character-stats.md#cut-off-and-leg-loss)), then it wakes into the crawl. A character that collapses and is out cold at once is a vital part or blood knock-out in the same blow.
+- **Observed**: the first tick that sets the flag (not in furniture, not carried) also calls `FUN_1405c8330`. It acts on the AI (`Character +0x648`: its vfunc `0x60`) and the orders receiver (`+0x650 +0x20`, the same object that holds the order queue `+0x40`, [ai-tasks](ai-tasks.md)): it sets the receiver's stop flag `+0x26c`, deletes its queued tasks (`FUN_14050d1b0` on `+0x300`) and its active ones (`FUN_140507530`). So the running task, queued orders and fight go; whether the AI's goal list is also dropped is **Unknown**, and no replan is requested there (the chooser finds the task gone). Skipped when the AI's current task has the flag at task data `+0x22`: 28 Standing, 65 Get up, 147 Stumbling.
+  Meitou: `MedicalState.CollapseOnset` (set by `Tick` when a leg is down where the last update had none; the first tick after a load only learns it), taken by `BodySystem.SlowWorld` the same tick (the medical update is parallel): `OrderQueue.Clear()` and `TaskStart.End(Stopped)` (ends the task and fight, stops, asks the decision step; an NPC's AI picks again from idle). Spared: carried, in a bed or cage, stumbling or getting up (`StaggeredUntil`; Meitou has no task 28).
+- **Observed**: going from posture ≠ 0 to 0 with the crippled flag clear (a leg back up, a stun worn off) makes `FUN_1405c7e20` queue the get-up task 65 (`standing up 3`, [Getting up](#getting-up)) unless one is queued.
 - Leg test `FUN_140644450`: down when a stump or crushed (limb state 1/3), when h − s < −(base × mult ×
   scale) − wear (severed), or when h − s + b (bandage, `+0x48`; not the rig `+0x4c`) is under the KO point
   `FUN_140643ae0` (−10..−85 by toughness), not under 0. Animals (slot `0x248`, `asAnimal`) never collapse.
@@ -113,13 +145,13 @@ bits on. So it lasts exactly while a leg is down; it does not knock out (the cut
 - Posture ≠ 0 picks category 5 GROUNDED lower clips (`AnimHuman_LowerCombat` `FUN_14051fc60`); base data
   (rebirth.mod): `crawling move`, `crawl idle up` (any combat mode), `crawl idle down` (out of combat), `crawl use`.
 - Defence techniques must have `is prone` equal to posture ≠ 0 (`FUN_140887970`): a crawler has no block or
-  dodge (no prone one exists). The attack pick (`FUN_1408876d0`) applies the same test (**Observed**): a crawler
+  dodge (no prone one exists). The attack pick (`FUN_1408876d0`) applies the same test (**Verified**: disassembly 1408877d4-1408877f9 rejects burden above the maximum, then the prone mismatch, whatever the burden; the decompile prints a spurious `<` or `==` split): a crawler
   attacks only with `ground attack L/R`. Nothing in the fight code ends a crawler's fight.
 - Speed (`FUN_140886460`, **Verified**): a final override after the water and sneak caps, 5.0 crippled, 7.0 at posture 1. The crippled flag
   (medical +0x160) is set only by the medical tick, so nobody is crippled before their first one (Meitou: `Speed.Crippled`, `MedicalState.Crawling`).
 - The get-up task (65, `FUN_14033ca10` / `FUN_140334a20`, **Verified**) of a character with posture > 0 ends at
   once and sets posture 1 (voluntary crawl), which the medical tick does not turn back into 2. The planner's
-  `isTargetDown` (`FUN_14099a5a0`) counts posture ≥ 2 as down, `iAmProne` is posture ≠ 0.
+  `isTargetDown` (`FUN_14099a5a0`, **Verified**) counts as down: no target, carried, unconscious, dead, in a bed or cage, or posture ≥ 2 (a non-character target is up); `iAmProne` is posture ≠ 0. Meitou: `ProductionSystem.TargetDown` (Staying close).
 - Meitou: `HealthPart.LegDown`, `MedicalState.Crawling` (KO point cached each medical tick), `AnimationSystem.Crawl`
   (engine choices: `crawl use` replaces the medic clip; crawl legs weighed at no less than −100). The ×0.5
   sight factor for a crawler ([perception](perception.md)) is not applied to crawlers who are not sneaking.
@@ -132,21 +164,21 @@ bits on. So it lasts exactly while a leg is down; it does not knock out (the cut
   3/4 character whose AI can get up becomes 3 when `Character::isItSafeToGetUp` fails, else 1 when sneaking (`+0xd4`),
   else 0. `playerWantsMeToGetUp` (`+0xec`, set for each selected character by every player order, `FUN_1407f9e20`,
   cleared each tick) turns that into 0 (1 only from 3 while sneaking). The exe tooltip says the same: a sneaker who wakes
-  stays down and crawls. No other setter of 1 was found.
+  stays down and crawls. No other setter of 1 was found. Meitou (`PlayerState.Ordered`): every order command that names characters sets it, the job giver's orders (45, 0x111, 0xdf) excepted; the original loops over the whole selection (the flag is set before any order-specific code, `FUN_1407f9e20`:96), Meitou only over the recipients.
 - Standing (not WHOLE): crippled (vfunc 0x360) gives 2; otherwise 1 is kept, anything else becomes 0, and 1 becomes 0
   too while `_isLiterallyUnderMeleeAttackRightNowForSure` (`+0x2b0`). So the forced crawl ends a voluntary one.
-- Standing orders: run, jog, walk, group speed (0, 1, 2, 16) on a posture-1 uncrippled character set 0 instead; stealth
+- Standing orders: run, jog, walk, group speed (0, 1, 2, 16) on a posture-1 uncrippled character set 0 instead (the speed arrows do not step while anyone selected is in posture 1, **Verified** `FUN_1407f3a20`, [ui-screens](ui-screens.md)); stealth
   off (4) sets 0 and ends sneaking. A theft witness (`ImStealingDoYouNotice`) in posture 1 or 3 gets 0.
-- Effects are those of posture ≠ 0: grounded clips, prone techniques only, stealth ×2, sight ×0.5, target-score terms; run
+- Effects are those of posture ≠ 0: grounded clips, prone techniques only, stealth ×2, sight ×0.5, target-score terms; the crippled task repertoire 0x40, which the
+  posture setter `FUN_1405c7e20` sets for posture 1 and 2 only (**Verified**; [planner](ai-tasks.md#planner)); run
   speed S = 7 (5 with a leg down, [pathfinding](pathfinding.md#speed-and-orders)).
 - Stand Up (order 28, also shown for 65): `Character::addOrder` queues AI task 28 "Standing", built as `Task_UnCrouch`
-  ([ai-tasks](ai-tasks.md)): it plays `squat T` backwards and sets posture 0 once the clip is under 0.1. While getting up the
-  tick queues task 52 `GET_UP_STAY_DOWN_THOUGH` (posture 1/2) or 65 `GET_UP_STAND_UP` (posture 0).
+  ([ai-tasks](ai-tasks.md)): it plays `squat T` backwards (the start `FUN_140345fb0` and the update `FUN_140346090` issue it at rate -1, **Verified**) and sets posture 0 once the clip's progress is under 0.1 (`DAT_14167fad0`, the 0.1 of `Task_Follow`'s catch-up floor), then ends (the matching `Task_Crouch` plays it at +1 and sets the crouched stance byte once its progress passes 0.9, `FUN_140346440`: no crouch task in the base data). Meitou also acts the goals CROUCH (27) and STAND_UP (28) out for modded packages (`AiBehaviour.Crouch`): `AnimationSystem.FinishCrouch` sets `CharacterCold.Crouched` (the stance byte, `StanceOf`) when `squat T` forwards passes 0.9 and clears it under 0.1 backwards or when the goal ends. `AnimationSystem.FinishStandUp` plays the clip from its end backwards (held clip rate -1, a layer that starts backwards starts at the clip's end) and clears `StayingLow` at the 0.1 mark; with no clip, or a character that is moving, at once. While getting up the
+  tick queues task 52 `GET_UP_STAY_DOWN_THOUGH` (posture 1/2) or 65 `GET_UP_STAND_UP` (posture 0). Animals always post 65 (one branch, no posture computation, no 52). Meitou: `CharacterFacts.GetUpGoal` (derived from `GettingUpUntil` and the posture; no consumer yet).
 - The posture is not saved: neither the character writer (`FUN_1406280a0`) nor the medical writer (`FUN_14064ea50`) has a
   key for it; the health panel (`MedicalSystem::getMedicalGUIData`) shows "Staying low" for 1 and "Playing dead..." for 3.
 - Meitou: `MedicalState.StayingLow` (not saved), `MedicalState.Prone` (posture ≠ 0) read wherever posture ≠ 0 is; set on
-  waking in `CombatSystem.Act`, cleared by a leg down, a speed order, sneak off, Stand Up (`StandUpCommand`, at once: no
-  `squat T`), the melee alert (`Fighting`, `AI::underMeleeAttack`), a caught thief's watcher (`CrimeSystem.Steal`) and a
+  waking in `CombatSystem.Act`, cleared by a leg down, a speed order, sneak off, Stand Up (`StandUpCommand`, `CharacterCold.StandingUp`: `squat T` backwards, see below), the melee alert (`Fighting`, `AI::underMeleeAttack`), a caught thief's watcher (`CrimeSystem.Steal`) and a
   player order to a selected character still getting up (`PlayerSystem.WantsToGetUp`, the orders that name characters).
 
 ### Playing dead
@@ -166,7 +198,7 @@ player order gets it up (1 when sneaking), as does a thief's watcher noticing.
   event 0x18. Without the order the get-up only says 0x17 / 0x18.
 - Meitou: `MedicalState.PlayingDead` (not saved): a knockout that ends while `MedicalContext.PlayDead` is set keeps the
   character `Unconscious` (so everyone treats it as down) with no timer. The get-up line (`DialogueSystem.SeeGettingUp`) is 23 / 25 / 24 by these counts. `BodySystem.Schedule` sets it serially from the last
-  tick by `BodySystem.Senses` (enemies `CombatSystem.IsEnemyOf`, by distance within the vision range, 500 inside); a player
+  tick by the character's senses' counts (`BodySystem.Senses`, [senses](perception.md#senses)); a player
   order standing it up grants the toughness (`BodySystem.GotUpByOrder`); animals never play dead. Rechecked every 15 ticks
   (engine choice). `MedicalState.StandUp` ends it. Health header: `HudText.HealthWord`.
 
@@ -189,11 +221,25 @@ marks each bone **pinned** (kinematic, follows animation) or **simulated** and c
 | CARRY_MODE, human | both Forearms, Head | the rest (animated carried pose) |
 | CARRY_MODE, animal | all but the carry bone | carry bone |
 
+The carry bone is a skeleton bone, not a body name: its body is the one the ragdoll file attaches to that bone (**Observed**, Pet Dog: bone `Bip01`, its ragdoll body is the unnamed "Actor"). Meitou matches by bone (`RagdollSystem.Simulates`); matching the name pinned nothing and the whole dog fell to the ground under its carrier (issue #176, parity s15-f24).
+
+**Verified** (disassembly of `ScythePhysicsT::vfunc_2` `FUN_1407d4cd0`) the carried animal's pin each frame: the pinned actor (controller `+0x130`) is made kinematic and set to orientation
+carrier node rotation x the attach bone's derived rotation x its binding-pose inverse (the bone's turn from its binding pose), position the attach bone's world position
+(`FUN_1405b1c50`, the carrier's position when zero) + the bone's world rotation x the vector at controller `+0x160`. The attach (`vfunc_15` `FUN_1407d5290`) subtracts from that vector a
+per-bone vector of the carrier's `AnimationClass` (`FUN_1405b83a0`, map entry `+0x28`, zero when the bone is missing); its starting value and meaning are **Unknown**.
+Meitou (`RagdollSystem.AnimalAttach`): places the animal's node so that its carry bone's actor has exactly that pose (the actor has no rotation of its own and sits at the bone's
+binding position, [phs](../formats/phs.md); Meitou's body is its shape, placed on it), with the vector taken as zero (engine choice); the rest hangs. Headless probe (Bonedog on a
+Greenlander, issue #307): the dog's `Bip01` on the shoulder bone, its head level with it out to the carrier's left, the front paws 8 to 11 below; with the human rule it stood 6 above
+the shoulder, over the head.
+
 **Verified** (decompile of `FUN_1405b8720`, the `+0x5a` carry flag branch): a carried human keeps its animated "carry me" pose and only the two forearms and the head are simulated; every other bone,
 legs included, is pinned to the animation. The carried body's scene node is **not** moved to a ragdoll body (`FUN_1407d3c00` takes the root-body position only for WHOLE or a carried animal): the
 carry placement of [carry-loot](carry-loot.md) sets it each frame. The pick-up attach (`FUN_1405ced90`) clears the active mask (`+0x2f8` = 0) and the CARRY_MODE request then rebuilds the ragdoll from the
 animated pose; put-down / drop (`FUN_1405ce9c0(0)`) requests CARRY_MODE off, the medical tick requests WHOLE again for a still-unconscious body. Meitou: `RagdollSystem` (`Simulates`, `Rebuild`) does the
 same; the limbs that swing are the forearms and the head, so a body's upper arms and legs follow only the `carry me` clip (`play speed` 0.006: almost still).
+The animal's pinned body is matched by **bone**, not by actor name: `FUN_1405b8720` keys its pin map by the bone names it hands to `disableBone`. **Verified** (probe of the shipped
+`.phs` files): Bonedog `dog1.phs`, River Raptor, Small Spider, Spider and Skimmer name their root actor `Actor` (bone `Bip01`), and the Bonedog, River Raptor and Small Spider have no `carry bone`, so
+their root fallback `Bip01` is that actor; matched by name, nothing would be pinned and the carried body would fall off the shoulder. Meitou: `RagdollSystem.CarryBoneOf` (a bone handle).
 
 Activating a simulated body: clear kinematic, ENERGY_SLEEP_TEST, linear damping 0.05, angular 0.01,
 sleep energy threshold 5.0, wake 0.4 if asleep. No joint motors or springs are set: a "powered"
@@ -217,6 +263,26 @@ bodies zero velocity. The setter passes the character's movement velocity (Y zer
 |v|² > 100), but slot 10 never uses it (**Verified**: its register is reused after the clamp). No
 hit impulse exists. `FUN_1407d2d10` (per-limb speed caps) and `FUN_1407d2290` have no callers.
 
+Meitou ("Advanced ragdolls", Advanced settings, on; Faithful off; `BodyOptions.AdvancedRagdolls`): a new whole-body (not carried) ragdoll starts with every new body at one speed: the
+`CharacterCold.Blow` that a downing melee hit or bolt left (`CombatSystem.Knockdown`: the victim's last-tick velocity plus a push along the blow of
+0.5 x (cut + blunt + pierce) units/s, at least 12.5, uncapped, with 0.2 of it upward; executions set it too; also kept as `CharacterCold.Knockdown` for a cut-off head), else the character's last-tick velocity (a bleed-out while running). A blow's push
+is focused on the struck part (below). Bodies kept from a partial ragdoll keep their own speed; a ragdoll restored from a save starts as saved.
+
+### Advanced ragdolls (Meitou)
+
+Engine feature behind the same switch (`BodyOptions.AdvancedRagdolls`; Faithful: the original's hard limits and no pull), tuned by eye (**Unknown** against real motion):
+- **Soft limits**, every ragdoll: each limit gets an inner one 25% of its range in from either end (`SoftBand`; a spherical joint's swing cone too), a soft overdamped spring (5 Hz, ratio 3)
+  that brakes the joint before the hard stop instead of letting it hit it at full speed.
+- **Relaxed pull**, whole and carried ragdolls of an incapacitated character (not a conscious one's collapsed limbs, which hang loose): a capped `TwistServo` on each joint towards
+  60% of the way from the binding pose to the middle of a hinge's range (knees about 50 degrees, elbows about 45, hips about 24 degrees, which way **Unknown**, spine straight; a shoulder's twist to 0, its swing left to
+  gravity). Unconscious 1.5 Hz with at most 40 torque, dead 0.8 Hz with at most 12 (muscles go slack at death); the head keeps only the file's spring. Re-set when the state
+  changes (a knocked-out body dying), removed at the freeze. Gravity beats it, so it shapes the rest pose rather than holding one.
+- **Spin on impact**: a new ragdoll started by a blow (`CharacterCold.Blow`'s push) spins its upper arms along the push and its thighs against it (the feet held the ground),
+  0.15 rad/s per unit/s of push, at most 6, each limb by its own roll of 0.6 to 1.4 (`RngPurpose.RagdollSpin`).
+- **Focused push**: the struck part's LOCATIONAL_DAMAGE `bone name` (else `bone name 2`; its nearest ancestor with a body when the bone has none) names the struck body
+  (`RagdollBlow.Bone`, `RagdollSystem.Struck`). The struck body takes the whole push times the ragdoll's mass over its own (at most 4x: an impulse on it
+  alone), every other body 0.4 of it, so the body is thrown from the hit part and the joints drag the rest; no start cap (the physics holds each body to `RagdollPhysics.MaxSpeed`, 200). No bone: the whole push on every body.
+
 ## Per frame
 
 Driver `FUN_1405b8180` (AnimationClass), update `FUN_1407d3c00`:
@@ -234,18 +300,23 @@ Driver `FUN_1405b8180` (AnimationClass), update `FUN_1407d3c00`:
 - Character simulation position `+0x48` = root body position while ragdolled or carried
   (`CharacterAnimal::vfunc_28` via `FUN_1407d16f0`): looting, carrying and AI distances use it.
 
+## Water state of a ragdolled body
+
+**Verified** (decompile, `FUN_1405d00b0` Character::threadedUpdatePeriodic, `FUN_1405c7fd0`): every update, a ragdolled or carried character whose movement position differs from the body position (Character `+0x48`) casts a ray straight down from the body (raised by a constant) against the physics world; a hit above 0 is stored as the stand height `+0x698` (a miss keeps the last) and the body position is pushed into the movement. `FUN_1405c7fd0` reads `+0x698` for the water state (ground + 2 at or under the water level 100: 15 x size deep, 6 x size waist) and a carried body follows its carrier. Ray mask: `0x7de04` outdoors (location type 0xb) or when the building test passes (groups 2 terrain, 9-12 floors, 14 walkable foliage, 15-18 stairs), else `0x7f9e00` (groups 9-12 and 15-22: no terrain or foliage, furniture 19-22 included); ragdoll bodies (groups 28-31) collide with neither 6 nor 14. Meitou: `RagdollSystem.StandOn` takes the ragdoll environment's ground height (terrain or the building floor near the body) as the probe, `CharacterCold.StandHeight`, and sets `WaterState` for a non-carried whole-body ragdoll; the carried body's state is its carrier's in `WeatherSystem`. **Observed**: the two masks are folded into `IRagdollEnvironment.GroundHeight`; walkable foliage is not probed.
+
 ## Sleep and limits
 
 Freeze = every body put to sleep and updates skipped (`FUN_1407d1f70`), WHOLE only:
 - after 2 s of ragdoll, within the next 5 s when ≥ 60% of bodies sleep; after 5 s a downward ray
   from 20 above the node against groups 2, 9–12, 15–22 (mask 0x7f9e04) decides (`FUN_1407d2440`);
-- at once when the terrain tile under it is not loaded (`FUN_1405b8180`).
+- at once when the terrain tile under it is not loaded (`FUN_1405b8180`). `FUN_1405d2c30` drains the character's animation request queue and then calls `FUN_1405b8180` (**Verified**; the earlier note that this is the AI task manager was wrong). Meitou: a whole ragdoll whose root is outside `World.ActiveZones` freezes at once (`RagdollSystem`).
 
 The frozen flag clears when a body wakes (`FUN_1407d2050`). `FUN_1407d4270` (reset timers, wake all
 with 0.4) runs when bone flags are applied and when a frozen ragdoll is carried. A root
 more than 200 below the terrain is lifted to it and frozen (`FUN_1407d4470`). Global flag
 `DAT_1421349c9` (the paused flag, [game-loop](game-loop.md#speed-and-pause)) disables freezing and buoyancy. No distance LOD or ragdoll count cap was found
-(`DAT_142133080` is a live-actor counter only).
+(`DAT_142133080` is a live-actor counter only). Meitou (engine choice, `RagdollSystem.LimbReach`): a collapsed limb of a character still up dangles only
+within 300 units of the camera (330 once dangling); farther it follows the animation. Headless runs (no camera) dangle at any distance.
 
 ## Getting up
 
@@ -256,7 +327,20 @@ more than 200 below the terrain is lifted to it and frozen (`FUN_1407d4470`). Gl
 - `FUN_1407d36e0` → `FUN_1407d3130`: heading = root→`Bip01 Head` direction flattened to the ground
   (rotation from +Z); each bone blends from its ragdoll pose to the clip's first key over 0.75 s
   (`FUN_1407d28e0`: nlerp rotation, lerp translation), then the bones return to animation.
-- The task ends when the clip passes 0.86, or at once when crawling.
+- The task ends (**Verified** decompile of `FUN_140334a20`) once the ragdoll blend object (AnimationClass `+0x2f0`) is absent or its blending
+  flag (`+0x61`, `FUN_1407d1400`) is clear, and either the task's posture flag (`+0x78`, set at the start from posture > 0) is set or the clip
+  passed 0.86. So a waker staying low or crawling (tasks 52) is let go when the 0.75 s blend ends, at once without one; posture 0 (65) stands
+  through the clip. Its end clears `+0x278` (getting up) and sets the posture (vfunc 0x370).
+- Also run when a crawler's leg comes back up (posture 2 to 0, `FUN_1405c7e20`; **Observed**): no ragdoll, so no blend, and the character stands through `standing up 3` (clip past 0.86). Meitou: `CombatSystem.Act` holds it
+  (`GetUpClipSeconds`) and `AnimationSystem` plays the clip (`CharacterAnimation.WasCrawling`); posture 1 to 0 (Stand Up) does the same since the setter queues 65 for every return to posture 0 (**Verified**, `FUN_1405c7e20`, `FUN_14033ca10` plays the clip whatever the posture) Checked offscreen in `--sandbox`: leg 80 below the KO point crawls the next tick, a heal 2 s later plays `standing up 3`.
+- Events 23 / 24 / 25 fire from this start only when the posture flag is clear (**Verified**, `FUN_14033ca10`): a wake into posture 1 or 3 fires nothing, the later stand-up (posture 1 to 0) and a crawler's leg coming back (2 to 0) do. Meitou: `DialogueSystem.SeeGettingUp` remembers a character that is not standing (out cold, staying low, crawling) and fires when it stands.
+- The start (when it found a clip) copies the character's position into the Hold point (CharStats `+0x130`, **Verified** `FUN_14033ca10`).
+- Meitou (`CombatSystem.Act`): a waker staying low or crawling is held `RagdollSystem.GetUpBlend` after a whole-body ragdoll, else not at all,
+  and plays no standing-up clip (`AnimationSystem`); the Hold point is moved where it wakes while Hold is on.
+- Meitou hold (`CombatSystem.Act`, measured headless): a posture-0 waker is held `GetUpClipSeconds` (clip length x 0.86 / play speed; `standing up 3` is 8.67 s at speed 1, so 7.45 s)
+  plus `GetUpBlend` only when it wakes out of a whole-body ragdoll (the same test that starts the clip at -0.75 s in `AnimationSystem`), so the hold ends on the tick the played clip passes 0.86.
+  The earlier constant added the blend with no ragdoll, 23 ticks past the clip. The posture flag `+0x78` is no animation event: `FUN_14033ca10` sets it from the posture (> 0) at the start, so a posture-0 waker is released only by the clip. **Observed** in `--sandbox` (a real ragdoll KO of the hero, the full load order, whose `standing up 3` plays at about 4x): the earlier constant held 246 ticks while the clip ended at 65, a 181-tick gap; now the hold is 78 ticks and a move order at wake+150 takes effect within 5 ticks. One carried or waking in a bed plays no clip (engine choice) and is not held. **Unknown**: whether the original
+  runs Task_GetUp for a waker in a bed or carried (the start returns at once when a state at `+0x2f8` is set, meaning not decoded).
 
 ## Saves
 
@@ -269,7 +353,7 @@ human frozen after 61 ticks): save → load gives the same 13 body poses (offset
 
 ## Unknowns
 
-- Meaning of groups 0, 1, 2, 7, 28–31 and the terrain's group.
+- Meaning of groups 1, 2, 7, 28–31 and the terrain's group (0: the click hulls, [combat](combat.md#line-of-fire-and-the-hit-shape)).
 - Exact condition of character slot 103 (group 4) and the downward-ray branch of `FUN_1407d2440`.
 - Which body is the root (RagdollAnimation `+0x48` key); likely the pelvis.
 - `FUN_1405ce9c0`'s branch for Character `+0x388` 1 / 0x5b (calls `FUN_1405b4fa0` on put-down).

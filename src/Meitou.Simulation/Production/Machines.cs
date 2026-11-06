@@ -76,6 +76,11 @@ public sealed class CraftState
     public string? Bound { get; set; }
     /// <summary>Critical rolls made so far, the roll counter.</summary>
     public int Rolls { get; set; }
+    /// <summary>
+    /// The levels of ingredients no section holds now (the original's item-to-level map, <b>Verified</b> <c>FUN_1402bb470</c>): a recipe switch stores each section's level under its item and a section
+    /// taking an item gets its level back; saved as <c>craft partial item ...</c>. Only levels above 0 are kept.
+    /// </summary>
+    public Dictionary<string, float> Partial { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -101,10 +106,40 @@ public sealed class Machine
     public float CropMatch { get; set; } = 1;
     /// <summary>A farm's water draw per second: <c>consumption rate</c> / G x the biome's <c>farm water usage</c>.</summary>
     public float WaterRate { get; set; }
-    /// <summary>Production status: 2 working, 1 output full, 0 idle (<b>Observed</b>, <c>+0x468</c>).</summary>
+    /// <summary>
+    /// Production status (<c>+0x468</c>, docs/game/buildings-production.md "Blocked output"): 2 ready or working (a producer starts there), 1 output full (blocked: the planner's states 63 / 64
+    /// read it), 0 nothing to work with. Not saved (the original saves no such key). Hashed.
+    /// </summary>
     public byte Status { get; set; }
+
+    /// <summary>
+    /// <c>machineHasEmptyInputs</c> (slot 149 <c>FUN_140298b70</c>, <b>Verified</b>): some rated input holds no item and its level is spent (0.001 or less).
+    /// </summary>
+    public bool HasEmptyInputs
+    {
+        get
+        {
+            foreach (var input in Inputs)
+                if (input.Rate > 0 && input.Count == 0 && input.Level <= 0.001f) return true;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// <c>isMachineOutputFull</c>, the output half of <c>isMachineJammed</c> (slot 175, <c>FUN_140296fb0</c>, <b>Verified</b>): a production machine with an output whose status is 1. Farms,
+    /// benches and storages have variants of their own that Meitou does not evaluate (false).
+    /// </summary>
+    public bool OutputBlocked => Status == 1 && Output is not null && Farm is null && Craft is null && !Data.IsStorage;
+
+    /// <summary><c>isMachineJammed</c> (<c>FUN_1405a2e60</c>, <b>Verified</b>): an empty input, else a blocked output.</summary>
+    public bool Jammed => HasEmptyInputs || OutputBlocked;
     /// <summary>Characters working it this tick (derived; not saved, not hashed).</summary>
     public int Operators { get; set; }
+    /// <summary>
+    /// The character that last worked a crafting bench: the exe's operator hand (building <c>+0x4d0</c>, written by each operator's tick in <c>FUN_1402b5a40</c> and never cleared), which the
+    /// Craft tab's Current Smith reads. Derived; not saved, not hashed (the original's handle is not saved either).
+    /// </summary>
+    public CharacterId Smith { get; set; } = CharacterId.None;
     /// <summary>Operators last tick: what a consumer's draw is scaled by (the grid runs after the operators, so its result applies one tick later).</summary>
     public int LastOperators { get; set; }
     /// <summary>The power factor its work is scaled by: granted / demand for a consumer (1 with no demand); health is <see cref="Health"/> (docs/game/buildings-production.md "Power").</summary>
@@ -154,6 +189,8 @@ public sealed class Machine
     public float ProductionMult { get; set; } = 1;
     /// <summary>A wind generator's share of its output: its blade's <see cref="Meitou.Data.World.RotorSpec.WindShare"/> of the wind at the site (derived each tick; not saved, not hashed).</summary>
     public float Wind { get; set; }
+    /// <summary>The wind range of the rotor this placement spawned (<see cref="Meitou.Data.World.WorldObjectLayout.WindRotor"/>; derived at creation, not saved); null: the share is 0.</summary>
+    public (float Min, float Max)? WindRotor { get; init; }
     /// <summary>A wind generator's wind speed at the site (units/s) and its rated output (data + research), for its panel; derived each tick.</summary>
     public float WindSpeed { get; set; }
     public float WindRated { get; set; }
@@ -179,12 +216,6 @@ public sealed class Machine
     /// <summary>An item furnace's grid metal (<see cref="ProductionSystem.FurnaceMetal"/>), for its panel; derived each tick, not saved, not hashed.</summary>
     public float Metal { get; set; }
 
-    /// <summary>A consuming input has neither stock nor more than the residual tolerance (Observed: upstream Machines.cs).</summary>
-    public bool HasEmptyInputs => Array.Exists(Inputs, input => input.Rate > 0 && input.Count == 0 && input.Level <= 0.001f);
-    /// <summary>The producer reports a full output; farms, crafting benches and storages have their own blocking rules.</summary>
-    public bool OutputBlocked => Status == 1 && Output is not null && Farm is null && Craft is null && !Data.IsStorage;
-    public bool Jammed => HasEmptyInputs || OutputBlocked;
-
     internal void Hash(ref StateHasher h)
     {
         h.Add(Rng.StableHash(Site));
@@ -207,6 +238,10 @@ public sealed class Machine
             h.Add(c.Queue.Count); h.Add(c.Repeat ? 1 : 0); h.Add(c.Done.Count);
             foreach (var j in c.Queue) { h.Add(Rng.StableHash(j.Option.Key)); h.Add(j.Progress); h.Add(j.Critical); }
             foreach (var d in c.Done) { h.Add(Rng.StableHash(d.Record)); h.Add(d.Quantity); h.Add(d.Quality); }
+            // Remembered levels of items no section holds (the held ones are in Inputs), sorted: a loaded map also lists the held ones.
+            if (c.Partial.Count > 0)
+                foreach (var (item, level) in c.Partial.OrderBy(p => p.Key, StringComparer.Ordinal))
+                    if (!Inputs.Any(i => i.Item == item)) { h.Add(Rng.StableHash(item)); h.Add(level); }
         }
     }
 }

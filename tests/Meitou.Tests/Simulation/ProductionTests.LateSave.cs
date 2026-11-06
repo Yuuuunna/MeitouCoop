@@ -18,7 +18,7 @@ public partial class ProductionTests
     static (PopulationData Data, TownBuilding House) LateMachineData()
     {
         var db = Database(); var definitions = new FcsFile();
-        var player = Rec("player", FcsRecordType.FACTION, "Nameless");
+        var player = Rec("204-gamedata.base", FcsRecordType.FACTION, "Nameless");
         var owner = Rec("owner", FcsRecordType.FACTION, "Owner");
         var town = Rec("town", FcsRecordType.TOWN, "Town");
         town.Ints["type"] = 2; town.References["faction"] = [new("owner", 0, 0, 0)];

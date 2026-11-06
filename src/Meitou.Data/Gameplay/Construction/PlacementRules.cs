@@ -34,30 +34,25 @@ public static class PlacementRules
     /// <summary>The block radius multiple of a building that creates a player town: 2.5 of the town's radius, 1 for ruins and points of interest.</summary>
     public const float OutpostRadiusFactor = 2.5f;
 
-    /// <summary>The base radius of a town by kind, before <c>town radius mult</c> (<b>Verified</b>, <c>FUN_140926d50</c>): town 2500, village 937.5, ruins 875, point of interest 437.5, others 1250.</summary>
-    public static float BaseRadius(TownType type) => type switch
-    {
-        TownType.Town => 2500,
-        TownType.Village => 937.5f,
-        TownType.Ruins => 875,
-        TownType.PointOfInterest => 437.5f,
-        _ => 1250,
-    };
-
     /// <summary>
-    /// The town block of docs/game/buildings-production.md "Placement" (Towns): a town of another faction blocks within its radius (<see cref="BaseRadius"/> x <c>town radius mult</c>);
-    /// a building that creates a player town within 2.5 x that radius (1 x for ruins and points of interest) or <see cref="OutpostMinimumDistance"/> of the centre. Towns of the
-    /// player's faction never block. <see cref="PlacementFailure.NotOwnedBuilding"/> (the second text of the first row) is the host's: it needs the building under the ghost.
+    /// The town block of docs/game/buildings-production.md "Placement" (Towns): a town of another faction blocks within its radius (<see cref="TownData.Radius"/>, 0 for a null town
+    /// which then blocks only outposts); a building that creates a player town within 2.5 x that radius (1 x for ruins and points of interest) or <see cref="OutpostMinimumDistance"/>
+    /// of the centre. Nest markers (never a candidate, <c>FUN_140927f10</c>) and towns of the player's faction never block, nor does any town for interior furniture or a node
+    /// standing in a building it may be built in (<paramref name="inOwnedBuilding"/>, <see cref="MayBuildIn"/>; <c>FUN_1404dba40</c>). <see cref="PlacementFailure.NotOwnedBuilding"/>
+    /// (the second text of the first row) is the host's: it needs the building under the ghost.
     /// </summary>
-    public static PlacementFailure TownBlock(BuildingBuildData building, Vector2 at, IReadOnlyList<PlacementTown> towns, string playerFactionId)
+    public static PlacementFailure TownBlock(BuildingBuildData building, Vector2 at, IReadOnlyList<PlacementTown> towns, string playerFactionId, bool inOwnedBuilding = false)
     {
         ArgumentNullException.ThrowIfNull(building);
         ArgumentNullException.ThrowIfNull(towns);
+        if (inOwnedBuilding && (building.IsInteriorFurniture || building.IsNode)) return PlacementFailure.None;
+
         foreach (var placed in towns)
         {
             var town = placed.Town;
+            if (town.Type == TownType.NestMarker) continue;
             if (playerFactionId.Length > 0 && town.Faction == playerFactionId) continue;
-            float radius = BaseRadius(town.Type) * town.TownRadiusMult;
+            float radius = town.Radius;
             float limit = radius;
             if (building.CreatesPlayerTown)
             {
@@ -67,6 +62,16 @@ public static class PlacementRules
             if (Vector2.DistanceSquared(at, placed.Position) < limit * limit) return PlacementFailure.TooCloseToTown;
         }
         return PlacementFailure.None;
+    }
+
+    /// <summary>
+    /// Whether a ghost may stand in a level building (<b>Verified</b> by decompile, <c>FUN_1404d69c0</c>): one a player faction owns; else, for a ghost that does not create a
+    /// player town, a ruin or one whose owner faction is <c>not real</c> (a building without an owner has "nofac", which is).
+    /// </summary>
+    public static bool MayBuildIn(BuildingBuildData building, bool playerOwned, bool destroyed, bool ownerNotReal)
+    {
+        ArgumentNullException.ThrowIfNull(building);
+        return playerOwned || !building.CreatesPlayerTown && (destroyed || ownerNotReal);
     }
 
     /// <summary>The resource value or crop yield below which a mine or farm is refused (<b>Verified</b>, docs/game/buildings-production.md "Placement").</summary>
@@ -83,8 +88,8 @@ public static class PlacementRules
         if (machine is null || !field.HasMap) return null;
         if (machine.Farm is { } farm)
         {
-            float fertility = farm.FertilityFactor(farm.Indoor ? 1 : Math.Clamp(field.Value(MachineData.GroundResource, at.X, at.Y, at.Z), 0, 1));
-            return new(MachineData.GroundResource, fertility, fertility * field.CropMatch(farm, at.X, at.Z), farm.Indoor ? [] : Environment(field.Coverage(at.X, at.Z)));
+            float fertility = farm.FertilityFactor(Math.Clamp(field.Value(MachineData.GroundResource, at.X, at.Y, at.Z), 0, 1));
+            return new(MachineData.GroundResource, fertility, fertility * field.CropMatch(farm, at.X, at.Z, farm.Indoor), farm.Indoor ? [] : Environment(field.Coverage(at.X, at.Z)));
         }
         if (machine.Resource == 0 || machine.Function == MachineData.NaturalMineFunction) return null;
         if (!field.HasNodes && machine.Resource is ResourceField.IronResource or ResourceField.CopperResource or ResourceField.CarbonResource) return null;

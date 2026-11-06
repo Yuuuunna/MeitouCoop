@@ -29,12 +29,13 @@ public sealed partial class LockSystem
                 && (access.Command.Issuer is not { } issuer || access.Membership != 0 && world.Players.Find(issuer)?.MembershipRevision(c.Faction) == access.Membership)
                 && (access.Fixture is not { } fixture || ReferenceEquals(world.Fixtures.Find(fixture.Id), fixture) && fixture.Owner == access.Owner && world.Fixtures.RevisionOf(fixture) == access.FixtureRevision)
                 && (access.TargetCold is null || table.TryResolveNext(access.Target, out int target) && ReferenceEquals(table.Cold(target), access.TargetCold) && access.TargetCold.Faction == access.TargetFaction);
+            if (valid && access.Command is DoorLockOrder && !MayManageDoor(world, access.Command, access.Owner)) valid = false;
             if (!valid)
             {
                 ClearWork(c); c.Bashing = null; c.BashOrdered = false;
                 doorWalkers.Remove(actor); workAccess.Remove(actor);
             }
-            else if (c.PickingLock is null && c.Shackles is null && c.ForcingLock is null && c.Freeing.IsNone && c.EnteringCage is null && !c.BashOrdered && !doorWalkers.ContainsKey(actor)) workAccess.Remove(actor);
+            else if (c.PickingLock is null && c.Shackles is null && c.ForcingLock is null && c.DoorJob is null && c.Freeing.IsNone && c.EnteringCage is null && !c.BashOrdered && !doorWalkers.ContainsKey(actor)) workAccess.Remove(actor);
         }
     }
 }

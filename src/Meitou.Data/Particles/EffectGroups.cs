@@ -201,7 +201,10 @@ public sealed partial class EffectUnit
         }
     }
 
-    /// <summary>Presentation fade at the edge of the active range.</summary>
+    /// <summary>
+    /// How much of the unit is shown by its distance (Meitou, <c>ParticleRenderer.RangeFade</c>): 1 out to 85 % of the distance it is simulated within, falling
+    /// to 0 at that distance, so it is out of sight when it starts being simulated (a cloud of its whole age at once) and when it stops (all its particles gone).
+    /// </summary>
     public float RangeFade { get; set; } = 1;
 
     public void Activate()
@@ -226,7 +229,7 @@ public sealed partial class EffectUnit
         }
         sim.WorldOffset = Anchor;
         sim.Origin = local;
-        sim.Orientation = Orientation;
+        sim.Orientation = Orientation;   // a steered burst turns with what it follows (ParticleRenderer.MoveBurst)
         sim.EmissionStopped = Stopped;
         float left = Pending;
         Pending = 0;
@@ -707,7 +710,7 @@ public sealed class GlobalPointEffectGroup : EffectGroup
 }
 
 /// <summary>
-/// The map-feature placers (docs/formats/weather.md "Effect placers on the map"): effects that belong to a hidden MAP_FEATURES record and are
+/// The map-feature placers (docs/formats/zones.md): effects that belong to a MAP_FEATURES record (hidden or not) and are
 /// always on, at fixed places. Not a weather group: they are made once from <c>features.dat</c> (<see cref="MapEffectPlacers"/>) and live as
 /// static POINT effects (Observed: the game's handler lives <c>min..max time to live</c> and is made again; the viewer keeps it).
 /// A unit is simulated while the camera is within <see cref="EffectWorld.ActiveRadius"/> plus the effect's <c>maximum view distance</c> of it.
@@ -751,6 +754,8 @@ public sealed class BurstEffectGroup(PuSystemDef system, int seed, EffectWorld w
 {
     public void Clear() => units.Clear();
     /// <summary>A unit at <paramref name="position"/>, turned by <paramref name="orientation"/>, emitting for <paramref name="seconds"/>, its particles <paramref name="size"/> times as big and <paramref name="lifeScale"/> times as long-lived.</summary>
+    /// <param name="recolour">A colour the particles take in place of their texture's hue: kept as a negative tint, which the renderer's fragment program reads as that.</param>
+    /// <returns>The unit, which its owner may move while it emits (its particles stay in the world where they were thrown).</returns>
     public EffectUnit Spawn(Vector3 position, Quaternion orientation, float seconds, float size, float lifeScale, Vector3? recolour = null)
     {
         var u = NewUnit(position);

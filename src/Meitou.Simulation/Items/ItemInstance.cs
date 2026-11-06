@@ -23,7 +23,7 @@ public sealed class ItemInstance
     public string[] WornNeverBy { get; init; } = [];
     /// <summary>Whether a character of the RACE <paramref name="race"/> may wear it (null: no wearer, no limit).</summary>
     public bool WearableBy(string? race, bool animal = false) => Wearable(WornOnlyBy, WornNeverBy, race, animal);
-    internal static bool Wearable(string[] only, string[] never, string? race, bool animal = false) => race is null || (only.Length == 0 ? !animal && !never.Contains(race) : only.Contains(race));
+    internal static bool Wearable(string[] only, string[] never, string? race, bool animal = false) => Meitou.Data.Gameplay.RaceLimiter.Allows(only, never, race, animal);
     /// <summary>Shackles' lock (level = ARMOUR <c>lock level</c> clamped 0..100, its <c>hardness</c>, locked when made: <c>FUN_14089a440</c>); null for other items.</summary>
     public Locks.LockState? Lock { get; set; }
     /// <summary>Worn and effectively locked: the item cannot be taken off, sold or moved (LockedArmour's tooltip: "locked in place and cannot be removed").</summary>
@@ -52,6 +52,14 @@ public sealed class ItemInstance
         set => buyback = value;
     }
     public int Level { get; set; }
+    /// <summary>
+    /// The level the original's item vfunc 0x2b8 reports, which its item price (<c>FUN_1407a8f90</c>) takes as the quality and its grade colour reads (<b>Verified</b>, vtables): a
+    /// gear piece's (weapon, armour, crossbow, robotic limb) <see cref="Level"/> (<c>Gear+0x224</c>), 0 for any other item (plain, map, nest, money, blueprint, severed limb, backpack).
+    /// </summary>
+    public int GearLevel => GearLevelOf(Type, Level);
+    /// <summary><see cref="GearLevel"/> for an item of <paramref name="type"/> at <paramref name="level"/>.</summary>
+    public static int GearLevelOf(FcsRecordType type, int level) =>
+        type is FcsRecordType.WEAPON or FcsRecordType.ARMOUR or FcsRecordType.CROSSBOW or FcsRecordType.LIMB_REPLACEMENT ? level : 0;
     /// <summary>The name of the smith who crafted the item at a bench (the save key <c>crafter</c>; empty: not crafted by the player's smith). The tooltip prints it with the player faction's name.</summary>
     public string Crafter { get; set; } = "";
     /// <summary>The faction whose uniform the piece is (the save key <c>uniform</c>, the faction record id; empty: none): armour with one sells and buys at 0.3 of its price (<c>Armour+0x1e8</c>, <c>FUN_1408a9c20</c>, <b>Verified</b>).</summary>
@@ -95,10 +103,22 @@ public sealed class ItemInstance
     public int StackLimit { get; init; } = 1;
     public bool IsFood { get; init; }
     /// <summary>
-    /// The faction the item was stolen from (-1: none), the item's "taken from" owner of docs/game/carry-loot.md 4.4 reduced to its faction: set when the player's looting is a theft
-    /// (<see cref="Carrying.CarrySystem"/>). The item counts as stolen while its holder is of another faction (<see cref="IsStolenFor"/>).
+    /// The faction the item was stolen from (-1: none), the faction of the item's "taken from" owner (docs/game/carry-loot.md 4.4): set when the player's looting is a theft
+    /// (<see cref="Carrying.CarrySystem"/>). The item counts as stolen while its holder is of another faction (<see cref="IsStolenFor"/>). Setting it alone leaves no owner
+    /// character (a container's or the ground's mark); <see cref="Mark"/> sets both.
     /// </summary>
-    public int StolenFrom { get; set; } = -1;
+    public int StolenFrom { get => Mark.Faction; set => Mark = StolenMark.OfFaction(value); }
+    /// <summary>
+    /// The whole stolen mark: <see cref="StolenFrom"/> with the robbed character and its squad (the original's owner handle <c>ownedby</c>, item +0x140, whose container ids name the
+    /// character's platoon). The fence rules test the owner's squad (docs/game/economy.md "Fencing, stealing and smuggling").
+    /// </summary>
+    public StolenMark Mark { get; set; } = StolenMark.None;
+    /// <summary>The character the item was stolen from (<see cref="CharacterId.None"/>: none known).</summary>
+    public CharacterId Owner => Mark.Owner;
+    /// <summary>The squad <see cref="Owner"/> was in when robbed (-1: none known).</summary>
+    public int OwnerSquad => Mark.Squad;
+    /// <summary>The <c>ownedby</c> of <see cref="Saved"/> became <see cref="Owner"/> at load, so a save writes it from the mark (the null handle once the mark is cleared). Not hashed.</summary>
+    internal bool OwnerFromSave { get; set; }
     /// <summary>
     /// One of its owner's CHARACTER / ANIMAL_CHARACTER <c>death items</c> (the save's <c>death</c>, docs/game/animals.md "Death items"): a live owner's own food search skips it, taking
     /// it from a live owner that is down butchers the owner, and it stops being one when it leaves the owner's inventory. Its stack does not merge with ordinary units.
@@ -121,11 +141,14 @@ public sealed class ItemInstance
     {
         Record = Record, Name = Name, Type = Type, EquipmentSection = EquipmentSection, IsLocked = IsLocked, WornOnlyBy = WornOnlyBy, WornNeverBy = WornNeverBy, MaterialId = MaterialId, CompanyId = CompanyId, Section = Section, X = X, Y = Y, Quantity = quantity, Level = Level, Crafter = Crafter, Uniform = Uniform, ColourId = ColourId,
         ItemFunction = ItemFunction, Quality = Quality, Charges = Charges, MaxCharges = MaxCharges, Width = Width, Height = Height, UnitWeight = baseWeight, DynamicWeight = DynamicWeight, StackLimit = StackLimit,
-        IsFood = IsFood, ContentsFactor = ContentsFactor, StolenFrom = StolenFrom, Death = Death, Unique = Unique, Buyback = Buyback?.Take(quantity),
+        IsFood = IsFood, ContentsFactor = ContentsFactor, Mark = Mark, Death = Death, Unique = Unique, Buyback = Buyback?.Take(quantity),
     };
 
-    /// <summary>Whether the item is stolen while held by a character of <paramref name="holderFaction"/> (carry-loot.md 4.4: the from-owner is set and of another faction).</summary>
-    public bool IsStolenFor(int holderFaction) => StolenFrom >= 0 && StolenFrom != holderFaction;
+    /// <summary>
+    /// Whether the item is stolen while held by a character of <paramref name="holderFaction"/> (<c>FUN_14079e550</c>, <b>Verified</b>: the from-owner is set and of another faction, and the holder's faction is not
+    /// lawless: <c>not real</c> or BANDIT). <paramref name="data"/> null: no lawless test.
+    /// </summary>
+    public bool IsStolenFor(int holderFaction, PopulationData? data) => StolenFrom >= 0 && StolenFrom != holderFaction && data?.IsLawless(holderFaction) != true;
 
     /// <summary>The weight this item and what is in it add to the load.</summary>
     public float Weight => UnitWeight * Quantity + (Contents?.ContentWeight() ?? 0) * ContentsFactor;
@@ -138,4 +161,17 @@ public sealed class ItemInstance
 
     /// <summary>The hunger levels eating the item gives: <see cref="Charges"/> / 100.</summary>
     public float Nutrition => IsFood ? Charges / 100f : 0;
+}
+
+/// <summary>
+/// An item's stolen mark (<see cref="ItemInstance.Mark"/>): the faction it was stolen from (-1: not stolen), and when known the robbed character and its squad (the save's <c>ownedby</c>
+/// handle). Stacks merge only with the same mark.
+/// </summary>
+public readonly record struct StolenMark(int Faction, CharacterId Owner, int Squad)
+{
+    public static readonly StolenMark None = new(-1, CharacterId.None, -1);
+    /// <summary>A mark naming only a faction (-1: none).</summary>
+    public static StolenMark OfFaction(int faction) => new(faction, CharacterId.None, -1);
+    /// <summary>The mark of an item taken from <paramref name="victim"/> (id <paramref name="id"/>): its faction, itself and its squad.</summary>
+    public static StolenMark Of(CharacterCold victim, CharacterId id) => new(victim.Faction, id, victim.SquadId);
 }

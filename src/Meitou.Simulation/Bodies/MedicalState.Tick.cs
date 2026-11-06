@@ -92,9 +92,13 @@ public sealed partial class MedicalState
     /// them, scaled by 0.01 and set to 1 above 0.999. need = max(0.5 x (1 - worst), 1 - worst vital); the blood term (1 - blood / capacity) x max(0, bleeding - 1.5 x <paramref name="extraBloodLoss"/>) x 10
     /// replaces it for the race's own kind of kit when larger and above 0.2. So 0 for a patient with everything bandaged.
     /// </summary>
-    public float FirstAidNeed(RaceData race, bool robotKit, float capacity, float extraBloodLoss)
+    public float FirstAidNeed(RaceData race, bool robotKit, float capacity, float extraBloodLoss) =>
+        FirstAidNeeds(race, capacity, extraBloodLoss) is var (organic, robot) && robotKit ? robot : organic;
+
+    /// <summary>Both of <see cref="FirstAidNeed"/>'s scores from one walk of the parts: the organic kit's and the robot kit's.</summary>
+    public (float Organic, float Robot) FirstAidNeeds(RaceData race, float capacity, float extraBloodLoss)
     {
-        if (Dead) return -0.1f;
+        if (Dead) return (-0.1f, -0.1f);
         float vitalOrganic = 100, anyOrganic = 100, vitalRobot = 100, anyRobot = 100;
         foreach (var p in parts)
         {
@@ -116,7 +120,7 @@ public sealed partial class MedicalState
         float robot = MathF.Max((2f - (Scaled(anyRobot) + 1f)) * 0.5f, 2f - (Scaled(vitalRobot) + 1f));
         if (!race.IsRobot && organic < blood && blood > 0.2) organic = blood;
         if (race.IsRobot && robot < blood && blood > 0.2) robot = blood;
-        return robotKit ? robot : organic;
+        return (organic, robot);
     }
 
     /// <summary>The need above which a patient counts as needing first aid (<c>0.01</c>, the quick right click's and the medic finders' floor, <b>Verified</b>: <c>DAT_141682ad8</c>).</summary>
@@ -174,8 +178,8 @@ public sealed partial class MedicalState
     /// <summary>
     /// Steps the character by <paramref name="dt"/> seconds of character time (real seconds x game speed, <c>FUN_140652000</c> and what it calls; docs/game/character-stats.md
     /// "Time"): every part degenerates or heals itself, heals, is repaired and recovers from stun; wounds clot and blood runs out or recovers; hunger falls or is refilled from
-    /// the stomach (by the game clock, in hours); the KO timer counts down; blood loss, starvation and destroyed vital parts kill. Events go to <paramref name="events"/> if given.
-    /// A dead character is not stepped.
+    /// the stomach (by the game clock, in hours); the KO timer counts down; blood loss, starvation and destroyed vital parts kill. The part, blood and KO-timer rates run on
+    /// dt + <see cref="MedicalContext.BudgetSeconds"/> (the medical time), hunger on dt. Events go to <paramref name="events"/> if given. A dead character is not stepped.
     /// </summary>
     public void Tick(float dt, in MedicalContext ctx, List<MedicalEvent>? events = null)
     {
@@ -185,15 +189,15 @@ public sealed partial class MedicalState
         var race = ctx.Race;
         float chance = ctx.Options.ChanceOfDeath;
         float hours = dt * GameHoursPerSecond;
+        float medicalTime = dt + MathF.Max(0, ctx.BudgetSeconds);
         LegKoPoint = KoPoint(c, ctx.Toughness);
-        bool standing = Standing;   // the posture of the last update: a leg that goes down in the loop below still counts from a standing start
 
         // Part healing rates. In a bed (kinds 6 and 0x19) degeneration is 0 and the bed scales the organic or the robotic rate; state 2 doubles the organic rate (HealMult).
         float degMult = ctx.Bed != BedKind.None ? 0 : DegenerationMult(c, ctx.Toughness);
         float organic = race.HealRate * (ctx.Bed == BedKind.Bed ? ctx.BedFactor : 1) * ctx.HealMult;
         float robotic = race.HealRate * (ctx.Bed == BedKind.RepairBed ? ctx.BedFactor : 1);
         bool conscious = !Unconscious;
-        float dtb = dt * ctx.BodyTimeScale;
+        float dtb = medicalTime * ctx.BodyTimeScale;
 
         for (int i = 0; i < Parts.Count && !Dead; i++)
         {
@@ -235,16 +239,20 @@ public sealed partial class MedicalState
             if (p.Rig > 0) p.Rig = MathF.Max(0, MathF.Min(p.Rig, 50 - (p.Flesh - p.Stun)));
             if (p.Stun > 0) p.Stun = MathF.Max(0, p.Stun - dtb * 0.05f * c.StunRecoveryRate * c.HealRateMult * r);
 
-            CheckPart(i, ctx, events, inHitPath: false, standing);
+            CheckPart(i, ctx, events, inHitPath: false);
         }
         if (Dead) return;
 
         TickBlood(dtb, ctx);
         TickHunger(hours, ctx);
+        bool freshStump = HasFreshStump;
+        if (freshStump) BloodKo = true;
         CheckBlood(ctx, events);
         if (Dead) return;
+        LegCollapse(events);   // after the blood rule, as after a blow: the posture's 3 s is the timer a leg going down leaves
 
-        if (Hunger <= 0) { Die(DeathCause.Starvation, events); return; }
+        // Not while being eaten: a vampiric meal drains the hunger level to -0.5 before it kills (whether the original's own update lets it pass 0 is Unknown).
+        if (Hunger <= 0 && EatenCountdown <= 0) { Die(DeathCause.Starvation, events); return; }
 
         // Starvation passes the character out below a toughness-dependent point; after waking, a grace period (game hours) keeps it from happening at once.
         starveGrace = MathF.Max(0, starveGrace - hours);
@@ -260,15 +268,17 @@ public sealed partial class MedicalState
 
         if (Unconscious)
         {
-            KoTimer -= dt;
-            // Blood under 0 keeps an unconscious character out (reassessCollapseMode); the blood-KO flag only lowers the conscious threshold to -25 (CheckBlood).
-            if (KoTimer <= 0 && !vitalDown && Blood >= 0 && ctx.PlayDead)
+            KoTimer -= medicalTime;
+            // Blood under 0 keeps an unconscious character out (reassessCollapseMode), under -25 with a fresh stump; the blood-KO flag otherwise only lowers the
+            // conscious threshold to -25 (CheckBlood).
+            bool bloodOk = Blood >= (freshStump ? -25 : 0);
+            if (KoTimer <= 0 && !vitalDown && bloodOk && ctx.PlayDead)
             {
                 // Awake but not safe to get up: it lies on, playing dead (posture 3), until it is (docs/game/ragdolls.md "Playing dead").
                 KoTimer = 0;
                 PlayingDead = true;
             }
-            else if (KoTimer <= 0 && !vitalDown && Blood >= 0)
+            else if (KoTimer <= 0 && !vitalDown && bloodOk)
             {
                 Unconscious = false;
                 PlayingDead = false;
@@ -281,6 +291,10 @@ public sealed partial class MedicalState
                 events?.Add(new MedicalEvent(MedicalEventKind.WokeUp));
             }
         }
+        bool legsDown = LegsDown;
+        if (legsDown && legsWereDown == 0) CollapseOnset = true;
+        legsWereDown = legsDown ? 1 : 0;
+        posture = Standing ? PostureState.Normal : PostureState.Other;
     }
 
     /// <summary>
@@ -308,9 +322,13 @@ public sealed partial class MedicalState
         }
         wounds.Clear();
         Bleeding = 0;
-        Blood = MathF.Min(Capacity(ctx), Blood + c.BloodRecoveryRate * seconds * ctx.Race.HealRate * c.RestingHealRateMult);
-        if (Blood > 25) BloodKo = false;
-        if (Unconscious && !VitalPartsKeepDown(KoPoint(c, ctx.Toughness)) && Blood >= 0)
+        float cap = Capacity(ctx);
+        if (Blood < cap)
+        {
+            Blood = MathF.Min(cap, Blood + c.BloodRecoveryRate * seconds * ctx.Race.HealRate * c.RestingHealRateMult);
+            if (Blood > 25) BloodKo = false;
+        }
+        if (Unconscious && !VitalPartsKeepDown(KoPoint(c, ctx.Toughness)) && Blood >= WakeBloodFloor)
         {
             Unconscious = false;
             PlayingDead = false;
@@ -344,8 +362,11 @@ public sealed partial class MedicalState
         Blood -= Bleeding * dt;
         float cap = Capacity(ctx);
         Blood = MathF.Min(Blood, cap);
-        if (Bleeding <= 0 && Blood < cap)
-            Blood = MathF.Min(cap, Blood + c.BloodRecoveryRate * dt * race.HealRate * (ctx.Resting ? c.RestingHealRateMult : 1));
+        if (Blood >= cap) return;
+        if (Bleeding <= 0) Blood = MathF.Min(cap, Blood + c.BloodRecoveryRate * dt * race.HealRate * (ctx.Resting ? c.RestingHealRateMult : 1));
+
+        // The blood-loss trauma flag clears only here, on a tick that found blood below capacity, even while bleeding (medicalUpdate FUN_140652000).
+        if (Blood > 25) BloodKo = false;
     }
 
     /// <summary>
@@ -362,7 +383,7 @@ public sealed partial class MedicalState
         if (t <= 0) return;
         if (Fed <= 0)
         {
-            float situation = HungerSituationFactor(c, ctx.Resting || Unconscious, ctx.UsingMachine, ctx.EncumbranceFactor, ctx.UseHungerRate);
+            float situation = HungerSituationFactor(c, ctx.Resting || Unconscious, ctx.Still, ctx.Idle, ctx.EncumbranceFactor, ctx.UseHungerRate);
             Hunger -= hours / t * ctx.Race.HungerRate * situation;
         }
         else

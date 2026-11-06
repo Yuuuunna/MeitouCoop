@@ -14,9 +14,10 @@ namespace Meitou.Game;
 sealed partial class GameHost
 {
     object? buildingsWorld;
-    long buildingsRevision = -1;
+    long buildingsRevision = -1, nestBuildingsRevision = -1;
     // What the overlays were last told, by instance id.
     readonly Dictionary<string, BuildingSnapshot> shownBuildings = new(StringComparer.Ordinal);
+    readonly HashSet<string> shownNestMeshes = new(StringComparer.Ordinal);
     readonly HashSet<string> litBuildings = new(StringComparer.Ordinal), effectBuildings = new(StringComparer.Ordinal);
     readonly Dictionary<string, float> constructionLook = new(StringComparer.Ordinal);
     Dictionary<string, BuildingBuildData>? buildData;
@@ -35,10 +36,14 @@ sealed partial class GameHost
             buildingsWorld = session.WorldIdentity;
         }
         var snapshot = session.CurrentSnapshot;
-        if (snapshot.BuildingsRevision != buildingsRevision)
+        UpdateRuins(snapshot);
+        UpdateEmptiedHouses(snapshot);
+        if (snapshot.BuildingsRevision != buildingsRevision || snapshot.NestBuildingsRevision != nestBuildingsRevision)
         {
             DiffBuildings(snapshot);
+            if (snapshot.NestBuildingsRevision != nestBuildingsRevision) DiffNestMeshes(snapshot);
             buildingsRevision = snapshot.BuildingsRevision;
+            nestBuildingsRevision = snapshot.NestBuildingsRevision;
         }
         UpdateCorpseFlies();
         // A lit building's lamps burn at its power share (granted / demand, 1 for one that draws nothing): dark without supply (docs/formats/lights.md "When a light is on").
@@ -73,7 +78,8 @@ sealed partial class GameHost
     {
         var current = new Dictionary<string, BuildingSnapshot>(StringComparer.Ordinal);
         foreach (var site in snapshot.Buildings)
-            if (site.LevelPlacement is null || !site.Destroyed) current[site.Id] = site;
+            if (site.LevelPlacement is not { } level || !site.Destroyed || !LevelDestroyed(level)) current[site.Id] = site;   // a ruin the level already draws as one needs no overlay
+        foreach (var site in snapshot.NestBuildings) current[site.Id] = site;   // the loaded nests' buildings, complete
         foreach (string id in shownBuildings.Keys.Where(id => !current.ContainsKey(id)).ToArray())
         {
             ActiveObjects?.RemoveRuntime(id);
@@ -99,6 +105,28 @@ sealed partial class GameHost
             shownBuildings[site.Id] = site;
         }
     }
+
+    /// <summary>The standing camps' debris meshes (<see cref="WorldSnapshot.NestMeshes"/>) as runtime item placements, by place: the ones gone are taken out, the new ones put in.</summary>
+    void DiffNestMeshes(WorldSnapshot snapshot)
+    {
+        var current = new Dictionary<string, Meitou.Simulation.NestMesh>(StringComparer.Ordinal);
+        foreach (var m in snapshot.NestMeshes) current.TryAdd(NestMeshId(m), m);
+        foreach (string id in shownNestMeshes.Where(id => !current.ContainsKey(id)).ToArray())
+        {
+            ActiveObjects?.RemoveRuntime(id);
+            shownNestMeshes.Remove(id);
+        }
+        foreach (var (id, m) in current)
+        {
+            if (!shownNestMeshes.Add(id)) continue;
+            var rotation = System.Numerics.Quaternion.CreateFromAxisAngle(System.Numerics.Vector3.UnitY, m.Yaw);
+            ActiveObjects?.AddRuntime(new BuildingPlacement(WorldLayout.ZoneOf(m.Position.X, m.Position.Z), id, m.Record, m.Position, rotation, null, m.Position.Y)
+                { Key = id, ItemMesh = m.Mesh, ItemScale = m.Scale });
+        }
+    }
+
+    static string NestMeshId(Meitou.Simulation.NestMesh m) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"nestmesh:{m.Mesh}@{m.Position.X:F1},{m.Position.Z:F1}");
 
     /// <summary>
     /// A building's lamps are lit while it is complete (docs/game/buildings-production.md "Construction tick": completing switches its lights on). Placed the way the world's
@@ -158,10 +186,14 @@ sealed partial class GameHost
         litBuildings.Clear();
         levelOwners = null;
         ForgetGroundItems();
+        ForgetRuins();
+        ForgetEmptiedHouses();
         ForgetFarms();
         shownBuildings.Clear();
         constructionLook.Clear();
         buildingsRevision = -1;
+        nestBuildingsRevision = -1;
+        shownNestMeshes.Clear();
         if (ActiveObjects is { } objects) objects.Construction = null;
     }
 
@@ -176,7 +208,8 @@ sealed partial class GameHost
         var parts = new Dictionary<string, IReadOnlyList<Meitou.Data.World.PlacedMesh>>(StringComparer.Ordinal);
         var icons = new Meitou.Data.Gameplay.Construction.BuildingIcons(Path.Combine(install.DataDirectory, "icons", "buildings"));
         IReadOnlyList<Meitou.Data.Gameplay.Construction.PlacementTown>? towns = null;
-        Dictionary<(Meitou.Data.World.ZoneCoordinate, string), (string Town, string? Owner)>? townOf = null;
+        // Per level building of a town: the town, its owner's name and where it sits in the town's buildings (a relaid one takes the same place).
+        Dictionary<(Meitou.Data.World.ZoneCoordinate, string), (string Town, string? Owner, int Site, int Index)>? townOf = null;
         var pickable = new Dictionary<string, bool>(StringComparer.Ordinal);
         // Resource and node buildings are not selectable objects (TownBuildings leaves them out too).
         bool Pickable(string record) => pickable.TryGetValue(record, out bool known) ? known
@@ -215,17 +248,20 @@ sealed partial class GameHost
                 Ground = ActiveGround,
                 Footprint = footprints.Of,
                 CollisionMesh = footprints.Mesh,
+                CollisionFile = footprints.File,
                 Plot = footprints.Plot,
+                PartBounds = footprints.PartBounds,
+                LinkedAround = (centre, radius) => footprints.LinkedAround(centre, radius, (x, z) => ActiveGround((float)x, (float)z)),
                 StaticAround = footprints.StaticAround,
                 StaticAlong = (origin, direction, length) => footprints.Along(origin, direction, length).Where(b => Pickable(b.Placement.BuildingId)),
                 // The movement pick's floors up to the viewed one: the build window's floor arrows choose the floor the ghost stands on.
                 FloorAlong = (origin, direction, length) => gpu.Objects?.FloorHit(origin, direction, viewedFloor, length) is { } hit
-                    ? (hit.Position, GhostFloorOf(hit.Room, hit.Room.FloorAt(hit.Position)) with { Ceiling = hit.Room.CeilingAbove(hit.Position) }) : null,
+                    ? (hit.Position, GhostFloorOf(hit.Room, hit.Room.FloorAt(hit.Position)) with { Ceiling = hit.Room.CeilingAbove(hit.Position), Normal = hit.Room.FloorNormal(hit.Position, viewedFloor, FloorSurfaces.RayStart) }) : null,
                 Readout = Readout,
             },
             WorldInfo = placement =>
             {
-                var (zone, instance, record) = (placement.Zone, placement.InstanceId, placement.BuildingId);
+                var (zone, instance) = (placement.Zone, placement.InstanceId);
                 if (townOf is null && popData is { } d)
                 {
                     townOf = [];
@@ -233,25 +269,24 @@ sealed partial class GameHost
                     {
                         // A building whose state names no owner belongs to its town's faction (the original re-owns a town's buildings to it).
                         string? townOwner = site.Index < d.SiteFactions.Count && d.SiteFactions[site.Index] is >= 0 and var townFaction && townFaction < d.Factions.Count ? d.Factions[townFaction].Name : null;
-                        foreach (var b in site.Buildings)
-                            townOf[(b.Zone, b.InstanceId)] = (site.Town.Name, b.OwnerFactionId is { } id ? d.Factions.FirstOrDefault(f => f.Id == id)?.Name ?? townOwner : townOwner);
+                        for (int i = 0; i < site.Buildings.Count; i++)
+                        {
+                            var b = site.Buildings[i];
+                            string? buildingOwner = b.OwnerFactionId is { } id ? d.Factions.FirstOrDefault(f => f.Id == id)?.Name ?? townOwner : townOwner;
+                            townOf[(b.Zone, b.InstanceId)] = (site.Town.Name, buildingOwner, site.Index, i);
+                        }
                     }
                 }
-                string recordName = db.Find(record)?.Name ?? record;
                 var levels = scene.Objects?.Levels;
                 var state = levels is not null && placement.StateId is { } stateId && levels.Zones.TryGetValue(zone, out var zoneDb) ? zoneDb.Find(stateId) : null;
-                // The squad template that runs it names a special building ("The Dancing Skeleton") and, for a trader, lists what it sells.
-                var squad = state?.GetString("squad template") is { Length: > 0 } squadId ? db.Find(squadId) : null;
-                string name = squad?.GetString("building name") is { Length: > 0 } squadName ? squadName
-                    : state?.GetString("name") is { Length: > 0 } own ? own : recordName;
-                string? type = name != recordName ? recordName : null;
-                // A shop whose state only carries its layout's generic name ("Shop", "Big Shop"): the Meitou UI calls it after what it sells.
-                string? sells = squad is { } s && s.GetBool("is trader") && state?.GetString("interior layout name") is { } layout && layout.Contains("Shop", StringComparison.Ordinal) && name == layout
-                    && s.GetReferences("vendors").FirstOrDefault().TargetStringId is { } vendor && db.Find(vendor)?.Name is { Length: > 0 } list
-                    ? char.ToUpperInvariant(list[0]) + list[1..] : null;
-                var (town, owner) = townOf is not null && townOf.TryGetValue((zone, instance), out var info) ? (info.Town, info.Owner) : (null, null);
-                return new(name, type, town, owner, state?.GetBool("is public day") ?? false, state?.GetBool("is public night") ?? false, sells,
-                    placement.DestroyedOverride ?? state?.GetBool("destroyed") ?? false);
+                var info = townOf is not null && townOf.TryGetValue((zone, instance), out var found) ? found : default((string Town, string? Owner, int Site, int Index)?);
+                var building = info is { } at && popData is { } live && at.Site < live.Sites.Count && at.Index < live.Sites[at.Site].Buildings.Count
+                    ? live.Sites[at.Site].Buildings[at.Index] : null;
+                var saved = (session as Meitou.Engine.WorldSession)?.World.Fixtures.Saved?.GetValueOrDefault(placement.Key);
+                var (name, type) = WorldBuildingName(db, placement, state, saved, building?.Key == placement.Key ? building : null);
+                var (town, owner) = info is { } t ? (t.Town, t.Owner) : (null, null);
+                return new(name, type, town, owner, state?.GetBool("is public day") ?? false, state?.GetBool("is public night") ?? false,
+                    shownRuins.TryGetValue(placement.Key, out var ruin) ? ruin.Destroyed : placement.DestroyedOverride ?? state?.GetBool("destroyed") ?? false);
             },
             Towns = () => towns ??= popData is { } d ? [.. d.Sites.Select(s => new Meitou.Data.Gameplay.Construction.PlacementTown(s.Town, new(s.Position.X, s.Position.Z)))] : [],
             PlayerFactionId = () => session.DescribeFaction(session.ActiveFaction)?.RecordId ?? "",
@@ -259,29 +294,55 @@ sealed partial class GameHost
         };
     }
 
-    // A level building's instance id and owning faction id (its state's owner, else its town's faction), by placement key; made on first use.
-    Dictionary<string, (string Instance, string? Owner)>? levelOwners;
+    /// <summary>
+    /// A world building's name and its <c>Type:</c> (the record's name when that differs), as the game names it in both UI modes: read from the naming a town override's
+    /// housing gave <paramref name="building"/>, else <paramref name="saved"/>, a loaded save's state, else <paramref name="state"/>, the level state the boot's housing
+    /// named (ResidentRuins).
+    /// </summary>
+    static (string Name, string? Type) WorldBuildingName(Meitou.Data.GameDatabase db, BuildingPlacement placement,
+        Meitou.Data.GameRecord? state, Meitou.Data.Fcs.FcsRecord? saved, TownBuilding? building)
+    {
+        string StateText(string key) => building?.Naming is { } naming && key is ResidentRuins.NameKey or ResidentRuins.SquadTemplateKey
+            ? key == ResidentRuins.NameKey ? naming.Name : naming.SquadTemplate
+            : saved is not null && saved.Strings.TryGetValue(key, out var text) ? text : state?.GetString(key) ?? "";
+        string recordName = db.Find(placement.BuildingId)?.Name ?? placement.BuildingId;
+
+        // The squad template that runs it names a special building ("The Dancing Skeleton").
+        var squad = StateText(ResidentRuins.SquadTemplateKey) is { Length: > 0 } squadId ? db.Find(squadId) : null;
+        string name = squad?.GetString("building name") is { Length: > 0 } squadName ? squadName
+            : StateText(ResidentRuins.NameKey) is { Length: > 0 } own ? own : recordName;
+        return (name, name != recordName ? recordName : null);
+    }
+
+    // A level building's instance id, owning faction id (its state's owner, else its town's faction) and town building, by placement key; made on first use.
+    Dictionary<string, (string Instance, string? Owner, TownBuilding Building)>? levelOwners;
 
     /// <summary>
-    /// The floor a ghost stands on in <paramref name="room"/>: a player site's, else a level building's with whether the player's faction owns it. A repaired town house is
-    /// shown as a site but stays a level building, so what is built in it names the level instance as its parent (as in any owned town building).
+    /// The floor a ghost stands on in <paramref name="room"/>: a player site's, else a level building's with what <c>PlacementRules.MayBuildIn</c> reads (whether the player's
+    /// faction owns it, whether it is a ruin, whether its owner is <c>not real</c>). A repaired town house is shown as a site but stays a level building, so what is built in it
+    /// names the level instance as its parent (as in any owned town building). A level building of no town has no owner: the original's "nofac", which is not real.
     /// </summary>
     GhostFloor GhostFloorOf(InteriorVolume room, int floor)
     {
         if (shownBuildings.TryGetValue(room.PlacementId, out var shown) && shown.LevelPlacement is null)
             return new(room.PlacementId, room.Footprint, floor, Owned: shown.Owner == session.ActiveFaction);
-        if (levelOwners is null && popData is { } d)
+        if (levelOwners is null && popData is { } data)
         {
             levelOwners = new(StringComparer.Ordinal);
-            foreach (var site in d.Sites)
+            foreach (var site in data.Sites)
             {
-                string? townOwner = site.Index < d.SiteFactions.Count && d.SiteFactions[site.Index] is >= 0 and var f && f < d.Factions.Count ? d.Factions[f].Id : null;
-                foreach (var b in site.Buildings) levelOwners[b.Key] = (b.InstanceId, b.OwnerFactionId ?? townOwner);
+                string? owner = site.Index < data.SiteFactions.Count && data.SiteFactions[site.Index] is >= 0 and var faction && faction < data.Factions.Count ? data.Factions[faction].Id : null;
+                foreach (var b in site.Buildings) levelOwners[b.Key] = (b.InstanceId, b.OwnerFactionId ?? owner, b);
             }
         }
-        string player = popData is { } p && p.PlayerFaction is >= 0 and var mine && mine < p.Factions.Count ? p.Factions[mine].Id : "";
-        return levelOwners?.TryGetValue(room.PlacementId, out var level) == true
-            ? new(room.PlacementId, room.Footprint, floor, room.PlacementId, session.CurrentSnapshot.OwnedTownBuildings.Contains(room.PlacementId) || player.Length > 0 && level.Owner == player)
-            : new(room.PlacementId, room.Footprint, floor, room.PlacementId);
+        bool owned = session.CurrentSnapshot.OwnedTownBuildings.Contains(room.PlacementId);
+        string? player = session.DescribeFaction(session.ActiveFaction)?.RecordId;
+        if (levelOwners?.TryGetValue(room.PlacementId, out var level) != true)
+            return new(room.PlacementId, room.Footprint, floor, room.PlacementId, owned) { OwnerNotReal = true };
+        return new(room.PlacementId, room.Footprint, floor, room.PlacementId, owned || player is not null && level.Owner == player)
+        {
+            Destroyed = shownRuins.TryGetValue(room.PlacementId, out var ruin) ? ruin.Destroyed : level.Building.Destroyed,
+            OwnerNotReal = level.Owner is not { } levelOwner || popData?.Factions.FirstOrDefault(f => f.Id == levelOwner) is not { NotReal: false },
+        };
     }
 }

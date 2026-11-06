@@ -17,7 +17,8 @@ public static class FcsReader
 
     public static FcsFile ReadFile(string path)
     {
-        using var stream = File.OpenRead(path);
+        // A large buffer: the reader takes a few bytes at a time, and a mod list is hundreds of megabytes.
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, FileOptions.SequentialScan);
         return Read(stream);
     }
 
@@ -141,7 +142,9 @@ public static class FcsReader
 
     static void ReadMap<T>(BinaryReader r, OrderedDictionary<string, T> map, Func<BinaryReader, T> readValue)
     {
-        for (int n = ReadCount(r); n > 0; n--)
+        int count = ReadCount(r);
+        map.EnsureCapacity(count);   // grown once: a heavy mod list's hundreds of thousands of maps grew by doubling, garbage that held the loading up in collections
+        for (int n = count; n > 0; n--)
         {
             long at = r.BaseStream.Position;
             var key = ReadString(r);
@@ -163,8 +166,9 @@ public static class FcsReader
     {
         int length = ReadCount(r);
         if (length == 0) return "";
-        var bytes = r.ReadBytes(length);
-        if (bytes.Length != length) throw new EndOfStreamException();
+        // Most are short keys and names: read on the stack rather than into an array each (BinaryReader reads no further than asked, so the stream is where it left off).
+        Span<byte> bytes = length <= 1024 ? stackalloc byte[length] : new byte[length];
+        r.BaseStream.ReadExactly(bytes);
         if (r is FcsBinaryReader { Lossless: true }) return LosslessUtf8.GetString(bytes);
         try { return Encoding.GetString(bytes); }
         catch (DecoderFallbackException e) { throw new FcsFormatException("String is not valid UTF-8.", r.BaseStream.Position - length, e); }

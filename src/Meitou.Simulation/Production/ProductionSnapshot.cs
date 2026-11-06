@@ -57,6 +57,16 @@ public sealed record CraftView(IReadOnlyList<(string Key, string Name, float Pro
 /// <summary>Something a bench can craft, with its hours and inputs per item, and whether research and the bench level allow it now.</summary>
 public sealed record CraftOptionView(string Key, string Name, CraftKind Kind, int Level, float Hours, IReadOnlyList<(string Name, float PerItem)> Inputs, bool Unlocked);
 
+/// <summary>
+/// What a bench's current smith would make of one queued craft (<c>FUN_1402bcf60</c>): <paramref name="Quality"/> the armour or crossbow quality (5 to 95; -1 for the other kinds); for a
+/// weapon <paramref name="Model"/> the predicted model's name (null for the other kinds), <paramref name="ModelChanged"/> when it differs from the queued one and
+/// <paramref name="MaterialCost"/> the weapon's <c>material cost</c>; <paramref name="Critical"/> the shown critical chance in percent (-1: no row).
+/// </summary>
+public readonly record struct CraftPrediction(int Quality, string? Model, bool ModelChanged, int MaterialCost, int Critical);
+
+/// <summary>A crafting bench's current smith (<see cref="Machine.Smith"/>): his name, his effective level of the bench's stat, the stat multiplier's penalty in percent (0: none) and the prediction per queued craft.</summary>
+public sealed record CraftSmithView(string Name, int Skill, int Penalty, IReadOnlyList<CraftPrediction> Entries);
+
 /// <summary>A machine's power as the host shows it: a consumer's demand and grant, a generator's output and load, a battery's flow and store (docs/game/buildings-production.md "Power").</summary>
 public enum PowerKind : byte { Consumer, Generator, Battery }
 
@@ -98,6 +108,8 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
     public bool Operable { get; init; }
     /// <summary>An automatic machine: works unattended; its menu order is Auto-Haul (152) instead of Use.</summary>
     public bool IsAutomatic { get; init; }
+    /// <summary><see cref="Machine.HasEmptyInputs"/>: with status 0 the panel reads Out of resource.</summary>
+    public bool InputsEmpty { get; init; }
     /// <summary>A storage (a "Hauling to" job can name it).</summary>
     public bool IsStorage { get; init; }
     /// <summary>Its BUILDING_FUNCTIONALITY <c>function</c> (-1: none; 12 a turret, 14 a furnace).</summary>
@@ -149,7 +161,7 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
             ? new FarmView(f.Growth, f.Death, f.Harvested, f.Plants.Length, f.Status, m.Yield, m.CropMatch, ProductionSystem.Ripeness(f)) { PlantGrowth = [.. f.Plants] } : null;
         // The classes that update their emitter every frame tell it the efficiency and the power; the others powered it once, when built, with no operators (efficiency 0).
         var sound = m.Data.PowersEmitterEachFrame ? new MachineSound(m.Efficiency, m.HasPower && m.Efficiency > 0) : new MachineSound(0, true);
-        return new MachineSnapshot(m.Site, m.Data.Id, inputs, output, storage, farm, m.Status, m.Operators, m.Data.MaxOperators) { Sound = sound, Rotation = m.Rotation, Wind = m.Data.IsWind ? new WindView(m.Wind, m.WindSpeed, m.Data.WindRotor, m.WindRated, m.PowerOn) : null, TechLevel = m.Data.IsResearch ? m.Data.TechLevel : 0, Operable = m.Data.Operable, IsAutomatic = m.Data.IsAutomatic, IsStorage = m.Data.IsStorage, Function = m.Data.Function, StorageLimitName = m.Data.StorageLimit is [var only] ? Name(only) : null, StorageCapacity = m.Data.StorageLimit is [_] ? (int)m.Data.StackBonusMult : 0, Craft = Crafting(m, items),
+        return new MachineSnapshot(m.Site, m.Data.Id, inputs, output, storage, farm, m.Status, m.Operators, m.Data.MaxOperators) { Sound = sound, Rotation = m.Rotation, Wind = m.Data.IsWind ? new WindView(m.Wind, m.WindSpeed, m.WindRotor, m.WindRated, m.PowerOn) : null, TechLevel = m.Data.IsResearch ? m.Data.TechLevel : 0, Operable = m.Data.Operable, IsAutomatic = m.Data.IsAutomatic, InputsEmpty = m.HasEmptyInputs, IsStorage = m.Data.IsStorage, Function = m.Data.Function, StorageLimitName = m.Data.StorageLimit is [var only] ? Name(only) : null, StorageCapacity = m.Data.StorageLimit is [_] ? (int)m.Data.StackBonusMult : 0, Craft = Crafting(m, items),
             Power = m.Data.IsConsumer || m.Data.IsGenerator || m.Data.IsBattery ? new PowerView(m.Data.IsBattery ? PowerKind.Battery : m.Data.IsGenerator ? PowerKind.Generator : PowerKind.Consumer, m.Demand, m.Granted, m.Usage, m.Charge, m.Store, m.Inputs.Length == 0 || Array.Exists(m.Inputs, i => i.Level > 0 || i.Count > 0), m.PowerOn, m.GetsBattery) { OnGrid = m.OnGrid, GridCharging = m.GridCharging, GridDraining = m.GridDraining } : null,
             Panel = PanelOf(m.Data), OutputValue = m.Data.OutputValue, Research = m.ProductionMult, Broken = m.Broken, Hydroponic = m.Data.Farm is { Indoor: true },
             Furnace = m.Data.IsFurnace ? new FurnaceView(m.Burning, m.Metal) : null,
@@ -185,7 +197,7 @@ public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyLi
 {
     /// <summary>How many researches have been finished (counting repeats): the host plays the notification when it grows.</summary>
     public int Finished { get; init; }
-    /// <summary>The researches finished at least once and those whose requirements are met (a blueprint's tooltip state, <c>FUN_1407ab430</c>).</summary>
+    /// <summary>The researches finished at least once and those whose requirements are met strictly, as a blueprint learns them (a blueprint's tooltip state, <c>FUN_1407ab430</c>).</summary>
     public IReadOnlySet<string> Known { get; init; } = new HashSet<string>();
     public IReadOnlySet<string> RequirementsMet { get; init; } = new HashSet<string>();
     public static ResearchSnapshot Empty { get; } = new(1, 0, [], 0, []);

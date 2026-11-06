@@ -29,7 +29,9 @@ internal static class OnlineBootstrap
         }
         Console.WriteLine("Online: checking local content and loading the compatible database...");
         token.ThrowIfCancellationRequested();
-        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets);
+        var userConfig = UserConfig.Load();
+        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets,
+            userConfig.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), userConfig.ModSettings);
         var compatibility = new CompatibilityHandshake(hello).Receive(profile.Hello);
         if (compatibility != CompatibilityFailure.None)
             throw new InvalidDataException($"Connection profile does not match this client's local {compatibility}; check the install, mod order and server profile.");

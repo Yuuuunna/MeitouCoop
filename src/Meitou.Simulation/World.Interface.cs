@@ -57,12 +57,13 @@ public sealed partial class World
         }
     }
 
-    public void InvalidateNavigation(IReadOnlySet<Meitou.Data.World.ZoneCoordinate> zones)
+    /// <summary>Invalidates affected routes; only additions that leave existing navigation unchanged may retain and splice their old route.</summary>
+    public void InvalidateNavigation(IReadOnlySet<Meitou.Data.World.ZoneCoordinate> zones, bool onlyAddedZones = false)
     {
         if (Characters.Phase is not (TablePhase.Outside or TablePhase.Inputs)) throw new InvalidOperationException("Navigation changes require a serial world boundary.");
         bool copy = Characters.Phase == TablePhase.Outside;
         if (copy) Characters.BeginTick();
-        try { foreach (var movement in systems.OfType<MovementSystem>()) movement.InvalidatePaths(this, zones); }
+        try { foreach (var movement in systems.OfType<MovementSystem>()) movement.InvalidatePaths(this, zones, onlyAddedZones); }
         finally { if (copy) Characters.EndTick(); }
     }
     readonly Items.InventoryVersions inventoryVersions = new();
@@ -142,15 +143,15 @@ public sealed partial class World
 
     /// <summary>
     /// Applies the interface's commands between ticks while paused, without advancing time or running simulation phases: selection, order toggles, job lists, crafting and
-    /// research queues, squads, inventory, open-shop transactions, building settings, and movement, combat, first-aid and door/cage orders (they set the
-    /// characters' tasks; nobody moves or fights until the next tick).
+    /// research queues, squads, inventory, open-shop transactions, building settings, the Stop order and every order (<see cref="OrderCommand"/>: each goes into its characters'
+    /// queues through the one order path, <see cref="PlayerOrders.Give"/>, and sets their tasks; nobody moves or fights until the next tick).
     /// </summary>
     public void ApplyPausedInterfaceCommands()
     {
         RequireNoDurableMutation();
         if (Characters.Phase != TablePhase.Outside) throw new InvalidOperationException("interface commands require a tick boundary");
         int authorityCount = Authority.ProcessPending();
-        var due = Commands.TakeDue(Tick, c => c is SelectCommand or OrdersCommand or RunSpeedCommand or StandUpCommand or SquadCommand or SquadAiCommand or SquadFormationCommand or RenameFactionCommand or SeenDiscoveriesCommand
+        var due = Commands.TakeDue(Tick, c => c is OrderCommand or ManoeuvreCommand or SelectCommand or OrdersCommand or RunSpeedCommand or StandUpCommand or SquadCommand or SquadAiCommand or SquadFormationCommand or RenameFactionCommand or SeenDiscoveriesCommand
             or Production.OperateOrder or Production.UseTurretOrder or Production.AddJob or Production.AddOrderJob or Production.RemoveJob or Production.MoveJob or FirstAid.MedicJobCommand { Job: true } or Carrying.RescueJobCommand { Job: true }
             or Production.QueueCraft or Production.CancelCraft or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace or Production.QueueResearch or Production.CancelResearch
             or Items.OpenContainerOrder or Items.CloseContainer or Locks.BuyBuilding or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic or InspectCommand or InspectBuildingCommand or ShowInventoryCommand or Items.HeldCommand or Items.QuickMoveItem or Items.ReadMapItem or Items.ArrangeInventory or Items.TransferInventoryItem
@@ -170,9 +171,11 @@ public sealed partial class World
         {
             PlayerTrades.Inputs(this, due);
             foreach (var system in systems)
-                if (due.Count > 0 && system is (PlayerSystem or Carrying.CarrySystem or Production.ProductionSystem or Trading.TradeSystem or Construction.ConstructionSystem or Dialogue.DialogueSystem
-                    or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem))
+                if (due.Count > 0 && (system is IOrderOwner || system is (PlayerSystem or Carrying.CarrySystem or Production.ProductionSystem or Trading.TradeSystem or Construction.ConstructionSystem or Dialogue.DialogueSystem
+                    or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem)))
                     system.Inputs(this, due);
+            PlayerOrders.ValidateAuthority(this);
+            Decisions.Run(this, paused: true);
             RuntimeBoundary?.Invoke(this);
             if (due.Count > 0) StateRevision = checked(StateRevision + 1);
         }
@@ -185,14 +188,16 @@ public sealed partial class World
         foreach (var talk in systems.OfType<Dialogue.DialogueSystem>()) talk.RefreshView(this);
         if (Settings.PublishSnapshots)
         {
-            var previous = PreviousSnapshot;
+            var (previous, buffer) = (PreviousSnapshot, previousBuffer);
             Publish();
-            PreviousSnapshot = previous;
+            KeepPrevious(previous, buffer);
         }
     }
 
-    /// <summary>The first system of type <typeparamref name="T"/> this world runs, or null.</summary>
-    internal T? SystemOf<T>() where T : class => systems.OfType<T>().FirstOrDefault();
+    /// <summary>The first system of type <typeparamref name="T"/> this world runs, or null. Remembered per type (the finders ask once per candidate pair; any thread).</summary>
+    internal T? SystemOf<T>() where T : class => (T?)systemsByType.GetOrAdd(typeof(T), static (_, list) => list.OfType<T>().FirstOrDefault(), systems);
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<Type, object?> systemsByType = new();
 
     /// <summary>
     /// Puts the item on the mouse back where it came from (<see cref="PlayerState.Held"/>, <see cref="PlayerSystem.ReturnHeldItem"/>): a save does this first, so the item is saved in its

@@ -243,6 +243,9 @@ msgstr "Resolução do mapa de sombras"
 msgid "Anti-aliasing"
 msgstr "Antisserrilhamento"
 
+msgid "Anti-aliasing/upscaling"
+msgstr "Antisserrilhamento/upscaling"
+
 msgid "Render scale"
 msgstr "Escala de renderização"
 
@@ -855,8 +858,8 @@ msgstr "Névoa atmosférica"
 msgid "Use Meitou's atmospheric haze tuning."
 msgstr "Usa o ajuste de névoa atmosférica do Meitou."
 
-msgid "Use temporal smoothing instead of FXAA."
-msgstr "Usa suavização temporal em vez de FXAA."
+msgid "Use temporal smoothing and upscaling instead of FXAA."
+msgstr "Usa suavização temporal e upscaling em vez de FXAA."
 
 msgid "Shadows"
 msgstr "Sombras"
@@ -1062,6 +1065,9 @@ msgstr "Exibe o próximo esquadrão na barra de esquadrões."
 msgid "Select the whole squad (Shift adds it to the selection)."
 msgstr "Seleciona todo o esquadrão (Shift adiciona seus membros à seleção)."
 
+msgid "Select this member of the squad bar (Shift adds them to the selection; press twice to centre on them)."
+msgstr "Seleciona este membro da barra de esquadrão (Shift o adiciona à seleção; pressione duas vezes para centralizar a câmera nele)."
+
 msgid "Select the next member of the character's squad."
 msgstr "Seleciona o próximo integrante do esquadrão do personagem."
 
@@ -1167,11 +1173,11 @@ msgstr "Contorno ao passar o cursor"
 msgid "Outline and tint the character under the cursor, in the colour of what a right click would do."
 msgstr "Contorna e colore o personagem sob o cursor com a cor correspondente à ação de clicar com o botão direito."
 
-msgid "Selection rings"
-msgstr "Anéis de seleção"
+msgid "Building outline"
+msgstr "Contorno do edifício"
 
-msgid "Draw the green ring on the ground under each selected character."
-msgstr "Exibe o anel verde no chão sob cada personagem selecionado."
+msgid "Outline and tint the selected building like a character under the cursor, except while its interior is shown."
+msgstr "Contorna e colore o edifício selecionado como um personagem sob o cursor, exceto enquanto o seu interior é exibido."
 
 msgid "luckyren Mode"
 msgstr "Modo luckyren"
@@ -1320,6 +1326,36 @@ msgstr "Todas as correções estão desativadas, como na versão original do jog
 msgid "Select All"
 msgstr "Selecionar todos"
 
+msgid "Select Member 1"
+msgstr "Selecionar membro 1"
+
+msgid "Select Member 2"
+msgstr "Selecionar membro 2"
+
+msgid "Select Member 3"
+msgstr "Selecionar membro 3"
+
+msgid "Select Member 4"
+msgstr "Selecionar membro 4"
+
+msgid "Select Member 5"
+msgstr "Selecionar membro 5"
+
+msgid "Select Member 6"
+msgstr "Selecionar membro 6"
+
+msgid "Select Member 7"
+msgstr "Selecionar membro 7"
+
+msgid "Select Member 8"
+msgstr "Selecionar membro 8"
+
+msgid "Select Member 9"
+msgstr "Selecionar membro 9"
+
+msgid "Select Member 10"
+msgstr "Selecionar membro 10"
+
 msgid "Move Forward"
 msgstr "Mover para a frente"
 
@@ -1371,13 +1407,13 @@ msgstr "Acelerar o tempo"
 msgid "Time Slower"
 msgstr "Desacelerar o tempo"
 
-msgid "Speed1"
+msgid "Speed 1"
 msgstr "Velocidade 1"
 
-msgid "Speed2"
+msgid "Speed 2"
 msgstr "Velocidade 2"
 
-msgid "Speed3"
+msgid "Speed 3"
 msgstr "Velocidade 3"
 
 msgid "Screenshot"
@@ -1491,8 +1527,8 @@ msgstr "Largar corpos"
 msgid "no {1} build"
 msgstr "sem versão para {1}"
 
-msgid "Smooths edges. Active: {1}"
-msgstr "Suaviza as bordas. Ativo: {1}"
+msgid "Smooths edges and upscales the render. Active: {1}"
+msgstr "Suaviza as bordas e faz upscaling da renderização. Ativo: {1}"
 
 msgid "Meitou's texts not yet translated"
 msgstr "textos do Meitou ainda não traduzidos"
@@ -1511,3 +1547,12 @@ msgstr "Não foi possível atualizar o idioma do Kenshi: {1}"
 
 msgid "No {1} found"
 msgstr "{1} não encontrado"
+
+msgid "[Leave]"
+msgstr "[Sair]"
+
+msgid "{1} is wanted by {2} for {3}: bounty c.{4}"
+msgstr "{1} é procurado por {2} por {3}: recompensa de c.{4}"
+
+msgid "{1} has been caught committing {2}!"
+msgstr "{1} foi pego cometendo {2}!"

@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Threading;
 using Meitou.Localisation;
@@ -20,10 +21,21 @@ public sealed partial class MainWindow
     Process? running;
     DispatcherTimer? graphicsSave;
     int schemaVersion;
-    /// <summary>The Graphics tab shown (a section's name), the schema's presets and their row.</summary>
+    /// <summary>The Graphics tab shown (a section's name), the schema's presets and their row, and its look.</summary>
     string graphicsTab = "";
     SettingsPresets? presets;
+    SettingsLooks? looks;
+    /// <summary>Every setting the schema describes, by key (the look row counts and saves through them).</summary>
+    Dictionary<string, SettingDescription> settingByKey = [];
+    /// <summary>The name a preset is being saved under (Save as), null when not naming.</summary>
+    string? namingLook;
     ComboBox? presetBox;
+    /// <summary>The features the player opened (by title), kept while the page is shown again.</summary>
+    readonly HashSet<string> openGroups = [];
+    /// <summary>The shown tab's rows: what marks each one changed, and what puts each control back to the saved value (after a feature's Reset).</summary>
+    readonly List<Action> rowMarks = [], rowShows = [];
+    /// <summary>A feature header's key to the settings folded under it: its row is marked, and resets, for them too.</summary>
+    readonly Dictionary<string, List<SettingDescription>> featureMembers = [];
     /// <summary>The last hardware detection's result line, and whether one is running.</summary>
     string? detected;
     bool detecting;
@@ -45,8 +57,10 @@ public sealed partial class MainWindow
         if (graphicsSave?.IsEnabled == true) SaveGame();
         game = GameSettings.Load();
         GraphicsPanel.Children.Clear();
+        GraphicsFooter.Child = null;
+        GraphicsFooter.IsVisible = false;
         bool found = game.Version is not null;
-        GraphicsFileText.Text = found ? GameSettings.FileName : Loc.Format(Tr("No {1} found"), GameSettings.FileName);
+        GraphicsFileText.Text = found ? GameSettings.FileName : Tr("No {1} found", GameSettings.FileName);
         ToolTip.SetTip(GraphicsFileText, GameSettings.FilePath);
         if (!found)
             GraphicsPanel.Children.Add(new TextBlock
@@ -68,11 +82,15 @@ public sealed partial class MainWindow
         if (locked is not null) notes.Add(locked);
         if (running is { HasExited: false }) notes.Add("The game is running: it saves its settings when it closes, over changes made here.");
         if (SplitArguments(config.LaunchArguments).Contains("--low-end")) notes.Add("The launch arguments have --low-end: the game ignores the graphics sliders while it is set.");
+        if (SplitArguments(config.LaunchArguments).Contains("--benchmark-baseline")) notes.Add("The launch arguments have --benchmark-baseline: the game ignores the graphics sliders while it is set.");
         foreach (var note in notes) GraphicsPanel.Children.Add(new TextBlock { Classes = { "warn" }, Text = note, TextWrapping = Avalonia.Media.TextWrapping.Wrap, Margin = new(0, 0, 0, 6) });
 
         var rows = new StackPanel { IsEnabled = locked is null };
         presets = schema.Presets is { Names.Count: > 0, Key.Length: > 0 } p ? p : null;
         presetBox = null;
+        looks = schema.Looks is { Presets.Count: > 0, FaithfulKey.Length: > 0, PresetKey.Length: > 0 } l ? l : null;
+        settingByKey = schema.Sections.SelectMany(x => x.Settings).GroupBy(x => x.Key).ToDictionary(g => g.Key, g => g.First());
+        if (looks is not null) rows.Children.Add(LookRow(looks));
         if (presets is not null) rows.Children.Add(PresetRow(presets));
         // One tab per section (the game's pages); the chosen one stays while the page is shown again.
         var sections = schema.Sections.Where(section => section.Settings.Any(Shown)).ToList();
@@ -101,14 +119,18 @@ public sealed partial class MainWindow
         {
             // Two clicks: the sliders tuned in the game's Tab panel are not undone by a stray one.
             if (reset.Tag is null) { reset.Tag = true; reset.Content = Tr("Click again"); return; }
-            game.ResetGraphics(presets?.Key);
+            game.ResetGraphics(presets?.Key, looks?.FaithfulKey, looks?.PresetKey);
             SaveGame();
             ShowGraphics();
         };
-        rows.Children.Add(Section("Reset"));
-        rows.Children.Add(Row("Reset graphics", "Every graphics setting back to the game's defaults, also those only in the game's Tab panel.", reset, 150));
+        var footer = Row("Reset graphics", "Every graphics setting back to the game's defaults, also those only in the game's Tab panel.", reset, 150);
+        footer.BorderThickness = new(0);
+        GraphicsFooter.Child = footer;
+        GraphicsFooter.IsEnabled = locked is null;
+        GraphicsFooter.IsVisible = true;
         GraphicsPanel.Children.Add(rows);
         LauncherText.TranslateTree(GraphicsPanel, originalUiText);
+        LauncherText.TranslateTree(GraphicsFooter, originalUiText);
     }
 
     // Why the file may not be changed for this schema (null: it may).
@@ -124,10 +146,92 @@ public sealed partial class MainWindow
     void FillSection(StackPanel content, SettingsSection section)
     {
         content.Children.Clear();
+        rowMarks.Clear();
+        rowShows.Clear();
+        featureMembers.Clear();
+        var groups = section.Groups ?? [];
+        foreach (var g in groups.Where(g => g.Header is not null))
+            featureMembers[g.Header!] = [.. g.Members.Select(key => section.Settings.FirstOrDefault(x => x.Key == key)).OfType<SettingDescription>().Where(Shown)];
+        var done = new HashSet<SettingsGroup>();
         foreach (var s in section.Settings.Where(Shown))
-            content.Children.Add(s.Kind == SettingKind.Toggle ? s.Graphics ? SwitchRow(s) : ToggleRow(s) : SliderRow(s));
+        {
+            // A feature shows where its first setting is: its header, then its members folded under it. Every row of every tab keeps the arrow's gutter,
+            // so the names line up from tab to tab.
+            if (groups.FirstOrDefault(g => g.Header == s.Key || g.Members.Contains(s.Key)) is not { } group)
+                content.Children.Add(new DockPanel { Children = { Gutter(null), SettingRow(s) } });
+            else if (done.Add(group)) content.Children.Add(GroupRows(group, section));
+        }
         LauncherText.TranslateTree(content, originalUiText);
     }
+
+    Border SettingRow(SettingDescription s) => s.Kind == SettingKind.Toggle ? s.Graphics ? SwitchRow(s) : ToggleRow(s)
+        : s.Labels is { Length: 2 } ? CheckRow(s, s.Labels[0], s.Labels[1], v => { if (s.Graphics) game.SetGraphics(s.Key, s.Min + v); else game.Set(s.Key, s.Min + v); })
+        : s.Labels is { Length: > 0 } ? ChoiceRow(s) : s.Modes is { Count: > 0 } ? ModesRow(s) : SliderRow(s);
+
+
+    const double GutterWidth = 22;
+
+    /// <summary>The column left of a row: a feature's fold arrow (a chevron, turned down while open), else empty.</summary>
+    static Border Gutter(Avalonia.Controls.Shapes.Path? chevron)
+    {
+        var gutter = new Border { Width = GutterWidth, Background = Avalonia.Media.Brushes.Transparent, Child = chevron };
+        DockPanel.SetDock(gutter, Dock.Left);
+        return gutter;
+    }
+
+    /// <summary>A feature, as the game's menu shows it: one row (its switch, or its title) with a fold arrow, and its settings in a band under it
+    /// while open, named without the feature's name they repeat ("Light shafts strength" is "Strength"). The arrow or the name opens it.</summary>
+    StackPanel GroupRows(SettingsGroup group, SettingsSection section)
+    {
+        var header = section.Settings.FirstOrDefault(x => x.Key == group.Header && Shown(x));
+        string name = header?.Name ?? group.Title;
+        var members = group.Members.Select(key => section.Settings.FirstOrDefault(x => x.Key == key)).OfType<SettingDescription>().Where(Shown)
+            .Select(m => m with { Name = WithinGroup(m.Name, name) }).ToList();
+        var headerRow = header is not null ? SettingRow(header) : Frame(group.Title, group.Description, members, new Panel(), 150);
+        var panel = new StackPanel();
+        if (members.Count == 0)
+        {
+            panel.Children.Add(new DockPanel { Children = { Gutter(null), headerRow } });
+            return panel;
+        }
+        bool open = openGroups.Contains(group.Title);
+        var brass = Avalonia.Application.Current?.FindResource("BrassLight") as Avalonia.Media.IBrush;
+        var chevron = new Avalonia.Controls.Shapes.Path
+        {
+            Data = Avalonia.Media.Geometry.Parse("M 1,1 L 5,5 L 1,9"), Stroke = brass, StrokeThickness = 1.8, Width = 7, Height = 10,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            RenderTransform = new Avalonia.Media.RotateTransform(open ? 90 : 0),
+        };
+        var under = new Border { Classes = { "features" }, IsVisible = open, Margin = new(GutterWidth, 0, 0, 0) };
+        var rows = new StackPanel();
+        rows.Children.AddRange(members.Select(SettingRow));
+        under.Child = rows;
+        void Fold()
+        {
+            bool nowOpen = !under.IsVisible;
+            under.IsVisible = nowOpen;
+            chevron.RenderTransform = new Avalonia.Media.RotateTransform(nowOpen ? 90 : 0);
+            if (nowOpen) openGroups.Add(group.Title);
+            else openGroups.Remove(group.Title);
+        }
+        var gutter = Gutter(chevron);
+        // The row's name and description (left of its control) open it too.
+        var targets = new List<Control> { gutter };
+        if (headerRow.Child is Grid { Children: [StackPanel text, ..] }) { text.Background = Avalonia.Media.Brushes.Transparent; targets.Add(text); }
+        foreach (var target in targets)
+        {
+            target.Cursor = new Cursor(StandardCursorType.Hand);
+            ToolTip.SetTip(target, Tr("{1}: {2} settings", Tr(name), members.Count));
+            target.PointerPressed += (_, e) => { if (e.GetCurrentPoint(target).Properties.IsLeftButtonPressed) { Fold(); e.Handled = true; } };
+        }
+        panel.Children.Add(new DockPanel { Children = { gutter, headerRow } });
+        panel.Children.Add(under);
+        return panel;
+    }
+
+    static string WithinGroup(string label, string group) =>
+        label.Length > group.Length + 1 && label.StartsWith(group + " ", StringComparison.OrdinalIgnoreCase)
+            ? char.ToUpperInvariant(label[group.Length + 1]) + label[(group.Length + 2)..] : label;
 
     TextBlock Section(string text) => new() { Classes = { "caps" }, Text = Tr(text).ToUpperInvariant(), Margin = new(0, 14, 0, 2) };
 
@@ -145,11 +249,205 @@ public sealed partial class MainWindow
         return new Border { Classes = { "row" }, Child = grid };
     }
 
+    /// <summary>A look the row offers: the schema's (Meitou first, then the examples) or one of the player's (its file).</summary>
+    sealed record LookChoice(SettingsLook Look, string? File, string Source);
+
+    /// <summary>
+    /// The look, as the game's settings menu shows it (docs/native-ui.md "Settings"): Faithful | Meitou, the Meitou preset, its changes from the look
+    /// (Revert; Save for the player's own), Save as, Share (a code on the clipboard), Paste, Delete. The presets are the game's files
+    /// (<see cref="LookPresetFile"/>); choosing a look writes its values, which the game reads as that look with no change.
+    /// </summary>
+    Border LookRow(SettingsLooks l)
+    {
+        var all = AllLooks(l);
+        bool faithful = IsFaithful(l);
+        var active = all.FirstOrDefault(x => x.Look.Name == (game.GetString(l.PresetKey) ?? l.Presets[0].Name)) ?? all[0];
+        int changes = l.Keys.Count(key => settingByKey.TryGetValue(key, out var s) && Changed(s));
+        string folder = Path.Combine(LauncherConfig.DataDirectory, l.Folder);
+
+        var controls = new WrapPanel { Margin = new(0, 6, 0, 0), ItemSpacing = 6, LineSpacing = 6 };
+        foreach (var (text, side) in new[] { ("Faithful", true), ("Meitou", false) })
+        {
+            var button = new ToggleButton { Content = Tr(text), IsChecked = faithful == side, MinWidth = 90 };
+            button.Click += (_, _) => ApplyLook(l, side, active);
+            controls.Children.Add(button);
+        }
+        if (!faithful)
+        {
+            var box = new ComboBox
+            {
+                MinWidth = 220, ItemsSource = all.Select(x => x.Source == "built in" ? Tr(x.Look.Name) : x.Look.Name).ToList(), SelectedIndex = all.IndexOf(active),
+            };
+            box.SelectionChanged += (_, _) => { if (box.SelectedIndex >= 0 && all[box.SelectedIndex] != active) ApplyLook(l, false, all[box.SelectedIndex]); };
+            controls.Children.Add(box);
+        }
+        string status = faithful ? changes == 0 ? Tr("As the game ships") : changes == 1 ? Tr("1 change from the game") : Tr("{1} changes from the game", changes)
+            : changes > 0 ? changes == 1 ? Tr("1 unsaved change") : Tr("{1} unsaved changes", changes)
+            : active.Source == "mine" ? Tr("Mine · Meitou {1}", MadeOf(active)) : active.Source == "built in" ? Tr("Built in") : Tr("Example");
+        var statusText = new TextBlock { Classes = { "desc" }, Text = status, VerticalAlignment = VerticalAlignment.Center, Margin = new(6, 0, 6, 0) };
+        if (changes > 0 && Avalonia.Application.Current?.FindResource("BrassLight") is Avalonia.Media.IBrush brass) statusText.Foreground = brass;
+        controls.Children.Add(statusText);
+        Button Action(string text, Action run)
+        {
+            var button = new Button { Content = Tr(text) };
+            button.Click += (_, _) => run();
+            controls.Children.Add(button);
+            return button;
+        }
+        if (changes > 0) Action("Revert", () => ApplyLook(l, faithful, active));
+        if (!faithful)
+        {
+            if (active.Source == "mine" && changes > 0) Action("Save", () => SaveLook(l, active.Look.Name, folder));
+            else if (active.Source == "mine")
+            {
+                var delete = Action("Delete", () => { });
+                delete.Click += (_, _) =>
+                {
+                    // Two clicks: a preset file is not removed by a stray one.
+                    if (delete.Tag is null) { delete.Tag = true; delete.Content = Tr("Click again"); return; }
+                    try { if (active.File is { } file) File.Delete(file); }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Status(Tr("Could not delete the preset: {1}", e.Message)); }
+                    ApplyLook(l, false, all[0]);
+                    Status(Tr("{1} deleted; the look is Meitou.", active.Look.Name));
+                };
+            }
+            Action("Save as", () => { namingLook = LookPresetFile.FreeName("My look", all.Select(x => x.Look.Name)); ShowGraphics(); });
+            Action("Share", async () =>
+            {
+                if (TopLevel.GetTopLevel(this)?.Clipboard is not { } clipboard) return;
+                await clipboard.SetValueAsync(Avalonia.Input.DataFormat.Text, LookPresetFile.ShareCode(new(active.Look.Name, MadeOf(active), active.Look.Values)));
+                Status(Tr("{1}'s code is on the clipboard: paste it on Discord, or with Paste.", active.Look.Name));
+            });
+            Action("Paste", async () =>
+            {
+                string? code = TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard ? await clipboard.TryGetTextAsync() : null;
+                if (LookPresetFile.FromShareCode(code) is not { } pasted)
+                {
+                    Status("The clipboard holds no preset code (MT1:...). Copy one with Share first.");
+                    return;
+                }
+                var saved = pasted with { Name = LookPresetFile.FreeName(pasted.Name, all.Select(x => x.Look.Name)) };
+                try { LookPresetFile.Save(folder, saved); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Status(Tr("Could not write the preset: {1}", e.Message)); return; }
+                ApplyLook(l, false, new LookChoice(new SettingsLook { Name = saved.Name, Values = saved.Values }, null, "mine"));
+                Status(Tr("{1} pasted and loaded (made on Meitou {2}).", saved.Name, saved.Made));
+            });
+        }
+        var panel = new StackPanel
+        {
+            Children =
+            {
+                new TextBlock { Classes = { "name" }, Text = Tr(l.Name) },
+                new TextBlock { Classes = { "desc" }, Text = Tr(l.Description) },
+                controls,
+            },
+        };
+        if (namingLook is { } naming)
+        {
+            // Save as: the name, then Save or Cancel (Enter / Esc).
+            var name = new TextBox { Text = naming, Width = 260, MaxLength = LookPresetFile.MaxNameLength };
+            var save = new Button { Content = Tr("Save") };
+            var cancel = new Button { Content = Tr("Cancel") };
+            void Done(bool keep)
+            {
+                string chosen = (name.Text ?? "").Trim();
+                namingLook = null;
+                if (keep && chosen.Length > 0) SaveLook(l, chosen, folder);
+                else ShowGraphics();
+            }
+            save.Click += (_, _) => Done(true);
+            cancel.Click += (_, _) => Done(false);
+            name.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Enter) { Done(true); e.Handled = true; }
+                else if (e.Key == Key.Escape) { Done(false); e.Handled = true; }
+            };
+            panel.Children.Add(new StackPanel
+            {
+                Orientation = Orientation.Horizontal, Spacing = 6, Margin = new(0, 6, 0, 0),
+                Children = { new TextBlock { Classes = { "desc" }, Text = Tr("Preset name"), VerticalAlignment = VerticalAlignment.Center }, name, save, cancel },
+            });
+            Dispatcher.UIThread.Post(() => { name.Focus(); name.SelectAll(); });
+        }
+        return new Border { Classes = { "row" }, Child = panel };
+    }
+
+    /// <summary>The Meitou version a look was made on: its file's, else this release's.</summary>
+    string MadeOf(LookChoice look) => look.File is { } file && File.Exists(file) && LookPresetFile.Read(File.ReadAllText(file)) is { } read ? read.Made : looks?.Made ?? "";
+
+    /// <summary>Makes a look the active one and writes its values: Faithful's, or Meitou's with the preset's own over them (Faithful keeps the preset to go back to).</summary>
+    void ApplyLook(SettingsLooks l, bool faithful, LookChoice look)
+    {
+        game.Set(l.FaithfulKey, faithful);
+        if (!faithful)
+        {
+            if (look.Source == "built in") game.Remove(l.PresetKey);
+            else game.Set(l.PresetKey, look.Look.Name);
+        }
+        foreach (var (key, value) in faithful ? l.Faithful : LookValues(l, look.Look)) game.SetGraphics(key, value);
+        SaveGame();
+        Dispatcher.UIThread.Post(ShowGraphics);
+    }
+
+    /// <summary>
+    /// Saves the look settings as the player's preset <paramref name="name"/> (what differs from Meitou's, as the game saves it) and makes it the active look.
+    /// </summary>
+    void SaveLook(SettingsLooks l, string name, string folder)
+    {
+        var values = new Dictionary<string, float>();
+        foreach (var key in l.Keys)
+            if (settingByKey.TryGetValue(key, out var s) && l.Meitou.TryGetValue(key, out float meitou))
+            {
+                float value = CurrentValue(s);
+                bool toggle = s.Kind == SettingKind.Toggle;
+                if (MathF.Abs(value - meitou) > (toggle ? 0.5f : MathF.Max(s.Step, 1e-4f) / 2)) values[key] = toggle ? value >= 0.5f ? 1 : 0 : MathF.Round(value, 3);
+            }
+        try { LookPresetFile.Save(folder, new(name, l.Made, values)); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Status(Tr("Could not write the preset: {1}", e.Message)); return; }
+        game.Set(l.FaithfulKey, false);
+        game.Set(l.PresetKey, name);
+        SaveGame();
+        Status(Tr("{1} saved.", name));
+        Dispatcher.UIThread.Post(ShowGraphics);
+    }
+
+    /// <summary>Whether the look is Faithful: saved, else when every switch Faithful turns off and Meitou turns on (not the tier's, not bloom) is saved off, as the game reads it.</summary>
+    bool IsFaithful(SettingsLooks l) => game.GetBool(l.FaithfulKey)
+        ?? l.Faithful.Keys.Where(key => key.StartsWith("Meitou: ", StringComparison.Ordinal) && l.Meitou.TryGetValue(key, out float meitou) && meitou >= 0.5f).All(key => game.GetGraphics(key) is { } v && v < 0.5f);
+
+    /// <summary>A Meitou look's values: Meitou's, with the preset's own over them.</summary>
+    static Dictionary<string, float> LookValues(SettingsLooks l, SettingsLook look)
+    {
+        var values = new Dictionary<string, float>(l.Meitou);
+        foreach (var (key, value) in look.Values) values[key] = value;
+        return values;
+    }
+
+    /// <summary>The value the current look gives a setting (Reset goes back to it); null when the look does not set it.</summary>
+    float? LookValue(string key)
+    {
+        if (looks is not { } l) return null;
+        if (IsFaithful(l)) return l.Faithful.TryGetValue(key, out float faithful) ? faithful : null;
+        string name = game.GetString(l.PresetKey) ?? l.Presets[0].Name;
+        var look = AllLooks(l).FirstOrDefault(x => x.Look.Name == name)?.Look ?? l.Presets[0];
+        return look.Values.TryGetValue(key, out float own) ? own : l.Meitou.TryGetValue(key, out float meitou) ? meitou : null;
+    }
+
+    /// <summary>The schema's looks (Meitou built in, then the examples), then the player's files in the look folder beside the game's settings file.</summary>
+    static List<LookChoice> AllLooks(SettingsLooks l)
+    {
+        var all = l.Presets.Select((look, i) => new LookChoice(look, null, i == 0 ? "built in" : "example")).ToList();
+        if (l.Folder.Length == 0) return all;
+        foreach (var (file, read) in LookPresetFile.ReadFolder(Path.Combine(LauncherConfig.DataDirectory, l.Folder)))
+            if (!all.Any(x => x.Look.Name == read.Name)) all.Add(new(new SettingsLook { Name = read.Name, Values = read.Values }, file, "mine"));
+        return all;
+    }
+
     /// <summary>The quality preset: the one the game saved its settings at, or one chosen here, which the game applies when it next starts.</summary>
     Border PresetRow(SettingsPresets p)
     {
         string current = game.GetString(p.Key) is { } saved && p.Names.Contains(saved) ? saved : game.HasGraphics ? p.Custom : p.Default;
-        var box = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, ItemsSource = p.Names.Select(Tr).ToList(), SelectedIndex = p.Names.IndexOf(current) };
+        var box = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, ItemsSource = p.Names.Select(name => Tr(name)).ToList(), SelectedIndex = p.Names.IndexOf(current) };
         box.SelectionChanged += (_, _) =>
         {
             if (box.Tag is not null || box.SelectedIndex < 0) return;
@@ -164,8 +462,9 @@ public sealed partial class MainWindow
         DockPanel.SetDock(detect, Dock.Right);
         dock.Children.Add(detect);
         dock.Children.Add(box);
-        string description = p.Description + " A preset chosen here is applied when the game next starts.";
-        return Row(p.Name, detected is { } line ? description + "\n" + line : description, dock, 330);
+        // The Detect line under the description: a text the walk cannot look up whole once it is appended, so the description is translated first.
+        string description = detected is { } line ? Tr(p.Description) + "\n" + line : p.Description;
+        return Row(p.Name, description, dock, 330);
     }
 
     /// <summary>
@@ -209,14 +508,14 @@ public sealed partial class MainWindow
             schemaVersion = schema.SettingsVersion;
             game.Set(p.Key, preset);
             SaveGame();
-            detected = Loc.Format(Tr("Detected: {1}"), summary);
+            detected = Tr("Detected: {1}", summary);
             Status(detected);
             done = true;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or InvalidDataException
             or TimeoutException or System.ComponentModel.Win32Exception)
         {
-            detected = Loc.Format(Tr("Could not detect the hardware: {1}"), e.Message);
+            detected = Tr("Could not detect the hardware: {1}", e.Message);
             Status(detected);
         }
         finally
@@ -254,78 +553,252 @@ public sealed partial class MainWindow
         }
     }
 
-    Border ToggleRow(SettingDescription s)
+    /// <summary>A setting's value: saved, else the game's start value (a top-level one: the schema's default).</summary>
+    float CurrentValue(SettingDescription s) =>
+        (s.Graphics ? game.GetGraphics(s.Key) : s.Kind == SettingKind.Toggle ? game.GetBool(s.Key) is { } on ? on ? 1 : 0 : null : game.GetNumber(s.Key))
+        ?? (s.Graphics ? s.Shown : s.Default ?? s.Shown);
+
+    /// <summary>Whether a look setting differs from the look's value; a quality or display setting is never marked (the Quality row reads Custom).</summary>
+    bool Changed(SettingDescription s) => s.Graphics && looks?.Keys.Contains(s.Key) == true && LookValue(s.Key) is { } look
+        && MathF.Abs(CurrentValue(s) - look) > (s.Kind == SettingKind.Toggle ? 0.5f : MathF.Max(s.Step, 1e-4f) / 2);
+
+    /// <summary>Puts a look setting back to the look's value.</summary>
+    void ResetSetting(SettingDescription s)
     {
-        bool value = game.GetBool(s.Key) ?? s.Default >= 0.5f;
-        var toggle = new ToggleButton { IsChecked = value, Content = Tr(value ? s.On : s.Off), HorizontalAlignment = HorizontalAlignment.Stretch };
-        toggle.Click += (_, _) =>
-        {
-            bool v = toggle.IsChecked == true;
-            toggle.Content = Tr(v ? s.On : s.Off);
-            game.Set(s.Key, v);
-            SaveGame();
-        };
-        return Row(s.Name, s.Description, toggle, 150);
+        game.SetGraphics(s.Key, LookValue(s.Key));
+        PresetBroken(s.Key);
     }
 
-    /// <summary>A Tab panel switch: the game's default (no key: the mode and the computer decide), or saved off (0) or on (1).</summary>
-    Border SwitchRow(SettingDescription s)
+    /// <summary>After a value changed: every row of the tab marked again (a feature header stands for its settings too).</summary>
+    void RefreshMarks()
     {
-        var box = new ComboBox
+        foreach (var mark in rowMarks) mark();
+    }
+
+    /// <summary>
+    /// A row, the same for every control: its name, and while one of <paramref name="settings"/> (a look setting) differs from the look
+    /// (<see cref="Changed"/>) the name in brass with a Reset link beside it that puts them all back, as in the game's menu.
+    /// </summary>
+    Border Frame(string text, string description, IReadOnlyList<SettingDescription> settings, Control control, int width, string? impact = null)
+    {
+        var name = new TextBlock { Classes = { "name" }, Text = text };
+        var reset = new TextBlock { Classes = { "reset" }, Text = Tr("Reset"), Margin = new(10, 0, 0, 2), VerticalAlignment = VerticalAlignment.Bottom, Cursor = new Cursor(StandardCursorType.Hand) };
+        ToolTip.SetTip(reset, Tr("Back to the look's value"));
+        void Mark()
         {
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            ItemsSource = new[] { Loc.Format(Tr("Game default ({1})"), Tr(s.Shown >= 0.5f ? s.On : s.Off)), Tr(s.Off), Tr(s.On) },
-            SelectedIndex = game.GetGraphics(s.Key) is { } v ? v >= 0.5f ? 2 : 1 : 0,
+            bool changed = settings.Any(Changed);
+            name.Classes.Set("changed", changed);
+            reset.IsVisible = changed;
+        }
+        reset.PointerPressed += (_, e) =>
+        {
+            if (!e.GetCurrentPoint(reset).Properties.IsLeftButtonPressed) return;
+            foreach (var s in settings.Where(Changed).ToList()) ResetSetting(s);
+            SaveGame();
+            foreach (var show in rowShows) show();
+            RefreshMarks();
+            e.Handled = true;
         };
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions($"*,Auto,{width}") };
+        grid.Children.Add(new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new StackPanel { Orientation = Orientation.Horizontal, Children = { name, reset } },
+                new TextBlock { Classes = { "desc" }, Text = description },
+            },
+        });
+        if (ImpactText(impact) is { } impactText)
+        {
+            Grid.SetColumn(impactText, 1);
+            grid.Children.Add(impactText);
+        }
+        Grid.SetColumn(control, 2);
+        control.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(control);
+        rowMarks.Add(Mark);
+        Mark();
+        return new Border { Classes = { "row" }, Child = grid };
+    }
+
+    /// <summary>A setting's performance impact, as the game shows it (High in brass), in its own column centred on the row; null when not ranked.</summary>
+    static TextBlock? ImpactText(string? impact)
+    {
+        if (impact is not { Length: > 0 }) return null;
+        var text = new TextBlock { Classes = { "desc" }, Text = Tr(impact), Margin = new(12, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center };
+        if (impact.StartsWith("High", StringComparison.Ordinal) && Avalonia.Application.Current?.FindResource("BrassLight") is Avalonia.Media.IBrush brass) text.Foreground = brass;
+        return text;
+    }
+
+    /// <summary>A setting's row (<see cref="Frame"/>); a feature's header stands for the settings under it too. <paramref name="show"/> puts the control back after a Reset.</summary>
+    Border SettingFrame(SettingDescription s, Control control, int width, Action show)
+    {
+        rowShows.Add(show);
+        return Frame(s.Name, s.Description, [s, .. featureMembers.GetValueOrDefault(s.Key) ?? []], control, width, s.Impact);
+    }
+
+    /// <summary>A drop-down over a setting's values (<paramref name="options"/>, the first one at <paramref name="first"/>), framed as every row is.</summary>
+    Border DropDownRow(SettingDescription s, IReadOnlyList<string> options, float first, Action<float> write)
+    {
+        var box = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, ItemsSource = options.Select(text => Tr(text)).ToList() };
+        bool loading = false;
+        void Show()
+        {
+            loading = true;
+            box.SelectedIndex = Math.Clamp((int)MathF.Round(CurrentValue(s) - first), 0, options.Count - 1);
+            loading = false;
+        }
+        Show();
+        var row = SettingFrame(s, box, 260, Show);
         box.SelectionChanged += (_, _) =>
         {
-            if (box.SelectedIndex < 0) return;
-            game.SetGraphics(s.Key, box.SelectedIndex switch { 1 => 0, 2 => 1, _ => null });
+            if (loading || box.SelectedIndex < 0) return;
+            write(first + box.SelectedIndex);
             PresetBroken(s.Key);
             SaveGame();
+            RefreshMarks();
         };
-        return Row(s.Name, s.Description, box, 260);
+        return row;
     }
 
-    /// <summary>A slider with its value and a Default button: a graphics slider's key is removed (the game's default for the mode),
-    /// a top-level one gets the schema's default. A slider without labels also takes a typed value (Enter or leaving the box).</summary>
+    /// <summary>
+    /// An on / off setting, as the game shows it: two halves, the active one lit. A Faithful / Meitou effect reads Faithful | Meitou ("Faithful (off) |
+    /// Meitou (on)" where the game's side is off), what each side does in its tooltip; an optional effect or a plain setting reads Off | On.
+    /// <paramref name="write"/> takes 1 for on (Meitou), 0 for off.
+    /// </summary>
+    Border CheckRow(SettingDescription s, string off, string on, Action<float> write)
+    {
+        bool effect = s.Graphics && off.StartsWith("Faithful", StringComparison.Ordinal) || on.StartsWith("Meitou", StringComparison.Ordinal);
+        bool offSide = off == "Off";
+        string left = !effect ? off : offSide ? "Faithful (off)" : "Faithful", right = !effect ? on : offSide ? "Meitou (on)" : "Meitou";
+        var halves = new[]
+        {
+            new ToggleButton { Content = Tr(left), CornerRadius = new(7, 0, 0, 7), Classes = { "half", "faithful" } },
+            new ToggleButton { Content = Tr(right), CornerRadius = new(0, 7, 7, 0), Classes = { "half" } },
+        };
+        foreach (var half in halves) half.MinWidth = effect && offSide ? 120 : 90;
+        if (effect)
+        {
+            ToolTip.SetTip(halves[0], Tr(off));
+            ToolTip.SetTip(halves[1], Tr(on));
+        }
+        bool loading = false;
+        void Show()
+        {
+            loading = true;
+            bool lit = CurrentValue(s) - (s.Kind == SettingKind.Toggle ? 0 : s.Min) >= 0.5f;
+            halves[0].IsChecked = !lit;
+            halves[1].IsChecked = lit;
+            loading = false;
+        }
+        Show();
+        for (int i = 0; i < 2; i++)
+        {
+            int side = i;
+            halves[i].Click += (_, _) =>
+            {
+                if (loading) return;
+                write(side);
+                PresetBroken(s.Key);
+                SaveGame();
+                Show();
+                RefreshMarks();
+            };
+        }
+        var pair = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { halves[0], halves[1] } };
+        return SettingFrame(s, pair, 260, Show);
+    }
+
+    /// <summary>A top-level on / off setting (full screen, VSync).</summary>
+    Border ToggleRow(SettingDescription s) => CheckRow(s, s.Off, s.On, v => game.Set(s.Key, v >= 0.5f));
+
+    /// <summary>A Tab panel switch: Faithful (off, saved 0) or Meitou (on, saved 1).</summary>
+    Border SwitchRow(SettingDescription s) => CheckRow(s, s.Off, s.On, v => game.SetGraphics(s.Key, v));
+
+    /// <summary>A setting with named values (anti-aliasing, texture quality, water reflection), in the slider's order from its left end.</summary>
+    Border ChoiceRow(SettingDescription s) => DropDownRow(s, s.Labels!, s.Min, v => { if (s.Graphics) game.SetGraphics(s.Key, v); else game.Set(s.Key, v); });
+
+    /// <summary>
+    /// A slider with named values (<see cref="SettingDescription.Modes"/>, render scale's quality modes): a drop-down of them and Custom, as the game's
+    /// menu shows it; the slider under it shows the value, locked but while Custom is chosen (or the value is none of the modes).
+    /// </summary>
+    Border ModesRow(SettingDescription s)
+    {
+        var modes = s.Modes!;
+        var box = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, ItemsSource = modes.Select(m => Tr(m.Name)).Append(Tr("Custom")).ToList() };
+        var custom = SliderRow(s with { Name = "Custom value", Description = "", Impact = null });
+        custom.Margin = new(GutterWidth, 0, 0, 0);
+        bool loading = false, customChosen = false;
+        int Index() => customChosen ? modes.Count : modes.FindIndex(m => m.Matches(CurrentValue(s), s.Step)) is var i and >= 0 ? i : modes.Count;
+        void Show()
+        {
+            loading = true;
+            box.SelectedIndex = Index();
+            custom.IsEnabled = box.SelectedIndex == modes.Count;
+            loading = false;
+        }
+        Show();
+        var row = SettingFrame(s, box, 260, Show);
+        box.SelectionChanged += (_, _) =>
+        {
+            if (loading || box.SelectedIndex < 0) return;
+            customChosen = box.SelectedIndex == modes.Count;
+            if (!customChosen) WriteSetting(s, modes[box.SelectedIndex].Value);
+            PresetBroken(s.Key);
+            SaveGame();
+            foreach (var show in rowShows) show();
+            RefreshMarks();
+        };
+        return new Border { Child = new StackPanel { Children = { row, custom } } };
+    }
+
+    void WriteSetting(SettingDescription s, float value)
+    {
+        if (s.Graphics) game.SetGraphics(s.Key, value);
+        else game.Set(s.Key, value);
+    }
+
+    /// <summary>A continuous setting: a slider and its value, which can be typed (Enter or leaving the box; Esc puts it back).</summary>
     Border SliderRow(SettingDescription s)
     {
         bool log = s.Logarithmic && s.Min > 0;
         float step = s.Step > 0 ? s.Step : 1;
-        // A reversed setting's value is mirrored onto the slider (Min + Max - value), so right is always the better end.
-        float Mirror(float v) => s.Reversed ? s.Min + s.Max - v : v;
+        // A reversed setting's value is mirrored onto the slider (Min + Max - value; on a logarithmic one Min x Max / value), so right is always the better end.
+        float Mirror(float v) => !s.Reversed ? v : log ? s.Min * s.Max / v : s.Min + s.Max - v;
         float ToSlider(float v) => log ? MathF.Log(Mirror(v)) : Mirror(v);
         float Snap(float v) => Math.Clamp(MathF.Round(v / step) * step, s.Min, s.Max);
         float FromSlider(double x) => Snap(Mirror(log ? MathF.Exp((float)x) : (float)x));
-        float? Get() => s.Graphics ? game.GetGraphics(s.Key) : game.GetNumber(s.Key) ?? s.Default;
         // The range itself is not mirrored: Min..Max either way.
         var slider = new Slider { Minimum = log ? MathF.Log(s.Min) : s.Min, Maximum = log ? MathF.Log(s.Max) : s.Max, Margin = new(0, 0, 10, 0) };
-        bool typed = s.Labels is not { Length: > 0 };
-        var text = new TextBox { Width = 120, IsVisible = typed, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.NoWrap };
-        var value = new TextBlock { Classes = { "desc" }, Width = 120, IsVisible = !typed, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.NoWrap };
-        var reset = new Button { Content = Tr("Default"), Margin = new(6, 0, 0, 0), IsEnabled = s.Graphics || s.Default is not null };
+        var text = new TextBox { Width = 120, VerticalAlignment = VerticalAlignment.Center, TextWrapping = Avalonia.Media.TextWrapping.NoWrap };
         bool loading = false;
-        void ShowValue(float? v) => text.Text = value.Text = Tr(v is { } x ? s.Text(x) : "Game default");
         void Show()
         {
             loading = true;
-            var v = Get();
-            slider.Value = ToSlider(Math.Clamp(v ?? s.Shown, s.Min, s.Max));
-            ShowValue(v);
+            float v = CurrentValue(s);
+            slider.Value = ToSlider(Math.Clamp(v, s.Min, s.Max));
+            text.Text = Tr(s.Text(v));
             loading = false;
         }
+        Show();
+        var dock = new DockPanel();
+        DockPanel.SetDock(text, Dock.Right);
+        dock.Children.Add(text);
+        dock.Children.Add(slider);
+        var row = SettingFrame(s, dock, 380, Show);
         void Write(float v)
         {
             if (s.Graphics) game.SetGraphics(s.Key, v);
             else game.Set(s.Key, v);
             PresetBroken(s.Key);
+            RefreshMarks();
         }
         slider.ValueChanged += (_, e) =>
         {
             if (loading) return;
             float v = FromSlider(e.NewValue);
-            ShowValue(v);
+            text.Text = Tr(s.Text(v));
             Write(v);
             SaveGameSoon();
         };
@@ -341,7 +814,7 @@ public sealed partial class MainWindow
         void Commit()
         {
             // Anything unreadable, or the shown text left as it was, puts the row back.
-            if (Parse((text.Text ?? "").Trim()) is { } v && v != Get())
+            if (Parse((text.Text ?? "").Trim()) is { } v && MathF.Abs(v - CurrentValue(s)) > step / 2)
             {
                 Write(v);
                 SaveGame();
@@ -354,24 +827,7 @@ public sealed partial class MainWindow
             else if (e.Key == Key.Escape) { Show(); e.Handled = true; }
         };
         text.LostFocus += (_, _) => Commit();
-        reset.Click += (_, _) =>
-        {
-            if (s.Graphics) game.SetGraphics(s.Key, null);
-            else if (s.Default is { } d) game.Set(s.Key, d);
-            PresetBroken(s.Key);
-            SaveGame();
-            Show();
-        };
-        Show();
-        var dock = new DockPanel();
-        DockPanel.SetDock(reset, Dock.Right);
-        DockPanel.SetDock(text, Dock.Right);
-        DockPanel.SetDock(value, Dock.Right);
-        dock.Children.Add(reset);
-        dock.Children.Add(text);
-        dock.Children.Add(value);
-        dock.Children.Add(slider);
-        return Row(s.Name, s.Description, dock, 460);
+        return row;
     }
 
     // Dragging a slider writes the file once it rests, not on every step.
@@ -391,7 +847,7 @@ public sealed partial class MainWindow
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            Status($"Could not write {GameSettings.FileName}: {e.Message}");
+            Status(Tr("Could not write {1}: {2}", GameSettings.FileName, e.Message));
         }
     }
 }

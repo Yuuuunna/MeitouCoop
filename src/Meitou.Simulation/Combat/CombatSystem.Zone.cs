@@ -37,6 +37,58 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>
+    /// The characters each fighter's attack zone held when it last looked (the original's list +0x1e0, <c>calculateTargetsInAttackZone</c> FUN_1406087a0: built at the attack start
+    /// and at each blow's impact), <see cref="ZoneCapacity"/> slots per fighter and a count; double-buffered like the slots, so a defender reads the attacker's list of the last tick.
+    /// </summary>
+    int[] zoneRead = [], zoneWrite = [];
+    byte[] zoneCountRead = [], zoneCountWrite = [];
+
+    /// <summary>Whether <paramref name="defender"/> is in <paramref name="attacker"/>'s attack zone list (<c>FUN_140608460</c>), as of the last tick.</summary>
+    bool InZone(int attacker, int defender)
+    {
+        int at = attacker * ZoneCapacity;
+        for (int n = 0; n < zoneCountRead[attacker]; n++)
+            if (zoneRead[at + n] == defender) return true;
+        return false;
+    }
+
+    /// <summary>Builds fighter <paramref name="i"/>'s attack zone list for blow <paramref name="blow"/> (its own slot of the write buffer: partition-safe).</summary>
+    void RecordZone(World world, int i, in CombatSlot s, CharacterCold cold, CombatTechnique tech, int blow) => Keep(i, Scan(world, i, s, cold, tech, blow));
+
+    void Keep(int i, in ZoneScan scan)
+    {
+        int at = i * ZoneCapacity;
+        for (int n = 0; n < scan.Count; n++) zoneWrite[at + n] = scan.Slots[n];
+        zoneCountWrite[i] = (byte)scan.Count;
+    }
+
+    void ResizeZones(int size)
+    {
+        Array.Resize(ref zoneRead, size * ZoneCapacity);
+        Array.Resize(ref zoneWrite, size * ZoneCapacity);
+        Array.Resize(ref zoneCountRead, size);
+        Array.Resize(ref zoneCountWrite, size);
+    }
+
+    void CopyZones(int highWater)
+    {
+        Array.Copy(zoneRead, zoneWrite, highWater * ZoneCapacity);
+        Array.Copy(zoneCountRead, zoneCountWrite, highWater);
+    }
+
+    void SwapZones()
+    {
+        (zoneRead, zoneWrite) = (zoneWrite, zoneRead);
+        (zoneCountRead, zoneCountWrite) = (zoneCountWrite, zoneCountRead);
+    }
+
+    void HashZone(ref StateHasher hasher, int i)
+    {
+        hasher.Add(zoneCountRead[i]);
+        for (int n = 0; n < zoneCountRead[i]; n++) hasher.Add(zoneRead[i * ZoneCapacity + n]);
+    }
+
+    /// <summary>
     /// Emits blow <paramref name="blow"/> of fighter <paramref name="i"/>'s attack to everyone in its attack zone (<b>Verified</b>, <c>calculateTargetsInAttackZone</c> FUN_1406087a0
     /// and <c>attackImpactCheck</c> FUN_14060a2f0, docs/game/combat.md "Attack zone"), at most the technique's <c>max simultaneous hits</c>; nobody in it is a whiff and the swing
     /// keeps its 0.5 s pause. The zone is a box ahead along the heading, k the fighter's size, s = lerp(k, 0.45, 1), r its footprint, L its weapon's length: its centre
@@ -46,6 +98,18 @@ public sealed partial class CombatSystem
     /// fighter's feet, and the order is the target first, then by distance (the original's is the physics query's).
     /// </summary>
     void Strike(World world, int i, in CombatSlot s, CharacterCold cold, CombatTechnique tech, int blow, EffectBuffer effects)
+    {
+        var scan = Scan(world, i, s, cold, tech, blow);
+        Keep(i, in scan);
+        int hits = Math.Min(scan.Count, Math.Max(1, tech.MaxSimultaneousHits));
+        for (int n = 0; n < hits; n++) effects.Emit(i, scan.Slots[n], BlowEffect, s.AttackSeq, new Vector3(s.AttackTech, 0, 0), blow);
+        // The walls and doors in it take the hits left (looked up in the serial apply: the building lookups are not thread-safe).
+        int left = Math.Max(1, tech.MaxSimultaneousHits) - hits;
+        if (left > 0 && (Construction is not null || Locks is not null)) effects.Emit(i, i, ZoneBuildingsEffect, s.AttackSeq, new Vector3(left, s.AttackTech, 0), blow | (hits > 0 ? 0x100 : 0));
+    }
+
+    /// <summary>The characters in blow <paramref name="blow"/>'s attack zone, in the list's order (<see cref="Strike"/>).</summary>
+    ZoneScan Scan(World world, int i, in CombatSlot s, CharacterCold cold, CombatTechnique tech, int blow)
     {
         var zone = ZoneOf(world, i, s, cold, tech, blow);
         var scan = new ZoneScan
@@ -85,11 +149,7 @@ public sealed partial class CombatSystem
             z.Keys[at] = key;
             z.Slots[at] = c;
         });
-        int hits = Math.Min(scan.Count, Math.Max(1, tech.MaxSimultaneousHits));
-        for (int n = 0; n < hits; n++) effects.Emit(i, scan.Slots[n], BlowEffect, s.AttackSeq, default, blow);
-        // The walls and doors in it take the hits left (looked up in the serial apply: the building lookups are not thread-safe).
-        int left = Math.Max(1, tech.MaxSimultaneousHits) - hits;
-        if (left > 0 && (Construction is not null || Locks is not null)) effects.Emit(i, i, ZoneBuildingsEffect, s.AttackSeq, new Vector3(left, 0, 0), blow | (hits > 0 ? 0x100 : 0));
+        return scan;
     }
 
     /// <summary>A blow's attack zone on the ground: the box's centre and heading (X/Z), half width, half depth, the attacker's feet height and the half height test.</summary>
@@ -114,7 +174,7 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>The <see cref="Effect.Kind"/> of the walls and doors a blow's zone may still hit: the target is the attacker, <c>Arg</c> the blow (+0x100 when it hit a character),
-    /// <c>Amount</c> the attack number, <c>Position.X</c> the hits left.</summary>
+    /// <c>Amount</c> the attack number, <c>Position.X</c> the hits left, <c>Position.Y</c> the technique.</summary>
     public const int ZoneBuildingsEffect = 4;
 
     /// <summary>The construction system, for which sites are walls (<see cref="Construction.ConstructionSystem.Data"/>) and their footprints; null: blows hit no wall.</summary>
@@ -133,14 +193,14 @@ public sealed partial class CombatSystem
     {
         int a = e.Target, blow = e.Arg & 0xff, left = (int)e.Position.X;
         ref var A = ref write[a];
-        if (A.AttackSeq != (int)e.Amount || A.AttackTech < 0 || world.Characters.Cold(a) is not { Fighter: { } fighter, Stats: { } stats, Medical: { } medical } cold) return;
-        var tech = techniques[A.AttackTech];
+        if (A.CancelTick == (int)world.Tick || world.Characters.Cold(a) is not { Fighter: { } fighter, Stats: { } stats, Medical: { } medical } cold) return;
+        var tech = techniques[(int)e.Position.Y];
         var zone = ZoneOf(world, a, A, cold, tech, blow);
         float Eff(StatsEnumerated stat) => stats[stat] * stats.Scale * medical.StatMultiplier(stat);
         float str = Eff(StatsEnumerated.Strength);
         var packet = Powered(fighter.Unarmed
-            ? DamageFormulas.UnarmedPacket(UnarmedRating(cold, fighter), Eff(StatsEnumerated.Toughness), str, fighter.FistsItem, TargetKind.Human, null, fighter.DamageOutput, combat)
-            : DamageFormulas.Packet(Eff(fighter.WeaponSkill), Eff(StatsEnumerated.Dexterity) * fighter.DexterityMult, str, fighter.Weapon!, TargetKind.Human, null, fighter.DamageOutput, combat), tech, blow);
+            ? DamageFormulas.UnarmedPacket(UnarmedRating(world, a, cold, fighter), Eff(StatsEnumerated.Toughness), str, fighter.FistsItem, TargetKind.None, null, fighter.DamageOutput, combat)
+            : DamageFormulas.Packet(Eff(fighter.WeaponSkill), Eff(StatsEnumerated.Dexterity) * fighter.DexterityMult, str, fighter.Weapon!, TargetKind.None, null, fighter.DamageOutput, combat), tech, blow);
         float f = 2 * packet.Blunt + 0.5f * packet.Cut;
         var found = buildingScratch;
         found.Clear();
@@ -176,19 +236,29 @@ public sealed partial class CombatSystem
             if (doorId is not null && world.Fixtures.Find(doorId) is { } door) global::Meitou.Simulation.Locks.LockSystem.Strike(world, door, Math.Clamp(f, 20, 60));
             else if (wall is not null)
             {
-                var line = wall.WallParent is { } parent && world.Buildings.Find(parent) is { } p ? p : wall;
-                line.Progress -= Math.Clamp(f * 0.5f, 10, 60) * 0.003f;
-                if (line.Progress <= 0)
-                {
-                    line.Progress = 0;
-                    line.Destroyed = true;
-                    world.EmitSound(SoundKind.WallBroken, a, line.Position);
-                }
-                world.Buildings.Changed();
+                StrikeWall(world, wall, f, a);
             }
         }
-        if ((e.Arg & 0x100) == 0) A.LastOutcome = BlowOutcome.Hit;
+        if ((e.Arg & 0x100) == 0 && A.AttackSeq == (int)e.Amount && A.AttackTech >= 0) A.LastOutcome = BlowOutcome.Hit;
     }
 
     readonly List<(float Key, string? Door, Construction.BuildSite? Wall)> buildingScratch = [];
+
+    /// <summary>
+    /// A blow on a wall building (<c>WallBuilding</c> damage, docs/game/buildings-production.md): <paramref name="f"/> = 2 blunt + 0.5 cut of the attacker's packet; clamp(f / 2, 10, 60) x 0.003 off the
+    /// progress of the wall line (an attached piece's parent), destroyed at 0 with the wall-broken sound at <paramref name="attacker"/>. Shared by the fight's blows and the bashers' swings (Smashing, 272).
+    /// </summary>
+    internal static bool StrikeWall(World world, Construction.BuildSite wall, float f, int attacker)
+    {
+        var line = wall.WallParent is { } parent && world.Buildings.Find(parent) is { } p ? p : wall;
+        line.Progress -= Math.Clamp(f * 0.5f, 10, 60) * 0.003f;
+        if (line.Progress <= 0)
+        {
+            line.Progress = 0;
+            line.Destroyed = true;
+            world.EmitSound(SoundKind.WallBroken, attacker, line.Position);
+        }
+        world.Buildings.Changed();
+        return line.Destroyed;
+    }
 }

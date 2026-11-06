@@ -9,26 +9,30 @@ namespace Meitou.Game;
 /// </summary>
 sealed partial class PlayerInterface
 {
-    /// <summary>How near the pointer a container's projected middle must be, in pixels (an engine choice: the containers have no pick mesh).</summary>
-    const float ContainerPickPixels = 30;
+    /// <summary>Whether a place is above the floor shown in a building the player is in, where nothing is drawn (the host sets it; null: never).</summary>
+    public Func<Vector3, bool>? AboveViewedFloor { get; set; }
 
-    /// <summary>The container whose middle (half a unit above its origin) projects nearest the pixel within <see cref="ContainerPickPixels"/>, if any, and is not hidden behind a wall.</summary>
     ContainerSpot? PickContainer(Vector2 pixel) => PickContainerAt(pixel)?.Container;
 
-    /// <summary><see cref="PickContainer"/> with the ray distance to the container's middle.</summary>
+    /// <summary>
+    /// The container under the pixel with the ray distance, when not hidden behind a wall: the nearest the ray meets on its record's collision (hull prism, then triangles), as a building is
+    /// picked (docs/game/ui-input.md "Building picking and selection"); one without collision, or above the shown floor of the building the player is in, cannot be picked. The
+    /// collision is read on workers; until then it is not picked.
+    /// </summary>
     (ContainerSpot Container, float T)? PickContainerAt(Vector2 pixel)
     {
-        if (Ray(pixel) is not { } ray) return null;
-        (ContainerSpot, float)? best = null;
-        float bestDistance = ContainerPickPixels;
-        foreach (var c in session.CurrentSnapshot.Containers)
+        if (Ray(pixel) is not { } ray || buildHost?.Placement is not { } placement) return null;
+        var containers = session.CurrentSnapshot.Containers;
+        (ContainerSpot, float)? hit = null;
+        float bestT = float.MaxValue;
+        foreach (var c in containers)
         {
-            var middle = c.Position + new Vector3(0, 0.5f, 0);
-            if (Project(middle) is not { } at) continue;
-            float d = Vector2.Distance(at, pixel), t = Vector3.Distance(ray.Origin, middle);
-            if (d < bestDistance && !Hidden(ray, t)) (best, bestDistance) = ((c, t), d);
+            if (placement.Footprint(c.Record) is not { } footprint) continue;
+            var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, c.Yaw);
+            if (BuildingRayT(ray, footprint.Place(c.Position, yaw), footprint.YMin, footprint.YMax, c.Record, c.Position, c.Position.Y, yaw) is { } t && t < bestT && AboveViewedFloor?.Invoke(c.Position) != true && !Hidden(ray, t))
+                (hit, bestT) = ((c, t), t);
         }
-        return best;
+        return hit;
     }
 
     /// <summary>

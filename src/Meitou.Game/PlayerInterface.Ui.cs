@@ -71,6 +71,8 @@ sealed partial class PlayerInterface
         // The title's start, load and import windows leave its buttons live (the original's title windows are not modal): another button replaces them.
         faithfulScreens.PassThrough = id => lobby is null && id is "new-game" or "load" or "import" && faithfulScreens.IsOpen("title");
         faithfulScreens.RegisterPanel(TownScreen, TownPanelLayout(mainPanel));
+        faithfulScreens.Register(FeedbackScreen, FeedbackLayout(), modal: true);
+        feedbackButtonLayout = MyGuiTemplates.Expand(FeedbackButtonLayout(), uiResources);
         faithfulScreens.Follow("bag", "inventory");   // the bag window is married to the inventory, opened and closed by OPEN BAG only
         faithfulScreens.Follow("loot-bag", "loot");
         faithfulScreens.Activated += FaithfulAction;
@@ -99,7 +101,7 @@ sealed partial class PlayerInterface
 
     public void CreateUiPainter(DebugOverlay overlay, Func<string, string?> resolve)
     {
-        uiPainter = new(overlay, uiResources, resolve) { Mode = UiMode };
+        uiPainter = new(overlay, uiResources, resolve) { Mode = UiMode, FontSizeSetting = fontSize };
         findAsset = resolve;
         // The screens' pictures are read ahead (the overview's map is 43 MB), so that opening a screen only uploads them.
         uiPainter.Prefetch(FaithfulScreenFiles.SelectMany(s => faithfulScreens.Layout(s.Id).Widgets).Concat(faithfulHud.Widgets)
@@ -143,9 +145,6 @@ sealed partial class PlayerInterface
         b.Text["condition"] = lead?.Body is { } status ? status.Dead ? "Dead" : status.Unconscious ? "Unconscious" : status.NeedsAid ? "Needs first aid" : "Conscious" : "No character selected";
         b.Text["blood"] = lead?.Body is { } blood ? $"Blood   {blood.Blood * 100:0}%" : "Blood --";
         b.Text["body"] = lead?.Body is { } worst ? $"Worst body part   {worst.WorstPart * 100:0}%" : "Body --";
-        b.Text["bloodFraction"] = (lead?.Body?.Blood ?? 0).ToString(CultureInfo.InvariantCulture);
-        b.Text["bodyFraction"] = (lead?.Body?.WorstPart ?? 0).ToString(CultureInfo.InvariantCulture);
-        b.Text["hungerFraction"] = ((lead?.Body?.Hunger ?? 0) / 3).ToString(CultureInfo.InvariantCulture);
         var roster = session.CurrentSnapshot.Characters.Where(c => c.IsPlayer).ToArray();
         b.Text["squad.count"] = roster.Length.ToString(CultureInfo.InvariantCulture);
         for (int i = 0; i < Math.Min(8, roster.Length); i++) b.Text[$"squad.{i}.name"] = roster[i].Name;
@@ -163,6 +162,7 @@ sealed partial class PlayerInterface
         }
         b.Actions["ShortcutInventoryButton"] = "meitou:inventory";
         b.Actions["ShortcutStatsButton"] = "meitou:stats";
+        b.Actions["ShortcutHelpButton"] = "meitou:help";
         b.Text["ShortcutTechButton"] = "TEC";
         foreach (string name in new[] { "ShortcutMapButton", "ShortcutTechButton", "ShortcutSquadButton" }) b.Actions[name] = "faithful:" + name;
         b.Actions["OrdersMedicButton"] = "meitou:medic";
@@ -197,7 +197,7 @@ sealed partial class PlayerInterface
         {
             var (_, _, _, buildingStatus, bad, _) = BuildingLines(buildingNow);
             b.Text["HealthText"] = buildingStatus;
-            b.Properties["HealthText"] = new Dictionary<string, string> { ["TextAlign"] = "Center", ["TextColour"] = bad ? BadColour : MyGuiColours.InkText };
+            b.Properties["HealthText"] = new Dictionary<string, string> { ["TextAlign"] = "Center", ["TextColour"] = bad ? BadColour : MyGuiColours.TemplateInk(uiResources, "Kenshi_TextboxStandardText") };
         }
         BindJobs(b, own);
         BindSquadTabs(b);
@@ -215,6 +215,20 @@ sealed partial class PlayerInterface
     IReadOnlyList<UiControl> ArrangeUi()
     {
         PollSessionMessages();
+        SyncScreens();
+        bool hud = !TitleOpen && !EditorOpen && !conversationShown;   // the conversation panel covers the HUD bar (engine reading of its layout)
+        SyncTownPanel(hud);
+        if (!TitleOpen) ReleaseTitleLogo();
+        var (controls, modalFrom) = ArrangedBase(hud);
+        AddFrameControls(controls, hud, modalFrom);
+        pointerOverUi = faithfulScreens.Contains(mouse) || MyGuiPresentation.HitTest(controls, mouse.X, mouse.Y) is not null;
+        AddHoverLabel(controls);
+        return controls;
+    }
+
+    /// <summary>Once an arrangement: the screens that follow the world opened, closed or filled.</summary>
+    void SyncScreens()
+    {
         SyncTradeScreens();
         SyncMachineScreens();
         SyncLootScreen();
@@ -224,11 +238,17 @@ sealed partial class PlayerInterface
         SyncDialogueScreen();
         SyncCharacterTradeScreen();
         ValidateInventoryDrag();
-        var b = BindUi();
         faithfulScreens.FocusRing = UiMode == UiMode.Meitou;
-        bool hud =!TitleOpen && !EditorOpen && !conversationShown;   // the conversation panel covers the HUD bar (engine reading of its layout)
-        SyncTownPanel(hud);
-        var controls = hud ? MyGuiPresentation.Arrange(faithfulHud, Width, Height, b, uiResources.Layers).ToList() : [];
+    }
+
+    /// <summary>
+    /// The interface's base (<see cref="ArrangedBase"/>): the HUD and its slots, the squad bar, the HUD text, the tutorial panel and the open screens; with where
+    /// the first modal screen (the Esc menu, save and load, message boxes) starts, -1 for none.
+    /// </summary>
+    (List<UiControl> Controls, int ModalFrom) ArrangeBase(bool hud)
+    {
+        var b = BindUi();
+        var controls = hud ? ArrangeHud(b) : [];
         UiRect FaithfulSlot(string name) => controls.FirstOrDefault(c => c.Name == name)?.Bounds ?? default;
         var slots = new Dictionary<string, UiRect>
         {
@@ -243,38 +263,87 @@ sealed partial class PlayerInterface
         AddHudText(controls);
         AddJobRemoveButtons(controls);
         if (hud) AddTutorialPanel(controls);
+        int modalFrom = AddScreens(controls);
+        return (controls, modalFrom);
+    }
+
+    /// <summary>The open screens over <paramref name="controls"/>; returns where the first modal one starts (-1: none).</summary>
+    int AddScreens(List<UiControl> controls)
+    {
+        int modalFrom = -1;
         foreach (var screen in faithfulScreens.Arrange(Width, Height, BindFaithfulScreen, AddFaithfulContent))
         {
+            if (ShotWithoutMenus && FeedbackShotHides.Contains(screen.Id)) continue;
+            if (modalFrom < 0 && faithfulScreens.IsModal(screen.Id)) modalFrom = controls.Count;
             if (screen.Id == "editor") controls.AddRange(EditorBackdrop());
             controls.AddRange(screen.Controls.Where(c => UiMode == UiMode.Faithful ||
                 !c.Properties.TryGetValue("ImageResource", out var resource) || resource != "Kenshi_TitleScreen"));
-            if (screen.Id == "title" && UiMode == UiMode.Meitou && !showCredits && TitleLogoReady())
-            {
-                float logoWidth = Math.Min(Width * 0.3f, Height * 0.6f);
-                controls.Add(new("MeitouTitle", "ImageBox", new(Width * 0.975f - logoWidth, Height * 0.04f, logoWidth, logoWidth * 0.469f), "", "", "", true,
-                    new Dictionary<string, string> { ["ImageTexture"] = TitleLogoTexture }, Vector4.Zero, Pickable: false));
-            }
-            else if (screen.Id == "title" && UiMode == UiMode.Meitou && !showCredits)
-                controls.Add(new("MeitouTitle", "TextBox", new(Width * 0.6f, Height * 0.04f, Width * 0.37f, Height * 0.14f), "KENSHI", "", "", true,
-                    new Dictionary<string, string> { ["FontName"] = "Meitou_TitleFont", ["TextAlign"] = "Right VCenter" },
-                    Vector4.Zero, new Vector4(0.89f, 0.84f, 0.71f, 1), TextScale: Height / 720f));
+            if (screen.Id == "title" && UiMode == UiMode.Meitou && !showCredits) AddTitleMark(controls);
         }
+        return modalFrom;
+    }
+
+    /// <summary>The Meitou title's mark, top right: the logo once it is loaded, the word until then.</summary>
+    void AddTitleMark(List<UiControl> controls)
+    {
+        if (TitleLogoReady())
+        {
+            float logoWidth = Math.Min(Width * 0.3f, Height * 0.6f);
+            controls.Add(new("MeitouTitle", "ImageBox", new(Width * 0.975f - logoWidth, Height * 0.04f, logoWidth, logoWidth * 0.469f), "", "", "", true,
+                new Dictionary<string, string> { ["ImageTexture"] = TitleLogoTexture }, Vector4.Zero, Pickable: false));
+        }
+        else
+            controls.Add(new("MeitouTitle", "TextBox", new(Width * 0.6f, Height * 0.04f, Width * 0.37f, Height * 0.14f), "KENSHI", "", "", true,
+                new Dictionary<string, string> { ["FontName"] = "Meitou_TitleFont", ["TextAlign"] = "Right VCenter" },
+                Vector4.Zero, new Vector4(0.89f, 0.84f, 0.71f, 1), TextScale: Height / 720f));
+    }
+
+    /// <summary>
+    /// Every frame over the base: what moves with the camera or real time. The name tags, ground item labels and task bars go under everything (the original's
+    /// Back layer), the floaters over the panels and under the modal screens (its Dialog layer).
+    /// </summary>
+    void AddFrameControls(List<UiControl> controls, bool hud, int modalFrom)
+    {
         if (hud) AddTutorialHighlight(controls);
         AddNotice(controls);
         AddInventoryDrag(controls);
-        var nameTags = new List<UiControl>();   // the tags are on the original's Back layer: under every panel
+
+        var nameTags = new List<UiControl>();
         AddItemLabels(nameTags);
         AddNameTags(nameTags);
         AddTaskBars(nameTags);
         controls.InsertRange(0, nameTags);
-        AddFloaters(controls);   // the original's Dialog layer: over the panels
+
+        var floaterControls = new List<UiControl>();
+        AddFloaters(floaterControls);
+        controls.InsertRange(modalFrom < 0 ? controls.Count : modalFrom + nameTags.Count, floaterControls);
+
         AddSpeech(controls);
         AddBuildReadout(controls);
         AddContextMenu(controls);
         AddPlayerTradeControls(controls);
-        pointerOverUi = faithfulScreens.Contains(mouse) || MyGuiPresentation.HitTest(controls, mouse.X, mouse.Y) is not null;
-        AddHoverLabel(controls);
-        return controls;
+        AddFeedbackButton(controls);
+    }
+
+    /// <summary>
+    /// The HUD's last arrangement and what it was made from (<see cref="MyGuiPresentation.Arrange"/> depends on nothing else): reused while the bindings stay the same, so most
+    /// frames skip the layout; remade at least every <see cref="HudRearrangeCalls"/> calls in case a binding is missed by <see cref="UiBindings.ContentEquals"/>.
+    /// </summary>
+    UiBindings? hudBindings;
+    IReadOnlyList<UiControl> hudControls = [];
+    (MyGuiLayout Layout, int Width, int Height, IReadOnlyList<string> Layers, Meitou.Localisation.GameLanguage Language) hudKey;
+    int hudReuses;
+    const int HudRearrangeCalls = 30;
+
+    List<UiControl> ArrangeHud(UiBindings b)
+    {
+        (MyGuiLayout, int, int, IReadOnlyList<string>, Meitou.Localisation.GameLanguage) key = (faithfulHud, Width, Height, uiResources.Layers, Meitou.Localisation.Loc.Language);
+        if (hudBindings is null || !key.Equals(hudKey) || ++hudReuses >= HudRearrangeCalls || !b.ContentEquals(hudBindings))
+        {
+            hudControls = MyGuiPresentation.Arrange(faithfulHud, Width, Height, b, uiResources.Layers);
+            (hudBindings, hudKey, hudReuses) = (b, key, 0);
+        }
+        return [.. hudControls];
     }
 
     bool UiMouseDown(Vector2 p)
@@ -307,12 +376,20 @@ sealed partial class PlayerInterface
         return true;
     }
 
+    /// <summary>The F1 key and the HLP button share one handler: toggle the Tutorials window (FUN_1406e1f20; ui-screens.md).</summary>
+    void ToggleHelpWindow()
+    {
+        if (faithfulScreens.IsOpen("tutorials")) faithfulScreens.Close("tutorials"); else faithfulScreens.Open("tutorials");
+    }
+
     void ExecuteUiAction(string action, string argument)
     {
         SoundForAction(action, argument);
         if (action.StartsWith("speed:", StringComparison.Ordinal)) PressButton(int.Parse(action[6..], CultureInfo.InvariantCulture));
         else if (action is "inventory" or "stats")
         {
+            // toggle_inventory does nothing, opening or closing, without a living lead of the player's (FUN_140724980); the selection holds only player characters.
+            if (action == "inventory" && (InventoryOwner() is not { } owner || owner.Body is { Dead: true })) return;
             if (faithfulScreens.IsOpen(action))
             {
                 faithfulScreens.Close(action);
@@ -322,6 +399,7 @@ sealed partial class PlayerInterface
             else if (action == "inventory" && InventoryOwner() is { } lead && pinnedInventories.FirstOrDefault(p => p.Value == lead.Id).Key is { } slot) faithfulScreens.Open(slot);
             else faithfulScreens.Open(action);
         }
+        else if (action == "help") ToggleHelpWindow();
         else if (action == "extendedstats") infoExpanded = !infoExpanded;
         else if (action is "floor-up" or "floor-down") Floor?.Step(action == "floor-up" ? 1 : -1);
         else if (action == "build") ToggleBuildMode();
@@ -358,9 +436,47 @@ sealed partial class PlayerInterface
     void DrawGameUi(DebugOverlay overlay, int width, int height, DebugOverlay.OverlayPass? pass = null)
     {
         IReadOnlyList<UiControl> controls = ArrangeUi();
+        if (cameraGrid) DrawCameraGrid(overlay, width, height);
         if (UiMode == UiMode.Faithful && LoadBar is { Visible: true } bar) controls = [.. controls, .. bar.Controls(uiResources, width, height)];
         uiPainter?.Draw(controls, width, height, mouse, $"meitou:speed.{Array.IndexOf(ButtonSpeeds, session.TimeScale)}",
             minimumTextPixels: TitleOpen ? 0 : StandardPixels, pass: pass);
+    }
+
+    /// <summary>The rule-of-thirds camera grid (Shift+;, toggle_camera_grid, event 0x29: the widget "CameraGrid", <c>FUN_1406e5fc0</c>), under the interface.</summary>
+    bool cameraGrid;
+    int gridHold;
+    bool gridRestore;
+
+    /// <summary>
+    /// The screenshot event with the camera grid shown (the frame-end callback <c>FUN_14082b6e0</c>, <b>Verified</b>): the "CameraGrid" widget is hidden and the picture is taken two frames later,
+    /// when the widget is shown again (<see cref="EndScreenshot"/>); with the grid hidden or missing the picture is taken at once. Returns whether the picture is taken this frame.
+    /// </summary>
+    public bool GateScreenshot(bool requested)
+    {
+        if (gridHold > 0) return --gridHold == 0;
+        if (!requested) return false;
+        if (!cameraGrid) return true;
+        (cameraGrid, gridRestore, gridHold) = (false, true, 2);
+        return false;
+    }
+
+    /// <summary>The picture is taken: the camera grid hidden for it is shown again.</summary>
+    public void EndScreenshot()
+    {
+        if (!gridRestore) return;
+        (cameraGrid, gridRestore) = (true, false);
+    }
+
+
+    static void DrawCameraGrid(DebugOverlay overlay, int width, int height)
+    {
+        var white = Vector4.One;
+        for (int i = 1; i <= 2; i++)
+        {
+            float x = MathF.Round(width * i / 3f), y = MathF.Round(height * i / 3f);
+            overlay.Line(x, 0, x, height, 1, white);
+            overlay.Line(0, y, width, y, 1, white);
+        }
     }
 
     /// <summary>For screenshot reviews: open the same panel through its registered button action.</summary>

@@ -127,7 +127,7 @@ public sealed partial class ProductionSystem
     {
         int limit = storage.LimitOf(item);
         foreach (var other in storage.Items)
-            if (other.Record == item.Record && other.Quality == item.Quality && other.StolenFrom == item.StolenFrom && other.Section == "main" && other.Quantity < limit) return true;
+            if (other.Record == item.Record && other.Quality == item.Quality && other.Mark == item.Mark && other.Section == "main" && other.Quantity < limit) return true;
         return storage.FindCell("main", item.Width, item.Height, out _, out _);
     }
 

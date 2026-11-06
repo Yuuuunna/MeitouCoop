@@ -19,12 +19,30 @@ public sealed record ResearchData
     /// <summary><c>cost</c>: items and counts (v0) paid when it is queued.</summary>
     public IReadOnlyList<(string Item, int Count)> Cost { get; init; } = [];
     public IReadOnlyList<string> EnableBuildings { get; init; } = [];
-    /// <summary><c>repeats</c>: how many more times it can be researched after the first (fcs.def).</summary>
+    /// <summary>
+    /// <c>repeats</c>: how many times it can be researched in all, at least once (<b>Verified</b>, the loader <c>FUN_140834b70</c> makes repetitions 1 .. repeats - 1 beside
+    /// the base record).
+    /// </summary>
     public int Repeats { get; init; }
-    /// <summary><c>repeat mult</c>: the cost factor per repetition (<b>Observed</b>, <c>FUN_1408320a0</c>).</summary>
+    /// <summary><c>repeat mult</c>: the cost and time factor per repetition (<b>Verified</b>, <c>FUN_1408320a0</c>).</summary>
     public float RepeatMult { get; init; } = 1;
     /// <summary>The crafts it unlocks (<c>enable item</c>, <c>enable armour</c>, ...): kind, record and the repetition (v0, 0 = the first) that unlocks it.</summary>
     public IReadOnlyList<(CraftKind Kind, string Id, int Repetition)> EnableCrafts { get; init; } = [];
+    /// <summary>The repetition (v0) and level floor (v1) of every entry of the eight <c>enable</c> lists (<see cref="UnlockFields"/>).</summary>
+    public IReadOnlyList<(int Repetition, int Level)> EnableFloors { get; init; } = [];
+
+    /// <summary>
+    /// The <c>level</c> of repetition <paramref name="times"/> (0 the first; <b>Verified</b>, <c>FUN_1408320a0</c>, <c>FUN_140831e60</c>): with <c>repeats</c> above 0 each repetition keeps the
+    /// <c>enable</c> entries whose v0 is its number and its level is raised to at least their v1; without repeats nothing is filtered and the level stays.
+    /// </summary>
+    public int LevelAt(int times)
+    {
+        int level = Level;
+        if (Repeats > 0)
+            foreach (var (repetition, floor) in EnableFloors)
+                if (repetition == times && floor > level) level = floor;
+        return level;
+    }
 
     /// <summary><c>improve buildings</c>: the BUILDINGs its <see cref="ProductionMult"/>, <see cref="PowerIncrease"/> and <see cref="CapacityIncrease"/> apply to (<b>Observed</b>, <c>FUN_140831a60</c>).</summary>
     public IReadOnlyList<string> ImproveBuildings { get; init; } = [];
@@ -48,20 +66,39 @@ public sealed record ResearchData
         ("enable crossbow", CraftKind.Crossbow), ("enable backpack", CraftKind.Backpack), ("enable robotics", CraftKind.Robotics),
     ];
 
-    /// <summary>The cost of its repetition <paramref name="times"/> (0 the first): each count x <c>repeat mult</c>^times, rounded down (engine reading).</summary>
-    public IEnumerable<(string Item, int Count)> CostAt(int times)
+    /// <summary>
+    /// The factor of repetition <paramref name="times"/> (0 the first; <b>Verified</b>, <c>FUN_1408320a0</c>): 1 for the first two, then <c>repeat mult</c>^(times - 1) by
+    /// repeated multiplication, at least 1.
+    /// </summary>
+    float FactorAt(int times)
     {
-        float f = MathF.Pow(RepeatMult, times);
-        foreach (var (item, count) in Cost) yield return (item, Math.Max(1, (int)(count * f)));
+        float f = 1;
+        for (int k = 1; k < times; k++) f *= RepeatMult;
+        return MathF.Max(1, f);
     }
 
     /// <summary>
-    /// The research hours (<b>Observed</b>, <c>FUN_14082ed10</c>): <c>time x research rate x level increase^(level - 1) / option</c>, the power by repeated multiplication (as the exe).
+    /// The cost of its repetition <paramref name="times"/> (0 the first; <b>Verified</b>, <c>FUN_1408320a0</c>): each count x the factor, rounded down, and at least
+    /// count + times; counts of 0 are paid nothing.
     /// </summary>
-    public float Hours(GameConstants constants, float option = 1)
+    public IEnumerable<(string Item, int Count)> CostAt(int times)
     {
-        float hours = Time * constants.ResearchRate / option;
-        for (int i = 1; i < Level; i++) hours *= constants.ResearchLevelIncreaseRate;
+        float f = FactorAt(times);
+        foreach (var (item, count) in Cost)
+            if (Math.Max((int)(count * f), count + times) is var n and > 0) yield return (item, n);
+    }
+
+    /// <summary>The <c>time</c> of its repetition <paramref name="times"/>: x the repetition's factor, rounded down (<b>Verified</b>, <c>FUN_1408320a0</c>).</summary>
+    public int TimeAt(int times) => (int)(Time * FactorAt(times));
+
+    /// <summary>
+    /// The research hours of repetition <paramref name="times"/> (<b>Observed</b>, <c>FUN_14082ed10</c>): <c>time x research rate x level increase^(level - 1) / option</c> (the repetition's <see cref="LevelAt"/>), the
+    /// power by repeated multiplication (as the exe).
+    /// </summary>
+    public float Hours(GameConstants constants, float option = 1, int times = 0)
+    {
+        float hours = TimeAt(times) * constants.ResearchRate / option;
+        for (int i = 1, level = LevelAt(times); i < level; i++) hours *= constants.ResearchLevelIncreaseRate;
         return hours;
     }
 
@@ -76,7 +113,7 @@ public sealed record ResearchData
         IsLevelUpgrade = r.GetBool("is level upgrade"),
         BlueprintOnly = r.GetBool("blueprint only"),
         Requirements = [.. r.GetReferences("requirements").Select(l => l.TargetStringId)],
-        Cost = [.. r.GetReferences("cost").Where(l => l.Values.Value0 > 0).Select(l => (l.TargetStringId, l.Values.Value0))],
+        Cost = [.. r.GetReferences("cost").Where(l => l.Values.Value0 >= 0).Select(l => (l.TargetStringId, l.Values.Value0))],
         EnableBuildings = [.. r.GetReferences("enable buildings").Select(l => l.TargetStringId)],
         Repeats = Math.Max(0, r.GetInt("repeats")),
         RepeatMult = r.GetFloat("repeat mult", 1),
@@ -85,6 +122,7 @@ public sealed record ResearchData
         PowerIncrease = r.GetInt("power increase"),
         CapacityIncrease = r.GetInt("power capacity increase"),
         EnableCrafts = [.. EnableFields.SelectMany(e => r.GetReferences(e.Field).Select(l => (e.Kind, l.TargetStringId, l.Values.Value0)))],
+        EnableFloors = [.. UnlockFields.SelectMany(f => r.GetReferences(f).Select(l => (l.Values.Value0, l.Values.Value1)))],
         Unlocks = [.. UnlockFields.SelectMany(f => r.GetReferences(f).Select(l => (f, l.TargetStringId)))],
     };
 

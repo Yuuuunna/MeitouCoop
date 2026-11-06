@@ -107,24 +107,67 @@ public static class SavedKit
 
     internal static SaveItem FromItem(ItemInstance i) => FromItem(i, i.Section);
 
-    /// <summary>A saved item written under <paramref name="section"/> (a machine grid whose original section name is not Meitou's <c>main</c>).</summary>
-    internal static SaveItem FromItem(ItemInstance i, string section) => new()
-    {
-        BaseId = i.Record, MaterialId = i.MaterialId, CompanyId = i.CompanyId, Crafter = i.Crafter, Uniform = i.Uniform, ColourId = i.ColourId, Section = section, X = i.X, Y = i.Y, Quantity = i.Quantity, Level = i.Level,
-        ItemFunction = i.ItemFunction, Quality = i.Quality, Charges = i.Charges, Source = i.Saved,
-        Damage = i.LimbDamage, Wear = i.LimbWear, Stun = i.LimbStun, Death = i.Death, Unique = i.Unique,
-        Lock = i.Lock is { } l ? new SaveItemLock(l.Level, l.EffectivelyLocked, l.Broken, l.Hardness) : null,
-        Contents = i.Contents is { } bag ? FromInventory(bag) : null,
-    };
+    /// <summary>
+    /// The saved items whose <c>ownedby</c> names a character (<see cref="ItemInstance.Owner"/>) while a save is captured: the capture writes the owner's handle on each once every character
+    /// has one (null: not capturing).
+    /// </summary>
+    [ThreadStatic] internal static List<(SaveItem Item, CharacterId Owner)>? OwnerNotes;
 
-    /// <summary>Puts the non-natural limbs of <paramref name="medical"/> (stumps, prosthetics, crushed) into <paramref name="loadout"/>.</summary>
+    /// <summary>
+    /// A saved item written under <paramref name="section"/> (a machine grid whose original section name is not Meitou's <c>main</c>). Its <c>ownedby</c> is the robbed character's handle, the null
+    /// handle when the owner read from the save was cleared since, else the record's own.
+    /// </summary>
+    internal static SaveItem FromItem(ItemInstance i, string section)
+    {
+        var saved = new SaveItem
+        {
+            BaseId = i.Record, MaterialId = i.MaterialId, CompanyId = i.CompanyId, Crafter = i.Crafter, Uniform = i.Uniform, ColourId = i.ColourId, Section = section, X = i.X, Y = i.Y, Quantity = i.Quantity, Level = i.Level,
+            ItemFunction = i.ItemFunction, Quality = i.Quality, Charges = i.Charges, Source = i.Saved,
+            Damage = i.LimbDamage, Wear = i.LimbWear, Stun = i.LimbStun, Death = i.Death, Unique = i.Unique,
+            Lock = i.Lock is { } l ? new SaveItemLock(l.Level, l.EffectivelyLocked, l.Broken, l.Hardness) : null,
+            Contents = i.Contents is { } bag ? FromInventory(bag) : null,
+            OwnedBy = !i.Owner.IsNone || i.OwnerFromSave ? Hand.Null : null,
+        };
+        if (!i.Owner.IsNone) OwnerNotes?.Add((saved, i.Owner));
+        return saved;
+    }
+
+    /// <summary>Puts the non-natural limbs of <paramref name="medical"/> (stumps, prosthetics, crushed) and a cut-off head into <paramref name="loadout"/>.</summary>
     public static void SetLimbs(Loadout loadout, Bodies.MedicalState? medical, GameDatabase db)
     {
         for (int k = 0; k < loadout.Limbs.Length; k++)
             loadout.Limbs[k] = medical?.LimbPart(k) is { Limb: not Bodies.LimbState.Original } p
-                ? new LoadoutLimb((int)p.Limb, p.Limb == Bodies.LimbState.Replaced && p.Replacement is { } r ? db.Find(r.StringId) : null)
+                ? new LoadoutLimb((int)p.Limb, p.Limb == Bodies.LimbState.Replaced && p.Replacement is { } r ? db.Find(r.StringId) : null,
+                    Colour: ColourOf(db, p.ReplacementItem?.ColourId))
                 : null;
+        loadout.Decapitated = medical?.Decapitated == true;
     }
+
+    /// <summary>
+    /// Gives <paramref name="loadout"/> the limbs saved in <paramref name="medical"/> (a MEDICAL_STATE of <paramref name="file"/>) without a <see cref="Bodies.MedicalState"/>,
+    /// as <see cref="SavedLimbs.Apply"/> reads them: a replaced slot whose prosthetic record is missing is a stump.
+    /// </summary>
+    public static void SetLimbs(Loadout loadout, SaveFile file, FcsRecord medical, GameDatabase db)
+    {
+        int bits = medical.Ints.GetValueOrDefault(SaveLimbs.Key);
+        var fitted = SaveLimbs.Read(file, medical);
+        for (int k = 0; k < loadout.Limbs.Length; k++)
+        {
+            int state = SaveLimbs.StateOf(bits, k);
+            var prosthetic = state == 2 && fitted[k] is { } item && db.Find(item.BaseId) is { Type: FcsRecordType.LIMB_REPLACEMENT } record ? record : null;
+            loadout.Limbs[k] = state switch
+            {
+                0 => null,
+                2 when prosthetic is not null => new LoadoutLimb(2, prosthetic, fitted[k]!.Level, ColourOf(db, fitted[k]!.ColourId)),
+                2 => new LoadoutLimb(1),
+                _ => new LoadoutLimb(state),
+            };
+        }
+    }
+
+    /// <summary>The COLOR_DATA a saved or live item's <c>color sid</c> names (null: none or not in the data).</summary>
+    static GameRecord? ColourOf(GameDatabase db, string? colourId) =>
+        colourId is { Length: > 0 } && db.Find(colourId) is { Type: FcsRecordType.COLOR_DATA } colour ? colour : null;
 
     /// <summary>A copy of <paramref name="loadout"/> (to give it limbs without touching a look another character may share).</summary>
     public static Loadout Copy(Loadout loadout)
@@ -136,7 +179,9 @@ public static class SavedKit
         };
         copy.Clothing.AddRange(loadout.Clothing);
         copy.Weapons.AddRange(loadout.Weapons);
+        copy.Carried.AddRange(loadout.Carried);
         loadout.Limbs.CopyTo(copy.Limbs, 0);
+        copy.Decapitated = loadout.Decapitated;
         return copy;
     }
 

@@ -69,8 +69,10 @@ sealed partial class GameHost
             doorSoundsFor = session.WorldIdentity;
         }
         var db = scene.Database;
-        sounds.Update(session.CurrentSnapshot.Doors.Select(d => KeyValuePair.Create($"{d.Key.Building}#{d.Key.Door}",
-            new DoorSoundState(d.Value.Position, TypeOf(d.Value.Record), (int)d.Value.Motion, d.Value.Broken))), eye);
+        sounds.Begin();
+        foreach (var (key, door) in session.CurrentSnapshot.Doors)
+            sounds.Update(key, new DoorSoundState(door.Position, TypeOf(door.Record), (int)door.Motion, door.Broken), eye);
+        sounds.End(eye);
 
         int TypeOf(string record)
         {
@@ -146,7 +148,7 @@ sealed partial class GameHost
         if (data is null || !data.PowersEmitterEachFrame) return true;
         if (data.IsWind)
         {
-            if (data.WindRotor is { } rotor) { levelWind.Add((emitter, rotor)); efficiency = LevelWindShare(emitter.Position, rotor); }
+            if (db.Find(emitter.Building) is { } record && WorldObjectLayout.WindRotor(db, record, emitter.Origin) is { } rotor) { levelWind.Add((emitter, rotor)); efficiency = LevelWindShare(emitter.Position, rotor); }
         }
         else if (data.IsGenerator || data.IsBattery || (data.PowerOperators == 0 && data.PowerOutput == 0)) efficiency = data.OutputRate;
         else return false;

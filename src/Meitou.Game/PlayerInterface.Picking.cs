@@ -96,10 +96,10 @@ sealed partial class PlayerInterface
     public CharacterId? Pick(Vector2 pixel) => PickWhere(pixel, c => c.IsPlayer);
 
     /// <summary>A living character of anyone else's under the pixel: what a right click attacks (hostility is not checked yet).</summary>
-    public CharacterId? PickTarget(Vector2 pixel) => PickWhere(pixel, c => !c.IsPlayer && c.Body is { Dead: false, Unconscious: false });
+    public CharacterId? PickTarget(Vector2 pixel) => PickWhere(pixel, c => !c.IsPlayer && c.Standing);
 
     /// <summary>A living trader under the pixel (a member of a squad with a shop): a right click trades with it, or attacks it when its faction is hostile (the world decides).</summary>
-    public CharacterId? PickTrader(Vector2 pixel) => PickWhere(pixel, c => c.IsTrader && c.Body is not { Dead: true } and not { Unconscious: true });
+    public CharacterId? PickTrader(Vector2 pixel) => PickWhere(pixel, c => c.IsTrader && c.Standing);
 
     /// <summary>A knocked-out or dead character under the pixel that nobody carries (what a pick-up or a loot is for); <paramref name="ownOnly"/> takes only the player's.</summary>
     public CharacterId? PickDowned(Vector2 pixel, bool ownOnly = false) =>
@@ -124,7 +124,7 @@ sealed partial class PlayerInterface
         float bestT = float.MaxValue;
         foreach (var c in session.CurrentSnapshot.Characters)
         {
-            if (!accept(c)) continue;
+            if (!accept(c) || HiddenInWorld?.Invoke(c.Id) == true) continue;   // not drawn: not picked, as the original's pick needs a visible character
             // The drawn body where the renderer has it (every part of a person or an animal, as posed); else a capsule from the feet up.
             float? hit = MeshHit?.Invoke(c.Id, ray.Origin, ray.Direction);
             if (hit is { } meshT)
@@ -141,16 +141,21 @@ sealed partial class PlayerInterface
                 best = c.Id;
             }
         }
-        return best is not { } found || Hidden(ray, bestT) ? null : (found, bestT);
+        (CharacterId Id, float T)? picked = best is not { } found || Hidden(ray, bestT) ? null : (found, bestT);
+        // An occupied cage with occupant selection that the ray meets first gives its occupant (the original's FUN_1407fb410 for the cage's occupant).
+        if (PickCageAt(pixel) is { Cage: { OccupantSelection: true, Occupant: { IsNone: false } occupant }, T: var cageT } && (picked is not { } nearer || cageT < nearer.T)
+            && session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == occupant) is { } held && accept(held) && HiddenInWorld?.Invoke(occupant) != true)
+            return (occupant, cageT);
+        return picked;
     }
 
     /// <summary>What a right click acts on, as <see cref="PickAt"/> chose it.</summary>
-    enum Picked { None, Character, GroundItem, Container, Door, Rock, Site, Bed, Cage }
+    enum Picked { None, Character, GroundItem, Container, Door, Rock, Site, Bed, Cage, Dummy, Seat }
 
     /// <summary>
     /// The right button's target under the pixel, with characters selected (docs/game/ui-input.md "Building picking and selection"): the nearest along the ray of a character with a quick
     /// order, a ground item, a container, a door, a rock and a site that is an object (unfinished, a machine, storage, furnace or turret), as the original's pick walks its hits nearest first.
-    /// The pixel magnets of items, containers and doors only decide whether one is a candidate; their distance is to their middle. What a building seen from outside hides is left out (each
+    /// What a building seen from outside hides is left out (each
     /// helper's <see cref="Hidden"/> test, the original's floor rule). A plain building is not a candidate: it takes the click only when nothing is (<see cref="SitePress"/>). Hover and click
     /// share it, as in the original.
     /// </summary>
@@ -161,15 +166,43 @@ sealed partial class PlayerInterface
         if (QuickOrder(p) is { Do: not null } order) Offer(Picked.Character, PickWhereAt(p, c => c.Id == order.Target)?.T ?? 0);
         else if (PickWhereAt(p, _ => true) is { } any && session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == any.Id) is { } held && Verbs(held).Count > 0)
             Offer(Picked.Character, any.T);   // no quick order, but a held click opens its menu
-        Offer(Picked.GroundItem, PickGroundItemAt(p)?.T);
-        Offer(Picked.Container, PickContainerAt(p)?.T);
+        var item = PickGroundItemAt(p);
+        Offer(Picked.GroundItem, item?.T);
+        var container = PickContainerAt(p);
+        Offer(Picked.Container, container?.T);
         Offer(Picked.Door, PickDoorAt(p)?.T);
-        Offer(Picked.Bed, PickBedAt(p)?.T);
-        Offer(Picked.Cage, PickCageAt(p)?.T);
+        Offer(Picked.Seat, PickSeatAt(p)?.T);
+        var bed = PickBedAt(p);
+        Offer(Picked.Bed, bed?.T);
+        var cage = PickCageAt(p);
+        Offer(Picked.Cage, cage?.T);
+        Offer(Picked.Dummy, PickDummyAt(p)?.T);
         Offer(Picked.Rock, PickRockAt(p)?.T);
         if (PickSiteAt(p) is { } site && SiteIsObject(site.Site)) Offer(Picked.Site, site.T);
+        // An item behind the container, bed or cage met first but lying inside its bounds takes the click (the original's walk, FUN_140800250: the building's box holds the item).
+        if (item is { } i && ItemAt(i.Id) is { } at && best.Kind switch
+            {
+                Picked.Container => Holds(container!.Value.Container.Record, container.Value.Container.Position, container.Value.Container.Yaw, at),
+                Picked.Bed => Holds(bed!.Value.Bed.Record, bed.Value.Bed.Position, bed.Value.Bed.Yaw, at),
+                Picked.Cage => Holds(cage!.Value.Cage.Record, cage.Value.Cage.Position, cage.Value.Cage.Yaw, at),
+                _ => false,
+            })
+            best = (Picked.GroundItem, i.T);
         return best;
     }
+
+    /// <summary>Where a ground item is drawn (<see cref="GroundItemShape"/>), else where it lies; null when it is gone.</summary>
+    Vector3? ItemAt(int id)
+    {
+        foreach (var g in session.CurrentSnapshot.GroundItems)
+            if (g.Id == id) return GroundItemShape?.Invoke(g)?.At ?? g.Position;
+        return null;
+    }
+
+    /// <summary>Whether a point lies inside the box of a building's collision placed at <paramref name="position"/> turned by <paramref name="yaw"/> (its footprint, from its lowest to its highest point).</summary>
+    bool Holds(string record, Vector3 position, float yaw, Vector3 point) =>
+        buildHost?.Placement.Footprint(record) is { } f && point.Y >= position.Y + f.YMin && point.Y <= position.Y + f.YMax
+        && f.Gap(position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, yaw), new Vector2(point.X, point.Z)) == 0;
 
     /// <summary>The host's test for where a ray enters a building seen from outside (its interior not shown), within a distance; null when none is in the way.</summary>
     public Func<Vector3, Vector3, float, float?>? ClosedBuildingHit { get; set; }

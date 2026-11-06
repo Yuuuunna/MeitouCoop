@@ -4,11 +4,12 @@ namespace Meitou.Engine.Time;
 /// The world's clock: how many simulation ticks a frame owes (docs/simulation.md "Time model", owner decisions 1 and 2). One tick is
 /// 1/30 s of GAME time at every speed, so the accumulator is fed <c>real dt x speed</c> and speeds 1, 2 and 5 run 30, 60 and 150
 /// ticks per real second; a paused world runs none. Speeds are the game's {pause, 1, 2, 5} (Verified, docs/game/game-loop.md
-/// "Speed and pause"). Pause sets the speed to 0 and remembers the last non-zero one; a separate <see cref="RequestedPause"/>
+/// "Speed and pause"). The pause key stores the speed and sets 0, and resumes at the stored one (<see cref="PauseKey"/>); the HUD pause button only sets 0; a separate <see cref="RequestedPause"/>
 /// (menus, loading) stops the world without touching the speed, and the world is paused when either holds, as the game's paused
 /// flag is "requested pause OR speed 0".
-/// A frame owes at most <see cref="MaxTicksPerFrame"/> x speed ticks; the rest are dropped, so the game then runs slower than asked
-/// (<see cref="AchievedSpeed"/>), as the original does below 20 fps through its 0.05 s dt cap. The tick count depends only on the
+/// A frame's real time is capped at <see cref="MaxFrameSeconds"/> BEFORE the speed multiplier, as the original does (FUN_14082ac70; it slows below 20 fps at every
+/// speed, Verified, docs/game/game-loop.md "Frame clocks"). A frame also owes at most <see cref="MaxTicksPerFrame"/> x speed ticks, a safety limit above that cap
+/// (engine choice: 2 ticks is 0.067 s of game time at 1x, the cap owes 1.5); the rest are dropped (<see cref="AchievedSpeed"/>). The tick count depends only on the
 /// summed <c>real time x speed</c>, not on how frames split it (the <see cref="FixedStepClock"/> property), as long as no tick is dropped.
 /// </summary>
 public sealed class SimulationClock
@@ -17,12 +18,16 @@ public sealed class SimulationClock
     public static readonly double[] Speeds = [1, 2, 5];
     /// <summary>Simulation ticks per game second (owner decision 2).</summary>
     public const double TickRate = 30;
-    /// <summary>Default most ticks a frame may run at speed 1 (engine choice): 0.2 s of game time; times the speed at the others.</summary>
-    public const int DefaultMaxTicksPerFrame = 6;
+    /// <summary>The longest real frame time that counts, before the speed multiplier (the original's <c>DAT_141696c74</c>, 0.05 s).</summary>
+    public const double MaxFrameSeconds = 0.05;
+    /// <summary>Default most ticks a frame may run at speed 1 (engine choice): 1/15 s of game time; times the speed at the others.</summary>
+    public const int DefaultMaxTicksPerFrame = 2;
 
     readonly FixedStepClock steps = new(TickRate);
     double speed = 1;
     double lastSpeed = 1;
+    double rememberedSpeed;
+    bool rememberedSet;
     int maxTicksPerFrame;
 
     public SimulationClock(int maxTicksPerFrame = DefaultMaxTicksPerFrame) => MaxTicksPerFrame = maxTicksPerFrame;
@@ -61,6 +66,31 @@ public sealed class SimulationClock
     /// <summary>The pause action: speed 0, or back to the last non-zero speed.</summary>
     public void TogglePause() => SetSpeed(speed == 0 ? lastSpeed : 0);
 
+    /// <summary>
+    /// The original's pause function (docs/game/game-loop.md "Speed and pause"): the speed it resumes at is kept apart from the speed buttons. A
+    /// call refreshes it from the current speed when that is above 0 (the first call also takes a speed of 0), so it is only ever written here.
+    /// </summary>
+    void Remember()
+    {
+        if (!rememberedSet) { rememberedSpeed = speed; rememberedSet = true; }
+        if (speed > 0) rememberedSpeed = speed;
+    }
+
+    /// <summary>A player pause that the pause key resumes: stores the speed, then speed 0 (no change when already paused).</summary>
+    public void Pause()
+    {
+        Remember();
+        SetSpeed(0);
+    }
+
+    /// <summary>The pause key: running, it pauses (<see cref="Pause"/>); paused, it sets the stored speed, which stays paused when that is 0 (after a speed button paused before the key stored one).</summary>
+    public void PauseKey()
+    {
+        if (speed > 0) { Pause(); return; }
+        Remember();
+        SetSpeed(rememberedSpeed);
+    }
+
     /// <summary>Steps to the next speed (1, 2, 5); from a pause, resumes at the step above the last speed.</summary>
     public void Faster() => SetSpeed(Speeds[Math.Min(Array.IndexOf(Speeds, lastSpeed) + 1, Speeds.Length - 1)]);
 
@@ -93,7 +123,7 @@ public sealed class SimulationClock
             return 0;
         }
         long droppedBefore = steps.DroppedTicks;
-        int run = steps.Advance(realSeconds * speed, (int)Math.Min((long)maxTicksPerFrame * (long)speed, int.MaxValue));
+        int run = steps.Advance(Math.Min(realSeconds, MaxFrameSeconds) * speed, (int)Math.Min((long)maxTicksPerFrame * (long)speed, int.MaxValue));
         long dropped = steps.DroppedTicks - droppedBefore;
         AchievedSpeed = AchievedSpeedOver(speed, run, dropped);
         return run;

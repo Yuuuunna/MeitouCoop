@@ -55,24 +55,30 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     /// <summary>Loading/idle hosts commit prepared external state only after any tick-ahead worker is joined.</summary>
     public void SynchronizeWorld() { EndTickAhead(); runtime.Synchronize(); }
     /// <summary>
-    /// The snapshot the last simulation tick published and the one before it, for interpolating by <see cref="SimulationAlpha"/>. While a tick runs ahead
-    /// (<see cref="BeginTickAhead"/>) or waits to fall due, the pair from before it: the picture moves on only when the clock reaches that tick.
+    /// The snapshot the last simulation tick published and the one before it, for interpolating by <see cref="SimulationAlpha"/>. While ticks run ahead
+    /// (<see cref="BeginTickAhead"/>) or wait to fall due, the pair from before them: the picture moves on only when the clock reaches the last of them.
     /// </summary>
     public WorldSnapshot CurrentSnapshot => held ? heldCurrent! : World.Snapshot;
     public WorldSnapshot PreviousSnapshot => held ? heldPrevious! : World.PreviousSnapshot;
-    /// <summary>The world tick the shown snapshot is of (<see cref="World.Tick"/> less a tick run ahead).</summary>
-    public long ShownTick => World.Tick - (aheadDone ? 1 : 0);
+    /// <summary>The world tick the shown snapshot is of (<see cref="World.Tick"/> less the ticks run ahead).</summary>
+    public long ShownTick => held ? heldTick : World.Tick;
     public double PresentationTick => ShownTick + SimulationAlpha;
     public double PresentationSeconds => Clock.GameSeconds;
 
-    // The tick run ahead (docs/simulation.md "Tick ahead"): the shown pair held meanwhile, the runner, and whether the tick is done but not yet due.
-    bool held, aheadDone;
+    // The ticks run ahead (docs/simulation.md "Tick ahead"): the shown pair and its tick held meanwhile, the runner, and how many are run but not yet due.
+    bool held;
+    long heldTick;
+    int aheadTicks;
+    // The ticks a frame owes, smoothed (how many the next batch runs ahead), and the speed they were owed at.
+    double owedPerFrame = 1, owedSpeed;
     WorldSnapshot? heldCurrent, heldPrevious;
     TickRunner? runner;
     bool running;
 
-    /// <summary>The wall time (ms) of the last tick run ahead, 0 once taken (for the profiler).</summary>
+    /// <summary>The wall time (ms) of the last ticks run ahead, 0 once taken (for the profiler).</summary>
     public double TakeAheadMs() { double ms = aheadMs; aheadMs = 0; return ms; }
+    /// <summary>The last ticks run ahead's ms, left for <see cref="TakeAheadMs"/>.</summary>
+    public double AheadMs => aheadMs;
     double aheadMs;
 
     /// <summary>A world tick's wall time (ms), smoothed over the last ten or so ticks, whether run in the frame or ahead (the host's dynamic tick ahead reads it).</summary>
@@ -83,6 +89,8 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     public InputState Input { get; } = new();
     public InputBindings Bindings { get; }
     public CameraRig Camera { get; }
+    /// <summary>The eye the simulation takes as the camera's (<see cref="World.ViewPosition"/>) instead of the rig's, while the host holds the view elsewhere (a character flight, a cinema take); null: the rig's.</summary>
+    public System.Numerics.Vector3? ViewEye { get; set; }
     /// <summary>Where the frame is between the previous and the current control tick (camera interpolation).</summary>
     public float Alpha => (float)Ticks.Alpha;
     /// <summary>The speed: 0 while paused by the player, else 1, 2 or 5.</summary>
@@ -106,12 +114,23 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     {
         EnsureNotRunning();
         int n = Simulation.Advance(realSeconds);
-        int run = n;
-        // A tick run ahead is the first one owed. Paused, it is taken at once (the shown pair jumps a tick), so what the interface changes shows.
-        if (aheadDone && (n > 0 || Simulation.IsPaused))
+        if (!Simulation.IsPaused)
         {
-            SettleAhead();
-            if (n > 0) run--;
+            // A speed change scales the estimate at once: a batch sized for 5x would hold the picture for frames at 1x.
+            if (owedSpeed > 0 && Simulation.Speed != owedSpeed) owedPerFrame *= Simulation.Speed / owedSpeed;
+            owedSpeed = Simulation.Speed;
+            owedPerFrame += (n - owedPerFrame) * 0.25;
+        }
+        int run = n;
+        // Ticks run ahead are the first ones owed; the shown pair moves on once the last of them is due. Paused, they are taken at once (the shown pair
+        // jumps), so what the interface changes shows.
+        if (aheadTicks > 0 && (n > 0 || Simulation.IsPaused))
+        {
+            int take = Simulation.IsPaused ? aheadTicks : Math.Min(n, aheadTicks);
+            for (int i = 0; i < take; i++) Clock.Advance(Simulation.TickSeconds);
+            aheadTicks -= take;
+            run -= Math.Min(run, take);
+            if (aheadTicks == 0) (held, heldPrevious, heldCurrent) = (false, null, null);
         }
         // Only a frame's last two ticks publish: the host draws between those two snapshots, and the ones before would go unseen.
         for (int i = 0; i < run; i++) SimulationTick(publish: i >= run - 2);
@@ -120,39 +139,45 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     }
 
     /// <summary>
-    /// Starts the next simulation tick on a thread of its own, ahead of the clock (docs/simulation.md "Tick ahead"), while the host draws the world from the shown
-    /// snapshots; <see cref="EndTickAhead"/> waits for it. Nothing may touch <see cref="World"/> in between. Does nothing while paused or with a tick already ahead.
+    /// Starts the next simulation ticks on a thread of their own, ahead of the clock (docs/simulation.md "Tick ahead"), while the host draws the world from the
+    /// shown snapshots; <see cref="EndTickAhead"/> waits for them. As many run as a frame has owed lately (at least one, at most the frame budget), so at 2x and 5x
+    /// a frame's ticks overlap the draw too. Nothing may touch <see cref="World"/> in between. Does nothing while paused or with ticks already ahead.
     /// </summary>
     public void BeginTickAhead()
     {
         EnsureNotRunning();
-        if (aheadDone || Simulation.IsPaused) return;
-        (heldPrevious, heldCurrent, held) = (World.PreviousSnapshot, World.Snapshot, true);
-        World.GameHours = Clock.TotalHours;   // the tick's start, as SimulationTick sets it; the game clock moves when the tick falls due
-        World.Daytime = Clock.IsDaytime;
+        if (aheadTicks > 0 || Simulation.IsPaused) return;
+        // Rounded down (a tick short runs in the next frame; one too many holds the picture a frame), plus a hair: the average nears a steady count from below.
+        int count = (int)Math.Clamp(Math.Floor(owedPerFrame + 0.1), 1, Simulation.MaxTicksPerFrame * Simulation.Speed);
+        (heldPrevious, heldCurrent, heldTick, held) = (World.PreviousSnapshot, World.Snapshot, World.Tick, true);
+        // Each tick's start, as SimulationTick sets it (the clock summed tick by tick); the game clock moves when the ticks fall due.
+        var starts = new (double Hours, bool Daytime)[count];
+        double seconds = Clock.GameSeconds;
+        for (int i = 0; i < count; i++, seconds += Simulation.TickSeconds) starts[i] = (Clock.TotalHoursAt(seconds), Clock.IsDaytimeAt(seconds));
+        World.PhysicsSpeed = (float)Simulation.Speed;   // the ragdoll physics steps in real time
+        World.ViewPosition = ViewEye ?? Camera.Current.Eye;
         runner ??= new TickRunner();
-        runner.Start(runtime);
+        runner.Start(runtime, starts);
         running = true;
+        aheadTicks = count;
     }
 
-    /// <summary>Waits for the tick <see cref="BeginTickAhead"/> started (rethrowing what it threw); it then waits to fall due.</summary>
+    /// <summary>Waits for the ticks <see cref="BeginTickAhead"/> started (rethrowing what they threw); they then wait to fall due.</summary>
     public void EndTickAhead()
     {
         if (!running) return;
         running = false;
-        aheadMs = runner!.Wait();   // one a frame at most: the last one, whether or not the profiler took the one before
-        Measure(aheadMs);
-        aheadDone = true;
+        aheadMs = runner!.Wait();   // one batch a frame at most: the last one, whether or not the profiler took the one before
+        Measure(aheadMs / aheadTicks);
     }
 
-    /// <summary>Takes a tick run ahead as run now: the game clock moves by it and the snapshots shown are the world's again (before a save, say).</summary>
+    /// <summary>Takes the ticks run ahead as run now: the game clock moves by them and the snapshots shown are the world's again (before a save, say).</summary>
     public void SettleAhead()
     {
         EnsureNotRunning();
-        if (!aheadDone) return;
-        aheadDone = held = false;
-        (heldPrevious, heldCurrent) = (null, null);
-        Clock.Advance(Simulation.TickSeconds);
+        if (aheadTicks == 0) return;
+        for (; aheadTicks > 0; aheadTicks--) Clock.Advance(Simulation.TickSeconds);
+        (held, heldPrevious, heldCurrent) = (false, null, null);
     }
 
     void EnsureNotRunning()
@@ -160,12 +185,13 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         if (running) throw new InvalidOperationException("a simulation tick is running ahead: call EndTickAhead first");
     }
 
-    /// <summary>The thread a tick runs ahead on (one per session, idle between ticks).</summary>
+    /// <summary>The thread ticks run ahead on (one per session, idle between batches).</summary>
     sealed class TickRunner : IDisposable
     {
         readonly Thread thread;
         readonly SemaphoreSlim start = new(0), done = new(0);
         WorldRuntime? runtime;
+        (double Hours, bool Daytime)[] starts = [];
         double ms;
         System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure;
         volatile bool stopping;
@@ -176,9 +202,9 @@ public sealed partial class WorldSession : IDisposable, IClientSession
             thread.Start();
         }
 
-        public void Start(WorldRuntime w)
+        public void Start(WorldRuntime w, (double Hours, bool Daytime)[] tickStarts)
         {
-            (runtime, failure) = (w, null);
+            (runtime, starts, failure) = (w, tickStarts, null);
             start.Release();
         }
 
@@ -197,7 +223,14 @@ public sealed partial class WorldSession : IDisposable, IClientSession
                 start.Wait();
                 if (stopping) return;
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                try { runtime!.Step(publish: true, daytime: runtime.World.Daytime); }
+                try
+                {
+                    // Only the last two publish, as in a frame (the shown pair keeps its buffers: World's snapshot ring).
+                    for (int i = 0; i < starts.Length; i++)
+                    {
+                        runtime!.Step(publish: i >= starts.Length - 2, starts[i].Hours, starts[i].Daytime);
+                    }
+                }
                 catch (Exception e) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e); }
                 ms = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 done.Release();
@@ -220,6 +253,8 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     {
         World.GameHours = Clock.TotalHours;
         World.Daytime = Clock.IsDaytime;
+        World.PhysicsSpeed = (float)(Simulation.Speed > 0 ? Simulation.Speed : Simulation.LastNonZeroSpeed);   // the ragdoll physics steps in real time
+        World.ViewPosition = ViewEye ?? Camera.Current.Eye;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         runtime.Step(publish, Clock.TotalHours, Clock.IsDaytime);
         Measure(System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
@@ -236,14 +271,16 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     {
         EnsureNotRunning();
         var floaters = World.Floaters;
+        bool benchFacing = World.BenchFacingFix;
         var next = runtime.ReplaceWorld(systems, candidate =>
         {
             candidate.Floaters = floaters;
+            candidate.BenchFacingFix = benchFacing;
             setup?.Invoke(candidate);
         });
         // A tick the old world ran ahead goes with it.
         presentationIdentity = new();
-        (aheadDone, held, heldPrevious, heldCurrent) = (false, false, null, null);
+        (aheadTicks, held, heldPrevious, heldCurrent) = (0, false, null, null);
         return next;
     }
 
@@ -260,7 +297,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     {
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var actions = Bindings.Resolve(Input.Consume());
-        if (actions.Pressed(InputAction.Pause)) Simulation.TogglePause();
+        if (actions.Pressed(InputAction.Pause)) Simulation.PauseKey();
         if (actions.Pressed(InputAction.Speed1)) Simulation.SetSpeed(1);
         if (actions.Pressed(InputAction.Speed2)) Simulation.SetSpeed(2);
         if (actions.Pressed(InputAction.Speed3)) Simulation.SetSpeed(5);

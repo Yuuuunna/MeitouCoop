@@ -348,8 +348,9 @@ sealed partial class GameHost
         }
         session = new WorldSession(scene.Focus, (scene.X0, scene.Z0, scene.X1, scene.Z1), heights.HeightAt, o.Hour, config.TickRate,
             clock: GameClockFor(constants ??= scene.Database is { } clockDb ? Meitou.Data.Gameplay.GameConstants.FromDatabase(clockDb) : null, o.Hour, o.Day ?? GameClock.DefaultStartDay),
-            simulation: worldSettings = new Meitou.Simulation.WorldSettings { Seed = g.Seed, MinPartitionSize = 128, Threads = Math.Max(1, config.SimThreads ?? Math.Clamp(Environment.ProcessorCount / 2, 1, 8)) },
+            simulation: worldSettings = new Meitou.Simulation.WorldSettings { Seed = g.Seed, MinPartitionSize = 128, Threads = Math.Max(1, config.SimThreads ?? Math.Clamp(Environment.ProcessorCount / 2, 1, 8)), FarTickPeriod = FarTickPeriod },
             systems: systems, walkability: walkability);
+        LocalSession.World.BenchFacingFix = config.FixBenchFacing;
         render.Grid = IsSandbox;
         session.Camera.Place(new Vector2((float)(o.X ?? scene.Focus.X), (float)(o.Z ?? scene.Focus.Z)), (float)(o.Yaw ?? 30) * MathF.PI / 180,
             (float)(o.Pitch ?? Meitou.Data.World.KenshiCamera.InitialPitchDegrees) * MathF.PI / 180,
@@ -425,7 +426,7 @@ sealed partial class GameHost
         NavmeshOverlayRenderer? navOverlay = null;
         if (overlay is not null)
         {
-            hud = new PlayerInterface(session, heights.HeightAt, DrawnPosition) { SpeedUnit = config.SpeedUnit, Floaters = config.Floaters };
+            hud = new PlayerInterface(session, heights.HeightAt, DrawnPosition) { SpeedUnit = config.SpeedUnit, Floaters = config.Floaters, FeedbackButtonInPlay = config.FeedbackButton };
             player = hud;
             hud.LoadUi(g.UiMode ?? config.UiMode, assets.Find);
             hud.CreateUiPainter(overlay, assets.Find);
@@ -472,7 +473,10 @@ sealed partial class GameHost
             hud.ClosedBuildingHit = (origin, direction, distance) => objects?.ClosedBuildingHit(origin, direction, distance);
             hud.HiddenInWorld = hiddenIndoors.Contains;
             hud.ShownInteriorHit = (origin, direction, distance) => objects?.ShownInteriorHit(origin, direction, distance);
+            hud.AboveViewedFloor = AboveViewedFloor;
+            hud.GroundItemShape = GroundShape;
             hud.GroundItemHidden = hiddenGround.Contains;
+            hud.DoorShape = (record, door) => nav?.Walkability.DoorGeometry?.Shape(record, door) ?? [];
             hoverOutline = new HoverOutlineRenderer(ctx);
             moveMarker = MarkerRenderer.Create(ctx, assets.Find);
             hud.Markers = moveMarker;
@@ -508,6 +512,13 @@ sealed partial class GameHost
         ApplyCameraRotateSpeed(config.CameraRotateSpeed);
         config.EdgeScroll ??= Meitou.Audio.AudioSystem.Setting(install, "Edge scrolling", 1) != 0;
         config.Tutorials ??= Meitou.Audio.AudioSystem.Setting(install, "tutorials", 1) != 0;
+        config.SeedCamera(install);
+        config.ApplyCamera(session.Camera.Settings);
+        KeyMap.SwapButtons = config.SwapMouseButtons == true;
+        hud?.FontSize = config.FontSize ?? Meitou.Data.Ui.KenshiFontSize.DefaultSetting;
+        config.MovementMarker ??= Meitou.Audio.AudioSystem.Setting(install, "Movement marker", 1) != 0;
+        config.RotationMarker ??= Meitou.Audio.AudioSystem.Setting(install, "Rotation marker", 1) != 0;
+        if (hud is not null) (hud.MovementMarker, hud.RotationMarker) = (config.MovementMarker == true, config.RotationMarker == true);
         tutorials ??= new TutorialManager(Path.Combine(Directory.GetCurrentDirectory(), TutorialManager.FileName));
         tutorials.Enabled = config.Tutorials == true;
         hud?.ConfigureTutorials(tutorials);
@@ -524,9 +535,11 @@ sealed partial class GameHost
             {
                 UpscalerStatus = UpscalerStatusText,
                 GameplayChanged = ApplyGameplay,
-                AttackSlotsChanged = slots => { foreach (var combat in LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.AttackSlots = slots; },
-                LateDefencesChanged = on => { foreach (var combat in LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on; },
-                DoorsCloseChanged = on => { foreach (var locks in LocalSession.World.Systems.OfType<Meitou.Simulation.Locks.LockSystem>()) locks.DoorsCloseBehind = on; },
+                ModSettings = () => mods?.Settings ?? [],
+                AttackSlotsChanged = slots => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.UseAttackSlots(slots); },
+                LateDefencesChanged = on => { foreach (var combat in LocalSystems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on; },
+                DoorsCloseChanged = on => { foreach (var locks in LocalSystems.OfType<Meitou.Simulation.Locks.LockSystem>()) locks.DoorsCloseBehind = on; },
+                BenchFacingChanged = on => { if (session is WorldSession local) local.World.BenchFacingFix = on; },
                 TutorialsChanged = on => { if (tutorials is { } t) t.Enabled = on; },
                 ResetTutorials = () => tutorials?.Reset(),
                 OffscreenChanged = () =>
@@ -537,6 +550,7 @@ sealed partial class GameHost
                     foreach (var production in LocalSession.World.Systems.OfType<Meitou.Simulation.Production.ProductionSystem>()) production.UnloadedProduction = config.UnloadedProduction;
                 },
                 CameraRotateSpeedChanged = ApplyCameraRotateSpeed,
+                CameraChanged = () => config.ApplyCamera(session.Camera.Settings),
                 AudioChanged = AudioSettingsChanged,
             };
             // The saved graphics values are the same keys the Vulkan panel uses. The Metal display choices have their own
@@ -582,6 +596,7 @@ sealed partial class GameHost
                 if (e.Action == "save") saveRequestedFolder = SaveCatalog.Folder(QuickSave.DefaultRoot, e.Text);
                 else if (e.Action == "load") loadRequestedFolder = e.Text;
                 else if (e.Action == "new-game") newGameRequested = e.Text;
+                else if (e.Action.StartsWith("feedback-", StringComparison.Ordinal)) FeedbackAction(e);
                 else if (e.Action == "main-menu") mainMenuRequested = true;
                 else if (e.Widget == "OptionsButton" && settings is not null) settings.Visible = true;
                 else if (e.Widget == "ExitGameButton" || e.Action == "exit") quit = true;
@@ -876,7 +891,7 @@ sealed partial class GameHost
                 if (key == SilkKey.F12) { frameStatsVisible = !frameStatsVisible; return; }
                 if (key is SilkKey.F8 or SilkKey.PrintScreen) { screenshotNow = true; return; }
                 if (key == SilkKey.F7 && hud is not null) { hud.UiVisible = !hud.UiVisible; return; }
-                // Ctrl+C copies the free camera's position as a viewer camera code; Ctrl+V flies to the clipboard's code.
+                // Ctrl+C copies the free camera's position as a viewer camera code; Ctrl+V flies to the clipboard's code or feedback camera location.
                 if (key is SilkKey.C or SilkKey.V && session.Camera.IsFree && hud is not null && !hud.UiEditing && ctrl)
                 {
                     if (key == SilkKey.C)
@@ -894,7 +909,7 @@ sealed partial class GameHost
                         hud.Follow = null;
                         Console.WriteLine("camera    moved to the clipboard's camera code");
                     }
-                    else Console.WriteLine("camera    the clipboard holds no camera code (Ctrl+C in a viewer copies one)");
+                    else Console.WriteLine("camera    the clipboard holds no camera code (Ctrl+C in a viewer copies one) or feedback camera location");
                     return;
                 }
                 // Numpad / flies the camera across the squad in portrait order; it holds the camera like the tour on Vulkan.
@@ -955,11 +970,11 @@ sealed partial class GameHost
                 if (KeyMap.Map(button) is not { } mapped) return;
                 var at = Pixels(mouse.Position);
                 if (settings?.Visible == true) { settings.MouseDown(at, mapped); return; }
-                bool select = mapped == Meitou.Engine.Input.MouseButton.Left;
+                bool select = PlayerButton(mapped) == Meitou.Engine.Input.MouseButton.Left;
                 if (hud is { UiVisible: true } && select && !config.SandboxPanelCollapsed && sandboxPicker?.MouseDown(at) == true) return;
                 if (hud is { UiVisible: true } && select && SandboxToggleClick(at)) return;
                 // PlayerInterface sees every click: it takes the HUD's controls, selects, starts a drag box or gives a move order.
-                if (hud is not null && hud.MouseDown(mapped, at, shiftDown, Ctrl(), Alt())) return;
+                if (hud is not null && hud.MouseDown(PlayerButton(mapped), at, shiftDown, Ctrl(), Alt())) return;
                 session.Input.SetMouseButton(mapped, true);
             };
             mouse.MouseUp += (_, button) =>
@@ -967,7 +982,7 @@ sealed partial class GameHost
                 if (Covered) return;
                 if (settings?.Visible == true) { settings.MouseUp(); return; }
                 if (KeyMap.Map(button) is not { } mapped) return;
-                hud?.MouseUp(mapped, Pixels(mouse.Position), shiftDown);
+                hud?.MouseUp(PlayerButton(mapped), Pixels(mouse.Position), shiftDown);
                 session.Input.SetMouseButton(mapped, false);
             };
             mouse.Scroll += (_, wheel) =>
@@ -1184,10 +1199,11 @@ sealed partial class GameHost
                 // The merged character editor is shared with Vulkan: a new game opens it once the squad is in the snapshot, and the world resumes when it closes.
                 OpenPendingEditor();
                 ResumeAfterCreation();
-                if (hud is not { EditorOpen: true }) { ClearEditorStage(); }
+                if (hud is not { EditorOpen: true }) { ClearEditorStage(); ClearEditorBar(); }
                 if (!tourHolds && hud is not null) ApplyTitleCamera();
                 // A flight puts the focus where it lands, so the towns there populate during the flight; otherwise the
                 // followed character's pivot is already in the rig.
+                viewAspect = window.Size.X / (float)Math.Max(window.Size.Y, 1);
                 SendFocus(tour.Active && tour.Current is { } tourLanding && TourPosition(tourLanding) is { } tourAt ? tourAt
                     : tourHolds ? camera.Target : null);
                 // The strategy camera's eye clearance for the followed character and the tour's arcs over hills.
@@ -1299,7 +1315,9 @@ sealed partial class GameHost
             double drawableWait = display.LastDrawableWaitMilliseconds;
             long recordStart = Stopwatch.GetTimestamp();
             var backbuffer = ctx.Backbuffer;
-            if (hud is { EditorOpen: true }) DrawEditorStage(size.X, size.Y);
+            // The editor's scene: in the Meitou UI the bar, drawn by the world pass below from the editor's camera (GameHost.EditorBar.cs); else the original's stage, the
+            // character and its platform drawn into the stage texture the interface shows over the world.
+            var editorBarFrame = hud is { EditorOpen: true } ? BeginEditorBar(size.X, size.Y) : null;
             // The still's objects are all resident before the first picture, as the Vulkan screenshot path settles them (its Settle
             // opens its own frame; here the frame is the first one's).
             if (frames == 0) { objects?.Settle(camera.Eye); foliage?.Settle(camera.Eye); }
@@ -1312,8 +1330,8 @@ sealed partial class GameHost
                         characters.PortraitRequests.Add(new PortraitRequest(DrawKey(member.Id), cell, member.PortraitSerial));
             }
             var hoverKeys = new List<(long Key, Vector4 Colour)>();
-            bool outlining = config.HoverOutline && !session.Camera.IsFree && hud is { UiVisible: true } &&
-                !Covered && settings?.Visible != true;
+            bool outlines = !session.Camera.IsFree && hud is { UiVisible: true } && !Covered && settings?.Visible != true;
+            bool outlining = config.HoverOutline && outlines;
             if (outlining)
             {
                 if (highlighting)
@@ -1323,11 +1341,12 @@ sealed partial class GameHost
                     hoverKeys.Add((DrawKey(hover.Id), hover.Colour));
             }
             gpu.HoverKeys = hoverKeys;
+            gpu.OutlinedBuilding = outlines && config.BuildingOutline ? hud!.OutlinedBuilding : null;
             gpu.HoverOutline = hoverOutline;
             // The frame's inputs, as WorldFrame.Draw prepares them: the weather at the camera, the atmosphere's tables for the sun and the
             // eye's height, the fog distance the light ends at, and the view distance that keeps the haze complete before the far plane.
             bool titleLook = hud is not null && TitleVisible;
-            float hour = presentationHour ?? (titleLook ? TitleHour : (float)session.Clock.HourOfDay);
+            float hour = editorBarFrame is not null ? EditorBarHour : presentationHour ?? (titleLook ? TitleHour : (float)session.Clock.HourOfDay);
             var aspect = size.X / (float)Math.Max(size.Y, 1);
             var eye = camera.Eye;
             var view = camera.View;
@@ -1360,6 +1379,7 @@ sealed partial class GameHost
             // seam's Vulkan-only gaps (no reflection, GI, low-resolution particles or fog-rate target).
             gpu.GameHours = session.Clock.HoursSinceStart;
             UpdateBlood();
+            UpdateModHits();
             if (characters is not null)
             {
                 characters.Look = Meitou.Rendering.Characters.PreviewLook.Of(o.Post);
@@ -1393,6 +1413,10 @@ sealed partial class GameHost
                     fogVolumes.HidePlaced = savedHidePlaced;
                 }
             }
+            if (editorBarFrame is { } barFrame) EndEditorBar(barFrame, size.X, size.Y);
+            // The feedback screenshot: the frame without the menus, the settings, the debug overlays and the pointer (GameHost.Feedback.cs).
+            bool feedbackShot = feedbackShotRequested && hud is not null && !still;
+            if (hud is not null) hud.ShotWithoutMenus = feedbackShot;
             if (overlay is not null)
             {
                 overlay.Target = backbuffer;
@@ -1409,7 +1433,6 @@ sealed partial class GameHost
                     hud.Steer();
                     if (hud.UiVisible)
                     {
-                        hud.SelectionRings = config.SelectionRings;
                         hud.Draw(overlay, size.X, size.Y, overlayPass);
                         if (IsSandbox && !g.UiShowcase) DrawSandbox(overlay, size.X, size.Y);
                     }
@@ -1417,7 +1440,7 @@ sealed partial class GameHost
                 bool wrote = false;
                 // The framebuffer is 2x the window's points on a Retina display: the fixed-pixel debug text would be half size.
                 float textScale = MathF.Max(1, size.X / (float)Math.Max(window.Size.X, 1));
-                if (statsVisible)
+                if (statsVisible && !feedbackShot)
                 {
                     statsLines.Clear();
                     statsLines.Add($"{fpsText}  {dt * 1000:0.00} ms  {size.X}x{size.Y}");
@@ -1428,26 +1451,26 @@ sealed partial class GameHost
                     overlay.Panel(size.X, size.Y, "Metal frame (F11 hides this)", statsLines, (hud is { UiVisible: true } ? hud.HudBottom : 0) + 8, textScale);
                     wrote = true;
                 }
-                if (frameStatsVisible)
+                if (frameStatsVisible && !feedbackShot)
                 {
                     overlay.TextScaled("Meitou - Metal", 16 * textScale, 16 * textScale, DebugOverlay.TextColour, textScale);
                     overlay.TextScaled($"{frames + 1} frames  {fpsText}  {dt * 1000:0.00} ms  {size.X}x{size.Y}", 16 * textScale,
                         (16 + overlay.LineHeight) * textScale, DebugOverlay.TextColour, textScale);
                     wrote = true;
                 }
-                if (debugMenuOpen && hud is not null)
+                if (debugMenuOpen && hud is not null && !feedbackShot)
                 {
                     DrawDebugMenu(overlay, size.X, size.Y, (hud.UiVisible ? hud.HudBottom : 0) + 8, "Ctrl+F10");
                     wrote = true;
                 }
-                if (settings?.Visible == true)
+                if (settings?.Visible == true && !feedbackShot)
                 {
                     settings.Draw(size.X, size.Y, overlayPass);
                     wrote = true;
                 }
                 // The mouse pointer over everything, as Vulkan draws it: the system cursor when Hardware mouse is on, else the
                 // game's own pointer. The free camera hides it, and saved pictures never contain it.
-                if (!still && !screenshotNow && pointerMouse is not null && hud is not null)
+                if (!still && !screenshotNow && !feedbackShot && pointerMouse is not null && hud is not null)
                 {
                     bool pointerWorld = !Covered && !g.NoPopulation && settings?.Visible != true && !TitleVisible;
                     bool freeLook = pointerWorld && session.Camera.IsFree;
@@ -1509,6 +1532,13 @@ sealed partial class GameHost
                 if (trace)
                     Console.WriteLine($"metal     idle trim ({(compact ? "compacting" : "background")}): " +
                         $"heap {before.HeapSizeBytes / 1048576} -> {after.HeapSizeBytes / 1048576} MB, LOH {loh / 1048576} MB");
+            }
+            if (feedbackShot)
+            {
+                hud!.ShotWithoutMenus = false;
+                var picture = ctx.Readback(backbuffer);
+                for (int i = 3; i < picture.Length; i += 4) picture[i] = 255;
+                FeedbackCaptured(picture, backbuffer.Desc.Width, backbuffer.Desc.Height);
             }
             if (screenshotNow)
             {

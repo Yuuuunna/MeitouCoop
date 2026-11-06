@@ -6,6 +6,9 @@ namespace Meitou.Simulation.Locks;
 /// <summary>The original's <c>Character+0x2f8</c> (save key <c>in something</c>, docs/game/carry-loot.md): 0 normal, 1 in a bed, 2 imprisoned.</summary>
 public enum HeldState : byte { None = 0, Bed = 1, Imprisoned = 2 }
 
+/// <summary>A placement of a save's zone building list: its BUILDING record and world position (<see cref="Saving.HeldSave.BuildingSpots"/>).</summary>
+public readonly record struct SavedSpot(string Record, Vector3 Position);
+
 /// <summary>What a <see cref="Fixture"/> is.</summary>
 public enum FixtureKind : byte
 {
@@ -17,10 +20,15 @@ public enum FixtureKind : byte
     Cage,
     /// <summary>A bed of an interior layout, or one the player built; no lock.</summary>
     Bed,
+    /// <summary>A training dummy of a town building (BF_TRAINING furniture, or the building itself): the production system works it as a machine (<c>ProductionSystem.TownDummy</c>).</summary>
+    Training,
 }
 
 /// <summary>A bed as the host picks it (<see cref="WorldSnapshot.Beds"/>): its fixture id, BUILDING record, where it is and its owner faction (-1: none).</summary>
 public sealed record BedSpot(string Id, string Record, Vector3 Position, int Owner = -1, float Yaw = 0) { public ulong Revision { get; init; } }
+
+/// <summary>A town training dummy as the host picks it (<see cref="WorldSnapshot.Dummies"/>): its fixture id (the site its Training order names), BUILDING record, where it stands and its owner.</summary>
+public sealed record TrainingSpot(string Id, string Record, Vector3 Position, int Owner, float Yaw) { public ulong SiteRevision { get; init; } }
 
 /// <summary>
 /// What a bed's BUILDING says (docs/game/locks.md "Beds"): its functionality's <c>function</c> (6 BF_BED, 25 BF_SKELETON_BED), the clip it is lain in (the functionality's <c>animation</c>:
@@ -28,24 +36,35 @@ public sealed record BedSpot(string Id, string Record, Vector3 Position, int Own
 /// (null with fewer than 2: it is lain in at its own origin and facing).
 /// </summary>
 /// <summary>A cage's clips (ANIMATION names; null: none listed): standing in it, unconscious, dazed.</summary>
-public readonly record struct CageClips(string? Idle, string? Ko, string? Dazed);
+public readonly record struct CageClips(string? Idle, string? Ko, string? Dazed, string? Lockpick = null);
 
-public readonly record struct BedData(int Function, string? Clip, float Materials, BedNode[]? Nodes = null);
+public readonly record struct BedData(int Function, string? Clip, float Materials, UseNode[]? Nodes = null);
 
 /// <summary>
-/// A <c>node type</c> 4 (NODE_USE) instance of a bed's BUILDING, in the bed's own space: where a sleeper is put and the way it faces (the node's yaw - 90°; a node looks
-/// along its local -X). <c>sleepinbed</c> holds <c>Bip01</c> about 12 units to the character's side, on the mattress (docs/game/locks.md "Beds").
+/// A <c>node type</c> 4 (NODE_USE) instance of a BUILDING, in the building's own space, and the way it faces (the node's yaw - 90掳; a node looks along its local -X). A bed's is
+/// where a sleeper is put (<c>sleepinbed</c> holds <c>Bip01</c> about 12 units to the character's side, on the mattress); a cage's, where its occupant stands once out
+/// (docs/game/locks.md "Beds", "Cages and beds").
 /// </summary>
-public readonly record struct BedNode(Vector3 At, float Yaw);
+public readonly record struct UseNode(Vector3 At, float Yaw);
 
-/// <summary>A container with an inventory as the host picks it: its fixture id, BUILDING record, position, owner faction (-1: none) and whether its lock is locked.</summary>
-public sealed record ContainerSpot(string Id, string Record, Vector3 Position, int Owner = -1, bool Locked = false) { public ulong Revision { get; init; } }
+/// <summary>A container with an inventory as the host picks it: its fixture id, BUILDING record, position, owner faction (-1: none), whether its lock is locked, its lock's level and its yaw.</summary>
+public sealed record ContainerSpot(string Id, string Record, Vector3 Position, int Owner = -1, bool Locked = false, int Level = 0, float Yaw = 0) { public ulong Revision { get; init; } }
 
 /// <summary>A door for the host's picking: its fixture id, its key in <see cref="WorldSnapshot.Doors"/>, its owner faction, where its closed leaf is (else its building's origin) and how far it slides fully open (<see cref="DoorSpot.Slide"/>).</summary>
-/// <summary>A cage for picking: its fixture id, CAGE-function BUILDING record, place, owner faction (-1 none), whether its lock holds and who is in it (None: free).</summary>
-public sealed record CageSpot(string Id, string Record, Vector3 Position, int Owner, bool Locked, CharacterId Occupant) { public ulong Revision { get; init; } }
+/// <summary>
+/// A cage for picking: its fixture id, CAGE-function BUILDING record, place, owner faction (-1 none), whether its lock holds, who is in it (None: free), its lock's level, its yaw and
+/// whether pointing at it points at its occupant (<see cref="Fixture.OccupantSelection"/>).
+/// </summary>
+public sealed record CageSpot(string Id, string Record, Vector3 Position, int Owner, bool Locked, CharacterId Occupant, int Level = 0, float Yaw = 0, bool OccupantSelection = false) { public ulong Revision { get; init; } }
 
-public sealed record DoorPick(string Id, string Building, int Door, int Owner, Vector3 Position, Vector3 Slide = default) { public ulong Revision { get; init; } }
+public sealed record DoorPick(string Id, string Building, int Door, int Owner, Vector3 Position, Vector3 Slide = default)
+{
+    public ulong Revision { get; init; }
+    /// <summary>The BUILDING record whose door it is, where that building stands and its yaw: the frame of its collision (<c>NavDoorGeometry.Shape</c>).</summary>
+    public string HostRecord { get; init; } = "";
+    public Vector3 Origin { get; init; }
+    public float Yaw { get; init; }
+}
 
 /// <summary>The door's motion state as saved in <c>state&lt;i&gt;</c> (docs/game/locks.md "Doors"; not the DoorState enum): 0 closed, 1 open, 2 opening, 3 closing.</summary>
 public enum DoorMotion : byte { Closed = 0, Open = 1, Opening = 2, Closing = 3 }
@@ -91,6 +110,8 @@ public sealed class LockState
 /// </summary>
 public sealed class Fixture
 {
+    /// <summary>A bed's use nodes a failed walk marked bad (node index, game hour of the mark; <see cref="FixtureRegistry.MarkBadNode"/>), each skipped for <see cref="FixtureRegistry.BadNodeHours"/>. Runtime only: not saved or hashed.</summary>
+    internal List<(int Node, double Stamp)>? BadNodes;
     public required string Id { get; init; }
     /// <summary>The instance id of the placed building it belongs to (the house of a door, the building of an interior item): what <see cref="IDoorGate"/> and the save name.</summary>
     public required string Building { get; init; }
@@ -100,9 +121,13 @@ public sealed class Fixture
     /// <summary>The town site it was registered with, and the owner faction (a position in the data's factions; -1 none).</summary>
     public int Site { get; init; } = -1;
     public int Owner { get; set; } = -1;
+    /// <summary>A nest building's (<see cref="NestBuildings"/>): its faction's kidnappers use it wherever they stand.</summary>
+    public bool Nest { get; set; }
     /// <summary>Where an occupant is held, and which way it faces (the item's origin: the cage's attach node is not read, an engine choice).</summary>
     public Vector3 Position { get; init; }
     public float Yaw { get; init; }
+    /// <summary>The building's position marker (<see cref="Meitou.Data.World.WorldObjectLayout.PositionMarker"/>) where it differs from <see cref="Position"/>: what <c>getPositionMarker</c> gives when the building has fewer than two use nodes.</summary>
+    public Vector3? Marker { get; init; }
     /// <summary>Null for beds, and for a container with no <c>has lock</c>.</summary>
     public LockState? Lock { get; init; }
     /// <summary>A container's own inventory (<c>has inventory</c>; docs/game/locks.md "Containers"): null for the rest. Starts empty (what the original puts in is <b>Unknown</b>).</summary>
@@ -131,12 +156,19 @@ public sealed class Fixture
 
     /// <summary>Cages: the functionality's <c>restrains movement</c> (pole, peeler). Cages and beds: <c>use range</c>, and who is in it.</summary>
     public bool Restrains { get; init; }
+    /// <summary>Cages: the functionality's <c>occupant selection</c>: pointing at the cage points at its occupant (docs/game/ui-input.md "Context menu verbs"); derived from the data.</summary>
+    public bool OccupantSelection { get; init; }
     /// <summary>Cages: the functionality's <c>animation</c>, <c>animation KO</c> and <c>animation dazed</c> clips, entry 0 of each (<c>UseableStuff::UseableStuff</c>, <b>Verified</b>); derived from the data.</summary>
     public CageClips Clips { get; init; }
-    /// <summary>Cage use nodes in local coordinates, derived from the building record; not saved or hashed.</summary>
-    public BedNode[]? UseNodes { get; init; }
+    /// <summary>Cages: the BUILDING's use nodes (null: none), the nearest of which an occupant leaving it is put at (<see cref="FixtureRegistry.ExitSpot"/>); derived from the data.</summary>
+    public UseNode[]? UseNodes { get; init; }
     public float UseRange { get; init; }
     public CharacterId Occupant { get; set; } = CharacterId.None;
+    /// <summary>Cages: a torture rack (<see cref="Meitou.Data.World.TownBuildings.IsRack"/>); derived from the data.</summary>
+    public bool Rack { get; init; }
+    /// <summary>Racks: the armour timer (<c>+0x490</c>, game seconds) and whether the last frame stretched its user (<c>+0x3a9</c> clear). Not saved; hashed only on a rack.</summary>
+    public float RackTimer { get; set; }
+    public bool RackBusy { get; set; }
     /// <summary>Beds: its record's <see cref="BedData"/>; derived from the data, not hashed or saved.</summary>
     public BedData Bed { get; init; }
     /// <summary>Beds: inside a building (an interior's bed; the bed search weighs it twice), not one standing on its own.</summary>
@@ -156,15 +188,16 @@ public sealed class Fixture
         if (Lock is { } l) l.Hash(ref h); else h.Add(-1);
         if (Kind == FixtureKind.Door) { h.Add((int)Motion); h.Add(OpenAmount); h.Add(DoorBroken); h.Add(WantsLock); if (AutoOpened) h.Add(LastPass); if (DoorProgress != 1) h.Add(DoorProgress); }
         h.Add(Occupant);
+        if (Rack) { h.Add(RackTimer); h.Add(RackBusy); }
         Contents?.Hash(ref h);
     }
 }
 
 /// <summary>
 /// A door as the snapshot shows it (<see cref="WorldSnapshot.Doors"/>): its open amount 0..1, motion, whether it is effectively locked and whether it wants to lock; for the sounds,
-/// whether it is broken, where it is (the leaf's centre once known, else its building's origin) and its own BUILDING record (<c>door type</c>).
+/// whether it is broken, where it is (the leaf's centre once known, else its building's origin), its own BUILDING record (<c>door type</c>) and its lock's level (the Pick Lock chance).
 /// </summary>
-public readonly record struct DoorView(float Open, DoorMotion Motion, bool Locked, bool WantsLock, bool Broken = false, Vector3 Position = default, string Record = "");
+public readonly record struct DoorView(float Open, DoorMotion Motion, bool Locked, bool WantsLock, bool Broken = false, Vector3 Position = default, string Record = "", int Level = 0);
 
 /// <summary>
 /// The doors of the building the HUD shows (<see cref="InspectBuildingCommand"/>), in the building's door order: what the panel's door lines say; whether a fixture of it is the player's

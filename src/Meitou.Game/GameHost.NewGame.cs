@@ -22,7 +22,7 @@ sealed partial class GameHost
         {
             var built = BuildSystems(interactive: true);
             LocalSession.ReplaceWorld(built.Systems);
-            population = built.Population; aggro = built.Aggro; playerSquad = null;
+            population = built.Population; playerSquad = null;
             if (nav is not null) population!.ZoneGate = nav.IsReady;
             loadedSave = null; preparedBase = null; saveInUse = null; worldEpoch++;
             SettleNewWorld();
@@ -37,8 +37,9 @@ sealed partial class GameHost
     void HandleNewGame()
     {
         if (newGameRequested is not { } id) return;
+        if (!SavesAvailable(out string why)) { newGameRequested = null; player.Notice(why, true); return; }
+        if (Busy()) return;   // the original's dispatcher leaves the request queued while a save or load runs (FUN_14047c310): it starts when that ends
         newGameRequested = null;
-        if (!SavesAvailable(out string why) || Busy()) { player.Notice(why.Length > 0 ? why : "Save or load still in progress", true); return; }
         if (scene.Database is not { } database || NewGameStart.Find(NewGameStart.LoadAll(database), id) is not { } chosen) return;
         StandardSystemSet? built = null;
         var nextDifficulty = player.NewGameOptions;
@@ -61,7 +62,7 @@ sealed partial class GameHost
                 catch (Exception e) { Console.Error.WriteLine($"new game  {e}"); throw new SceneLoadFailed($"New game failed: {e.Message}"); }
                 popData = nextData; difficulty = nextDifficulty;
                 simulationWeather?.Reset();
-                population = built.Population; aggro = built.Aggro; playerSquad = spawned;
+                population = built.Population; playerSquad = spawned;
                 if (nav is not null) population!.ZoneGate = nav.IsReady;
                 loadedSave = null; preparedBase = null; saveInUse = null; worldEpoch++;
                 session.Clock.SetTime(Meitou.Engine.Time.GameClock.DefaultStartDay, Meitou.Engine.Time.GameClock.DefaultStartHour);
@@ -69,7 +70,7 @@ sealed partial class GameHost
                 var view = session.Camera.Current;
                 session.Camera.Place(new Vector2(lead.X, lead.Z), view.Yaw, view.Pitch, view.Distance);
                 SettleNewWorld();
-                player.Notice($"Started {chosen.Name}");
+                player.Notice(Loc.Tr("Started {1}", chosen.Name));
                 // No tutorial file was read at start: the camera hints, queued (FUN_140872e00).
                 if (tutorials is { Fresh: true })
                     foreach (string hint in (string[])["Hold middle mouse button to rotate the camera", "Use mouse wheel to zoom", "Now create your first character. Use the 'Confirm' button when finished."])

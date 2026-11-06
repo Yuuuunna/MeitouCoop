@@ -384,10 +384,11 @@ expanded codebooks decode):
 ### The codebook library
 
 The library is part of the game's Wwise decoder in `kenshi_x64.exe`: a table of 599 increasing 64-bit pointers in `.data` (598
-codebooks and the end) into one block of packed codebooks in `.rdata` (about 72 KB). `WwiseCodebookLibrary.FromExecutable` finds it by
+codebooks and the end) into one block of packed codebooks in `.rdata` (about 72 KB). `WwiseCodebookLibrary.FromExecutable` finds it in any non-code section by
 that shape (a run of 200+ increasing pointers at most 8000 bytes apart) and accepts it only if every entry parses to exactly its span.
 So it is read from the user's install, never shipped, and no exe build's offsets are hardcoded. **Verified** on the Steam exe
-(36,718,592 bytes): one such table, 598 codebooks (**Observed**; every ambience WEM decodes against it).
+(36,718,592 bytes): one such table, 598 codebooks (**Observed**; every ambience WEM decodes against it). Other builds (GOG, older
+versions): **Unknown**. A failure logs why: the exe missing, or its size, sections and longest pointer run.
 
 ### Audio packets
 

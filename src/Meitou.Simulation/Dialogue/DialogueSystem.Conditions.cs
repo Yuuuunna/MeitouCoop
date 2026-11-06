@@ -11,7 +11,7 @@ public sealed partial class DialogueSystem
     /// <summary>
     /// One condition (<c>FUN_140676950</c>, docs/game/dialogue.md "Conditions"): <c>who</c> 0 tests the speaker, any other value the target. Yes/no conditions pass when the computed
     /// answer equals value &gt; 0; counts compare by <c>compare by</c> (Num3: 1 &lt;, 2 &gt;, else ==; Num2: 1 &lt;, else &gt;=). Conditions whose inputs Meitou does not have
-    /// (building locks, town walls, strength ratings, head counts, training equipment) compute "no".
+    /// (building locks, town wall locks, strength ratings, head counts, training equipment) compute "no".
     /// </summary>
     bool Condition(World world, Conversation c, DialogueCondition dc, CharacterId me, CharacterCold mc, CharacterId other)
     {
@@ -24,16 +24,44 @@ public sealed partial class DialogueSystem
         if (dc.Condition == 76) return Bool(s is not null);
         if (dc.Condition == 13) return Num3(counters.GetValueOrDefault((me, c.Event)).Count);
         if (dc.Condition == 10) return Num3(FactionRank(world, c, mc.Faction));   // the speaker's faction's rank, whatever `who` says
-        if (s is null) return dc.Condition is 6 or 15 or 34 or 51 || !b;
-        int meF = mc.Faction, sF = s.Faction;
+
         var relations = data.Relations;
+        // A missing target (who != 0) becomes the player's nearest selected character, else the active squad's first, for this and the later conditions and as the conversation's target.
+        if (s is null && dc.Who != 0 && SubjectFallback(world, c, me) is { } found)
+        {
+            if (!c.DryRun) c.Player = found;
+            other = subjectId = found;
+            s = Cold(world, found);
+        }
+        if (dc.Condition >= SimulationExtensions.FirstModCode) return ModCondition(world, me, s is null ? CharacterId.None : subjectId, dc);
+        if (dc.Condition == 12) return Num3(Funds(world, c)?.Research.TechLevel ?? 0);   // the research manager's tech level (*(*(game + 0x38) + 8), FUN_140676950), whatever the subject
+        if (s is null)
+        {
+            // No player character at all: the faction-level test (FUN_140671530) against the player's faction; everything else passes. Not DC 11 (the speaker's own platoon, not built).
+            int player = c.Faction;
+            return dc.Condition switch
+            {
+                1 => Num2(player == mc.Faction ? 100 : relations.Contains(mc.Faction) && relations.Contains(player) ? (int)relations.Get(mc.Faction, player) : 0),
+                2 => Num2(CanReadFunds(world, c) ? Funds(world, c)?.Money ?? 0 : 0),
+                3 => Num2(relations.Contains(player) ? (int)relations.GlobalTrust(player) : 0),
+                11 => !b,
+                _ => true,
+            };
+        }
+        int meF = mc.Faction, sF = s.Faction;
         switch (dc.Condition)
         {
             case 6 or 15 or 34 or 51: return true;
+            // WEAKER_THAN_ME / STRONGER_THAN_ME: the combat ratings, strictly more than 1.5 times (FUN_140676950).
+            case 21 or 22 when world.Characters.TryResolveNext(me, out int ms) && world.Characters.TryResolveNext(subjectId, out int ss):
+            {
+                float mine = Combat.CombatSystem.Rating(world, ms), theirs = Combat.CombatSystem.Rating(world, ss);
+                return Bool(dc.Condition == 21 ? mine > theirs * 1.5f : theirs > mine * 1.5f);
+            }
             case 1: return Num2(sF == meF ? 100 : relations.Contains(meF) && relations.Contains(sF) ? (int)relations.Get(meF, sF) : 0);
             case 2: return Num2((CanReadFunds(world, c) ? Funds(world, c)?.Money ?? 0 : 0));
             case 3: return Num2((int)relations.GlobalTrust(sF));   // S's faction's global trust (FactionRelations +0x18, FUN_140671530)
-            case 12: return Num3((Funds(world, c)?.Research.TechLevel ?? 0));   // the research manager's tech level (*(*(game + 0x38) + 8), FUN_140676950)
+
             case 7 or 8:
             {
                 // Caged by the speaker's faction (7) or another (8); when S is the speaker, by the target's faction instead (FUN_140676950).
@@ -42,8 +70,8 @@ public sealed partial class DialogueSystem
                 return Bool(dc.Condition == 7 ? cell2.Owner == by : cell2.Owner != by);
             }
             case 4 or 5:
-                return Bool(Cold(world, s.Carrying) is { } body && (body.Medical?.Dead ?? false) == (dc.Condition == 5) && (body.Bounties?.AmountFor(meF) ?? 0) > 0);
-            case 9: return Bool(s.SquadId >= 0 && world.Squads.Find(s.SquadId)?.Shop is not null);
+                return Bool(Cold(world, s.Carrying) is { } body && (body.Medical?.Dead ?? false) == (dc.Condition == 5) && (body.Bounties?.BookedAmount(data.Relations, meF) ?? 0) > 0);
+            case 9: return Bool(s.SquadId >= 0 && world.Squads.Find(s.SquadId) is { } sq && data.Db.Find(sq.TemplateId)?.GetBool("is trader") == true);   // the template's flag, not its stock
             case 14: return Bool(s.IsImprisoned);
             case 16:
             {
@@ -74,13 +102,13 @@ public sealed partial class DialogueSystem
                 var (enemies, _, allies) = BodySystem.Senses(world, combat, ss, s);
                 return Bool(enemies > allies * 1.3f);
             }
-            case 40: return Num2(s.RecentlyWanted > 0 || s.Recognition >= 1 ? s.Bounties?.AmountFor(meF) ?? 0 : 0);
+            case 40: return Num2(s.RecentlyWanted > 0 || s.Recognition >= 1 ? s.Bounties?.BookedAmount(data.Relations, meF) ?? 0 : 0);
             case 41: return Bool(s.Medical is { Unconscious: true, Dead: false });
             case 43: return Bool(SquadOf(world, subjectId).All(m => Cold(world, m)?.Medical?.Incapacitated != false));
             case 44: return Bool(s.Medical?.Dead == true);
             case 45: return Bool(s.Appearance?.Female == true);
             case 46: return b && Cold(world, s.Carrying) is { Medical.Dead: false, NpcClass: FundamentalType.Adventurer or FundamentalType.Bandit or FundamentalType.Slave or FundamentalType.Civilian };
-            case 47: return Num2(s.Bounties?.AmountFor(meF) ?? 0);
+            case 47: return Num2(s.Bounties?.BookedAmount(data.Relations, meF) ?? 0);
             case 48: return Bool(s.Fighter is { IsAnimal: false, Weapon: null });
             case 50: return Bool(world.Squads.Find(mc.SquadId)?.Ai is { } board && board.MissionTarget == subjectId);
             case 52: return Bool(Loves(world, mc, subjectId));
@@ -88,14 +116,19 @@ public sealed partial class DialogueSystem
             case 54: return Bool(ScrewOver(world, me, mc, subjectId, s));
             case 55: return Bool(Helps(world, me, mc, subjectId, s));
             case 56: return Bool(s.InCombat);
+            // WITHIN_TOWN_WALLS: S's gate code above 0 (Character slot 35, docs/game/pathfinding.md "Gate codes"); no gate pass yet reads as the open world.
+            case 57: return Bool(Position(world, subjectId) is { } walled && world.SystemOf<Locks.LockSystem>()?.Regions?.CodeAt(walled) > 0);
+            // TOWN_WALLS_LOCKED_UP: S's current town has gates and none of their doors is open (FUN_140929820 behind Town vfunc 0x300); S in no town reads false.
+            case 58: return Bool(Position(world, subjectId) is { } inTown && TownAt(inTown) is >= 0 and var walledTown && Locks.LockSystem.TownLockedUp(world, data.Sites[walledTown]));
             case 59: return Bool(s.SlaveState is 1 or 2);
             case 61: return Bool(s.SlaveState is 1 or 2 && s.SlaveOwner >= 0 && s.SlaveOwner == meF);
             case 62: return Bool(s.SlaveState > 1);
             case 64: return Bool(Locks.LockSystem.WornShackles(s) is not null);
             case 60: return Bool(Position(world, me) is { } here && NearestTownOf(sF, here) is { } d && d <= 23040);
             case 63: return Bool(s.IsImprisoned && s.InWhat is { } cage && world.Fixtures.Find(cage)?.Lock is { EffectivelyLocked: true });
-            case 65: return Bool(s.Race is not null && s.Race.StringId == mc.Race?.StringId);
-            case 66: return Bool(s.IsPlayer && (CanReadFunds(world, c) ? Funds(world, c)?.Money ?? 0 : 0) >= (s.Bounties?.AmountFor(meF) ?? 0));
+            case 65: return Bool(s.Race is not null && mc.Race is not null && dialogue.RaceGroupOf(s.Race.StringId)?.Group == dialogue.RaceGroupOf(mc.Race.StringId)?.Group);
+            case 66: return Bool(s.IsPlayer && (CanReadFunds(world, c) ? Funds(world, c)?.Money ?? 0 : 0) >= (s.Bounties?.BookedAmount(data.Relations, meF) ?? 0));
+
             case 67: return Bool((s.Orders & CharacterOrders.Sneak) != 0 && !s.InCombat);
             case 68: return Bool(world.Characters.TryResolveNext(subjectId, out int indoors) && world.Sight.BuildingOf(indoors) is not null);
             case 69: return Num2(HasIllegalItem(world, c, me, mc, subjectId) ? 1 : 0);
@@ -118,6 +151,33 @@ public sealed partial class DialogueSystem
             case 79: return Bool(s.Race?.IsRobot == true || (s.Medical?.Parts.Any(p => p.Limb == Bodies.LimbState.Replaced) ?? false));
             default: return Bool(false);
         }
+    }
+
+    /// <summary>
+    /// The subject a condition about a missing target takes (<c>FUN_140676950</c>): the character the player has selected that is nearest to <paramref name="me"/> (<c>FUN_1407f4ba0</c>: squared
+    /// distance, no cap, the first of equals), else the first member of the player's active squad (<c>FUN_1407f5710</c>, <see cref="ActiveSquad"/>); none when the player has neither.
+    /// </summary>
+    CharacterId? SubjectFallback(World world, Conversation context, CharacterId me)
+    {
+        var table = world.Characters;
+        var player = Player(world, context);
+        if (world.Players.RequiresExplicitControl && context.Actor is null) return null;
+        if (Position(world, me) is { } at)
+        {
+            CharacterId? best = null;
+            float bestD = float.MaxValue;
+            foreach (var id in player?.Selection ?? [])
+            {
+                if (!table.TryResolveNext(id, out int s) || !table.Next[s].Alive || table.Cold(s)?.Faction != context.Faction) continue;
+                float d = Vector3.DistanceSquared(table.Next[s].Position, at);
+                if (d < bestD) (best, bestD) = (id, d);
+            }
+            if (best is not null) return best;
+        }
+        if (world.Squads.Find(player?.Squad ?? -1) is { } squad && squad.Faction == context.Faction)
+            foreach (var id in squad.Members)
+                if (table.TryResolveNext(id, out int s) && table.Next[s].Alive) return id;
+        return null;
     }
 
     // Per culture faction: its trade culture (Faction +0x90), built on first use.

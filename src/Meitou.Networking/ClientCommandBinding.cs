@@ -7,6 +7,7 @@ using Meitou.Simulation.Carrying;
 using Meitou.Simulation.Crime;
 using Meitou.Simulation.Locks;
 using Meitou.Simulation.Production;
+using Meitou.Simulation.Dialogue;
 
 namespace Meitou.Networking;
 
@@ -24,6 +25,12 @@ public static class ClientCommandBinding
         CharacterId Buyer() => selection.Count > 0 ? selection[0] : throw new InvalidOperationException("Select a buyer first.");
         var command = intent switch
         {
+            AreaArrival c => c with
+            {
+                SquadId = c.SquadId < 0 ? view.Snapshot.ActiveSquad : c.SquadId,
+                Leader = c.Leader.IsNone ? view.Snapshot.PlayerSquads.FirstOrDefault(s => s.Id == (c.SquadId < 0 ? view.Snapshot.ActiveSquad : c.SquadId))
+                    ?.Members.FirstOrDefault(CharacterId.None) ?? CharacterId.None : c.Leader,
+            },
             MoveOrder c when c.Characters.Count == 0 => c with { Characters = Selected() },
             FollowOrder c when c.Characters.Count == 0 => c with { Characters = Selected() },
             StopCommand c when c.Characters.Count == 0 => c with { Characters = Selected() },
@@ -31,6 +38,8 @@ public static class ClientCommandBinding
             ShootAtOrder c when c.Gunners.Count == 0 => c with { Gunners = Selected() },
             OrdersCommand c when c.Characters.Count == 0 => c with { Characters = Selected() },
             RunSpeedCommand c when c.Characters.Count == 0 => c with { Characters = Selected() },
+            ManoeuvreCommand c when c.Characters.Count == 0 => c with { Characters = Selected() },
+            DoorLockOrder c when c.Characters.Count == 0 => c with { Characters = Selected() },
             StandUpCommand c when c.Characters.Count == 0 => c with { Characters = Selected() },
             TreatOrder c when c.Medics.Count == 0 => c with { Medics = Selected() },
             SplintOrder c when c.Medics.Count == 0 => c with { Medics = Selected() },
@@ -83,7 +92,7 @@ public static class ClientCommandBinding
             command = disposal with { Bodies = disposal.Characters.Select(id => view.Snapshot.Characters.FirstOrDefault(c => c.Id == id)?.Carrying ?? CharacterId.None).ToArray() };
         if (command is FixtureCommand fixture)
         {
-            string? id = fixture switch { PickLockOrder c => c.Cage ?? view.Snapshot.Characters.FirstOrDefault(p => p.Id == c.Prisoner)?.Prison?.CageId, DoorOrder c => c.Door, GetInCageOrder c => c.Cage,
+            string? id = fixture switch { PickLockOrder c => c.Cage ?? view.Snapshot.Characters.FirstOrDefault(p => p.Id == c.Prisoner)?.Prison?.CageId, DoorOrder c => c.Door, DoorLockOrder c => c.Door, GetInCageOrder c => c.Cage,
                 ForceLockOrder c => c.Fixture, UseBedOrder c => c.Bed, PutInBedOrder c => c.Bed,
                 PutInCageOrder c => c.Cage, PayBailOrder c => view.Snapshot.Characters.FirstOrDefault(p => p.Id == c.Prisoner)?.Prison?.CageId, _ => null };
             if (id is not null && fixture.ExpectedFixtureRevision == 0)
@@ -123,6 +132,8 @@ public static class ClientCommandBinding
             if (view.Snapshot.Machines.FirstOrDefault(m => m.Site == site) is { } machine) return machine.AuthorityFaction;
             if (view.Snapshot.Containers.FirstOrDefault(c => c.Id == site) is { } container) return container.Owner;
             if (view.Snapshot.Buildings.FirstOrDefault(b => b.Id == site) is { } building) return building.Owner;
+            if (view.Snapshot.Dummies.FirstOrDefault(d => d.Id == site) is { } dummy) return dummy.Owner;
+            if (view.Snapshot.Seats.FirstOrDefault(s => s.Id == site) is { } seat) return seat.Owner;
             if (ProductionSystem.IsNatural(site)) return -1;
             throw Missing();
         }

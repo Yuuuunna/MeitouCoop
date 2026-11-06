@@ -31,9 +31,10 @@ public sealed record LoadoutWeapon(GameRecord Weapon)
 
 /// <summary>
 /// A limb that is not the natural one (docs/game/character-stats.md "Limb replacements and robots"): <see cref="State"/> 1 stump, 2 replaced, 3 crushed (the medical
-/// <c>LimbState</c>), and for a replaced limb its LIMB_REPLACEMENT record.
+/// <c>LimbState</c>), and for a replaced limb its LIMB_REPLACEMENT record, the item level it is made at (a CHARACTER <c>robot limbs</c> entry's v0) and the COLOR_DATA the
+/// item carries (its <c>color sid</c>; null: none yet, the wearer's scheme applies, docs/characters.md "Clothing colours").
 /// </summary>
-public sealed record LoadoutLimb(int State, GameRecord? Prosthetic = null);
+public sealed record LoadoutLimb(int State, GameRecord? Prosthetic = null, int Level = 0, GameRecord? Colour = null);
 
 /// <summary>
 /// What <see cref="CharacterGenerator"/> rolled for one character: race, gender, a body-file-like appearance (head, hair,
@@ -64,6 +65,8 @@ public sealed class Loadout
     public List<LoadoutWeapon> Weapons { get; } = [];
     /// <summary>The limbs by slot (0 left arm, 1 right arm, 2 left leg, 3 right leg); null for a natural one.</summary>
     public LoadoutLimb?[] Limbs { get; } = new LoadoutLimb?[4];
+    /// <summary>The head was cut off (Meitou, <c>MedicalState.Decapitated</c>): the look has no head, hair, beard or hat.</summary>
+    public bool Decapitated { get; set; }
     public List<string> Notes { get; } = [];
 
     /// <summary>One line per choice, for logs and the viewer.</summary>

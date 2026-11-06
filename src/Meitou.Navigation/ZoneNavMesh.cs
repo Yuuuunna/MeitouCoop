@@ -85,15 +85,27 @@ public sealed class ZoneNavMesh
     /// <summary><see cref="Heights"/> from a list with one entry per polygon (null when every entry is).</summary>
     internal static HeightGrid?[]? HeightsOf(List<HeightGrid?> list) => list.Any(h => h is not null) ? [.. list] : null;
 
-    /// <summary>A copy without the pruned polygons (and the vertices only they used), neighbours renumbered; what the game keeps and caches.</summary>
+    /// <summary>This mesh with another kept set over the same polygons (the arrays are shared).</summary>
+    internal ZoneNavMesh WithKept(bool[] kept) => new()
+    {
+        ZoneX = ZoneX, ZoneZ = ZoneZ, Vertices = Vertices, Polygons = Polygons, Neighbours = Neighbours, Areas = Areas, Links = Links, Kept = kept,
+        BoundsMin = BoundsMin, BoundsMax = BoundsMax, DoorIds = DoorIds, DoorOf = DoorOf, Surfaces = Surfaces, Terrain = Terrain, Heights = Heights,
+    };
+
+    /// <summary>
+    /// A copy without the pruned polygons (and the vertices only they used), neighbours renumbered; what the game keeps and caches. Arrays for the maps, no LINQ: it runs
+    /// whenever a loaded zone's kept set changes, and a growing vertex dictionary and an iterator per polygon were most of its garbage.
+    /// </summary>
     public ZoneNavMesh WithoutPruned()
     {
-        var heights = new List<HeightGrid?>();
         var map = new int[PolygonCount];
         int count = 0;
         for (int p = 0; p < PolygonCount; p++) map[p] = Kept[p] ? count++ : -1;
-        var vertexMap = new Dictionary<int, int>();
+
+        var vertexMap = new int[Vertices.Length];
+        Array.Fill(vertexMap, -1);
         var vertices = new List<Vector3>();
+        var heights = new List<HeightGrid?>(count);
         var polygons = new int[count][];
         var neighbours = new int[count][];
         var areas = new byte[count];
@@ -104,28 +116,62 @@ public sealed class ZoneNavMesh
             if (!Kept[p]) continue;
             int n = map[p];
             heights.Add(Heights?[p]);
-            polygons[n] = Polygons[p].Select(v =>
-            {
-                if (!vertexMap.TryGetValue(v, out int i)) { i = vertices.Count; vertexMap[v] = i; vertices.Add(Vertices[v]); }
-                return i;
-            }).ToArray();
-            neighbours[n] = Neighbours[p].Select(q => q >= 0 ? map[q] : -1).ToArray();
+            polygons[n] = KeptVertices(Polygons[p], vertexMap, vertices);
+            neighbours[n] = Renumbered(Neighbours[p], map);
             areas[n] = Areas[p];
             if (doorOf is not null) doorOf[n] = DoorOf![p];
-            var l = LinksOf(p);
-            if (l.Length > 0)
-            {
-                var kept = new List<int>();
-                for (int i = 0; i < l.Length; i += 2) if (map[l[i + 1]] >= 0) { kept.Add(l[i]); kept.Add(map[l[i + 1]]); }
-                if (kept.Count > 0) links[n] = [.. kept];
-            }
+            links[n] = KeptLinks(LinksOf(p), map);
         }
+
+        var kept = new bool[count];
+        Array.Fill(kept, true);
         return new ZoneNavMesh
         {
             ZoneX = ZoneX, ZoneZ = ZoneZ, Vertices = [.. vertices], Polygons = polygons, Neighbours = neighbours, Areas = areas, Links = links,
-            Kept = Enumerable.Repeat(true, count).ToArray(), BoundsMin = BoundsMin, BoundsMax = BoundsMax, DoorIds = DoorIds, DoorOf = doorOf, Surfaces = Surfaces, Terrain = Terrain,
+            Kept = kept, BoundsMin = BoundsMin, BoundsMax = BoundsMax, DoorIds = DoorIds, DoorOf = doorOf, Surfaces = Surfaces, Terrain = Terrain,
             Heights = HeightsOf(heights),
         };
+    }
+
+    /// <summary>A polygon's vertices in the copy's numbering, each vertex copied the first time a kept polygon uses it.</summary>
+    int[] KeptVertices(int[] polygon, int[] vertexMap, List<Vector3> vertices)
+    {
+        var result = new int[polygon.Length];
+        for (int k = 0; k < polygon.Length; k++)
+        {
+            int v = polygon[k];
+            if (vertexMap[v] < 0)
+            {
+                vertexMap[v] = vertices.Count;
+                vertices.Add(Vertices[v]);
+            }
+            result[k] = vertexMap[v];
+        }
+        return result;
+    }
+
+    static int[] Renumbered(int[] neighbours, int[] map)
+    {
+        var result = new int[neighbours.Length];
+        for (int k = 0; k < neighbours.Length; k++) result[k] = neighbours[k] >= 0 ? map[neighbours[k]] : -1;
+        return result;
+    }
+
+    /// <summary>A polygon's links (pairs of edge and target) to kept polygons, renumbered; null when none is left.</summary>
+    static int[]? KeptLinks(ReadOnlySpan<int> links, int[] map)
+    {
+        int keptPairs = 0;
+        for (int i = 0; i < links.Length; i += 2) if (map[links[i + 1]] >= 0) keptPairs++;
+        if (keptPairs == 0) return null;
+        var result = new int[keptPairs * 2];
+        int at = 0;
+        for (int i = 0; i < links.Length; i += 2)
+            if (map[links[i + 1]] >= 0)
+            {
+                result[at++] = links[i];
+                result[at++] = map[links[i + 1]];
+            }
+        return result;
     }
 
     // ---- point queries ----
@@ -340,16 +386,19 @@ public sealed class ZoneNavMesh
     }
 
     /// <summary>
-    /// The edges of kept polygons that lie on the border line of this zone facing the direction (<paramref name="dx"/>, <paramref name="dz"/>) and lead nowhere
+    /// The edges of kept polygons (of every polygon when <paramref name="all"/>) that lie on the border line of this zone facing the direction (<paramref name="dx"/>, <paramref name="dz"/>) and lead nowhere
     /// inside the mesh (edges that have a link are left out when <paramref name="skipLinked"/>).
     /// </summary>
-    internal List<(int Polygon, int Edge)> BorderEdges(int dx, int dz, bool skipLinked)
+    /// <param name="keep">The kept set to read instead of <see cref="Kept"/>; null with <paramref name="all"/> false reads <see cref="Kept"/>.</param>
+    /// <param name="all">Every polygon, kept or not.</param>
+    internal List<(int Polygon, int Edge)> BorderEdges(int dx, int dz, bool skipLinked, bool[]? keep = null, bool all = false)
     {
         var result = new List<(int, int)>();
         float line = dx > 0 ? BoundsMax.X : dx < 0 ? BoundsMin.X : dz > 0 ? BoundsMax.Y : BoundsMin.Y;
+        var kept = keep ?? Kept;
         for (int p = 0; p < PolygonCount; p++)
         {
-            if (!Kept[p]) continue;
+            if (!all && !kept[p]) continue;
             var poly = Polygons[p];
             for (int k = 0; k < poly.Length; k++)
             {
@@ -379,6 +428,8 @@ public sealed class HeightGrid(float x0, float z0, float step, int columns, int 
     public int Columns { get; } = columns;
     public int Rows { get; } = rows;
     public float[] Values { get; } = values;
+    /// <summary>While the zone is built: per sample, whether it is a span of the polygon's own region (not the span nearest its plane); null once built or loaded.</summary>
+    internal bool[]? Own { get; set; }
 
     /// <summary>The height at (x, z) between the four samples round it, those that have none left out; false when none of the four has one.</summary>
     public bool TryHeightAt(float x, float z, out float height)

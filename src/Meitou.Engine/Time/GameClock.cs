@@ -25,8 +25,7 @@ public sealed class GameClock
         double sunrise = DefaultSunrise, double sunset = DefaultSunset, int daysPerYear = DefaultDaysPerYear)
     {
         if (daysPerYear < 1) throw new ArgumentOutOfRangeException(nameof(daysPerYear));
-        // Sunset not after sunrise gives 6 and 20 (game-loop.md, formats/terrain.md).
-        if (sunset <= sunrise) (sunrise, sunset) = (6, 20);
+        // The raw values stay: with a sunset not after the sunrise there is no daytime (the 6 / 20 fallback is the sun direction's alone, FUN_14066e380, Meitou.Data.World.SkyClock).
         StartHour = ((startHour % 24) + 24) % 24;
         StartDay = startDay;
         Sunrise = sunrise;
@@ -54,18 +53,20 @@ public sealed class GameClock
     public double HoursSinceStart => GameSeconds / SecondsPerGameHour;
 
     /// <summary>Total game hours: <c>day x 24 + time of day</c> (the game's double at +0xa0 of the sky controller).</summary>
-    public double TotalHours => StartDay * 24.0 + StartHour + HoursSinceStart;
+    public double TotalHours => TotalHoursAt(GameSeconds);
+
+    /// <summary><see cref="TotalHours"/> at <paramref name="gameSeconds"/> since the start (a tick run ahead of the clock).</summary>
+    public double TotalHoursAt(double gameSeconds) => StartDay * 24.0 + StartHour + gameSeconds / SecondsPerGameHour;
 
     /// <summary>Time of day in [0, 24).</summary>
-    public double HourOfDay
+    public double HourOfDay => HourOf(TotalHours);
+
+    static double HourOf(double totalHours)
     {
-        get
-        {
-            double h = TotalHours % 24;
-            if (h < 0) h += 24;
-            // A double a hair under 24 would print as 24:00.
-            return h >= 24 ? 0 : h;
-        }
+        double h = totalHours % 24;
+        if (h < 0) h += 24;
+        // A double a hair under 24 would print as 24:00.
+        return h >= 24 ? 0 : h;
     }
 
     /// <summary>The day count (what the save stores as <c>time day</c>).</summary>
@@ -79,6 +80,9 @@ public sealed class GameClock
 
     /// <summary>Daytime when <c>sunrise &lt; hour &lt; sunset</c>, both strict (Observed, <c>FUN_14066cb20</c>).</summary>
     public bool IsDaytime => IsDay(HourOfDay);
+
+    /// <summary><see cref="IsDaytime"/> at <paramref name="gameSeconds"/> since the start.</summary>
+    public bool IsDaytimeAt(double gameSeconds) => IsDay(HourOf(TotalHoursAt(gameSeconds)));
 
     /// <summary>The daylight factor, 0 to 1 (Observed, <c>FUN_14066cb50</c>): 0 outside daytime, a linear rise over <see cref="RampHours"/> after sunrise and fall before sunset, 1 between.</summary>
     public double DaylightFactor => DaylightAt(HourOfDay);

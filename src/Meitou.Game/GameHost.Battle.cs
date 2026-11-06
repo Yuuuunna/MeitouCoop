@@ -20,6 +20,11 @@ sealed partial class GameHost
 
     /// <summary>The default spot (the owner's pick, 2026-10-23): a plateau about 1380 high, from camera code 01C69590C7EAFBAB44A4CE5146EAC4B2BFD203D43E755F7D44.</summary>
     public static readonly Vector2 BattleSpot = new(-74028, 13428);
+    /// <summary>The battle's starting hour (without <c>--time</c>).</summary>
+    public const float BattleHour = 15;
+
+    /// <summary><c>--battle-map fog</c>: a spot in the Fog Islands picked in the game view, about 460 units from the plateau first used (-71170, -40200: about 880 high, level to 13 units over 800 x 800, in its fog volumes, 10k from any building).</summary>
+    public static readonly Vector2 FogBattleSpot = new(-71560, -39953);
 
     bool IsBattle => g.Battle is not null;
     /// <summary>The floor is the sandbox's: the animation sandbox's, or the battle's with <c>--battle-map sandbox</c>.</summary>
@@ -43,6 +48,7 @@ sealed partial class GameHost
             int faction = popData!.Factions.Select((f, i) => (f, i)).FirstOrDefault(p => p.f.Id == factionId, (null!, -1)).Item2;
             battleSides.Add((record.StringId, record.Name, count, faction >= 0 ? faction : null));
         }
+        BattleFactions();
         var spot = g.BattleFlat ? Vector2.Zero : g.BattleAt is { } at ? new Vector2(at.X, at.Z) : BattleSpot;
         battleSpot = new Vector3(spot.X, LocalSession.World.Walkability.GroundHeight(spot.X, spot.Y), spot.Y);
         BattleSetup(LocalSession.World, population!);
@@ -54,6 +60,28 @@ sealed partial class GameHost
     }
 
     string BattleSide(int side) => $"{battleSides[side].Count} x {battleSides[side].Name}";
+
+    /// <summary>
+    /// Gives a side whose record names no faction (CHARACTER records rarely do: the game takes a squad's) one hostile to the other side, as two groups that fight each other
+    /// are in the game: the first faction, not the player's, that is an enemy of the other side's (<see cref="AggroSystem.IsEnemy"/>), or of the player's when neither side names one.
+    /// Both sides used to fall back to the same faction, so each side's senses tagged nobody an enemy and a bowman counted every enemy but its target and its attackers a friend.
+    /// </summary>
+    void BattleFactions()
+    {
+        var relations = popData!.Relations;
+        int player = popData.PlayerFaction;
+        for (int side = 0; side < 2; side++)
+        {
+            if (battleSides[side].Faction is not null) continue;
+            int foe = battleSides[1 - side].Faction ?? player;
+            for (int f = 0; f < relations.Count; f++)
+            {
+                if (f == player || f == foe || !AggroSystem.IsEnemy(relations, f, foe) || !AggroSystem.IsEnemy(relations, foe, f)) continue;
+                battleSides[side] = battleSides[side] with { Faction = f };
+                break;
+            }
+        }
+    }
 
     /// <summary>Fills a new world with the two blocks, a squad each (its first fighter leads): side 0 south (−Z) facing +Z, side 1 north facing −Z, each centred on the spot's X.</summary>
     void BattleSetup(World world, PopulationSystem population)
@@ -204,7 +232,6 @@ sealed partial class GameHost
         var built = BuildSystems(interactive: true);
         LocalSession.ReplaceWorld(built.Systems, world => BattleSetup(world, built.Population!));
         population = built.Population;
-        aggro = built.Aggro;
         worldEpoch++;
         indexedFor = null;
         previousById.Clear();

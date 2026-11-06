@@ -1,10 +1,12 @@
+using System.Globalization;
 using System.Numerics;
+using System.Text;
 using Meitou.Data.Gameplay.Dialogue;
 
 namespace Meitou.Simulation.Dialogue;
 
 /// <summary>The player's Talk order: <see cref="Talker"/> walks up to <see cref="Target"/> and the conversation opens in reach (the original's task 12, then event 1).</summary>
-public sealed record TalkOrder(CharacterId Talker, CharacterId Target) : SimCommand;
+public sealed record TalkOrder(CharacterId Talker, CharacterId Target) : OrderCommand;
 /// <summary>Clicks choice <see cref="Index"/> of the open conversation.</summary>
 public abstract record DialogueCommand : SimCommand
 {
@@ -31,17 +33,22 @@ public sealed record ConversationView(CharacterId Npc, CharacterId Player, Chara
 
 /// <summary>
 /// What a conversation asks the host to do once it has ended: DA_CHARACTER_EDITOR, the surgeon's editor on <see cref="DialogueRequest.Player"/>, already paid; DA_JOIN_SQUAD_WITH_EDIT,
-/// the in-play editor on the recruit (<see cref="DialogueRequest.Player"/>).
+/// the in-play editor on the recruit (<see cref="DialogueRequest.Player"/>); the animal buying window's confirm, the in-play editor on the bought animals
+/// (<see cref="DialogueRequest.Characters"/>, to name them).
 /// </summary>
-public enum DialogueRequestKind : byte { CharacterEditor, RecruitEditor }
+public enum DialogueRequestKind : byte { CharacterEditor, RecruitEditor, AnimalEditor }
 public sealed record DialogueRequest(long Id, DialogueRequestKind Kind, CharacterId Player, CharacterId Npc)
 {
     public Guid EditSession { get; init; }
+    public IReadOnlyList<CharacterId> Characters { get; init; } = [];
+    public IReadOnlyDictionary<CharacterId, Guid> EditSessions { get; init; } = new Dictionary<CharacterId, Guid>();
+
 }
 
 /// <summary>A system with a conversation to publish (the dialogue system).</summary>
 public interface IDialogueSource
 {
+    (int Serial, bool Forget) ArrivalResultFor(PlayerId player) => (0, false);
     ConversationView? PublishConversation();
     ConversationView? PublishConversation(PlayerId player) => player == PlayerId.Local ? PublishConversation() : null;
     ConversationView? PublishConversation(World world, PlayerId player) => null;
@@ -79,6 +86,8 @@ public sealed class DialogueSettings
     public int AmbientEveryTicks { get; init; } = 30;
     public int AmbientPerScan { get; init; } = 2;
     public float AmbientRepeatHours { get; init; } = 0.5f;
+    /// <summary>Whether the displayed lines go through <see cref="Censorship"/> (the player's setting, read when a line is built).</summary>
+    public Func<bool>? Censored { get; init; }
 }
 
 /// <summary>
@@ -105,6 +114,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     readonly SortedDictionary<CharacterId, string> interrupts = new(Comparer<CharacterId>.Create(CompareIds));
     ulong rolls;
     long requestId;
+
 
     readonly PopulationSystem? population;
 
@@ -155,6 +165,12 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             if (command is AreaArrival arrivalEvent)
             {
                 if (command.Issuer is null) Arrive(world, arrivalEvent);
+                else if (world.CommandPlayer(command) is { } player
+                    && world.Squads.Find(arrivalEvent.SquadId >= 0 ? arrivalEvent.SquadId : player.Squad) is { } squad
+                    && squad.Faction == player.Faction && arrivalEvent.Leader == squad.Leader && world.MayOrder(command, squad.Leader)
+                    && world.Characters.TryResolveNext(squad.Leader, out int leader)
+                    && data.BiomeGroupAt(new Vector2(world.Characters.Next[leader].Position.X, world.Characters.Next[leader].Position.Z)) == arrivalEvent.GroupId)
+                    Arrive(world, arrivalEvent);
                 continue;
             }
             if (command is DialogueEvent scripted)
@@ -219,6 +235,8 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         StepAreaArrivals(world);
         ExpireSpeech(world);
         foreach (var state in interactions.Values.ToArray()) KeepCharacterTrade(world, state);
+        Memory.Age(world);
+
         if (bubbles.Count > 0) StepBubbles(world);
         if (Settings.AmbientEvents && world.Tick % Settings.AmbientEveryTicks == 0) { SeeOthers(world); SeeGettingUp(world); }
         if (approaches.Count > 0) StepApproaches(world);
@@ -235,13 +253,32 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             if (!table.TryResolveNext(state.Talker, out int p) || !table.TryResolveNext(state.Target, out int n) || !Awake(table, p) || !Awake(table, n)) CancelApproach(world, state);
             else if (InTalkRange(table, p, n))
             {
-                MovementSystem.Stop(table, p);
+                TaskStart.Stand(table, p);
                 var (who, whom) = (state.Talker, state.Target);
                 CancelApproach(world, state);
                 Start(world, whom, who, DialogueEvents.PlayerTalkToMe, state: state);
             }
             else if (world.Tick >= state.ApproachUntil) CancelApproach(world, state);
-            else Hold(world, n);
+            else
+            {
+                Hold(world, n);
+                if (world.Tick >= state.NextAim)
+                {
+                    state.NextAim = world.Tick + (long)MathF.Ceiling(RepathSeconds / world.TickSeconds);
+                    ref readonly var tp = ref table.Next[p];
+                    var at = table.Next[n].Position;
+                    bool walking = tp.Task == (byte)CharacterTask.GoTo && Vector2.Distance(tp.Goal, state.AimedAt) <= RepathDistance;
+                    bool stopped = tp.Task == (byte)CharacterTask.Idle;
+                    if (!walking && !stopped) CancelApproach(world, state);
+                    else if (stopped || Vector2.Distance(state.AimedAt, new Vector2(at.X, at.Z)) > RepathDistance)
+                    {
+                        state.AimedAt = new Vector2(at.X, at.Z);
+                        var context = Context(world, new Conversation { Npc = state.Target, Player = state.Talker, Event = DialogueEvents.PlayerTalkToMe }, state);
+                        DeferPlayer(world, context, new MoveOrder([state.Talker], at) { Tick = world.Tick + 1 });
+                    }
+                }
+            }
+
         }
         RefreshView(world);
     }
@@ -251,6 +288,11 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         var table = world.Characters;
         if (!table.TryResolveNext(order.Talker, out int p) || table.Cold(p) is not { IsPlayer: true } pc
             || !table.TryResolveNext(order.Target, out int n) || table.Cold(n) is not { IsPlayer: false } nc || !Awake(table, n)) return;
+        if (data.Db.Find(pc.RecordId)?.GetBool("dumb") == true)
+        {
+            Post(world, Context(world, new Conversation { Npc = order.Target, Player = order.Talker, Event = DialogueEvents.PlayerTalkToMe }, state), Loc.Tr("{1} can't talk to people", pc.Name));
+            return;
+        }
         if (data.Relations.Contains(nc.Faction) && data.Relations.Contains(pc.Faction) && data.Relations.IsHostile(nc.Faction, pc.Faction) && !HasInterrupt(order.Target, state.Attributed ? state.Actor : null, state.Faction))
         {
             if (state.Attributed) { world.Post(state.Actor, "This character will not talk right now."); return; }
@@ -261,6 +303,8 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         state.Talker = order.Talker; state.Target = order.Target;
         state.ApproachUntil = world.Tick + (long)(Settings.ApproachSeconds / world.TickSeconds);
         Hold(world, n);
+        state.NextAim = world.Tick + (long)MathF.Ceiling(RepathSeconds / world.TickSeconds);
+        state.AimedAt = new Vector2(table.Next[n].Position.X, table.Next[n].Position.Z);
         if (!InTalkRange(table, p, n))
         {
             var context = Context(world, new Conversation { Npc = order.Target, Player = order.Talker, Event = DialogueEvents.PlayerTalkToMe }, state);
@@ -277,17 +321,20 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
 
     /// <summary>The talk distance beyond the target's radius while walking (7 x 3, <c>AI::isWithinChoppingRange</c> for a character, docs/game/dialogue.md "Player conversation").</summary>
     public const float TalkReach = 21;
+    /// <summary>How far the target may move from the walk's goal, and how often that is looked at (the pursuit's constants).</summary>
+    const float RepathDistance = 12, RepathSeconds = 0.5f;
     /// <summary>The largest height difference to talk across (the original's on the same floor; engine choice, the sim has no floors here).</summary>
     public const float TalkHeight = 35;
 
     /// <summary>
-    /// Whether <paramref name="talker"/> is near enough <paramref name="target"/> to talk: X/Z within the target's footprint radius + <see cref="TalkReach"/>, twice the reach once
+    /// Whether <paramref name="talker"/> is near enough <paramref name="target"/> to talk: X/Z within the target's scaled radius (footprint x body scale) + <see cref="TalkReach"/>, twice the reach once
     /// the talker has stopped, and within <see cref="TalkHeight"/> in height.
     /// </summary>
     static bool InTalkRange(CharacterTable table, int talker, int target)
     {
-        var (a, b) = (table.Current[talker].Position, table.Current[target].Position);
-        float reach = Combat.CombatTuning.Footprint(table.Cold(target)) + TalkReach * ((table.Current[talker].Flags & (ushort)MoveFlags.AnyPath) == 0 ? 2 : 1);
+        var (a, b) = (table.Next[talker].Position, table.Next[target].Position);
+        float reach = Combat.CombatSteering.Radius(table.Cold(target)) + TalkReach * ((table.Next[talker].Flags & (ushort)MoveFlags.AnyPath) == 0 ? 2 : 1);
+
         return Vector2.Distance(new(a.X, a.Z), new(b.X, b.Z)) < reach && MathF.Abs(a.Y - b.Y) < TalkHeight;
     }
 
@@ -298,7 +345,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     {
         var table = world.Characters;
         table.Cold(slot)!.Engaged = true;
-        if (table.Next[slot].Task is (byte)CharacterTask.Wander or (byte)CharacterTask.Idle) MovementSystem.Stop(table, slot);
+        if (table.Next[slot].Task is (byte)CharacterTask.Wander or (byte)CharacterTask.Idle) TaskStart.Stand(table, slot);
     }
 
     static void Release(World world, CharacterId id)
@@ -307,11 +354,20 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             && world.SystemOf<DialogueSystem>()?.HoldsNpc(id) != true && world.SystemOf<Trading.TradeSystem>()?.HoldsNpc(id) != true) c.Engaged = false;
     }
 
+    /// <summary>The farthest the talking player character may be from the camera for a player conversation to start (<c>FUN_140684320</c>, constant 9216).</summary>
+    public const float CameraReach = 9216;
+
+    /// <summary>Whether the talker is more than <see cref="CameraReach"/> from the camera focus (no focus known: never; headless runs and tests have none).</summary>
+    bool TooFarFromCamera(CharacterTable table, CharacterId talker) =>
+        population?.Focus is { } focus && table.TryResolveNext(talker, out int p) && Vector3.Distance(table.Next[p].Position, focus) > CameraReach;
+
     /// <summary>Fires <paramref name="ev"/> at <paramref name="npc"/> with <paramref name="player"/> as its target and opens the conversation (docs/game/dialogue.md "Player conversation").</summary>
     void Start(World world, CharacterId npc, CharacterId player, int ev, bool quiet = false, Interaction? state = null)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(npc, out int n) || table.Cold(n) is not { } nc) return;
+        if (world.Players.RequiresExplicitControl && world.Players.ControlOf(player) is null) return;
+        if (!world.Players.RequiresExplicitControl && ev == DialogueEvents.PlayerTalkToMe && TooFarFromCamera(table, player)) return;
         bool supplied = state is not null;
         state ??= InteractionFor(world.Players.ControlOf(player)?.Player ?? PlayerId.Local);
         if (!NpcAvailable(world, npc, state) || state.Open is not null) return;
@@ -321,6 +377,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         state.Attributed = c.Actor is not null; state.Control = c.Control;
         state.Faction = c.Faction; state.MembershipRevision = c.MembershipRevision;
         IReadOnlyList<DialogueNode> roots = TakeInterrupt(npc, c.Actor, c.Faction, out var pending) && dialogue.Node(pending) is { IsRoot: true } interrupt ? [interrupt] : SetOf(world, n).For(ev);
+
         var picked = Pick(world, c, roots);
         if (picked is not { } p)
         {
@@ -329,6 +386,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         }
         state.Open = c;
         Hold(world, n);
+        if (TaskStart.OnAiWalk(table, n)) TaskStart.Stand(table, n);   // a walking NPC stops to talk (engine choice); the approach chased it
         c.Root = p.Root;
         if (IsNpcSide(p.Line.Speaker)) Say(world, c, p.Line, p.Speaker);
         else Offer(world, c, p.Root ?? p.Line);
@@ -346,11 +404,12 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     }
 
     /// <summary>
-    /// The character offers Trade: its squad has a shop, and its record says <c>is trader</c> or its dialogue reaches a Trade line (docs/game/economy.md "Who trades"); the
-    /// guards and other members of a trader squad do not.
+    /// The character offers Trade: its squad has a shop, or has no home building and a template with <c>vendors</c> (a Caravan, stocked at its first trade), and its record says
+    /// <c>is trader</c> or its dialogue reaches a Trade line (docs/game/economy.md "Who trades"); the guards and other members of a trader squad do not.
     /// </summary>
     public bool Trades(World world, int slot) =>
-        world.Characters.Cold(slot) is { IsPlayer: false, SquadId: >= 0 } cold && world.Squads.Find(cold.SquadId)?.Shop is not null
+        world.Characters.Cold(slot) is { IsPlayer: false, SquadId: >= 0 } cold && world.Squads.Find(cold.SquadId) is { } squad
+        && (squad.Shop is not null || squad.HomeBuilding is null && data.Db.Find(squad.TemplateId)?.GetReferences("vendors").Count > 0)
         && (data.Db.Find(cold.RecordId)?.GetBool("is trader") == true || SetOf(world, slot).Trades);
 
     public bool CanTalk(World world, int slot, CharacterId? talker = null)
@@ -388,8 +447,8 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         c.Line = line;
         c.Speaker = speaker;
         MarkUsed(world, c, line);
-        string text = Expand(world, c, line, PickText(world, speaker, line), speaker, c.Player);
-        if (line.TakesMoney && line.Cost is { } cost) text += $" [c.{cost:N0}]";
+        string text = Said(Expand(world, c, line, PickText(world, speaker, line), speaker, c.Player));
+        text += MoneySuffix(line);
         c.Text = text;
         c.Log.Add($"{NameOf(world, speaker)}: {text}");
         LogLine(world, c, speaker, NameOf(world, speaker), text, false);
@@ -414,9 +473,10 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
                 c.Choices.Add((null, "[...]"));
                 return;
             }
-            c.Choices.Add((child, Expand(world, c, child, PickText(world, c.Player, child), c.Player, c.Npc)));
+            string label = Said(Expand(world, c, child, PickText(world, c.Player, child), c.Player, c.Npc)) + MoneySuffix(child);
+            if (label.Length > 0) c.Choices.Add((child, label));   // a choice with no text and no cost is never offered (FUN_140680130)
         }
-        if (c.Choices.Count == 0) c.Choices.Add((null, "[Leave]"));
+        if (c.Choices.Count == 0) c.Choices.Add((null, LeaveChoice));
     }
 
     void Choose(World world, Conversation c, int index)
@@ -436,14 +496,16 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             if (c.Ended) return;
             from = reply;
         }
-        else if (text == "[Leave]" || from is null) { c.Ended = true; return; }
+        else if (text == LeaveChoice || from is null) { c.Ended = true; return; }
         var next = Pick(world, c, from.Children);
         if (next is not { } p) { c.Ended = true; return; }
         if (IsNpcSide(p.Line.Speaker)) Say(world, c, p.Line, p.Speaker);
         else
         {
             c.Choices.Clear();
-            c.Choices.Add((p.Line, Expand(world, c, p.Line, PickText(world, c.Player, p.Line), c.Player, c.Npc)));
+            string label = Said(Expand(world, c, p.Line, PickText(world, c.Player, p.Line), c.Player, c.Npc)) + MoneySuffix(p.Line);
+            if (label.Length == 0) c.Ended = true;   // nothing to offer: the conversation ends
+            else c.Choices.Add((p.Line, label));
         }
     }
 
@@ -481,6 +543,18 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     string PickText(World world, CharacterId who, DialogueNode line) =>
         line.Texts.Count switch { 0 => "", 1 => line.Texts[0], var n => line.Texts[Rng.Int(NextRoll(world, who), n)] };
 
+    /// <summary>
+    /// The cost a line's text shows (<c>FUN_140675320</c>, for a said line and a choice button alike): " [c.N]" once for every DA_TAKE_MONEY effect, N its own val0 with thousands
+    /// separators, in effect order. DA_GIVE_MONEY adds nothing.
+    /// </summary>
+    static string MoneySuffix(DialogueNode line)
+    {
+        var sb = new StringBuilder();
+        foreach (var e in line.Effects)
+            if (e.Action == DialogueActions.TakeMoney) sb.Append(" [c.").Append(e.Value.ToString("N0", CultureInfo.InvariantCulture)).Append(']');
+        return sb.ToString();
+    }
+
     string NameOf(World world, CharacterId id) => world.Characters.TryResolveNext(id, out int s) && world.Characters.Cold(s) is { } c ? c.Name : "";
 
     internal void RefreshView(World world)
@@ -491,10 +565,13 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             if (state.Open is not { } c) { state.View = null; continue; }
             bool visible = c.Actor is null || world.Players.Find(c.Actor.Value)?.HasPermission(c.Faction, FactionPermission.ReadFunds) == true;
             state.View = new ConversationView(c.Npc, c.Player, c.Speaker, NameOf(world, c.Speaker.IsNone ? c.Npc : c.Speaker), NameOf(world, c.Player), c.Text,
-                [.. c.Choices.Select(x => x.Text)], [.. c.Log], visible ? Funds(world, c)?.Money ?? 0 : 0)
+                [.. c.Choices.Select(Shown)], [.. c.Log], visible ? Funds(world, c)?.Money ?? 0 : 0)
                 { SessionId = state.Id, ChoiceRevision = c.Revision, FundsVisible = visible };
         }
     }
+
+    internal const string LeaveChoice = "[Leave]";
+    static string Shown((DialogueNode? Reply, string Text) choice) => choice.Reply is null && choice.Text == LeaveChoice ? Loc.Tr(LeaveChoice) : choice.Text;
 
     public ConversationView? PublishConversation() => Local.View;
     public ConversationView? PublishConversation(PlayerId player) => interactions.GetValueOrDefault(player.Value)?.View;
@@ -506,7 +583,8 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         HashAreaArrivals(ref hasher);
         HashInteractions(ref hasher);
         var (open, talker, target) = (Local.Open, Local.Talker, Local.Target);
-        if (lastUse.Count == 0 && permanent.Count == 0 && counters.Count == 0 && Memory.IsEmpty && interrupts.Count == 0 && playerInterrupts.Count == 0 && bubbles.Count == 0 && ambientAt.Count == 0 && approaches.Count == 0 && down.Count == 0 && followers.Count == 0 && stalkers.Count == 0 && open is null && talker.IsNone) return;
+        if (lastUse.Count == 0 && permanent.Count == 0 && counters.Count == 0 && Memory.IsEmpty && interrupts.Count == 0 && playerInterrupts.Count == 0 && bubbles.Count == 0 && ambientAt.Count == 0 && approaches.Count == 0 && down.Count == 0 && quiet.Count == 0 && followers.Count == 0 && stalkers.Count == 0 && open is null && talker.IsNone) return;
+
         hasher.Add(0x44696167);
         hasher.Add(rolls);
         foreach (var (line, hours) in lastUse) { hasher.Add(Rng.StableHash(line)); hasher.Add(hours); }
@@ -522,6 +600,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         foreach (var ((squad, whom), hours) in ambientAt) { hasher.Add(squad); hasher.Add(whom); hasher.Add(hours); }
         HashApproaches(ref hasher);
         foreach (var id in down) hasher.Add(id);
+        foreach (var (npc, pc) in quiet) { hasher.Add(npc); hasher.Add(pc); }
         hasher.Add(talker);
         hasher.Add(target);
         if (open is { } c)

@@ -8,14 +8,21 @@ public sealed record SpeechBubble(CharacterId Speaker, string Text, bool Large);
 
 public sealed partial class DialogueSystem
 {
-    /// <summary>A speech-bubble conversation under way (docs/game/dialogue.md "Ambient conversations"): the line said next, by whom, and when.</summary>
-    sealed record Bubble(Conversation C, DialogueNode Line, long DueTick, CharacterId Speaker);
+    /// <summary>
+    /// A speech-bubble conversation under way (docs/game/dialogue.md "Ambient conversations"): the line said next, by whom, and when. <paramref name="Chained"/>: a line after the first, which the
+    /// original runs on its speaker's own dialogue state (<c>FUN_140684720</c>); the first runs on the owner's (<c>FUN_140683f90</c>).
+    /// </summary>
+    sealed record Bubble(Conversation C, DialogueNode Line, long DueTick, CharacterId Speaker, bool Chained = false);
 
     readonly List<Bubble> bubbles = [];
     // The lines on show: the text and the tick it goes (display only: follows from the bubbles, so not hashed).
     readonly SortedDictionary<CharacterId, (string Text, long Until, bool Large)> shown = new(Comparer<CharacterId>.Create(CompareIds));
     // When a squad last reacted to seeing a character (the cooldown of SeeOthers).
     readonly SortedDictionary<(int Squad, CharacterId Target), double> ambientAt = new(Comparer<(int, CharacterId)>.Create((a, b) => a.Item1 != b.Item1 ? a.Item1.CompareTo(b.Item1) : CompareIds(a.Item2, b.Item2)));
+    // The NPC / player-character pairs noticed at the world's first look (a new game or a load) and not lost from notice since: no sight line for them (engine choice; the
+    // original greets a character arriving, not one already beside it at the start, Observed). Hashed.
+    readonly SortedSet<(CharacterId Npc, CharacterId Player)> quiet = new(Comparer<(CharacterId, CharacterId)>.Create((a, b) => CompareIds(a.Item1, b.Item1) is var c and not 0 ? c : CompareIds(a.Item2, b.Item2)));
+    bool looked;
 
     /// <summary>The event of a crowd trigger's lines (EV_CROWD_TRIGGERED), and of a contract's end talk (EV_CONTRACT_JOB_ENDED).</summary>
     const int CrowdTriggered = 74;
@@ -46,13 +53,23 @@ public sealed partial class DialogueSystem
 
     /// <summary>
     /// Starts <paramref name="root"/> as a bubble conversation of <paramref name="npc"/> with <paramref name="whom"/> (<c>FUN_140683f90</c>): the best of its lines (speakers resolved as in
-    /// any choice) is said, the chain after it. <paramref name="now"/>: said this tick, else on the next bubble step. Returns whether a line was found.
+    /// any choice) is said, the chain after it. <paramref name="now"/>: said this tick, else on the next bubble step. Returns whether a line was found. <paramref name="force"/>
+    /// (a crowd trigger): the start is not refused for a character busy talking or caged; what it was saying is dropped without the end step (no counter), as the original overwrites
+    /// the state (a character in the open player conversation is still refused: engine choice).
     /// </summary>
-    bool StartBubbles(World world, CharacterId npc, CharacterId whom, DialogueNode root, int ev, bool now = true)
+    bool StartBubbles(World world, CharacterId npc, CharacterId whom, DialogueNode root, int ev, bool now = true, bool force = false)
     {
-        if (!world.Characters.TryResolveNext(npc, out int n) || !Awake(world.Characters, n) || BubbleOf(npc)) return false;
+        if (!world.Characters.TryResolveNext(npc, out int n)) return false;
+        if (force)
+        {
+            if (!CanSpeak(world.Characters, n) || interactions.Values.Any(s => s.Open is { } o && (o.Npc == npc || o.Player == npc))) return false;
+            bubbles.RemoveAll(b => b.C.Npc == npc || b.Speaker == npc);
+            shown.Remove(npc);
+        }
+        else if (!Awake(world.Characters, n) || BubbleOf(npc)) return false;
         var c = Context(world, new Conversation { Npc = npc, Player = whom, Event = ev, Root = root });
-        if (Pick(world, c, root.Children) is not { } first || Busy(first.Speaker, c)) return false;
+        if (Pick(world, c, root.Children) is not { } first || !force && Busy(first.Speaker, c)) return false;
+
         bubbles.Add(new Bubble(c, first.Line, world.Tick, first.Speaker));
         if (now) StepBubbles(world);
         return true;
@@ -73,6 +90,13 @@ public sealed partial class DialogueSystem
         StepBubbles(world);
         return true;
     }
+
+    /// <summary>
+    /// The "one at a time" test of a root (<c>FUN_140678f30</c>, <b>Verified</b>): a member of the conversation owner's squad, the owner included, has a live conversation rooted at <paramref name="node"/>,
+    /// the open window or a bubble chain of another conversation than <paramref name="c"/>.
+    /// </summary>
+    bool RootLive(World world, Conversation c, DialogueNode node) =>
+        SquadOf(world, c.Npc).Any(m => interactions.Values.Any(s => s.Open is { } o && o != c && o.Npc == m && o.Root == node) || bubbles.Any(b => b.C != c && b.C.Npc == m && b.C.Root == node));
 
     bool BubbleOf(CharacterId who) => shown.ContainsKey(who) || bubbles.Any(b => b.Speaker == who || b.C.Npc == who);
 
@@ -98,7 +122,7 @@ public sealed partial class DialogueSystem
         var near = new List<(int Slot, float D2)>();
         for (int i = 0; i < table.HighWater; i++)
         {
-            if (!table.Next[i].Alive || table.Next[i].Task == (byte)CharacterTask.Rest || table.Cold(i) is not { IsPlayer: false, SquadId: >= 0, Engaged: false, InCombat: false, Fleeing: false, IsImprisoned: false } nc) continue;
+            if (!table.Next[i].Alive || table.Next[i].Task == (byte)CharacterTask.Rest || table.Cold(i) is not { IsPlayer: false, SquadId: >= 0, Engaged: false, InCombat: false, Fleeing: false, IsImprisoned: false, SlaveState: not 1 } nc) continue;   // a slave (state 1) says nothing (FUN_1408529c0)
             if (nc.Fighter?.IsAnimal == true || nc.Appearance?.Animal is not null || !data.Relations.Contains(nc.Faction) || !Awake(table, i)) continue;
             float reach = MathF.Max(world.Sight.MaxRange(i, AggroSystem.RangeOf(nc, AggroSystem.OutdoorSight)), Settings.AmbientRange);
             float nearest = float.MaxValue;
@@ -117,28 +141,41 @@ public sealed partial class DialogueSystem
             {
                 var pc = table.Cold(p)!;
                 float stealth = (pc.Orders & CharacterOrders.Sneak) != 0 ? Orders.Stealth(pc) : -1;
-                if (world.Sight.Sees(i, p, table.Next[i].Position, table.Next[i].Yaw, table.Next[p].Position, outdoor, stealth) <= 0) continue;
+                if (world.Sight.Sees(i, p, table.Next[i].Position, table.Next[p].Position, outdoor, stealth) <= 0) continue;
                 sees.Add((i, p));
                 squadSees.Add((nc.SquadId, p));
             }
         }
+        // The pairs noticed now (seen, or by a squad mate within 2 R). Those noticed at the first look of the world stay quiet until the player character has been out of notice.
+        var noticed = new HashSet<(CharacterId Npc, CharacterId Player)>();
+        foreach (var (i, _) in near)
+        {
+            float shared = 2 * AggroSystem.RangeOf(table.Cold(i)!, AggroSystem.OutdoorSight);
+            foreach (int p in players)
+                if (sees.Contains((i, p)) || Vector3.DistanceSquared(table.Next[i].Position, table.Next[p].Position) <= shared * shared && squadSees.Contains((table.Cold(i)!.SquadId, p)))
+                    noticed.Add((table.IdOf(i), table.IdOf(p)));
+        }
+        if (!looked) { looked = true; quiet.UnionWith(noticed); }
+        else quiet.RemoveWhere(q => !noticed.Contains(q));
         int said = 0;
         foreach (var (i, nearest) in near)
         {
             if (said >= Settings.AmbientPerScan) break;
             var nc = table.Cold(i)!;
-            float shared = 2 * AggroSystem.RangeOf(nc, AggroSystem.OutdoorSight);
+            var npc = table.IdOf(i);
             int best = -1;
             float best2 = float.MaxValue;
             foreach (int p in players)
             {
                 float d2 = Vector3.DistanceSquared(table.Next[i].Position, table.Next[p].Position);
-                if (d2 < best2 && (sees.Contains((i, p)) || d2 <= shared * shared && squadSees.Contains((nc.SquadId, p)))) (best, best2) = (p, d2);
+                if (d2 < best2 && noticed.Contains((npc, table.IdOf(p))) && !quiet.Contains((npc, table.IdOf(p)))) (best, best2) = (p, d2);
             }
             // The squad's cooldown starts only once a line is said: the original asks again on every perception update and rolls `chance temporary` afresh each time
             // (the Red Sabres' attack root is 20%), so a failed look is tried again on the next scan. A player character it has nothing to say to leaves the turn to the NPCs.
-            if (best >= 0 && !Recent(world, nc.SquadId, table.IdOf(best))
-                && TrySay(world, i, nc.SquadId, best, data.Relations.IsHostile(nc.Faction, table.Cold(best)!.Faction) ? 66 : data.Relations.IsAlly(nc.Faction, table.Cold(best)!.Faction) ? 67 : 3))
+            int sight = SightEvent(world, i, nc, best);
+            bool free = nc is { SlaveState: 0, Escaped: false };
+            if (best >= 0 && (sight == 67 || free) && !Recent(world, nc.SquadId, table.IdOf(best))
+                && TrySay(world, i, nc.SquadId, best, sight))
             {
                 said++;
                 continue;
@@ -151,7 +188,52 @@ public sealed partial class DialogueSystem
                 float d2 = Vector3.DistanceSquared(table.Next[i].Position, table.Next[o].Position);
                 if (d2 <= best2 && !Recent(world, nc.SquadId, table.IdOf(o))) (best, best2) = (o, d2);
             }
-            if (best >= 0 && TrySay(world, i, nc.SquadId, best, 3)) said++;
+            if (best >= 0 && free && TrySay(world, i, nc.SquadId, best, 3)) said++;
+        }
+        SeeAnimals(world, near, said);
+    }
+
+    /// <summary>EV_USING_MY_TRAINING_EQUIPMENT (<c>FUN_140859680</c>).</summary>
+    const int UsingMyTrainingEquipment = 59;
+
+    /// <summary>
+    /// The event an NPC fires at a seen player character (<c>FUN_140859680</c>, <b>Verified</b>): 67 for an ally; else 59 when the target is training on a dummy owned by the looker's faction
+    /// (the target's <c>+0x158</c> holds the faction of the dummy it uses, set by <c>Task_UseTrainingDummy</c>'s update and reset every character tick) while the looker senses no enemy,
+    /// else 66 for an enemy of the player and 3 for the rest.
+    /// </summary>
+    int SightEvent(World world, int looker, CharacterCold nc, int target)
+    {
+        int faction = target >= 0 ? world.Characters.Cold(target)?.Faction ?? -1 : -1;
+        if (data.Relations.IsAlly(nc.Faction, faction)) return 67;
+        if (target >= 0 && TrainingDummyOwner(world, target) == nc.Faction && world.SystemOf<AggroSystem>()?.SensesOf(looker) is not { Enemies: > 0 }) return UsingMyTrainingEquipment;
+        return data.Relations.IsHostile(nc.Faction, faction) ? 66 : 3;
+    }
+
+    /// <summary>The faction owning the training dummy the character is using now (Character <c>+0x158</c>); -1 when it uses none.</summary>
+    internal static int TrainingDummyOwner(World world, int slot) =>
+        world.Characters.Cold(slot) is { OperateSite: { } site } && world.Fixtures.Find(site) is { Kind: Locks.FixtureKind.Training } dummy ? dummy.Owner : -1;
+
+    /// <summary>I_SEE_ANIMAL_SQUAD: an NPC looker that passes the same filter and sees an awake animal fires it at the animal (<c>FUN_140859680</c> :54-64, before the friend/enemy split).</summary>
+    const int SeeAnimalSquad = 27;
+
+    void SeeAnimals(World world, List<(int Slot, float D2)> near, int said)
+    {
+        var table = world.Characters;
+        var animals = new List<int>();
+        for (int a = 0; a < table.HighWater; a++)
+            if (table.Next[a].Alive && Awake(table, a) && table.Cold(a) is { } ac && (ac.Fighter?.IsAnimal == true || ac.Appearance?.Animal is not null)) animals.Add(a);
+        if (animals.Count == 0) return;
+        foreach (var (i, _) in near)
+        {
+            if (said >= Settings.AmbientPerScan) return;
+            var nc = table.Cold(i)!;
+            float outdoor = AggroSystem.RangeOf(nc, AggroSystem.OutdoorSight);
+            foreach (int a in animals)
+                if (world.Sight.Sees(i, a, table.Next[i].Position, table.Next[a].Position, outdoor, -1) > 0 && !Recent(world, nc.SquadId, table.IdOf(a)) && TrySay(world, i, nc.SquadId, a, SeeAnimalSquad))
+                {
+                    said++;
+                    break;
+                }
         }
     }
 
@@ -171,7 +253,7 @@ public sealed partial class DialogueSystem
     const int GetUpPeace = 23, GetUpFight = 24, GetUpUnnecessaryFight = 25;
 
     /// <summary>
-    /// Getting up (<c>Task_GetUp</c>, <c>FUN_14033ca10</c> / <c>FUN_1408c6780</c>, docs/game/ragdolls.md): a character that was down at the last look and is awake now fires, with no target,
+    /// Getting up (<c>Task_GetUp</c>, <c>FUN_14033ca10</c> / <c>FUN_1408c6780</c>, docs/game/ragdolls.md): the events fire only when the task starts with posture 0, so a character that was not standing (out cold, staying low, crawling) at the last look and stands now fires, with no target (a wake that stays low fires nothing until it stands),
     /// 23 when it senses no enemy or neutral (<see cref="BodySystem.Senses"/>); else, stood up on the player's order with no conscious ally sensed, 25; else 24.
     /// </summary>
     void SeeGettingUp(World world)
@@ -182,7 +264,7 @@ public sealed partial class DialogueSystem
             if (!table.Next[i].Alive || table.Cold(i) is not { Medical: { } medical } c) continue;
             var id = table.IdOf(i);
             if (medical.Dead) { down.Remove(id); continue; }
-            if (medical.Incapacitated) { down.Add(id); continue; }
+            if (!medical.Standing) { down.Add(id); continue; }   // knocked out, staying low or crawling: posture not 0
             if (!down.Remove(id)) continue;
             bool ordered = c.OrderedUp;
             c.OrderedUp = false;
@@ -231,17 +313,21 @@ public sealed partial class DialogueSystem
     {
         for (int k = 0; k < bubbles.Count; k++)
         {
-            var (c, line, due, speaker) = bubbles[k];
+            var current = bubbles[k];
+            var (c, line, due, speaker, chained) = current;
             if (!Authorized(world, c)) { bubbles.RemoveAt(k--); continue; }
+
             if (world.Tick < due) continue;
-            if (!world.Characters.TryResolveNext(speaker, out int n) || !Awake(world.Characters, n))
+            if (!world.Characters.TryResolveNext(speaker, out int n) || !CanSpeak(world.Characters, n))
             {
                 bubbles.RemoveAt(k--);
                 continue;
             }
             MarkUsed(world, c, line);
-            string text = Expand(world, c, line, PickText(world, speaker, line), speaker, speaker == c.Player ? c.Npc : c.Player);
-            RunEffects(world, c, line, c.Npc);
+            string text = Said(Expand(world, c, line, PickText(world, speaker, line), speaker, speaker == c.Player ? c.Npc : c.Player)) + MoneySuffix(line);
+            RunEffects(world, c, line, chained ? speaker : c.Npc);   // locks, unlocks, interrupt and the rest land on the state of whoever says a chained line
+            // A crowd trigger's forced starts drop other characters' bubbles from the list: find this one again.
+            if ((k = bubbles.FindIndex(b => ReferenceEquals(b, current))) < 0) continue;
             float seconds = 2 + 0.12f * text.Length;
             if (text.Length > 0)
             {
@@ -254,27 +340,31 @@ public sealed partial class DialogueSystem
                 EndBubbles(world, c);
                 bubbles.RemoveAt(k--);
             }
-            else bubbles[k] = new Bubble(c, next.Line, world.Tick + (long)MathF.Ceiling(seconds / world.TickSeconds), next.Speaker);
+            else bubbles[k] = new Bubble(c, next.Line, world.Tick + (long)MathF.Ceiling(seconds / world.TickSeconds), next.Speaker, Chained: true);
         }
     }
 
     /// <summary>
-    /// A line's <c>crowd trigger</c> (<c>FUN_140680560</c>, unless the line is itself of event 74): the awake members of the conversation owner's squad other than itself and the
-    /// speaker, not animals, start that DIALOGUE as event 74 at the target. Engine readings: the owner is left out (it is talking), and each member joins with the trigger's val0
-    /// percent (the data's values are 100 but for two lines).
+    /// A line's <c>crowd trigger</c> (<c>FUN_140680560</c>, unless the line is itself of event 74): every member of the saying character's squad (<paramref name="speaker"/>, the state the
+    /// effects run on) that is not down (<see cref="Down"/>), not an animal and not in a bed starts that DIALOGUE as event 74 at the target, forced (<see cref="StartBubbles"/>): fighting,
+    /// held and caged members too, a conversation they were in overwritten. Engine readings: the owner and the speaker are left out (they are talking), a player character is left to its
+    /// player, and each member joins with the trigger's val0 percent (the data's values are 100 but for two lines).
     /// </summary>
     void CrowdTrigger(World world, Conversation c, DialogueNode line, CharacterId speaker)
     {
         if (c.Event == CrowdTriggered || line.CrowdTrigger is not { } id || dialogue.Node(id) is not { IsRoot: true } root) return;
         var table = world.Characters;
-        foreach (var m in SquadOf(world, c.Npc))
+        foreach (var m in SquadOf(world, speaker))
         {
-            if (m == c.Npc || m == speaker || !table.TryResolveNext(m, out int s) || !Awake(table, s) || table.Cold(s) is not { IsPlayer: false } mc) continue;
-            if (mc.Fighter?.IsAnimal == true || mc.Appearance?.Animal is not null || mc.Engaged) continue;
+            if (m == c.Npc || m == speaker || !table.TryResolveNext(m, out int s) || !table.Next[s].Alive || table.Cold(s) is not { IsPlayer: false } mc) continue;
+            if (mc.Fighter?.IsAnimal == true || mc.Appearance?.Animal is not null || CharacterFacts.Down(mc) || mc.InSomething == Locks.HeldState.Bed) continue;
             if (line.CrowdChance < 100 && Rng.Float(NextRoll(world, m)) * 100 >= line.CrowdChance) continue;
-            StartBubbles(world, m, c.Player, root, CrowdTriggered, now: false);
+            StartBubbles(world, m, c.Player, root, CrowdTriggered, now: false, force: true);
         }
     }
+
+    /// <summary>Whether the character at <paramref name="slot"/> can say a bubble line: alive and conscious. A caged one can (the original's step stops only for a ragdolled owner).</summary>
+    static bool CanSpeak(CharacterTable table, int slot) => table.Next[slot].Alive && table.Cold(slot) is { } c && c.Medical?.Incapacitated != true;
 
     /// <summary>A bubble conversation's end (<c>FUN_140674830</c>): the event's counter and time; only an event-1 conversation leaves the speaker's squad remembering the target.</summary>
     void EndBubbles(World world, Conversation c)

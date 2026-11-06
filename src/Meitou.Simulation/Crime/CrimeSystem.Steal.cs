@@ -73,7 +73,7 @@ public sealed partial class CrimeSystem
     public bool Steal(World world, int thief, Locks.Fixture container, CrimeCode code)
     {
         var table = world.Characters;
-        if (table.Cold(thief) is not { } c || container.Owner < 0 || container.Owner == c.Faction) return false;
+        if (table.Cold(thief) is not { } c || container.Owner < 0 || container.Owner == c.Faction || !IsStealing(world, container)) return false;
         SetPending(world, thief, code, container.Owner, CharacterId.None, MinTimer);
         float p = 1;
         int w = Watcher(world, thief, container);
@@ -92,18 +92,31 @@ public sealed partial class CrimeSystem
     public enum TakeKind { RightClick, Drag, Give }
 
     /// <summary>
+    /// <c>InventoryGUI::isStealing</c> (<c>FUN_140711740</c>, <b>Verified</b>; docs/game/carry-loot.md "Stolen ownership") for a take out of a character: not from an animal without a
+    /// backpack on, nor from one of a <c>not real</c> faction. Its crime, steal roll and stolen mark all need it. The callers keep the player's own windows out.
+    /// </summary>
+    public static bool IsStealing(World world, CharacterCold owner) =>
+        !(CharacterFacts.Animal(owner) && owner.Inventory?.Backpack is null) && !NotReal(world, owner.Faction);
+
+    /// <summary><c>InventoryGUI::isStealing</c> for a take out of a container: not one of a <c>not real</c> faction, nor a building of <c>building category</c> CAMPING.</summary>
+    public static bool IsStealing(World world, Locks.Fixture container) =>
+        !NotReal(world, container.Owner) && world.SystemOf<Construction.ConstructionSystem>()?.Data(container.RecordId)?.Category != "CAMPING";
+
+    static bool NotReal(World world, int faction) => world.SystemOf<CrimeSystem>()?.Factions.NotReal(faction) == true;
+
+    /// <summary>
     /// The pending crime a take out of another faction's character sets (<b>Verified</b> call sites): a right click (<c>FUN_140713d20</c>) Theft from an owner not down, Looting from a down
     /// one unless the loot is allowed (<see cref="IsLootTheft"/>); a drag (<c>FUN_140715560</c>) Theft from a down owner unless allowed, Looting from one not down; a give
     /// (<c>FUN_140712490</c>) Theft. Down is the game's <c>isDown</c>: unconscious or dead, playing dead included. Null: no crime.
     /// </summary>
-    public static CrimeCode? TakeCode(CharacterCold thief, CharacterCold owner, TakeKind kind)
+    public static CrimeCode? TakeCode(World world, CharacterCold thief, CharacterCold owner, TakeKind kind)
     {
         bool down = owner.Medical?.Incapacitated == true;
         return kind switch
         {
             TakeKind.Give => CrimeCode.Theft,
-            TakeKind.RightClick => !down ? CrimeCode.Theft : IsLootTheft(thief, owner) ? CrimeCode.Looting : null,
-            _ => !down ? CrimeCode.Looting : IsLootTheft(thief, owner) ? CrimeCode.Theft : null,
+            TakeKind.RightClick => !down ? CrimeCode.Theft : IsLootTheft(world, thief, owner) ? CrimeCode.Looting : null,
+            _ => !down ? CrimeCode.Looting : IsLootTheft(world, thief, owner) ? CrimeCode.Theft : null,
         };
     }
 
@@ -116,9 +129,9 @@ public sealed partial class CrimeSystem
     public bool Pickpocket(World world, int thief, int owner, Items.ItemInstance? item, TakeKind kind)
     {
         var table = world.Characters;
-        if (table.Cold(thief) is not { } c || table.Cold(owner) is not { } o || o.Faction == c.Faction) return false;
+        if (table.Cold(thief) is not { } c || table.Cold(owner) is not { } o || o.Faction == c.Faction || !IsStealing(world, o)) return false;
         var ownerId = table.IdOf(owner);
-        if (TakeCode(c, o, kind) is { } code) SetPending(world, thief, code, o.Faction, ownerId, MinTimer);
+        if (TakeCode(world, c, o, kind) is { } code) SetPending(world, thief, code, o.Faction, ownerId, MinTimer);
         if (kind == TakeKind.Drag) item = null;
         float p = 1;
         bool watches = o.Medical is not { Dead: true } && !(o.Medical is { Unconscious: true, PlayingDead: false }) && o.CarriedBy.IsNone && !o.IsImprisoned
@@ -148,12 +161,12 @@ public sealed partial class CrimeSystem
             else
             {
                 if (watcher.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, watcherId);
-                else if (table.Next[w].Task == (byte)CharacterTask.Rest) table.Next[w].Task = (byte)CharacterTask.Idle;
+                else if (table.Next[w].Task == (byte)CharacterTask.Rest) TaskStart.Become(world, w, CharacterTask.Idle, Meitou.Data.Gameplay.Ai.TaskType.IDLE, TaskSource.Npc);
                 // One staying low or playing dead stands (posture 0, docs/game/ragdolls.md "Staying low").
                 if (watcher.Medical is { } low) low.StandUp();
                 world.Defer(new Dialogue.DialogueEvent(watcherId, thiefId, CaughtEvent) { Tick = world.Tick + 1 });
                 if (c.IsPlayer) world.Post("Got caught stealing.");
-                SetPending(world, thief, CrimeCode.Theft, faction, victim, CaughtTimer);
+                SetPending(world, thief, CrimeCode.Theft, faction, victim, CaughtTimer, viaWrapper: true);
                 if (watcher.SquadId >= 0) world.SystemOf<Dialogue.DialogueSystem>()?.Memory.Remember(world, watcher.SquadId, thiefId, Dialogue.MemoryTag.StoleFromMe);
             }
         }

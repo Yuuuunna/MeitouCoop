@@ -27,7 +27,8 @@ that bucket's run): human bodies draw group 1 before group 0. Sliders and colour
 (mesh name))` when its mesh is made, so draws after the appearance (money, bounty, name) follow a reseeded or uncached sequence. **Unknown**: the
 Character constructor's own draws (it runs before the race pick), where equipment is rolled, the faction field skipping the skin re-roll and morph,
 the morph mesh name. Meitou (`CharacterGenerator`, `MsvcRandom`): the same generator and appearance order, one sequence per character from its
-seed (scrambled, as neighbouring `srand` seeds start alike), equipment after the morph index, the poses from FNV-1a of race/gender/index; money,
+seed (scrambled, as neighbouring `srand` seeds start alike), equipment after the morph index (backpack, `robot limbs`, clothing, crossbows,
+weapons: `setupInventorySections` order, **Verified**), the poses from FNV-1a of race/gender/index; money,
 names and personality keep their own per-purpose seeds.
 
 ### Random appearance
@@ -109,8 +110,9 @@ player squad, floor(weirdness x 10) goes into the generated morph mesh's name (w
 
 CHARACTER `race` overrides the body file's race (fcs.def "will override race in .body file"; the viewer
 follows this, not traced). The candidates (`Faction::chooseARace` `FUN_1407ff1a0`, **Verified** in outline): the squad template's
-`race override` (7 templates) when one is given, else the CHARACTER's `race`, else the faction's `races`; a weighted draw by the reference value. Meitou keeps a body file's race
-before the faction's.
+`race override` (7 templates) when one is given, else the CHARACTER's `race`, else the faction's `races`; a weighted draw by the reference value, where an entry of value 0 or less is never drawn (**Verified** for the faction list, `FUN_1407fe270`). The body file is not consulted for the race (**Verified**: `FUN_140581770` calls `chooseARace` with the CHARACTER and fills the chosen race's appearance from the body afterwards, `FUN_1406c3a70` has no race read); Meitou uses the body file's race only after
+when all of those give none (engine fallback; the 19 base-game CHARACTERs with a body and no race list either have an unreadable old-format body or are mod characters). With no candidate the original logs "Missing race" and uses RACE `17-gamedata.quack` (Greenlander) **by id**
+(`FUN_140074f00`, `FUN_140538360`, **Verified** read), so a translation mod that renames it changes nothing.
 
 ### Hidden body parts (Verified, `@ 140075600`, `@ 140071f90`, `@ 140531cc0`; HLSL `skin.hlsl`)
 
@@ -139,6 +141,7 @@ an unnamed root-chain bone (pelvis) is no limb (the original's fallback part ind
 image loaded by name through Ogre's resources; a DXT1-5 file is refused (logged "Convert this to png instead"), so no bits. Each body vertex samples the
 texel (clamp(int(W x u)), clamp(int(H x v))) at its UV; with alpha > 0 an exact table colour sets its bit, any other colour is logged as invalid and sets
 none. Meitou: `CharacterContent.MarkBody` (vertex colour Y: limb bits 0-3, part bits from 4), `CharacterAppearance.HiddenParts` in instance flags bits 18-27.
+Meitou's decapitation (not the original's): vertex bit 14 marks every vertex of the Head part's bones, hidden by instance flag 28 (`CharacterAppearance.Headless`); flag 29 draws only them (a cut-off head, `HeadOnly`).
 Which region each colour marks is the race's own choice (data, not engine). **Observed** (scratch survey of `human_male`/`human_female` with
 `MaleMask_Default.png`/`FemaleMask_Default.png`): white the chest (Y 14-15), red shoulders and upper arms (13-15), green a hip band (11-13); robots' `robot_mask.png`
 is all red. 19 base ARMOURs use `hide parts` (coats 0x3, robes 0x5, plate jackets and skin suits 0x7, ninja rags 0x4).
@@ -158,6 +161,19 @@ Each item instance carries a COLOR_DATA (save key `color sid`). **Observed** (de
 - A new item takes its record's first `color` reference.
 - Put on (attached) without a colour, it takes the wearer's scheme, CHARACTER `color`, else the faction's `color`, and keeps it. A looted uniform keeps its first wearer's colours.
 - Drawn: an ARMOUR or CONTAINER (the types fcs.def gives the field) whose `dont colorise` is true (default; every base record stores it) shows no colour, but its colour is still stored.
+
+Limbs (**Verified**, decompile: `FUN_1400cfdd0` → `FUN_140535d50` → `FUN_1405358a0`; `FUN_140536210`): a fitted limb's item is attached like clothing, so a
+prosthetic takes and keeps its own colour, else the wearer's scheme. The `dont colorise` reset runs only for types 3, 46 and 6 (ARMOUR, CONTAINER, ATTACHMENT), so a
+LIMB_REPLACEMENT always shows its colour; `setupItemMaterial` dyes any skinned attached item but an ATTACHMENT that has a colour and whose material has a `color map`.
+**Observed** (scratch probe, base data): 20 of 28 LIMB_REPLACEMENTs have a material, none with a `color map`, so vanilla prosthetics look undyed; a mod material with
+one shows the scheme (issue #279). In the owner's distinct saves 5 of 35 saved prosthetic items carry a `color sid` (4 the Player Faction Color mod's scheme, 1 `orange robes`).
+Meitou: `LoadoutLimb.Colour` (the fitted item's `ColourId`, `SavedKit.SetLimbs`), `CharacterAppearance.AddLimb`.
+
+Paint factor (**Observed**, decompile `FUN_140536210`): `paint factor 1` / `2` (the colour's alpha in the shader) are read from the float table of the attached item's own
+record (the object `slot` and `is locked` come from), not its material. The read is a map `operator[]` (`FUN_1400b0ab0`) that inserts a zero for a missing key, so the
+default is 0 (the dye multiplies into the texture). fcs.def defines them only on MATERIAL_SPECS_CLOTHING (11 of 150 set one) and no item record stores them, so the original
+always passes 0. Meitou reads them from the item record (`CharacterContent.ItemMaterial`, clothing, armour and prosthetics alike), default 0, and ignores the materials' values;
+the look of those 11 materials is not checked against the game. The icon path already passes 0.
 
 **Observed** in the owner's 9 saves (scratch probe of platoon files, worn ARMOUR): of 27,230 coloured pieces, 17,866 have the
 platoon faction's scheme, 7,634 the `color` of some CHARACTER (the wearer's record was not matched), 1,632 their record's own, 98 other (looted, mod colours). No uncoloured worn piece is in a faction with
@@ -209,6 +225,9 @@ both. Lines are trimmed, blank ones skipped; each file is optional. An empty lis
 name). 135 of 639 merged CHARACTERs are `named`, among them most start-squad members (Wanderer, Nobody, start slave; not Citizen, Exile).
 Meitou: `NamePool`, rolled at spawn (`PopulationSystem.SpawnName`, `RngPurpose.Name`) from the world seed, which a new game from the menu rolls afresh
 (`--seed` keeps one), so the start squad's names differ from game to game as the original's; files read from the install, not mods.
+**Verified** (`FUN_14062b210` end): once the character is set up, a name holding a `/` goes through the dialogue text expansion and censorship
+(`FUN_14067e8b0`, [dialogue tokens](game/dialogue.md#tokens)) with the character's own dialogue and no target, so a word swap's line replaces the token
+(UWE names CHARACTERs "Trader /GENNAME/" with a GENNAME WORD_SWAPS of first names). Meitou: `DialogueSystem.ExpandName` at spawn.
 
 ## Character editor
 
@@ -218,6 +237,15 @@ exe decompile unless marked; Meitou: `CharacterDraft` (data), `EditCharacter` / 
 - **Modes**: 0 new game (`FUN_140872e00`: every player character after the start's `squad` spawns, with the start's `force race`), 1 in play
   (dialogue `DA_CHARACTER_EDITOR` on the talking player character; `DA_JOIN_SQUAD_WITH_EDIT` and slave purchases on the recruits). Mode 1
   hides the race, subrace and gender arrows; they are also hidden when there is no choice. Everything else works in both modes.
+- **Animals** (**Verified**, decompile): the window lists every character it is given, animals too (`FUN_1405f4dd0` copies the list unfiltered), so
+  rebirth's "Guy with a dog" start (`47924-rebirth.mod`, squad `47925-rebirth.mod`; its man and Bonedog **Observed** in a player save) shows both. An
+  animal's page (`FUN_1405efd60`, no humanoid appearance): body view, IMPORT and EXPORT hidden; `FUN_1405ee0c0` then hides the tab buttons, the
+  rows (`TabsPanelContent`), RANDOMISE, RANDOMISE ALL, RESET and every race/subrace/gender arrow, shows the RACE name as race and subrace, gender
+  "-", and the race's description and stats. NameText renames whichever character is shown (`FUN_1405e9410`), animals included. CLOTHES,
+  CONFIRM and CHANGE CHARACTER stay. The preview idle the original sets for an animal is **Unknown** in detail (Meitou: its world pose). Meitou:
+  `EditorSession.Animals`, `BindAnimalEditor`; an animal's rename is an `EditCharacter` with no look, accepted in every kind (a bought animal's
+  goes through `EditKind.Recruit`; [animals](game/animals.md#buying-animals)); in the Meitou bar an animal not shown is not
+  drawn (no seat).
 - **Races**: RACE_GROUP name on RACE, RACE name on SUBRACE; a race is listed if not an animal, in a group, has its editor limits XML, `playable`
   (mode 0) and, with a `force race` list, in it (none left: "Game start has no valid races", the list is unrestricted). Showing a character in
   mode 0 (`FUN_1405efd60`) whose race isn't listed switches it to the first group's first race (a race missing from its group: that group's
@@ -265,14 +293,15 @@ exe decompile unless marked; Meitou: `CharacterDraft` (data), `EditCharacter` / 
   (`FUN_14007f040`), then face poses; the rest stays. Draws as in [Original random sequence](#assembly-and-generation). RESET ALL = the appearance template's defaults (hair, beard,
   colours, `Posture`, idle stance `idle_stand_normal`; slider values **Unknown**, Meitou: XML mid, poses 0, Posture 20); CLOTHES toggles worn
   clothing in the preview; IMPORT/EXPORT: see [below](#import-and-export). CONFIRM asks first when some
-  characters were never shown, closes, unpauses at speed 1; it charges nothing. No cancel widget; Esc opens the game menu over the editor
+  characters were never shown, closes, unpauses and sets the speed to Normal (`FUN_1405e9f40`, **Verified**; the generic editor confirm, so surgery too); it charges nothing. No cancel widget; Esc opens the game menu over the editor
   (**Observed**, vanilla play; Meitou does so in both modes).
 - **Race and gender switches** (`FUN_1405ef390`, `FUN_1405eadc0`, **Observed**): each character keeps a look per (race, gender); a switch stores
   the current look under the old pair and loads the new pair's, keeping the idle stance. **Verified** (decompilation, `FUN_1405f03c0`): when the
   editor opens, every pair's look is the template reset (`FUN_14007a490` with 1: first head, no hair or beard, the race's first `hair colors`,
   face sliders at mid) and then a hair roll, nothing else. Meitou (`CharacterDraft.SwitchedLook`): the same when a pair is first shown (sliders at mid).
 - **Preview**: a separate scene. **Verified** (install's compositor files): workspace `Kenshi_Character_Editor` = `GBuffer_Minimal` (characters only,
-  render queues 50-70) then a `Character_Editor` node, then the GUI. The background is a full-screen `render_quad` of
+  render queues 50-70) then a `Character_Editor` node, then the GUI. Its G-buffer uses output dimensions (`target_width target_height`) and `no_fsaa`
+  (`workspace.compositor`, verified against vanilla 1.0.68): no supersampling or multisampling. The background is a full-screen `render_quad` of
   `data/gui/gfx/SandyGround.dds` (1920x1080 DXT1, no depth). Lighting (`charedit.compositor`, `rtt.hlsl`, `lightingFunctions.hlsl`): world
   direction (-3, 2, -3) towards the light, colour 0.6: `CalcPunctualLight` (diffuse π·N.L·(1-0.04), GGX for roughness 1-0.99·gloss, specular
   colour 0.04) plus `CalcEnvironmentLight` (`mp_irradiance` mip 3 ·a·4, `mp_specularity` mip (1-gloss)·7 ·a·10, Lazarov BRDF), times exposure
@@ -294,9 +323,26 @@ exe decompile unless marked; Meitou: `CharacterDraft` (data), `EditCharacter` / 
   as the mix of the old and new values over 0.12 s, the interval of the throttled rebuild (`CharacterRenderer.Blend`): body shape, posture
   layers, face/body pose weights (morph set recomputed per frame in a scratch ring of `MorphArena`) and skin/hair colours; a look with another
   head, hair or clothes swaps at once. The original's own slider behaviour is **Unknown**.
+- **Meitou bar** (Meitou UI, both hosts; `EditorBar`, `GameHost.EditorBar`): instead of the stage, the world's renderers draw a copy of The Hub's intact
+  Storm House with interior layout `Bar` (parts, furniture, lamps; a runtime placement keyed `meitou:editor-bar` whose state and layouts are read from
+  the source's zone, `BuildingPlacement.StateZone`) 3000 above the highest ground round the edited character, in the interior view with every floor, at
+  23:00 under a clear sky without weather particles, the water and its reflection off and the frame cut at 2500 (`WorldFrame.Gpu.ViewCap`: far plane and
+  shadow cascades), short of the world 3000 below; headless 1280x960 Release: 4.0-4.2 ms a frame capped, 5-29 ms uncapped (**Observed**, noisy machine). The shown character stands at a fixed spot of the building's frame facing the counter; up to 5 other
+  characters of the editor's list sit on the seats nearest the far tables behind it, each over 41 across from it (beyond the orbit's reach; the source's chair spots and sitting clips). Night shows
+  in the dark windows. The bar's own people stand and sit in it: its residents' leader (Barman) at a shopkeeper node and first squad member (Ninja Guard) at a guard
+  node, 3 patrons of the town's `bar squads` on the next seats and 3 at general nodes, all beyond the same 41, rolled with fixed seeds. Their clips run at the
+  record's `play speed`; one without `loop` holds its last frame, as the simulation holds a one-shot clip, so a mod's sit-down seat clip is not replayed (#242);
+  the edited character's stance preview follows the same rule.
+  Base data has none: its seat clips loop (`sitting chair` a 0.033 s pose at speed 0.01, `sitting idle` 10.9 s at 1; **Verified** by probe on base data).
+  The original seats a sitter with the functionality's first `animation` reference (**Verified**, decompilation, `FUN_1402a0900`). The bar stands on
+  `FLatTop_Pillar01.mesh` scaled to 1500 each way with its top at the bar's ground, with 14 shrubs round it. A white point light under the roof (half the
+  lamps' mean power, radius 220) and a grey character fill (0.04) light the room neutrally. The camera is the stage's
+  orbit, moved across instead of shifting the projection. The stage covers the bar until its parts, the streaming and the characters are in, or at most 3 s
+  after its room is laid out (the counts are global and can stay up under memory pressure). The faithful UI keeps the stage. Metal: compiled, not yet seen on a Mac.
 - **Keys**: `in editor` true while open; a mode 0 character without a body file is randomised on open (Meitou's start characters are already
   rolled). Closing in mode 0 also sets health from the CHARACTER's `starting health` (Meitou: a new race at creation gets a new body, which
-  applies it; the edited look keeps stumps and prosthetics).
+  applies it; the edited look keeps stumps and prosthetics), then validates each human's inventory sections for its race (**Verified**, `FUN_1405f5d10`:
+  worn hats, shirts and shoes of a race that closes them are removed, [disabled slots](game/ui-screens.md); Meitou: `CharacterEditing.EndCreation`).
 - **Observed** (implementation, `CharacterEditing` / `CharacterEditSessions`; not multiplayer-runtime verified): in-play edits require a
   server dialogue token bound to the issuer, character, NPC, edit kind, control grant and membership revision. Reopening or disconnecting invalidates it;
   a successful token applies once. Surgery rechecks the living NPC within 60 units and keeps race/sex. Client `Paid` is ignored: the session records
@@ -314,6 +360,8 @@ what the original does with another race in mode 1 is **Unknown**. **Verified** 
 type 15, one record, id 1, `1--INGAME`, name `default` or `0`, and round-trip byte-exact. Meitou (`CharacterDraft.Import`/`Export`,
 `PlayerInterface.Editor`): export writes that layout, overwriting a file of the same name; import sanitizes the file for its race and refuses a
 race the editor doesn't offer (creation) or another race or sex (surgeon).
+**Observed** (native 1.0.68 editor import/export): an imported appearance with head `99184-Newwworld.mod` exports with a different head id and explicit neutral face-slider defaults.
+For rendering comparisons, use the native editor's exported result on both sides; importing the same input alone does not establish identical appearance data. The head fallback rule is **Unknown**.
 Dialog (`FUN_1401a0b10`, refresh `FUN_14019fd70`, **Observed**): `CurrentFolder` shows the folder as kept (no trailing separator; "./data"
 when empty); `ListFiles` gets "[..]" and the subfolders as "[name]", then (open mode) the matching files by file name with extension, item data
 folder + "/" + name; ButtonUp cuts the folder at its last `\` or `/`; ButtonCancel is `Tr("Cancel")`, ButtonOpenSave `Tr("Import")` here, both
@@ -329,6 +377,8 @@ behind `DC_FACTION_RANK`; Grey free for escaped slaves. Meitou: the surgeon is t
 mode 1, already paid ([dialogue](game/dialogue.md#meitou-design)), with a server-issued editor session. Direct client requests cannot
 claim payment or open an editor without the dialogue authorization. An unpaid trusted-host session derives its price from `SurgeonDialogues`.
 
+**Observed** (the user, base game): the surgeon's editor (its `NameText`) is the only way to rename a squad member; the portrait's `NameText`
+EditBox takes no typing. Meitou matches.
 
 ## Open questions
 

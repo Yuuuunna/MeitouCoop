@@ -16,6 +16,8 @@ namespace Meitou.Game;
 /// </summary>
 sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, float> ground, Func<CharacterSnapshot, Vector3> where)
 {
+    internal bool IsRemoteSession => session.IsRemote;
+
     public Matrix4x4 ViewProjection = Matrix4x4.Identity;
     public Vector3 Eye;
     public int Width = 1, Height = 1;
@@ -41,12 +43,16 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
 
     /// <summary>
     /// The active squad's members in squad order, the first leading (the squad bar's; the number keys and select_all pick from them, the original's <c>UiSelectSquadMember</c> /
-    /// <c>UiSelectAllInSquad</c>). Every player character when there is no squad list (a world without a player squad).
+    /// <c>UiSelectAllInSquad</c>). The squad of the first selected character, else the first squad, when the active one is unknown; every player character in a world with no squad list.
     /// </summary>
     IReadOnlyList<CharacterId> ActiveSquadMembers()
     {
         var snapshot = session.CurrentSnapshot;
-        if (snapshot.PlayerSquads.FirstOrDefault(s => s.Id == snapshot.ActiveSquad) is not { } squad) return PlayerCharacters();
+        // No cached squad: the first selected character's squad, else the first squad of the roster, else nothing (FUN_1407f5520).
+        var firstSelected = Selected().Count > 0 ? Selected()[0].Id : CharacterId.None;
+        var squad = snapshot.PlayerSquads.FirstOrDefault(s => s.Id == snapshot.ActiveSquad)
+            ?? snapshot.PlayerSquads.FirstOrDefault(s => s.Members.Contains(firstSelected)) ?? snapshot.PlayerSquads.FirstOrDefault();
+        if (squad is null) return snapshot.PlayerSquads.Count == 0 ? PlayerCharacters() : [];   // a world with no squad list at all (tests, bare sessions) keeps every player character
         var present = PlayerCharacters().ToHashSet();
         return [.. squad.Members.Where(present.Contains)];
     }
@@ -61,10 +67,11 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         session.Submit(command);
     }
 
-    public void Select(IReadOnlyList<CharacterId> ids, bool additive)
+    /// <param name="toggle">A single character with shift: one already selected leaves the selection (<see cref="SelectCommand.Toggle"/>).</param>
+    public void Select(IReadOnlyList<CharacterId> ids, bool additive, bool toggle = false)
     {
         if (ids.Count > 0) SetBuilding(null);   // selecting a character ends the building's selection
-        Say(new SelectCommand(ids, additive) { Tick = session.CommandTick });
+        Say(new SelectCommand(ids, additive, toggle && additive) { Tick = session.CommandTick });
     }
 
     public void Move(Vector3 target, bool queued) =>
@@ -77,16 +84,21 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     {
         pendingTalk = null;
         mouse = p;
+        uiInput++;
         (pressShift, pressCtrl) = (shift, ctrl);
         HideTooltip();   // a press captures the mouse, which hides a tooltip (MyGUI)
+        if (button == MouseButton.Left && FeedbackButtonDown(p)) return true;
         if (EditorPointerDown(button, p)) return true;
         if (button == MouseButton.Right && CancelInventoryDrag()) return true;
         if (button == MouseButton.Right && !OverHud(p) && WallCancel()) return true;
+        if (button == MouseButton.Right && !OverHud(p) && BuildDiscard()) return true;
         if (button == MouseButton.Left)
         {
             if (contextMenu is not null) return true;   // an open menu takes no press: its rows act on the release, a press beside it does nothing (FUN_1407a7f10)
             if (UiMouseDown(p)) return true;
             if (OverHud(p)) return true;
+            // A ground item's name label (shown while Highlight is held) takes the left press; its release over it is the item's pick-up (FUN_1401638f0).
+            if (LabelAt(p) is { } label) { labelPress = label; return true; }
             if (BuildClick()) return true;
             dragFrom = p;
             dragging = false;
@@ -95,15 +107,22 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         if (button == MouseButton.Right && InventoryRightClick(p, shift)) return true;
         if (button == MouseButton.Right && CloseContextMenu()) return true;
         if (button == MouseButton.Right && MapRightDown(p)) return true;
-        // Held on a squad bar portrait: that member's context menu, as on the character in the world (no quick order from the portrait).
-        if (button == MouseButton.Right && SquadBarMemberAt(p) is { } member && session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == member) is { } shown
-            && ContextPressOn(p, at => Menu(shown.Name, at, Verbs(shown)), null)) return true;
+        // A right press on a squad bar portrait held 0.25 s opens the member's context menu; a quicker release over it selects the member and focuses the camera on it,
+        // as the double click (FUN_140413d80, FUN_140415630, docs/game/ui-input.md "Squad bar portraits").
+        if (button == MouseButton.Right && SquadBarMemberAt(p) is { } member)
+        {
+            if (session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == member) is { } shown
+                && ContextPressOn(p, at => Menu(shown.Name, at, Verbs(shown)), () => FocusMember(member, shift), PortraitHoldSeconds)) return true;
+            memberPress = member;
+            return true;
+        }
         if (button == MouseButton.Middle && UiVisible && MapPointerDown(p)) return true;
         if (button == MouseButton.Right && !OverHud(p))
         {
             // Alt + right click on a downed or dead character: the nearest selected loots it (take all). Ctrl + right click: picks it up, or puts it down when a selected
             // character carries it. A plain right click on one of your own downed characters that needs no first aid picks it up too (the original's quick right click).
-            var downed = alt || ctrl ? PickDowned(p) : null;
+            // A ground item's name label (shown while Alt is held) is drawn over everything: a click on it is the item's, never the body lying beside it.
+            var downed = (alt || ctrl) && LabelAt(p) is null ? PickDowned(p) : null;
             if (alt && downed is { } loot && SelectedIds() is { Count: > 0 })
                 Say(new Meitou.Simulation.Carrying.LootOrder([], loot) { Tick = session.CommandTick });
             else if (ctrl && downed is { } body && Selected().Where(c => c.Carrying == body).Select(c => c.Id).ToArray() is { Length: > 0 } carriers)
@@ -117,7 +136,9 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
             else if (kind == Picked.Container && ContainerClick(p, alt)) { }
             else if (kind == Picked.Door && DoorClick(p, alt)) { }
             else if (kind == Picked.Bed && BedPress(p)) { }
+            else if (kind == Picked.Seat && SeatPress(p)) { }
             else if (kind == Picked.Cage && CageClick(p)) { }
+            else if (kind == Picked.Dummy && DummyPress(p)) { }
             else if (kind == Picked.Rock && RockPress(p)) { }
             else if (kind is Picked.Site or Picked.None && SitePress(p)) { }
             else if (Ray(p) is { } ray && MoveHit(ray.Origin, ray.Direction) is { } hit)
@@ -170,7 +191,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         Action? Do(Action a) => give ? a : null;
         bool carried = !c.CarriedBy.IsNone;
         if (carried && characters.FirstOrDefault(o => o.Id == c.CarriedBy) is not { IsPlayer: true }) return null;
-        bool dead = c.Body is { Dead: true }, down = dead || c.Body is { Unconscious: true } || carried;
+        bool dead = c.Body is { Dead: true }, down = c.Down;
         var loot = Do(() => Say(new Meitou.Simulation.Carrying.OpenLootOrder([], c.Id) { Tick = tick }));
         var id = c.Id;
         if (c.IsPlayer)
@@ -186,7 +207,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
             if (!carried) return lead.Id == id ? null : ("lift", id, Do(() => Say(new Meitou.Simulation.Carrying.PickUpOrder([], id) { Tick = tick })));
             return lead.Carrying == id ? ("lift", id, Do(() => Say(new Meitou.Simulation.Carrying.PutDownOrder([lead.Id]) { Tick = tick }))) : null;
         }
-        bool sneaking = c.StealthKoChance is not null;
+        bool sneaking = c.CanStealthKo;
         if (Hostile(c))
         {
             if (down) return ("search", id, loot);
@@ -221,7 +242,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         if (session.CanTalk(id, lead.Id)) return (TalkPointer(c), id, Do(() => RequestTalk(lead.Id, id)));
         if (session.TalkHintPending(id, lead.Id)) return ("talk", id, Do(() => WaitForTalkHint(c, lead.Id, selection, quick: true)));
         if (c.IsTrader) return ("talk", id, Do(() => Say(new Meitou.Simulation.Trading.OpenTrade(lead.Id, id) { Tick = tick })));   // engine: a shop whose keeper has no line to say
-        return AlliedFaction?.Invoke(c.Faction) == true ? ("green", id, null) : null;
+        return session.RegardsFriendly(id, lead.Id) ? ("green", id, null) : null;   // slot 126: the target regards the lead as friendly
     }
 
     public void MouseMove(Vector2 p)
@@ -237,12 +258,25 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     public void MouseUp(MouseButton button, Vector2 p, bool shift)
     {
         mouse = p;
+        uiInput++;
         EditorPointerUp(button);
         if (ContextMenuRelease(button, p)) return;
+        if (button == MouseButton.Left && labelPress is { } labelled)
+        {
+            labelPress = null;
+            if (LabelAt(p) == labelled) LabelPickUp(labelled);
+            return;
+        }
         if (button == MouseButton.Left) { InventoryPointerUp(p); JobDragEnd(p); SquadPointerUp(p, shift); faithfulScreens.PointerUp(); mapDrag = null; }
         if (button == MouseButton.Middle) mapDrag = null;
+        if (button == MouseButton.Right && memberPress is { } pressed)
+        {
+            memberPress = null;
+            if (SquadBarMemberAt(p) == pressed) FocusMember(pressed, shift);
+            return;
+        }
         if (button == MouseButton.Right && MapRightUp(p)) return;
-        if (button == MouseButton.Right) { ContextRelease(); SiteRelease(); RockRelease(); BedRelease(); }
+        if (button == MouseButton.Right) { ContextRelease(); SiteRelease(); RockRelease(); BedRelease(); DummyRelease(); SeatRelease(); }
         if (button == MouseButton.Right && steering)
         {
             Steer(final: true);
@@ -269,7 +303,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
                 Inspect(CharacterId.None);
                 return;
             }
-            Select(hit is { } id ? new[] { id } : [], shift);
+            Select(hit is { } id ? new[] { id } : [], shift, toggle: true);
             if (other is { } stranger) Inspect(stranger);
             else if (!shift || hit is not null) Inspect(CharacterId.None);
         }
@@ -290,10 +324,13 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     public void Steer(bool final = false)
     {
         PollPendingTalk();
+        if (!final) hotkeyEventsThisFrame = 0;
         UpdateContextMenu();
         UpdateFactionName();
         UpdateTownName();
         UpdateBed();
+        UpdateDummy();
+        UpdateSeat();
         UpdateMap();
         if (!final) UpdateBuild();
         if (!steering || OverHud(mouse)) return;
@@ -307,13 +344,22 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
 
     /// <summary>The character the strategy camera follows (a double tap of its number key, F, or a double click on its squad button); panning the camera lets go.</summary>
     public CharacterId? Follow { get; set; }
+    CharacterId? memberPress;
+
+    /// <summary>A portrait's right click: selects the member (Shift toggles) and focuses the camera on it, as the double click.</summary>
+    void FocusMember(CharacterId member, bool shift)
+    {
+        Select([member], shift, toggle: true);
+        if (FlyTo?.Invoke(member) != true) CentreOn(member);
+    }
     /// <summary>The host's camera flight to a double-clicked squad member (Advanced settings "Character flights"); false: centre on it at once.</summary>
     public Func<CharacterId, bool>? FlyTo { get; set; }
     /// <summary>A third press (a single one while the flight to that member is under way): the host ends the flight on it at once.</summary>
     public Action<CharacterId>? SkipFlight { get; set; }
     // The last number key and when it was pressed: the same key again within DoubleTapSeconds centres on the character (docs/game/ui-input.md, events 100..120).
-    Key lastSelectKey;
-    long lastSelectAt;
+    InputAction? lastHotkey;
+    long lastHotkeyAt;
+    int hotkeyEventsThisFrame;
     const double DoubleTapSeconds = 0.5;
 
     /// <summary>Selects the squad's <paramref name="index"/>th member (<paramref name="shift"/> adds); the second press within half a second centres the camera on it and follows.</summary>
@@ -321,7 +367,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     {
         var members = ActiveSquadMembers();
         if (index < 0 || index >= members.Count) return;
-        Select([members[index]], shift);
+        Select([members[index]], shift, toggle: true);
         if (!doubleTap) SkipFlight?.Invoke(members[index]);
         else if (FlyTo?.Invoke(members[index]) != true) CentreOn(members[index]);
     }

@@ -13,7 +13,7 @@ public enum EditKind : byte { Creation, Surgery, Recruit }
 /// Validated when applied (<see cref="CharacterEditing.Apply"/>): a player character; at creation only while the new game's editor is open
 /// (<see cref="PlayerState.InCreation"/>), in surgery only beside the <see cref="Surgeon"/> and with the race and gender unchanged.
 /// </summary>
-public sealed record EditCharacter(CharacterId Character, FcsRecord Appearance, string Name, EditKind Kind) : SimCommand
+public sealed record EditCharacter(CharacterId Character, FcsRecord? Appearance, string Name, EditKind Kind) : SimCommand
 {
     /// <summary>The plastic surgeon doing the work (surgery only).</summary>
     public CharacterId Surgeon { get; init; } = CharacterId.None;
@@ -44,12 +44,15 @@ public static class CharacterEditing
     public static Guid OpenSession(World world, PlayerId? issuer, CharacterId character, CharacterId surgeon, EditKind kind, bool paid = true)
         => CharacterEditSessions.Open(world, issuer, character, surgeon, kind, paid);
 
+    public static IReadOnlyDictionary<CharacterId, Guid> OpenAnimalSessions(World world, PlayerId? issuer, IReadOnlyList<CharacterId> characters) =>
+        CharacterEditSessions.OpenAnimals(world, issuer, characters);
+
     public static void CloseForPlayer(World world, PlayerId player) => CharacterEditSessions.CloseForPlayer(world, player);
 
     public static void Apply(World world, PopulationData data, EditCharacter edit)
     {
         void Post(string message) => world.Post(edit.Issuer ?? PlayerId.Local, message);
-        if (!Enum.IsDefined(edit.Kind) || edit.Appearance is null || edit.Name is null || !world.MayOrder(edit, edit.Character)) return;
+        if (!Enum.IsDefined(edit.Kind) || edit.Name is null || !world.MayOrder(edit, edit.Character)) return;
         var player = world.CommandPlayer(edit);
         if (player is null) return;
         var session = edit.Kind == EditKind.Creation ? null : CharacterEditSessions.Find(world, edit);
@@ -59,11 +62,34 @@ public static class CharacterEditing
         { Post("Use the server creation request to create characters."); return; }
 
         var table = world.Characters;
-        if (!table.IsAlive(edit.Character) || !table.TryResolveNext(edit.Character, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold || cold.Appearance is not { Animal: null } look)
+        if (!table.IsAlive(edit.Character) || !table.TryResolveNext(edit.Character, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold || cold.Appearance is not { } look)
         {
             Post("That character cannot be edited.");
             return;
         }
+        if (edit.Appearance is null)
+        {
+            if (edit.Kind == EditKind.Creation && !player.InCreation) { Post("Characters can only be made at the start of a new game."); return; }
+            if (edit.Kind == EditKind.Surgery)
+            {
+                if (!table.TryResolveNext(edit.Surgeon, out int surgeon) || !table.IsAlive(edit.Surgeon)
+                    || System.Numerics.Vector3.Distance(table.Next[surgeon].Position, table.Next[slot].Position) > SurgeonReach)
+                { Post("The surgeon is not here any more."); return; }
+                if (session is { Paid: false })
+                {
+                    var cost = SurgeryCost(world, data.Surgeons, edit.Surgeon, table.Cold(surgeon)!);
+                    if (cost is null || cost.Value > 0 && (!world.MayManage(edit, cold.Faction, FactionPermission.SpendFunds)
+                        || world.Factions.Find(cold.Faction) is not { } funds || funds.Money <= cost.Value || !funds.TryDebit(cost.Value)))
+                    { Post("Surgery payment is no longer authorized."); return; }
+                }
+            }
+            string renamed = edit.Name.Trim();
+            if (renamed.Length > MaxNameLength) renamed = renamed[..MaxNameLength];
+            if (renamed.Length > 0) cold.Name = renamed;
+            if (session is not null) session.Applied = true;
+            return;
+        }
+        if (look.Animal is not null) { Post("An animal's appearance cannot be changed."); return; }
         var currentRace = look.Race;
         var proposedRace = edit.Appearance.References.TryGetValue("race", out var refs) && refs.Count > 0 ? data.Db.Find(refs[0].TargetStringId) : null;
         if (proposedRace is not { Type: FcsRecordType.RACE }) { Post("The edited look has no race."); return; }
@@ -156,4 +182,17 @@ public static class CharacterEditing
         if (name.Length > 0) cold.Name = name;
         if (session is not null) session.Applied = true;
     }
+    internal static void EndCreation(World world, CharacterAssembly? assembly)
+    {
+        if (world.Players.RequiresExplicitControl || !world.Player.InCreation || world.Squads.Find(world.Player.Squad) is not { } squad) return;
+        foreach (var id in squad.Members)
+        {
+            if (!world.Characters.TryResolveNext(id, out int slot) || world.Characters.Cold(slot) is not { IsPlayer: true, Inventory: { } inventory } cold
+                || cold.Faction != world.Player.Faction || SquadRegistry.IsAnimal(cold)) continue;
+            int before = inventory.Items.Count;
+            Items.InventoryCommands.ValidateSections(world, slot, cold);
+            if (inventory.Items.Count != before) assembly?.RefreshEquipment(cold);
+        }
+    }
+
 }

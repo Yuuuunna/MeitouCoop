@@ -384,7 +384,7 @@ sealed partial class PlayerInterface
 
     /// <summary>Adds a text panel's lines over the arranged widget <paramref name="panel"/>: one row per line, the label from 3 % of the width, the value right-aligned to 96 %.</summary>
     /// <summary>One row per line from <paramref name="top"/> down, the label left and the value right; the value takes <paramref name="valueFont"/> at <paramref name="valuePixels"/> when given.</summary>
-    static void AddLines(List<UiControl> controls, string panel, IReadOnlyList<HudLine> lines, float rowHeight, float? fontPixels = null, string font = "Kenshi_StandardFont_Medium",
+    void AddLines(List<UiControl> controls, string panel, IReadOnlyList<HudLine> lines, float rowHeight, float? fontPixels = null, string font = "Kenshi_StandardFont_Medium",
         string? valueFont = null, float? valuePixels = null, float top = 0)
     {
         if (controls.FirstOrDefault(c => c.Name == panel) is not { } host) return;
@@ -411,7 +411,7 @@ sealed partial class PlayerInterface
                 ("value", lines[i].Action is null ? lines[i].Value : "", lines[i].ValueColour, "Right Top", valueProperties) })
                 if (text.Length > 0)
                 {
-                    var textProperties = new Dictionary<string, string>(properties) { ["TextAlign"] = align, ["TextColour"] = colour ?? MyGuiColours.InkText };
+                    var textProperties = new Dictionary<string, string>(properties) { ["TextAlign"] = align, ["TextColour"] = colour ?? MyGuiColours.TemplateInk(uiResources, "Kenshi_TextboxStandardText") };
                     // A line with a tooltip is a mouse target (the HUD's own tooltip, anchored on its panel).
                     if (tipProperties is not null) foreach (var pair in tipProperties) textProperties[pair.Key] = pair.Value;
                     // A value beside a label keeps out of the label's column: a long one (a French weather notice) is cut short instead of running over the label.
@@ -499,6 +499,12 @@ sealed partial class PlayerInterface
     readonly List<(string Bar, string Name, string Arrows)> medicalRows = [];
 
     /// <summary>
+    /// A bar's fraction in steps of 1/1024, about half a pixel of a bar on a 4K panel: hunger and blood creep every tick, and an unrounded fraction made the HUD's
+    /// bindings new each tick, so its cached layout (<see cref="ArrangeHud"/>) was made again for a change no one can see.
+    /// </summary>
+    static float BarStep(float fraction) => MathF.Round(fraction * 1024) / 1024;
+
+    /// <summary>
     /// The medical panel (docs/game/ui-screens.md section 4): Blood first, the body parts, Hunger last, each a name centred on its bar, arrows at its right end and
     /// its number in the value column. A part's bar is green to its flesh less stun, yellow to the bandage on top of that, red behind it to its maximum less stun (the lost
     /// part shows red) and white past the green by the splint; blood is green to its fraction of capacity; hunger (0..3) green to h - 2, yellow to h - 1, red to h.
@@ -514,7 +520,10 @@ sealed partial class PlayerInterface
             float capacity = Math.Max(hud?.BloodCapacity ?? 1, 1e-3f), blood = hud?.Blood ?? body.Blood * capacity;
             // A run of '<', one per 0.05 of bleeding (at most 100).
             int bleed = Math.Min(100, (int)MathF.Ceiling(Math.Abs(hud?.Bleeding ?? 0) / 0.05f));
-            rows.Add(new(Loc.Tr("Blood"), blood / capacity, 0, 0, ((int)MathF.Floor(blood + 0.1f)).ToString(CultureInfo.InvariantCulture), new string('<', bleed), false, BloodTip(hud?.BleedRate ?? 1)));
+            // A robot race's row reads "Oil" and shows the Robot layer over its green, as a robotic part does (FUN_14088a8f0 passes RACE is robot; docs/game/ui-screens.md).
+            bool robot = hud is { Robot: true };
+            rows.Add(new(Loc.Tr(robot ? "Oil" : "Blood"), blood / capacity, 0, 0, ((int)MathF.Floor(blood + 0.1f)).ToString(CultureInfo.InvariantCulture), new string('<', bleed), robot,
+                BloodTip(hud?.BleedRate ?? 1)));
             foreach (var part in lead.HealthParts)
             {
                 // The original's row (FUN_14088a8f0): the green and the number are the flesh less the stun, the yellow adds the bandage, the white is the green plus the splint (rig x 0.01),
@@ -540,25 +549,25 @@ sealed partial class PlayerInterface
             if (r.Crushed) b.Progress[name + "Crushed"] = 1;
             else b.Hidden.Add(name + "Crushed");
             // The splint layer is drawn only where it reaches past the green (with no splint it would sit under the green).
-            if (r.White > Math.Max(r.Green, 0)) b.Progress[name + "White"] = r.White;
+            if (r.White > Math.Max(r.Green, 0)) b.Progress[name + "White"] = BarStep(r.White);
             else b.Hidden.Add(name + "White");
             // The row's tooltip sits on its LifeBarNTooltip widget (FUN_1407228a0 sets a type 0 text there).
             if (r.Tooltip is { Length: > 0 } tip) b.Properties[name + "Tooltip"] = UiTooltips.TextProperties(tip, "fixed");
             else b.Hidden.Add(name + "Tooltip");
-            b.Progress[name + "Green"] = Math.Max(r.Green, 0);
-            b.Progress[name + "Yellow"] = Math.Max(r.Yellow, 0);
-            b.Progress[name + "Red"] = Math.Max(r.Red, 0);
-            if (r.Robot) b.Progress[name + "Robot"] = Math.Max(r.Green, 0); else b.Hidden.Add(name + "Robot");
+            b.Progress[name + "Green"] = BarStep(Math.Max(r.Green, 0));
+            b.Progress[name + "Yellow"] = BarStep(Math.Max(r.Yellow, 0));
+            b.Progress[name + "Red"] = BarStep(Math.Max(r.Red, 0));
+            if (r.Robot) b.Progress[name + "Robot"] = BarStep(Math.Max(r.Green, 0)); else b.Hidden.Add(name + "Robot");
             b.Text[name + "Datapanel"] = "";
             b.Text[name + "Value"] = r.Value;
-            b.Properties[name + "Value"] = new Dictionary<string, string> { ["TextAlign"] = "Center", ["TextColour"] = MyGuiColours.InkText };
+            b.Properties[name + "Value"] = new Dictionary<string, string> { ["TextAlign"] = "Center", ["TextColour"] = MyGuiColours.TemplateInk(uiResources, "Kenshi_TextboxStandardText") };
             medicalRows.Add((name, r.Name, r.Arrows));
         }
         if (buildingRows is null && lead?.Body is not null)
         {
             var (word, colour, _) = HealthWord(lead);
             b.Text["HealthText"] = word;
-            b.Properties["HealthText"] = new Dictionary<string, string> { ["TextAlign"] = "Center", ["TextColour"] = colour ?? MyGuiColours.InkText };
+            b.Properties["HealthText"] = new Dictionary<string, string> { ["TextAlign"] = "Center", ["TextColour"] = colour ?? MyGuiColours.TemplateInk(uiResources, "Kenshi_TextboxStandardText") };
         }
     }
 }

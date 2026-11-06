@@ -36,8 +36,12 @@ public class FightWiringTests
         return (world, combat, a, b, c);
     }
 
+    /// <summary>
+    /// The attacked bandit fights back (Self preservation's stand-in, <see cref="RetaliationSystem"/>); its mate, with no goal that protects anyone (no AI here), keeps out: squad mates join only by
+    /// their own protect goals (docs/game/ai-tasks.md "Combat goals").
+    /// </summary>
     [Fact]
-    public void An_attacker_walks_to_its_target_fights_and_the_attacked_and_their_mate_retaliate()
+    public void An_attacker_walks_to_its_target_fights_and_the_attacked_retaliates_alone()
     {
         var (world, combat, a, b, c) = Fight(5, 1);
         using var _ = world;
@@ -48,9 +52,9 @@ public class FightWiringTests
         int ticks = 120;
         while (ticks < 9000 && !table.Cold(a.Slot)!.Medical!.Incapacitated && !table.Cold(b.Slot)!.Medical!.Incapacitated) { world.RunTick(); ticks++; }
         Assert.True(table.Cold(a.Slot)!.Medical!.Incapacitated || table.Cold(b.Slot)!.Medical!.Incapacitated, "the fight resolved");
-        // The attacked bandit and its squad mate fought back at the player.
+        // The attacked bandit fought back at the player; its mate did not join.
         Assert.Contains(combat.Log, e => e.Attacker == b.Slot && e.Defender == a.Slot);
-        Assert.True(combat.StateOf(c).Thrown > 0 || combat.StateOf(c).TargetSlot == a.Slot || table.Cold(c.Slot)!.InCombat, "the mate joined");
+        Assert.DoesNotContain(combat.Log, e => e.Attacker == c.Slot);
         // A downed character does not move any more.
         int down = table.Cold(a.Slot)!.Medical!.Incapacitated ? a.Slot : b.Slot;
         var at = table.Previous[down].Position;

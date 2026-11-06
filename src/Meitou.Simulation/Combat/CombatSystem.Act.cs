@@ -15,9 +15,10 @@ public sealed partial class CombatSystem
 
     /// <summary>
     /// The weapon's <c>indoors mod</c> (CharStats <c>+0x28</c>) while the fighter is in a building's indoor volume (<see cref="SightMap.Inside"/>; the original also asks a vfunc
-    /// <c>0x1e0</c> and the building's <c>+0xc2</c>, <b>Unknown</b>), else 0 (<c>FUN_1408844c0</c>, <c>FUN_1408862d0</c>; docs/game/combat.md "Indoors").
+    /// <c>0x1e0</c> and the building's <c>+0xc2</c>, <b>Unknown</b>), else 0 (<c>FUN_1408844c0</c>, <c>FUN_1408862d0</c>; docs/game/combat.md "Indoors"). With fists it is the fists
+    /// item's (the <c>FISTS</c> record's 8), and 8 when there is no item at all (<c>FUN_140884370</c>).
     /// </summary>
-    static int IndoorsMod(World world, int i, Fighter f) => world.Sight.Inside(i) ? f.Weapon?.Stats.IndoorsMod ?? 0 : 0;
+    static int IndoorsMod(World world, int i, Fighter f) => world.Sight.Inside(i) ? (f.Weapon ?? f.Fists)?.Stats.IndoorsMod ?? 8 : 0;
 
     /// <summary>An attack bonus indoors (<c>FUN_1408844c0</c>): a positive bonus is dropped under a negative modifier, then the modifier is added.</summary>
     static float IndoorsAttackBonus(float bonus, int mod) => (bonus > 0 && mod < 0 ? 0 : bonus) + mod;
@@ -29,14 +30,18 @@ public sealed partial class CombatSystem
     /// </summary>
     static float Eff(CharacterCold c, StatsEnumerated stat) => (c.Stats![stat] + GearBonus(c, stat)) * c.Stats.Scale * c.Medical!.StatMultiplier(stat) * GearFactor(c, stat);
 
-    /// <summary>The HUD's "Damage:" figure of a melee fighter (the Current Skill line's tooltip): the sum of its blow's terms (<c>FUN_1408868b0</c>) against a human, unpowered.</summary>
-    internal float HudDamage(CharacterCold c)
+    /// <summary>
+    /// The HUD's "Damage:" figure of a melee fighter (the Current Skill line's tooltip) and the stats window's "Martial arts damage" (<c>FUN_140892120</c>, <c>FUN_1408b1250</c>): the sum
+    /// of the four terms of its blow (<c>FUN_1408868b0</c> with no target, so no kind or race multiplier; the gear's damage output applies), unpowered: the fists' for an unarmed
+    /// fighter, else the weapon's.
+    /// </summary>
+    internal float HudDamage(World world, int slot, CharacterCold c)
     {
         if (c is not { Fighter: { } f, Stats: not null, Medical: not null }) return 0;
         float str = Eff(c, StatsEnumerated.Strength);
         return (f.Unarmed
-            ? DamageFormulas.UnarmedPacket(Eff(c, f.WeaponSkill), Eff(c, StatsEnumerated.Toughness), str, f.FistsItem, TargetKind.Human, null, f.DamageOutput, combat)
-            : DamageFormulas.Packet(Eff(c, f.WeaponSkill), Eff(c, StatsEnumerated.Dexterity) * f.DexterityMult, str, f.Weapon!, TargetKind.Human, null, f.DamageOutput, combat)).Sum;
+            ? DamageFormulas.UnarmedPacket(UnarmedRating(world, slot, c, f), Eff(c, StatsEnumerated.Toughness), str, f.FistsItem, TargetKind.None, null, f.DamageOutput, combat)
+            : DamageFormulas.Packet(Eff(c, f.WeaponSkill), Eff(c, StatsEnumerated.Dexterity) * f.DexterityMult, str, f.Weapon!, TargetKind.None, null, f.DamageOutput, combat)).Sum;
     }
 
     /// <summary>
@@ -54,9 +59,14 @@ public sealed partial class CombatSystem
     /// <summary>The worn gear's bonus added to the trained level before the multiplier (<c>FUN_140884ac0</c>): the armour's <c>perception bonus</c> for perception, else 0.</summary>
     internal static int GearBonus(CharacterCold c, StatsEnumerated stat) => stat == StatsEnumerated.Perception ? c.Fighter?.PerceptionBonus ?? 0 : 0;
 
-    /// <summary>The rating a fist blow's damage is scaled by (<see cref="DamageFormulas.UnarmedRating"/>): the raw martial arts stat (no injury multiplier), the gear's unarmed bonus, the dust penalty and the load.</summary>
-    internal static float UnarmedRating(CharacterCold c, Fighter fighter) =>
-        DamageFormulas.UnarmedRating(c.Stats![StatsEnumerated.MartialArts] * c.Stats.Scale, fighter.UnarmedBonus, c.Medical!.DustAttackPenalty, fighter.EncumbranceFactor);
+    /// <summary>
+    /// The fist rating (<see cref="DamageFormulas.UnarmedRating"/>, <c>FUN_140884e00</c> with its flag set, as every combat caller passes it): the raw martial arts stat (no injury
+    /// multiplier), the gear's unarmed bonus with the indoors modifier inside (<see cref="IndoorsAttackBonus"/>), the dust penalty and the load. A fist blow's damage, an unarmed
+    /// fighter's attack rating (<c>FUN_140884ee0</c>) and its defence rating (<c>FUN_140886290</c>) are this number.
+    /// </summary>
+    internal static float UnarmedRating(World world, int slot, CharacterCold c, Fighter fighter) =>
+        DamageFormulas.UnarmedRating(c.Stats![StatsEnumerated.MartialArts] * c.Stats.Scale, IndoorsAttackBonus(fighter.UnarmedBonus, IndoorsMod(world, slot, fighter)),
+            c.Medical!.DustAttackPenalty, fighter.EncumbranceFactor);
 
     /// <summary>The worn gear's factor of a stat that <see cref="Eff"/> applies: <c>ranged skill mult</c> for crossbows, <c>asassination mult</c> for assassination, else 1.</summary>
     internal static float GearFactor(CharacterCold c, StatsEnumerated stat) => stat switch
@@ -78,34 +88,81 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>
+    /// The seconds one swing of an animal's door bash takes (<c>Task_BashDoor</c>, <c>FUN_140887420</c>, <b>Verified</b>): the first attack technique, in data order, that fits the animal's weapon
+    /// category (not <c>disabled</c>, no block or dodge) plays at speed 1; its clip's length from the animal's own skeleton over the technique's <c>anim speed mult</c>. 0 when there is none
+    /// or the clip is unknown (the caller keeps the human cycle).
+    /// </summary>
+    public float AnimalBashSeconds(CharacterCold cold)
+    {
+        if (cold.Fighter is not { IsAnimal: true } f) return 0;
+        foreach (var t in asWritten)
+        {
+            if (t.Disabled || t.IsBlock || t.IsDodge || !TechniqueChooser.Fits(t, f.AnimalCategory)) continue;
+            return lengths.For(cold.Race?.StringId).Of(t.AnimName) / MathF.Max(t.AnimSpeedMult, 0.1f);
+        }
+        return 0;
+    }
+
+    /// <summary>
     /// The playback rate of a technique (docs/game/combat.md "Animation speed", <b>Verified</b>): attacks lerp(t, 0.8, 1.2) x G capped at 1.2, blocks lerp(t, 0.6, 4) x G
     /// capped at 4, with t = 0.01 (0.6 dexterity + 0.4 skill) (attack, or defence with the bonuses); dodges 1. G = (0.5 + 0.5 min(1, e + 0.5) (1 - f)) x the gear's
     /// <c>combat speed mult</c>, e the encumbrance factor and f the weapon-weight-over-strength factor of the strength XP.
     /// </summary>
-    float PlayRate(CharacterCold cold, CombatTechnique tech, bool attack)
+    float PlayRate(World world, int slot, CharacterCold cold, CombatTechnique tech, bool attack)
     {
         if (!attack && (tech.IsDodge || !tech.IsBlock)) return 1;
-        return Rate(cold, attack);
+        return Rate(world, slot, cold, attack);
     }
 
     /// <summary>The attack play rate of a fighter (its <see cref="PlayRate"/> for any attack; CharStats +0x188 in the original), which the chase lead also reads.</summary>
-    public float AttackRate(CharacterCold cold) => Rate(cold, true);
+    public float AttackRate(World world, int slot, CharacterCold cold) => Rate(world, slot, cold, true);
 
-    float Rate(CharacterCold cold, bool attack)
+    /// <summary>
+    /// The attack rating (<c>FUN_140884ee0</c>, <b>Verified</b>): unarmed, the fist rating; else the trained melee attack (no injury or hunger multiplier, times the stats' scale) plus the
+    /// gear's attack bonus and the weapon's attack mod with the indoors modifier inside, less the dust penalty.
+    /// </summary>
+    internal static float AttackRating(World world, int slot, CharacterCold c, Fighter f) => f.Unarmed ? UnarmedRating(world, slot, c, f)
+        : Trained(c, StatsEnumerated.MeleeAttack) + IndoorsAttackBonus(f.AttackBonus + (f.Weapon?.Stats.AttackMod ?? 0), IndoorsMod(world, slot, f)) - c.Medical!.DustAttackPenalty;
+
+    /// <summary>
+    /// The defence rating (<c>FUN_140886290</c> → <c>FUN_140884f50</c>, <b>Verified</b>): unarmed, the fist rating; else the trained melee defence (no injury or hunger multiplier) plus the
+    /// gear's defence bonus, the weapon's defence mod, the indoors modifier inside and, with <paramref name="guard"/> (the function's flag), 20 when guarding. The block contest's defence
+    /// (<see cref="DefenceFormulas.Defence"/>) is the same sum.
+    /// </summary>
+    internal static float DefenceRating(World world, int slot, CharacterCold c, Fighter f, bool guard = true) => f.Unarmed ? UnarmedRating(world, slot, c, f)
+        : Trained(c, StatsEnumerated.MeleeDefence) + f.DefenceBonus + (f.Weapon?.Stats.DefenceMod ?? 0) + IndoorsMod(world, slot, f) + (guard && Guarding(c) ? 20 : 0);
+
+    /// <summary>A trained level as the combat ratings read it (CharStats <c>+0x120</c>, <c>+0x124</c>): the stored level times the stats' read-time scale, no multiplier.</summary>
+    static float Trained(CharacterCold c, StatsEnumerated stat) => c.Stats![stat] * c.Stats.Scale;
+
+    /// <summary>
+    /// The attack and block play rates (CharStats <c>+0x188</c> / <c>+0x18c</c>, <c>FUN_1408866b0</c> → <c>FUN_140883a80</c>, <b>Verified</b>): from dexterity and the
+    /// <see cref="AttackRating"/> or <see cref="DefenceRating"/>; both x 0.8 while swimming (water state 3, <c>FUN_1405c7fd0</c>).
+    /// </summary>
+    float Rate(World world, int slot, CharacterCold cold, bool attack)
     {
         var fighter = cold.Fighter!;
         float weight = fighter.Unarmed ? 0 : fighter.Weapon!.Stats.Weight;
         float f = Math.Clamp(xp.WeaponWeightStrengthFactor(weight, cold.Stats![StatsEnumerated.Strength], cold.Medical!.StatMultiplier(StatsEnumerated.Strength)), 0, 1);
         float g = (0.5f + 0.5f * MathF.Min(1, fighter.EncumbranceFactor + 0.5f) * (1 - f)) * fighter.CombatSpeed;
         float dex = Eff(cold, StatsEnumerated.Dexterity) * fighter.DexterityMult;
-        float skill = attack
-            ? fighter.Unarmed ? Eff(cold, StatsEnumerated.MartialArts) : Eff(cold, StatsEnumerated.MeleeAttack) + fighter.Weapon!.Stats.AttackMod
-            : Eff(cold, StatsEnumerated.MeleeDefence) + fighter.DefenceBonus + (fighter.Weapon?.Stats.DefenceMod ?? 0) + (Guarding(cold) ? 20 : 0);
+        float skill = attack ? AttackRating(world, slot, cold, fighter) : DefenceRating(world, slot, cold, fighter);
         float t = 0.01f * (0.6f * dex + 0.4f * skill);
-        return attack ? MathF.Min(1.2f, WeaponStats.Lerp(t, 0.8f, 1.2f) * g) : MathF.Min(4f, WeaponStats.Lerp(t, 0.6f, 4f) * g);
+        float swim = cold.WaterState == 3 ? 0.8f : 1;
+        return swim * (attack ? MathF.Min(1.2f, WeaponStats.Lerp(t, 0.8f, 1.2f) * g) : MathF.Min(4f, WeaponStats.Lerp(t, 0.6f, 4f) * g));
     }
 
-    public void Act(World world, Partition part, EffectBuffer effects)
+    /// <summary>
+    /// Each character's fight as its body step left it (<see cref="BeforeAct"/>): what <see cref="Act"/> reads of another character's fight, which that one's own Act may end meanwhile
+    /// (<see cref="EndFight(CharacterTable, int, ref CombatSlot)"/>). Derived each tick, not hashed.
+    /// </summary>
+    bool[] inFight = [];
+
+    /// <summary>
+    /// Step 1 of a fighter's update, the body (bleeding, healing, waking, the arms, getting up, the fight's end on going down), for every character before any of them decides
+    /// (<see cref="Act"/>): the decisions read these of their targets and candidates, so they must not depend on which partition ran first.
+    /// </summary>
+    public void BeforeAct(World world, Partition part)
     {
         var table = world.Characters;
         var prev = table.Previous;
@@ -115,64 +172,109 @@ public sealed partial class CombatSystem
         List<MedicalEvent>? events = null;
         for (int i = part.Start; i < part.End; i++)
         {
-            if (!prev[i].Alive) continue;
+            if (!prev[i].Alive || prev[i].Dormant || !world.Steps(i)) continue;   // the far cadence: a skipped fighter's tick timers run on, it acts on them at its step
+            var cold = table.Cold(i)!;
+            Body(world, i, cold, ref write[i], now, dt, ref events);
+            inFight[i] = cold.InCombat;
+        }
+    }
+
+    void Body(World world, int i, CharacterCold cold, ref CombatSlot s, int now, float dt, ref List<MedicalEvent>? events)
+    {
+        if (cold.Fighter is null || cold.Stats is null || cold.Medical is null || cold.Race is null) return;
+        var table = world.Characters;
+        var prev = table.Previous;
+        var next = table.Next;
+        // 1. The body: bleeding, healing, waking.
+        if (Settings.TickMedical)
+        {
+            events ??= [];
+            events.Clear();
+            cold.Medical.Tick(dt, MakeContext(world, i, cold), events);
+        }
+        // The weapon in hand follows the arms (docs/game/combat.md "Arms"): losing one puts the weapon away and the fight goes on with what the arms still allow.
+        if (cold.Fighter.SetArms(cold.Medical.ArmWorks(left: false), cold.Medical.ArmWorks(left: true)))
+        {
+            // The weapon put away ends the block it was held in (FUN_1405cc230 sheathes it on an arm's change); a dodge needs no weapon.
+            if (s.ReactTech >= 0 && !cold.Fighter.CanBlock && !techniques[s.ReactTech].IsDodge) s.ReactTech = -1;
+            if (cold.InCombat && !s.Ranged) cold.DrawnWeapon = MeleeDrawn(cold.Fighter);
+            else if (!cold.InCombat && cold.DrawnWeapon != WeaponKinds.None && cold.DrawnWeapon != HandHold.OfCategory((int)WeaponCategory.Bow).Weapon) cold.DrawnWeapon = MeleeDrawn(cold.Fighter);   // a weapon out on a walk follows the arms too
+        }
+        // A player's character out of a fight keeps its weapon out while it walks or follows on an order; idle or at work it sheathes (Idleness and the jobs need it away).
+        if (cold.IsPlayer && !cold.InCombat && cold.DrawnWeapon != WeaponKinds.None && next[i].Task is not ((byte)CharacterTask.GoTo or (byte)CharacterTask.Follow or (byte)CharacterTask.Attack))
+            cold.DrawnWeapon = WeaponKinds.None;
+        // Waking while sneaking it stays low (posture 1, docs/game/ragdolls.md "Staying low"); otherwise it stands.
+        if (s.Down && !cold.Medical.Incapacitated)
+        {
+            cold.Medical.StayingLow = cold.Medical.WokenLow ?? Orders.Has(cold, CharacterOrders.Sneak);
+            cold.Medical.WokenLow = null;
+        }
+        // A leg down replaces it with the forced crawl (posture 2), which ends standing.
+        if (cold.Medical.Crawling) cold.Medical.StayingLow = false;
+        // Waking: it gets up (Task_GetUp, docs/game/ragdolls.md "Getting up"), less wanted as a target and left alone by a hit while its fight is off. Standing up takes
+        // the clip's played length, after the bone blend when it wakes out of a whole-body ragdoll; one staying low or crawling (posture above 0) is held only for that blend,
+        // else not at all (FUN_140334a20). One carried or in a bed plays no get-up clip (AnimationSystem), so it is held for none either.
+        if (s.Down && !cold.Medical.Incapacitated && GetUpClipSeconds > 0)
+        {
+            bool whole = world.SystemOf<Ragdolls.RagdollSystem>()?.WasWhole(table.IdOf(i)) == true;
+            float hold = cold.Medical.StayingLow || cold.Medical.Crawling
+                ? whole ? Ragdolls.RagdollSystem.GetUpBlend : 0
+                : CharacterFacts.PlaysGetUp(cold) ? GetUpClipSeconds + (whole ? Ragdolls.RagdollSystem.GetUpBlend : 0) : 0;
+            // It neither walks, works nor fights until then (Task_GetUp holds the character).
+            if (hold > 0)
+            {
+                cold.GettingUpUntil = now + (int)MathF.Ceiling(hold / dt);
+                cold.StaggeredUntil = Math.Max(cold.StaggeredUntil, cold.GettingUpUntil);
+            }
+            // The get-up's start puts the Hold point where it wakes (FUN_14033ca10).
+            if (Orders.Has(cold, CharacterOrders.Hold)) cold.HoldPoint = prev[i].Position;
+        }
+        // The leg back up (posture 2 to 0, not a waking): the posture setter queues the get-up task 65 (FUN_1405c7e20), which stands the character through the
+        // `standing up 3` clip with no bone blend (no ragdoll to leave: FUN_140334a20), holding it like a waker.
+        bool crawling = cold.Medical.Crawling;
+        if (s.Crawl && !crawling && !s.Down && !cold.Medical.Incapacitated && !cold.Medical.Prone && GetUpClipSeconds > 0 && cold.CarriedBy.IsNone)
+        {
+            cold.GettingUpUntil = now + (int)MathF.Ceiling(GetUpClipSeconds / dt);
+            cold.StaggeredUntil = Math.Max(cold.StaggeredUntil, cold.GettingUpUntil);
+            if (Orders.Has(cold, CharacterOrders.Hold)) cold.HoldPoint = prev[i].Position;
+        }
+        s.Crawl = crawling || cold.Medical.StayingLow;   // any posture above 0: the setter queues task 65 whenever it returns to 0 (FUN_1405c7e20)
+        s.Down = cold.Medical.Incapacitated;
+        if (s.Down)
+        {
+            s.AttackTech = -1;
+            s.NextBlow = 0;
+            s.ReactTech = -1;
+            s.TargetSlot = -1;
+            s.Engaged = false;
+            s.Picked = false;
+            if (cold.InCombat) EndFight(table, i, ref s);
+            return;
+        }
+        if (CharacterFacts.GettingUp(cold, now))
+        {
+            s.AttackTech = -1;
+            s.NextBlow = 0;
+            s.ReactTech = -1;
+        }
+    }
+
+    public void Act(World world, Partition part, EffectBuffer effects)
+    {
+        var table = world.Characters;
+        var prev = table.Previous;
+        var next = table.Next;
+        int now = (int)world.Tick;
+        float dt = world.TickSeconds;
+        for (int i = part.Start; i < part.End; i++)
+        {
+            if (!prev[i].Alive || prev[i].Dormant || !world.Steps(i)) continue;
             var cold = table.Cold(i)!;
             if (cold.Fighter is null || cold.Stats is null || cold.Medical is null || cold.Race is null) continue;
             ref var s = ref write[i];
+            // Down or getting up (the body step, BeforeAct): it neither fights nor defends.
+            if (s.Down || CharacterFacts.GettingUp(cold, now)) continue;
             ulong key = Rng.Key(table.IdOf(i));
-
-            // 1. The body: bleeding, healing, waking.
-            if (Settings.TickMedical)
-            {
-                events ??= [];
-                events.Clear();
-                cold.Medical.Tick(dt, MakeContext(world, i, cold), events);
-            }
-            // The weapon in hand follows the arms (docs/game/combat.md "Arms"): losing one puts the weapon away and the fight goes on with what the arms still allow.
-            if (cold.Fighter.SetArms(cold.Medical.ArmWorks(left: false), cold.Medical.ArmWorks(left: true)))
-            {
-                // The weapon put away ends the block it was held in (FUN_1405cc230 sheathes it on an arm's change); a dodge needs no weapon.
-                if (s.ReactTech >= 0 && !cold.Fighter.CanBlock && !techniques[s.ReactTech].IsDodge) s.ReactTech = -1;
-                if (cold.InCombat && !s.Ranged) cold.DrawnWeapon = MeleeDrawn(cold.Fighter);
-                else if (!cold.InCombat && cold.DrawnWeapon != WeaponKinds.None && cold.DrawnWeapon != HandHold.OfCategory((int)WeaponCategory.Bow).Weapon) cold.DrawnWeapon = MeleeDrawn(cold.Fighter);   // a weapon out on a walk follows the arms too
-            }
-            // A player's character out of a fight keeps its weapon out while it walks or follows on an order; idle or at work it sheathes (Idleness and the jobs need it away).
-            if (cold.IsPlayer && !cold.InCombat && cold.DrawnWeapon != WeaponKinds.None && next[i].Task is not ((byte)CharacterTask.GoTo or (byte)CharacterTask.Follow or (byte)CharacterTask.Attack))
-                cold.DrawnWeapon = WeaponKinds.None;
-            // Waking while sneaking it stays low (posture 1, docs/game/ragdolls.md "Staying low"); otherwise it stands.
-            if (s.Down && !cold.Medical.Incapacitated)
-            {
-                cold.Medical.StayingLow = cold.Medical.WokenLow ?? Orders.Has(cold, CharacterOrders.Sneak);
-                cold.Medical.WokenLow = null;
-            }
-            // A leg down replaces it with the forced crawl (posture 2), which ends standing.
-            if (cold.Medical.Crawling) cold.Medical.StayingLow = false;
-            // Waking: it gets up for GetUpSeconds (Task_GetUp), less wanted as a target and left alone by a hit while its fight is off.
-            if (s.Down && !cold.Medical.Incapacitated && GetUpSeconds > 0)
-            {
-                // It neither walks, works nor fights until it stands (Task_GetUp holds the character).
-                cold.GettingUpUntil = now + (int)MathF.Ceiling(GetUpSeconds / dt);
-                cold.StaggeredUntil = Math.Max(cold.StaggeredUntil, cold.GettingUpUntil);
-            }
-            s.Down = cold.Medical.Incapacitated;
-            if (s.Down)
-            {
-                s.AttackTech = -1;
-                s.NextBlow = 0;
-                s.ReactTech = -1;
-                s.TargetSlot = -1;
-                s.Engaged = false;
-                s.Picked = false;
-                if (cold.InCombat) EndFight(table, i);
-                continue;
-            }
-            if (now < cold.GettingUpUntil)
-            {
-                s.AttackTech = -1;
-                s.NextBlow = 0;
-                s.ReactTech = -1;
-                continue;
-            }
 
             // 2. Helpless in a hit reaction until its clip ends; every BreakOutSeconds of it the character may break out (the original's +0x124, FUN_1406085e0): a roll of its
             // unarmed dodge chance against the strongest fighter swinging at it at 10 to 99 per cent of the swing; on success the stumble ends in a stumble-dodge row.
@@ -181,25 +283,41 @@ public sealed partial class CombatSystem
                 s.AttackTech = -1;
                 s.NextBlow = 0;
                 int every = Math.Max(1, (int)MathF.Round(CombatTuning.BreakOutSeconds / dt));
-                bool chance = s.StumbleClip >= 0 && now > s.StumbleStart && (now - s.StumbleStart) % every == 0;
-                if (s.ReactTech >= 0 && now >= s.ReactStart + s.ReactTicks) s.ReactTech = -1;
-                if (chance && s.ReactTech < 0 && (s.TargetSlot >= 0 || cold.InCombat) && BreaksOut(world, i, cold, key, now))
+                bool chance = s.StumbleClip >= 0 && now > s.StumbleStart && now >= s.BreakOutTick;
+                s.ReactTech = -1;   // a hit reaction ends the defence
+                if (chance && s.ReactTech < 0 && (s.TargetSlot >= 0 || cold.InCombat))
                 {
-                    React(world, i, ref s, cold, key, now, dt, stumbling: true);
-                    if (s.ReactTech >= 0) { s.StunUntil = now; s.StumbleClip = -1; }
+                    // Due, the timer stays out until a swing is in the window, then rolls on that tick; a failed roll starts it again (FUN_1406085e0).
+                    // A won roll ends the stumble and clears the no-defence timer, then starts a defence (FUN_1406085e0 -> state 3 -> FUN_140609290): a stumble-dodge row,
+                    // or with none no technique and the no-defence time. That start fades the stumble clip out (FUN_1405b36f0) once it has a swing to answer; without one it plays on.
+                    if (BreaksOut(world, i, cold, key, now, out bool rolled))
+                    {
+                        s.StunUntil = now;
+                        s.DefendReadyTick = Math.Min(s.DefendReadyTick, now);
+                        if (MostAdvanced(world, i, now, s.ReactedSlot, landing: false).Attacker >= 0) s.StumbleClip = -1;
+                        React(world, i, ref s, cold, key, now, dt, stumbling: true);
+                    }
+                    else if (rolled) s.BreakOutTick = now + every;
                 }
                 if (now < s.StunUntil) continue;
             }
 
             // 3. The target.
-            // A target down or gone: the fighter chooses again at once (state 4, re-decide), and the fight ends only when nobody is left. While deciding, it chooses again
-            // every PickSeconds, unless the target is the player's pick (a focused order returns its target without scoring).
+            // A target down or gone is dropped (state 4, re-decide): the fight ends at once when it was the task's own target (CombatClassAI update FUN_14060d6a0, refocus read as
+            // clear), else the fighter chooses again at once and, with nobody to choose, fights on without a target until nothing is left (NothingLeft). While deciding, it chooses
+            // again every PickSeconds, unless the target is the player's pick (a focused order returns its target without scoring). A target caged or carried is dropped the same
+            // way, the player's pick too (FUN_14060d6a0: down, dead, ragdolled or carried; imprisoned unless the fighter itself stumbles, which skips this step).
             bool fighting = s.TargetSlot >= 0;
-            if (fighting && !(s.TargetSlot < prev.Length && prev[s.TargetSlot].Alive && prev[s.TargetSlot].Generation == s.TargetGeneration && !read[s.TargetSlot].Down))
+            // The target's fight ended since it let this one close in: its engaged list was emptied (FUN_1406659b0 mode 2), the fighter keeps its target and asks again below.
+            if (s.Engaged && fighting && (uint)s.TargetSlot < (uint)prev.Length && !Listed(in s, in read[s.TargetSlot])) s.Engaged = false;
+            if (fighting && !(s.TargetSlot < prev.Length && prev[s.TargetSlot].Alive && prev[s.TargetSlot].Generation == s.TargetGeneration && !read[s.TargetSlot].Down
+                && table.Cold(s.TargetSlot) is { IsImprisoned: false, CarriedBy.IsNone: true, Medical.Incapacitated: false })
+                && !FinishingSwing(in s, prev, now))
             {
                 s.AttackTech = -1;
                 s.NextBlow = 0;
-                int pick = ChooseTarget(world, i, s, cold, keep: false);
+                bool task = s.TargetSlot == s.TaskSlot && s.TargetGeneration == s.TaskGeneration;
+                int pick = task ? -1 : ChooseTarget(world, i, s, cold);
                 s.PickTick = now + PickTicks(world, cold);
                 if (pick >= 0) { Retarget(ref s, pick, prev[pick].Generation, now); next[i].TaskTime = 0; }   // its path is asked for at once, not after the wait the last target's failure set (PursuitSystem)
                 else
@@ -207,40 +325,45 @@ public sealed partial class CombatSystem
                     fighting = false;
                     s.TargetSlot = -1;
                     s.Picked = false;
-                    EndFight(table, i);
+                    if (task || NothingLeft(world, i, in s)) EndFight(table, i, ref s);
                 }
             }
             // A player's pick is kept, unless no path leads to it (the focused target is dropped while its path is impossible).
             else if (fighting && (!s.Picked || PursuitSystem.PathImpossible(cold, new CharacterId(s.TargetSlot, s.TargetGeneration), now)) && now >= s.PickTick && s.AttackTech < 0 && s.ReactTech < 0)
             {
-                int pick = ChooseTarget(world, i, s, cold, keep: CurrentSensed(world, i, ref s, cold, now));
+                int pick = ChooseTarget(world, i, s, cold);
                 s.PickTick = now + PickTicks(world, cold);
                 if (pick >= 0 && pick != s.TargetSlot) { Retarget(ref s, pick, prev[pick].Generation, now); next[i].TaskTime = 0; }
                 else if (pick < 0)
                 {
-                    // Nobody qualifies, not even the current target (a holder's that left its area, a player's beyond 400): the chooser has no target and the fight ends.
+                    // Nobody qualifies, not even the current target (a holder's that left its area, a player's beyond 400): the chooser has no target (state 9).
                     fighting = false;
                     s.TargetSlot = -1;
-                    EndFight(table, i);
+                    if (NothingLeft(world, i, in s)) EndFight(table, i, ref s);
                 }
+            }
+            // In the fight without a target: it chooses again every PickSeconds and leaves the fight once nothing is left.
+            else if (!fighting && cold.InCombat && now >= s.PickTick && s.AttackTech < 0 && s.ReactTech < 0)
+            {
+                int pick = ChooseTarget(world, i, s, cold);
+                s.PickTick = now + PickTicks(world, cold);
+                if (pick >= 0) { Retarget(ref s, pick, prev[pick].Generation, now); next[i].TaskTime = 0; fighting = true; }
+                else if (NothingLeft(world, i, in s)) EndFight(table, i, ref s);
             }
 
             // 3b. A crossbowman fights with the crossbow or the melee weapon; with the crossbow the ranged controller runs instead of the melee attack (a blow aimed at it is still met).
             ChooseMode(world, i, ref s, cold, fighting);
             if (s.Ranged)
             {
-                if (s.ReactTech >= 0 && now >= s.ReactStart + s.ReactTicks) s.ReactTech = -1;
+                EndReaction(world, i, ref s, now, dt);
                 if (s.ReactTech < 0 && s.AttackTech < 0) React(world, i, ref s, cold, key, now, dt);
-                TickRanged(world, i, ref s, cold, effects, now, dt);
+                else if (s.ReactTech >= 0) Reconsider(world, i, ref s, cold, key, now, dt);
+                TickRanged(world, i, ref s, cold, effects, now, world.StepSeconds(i));   // its timers are seconds: a far character's step covers several ticks
                 continue;
             }
 
-            // 4. The reaction and the attack in progress. A block that ends leaves a short wait (a dodge goes straight back to deciding).
-            if (s.ReactTech >= 0 && now >= s.ReactStart + s.ReactTicks)
-            {
-                if (!techniques[s.ReactTech].IsDodge) s.ReadyTick = Math.Max(s.ReadyTick, now + (int)MathF.Ceiling(CombatTuning.AfterBlockPause / dt));
-                s.ReactTech = -1;
-            }
+            // 4. The reaction and the attack in progress.
+            EndReaction(world, i, ref s, now, dt);
             float incoming = Incoming(world, i, now, out int yielder);
             // One that lost the initiative roll to it: it turns on that one (FUN_140666a30 sets the winner to attack the asker), unless it fights the player's pick.
             if (yielder >= 0 && yielder != s.TargetSlot && !s.Ranged && !(fighting && s.Picked))
@@ -308,12 +431,16 @@ public sealed partial class CombatSystem
             if (s.ReactTech < 0 && s.AttackTech < 0)
             {
                 // Deciding, it first asks to be one of the fighters its target lets close in (FUN_140666e20); a fighter left out circles (PursuitSystem) and asks again each tick.
-                if (fighting && !s.Engaged) s.Engaged = MayJoin(world, i, s.TargetSlot, now);
+                if (fighting && !s.Engaged)
+                {
+                    s.Engaged = MayJoin(world, i, s.TargetSlot, now);
+                    if (s.Engaged) s.JoinedEpoch = read[s.TargetSlot].ListEpoch;
+                }
                 bool yielded = fighting && read[s.TargetSlot].YieldTo == i && now < read[s.TargetSlot].YieldUntil;
                 bool paused = now < s.PauseUntil;
                 if (!aborted && fighting && !paused && (now >= s.ReadyTick || incoming >= 0 || yielded))
                 {
-                    StartAttack(world, i, ref s, cold, key, now, dt);
+                    StartAttack(world, i, ref s, cold, key, now, dt, effects);
                     // A failed ask: with a blow coming it defends (below), else an engaged fighter goes to state 5 (FUN_14060c8b0); an attack ends it.
                     s.CircleState = s.Engaged && s.AttackTech < 0 && incoming < 0;
                 }
@@ -321,13 +448,13 @@ public sealed partial class CombatSystem
                 // Only a fighter defends: a target whose fight is off is simply hit (the ask answers "attack", docs/game/combat.md "Fight lifecycle and orders").
                 if (s.AttackTech < 0 && !paused && now >= s.DefendReadyTick && (fighting || cold.InCombat)) React(world, i, ref s, cold, key, now, dt);
             }
-            else if (s.ReactTech >= 0 && s.AttackTech < 0 && !techniques[s.ReactTech].IsDodge && now >= s.DefendReadyTick && (fighting || cold.InCombat))
-                // A block in progress meets another blow: the defence update (FUN_140609c70) follows the most advanced incoming swing and starts a new defence when its direction differs.
-                React(world, i, ref s, cold, key, now, dt, reconsider: true);
+            else if (s.ReactTech >= 0 && s.AttackTech < 0 && (fighting || cold.InCombat))
+                // A defence in progress meets another blow: the defence update (FUN_140609c70, which does not read the +0x14c timer) follows the most advanced incoming swing.
+                Reconsider(world, i, ref s, cold, key, now, dt);
         }
     }
 
-    void StartAttack(World world, int i, ref CombatSlot s, CharacterCold cold, ulong key, int now, float dt)
+    void StartAttack(World world, int i, ref CombatSlot s, CharacterCold cold, ulong key, int now, float dt, EffectBuffer effects)
     {
         var table = world.Characters;
         var prev = table.Previous;
@@ -339,17 +466,19 @@ public sealed partial class CombatSystem
         if (!s.Engaged) return;   // left out by its target: it circles (PursuitSystem)
         // No one but enemies within its body room (x1.2 in state 5): the ask fails (FUN_14060c670, FUN_1402b3180).
         if (NearestFriend(world, i, in s, cold) < BodyRoom(cold) * (s.CircleState ? CircleRoomFactor : 1)) return;
+        if (OtherFloor(world, i, prev[i].Position, t, prev[t].Position)) return;   // no swing through a floor: it walks round by the stairs (PursuitSystem)
+
         var tc = table.Cold(t)!;
         var medical = cold.Medical!;
         float length = fighter.WeaponLength;
         // The gap to where the target will be (a target that is not fighting is led by LeadSeconds, FUN_1402b4570).
-        var aim = prev[t].Position + (tc.InCombat ? Vector3.Zero : prev[t].Velocity * CombatTuning.AimLeadSeconds);
+        var aim = prev[t].Position + (inFight[t] ? Vector3.Zero : prev[t].Velocity * CombatTuning.AimLeadSeconds);
         float e = fighter.EncumbranceFactor;
         var query = new AttackQuery
         {
             Category = fighter.TechniqueCategory,
             Skill = cold.Stats![fighter.WeaponSkill],
-            UnarmedSkill = WeaponStats.Lerp(e, 0.2f, 1) * (cold.Stats[StatsEnumerated.MartialArts] + fighter.UnarmedBonus),
+            UnarmedSkill = WeaponStats.Lerp(e, 0.2f, 1) * (cold.Stats[StatsEnumerated.MartialArts] + fighter.UnarmedBonus - medical.DustAttackPenalty),   // the chooser asks FUN_140884e00 with the injury term on (FUN_140884580 subtracts the dust penalty)
             Animal = fighter.IsAnimal,
             Prone = medical.Prone,
             Encumbrance = e,
@@ -366,21 +495,20 @@ public sealed partial class CombatSystem
         int pick = TechniqueChooser.ChooseAttack(techniques, query, roll, out s.Reach);
         if (pick < 0) return;
         // In reach with a technique: ask the target (and hold an attack slot).
-        if (!HasSlot(world, i, t, tc, now) || !HasInitiative(world, i, ref s, t, cold, tc, now)) return;
+        if (!HasSlot(world, i, t, tc, now) || !HasInitiative(world, i, ref s, t, cold, tc, now, effects)) return;
         var tech = techniques[pick];
         s.AttackSeq++;
         s.AttackTech = pick;
         s.LastTech = pick;
         s.AttackStart = now;
-        s.AttackTicks = Ticks(tech, PlayRate(cold, tech, attack: true), dt, cold);
+        s.AttackTicks = Ticks(tech, PlayRate(world, i, cold, tech, attack: true), dt, cold);
         s.AttackEnd = now + Math.Max(1, (int)MathF.Ceiling(Math.Max(tech.EndProgress, CombatTuning.SwingFinished) * s.AttackTicks));
         s.NextBlow = 1;
         s.LastOutcome = BlowOutcome.Missed;
         s.AttackFrom = prev[i].Position;
-        // The bonus with the weapon's indoors modifier inside, less the dust's "Weather penalty" (FUN_140643a30, docs/formats/weather.md "Effects on characters").
-        s.AttackSkill = Eff(cold, fighter.Unarmed ? StatsEnumerated.MartialArts : StatsEnumerated.MeleeAttack)
-            + IndoorsAttackBonus(fighter.Unarmed ? fighter.UnarmedBonus : fighter.AttackBonus + (fighter.Weapon?.Stats.AttackMod ?? 0), IndoorsMod(world, i, fighter))
-            - cold.Medical!.DustAttackPenalty;
+        RecordZone(world, i, in s, cold, tech, 1);   // the attack start builds the zone list (FUN_1402b4570 -> FUN_1406087a0)
+        // The bonus with the weapon's indoors modifier inside, less the dust's "Weather penalty" (FUN_140643a30, docs/formats/weather.md "Effects on characters"); unarmed, the fist rating.
+        s.AttackSkill = AttackRating(world, i, cold, fighter);
     }
 
     /// <summary>
@@ -389,13 +517,14 @@ public sealed partial class CombatSystem
     /// or not fighting it; otherwise an initiative roll on both attack skills (the skill roll with <c>attack chance factor</c>, 50/50 at equal skill),
     /// drawn from the pair and tick so both sides agree. The loser yields: the winner may swing at it at once (the original sets the winner to attack).
     /// </summary>
-    bool HasInitiative(World world, int i, ref CombatSlot s, int t, CharacterCold cold, CharacterCold tc, int now)
+    bool HasInitiative(World world, int i, ref CombatSlot s, int t, CharacterCold cold, CharacterCold tc, int now, EffectBuffer effects)
     {
         ref readonly var target = ref read[t];
         var prev = world.Characters.Previous;
         bool atMe = target.TargetSlot == i && target.TargetGeneration == prev[i].Generation;
         if (target.YieldTo == i && now < target.YieldUntil) return true;
         if (atMe && SwingProgress(in target, now) is > 0 and < 1) return false;   // its swing at me is on the way to its blow (progress strictly between 0 and 1, FUN_140665420): I defend (FUN_140666a30)
+        if (MassCombatAnswer(world, t, in target, atMe, now)) effects.Emit(i, t, MassCombatEffect);
         if (Open(t, tc, now)) return true;
         if (s.YieldTo == t && now < s.YieldUntil) return false;
         // The target is free (deciding or in its pause): one draw for the pair and tick, the lower slot's view.
@@ -415,6 +544,20 @@ public sealed partial class CombatSystem
         return false;
     }
 
+    /// <summary>The <see cref="Effect.Kind"/> of an ask whose answer adds mass combat experience to the asked character (<c>FUN_1408c5e80</c>, <c>Target</c>).</summary>
+    public const int MassCombatEffect = 5;
+
+    /// <summary>
+    /// Whether the answer to an ask (<c>FUN_140666a30</c>, <b>Verified</b>) gives the asked character mass combat XP: it is stumbling, or it fights someone other than the asker with its dead-time
+    /// flag clear (no block or dodge playing) and is defending (blows coming at it; engine reading of state 1) or attacking. A target without a target gives none.
+    /// </summary>
+    bool MassCombatAnswer(World world, int t, in CombatSlot target, bool atMe, int now)
+    {
+        if (now < target.StunUntil) return true;
+        if (target.TargetSlot < 0 || atMe || target.Down || target.ReactTech >= 0) return false;
+        return target.AttackTech >= 0 || Incoming(world, t, now, out _) > 0;
+    }
+
     /// <summary>
     /// Whether <paramref name="t"/> would not swing back (staggered, down, not fighting, the Block order; the ask has no Passive case), so it cannot take the initiative. A fighter that is
     /// blocking or dodging is not open: once its defence has started (+0x144) the original's answer rolls the initiative (FUN_140666a30).
@@ -430,8 +573,9 @@ public sealed partial class CombatSystem
     /// The stumble break-out roll (<b>Verified</b>, <c>FUN_1406085e0</c> / <c>FUN_140885d80</c>): of the fighters swinging at it with the swing between 10 and 99 per cent, the one with the
     /// highest attack skill; a draw under the defender's unarmed dodge chance against that skill (0 to 95) breaks out. False with no such swing.
     /// </summary>
-    bool BreaksOut(World world, int i, CharacterCold cold, ulong key, int now)
+    bool BreaksOut(World world, int i, CharacterCold cold, ulong key, int now, out bool rolled)
     {
+        rolled = false;
         var prev = world.Characters.Previous;
         var range = world.Grid.Range(prev[i].Position.X, prev[i].Position.Z, CombatTuning.ReactionScanRadius);
         int generation = prev[i].Generation;
@@ -445,6 +589,7 @@ public sealed partial class CombatSystem
             if (progress >= CombatTuning.BreakOutFrom && progress < CombatTuning.BreakOutTo) best = MathF.Max(best, a.AttackSkill);
         }
         if (float.IsNegativeInfinity(best)) return false;
+        rolled = true;
         var fighter = cold.Fighter!;
         float effective = DefenceFormulas.EffectiveDefence(Eff(cold, StatsEnumerated.MartialArts), fighter.EncumbranceFactor, Speed.LegFactor(cold.Medical!), fighter.DefenceBonus, Guarding(cold));
         float chance = DefenceFormulas.BlockChance(effective, best, combat, 0, 95);
@@ -478,6 +623,20 @@ public sealed partial class CombatSystem
             if (v > 0 && v < 1) most = MathF.Max(most, v);
         }
         return most;
+    }
+
+    /// <summary>
+    /// Whether a swing at a target that went down, died or was caged or carried plays on before the target is dropped (<b>Verified</b>, the fight tick <c>FUN_14060d6a0</c>; docs/game/combat.md
+    /// "Pacing"): the drop waits while the clip's own progress is under the technique's <c>acceptable end time</c>, so a kill is followed by the rest of the clip before the next choice.
+    /// A swing ending now (a stop frame) or a target whose slot was reused drops at once.
+    /// </summary>
+    bool FinishingSwing(in CombatSlot s, ReadOnlySpan<CharacterHot> prev, int now)
+    {
+        if (s.AttackTech < 0 || s.AttackTicks <= 0 || now >= s.AttackEnd) return false;
+        if ((uint)s.TargetSlot >= (uint)prev.Length || prev[s.TargetSlot].Generation != s.TargetGeneration) return false;
+
+        float clip = (now - s.AttackStart) / (float)s.AttackTicks;
+        return clip < techniques[s.AttackTech].EndProgress;
     }
 
     /// <summary>
@@ -518,8 +677,7 @@ public sealed partial class CombatSystem
             var aim = prev[t].Position + (tc.InCombat ? Vector3.Zero : prev[t].Velocity * CombatTuning.AimLeadSeconds);
             to = aim - prev[i].Position;
             if (!(to.Length() > 8)) return false;
-            float defence = target.Unarmed ? UnarmedRating(tc, target)
-                : Eff(tc, StatsEnumerated.MeleeDefence) + target.DefenceBonus + (target.Weapon?.Stats.DefenceMod ?? 0) + (Guarding(tc) ? 20 : 0);
+            float defence = DefenceRating(world, t, tc, target);
             float window = MathF.Max(0.6f * (20 - (defence - s.AttackSkill)) / 20, MathF.Max(0.1f, (4 - FightersAt(world, t)) / 3f));
             if (!(SwingProgress(in s, now) < window)) return false;
         }
@@ -529,6 +687,32 @@ public sealed partial class CombatSystem
         dir /= len;
         return true;
     }
+
+    /// <summary>
+    /// The defence update's turn (<c>FUN_140666400</c>, called every tick from <c>FUN_140609c70</c>): a defending fighter faces the attacker its defence follows at once when that one is over 5 away,
+    /// except while it plays a block of a rear direction (7, 8 or 9), which is met turned away. A steering defender faces it through its band (PursuitSystem.BandTarget).
+    /// </summary>
+    public bool DefenceAim(World world, int i, out Vector2 dir)
+    {
+        dir = default;
+        var prev = world.Characters.Previous;
+        if ((uint)i >= (uint)prev.Length) return false;
+        ref readonly var s = ref read[i];
+        int a = s.ReactedSlot;
+        if (s.ReactTech < 0 || (uint)a >= (uint)prev.Length || a == i || !prev[a].Alive) return false;
+        if (!DefenceFaces(s.ReactTech)) return false;
+
+        var to = prev[a].Position - prev[i].Position;
+        if (!(to.LengthSquared() > 25)) return false;
+        dir = new Vector2(to.X, to.Z);
+        float len = dir.Length();
+        if (len < 1e-4f) return false;
+        dir /= len;
+        return true;
+    }
+
+    /// <summary>Whether a defence with technique <paramref name="tech"/> turns to the swing it follows: not a block of a rear direction (7, 8 or 9, <c>FUN_140666400</c>).</summary>
+    internal bool DefenceFaces(int tech) => !(techniques[tech].IsBlock && techniques[tech].AttackDirection1 is 7 or 8 or 9);
 
     /// <summary>Any leg part is down (flesh - stun + rig &lt; 0): the original's two leg parts at medical +0x4d8 / +0x4e0 in the kick factor (<c>FUN_140886030</c>).</summary>
     static bool LegDown(MedicalState medical)
@@ -559,13 +743,13 @@ public sealed partial class CombatSystem
             if (other == i || !range.Holds((x, z))) continue;
             ref readonly var o = ref read[other];
             if (o.TargetGeneration != generation || o.Down || o.Ranged) continue;
-            // A swing holds its slot unless the target (a blocker) freed its slots after the swing started.
-            if (o.AttackTech >= 0 && o.NextBlow > 0 && o.AttackStart >= read[t].SlotsCleared)
+            // A swing holds its slot unless the target (a blocker) freed its slots after the swing started, or it has run past SlotHoldSeconds (FUN_140668000).
+            if (o.AttackTech >= 0 && o.NextBlow > 0 && o.AttackStart >= read[t].SlotsCleared && now - o.AttackStart <= (int)MathF.Ceiling(SlotHoldSeconds / world.TickSeconds))
             {
                 if (++holders + ahead >= slots) return false;
                 continue;
             }
-            if (other > i || now < o.StunUntil || now < o.PauseUntil && o.AttackTech < 0 && o.ReactTech < 0 || !o.Engaged && !MayJoin(world, other, t, now)) continue;
+            if (other > i || now < o.StunUntil || now < o.PauseUntil && o.AttackTech < 0 && o.ReactTech < 0 || !Listed(in o, in read[t]) && !MayJoin(world, other, t, now)) continue;
             // It decides this tick when its swing or reaction ends now (Act's steps 4 and 5): a block's end and a swing's end start a pause (cut short by a blow at it).
             int ready = o.ReadyTick;
             if (o.AttackTech >= 0)
@@ -575,8 +759,8 @@ public sealed partial class CombatSystem
             }
             else if (o.ReactTech >= 0)
             {
-                if (now < o.ReactStart + o.ReactTicks) continue;
-                if (!techniques[o.ReactTech].IsDodge) ready = Math.Max(ready, now + (int)MathF.Ceiling(CombatTuning.AfterBlockPause / world.TickSeconds));
+                if (!ReactionEnds(world, other, in o, now, out bool wait)) continue;
+                if (wait) ready = Math.Max(ready, now + (int)MathF.Ceiling(CombatTuning.AfterBlockPause / world.TickSeconds));
             }
             if (now < ready && !(read[t].YieldTo == other && now < read[t].YieldUntil) && Incoming(world, other, now, out _) < 0) continue;
             // A yielder asks in vain unless the target is open (HasInitiative).
@@ -593,10 +777,16 @@ public sealed partial class CombatSystem
     static int BlockTimerTicks(World world, ulong key, int now) =>
         Math.Max(1, (int)MathF.Ceiling((1.5f + 3 * CombatRolls.Float(world.Seed, key, CombatRoll.BlockTimer, (ulong)(uint)now)) / world.TickSeconds));
 
+    /// <summary>A slot holder is dropped once its slot timer passes this (AttackSlotManager::periodicUpdate, <c>DAT_141683188</c>, Verified): even a swing still on.</summary>
+    public const float SlotHoldSeconds = 20;
+
     /// <summary>The most attack slots a target can have (the slot count is clamped to 1 to 5, <c>FUN_1406661d0</c>).</summary>
     public const int MaxAttackSlots = 5;
     /// <summary>The most fighters a target lets close in at once (<c>FUN_140666e20</c> adds an asker while it has at most four).</summary>
     public const int MaxEngaged = 5;
+
+    /// <summary>Whether fighter <paramref name="o"/> is in the engaged list of <paramref name="target"/>, its target: it joined and the target's fight has not ended since (<see cref="CombatSlot.ListEpoch"/>).</summary>
+    internal static bool Listed(in CombatSlot o, in CombatSlot target) => o.Engaged && o.JoinedEpoch == target.ListEpoch;
 
     /// <summary>
     /// Whether <paramref name="i"/> may join the fighters its target lets close in (<see cref="MaxEngaged"/>, <c>FUN_140666e20</c>): it joins while fewer are in. The ones that are
@@ -613,7 +803,7 @@ public sealed partial class CombatSystem
             if (other == i || !range.Holds((x, z))) continue;
             ref readonly var o = ref read[other];
             if (o.TargetGeneration != generation || o.Down || o.Ranged) continue;
-            if (!o.Engaged && (other > i || !MayDecide(in o, now))) continue;
+            if (!Listed(in o, in read[t]) && (other > i || !MayDecide(in o, now))) continue;
             if (++count >= MaxEngaged) return false;
         }
         return count < MaxEngaged;
@@ -702,43 +892,166 @@ public sealed partial class CombatSystem
         return count;
     }
 
-    /// <param name="reconsider">A block already playing meets a new blow (the original's defence update FUN_140609c70: when the most advanced incoming swing changes, a blow whose direction differs from the current block's starts a new defence, one with the same direction keeps it).</param>
-    /// <param name="stumbling">A break-out from a stumble that won its roll: the reaction is one of the <c>is stumble dodge</c> rows, without a block or dodge roll.</param>
-    void React(World world, int i, ref CombatSlot s, CharacterCold cold, ulong key, int now, float dt, bool stumbling = false, bool reconsider = false)
+    /// <summary>Ends the reaction in progress when <see cref="ReactionEnds"/> says so; a wait that follows holds off the next attack (the +0x148 wait, AfterBlockPause).</summary>
+    void EndReaction(World world, int i, ref CombatSlot s, int now, float dt)
     {
-        var table = world.Characters;
-        var prev = table.Previous;
-        // The blow at it that lands first, from those swinging at it within ReactionScanRadius (the index's list, kept to the grid's cells round it, in the grid's order:
-        // the first of a tie wins); not the one it has reacted to already.
+        if (!ReactionEnds(world, i, in s, now, out bool wait)) return;
+        if (wait) s.ReadyTick = Math.Max(s.ReadyTick, now + (int)MathF.Ceiling(CombatTuning.AfterBlockPause / dt));
+        s.ReactTech = -1;
+    }
+
+    /// <summary>A swing at the fighter whose blow has not landed yet: the attacker, its attack number, the blow, its progress (<see cref="SwingProgress"/>, 1 or more on the tick it lands) and that tick.</summary>
+    readonly record struct IncomingBlow(int Attacker, int Seq, int Blow, float Progress, int Lands);
+
+    /// <summary>
+    /// The swing at <paramref name="i"/> that is furthest on (the original's followed attacker +0x1a8, <c>FUN_140665e00</c>: the largest progress), from those swinging at it within
+    /// ReactionScanRadius whose blow has not landed. An exact tie keeps <paramref name="keep"/>, else the lower slot (the original's <c>&lt;=</c> keeps one stable; Meitou's grid order is
+    /// not, so the slot breaks it). <paramref name="landing"/>: a blow landing now counts (the hold); the defence start and update pick only among 0 &lt; v &lt; 1. Attacker -1: nobody.
+    /// </summary>
+    IncomingBlow MostAdvanced(World world, int i, int now, int keep, bool landing)
+    {
+        var prev = world.Characters.Previous;
         var range = world.Grid.Range(prev[i].Position.X, prev[i].Position.Z, CombatTuning.ReactionScanRadius);
-        int generation = prev[i].Generation, attacker = -1, blow = 0, first = int.MaxValue, firstAny = int.MaxValue;
+        int generation = prev[i].Generation;
+        var best = new IncomingBlow(-1, 0, 0, 0, 0);
         foreach (var (_, x, z, other) in index.AttackersOf(i))
         {
             if (other == i || !range.Holds((x, z))) continue;
             ref readonly var a = ref read[other];
-            if (a.AttackTech < 0 || a.NextBlow == 0 || a.TargetGeneration != generation) continue;
-            int lands = a.AttackStart + (int)MathF.Ceiling(techniques[a.AttackTech].StrikeProgress(a.NextBlow) * a.AttackTicks);
-            if (lands <= now) continue;
-            if (lands < firstAny) firstAny = lands;
-            if (s.ReactedSlot == other && s.ReactedSeq == a.AttackSeq && s.ReactedBlow == a.NextBlow) continue;
-            if (lands < first) { first = lands; attacker = other; blow = a.NextBlow; }
-        }
-        if (attacker < 0) return;
-        // A block already playing serves the blow that lands first; it is only reconsidered once that one has passed (FUN_140609c70 follows the most advanced swing).
-        if (reconsider && firstAny < first) return;
-        var attack = read[attacker];
-        var atkTech = techniques[attack.AttackTech];
-        int direction = HitOutcomes.Facing(atkTech.DirectionOf(blow), HitOutcomes.Behind(prev[attacker].Position, prev[i].Position, prev[i].Yaw));
-        if (reconsider && s.ReactTech >= 0 && techniques[s.ReactTech].AttackDirection1 == direction && s.ReactStart + s.ReactTicks <= first) return;   // the block ends before this blow: it is handled once the clip is over
-        s.ReactedSlot = attacker;
-        s.ReactedSeq = attack.AttackSeq;
-        s.ReactedBlow = blow;
-        // A block already playing covers a later blow of its own direction (FUN_140665fa0 compares the current technique with each blow); only a different direction starts a new one.
-        if (reconsider && s.ReactTech >= 0 && techniques[s.ReactTech].AttackDirection1 == direction) return;
+            if (a.AttackTech < 0 || a.NextBlow == 0 || a.TargetGeneration != generation || a.AttackTicks <= 0) continue;
 
+            // A blow is on its way until the attacker's state shows it struck (a far attacker strikes at its own step, after the landing tick; strikes apply after every Act).
+            int lands = a.AttackStart + (int)MathF.Ceiling(techniques[a.AttackTech].StrikeProgress(a.NextBlow) * a.AttackTicks);
+            float v = SwingProgress(in a, now);
+            if (v <= 0 || !landing && v >= 1) continue;
+            if (best.Attacker >= 0 && !Ahead(v, other, in best, keep)) continue;
+            best = new IncomingBlow(other, a.AttackSeq, a.NextBlow, v, lands);
+        }
+        return best;
+    }
+
+    static bool Ahead(float v, int other, in IncomingBlow best, int keep) =>
+        v > best.Progress || v == best.Progress && best.Attacker != keep && (other == keep || other < best.Attacker);
+
+    /// <summary>
+    /// Whether the reaction in progress ends this tick (the defence update <c>FUN_140609c70</c>, docs/game/combat.md "Pacing"), and whether the +0x148 wait follows: any reaction once no
+    /// swing at the fighter is on its way (then the wait), a dodge also once its clip is past 0.98 (state 4, deciding at once). A block is not ended by its clip running out.
+    /// </summary>
+    bool ReactionEnds(World world, int i, in CombatSlot s, int now, out bool wait)
+    {
+        wait = false;
+        if (s.ReactTech < 0) return false;
+        if (MostAdvanced(world, i, now, s.ReactedSlot, landing: true).Attacker < 0)
+        {
+            wait = true;
+            return true;
+        }
+        return techniques[s.ReactTech].IsDodge && now - s.ReactStart > HitOutcomes.DodgeTo * s.ReactTicks;
+    }
+
+    /// <summary>
+    /// Starts a defence against the swing furthest on (the original's <c>FUN_140609290</c>): only once that swing is 0.1 of the way to its blow and the fighter is in that attacker's
+    /// attack zone list (<c>FUN_140608460</c>); else it tries again in 0.1 s. A blow decided again rolls afresh.
+    /// </summary>
+    /// <param name="stumbling">A break-out from a stumble that won its roll: the reaction is one of the <c>is stumble dodge</c> rows, without a block or dodge roll.</param>
+    void React(World world, int i, ref CombatSlot s, CharacterCold cold, ulong key, int now, float dt, bool stumbling = false)
+    {
+        var swing = MostAdvanced(world, i, now, s.ReactedSlot, landing: false);
+        if (swing.Attacker < 0) return;
+        if (!Startable(in swing, i))
+        {
+            s.DefendReadyTick = now + (int)MathF.Ceiling(CombatTuning.EarlyDefenceSeconds / dt);
+            return;
+        }
+        if (!stumbling && cold.Fighter!.IsAnimal)
+        {
+            // An animal never defends: the start takes no technique and holds off the next try (FUN_140609290, the defender's asAnimal vfunc 0x248).
+            s.ReactedSlot = swing.Attacker;
+            s.DefendReadyTick = now + (int)MathF.Ceiling(CombatTuning.AnimalNoDefenceSeconds / dt);
+            return;
+        }
+        StartDefence(world, i, ref s, cold, key, now, dt, in swing, stumbling, reconsider: false);
+    }
+
+    /// <summary>
+    /// The defence update (<c>FUN_140609c70</c>): a defence follows the swing furthest on (a dodge too, so it turns to it); for a block, when that swing or its blow changes, or every 1 s,
+    /// it starts a new defence if the blow's side (worked out now, so an attacker that walked round counts) differs from the block's. A block of the same side carries on; a dodge is never re-picked.
+    /// </summary>
+    void Reconsider(World world, int i, ref CombatSlot s, CharacterCold cold, ulong key, int now, float dt)
+    {
+        var swing = MostAdvanced(world, i, now, s.ReactedSlot, landing: false);
+        if (swing.Attacker < 0) return;
+        bool changed = swing.Attacker != s.ReactedSlot || swing.Seq != s.ReactedSeq || swing.Blow != s.ReactedBlow;
+        s.ReactedSlot = swing.Attacker;
+        s.ReactedSeq = swing.Seq;
+        s.ReactedBlow = swing.Blow;
+        if (techniques[s.ReactTech].IsDodge || !changed && now < s.ReactCheckTick) return;
+
+        s.ReactCheckTick = now + (int)MathF.Ceiling(CombatTuning.DefenceRecheckSeconds / dt);
+        if (techniques[s.ReactTech].AttackDirection1 == BlowSide(world, i, in swing)) return;
+        if (!Startable(in swing, i))
+        {
+            // A new start that fails (too early, or not in the attacker's zone) ends the defence (state 4).
+            s.ReactTech = -1;
+            s.DefendReadyTick = now + (int)MathF.Ceiling(CombatTuning.EarlyDefenceSeconds / dt);
+            return;
+        }
+        StartDefence(world, i, ref s, cold, key, now, dt, in swing, stumbling: false, reconsider: true);
+    }
+
+    /// <summary>The defence start's tests on the swing it picked (<c>FUN_140609290</c>): the fighter is in the attacker's zone list and the swing is 0.1 of the way to its blow.</summary>
+    bool Startable(in IncomingBlow swing, int i) => InZone(swing.Attacker, i) && swing.Progress >= CombatTuning.DefenceStartProgress;
+
+    /// <summary>The side the blow comes from as the fighter stands now (<c>FUN_140436520</c>): the swing's own direction, or its rear counterpart when the attacker is behind.</summary>
+    int BlowSide(World world, int i, in IncomingBlow swing)
+    {
+        var prev = world.Characters.Previous;
+        var tech = techniques[read[swing.Attacker].AttackTech];
+        return HitOutcomes.Facing(tech.DirectionOf(swing.Blow), HitOutcomes.Behind(prev[swing.Attacker].Position, prev[i].Position, prev[i].Yaw));
+    }
+
+    void StartDefence(World world, int i, ref CombatSlot s, CharacterCold cold, ulong key, int now, float dt, in IncomingBlow swing, bool stumbling, bool reconsider)
+    {
+        s.ReactedSlot = swing.Attacker;
+        s.ReactedSeq = swing.Seq;
+        s.ReactedBlow = swing.Blow;
+        int pick = ChooseDefence(world, i, cold, key, now, in swing, stumbling);
+        if (pick < 0)
+        {
+            // No defence (a failed roll or no row for the side, alike: FUN_140887970 returns none for both): none is tried again for a while (the original's +0x14c).
+            s.DefendReadyTick = now + (int)MathF.Ceiling(CombatTuning.NoDefenceSeconds / dt);
+            if (reconsider) s.ReactTech = -1;   // the failed new start ends the defence (state 4, FUN_140609c70)
+            return;
+        }
+
+        s.ReactCheckTick = now + (int)MathF.Ceiling(CombatTuning.DefenceRecheckSeconds / dt);
+        s.DefendReadyTick = Math.Max(s.DefendReadyTick, now + (int)MathF.Ceiling(CombatTuning.DefenceStartedSeconds / dt));
+        s.LastTech = -1;   // the original's current technique (+0x150) is now a defence, which the next attack choice does not count as its last
+        if (pick == s.ReactTech) return;   // the same technique again: its clip plays on (FUN_1405b7600 finds the playing layer)
+
+        var reaction = techniques[pick];
+        int ticks = Ticks(reaction, PlayRate(world, i, cold, reaction, attack: false), dt, cold);
+        // The clip starts at once. With LateDefences (Meitou balance choice, docs/simulation.md "Combat") it is never too little along for the roll it passed to count: a late one
+        // joins its clip partway.
+        int start = now;
+        if (LateDefences)
+        {
+            float least = reaction.IsBlock ? HitOutcomes.BlockProgress : HitOutcomes.DodgeFrom;
+            start = Math.Min(start, swing.Lands - (int)MathF.Ceiling(least * ticks) - 1);
+        }
+        s.ReactTech = pick;
+        s.ReactStart = start;
+        s.ReactTicks = ticks;
+    }
+
+    /// <summary>The block or dodge roll against the swing's attacker, and the technique it picks for the blow's side (-1: none); each decision draws afresh (the tick salts the blow's counter).</summary>
+    int ChooseDefence(World world, int i, CharacterCold cold, ulong key, int now, in IncomingBlow swing, bool stumbling)
+    {
+        var table = world.Characters;
+        ref readonly var attack = ref read[swing.Attacker];
         var fighter = cold.Fighter!;
-        float meleeDefence = Eff(cold, StatsEnumerated.MeleeDefence);
-        ulong counter = CombatRolls.BlowCounter(attacker, attack.AttackSeq, blow, 0);
+        float meleeDefence = Trained(cold, StatsEnumerated.MeleeDefence);
+        ulong counter = CombatRolls.BlowCounter(swing.Attacker, attack.AttackSeq, swing.Blow, 0) ^ (ulong)(uint)now * 0x9E3779B97F4A7C15UL;
         float chanceRoll = CombatRolls.Float(world.Seed, key, CombatRoll.Block, counter);
         float pickRoll = CombatRolls.Float(world.Seed, key, CombatRoll.Reaction, counter);
         float block, dodge = 0;
@@ -746,6 +1059,7 @@ public sealed partial class CombatSystem
         {
             float d = DefenceFormulas.Defence(meleeDefence, fighter.Weapon!.Stats.DefenceMod, true, fighter.DefenceBonus + IndoorsMod(world, i, fighter), Guarding(cold));
             block = DefenceFormulas.BlockChance(d, attack.AttackSkill, combat);
+            if (table.Cold(swing.Attacker)?.Fighter is { Unarmed: true, IsAnimal: false }) block *= DefenceFormulas.FistBlockFactor(cold.Stats![StatsEnumerated.MartialArts]);
         }
         else
         {
@@ -753,29 +1067,7 @@ public sealed partial class CombatSystem
             float effective = DefenceFormulas.EffectiveDefence(Eff(cold, StatsEnumerated.MartialArts), fighter.EncumbranceFactor, Speed.LegFactor(cold.Medical!), fighter.DefenceBonus, Guarding(cold));
             dodge = DefenceFormulas.BlockChance(effective, attack.AttackSkill, combat, 0, 95);
         }
-        int pick = TechniqueChooser.ChooseReaction(techniques, fighter.TechniqueCategory, cold.Medical!.Prone, fighter.CanBlock, direction, block, dodge, chanceRoll, pickRoll, stumbling);
-        if (pick < 0)
-        {
-            // No defence (a failed dodge roll, or nothing fits): none is tried again for a while (the original's +0x14c).
-            s.DefendReadyTick = now + (int)MathF.Ceiling(CombatTuning.NoDefenceSeconds / dt);
-            if (reconsider) s.ReactTech = -1;   // the failed new start ends the defence (state 4, FUN_140609c70)
-            return;
-        }
-        var reaction = techniques[pick];
-        int ticks = Ticks(reaction, PlayRate(cold, reaction, attack: false), dt, cold);
-        // The reaction is timed so that it is at its "blocked frame" when the blow arrives; with less lead time it starts at once and is less far along,
-        // With LateDefences (Meitou balance choice, docs/simulation.md "Combat") never too little for the roll it passed to count: a late one joins its clip partway.
-        int strike = first;
-        int start = Math.Max(now, strike - (int)MathF.Round(reaction.StrikeProgress(1) * ticks));
-        if (LateDefences)
-        {
-            float least = reaction.IsBlock ? HitOutcomes.BlockProgress : HitOutcomes.DodgeFrom;
-            start = Math.Min(start, strike - (int)MathF.Ceiling(least * ticks) - 1);
-        }
-        s.ReactTech = pick;
-        s.ReactStart = start;
-        s.ReactTicks = ticks;
-        s.LastTech = -1;   // the original's current technique (+0x150) is now a defence, which the next attack choice does not count as its last
-
+        int direction = BlowSide(world, i, in swing);
+        return TechniqueChooser.ChooseReaction(techniques, fighter.TechniqueCategory, cold.Medical!.Prone, fighter.CanBlock, direction, block, dodge, chanceRoll, pickRoll, stumbling);
     }
 }

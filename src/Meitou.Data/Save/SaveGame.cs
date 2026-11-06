@@ -39,6 +39,12 @@ public sealed partial class SaveGame
     /// <summary>The bytes of <c>portraits_texture.png</c>, if the save has one.</summary>
     public byte[]? Portraits { get; set; }
 
+    /// <summary>
+    /// Meitou's own sidecar files of code mods (<c>meitou-mods/&lt;mod id&gt;.dat</c>, docs/formats/save.md "Mod data"), by mod id. Kept for mods not loaded now, so a save
+    /// made from this one carries them on.
+    /// </summary>
+    public SortedDictionary<string, byte[]> ModData { get; } = new(StringComparer.Ordinal);
+
     /// <summary>What does not fit the format's own rules (a platoon file that is missing, a zone file the CAMERA list does not name...); loading goes on.</summary>
     public List<string> Problems { get; } = [];
 
@@ -70,6 +76,7 @@ public sealed partial class SaveGame
         foreach (var zone in folder.ZoneFiles)
             game.Zones[zone] = new SaveZone(zone, folder.ReadFile(SaveFolder.ZoneName(zone)));
         if (folder.Exists(SaveFolder.PortraitName)) game.Portraits = folder.ReadAllBytes(SaveFolder.PortraitName);
+        foreach (var (id, name) in folder.ModDataFiles) game.ModData[id] = folder.ReadAllBytes(name);
         game.Reindex();
         game.CheckZoneFiles();
         return game;
@@ -142,7 +149,7 @@ public sealed partial class SaveGame
 
     /// <summary>The player's faction: the one with a <c>known</c> list, else the one whose id is <c>204-gamedata.base</c>.</summary>
     public SaveFaction? PlayerFaction =>
-        Factions.FirstOrDefault(f => f.Record.References.ContainsKey("known")) ?? Factions.FirstOrDefault(f => f.Id == "204-gamedata.base");
+        Factions.FirstOrDefault(f => f.Record.References.ContainsKey("known")) ?? Factions.FirstOrDefault(f => f.Id == Gameplay.FactionData.PlayerId);
 
     /// <summary>
     /// The zone-file check the game runs at load and at save (docs/formats/save.md, <c>FUN_140a0bef0</c>): the CAMERA <c>zones</c> list against the files.
@@ -167,6 +174,7 @@ public sealed partial class SaveGame
         }
         foreach (var z in Zones.Values) copy.Zones[z.Coordinate] = new SaveZone(z.Coordinate, z.File.Clone());
         copy.Portraits = Portraits?.ToArray();
+        foreach (var (id, bytes) in ModData) copy.ModData[id] = bytes.ToArray();
         copy.Reindex();
         copy.Problems.AddRange(Problems);
         return copy;
@@ -180,7 +188,7 @@ public sealed partial class SaveGame
     // ------------------------------------------------------------------ derived data
 
     /// <summary>
-    /// Brings the parts that follow from the rest up to date: the CAMERA <c>zones</c> list from the zone files, every platoon's character count and file name,
+    /// Brings the parts that follow from the rest up to date: the CAMERA <c>zones</c> list from the zone files, the character count of every platoon with a file and the file name,
     /// slot lists 0 (platoon containers) and 1 (town containers) of <c>quick.save</c> (lists 2 and 3 are kept, or start as 1..4096: their meaning is Unknown), a zone file's
     /// slot list when it has none, each file's <c>nextId</c> (raised to its highest record id, never lowered) and the <c>byteSize</c> of the records that carry a child count.
     /// </summary>
@@ -189,7 +197,8 @@ public sealed partial class SaveGame
         Camera.SetZones(Zones.Keys);
         foreach (var p in Platoons)
         {
-            p.CharCount = p.Characters.Count;
+            // A platoon with no file has no characters to count: its count is the save's (the town pool counts it while the platoon is not active).
+            if (p.File is not null) p.CharCount = p.Characters.Count;
             if (p.Collection is { } c) c.Ints["char count"] = p.Characters.Count;
             if (p.File is not null && p.FileName is null) p.ContentFile = SaveFolder.PlatoonName(p.Record.StringId);
         }
@@ -263,6 +272,14 @@ public sealed partial class SaveGame
     /// leaves either the old save or the new one, never half of one. The old folder's contents are replaced as a whole: files the new save no longer has are gone.
     /// <paramref name="beforeInstall"/> runs between the two renames (a test uses it to fail there); the old save is then moved back.
     /// </summary>
+    void WriteModData(string work)
+    {
+        if (ModData.Count == 0) return;
+        Directory.CreateDirectory(Path.Combine(work, SaveFolder.ModDataDirectory));
+        foreach (var (id, bytes) in ModData)
+            File.WriteAllBytes(Path.Combine(work, SaveFolder.ModDataName(id).Replace('/', Path.DirectorySeparatorChar)), bytes);
+    }
+
     public void Write(string folder, Action? beforeInstall = null)
     {
         folder = Path.GetFullPath(folder);
@@ -280,6 +297,7 @@ public sealed partial class SaveGame
             foreach (var (name, file) in AllFiles())
                 file.WriteFile(Path.Combine(work, name.Replace('/', Path.DirectorySeparatorChar)));
             if (Portraits is not null) File.WriteAllBytes(Path.Combine(work, SaveFolder.PortraitName), Portraits);
+            WriteModData(work);
 
             if (Directory.Exists(folder))
             {

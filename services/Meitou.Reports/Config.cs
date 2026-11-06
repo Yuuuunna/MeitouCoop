@@ -14,7 +14,12 @@ sealed record Config(
     string? DiscordPublicKey,
     string? DiscordAppId,
     string? DiscordBotToken,
-    string[] DiscordTrustedRoles)
+    string[] DiscordTrustedRoles,
+    string? GithubToken,
+    string? GithubAppId,
+    string? GithubAppKey,
+    string FeedbackDir,
+    Uri PublicUrl)
 {
     public static Config Load(IConfiguration c)
     {
@@ -35,7 +40,13 @@ sealed record Config(
             Get("DISCORD_PUBLIC_KEY"),
             Get("DISCORD_APP_ID"),
             Get("DISCORD_BOT_TOKEN"),
-            List("DISCORD_TRUSTED_ROLES"));
+            List("DISCORD_TRUSTED_ROLES"),
+            Get("GITHUB_TOKEN"),
+            Get("GITHUB_APP_ID"),
+            // The PEM may come on one line with its newlines written as \n, for hosts whose variables can't hold several lines.
+            Get("GITHUB_APP_PRIVATE_KEY")?.Replace("\\n", "\n", StringComparison.Ordinal),
+            Get("FEEDBACK_DIR") ?? "/data/feedback",
+            new Uri(Get("PUBLIC_URL") ?? "https://gear-pastry-chorus.cloudovna.app"));
     }
 
     /// <summary>A <c>postgresql://user:pass@host:port/db?sslmode=...</c> URL as an Npgsql connection string.</summary>

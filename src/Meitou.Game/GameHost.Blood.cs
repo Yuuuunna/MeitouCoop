@@ -156,7 +156,7 @@ sealed partial class GameHost
         if (saved is not null) { store.Load(SaveDecals.Read(saved)); gpu?.Decals?.LoadSurfaces(SaveSurfaceDecals.Read(saved)); }
     }
 
-    /// <summary>The store's decals into the save's TERRAIN_DECALS record (with <c>Blood</c> off the record keeps what the loaded save had).</summary>
+    /// <summary>The store's decals and the surfaces' into the save's TERRAIN_DECALS record (with <c>Blood</c> off the record keeps what the loaded save had).</summary>
     void WriteDecals(SaveGame game)
     {
         if (decalStore is { } store && game.Decals is { } record) { SaveDecals.Write(record, store.All); if (gpu?.Decals is { } decals) SaveSurfaceDecals.Write(record, decals.SavedSurfaces); }

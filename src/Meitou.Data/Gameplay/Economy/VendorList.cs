@@ -54,6 +54,10 @@ public sealed record VendorList
                 else if (IsItemType(target.Type)) entries.Add(new VendorEntry(target.StringId, target.Type, e.Values.Value0 == 0 ? 100 : e.Values.Value0));
                 else if (target.Type == FcsRecordType.WEAPON_MANUFACTURER) makers.Add(RecordLink.From(e));
             }
+        // A weapon is stocked only when it is a `weapon types` entry of one of the list's manufacturers (<b>Verified</b>, `FUN_140956ba0`: "No valid manufacturer found for weapon" otherwise); no manufacturer
+        // or manufacturers without weapon types skip the weapons altogether.
+        var makable = makers.Where(m => db.Find(m.Id) is { Type: FcsRecordType.WEAPON_MANUFACTURER }).SelectMany(m => db.Find(m.Id)!.GetReferences("weapon types")).Select(t => t.TargetStringId).ToHashSet();
+        entries.RemoveAll(e => e.Type == FcsRecordType.WEAPON && !makable.Contains(e.Id));
         int count = RecordReading.Int(r, "items count", 40);
         return new VendorList
         {

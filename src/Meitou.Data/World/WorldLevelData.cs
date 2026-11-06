@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Numerics;
 using Meitou.Content;
 using Meitou.Data.Fcs;
@@ -13,6 +14,13 @@ namespace Meitou.Data.World;
 /// </summary>
 public sealed class WorldLevelData
 {
+    FrozenSet<(int X, int Z)> foliageOwnership = Array.Empty<(int X, int Z)>().ToFrozenSet();
+    /// <summary>Player factions' town ownership published at the serialized world boundary; placement workers capture this immutable snapshot.</summary>
+    public FrozenSet<(int X, int Z)> FoliageOwnership => Volatile.Read(ref foliageOwnership);
+    public void SetFoliageOwnership(IEnumerable<(int X, int Z)> towns) => Volatile.Write(ref foliageOwnership, towns.ToFrozenSet());
+    internal Gameplay.BuildingSwaps? AppliedBuildingSwaps;
+    internal Dictionary<string, string>? BuildingSwapOwners;
+
     /// <summary>Folder of the world's level data, relative to the install's <c>data/</c> folder.</summary>
     public const string RelativeDirectory = "newland/leveldata";
 
@@ -24,6 +32,18 @@ public sealed class WorldLevelData
 
     /// <summary>Layers in the order they were applied.</summary>
     public List<WorldLevelLayer> Layers { get; } = [];
+
+    /// <summary>Whether <see cref="ResidentRuins.Apply"/> has set the ruins the residents make.</summary>
+    public bool ResidentRuinsApplied { get; internal set; }
+
+    /// <summary>The keys of the buildings <see cref="ResidentRuins.Apply"/> ruined (their level files have them standing).</summary>
+    public HashSet<string> ResidentRuined { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The interior and exterior layout names the level files give the buildings <see cref="ResidentRuins.Apply"/> named otherwise, by building key.</summary>
+    public Dictionary<string, (string Interior, string Exterior)> LevelLayoutNames { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The name and squad template the level files give the buildings <see cref="ResidentRuins.Apply"/> named otherwise, by building key.</summary>
+    public Dictionary<string, BuildingNaming> LevelNames { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Merged zone files by grid cell.</summary>
     public SortedDictionary<ZoneCoordinate, GameDatabase> Zones { get; } = new(Comparer<ZoneCoordinate>.Create((a, b) => a.Y != b.Y ? a.Y.CompareTo(b.Y) : a.X.CompareTo(b.X)));
@@ -252,7 +272,7 @@ public sealed record BuildingPlacement(ZoneCoordinate Zone, string InstanceId, s
     /// <summary>Its state's interior layout is not laid out: a town house the player bought, whose furniture the purchase destroyed (docs/simulation.md "Town house purchases").</summary>
     public bool WithoutInterior { get; init; }
     /// <summary>
-    /// Its interior and exterior layout names when not its state's: a town override's or a loaded save's residents named them (runtime layout overrides,
+    /// Its interior and exterior layout names when not its state's: a town override's or a loaded save's residents named them (<see cref="TownBuildings.Relay"/>,
     /// docs/game/factions-squads-towns.md "Town residents"); null leaves the state's.
     /// </summary>
     public string? InteriorLayout { get; init; }
@@ -260,7 +280,7 @@ public sealed record BuildingPlacement(ZoneCoordinate Zone, string InstanceId, s
 
     /// <summary>The name of its interior or exterior layout: its own (<see cref="InteriorLayout"/>), else its state's; "" for none.</summary>
     public string LayoutName(GameRecord? state, bool exterior) =>
-        (exterior ? ExteriorLayout : InteriorLayout) ?? state?.GetString(exterior ? "exterior layout name" : "interior layout name") ?? "";
+        (exterior ? ExteriorLayout : InteriorLayout) ?? state?.GetString(exterior ? ResidentRuins.ExteriorKey : ResidentRuins.InteriorKey) ?? "";
     /// <summary>A loose item's mesh and scale when not its record's own (a nest's numbered debris piece, docs/game/factions-squads-towns.md "Nest furniture").</summary>
     public string? ItemMesh { get; init; }
     public float ItemScale { get; init; } = 1;

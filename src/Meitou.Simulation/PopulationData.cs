@@ -53,10 +53,18 @@ public sealed class GeneratedAppearances(GameDatabase db, string installRoot) : 
         }
         catch (Exception e) when (e is IOException or FcsFormatException or KeyNotFoundException or InvalidDataException or UnauthorizedAccessException)
         {
+            Warn(recordId, e);
             return null;
         }
     }
 
+
+    // A record whose look fails is drawn as a marker; say so once per record, not per character.
+    readonly ConcurrentDictionary<string, byte> warned = new(StringComparer.Ordinal);
+    void Warn(string recordId, Exception e)
+    {
+        if (warned.TryAdd(recordId, 0)) Console.Error.WriteLine($"warning   no appearance for {recordId}: {e.Message}");
+    }
 
     public FcsRecord? Sanitize(FcsRecord proposed, GameRecord race) => CharacterDraft.Sanitize(db, installRoot, proposed, race);
     public FcsRecord? CreationAppearance(FcsRecord original, CreationAppearanceChoice choice, int seed)
@@ -74,6 +82,7 @@ public sealed class GeneratedAppearances(GameDatabase db, string installRoot) : 
         }
         catch (Exception e) when (e is IOException or FcsFormatException or KeyNotFoundException or InvalidDataException or UnauthorizedAccessException)
         {
+            Warn(recordId, e);
             return null;
         }
     }
@@ -99,8 +108,29 @@ public sealed record TownSite(int Index, TownData Record, Vector3 Position, Zone
 
     /// <summary>The placement's instance id in the level data (<c>9-rebirth-INGAME</c>), which the save's town state names.</summary>
     public string InstanceId { get; init; } = "";
-    /// <summary>The town's placed buildings with their beds and nodes (<see cref="TownBuildings"/>), the AI's homes; empty when the host gave none.</summary>
-    public IReadOnlyList<TownBuilding> Buildings { get; init; } = [];
+    /// <summary>
+    /// The town's placed buildings with their beds and nodes (<see cref="TownBuildings"/>), the AI's homes; empty when the host gave none. A building laid out
+    /// afresh (<see cref="PopulationData.Relay"/>) takes its old one's place.
+    /// </summary>
+    public IReadOnlyList<TownBuilding> Buildings { get => buildings; init => buildings = [.. value]; }
+    List<TownBuilding> buildings = [];
+    // The buildings as the boot laid them out, by position, of those laid out afresh since.
+    readonly Dictionary<int, TownBuilding> booted = [];
+
+    internal void Relay(TownBuilding old, TownBuilding relaid)
+    {
+        int index = buildings.FindIndex(x => ReferenceEquals(x, old));
+        if (index < 0) return;
+        booted.TryAdd(index, old);
+        buildings[index] = relaid;
+    }
+
+    /// <summary>The buildings laid out afresh go back to the boot's.</summary>
+    internal void ClearRelays()
+    {
+        foreach (var (i, b) in booted) buildings[i] = b;
+        booted.Clear();
+    }
     /// <summary>The zones the town's level state lists, as the original files them at load, which discovery counts as well as <see cref="Zone"/> (docs/game/ui-screens.md "Map"); empty for a Nest and when the host gave none.</summary>
     public IReadOnlyList<ZoneCoordinate> Coverage { get; init; } = [];
 }
@@ -133,7 +163,7 @@ public sealed class PopulationData
     /// <summary>Rolls the characters' looks; null leaves them without (headless tests, markers only).</summary>
     public IAppearanceSource? Appearances { get; init; }
     public IWorldStates States { get; init; } = IWorldStates.None;
-    /// <summary>The player's faction (the FACTION named Nameless, 204-gamedata.base), a position in <see cref="Factions"/>; -1 when there is none.</summary>
+    /// <summary>The player's faction (FACTION <see cref="FactionData.PlayerId"/>, Nameless), a position in <see cref="Factions"/>; -1 when there is none.</summary>
     public int PlayerFaction { get; init; } = -1;
     /// <summary>
     /// The live relation table of the game (who is hostile to whom: roaming squads avoid hostile towns, <see cref="AggroSystem"/> starts fights by it);
@@ -161,6 +191,33 @@ public sealed class PopulationData
     {
         foreach (var s in Sites)
             if (s.Replacement is not null) SetReplacement(s.Index, null);
+        ClearRelays();
+    }
+
+    /// <summary>The building layouts, for laying a town building out afresh (<see cref="Relay"/>); null: buildings keep the boot's layouts.</summary>
+    public BuildingLayouts? Layouts { get; set; }
+
+    /// <summary>
+    /// Lays building <paramref name="b"/> of town <paramref name="site"/> out with other layout names (a town override's or a loaded save's residents, docs/game/factions-squads-towns.md
+    /// "Town residents"), or only renamed (<paramref name="naming"/>): the new building takes its place in <see cref="TownSite.Buildings"/> and is returned; <paramref name="b"/> itself when the names are its own
+    /// already or there are no layouts.
+    /// </summary>
+    public TownBuilding Relay(int site, TownBuilding b, string interior, string exterior, BuildingNaming? naming = null)
+    {
+        bool sameLayouts = b.LayoutName(exterior: false) == interior && b.LayoutName(exterior: true) == exterior;
+        if (Layouts is null || sameLayouts && (naming is null || naming == b.Naming)) return b;
+        var relaid = TownBuildings.Relay(Db, Layouts, b, interior, exterior, naming);
+        if (ReferenceEquals(relaid, b)) return b;
+        Sites[site].Relay(b, relaid);
+        lock (turrets) turrets.Remove(site);
+        return relaid;
+    }
+
+    /// <summary>Every building back to the boot's layouts (with <see cref="ClearReplacements"/>, a new game or a save starting).</summary>
+    void ClearRelays()
+    {
+        foreach (var s in Sites) s.ClearRelays();
+        lock (turrets) turrets.Clear();
     }
 
     /// <summary>The nearest placed town whose radius holds a point (the game's position lookup, <c>FUN_140928890</c>), -1 when none.</summary>
@@ -199,6 +256,7 @@ public sealed class PopulationData
         return copy;
     }
     Dictionary<string, int>? factionIndex;
+    Dictionary<string, int>? templateFaction;
 
     readonly Dictionary<int, IReadOnlyList<TownBuilding>> turrets = [];
     /// <summary>
@@ -263,13 +321,51 @@ public sealed class PopulationData
     }
 
     /// <summary>FACTION <c>road preference</c> of a position in <see cref="Factions"/>; 0 (never the roads) for none.</summary>
+    /// <summary>The faction is "lawless": <c>not real</c> or of <c>fundamental type</c> BANDIT (<c>+0x1d0</c> / <c>+0x34</c> = 8); false for no valid faction.</summary>
+    public bool IsLawless(int faction) => faction >= 0 && faction < Factions.Count && (Factions[faction].NotReal || Factions[faction].FundamentalType == FundamentalType.Bandit);
+
     public float RoadPreferenceOf(int faction) => faction >= 0 && faction < Factions.Count ? Factions[faction].RoadPreference : 0;
+
+    /// <summary>
+    /// The faction owning a town building before any saved owner: the player's faction when the level data names it, else the town's faction whatever the level data says, since the town populate
+    /// gives the town faction every non-player building of the town (<c>FUN_1409370d0</c>:35-75, <c>FUN_14092e4b0</c>:35-37).
+    /// </summary>
+    public int LevelOwnerOf(Meitou.Data.World.TownBuilding b, int townFaction) =>
+        b.OwnerFactionId is { } id && FactionIndex(id) is >= 0 and var faction && faction == PlayerFaction ? faction : townFaction;
 
     /// <summary>The position of a faction id in <see cref="Factions"/> (the first when an id repeats), or -1. The index is built once.</summary>
     public int FactionIndex(string id)
     {
         var index = LazyInitializer.EnsureInitialized(ref factionIndex, () => BuildFactionIndex(Factions));
         return index.GetValueOrDefault(id, -1);
+    }
+
+    /// <summary>The faction <c>Wildlife</c> (<c>3943-gamedata.base</c>): a spawned squad's faction when nothing else gives one (<c>FUN_1408fe6b0</c>); -1 when absent.</summary>
+    public int WildlifeFaction => FactionIndex("3943-gamedata.base");
+
+    /// <summary>
+    /// The first faction, in load order, whose <c>squads</c> or <c>squad default</c> lists the squad template (<c>FUN_1402e7d10</c>), or -1. The map is built once.
+    /// </summary>
+    public int FactionOfTemplate(string templateId)
+    {
+        var map = LazyInitializer.EnsureInitialized(ref templateFaction, () =>
+        {
+            var m = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int f = 0; f < Factions.Count; f++)
+                foreach (var link in Factions[f].Squads.Concat(Factions[f].SquadDefault)) m.TryAdd(link.Id, f);
+            return m;
+        });
+        return map.GetValueOrDefault(templateId, -1);
+    }
+
+    /// <summary>
+    /// The spawn faction of a squad template (<c>FUN_1408fe6b0</c>): the template's own <c>faction</c> (Wildlife when it does not resolve); without one the owning town's
+    /// (<paramref name="town"/>, when there is a town), else the first faction listing the template; failing those Wildlife.
+    /// </summary>
+    public int SpawnFactionOf(SquadTemplate template, int? town = null)
+    {
+        int f = template.Faction is { } named ? FactionIndex(named) : town ?? FactionOfTemplate(template.Id);
+        return f >= 0 ? f : WildlifeFaction;
     }
 
     /// <summary>
@@ -333,7 +429,7 @@ public sealed class PopulationData
         }
         var factions = FactionData.LoadAll(db);
         var byId = BuildFactionIndex(factions);
-        int player = factions.FindIndex(f => f.BaseName == "Nameless");
+        int player = factions.FindIndex(f => f.Id == FactionData.PlayerId);
         var relations = FactionRelations.Build(factions);
         relations.PlayerFaction = player;
         return new PopulationData
@@ -366,12 +462,14 @@ public sealed class PopulationSettings
     /// <summary>The <c>Squad size multiplier</c> setting (factions-squads-towns.md section 9).</summary>
     public float SquadSizeMultiplier { get; set; } = 1;
     /// <summary>The <c>Fast zone hopping</c> setting: a ring of one more zone round each box the player's characters ask for (<c>FUN_140a0f640</c>'s flag, <b>Verified</b>; the camera's block is not ringed).</summary>
-    public bool FastZoneHopping { get; init; }
+    public bool FastZoneHopping { get; set; }
     /// <summary>
     /// Game seconds a zone stays loaded after nothing asks for it. The original has three real-time countdowns whose lengths are
     /// Unknown (game-loop.md); this is an engine choice, long enough that walking back and forth over a zone edge never reloads.
     /// </summary>
     public float UnloadGraceSeconds { get; init; } = 60;
+    /// <summary>Game seconds a town site stays loaded after its zones lapsed: 0, the original's rule (a town unloads with its zones, 4 to 6 s after the last request, docs/game/character-stats.md "Which zones are loaded"). Wild sites and roaming squads keep <see cref="UnloadGraceSeconds"/>.</summary>
+    public float TownUnloadGraceSeconds { get; init; }
     /// <summary>Ticks between looks at the zones (engine choice: twice a game second).</summary>
     public int CheckEveryTicks { get; init; } = 15;
     /// <summary>Build the towns' characters on a background thread (the game) or inside the tick (tests).</summary>

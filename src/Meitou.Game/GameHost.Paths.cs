@@ -26,7 +26,7 @@ sealed partial class GameHost
     {
         var viewProjection = camera.View * camera.Projection(width / (float)Math.Max(height, 1), camera.Near, camera.ViewDistance);
         foreach (var c in snapshot.Characters)
-            if (c.Path.Count > 0) DrawWalkPath(overlay, c, viewProjection, width, height);
+            if ((c.Selected || c.Inspected) && c.Path.Count > 0) DrawWalkPath(overlay, c, viewProjection, width, height);
         overlay.Flush(width, height);
     }
 
@@ -36,7 +36,7 @@ sealed partial class GameHost
         int shown = 0, points = 0;
         foreach (var c in snapshot.Characters)
         {
-            if (c.Path.Count == 0) continue;
+            if (!(c.Selected || c.Inspected) || c.Path.Count == 0) continue;
             shown++;
             points += c.Path.Count;
         }

@@ -48,6 +48,7 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     public RemoteGameSession Connection => connection;
     public object WorldIdentity { get; } = new();
     public bool HasWorldView => !disposed && view is not null && connection.State.View is not null;
+    public GameplayRules? AuthorityRules => HasWorldView ? view?.AuthorityRules : null;
     public PlayerMessageBatch Messages => view?.Messages ?? PlayerMessageBatch.Empty;
     public Meitou.Data.World.WeatherFrame? Weather => HasWorldView ? view?.Weather : null;
     public Meitou.Data.Particles.WeatherEffectFrame? WeatherEffects => HasWorldView ? view?.WeatherEffects ?? Meitou.Data.Particles.WeatherEffectFrame.Empty : Meitou.Data.Particles.WeatherEffectFrame.Empty;
@@ -79,6 +80,18 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     public bool HasPlayer => connection.State.Admission.State.Roles.Length != 0;
     public IReadOnlyList<string> CreationRaces => []; // remote creation uses the server catalogue; the legacy editor is not wired
     public int Formation => Faction?.Formation ?? (int)SquadFormation.Random;
+    public VerbFacts? VerbFactsOf(CharacterId lead, CharacterId target) => HasWorldView && view?.Snapshot.VerbLead == lead
+        ? view.Snapshot.Verbs.FirstOrDefault(v => v.Target == target)?.Facts : null;
+    public bool RegardsFriendly(CharacterId target, CharacterId lead) => VerbFactsOf(lead, target)?.RegardsLead == true;
+    public bool? ArrivalForget(int serial) => view?.Snapshot.ArrivalSerial == serial ? view.Snapshot.ArrivalForget : null;
+    CharacterId pointed = CharacterId.None;
+    public void SetPointed(CharacterId target)
+    {
+        if (!CanControl) { pointed = CharacterId.None; return; }
+        if (target == pointed) return;
+        pointed = target;
+        Submit(new PointedCommand(target) { Tick = CommandTick });
+    }
     public bool IsRemote => true;
     public bool CanSaveWorld => false;
     public bool CanChangeSpeed => false;
@@ -131,8 +144,19 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             pending.Add((request, reply));
             if (bound.Command is SelectCommand select)
             {
-                if (!select.Additive) selection.Clear();
-                foreach (var id in select.Characters) if (!selection.Contains(id)) selection.Add(id);
+                if (select.Characters.Count > 0)
+                {
+                    bool toggled = select.Toggle && select.Characters.Count == 1 && selection.Contains(select.Characters[0]);
+                    if (toggled)
+                    {
+                        if (selection.Count >= 2) selection.Remove(select.Characters[0]);
+                    }
+                    else
+                    {
+                        if (!select.Additive) selection.Clear();
+                        foreach (var id in select.Characters) if (!selection.Contains(id)) selection.Add(id);
+                    }
+                }
                 if (selection.Count > 0 && view!.Roles.FirstOrDefault(r => r.Character == selection[0]) is { } role)
                     chosenFaction = role.Faction;
                 RefreshPresentation();

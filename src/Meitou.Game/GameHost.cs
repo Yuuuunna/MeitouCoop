@@ -41,7 +41,6 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     WorldSession LocalSession => session as WorldSession ?? throw new InvalidOperationException("This operation requires a local simulation session.");
     Meitou.Simulation.PopulationSystem? population;
     /// <summary>The fights started by faction hostility (printed to the log); null in the sandbox and without the population.</summary>
-    Meitou.Simulation.AggroSystem? aggro;
     // The game data the world was built from, kept to build the next world of a quickload (GameHost.Saving.cs).
     Meitou.Simulation.PopulationData? popData;
     IReadOnlyList<Meitou.Data.World.TownPlacement> townPlacements = [];
@@ -53,6 +52,8 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     Meitou.Navigation.NavSystem? nav;
     /// <summary>Zones whose mesh went live since the last <see cref="Meitou.Simulation.RepathCommand"/> (filled on the nav thread, under its own lock).</summary>
     /// <summary>Seconds between <see cref="Meitou.Simulation.RepathCommand"/>s at least: zones go live in runs along a long walk, and are sent together (engine choice).</summary>
+    /// <summary>The far cadence (docs/simulation.md "Far cadence"): a character far from the camera and from every player character steps once in this many ticks.</summary>
+    const int FarTickPeriod = 4;
     PlayerInterface player = null!;
     Meitou.Simulation.Squad? playerSquad;
     WorldFrame.Gpu gpu = null!;
@@ -188,11 +189,16 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
             simulation: worldSettings = new Meitou.Simulation.WorldSettings
             {
                 Seed = g.Seed, MinPartitionSize = 32, Threads = Math.Max(1, config.SimThreads ?? Math.Clamp(Environment.ProcessorCount / 2, 1, 8)),
-                Sunrise = (float)clock.Sunrise, Sunset = (float)clock.Sunset,
+                Sunrise = (float)clock.Sunrise, Sunset = (float)clock.Sunset, FarTickPeriod = FarTickPeriod,
             },
             systems: systems, walkability: walkability);
+        LocalSession.World.BenchFacingFix = config.FixBenchFacing;
+        if (gpu.Characters is { } nearChars) LocalSession.World.NearRadius = nearChars.NearReach;   // every drawn character steps every tick (docs/simulation.md "Far cadence")
         BootPlayer(display, interactive);
     }
+
+    /// <summary>The level data read afresh (no scene objects to share), with the factions' building swaps applied as the scene's are.</summary>
+    Meitou.Data.World.WorldLevelData LoadedLevels(Meitou.Data.GameDatabase gameDb) { var levels = Meitou.Data.World.WorldLevelData.Load(install, includeInteriors: true); Meitou.Data.World.BuildingSwapPass.ApplyBuildingSwaps(levels, gameDb); return levels; }
 
     /// <summary>
     /// The simulation's side of <see cref="Boot"/>, on a worker (it reads the game data and the scene's level data and makes no GPU resource): the navmesh system, the
@@ -208,7 +214,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         var levels = IsSandbox || IsDuel || IsBattle ? null
             : scene.Objects?.Levels ?? Meitou.Data.World.WorldLevelData.Load(install, includeInteriors: true);
         simulationContent = WorldContent.Load(install, gameDb, assets, heights.HeightAt, levels,
-            Meitou.Simulation.Bodies.BodyOptions.Default with { Dismemberment = Gameplay.Dismemberment },
+            Meitou.Simulation.Bodies.BodyOptions.Default with { Dismemberment = Gameplay.Dismemberment, Decapitation = config.Decapitation, AdvancedRagdolls = config.AdvancedRagdolls },
             scene.Objects?.Layouts, Console.WriteLine);
         nav = simulationContent.Navigation;
         ragdollGeometry = simulationContent.RagdollGeometry;
@@ -220,9 +226,10 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         saveLevels = levels;
         simWalkability = simulationContent.Walkability;
         simulationWeather = levels is not null ? SimulationWeather.Load(install, gameDb, heights.HeightAt) : null;
+        StartMods(gameDb, popData);
+        StartDeferredWarmup();
         var built = BuildSystems(interactive);
         population = built.Population;
-        aggro = built.Aggro;
         if (nav is not null) population!.ZoneGate = nav.IsReady;
         return (simWalkability, built.Systems, popData.Bodies.Constants);
     }
@@ -233,6 +240,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     /// </summary>
     void ConfigurePlayerInterface(PlayerInterface ui)
     {
+        ConnectModUi(ui);
         ui.FixLoadButton = config.FixLoadButton;
         ui.SaveInUse = folder => session.CanSaveWorld && session.HasPlayer && saveInUse is { } used && string.Equals(Path.GetFullPath(used), Path.GetFullPath(folder), StringComparison.OrdinalIgnoreCase);
         ui.DeleteSave = folder =>
@@ -277,7 +285,10 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         };
         ui.ArtifactOf = id => popData?.Db.Find(id)?.GetBool("artifact") == true;
         ui.ItemRecordOf = id => popData?.Db.Find(id);
+        var specialFoodRaces = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+        ui.SpecialFoodRaces = id => popData is { } d ? specialFoodRaces.GetOrAdd(id, item => Meitou.Data.Gameplay.Bodies.SpecialFood.EatenBy(d.Db, item)) : "";
         ui.CombatOf = () => popData?.Combat;
+        ui.RangedDamageMultiplier = () => session.AuthorityRules?.GlobalDamageMultiplier ?? 1;
         ui.MapItemTowns = record =>
         {
             if (session.IsRemote) return null; // exact map discoveries require the server's hidden world seed
@@ -293,10 +304,11 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         var context = display.Context;
         var target = camera.Target;
         foreach (var problem in session.Bindings.Apply(config.Bindings)) Console.Error.WriteLine($"config    binding skipped: {problem}");
-        // Right is the command button now; older saved configs bound it to orbit.
-        session.Bindings.Set(InputAction.Orbit, [.. session.Bindings.Get(InputAction.Orbit).Where(b => !(b.IsMouse && b.Button == EngineButton.Right))]);
-        // Ctrl orbits as the middle button does; older saved configs had the middle button alone.
-        if (session.Bindings.Get(InputAction.Orbit).SequenceEqual([Binding.Of(EngineButton.Middle)])) session.Bindings.Set(InputAction.Orbit, EngineButton.Middle, EngineKey.LeftControl, EngineKey.RightControl);
+        // Right is the command button by default; older saved configs bound it to orbit (kept when Command has moved off it).
+        if (session.Bindings.Get(InputAction.Command).Contains(Binding.Of(EngineButton.Right)))
+            session.Bindings.Set(InputAction.Orbit, [.. session.Bindings.Get(InputAction.Orbit).Where(b => !(b.IsMouse && b.Button == EngineButton.Right))]);
+        // Left Control orbits as the middle button does (mouse_rotate, FUN_1403636c0: only code 0x1d); older saved configs had the middle button alone.
+        if (session.Bindings.Get(InputAction.Orbit).SequenceEqual([Binding.Of(EngineButton.Middle)])) session.Bindings.Set(InputAction.Orbit, EngineButton.Middle, EngineKey.LeftControl);
         // F12 is the profiler now (as in the viewer); older saved configs took it for the screenshot.
         if (session.Bindings.Get(InputAction.Screenshot).SequenceEqual([Binding.Of(EngineKey.F12)])) session.Bindings.Set(InputAction.Screenshot, EngineKey.F8, EngineKey.PrintScreen);
         // The profiler and debug menu were briefly on F10 and Insert; configs saved then go back to F12 and F10.
@@ -312,7 +324,9 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         player = new PlayerInterface(session, gpu.Terrain.HeightAt, DrawnPosition);
         player.LoadUi(g.UiMode ?? config.UiMode, assets.Find);
         player.SpeedUnit = config.SpeedUnit;
+        player.ShowNames = config.ShowNames;
         player.Floaters = config.Floaters;
+        player.FeedbackButtonInPlay = config.FeedbackButton;
         player.FixLoadButton = config.FixLoadButton;
         // The region (BIOME_GROUP) under a point, for the biome banner.
         player.RegionAt = (x, z) => gpu.Weather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
@@ -324,17 +338,26 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         player.MeshHit = (id, origin, direction) => gpu.Characters?.RayHit(DrawKey(id), origin, direction);
         player.Floor = (() => viewedFloor, StepFloor);
         player.HiddenInWorld = hiddenIndoors.Contains;
+        player.AboveViewedFloor = AboveViewedFloor;
+        player.GroundItemShape = GroundShape;
         player.GroundItemHidden = hiddenGround.Contains;
         player.BuildingMoveHit = (origin, direction, distance) => gpu.Objects?.MoveHit(origin, direction, viewedFloor, distance);
         player.SurfaceMoveHit = SurfaceMoveHit;
         player.ClosedBuildingHit = (origin, direction, distance) => gpu.Objects?.ClosedBuildingHit(origin, direction, distance);
         player.ShownInteriorHit = (origin, direction, distance) => gpu.Objects?.ShownInteriorHit(origin, direction, distance);
+        player.DoorShape = (record, door) => nav?.Walkability.DoorGeometry?.Shape(record, door) ?? [];
         ConfigurePlayerInterface(player);
         if (IsSandbox) player.ReservedKeys.UnionWith([Meitou.Engine.Input.Key.Z, Meitou.Engine.Input.Key.X, Meitou.Engine.Input.Key.C, Meitou.Engine.Input.Key.Y, Meitou.Engine.Input.Key.P, Meitou.Engine.Input.Key.G]);
         player.ConfigureFrontend(scene.Database,
             () => Meitou.Data.Save.SaveCatalog.Scan(Meitou.Simulation.Saving.QuickSave.DefaultRoot, install.SaveDirectory,
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "kenshi", "save")),
             assets.Find("credits.txt") is { } creditsFile ? File.ReadAllText(creditsFile) : "");
+        player.DataProblems = (scene.Database?.Issues.Count ?? 0) + (scene.Objects?.Levels.Problems().Count ?? 0);
+        if (scene.Database is { } db)
+        {
+            player.Mods = ModReport.Build(install, db, mods?.Refused);
+            LogMods(player.Mods);
+        }
         if (OpensOnTitle(interactive)) player.ShowTitle();
         if (nav is not null && (start is not null || !interactive))
         {
@@ -392,6 +415,14 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         }
     }
 
+    /// <summary>Logs the mod list the game data was loaded from: enabled (the names the list file gives), loaded (those whose .mod file was found), problems.</summary>
+    void LogMods(ModReport report)
+    {
+        string file = Meitou.Content.ModList.ModsCfgOverride ?? "data/mods.cfg";
+        string problems = report.Problems == 1 ? "problem" : "problems";
+        Console.WriteLine($"mods      {report.Enabled} enabled, {report.Loaded} loaded, {report.Problems} {problems}, from {file}");
+    }
+
     /// <summary>The game clock with sunrise, sunset and days per year from the CONSTANTS record (defaults without data).</summary>
     static GameClock GameClockFor(Meitou.Data.Gameplay.GameConstants? c, double startHour, long startDay)
     {
@@ -410,6 +441,17 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
     /// <summary>
     /// Waits for requested startup geometry when asked. Runtime owns navigation publication and gate labels.
     /// </summary>
+    Task navUnload = Task.CompletedTask;
+    HashSet<Meitou.Data.World.ZoneCoordinate> navUnloading = [];
+
+    /// <summary>Waits for the zones being dropped (a load right after must not be undone by it).</summary>
+    void FinishNavUnload()
+    {
+        if (navUnloading.Count == 0) return;
+        navUnload.Wait();
+        navUnloading = [];
+    }
+
     void UpdateNav(bool wait = false)
     {
         if (nav is null || population is null || !wait || session is not WorldSession local) return;
@@ -443,8 +485,9 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
             player.PortraitSize = Meitou.Rendering.Characters.CharacterRenderer.PortraitSizeFor(previews.Look);
             SyncIconLook();
         }
+        if (!player.EditorOpen) ClearEditorBar();
         if (TitleVisible) { DrawTitleWorld(width, height); return; }
-        if (player.EditorOpen) { DrawEditorStage(width, height); return; }
+        if (player.EditorOpen) { DrawEditorScene(width, height); return; }
         if (gpu.Characters is { StageRequest: not null } staged) staged.StageRequest = null;
         ClearEditorStage();
         double seconds = animClock ? animSeconds : realTime.Elapsed.TotalSeconds;
@@ -453,6 +496,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         gpu.GameHours = session.Clock.HoursSinceStart;
         // The sim's sight counts the interior lamps the renderer shows (the interiorlamps switch).
         if (session is WorldSession sightOwner) sightOwner.World.Sight.InteriorLampsAllDay = gpu.Lamps?.InteriorAllDay ?? o.InteriorLamps;
+        else if (session.AuthorityRules is { } rules && gpu.Lamps is { } remoteLamps) remoteLamps.InteriorAllDay = rules.InteriorLampsAllDay;
         // The weather's three time bases: the game day and time of day (the hour below), the game speed (the last non-zero one while paused) and the paused flag.
         if (gpu.Weather is { } weather)
         {
@@ -462,8 +506,10 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         }
         Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Host);   // the profiler: the host's frame so far, then the blood marks apart from the terrain's update
         UpdateBlood();
+        UpdateModHits();
         Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Blood, "blood marks");
         birdAspect = width / (float)Math.Max(height, 1);
+        UpdateFoliageOwnership();
         UpdateBirds();
         Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Birds, "birds");
         UpdateWeatherSource();
@@ -479,6 +525,7 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
                 weatherHour: (float)session.Clock.HourOfDay);
         }
         finally { if (session is WorldSession completedLocal) completedLocal.EndTickAhead(); }
+        if (tickAhead && session is WorldSession) NoteAheadTick();
     }
 
     /// <summary>This frame's world draw overlaps the next world tick (set by the interactive loop; never in stills, the duel, recorded flights or the play benchmark).</summary>

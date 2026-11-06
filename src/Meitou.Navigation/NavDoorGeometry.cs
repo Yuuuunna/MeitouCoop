@@ -20,6 +20,26 @@ public sealed class NavDoorGeometry(GameInstall install, GameDatabase db)
     /// <summary>The leaf's centre, the normal of its thinner horizontal side and half its width along the other (null: no collision found).</summary>
     public DoorSpot? Spot(string buildingRecordId, int doorIndex) => spots.GetOrAdd((buildingRecordId, doorIndex), Find);
 
+    readonly ConcurrentDictionary<(string Building, int Door), IReadOnlyList<(Vector3[] Vertices, int[] Indices)>> shapes = new();
+
+    /// <summary>
+    /// Door i's collision triangles in the same frame as <see cref="Spot"/> (the leaf closed), for the pointer's ray (docs/game/ui-input.md "Building picking and selection"); empty
+    /// when it has none.
+    /// </summary>
+    public IReadOnlyList<(Vector3[] Vertices, int[] Indices)> Shape(string buildingRecordId, int doorIndex) => shapes.GetOrAdd((buildingRecordId, doorIndex), FindShape);
+
+    IReadOnlyList<(Vector3[] Vertices, int[] Indices)> FindShape((string Building, int Door) key)
+    {
+        if (db.Find(key.Building) is not { Type: FcsRecordType.BUILDING } building) return [];
+        float scale = building.GetFloat("scale", 1);
+        if (scale <= 0) scale = 1;
+        var result = new List<(Vector3[] Vertices, int[] Indices)>();
+        foreach (var mesh in WorldObjectLayout.Building(db, building, "", Vector3.Zero, Quaternion.Identity))
+            if (mesh.DoorIndex == key.Door && collision.Get(mesh.Source.GetPath("xml collision")) is { } prepared)
+                foreach (var shape in prepared.Shapes) result.Add(([.. shape.Vertices.Select(v => v * scale)], shape.Indices));
+        return result;
+    }
+
     DoorSpot? Find((string Building, int Door) key)
     {
         if (db.Find(key.Building) is not { Type: FcsRecordType.BUILDING } building) return null;

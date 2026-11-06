@@ -25,7 +25,7 @@ public sealed class SavedMember
     public EntityId Entity { get; set; }
     /// <summary>Its body left the world (removed after death): the next save leaves it out.</summary>
     public bool Gone { get; set; }
-    /// <summary>Dead (in the save, or when its platoon left the world): never made again; a save keeps its records (with the medical state it died with).</summary>
+    /// <summary>Dead when its platoon left the world: kept in the record and made again as a corpse (<c>FUN_1404ff410</c> writes the whole list); not counted as living.</summary>
     public bool Dead { get; set; }
 
     /// <summary>Where it stood and which way it faced when its platoon left the world (null: the save's place).</summary>
@@ -45,6 +45,10 @@ public sealed class SavedMember
 /// </summary>
 public sealed class SavedPlatoon
 {
+    /// <summary>Set on platoons Meitou writes with the town they belong to now as <c>basetown</c> (replacement-aware, as the original's).</summary>
+    public const string BaseTownKey = "meitou basetown";
+    /// <summary>A platoon of an older Meitou save: its <c>basetown</c> is the placement's own id even in a replaced town, so it is taken to fit (the original's test is not applied).</summary>
+    public bool LegacyBaseTown { get; init; }
     public required SavePlatoon Source { get; init; }
     public string Name => Source.Name;
     public required bool Pinned { get; init; }
@@ -85,6 +89,8 @@ public sealed record SavedNest(string Instance, string TownId, Vector3 Position,
 /// <summary>What a world loaded from a save needs to make the save's NPC platoons later (<see cref="World.Saved"/>), and the platoons themselves.</summary>
 public sealed class SavedPopulation
 {
+    /// <summary>The save was written by Meitou (its CAMERA holds the seed key): its platoons without <see cref="SavedPlatoon.BaseTownKey"/> predate the replacement-aware <c>basetown</c>.</summary>
+    public bool MeitouWritten { get; init; }
     public required SaveHandles Handles { get; init; }
     public required IReadOnlyDictionary<FcsRecord, string> InstanceOf { get; init; }
     /// <summary>The instance ids of <see cref="InstanceOf"/>, as a set (made on first use).</summary>
@@ -110,10 +116,44 @@ public sealed class SavedPopulation
     public Dictionary<string, SavedPlatoon> ByName { get; } = new(StringComparer.Ordinal);
     /// <summary>The save's WAR_SAVESTATEs by FACTION id: the war managers read them at the first look (<see cref="WarSave"/>).</summary>
     public Dictionary<string, FcsRecord> Wars { get; } = new(StringComparer.Ordinal);
+    /// <summary>The save's <c>prosperity</c> of each faction by FACTION id: the population starts the faction's there (<see cref="PopulationSystem"/>), else at its cap.</summary>
+    public Dictionary<string, float> Prosperity { get; } = new(StringComparer.Ordinal);
     /// <summary>Town handles (container and serial) to the placed town they name, for the war states' targets and homes.</summary>
     public Dictionary<(int C, int CS), int> TownSites { get; } = [];
     /// <summary>Platoon handles (container and serial) to the world's platoon made for them, for the war states' <c>p&lt;i&gt;</c> and <c>leader c&lt;i&gt;</c>.</summary>
     public Dictionary<(int C, int CS), int> PlatoonIds { get; } = [];
+    /// <summary>
+    /// Items made from the save whose <c>ownedby</c> names a character of another faction than their holder's (docs/game/economy.md "Fencing, stealing and smuggling"): stolen from that
+    /// faction at once, and from the character itself once it is in the world (<see cref="ResolveOwners"/>).
+    /// </summary>
+    readonly List<(ItemInstance Item, Hand Owner, StolenMark Interim)> owners = [];
+
+    /// <summary>Marks the items of a character just made whose saved <c>ownedby</c> names a character of the save of another faction than <paramref name="holderFaction"/>.</summary>
+    internal void NoteOwners(Inventory inventory, int holderFaction, PopulationData data)
+    {
+        foreach (var item in inventory.All())
+        {
+            if (item.Saved is not { } r || Hand.Read(r, "ownedby") is not { Type: (int)FcsRecordType.CHARACTER } h || Handles.Character(h) is not { } owner) continue;
+            int faction = data.FactionIndex(owner.Platoon.FactionId);
+            if (faction < 0 || faction == holderFaction) continue;
+            item.Mark = StolenMark.OfFaction(faction);
+            lock (owners) owners.Add((item, h, item.Mark));
+        }
+    }
+
+    /// <summary>Gives each noted item whose owner is now in the world the whole mark (the owner and its squad); one whose mark changed since is dropped from the list.</summary>
+    internal void ResolveOwners(World world)
+    {
+        lock (owners)
+            owners.RemoveAll(o =>
+            {
+                if (o.Item.Mark != o.Interim) return true;
+                if (CharacterOf(o.Owner) is not { } id || !world.Characters.TryResolveNext(id, out int slot) || world.Characters.Cold(slot) is not { } cold) return false;
+                (o.Item.Mark, o.Item.OwnerFromSave) = (StolenMark.Of(cold, id), true);
+                return true;
+            });
+    }
+
     /// <summary>Lines for the host's log (each platoon made, characters left out); taken by <see cref="TakeLog"/>.</summary>
     readonly List<string> log = [];
     internal void Log(string line) { lock (log) log.Add(line); }
@@ -170,7 +210,7 @@ internal static class SavedCharacters
         if (savedItems.Count == 0 && appearances is { } again && look?.Loadout is { } rolled)
         {
             var worn = SavedKit.Wear(rolled, sc.Appearance, data.Db);
-            if (worn is null && medical is { LimbBits: not 0 }) worn = SavedKit.Copy(rolled);
+            if (worn is null && medical is { LimbBits: not 0 } or { Decapitated: true }) worn = SavedKit.Copy(rolled);
             if (worn is not null)
             {
                 SavedKit.SetLimbs(worn, medical, data.Db);
@@ -229,6 +269,7 @@ internal static class SavedCharacters
             Role = sc.SquadMemberType,
             IsPlayer = player,
             Orders = player ? Orders.PlayerDefaults : CharacterOrders.None,
+            Replan = player,   // a load: every player character is decided again
             FootprintRadius = race?.PathfindFootprintRadius ?? 0,
             Save = new SavedCharacterLink
             {
@@ -249,11 +290,12 @@ internal static class SavedCharacters
         DialogueSave.Read(sc.GameState, cold);
         if (cold.IsPlayer && sc.GameState is { } orders) Orders.Read(orders, cold);
         // The loader turns the saved toggles back on through setStandingOrder, and Hold's sets the hold point to where the character stands.
-        if ((cold.Orders & CharacterOrders.Hold) != 0) cold.HoldPoint = new System.Numerics.Vector2(hot.Position.X, hot.Position.Z);
+        if ((cold.Orders & CharacterOrders.Hold) != 0) cold.HoldPoint = hot.Position;
         // In a bed or a cage, and the sentence (docs/simulation.md "Cages, beds and locks"); the fixture binds when its town registers.
         HeldSave.Read(sc.GameState, cold, context.Handles, context.InstanceOf);
         if (cold.InSomething == Locks.HeldState.Bed) hot.Task = (byte)CharacterTask.Sleep;   // it lies there until an order (Locks.BedSystem)
         if (cold.IsPlayer && sc.Ai is { } ai) PermaJobSave.Read(ai, sc.GameState, cold, world.Buildings, context.Handles, context.InstanceOf, context.InstanceIds);
+        if (cold.IsPlayer && sc.Ai is { } queueAi) OrderSave.Read(queueAi, cold, context.Handles, context.InstanceOf);
         // The portrait camera's number: the saved one, else the handle's serial (CharacterAnimal::vfunc_18).
         cold.PortraitSerial = sc.GameState is { } portrait && portrait.Ints.TryGetValue("portrait_serial", out int serial) ? (uint)serial : (uint)sc.Handle.S;
         cold.Save.InSomething = cold.InSomething;
@@ -270,6 +312,8 @@ internal static class SavedCharacters
                 sc.GameState is { } aged && aged.Floats.TryGetValue("age", out float age) ? age : 1);
         else if (race is not null)
             notes?.Add($"{platoonName}: {cold.Name} has no stats or medical state that could be read; it has no body in the world.");
+        // What it holds that was stolen (the save's `ownedby`).
+        if (cold.Inventory is { } carried) context.NoteOwners(carried, faction, data);
         return world.Characters.Spawn(hot, cold, world.Tick);
     }
 
@@ -323,7 +367,7 @@ internal static class SavedCharacters
         var list = new List<(SavedMember, SavedParts)>();
         foreach (var m in sp.Members)
         {
-            if (m.Gone || m.Dead) continue;   // a corpse made once is not made again (it lies in the world, or went with its zone)
+            if (m.Gone) continue;   // a body that left the world after its platoon came back is not in the record any more; a dead one kept at the unload is made again as a corpse
             var p = m.Position is null ? Read(m.Source, sp.Name, data, appearances, races, parts, context.Log) : Again(m, data, races);
             if (p is null) continue;
             list.Add((m, p));
@@ -354,6 +398,7 @@ internal static class SavedCharacters
             PlatoonId = platoon.Id,
             Pinned = sp.Pinned,
             Wild = sp.Wild is not null,
+            Restored = true,
             LeftPackage = platoon.Package,
             Position = new Vector3(platoon.Position.X, walk.GroundHeight(platoon.Position.X, platoon.Position.Y), platoon.Position.Y),
             HomeCentre = homeCentre,
@@ -413,6 +458,9 @@ internal static class SavedCharacters
             (sp.Memory, sp.MemorySet) = (null, false);
         }
         sp.Touched = true;
+        context.ResolveOwners(world);
+        // A caged or sleeping member takes its fixture again: its town registered (and bound) before the platoon came in.
+        world.Fixtures.Bind(world);
         context.Log($"{sp.Name} ({name}, {(sp.Pinned ? "town" : sp.Wild is { } wild ? (wild == WildKind.Nest ? "nest" : "homeless") : "roaming")}): {squad.Members.Count} saved character(s) at {world.Characters.Next[squad.Leader.Slot].Position.X:0}, {world.Characters.Next[squad.Leader.Slot].Position.Z:0}");
         return squad;
     }
@@ -440,7 +488,7 @@ internal static class SavedCharacters
             m.Look = cold.Appearance;
             m.Bounties = cold.Bounties;
             m.Entity = cold.Entity;
-            if (cold.DiedTick >= 0) m.Dead = true;
+            if (cold.DiedTick >= 0 || cold.Medical is { Dead: true }) m.Dead = true;
             m.Live = CharacterId.None;
         }
         sp.Anchor = anchor;

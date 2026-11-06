@@ -92,7 +92,7 @@ public class NavigationTests
         var b = new Vector3(cx + 400, 10, cz);
         var path = Route(world, a, b);
         Assert.True(path.Found);
-        Assert.True(Length(path.Points) > 800 + 40, $"length {Length(path.Points)}");
+        Assert.True(Length(path.Points) > 800 + 30, $"length {Length(path.Points)}");   // round a corner: at least 832
         // No leg of the path passes through the box.
         for (int i = 1; i < path.Points.Count; i++)
             for (int k = 0; k <= 20; k++)
@@ -195,10 +195,10 @@ public class NavigationTests
         ZoneGeometryGatherer.AddOutsideCarvers(interior, hull);
         interior.Painters.Add(new NavVolume([new(cx - 72, cz - 8), new(cx - 54, cz - 8), new(cx - 54, cz + 8), new(cx - 72, cz + 8)], 0, 40) { Owner = "house" });
         interior.Seeds.Add(new(cx, 10, cz));
-        var inside = ZoneNavMeshBuilder.Build(interior, Settings, out _);
+        var inside = ZoneNavMeshBuilder.Build(interior, Settings with { TileCells = 96 }, out _);   // one tile: the box is 192 units
         Assert.Contains(NavArea.Door, inside.Areas);
 
-        var combined = NavInteriors.Combine(exterior, [inside]);
+        var combined = NavInteriors.Combine(exterior, [new(inside)]);
         Assert.True(combined.PolygonCount > exterior.PolygonCount);
         var world = NavWorld.Empty.With(combined.WithoutPruned());
         var street = new Vector3(cx - 200, 10, cz);
@@ -262,12 +262,12 @@ public class NavigationTests
         interior.AddTriangle(a, c, b, NavArea.Ground);
         ZoneGeometryGatherer.AddOutsideCarvers(interior, hull);
         interior.Seeds.Add(new(cx, 10, cz));
-        var inside = ZoneNavMeshBuilder.Build(interior, Settings, out _);
+        var inside = ZoneNavMeshBuilder.Build(interior, Settings with { TileCells = 96 }, out _);   // one tile: the box is 192 units
         Assert.DoesNotContain(NavArea.Door, inside.Areas);
 
         var street = new Vector3(cx - 200, 10, cz);
         var room = new Vector3(cx + 30, 10, cz + 10);
-        var open = new NavQuery(NavWorld.Empty.With(NavInteriors.Combine(exterior, [inside], doorless: [true]).WithoutPruned()));
+        var open = new NavQuery(NavWorld.Empty.With(NavInteriors.Combine(exterior, [new(inside, Doorless: true)]).WithoutPruned()));
         var inward = open.FindPath(street, room);
         Assert.True(inward.Found, "no way in");
         // Through the doorway, not over the walls, and back out.
@@ -276,7 +276,7 @@ public class NavigationTests
         Assert.True(open.FindPath(room, street).Found, "no way out");
 
         // A destroyed building's interior (not doorless) is not joined.
-        var island = new NavQuery(NavWorld.Empty.With(NavInteriors.Combine(exterior, [inside], doorless: [false]).WithoutPruned()));
+        var island = new NavQuery(NavWorld.Empty.With(NavInteriors.Combine(exterior, [new(inside)]).WithoutPruned()));
         Assert.False(island.FindPath(street, room).Found);
     }
 }

@@ -1,6 +1,7 @@
 using System.Numerics;
 using Meitou.Data.Gameplay;
 using Meitou.Simulation;
+using Meitou.Tests.Bodies;
 using SimWorld = Meitou.Simulation.World;
 
 namespace Meitou.Tests.Simulation;
@@ -101,7 +102,7 @@ public class AnimationTests
         int cut = lib.IndexOfAny("Cut left");
         var forward = Vector2.Zero;
         for (int i = 0; i < 12; i++) forward += system.Update(a, cold, 0, dt, 1, 1, 10 + i, combatView: CombatView.None with { Technique = cut, Progress = (i + 1) / 30f });
-        var layers = system.Publish(a);
+        var layers = system.Publish(a, []);
         Assert.Equal(0.4f, layers.Single(l => l.Name == "Cut left").Time, 3);
         Assert.DoesNotContain(layers, l => l.Name == "stand 1" && l.Weight > 0.01f);
         Assert.True(forward.Y > 0, $"the cut moved the character {forward}");
@@ -139,5 +140,31 @@ public class AnimationTests
         // Away from it, nothing is held back.
         AnimationSystem.Relocate(world, a.Slot, ref hot, new Vector2(0, -5));
         Assert.Equal(997, hot.Position.X, 3);
+    }
+    [Fact]
+    public void A_leg_down_crawls_at_once_and_its_recovery_plays_the_get_up_clip()
+    {
+        // docs/game/ragdolls.md "Forced crawl": a leg below the KO point is no knockout and no fall clip, the character is a crawler (posture 2) from that tick; posture 2
+        // ending in 0 queues the get-up task 65 (FUN_1405c7e20), `standing up 3`, which holds the character still.
+        var lib = new AnimationLibrary([Def("stand 1", AnimationArea.All, idle: true, right: 0), Def("standing up 3", AnimationArea.All) with { DisablesMovement = true }]);
+        var system = new AnimationSystem(lib, new AnimationLengths().Add("standing up 3", 2f));
+        var body = BodyFixtures.Healthy();
+        var ctx = BodyFixtures.Context(toughness: 50);
+        var cold = new CharacterCold { Medical = body };
+        var a = new CharacterAnimation();
+        const float dt = 1 / 30f;
+        for (int i = 0; i < 5; i++) system.Update(a, cold, 0, dt, 1, 1, i);
+        body.Parts[BodyFixtures.RLeg].Flesh = -80;
+        body.Tick(1e-4f, ctx);
+        Assert.True(body.Crawling);
+        Assert.False(body.Unconscious);
+        system.Update(a, cold, 0, dt, 1, 1, 5);
+        Assert.Equal(-1, a.Action);   // no fall and no get-up clip: it goes straight to the crawl
+        body.Parts[BodyFixtures.RLeg].Flesh = 100;
+        body.Tick(1e-4f, ctx);
+        Assert.False(body.Crawling);
+        system.Update(a, cold, 0, dt, 1, 1, 6);
+        Assert.Equal(lib.IndexOf("standing up 3"), a.Action);
+        Assert.True(a.HoldsStill);
     }
 }

@@ -81,11 +81,13 @@ sealed partial class GameHost
     {
         if (session.IsRemote) return;
         var gameplay = Gameplay;
-        if (popData is { } data) data.BodyOptions.Dismemberment = gameplay.Dismemberment;
+        if (popData is { } data) (data.BodyOptions.Dismemberment, data.BodyOptions.Decapitation, data.BodyOptions.AdvancedRagdolls) = (gameplay.Dismemberment, config.Decapitation, config.AdvancedRagdolls);
         foreach (var population in LocalSession.World.Systems.OfType<Meitou.Simulation.PopulationSystem>())
             (population.Settings.SquadSizeMultiplier, population.Settings.PopulationMultiplier, population.Settings.RaidSizeMult, population.Settings.RaidFrequencyMult) =
                 (gameplay.SquadSize, gameplay.Population, gameplay.RaidSize, gameplay.RaidFrequency);
+        foreach (var population in LocalSession.World.Systems.OfType<Meitou.Simulation.PopulationSystem>()) population.Settings.FastZoneHopping = gameplay.FastZoneHopping;
         foreach (var ai in LocalSession.World.Systems.OfType<Meitou.Simulation.Ai.AiSystem>()) ai.Settings.TownAttacks = gameplay.TownAttacks;
+        foreach (var combat in LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.StuckLimit = gameplay.HarpoonLimit;
     }
 
     /// <summary>The system list and its order are <see cref="StandardSystems"/>'(docs/simulation.md "Threading"); built again for each world.</summary>
@@ -97,15 +99,14 @@ sealed partial class GameHost
             // --battle-no-fear: no flee system, so nobody runs away.
             Parts = (IsSandbox || IsDuel || IsBattle ? Meitou.Simulation.StandardParts.All & ~Meitou.Simulation.StandardParts.Aggro : Meitou.Simulation.StandardParts.All)
                 & ~(IsBattle && g.BattleNoFear ? Meitou.Simulation.StandardParts.Flee : Meitou.Simulation.StandardParts.None),
-            Aggro = new Meitou.Simulation.AggroSettings { RecordLog = true },
             // NPCs that see a player character say a line as a speech bubble (docs/game/dialogue.md "Ambient conversations"); the sandbox, the duel and the battle stay silent.
-            Dialogue = new Meitou.Simulation.Dialogue.DialogueSettings { AmbientEvents = !IsSandbox && !IsDuel && !IsBattle },
+            Dialogue = new Meitou.Simulation.Dialogue.DialogueSettings { AmbientEvents = !IsSandbox && !IsDuel && !IsBattle, Censored = () => config.Censorship },
             Population = new Meitou.Simulation.PopulationSettings
             {
                 Background = interactive && !IsDuel && !IsBattle, KeepRoamers = config.KeepRoamers, OffscreenFights = config.OffscreenFights, OffscreenHealing = config.OffscreenHealing,
                 CampaignAncestorsOnce = config.CampaignAncestorsOnce, KeepWild = config.KeepWild, ResidentSchedule = config.ResidentSchedule,
                 NestsMultiplier = (settings ?? difficulty)[6],
-                SquadSizeMultiplier = Gameplay.SquadSize, PopulationMultiplier = Gameplay.Population, RaidSizeMult = Gameplay.RaidSize, RaidFrequencyMult = Gameplay.RaidFrequency,
+                SquadSizeMultiplier = Gameplay.SquadSize, PopulationMultiplier = Gameplay.Population, RaidSizeMult = Gameplay.RaidSize, RaidFrequencyMult = Gameplay.RaidFrequency, FastZoneHopping = Gameplay.FastZoneHopping,
             },
             Ai = new Meitou.Simulation.Ai.AiSettings { TownAttacks = Gameplay.TownAttacks },
             Construction = new Meitou.Simulation.Construction.ConstructionSettings { BuildingSpeed = (settings ?? difficulty)[5], EdgeGap = SiteEdgeGap },
@@ -113,14 +114,16 @@ sealed partial class GameHost
             // The duel replays exactly: its paths are answered inside the tick, never on a thread whose timing differs from lap to lap.
             SynchronousPaths = !interactive || IsDuel,
             // The duel prints what its measured lap holds (MeasureLap).
-            Combat = new Meitou.Simulation.Combat.CombatOptions { SelfApproach = false, TickMedical = false, RecordLog = IsDuel, AttackSlots = Math.Clamp(config.AttackSlots, 1, 5), LateDefences = config.LateDefences, GunnerFacesBarrel = config.FixGunnerFacing, PunchReachFix = config.FixPunchReach },
+            Combat = new Meitou.Simulation.Combat.CombatOptions { SelfApproach = false, TickMedical = false, RecordLog = IsDuel, AttackSlots = config.AttackSlotsOption, StuckLimit = Gameplay.HarpoonLimit, LateDefences = config.LateDefences, GunnerFacesBarrel = config.FixGunnerFacing, PunchReachFix = config.FixPunchReach },
             DoorsCloseBehind = config.DoorsCloseBehind,
+            Extensions = mods?.Simulation,
         }, data ?? popData);
 
     /// <summary>Once per frame, between ticks: the notices of the write worker, the requests of the keys, the autosave, a finished read. <paramref name="realDt"/>: the frame's real seconds.</summary>
     void HandleSaves(double realDt)
     {
         while (saveNotices.TryDequeue(out var notice)) player.Notice(notice.Text, notice.Error);
+        HandleFeedback();
         PrintSavedLog();
         Autosave(realDt);
         if (quickSaveRequested) { quickSaveRequested = false; QuickSaveNow(); }
@@ -169,7 +172,8 @@ sealed partial class GameHost
 
     bool Busy() => saveWrite is { IsCompleted: false } || Covered;
 
-    void QuickSaveNow(string? destination = null)
+    /// <summary>Saves the world; a <paramref name="feedback"/> save (into a temporary folder for the feedback report) leaves the save in use alone, shows no notice and fails its write task.</summary>
+    void QuickSaveNow(string? destination = null, bool feedback = false)
     {
         if (!SavesAvailable(out string reason)) { player.Notice(reason, true); return; }
         LocalSession.SettleAhead();   // a tick run ahead counts as run: the saved world and its clock agree
@@ -189,16 +193,17 @@ sealed partial class GameHost
             WriteWeather(game, (int)clock.Day, clock.HourOfDay);
             WriteDecals(game);
             player.WriteBiome(game.Camera);
+            CaptureModData(world, game);
         }
         catch (Exception e)
         {
             Console.Error.WriteLine($"save      capture failed: {e}");
-            player.Notice($"Save failed: {e.Message}", true);
+            player.Notice(Loc.Tr("Save failed: {1}", e.Message), true);
             return;
         }
         double captureMs = watch.Elapsed.TotalMilliseconds;
         string folder = destination ?? QuickSave.Folder();
-        saveInUse = folder;
+        if (!feedback) saveInUse = folder;
         saveWrite = Task.Run(() =>
         {
             try
@@ -206,12 +211,13 @@ sealed partial class GameHost
                 var written = Stopwatch.StartNew();
                 game.Write(folder);
                 Console.WriteLine($"save      {folder}: captured in {captureMs:0.0} ms{(ahead ? "" : " (the base made on the spot)")}, written in {written.ElapsedMilliseconds} ms");
-                saveNotices.Enqueue(("Saved", false));
+                if (!feedback) saveNotices.Enqueue(("Saved", false));
             }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"save      write failed: {e}");
-                saveNotices.Enqueue(($"Save failed: {e.Message}", true));
+                if (feedback) throw;
+                saveNotices.Enqueue((Loc.Tr("Save failed: {1}", e.Message), true));
             }
         });
     }
@@ -265,7 +271,7 @@ sealed partial class GameHost
             Stage("read", () => read = Task.Run(() => SaveGame.Load(SaveFolder.Open(folder), ReadArrivalHour))),
             Stage("systems", () => { prepared = PrepareSystems(read!, interactive: true); return null; }, duringAscent: true),
             Stage("build", () => SwapInSave(read!, interactive: true, out summary, prepared: prepared)),
-            Stage("finishing", () => { SettleNewWorld(); player.FollowSelected(); FinishLoadNotice(summary); saveInUse = folder; return null; }));
+            Stage("finishing", () => { SettleNewWorld(); player.FollowSelected(); FinishLoadNotice(summary); PauseAfterLoad(); saveInUse = folder; return null; }));
     }
 
     /// <summary>
@@ -302,7 +308,7 @@ sealed partial class GameHost
                 if ((options & ImportOptions.ResetPositions) != 0 && nav is not null && read!.IsCompletedSuccessfully) SaveImport.PlaceOnGround(read.Result, nav.Walkability.GroundHeight);
                 return SwapInSave(read!, interactive: true, out summary, new SaveLoadOptions { Appearances = data.Appearances, ResetRelations = (options & ImportOptions.Relations) == 0 }, prepared);
             }),
-            Stage("finishing", () => { SettleNewWorld(); player.FollowSelected(); FinishLoadNotice(summary, imported: true); return null; }));
+            Stage("finishing", () => { SettleNewWorld(); player.FollowSelected(); FinishLoadNotice(summary, imported: true); PauseAfterLoad(); return null; }));
     }
 
     sealed record PreparedSystems(StandardSystemSet Built, PopulationData Data, NewGameSettings Difficulty);
@@ -346,6 +352,7 @@ sealed partial class GameHost
             LocalSession.ReplaceWorld(built.Systems, world =>
             {
                 loaded = SaveLoader.Load(world, read.Result, data, loadOptions ?? new SaveLoadOptions { Appearances = data.Appearances });
+                RestoreModData(world, read.Result);
                 if (world.Squads.Find(world.Player.Squad) is { Members.Count: > 0 } squad)
                 {
                     world.Player.Selection.Clear();
@@ -360,8 +367,8 @@ sealed partial class GameHost
         }
         popData = nextData;
         difficulty = nextDifficulty;
+        player.NewGameOptions = nextDifficulty;   // the New game window then shows the loaded save's options (the original loads them into its globals)
         population = built.Population;
-        aggro = built.Aggro;
         if (nav is not null) population!.ZoneGate = nav.IsReady;
         loadedSave = loaded;
         preparedBase = null;
@@ -412,9 +419,19 @@ sealed partial class GameHost
         Console.WriteLine($"load      {summary}");
         var missing = loadedSave?.MissingMods ?? [];
         // The message panel fits a line or two: it gives the count, the message log the names.
-        if (missing.Count == 0) player.Notice(imported ? "Imported" : "Loaded");
-        else player.Notice($"Loaded; the save was made with {missing.Count} mod(s) not loaded now (listed in the messages)", true,
-            $"Loaded; the save was made with mods not loaded now: {string.Join(", ", missing)}");
+        if (missing.Count == 0)
+        {
+            player.Notice(imported ? "Imported" : Loc.TrIn("save notice", "Loaded"));
+            return;
+        }
+        string panel = Loc.Tr("Loaded; the save was made with {1} mod(s) not loaded now (listed in the messages)", missing.Count);
+        player.Notice(panel, true, Loc.Tr("Loaded; the save was made with mods not loaded now: {1}", string.Join(", ", missing)));
+    }
+
+    /// <summary>A save loaded from the menus starts paused with <see cref="UserConfig.PauseOnLoad"/> (a player pause: the speed buttons resume it).</summary>
+    void PauseAfterLoad()
+    {
+        if (config.PauseOnLoad) LocalSession.Simulation.Pause();
     }
 
     /// <summary>
@@ -435,4 +452,5 @@ sealed partial class GameHost
         if (await Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(15))).ConfigureAwait(false) == all) await all.ConfigureAwait(false);
         else Console.Error.WriteLine("load      the navmesh round the player was not ready after 15 s; loading goes on");
     }
+
 }

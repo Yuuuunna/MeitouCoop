@@ -33,7 +33,7 @@ public sealed partial class CarrySystem
             { issuedTasks.Remove(actor); continue; }
             if (world.MayOrder(issued.Command, actor)) continue;
             // End the instruction, preserving any body already attached to the carrier.
-            End(world.Characters, slot);
+            End(world, slot);
             issuedTasks.Remove(actor);
         }
     }
@@ -67,7 +67,7 @@ public sealed partial class CarrySystem
     bool CanLiftFor(World world, int carrier, int body)
     {
         var target = world.Characters.Cold(body)!;
-        return CanBeLifted(target) || InOpenCage(world, target) is not null || AwakeMate(target)
+        return CanBeLifted(target) || world.Characters.Cold(carrier)!.Snatching && Snatchable(target) || InOpenCage(world, target) is not null || AwakeMate(target)
             && (!world.Players.RequiresExplicitControl || world.Players.ControlOf(world.Characters.IdOf(carrier)) is { } grant
                 && world.Players.CanControl(grant.Player, world.Characters.IdOf(body)));
     }
@@ -83,7 +83,7 @@ public sealed partial class CarrySystem
             || body.CarriedBy.IsNone && (body.IsImprisoned || Asleep(table, target));
     }
 
-    internal void CancelInstruction(World world, int slot) => End(world.Characters, slot);
+    internal void CancelInstruction(World world, int slot) => End(world, slot);
 
     public void ClosePlayerSession(World world, PlayerId player)
     {
@@ -99,7 +99,7 @@ public sealed partial class CarrySystem
         {
             if (issued.Command.Issuer != player) continue;
             if (world.Characters.TryResolveNext(actor, out int slot) && world.Characters.Cold(slot)!.CarryTarget == issued.Target
-                && (CharacterTask)world.Characters.Next[slot].Task == issued.Task) End(world.Characters, slot);
+                && (CharacterTask)world.Characters.Next[slot].Task == issued.Task) End(world, slot);
             issuedTasks.Remove(actor);
         }
     }

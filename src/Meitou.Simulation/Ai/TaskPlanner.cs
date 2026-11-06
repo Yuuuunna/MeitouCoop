@@ -20,7 +20,7 @@ public interface IPlanWorld
 {
     /// <summary>The category registry it plans with (a registration flag bit, docs/game/ai-tasks.md "Planner").</summary>
     int Category { get; }
-    /// <summary>A character without a squad may use restricted rows.</summary>
+    /// <summary>Whether restricted rows (lockpicking, cutting, opening gates) are offered: the original offers them to a flagged search (the orders step) or when the acting character's faction is not the player's (<c>FUN_14051bae0</c>). Named for an older reading (no squad).</summary>
     bool Squadless { get; }
     /// <summary>The desire of a row the plan passes through, for that target (the goal's own is given to <see cref="TaskPlanner.Plan"/>).</summary>
     float Desire(TaskDataRow row, in PlanTarget target);
@@ -124,7 +124,7 @@ public sealed class TaskPlanner
 
     /// <summary>
     /// Opens the children of the node's first unmet B entry, else of its effect (its finder picks the effect's target first): one per provider of that
-    /// state not yet in the search; a restricted provider only for a squadless character, one that needs a target only when there is one.
+    /// state not yet in the search; a restricted provider only when the world offers them, one that needs a target only when there is one.
     /// </summary>
     void Expand(int i, IPlanWorld world)
     {

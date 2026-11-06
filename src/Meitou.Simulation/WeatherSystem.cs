@@ -7,7 +7,7 @@ namespace Meitou.Simulation;
 
 /// <summary>
 /// What the weather does to characters (docs/formats/weather.md "Effects on characters"; the character's weather update <c>FUN_1405cf790</c>, <b>Verified</b> by
-/// decompilation). Every tick, for each living character with a body, in the slow-world phase (serial) with the tick's seconds of character time:
+/// decompilation). For each living character with a body every <see cref="EveryTicks"/> ticks, in the slow-world phase (serial), with that many ticks of character time:
 /// <list type="number">
 /// <item>Acid, unless the race is immune to it: swimming (water state 3) in a region with <c>acidic water</c> burns every part; otherwise, outdoors, standing (not down or
 /// carried), not in a bed or cage and with an empty boots slot, <c>acidic ground</c> burns the legs.</item>
@@ -49,6 +49,12 @@ public sealed class WeatherSystem(GameConstants constants) : ITickSystem
     /// <summary>The roof must be more than this over the character's feet (the original's <c>+10</c>).</summary>
     public const float RoofClearance = 10;
 
+    /// <summary>
+    /// Meitou (<b>engine choice</b>): a character is updated every this many ticks, on its slot's turn, with that many ticks of time (the original updates each one every frame); the
+    /// harm is the same, it lands in steps of a sixth of a game second.
+    /// </summary>
+    public const int EveryTicks = 5;
+
     readonly Dictionary<(CharacterId, int), long> eventAfter = [];
     readonly Dictionary<string, bool> shelterRecords = new(StringComparer.Ordinal);
 
@@ -57,9 +63,10 @@ public sealed class WeatherSystem(GameConstants constants) : ITickSystem
         if (world.Weather is not { } source) return;
         var table = world.Characters;
         var next = table.Next;
-        float dt = world.TickSeconds;
+        // Each character every EveryTicks ticks on its slot's turn, with that many ticks of time.
+        float dt = world.TickSeconds * EveryTicks;
         var zones = source.Zones;
-        for (int i = 0; i < table.HighWater; i++)
+        for (int i = (int)(world.Tick % EveryTicks); i < table.HighWater; i += EveryTicks)
         {
             if (!next[i].Alive || table.Cold(i) is not { } cold) continue;
             cold.Weather = WeatherAffecting.None;
@@ -140,7 +147,7 @@ public sealed class WeatherSystem(GameConstants constants) : ITickSystem
     /// <summary>
     /// Whether a roof of a shelter is over the character (<c>FUN_1405cf790</c>: a ray down from 1000 above hits a building more than 10 over the feet whose record has <c>is shelter</c>).
     /// <b>Engine choice</b>: the collision query does not say which building a triangle belongs to, so a player's complete building with <c>is shelter</c> within <see cref="ShelterReach"/> of the
-    /// character is the one assumed hit, and the ray counts when it meets any building's collision more than <see cref="RoofClearance"/> over the feet. Buildings of the towns are not asked
+    /// character is the one assumed hit, and the ray counts when it meets the collision of groups 23..26 (the passable parts and the parts of buildings paths ignore: <see cref="Ragdolls.IRagdollEnvironment.Roofs"/>, the ray's include mask 0x7800000, <b>Verified</b>) more than <see cref="RoofClearance"/> over the feet. Buildings of the towns are not asked
     /// (the base game has none with the flag; the three that have it are the player's tents of a mod).
     /// </summary>
     bool Sheltered(World world, int slot, Vector3 at)
@@ -159,7 +166,7 @@ public sealed class WeatherSystem(GameConstants constants) : ITickSystem
         if (!near) return false;
         var from = new Vector3(at.X, at.Y + 1000, at.Z);
         var seg = new Vector3(0, -(1000 - RoofClearance), 0);
-        Combat.SolidHits.Hit(world.Walkability, Buildings, from, seg, 50, out bool building);
+        Combat.SolidHits.Hit(world.Walkability, Buildings, from, seg, 50, out bool building, roofs: true);
         return building;
     }
 

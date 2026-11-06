@@ -43,7 +43,7 @@ public sealed record CloseCharacterTrade : SimCommand
 public sealed partial class DialogueSystem
 {
     /// <summary>EV_BOUGHT_ME_FROM_SLAVERY.</summary>
-    const int BoughtMeFromSlavery = 51;
+    internal const int BoughtMeFromSlavery = 51;
     /// <summary>How near the slaver a member of the customer's squad must be to be offered for sale (DA 41, 300 units, 3D).</summary>
     const float SlaveSaleRange = 300;
     /// <summary>How far from the buyer a bought slave walks out of its cage to (engine choice).</summary>
@@ -269,21 +269,13 @@ public sealed partial class DialogueSystem
         bool caged = c.IsImprisoned;
         if (caged) world.Fixtures.Release(world, id);
         Locks.FixtureRegistry.ClearSlave(world, c);
+        c.Freed = true;   // status +0xea = 1 (FUN_1406add20, Verified)
         c.Ai = null;
         c.Engaged = false;
         c.Fleeing = false;
         c.Pending = null;
-        MovementSystem.Stop(table, slot);
-        if (caged && table.TryResolveNext(player, out int buyer))
-        {
-            var from = table.Next[slot].Position;
-            var to = table.Next[buyer].Position;
-            var away = new Vector2(from.X - to.X, from.Z - to.Z);
-            float gap = away.Length();
-            // Beside the buyer, on the slave's side: out through the open cage door (the path finds it).
-            var target = new Vector2(to.X, to.Z) + (gap > 1e-3f ? away / gap * Math.Min(GetOutReach, gap) : Vector2.Zero);
-            MovementSystem.GoTo(table, slot, target, SpeedMode.Walk);
-        }
+        TaskStart.Stand(table, slot);
+        if (caged && table.TryResolveNext(player, out int buyer)) WalkOutOfCage(world, slot, buyer);
         if (Locks.LockSystem.WornShackles(c)?.Lock is { } l) l.Locked = false;
         Memory.Remember(world, c.SquadId, player, MemoryTag.FreedMe);   // its (new) squad remembers the buyer as the one who freed it (FUN_1406add20, Observed)
         if (Settings.AmbientEvents) Fire(world, id, player, BoughtMeFromSlavery);
@@ -292,11 +284,26 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
+    /// The walk of a prisoner freed from its cage (Task_GetOutOfCage with the legit flag, row 133, <c>FUN_1406add20</c> and <c>FUN_1406ae170</c> give it): out through the open cage door to within a few
+    /// units of <paramref name="nearSlot"/>, on the prisoner's side of it (where the original's task takes it is <b>Unknown</b>; the path finds the door).
+    /// </summary>
+    internal static void WalkOutOfCage(World world, int slot, int nearSlot)
+    {
+        var table = world.Characters;
+        var from = table.Next[slot].Position;
+        var to = table.Next[nearSlot].Position;
+        var away = new Vector2(from.X - to.X, from.Z - to.Z);
+        float gap = away.Length();
+        var target = new Vector2(to.X, to.Z) + (gap > 1e-3f ? away / gap * Math.Min(GetOutReach, gap) : Vector2.Zero);
+        TaskStart.Walk(world, slot, target, SpeedMode.Walk, Meitou.Data.Gameplay.Ai.TaskType.MOVE_ON_FREE_WILL, TaskSource.Npc);
+    }
+
+    /// <summary>
     /// The animal buying confirm (<c>FUN_1406aac20</c>, docs/game/animals.md "Buying animals", <b>Observed</b>): refused with a "Character Limit Reached" message when the player
     /// faction has fewer free places (CONSTANTS <c>max faction size</c> less its characters) than ticked rows, the window staying open. Otherwise each bought animal has its AI
     /// orders dropped, keeps a quarter of its combat, athletic and stealth stats (<see cref="TamedStats"/>) and joins the player as a recruit does; what its backpack held goes back
     /// to the seller's squad, each item into the first backpack of the seller's squad members (from the last member back) that takes it, the rest destroyed. Then the total is
-    /// taken from the player's money. The original then opens the character editor on the bought animals to name them (not opened: Meitou's editor does not edit animals).
+    /// taken from the player's money. The original then opens the in-play character editor (mode 1) on the animals bought, none when none was (<see cref="OpenAnimalEditor"/>).
     /// </summary>
     void BuyAnimals(World world, Interaction state, CharacterTrade t, int seller, List<(int Slot, CharacterCold Cold, long Price)> chosen, long total)
     {
@@ -312,6 +319,7 @@ public sealed partial class DialogueSystem
         }
         if (!table.TryResolveNext(t.Player, out int p) || table.Cold(p) is not { IsPlayer: true } buyer) return;
         var sellerSquad = world.Squads.Find(table.Cold(seller)!.SquadId);
+        var bought = new List<CharacterId>();
         foreach (var (slot, c, _) in chosen)
         {
             var packed = c.Inventory?.Backpack?.Contents is { } bag ? bag.All().ToList() : [];
@@ -320,8 +328,19 @@ public sealed partial class DialogueSystem
             if (c.Stats is { } stats) foreach (var stat in TamedStats) stats[stat] *= 0.25f;
             foreach (var item in packed) c.Inventory!.Remove(item);
             foreach (var item in packed) GiveBack(world, sellerSquad, item);
+            bought.Add(table.IdOf(slot));
         }
         Funds(world, t.Context)!.TryDebit(total);
+        OpenAnimalEditor(world, state, t, bought);
+    }
+
+    void OpenAnimalEditor(World world, Interaction state, CharacterTrade t, List<CharacterId> bought)
+    {
+        if (bought.Count == 0) return;
+        var sessions = Editing.CharacterEditing.OpenAnimalSessions(world, t.Context.Actor, bought);
+        if (sessions.Count == 0) return;
+        state.Request = new DialogueRequest(++requestId, DialogueRequestKind.AnimalEditor, bought[0], bought[0])
+            { Characters = bought.ToArray(), EditSessions = sessions, EditSession = sessions.GetValueOrDefault(bought[0]) };
     }
 
     /// <summary>Puts an item from a bought animal's bag into the first backpack of <paramref name="squad"/>'s members, from the last member back, that takes it; none: it is gone.</summary>

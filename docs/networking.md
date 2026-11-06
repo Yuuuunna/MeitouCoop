@@ -23,7 +23,7 @@ multiple consecutive frames; only EOF before a new header is a clean close. Part
 unknown kind/version or invalid size is an error. Writes freeze payload bytes. The host serializes writes,
 uses one reader, supplies cancellation/deadlines and closes a connection after framing/partial-write errors.
 Message kinds cover compatibility/authentication/admission, commands/receipts, observation filters,
-state chunks, ACK/resync, withdrawal, creation/invitation messages and talk hints. Application protocol: 19.
+state chunks, ACK/resync, withdrawal, creation/invitation messages and talk hints. Application protocol: 20.
 
 `ClientCommandBinding` expands selection-based intents into explicit actors and binds grants/membership
 revisions from the displayed view. `PlayerCommandRouting` supplies the shared actor/faction scope; building
@@ -43,14 +43,14 @@ the bound connection. Bodies retain session, inventory, job, machine, site and t
 JSON rejects duplicate keys at every depth, non-finite floats, unknown enum values/bits, null array elements,
 arrays over 4096 elements, strings over 4096 encoded bytes, depth over 16 and over 100000 tokens.
 Optional nullable scalar fields retain their command semantics; domain validation still runs at execution.
-**Observed** (source review, no new tests): protocol 19 also carries custody, pickup, loot/carry/medical/facility
+**Observed** (source review, no new tests): protocol 20 also carries custody, pickup, loot/carry/medical/facility
 orders, editor sessions, player barter and scoped inspection. Fixture/group, loot-window and held serial
 revisions survive binding. Editor intent uses a bounded race/gender/control/colour/style DTO rather than
 mutable FCS definitions. Barter views reach only participants; visible characters expose controller identity.
-**Observed** (source review, no new tests): protocol 19 also carries custody, pickup, loot/carry/medical/facility
-orders, editor sessions, player barter and scoped inspection. Fixture/group, loot-window and held serial
-revisions survive binding. Editor intent uses a bounded race/gender/control/colour/style DTO rather than
-mutable FCS definitions. Barter views reach only participants; visible characters expose controller identity.
+**Observed** (source review): protocol 20 adds typed `Manoeuvre` (10), `DoorLock` (154), `Pointed` (183) and
+`AreaArrival` (184) intents. They retain actor grants, command provenance and target/site revision checks.
+Read-only `VerbLead` / `Verbs` are computed for the recipient's faction using its selected owned lead and visible target;
+`ArrivalSerial` / `ArrivalForget` keep arrival state per recipient. Projection never authorizes execution.
 Network move/squad/placement positions are bounded to the map on X/Z and one world-size magnitude on Y;
 placement batches have at most 2048 entries and rotations require squared length within .01 of one.
 These engine input limits also prevent finite-but-enormous values from overflowing geometric arithmetic.
@@ -81,14 +81,22 @@ owner. `WorldViewCodec` preserves view/role/grant metadata, private details, ren
 GameRecord values are IDs resolved in the compatible local database. CharacterDisplay contains appearance,
 resolved body-shape input and visible attachments, excluding Loadout, BodyFile and diagnostics. No assets or
 raw FCS records travel. Ragdoll arrays and tuple/set/door/job representations have explicit converters.
+**Observed** (source review): protocol 20 character-keyed maps (`TradeView.GoodsOf` / `GoodsRevisions`, `DialogueRequest.EditSessions`) encode as sorted arrays of `{ Character: { Slot, Generation }, Value }` entries; duplicate/negative identities and null entries/values are rejected.
 View JSON is limited to 32 MiB/depth 48/two million tokens; duplicate fields, null array entries and non-finite
 numbers are rejected, except CharacterSnapshot.DrawYaw's explicit NaN fallback. Payloads are presentation,
 never a source of server commands or simulation state.
 
-**Observed** (source review): protocol 19 adds authoritative projectile speed for tracers (finite, nonnegative)
-and `PathExact`, the exact navmesh point count from the first published waypoint (0 through `Path.Count`).
+**Observed** (source review): protocol 20 adds authoritative projectile speed for tracers (finite, nonnegative)
+and `PathExact`, the exact navmesh point count from the first published waypoint (0 through `Path.Count`, or `int.MaxValue` when there is no provisional path).
 Paths retain selected-owned authorization; public character projection clears both path fields. Projectile
 speed retains the existing nearby-projectile filter. Compatibility rejects earlier application protocols.
+
+**Observed** (source review): recipient captures use independent snapshot buffers; publication detaches mutable
+animation arrays, bone poses, appearances and turret angles on the world owner before worker serialization.
+`Dummies` / `Seats` carry `SiteRevision`; smith details require managed sites, and projectile shooter references require
+visible characters. Nest/ruin/emptied-house views follow the existing observation filters. `FoliageOwnedTowns` includes
+only ownership visible through Nearby or Manage observation and updates the client's scene ownership snapshot.
+Talk hints and hostile-fight details use the actual recipient; disguise details remain limited to controlled characters.
 
 `ServerStateReplicator` freezes keyed appearance/character/building/machine/projectile/public-faction/survey/message entries plus a remaining-view
 entry. Deltas compare against an acknowledged publication, replacing whole changed entries so removed
@@ -103,7 +111,7 @@ Validation reuses depth-local field sets and a bounded per-document name cache; 
 fail. Appearance reuse compares component bytes before decoding unchanged descriptors. **Verified** by
 codec/replication/transport tests.
 
-**Observed** (source review): protocol 19 separates `a:slot:generation` appearance entries from `c:`
+**Observed** (source review): protocol 20 separates `a:slot:generation` appearance entries from `c:`
 character state. Components serialize directly; unchanged appearance descriptors reuse acknowledged encoded
 bytes after content comparison. Clients decode only changed components and rebuild the small view envelope;
 Whole-component replacement preserves private-field removal; optional character fields equal to their declared

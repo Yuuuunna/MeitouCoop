@@ -89,9 +89,9 @@ public class PlayerSessionUiTests
     public void PrivateFollowupMakesAnEnemyTalkCandidateWithoutExposingCampaignInternals()
     {
         var own = new CharacterSnapshot(new(1, 1), null, Vector3.Zero, 0, []) { IsPlayer = true, Faction = 17 };
-        var target = new CharacterSnapshot(new(2, 1), null, new(10, 0, 0), 0, []) { Faction = 18 };
+        var target = new CharacterSnapshot(new(2, 1), null, new(10, 0, 0), 0, []) { Faction = 18, HostileToPlayer = true };
         var session = new RemotePresentation { CurrentSnapshot = new(1, [own, target]), FollowupWaiting = true, TalkPending = true };
-        var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position) { HostileFaction = f => f == 18 };
+        var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position);
         ui.QuickOrderFor(target, [own.Id])!.Value.Do!();
         ui.PollPendingTalk(); Assert.Empty(session.Commands);
         session.TalkPending = false; session.TalkAvailable = true; ui.PollPendingTalk();
@@ -102,9 +102,9 @@ public class PlayerSessionUiTests
     public void UnknownHostileDialogueDoesNotBecomeAnAttackAndANewerOrderCancelsTheDeferredClick()
     {
         var own = new CharacterSnapshot(new(1, 1), null, Vector3.Zero, 0, []) { IsPlayer = true, Faction = 17 };
-        var target = new CharacterSnapshot(new(2, 1), null, new(10, 0, 0), 0, []) { Faction = 18, WarParty = true };
+        var target = new CharacterSnapshot(new(2, 1), null, new(10, 0, 0), 0, []) { Faction = 18, WarParty = true, HostileToPlayer = true };
         var session = new RemotePresentation { CurrentSnapshot = new(1, [own, target]), TalkPending = true };
-        var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position) { HostileFaction = f => f == 18 };
+        var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position);
         ui.QuickOrderFor(target, [own.Id])!.Value.Do!();
         ui.PollPendingTalk(); Assert.Empty(session.Commands);
         session.TalkPending = false; session.TalkAvailable = true;

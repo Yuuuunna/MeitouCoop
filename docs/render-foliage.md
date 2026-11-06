@@ -3,6 +3,17 @@
 Current engine contracts; original placement/material/range facts: [formats/foliage.md](formats/foliage.md).
 Atlas format, transitions and residency: [impostors.md](impostors.md). GPU API: [native renderer](renderer-native.md).
 
+## Ownership
+
+**Observed** (source review): `WorldLevelData.FoliageOwnership` is an immutable per-world snapshot, copied by
+`SetFoliageOwnership`; it has no static state. `WorldFoliageOwnership` updates it at runtime boundaries from towns of
+all player factions. Remote scenes receive only the recipient's authorized `FoliageOwnedTowns` projection.
+
+Ownership changes refresh `FoliageWorld` and invalidate incompatible layout caches. Resource queries clear cached
+zones under their lock; rendering waits for old placement jobs, drops old zones and rebuilds worker worlds. Navigation
+hashing and geometry share the same frozen ownership snapshot per job; changed ownership invalidates tracked navigation
+and starts a new incarnation, rejecting old jobs. See [shared runtime](multiplayer.md#shared-runtime).
+
 ## Rendering and streaming
 
 `FoliageWorld`/`FoliageLayout` build deterministic zone layouts on workers with separate height,

@@ -20,6 +20,10 @@ Hit reactions: the six ANIMATION records with `stumbles` all relocate; their `Bi
 `mid blow` 4.63 s peak 18 back (~45%) ending 4 back, `back blow light` 0.67 s ~0, `back blow low` 1.47 s 17.7
 forward, `mid blow drop` 6.57 s ~4 back, `back blow high` has no clip. When they play: [combat.md](game/combat.md#hit-reactions).
 
+### Clips a body lacks
+
+**Verified** (layer manager update `@ 1405b5c30`, with `FUN_1405b3090` / `FUN_14051caa0`): a layer whose animation the character's entity does not have (`hasAnimationState` false) is deleted before the weights are summed or scaled, so it takes no weight from the other layers. **Observed** (the base game plus a large mod list, rigs of the humanoid races): ~8 ANIMATION records resolve on no humanoid skeleton, e.g. `Block pole bottom` and `GROUNDED_BlowBack_Chest low`, whose clips only a mod's female animation file holds, and `stand 1 sword lefty`. Meitou: the renderer finds no layer for them, so before this a wanted one took the whole body half's weight (`Publish`) and the body stood in the binding pose until it ended. `AnimationSystem.Plays` (`CharacterRigs.Plays`, cached per appearance) drops such wanted layers, and a technique or hit reaction the body cannot play is not started (it stays in its stance; the combat system still holds it for the clip's length). **Unknown**: what the original picks when its hit reaction clip is missing.
+
 ### Clip times between ticks
 
 Engine choice (`GameHost.LayerTime`): the host draws a layer's clip time from the last tick's towards this one's by the shorter way round the clip (by the layer's
@@ -33,7 +37,11 @@ slot 8 (the drawn node turns toward the character's facing by at most 2 rad/s ×
 `@ 1405b24e0`), the phase (`+0xc8` += dt × `+0xcc`, wrapped to 0..1), then three of the five layer managers built at `@ 1406216b0`, whose
 rate is CONSTANTS `animation blend rate` × 2, 1.25, 1, 0.5, 0.5 (`@ 140636dc0`). Manager 1 is normalised to 1, manager 0 to 1 minus the weights
 of manager 1's flagged (`+0x5c`) layers, manager 2 not at all: lower (×2), upper and whole body (×1.25), overlay (×1); this mapping is
-**Observed** (from that order, not from where layers are added). Per manager (`@ 1405b5c30`), with an active and a fading-out list:
+**Observed** (from that order); **Verified** for record clips (`FUN_1405ba280`, `FUN_1405b7540`): the ANIMATION record's `layer` picks the manager, `lower` 0, `overlay` 2, two other
+names 4 and 3, `all` and anything else 1. A layer is flagged +0x5c when its record is `is action` or `layer` `all`, a technique's when it is not a plain block (**Observed**: `FUN_1405b5270`
+computes that value; that it lands in +0x5c rests on a reading of the stack arguments, backed by manager 0 giving way only to manager 1's flagged, whole-body, layers). Per manager (`@ 1405b5c30`), with an active and a fading-out list:
+- a fading layer's time advances only when it loops (+0x5d); a fading one-shot stands still, except a block replayed by `FUN_1405b7600` (+0x62), which plays backwards (**Verified**;
+  Meitou: `AnimationSystem.RunsFading`, `FadingTime`, the block at its last forward rate, `Layer.Rate`). A defence start (`FUN_140609290`) first moves manager 1's flagged layers to the fading list (`FUN_1405b36f0`).
 - a fading layer falls to 0 at the manager rate; an active one moves toward its target at the manager rate × its play rate clamped to 0.5..10
   (`@ 1405b1630`; instant on the first update). The play rate is signed (F × play speed × signed speed), so a clip with a negative play speed
   (the combat shuffles) takes the 0.5 floor going forward and its true rate backing off; Meitou `BlendStep`. What the play rate (`+0x40`) of a synched movement clip is was not traced: Meitou uses
@@ -123,7 +131,9 @@ of definitions and gives each a weight; zero-weight ones are dropped:
   1 IMPRISONED, 2 SLEEPING, 3 CARRIED, 4 SWIMMING, 5 GROUNDED, 6 COMBAT, 7 ATTACKS, 8 RANGED, enum names
   from the FCS editor). Meitou plays category 4 in deep water ([water states](game/pathfinding.md#water-states)): `swim` (clip `swim2`), `swim carry`, `swim carry left`, `swim idle`;
   and category 5 while crawling ([forced crawl](game/ragdolls.md#forced-crawl)).
+  The hit-reaction pick `FUN_14051f420` -> `FUN_14051d660` tests it too, against the class category `AC+0xf0` that `FUN_140520500` sets (4 in deep water for a swimming race, else 5 held down or crawling, else 0; **Verified**): a swimmer or crawler only gets stumbles of category 4 or 5, none if no record has them (Meitou: `AnimationStance.Category`). The stumble picker never reads `weather type` (`FUN_1405bbd40` files a weather record in the by-name and per-part stumble maps like any other, **Verified**), so such a record listing `stumbles` is a valid stumble (base data: the only weather-type record, a mod's `wind in face`, has none; Meitou appends them last as `WeatherCategory`, taken by no other selector).
 - `is combat mode` and `stealth mode`: EITHER (2) or equal to the character's combat / stealth state (when the combat flag is set: [combat](game/combat.md#combat-stance)).
+- `crouched` / `prone` (record bytes +0x9c / prone; `FUN_14051ec80`:110 compares them with `AnimationClass` +0x21c / +0x21d): both are written together by `FUN_14051dda0` (vtable slot 18); with both set crouched is cleared and "ANIM ERROR: crouched and proned" logged. Task_Crouch (27) sets crouched once its `squat T` clip has passed a progress threshold (`FUN_140346440`, threshold not read), Task_UnCrouch (28) and the end of many tasks clear it (**Verified**). The base data has no crouch task. Meitou: `CharacterCold.Crouched` feeds `AnimationStance.Crouched` (never with prone); nothing sets it yet, the task trigger is missing.
 - Arms (`@ 14051d240`, **Verified**): for layer index 1 (upper **and** `all`, which keeps index 1) and 2 (overlay) the lower layer is exempt: `has weapon L` and `R` both YES mean exactly
   one hand holds a weapon; otherwise each hand's YES / NO must match what it holds, EITHER passes. For the same layers the weapon type held (5 = unarmed) must be a set bit of the record's weapon-kind
   mask, except that fists skip the test (`@ 14051ec80`). Meitou: `AnimationDefinition.ArmsFit`, `KindFits`, applied in `FitsExceptLegs`.
@@ -136,8 +146,8 @@ of definitions and gives each a weight; zero-weight ones are dropped:
   is 1. A positive r is then sharpened: **w = 1 / (1 + e^(−10 (2r − 1)))** (so r = 0.5 → 0.5, r = 1 → 0.99995).
 - **Leg weight**: the same ramp (without the sigmoid) over the health of the *more hurt* leg against
   `L/R leg damage min / ideal / max` of that side (left values if the left leg is worse). The loader forces
-  min < 1 to −101 and max > 99 to 101, so a healthy-leg clip covers the whole range. Idle picks (`@ 14051ec80`, `@ 14051d310`) weigh the legs the same way, so an idle records 0 .. 100 still plays on a leg
-  below 0 (limping, not yet collapsed); Meitou reads the range alike in `AnimationDefinition.Fits` (`LegFloor`, `LegCeil`; before, the idle list was empty for such a leg).
+  min < 1 to −101 and max > 99 to 101, so a healthy-leg clip covers the whole range; a minimum under 1 makes the ramp flat 1 below the ideal (no rise), and a value and a minimum both under −40 give 1 outright (`FUN_14051cd10`, **Verified**). Idle picks (`@ 14051ec80`, `FUN_14051d180`) weigh each candidate `idle chance` x this ramp (a pass/fail range would not; the stance flag +0x9f gives 1 instead), keeping weights above 0. Meitou: `AnimationDefinition.LegWeight` and `AnimationLibrary.LegWeighted` (the idle caches hold the clips that fit apart from the legs).
+  The idle draw `FUN_14051ec80` never comes back empty (**Verified**): with no record fitting it returns the first record of the idle list it was given (`+0x2c0`; which record that is in the base data is **Unknown**). The crawl idles' `-999` leg minimum is read as -101, so a leg past -101 % (a severed one; `HealthPart.Fraction` is unbounded) fits neither `crawl idle` and the pick was empty, leaving a stopped crawler in the bind pose (**Verified**: probe of the base data, no crawl idle fits a leg under -101 in any combat or stealth state). Meitou: `AnimationLibrary.CrawlIdles` then ignores the leg ranges and takes the first grounded idle that fits the rest, in data order.
 - Only for idle picks (layer upper or overlay): `being carried` / `carrying left` / `carrying right` must
   match the character, and the weapon-type flags must include the equipped weapon's type; for unarmed (type 5)
   a clip that `has weapon L` or `R` YES gets weight 0.1 instead.
@@ -163,6 +173,7 @@ of definitions and gives each a weight; zero-weight ones are dropped:
   for > 0 when the lists are built (`FUN_1405bbd40`, **Observed**): such a clip goes to the strafe list instead of the by-name action list, and the value is never a speed.
   Only the base/animal class reads the strafe list (its first entry is the side step in a fight); humans fetch `strafe lower` by name. An animal's `strafe anim`
   is its side step only when none of its `animations` has `strafe speed max` > 0.
+  Human side step (`FUN_14051fc60`, **Verified**): only in combat mode, the record named `strafe lower` from the race's by-name map (first lookup cached globally), weight 1 − the movement layer's, no stance fit test. Meitou: `AnimationLibrary.Strafe` looks it up by name.
 - Meitou: `AnimationSystem.Strafe` and `AnimationLibrary.Strafe`; a fighter in its footwork (`CharacterCold.FaceSlot`) keeps facing its
   target while its path moves it (`MovementSystem`, the turn's speed cut skipped); the share is 0 below a total speed of 1 (standing; engine reading of the weight).
 
@@ -213,10 +224,17 @@ stump remains unless hide-stump bits1/2 remove it. Thigh n0.8 when that leg is a
 Calf k uses the signed leg ratio (`@ read_boot_height_n7`, **Observed**): b = worn boots' `boot height`, L/R = the `offset` of a fitted
 left/right leg LIMB_REPLACEMENT (slot 52/53). Left only: (b+4)/(L+4); right only: x=R, y=b; both: x=R, y=L, then x<y gives
 (x+4)/(y+4), else -(y+4)/(x+4), equal 0. Positive scales the left calf, negative the right, 0 neither (`CharacterShape.LegRatioOf`). Movement translation scaleH unless two unidentified states.
+
+**Feet lift** (**Verified**, decompiled): the same pass (`FUN_140538630`) stores at the character's +0x2cc the lower leg `offset` when both leg slots (52, 53) hold
+a LIMB_REPLACEMENT, else the worn boots' `boot height` (0 without), and `FUN_1405f16a0` places the body mesh's node at Y = +0x2cc − +0x2c8, so the body is
+raised by it. Meitou subtracts it from the ground offset (`CharacterShape.FeetLiftOf`, `CharacterRigs`), so the ragdoll's placement takes it too. Base game: no
+boots have a `boot height`; two Scout legs lift 0.5, two Stealth legs -0.2. Mods use it for heels (issue #126; **Observed**: the Animation Collection Pack's
+2B Boots, `boot height` 1 on the female sandal mesh, a geta whose teeth sank into the ground before).
 Muscle normal blends, head poses and skinning follow their own data/shader rules, not bone scale.
 
 **Engine choice** GroundOffset compensates lowest foot/toe bind-pose height change per appearance;
-it does not re-ground crouches or prove the original controller's mechanism. Physically moving
+it does not re-ground crouches or prove the original controller's mechanism. It is measured with every limb (the sliders only): a lost leg's calf and foot scale to 0, so with
+both legs lost the lowest foot was the knee and the lowering sank a crawler into the ground and a carried body down its carrier's back (**Observed**, sandbox screenshots). Physically moving
 characters/root collision and leg-health/lying/care selection belong in [simulation](simulation.md#animation).
 
 ### Stat-driven body
@@ -235,7 +253,7 @@ characters/root collision and leg-health/lying/care selection belong in [simulat
 (`FUN_14052e6c0`, M and S above). The maps: base `nm <g>` blended to `nm <g> strong` by D; when S > 0.25 or S > D, blended to `nm <g> skinny`
 by S, the base being `nm <g> strong` when D > 0.33 (RACE fields; humans and Shek have their own `_muscular` / `_skinny` files, robots and hive
 one file for all). What calls it, and how often, is **Unknown** (it is a virtual of `AppearanceHuman`, slots 6 and 13).
-Meitou (`CharacterShape.BuildFromStats`, `CharacterSnapshot.Build`, `CharacterRenderer.ApplyBuild`): published every tick from the live stats,
+**The bone shape is rebuilt only for the player's faction** (**Verified**, `FUN_140531820`: `FUN_14052e6c0` runs only when the character's faction has `+0x250` set, the test of `declareDead`); any other character keeps the shape made at its creation (`FUN_1405338f0` calls `FUN_14052bc70` then `FUN_14052e6c0`), while its normal maps and `muscleBlend` follow the live values. Meitou: `BodyBuild.ShapeMuscle`/`ShapeStarvation`, `WorldPublish.ShapedBuild` (the shape input is stored at the first publish, refreshed while the faction is the player's; not saved, so a load re-makes it from the saved stats, as the original does). Meitou (`CharacterShape.BuildFromStats`, `CharacterSnapshot.Build`, `CharacterRenderer.ApplyBuild`): published every tick from the live stats,Meitou (`CharacterShape.BuildFromStats`, `CharacterSnapshot.Build`, `CharacterRenderer.ApplyBuild`): published every tick from the live stats,
 applied when a value moves by more than 0.01, the normal maps once both are resident (engine choices).
 
 ### Startup preprocessing
@@ -296,7 +314,8 @@ The renderer samples at `clip length × slider / 100`; generated NPC posture fol
 - The order the game's `qsort` leaves ANIMATION_FILE records created by the same file in ([Animation files](#animation-files));
   it decides only clips two such files both define (3 names in a large modded install).
 - Which COMBAT_TECHNIQUE `animal` values exist (block clones: `<anim name> override`, [combat](game/combat.md#hit-reactions)).
-- Which manager each layer is added to (the lower/upper/overlay mapping in [Layer managers](#layer-managers) is inferred), what managers 3 and 4 hold, the play rate of a synched clip, and the `+0x5c` flag.
+- What managers 3 and 4 hold, the play rate of a synched clip, and whether an attack technique's layer (started by `FUN_1405b7800` through `FUN_1405b6410`, whose stack arguments the
+  decompile does not show) loops while it fades (Meitou freezes it as a one-shot).
 - ~~Which record field turns on root-motion extraction~~: `relocates` for ANIMATION records; combat techniques
   by their own rule ([Root motion](#clips-and-layers)). Still open: the time divisor of the root-motion velocity,
   and how combat footwork moves the body while combat sets animation-driven movement.

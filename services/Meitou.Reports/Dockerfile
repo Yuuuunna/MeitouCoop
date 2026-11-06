@@ -9,10 +9,13 @@ COPY services/Meitou.Reports/Meitou.Reports.csproj services/Meitou.Reports/
 RUN dotnet restore services/Meitou.Reports/Meitou.Reports.csproj -r linux-x64
 COPY services/Meitou.Reports/ services/Meitou.Reports/
 RUN dotnet publish services/Meitou.Reports/Meitou.Reports.csproj -c Release -r linux-x64 -o /out --no-restore
+# The feedback attachments' folder, owned by the app user: a volume mounted on /data starts as a copy of it.
+RUN mkdir -p /data/feedback
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled
 WORKDIR /app
 COPY --from=build /out/meitou-reports .
+COPY --from=build --chown=$APP_UID /data /data
 ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
 USER $APP_UID

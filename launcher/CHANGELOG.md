@@ -2,6 +2,48 @@
 
 Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.yml`; each release needs its `## v<version>` section.
 
+## v1.6.0
+
+- **Continue** on the Play button: starts the newest save straight away, with its name under the button. It only starts when the
+  save's mods are the ones you have enabled; otherwise the status says which mods differ. Play beside it reads **Main menu** over
+  the version it starts.
+- **Render scale modes** on the Graphics page, as in the game: Ultra performance to DLAA from a drop-down, or Custom with the
+  slider. The slider always shows the chosen mode's value and moves only under Custom. Ultra quality (0.83) is a mode now.
+- The default and High presets render at Quality (0.67) scale.
+
+## v1.5.1
+
+- A mod that ships both a Meitou code mod (`meitou.json`) and an RE_Kenshi plugin no longer says its DLLs are ignored: its row
+  shows only the code-mod note.
+
+## v1.5.0
+
+- **Simplified Chinese** texts for the launcher and Meitou's own game menus.
+- **Every label is translatable now**: the texts the launcher builds at run time (statuses, tooltips, counts, the Graphics page's
+  rows and the download and install lines) and the tooltips and placeholders the layout sets. A translated label no longer goes
+  back to English on a language switch.
+- **Look** row on the Graphics page, as in the game: Faithful or Meitou, its example looks or your own, with **Save**,
+  **Save as**, **Share** (a code to paste on Discord), **Paste** and **Delete**. The presets are the same files as the game's.
+- Each effect is a **Faithful | Meitou** switch, as in the game, with what each side does in its tooltip; other on / off
+  settings read **Off | On** the same way. The "Game default" choice is gone.
+- **Harmonized settings**: choices are drop-downs (anti-aliasing, texture quality, water reflection...), amounts are sliders that
+  always go right for more (terrain detail is no longer backwards). A look setting you changed shows its name in brass with
+  a **Reset** link back to the look, instead of a Default button on every slider. Reset graphics stays at the bottom of the page.
+- **Bloom** is an effect you switch on, with its strength under it.
+- The Graphics tabs follow the game's pages, one per subject: Lighting, Sky & weather, Colour, World, Characters. Each feature
+  holds all its settings: Shadows has its distance, map size and filter; Water its reflection; Light shafts and the terrain relief their quality.
+  Each feature is one row, with its own settings folded under it behind an arrow.
+- Shows with game releases from the next one on.
+- The window can be **resized** from its edges and corners on Windows.
+- Scroll bars match the launcher: a brass thumb on a dark track, no arrows. A page keeps its scroll bar's room, so
+  its rows no longer shift when the bar appears.
+- **Mods from a save**: the Mods page's **From save** button lists your saves and applies the mods a save was made with, in its
+  load order. Like a preset, it doesn't save until you Save or Play.
+- **Code mods**: Play asks before a mod may run its own code, with a box per mod, **Trust all** and **Data only all**. The
+  **Code mods** button lets you change those choices later.
+- On Windows, the first-start dialog asks whether to **launch as Kenshi on Steam**.
+- The mod list loads in the background, so the window opens at once even with a large workshop folder.
+
 ## v1.4.0
 
 - The Graphics page has **every graphics setting** of the game's Tab panel, sliders and Faithful / Meitou switches,

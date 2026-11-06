@@ -25,19 +25,15 @@ public abstract record FactionCommand : SimCommand
 }
 
 /// <summary>Move order: the characters walk to <see cref="Target"/> (world units; the height is taken from the ground).</summary>
-public sealed record MoveOrder(IReadOnlyList<CharacterId> Characters, Vector3 Target) : SimCommand
-{
-    /// <summary>Add to the characters' order lists (shift in the game) instead of replacing them.</summary>
-    public bool Queued { get; init; }
-}
+public sealed record MoveOrder(IReadOnlyList<CharacterId> Characters, Vector3 Target) : OrderCommand;
 
 /// <summary>
 /// The context menu's Follow (order 31, <c>Task_Follow</c>; docs/game/ui-input.md "Context menu verbs"): the characters (the selection when empty) keep a formation place behind
 /// <see cref="Target"/> until another order replaces it or the target is gone (<see cref="CharacterCold.FollowOrder"/>). <b>Engine</b>: the squad follower's slot rule, not saved.
 /// </summary>
-public sealed record FollowOrder(IReadOnlyList<CharacterId> Characters, CharacterId Target) : SimCommand
+public sealed record FollowOrder(IReadOnlyList<CharacterId> Characters, CharacterId Target) : OrderCommand
 {
-    /// <summary>Bodyguard (order 45) rather than Follow (31): the follower also fights whoever attacks the target (<see cref="CharacterCold.Guarding"/>). <b>Engine</b> reading of the order: the original shares the follow order giver and the task type's data names no more.</summary>
+    /// <summary>Bodyguard (order 45) rather than Follow (31): both fight an attacker of the target within 40 of it (state 16), a bodyguard also its own attacker within 40 (state 39; <see cref="CharacterCold.Guarding"/>, <c>RetaliationSystem.Guards</c>, docs/game/ai-tasks.md "Precedence"); the Bodyguard job's follow is the same row.</summary>
     public bool Guard { get; init; }
 }
 
@@ -117,6 +113,7 @@ public static class PlayerCommandRouting
         SelectCommand c => c.Characters, Combat.AttackOrder c => c.Attackers, Combat.ShootAtOrder c => c.Gunners,
         Trading.OpenTrade c => [c.Customer],
         Dialogue.TalkOrder c => [c.Talker],
+        Dialogue.AreaArrival c => [c.Leader],
         FirstAid.TreatOrder c => c.Medics, FirstAid.SplintOrder c => c.Medics,
         FirstAid.RestOrder c => c.Characters, FirstAid.MedicJobCommand c => c.Characters,
         Editing.EditCharacter c => [c.Character],
@@ -127,7 +124,7 @@ public static class PlayerCommandRouting
         Carrying.CloseLoot c => [c.Actor],
         Crime.PutInCageOrder c => c.Carriers, Crime.PayBailOrder c => [c.Payer],
         Locks.PickLockOrder c => c.Characters, Locks.GetOutOrder c => c.Characters,
-        Locks.DoorOrder c => c.Characters, Locks.SetFreeOrder c => c.Characters,
+        Locks.DoorOrder c => c.Characters, Locks.DoorLockOrder c => c.Characters, Locks.SetFreeOrder c => c.Characters,
         Locks.GetInCageOrder c => c.Characters, Locks.ForceLockOrder c => c.Characters,
         Locks.ShackleOrder c => c.Characters, Locks.PutShacklesOrder c => c.Characters,
         Locks.UseBedOrder c => c.Characters, Locks.PutInBedOrder c => c.Carriers,
@@ -146,8 +143,8 @@ public static class PlayerCommandRouting
         Production.OperateOrder c => c.Characters, Production.UseTurretOrder c => c.Characters, Production.AddJob c => c.Characters,
         Production.DisposeCorpseOrder c => c.Characters,
         Construction.BuildOrder c => c.Characters, Construction.DismantleOrder c => c.Characters,
-        Items.ArrangeInventory c => [c.Character], Items.QuickMoveItem c => [c.Character], Items.ReadMapItem c => [c.Character],
-        OrdersCommand c => c.Characters, RunSpeedCommand c => c.Characters, StandUpCommand c => c.Characters,
+        Items.ArrangeInventory c => [c.Character], Items.QuickMoveItem c => c.Into.IsNone ? [c.Character] : [c.Character, c.Into], Items.ReadMapItem c => [c.Character],
+        OrdersCommand c => c.Characters, RunSpeedCommand c => c.Characters, StandUpCommand c => c.Characters, ManoeuvreCommand c => c.Characters,
         _ => [],
     };
     public static CommandFactionScope FactionScope(SimCommand command) => command switch
@@ -173,11 +170,12 @@ public static class PlayerCommandRouting
         }),
         Trading.OpenTrade c => new(CommandFactionSource.Character, Character: c.Customer),
         Dialogue.TalkOrder c => new(CommandFactionSource.Character, Character: c.Talker),
+        Dialogue.AreaArrival c => new(CommandFactionSource.Character, Character: c.Leader),
         Items.LiftItem { From.Holder: Items.ItemHolder.Site } c => new(CommandFactionSource.WorkSite, Site: c.From.Site),
         Items.PlaceHeld { Into.Holder: Items.ItemHolder.Site } c => new(CommandFactionSource.WorkSite, Site: c.Into.Site),
         Trading.OpenPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
         Trading.AcceptPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
-        Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
+        Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
             or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
             or Crime.PutInCageOrder or Crime.PayBailOrder
             => new(CommandFactionSource.Character, Character: Characters(command).FirstOrDefault()),
@@ -199,8 +197,8 @@ public static class PlayerCommandRouting
     internal static bool Supports(SimCommand command) => command is
         Production.QueueResearch or Production.CancelResearch or MoveOrder or FollowOrder or StopCommand or SelectCommand
         or Combat.AttackOrder or Combat.ShootAtOrder or Trading.OpenTrade or Trading.BuyItem or Trading.SellItem or Trading.CloseTrade or Trading.ArrangeStock
-        or Items.ArrangeInventory or Items.QuickMoveItem or Items.ReadMapItem or Items.TransferInventoryItem or OrdersCommand or RunSpeedCommand or StandUpCommand
-        or Dialogue.TalkOrder or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
+        or Items.ArrangeInventory or Items.QuickMoveItem or Items.ReadMapItem or Items.TransferInventoryItem or OrdersCommand or RunSpeedCommand or StandUpCommand or ManoeuvreCommand
+        or Dialogue.AreaArrival or Dialogue.TalkOrder or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
         or NewSquadCommand or RenameSquadCommand or RemoveSquadCommand or MoveToSquadCommand or ReorderSquadCommand or ActiveSquadCommand or DismissCommand
         or RenameFactionCommand or SquadFormationCommand or SquadAiCommand or Items.OpenContainerOrder or Items.CloseContainer
         or Production.PutInMachine or Production.TakeFromMachine or Production.QueueCraft or Production.CancelCraft
@@ -214,12 +212,12 @@ public static class PlayerCommandRouting
         or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder
         or Carrying.StealthKoOrder or Carrying.RescueJobCommand or Carrying.TakeLootItem or Carrying.PutLootItem
         or Carrying.CloseLoot or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder
-        or Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
+        or Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
         or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
         or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
         or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld
         or Items.PickUpItemOrder
-        or InspectCommand or InspectBuildingCommand or ShowInventoryCommand
+        or PointedCommand or InspectCommand or InspectBuildingCommand or ShowInventoryCommand
         or Trading.OpenPlayerTrade or Trading.AcceptPlayerTrade or Trading.RevisePlayerTrade or Trading.ConfirmPlayerTrade or Trading.CancelPlayerTrade;
 }
 
@@ -229,8 +227,12 @@ public static class PlayerCommandRouting
 /// </summary>
 public sealed record FocusCommand(Vector3 Position) : SimCommand;
 
-/// <summary>Selects the player's own characters. No valid targets retains the selection; otherwise non-additive replaces it and additive (shift) adds to it.</summary>
-public sealed record SelectCommand(IReadOnlyList<CharacterId> Characters, bool Additive = false) : SimCommand;
+/// <summary>
+/// Selects the player's own characters. No valid targets retains the selection; otherwise non-additive replaces it and additive (shift) adds to it.
+/// <paramref name="Toggle"/> (shift on a single character's click, portrait or number key, <c>FUN_1407f9000</c> / <c>FUN_1407f8f60</c>): a character already selected leaves the
+/// selection unless it is the only one; one not selected joins it.
+/// </summary>
+public sealed record SelectCommand(IReadOnlyList<CharacterId> Characters, bool Additive = false, bool Toggle = false) : SimCommand;
 
 /// <summary>Clears order selection and shows another faction's character in the HUD panels. <see cref="CharacterId.None"/> clears inspection only.</summary>
 public sealed record InspectCommand(CharacterId Target) : SimCommand;
@@ -256,3 +258,6 @@ public sealed record RepathCommand : SimCommand
 {
     public IReadOnlySet<ZoneCoordinate>? Zones { get; init; }
 }
+
+/// <summary>Recipient-scoped pointer hint; grants no control or observation rights.</summary>
+public sealed record PointedCommand(CharacterId Target) : SimCommand;

@@ -16,11 +16,21 @@ public class SurgeryTests
 {
     const int Price = 200;
 
-    /// <summary>Gives every look the tests' race, and keeps the proposed record as it is.</summary>
     sealed class Looks(GameRecord race) : IAppearanceSource
     {
         public CharacterAppearance? Create(string recordId, string? factionId, int seed) => new() { Race = race };
         public CharacterAppearance? Create(string recordId, Loadout loadout) => new() { Race = race };
+    }
+
+    sealed class EditorFiles : IDisposable
+    {
+        public string Root { get; } = Path.Combine(Path.GetTempPath(), "meitou-surgery-" + Guid.NewGuid().ToString("N"));
+        public EditorFiles()
+        {
+            Directory.CreateDirectory(Root);
+            File.WriteAllText(Path.Combine(Root, "editor.xml"), """<Editor><Config gender="Male"><Category name="Body"><Range name="Height" min="0" max="100" /></Category></Config></Editor>""");
+        }
+        public void Dispose() { File.Delete(Path.Combine(Root, "editor.xml")); Directory.Delete(Root); }
     }
 
     [Fact]
@@ -39,8 +49,11 @@ public class SurgeryTests
         surgeonRecord.References["race"] = [Ref("1-t", 100)];
         surgeonRecord.References["dialogue"] = [Ref("84-t")];
         var db = Database(extra: [open, take, line, dialogue, surgeonRecord, Rec("86-t", FcsRecordType.RACE, "Other")]);
-        var race = db.Find("1-t")!;
-        var data = PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)], new Looks(race));
+        using var editor = new EditorFiles();
+        var raceEdit = Rec("1-t", FcsRecordType.RACE, "Testers");
+        raceEdit.Filenames["editor limits"] = "editor.xml";
+        var editorData = new FcsFile(); editorData.Records.Add(raceEdit); db.Apply(editorData, "editor.mod");
+        var data = PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)], new GeneratedAppearances(db, editor.Root));
 
         var walk = new OpenGroundWalkability(Ground);
         var systems = Standard(data, walk, StandardParts.Population | StandardParts.Player, new PopulationSettings { CheckEveryTicks = 1 });
@@ -49,7 +62,7 @@ public class SurgeryTests
         world.Commands.Enqueue(new FocusCommand(new Vector3(-90000, 0, -90000)) { Tick = 0 });
         var patient = squad.Leader;
         var cold = world.Characters.Cold(patient.Slot)!;
-        var before = cold.Appearance = new CharacterAppearance { Race = race };
+        var before = cold.Appearance = data.Appearances!.Create(cold.RecordId, null, 7)!;
         string name = cold.Name;
         var at = world.Characters.Previous[patient.Slot].Position;
 
@@ -71,7 +84,12 @@ public class SurgeryTests
         void Attempt(CharacterId surgeon, string raceId, bool female, int money, bool accepted)
         {
             world.Player.Money = money;
-            world.Commands.Enqueue(new EditCharacter(patient, Look(raceId, female), "Renamed", EditKind.Surgery) { Tick = world.Tick, Surgeon = surgeon });
+            // The dialogue authorizes an unpaid editor in reach; moving away afterwards must still reject the edit.
+            var surgeonAt = world.Characters.Next[surgeon.Slot].Position;
+            world.Characters.Place(surgeon.Slot, at + new Vector3(10, 0, 0), world.Tick);
+            var session = CharacterEditing.OpenSession(world, null, patient, surgeon, EditKind.Surgery, paid: false);
+            world.Characters.Place(surgeon.Slot, surgeonAt, world.Tick);
+            world.Commands.Enqueue(new EditCharacter(patient, Look(raceId, female), "Renamed", EditKind.Surgery) { Tick = world.Tick, Surgeon = surgeon, SessionId = session });
             world.RunTicks(1);
             var messages = world.TakeMessages();
             if (accepted)
@@ -97,5 +115,46 @@ public class SurgeryTests
         Attempt(near, "86-t", false, 500, accepted: false);    // another race
         Attempt(near, "1-t", true, 500, accepted: false);      // another gender
         Attempt(near, "1-t", false, 500, accepted: true);
+    }
+
+    /// <summary>
+    /// An animal on the new-game editor's list (docs/characters.md "Character editor", #312): a name-only edit renames it, a new look sent for it is refused and leaves it as it was.
+    /// </summary>
+    [Fact]
+    public void At_creation_a_name_only_edit_renames_an_animal_and_a_new_look_for_it_is_refused()
+    {
+        var animalRecord = Rec("87-t", FcsRecordType.ANIMAL_CHARACTER, "Hound");
+        animalRecord.References["race"] = [Ref("1-t", 100)];
+        var db = Database(extra: [animalRecord]);
+        var data = PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)], new Looks(db.Find("1-t")!));
+        var walk = new OpenGroundWalkability(Ground);
+        var systems = Standard(data, walk, StandardParts.Population | StandardParts.Player, new PopulationSettings { CheckEveryTicks = 1 });
+        using var world = new SimWorld(new WorldSettings { Seed = 11, PublishSnapshots = false }, walk, systems.Systems);
+        var squad = systems.Population!.StartPlayer(world, NewGameStart.From(db.Find("40-t")!));
+        world.Commands.Enqueue(new FocusCommand(new Vector3(-90000, 0, -90000)) { Tick = 0 });
+        var dog = squad.Leader;
+        var cold = world.Characters.Cold(dog.Slot)!;
+        var look = cold.Appearance = CharacterAppearance.BuildAnimal(db, "", db.Find("87-t")!);
+        string name = cold.Name;
+        Assert.True(world.Player.InCreation);
+
+        void Edit(FcsRecord? appearance, string typed)
+        {
+            world.Commands.Enqueue(new EditCharacter(dog, appearance, typed, EditKind.Creation) { Tick = world.Tick });
+            world.RunTicks(1);
+        }
+
+        var proposed = Rec("look", FcsRecordType.CHARACTER, "Look");
+        proposed.References["race"] = [Ref("1-t")];
+        Edit(proposed, "Wrong");
+        Assert.Single(world.TakeMessages());
+        Assert.Equal(name, cold.Name);
+        Assert.Same(look, cold.Appearance);
+        Assert.False(cold.LookEdited);
+
+        Edit(null, "Rex");
+        Assert.Empty(world.TakeMessages());
+        Assert.Equal("Rex", cold.Name);
+        Assert.Same(look, cold.Appearance);
     }
 }

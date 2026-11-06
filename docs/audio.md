@@ -28,6 +28,9 @@ of the pivot at the zoom distance).
   Boneyard, Canyons, Coast, Desert, Forest, Jungle, Plains, Swamplands, Tarsands; default Desert) names the bank `SFX_Amb_<name>`. Its
   `music` field (enum `BiomeMusic`: Dunes, Savanah, Swamp, Tarsands, None) picks the music in the same step. Base game: 74 regions; Plains
   15, Desert 14, Canyons 12, Coast 10, Boneyard 7, Tarsands 5, Forest 4, Swamplands 3, Ashlands 2, Jungle 2 (Verified, records).
+  The Crater and Border Zone are Canyons, Shun is Coast (Verified, records). `Enter_Canyons_Night` starts layer `0C07AA21` (two loops) and
+  random one-shots `221D4A37`; the loops are tonal, peaking near 1.5-2 kHz and 4.5 kHz like an insect chorus, the day loop is low wind
+  (Observed: band energies of the exported wems), so crickets there at night are the data's.
 - **Day** is `sunrise < hour < sunset` strictly (GLOBAL CONSTANTS, 5 and 23; `FUN_14066cb20`), otherwise night.
 - Each frame the game compares one number, the biome index with bit 8 set at night, with the last (−1 at start). No delay, no hysteresis.
   On a change: if the biome changed (not only the time), `Leave_<OldBiome>`; then `Enter_<Biome>_Day` or `Enter_<Biome>_Night`. So day to
@@ -118,7 +121,7 @@ Traced 2026-10-17 from the last part of the camera update (`FUN_1406b0140`, with
 - **Data** (base game records, Verified). 603 BUILDINGs; 58 have an interior-mask hull, 38 of those an ambience (Metal 6, Stone 20, Wicker 4, Wood 8) and 20 none; 25 more have an ambience but no hull and never
   sound. Integrity is 100 for most (50 and 70 for some, 0 and 1 for ruins); `cavernous` is set on 17 Metal and 2 Stone buildings. 13 gateways have a hull, none an ambience.
 - **Meitou** (`InteriorSounds`; `GameHost.AudioWorld.cs`). `WorldObjectRenderer.InteriorUnder(x, z)` finds the loaded building whose hull footprint (`InteriorVolume.ContainsGround`) holds the pivot, highest first; the
-  volume carries `Ambience`, `Integrity` and `Cavernous` from its record. Differences: gateways and destroyed buildings have no volume (the exe's hull would still be hit), and the hull is the convex footprint of the
+  volume carries `Ambience`, `Integrity` and `Cavernous` from its record. Gateways keep a hull for this test only (`InteriorVolume.IsGateway`, `ZoneObjects.GateHulls`: `FUN_140551b20` builds the interior object of any building with an `interior` list, no gateway test, **Verified**; they are no room for roof hiding, sight or the view). Differences: destroyed buildings have no volume (the exe's hull would still be hit), and the hull is the convex footprint of the
   mask's collision, and a hull whose top lies below the terrain at the pivot's X/Z still counts (the exe's ray hits the terrain first; `ContainsGround` ignores terrain). Rendered (`audio render … Indoors:<name> Building_Integrity=100 Enter_Building`, `Camera_Zoom` 50): about −84 (Wood), −78 (Metal), −84 (Stone), −87 (Wicker) dBFS; integrity 0 is 4 dB louder than 100
   (**Observed**; it fades in over 1 s and `Leave_Building` ends it in 1 to 2 s).
 
@@ -210,7 +213,7 @@ gun's shot sounds on the building's object (see **Turrets**). `UI_Generator` (`F
 **Meitou:** door sounds as above (`Meitou.Audio.DoorSounds`, fed each frame by `GameHost.UpdateDoorSounds` from the snapshot's doors, which carry each door's
 position, record and broken flag). A door object takes the leaf's centre, else its building's origin. A door missing from the snapshot is closed, since the
 snapshot leaves out plainly closed doors. A door seen for the first time is assumed to have been closed (if it is opening) or open (if it is closing); one at rest is taken as it is, so a load is quiet. Doors over 3000 units from the eye are skipped
-(**engine choice**; the exe posts for every door). F11 counts the door sounds.
+(**engine choice**; the exe posts for every door). The `--quit-after` log counts the door sounds.
 
 **Break** (**Verified**, `DoorStuff::vfunc_62` `14029d690`, `WallBuilding::vfunc_62` `14029d560`; the damage entry of the building, called through the vtable). Given a hit's two floats (`p0`, `p1`; `p1` is the heavier term): a door that is not already broken takes
 `clamp(2·p1 + 0.5·p0, 20, 60)` and loses 0.015 × that of its integrity (wall: half the sum, clamped 10 to 60, 0.003 ×); when the integrity is 0 or less it is marked broken (virtual `+0x310`/`+0x340`) and `Break` posts on the building's object. **Neither
@@ -276,7 +279,7 @@ through one helper (`FUN_1405c9a70(char, event, maxSqDist)`): **dropped when the
   `Impact` on a pooled object at the spot, `Impacts` = the ground's name (Stone for anything unnamed). `Attack` on a shooter.
 - **Voices** (`VO_Bank`, loaded explicitly). A person's `VO_Races` = RACE `sounds` (0..3: Human, Shek, Hive, Robot; other: Human) plus `_Male` / `_Female` unless single-gender; an animal's `Creature_VO` = RACE
   `sounds` less 4 indexing Beak, Bull, Cage, Dog, Duck, Gar, Goat, Gorillo, IronSpider, Leviathan, Pack, Spider, Turtle (below 4: Dog). A landed hit: **50 %** (`random & 8`) `VO_Get_Hit` (animals `VO_Creature_Take_Damage`).
-  Animals only: `VO_Creature_Die` when they go down, `VO_Creature_Victory` for the attacker, `VO_Creature_Alert` when threat goes from none to some, `VO_Creature_Passive` on a 20 to 60 s timer (the first up to 100 s). People have no
+  Animals only: `VO_Creature_Die` when they go down, `VO_Creature_Victory` for the attacker, `VO_Creature_Alert` when threat goes from none to some, `VO_Creature_Passive` on a 20 to 60 s timer (the first up to 100 s; **Verified** `FUN_1405cdf00`: nothing while the animal is down and the timer stays due; in combat mode the call is skipped but the timer still reschedules). People have no
   other voice events in the exe's character code (grunts on swings are inside the attack events' containers).
 - **Character tasks** (all through the same helper unless noted; slots 1 / 2 / 3 of a task are start / update / end): `Character_Build_Loop_Start` and `_Stop` (Build 2, Repair 95), `Character_Medic_Start` / `_Stop` (First aid),
   `Character_Unlock` (loop, 1000 units; started by Task_UnlockDoor, Task_PickLock (also for shackles) and Task_CutShackles (also locks) at their start; Task_BruteForceShackles starts none) stopped by `Character_Unlock_Success` (slot 2 when a roll, cut or
@@ -285,6 +288,24 @@ through one helper (`FUN_1405c9a70(char, event, maxSqDist)`): **dropped when the
   `Character_Pick_Up_Ground` (`Task_Pickup` slot 2, 1000 units, after the `Inventory_Items` switch, which the bank ignores; posted when any of the stack went into the inventory, not when nothing fitted), `Character_Pick_Up_Person` / `Character_Drop_Person` (on the carried person, with its `Armor_Worn`), `Character_Loot` (character target) / `Character_Inspect`,
   `Character_Consume` with `Consume` = `Eat` (200 units) and `Sell_Item` (200 units). `Character_Building_Materials` is posted but **no bank has it** (silent). Involuntary drops (knock-out, ragdoll) are silent.
   `Character_Drop_Ground`, `Taunt` and `Create_Character` are posted on the GUI object ([Interface](#interface)).
+- **Machine work** (**Verified**, decompile): each update of `Task_OperateMachine` (slot 2 `FUN_14035bc90`, once `tryOperate` passes and the clip, the functionality's `animation` else
+  `stonemine`, plays) and of `Task_UseTrainingDummy` (slot 2 `FUN_14035c1e0`) adds the BUILDING_FUNCTIONALITY's `animation events` to that clip on the operator (`FUN_140065280`, `FUN_140064e10`;
+  time = value x 0.01): a sorted insert that skips an event record already there at that time and moves the clip's next-event index past an event inserted before its last fraction
+  (`FUN_140064870`). No removal was found: they last as long as the clip's instance (**Observed**). Data (base game and rebirth, **Verified** by probe): mines `Impact` with `Impacts` =
+  `Ore` / `Stone` / `Copper` at 30 %, plates and weapon smiths `Plate` 30 %, farms `Character_farm` 30 % (with a ground effect, below), sword and assassin training `Dummy` 40 %;
+  the `stonemine` clip's own `Pickaxe` is `Attack` with `Weapons` = `Work_Pick` at 10 %. SFX_General_Bank has those `Impacts` cases and `Attack`'s `Work_Pick` (**Verified**, hashed names).
+  The AI's worker goals act out through the same task (87 / 221, [ai-tasks](game/ai-tasks.md#slave-work-shout-and-capture)), so NPC town workers and obedient slaves sound alike.
+- **Ground effect** (a particle, not a sound; **Verified**, decompile, unless marked): an ANIMATION_EVENT with `ground effect` set also becomes an `AnimationGroundEvent` on the clip
+  (`FUN_140064e10`; it keeps the `bone`). Base game and rebirth (**Verified**, probe): `Footstep R` / `Footstep L` (bones `Bip01 R/L Foot`) and the farms' `Impact Farm` (no bone).
+  Firing (`FUN_140065330`): nothing while a character flag at `+0x1a9` is clear (**Unknown** meaning) or without a body entity (**Observed**). The point is the named bone's world position (the character's
+  without a bone or when the bone's height comes out 0). Under the water height: the BIOMES record's `water effects` entry (v0 depth, v1 speed) with the greatest v0 at
+  most the depth, then greatest v1 at most the speed, at the water surface. Dry: only when the ground ray's hit has the null handle (type `0xb`, the terrain; **Observed**); the biome's
+  `ground effects` slot for the overlay channel at the point (`FUN_140a16f70`, the footsteps' channel pick), fired when the speed is at least its min speed and `rand()`/32768 is at most
+  its chance; a bone puts the point on the terrain. Slots (biome loader `FUN_140a13750`): an entry's v0 above 2 is lowered by one, then 0..4 picks the slot; v1 is the min speed, v2 x 0.01
+  the chance. The effect spawns through a pool (none when full) only inside the camera frustum (`FUN_140a08c00`). Data (`gamedata.base` dump): 59 BIOMES list `ground effects`
+  (`Dustkick01`, `01a`, `01b`, `01c`; min speed 0, 30 or 40; chance 100), 70 list `water effects` (`Watersplash` v0 0, `WadingFoam` v0 3); a farmer standing at work (speed 0) kicks
+  dust only where the slot's min speed is 0 (**Observed**). **Not in Meitou**, for footsteps or farms: `ParticleRenderer.Burst` can fire a system, but how a one-shot EFFECT instance
+  maps onto it, the `+0x1a9` flag and the v0 slot shift are **Unknown**.
 
 Meitou (`CharacterSounds`, `AnimationSoundEvents`, `GroundSurfaces` in `Meitou.Audio`; `GameHost.AudioCharacters.cs`): characters within 1100 units of the eye get an object (dropped past 1400, or when they leave the snapshot);
 the host hands each character's place, facing, speed (horizontal distance between the last two snapshots over the tick) and animation layers (`AnimationLayer.Length` and `.Definition`, added to the snapshot) every frame.
@@ -311,6 +332,11 @@ warden locks one, `Character_Pick_Up_Ground` on a character that takes a ground 
 on the GUI object with `Inventory_Items` of the item, `FUN_140715560`), that `Item_Drop` through `UiSounds` when the shackles are on. The exe's AI cuffing (`Task_CuffTarget`: "Restraining" bar, `medic` animation) posts no event (**Verified**: no `PostEvent` caller in it), so a put-on by anyone but the player is silent. The RE found no task sound for dismantling (order 96; only `Task_Build`, orders 2 and 95, loops: **Observed**), so it is silent but for `Thing_Complete` when done. **No trigger in Meitou:** `Character_Inspect` (loot targets
 only characters), `Character_Unlock_Fail` as a sound of its own (it is only the loop's Stop; a failed roll posts nothing, as in the exe), `Character_Building_Materials` (no bank has it), `Sell_Item` from NPC shoppers, `Character_Drop_Person` from the corpse machine.
 Meitou's wardens have no unlock loop (their rounds only start the click); the player's lock picking loops as the exe's `Task_PickLock`.
+Machine work: while an operator works (the player's operate task, or an AI worker's or obedient slave's standing work at its building's functionality clip: `CharacterCold.ActionWork`),
+the snapshot's `WorkEvents` (functionality and clip) has the host give that clip's layer its events with the functionality's added (`AnimationSoundEvents.Attach`), kept until the layer
+is gone; a clip still playing when its worker starts at another machine takes that machine's events too, as the exe's instance would. Not covered: the town's training dummies, which
+Meitou's AI stands at with no clip. The simulation's time of a looping clip that is neither synched nor a side step runs on past its length; the host wraps
+its fraction, so the events of `stonemine`, `chop down static` and the swim clips fire on every pass, as the exe's cursor does.
 
 **Unarmed `Weapons`** (`FUN_1402b4570`, when a technique is chosen): the switch becomes `HtH_Punch` when the technique's last blow uses limb 0 or 1 (the arms, **Verified**) else `HtH_Kick`, with `_Robot` appended for a robot (**Observed**: the exe also appends it when a limb check on the attacker's race says robotic limbs). Meitou applies it when the animation of a COMBAT_TECHNIQUE valid
 for unarmed fighting only (not a block or dodge, not a creature's) starts (**Observed**: the exe's guard on the technique is a flag whose meaning is not traced).
@@ -386,7 +412,9 @@ host running without sound.
   - **3D paths**: a positioned container's one-shots pick a random path and move along its vertices (listener-relative x, z); the player
     pans them left/right by direction (equal power). The ambience has no attenuation and no sends, so these get neither distance gain nor reverb.
   - **Positions, attenuation, reverb**: [below](#game-objects-3d-and-attenuation).
-- `AudioOutput` keeps four blocks of 1024 frames (23 ms each at 44100 Hz) queued on one OpenAL Soft streaming source, refilled by a thread.
+- `AudioOutput` keeps four blocks of 1024 frames (23 ms each at 44100 Hz) queued on one OpenAL Soft streaming source, refilled by a thread. Every 0.5 s it checks
+  `ALC_CONNECTED`; a lost device (unplugged, switched or disabled output) is reopened on the current default with `alcReopenDeviceSOFT`,
+  since OpenAL otherwise stays silent until restart (issue #309).
 - `AmbienceDirector` is the game's rules above: biome under the pivot, day/night, `Camera_Zoom`, `Time_in_Game`, rain and wind. Two
   fixes of the game's bugs, each a switch on the Fixes settings page (off plays as the game): the delayed-load suffix bug is not copied (the right event always plays; `Ambience after loading`), and the wind is stopped with
   `Weather_Wind_End` (`Wind stops`; off posts the game's `Weather_Wind_Stop`).
@@ -488,7 +516,7 @@ other sounds at the listener (dry or sent); a sound mixed in the last block coun
 are silent: one heard last block first fades out over a block, then its voice keeps its clock without decoding (`Voice.Skip`); back among the loudest it
 moves its place within the decoded frames, or reopens and seeks (an error ends the voice, never the mix), and fades in over one block; a one-shot that ran out
 meanwhile ends. Trimmed music clips are never
-capped. The game's own Wwise limits (`STMG` max voices and volume threshold, each node's max instances, read but not modelled) are not this rule. F11
+capped. The game's own Wwise limits (`STMG` max voices and volume threshold, each node's max instances, read but not modelled) are not this rule. The `--quit-after` log
 shows how many sounds were capped. After the mix a peak limiter (both modes, `AudioOutput.Limit`: ceiling 0.89, instant attack, 0.15 s release) turns a
 loud sum down instead of hard-clipping it at the 16-bit conversion.
 
@@ -525,7 +553,7 @@ banks left behind (they stay loaded: about 5 to 14 MB of Ogg each; the music ban
 ## In the viewer and the game
 
 On by default; `--no-audio` turns it off, `--audio-gain <dB>` raises or lowers everything. The console (the game's `log.txt`) prints the device, or
-why there is none: the host then runs silently. F11's statistics show the biome, day or night, rain, wind and the number of voices, and the music: the
+why there is none: the host then runs silently. The `--quit-after` log's `audio` line shows the biome, day or night, rain, wind and the number of voices, and the music: the
 main theme or the remembered biome music, seconds until the timer next posts it, music voices (`AudioSystem.StatsLine`; paused shows). Both hosts feed
 `AudioSystem.Update` each frame (region under the pivot, weather, hour, sunrise and sunset, eye height).
 
@@ -546,10 +574,10 @@ main theme or the remembered biome music, seconds until the timer next posts it,
     rain and wind end) and `StartMainTheme` runs again, so the menu sounds as at start-up; the next game's first update re-enters its biome.
   - **World sounds** (`GameHost.AudioWorld.cs`, each frame after the ambience): the building under the pivot (`InteriorSounds`, [Interiors](#interiors)) and the building emitters (`WorldEmitters`,
     [Point emitters](#point-emitters)) with the eye as the distance origin. The level's emitters are read once on a worker (`WorldObjects.Emitters`), a player-built site's when it completes. The main menu ends the
-    interior ambience and stops the emitters. `GameHost.AudioEffects.cs` adds the effect emitters (sky beams) and `GameHost.AudioTurrets.cs` the turrets' movement sounds ([Other world-side events](#other-world-side-events)); robot spiders are in `CharacterSounds`. The console prints the number of emitters read; the statistics line `world audio` (F11 and the end-of-run `audio     world:`) shows indoors or outdoors, emitters playing of
+    interior ambience and stops the emitters. `GameHost.AudioEffects.cs` adds the effect emitters (sky beams) and `GameHost.AudioTurrets.cs` the turrets' movement sounds ([Other world-side events](#other-world-side-events)); robot spiders are in `CharacterSounds`. The console prints the number of emitters read; the end-of-run line `audio     world:` shows indoors or outdoors, emitters playing of
     all, and the nearest one's name and distance.
   - **Characters and interface.** `UpdateAudio` also calls `UpdateCharacterAudio` (`GameHost.AudioCharacters.cs`, [Characters](#characters-footsteps-combat-voices)); the interface sounds are on from `AttachAudio`, also on the
-    title screen (`GameHost.AudioUi.cs`). `VO_Bank` loads with the first character. F11 and the `--quit-after` log show `characters: N characters, N footsteps, N swings, N impacts, N voices, N interface sounds`.
+    title screen (`GameHost.AudioUi.cs`). `VO_Bank` loads with the first character. The `--quit-after` log shows `characters: N characters, N footsteps, N swings, N impacts, N voices, N interface sounds`.
   - Not in screenshots, the headless paths or tests: only the interactive run creates the audio.
 
 ## Tools

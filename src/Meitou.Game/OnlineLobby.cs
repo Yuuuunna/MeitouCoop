@@ -30,7 +30,9 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
         Directory.CreateDirectory(folder);
         journal = Path.Combine(folder, key + ".creation.json");
         journalLock = new FileStream(journal + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets);
+        var userConfig = UserConfig.Load();
+        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets,
+            userConfig.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), userConfig.ModSettings);
         if (new CompatibilityHandshake(hello).Receive(profile.Hello) is var mismatch && mismatch != CompatibilityFailure.None)
             throw new InvalidDataException($"Local content does not match the connection profile: {mismatch}.");
         connection = await RemoteGameSession.ConnectAsync(profile.Host, profile.Port, hello,

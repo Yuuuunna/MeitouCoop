@@ -3,7 +3,7 @@ using System.Reflection;
 namespace Meitou.Simulation;
 
 /// <summary>
-/// Which of the three parallel phases a system implements, and the delegate that runs each one over the world's partitions, built once
+/// Which of the parallel phases a system implements, and the delegate that runs each one over the world's partitions, built once
 /// when the system is added. A phase is implemented when the system's type supplies the method itself instead of the empty default of
 /// <see cref="ITickSystem"/>; a phase it does not implement is <c>null</c> here, so the tick skips the barrier. The delegates read
 /// the partitions of the tick that is running, so one instance serves every tick.
@@ -16,6 +16,7 @@ sealed class SystemPhases
         var map = system.GetType().GetInterfaceMap(typeof(ITickSystem));
         if (Implements(map, nameof(ITickSystem.Think))) Think = i => system.Think(world, world.PartitionAt(i));
         if (Implements(map, nameof(ITickSystem.Move))) Move = i => system.Move(world, world.PartitionAt(i));
+        if (Implements(map, nameof(ITickSystem.BeforeAct))) BeforeAct = i => system.BeforeAct(world, world.PartitionAt(i));
         if (Implements(map, nameof(ITickSystem.Act))) Act = i => system.Act(world, world.PartitionAt(i), world.BufferAt(i));
     }
 
@@ -23,6 +24,7 @@ sealed class SystemPhases
     public int Index { get; }
     public Action<int>? Think { get; }
     public Action<int>? Move { get; }
+    public Action<int>? BeforeAct { get; }
     public Action<int>? Act { get; }
 
     /// <summary>True when the interface method is not the default one (a method that cannot be told is taken as implemented, which is always safe).</summary>

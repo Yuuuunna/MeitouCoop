@@ -58,7 +58,7 @@ public sealed class NavSystem : IDisposable
             var raw = map.Downsample(2, out int size);
             var grid = new HeightWindow(0, 0, 2, size, size, raw);
             return (x, z) => grid.TryHeightAt(x, z, out float h) ? h : terrainHeight(x, z);
-        }, routeObstacles: () => footprints.Value.Obstacles(levels.Buildings(), levels, placementHeight));
+        }, routeObstacles: () => [.. footprints.Value.Obstacles(levels.Buildings(), levels, placementHeight), .. footprints.Value.FeatureObstacles(placementHeight)]);
         service = new NavMeshService(install, db, levels, Walkability, settings, cache, Runtime, deferPublication);
         Walkability.AllowUnloadedFallback = !deferPublication;
         Walkability.KeepStanding = service.KeepAt;
@@ -67,6 +67,9 @@ public sealed class NavSystem : IDisposable
     }
 
     public NavmeshWalkability Walkability { get; }
+
+    /// <summary>A loading screen covers the game: zone builds take every core (<see cref="NavMeshService.Covered"/>).</summary>
+    public bool Covered { get => service.Covered; set => service.Covered = value; }
 
     /// <summary>Open or close a door by its building's instance id: <c>Doors.Close(id)</c>. No rebuild; the next query sees it.</summary>
     public NavDoors Doors => Walkability.Doors;
@@ -84,6 +87,7 @@ public sealed class NavSystem : IDisposable
     public Task<NavZoneReady> PrepareZone(ZoneCoordinate zone) => service.Prepare(zone);
     public bool IsReady(ZoneCoordinate zone) => service.IsReady(zone);
     public IReadOnlyCollection<ZoneCoordinate> TrackedZones => service.TrackedZones;
+    public long Incarnation => service.Incarnation;
     public bool KeepAt(System.Numerics.Vector3 position) => service.KeepAt(position);
 
     public IReadOnlySet<ZoneCoordinate> CommitPrepared()
@@ -122,6 +126,9 @@ public sealed class NavSystem : IDisposable
 
     /// <summary>Drops a zone's mesh (its cache file stays). Paths already handed out stay valid as lists of points.</summary>
     public void UnloadZone(ZoneCoordinate zone) => service.Unload(zone);
+
+    /// <summary>Drops several zones' meshes with one republish of the world (callable off the main thread).</summary>
+    public void UnloadZones(IReadOnlyCollection<ZoneCoordinate> zones) => service.Unload(zones);
 
     /// <summary>
     /// A building the player placed (or finished) takes part in the navmesh from the next build of the zones it reaches; the zones loaded now are built again, and

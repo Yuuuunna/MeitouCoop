@@ -93,6 +93,13 @@ sealed partial class PlayerInterface
                     $"{name}  {(int)(progress * 100)}%", CraftActionId("craft-cancel", Machine(craftStation)!, i.ToString(CultureInfo.InvariantCulture)), "", true, face, Vector4.Zero,
                     TextColour: i == 0 ? new(0.66f, 0.72f, 0.45f, 1) : ink, HoverColour: new(1, 0.4f, 0.3f, 1), Pickable: true, Clip: queue.Bounds));
             }
+        // A queued craft under the pointer has its own description (the CraftQueue box's tooltip, FUN_1402be650 -> FUN_1402bcf60).
+        if (controls.LastOrDefault(c => c.Name.StartsWith("craft-queue-", StringComparison.Ordinal) && c.Bounds.Contains(mouse.X, mouse.Y)) is { } over
+            && int.TryParse(over.Name.AsSpan(12), NumberStyles.None, CultureInfo.InvariantCulture, out int hoveredIndex) && hoveredIndex < craft.Queue.Count)
+        {
+            QueueDescription(controls, craftStation, craft, hoveredIndex, options);
+            return;
+        }
         string? hovered = controls.LastOrDefault(c => c.Name.StartsWith("craft-row-", StringComparison.Ordinal) && c.Bounds.Contains(mouse.X, mouse.Y))?.Action;
         string? focus = hovered is { } h ? h.StartsWith("craft-queue:", StringComparison.Ordinal) ? Uri.UnescapeDataString(h[(h.LastIndexOf(':') + 1)..]) : h[(h.IndexOf(':') + 1)..] : craftFocus;
         if (focus is null || options.FirstOrDefault(o => o.Key == focus) is not { } option) return;
@@ -105,5 +112,49 @@ sealed partial class PlayerInterface
         foreach (var (item, per) in option.Inputs) lines.Add(new(item, per.ToString("0.##", CultureInfo.InvariantCulture), MainColour));
         if (!option.Unlocked) lines.Add(new("Needs research", "", BadColour));
         DatapanelLines(controls, "QueueDescriptionPanel1", lines);
+    }
+
+    /// <summary>
+    /// The description of a queued craft (<c>FUN_1402bcf60</c>, into <c>QueueDescriptionPanel2</c>; <b>Verified</b>): <c>State:</c> "In production..." and, by the bench's status, a second
+    /// <c>State:</c> row in Bad (0 Out of resources, 1 Output full, 3 Upgrade required); <c>ETA:</c> the hours left, truncated to a tenth, "&lt;" before 0; and, only while the bench has had a smith,
+    /// <c>-Current Smith:</c> with his level of the bench's stat and the multiplier's penalty in Bad, then by the item's class <c>-Material Costs:</c> (weapons), <c>-Predicted Result:</c>
+    /// (the quality's name for armour and crossbows, in the colour of its grade; the model's for weapons, Bad when it is not the queued one) and <c>-Critical Success Chance:</c>.
+    /// The ingredients go to Panel 1 (<c>FUN_1402b6b40</c>; Meitou lists the recipe as the item rows do). Not shown: "Not assigned to a craft bench" (the queue entry's bench hand is never
+    /// null here) and the ETA's bar.
+    /// </summary>
+    void QueueDescription(List<UiControl> controls, string site, CraftView craft, int index, IReadOnlyList<CraftOptionView> options)
+    {
+        var (key, name, progress, hours) = craft.Queue[index];
+        var ingredients = new List<HudLine> { new(name, "") };
+        if (options.FirstOrDefault(o => o.Key == key) is { } option)
+            foreach (var (item, per) in option.Inputs) ingredients.Add(new(item, per.ToString("0.##", CultureInfo.InvariantCulture), MainColour));
+        DatapanelLines(controls, "QueueDescriptionPanel1", ingredients);
+        var rows = new List<HudLine> { new(Loc.Tr("State:"), Loc.Tr("In production...")) };
+        string? status = Machine(site)?.Status switch { 0 => "Out of resources", 1 => "Output full", 3 => "Upgrade required", _ => null };
+        if (status is not null) rows.Add(new(Loc.Tr("State:"), Loc.Tr(status), ValueColour: BadColour));
+        // FUN_1402bcf60: (int)(hours x (1 - progress) x 10) tenths, "{1,num} hr" for a whole 1 and "hrs" else, "<" in front at 0 (the entry's +0x30 divisor is Unknown: 0 unless the bench worked this tick).
+        float left = (int)(hours * (1 - progress) * 10) * 0.1f;
+        rows.Add(new(Loc.Tr("ETA:"), (left == 0 ? "<" : "") + Loc.Plural("{1,num} hr", "{1,num} hrs", (int)left, left)));
+        if (session.CurrentSnapshot.Smiths.GetValueOrDefault(site) is { } smith)
+        {
+            string penalty = smith.Penalty == 0 ? "" : Tag(BadColour) + " (" + Loc.Format("{1,num=fix,p=0}", -smith.Penalty) + ")" + Tag(MyGuiColours.InkText);
+            rows.Add(new(Loc.Tr("-Current Smith:"), smith.Name.Replace("#", "##", StringComparison.Ordinal) + Loc.Tr(" (skill: {1,num}{2})", smith.Skill, penalty)));
+            if (index < smith.Entries.Count)
+            {
+                var guess = smith.Entries[index];
+                if (guess.Model is not null)
+                {
+                    rows.Add(new(Loc.Tr("-Material Costs:"), Loc.Format("{1,num}", guess.MaterialCost)));
+                    rows.Add(new(Loc.Tr("-Predicted Result:"), Tag(guess.ModelChanged ? BadColour : MainColour) + guess.Model.Replace("#", "##", StringComparison.Ordinal)));
+                }
+                else if (guess.Quality >= 0)
+                {
+                    int grade = Meitou.Simulation.Combat.ArmourTooltip.GradeOf(guess.Quality);
+                    rows.Add(new(Loc.Tr("-Predicted Result:"), Tag(TipColour(GradeTone(grade), false)) + Loc.Tr(Meitou.Simulation.Combat.ArmourTooltip.GradeNames[grade])));
+                }
+                if (guess.Critical >= 0) rows.Add(new(Loc.Tr("-Critical Success Chance:"), Loc.Tr("{1,num}%", guess.Critical)));
+            }
+        }
+        DatapanelLines(controls, "QueueDescriptionPanel2", rows);
     }
 }

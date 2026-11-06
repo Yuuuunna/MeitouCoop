@@ -227,16 +227,27 @@ public sealed class SaveBuilder
         r.Strings["faction name"] = factionName;
         r.Strings["faction stringID"] = factionId;
         r.Strings["squad template"] = squadTemplate;
-        r.Filenames["content file"] = SaveFolder.PlatoonName(name);
 
+        var platoon = new SavePlatoon(r, null);
+        GiveFile(platoon);
+        Game.Platoons.Add(platoon);
+        return platoon;
+    }
+
+    /// <summary>
+    /// Gives a platoon with no file an empty one (named <c>&lt;string id&gt;.platoon</c>, the record's <c>content file</c>) with the characters' INSTANCE_COLLECTION; a platoon
+    /// with a file keeps it.
+    /// </summary>
+    public void GiveFile(SavePlatoon platoon)
+    {
+        if (platoon.File is not null) return;
+        platoon.ContentFile = SaveFolder.PlatoonName(platoon.Record.StringId);
         var file = new SaveFile();
         var collection = new FcsRecord { Type = (int)FcsRecordType.INSTANCE_COLLECTION, Name = "0" };
         file.Records.Add(collection);
         collection.Ints["char count"] = 0;
         AssignId(file, collection, "");
-        var platoon = new SavePlatoon(r, file);
-        Game.Platoons.Add(platoon);
-        return platoon;
+        platoon.File = file;
     }
 
     /// <summary>Gives a record the next number of the file: id, string id <c>&lt;n&gt;-&lt;suffix&gt;-INGAME</c>.</summary>
@@ -360,10 +371,13 @@ public sealed class SaveBuilder
     /// <summary>The STATS floats a record always has that the stat system does not write (the legacy ones): zero.</summary>
     public static readonly string[] LegacyStatKeys = ["xp", "free attribute points", "warrior spirit", "endurance", "ff", "hackers", "survival", "arrow defence"];
 
-    /// <summary>Fills the legacy STATS floats a real record always has (zero unless already set).</summary>
-    public static void FillLegacyStats(FcsRecord stats)
+    /// <summary>
+    /// Fills the legacy STATS floats a real record always has (zero unless already set); a new character's <c>warrior spirit</c> is the STATS template's
+    /// (<paramref name="warriorSpirit"/>, <c>FUN_14064b6a0</c> reads it into CharStats, <c>FUN_14064a8f0</c> writes it back).
+    /// </summary>
+    public static void FillLegacyStats(FcsRecord stats, float warriorSpirit = 0)
     {
-        foreach (var k in LegacyStatKeys) stats.Floats.TryAdd(k, 0);
+        foreach (var k in LegacyStatKeys) stats.Floats.TryAdd(k, k == "warrior spirit" ? warriorSpirit : 0);
     }
 }
 

@@ -51,7 +51,7 @@ public partial class ProductionTests
     /// holds 3); a generator (20 power, 0.01 x P fuel a second at full load), a battery (rate 10, store 30 s), lamps drawing 4 and 8 and the workshop drawing 5;
     /// a 2 x 2 tank storing only water, its stacks x 10.
     /// </summary>
-    static GameDatabase Database()
+    static GameDatabase Database(bool staffedWell = false)
     {
         FcsRecord Item(string id, string name) { var r = Rec(id, FcsRecordType.ITEM, name); r.Floats["weight kg"] = 1; r.Ints["stackable"] = 100; return r; }
         FcsRecord Function(string id, int function, int stat)
@@ -68,6 +68,7 @@ public partial class ProductionTests
             return r;
         }
         var wellFn = Function("80-t", MachineData.MineFunction, (int)StatsEnumerated.Labouring);
+        if (staffedWell) wellFn.Ints["max operators"] = 1; // Rights cases isolate staffed production from background output.
         wellFn.Floats["production mult"] = 0.05f;
         wellFn.References["produces"] = [new FcsReference(Water, 10, 0, 0)];
         var farmFn = Function("81-t", MachineData.MineFunction, (int)StatsEnumerated.Farming);
@@ -79,6 +80,8 @@ public partial class ProductionTests
         benchFn.Ints["tech level"] = 1;
         var farmData = Rec("83-t", FcsRecordType.FARM_DATA, "Test Crop");
         farmData.Ints["amount"] = 4;
+        // An indoor crop (fertility effect 0) whose minimum fertility the bare test ground (0) clears, as the shipped indoor farms' -1.
+        farmData.Floats["minimum fertility"] = -1;
         foreach (var (key, value) in new[] { ("growth time", 1f), ("harvest time", 48f), ("death time", 8f), ("consumption rate", 24f), ("harvest rate", 256f), ("clear rate", 500f), ("output per plant", 2f), ("green", 1f) })
             farmData.Floats[key] = value;
         var farm = Building(Farm, "Test Farm", "81-t");
@@ -317,7 +320,7 @@ public partial class ProductionTests
     [Fact]
     public void ContinuousWorkSurvivesAnAuthorizedTransferButStopsWhenAssetRightsAreRevoked()
     {
-        using var rig = new Rig(Database(), Constants, [Well]);
+        using var rig = new Rig(Database(staffedWell: true), Constants, [Well]);
         var world = rig.World;
         var a = world.Players.Register(new PlayerId(2)); var b = world.Players.Register(new PlayerId(3));
         world.Players.SetMembership(a.Id, PlayerFaction, FactionPermission.All);
@@ -393,7 +396,7 @@ public partial class ProductionTests
     public void WorkRechecksRightsAfterSchedulingAndBeforeProducing()
     {
         var boundary = new BeforeProduction();
-        using var rig = new Rig(Database(), Constants, [Well], beforeProduction: boundary);
+        using var rig = new Rig(Database(staffedWell: true), Constants, [Well], beforeProduction: boundary);
         var world = rig.World;
         var player = world.Players.Register(new PlayerId(2));
         world.Players.SetMembership(player.Id, PlayerFaction, FactionPermission.All);
@@ -603,7 +606,7 @@ public partial class ProductionTests
         var stats = new CharacterStats(); stats[StatsEnumerated.Labouring] = Unit;
         var squad = new Squad { Id = 1, TemplateId = "t", Faction = Town };
         var cold = new CharacterCold { Name = "miner", Race = Human, Stats = stats, Medical = MedicalState.Create(Human, 50), Inventory = new Inventory(), Faction = Town };
-        cold.Ai = new Meitou.Simulation.Ai.AiMind { Squad = squad, Behaviour = Meitou.Simulation.Ai.AiBehaviour.Work, WorkBuilding = building, WorkOperate = building };
+        cold.Ai = new Meitou.Simulation.Ai.AiMind { Squad = squad, Behaviour = Meitou.Simulation.Ai.AiBehaviour.Work, WorkBuilding = building, WorkOperate = building, WorkOwner = Town };
         rig.World.Characters.Spawn(new CharacterHot { Position = At + new Vector3(0, 0, 10), MaxSpeed = 40, WalkSpeed = 15, Task = (byte)CharacterTask.Idle }, cold, 0);
         rig.World.RunTicks(600);
         var machine = rig.World.Machines.Find(ProductionSystem.TownWorkId(building));
@@ -784,14 +787,22 @@ public partial class ProductionTests
             Db = db, Factions = factions.Factions, Relations = factions.Relations, PlayerFaction = PlayerFaction,
             Sites = [new TownSite(0, town, At, zone) { Buildings = [building] }], SiteFactions = [3],
         };
+        // Import the older CAMERA fixture through native Ensure before the existing save round trip.
+        var legacy = Meitou.Simulation.Saving.SaveCapture.PrepareBase(data).Game;
+        legacy.Camera.Record.Strings["meitou tm7"] = building.Key;
+        legacy.Camera.Record.Ints["meitou tm7 st"] = 1;
+        legacy.Camera.Record.Ints["meitou tm7 outn"] = 4;
+        legacy.Camera.Record.Floats["meitou tm7 out"] = 0.25f;
+        legacy.Camera.Record.Ints["meitou tm7 in0"] = 3;
+        legacy.Camera.Record.Floats["meitou tm7 lv0"] = 0.5f;
         using var rig = new Rig(db, Constants, []);
+        Meitou.Simulation.Saving.MachineSave.Read(legacy, rig.World, rig.Production, rig.Items);
         rig.World.Fixtures.RegisterSite(rig.World, data, 0);
         rig.World.VisitedZones.Add(zone);
         var machine = rig.Production.TownWork(rig.World, building)!;
-        machine.Output!.Count = 4;
-        machine.Output.Progress = 0.25f;
-        machine.Inputs[0].Count = 3;
-        machine.Inputs[0].Level = 0.5f;
+        Assert.Equal((4, 0.25f), (machine.Output!.Count, machine.Output.Progress));
+        Assert.Equal((3, 0.5f), (machine.Inputs[0].Count, machine.Inputs[0].Level));
+        Assert.Equal(1, machine.Status);
         var save = Meitou.Simulation.Saving.SaveCapture.Capture(rig.World, data, new(1, 12, 0), options: new() { Levels = levels });
         var instance = Assert.Single(save.Zones[zone].BuildingList!.Instances);
         Assert.Equal("farm", instance.Id);
@@ -805,6 +816,7 @@ public partial class ProductionTests
         Assert.Equal(1, back.World.Buildings.Find(building.Key)!.Owner);
         Assert.Equal((4, 0.25f), (read.Output!.Count, read.Output.Progress));
         Assert.Equal((Water, 3, 0.5f), (read.Inputs[0].Item, read.Inputs[0].Count, read.Inputs[0].Level));
+        Assert.Equal(1, read.Status);
         read.Output.Count--;
         Assert.Same(read, back.Production.TownWork(back.World, building));
         Assert.Equal(3, read.Output.Count);
@@ -941,6 +953,10 @@ public partial class ProductionTests
 
     // ------------------------------------------------------------------ job lists
 
+    /// <summary>The index of the list job the character is on (<see cref="PermaJobs.ListJob"/>), -1 when none.</summary>
+    static int JobOf(SimWorld world, CharacterId id) =>
+        PermaJobs.ListJob(world.Characters.Cold(id.Slot)!, (CharacterTask)world.Characters.Next[id.Slot].Task) is { Implicit: false } job ? job.Job : -1;
+
     [Fact]
     public void A_job_list_runs_the_first_job_that_can_run_and_goes_back_to_a_higher_one()
     {
@@ -952,25 +968,25 @@ public partial class ProductionTests
         var cold = rig.World.Characters.Cold(w.Slot)!;
         void Look() => rig.World.RunTicks(2 * ProductionSystem.JobCheckTicks);
         Look();
-        Assert.Equal((rig.Sites[0], 0), (cold.OperateSite, cold.JobIndex));
+        Assert.Equal((rig.Sites[0], 0), (cold.OperateSite, JobOf(rig.World, w)));
         // A full output with no storage blocks A: on to B; emptied, A takes over again.
         rig.Machine(0).Output!.Count = 10;
         Look();
-        Assert.Equal((rig.Sites[1], 1), (cold.OperateSite, cold.JobIndex));
+        Assert.Equal((rig.Sites[1], 1), (cold.OperateSite, JobOf(rig.World, w)));
         rig.Machine(0).Output!.Count = 0;
         Look();
-        Assert.Equal((rig.Sites[0], 0), (cold.OperateSite, cold.JobIndex));
+        Assert.Equal((rig.Sites[0], 0), (cold.OperateSite, JobOf(rig.World, w)));
         // An order takes it off its job; idle again, the list takes over.
         rig.World.Commands.Enqueue(new MoveOrder([w], At + new Vector3(0, 0, 150)) { Tick = rig.World.Tick });
         rig.World.RunTicks(2);
-        Assert.Equal(-1, cold.JobIndex);
+        Assert.Equal(-1, JobOf(rig.World, w));
         for (int t = 0; t < 3000 && rig.World.Characters.Next[w.Slot].Task != (byte)CharacterTask.Idle; t++) rig.World.RunTick();
         Look();
-        Assert.Equal((rig.Sites[0], 0), (cold.OperateSite, cold.JobIndex));
+        Assert.Equal((rig.Sites[0], 0), (cold.OperateSite, JobOf(rig.World, w)));
         // Removing the job it is on: the next one runs.
         rig.World.Commands.Enqueue(new RemoveJob(w, 0) { Tick = rig.World.Tick });
         Look();
-        Assert.Equal((rig.Sites[1], 0, 1), (cold.OperateSite, cold.JobIndex, cold.Jobs.Count));
+        Assert.Equal((rig.Sites[1], 0, 1), (cold.OperateSite, JobOf(rig.World, w), cold.Jobs.Count));
     }
 
     /// <summary>A character takes a machine job just inside the original's job range (about 6517, docs/game/ai-tasks.md "Perma-jobs") and skips one just outside it.</summary>
@@ -983,7 +999,7 @@ public partial class ProductionTests
         rig.World.Commands.Enqueue(new AddJob([far], Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY, rig.Sites[0]) { Tick = rig.World.Tick });
         rig.World.Commands.Enqueue(new AddJob([near], Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY, rig.Sites[1]) { Tick = rig.World.Tick });
         rig.World.RunTicks(2 * ProductionSystem.JobCheckTicks);
-        Assert.Equal((-1, 0), (rig.World.Characters.Cold(far.Slot)!.JobIndex, rig.World.Characters.Cold(near.Slot)!.JobIndex));
+        Assert.Equal((-1, 0), (JobOf(rig.World, far), JobOf(rig.World, near)));
     }
 
     /// <summary>
@@ -1209,8 +1225,8 @@ public partial class ProductionTests
         Assert.Equal(own, field.Yield(ResourceField.IronResource, rocks[0].Position));
     }
 
-    /// <summary>The farm catch-up (docs/game/buildings-production.md "Unloaded zones"): watered, the crop moves on h hours and the water is used; dry, only the watered hours
-    /// (water / (rate x h)) count in full and the rest grows at the drought multiplier while the death rises.</summary>
+    /// <summary>The farm catch-up (docs/game/buildings-production.md "Farm catch-up"): watered, the crop moves on h hours and w x rate water is used; dry, only the watered hours
+    /// (water / (rate x h), the per-second rate with the game hours, as the game mixes them) count in full and the rest grows at the drought multiplier while the death rises.</summary>
     [Fact]
     public void A_farm_catches_up_its_unloaded_hours_watered_or_in_drought()
     {
@@ -1222,24 +1238,25 @@ public partial class ProductionTests
             var copy = new Machine
             {
                 Site = m.Site, Position = m.Position, Data = m.Data with { Farm = m.Data.Farm! with { DroughtMultiplier = 0.5f, DroughtDeathTime = 100 } },
-                Inputs = m.Inputs, Farm = new FarmState(4), WaterRate = 24 / MachineData.DaySeconds,   // one water per hour
+                Inputs = m.Inputs, Farm = new FarmState(4), WaterRate = 1,
             };
             (m.Inputs[0].Level, m.Inputs[0].Count) = (level, count);
             return copy;
         }
 
-        // Watered: 10 water lasts 10 / (1 x 0.5) = 20 h, more than the 0.5 h away; growth 0.5 of the 1 h growth time, one whole water drawn for 0.5.
+        // Watered: 10 water gives w = 10 / (1 x 2) = 5, more than the 2 h away; the 1 h growth time and 1 h of the 48 h harvest time pass; 5 water drawn, the level full.
         var wet = Copy(0, 10);
-        rig.Production.TimeSkip(rig.World, wet, 0.5f, false);
-        Assert.Equal(0.5f, wet.Farm!.Growth, 4);
+        rig.Production.TimeSkip(rig.World, wet, 2, false);
+        Assert.Equal(1 + 1 / 48f, wet.Farm!.Growth, 4);
         Assert.Equal(0, wet.Farm.Death);
-        Assert.Equal(9, wet.Inputs[0].Count);
+        Assert.Equal(5, wet.Inputs[0].Count);
+        Assert.Equal(1, wet.Inputs[0].Level);
 
-        // Dry: 0.2 water over 4 h counts 0.2 / (1 x 4) = 0.05 h; the other 3.95 h at half speed reach 0.05 + 1.975 = 2.025 h of the cycle: ripening,
-        // 1 + 1.025 / 48 of the harvest time; the death 3.95 / 100. The water left is less than it needs: the level empties.
+        // Dry: 0.2 water over 4 h counts 0.2 / (1 x 4) = 0.05 h; the other 3.95 h pass unstretched (FUN_1400df6e0: the drought only stretches the growth phase, here 1 / 0.5 = 2 h)
+        // and reach 4 h of the cycle: ripening, 1 + (4 - 2) / 48 of the harvest time; the death 3.95 / 100. The water left is less than it needs: the level empties.
         var dry = Copy(0.2f, 0);
         rig.Production.TimeSkip(rig.World, dry, 4, false);
-        Assert.Equal(1 + 1.025f / 48, dry.Farm!.Growth, 4);
+        Assert.Equal(1 + 2f / 48, dry.Farm!.Growth, 4);
         Assert.Equal(0.0395f, dry.Farm.Death, 4);
         Assert.Equal(0, dry.Inputs[0].Level);
     }

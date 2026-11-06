@@ -69,8 +69,9 @@ sealed class CharacterAssembly(PopulationData data)
             return null;
         }
         var armour = inventory.Items.Where(i => i.Type == FcsRecordType.ARMOUR && Items.InventoryCommands.IsEquipmentSection(i.Section) && combat.Armour(i.Record) is not null)
-            // Its stats follow the level (the grade's quality), not `quality`, which is 100 on saved armour; level 0 is full strength (docs/game/ui-screens.md "Armour").
-            .Select(i => ArmourPiece.Create(combat.Armour(i.Record)!, i.Level <= 0 ? 1f : Math.Clamp(i.Level, 0, 100) * 0.01f));
+            // Its stats follow the level (the grade's quality), not `quality`, which is 100 on saved armour; level 0 is full strength without the slot rules (docs/game/combat.md "Armour and medical hit").
+            .Select(i => (Data: combat.Armour(i.Record)!, i.Level))
+            .Select(x => ArmourPiece.Create(x.Data, ArmourPiece.QualityOf(x.Data, x.Level), ArmourPiece.Graded(x.Data, x.Level)));
         // The crossbow: the first CROSSBOW in the weapon sections (back, then hip), its quality the level x 0.01 like a weapon's.
         CrossbowInstance? crossbow = null;
         foreach (var section in new[] { "back", "hip" })
@@ -84,7 +85,7 @@ sealed class CharacterAssembly(PopulationData data)
         string fistsId = (raceId is null ? null : data.Db.Find(raceId))?.GetReferences("fists lv1").Select(r => r.TargetStringId).FirstOrDefault() ?? "FISTS";
         // A fist blow reads only the item's record (multipliers, bleed, penetration, length), so its quality does not matter.
         var fists = (combat.Weapon(fistsId) ?? combat.Weapon("FISTS")) is { } fistsData ? WeaponInstance.Create(1, fistsData, null, null, combat.Constants) : null;
-        var fighter = new Fighter(First("hip"), armour, backpackStealth, backpackAthletics) { BackWeapon = First("back"), Crossbow = crossbow, Fists = fists };
+        var fighter = new Fighter(First("hip"), armour, backpackStealth, backpackAthletics, packRecord?.GetInt("combat skill bonus", 0) ?? 0, packRecord?.GetFloat("combat speed mult", 1) ?? 1) { BackWeapon = First("back"), Crossbow = crossbow, Fists = fists };
         if (medical is not null) fighter.SetArms(medical.ArmWorks(left: false), medical.ArmWorks(left: true));
         return fighter;
     }
@@ -207,18 +208,39 @@ sealed class CharacterAssembly(PopulationData data)
         cold.Stats = stats;
         cold.Medical = medical;
         if (AnimalData.From(record) is { } animal) (cold.Animal, cold.ShownAge) = (animal, age);
-        cold.Inventory = data.Items.Build(record, cold.Appearance?.Loadout);
+        cold.Inventory = data.Items.Build(record, cold.Appearance?.Loadout, seed, Rng.Key(id));
         if (!cold.IsPlayer && (data.PlayerFaction < 0 || cold.Faction != data.PlayerFaction)) data.Items.AddSpawnMoney(cold.Inventory, record, seed, Rng.Key(id));
         // CHARACTER `wears uniform` (CharacterHuman::setupInventorySections, Verified read; Observed use): the armour it is made wearing is its faction's uniform.
         if (record is { Type: Meitou.Data.Fcs.FcsRecordType.CHARACTER } && record.GetBool("wears uniform") && (uint)cold.Faction < (uint)data.Factions.Count)
             foreach (var piece in cold.Inventory.Items)
                 if (piece.Type == Meitou.Data.Fcs.FcsRecordType.ARMOUR && piece.Section != "main") piece.Uniform = data.Factions[cold.Faction].Id;
+        // CHARACTER `shaved`: a character made shaven-headed (Character vslot 124 isHeadShaven); a loaded one takes its saved state instead (Saving.SlaveSave).
+        if (record is { Type: Meitou.Data.Fcs.FcsRecordType.CHARACTER }) cold.Shaved = record.GetBool("shaved");
+        FitRolledLimbs(cold.Appearance?.Loadout, cold.Inventory, medical);
         Dye(cold, cold.Inventory);
         cold.Fighter = FighterOf(record, cold.Inventory, cold.Medical, cold.Race?.StringId);
         cold.WaterFactor = raceData.WaterAvoidance * (cold.Faction == data.PlayerFaction && data.PlayerFaction >= 0 ? 0.5f : 1);
         cold.RoadPreference = data.RoadPreferenceOf(cold.Faction);
         hot.MaxSpeed = Speed.Run(raceData, stats, medical, 1, statsFactor: cold.Fighter?.AthleticsFactor ?? 1);
-        // A start without a limb (CHARACTER `starting health`) shows its stump.
+        // A start without a limb (CHARACTER `starting health`) shows its stump, one made with a prosthetic (`robot limbs`) its prosthetic.
         if (Enumerable.Range(0, 4).Any(k => medical.LimbPart(k) is { Limb: not LimbState.Original })) RefreshEquipment(cold);
+    }
+
+    /// <summary>
+    /// Fits the prosthetics a new character's loadout rolled from its CHARACTER <c>robot limbs</c> (<c>CharacterHuman::setupInventorySections</c>, <b>Verified</b>): each is made at
+    /// its rolled level and put on its limb whatever the limb was, so it also covers a <c>starting health</c> stump. The item sits in the limb's inventory section, as a fitted one does.
+    /// </summary>
+    void FitRolledLimbs(Loadout? loadout, Inventory inventory, MedicalState medical)
+    {
+        if (loadout is null) return;
+        for (int k = 0; k < loadout.Limbs.Length; k++)
+        {
+            if (loadout.Limbs[k] is not { State: (int)LimbState.Replaced, Prosthetic: { } record } rolled) continue;
+            if (data.Items.Limb(record.StringId) is not { } limb || limb.LimbSlot != k || data.Items.Create(record.StringId) is not { } item) continue;
+            item.Level = rolled.Level;
+            if (!medical.FitReplacement(limb, item)) continue;
+            (item.Section, item.X, item.Y) = (LimbReplacement.SlotOf(k), 0, 0);
+            inventory.Items.Add(item);
+        }
     }
 }

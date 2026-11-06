@@ -4,7 +4,7 @@
         x:Class="Meitou.Launcher.MainWindow"
         Title="Meitou Launcher" Icon="avares://meitou-launcher/Assets/meitou.ico"
         WindowDecorations="None" TransparencyLevelHint="Transparent"
-        WindowStartupLocation="CenterScreen" Width="1200" Height="936" MinWidth="760" MinHeight="540">
+        WindowStartupLocation="CenterScreen" Width="1200" Height="936" MinWidth="800" MinHeight="540">
   <!-- No system frame: the plate floats on a transparent window with its own title bar; the margin holds its shadow and the resize grips. -->
   <Panel>
     <Border x:Name="Plate" Classes="plate" Margin="8" Padding="16,0,16,12">
@@ -53,13 +53,27 @@
           </Button>
           <!-- Play the newest installed version, or the one picked from the arrow's menu (or on Versions) -->
           <StackPanel x:Name="PlayPanel" DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
-            <!-- A fixed least width (with the arrow, Install latest's 352) so "Play latest" / "Play latest nightly" do not move the footer -->
+            <!-- A fixed least width (with the arrow, Install latest's 352) so "Play latest" / "Play latest nightly" do not move the footer;
+                 beside Continue it is "Main menu" over the version, no wider than its text -->
             <Button x:Name="PlayButton" Classes="paper" Click="Play_Click" CornerRadius="7,0,0,7" MinWidth="312">
               <!-- Playing the latest while a newer release is not installed, it is the update button: download icon, "Update to v…" -->
               <StackPanel Orientation="Horizontal" Spacing="12">
                 <Path x:Name="PlayIcon" Data="M0,0 L0,18 L15,9 Z" VerticalAlignment="Center" />
                 <Path x:Name="UpdateIcon" Data="M6,0 H11 V8 H16 L8.5,16 L1,8 H6 Z M0,18 H17 V20 H0 Z" VerticalAlignment="Center" IsVisible="False" />
-                <TextBlock x:Name="PlayText" Text="Play latest" VerticalAlignment="Center" Foreground="{StaticResource Secondary}" />
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock x:Name="PlayText" Text="Play latest" Foreground="{StaticResource Secondary}" />
+                  <TextBlock x:Name="PlaySubText" FontSize="11" LineHeight="13" IsVisible="False" Foreground="{StaticResource Secondary}" />
+                </StackPanel>
+              </StackPanel>
+            </Button>
+            <!-- Continue: the newest save, when it was made with the enabled mods (ContinueSave.cs); shown while there is a save -->
+            <Button x:Name="ContinueButton" Classes="paper" Click="Continue_Click" CornerRadius="0" Margin="-1,0,0,0" MinWidth="250" HorizontalContentAlignment="Left" IsVisible="False">
+              <StackPanel Orientation="Horizontal" Spacing="12">
+                <Path Data="M0,0 L0,18 L15,9 Z" VerticalAlignment="Center" />
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock Text="Continue" LineHeight="23" Foreground="{StaticResource Secondary}" />
+                  <TextBlock x:Name="ContinueSaveText" FontSize="11" LineHeight="13" MaxWidth="180" TextTrimming="CharacterEllipsis" Foreground="{StaticResource Secondary}" />
+                </StackPanel>
               </StackPanel>
             </Button>
             <Button x:Name="PlayVersionButton" Classes="paper" CornerRadius="0,7,7,0" MinWidth="0" Padding="13,6" Margin="-1,0,0,0"
@@ -170,7 +184,7 @@
               </Button>
             </Panel>
           </Border>
-          <ScrollViewer>
+          <ScrollViewer Classes="page">
             <StackPanel x:Name="NewsPanel" Spacing="14" Margin="0,0,14,4" />
           </ScrollViewer>
         </DockPanel>
@@ -188,6 +202,7 @@
               <ComboBox x:Name="PresetBox" MinWidth="170" PlaceholderText="Presets" />
               <Button Content="Apply" Click="ApplyPreset_Click" />
               <Button Content="Delete" Click="DeletePreset_Click" />
+              <Button Content="From save" Click="ModsFromSave_Click" ToolTip.Tip="Take the mod list and load order a save was made with" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Button Content="Select all" Click="SelectAll_Click" />
@@ -197,6 +212,8 @@
           </DockPanel>
           <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
             <Button DockPanel.Dock="Left" Content="Save mod list" Click="SaveMods_Click" ToolTip.Tip="Write data/mods.cfg (Play does this too)" />
+            <Button DockPanel.Dock="Left" Content="Code mods" Click="CodeMods_Click" Margin="6,0,0,0"
+                    ToolTip.Tip="Choose which code mods may run their own C# code; the others load as data only" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
               <TextBox x:Name="PresetName" Width="240" PlaceholderText="New preset name" />
               <Button Content="Save as preset" Click="SavePreset_Click" />
@@ -263,7 +280,7 @@
             </ListBox>
             <Border Grid.Column="1" Classes="vrule" HorizontalAlignment="Center" />
             <TextBlock Grid.Column="2" x:Name="NotesEmpty" Classes="empty" Text="Select a release to read its notes." />
-            <ScrollViewer Grid.Column="2">
+            <ScrollViewer Grid.Column="2" Classes="page">
               <!-- The notes' Markdown, drawn like the news posts (MarkdownView) -->
               <ContentControl x:Name="ReleaseNotes" Margin="0,0,14,0" />
             </ScrollViewer>
@@ -271,21 +288,26 @@
         </DockPanel>
 
         <!-- Graphics: the game's display settings and main sliders (GraphicsPage.cs), rows built in code -->
-        <ScrollViewer x:Name="GraphicsPage" IsVisible="False">
-          <StackPanel Margin="0,0,14,0">
-            <Border Classes="header" Margin="0,0,0,10">
-              <DockPanel>
-                <TextBlock x:Name="GraphicsFileText" DockPanel.Dock="Right" Classes="aside" />
-                <TextBlock Text="Graphics" />
-              </DockPanel>
-            </Border>
-            <StackPanel x:Name="GraphicsPanel" />
-          </StackPanel>
-        </ScrollViewer>
+        <DockPanel x:Name="GraphicsPage" IsVisible="False">
+          <!-- Footer: Reset graphics stays at the bottom of the panel while the rows scroll -->
+          <Border x:Name="GraphicsFooter" DockPanel.Dock="Bottom" BorderBrush="{StaticResource PlateRim}" BorderThickness="0,1,0,0"
+                  Margin="0,6,0,0" Padding="0,4,24,0" IsVisible="False" />
+          <ScrollViewer Classes="page">
+            <StackPanel Margin="0,0,14,0">
+              <Border Classes="header" Margin="0,0,0,10">
+                <DockPanel>
+                  <TextBlock x:Name="GraphicsFileText" DockPanel.Dock="Right" Classes="aside" />
+                  <TextBlock Text="Graphics" />
+                </DockPanel>
+              </Border>
+              <StackPanel x:Name="GraphicsPanel" />
+            </StackPanel>
+          </ScrollViewer>
+        </DockPanel>
 
         <!-- Settings: one row per option, name and description left, control right -->
-        <ScrollViewer x:Name="SettingsPage" IsVisible="False">
-          <StackPanel>
+        <ScrollViewer x:Name="SettingsPage" Classes="page" IsVisible="False">
+          <StackPanel Margin="0,0,14,0">
             <Border Classes="header" Margin="0,0,0,10">
               <TextBlock Text="Settings" />
             </Border>
@@ -418,14 +440,22 @@
 
     <!-- Resize grips over the plate's visible edge: 4 px outside it, 6 px inside (hidden while maximised) -->
     <Panel x:Name="Grips">
-      <Border Tag="North" Height="10" VerticalAlignment="Top" Margin="18,4,18,0" Background="Transparent" Cursor="SizeNorthSouth" PointerPressed="Grip_PointerPressed" />
-      <Border Tag="South" Height="10" VerticalAlignment="Bottom" Margin="18,0,18,4" Background="Transparent" Cursor="SizeNorthSouth" PointerPressed="Grip_PointerPressed" />
-      <Border Tag="West" Width="10" HorizontalAlignment="Left" Margin="4,18,0,18" Background="Transparent" Cursor="SizeWestEast" PointerPressed="Grip_PointerPressed" />
-      <Border Tag="East" Width="10" HorizontalAlignment="Right" Margin="0,18,4,18" Background="Transparent" Cursor="SizeWestEast" PointerPressed="Grip_PointerPressed" />
-      <Border Tag="NorthWest" Width="18" Height="18" Margin="4,4,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Background="Transparent" Cursor="TopLeftCorner" PointerPressed="Grip_PointerPressed" />
-      <Border Tag="NorthEast" Width="18" Height="18" Margin="0,4,4,0" HorizontalAlignment="Right" VerticalAlignment="Top" Background="Transparent" Cursor="TopRightCorner" PointerPressed="Grip_PointerPressed" />
-      <Border Tag="SouthWest" Width="18" Height="18" Margin="4,0,0,4" HorizontalAlignment="Left" VerticalAlignment="Bottom" Background="Transparent" Cursor="BottomLeftCorner" PointerPressed="Grip_PointerPressed" />
-      <Border Tag="SouthEast" Width="18" Height="18" Margin="0,0,4,4" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="Transparent" Cursor="BottomRightCorner" PointerPressed="Grip_PointerPressed" />
+      <Border Tag="North" Height="10" VerticalAlignment="Top" Margin="18,4,18,0" Background="Transparent" Cursor="SizeNorthSouth" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
+      <Border Tag="South" Height="10" VerticalAlignment="Bottom" Margin="18,0,18,4" Background="Transparent" Cursor="SizeNorthSouth" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
+      <Border Tag="West" Width="10" HorizontalAlignment="Left" Margin="4,18,0,18" Background="Transparent" Cursor="SizeWestEast" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
+      <Border Tag="East" Width="10" HorizontalAlignment="Right" Margin="0,18,4,18" Background="Transparent" Cursor="SizeWestEast" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
+      <Border Tag="NorthWest" Width="18" Height="18" Margin="4,4,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" Background="Transparent" Cursor="TopLeftCorner" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
+      <Border Tag="NorthEast" Width="18" Height="18" Margin="0,4,4,0" HorizontalAlignment="Right" VerticalAlignment="Top" Background="Transparent" Cursor="TopRightCorner" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
+      <Border Tag="SouthWest" Width="18" Height="18" Margin="4,0,0,4" HorizontalAlignment="Left" VerticalAlignment="Bottom" Background="Transparent" Cursor="BottomLeftCorner" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
+      <Border Tag="SouthEast" Width="18" Height="18" Margin="0,0,4,4" HorizontalAlignment="Right" VerticalAlignment="Bottom" Background="Transparent" Cursor="BottomRightCorner" PointerPressed="Grip_PointerPressed" PointerMoved="Grip_PointerMoved"
+              PointerReleased="Grip_PointerReleased" PointerCaptureLost="Grip_PointerCaptureLost" />
     </Panel>
   </Panel>
 </Window>

@@ -19,7 +19,7 @@ sealed partial class PlayerInterface
     /// <summary>The character whose bag the loot window opened (not left open with OPEN BAG): it closes again with the loot window unless OPEN BAG was pressed meanwhile.</summary>
     CharacterId lootOpenedBag = CharacterId.None;
 
-    static bool IsAnimal(CharacterSnapshot? c) => c?.Appearance?.Animal is not null;
+    static bool IsAnimal(CharacterSnapshot? c) => c is { Animal: true };
 
     static bool IsLootScreen(string screen) => screen is "loot" or "loot-bag";
 
@@ -42,7 +42,7 @@ sealed partial class PlayerInterface
         if (faithfulScreens is null || characterInventoryLayout is null || animalInventoryLayout is null) return;
         foreach (var (id, owner) in pinnedInventories.Keys.Select(slot => (slot, WindowCharacter(slot))).Prepend(("inventory", InventoryOwner())).Append(("loot", LootBody())))
         {
-            bool animal = owner?.Appearance?.Animal is not null;
+            bool animal = IsAnimal(owner);
             if (animalWindow.GetValueOrDefault(id) == animal) continue;
             animalWindow[id] = animal;
             faithfulScreens.Replace(id, animal ? animalInventoryLayout : characterInventoryLayout);

@@ -39,7 +39,12 @@ internal sealed partial class ZoneGeometryGatherer : IDisposable
     readonly BuildingLayouts layouts;
 
     NavRuntimeBuildings? runtime;
-    internal void UseRuntimeSnapshot(NavRuntimeBuildings? snapshot) => runtime = snapshot;
+    System.Collections.Frozen.FrozenSet<(int X, int Z)>? ownershipSnapshot;
+    internal void UseRuntimeSnapshot(NavRuntimeBuildings? snapshot)
+    {
+        runtime = snapshot;
+        ownershipSnapshot = levels.FoliageOwnership;
+    }
 
     public ZoneGeometryGatherer(GameInstall install, GameDatabase db, WorldLevelData levels, CollisionCache collision, NavRuntimeBuildings? runtime = null)
     {
@@ -56,12 +61,13 @@ internal sealed partial class ZoneGeometryGatherer : IDisposable
         }
         seedsByZone = NavSeeds.Load(install);
         layouts = new BuildingLayouts(db, levels.Interiors);
+        levels.ConfigurePreparedLayouts(layouts);
     }
 
     /// <summary>Whether foliage collision is gathered (it needs the biome data and costs a foliage placement per zone).</summary>
     public bool IncludeFoliage { get; set; } = true;
 
-    /// <summary>Add a prism carver around every convex obstacle, so the ground inside a closed building volume is removed too (the original's cutting materials).</summary>
+    /// <summary>Every convex obstacle is a <see cref="NavSolid"/> too, so the ground inside a closed building volume is removed (the original's cutting materials).</summary>
     public bool CarveConvexObstacles { get; set; } = true;
 
     public void Dispose()
@@ -92,7 +98,6 @@ internal sealed partial class ZoneGeometryGatherer : IDisposable
             ZoneMin = new((float)ox, (float)oz),
             ZoneMax = new((float)ox + WorldLayout.ZoneSize, (float)oz + WorldLayout.ZoneSize),
             Margin = margin,
-            TerrainHeight = (x, z) => (float)map.HeightAt(x, z),
             Ground = ZoneHeights(zone),
         };
         var sw = Stopwatch.StartNew();
@@ -101,6 +106,7 @@ internal sealed partial class ZoneGeometryGatherer : IDisposable
         AddTerrain(g);
         double terrain = sw.Elapsed.TotalMilliseconds; sw.Restart();
         AddBuildings(g, buildingHash);
+        AddMapFeatures(g);
         double buildings = sw.Elapsed.TotalMilliseconds; sw.Restart();
         if (foliageTask is not null) AddFoliage(g, foliageTask.GetAwaiter().GetResult());
         Phases = (terrain, buildings, sw.Elapsed.TotalMilliseconds); sw.Restart();

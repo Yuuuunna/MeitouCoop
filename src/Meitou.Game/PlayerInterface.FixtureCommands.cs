@@ -19,6 +19,7 @@ sealed partial class PlayerInterface
         {
             PickLockOrder q => q with { Characters = Actors(q.Characters), ExpectedFixtureRevision = q.ExpectedFixtureRevision != 0 ? q.ExpectedFixtureRevision : q.Cage is { } cage ? Revision(cage) : CageOf(q.Prisoner) },
             GetOutOrder q => q with { Characters = Actors(q.Characters) },
+            DoorLockOrder q => q with { Characters = Actors(q.Characters), ExpectedFixtureRevision = q.ExpectedFixtureRevision != 0 ? q.ExpectedFixtureRevision : Revision(q.Door) },
             DoorOrder q => q with { Characters = Actors(q.Characters), ExpectedFixtureRevision = q.ExpectedFixtureRevision != 0 ? q.ExpectedFixtureRevision : Revision(q.Door) },
             ForceLockOrder q => q with { Characters = Actors(q.Characters), ExpectedFixtureRevision = q.ExpectedFixtureRevision != 0 ? q.ExpectedFixtureRevision : Revision(q.Fixture) },
             GetInCageOrder q => q with { Characters = Actors(q.Characters), ExpectedFixtureRevision = q.ExpectedFixtureRevision != 0 ? q.ExpectedFixtureRevision : Revision(q.Cage) },

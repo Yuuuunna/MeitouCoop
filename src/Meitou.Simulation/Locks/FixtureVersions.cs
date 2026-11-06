@@ -4,7 +4,7 @@ using System.Runtime.CompilerServices;
 namespace Meitou.Simulation.Locks;
 
 /// <summary>Client-observed fixture identity, independent of opening/lockpick progress.</summary>
-public abstract record FixtureCommand : SimCommand
+public abstract record FixtureCommand : OrderCommand
 {
     public ulong ExpectedFixtureRevision { get; init; }
 }

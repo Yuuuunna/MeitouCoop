@@ -19,7 +19,7 @@ public class StanceTests
         var combat = new CombatSystem(KatanaTechniques(), Constants, BaseGame, BodyOptions.Default, DuelFixture.Lengths, new CombatOptions { SelfApproach = false, TickMedical = false });
         var walk = new OpenGroundWalkability((_, _) => 150);
         using var world = new SimWorld(new WorldSettings { Seed = 3, Threads = 1, PublishSnapshots = false }, walk,
-            [new PursuitSystem(combat), new MovementSystem(new PathService(walk, true)), new BodySystem(BaseGame), combat]);
+            [new PursuitSystem(combat), new MovementSystem(new PathService(walk, true)), new BodySystem(BaseGame), combat, Senses(combat)]);
         CharacterId Make(Vector3 at) => world.Characters.Spawn(new CharacterHot { Position = at, Health = 100, MaxSpeed = 60, WalkSpeed = 15, Mode = SpeedMode.Free }, new Combatant().MakeCold(), 0);
         var a = Make(new Vector3(1000, 150, 1000));
         var b = Make(new Vector3(1200, 150, 1000));

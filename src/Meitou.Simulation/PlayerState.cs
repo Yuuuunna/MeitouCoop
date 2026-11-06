@@ -57,6 +57,16 @@ public sealed class PlayerState
     public IReadOnlyList<string> CreationRaces { get; set; } = [];
     /// <summary>The character of another faction the HUD shows (<see cref="InspectCommand"/>), or <see cref="CharacterId.None"/>. Display only: not hashed and not saved.</summary>
     public CharacterId Inspected { get; set; } = CharacterId.None;
+    /// <summary>
+    /// The character under the mouse pointer (the one a right click and its menu act on), or <see cref="CharacterId.None"/>: the publish gives it the menu's figures (kidnap and knock-out chances,
+    /// shackles), which it skips for the crowd. Set by the host as the pointer moves, not by a command (any thread). Display only: not hashed and not saved.
+    /// </summary>
+    public CharacterId Pointed
+    {
+        get { long v = Volatile.Read(ref pointed); return new((int)v, (int)(v >> 32)); }
+        set => Volatile.Write(ref pointed, (long)value.Generation << 32 | (uint)value.Slot);
+    }
+    long pointed = (long)CharacterId.None.Generation << 32 | (uint)CharacterId.None.Slot;
     /// <summary>The instance id of the building the HUD shows (<see cref="InspectBuildingCommand"/>), or null. Display only: not hashed and not saved.</summary>
     public string? InspectedBuilding { get; set; }
     /// <summary>The characters the pinned inventory windows show (<see cref="ShowInventoryCommand"/>). Display only: not hashed and not saved.</summary>
@@ -225,6 +235,11 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         Carrying.PickUpOrder o => o.Carriers, Carrying.PutDownOrder o => o.Carriers, Carrying.LootOrder o => o.Looters, Carrying.OpenLootOrder o => o.Looters,
         Carrying.StealthKoOrder o => o.Attackers, FirstAid.TreatOrder o => o.Medics, FirstAid.SplintOrder o => o.Medics, Locks.PickLockOrder o => o.Characters,
         Locks.UseBedOrder o => o.Characters, Production.OperateOrder o => o.Characters, Construction.BuildOrder o => o.Characters,
+        // Every other right-click verb that names characters goes through the same dispatcher (FUN_1407f9e20 :96 sets the flag before any order-specific code); only the job giver's orders (45, 0x111, 0xdf) skip it.
+        Dialogue.TalkOrder o => [o.Talker], FirstAid.RestOrder o => o.Characters, Items.OpenContainerOrder o => o.Characters, Items.PickUpItemOrder o => o.Characters,
+        Locks.DoorOrder o => o.Characters, Locks.DoorLockOrder o => o.Characters, Locks.ForceLockOrder o => o.Characters, Locks.PutShacklesOrder o => o.Characters, Locks.ShackleOrder o => o.Characters,
+        Locks.SetFreeOrder o => o.Characters, Locks.GetInCageOrder o => o.Characters, Locks.GetOutOrder o => o.Characters, Locks.PutInBedOrder o => o.Carriers, Crime.PutInCageOrder o => o.Carriers,
+        Construction.DismantleOrder o => o.Characters, Production.ProspectOrder o => [o.Character],
         _ => null,
     };
 
@@ -245,7 +260,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                 // Standing up (not staying low) on the order trains toughness when enemies are about.
                 if (!low) world.SystemOf<BodySystem>()?.GotUpByOrder(world, slot, cold);
             }
-            else if (medical.StayingLow && cold.GettingUpUntil > world.Tick) medical.StandUp();
+            else if (medical.StayingLow && CharacterFacts.GettingUp(cold, world.Tick)) medical.StandUp();
         }
     }
 
@@ -259,9 +274,19 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
             switch (command)
             {
                 case SelectCommand select:
-                    var selectable = (command.Issuer is null ? select.Characters : world.CommandCharacters(select, select.Characters)).Where(id =>
+                    var candidates = (command.Issuer is null ? select.Characters : world.CommandCharacters(select, select.Characters)).Where(id =>
                         table.TryResolveNext(id, out int slot) && table.Cold(slot)!.IsPlayer).ToArray();
+                    if (candidates.Length == 0) break;
+                    // A non-additive select with any candidate clears the selection first; the gate then keeps out the dead (FUN_1407f3b50, FUN_1407f7f20).
+                    if (!select.Additive && !(select.Toggle && candidates.Length == 1 && player.Selection.Contains(candidates[0]))) player.Selection.Clear();
+                    var selectable = candidates.Where(id => !(table.TryResolveNext(id, out int living) && table.Cold(living)!.Medical is { Dead: true })).ToArray();
                     if (selectable.Length == 0) break;
+                    // A shift-click on a selected character takes it out, never emptying the selection (it stays when it is the only one).
+                    if (select.Toggle && selectable.Length == 1 && player.Selection.Contains(selectable[0]))
+                    {
+                        if (player.Selection.Count >= 2) player.Selection.Remove(selectable[0]);
+                        break;
+                    }
                     // Selecting meets the owner's faction (FUN_1407f7f20), here the player's.
                     player.Meet(player.Faction);
                     // Picking one of your own shows them: the inspected character of another faction no longer takes the HUD.
@@ -281,6 +306,9 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                     break;
                 case SeenDiscoveriesCommand:
                     player.SeeDiscoveries();
+                    break;
+                case PointedCommand pointer:
+                    player.Pointed = table.TryResolveNext(pointer.Target, out _) ? pointer.Target : CharacterId.None;
                     break;
                 case InspectCommand inspect:
                     player.Inspected = inspect.Target;
@@ -305,7 +333,8 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                     foreach (var id in world.CommandCharacters(stop, stop.Characters))
                     {
                         if (!table.TryResolveNext(id, out int slot) || !table.Cold(slot)!.IsPlayer) continue;
-                        MovementSystem.Stop(table, slot);
+                        table.Cold(slot)!.OrderQueue.Clear();   // drops the queued orders too
+                        TaskStart.End(world, slot, TaskEnd.Stopped);
                         table.Cold(slot)!.FollowOrder = CharacterId.None;
                     }
                     break;
@@ -332,7 +361,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                     if (Enum.IsDefined(formation.Formation) && world.CommandFaction(formation, FactionPermission.ManageSquads) is { } formed)
                         SquadAiKeys.SetFormation(world, formed.Index, (int)formation.Formation, data?.Factions);
                     break;
-                case OrdersCommand or RunSpeedCommand or StandUpCommand:
+                case OrdersCommand or RunSpeedCommand or StandUpCommand or ManoeuvreCommand:
                     Orders.Apply(world, command);
                     break;
                 case Editing.EditCharacter edit:
@@ -342,6 +371,8 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                     DebugCheats.Apply(world, data, assembly, debug);
                     break;
                 case Editing.FinishCreation:
+                    if (command.Issuer is not null || world.Players.RequiresExplicitControl) break;
+                    if (player.InCreation) Editing.CharacterEditing.EndCreation(world, assembly);
                     player.InCreation = false;
                     break;
                 case Items.PickUpItemOrder pick:
@@ -401,7 +432,7 @@ public enum SquadAi : ushort
     Sit = 4,
     /// <summary>Heal Allies (+0x110): the medic and robotics jobs also treat characters of allied factions (<see cref="FirstAid.FirstAidSystem"/>).</summary>
     Heal = 8,
-    /// <summary>Help Allies (+0x111): idle characters join the defence of characters of allied factions (<see cref="RetaliationSystem"/>).</summary>
+    /// <summary>Help Allies (+0x111): the player's characters count allied factions' fighters in the protect-allies finder (squared; <see cref="RetaliationSystem"/> goal 15).</summary>
     Help = 16,
     /// <summary>Rescue Allies (+0x112): the rescue job also picks up downed characters of allied factions (<see cref="Carrying.CarrySystem"/>).</summary>
     Rescue = 32,
@@ -411,6 +442,10 @@ public enum SquadAi : ushort
     Feed = 128,
     /// <summary>Shoot first (+0x11a): the player's turret gunners also take dangerous neutrals (<see cref="SquadAiRules.ShootsFirstAt"/>).</summary>
     ShootFirst = 256,
+    /// <summary>Heal Neutrals (Meitou-only): player medics also treat downed characters of factions that are no enemy (<see cref="FirstAid.FirstAidSystem"/> pass 2).</summary>
+    HealNeutrals = 512,
+    /// <summary>Heal All (Meitou-only): as <see cref="HealNeutrals"/>, and downed enemies too.</summary>
+    HealAll = 1024,
     /// <summary>A new game's options (<b>Observed</b>: 511 of the owner's saves; heal and help are on in 4, rescue and shoot first in none).</summary>
     Defaults = Ditch | Sleep | Sit | Share | Feed,
 }
@@ -433,16 +468,22 @@ public static class SquadAiKeys
         (SquadAi.Share, "share"), (SquadAi.Feed, "feed"), (SquadAi.ShootFirst, "shootfirst"),
     ];
 
+    /// <summary>The Meitou-only options' CAMERA bools, written only while on.</summary>
+    public static readonly (SquadAi Option, string Key)[] MeitouKeys = [(SquadAi.HealNeutrals, "meitou heal neutrals"), (SquadAi.HealAll, "meitou heal all")];
+
     public static void Write(Meitou.Data.Fcs.FcsRecord camera, SquadAi options)
     {
         foreach (var (option, key) in Keys) camera.Bools[key] = (options & option) != 0;
+        foreach (var (option, key) in MeitouKeys)
+            if ((options & option) != 0) camera.Bools[key] = true;
+            else camera.Bools.Remove(key);
     }
 
     /// <summary>The options a CAMERA record holds; an absent key keeps the option's default (<see cref="SquadAi.Defaults"/>).</summary>
     public static SquadAi Read(Meitou.Data.Fcs.FcsRecord camera)
     {
         var options = SquadAi.Defaults;
-        foreach (var (option, key) in Keys)
+        foreach (var (option, key) in Keys.Concat(MeitouKeys))
             if (camera.Bools.TryGetValue(key, out bool on)) options = on ? options | option : options & ~option;
         return options;
     }
@@ -476,13 +517,10 @@ public static class SquadAiRules
     /// <summary>
     /// Whether a player turret gunner with <see cref="SquadAi.ShootFirst"/> may take a sensed non-enemy of a faction whose fundamental type is <paramref name="fundamentalType"/> and
     /// whose own default relation is <paramref name="defaultRelation"/> (<c>FUN_1404374d0</c>, asked only when no enemy is in its sights): type 0 or 8, or a default below -30.
-    /// Such a target weighs <see cref="ShootFirstWeight"/> where an enemy weighs 1 (CombatSystem.Turrets.cs).
+    /// Such a target is scored at range factor <see cref="TurretFormulas.ShootFirstRange"/> (CombatSystem.Turrets.cs).
     /// </summary>
     public static bool ShootsFirstAt(SquadAi options, int fundamentalType, float defaultRelation) =>
         (options & SquadAi.ShootFirst) != 0 && (fundamentalType is 0 or 8 || defaultRelation < -30);
-
-    /// <summary>A shoot-first target's weight against an enemy's 1 (<c>FUN_1404374d0</c>: 0.6).</summary>
-    public const float ShootFirstWeight = 0.6f;
 }
 
 /// <summary>What the player knows of a town (the GAMESTATE_TOWN bools <c>discovered</c>, <c>explored</c>, <c>recently discovered</c>; docs/game/ui-screens.md "Map").</summary>

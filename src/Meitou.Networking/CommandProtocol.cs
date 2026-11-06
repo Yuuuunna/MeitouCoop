@@ -30,7 +30,7 @@ public static class CommandProtocol
     static readonly IReadOnlyDictionary<ushort, Type> types = new Dictionary<ushort, Type>
     {
         [1] = typeof(MoveOrder), [2] = typeof(FollowOrder), [3] = typeof(StopCommand), [4] = typeof(SelectCommand),
-        [5] = typeof(AttackOrder), [6] = typeof(ShootAtOrder), [7] = typeof(OrdersCommand), [8] = typeof(RunSpeedCommand), [9] = typeof(StandUpCommand),
+        [5] = typeof(AttackOrder), [6] = typeof(ShootAtOrder), [7] = typeof(OrdersCommand), [8] = typeof(RunSpeedCommand), [9] = typeof(StandUpCommand), [10] = typeof(ManoeuvreCommand),
         [20] = typeof(OpenTrade), [21] = typeof(BuyItem), [22] = typeof(SellItem), [23] = typeof(CloseTrade), [24] = typeof(ArrangeStock),
         [30] = typeof(ArrangeInventory), [31] = typeof(QuickMoveItem), [32] = typeof(ReadMapItem), [33] = typeof(TransferInventoryItem),
         [34] = typeof(OpenContainerOrder), [35] = typeof(CloseContainer),
@@ -52,10 +52,10 @@ public static class CommandProtocol
         [140] = typeof(PickLockOrder), [141] = typeof(GetOutOrder), [142] = typeof(DoorOrder), [143] = typeof(SetFreeOrder),
         [144] = typeof(GetInCageOrder), [145] = typeof(ForceLockOrder), [146] = typeof(ShackleOrder), [147] = typeof(PutShacklesOrder),
         [148] = typeof(UseBedOrder), [149] = typeof(PutInBedOrder), [150] = typeof(ToggleDoorsOrder), [151] = typeof(ToggleDoorLocksOrder),
-        [152] = typeof(PutInCageOrder), [153] = typeof(PayBailOrder),
+        [152] = typeof(PutInCageOrder), [153] = typeof(PayBailOrder), [154] = typeof(DoorLockOrder),
         [160] = typeof(LiftItem), [161] = typeof(PlaceHeld), [162] = typeof(GiveHeld), [163] = typeof(DropHeld), [164] = typeof(ReturnHeld),
         [165] = typeof(PickUpItemOrder),
-        [180] = typeof(InspectCommand), [181] = typeof(InspectBuildingCommand), [182] = typeof(ShowInventoryCommand),
+        [180] = typeof(InspectCommand), [181] = typeof(InspectBuildingCommand), [182] = typeof(ShowInventoryCommand), [183] = typeof(PointedCommand), [184] = typeof(AreaArrival),
         [170] = typeof(OpenPlayerTrade), [171] = typeof(AcceptPlayerTrade), [172] = typeof(RevisePlayerTrade),
         [173] = typeof(ConfirmPlayerTrade), [174] = typeof(CancelPlayerTrade),
     };

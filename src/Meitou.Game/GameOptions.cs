@@ -20,13 +20,16 @@ sealed class GameOptions
     public bool LowEnd;
     /// <summary><c>--benchmark-baseline</c> (also passed on to WorldOptions): the benchmarks' settings for this run, the saved graphics neither applied nor overwritten.</summary>
     public bool BenchmarkBaseline;
-    /// <summary>With --screenshot, captures representative UI panels.</summary>
+    /// <summary><c>--mods-cfg</c>: read the enabled mods from this file instead of <c>data/mods.cfg</c> (also <c>MEITOU_MODS_CFG</c>; the option wins).</summary>
+    public string? ModsCfg;
     public bool UiShowcase;
     /// <summary>With <c>--screenshot</c>: one HUD/panel to open for the picture (null: the HUD only).</summary>
     public string? UiPanel;
+    /// <summary>With <c>--screenshot</c>: the settings menu's Graphics page in a set of states (docs/native-ui.md "Settings"), one picture each.</summary>
+    public bool SettingsShowcase;
     /// <summary>With <c>--screenshot</c>: control ticks (and their real time of simulation, at speed 1) run before the picture, with no input.</summary>
     public int Ticks;
-    public bool NoPopulation, NewGame, ListStarts;
+    public bool NoPopulation, NewGame, ListStarts, DataCheck;
     /// <summary>The animation sandbox (<c>--sandbox [n]</c>): 0 off, else the number of characters (1 or 2) on a flat wireframe floor.</summary>
     public int Sandbox;
     /// <summary>The CHARACTER record (name or id) the sandbox spawns (null: the default new-game start's first squad member).</summary>
@@ -66,6 +69,8 @@ sealed class GameOptions
     public double? QuitAfter;
     /// <summary>A save folder (Meitou's or the original game's) started in instead of a new world, loaded as the game menu's Load does (<c>--load</c>).</summary>
     public string? Load;
+    /// <summary><c>--continue</c>: start in the newest save (<see cref="Meitou.Content.SaveModList.Scan"/>), resolved into <see cref="Load"/> once the install is found.</summary>
+    public bool Continue;
     /// <summary><c>--play-bench &lt;dir&gt;</c>: the interactive game driven by a script, every frame measured, the results written there (GameHost.PlayBench.cs).</summary>
     public string? PlayBench;
     /// <summary><c>--no-precompile</c>: the methods are compiled on their first call only, not ahead on a background thread (JitWarmup).</summary>
@@ -86,9 +91,11 @@ sealed class GameOptions
           --fps-limit <n>            frame limit when vsync is off (default 150 from meitou.user.json; 0 = unlimited)
           --vsync / --no-vsync       vsync (default off)
           --seed <n>                 the world seed (default 0)
-          --ui <faithful|meitou>      UI mode, independent of graphics; also available in the settings (default meitou)
+          --mods-cfg <file>          read the enabled mods from this file instead of data/mods.cfg (also MEITOU_MODS_CFG); the launcher still writes the real one
+          --ui <faithful|meitou>      UI mode, independent of graphics; also available in the settings (default meitou; --low-end: faithful)
           --ui-showcase              with --screenshot: capture HUD, inventory, stats, map, menus, a trade with the nearest trader and a conversation in either UI mode
           --ui-panel <name>          with --screenshot: open one HUD/panel for the picture (hud, hud-expanded, inventory, stats, overview, menu, title, ...)
+          --settings-showcase        with --screenshot: capture the settings menu's Graphics page (every tab, a preset with changes, the preset list, Save as, Low quality, Faithful)
           --title-preview            with --screenshot: capture the staged Meitou title scene
           --connect <host:port|profile.json>   connect by address with remembered device identity (legacy profile also accepted)
           --create-faction <name>    with --connect: create an eligible new account's server-default starting squad
@@ -97,6 +104,7 @@ sealed class GameOptions
           --no-population            no town residents or movement (an empty world)
           --new-game [start]         a new game as the NEW_GAME_STARTOFF start (default Wanderer): the player squad at its town, camera on it
           --list-starts              print the available starts and exit
+          --data-check               print every game data and level file problem of the load order (missing mod, changed record type...) and exit: 0 none, 1 some
           --sandbox [n]              animation sandbox: no world, a flat 1000x1000 wireframe floor (lines every 10, bold every 100) with 1 character (n = 2: two facing each other 30 units apart; more: the rest idle in rings round them, up to 1000); Z/X/C walk/run/free, [ ] fixed speed, P patrol, G fight, Y follow; works with --screenshot --ticks
           --sandbox-character <name> the CHARACTER or ANIMAL_CHARACTER record the sandbox spawns (default: the first member of the default new-game start)
           --sandbox-mode <list>      the sandbox hero's start, comma-separated: walk, run or free, a fixed speed in u/s, patrol (the 400-unit patrol), fight (the G key, with --sandbox 2), e.g. run,patrol (with --move-to or --screenshot)
@@ -109,7 +117,7 @@ sealed class GameOptions
           --battle <n> <unit> <m> <unit> [rows]  n NPCs of one CHARACTER or ANIMAL_CHARACTER record (name or id) fight m of another (at least 1 each), in two blocks facing each other
                                      (rows of 25, or each block in that many rows, the back row taking the rest; bigger races stand further apart);
                                      no towns, no aggro: a standing fighter without a target goes for the nearest standing enemy; Backspace starts the same fight again
-          --battle-map <map>         where the battle is fought: plateau (default), mesa (the --duel spot in the dunes), sandbox (the flat floor) or x,z on the map (no building collision there)
+          --battle-map <map>         where the battle is fought: plateau (default), mesa (the --duel spot in the dunes), fog (a plateau in the Fog Islands), sandbox (the flat floor) or x,z on the map (no building collision there)
           --battle-width <a>[,<b>]   fighters per row of the first side and of the second (one value: both), instead of the rows
           --battle-no-fear           nobody in the battle runs away: every fighter fights until it is down
           --move-to <x> <z>        with --new-game: select the squad and order it to walk (for screenshots; the picture is taken where the leader got to)
@@ -127,13 +135,14 @@ sealed class GameOptions
           --benchmark-baseline       the settings benchmarks for the site use (bench/kit): a 1920x1080 window, the Medium tier, no GI, ground parallax or tessellation, no upscaler, SMAA;
                                      like --low-end, the saved graphics are neither applied nor overwritten
           --load <save folder>       start in a save, Meitou's or the original game's (%LOCALAPPDATA%\kenshi\save\<name>), loaded as the game menu's Load does; works with --screenshot
+          --continue                 start in the newest save of Meitou's and the original game's save folders, as --load would
           --renderer <vulkan|metal>  the renderer for the whole frame: vulkan (the default) or metal (macOS: the scene, HUD and faithful panels, the port's current slice)
           --yaw/--pitch/--distance   start view: heading, pitch above the horizon and boom (Kenshi: 30 degrees, boom 150; clamped to 10..2000)
           world options as meitou-viewer --world: --at, --zone, --town, --radius, --time, --screenshot, --size, --no-foliage, ...
         Keys: W/A/S/D or arrows move (or the pointer at a screen edge), Q/E rotate, Comma/Period tilt, wheel or Home/End zoom, PageUp/PageDown floor up/down (lens in the free camera), middle drag or Ctrl orbit, left click or drag selects, right click moves (shift queues), 1..9, 0 / ` select, [ / ] previous / next squad member, R stops,
           numpad 0..8 Block, Hold, Passive, Ranged, Sneak, Taunt, run speed, Medic (also H), Rescue (also J), L rest, K put down, I/C/M/T/Y windows, Tab next squad (all rebindable),
           ; free camera (R/F up/down), Space pause, F2/F3/F4 speed 1x/2x/5x, F8 or PrintScreen screenshot, Ctrl+/ Metal GPU capture (MTL_CAPTURE_ENABLED=1),
-          F5 quicksave, F9 quickload (Meitou's own slot under %LOCALAPPDATA%\Meitou\save), Ctrl+F9 fps counter, F10 debug menu (teleport, spawn, items, money, heal, max skills, damage; Metal: settings), F11 statistics, F12 profiler (gpu, cpu, off), Esc game menu (save, load, exit). Shift+F1 Meitou on / off, Shift+F2 skin scattering on / off, Alt+Enter full screen,
+          F5 quicksave, F9 quickload (Meitou's own slot under %LOCALAPPDATA%\Meitou\save), Ctrl+F9 fps counter, F10 debug menu (teleport, spawn, items, money, heal, max skills, damage, bounties; Metal: settings), F11 statistics, F12 profiler (gpu, cpu, off), Esc game menu (save, load, exit). Shift+F1 Meitou on / off, Shift+F2 skin scattering on / off, Alt+Enter full screen,
           F6 cinematic camera editor (numpad keys as in the viewer; game-shots.json; Home the lens also in the free camera), F7 hide the interface,
           Backspace restarts the --duel lap or the --battle, PageUp/PageDown narrow/widen its lens, Home resets it.
         Settings (frame limit, vsync, full screen (--windowed for one run), tick rate (tickRate), simulation threads (simThreads), the settings sliders, key bindings) are kept in meitou.user.json.
@@ -156,6 +165,7 @@ sealed class GameOptions
                 case "--connection-check": g.ConnectionCheck = true; break;
                 case "--ui-showcase": g.UiShowcase = true; break;
                 case "--ui-panel": g.UiPanel = Next(); break;
+                case "--settings-showcase": g.SettingsShowcase = true; break;
                 case "--fps-limit": g.FpsLimit = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--seed": g.Seed = ulong.Parse(Next(), CultureInfo.InvariantCulture); g.SeedGiven = true; break;
                 case "--ui":
@@ -171,6 +181,7 @@ sealed class GameOptions
                     if (i + 1 < args.Length && !args[i + 1].StartsWith('-')) g.NewGameName = args[++i];
                     break;
                 case "--list-starts": g.ListStarts = true; break;
+                case "--data-check": g.DataCheck = true; break;
                 case "--sandbox":
                     g.Sandbox = i + 1 < args.Length && int.TryParse(args[i + 1], NumberStyles.None, CultureInfo.InvariantCulture, out int count) ? Math.Clamp(count, 1, 1000) : 1;
                     if (i + 1 < args.Length && int.TryParse(args[i + 1], NumberStyles.None, CultureInfo.InvariantCulture, out _)) i++;
@@ -209,12 +220,13 @@ sealed class GameOptions
                     {
                         case "plateau": (g.BattleFlat, g.BattleAt) = (false, null); break;
                         case "mesa": (g.BattleFlat, g.BattleAt) = (false, (GameHost.DuelSpot.X, GameHost.DuelSpot.Y)); break;
+                        case "fog": (g.BattleFlat, g.BattleAt) = (false, (GameHost.FogBattleSpot.X, GameHost.FogBattleSpot.Y)); break;
                         case "sandbox": (g.BattleFlat, g.BattleAt) = (true, null); break;
                         case var map when map.Split(',') is [var mx, var mz] && float.TryParse(mx, NumberStyles.Float, CultureInfo.InvariantCulture, out float bx)
                             && float.TryParse(mz, NumberStyles.Float, CultureInfo.InvariantCulture, out float bz):
                             (g.BattleFlat, g.BattleAt) = (false, (bx, bz));
                             break;
-                        default: throw new ArgumentException("--battle-map must be plateau, mesa, sandbox or x,z");
+                        default: throw new ArgumentException("--battle-map must be plateau, mesa, fog, sandbox or x,z");
                     }
                     break;
                 case "--battle-no-fear": g.BattleNoFear = true; break;
@@ -225,6 +237,7 @@ sealed class GameOptions
                 case "--move-to": g.MoveTo = (float.Parse(Next(), CultureInfo.InvariantCulture), float.Parse(Next(), CultureInfo.InvariantCulture)); break;
                 case "--quit-after": g.QuitAfter = double.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--load": g.Load = Next(); break;
+                case "--continue": g.Continue = true; break;
                 case "--renderer":
                 {
                     string renderer = Next().ToLowerInvariant();
@@ -239,6 +252,7 @@ sealed class GameOptions
                 case "--scene-every": g.SceneEvery = Math.Max(int.Parse(Next(), CultureInfo.InvariantCulture), 1); break;
                 case "--scene-npc": g.SceneNpc = Next(); break;
                 case "--scene-town": g.SceneTown = Next(); break;
+                case "--mods-cfg": g.ModsCfg = Next(); break;
                 case "--low-end": g.LowEnd = true; rest.Add(a); break;
                 case "--benchmark-baseline": g.BenchmarkBaseline = true; rest.Add(a); break;
                 default: rest.Add(a); break;

@@ -1,9 +1,10 @@
 using System.Numerics;
+using Meitou.Data.World;
 
 namespace Meitou.Simulation;
 
 /// <summary>
-/// Splicing a long route (docs/game/pathfinding.md "Long routes", engine choice): when a walker reaches its provisional part, it asks
+/// Splicing a long route (docs/game/pathfinding.md "Long routes", engine choice): when zones along a walker's path go live, or it reaches the provisional part, it asks
 /// for a path only to a point of its own path ahead and replaces the path up to that point, keeping the rest and following the old path until the answer comes.
 /// Asking for the whole way each time turned walkers about and dropped orders whenever one answer failed.
 /// </summary>
@@ -22,12 +23,13 @@ public sealed partial class MovementSystem
     public const float SpliceReach = 4000;
 
     /// <summary>
-    /// Asks for a splice of the walker's path (partition-safe: its own state) to the point <see cref="SpliceReach"/> along it.
+    /// Asks for a splice of the walker's path (partition-safe: its own state): to the point <see cref="SpliceReach"/> along it, or past the last of
+    /// <paramref name="zones"/> it crosses when that is further.
     /// </summary>
-    static void AskSplice(ref CharacterHot n, CharacterCold cold)
+    static void AskSplice(ref CharacterHot n, CharacterCold cold, IReadOnlySet<ZoneCoordinate>? zones = null)
     {
-        if (cold.NavigationWaiting || (n.Flags & (ushort)MoveFlags.HasPath) == 0 || (n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0 || n.PathCursor >= cold.Path.Length) return;
-        int end = ReachEnd(n.Position, cold.Path, n.PathCursor);
+        if (cold.NavigationWaiting || (n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0 || n.PathCursor >= cold.Path.Length) return;
+        int end = Math.Max(ReachEnd(n.Position, cold.Path, n.PathCursor), zones is null ? -1 : LastCrossing(n.Position, cold.Path, n.PathCursor, zones));
         cold.SplicePath = cold.Path;
         cold.SpliceEnd = end;
         cold.SpliceGoal = n.Goal;
@@ -50,6 +52,19 @@ public sealed partial class MovementSystem
             a = b;
         }
         return end;
+    }
+
+    /// <summary>The end of the last leg from <paramref name="cursor"/> on that enters one of <paramref name="zones"/> (-1: none does).</summary>
+    static int LastCrossing(Vector3 at, Vector3[] path, int cursor, IReadOnlySet<ZoneCoordinate> zones)
+    {
+        int last = -1;
+        var a = at;
+        for (int i = cursor; i < path.Length; i++)
+        {
+            if (Crosses(a, [path[i]], 0, zones)) last = i;
+            a = path[i];
+        }
+        return last;
     }
 
     /// <summary>The point a splice asked for goes to; null when the request is for the whole way (no splice, or the path or goal changed since).</summary>

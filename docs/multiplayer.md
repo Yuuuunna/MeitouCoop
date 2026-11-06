@@ -513,7 +513,7 @@ Runtime replacement/disposal share the commit gate, while ordinary stepping does
 Restore prepares an independent catalogue before constructing systems, loads resources/assets/roles and
 then authority/diplomacy into the candidate before activation. Invalid loading keeps the old world. If only
 old-world disposal fails after activation, the result returns the usable new coordinator plus CleanupFailure
-for the host to report. Runtime checkpoint timing preserves exact GameHours and Daytime; saved source tick
+for the host to report. **Observed** (source review): `SaveLoadOptions.GameHoursOverride` selects exact checkpoint hours before any timer restoration; legacy CAMERA minute encoding remains compatible. Runtime checkpoint timing preserves exact GameHours and Daytime; saved source tick
 and revision are diagnostic, while native timers rebase to the replacement world's tick zero. Native minute
 clock fields must agree with the precise timestamp. HeadlessWorld supplies the real content/level options.
 **Verified** by `WorldCheckpointCoordinatorTests`: detached capture, authority drain, exact time, commit

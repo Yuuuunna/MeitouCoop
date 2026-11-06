@@ -11,7 +11,7 @@ public sealed partial class PopulationSystem
 {
     /// <summary>
     /// Takes the squad's characters out of the world into <paramref name="stored"/> (serial phase): each living member's cold state, cleared of what referred to the
-    /// world, with its place; the dead are left out. Returns where the leader (else the first member) stood.
+    /// world, with its place; the dead are kept too, apart (<see cref="StoredSquad.Dead"/>), and their bodies leave the world with the others. Returns where the leader (else the first member) stood.
     /// </summary>
     static Vector2 Store(World world, Squad squad, StoredSquad stored)
     {
@@ -19,17 +19,25 @@ public sealed partial class PopulationSystem
         var at = new Vector2(squad.Position.X, squad.Position.Z);
         bool placed = false;
         stored.Members.Clear();
+        stored.Dead.Clear();
         foreach (var id in squad.Members)
         {
             if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { } cold) continue;
             var hot = table.Previous[slot];
-            if (cold.DiedTick < 0 && hot.Alive)
+            bool dead = cold.DiedTick >= 0 || cold.Medical is { Dead: true };
+            if (!dead && hot.Alive)
             {
                 Detach(cold);
                 bool leads = id == squad.Leader;
                 stored.Members.Add(new StoredMember(cold, hot.Position, hot.Yaw, leads));
                 if (leads || !placed) at = new Vector2(hot.Position.X, hot.Position.Z);
                 placed |= leads;
+            }
+            else if (hot.Alive)
+            {
+                // FUN_1404ff410 writes the whole list, the dead with it; FUN_1404feed0 then destroys every member.
+                Detach(cold);
+                stored.Dead.Add(new StoredMember(cold, hot.Position, hot.Yaw, false));
             }
             world.Uniques.Left(id);
             RemoveMember(world, id);
@@ -41,18 +49,12 @@ public sealed partial class PopulationSystem
     }
 
     /// <summary>
-    /// A squad's member leaves the world with its squad, except a corpse: the original destroys a corpse by its own update only, 12 game hours after death or when its zone is no
-    /// longer loaded (<c>FUN_1405ccd90</c>, docs/game/character-stats.md "Corpses"), so a squad going away leaves its dead lying (<see cref="BodySystem"/> removes them in time).
+    /// A squad's member leaves the world with its squad, the dead too: the unload destroys every member of the active platoon with no dead test (<c>FUN_1404feed0</c>,
+    /// docs/game/character-stats.md "Corpses"). A squad that stays keeps its corpses to the 12 hour rule (<see cref="BodySystem"/>).
     /// </summary>
     static void RemoveMember(World world, CharacterId id)
     {
-        var table = world.Characters;
-        if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { } cold && (cold.DiedTick >= 0 || cold.Medical is { Dead: true }))
-        {
-            cold.SquadId = -1;
-            return;
-        }
-        table.Remove(id, unloaded: true);
+        world.Characters.Remove(id, unloaded: true);
     }
 
     /// <summary>Clears what a character's cold state holds only while it is in the world: paths, AI, carrying, treatment, combat and stealth state, a pending crime, jobs.</summary>
@@ -68,6 +70,8 @@ public sealed partial class PopulationSystem
         c.DrawnWeapon = default;
         c.ModeOverride = null;
         c.SpeedOverride = 0;
+        c.PaceCap = null;
+        c.Ordered = false;
         c.InCombat = false;
         c.Fleeing = false;
         c.Engaged = false;
@@ -76,8 +80,9 @@ public sealed partial class PopulationSystem
         c.StealthExposureTick = long.MinValue;
         c.TreatTarget = CharacterId.None;
         c.TreatSplint = false;
+        c.TreatKit = null;
         c.Jobs.Clear();
-        c.JobIndex = -1;
+        c.Running = null;
         c.Carrying = CharacterId.None;
         c.CarriedBy = CharacterId.None;
         c.CarryTarget = CharacterId.None;
@@ -108,6 +113,22 @@ public sealed partial class PopulationSystem
         return squad;
     }
 
+    /// <summary>A stored dead member back in the world as a corpse of <paramref name="squad"/> where it lay (moved along with the squad's stand-in, as the living are), still counted on the squad's list.</summary>
+    void SpawnCorpse(World world, Squad squad, StoredMember m, Vector2 delta, bool moved, Vector2 position)
+    {
+        var walk = world.Walkability;
+        var at = m.Position;
+        if (moved)
+        {
+            float x = at.X + delta.X, z = at.Z + delta.Y;
+            if (!walk.IsWalkable(x, z)) (x, z) = WalkableSpots.Nearest(walk, new Vector2(x, z), out var near, 32) ? (near.X, near.Y) : (position.X, position.Y);
+            at = new Vector3(x, walk.GroundHeight(x, z), z);
+        }
+        m.Cold.SquadId = squad.Id;
+        var hot = new CharacterHot { Position = at, Yaw = m.Yaw, Health = 100, Task = (byte)CharacterTask.Idle, Mode = SpeedMode.Walk, MaxSpeed = CharacterAssembly.StandInMaxSpeed, WalkSpeed = m.Cold.Race?.WalkSpeed ?? 15 };
+        squad.Members.Add(world.Characters.Spawn(hot, m.Cold, world.Tick));
+    }
+
     /// <summary>Stored characters into the world as a squad of <paramref name="town"/> (-1: a wild one) homed at the given circle, moved along when <paramref name="position"/> is not where they were stored.</summary>
     Squad? SpawnKept(World world, StoredSquad stored, string templateId, int faction, int town, int platoonId, Vector2 position, Vector2 homeCentre, float homeRadius, int size)
     {
@@ -122,6 +143,7 @@ public sealed partial class PopulationSystem
             Town = town,
             PlatoonId = platoonId,
             Pinned = stored.Pinned && town >= 0,
+            Restored = true,
             Position = new Vector3(position.X, world.Walkability.GroundHeight(position.X, position.Y), position.Y),
             HomeCentre = homeCentre,
             HomeRadius = homeRadius,
@@ -167,7 +189,9 @@ public sealed partial class PopulationSystem
             if (leads && squad.Leader.IsNone) squad.Leader = id;
         }
         squad.SpawnSize = Math.Max(size, squad.Members.Count);
+        foreach (var m in stored.Dead) SpawnCorpse(world, squad, m, delta, moved, position);
         stored.Members.Clear();
+        stored.Dead.Clear();
         if (squad.Leader.IsNone) squad.Leader = SquadRegistry.Successor(squad.Members, table);
         world.Squads.Add(squad);
         Memory?.Restore(squad.Id, stored.Memory);

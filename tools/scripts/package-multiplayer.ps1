@@ -8,7 +8,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $stageRoot = [IO.Path]::GetFullPath($Stage, $repo)
 $outputRoot = [IO.Path]::GetFullPath($Output, $repo)
 if (Test-Path -LiteralPath $outputRoot) { throw 'Output already exists; choose a new release folder.' }
-foreach ($entry in @('client/MeitouClient.exe', 'server/Meitou.Server.exe')) {
+foreach ($entry in @('client/MeitouClient.exe', 'client/meitou-tools.exe', 'server/Meitou.Server.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $entry))) { throw "Missing published executable: $entry" }
 }
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
@@ -48,6 +48,7 @@ meitou.local.json 仅用于定位原版安装，与服务器连接和账号无�
 network 日志记录基线丢失、视图撤回/恢复和状态变化，用于排查暂停及角色消失。
 客户端日志为 exe 旁 log.txt；服务端错误显示在控制台。报告时提供日志和复现步骤，不发送身份文件或 server.pfx。
 兼容校验默认覆盖数据库和模组加载顺序，GameplayAssets 可追加玩法资产。检查点目前不会自动轮替清理。
+客户端包附带 meitou-tools.exe；在终端运行 meitou-tools.exe mod-check <存档目录> 检查代码模组确定性。
 '@
 $readme += "`r`n本次构建验证：$ValidationNote`r`n"
 [IO.File]::WriteAllText((Join-Path $outputRoot '实机测试说明.txt'), $readme)
@@ -75,7 +76,7 @@ foreach ($kind in @('client', 'server')) {
     $assemblyHashes = Get-ChildItem -LiteralPath $destination -File | Where-Object { $_.Name -like 'Meitou*.dll' -or $_.Name -like 'Meitou*.exe' } | ForEach-Object {
         @{ name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     }
-    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=19; engine='meitou-experimental-1'; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
+    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=20; engine='meitou-experimental-1'; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination 'build-info.json') -Encoding utf8
     [IO.Compression.ZipFile]::CreateFromDirectory($destination, (Join-Path $outputRoot "$name.zip"), [IO.Compression.CompressionLevel]::Optimal, $true)
 }

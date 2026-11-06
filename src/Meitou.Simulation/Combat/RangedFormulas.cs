@@ -143,12 +143,11 @@ public static class TurretFormulas
         ((pierceMin + w * (pierceMax - pierceMin)) * power * heightTimesMount, power * range * heightTimesMount, shotSpeed * 0.8f * power * heightTimesMount + shotSpeed * 0.2f);
 
     /// <summary>
-    /// A candidate's score before the turret's own weights (<c>FUN_140435d70</c>): (f x g)², g = 1 - d / (<paramref name="rangeFactor"/> x range), f 1 or 0.1 for a target down; a target out
+    /// A candidate's score before the turret's own weights (<c>FUN_140435d70</c>): (f x g)², g = 1 - d / (<paramref name="rangeFactor"/> x range), <paramref name="f"/> the posture factor (0.1 crippled, x0.1 not upright); a target out
     /// of that range scores 0.001 (it may still be chosen, never fired at).
     /// </summary>
-    public static float Closeness(float distance, float range, float rangeFactor, bool down)
+    public static float Closeness(float distance, float range, float rangeFactor, float f)
     {
-        float f = down ? 0.1f : 1;
         float g = distance < 0 ? 0 : 1 - distance / (rangeFactor * range);
         if (g <= 0) g = 0;
         float s = f * g * f * g;

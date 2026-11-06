@@ -38,6 +38,8 @@ internal sealed class NavMeshService : IDisposable
     readonly Dictionary<ZoneCoordinate, ZoneNavMesh> full = [];
     readonly HashSet<ZoneCoordinate> dirty = [], removed = [];
     readonly HashSet<Vector3> keepRequests = [];
+    readonly Dictionary<ZoneCoordinate, bool[]> live = [];
+    readonly Dictionary<ZoneCoordinate, List<Vector3>> standing = [];
     readonly Dictionary<Vector3, long> keepChecked = [];
     readonly Thread worker;
     long generation, incarnation, publication;
@@ -67,6 +69,14 @@ internal sealed class NavMeshService : IDisposable
     static TaskCompletionSource<NavZoneReady> Completion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public NavmeshWalkability Walkability { get; }
     public NavBuildSettings Settings { get; }
+
+    /// <summary>
+    /// A loading screen covers the game (the host sets it): a zone's tiles are built on every core but one. Uncovered, on a quarter of them: the tile builds run on
+    /// the shared pool at normal priority and allocate gigabytes a zone, and on every core they starved the simulation and the render thread for 100-200 ms frames.
+    /// </summary>
+    public bool Covered { get; set; } = true;
+
+    NavBuildSettings BuildSettings => Covered || Settings.Threads > 0 ? Settings : Settings with { Threads = Math.Max(1, Environment.ProcessorCount / 4) };
     public NavMeshCache Cache { get; }
     public event Action<NavZoneReady>? ZoneReady;
     public long Incarnation { get { lock (gate) return incarnation; } }
@@ -127,14 +137,19 @@ internal sealed class NavMeshService : IDisposable
         }
     }
 
-    public void Unload(ZoneCoordinate zone)
+    public void Unload(ZoneCoordinate zone) => Unload([zone]);
+
+    public void Unload(IReadOnlyCollection<ZoneCoordinate> zones)
     {
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            if (pending.Remove(zone, out var request)) Cancel(request);
-            failed.Remove(zone);
-            removed.Add(zone); dirty.Remove(zone);
+            foreach (var zone in zones)
+            {
+                if (pending.Remove(zone, out var request)) Cancel(request);
+                failed.Remove(zone);
+                removed.Add(zone); dirty.Remove(zone);
+            }
         }
         if (!deferred) CommitPrepared();
     }
@@ -148,7 +163,7 @@ internal sealed class NavMeshService : IDisposable
             incarnation = checked(incarnation + 1);
             var wanted = requeuePending ? pending.Keys.Concat(failed.Keys).Distinct().ToArray() : [];
             foreach (var request in pending.Values) Cancel(request);
-            pending.Clear(); failed.Clear(); keepRequests.Clear(); keepChecked.Clear();
+            pending.Clear(); failed.Clear(); keepRequests.Clear(); keepChecked.Clear(); standing.Clear(); live.Clear();
             foreach (var zone in wanted) Issue(zone);
         }
     }
@@ -178,25 +193,31 @@ internal sealed class NavMeshService : IDisposable
             foreach (var zone in removed.Concat(deferred ? dirty : []).Distinct())
             {
                 if (world.Contains(zone)) { world = world.Without(zone); changed.Add(zone); }
-                full.Remove(zone);
+                full.Remove(zone); live.Remove(zone); standing.Remove(zone);
             }
             removed.Clear();
             foreach (var request in pending.Values.Where(r => r.Result is not null).OrderBy(r => r.Zone.X).ThenBy(r => r.Zone.Y).ToArray())
             {
                 var result = request.Result!;
                 full[request.Zone] = result.Mesh;
-                foreach (var neighbour in ZoneKeptClosure.Spread(full, request.Zone, Settings))
-                    if (world.Contains(neighbour)) { world = world.With(full[neighbour].WithoutPruned()); changed.Add(neighbour); }
-                world = world.With(result.Mesh.WithoutPruned()); changed.Add(request.Zone);
+                live.Remove(request.Zone);
                 dirty.Remove(request.Zone); pending.Remove(request.Zone); completed.Add((request, result));
             }
             foreach (var at in keepRequests)
             {
                 var zone = WorldLayout.ZoneOf(at.X, at.Z);
-                if (!full.TryGetValue(zone, out var mesh) || !world.Contains(zone) || !SeedPruner.Extend(mesh, [at], Settings)) continue;
-                foreach (var neighbour in ZoneKeptClosure.Spread(full, zone, Settings))
-                    if (world.Contains(neighbour)) { world = world.With(full[neighbour].WithoutPruned()); changed.Add(neighbour); }
-                world = world.With(mesh.WithoutPruned()); changed.Add(zone);
+                if (!full.TryGetValue(zone, out var mesh) || !world.Contains(zone) || !live.TryGetValue(zone, out var kept)) continue;
+                var test = (bool[])kept.Clone();
+                if (!SeedPruner.Extend(mesh, test, [at], Settings)) continue;
+                if (!standing.TryGetValue(zone, out var points)) standing[zone] = points = [];
+                points.Add(at);
+            }
+            foreach (var (zone, keep) in ZoneKeptClosure.Resolve(full, Settings, standing))
+            {
+                if (live.TryGetValue(zone, out var before) && before.AsSpan().SequenceEqual(keep) && world.Contains(zone)) continue;
+                live[zone] = keep;
+                world = world.With(full[zone].WithKept(keep).WithoutPruned());
+                changed.Add(zone);
             }
             if (changed.Count > 0) { Walkability.SetWorld(world); publication = checked(publication + 1); keepChecked.Clear(); }
             foreach (var at in keepRequests) keepChecked[at] = publication;
@@ -237,7 +258,7 @@ internal sealed class NavMeshService : IDisposable
                         if (mesh is null)
                         {
                             var geometry = gatherer.Gather(zone, buildingHash: hash);
-                            mesh = NavMeshPipeline.BuildZone(gatherer, geometry, Settings, out _); origin = NavMeshOrigin.Built;
+                            mesh = NavMeshPipeline.BuildZone(gatherer, geometry, BuildSettings, out _); origin = NavMeshOrigin.Built;
                             try { Cache.Save(mesh, hash, settingsHash); } catch (IOException) { }
                         }
                         mesh.Terrain = gatherer.ZoneHeights(zone);

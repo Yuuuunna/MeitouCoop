@@ -32,12 +32,19 @@ sealed partial class PlayerInterface
 
     BuildServices? buildHost;
     bool buildMode;
+    // Build mode paused a running game (the original's requested pause, FUN_1404e65e0): leaving it resumes the speed the player had.
+    bool buildPausedGame;
     string? buildCategory;
     int buildGroup;
+
+    /// <summary>A right click dropped the held building: no building is held until one is chosen from the lists again (<c>FUN_1404e27e0</c>).</summary>
+    bool buildDiscarded;
     // Which member of the group is chosen (null: its default pick).
     BuildingBuildData? buildMember;
     readonly List<QueuedGhost> buildQueue = [];
     float ghostYaw, ghostLift, ghostTilt = DefaultTilt;
+    // How far the ghost may still sink and rise at its last place (PlacementCheck.Margins, after the nudge); the height keys stop at them.
+    PlacementCheck.VerticalMargins ghostMargins = PlacementCheck.VerticalMargins.Unlimited;
     // The ghost now: where the cursor meets the ground or a building's floor (On), its rotation (tilt included), the first failure.
     (Vector3 Position, Quaternion Rotation, PlacementFailure Failure, BuildingBuildData Building, Vector2[]? Hull, GhostFloor? On)? ghost;
     readonly HashSet<Key> buildHeld = [];
@@ -76,20 +83,25 @@ sealed partial class PlayerInterface
         {
             buildQueue.Clear();
             ghostYaw = ghostLift = 0;
+            ghostMargins = PlacementCheck.VerticalMargins.Unlimited;
             ghostTilt = DefaultTilt;
             buildCategory = null;
             buildGroup = 0;
             buildMember = null;
+            buildDiscarded = false;
             CloseInventoryWindows();
             faithfulScreens.Open("build");
             CloseContextMenu();
-            if (session.CanChangeSpeed && session.TimeScale != 0) session.TogglePause();   // a player pause: the speed buttons resume it
+            if (session.CanChangeSpeed && session.TimeScale != 0) { session.TogglePause(); buildPausedGame = true; }   // a player pause: the speed buttons resume it
         }
         else
         {
             buildQueue.Clear();
             faithfulScreens.Close("build");
             ShowGhosts();
+            // Confirm, Esc and the window's close all clear the request (FUN_1404d1870 -> FUN_140787d40(0)); a game that was paused before stays paused.
+            if (buildPausedGame && session.CanChangeSpeed && session.TimeScale == 0) session.TogglePause();
+            buildPausedGame = false;
         }
     }
 
@@ -110,7 +122,7 @@ sealed partial class PlayerInterface
     BuildGroup? CurrentGroup()
     {
         var groups = BuildGroups();
-        return groups.Count == 0 ? null : groups[Math.Clamp(buildGroup, 0, groups.Count - 1)];
+        return groups.Count == 0 || buildDiscarded ? null : groups[Math.Clamp(buildGroup, 0, groups.Count - 1)];
     }
 
     /// <summary>The building the ghost shows: the chosen member of the chosen group (its default pick otherwise).</summary>
@@ -129,15 +141,15 @@ sealed partial class PlayerInterface
 
     /// <summary>
     /// A key press while build mode is on: the build map (docs/game/ui-input.md section 4, checked first in build mode) takes <c>,</c> <c>.</c> rotate, <c>-</c> <c>=</c> move down / up,
-    /// <c>[</c> <c>]</c> tilt, Backspace undo and Space apply. Returns true when the key was taken, so the host does not also pause or turn the camera. The numpad aliases of the original
-    /// are not mapped (the numpad is the cinema camera's).
+    /// <c>[</c> <c>]</c> tilt, Backspace undo and Space apply. Returns true when the key was taken, so the host does not also pause or turn the camera. NUM+ / NUM- are the original's second keys of both the move and the tilt pairs, and the later registration (tilt) wins in its key map, so they tilt (<c>FUN_1403636c0</c>, <c>FUN_140362260</c>).
     /// </summary>
     public bool BuildKey(Key key, bool shift)
     {
+        uiInput++;
         if (!buildMode) return false;
         switch (key)
         {
-            case EngineKey.Comma or EngineKey.Period or EngineKey.Minus or EngineKey.Equal or EngineKey.LeftBracket or EngineKey.RightBracket:
+            case EngineKey.Comma or EngineKey.Period or EngineKey.Minus or EngineKey.Equal or EngineKey.LeftBracket or EngineKey.RightBracket or EngineKey.KeypadAdd or EngineKey.KeypadSubtract:
                 buildHeld.Add(key);
                 return true;
             case EngineKey.Backspace:
@@ -151,7 +163,14 @@ sealed partial class PlayerInterface
         }
     }
 
-    public void BuildKeyUp(Key key) => buildHeld.Remove(key);
+    /// <summary>Whether <paramref name="key"/> is a build map key that the cinema's numpad must not take (NUM+ / NUM- while building).</summary>
+    public bool OwnsBuildNumpad(Key key) => buildMode && key is EngineKey.KeypadAdd or EngineKey.KeypadSubtract;
+
+    public void BuildKeyUp(Key key)
+    {
+        uiInput++;
+        buildHeld.Remove(key);
+    }
 
     /// <summary>Once a frame: the held keys move the ghost at the documented speeds, the ghost follows the cursor, is judged and drawn.</summary>
     void UpdateBuild()
@@ -166,11 +185,15 @@ sealed partial class PlayerInterface
         buildClock = now;
         float Held(Key plus, Key minus) => (buildHeld.Contains(plus) ? 1f : 0f) - (buildHeld.Contains(minus) ? 1f : 0f);
         ghostYaw += Held(EngineKey.Period, EngineKey.Comma) * RotateDegreesPerSecond * MathF.PI / 180 * dt;
-        ghostLift += Held(EngineKey.Equal, EngineKey.Minus) * (SlowModifier ? SlowMove : MoveUnitsPerSecond) * dt;
+        // The height keys (FUN_1404d5420): up goes by at most the up margin, and when it cannot (or is not held) down goes by at most the down margin.
+        float lift = (SlowModifier ? SlowMove : MoveUnitsPerSecond) * dt;
+        if (buildHeld.Contains(EngineKey.Equal) && ghostMargins.Up > 0) ghostLift += MathF.Min(lift, ghostMargins.Up);
+        else if (buildHeld.Contains(EngineKey.Minus) && ghostMargins.Down > 0) ghostLift -= MathF.Min(lift, ghostMargins.Down);
         if (MathF.Abs(ghostLift) > MaxLift) ghostLift = 0;
-        ghostTilt = Math.Clamp(ghostTilt + Held(EngineKey.RightBracket, EngineKey.LeftBracket) * TiltPerSecond * dt, 0, 1);
+        ghostTilt = Math.Clamp(ghostTilt + Math.Clamp(Held(EngineKey.RightBracket, EngineKey.LeftBracket) + Held(EngineKey.KeypadAdd, EngineKey.KeypadSubtract), -1, 1) * TiltPerSecond * dt, 0, 1);
 
         ghost = null;
+        ghostMargins = PlacementCheck.VerticalMargins.Unlimited;
         wallPieces.Clear();
         wallEndSnap = ghostSnap = null;
         if (wallLine is { } line && line.Master != CurrentBuilding()) wallLine = null;
@@ -199,7 +222,7 @@ sealed partial class PlayerInterface
             float yaw = ghostYaw;
             Func<string, Vector3, Quaternion, bool>? ignore = null;
             // A wall ghost before its first click snaps to the nearest link point: it starts there, or ends there on a free start (Verified, FUN_140427950).
-            if (building is { LinksTogether: true, LinkType: 0 or 3 } && WallLine.Find(WallLinks(), position) is { } snap)
+            if (building is { LinksTogether: true, LinkType: 0 or 3 } && WallLine.Find(WallLinks(position), position) is { } snap)
             {
                 ghostSnap = snap;
                 rotation = WallLine.LookRotation(snap.Direction);
@@ -208,8 +231,17 @@ sealed partial class PlayerInterface
                 ignore = WallIgnore(new WallPiece(building, position, rotation), [snap.Point]);
             }
             var snapshot = session.CurrentSnapshot;
-            var failure = !Unlocked().Contains(building.Id) ? PlacementFailure.NotAvailable : PlacementCheck.Evaluate(new PlacementQuery(building, position, rotation, yaw, on?.Floor ?? 0, parts,
-                buildQueue, snapshot.Characters, snapshot.Buildings, host.Towns(), host.PlayerFactionId(), host.Placement) { Ignore = ignore, On = on });
+            var query = new PlacementQuery(building, position, rotation, yaw, on?.Floor ?? 0, parts,
+                buildQueue, snapshot.Characters, snapshot.Buildings, host.Towns(), host.PlayerFactionId(), host.Placement) { Ignore = ignore, On = on, Lift = ghostLift };
+            // The ghost settles on the ground by itself (the original nudges it every frame, FUN_1404d1680): the height it keeps is what the placement is judged at and what a click queues.
+            if (PlacementCheck.Settle(query) is { } settled)
+            {
+                ghostLift += settled.Step;
+                position.Y += settled.Step;
+                ghostMargins = settled.After;
+                query = query with { Position = position, Lift = ghostLift };
+            }
+            var failure = !Unlocked().Contains(building.Id) ? PlacementFailure.NotAvailable : PlacementCheck.Evaluate(query);
             ghost = (position, rotation, failure, building, footprint?.Place(position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, yaw)), on);
         }
         buildMessage = ghost is { Failure: not PlacementFailure.None } g ? PlacementCheck.Message(g.Failure)
@@ -225,10 +257,25 @@ sealed partial class PlayerInterface
         return buildIndex?.GetValueOrDefault(id);
     }
 
-    /// <summary>The link points a line can snap to: the queued wall ghosts and the player's wall sites and buildings (the level's town walls are not candidates, an engine gap).</summary>
-    List<WallLink> WallLinks() => WallLine.Links(
-        buildQueue.Select(q => (q.Building, q.Position, q.Rotation))
-            .Concat(session.CurrentSnapshot.Buildings.Select(s => (Data: BuildData(s.Record), s.Position, s.Rotation)).Where(w => w.Data is not null).Select(w => (w.Data!, w.Position, w.Rotation))));
+    /// <summary>How far round the cursor the level's walls are read for a snap: the snap radius times sqrt 2, plus the longest wall (so the joins at the ends in reach are counted).</summary>
+    const float LevelWallReach = 300;
+
+    /// <summary>
+    /// The link points a line can snap to (<b>Verified</b>, <c>FUN_1404289f0</c>): the queued wall ghosts and every building that links together in the loaded zones, any owner. Those are the
+    /// player's sites and the level's town walls near <paramref name="near"/>; a level wall that is a site already is the site's.
+    /// </summary>
+    List<WallLink> WallLinks(Vector3 near)
+    {
+        var sites = session.CurrentSnapshot.Buildings;
+        var known = sites.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+        var level = buildHost is { } host
+            ? host.Placement.LinkedAround(new Vector2(near.X, near.Z), LevelWallReach).Where(w => !known.Contains(w.Key)).Select(w => (Data: BuildData(w.Record), w.Position, w.Rotation))
+            : [];
+        return WallLine.Links(
+            buildQueue.Select(q => (q.Building, q.Position, q.Rotation))
+                .Concat(sites.Select(s => (Data: BuildData(s.Record), s.Position, s.Rotation)).Where(w => w.Data is not null).Select(w => (w.Data!, w.Position, w.Rotation)))
+                .Concat(level.Where(w => w.Data is not null).Select(w => (w.Data!, w.Position, w.Rotation))));
+    }
 
     /// <summary>
     /// What never blocks a wall piece (<b>Observed</b>, <c>FUN_140427b00</c>): connectors and wedges, and near a snapped joint the walls with a link point at that joint.
@@ -252,7 +299,7 @@ sealed partial class PlayerInterface
     void LayWall(BuildServices host, (BuildingBuildData Master, Vector3 Start, WallSnap? StartSnap, bool Reversed) line, Vector3 hit)
     {
         var end = new Vector3(hit.X, hit.Y + ghostLift, hit.Z);
-        var endSnap = WallLine.Find(WallLinks(), end, line.Reversed ? 1 : 2);
+        var endSnap = WallLine.Find(WallLinks(end), end, line.Reversed ? 1 : 2);
         if (endSnap is { } es && FlatDistance(es.Point, line.Start) < 1) endSnap = null;
         wallEndSnap = endSnap;
         var pieces = WallLine.Layout(line.Master, BuildData, host.Placement.Ground, line.Start, line.StartSnap, endSnap?.Point ?? end, endSnap, line.Reversed);
@@ -309,6 +356,15 @@ sealed partial class PlayerInterface
         return false;
     }
 
+    /// <summary>A right click in build mode over the world with a building held: it is discarded; the queued ghosts stay (Clear Building: Right-Click).</summary>
+    bool BuildDiscard()
+    {
+        if (!buildMode || CurrentBuilding() is null) return false;
+        buildDiscarded = true;
+        ghost = null;
+        return true;
+    }
+
     /// <summary>A right click in build mode while a line is laid: drops the line (true: taken).</summary>
     bool WallCancel()
     {
@@ -363,6 +419,23 @@ sealed partial class PlayerInterface
         ghostLift = 0;
     }
 
+    /// <summary>
+    /// The size of a ghost's bounding box (<c>Aabb::getSize</c> of the ghost's bounds, <c>FUN_1404d6d90</c>): the merge of its parts' mesh bounds in their own space, the full X, Y and Z extent.
+    /// Zero without readable mesh bounds.
+    /// </summary>
+    Vector3 GhostBoundsSize(BuildingBuildData building)
+    {
+        if (buildHost is not { } host) return default;
+        Vector3? min = null, max = null;
+        foreach (var part in host.Parts(building.Id))
+        {
+            if (host.Placement.PartBounds(part.MeshPath) is not { } box) continue;
+            min = min is { } lo ? Vector3.Min(lo, box.Min) : box.Min;
+            max = max is { } hi ? Vector3.Max(hi, box.Max) : box.Max;
+        }
+        return min is { } a && max is { } b ? b - a : default;
+    }
+
     void BuildUndo()
     {
         if (WallCancel()) return;
@@ -373,7 +446,7 @@ sealed partial class PlayerInterface
     {
         if (buildQueue.Count == 0) return;
         Sound("Building_Confirm");
-        Say(new PlaceBuildings([.. buildQueue.Select(q => new PlannedBuilding(q.Building.Id, q.Position, q.Rotation, q.Floor, q.Parent))]) { Tick = session.CommandTick, Faction = session.ActiveFaction });
+        Say(new PlaceBuildings([.. buildQueue.Select(q => new PlannedBuilding(q.Building.Id, q.Position, q.Rotation, q.Floor, q.Parent, GhostBoundsSize(q.Building)))]) { Tick = session.CommandTick, Faction = session.ActiveFaction });
         buildQueue.Clear();
         SetBuildMode(false);
     }
@@ -402,12 +475,12 @@ sealed partial class PlayerInterface
         b.SelectedItems["BuildingsList"] = group is null ? -1 : groups.ToList().IndexOf(group);
         b.Text["BuildingName"] = building?.Name ?? "";
         b.Text["DescriptionText"] = building is null || buildHost is null ? "" : buildHost.Description(building.Id);
-        b.Properties["DescriptionText"] = new Dictionary<string, string> { ["WordWrap"] = "true", ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.InkText };
+        b.Properties["DescriptionText"] = new Dictionary<string, string> { ["WordWrap"] = "true", ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.TemplateInk(uiResources, "Kenshi_EditBoxStrechEmpty") };
         // The building's picture (docs/game/ui-screens.md "Building icons"): the game's saved one, else the renderer's drawing; the frame stays empty while it loads.
         if (BuildingImage(building) is { } image) b.Properties["BuildingImage"] = image;
         else b.Hidden.Add("BuildingImage");
-        b.Text["CommandsTextBox"] = string.Join('\n', BuildCommandLines);
-        b.Properties["CommandsTextBox"] = new Dictionary<string, string> { ["WordWrap"] = "true", ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.InkText };
+        b.Text["CommandsTextBox"] = BuildCommandsText();
+        b.Properties["CommandsTextBox"] = new Dictionary<string, string> { ["WordWrap"] = "true", ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.TemplateInk(uiResources, "Kenshi_GenericTextBox") };
         b.Text["FloorText"] = Loc.Tr("Floor {1,num}", Floor?.Get() ?? 0);
         Enable("FloorArrowUp", "FloorArrowUp");
         Enable("FloorArrowDown", "FloorArrowDown");
@@ -432,11 +505,20 @@ sealed partial class PlayerInterface
         return painter.RenderedIconReady(rendered) ? new() { ["ImageTexture"] = rendered, ["ImageFlipV"] = "true", ["Caption"] = "" } : null;
     }
 
-    /// <summary>The Commands box: the build map's keys (the original's own text is <b>Unknown</b>).</summary>
-    static readonly string[] BuildCommandLines =
-    [
-        "Left click / Space: place", "Walls: click the start, click the end; right click: drop the line", "Backspace: undo", ", .: rotate", "- =: move down / up (Shift: slow)", "[ ]: tilt", "Confirm: build what is placed", "B: leave build mode",
-    ];
+    /// <summary>
+    /// The Commands box (<c>FUN_1404d7d90</c>, <b>Verified</b>, the key strings read from the exe's data): per line a label in the dark tag, a space and the value in the light tag, the lines
+    /// joined by line breaks; the last reads "Press [Confirm] when finished". The texts are the original's, not Meitou's bindings (Space also places, Escape leaves build mode).
+    /// </summary>
+    static string BuildCommandsText()
+    {
+        const string Label = "#140806", Value = "#afa68b";
+        static string Row(string label, string value) => Label + Loc.Tr(label) + Value + " " + value;
+        return string.Join('\n',
+            Row("Place Building:", Loc.Tr("Left-Click")), Row("Clear Building:", Loc.Tr("Right-Click")),
+            Row("Rotate:", Loc.Tr("{1} or {2} keys", "<>", ",.")), Row("Change Height:", Loc.Tr("{1} and {2}", "+", "-")),
+            Row("Change Slope:", Loc.Tr("{1} and {2}", "[", "]")), Row("Undo:", Loc.Tr("Backspace")), Row("Cancel All:", Loc.Tr("Esc")),
+            Label + Loc.Tr("Press") + " " + Value + "[" + Loc.Tr("Confirm") + "]" + Label + " " + Loc.Tr("when finished"));
+    }
 
     /// <summary>The stats panel's lines, the failure message and the queue count, over the arranged window.</summary>
     void AddBuildContent(List<UiControl> controls)
@@ -452,7 +534,7 @@ sealed partial class PlayerInterface
                 new Dictionary<string, string> { ["FontName"] = "Kenshi_PaintedTextFont_Medium", ["TextAlign"] = "Left VCenter", ["TextColour"] = "1 0.45 0.38" }, Vector4.Zero, Pickable: false, Clip: messagePanel.Clip));
         if (buildQueue.Count > 0 && controls.FirstOrDefault(c => c.Name == "ButtonPanel") is { } buttons)
             controls.Add(new("QueueText", "TextBox", new(buttons.Bounds.X, buttons.Bounds.Y - 20, buttons.Bounds.Width, 18), $"{buildQueue.Count} placed", "", "Kenshi_TextboxStandardText", true,
-                new Dictionary<string, string> { ["FontName"] = "Kenshi_StandardFont_Medium", ["TextAlign"] = "Right VCenter", ["TextColour"] = MyGuiColours.InkText }, Vector4.Zero, Pickable: false));
+                new Dictionary<string, string> { ["FontName"] = "Kenshi_StandardFont_Medium", ["TextAlign"] = "Right VCenter", ["TextColour"] = MyGuiColours.TemplateInk(uiResources, "Kenshi_TextboxStandardText") }, Vector4.Zero, Pickable: false));
     }
 
     /// <summary>A button or list of the window.</summary>
@@ -462,11 +544,13 @@ sealed partial class PlayerInterface
         {
             case ("CategoriesList", "select"):
                 buildCategory = e.Text;
+                buildDiscarded = false;
                 buildGroup = 0;
                 buildMember = null;
                 break;
             case ("BuildingsList", "select"):
                 buildGroup = (int)e.Value;
+                buildDiscarded = false;
                 buildMember = null;
                 ghostLift = 0;
                 break;
@@ -500,7 +584,10 @@ sealed partial class PlayerInterface
         foreach (var site in session.CurrentSnapshot.Buildings)
         {
             var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, PlacementCheck.YawOf(site.Rotation));
-            float? t = host.Placement.Footprint(site.Record) is { } footprint
+            // No selectable geometry: an invisible sitting node must leave the click to ground movement.
+            var bounds = host.Placement.Footprint(site.Record);
+            if (bounds is null && Machine(site.Id)?.Function is TownBuildings.ChairFunction or TownBuildings.ThroneFunction && host.Parts(site.Record).Count == 0) continue;
+            float? t = bounds is { } footprint
                 ? BuildingRayT(ray, footprint.Place(site.Position, yaw), footprint.YMin, footprint.YMax, site.Record, site.Position, site.Position.Y, yaw)
                 : host.Placement.Plot(site.Record) is { } plot ? PlotT(ray, plot.Place(site.Position, yaw), ground < float.MaxValue ? ground : null)
                 : RaySegment(ray.Origin, ray.Direction, site.Position, site.Position + new Vector3(0, 16, 0), 12);
@@ -567,15 +654,18 @@ sealed partial class PlayerInterface
         var verbs = new List<(string, Action)>();
         var selection = SelectedIds();
         if (selection.Count == 0) return verbs;
-        // Building work is the owner's (the construction system ignores it on another faction's); the other verbs are as before.
+        // Build is offered on any standing unfinished building, whoever owns it (FUN_1407a6bc0, ui-input.md); Repair and the other verbs are the owner's.
         bool own = site.Owner == session.ActiveFaction;
         if (own && (site.Destroyed || site.Complete && site.NeedsWork)) verbs.Add(("Repair", () => OrderConstruction(site, selection)));
-        else if (own && !site.Complete) verbs.Add(("Build", () => OrderConstruction(site, selection)));
+        else if (!site.Complete && !site.Destroyed) verbs.Add(("Build", () => OrderConstruction(site, selection)));
         AddMachineVerb(verbs, site, selection);
         if (site.Complete && Machine(site.Id) is { } machine)
         {
             if (machine.IsStorage)
-                verbs.Add(("Auto-Haul", () => Say(new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
+                // Order 124: one haul trip, with Shift the Hauling to job (FUN_1407fa650).
+                verbs.Add(("Auto-Haul", () => Say(SlowModifier
+                    ? (Meitou.Simulation.SimCommand)new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
+                    : new Meitou.Simulation.Production.OperateOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
             // With Shift the dispatch turns Inventory (26) on a storage into Hauling to (124) and Man Turret (146) into Turret guard (234) (FUN_1407fa650, docs/game/ui-input.md "Click").
             if (machine.IsStorage)
                 verbs.Add(("Inventory", () => { if (SlowModifier) Say(new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }); else OpenStorage(site); }));
@@ -591,7 +681,7 @@ sealed partial class PlayerInterface
                     ? (Meitou.Simulation.SimCommand)new Meitou.Simulation.Production.AddJob(selection, Meitou.Data.Gameplay.Ai.TaskType.USE_TURRET, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick }
                     : new Meitou.Simulation.Production.UseTurretOrder(selection, site.Id) { SiteRevision = site.SiteRevision, Tick = session.CommandTick })));
         }
-        if (site.LevelPlacement is null) verbs.Add(("Dismantle", () => Say(new DismantleOrder(selection, site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick })));
+        if (own && site.LevelPlacement is null) verbs.Add(("Dismantle", () => Say(new DismantleOrder(selection, site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick })));
         if (site.LevelPlacement is null && !site.Complete && site.Progress <= 0 && site.Materials.All(m => m.Delivered <= 0))
             verbs.Add(("Cancel Construction", () => Say(new CancelSite(site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick })));
         // A finished building's doors: the door panel's open/close and lock buttons, for all its doors at once (docs/simulation.md "Cages, beds and locks").
@@ -616,7 +706,7 @@ sealed partial class PlayerInterface
         Say(new BuildOrder(selection, site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick });
         if (SlowModifier) Say(new Meitou.Simulation.Production.AddJob(selection,
             site.Destroyed || site.Complete ? Meitou.Data.Gameplay.Ai.TaskType.REPAIR : Meitou.Data.Gameplay.Ai.TaskType.BUILD,
-            site.Id) { Tick = session.CommandTick });
+            site.Id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = session.CommandTick });
     }
 
     /// <summary>A right press on a site with characters selected: a click released within the hold time orders the build, held longer it opens the menu (true: taken).</summary>
@@ -639,11 +729,12 @@ sealed partial class PlayerInterface
     {
         if (sitePending is not { } pending) return;
         sitePending = null;
-        if (SlowModifier && pending.Site.Complete && Machine(pending.Site.Id) is { } job && (job.Operable || job.IsStorage || job.Function is Meitou.Data.World.ObjectRanges.TurretFunction or MachineData.TrainingFunction))
+        if (SlowModifier && pending.Site.Complete && Machine(pending.Site.Id) is { } job && (job.Operable || job.IsStorage || job.Function is Meitou.Data.World.ObjectRanges.TurretFunction or MachineData.TrainingFunction or TownBuildings.ChairFunction or TownBuildings.ThroneFunction))
         {
             // A turret: 146 USE_TURRET, which becomes the job 234 Turret guard (PermaJobs).
             var type = job.Function == Meitou.Data.World.ObjectRanges.TurretFunction ? Meitou.Data.Gameplay.Ai.TaskType.USE_TURRET
                 : job.Function == MachineData.TrainingFunction ? Meitou.Data.Gameplay.Ai.TaskType.USE_TRAINING_DUMMY
+                : job.Function is TownBuildings.ChairFunction or TownBuildings.ThroneFunction ? Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY
                 : job.Operable ? (job.IsAutomatic ? Meitou.Data.Gameplay.Ai.TaskType.OPERATE_AUTOMATIC_MACHINERY : Meitou.Data.Gameplay.Ai.TaskType.OPERATE_MACHINERY)
                 : Meitou.Data.Gameplay.Ai.TaskType.OPERATE_STORAGE;
             Say(new Meitou.Simulation.Production.AddJob(SelectedIds(), type, pending.Site.Id) { SiteRevision = pending.Site.SiteRevision, Tick = session.CommandTick });
@@ -651,7 +742,7 @@ sealed partial class PlayerInterface
         }
         // With Shift the Build order becomes the Engineer job (125), which builds any unfinished site.
         if (QuickConstruction(pending.Site)) OrderConstruction(pending.Site, SelectedIds());
-        else if (Machine(pending.Site.Id) is { Operable: true } or { Function: MachineData.TrainingFunction }) Say(new Meitou.Simulation.Production.OperateOrder(SelectedIds(), pending.Site.Id) { SiteRevision = pending.Site.SiteRevision, Tick = session.CommandTick });
+        else if (Machine(pending.Site.Id) is { Operable: true } or { Function: MachineData.TrainingFunction or TownBuildings.ChairFunction or TownBuildings.ThroneFunction }) Say(new Meitou.Simulation.Production.OperateOrder(SelectedIds(), pending.Site.Id) { SiteRevision = pending.Site.SiteRevision, Tick = session.CommandTick });
         else if (Machine(pending.Site.Id) is { Function: Meitou.Data.World.ObjectRanges.TurretFunction })
             Say(new Meitou.Simulation.Production.UseTurretOrder(SelectedIds(), pending.Site.Id) { SiteRevision = pending.Site.SiteRevision, Tick = session.CommandTick });   // the original's order 146 USE_TURRET
         else if (Machine(pending.Site.Id) is { IsStorage: true } or { Function: MachineData.ItemFurnaceFunction }) OpenStorage(pending.Site);
@@ -729,7 +820,7 @@ sealed partial class PlayerInterface
     /// only for an unfinished building; a finished plain building is the arrow, and its quick order is a move (docs/game/ui-input.md "Building hover and click").
     /// </summary>
     bool SiteIsObject(BuildingSnapshot site) =>
-        QuickConstruction(site) || Machine(site.Id) is { Operable: true } or { IsStorage: true } or { Function: MachineData.ItemFurnaceFunction or MachineData.TrainingFunction or Meitou.Data.World.ObjectRanges.TurretFunction };
+        QuickConstruction(site) || Machine(site.Id) is { Operable: true } or { IsStorage: true } or { Function: MachineData.ItemFurnaceFunction or MachineData.TrainingFunction or TownBuildings.ChairFunction or TownBuildings.ThroneFunction or Meitou.Data.World.ObjectRanges.TurretFunction };
 
     /// <summary>
     /// The pointer over a site with characters selected: <c>build</c> while unfinished (the original's pointer mode 0xb), <c>search</c> over a storage, else the class's slot 130 pointer
@@ -745,5 +836,5 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>Something more specific than a building lies under the pixel: a character, an item on the ground, a container, a door or a resource rock. A plain building gives way to it.</summary>
-    bool SomethingInsideAt(Vector2 p) => PickWhere(p, _ => true) is not null || PickGroundItem(p) is not null || PickContainer(p) is not null || PickDoor(p) is not null || PickRock(p) is not null || PickBed(p) is not null;
+    bool SomethingInsideAt(Vector2 p) => PickWhere(p, _ => true) is not null || PickGroundItem(p) is not null || PickContainer(p) is not null || PickDoor(p) is not null || PickRock(p) is not null || PickBed(p) is not null || PickDummyAt(p) is not null || PickSeat(p) is not null;
 }

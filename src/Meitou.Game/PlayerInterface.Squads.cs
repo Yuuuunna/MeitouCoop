@@ -41,12 +41,8 @@ sealed partial class PlayerInterface
         b.SelectedTabs["SquadPanel"] = Math.Max(0, tabs.FindIndex(s => s.Id == session.CurrentSnapshot.ActiveSquad));
     }
 
-    /// <summary>The squads the HUD has a tab for: those with members, and the active one.</summary>
-    List<SquadView> SquadTabSquads()
-    {
-        var snapshot = session.CurrentSnapshot;
-        return [.. snapshot.PlayerSquads.Where(s => s.Members.Count > 0 || s.Id == snapshot.ActiveSquad)];
-    }
+    /// <summary>The squads the HUD has a tab for: those with members (an empty squad has none, even when active, <c>FUN_140416140</c>).</summary>
+    List<SquadView> SquadTabSquads() => [.. session.CurrentSnapshot.PlayerSquads.Where(s => s.Members.Count > 0)];
 
     /// <summary>A squad tab pressed: the squad bar shows that squad.</summary>
     bool SquadTabClick(UiControl c)

@@ -42,6 +42,7 @@ internal sealed class ContentPlacement
     {
         Ground = ground,
         Footprint = footprints.Require,
+        PartBounds = footprints.PartBounds,
         StaticAround = (at, radius) => Static(world, at, radius),
         Readout = (id, position) =>
         {
@@ -71,7 +72,7 @@ internal sealed class ContentPlacement
         string id = plan.Parent!;
         GameRecord record;
         Vector3 position; Quaternion rotation;
-        bool level;
+        bool level, owned = true, destroyed = false, ownerNotReal = false;
         if (world.Buildings.Find(id) is { } site)
         {
             if (!site.Complete || site.Destroyed || site.Owner != faction || db.Find(site.Record) is not { } found) return null;
@@ -80,7 +81,15 @@ internal sealed class ContentPlacement
         else
         {
             var parent = levelBuildings.Value.FirstOrDefault(b => b.Building.Placement.Key == id);
-            if (parent.Building.Record is null || parent.Building.Destroyed || !world.Fixtures.OwnsBuilding(id, faction)) return null;
+            if (parent.Building.Record is null || db.Find(plan.Record) is not { } planned) return null;
+            owned = world.Fixtures.OwnsBuilding(id, faction);
+            destroyed = world.Fixtures.PublishedRuins().FirstOrDefault(r => r.Building.Key == id)?.Destroyed ?? parent.Building.Destroyed;
+            var home = population.Sites.SelectMany(s => s.Buildings.Select(b => (Site: s, Building: b))).FirstOrDefault(p => p.Building.Key == id);
+            string? owner = home.Building?.OwnerFactionId;
+            int townOwner = home.Site is not null && home.Site.Index < population.SiteFactions.Count ? population.SiteFactions[home.Site.Index] : -1;
+            var ownerData = owner is not null ? population.Factions.FirstOrDefault(f => f.Id == owner) : (uint)townOwner < (uint)population.Factions.Count ? population.Factions[townOwner] : null;
+            ownerNotReal = ownerData is null || ownerData.NotReal;
+            if (!PlacementRules.MayBuildIn(BuildingBuildData.From(planned), owned, destroyed, ownerNotReal)) return null;
             record = parent.Building.Record; position = parent.Building.Position; rotation = parent.Building.Placement.Rotation; level = true;
         }
         var footprint = footprints.Require(record.StringId);
@@ -95,7 +104,7 @@ internal sealed class ContentPlacement
         if (surface.HighestUpTo(plan.Position.X, plan.Position.Z, plan.Floor) is not { } height) return null;
         var feet = new Vector3(plan.Position.X, height, plan.Position.Z);
         int actualFloor = surface.FloorAt(feet);
-        return new(height, new GhostFloor(id, footprint.Place(position, rotation), actualFloor, level ? id : null, Owned: true)
-            { Ceiling = surface.CeilingAbove(feet.X, feet.Z, feet.Y + InteriorVolume.CoverClearance) });
+        return new(height, new GhostFloor(id, footprint.Place(position, rotation), actualFloor, level ? id : null, Owned: owned)
+            { Destroyed = destroyed, OwnerNotReal = ownerNotReal, Ceiling = surface.CeilingAbove(feet.X, feet.Z, feet.Y + InteriorVolume.CoverClearance) });
     }
 }

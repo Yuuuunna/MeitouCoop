@@ -12,6 +12,9 @@ namespace Meitou.Simulation.Saving;
 /// <summary>Settings of <see cref="SaveLoader.Load"/>.</summary>
 public sealed class SaveLoadOptions
 {
+    /// <summary>Trusted checkpoint clock, used before any absolute timers are restored; null uses the legacy minute-resolution clock.</summary>
+    public double? GameHoursOverride { get; init; }
+
     /// <summary>Put the save's relation table into <c>PopulationData.Relations</c> (it is one table shared by the data; a loaded game replaces its start values).</summary>
     public bool ApplyRelations { get; init; } = true;
 
@@ -52,6 +55,8 @@ public static class SaveLoader
         ArgumentNullException.ThrowIfNull(save);
         ArgumentNullException.ThrowIfNull(data);
         options ??= new SaveLoadOptions();
+        if (options.GameHoursOverride is { } exactHours && (!double.IsFinite(exactHours) || exactHours < 0))
+            throw new ArgumentOutOfRangeException(nameof(options), "The checkpoint clock must be finite and non-negative.");
         var multiplayerFactions = options.MultiplayerMetadata is { } metadata ? PlayerRegistrySave.PlayerFactionIds(data, metadata) : null;
         if (world.Tick != 0 || world.Characters.Count != 0) throw new InvalidOperationException("A save is loaded into a world that has not started and has no characters.");
         if (world.Squads.Count != 0 || world.Squads.NextAvailableId != 0) throw new InvalidOperationException("A save requires an empty squad registry.");
@@ -63,6 +68,9 @@ public static class SaveLoader
 
         var camera = save.Camera;
         var loaded = new LoadedSave { Source = save, Clock = new SaveClock(camera.Day, camera.Hour, camera.Minute) };
+        // The world's clock is the save's from the start: the first tick (run before the host sets it) makes the zones' saved platoons, whose absolute hours (a shop's
+        // next restock) are read against it.
+        world.GameHours = options.GameHoursOverride ?? camera.Day * 24 + loaded.Clock.HourOfDay;
         // The CAMERA's mods list names the data files the save was made with (without extension; gamedata.base as "base", docs/formats/save.md).
         var running = new HashSet<string>(data.Db.Files.Select(f => f == "gamedata.base" ? "base" : Path.GetFileNameWithoutExtension(f)), StringComparer.OrdinalIgnoreCase);
         foreach (var mod in camera.Record.References.GetValueOrDefault("mods") ?? [])
@@ -95,6 +103,7 @@ public static class SaveLoader
         // Building locks and doors are taken from the zones when their town registers; held characters name their bed or cage by building instance.
         var buildingStates = HeldSave.BuildingStates(save);
         world.Fixtures.Saved = buildingStates;
+        world.Fixtures.SavedSpots = HeldSave.BuildingSpots(save);
         world.Fixtures.Items = data.Items;
         var instanceOf = new Dictionary<Meitou.Data.Fcs.FcsRecord, string>(ReferenceEqualityComparer.Instance);
         foreach (var (instance, record) in buildingStates) instanceOf[record] = instance;
@@ -107,9 +116,11 @@ public static class SaveLoader
         else if (playerFaction is not null) BuildingSave.Read(save, world, data.Db, playerFaction.Id, playerIndex);
         // The machines of the player's complete buildings: recipe slots, storage, farms (docs/simulation.md "Production").
         MachineSave.Bind(save, world, data.Items);
+        NaturalClaimsSave.Read(camera.Record, world, data);
         if ((playerFaction is not null || multiplayerFactions is not null) && world.Systems.OfType<Production.ProductionSystem>().FirstOrDefault() is { } production)
             MachineSave.Read(save, world, production, data.Items, allOwners: multiplayerFactions is not null);
         // The loose items of the zone files (docs/simulation.md "Ground items").
+        world.SavedZones.UnionWith(save.Zones.Keys);
         if (GroundItemSave.Load(save, world, data.Items, id => data.FactionIndex(id) is var f and >= 0 && !data.Factions[f].NotReal ? f : -1) is > 0 and var lost) loaded.Notes.Add($"{lost} loose items name records this game does not have; they stay in the zone files.");
 
         var races = new Dictionary<string, RaceData?>(StringComparer.Ordinal);
@@ -119,7 +130,7 @@ public static class SaveLoader
         // The NPC platoons are made when their zones load; what that needs stays with the world (docs/simulation.md "Saves").
         var context = new SavedPopulation
         {
-            Handles = handles, InstanceOf = instanceOf, Appearances = options.Appearances, Clock = loaded.Clock, PlayerFaction = playerIndex,
+            MeitouWritten = save.Camera.Record.Strings.ContainsKey(SeedKey), Handles = handles, InstanceOf = instanceOf, Appearances = options.Appearances, Clock = loaded.Clock, PlayerFaction = playerIndex,
             MultiplayerFactions = multiplayerFactions,
         };
         world.Saved = context;
@@ -134,12 +145,19 @@ public static class SaveLoader
             if (site.InstanceId.Length > 0 && context.TownStates.TryGetValue(site.InstanceId, out var state)
                 && state.Strings.GetValueOrDefault("replacementTown") is { Length: > 0 } replacement && data.Db.Find(replacement) is { Type: FcsRecordType.TOWN } record)
                 data.SetReplacement(site.Index, TownData.From(record));
+        world.Fixtures.LayoutsFromSave(world, data);   // the layouts the original furnished the saved buildings with
+        world.Fixtures.RuinsFromSave(world, data);
+        foreach (var site in data.Sites)
+            if (site.Replacement is not null) world.Fixtures.ApplyTownRuins(world, data, site.Index);   // the ruins its residents made
         // The war states, and the town handles their targets and homes name (docs/formats/save.md WAR_SAVESTATE).
         var siteOf = data.Sites.Where(s => s.InstanceId.Length > 0).GroupBy(s => s.InstanceId).ToDictionary(g => g.Key, g => g.First().Index, StringComparer.Ordinal);
         foreach (var town in save.Towns)
             if (!town.IsNest && siteOf.TryGetValue(town.Instance, out int site) && !town.Handle.IsNull) context.TownSites.TryAdd((town.Handle.C, town.Handle.CS), site);
         foreach (var f in save.Factions)
+        {
             if (f.War is { } war) context.Wars.TryAdd(f.Id, war);
+            context.Prosperity.TryAdd(f.Id, f.Prosperity);
+        }
         var campaignHomes = WarSave.PlatoonHomes(context.Wars.Values);
         foreach (var platoon in save.Platoons)
         {
@@ -151,6 +169,7 @@ public static class SaveLoader
                 LoadNpcPlatoon(world, platoon, data, loaded, context, campaignHomes.TryGetValue((platoon.Handle.C, platoon.Handle.CS), out var home) ? home : null);
         }
         if (loaded.PlayerPlatoons.FirstOrDefault(p => p.Squad.Faction == playerIndex) is { } localPlatoon) world.Player.Squad = localPlatoon.Squad.Id;
+        context.ResolveOwners(world);
         // What the player's squads remembered (of the characters made so far; an NPC not made yet is not named again).
         if (context.Memory is { } memory)
             foreach (var lp in loaded.PlayerPlatoons) memory.Restore(lp.Squad.Id, MemorySave.Read(lp.Platoon.Record, context.CharacterOf));
@@ -322,7 +341,7 @@ public static class SaveLoader
         string baseTown = platoon.Record.Strings.GetValueOrDefault("basetown", "");
         int origin = -1;
         for (int i = 0; i < data.Sites.Count && baseTown.Length > 0; i++)
-            if (data.Sites[i].Town.Id == baseTown) { origin = i; break; }
+            if (data.Sites[i].Record.Id == baseTown || data.Sites[i].Replacement?.Id == baseTown) { origin = i; break; }   // the town's own TOWN, or the override that took its place (platoons made since)
         if (origin < 0 && campaignHome is { IsNull: false } home && context.TownSites.TryGetValue((home.C, home.CS), out int homeSite)) origin = homeSite;
         if (origin < 0 && platoon.SquadTemplate.Length > 0 && LoadWildPlatoon(world, platoon, data, loaded, context)) return;
         if (origin < 0 || platoon.SquadTemplate.Length == 0)
@@ -341,11 +360,13 @@ public static class SaveLoader
         // A platoon without characters (no file, or none in it) has nothing to make: a town's stays in the save as it is, a travelling one is a stand-in whose members the
         // template makes, as for the population's own.
         bool hasCharacters = platoon.IsLoaded && platoon.Characters.Count > 0;
-        if (!hasCharacters && !travels) return;
+        bool unmade = !hasCharacters && !travels && Unmade(platoon);
+        if (!hasCharacters && !travels && !unmade) return;
         SavedPlatoon? sp = null;
+        if (unmade) sp = new SavedPlatoon { Source = platoon, Pinned = true, LegacyBaseTown = context.MeitouWritten && !platoon.Record.Bools.ContainsKey(SavedPlatoon.BaseTownKey), Anchor = new Vector2(platoon.Position.X, platoon.Position.Z) };
         if (hasCharacters)
         {
-            sp = new SavedPlatoon { Source = platoon, Pinned = !travels, Anchor = new Vector2(platoon.Position.X, platoon.Position.Z) };
+            sp = new SavedPlatoon { Source = platoon, Pinned = !travels, LegacyBaseTown = context.MeitouWritten && !platoon.Record.Bools.ContainsKey(SavedPlatoon.BaseTownKey), Anchor = new Vector2(platoon.Position.X, platoon.Position.Z) };
             foreach (var sc in platoon.Characters) sp.Members.Add(new SavedMember { Source = sc });
         }
         ulong key = Rng.Mix(Rng.StableHash(platoon.Name));
@@ -355,7 +376,7 @@ public static class SaveLoader
             size = SquadFactory.Plan(data.Db, Meitou.Data.Gameplay.SquadTemplate.From(sizeRecord), 1, world.Seed, key, data.States).TotalMembers;
         var p = new Platoon
         {
-            Id = world.Platoons.NextId(),
+            Id = unmade ? world.Platoons.NextReservedId() : world.Platoons.NextId(),
             Origin = origin,
             TemplateId = platoon.SquadTemplate,
             Faction = faction >= 0 ? faction : siteFaction,
@@ -366,6 +387,11 @@ public static class SaveLoader
             State = PlatoonState.Unloaded,
             Package = package?.Id, Job = job,
             Saved = sp,
+            Unmade = unmade,
+            Imprisoned = platoon.Record.Bools.GetValueOrDefault("imprisoned"),
+            Dead = platoon.Record.Bools.GetValueOrDefault("dead"),
+            IntactFlag = platoon.Record.Bools.GetValueOrDefault("intact", true),
+            Target = MissionTownOf(platoon.Record, data),
         };
         world.Platoons.Add(p);
         if (!platoon.Handle.IsNull) context.PlatoonIds.TryAdd((platoon.Handle.C, platoon.Handle.CS), p.Id);
@@ -375,9 +401,28 @@ public static class SaveLoader
             context.Platoons.Add(sp);
             context.ByName[sp.Name] = sp;
         }
+        if (unmade) loaded.Notes.Add($"{platoon.Name}: never made by the game; made from its template when it activates.");
         if (travels) loaded.RoamingPlatoons[p.Id] = platoon.Name;
         else loaded.TownBoundPlatoons++;
     }
+
+    /// <summary>The site of the platoon's saved mission town (<see cref="SaveCapture.MissionTownKey"/>: the town its package took it to when it left the world); -1 when it has none or the town is not placed.</summary>
+    static int MissionTownOf(FcsRecord record, PopulationData data)
+    {
+        if (record.Strings.GetValueOrDefault(SaveCapture.MissionTownKey) is not { Length: > 0 } id) return -1;
+        for (int i = 0; i < data.Sites.Count; i++)
+            if (data.Sites[i].Town.Id == id) return i;
+        return -1;
+    }
+
+    /// <summary>
+    /// Whether a saved town platoon with no file is one the game never made: the original builds a <c>never been activated</c> platoon from its template on activation
+    /// (<c>FUN_1404ffad0</c>, <b>Verified</b>); the <c>char count</c> &gt; 0 and BUILDING <c>homebuilding</c> filter is Meitou's own (docs/formats/save.md "NPC platoons").
+    /// It becomes a stand-in (<see cref="Platoon.Unmade"/>) instead of staying in the save.
+    /// </summary>
+    internal static bool Unmade(SavePlatoon platoon) =>
+        !platoon.IsLoaded && platoon.Record.Bools.GetValueOrDefault("never been activated") && platoon.CharCount > 0
+        && Hand.Read(platoon.Record, "homebuilding") is { IsNull: false, Type: (int)FcsRecordType.BUILDING };
 
     /// <summary>
     /// Whether a saved NPC platoon travels and so gets a roaming stand-in (<b>engine rule</b>, from the five saves of docs/formats/save.md: residents are marked <c>is resident</c>, and
@@ -446,6 +491,9 @@ public static class SaveLoader
             State = PlatoonState.Unloaded,
             Package = package?.Id, Job = job,
             Saved = sp,
+            Imprisoned = platoon.Record.Bools.GetValueOrDefault("imprisoned"),
+            Dead = platoon.Record.Bools.GetValueOrDefault("dead"),
+            IntactFlag = platoon.Record.Bools.GetValueOrDefault("intact", true),
         };
         world.Platoons.Add(p);
         sp.PlatoonId = p.Id;

@@ -11,7 +11,7 @@ public interface IClientSession : IPlayerSession, IWorldPresentation
     new WorldSnapshot CurrentSnapshot { get; }
     FixedStepClock Ticks { get; }
     float Alpha { get; }
-    bool IsPaused { get; }
+    new bool IsPaused { get; }
     double PresentationTick { get; }
     double PresentationSeconds { get; }
     event Action<ActionState>? Ticked;

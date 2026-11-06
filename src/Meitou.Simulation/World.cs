@@ -21,6 +21,11 @@ public interface ITickSystem
     void Think(World world, Partition partition) { }
     /// <summary>Step 4, parallel: path following, steering, separation, integration on the ground.</summary>
     void Move(World world, Partition partition) { }
+    /// <summary>
+    /// Step 5, parallel, right before this system's <see cref="Act"/> with a barrier between: the slots' own state that the system's <see cref="Act"/> reads of other slots (combat's
+    /// body step), so each slot's Act sees every slot's update of this tick whatever the partitions and thread count. Writes only its own slots; no effects.
+    /// </summary>
+    void BeforeAct(World world, Partition partition) { }
     /// <summary>Step 5, parallel: combat timers, needs, production; effects on others go to <paramref name="effects"/>.</summary>
     void Act(World world, Partition partition, EffectBuffer effects) { }
     /// <summary>Step 6, serial: applies one effect this system emitted; effects arrive sorted by (target, source, system, sequence).</summary>
@@ -44,8 +49,8 @@ public sealed record WorldSettings
     public int Threads { get; init; } = 1;
     /// <summary>Game seconds per tick (docs/simulation.md: 1/30).</summary>
     public float TickSeconds { get; init; } = 1f / 30;
-    /// <summary>Cell size of the neighbour grid, in world units.</summary>
-    public float GridCellSize { get; init; } = 100;
+    /// <summary>Cell size of the neighbour grid, in world units: a query scans whole cells, so near a crowd separation and fight steering pay for every body in them.</summary>
+    public float GridCellSize { get; init; } = 25;
     /// <summary>Build a <see cref="WorldSnapshot"/> at the end of each tick. A headless test can turn it off.</summary>
     public bool PublishSnapshots { get; init; } = true;
     /// <summary>Partitions per worker thread: more evens out uneven work, fewer cuts overhead.</summary>
@@ -57,6 +62,11 @@ public sealed record WorldSettings
     /// <summary>The CONSTANTS <c>sunrise</c> and <c>sunset</c> (game hours) the daylight factor ramps at (<see cref="SightMap.Daylight"/>).</summary>
     public float Sunrise { get; init; } = 5;
     public float Sunset { get; init; } = 23;
+    /// <summary>
+    /// The far cadence (docs/simulation.md "Far cadence", engine choice): a character far from the camera and from every player character steps once in this many
+    /// ticks, its step covering the ticks since its last. 1 (the default, and headless worlds without a <see cref="World.ViewPosition"/>): everyone steps every tick.
+    /// </summary>
+    public int FarTickPeriod { get; init; } = 1;
 }
 
 /// <summary>
@@ -74,6 +84,10 @@ public sealed partial class World : IDisposable
     readonly EffectBuffer[] buffers;
     readonly List<Effect> effects = [];
     Partition[] partitions = [];
+    // The far cadence (RefreshCadence): per slot, the ticks this tick's step covers (0: skipped this tick) and the tick of its last step.
+    byte[] stepTicks = [];
+    long[] lastStep = [];
+    readonly List<System.Numerics.Vector3> playerSpots = [];
     // Per system, built once when it is added: which parallel phases it implements and the delegates that run them (no closure per tick).
     readonly List<SystemPhases> phases = [];
     readonly List<SimCommand> deferred = [];
@@ -110,6 +124,12 @@ public sealed partial class World : IDisposable
         production = this.systems.OfType<Production.ProductionSystem>().FirstOrDefault();
         dialogues = this.systems.OfType<Dialogue.IDialogueSource>().FirstOrDefault();
         ragdolls = this.systems.OfType<Ragdolls.IRagdollSource>().FirstOrDefault();
+        hasGoalSources = this.systems.OfType<IGoalSource>().Any();
+        Claims.Configure(settings.TickSeconds);
+        for (int k = 0; k < this.systems.Count; k++) RegisterCombatHitObserver(this.systems[k], k);
+        foreach (var owner in this.systems.OfType<ITaskOwner>()) owner.RegisterTasks(Tasks);
+        foreach (var owner in this.systems.OfType<IDecisionOwner>()) owner.RegisterSources(Decisions);
+        for (int k = 0; k < this.systems.Count; k++) if (DecidesAfter(this.systems[k])) decideAfter = k;
         Characters = characters ?? new CharacterTable();
         Characters.EntityRemoved = Players.RoleRemoved;
         Entities = new WorldEntities(Characters);
@@ -122,6 +142,18 @@ public sealed partial class World : IDisposable
 
     public WorldSettings Settings { get; private set; }
     public ulong Seed => Settings.Seed;
+
+    /// <summary>The act-out handlers <see cref="TaskStart"/> starts and ends tasks through (filled by the systems that own them, <see cref="ITaskOwner"/>; open to later additions).</summary>
+    public TaskHandlers Tasks { get; } = new();
+
+    /// <summary>
+    /// The decision step for the player's characters (docs/simulation.md "Decision step"): run in the slow world right after the last of retaliation, aggro and flight (after every system
+    /// when the world has none of them), and for orders between ticks. Its sources are registered by the systems that own them (<see cref="IDecisionOwner"/>; open to later additions).
+    /// </summary>
+    public DecisionSystem Decisions { get; } = new();
+    int decideAfter = -1;
+
+    static bool DecidesAfter(ITickSystem system) => system is RetaliationSystem or AggroSystem or FleeSystem;
 
     /// <summary>
     /// Sets the world seed before the first tick: a loaded save's (docs/formats/save.md CAMERA <c>meitou seed</c>), so its seeded layout rolls as before the save, or a new
@@ -156,6 +188,10 @@ public sealed partial class World : IDisposable
     public Saving.SavedPopulation? Saved { get; set; }
     /// <summary>Each faction's <c>squad formation</c> (<see cref="SquadFormation"/>), by faction position; set by the population. Null (no faction data): RANDOM, the field's default.</summary>
     public IReadOnlyList<int>? FactionFormations { get; set; }
+    /// <summary>The squad templates whose <c>force speed</c> is 0, 1 or 2 (<see cref="Squad.ForceSpeed"/>), by record id; set by the population. Derived from the data: not saved or hashed.</summary>
+    public IReadOnlyDictionary<string, byte>? ForcedSpeeds { get; set; }
+    /// <summary>A bench with its table behind is sat facing away from the table (Fixes settings, Meitou); off, towards the world origin, as the game does (docs/game/ai-tasks.md "Town goals").</summary>
+    public bool BenchFacingFix { get; set; } = true;
     /// <summary>Faction-owned funds, names and research. Player interface state only references these resources.</summary>
     public FactionStates Factions { get; } = new();
     /// <summary>The local player's interface and current faction (legacy single-player entry point).</summary>
@@ -164,12 +200,20 @@ public sealed partial class World : IDisposable
     public WorldPlayers Players { get; }
     /// <summary>Doors, lockable containers, cages and beds of the registered towns, with their occupants (docs/simulation.md "Cages, beds and locks").</summary>
     public Locks.FixtureRegistry Fixtures { get; } = new();
+    /// <summary>The squads' goal list across ticks (<see cref="GoalClaims"/>).</summary>
+    public GoalClaims Claims { get; } = new();
+    /// <summary>The camera the host last passed (<see cref="CameraViewCommand"/>); null: none, nothing is tested against a screen.</summary>
+    public CameraViewCommand? View { get; internal set; }
+
+    readonly bool hasGoalSources;
     /// <summary>The characters' places and light levels for the sight tests (docs/game/perception.md "Sight"), worked out each tick.</summary>
     public SightMap Sight { get; } = new();
     /// <summary>The unique (story) characters made, dead or captured (docs/game/factions-squads-towns.md "Unique characters").</summary>
     public UniqueCharacters Uniques { get; } = new();
     /// <summary>The player-built buildings and construction sites, in creation order (docs/simulation.md "Buildings").</summary>
     public Construction.BuildingRegistry Buildings { get; } = new();
+    /// <summary>The buildings the loaded nests stood up round themselves (docs/game/factions-squads-towns.md "Nest furniture"); not saved.</summary>
+    public NestBuildings NestBuildings { get; } = new();
     /// <summary>Loose items lying in the world, so far the severed limbs combat drops (docs/simulation.md "Ground items").</summary>
     public Items.GroundItems GroundItems { get; } = new();
     /// <summary>The loose-item slots of the towns' interiors (docs/simulation.md "Ground items"); hashed once a town with any registered.</summary>
@@ -179,6 +223,8 @@ public sealed partial class World : IDisposable
     /// each that its loaded save has none of. Only read by saves, so not hashed.
     /// </summary>
     public HashSet<Meitou.Data.World.ZoneCoordinate> VisitedZones { get; } = [];
+    /// <summary>The zones the loaded save has a file of: the original's zones not loaded fresh (<c>ZoneMapContent::newGameFirstTimeLoaded</c> clear), where a nest lays no items.</summary>
+    public HashSet<Meitou.Data.World.ZoneCoordinate> SavedZones { get; } = [];
     /// <summary>
     /// The zones active as of the population's last look, which are the loaded zones (null before one, so no zone is judged inactive): squads, loose items and the navmesh are kept there. The collection is the population's own and swapped by it: read within a tick only. Not hashed.
     /// </summary>
@@ -214,6 +260,50 @@ public sealed partial class World : IDisposable
     /// outdoors work only at night (docs/game/ui-screens.md "Selected building", slot 164).
     /// </summary>
     public bool Daytime { get; set; }
+    /// <summary>
+    /// How many times faster than real time the host runs ticks (the game speed 1, 2 or 5; 1 without a clock). The ragdoll physics steps in real time, not game time
+    /// (<see cref="Ragdolls.RagdollPhysics.StepOf"/>), so a ragdoll's outcome depends on it, as in the original; headless runs and the goldens stay at 1. An input like <see cref="GameHours"/>:
+    /// not hashed, not saved.
+    /// </summary>
+    public float PhysicsSpeed { get; set; } = 1;
+    /// <summary>
+    /// Meitou (<b>engine choice</b>, docs/simulation.md "Speed steps"): how many ticks make one tick of real time at the host's speed: 1 at 1x (and headless), 2 at 2x, 5 at 5x.
+    /// The periodic looks (<see cref="Every"/>) and the body step stretch by it, so they cost per real second what they do at 1x.
+    /// </summary>
+    public int SpeedSteps => PhysicsSpeed >= 1.5f ? (int)MathF.Round(PhysicsSpeed) : 1;
+    /// <summary>A look's period of <paramref name="ticks"/> stretched by <see cref="SpeedSteps"/> (at least 1).</summary>
+    public int Every(int ticks) => Math.Max(1, ticks) * SpeedSteps;
+    /// <summary>
+    /// Where the player's camera is (null without one: headless runs, tests). For looks only: the ragdoll system dangles a collapsed limb near it (<see cref="Ragdolls.RagdollSystem.LimbReach"/>).
+    /// An input like <see cref="GameHours"/>: not hashed, not saved.
+    /// </summary>
+    public System.Numerics.Vector3? ViewPosition { get; set; }
+    /// <summary>
+    /// Within this distance of <see cref="ViewPosition"/> a character is near for the far cadence (<see cref="WorldSettings.FarTickPeriod"/>): the renderer's character draw
+    /// distance plus its reach margin, so every drawn character steps every tick. The host sets it; an input like <see cref="ViewPosition"/>.
+    /// </summary>
+    public float NearRadius { get; set; } = 8000;
+    /// <summary>Within this distance of a player character everyone is near for the far cadence (engine choice: what the player's people fight, trade and talk with).</summary>
+    public const float PlayerNearRadius = 1500;
+    /// <summary>The characters skipped this tick by the far cadence (the play bench's <c>far</c> column).</summary>
+    public int FarSkipped { get; private set; }
+    /// <summary>Whether <paramref name="slot"/> steps this tick (far cadence): the parallel systems, the ragdolls, the sight map and the decisions leave a skipped slot as it is.</summary>
+    public bool Steps(int slot) => StepTicks(slot) != 0;
+    /// <summary>The ticks a stepping slot's step covers this tick (1 for a near character; up to <see cref="WorldSettings.FarTickPeriod"/> for a far one), 0 when skipped. A slot the tick has not seen yet (outside a tick) steps.</summary>
+    public int StepTicks(int slot) => slot < stepTicks.Length ? stepTicks[slot] : 1;
+    /// <summary>The game seconds a stepping slot's step covers this tick: the systems' <c>dt</c> for it.</summary>
+    public float StepSeconds(int slot) => StepTicks(slot) * TickSeconds;
+    /// <summary>
+    /// The slot's turn in a sweep that looks at each character once in <paramref name="every"/> ticks (its turn: the ticks where Tick - slot is a multiple of every; the AI's think
+    /// anchors at Tick + slot, so a slot's look and think interleave) fell within the ticks its current step covers (<see cref="StepTicks"/>): a near character exactly on its turn, a
+    /// far one at its first step after it, a skipped one never. So a far character keeps the sweep's rate whatever the period divides (docs/simulation.md "Far cadence").
+    /// </summary>
+    public bool Turn(int slot, int every)
+    {
+        long since = (Tick - slot) % every;
+        if (since < 0) since += every;
+        return since < StepTicks(slot);
+    }
     /// <summary>The integer hour of day, 0 to 23 (the game's sky controller hour that the AI compares windows with).</summary>
     public int Hour => Math.Clamp((int)(((GameHours % 24) + 24) % 24), 0, 23);
     public float TickSeconds => Settings.TickSeconds;
@@ -226,12 +316,17 @@ public sealed partial class World : IDisposable
     {
         if (Tick != 0) throw new InvalidOperationException("systems are added before the first tick");
         systems.Add(system);
+        systemsByType.Clear();
         phases.Add(new SystemPhases(this, system, systems.Count - 1));
         animations ??= system as IAnimationSource;
         projectiles ??= system as IProjectileSource;
         trades ??= system as Trading.ITradeSource;
         dialogues ??= system as Dialogue.IDialogueSource;
         ragdolls ??= system as Ragdolls.IRagdollSource;
+        RegisterCombatHitObserver(system, systems.Count - 1);
+        if (system is ITaskOwner taskOwner) taskOwner.RegisterTasks(Tasks);
+        if (system is IDecisionOwner owner) owner.RegisterSources(Decisions);
+        if (DecidesAfter(system)) decideAfter = systems.Count - 1;
     }
 
     /// <summary>The character holds a line it wants to say to the player (<see cref="Dialogue.IDialogueSource.HasInterrupt"/>).</summary>
@@ -282,12 +377,15 @@ public sealed partial class World : IDisposable
         PlayerTrades.Inputs(this, due);
         prof?.Lap(TickProfile.Inputs);
         for (int k = 0; k < systems.Count; k++) { systems[k].Inputs(this, due); prof?.Lap(TickProfile.Inputs, k); }
+        PlayerOrders.ValidateAuthority(this);
         RuntimeBoundary?.Invoke(this);
 
         // 2. Schedule (serial): the grid of the last tick's positions, then the systems.
         table.Phase = TablePhase.Schedule;
         Grid.Build(table.Previous);
+        RefreshCadence();
         prof?.Lap(TickProfile.Grid);
+        MarkDormant();
         Sight.Update(this);
         prof?.Lap(TickProfile.Sight);
         MakePartitions();
@@ -303,6 +401,7 @@ public sealed partial class World : IDisposable
         prof?.Lap(TickProfile.Act);
         foreach (var p in phases)
         {
+            if (p.BeforeAct is { } before) RunParallel(before, prof, TickProfile.Act, p.Index);
             if (p.Act is not { } act) continue;
             foreach (var b in buffers) b.BeginSystem(p.Index);   // Effect.System is the system's real index, so the commit order does not depend on which systems act
             RunParallel(act, prof, TickProfile.Act, p.Index);
@@ -320,7 +419,17 @@ public sealed partial class World : IDisposable
         prof?.Lap(TickProfile.Commit);
         table.Phase = TablePhase.SlowWorld;
         // 7. Slow world (serial).
-        for (int k = 0; k < systems.Count; k++) { systems[k].SlowWorld(this); prof?.Lap(TickProfile.SlowWorld, k); }
+        for (int k = 0; k < systems.Count; k++)
+        {
+            systems[k].SlowWorld(this);
+            prof?.Lap(TickProfile.SlowWorld, k);
+            if (k == decideAfter) RunDecisions(prof);
+        }
+        if (decideAfter < 0) RunDecisions(prof);
+        TaskStart.CheckStarts(this);
+        prof?.Part("task starts");
+        Claims.Now = Tick;
+        if (hasGoalSources) SquadGoals.Of(this);   // the duties running now refresh their entries; the ones past their 3 s go
 
         // 8. Publish.
         Squads.Refresh(table);
@@ -328,12 +437,39 @@ public sealed partial class World : IDisposable
         PlayerTrades.Prune(this);
         table.Phase = TablePhase.Outside;
         table.EndTick();
+        prof?.Part("end tick");   // F12: the squads, the prune and the table's end, apart from the snapshot
         Tick++;
         StateRevision = checked(StateRevision + 1);
         GameHours += TickSeconds / SecondsPerGameHour;
         RuntimeBoundary?.Invoke(this);
-        if (publish && Settings.PublishSnapshots) Publish();
+        if (publish && Settings.PublishSnapshots) Publish(prof, farShared: true);
         prof?.Lap(TickProfile.Publish);
+    }
+
+    /// <summary>
+    /// The activity gate (<c>FUN_1405c9410</c>, each logic tick per character, <b>Verified</b>): a character whose zone record is not loaded is deactivated, one whose zone is loaded active again,
+    /// and one off the zone grid keeps its state. A deactivated character is not updated (<see cref="CharacterHot.Dormant"/>). Without a loaded set (a world with no population) every one is active.
+    /// </summary>
+    void MarkDormant()
+    {
+        var table = Characters;
+        var loaded = LoadedZones;
+        for (int i = 0; i < table.HighWater; i++)
+        {
+            var at = table.Previous[i];
+            if (!at.Alive) continue;
+            if (loaded is null) { if (at.Dormant) table.SetDormant(i, false); continue; }
+            var zone = Meitou.Data.World.WorldLayout.ZoneOf(at.Position.X, at.Position.Z);
+            if (zone.IsInsideGrid && at.Dormant == loaded.Contains(zone)) table.SetDormant(i, !loaded.Contains(zone));
+        }
+    }
+
+    // The decisions pass: its own part of the slow world phase, not the next system's.
+    void RunDecisions(TickProfile? prof)
+    {
+        Decisions.Run(this, paused: false);
+        prof?.Part("decisions");
+        prof?.Lap(TickProfile.SlowWorld);
     }
 
     /// <summary>The ticks' time per phase and system (off unless the host turns it on; F12's sim rows).</summary>
@@ -475,6 +611,65 @@ public sealed partial class World : IDisposable
         for (int i = 0; i < ticks; i++) RunTick();
     }
 
+    /// <summary>
+    /// The far cadence (docs/simulation.md "Far cadence"): a character near the camera (<see cref="NearRadius"/> of <see cref="ViewPosition"/>), a player character
+    /// or anyone within <see cref="PlayerNearRadius"/> of one steps every tick; the rest step once in <see cref="WorldSettings.FarTickPeriod"/> ticks, spread by
+    /// slot, each step covering the ticks since the last (so a character crossing the boundary loses no time). Serial, from the last tick's positions.
+    /// </summary>
+    void RefreshCadence()
+    {
+        var table = Characters;
+        int n = table.HighWater, period = Settings.FarTickPeriod;
+        if (stepTicks.Length < n)
+        {
+            int size = Math.Max(n, stepTicks.Length * 2);
+            int was = stepTicks.Length;
+            Array.Resize(ref stepTicks, size);
+            Array.Resize(ref lastStep, size);
+            stepTicks.AsSpan(was).Fill(1);
+        }
+        if (Players.RequiresExplicitControl || period <= 1 || ViewPosition is not { } eye)
+        {
+            if (FarSkipped > 0) stepTicks.AsSpan(0, n).Fill(1);
+            FarSkipped = 0;
+            return;
+        }
+        var prev = table.Previous;
+        playerSpots.Clear();
+        for (int i = 0; i < n; i++)
+            if (prev[i].Alive && table.Cold(i) is { IsPlayer: true }) playerSpots.Add(prev[i].Position);
+        float near2 = NearRadius * NearRadius;
+        int skipped = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (!prev[i].Alive)
+            {
+                stepTicks[i] = 1;
+                lastStep[i] = Tick;
+                continue;
+            }
+            var at = prev[i].Position;
+            bool near = (Tick + i) % period == 0 || System.Numerics.Vector3.DistanceSquared(at, eye) <= near2 || table.Cold(i) is { IsPlayer: true } || NearPlayer(at);
+            if (!near)
+            {
+                stepTicks[i] = 0;
+                skipped++;
+                continue;
+            }
+            stepTicks[i] = (byte)Math.Clamp(Tick - lastStep[i], 1, period);
+            lastStep[i] = Tick;
+        }
+        FarSkipped = skipped;
+    }
+
+    bool NearPlayer(System.Numerics.Vector3 at)
+    {
+        const float r2 = PlayerNearRadius * PlayerNearRadius;
+        foreach (var p in playerSpots)
+            if (System.Numerics.Vector3.DistanceSquared(at, p) <= r2) return true;
+        return false;
+    }
+
     void MakePartitions()
     {
         int slots = Characters.HighWater;
@@ -508,6 +703,7 @@ public sealed partial class World : IDisposable
         Players.Hash(ref h);
         Entities.Hash(ref h);
         foreach (var s in systems) if (s is IStateHashed hashed) hashed.Hash(ref h);
+        HashCombatHitObserverFaults(ref h);
         return h.Value;
     }
 

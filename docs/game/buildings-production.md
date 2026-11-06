@@ -24,7 +24,7 @@ initializer `FUN_14055ba20`, the tick `FUN_1405595a0` and the save writer/reader
 | +0x18c float | rate = `build speed mult` / (1200/11), i.e. per game hour converted to per second | - |
 | +0x190 int | builder counter of the 0.75 falloff | - |
 | +0x194 float | visual threshold = clamp(`build threshold` / 100, 0, 0.95) | - |
-| +0x1a0 byte | is a door (set by the DoorStuff constructor `FUN_14029fb40`): build work x3, never completes itself, no refund | - |
+| +0x1a0 byte | is a door (set by the DoorStuff constructor `FUN_14029fb40`): build work x3, never completes itself (neither by progress nor by the immediate finish; its parent building does, `FUN_1405595a0` lines 56-60 and 121-123, **Verified**), no refund | - |
 | +0x1a1 byte | destroyed | `destroyed` |
 
 Materials (**Verified**, `FUN_14055ba20`): one entry per BUILDING `construction` reference (item = the referenced
@@ -40,7 +40,8 @@ Iron Plates x7, Copper x3).
 **Verified** (`Task_Build` update `FUN_14034a440`, event dispatcher `FUN_1407b65b0` case 11, `FUN_1405595a0`):
 
 1. Each update of a builder whose site is not stalled pushes a type-11 event `(building, amount)` with
-   `amount = lerp(0.3, 2.0, clamp(engineering, 0, 100) / 100) * dt`, `dt` = the character's update time
+   `amount = lerp(0.3, 2.0, clamp(engineering, 0, 100) / 100) * dt`, engineering the raw stored stat (CharStats +0xcc, no
+   effective-stat multiplier; dismantle reads it the same way, **Verified** `FUN_14034a440`, `FUN_1403518c0`), `dt` = the character's update time
    (`Character+0xc4`, game-speed-scaled seconds). The builder gains engineering XP (`FUN_1408c6250`, [stats](character-stats.md)).
 2. The dispatcher calls Building slot 70 with that amount. Slot 70 scales it by the *Building speed* option
    (`142133584`, 0.5..2) and CONSTANTS `build speed` (`g_Constants+0x168`, 6 in the base game), then by `0.75^k`
@@ -64,7 +65,10 @@ engineering factor (it equals an engineering 41.2 builder). Meitou should run th
 
 Destroyed buildings (**Verified**, `FUN_1405595a0`): the first tick on a building with +0x1a1 set clears complete, sets
 progress to 0.4 x target, sets each delivered amount to `floor(delivered x U[0.3, 0.5) + 0.5)` and calls slot 104
-(`FUN_140557280`, destroyed off: navmesh/doors restored, **Observed**).
+(`FUN_140557280`, destroyed off: navmesh/doors restored, **Observed**). That transition lives only in Building slot 70, whose callers are the
+build event 11 (`FUN_1407b65b0`), the add-materials task with amount 0 (`FUN_140348870`), save import (amount FLT_MAX, which skips it),
+placement, the wall forwarding and finish helpers; the per-frame refresh (slot 28 `FUN_1405626a0`) never calls it. So nothing ruins a building
+by itself: it stays destroyed, complete, until a builder or a delivery touches it (**Verified**, decompile; Meitou `ConstructionSystem.Touch`).
 
 Save import (**Verified**, slot 18 `FUN_140552b70`): when importing, a building whose faction is not the player's has
 `destroyed` cleared, every delivered set to required and is completed at once (slot 70 with FLT_MAX).
@@ -91,7 +95,7 @@ Fetching (**Verified**, TaskData rows of `FUN_140319a60`, finder `FUN_1405a2a60`
 case 247, `FUN_14033cd10`): the planner chain is 2 Building (needs 51) <- 71 Adding materials (needs 50) <- 115 "Finding
 building mats" (effect 150, a target finder) <- 247 "Collecting resource". The 115 finder takes the site's materials with
 `required - delivered > 0` (`FUN_14054a450`) in list order and returns the first one's source (factor 1; 0 when none):
-1. a source remembered for that item (a per-item map in the AI, re-used while valid);
+1. a source remembered for that item (a per-item map in the AI, kept in the AI's per-update cache, which is emptied at the start and end of each update, so it changes no answer; Meitou keeps none);
 2. a loose item within 1200 of the character with the same record, not blacklisted and not lying in another faction's
    building (`FUN_140997d80`, **Observed**); the first the world grid query meets;
 3. a complete building of the character's town (its current town, else the nearest town within 3953, plus its home
@@ -99,13 +103,13 @@ building mats" (effect 150, a target finder) <- 247 "Collecting resource". The 1
    owner it may use, that is not the excluded one, holds the item and has items: storages (`StorageBuilding`, slot
    0x3b0 null) first, then production buildings (their output); nearest within the AI's range. An item matches when
    it is the same record, or, when neither is an ITEM (type 4), any record of the same type.
-The range is the AI's mode `AI+0x2bc` (**Verified**, constructor `FUN_1406236d0` sets 2; character orders 8/9 of
+The town candidates are the buildings found by a spatial query round the town (`FUN_140a00690`: within the town's radius x 1.1 of its position, filtered by the Ownerships' `canIUseThisBuilding`), not the buildings registered to the town, so a player outpost's storages count by where they stand (**Verified**; Meitou `FixtureRegistry.TownCandidates`, shared with the cage finders). The range is the AI's mode `AI+0x2bc` (**Verified**, constructor `FUN_1406236d0` sets 2; character orders 8/9 of
 `FUN_1405caa50` change it, which HUD buttons send them is **Unknown**): mode 2 squared distance <= 4.246733e7 (about 6517)
 from the character; mode 0 `(18 + 40 + 5)`, mode 1 `(18 + 200 + 5)` (AI+8 = 18, AI+0xc = 5), others 1000.
 Task 247 is `Task_EmptyMachine_BuildMats` (+0x78 clear) for a building target, `Task_Pickup` for an item. At the building
 the update lists its records (a storage: every record it holds; a production building: its output), takes the first
 record whose count (slot 5, `FUN_1403411c0`: always 2) is above 0, i.e. the first listed record, and moves up to 2 units
-while the character has room, then ends. Meitou takes the material instead of the first listed record (engine choice).
+while the character has room, then ends. Meitou takes the material instead of the first listed record (engine choice). Looting food (284, `Task_EmptyMachine` with flag +0x78 = 1, `FUN_14033cd10`, **Verified**) takes the first listed record (the storage's distinct records in inventory item order, `FUN_140299990`, no food filter) the same way but up to 10 units, one per pass, ending when the building no longer holds it or there is no room.
 
 Missing-material speech: **Verified** text in the original `locale/zh_CN/LC_MESSAGES/main.po`, source annotation
 `character.cpp:3412`: "I don't have any building materials." / "我没有建筑材料了。" The separate GOAP.cpp:490
@@ -119,7 +123,8 @@ Task ids and AI conditions: [ai-tasks](ai-tasks.md#build-tasks). Engineer job (*
 lists, effect 2 and the finder `FUN_140999060`, which ignores the job's target and runs `BuildingFinderForEngineers`
 (`FUN_1409a6900`, `FUN_1409a6c10`) from the character's position. Candidates are
 buildings of the character's owner that are not blacklisted, dismantled, holding dismantle work (+0x168 > 0) or paused,
-and not (slot 0x2f0 = 19 and destroyed, slot 0x330 = +0x1a1); an incomplete building (or one needing repair, slot 0x328)
+and not (slot 0x2f0 = 19 SHELL_WITH_INTERIOR and destroyed, slot 0x330 = +0x1a1: any other destroyed building stays a candidate and the
+engineer's first touch ruins it, clearing the flag); an incomplete building (or one needing repair, slot 0x328)
 is a candidate, a complete one contributes its mounted children that need work. Score `max(2 (1 - d^2 / 9000^2),
 0.0001)` (d 3D), x0.5 when slot 89 is set, / (n + 1) with n = characters already working it; a stalled site the
 character has no material for (condition 50 false) is multiplied by the planner cost of the 115 finder (`FUN_14060f1d0`)
@@ -135,21 +140,23 @@ score and the 0.75 falloff spread them). Work distance: [below](#work-distance).
   movement flag (+0x640 +8, **Unknown**); or the character's movement reports touching the building's handle (+0x300 slot 1); or
 - the X/Z distance to `getPositionMarker(charPos)` (slot 0x470: the nearest valid usage node, else the construction position
   +0x26c when fewer than 2) is below `getReachRange()` (slot 0x350), **doubled when not moving**, and the character is on the
-  same floor (slot 0x60) or |dy| < 15: 130 for a door or a building with a door, 45 outdoors or ceiling-mounted (**Observed**, `AI::isWithinChoppingRange` `FUN_14059c6d0`).
+  same floor (slot 0x60) or |dy| below a limit: 130 when the door byte (+0x1a0) is set or the building has a door child (slot 0x3e0), else 45 when its containing-building handle (slot 0x1d8) is null (outside any building) or slot 0x428 is true, else 15 (**Verified**, `AI::isWithinChoppingRange` `FUN_14059c6d0`, constants 130 / 45 / 15 in `data_values.txt`; what slot 0x428 is stays **Observed**: ceiling-mounted class).
+- Meitou: one shared `FixtureRegistry.AtCage` for the cage goals (arrest, kidnap, town duty): flat distance to the cage's position below its `use range` (doubled when not moving) and |dy| below 15; the former `CageReach` / `CageSlack` slack of cages is gone (a cage's position marker, the floor number and the outdoor 45 are not modelled).
 - Otherwise not; once the path has ended at the target it logs "Task impossible: X can't get to Y". There is no settle slack.
+- That notice (**Verified**, `FUN_14059c6d0`, also the failure handlers `FUN_14033da80` / `FUN_140332150`) calls `FUN_140796ed0`: the target's handle goes into the AI's ignore map (AI +0x20 -> +0x218) with the timer 20.0, and the squad blackboard is told. Readers skip the handle: the loose-item source finder `FUN_14059d000` (before the ownership test), the engineer finder `FUN_1409a6900` (first condition), the turret finder `FUN_1405b0da0`, the corpse-machine finder ([ai-tasks](ai-tasks.md)). The entry's decay is **Unknown** (a 20 s timer is assumed). Meitou `ConstructionSystem.NoteUnreachable` (`CharacterCold.Ignored`, not saved): a builder whose path ended short ignores that site or loose item for 20 s; a fetcher of a loose item goes back to its site and picks another source.
 
 `getReachRange`: `Building` 40 (construction), `WallBuilding` 60, `UseableStuff` (machines, storages, farms, mines, rocks) its
 `maxUseRange` +0x420, read from the functionality's `use range` (`FUN_1402a0900`), `DoorStuff` 45 (kind 7) or 25. Vanilla `use range`
 (**Verified** by a probe of the install): 10 to 25 for benches and storage, 50 ore mines and iron rocks, 80 wind generators,
 100 copper rocks, 140 hybrid stone mines. Which tasks reach their building through `isAtLocation` is **Observed** only through
-the goal conditions (the call is virtual).
+the goal conditions (the call is virtual). Meitou applies the height limit above wherever it applies the reach range of the same function: builders, fetchers, machine operators, haulers and corpse carriers (`SiteReach.AtHeight`; rocks and turret posts keep their own arrival test).
 
 Meitou (`SiteReach`): builders 40 (walls 60), operators and storage fetches the `use range`, doubled once stopped, measured
 to the building's footprint hull (engine choice standing in for touching; a building without collision uses its parts' bounds
 hull) or, unknown, its position. A rock's operator has arrived inside its mesh's bounds box as the instance places it, scaled 1.2
 (a circle of 1.2 x its radius without the mesh), or within the `use range` (doubled once stopped) of the box's centre, which
 stands in for the position marker (engine choice; a rock's origin can lie off its pile); it faces that centre. Taking its ore
-measures 40 to the box's edge. No height test.
+measures 40 to the box's edge. Height: Meitou has no floor id, so `SiteReach.AtHeight` requires |dy| below the limit above (130 door, 15 inside a building, else 45; slot 0x428 not read) for every site goal.
 
 Repair (**Verified**, Building slot 0x328 `FUN_1400f6b70`, `Task_Build` `FUN_14034a440`): a building needs repair when
 `progress < target`; building health is construction progress. Orders 2 and 95 are both `Task_Build`, which pushes the
@@ -173,12 +180,13 @@ repair above. Meitou uses the destroyed-building transition and material gate al
 order; the exact original activation timing remains **Unknown**. Implementation and regression coverage:
 [town-house repairs](../simulation.md#buildings).
 
-Dismantle (**Verified**, `Task_Dismantle` `FUN_1403518c0`, Building slot 73 `FUN_1402a2860`): refused with "I have to
-dismantle the furniture first." / "...unmount the buildings first." while those exist; a door redirects to its
+Dismantle (**Verified**, `Task_Dismantle` `FUN_1403518c0`, Building slot 73 `FUN_1402a2860`): refused by the builder itself when the task runs (a speech bark, then the task ends): "I have to
+dismantle the furniture first." / "...unmount the buildings first." while those exist (Meitou: the order is accepted and the builder barks it, `OrderCheck.Blocked`); a door redirects to its
 building. Animation `stonemine`, engineering XP as for building. Per update `amount = dt x lerp(0.05, 4, eng/100) x 4`;
 slot 73 clears complete (a complete building first drops to `target - 1`), then `progress -= amount x rate` (no option
-or CONSTANTS factor). At progress <= 0: mounted turrets released, +0x162 set, sound `Thing_Complete`, refund, building
+or CONSTANTS factor). At progress <= 0: every turret mounted on it (`BuildingFinderTurretsOnCertainBuilding`) is destroyed through `FUN_140799af0` with the reason "dismantled" (no refund, **Verified**; Meitou `DestroyMountedTurrets`), +0x162 set, sound `Thing_Complete`, refund, building
 removed.
+The menu offers it only when Building slot 79 (`FUN_14029c380`) holds (**Verified**): false unless the owner is a player faction, and false for a foliage building (flag `+0xc0`); true when the parent building is a player faction's; one more branch (a `creates player town` building whose related object has no player owner) can make it false and is not modelled (**Unknown**). Meitou gates the verb and `DismantleOrder` on the player's faction.
 
 Refund (**Verified**, `FUN_14029dc10`, called by slot 73 and by `FUN_14054c810` for mounted buildings that cannot
 move): skipped for doors; for each entry with delivered > 0, spawns `max(1, trunc(U[m, 1) x delivered))` items at
@@ -209,12 +217,27 @@ shows the first failing message in this order (**Verified** unless marked):
 - **Towns** (`FUN_140926d50`, `FUN_140926eb0`): radius = `town radius mult` x base (town 2500, village 937.5, ruins
   875, point of interest 437.5, others 1250). A `creates player town` building is blocked within 2.5 x radius (1 x for
   ruins/POI) or 2000 of the centre; other buildings only within 1 x radius, so they may stand outside any town.
-  Player towns never block.
+  Player towns never block. **Verified** (`FUN_140927f10`, `FUN_140926d50`, `FUN_140926eb0`, `FUN_1404dba40`): the ghost's
+  town is the nearest by centre among all types except type 8 `NEST_MARKER` (skipped, so a nest marker never blocks; the
+  ghost's call arguments are not in the decompile, the other callers pass type 10 = any);
+  type 10 null towns have radius 0 (type 8 too), so they block only a `creates player town` building, within 2000.
+  No town blocks an `is interior furniture` or `is node` ghost (ghost `+0x109`) whose footprint nodes all stand in one
+  building it may be built in (ghost `+0x8b`): `FUN_1404dba40` clears the town, so furniture goes into a bought town house.
+- **Building in a building** (**Verified** by decompile, `FUN_1404d69c0`): every footprint node must stand in the same
+  building, and that building's owner (Building slot `+0x58`; none means the FACTION `nofac`, "No Faction") is a player
+  faction (`+0x250`), or the ghost is not `creates player town` and the building is destroyed (slot `+0x330`, `+0x1a1`,
+  the save's `destroyed`) or its owner faction is `not real` (`+0x1d0`, set from the record in `FUN_1407fe270`; `nofac`
+  is, so ownerless buildings qualify). Else the ghost is refused, with "Can't place in a building you don't own." when a
+  town also blocks (the text without one is **Unknown**; Meitou shows the same). Meitou: `PlacementRules.MayBuildIn`.
+  **Unknown/not modelled:** the original tests only that nearest town (Meitou tests every one), and swaps it for the
+  town containing the ghost (`FUN_140928890`) when inside 0.9 x its radius (0.6 x when the nearest is ruins/POI).
 - **Outposts** (**Verified**, `FUN_1404d6d90` per queued ghost on Confirm, then `FUN_1404db180`): a ghost in or on a
-  building takes that building's town; else the nearest town of the player faction within 5000 (X/Z); else the town of
+  building takes that building's town when it is within 5000 (X/Z) of the ghost, so furniture in a bought town house
+  joins that town and never makes an outpost (Meitou: none, `BuildSite.Town` names player towns only; a level building
+  of no town, such as a wilderness ruin, goes on to the rules below); else the nearest town of the player faction within 5000 (X/Z); else the town of
   the nearest player building within 2500 (the decompile adds an X/Z > 10000 test there that looks unreachable,
   **Observed**); else a `creates player town` building that is not a wall makes an outpost at its position
-  (node position plus bounding-box size, as decompiled), and every player building whose town is a player town or none
+  (the ghost node's position plus `Aabb::getSize` of the ghost's bounds, the full X, Y and Z extent, **Verified** `FUN_1404d6d90`; Meitou: `PlannedBuilding.BoundsSize`, the merge of the ghost parts' mesh bounds in their own space, from `PlayerInterface.GhostBoundsSize`), and every player building whose town is a player town or none
   and whose nearest town of any faction within 8000 is the new one moves into it. Walls (`links together`, ghost class
   `PreviewBuilding_Wall`) never make one there; after the pass, queued walls still without a town take the last player
   town among the queue's ghosts, else the nearest town of any faction within 16000 of their mean position, else a new
@@ -241,14 +264,39 @@ shows the first failing message in this order (**Verified** unless marked):
   interior furniture and nodes) the ghost tilts to the ground and a slope over the limit fails; without it the tilt is
   blended by the player tilt factor and clamped, never failing. Also fails on an object surface more than 5 deg off
   the hit normal, or on ground with normal.y < 0.2 (`FUN_1404d5420`).
-- **Vertical margins** (`FUN_1404d9c00`, `FUN_1404d21e0`): ground height by a ray from 1000 above; nodes marked
-  `above ground` must be at or above it, others at or below; both minimum margins must be >= 0. `vertical position
-  tolerance` widens this for single-kind buildings (**Observed**).
+  The slope block is wrapped in a call to vtable slot 3, which returns false for `PreviewBuilding`, `_Wall`, `_Resource` and `_Ceiling` (`FUN_14042de80`; only `_Snapping` overrides it with `FUN_1404fe140`), so it runs for an indoor ghost too (**Verified**, `vtables.txt`): one ray from 10 above the origin straight down against the viewed floors' collision, its hit normal (up if none) against `max slope`; the indoor ghost's forced `match slope` makes an over-steep floor (a stair) fail it (NotLevel). Meitou: `FloorSurfaces.NormalBelow` (a ray 10 above the origin straight down on the floors up to the viewed one, the nearest triangle's upward normal) in `GhostFloor.Normal`, and `PlacementCheck` fails NotLevel when its angle from vertical exceeds `max slope` (> 0); the 5 degree surface test stays untraced.
+- **Vertical margins** (**Verified**, `FUN_1404d9c00`, `FUN_1404d21e0`, `FUN_1404d23c0`, `FUN_1404d9530`, `FUN_1404d2080`, `FUN_1404d1680`
+  and the frame update `FUN_1404dba40`; Meitou: `PlacementCheck.Margins`, `Settle`):
+  - **Groups and nodes.** One group per BUILDING_PART with `affects footprint` (`FUN_1407e5f80`); its `above ground` bool picks
+    the side. Its nodes are the four corners (X, Z) of the part's mesh bounds box, times the building's `scale`, at height
+    `footprint vertical` x scale. A node's world place = the ghost's turn x (node + the part's scene-node position) + the ghost's
+    position (the ghost's tilt is in the turn). Wall ghosts (`PreviewBuilding_Wall`, own slots) add intermediate points along
+    long LAND parts and are not measured here.
+  - **Ground** under a node (`FUN_1404d2080`): the terrain height there, never below 100 (`FUN_1409b2a40`). A ray hit counts only
+    when its object type is 0xe (the terrain, **Observed**: `FUN_1404d5420` resets the lift when the cursor hits any other type);
+    anything else falls back to the terrain height, so buildings never count as ground.
+  - **Margins.** Per node: ground - node height for a group not above ground, node height - ground for one that is; a group's
+    value is the minimum over its nodes, and the ghost's `+0x84` ("up": how far it may still rise) is the minimum over the
+    not-above groups, `+0x80` ("down": how far it may sink) over the above groups, both starting at 1e8.
+  - **Tolerance.** `vertical position tolerance` T (BUILDING float) when |T| > 0: with no above-ground group, the first group is
+    measured again with its nodes moved up by T x scale (the building's turn applied, **Observed**: the decompile computes
+    the turned offset but its use is unclear) and node - ground, folded into "down"; with only above-ground groups, moved down
+    by |T| x scale and ground - node, folded into "up".
+  - **Frame nudge** (`FUN_1404d1680`, added to the lift and to the margins in `FUN_1404dba40`, before the validity test): outdoors
+    with down + up < 0 the ghost centres, lift += (up - down) / 2 (unless a building is under the cursor, **Unknown** use, not
+    modelled); else a negative down raises it by -down, a negative up lowers it by |up|. `is interior furniture` / `is node` ghosts
+    (that may also stand outside) are instead pulled to lift 0: step = min(-lift, up - 0.01), then clamped to -down. So the margin
+    failure outdoors is "down + up < 0" ("Ground needs to be more level.", `FUN_1404d1640`), and buildings sink into slopes
+    by themselves. The margins are skipped for interior-only furniture, inside a building (`FUN_14042def0`), and when
+    `PreviewBuilding +0x48` is set (never seen set outside the build-mode object).
+  - **Not modelled:** ghosts on a building's floor (Meitou takes the floor as level, the original measures against the terrain
+    under them, **Unknown**), the indoor lift reset, parts nested under another part (the node position is the whole chain's, the
+    original's the part's own scene node), and a mesh whose bounds file is missing (the part is left out).
 - **Indoors** (`FUN_1404d69c0`, flags read in `FUN_1404debc0`): an `is interior furniture` or `is node` building
   is valid with all node points in one player-owned building; otherwise only if it is `is exterior furniture` or
   `is node` (**Verified** by code). So interior-only furniture must be inside, while interior+exterior items (Campfire,
   Camp Bed, storage boxes, fish racks) go either way. Without `is interior furniture`
-  the check passes. `ceiling placement` uses the ceiling ghost (hangs 1 below the hit of an upward ray).
+  the check passes. `ceiling placement` uses the ceiling ghost: `PreviewBuilding_Ceiling` (vtable `1416e1b68`) overrides slots 4 (`FUN_1404fe0b0`, returns 1), 21 and 27. Slot 21 `FUN_1404d28a0` (**Verified**) is the position update: a ray from 5 above the cursor point (`DAT_141685340`) pointing UP, collision mask `0x8071c00` (groups 10, 11, 12, 16, 17, 18, 27: upper floors, their stairs, unwalkable roofs), result initialised to -99; on a hit the ghost's y = hit y - 1 (`DAT_14167c308`) and the hit object is kept (+0x130); on a miss y += 20 (`DAT_141683188`) and the valid-surface byte (+0x8a) is cleared. Slot 27 `FUN_1404fe0a0` compares an object with the kept hit. Meitou hangs the ghost 1 below the ceiling the room model finds (`Room.CeilingAbove`, `CeilingHang`), which approximates the ray (it does not apply the collision mask).
 - **Resources** (`FUN_1404d9ea0`): `world resource mining` STONE/WATER/GROUND from a noise field; IRON/COPPER/CARBON
   need the biome's `resources` and a resource node within 1500, falling off from the node radius (>= 25) to 1500.
   Farms: fertility `1 - (1 - v) x fertility effect` (0 at or below `minimum fertility`), yield = biome
@@ -260,16 +308,28 @@ shows the first failing message in this order (**Verified** unless marked):
   and `Environment:`. Values are coloured (1 - c, c, 0), c clamped to 0..1. Environment: `-` when `fertility effect`
   is 0, else of the coverages Green, Arid, Swamp (keys 1, 2, 3) the first largest, `, ` and the next equal one, or
   `Dead` when the largest is below 0.1, in the crop yield's colour. The ghost is valid only while v and the crop yield
-  are >= 0.01.
+  are >= 0.01. The popup's crop yield (`FUN_1400e40a0`, **Verified**) is a fixed constant when the farm's own `fertility effect` is 0, else the weighted biome coverages: it keys on the record's flag, not on slot 59 as the running farm does (`FarmBuilding`), and `PlacementRules.Readout` matches that.
 - **Controls** (bindings `FUN_1403636c0`, applied in `FUN_1404d5420` x frame time): rotate +-80 deg/s, move up/down
-  +-60 units/s (6 with the slow modifier, capped by the margins; offset reset above 1000), tilt factor +-1/s in 0..1,
-  default 0.2.
+  +-60 units/s (6 with the slow modifier; offset reset above 1000), tilt factor +-1/s in 0..1, default 0.2. Each step is capped
+  by the margins (**Verified**, `FUN_1404d5420`): the up key moves by min(step, up margin) while the up margin is above 0 and
+  otherwise the down key tests the same against the down margin; the margins are those of the previous frame, after the nudge.
 - **Commit** (`FUN_1404d5130`, `FUN_1404db5a0`, `FUN_1404d72a0`): a click queues the ghost (position relative to the
   parent building, or height above terrain, and floor) and spawns a new ghost; Confirm assigns towns, then the factory
   `FUN_14057cc70` creates each building with its town, the player faction, rotation, parent building and floor. No
   terrain is flattened; outdoor buildings with `path mode` and `build threshold` 0 trigger a navmesh rebuild of their
   area (`FUN_1404d2c80` -> `FUN_1403a66c0`, **Observed**). That a new building starts at progress 0 with nothing
   delivered is **Observed** (the factory's complete flag is false).
+- **Builders sent on Confirm** (**Verified**, `FUN_1404d72a0`'s tail: `FUN_1407f9e20(player, 0, 2, last building)`; 2 = Build, `FUN_14079b2d0`): after the
+  loop, when a non-node building (`is node` clear, created by `FUN_14057cc70`) was made, every selected character gets the plain Build
+  order on the LAST such building queued (one order per Confirm, not per ghost; the shift argument is 0, so Shift never makes it a job, and the
+  queue is replaced as by a right click, `FUN_1405d20d0`). Any such building, furniture (camp bed) or full building alike; no "free character" or
+  distance test. Meitou: `ConstructionSystem.OrderBuild` at the end of `PlaceBuildings`, on the last placed site's root (unlocked or town-blocked
+  plans create nothing and are skipped); the bark and material fetch are those of a right-click order.
+- **Pause** (**Verified**): entering build mode sets the world's requested pause without touching the speed
+  (`FUN_1404e65e0` -> `FUN_140787d40(world, 1)`; paused = request or speed 0). Every exit clears it, so the game runs on
+  at the speed the player had: Confirm (`FUN_1404db180`), the Esc handler (`FUN_14082b010` -> `FUN_1404d4320`, when
+  `FUN_1404d1860` says the mode is on) and the end of the commit (`FUN_1404e4120`) all end in `FUN_1404d1870` ->
+  `FUN_140787d40(world, 0)`. Meitou pauses by speed and resumes only a game that build mode paused.
 
 ### Upgrades
 
@@ -326,12 +386,17 @@ short; a piece runs from its position along its own +Z for `link length` x `scal
   = first with length < remaining + 10 (full pieces, then shorts; overshoot <= 10). A bend > 10 deg to the previous
   piece puts the shortest piece centred on the joint along the bisector (crest, not when the shortest is a single), < -10
   the wedge at the joint (valley). Stops when < 10 remains, past the end, or after 500 pieces; a leftover shorter than
-  the shortest piece - 10 stays open. A climb steeper than `max slope` continues straight until the hill rises
-  `building height` - 10 above it (`FUN_14042a2b0`, **Observed**). With a snapped end, later frames shorten every piece
+  the shortest piece - 10 stays open. A rising piece (its end higher than the current point) whose pitch from level exceeds the wall's `max slope` (the wall object's +0x88, strictly greater;
+  **Verified**, `FUN_14042a4b0`) is not placed: `FUN_14042a2b0` lays pieces of the LONGEST length along the previous piece's direction (3D), for as long as half a piece is less than the distance left (a
+  single only once), where the distance is to the first profile point from the cursor on at which the ground stands `building height` (+0x8c) - 10 above the line (the constant `DAT_14167fad4` = 10), else to
+  the point of greatest rise; then the run ends (Meitou `WallLine.Straight`). With a snapped end, later frames shorten every piece
   by remaining / count so the run closes on the point (**Observed**).
 - **Orientation** (`FUN_1404278b0`): +Z towards the piece's end (pitching with the slope), +X level (Y x Z).
 - **Snapping** (`FUN_1404289f0`, `FUN_140427950`): candidates are the queued wall ghosts and every loaded building with
-  `links together` (no owner or family filter seen; Building slot 4 filters, **Unknown**). Link points: start =
+  `links together` (**Verified**, `FUN_1409fe710` -> `FUN_1409fe1e0`: every object of type 0 in each zone of the loaded set,
+  no owner or state test, so intact level town walls count; Building slot 4 filters, **Unknown**). Meitou: the queued ghosts,
+  the player's sites and the level's walls within 300 of the cursor (`BuildingFootprints.LinkedAround`; every zone counts as
+  loaded, a level wall that is a site is the site). Link points: start =
   position, end = position + rot x (0, 0, len); direction = the wall's +Z, a connector's end direction turned 48 deg
   about Y. Points within sqrt(10) count as joined. Search in X/Z, radius 90 (25 inside a building): a free point scores
   d^2 - r^2, a joined one d^2, best below r^2, so free points snap within 127 and win. Codes 1 free end, 2 free start, 3
@@ -365,7 +430,7 @@ A building is offered when it is in the research manager's unlocked set, filled 
 `enable buildings` (or the window's debug flag +0xa8 is set); a category shows when one member passes. In the base game
 88 buildings are unlocked by research; categories DOORS, sign, nodes, moor, CANNIBAL, EXTERIOR, Furniture and misc have
 none and never show. A new game starts with the research `_Default Start` (`5359-gamedata.base`) completed (**Verified**: the exe
-string; **Observed**: `finished0` of the five sample saves); Meitou adds it to every new game (`ResearchGate`). A group's default pick is the member with the highest `build materials`. Sort order **Unknown**.
+string; **Observed**: `finished0` of the five sample saves); Meitou adds it to every new game (`ResearchGate`). Order (**Verified**, `FUN_1404e4480`, `FUN_1404e4210`, comparator `FUN_1404d6060`): categories by name in byte order (a `std::map` of names), groups by name in byte order within a category, and a group's offered members taken from the last in the building list to the first and sorted by `build materials` descending (equal ones keep that reversed order, an insertion sort); the default pick is the first of them (`BuildMenu.Groups`). The Commands text stays **Unknown**.
 Stats panel (`FUN_1404df450`): "Materials cost:" (each `construction` item and amount, or Building Materials x
 `build materials`, or "Nothing"), "Estimated build time:" (formula above, whole hours), then power output/consumption,
 `power capacity`, Num People (`max operators`), Produces (`produces`, `output rate`), Efficiency, Damage, Training max
@@ -409,23 +474,29 @@ rock) makes output only while someone operates it.
   KenshiLib 1ce4a16; [ui-input](ui-input.md#context-menu-verbs)); `Task_OperateMachine`'s start (`FUN_14035b430`) only asks `tryOperate` (slot `0x4f8`:
   `UseableStuff` `FUN_1400f8030`, `CraftingBuilding` `FUN_1402b5bf0`: refused when `dontNeedWorkRightNow` or every operator slot is taken), no owner test;
   for a foliage building (a rock) of no player owner it then makes the player's faction its owner. The output stays in the machine, so taking it is looting
-  another faction's inventory (26). Meitou: not built, NPC town buildings are not `Machine`s ([simulation](../simulation.md#production)).
+  another faction's inventory (26). Meitou: [NPC town machines](#npc-town-machines).
 - **Automatic machines** (**Verified**, decompile): +0x3ac (`numOperatorsMax`, KenshiLib 1ce4a16) is the BUILDING's `max operators`
-  unless below 0, then the functionality's (`FUN_1402a3750`); +0x3a9 "has operators" = that value is neither 0 nor from two negatives.
-  With +0x3a9 clear, `ProductionBuilding::vfunc_28` (each frame) calls slot 150 itself with no operator and s = 1, so the machine
-  works unattended (`ResearchBuilding::vfunc_28` does the same). +0x3ac = 0 gives the menu order 152 Auto-Haul instead of 87
+  unless below 0, then the functionality's (`FUN_1402a3750`, `FUN_14029e460`); +0x3a9 "has operators" = that value is neither 0 nor from two negatives.
+  With +0x3a9 clear (raw 0, or both records negative), `ProductionBuilding::vfunc_28` (`FUN_14029ad90`, each frame) calls slot 150 itself with no operator and s = 1, so the machine
+  works unattended (`ResearchBuilding::vfunc_28` does the same). Meitou: `MachineData.Unattended` (no base-game pair is negative on both, **Verified** over the
+  base records, so mods only). Only raw +0x3ac = 0 (not the both-negative case) gives the menu order 152 Auto-Haul instead of 87
   ([ui-input](ui-input.md#context-menu-verbs)). Base game (**Verified** data): Iron Refinery III / IV, Cotton and Hemp Auto-Loom,
   Automatic Grain Silo, Hybrid Stone Mine II (building 0); Campfire, Camp Fish Pile, Bread Oven, wind generators, Rain Collector,
   Battery Bank, storages and lights (functionality 0).
 - s = `lerp(stat/100, 0.5, 1.4)` of the effective stat `stat used` (`FUN_1408852a0`; 1 without an operator; the lerp
-  helper `FUN_140015b63` is `a + (b - a) t`).
-- outputRate = BUILDING `output rate` x functionality `production mult`; with `output per day`, / (2G) (loader
-  `FUN_14029e7b0`). So a building makes `output rate x production mult x P/2 x s` cycles per game day.
+  helper `FUN_140015b63` is `a + (b - a) t`). **Verified**: no clamp, so a stat above 100 lifts s past 1.4 (`FUN_14035bc90` passes it
+  unchanged to the work slot 0x4b0). A farm's own efficiency roll keeps its clamp to 0..1.
+- outputRate = BUILDING `output rate` x functionality `production mult` (research benches too), with `output per day` / (2G)
+  (production buildings only, `FUN_14029e7b0`), then / the raw `max operators` (+0x3ac) when above 1, for every function
+  (**Verified**, `FUN_14029e460`, `FUN_14029e7b0`, `FUN_1402b9aa0`). Each operator adds its share, so a full crew makes
+  `output rate x production mult x P/2 x s` cycles per game day; a building whose own `max operators` is 0 is never divided.
 - yield (slot 120 via offset `0x46c`): 1 without `world resource mining`; else the resource at the position
   ([resources](#resources)), at least 0.1 for a natural site; for any other building 0 becomes 0.5 when it is not the player's (**Verified**, `FUN_14029c670`: the natural branch takes `FUN_140a12ff0` and the 0.1 floor, the other `FUN_140a13540` and the 0.5 rule).
 - health x powerSat (slot 109, `FUN_140296e00`, **Verified**): health the [construction state](#construction-state)'s progress / target capped at 1; powerSat
   the granted share of the demand, 1 with no demand. Meitou: `Machine.Health`, 1 for rocks and a target of 0.
-- upgrade = the research `production mult` of the building ([research](#research)), default 1.
+- upgrade = the research `production mult` of the building ([research](#research)), default 1. The upgrade lookup (`production mult`,
+  `power increase`, `power capacity increase`) answers only for the player's buildings (owner with the player pointer +0x250, `FUN_140546dd0`);
+  any other gets the default 1, 0, 0 (**Verified**, `FUN_14082ec70`).
 
 **Recipes** (**Observed**, loader `FUN_14029e7b0`). Each `consumes` entry (item, v0, v1) is an input: section `in<k>`
 of the building's inventory limited to v0, a level float (starts 0) and a rate v1/100. Each cycle the inputs lose
@@ -445,11 +516,12 @@ not a natural site, has a functionality and passes the owner test of [resources]
 skipped when a virtual test on the character (`+0x30`) fails (**Unknown** what it tests; Meitou skips animals). Meitou
 shows it for the whole operate task, the walk there included, and drops it when the task ends (the original's removal
 was not traced, **Unknown**).
-Operator animation: the functionality's `animation` reference (**Verified**, probe of vanilla BUILDING_FUNCTIONALITY). No
+Operator animation: the functionality's `animation` reference (**Verified**, probe of vanilla BUILDING_FUNCTIONALITY); its `animation events` (the pick hitting ore, stone, a plate)
+sound on that clip ([audio](../audio.md#characters-footsteps-combat-voices) "Machine work"). No
 farming clip exists: cactus, cotton, potato, rice and veg farms use `stonemine` (the mining swing, with the Hoe); `farming
 wheat` and `farming hemp` have none (what the original plays then is **Unknown**; Meitou falls back to `stonemine`). Whether
-the original plays it while the crop grows is **Unknown**; task 87's start conditions (inputs not empty, output not full) let
-an operator stay at a growing farm with water, and Meitou plays the clip there.
+the original plays it while the crop grows is moot (**Observed**): row 87 needs state 73 `machineHasFreeOperatorSlot`, whose evaluator `FUN_140598de0` is **Verified** false while the machine's
+status `+0x468` is 3 (a growing farm; a bench with an empty queue too), so the planner finds no way to operate a growing farm. Meitou lets an operator tend it with water and plays the clip (engine choice).
 
 | function | examples (production mult) |
 |---|---|
@@ -461,6 +533,26 @@ an operator stay at a growing farm with water, and Meitou plays the clip there.
 | 14 ITEM_FURNACE | Furnace 0.25 |
 | 23 BATTERY | battery 0.00125 |
 | 26 RAIN_COLLECTOR | 48 |
+
+### Blocked output
+
+Status `+0x468` of a `ProductionBuilding` (production, furnace, generator, wind, rain, torture; benches and farms reuse the field with words of their own).
+- **Values** (**Verified**, panel `FUN_140300090`): 2 ready or working, 1 output full, 0 nothing to work with (an empty input), 3 a bench with an empty queue or a growing farm.
+- **Start / save** (**Verified**): the constructor `FUN_1402a3750` sets 2. Not saved (`FUN_1402a1fa0` / `FUN_1402a23a0` write only `production amount`, `resource mult`, `mining resource level`, `consumption amount-<k>`), so a load starts at 2.
+- **Set** (`operate` `FUN_140298700`, **Verified**): when the clamp `vfunc_185` `FUN_14029a510` leaves amount above 0, status 2 and the inputs are drawn; else, with an output, status = 1 if the output section cannot take one more item, else 0.
+- **Cleared** (**Verified**): `ProductionBuilding::vfunc_28` `FUN_14029ad90` each frame, only for a machine with operators (`+0x3a9`): 1 becomes 2 once the output has room (capacity below 1: the section takes one; else held below capacity), 0 becomes 2 once no input is empty (slot 149
+  `FUN_140298b70`: a rated input with a recipe item, level at most 0.001 and, **Observed**, none of the item in the section: the section test's second argument is lost in the decompile). An automatic machine only runs `operate`, which recomputes it. `Task_EmptyMachine` (`FUN_14033cd10`) also sets 1 to 2 right after emptying, only when the building's function class (vslot `0x358`) is 4.
+- **What stops** (**Verified**): progress and consumption (amount 0, no item made). Not the operator: `Task_OperateMachine`'s update (`FUN_14035bc90`) asks `tryOperate` (slot `0x4f8`, `FUN_1400f8030`), which refuses only on slot `0x4e8` (`FUN_1402ab3c0`, a constant 0 for every production class but the farm, whose `FUN_1400f6e00` refuses a growing crop), so the animation and XP go on while blocked; the power demand (`FUN_140299630`) does not read the status either. What takes the operator away is **Unknown** (the planner's re-run).
+- **Readers**: the panel word ("Output full" 1; "Out of resource" 0 with slot 149 true; "Production queue empty" 3; then No power, No workers, Working); the rain collector's text; planner states 62 / 63 / 64 below; `FUN_14059ab90` (a building finder over status 0 or 1, caller **Unknown**).
+- **Planner states** (evaluators **Verified**, hand type 0 = building): 62 `FUN_1405974e0` = slot 149. 63 `FUN_1405a2ba0` = slot 175 (`+0x578`): production family `FUN_140296fb0` (output object `+0x448` and status 1), `StorageBuilding` false; the farm
+  `FUN_1400deed0` also needs float `+0x51c` below `+0x54c` (meaning **Unknown**), the bench `FUN_1402b5320` a list test (**Unknown**). 64 `FUN_1405a2e60` = 62 or 63 for a building hand (any other hand: 63 only). 65 `FUN_1405a2f00` = the 64 test over a hand list at `FUN_1407956a0(AI+0x2f8)+0x58` (**Unknown** list).
+  105 slot 176 = output section empty; 106 slot 174 = an input at capacity. Rows asking 64 / 65: 91 (A !64), 90 (A !65, effect !64), 89 (B !65), all `Task_Blank` with no `AI_TASK` enum in the base data (`gamedata_base.txt`, **Observed**): no data starts that chain.
+- **Operator plan** (**Observed**, TaskData table, providers by list A): row 87 needs !63 and !62. As a job's root it is skipped while they are unmet ([perma-jobs](ai-tasks.md#perma-jobs)). Reached as a provider (Worker 189 / 190 need 123, which 87 achieves), the search expands
+  an unmet !63 into rows 92 Collecting resource (`Task_EmptyMachine`; A: 66, !63, !169) and 113 (A: !63, 105, !66, !89), which achieve it: the worker takes the output into its own inventory (B 82 room; 114 ditching makes it) before operating.
+- **Crafting** (`FUN_1402bcac0`, **Observed**): after a finished item is stored, status 1 when the output has become full (not when it could not be stored).
+
+Meitou: `Machine.Status` (hashed, not saved, a producer starts at 2), `HasEmptyInputs`, `OutputBlocked`, `Jammed`; `ProductionSystem.SlowWorld` clears 1 / 0 for a producer that takes operators, an operator's or automatic machine's step sets them. The panel reads the word chain
+(`ProductionStatus`). Planner: `Holds` evaluates 62 / 63 / 64 for a `Targets.Machine` target, which no finder gives yet; 65, 105, 106, the farm and bench variants and the 87 to 92 plan are not modelled (the job system's `HasWork` / `Room` is the engine reading of the blocked start).
 
 ### Item furnace
 
@@ -518,7 +610,7 @@ field prefixes by MiningResource: `iron`, `stone`, `copper`, `carbon`, `water`, 
 - **NPC mines** (**Observed**, two saves of one game): NPC towns' mines have production states; Quarry Mine A 14 of 16,
   Quarry Mine B 16 of 18 and Stone Mine 8 of 8 with `production amount` > 0 (at most 0.19), none holding output items; Ore
   Mine 0 of 8; Ore Drill III (Automated) `resource mult` 0.5 (the not-player fallback). So NPCs work them (the town goal 43
-  Staying home leads to 221 operating, [ai-tasks](ai-tasks.md#town-goals)). **Unknown:** what empties an NPC mine's output.
+  Staying home leads to 221 operating, [ai-tasks](ai-tasks.md#town-goals)). What empties an NPC mine's output: [NPC town machines](#npc-town-machines).
 
 - **Rain collector** (function 26, `RainCollectorBuilding`, vtable `1416eca48`; **Verified**, decompile): a ProductionBuilding that overrides slot 109 (health x power share, `FUN_140296e00`)
   with `FUN_140298470` = that times the rain strength `FUN_140298400`: the current weather's `wetness` at the building (when the building is outdoors), 0 when the weather's
@@ -540,6 +632,10 @@ Function 10, `CraftingBuilding` (**Observed** unless noted).
   ingredients` or no ingredients, the bench's `consumes` at v1/100. Material cost (item vfunc 102): a weapon's
   `material cost`, else 1. Armour: each section at `total coverage`/100; Fabrics (`584-gamedata.base`, hard-coded,
   **Verified** bytes) at that x `fabrics amount`.
+- **Partial levels** (**Verified**, `FUN_1402bb470`, `FUN_1402b8440`): the bench keeps a map item -> level (+0x520). A recipe switch first stores every
+  section's level under its item, then each section taking an ingredient gets `map[item]` (0 when absent), so a half-used ingredient comes back when
+  the recipe does. A save stores the sections' levels in the map, then writes each entry above 0 (k counts written entries only); a load fills the map
+  (sids not in the game are skipped). The sections' own levels load from `consumption amount-<k>`. Meitou: `CraftState.Partial`, `ProductionSystem.Bind`.
 - **Hours:** ITEM `production time` (default 4); crossbow / robotic limb `craft time hrs` / P (defaults 20, 10); weapon
   (`FUN_1402b76f0`) clamp(q² x 100 x `value`/300 x 2/P, 2, 32), q = level/100; armour (`FUN_140898e90`) coverage/100
   x lerp(q, 1, 5), at least 1, then hat x0.6, legs x0.45, shirt x3, boots x0.5, chain (`material type` 2) x2. Constants
@@ -550,16 +646,19 @@ Function 10, `CraftingBuilding` (**Observed** unless noted).
   its `level` (`FUN_1402bcac0` passes it to the item factory, whose limb and crossbow branches hand it to the Gear constructor;
   **Verified**, decompile); Meitou caps it at `tech level` as for armour. Critical chance (`FUN_1402b5900`): (skill -
   threshold)/50, none below 0; threshold for stats 8 and 38 the floor of the skill's tier (80/60/40/20, else 5), else
-  the item level. A weapon below the crafter's skill with no critical comes out as a lower model
-  (`uses_weapon_crafts_weapon_models`; which model is **Unknown**, Meitou takes the best at or below the skill).
+  the item level. A weapon whose level is above the crafter's skill, with no critical, comes out as a lower model
+  (`FUN_1402bcac0` -> `FUN_1402bb020`, **Verified**: the player-weapons maker's highest model level at or below the smith's level and the queued weapon's level whose model the bench lists
+  in `weapon crafts` and research has enabled; Meitou: `ProductionSystem.WeaponModel`, the bench's lowest model when none qualifies where the original takes a default record, **Unknown**). A critical on a
+  weapon below the smith's level takes a model from `FUN_1402bb2b0` of min(item level, skill) (not read; Meitou keeps the queued model).
 - **Research** `enable item`, `enable armour`, `enable weapon type`, `enable weapon model`, `enable crossbow`,
   `enable backpack`, `enable robotics` unlock crafts, v0 = the repetition that does it; `repeats` and `repeat mult`
-  (cost x mult per repetition). Whether a craft no research lists is available from the start is **Unknown** (Meitou: yes).
+  ([Research](#research) repetitions). Whether a craft no research lists is available from the start is **Unknown** (Meitou: yes).
 - **Save** (GAMESTATE_BUILDING, `vfunc_17`/`18` `FUN_1402b8440` / `FUN_1402b8ab0`): float `num crafts`, bool `repeat`,
   per queued k strings `current<k>` (item) and `currentExtraData<k>` (weapon model), float `current prog<k>`, int
-  `crit<k>`; partly drawn items as `craft partial item sid <k>` / `val <k>` / `size` (Meitou does not write these).
+  `crit<k>`; partly drawn items as strings `craft partial item sid <k>` (item id), floats `craft partial item val <k>` and int `craft partial item size`
+  (**Verified**, `FUN_1402b8440` / `FUN_1402b8ab0`): see Partial levels.
 - **UI:** overview CraftTab (`CraftingStationsList`, `QueueItemsPanel`, `CraftQueue`, `QueueRepeat` "Repeat Queue",
-  `QueueDescriptionPanel1/2`); the building window's `CraftingPanel` (`CraftingName`, `QueueButton` "QUEUE..."); its rows and slot ghosts: [Selected building](ui-screens.md#selected-building).
+  `QueueDescriptionPanel1/2`); the building window's `CraftingPanel` (`CraftingName`, `QueueButton` "QUEUE..."); its rows and slot ghosts: [Selected building](ui-screens.md#selected-building); the description of a hovered queue entry (State, ETA, Current Smith, Predicted Result, Material Costs, Critical Success Chance): [Craft tab](ui-screens.md#craft-tab).
 - Example: Weapon Smith 2033, functionality 2035 (stat 7, tech level 25, consumes Iron Plates 5/100).
 
 ## Farming
@@ -574,10 +673,12 @@ the [layout's plant count](#farm-plants), not `amount`.
 - **Setup**: water rate w = `consumption rate`/G x the biome group's `farm water usage` (Desert 8, most 1, Floodlands 0.1);
   harvest and clear rates / G; harvest time at least 1e-6; indoor = `fertility effect` 0; every input's rate is 1.
   Fertility factor F = `1 - (1 - f) x fertility effect`, 0 when f <= `minimum fertility`, f the GROUND resource
-  (`FUN_1400e4320`, `vfunc_91`); F is also the yield.
+  (`FUN_1400e4320`, `vfunc_91`); F is also the yield. Both the water usage and F apply to indoor farms too, with no indoor branch
+  (**Verified**, `FUN_1400e8420`): their effect 0 gives F = 1 unless the ground is at or below the minimum (the shipped indoor
+  FARM_DATA have `minimum fertility` -1, so never). The biome crop terms of the crop match C (`FUN_1400dfe10`) and the rain top-up read where the farm stands instead (slot 59 `isIndoors`: interior furniture inside a building, **Verified**), not `fertility effect` 0, which is a separate byte: a hydroponic farm standing outdoors takes the biome match and rain; Meitou `Machine.Indoors`, set at creation and by the power tick. The ghost's popup keeps the flag (the ghost's parent is not read there, **Unknown**).
 - **Plants**: each has a growth g. Replant (`FUN_1400e48e0`): every g = -0.2 x U[0,1), `plant start` = their minimum,
   `plants harvested` 0, death d 0, clear progress 0, harvest progress 0, farm growth = `plant start`.
-- **Tick**, h = dt/(G/24): outdoors (the exe also tests a building flag at `+0x240`, meaning **Unknown**), rain fills the FIRST input's level by
+- **Tick**, h = dt/(G/24): while the farm is not inside a building (slot 59 `isIndoors` null, **Verified**; or the byte at `+0x240` is set, meaning **Unknown**, treated as unset; the farm's own indoor flag, fertility effect 0, is not read, so a hydroponic farm standing outside is rained on; Meitou `Machine.Indoors`), rain fills the FIRST input's level by
   `wetness x w x rate x dt x 3` (to 1 at most; **Verified**: `FUN_1400e5580`, the 3 at `14168a254`). `wetness` is the weather record's `wetness`
   (0..1; the def field `+0x94` of the region's current weather at the farm, loader `FUN_1409de7b0`), not `rain intensity` and not times the weather's strength;
   any weather counts, acid included. Meitou: `WeatherHere.Wetness`, `ProductionSystem.FarmTick`. Water draw
@@ -586,11 +687,13 @@ the [layout's plant count](#farm-plants), not `amount`.
   powerSat when the building uses power. Farm growth < 1: each plant with -1 <= g < 1 gains inc; farm growth = the
   lowest such g, capped at 1. 1 <= growth < 2: growth += h / `harvest time` (ripe; at 2 it rots). Growth >= 2:
   d += h / `death time`. While 0 < growth < 1 and `drought death time` > 0: a failed draw adds h / `drought death time`
-  to d, a good one takes it off while 0 < d < 0.6. d >= 1 or every plant harvested: replant.
+  to d, a good one takes it off while 0 < d < 0.6 with no floor at 0 (**Verified**, `FUN_1400e5580`; one step can leave d below 0, nothing clamps it later). d >= 1 or every plant harvested: replant.
 - **Harvest** (an operator, skill factor s): when growth >= 1, d < `death threshold`, not every plant harvested and the
-  output is not full, harvest progress += health x powerSat x P x dt x s x harvest rate. At 1: the output gets, per whole
-  unit of `output per plant`, one item with probability e (the fraction rolled once); the plant's g = -10, `plants
-  harvested` += 1; the work point moves to the next plant. No room: status 1. A crop of zero items floats "Failed".
+  status is not 1, harvest progress += health x powerSat x P x dt x s x harvest rate (no room test yet). At 1 the output
+  section is asked for room for the item (**Verified**, `FUN_1400e59e0`): none sets status 1 and keeps the progress (the tick keeps 1 while the output
+  cannot take the item, else resets to 2; the work function does nothing at 1). With room, ceil(`output per plant`) rolls give one item each with probability e (a do-while: 1 to 2 rolls
+  for an output of 1 or 2; 0.5 gives one e-roll), then the fraction `output - int(output)` is rolled once against itself; the progress resets to 0, the plant's g = -10, `plants
+  harvested` += 1; the work point moves to the next plant. A crop of zero items floats "Failed".
   e (`FUN_1400dfe10`) = `clamp01(lerp(farming/100, 0.5, 2))` x C x F, C = sum of the farm's crop weights x the biome
   coverages (1 indoors), farming the operator's effective stat (**Verified**: the 0.01 at `141682ad8` and the call order).
 - **Clearing**: d >= `death threshold`: clear progress += health x powerSat x P x dt x s x clear rate; at 1 one plant is
@@ -633,19 +736,24 @@ harvest look `FUN_1400e4800`, replant `FUN_1400e48e0`, geometry `FUN_1400e4a20`,
 ### Unloaded zones
 
 **Verified** (decompile, `ZoneManager::updateRendertimeThread` / `ZoneMapContent::threadedUpdate`): buildings update only in active zones; an
-unloaded zone has no building objects. Farms, automatic machines and moving-part buildings update every pass, operated ones in a 10-per-pass
-rotation. No building but the farm reads a saved time, so mines, wells, refiners, generators, research and crafting stop unloaded and do not
+unloaded zone has no building objects. Per zone pass (`FUN_1409fb2b0`): objects whose vfunc 0x3e8 (needs update) is true always enter the ready list (Building: any sub-part busy; ProductionBuilding: busy, or not (flag +0x3a9 and no current job); FarmBuilding: always), idle ones only while a budget of 10 per call lasts, from a rotation cursor that then advances (**Verified**). The pass cadence of `threadedUpdate` and whether the idle battery step (`FUN_1402994a0`, no dt) shows a rate difference are **Unknown**. Meitou updates every machine of an active zone each tick, dt-scaled (a difference, idle battery charge unverified). No building but the farm reads a saved time, so mines, wells, refiners, generators, research and crafting stop unloaded and do not
 catch up.
 
 **Farm catch-up** (**Verified**, `FarmBuilding::loadFromSerialise` / `timeSkip`): the farm saves `save time` (game hours) when its zone unloads
 and on every save. On load, h = now - save time; if h > 1 and the farm is built, `timeSkip(h, ignoreWater = owner is not the player)`:
-- Cycle C = G (`growth time` / fertility) + `harvest time` + `death time`; position p from `plant growth` (0..1 over G, 1..2 over harvest time,
+- Cycle C = G (`growth time` / fertility, no power factor) + `harvest time` + `death time`; position p from `plant growth` (0..1 over G, 1..2 over harvest time,
   then `plant death` x death time).
-- Water m = min over inputs of level + item count; watered hours w = m / (consumption rate x h) (it divides by h too, as written).
-- h <= w or an NPC farm: p += h, death 0; a completed cycle replants.
-- Else p += w (wrapped), the other h - w hours grow at the drought multiplier (0: 1e-8) and death += (h - w) / `drought death time`, past 1
-  replanting.
-- A player farm then uses its water: the level is zeroed and whole items removed for w x rate - level.
+- Water m = min over inputs of level + item count; watered hours w = m / (rate x h), rate the per-second water rate (+0x534, as the live
+  tick uses it) and h in game hours (it mixes the units and divides by h too, as written; w = h with no rate).
+- h <= w or an NPC farm: p += h, death 0 (not added to); when p > C the harvested count resets and p wraps (`p - floor(p / C) x C`). Nothing replants (`FUN_1400e48e0` is not
+  called), and the plants' own growth values, harvest and clear progress are untouched.
+- Else p = (p + w) wrapped on C, Gd = G / `drought multiplier` (1e8, `DAT_1416888b0`, when that is 0) and the drought cycle Cd = Gd + harvest + death; p += h - w with no multiplier
+  (drought stretches only the growth phase). With a `drought death time` DDT > 0: death = saved death + (h - w) / DDT (the saved death is not zeroed here); above 1 the harvested count
+  resets, death keeps its fraction and p = that fraction x DDT; no replant. p then wraps on Cd; phases use Gd (p < Gd: growth p / Gd; then 1 + (p - Gd) / harvest time; else 2) and a
+  position in the death phase ADDS (p - Gd - harvest) / death time to the accumulated death.
+  The plants are not touched (**Verified**, `FUN_1400df6e0` writes no plant): while the growth is below 1 the live tick (`FUN_1400e5580`) sets it to the lowest plant again, so a catch-up inside the growing phase is undone by the next tick, a vanilla quirk Meitou keeps.
+- A player farm then uses its water, per input: need = w x rate x the input's amount - level, the level zeroed; need > 0 removes the whole
+  stack when it holds no more than need, else floor(need) items with the level 1 - frac(need) (**Verified**, `FUN_1400df6e0`).
 
 Meitou: the *Production far away* switch ([simulation](../simulation.md)); Faithful applies the above while running (a farm out of the active
 zones keeps its stamp and catches up when its zone is active again; generators burn no fuel unloaded).
@@ -660,13 +768,31 @@ to `FUN_140836b70`: contribution k of the frame is x 0.6^k (counter `+0x174`, cl
 0.95, 1.0, 1.05, 1.1 (I to VI); functionality `tech level` 1 to 6; power 0, 0, -10, -15, -25, -30 (**Verified**, probe).
 - **Levels** (**Observed**): the manager's tech level starts 1; each finished `is level upgrade` research of `level` L
   raises it to L+1 (`FUN_140830880`). A complete player bench raises the bench level to its `tech level`
-  (`FUN_14029be00` -> `FUN_140834390`). Available (`FUN_1408333b0`): not `blueprint only`, not finished or queued,
-  `level` <= tech level, requirements met (a RESEARCH finished, a BUILDING unlocked; `FUN_140830490`, engine reading
-  of a garbled decompile), grouped by `category`.
+  (`FUN_14029be00` -> `FUN_140834390`); it only rises: losing the best bench does not lower it, only the manager's constructor and the
+  research load zero it (**Verified**, `FUN_140834390`, `FUN_140836cb0`, `FUN_1408360f0`). Available (`FUN_1408333b0`): not `blueprint only`, not finished or queued,
+  `level` <= tech level, requirements met leniently (`FUN_140832fa0` with its flag set, **Verified**: a RESEARCH finished, another record
+  unlocked, or else that record's own `requirements` all met strictly, one level, an empty list passing; blueprint learning `FUN_1402b65d0`
+  checks strictly), grouped by `category`.
 - **Queue** (`FUN_1408348a0`): needs `level` <= bench level (`FUN_140830a30` names the missing level) and the cost
-  paid (`FUN_1408343c0`): `cost` items (x `repeat mult` per repeat, `FUN_1408320a0`) summed over the inventories of the
-  player's research benches near the player (`FUN_14082e750`, `FUN_14082e810`), then removed; a paid id is remembered and
-  never charged again. Partial progress is kept when an item leaves the queue.
+  paid (`FUN_1408343c0`): `cost` items (of the repetition, below) summed over the inventories of the
+  player's research benches (**Verified**: `FUN_14082e750` runs a `BuildingFinderNearestAllies_Function` at the position of the camera focus node
+  (`FUN_1407f2960`, the position the zone load centres on), `FUN_1409fc450` visits the building cells within +-1 of its cell (`floor(x / 4608)`, the zone grid), the finder keeps
+  buildings of function 3 owned by the player (`FUN_1408ca830`, `FUN_1408ca5d0`); the finder's +0x40 = 3 is the function it requires; its +0x18 = 8 is read by neither the cell walk nor the tests, meaning **Unknown**) in those
+  3 x 3 zones, counted by `FUN_14082e810` and removed by `FUN_14082e900`; a paid id is remembered and never charged again. Meitou: `ProductionSystem.Benches`, the zone
+  of the last `FocusCommand` (sent when the camera moved 50 units; derived, not saved; none, as in headless runs: every bench), so a camera in another zone sees no bench. Partial progress is kept when an item leaves the queue.
+- **Repetitions** (**Verified**, loader `FUN_140834b70`, `FUN_1408320a0`; Meitou `ResearchData.CostAt` / `TimeAt`, `ResearchState`): a research
+  with `repeats` R > 1 gets copies "name 2" .. "name R" (repetition j = 1 .. R-1) beside the base (j = 0), so it is finished max(1, R)
+  times in all. Repetition j has factor f = max(1, `repeat mult`^(j-1)) (1 for j = 0 and 1); each `cost` count c becomes
+  max(trunc(c x f), c + j) and `time` trunc(time x f), which the hours above read. Mult 2, c 10: 10, 11, 20, 40, 80. How the
+  copies' `requirements` chain (`FUN_1400b61b0`) and how a save names a copy are **Unknown** (Meitou counts finishes per base id).
+- **Enable lists per repetition** (**Verified**, `FUN_140834b70` calls `FUN_1408320a0` for every research with `repeats` > 0, repeats 1 included, on the base as repetition 0
+  and on each copy; `FUN_140831e60` runs it over `enable buildings`, `enable weapon type`, `enable weapon model`, `enable armour`, `enable item`, `enable robotics`,
+  `enable crossbow`, `enable backpack`): an entry's v0 is the repetition that unlocks it and v1 a level floor. Repetition j keeps the entries with v0 = j (others are removed
+  from that record, so v0 at or above `repeats`, or below 0, never applies) and raises its `level` to at least their v1. The record's `level` is what the
+  queue test (bench level), availability (tech level, `FUN_1408333b0`) and the hours (`FUN_14082ed10`) read, so the next repetition can need a higher bench. With `repeats` 0
+  nothing is filtered or raised: every entry applies when the single record completes, whatever v0 (base data: Advanced Medicine's "Advanced First Aid Kit" 1,4,4 and
+  Heavy Generator Theory's "Generator II" 1,4,0). Meitou: `ResearchData.LevelAt`, `ResearchState.Refresh` (crafts), `ResearchGate.Unlocked` (buildings). The blueprint tooltip's tech level still reads the
+  record's own `level` (the original's base record carries the repetition 0 floor; only matters for a repeating research with a blueprint).
 - **Complete** (`FUN_140834550`): leaves the queue, joins the finished set, `improve buildings` applied
   (`FUN_140831a60`, the research's own fields for each listed building: `production mult` replaces the building's, so the
   last finished wins; `power increase` and `power capacity increase` add; lookup `FUN_14082ec70`, default 1, 0, 0), lists
@@ -698,7 +824,7 @@ to `FUN_140836b70`: contribution k of the frame is x 0.6^k (counter `+0x174`, cl
   item. Otherwise `completeResearch` (as above, message and sound included) and the item is used up. Tech and bench level play no part.
 - **Tooltip** (`FUN_1407ab430`, **Observed** by decompile): the research name and "Research Blueprint" (Title), the item rows, then the first match of: finished
   before, "Research already known" (Title); `level` above the player's bench level (`uses_level` `FUN_140830a30` answers the level, else 0), "Needs research bench level {1,num}"
-  (BadBright); requirements met (`uses_requirements`), "Right-click to learn tech" (Title), else "Cannot learn this yet" (BadBright). Then `Tech Level` (ink) with the `level` (Main),
+  (BadBright); requirements met strictly (`uses_requirements` = `FUN_140832fa0` with the lenient flag clear, **Verified**: the check learning makes, not the research list's), "Right-click to learn tech" (Title), else "Cannot learn this yet" (BadBright). Then `Tech Level` (ink) with the `level` (Main),
   the prices, `Requirements:` with the `requirements` names (cyan `#14ffdc` when finished, else BadBright; the first in one row, the rest ", "-joined in a second), and a row per
   `enable buildings`, `enable weapon type`, `enable weapon model`, `enable armour` and `enable item` reference (`FUN_14079a890`): "New Building:", "New Weapon Class:",
   "New Weapons Grade:", "New Armour Type:", "New Items:", the name in Good. Meitou: `BlueprintRows`, `UnlockRows` (a row per requirement).
@@ -721,7 +847,7 @@ and `power capacity` (battery store, "in seconds" per fcs.def), plus research ([
   fuelled ("Out of fuel" otherwise); **Verified** `FUN_140297760`, health the construction fraction. A battery's output is the same health x rate while it holds charge,
   and its capacity health x (capacity + increase) (`FUN_140297650`). Meitou the same (`ProductionSystem.Output`, `Capacity`).
 - **Wind generators** (**Verified**, decompiled): output = the share x the above, 0 when below 1 (`WindGeneratorBuilding::getPowerOutput`); the share
-  (`PhysicsCollection::getWindRotationPower`) is the first ROTATION_WIND_SPEED part's wind share ([rotating parts](#rotating-parts)), 0 with none or without
+  (`PhysicsCollection::getWindRotationPower`) is the first ROTATION_WIND_SPEED part's wind share ([rotating parts](#rotating-parts)) among the parts the placement actually spawned (FUN_140848950 spawns only the chosen random-group parts, so the rotor depends on the position's seed; Meitou: `WorldObjectLayout.WindRotor`, per machine), 0 with none or without
   the building's physics collection (render entity) loaded. Meitou gives every built one its share from the scheduled wind of the weather region at the site.
   Sound intensity = the share. State (`getGUIState`): the production state, then "No Wind" ("There is currently not enough wind to drive the
   machine.") while the share is 0. Panel (`getGUIPower`), only with rated output (`getMaxPower`: `power output` + research) above 0: section 4 (the condition
@@ -740,8 +866,9 @@ and `power capacity` (battery store, "in seconds" per fcs.def), plus research ([
   min(demand, supply left / consumers left). Consumers left short with `gets battery` are counted; if batteries were in
   use the previous frame (town `+0x470`) they share the batteries' output the same way. With no supply left the
   batteries drain by what was drawn (`FUN_1402978d0`) and the town enters battery mode; with a surplus it leaves it and
-  the batteries charge from it, each at most its rate. Factor = granted / demand (1 with no demand), x health
+  the batteries charge from it, each at most its rate: in stored order each battery takes min(surplus left / batteries still to come, its rate), the count falling by one for every battery, switched off or full ones included (**Verified**, `FUN_14092cd60`; the switch byte `vfunc 0x228` and "rate 0 when full" are engine readings, **Observed**). Factor = granted / demand (1 with no demand), x health
   (`vfunc_109`); production, crafting, research and farm growth are scaled by it.
+- **One town per call** (**Verified**, `FUN_14092d850`): the world's per-frame update collects every eligible town (`vfunc 0x270` == 0) and calls `vfunc 0x2b8` (the frame above) on the one at a static cursor (`DAT_14213543c`, incremented first, wrapped to 0 at the count) per call; the other towns keep their last grants. The call rate is not decoded. Meitou `ProductionSystem.ShareOneTown`: one grid town per production pass in ascending number (an engine choice for the cadence); batteries of every town still integrate their last grant each pass.
 - **Fuel** (`vfunc_183` on generators): inputs drawn as a producer's, x the load (`GeneratorBuilding::vfunc_167`):
   output / rated x (battery charging + consumer demand) / all generators' output, at most 1 ("Fuel Consumption {1}%").
 - **Battery store** (`vfunc_27`): += flow / rate x dt, clamped to 0..capacity.
@@ -771,8 +898,7 @@ and `power capacity` (battery store, "in seconds" per fcs.def), plus research ([
 - **What damages a building** (**Verified**, decompile): hits go to slot 62, which is `FUN_1402972c0` (returns 1, no effect) for every UseableStuff class (machines,
   turrets, storages, lights) and `FUN_1400d20b0` (returns 0, no effect either) for plain and gate buildings; only WallBuilding (`FUN_14029d560`, [walls](#walls)) and doors (`FUN_14029d690`)
   lose health, a wall at 0 becoming destroyed (slot 104). Destroyed (+0x1a1) is otherwise set only by SQUAD_TEMPLATE `building ruined` (28 true; `FUN_14057f1f0` from `RootObjectFactory::createRandomUnloadedSquad`, **Verified**: the squad's
-  building gets the template's `building designation` if it has none, its `public day`, and is destroyed when ruined and destructible; not modelled: Meitou's town buildings take
-  destroyed only from the level and saves) and
+  building gets the template's `building designation` if it has none, its `public day`, and is destroyed when ruined and destructible: [ruined by residents](#ruined-by-residents)) and
   its own deferred replay: slot 104 (`FUN_140557280`) called while `FUN_14025c6d0(DAT_1421348a0)` holds queues message 0x10 (`FUN_140349be0` on
   `DAT_142134110`) instead, replayed by `FUN_1407b65b0` from the GameWorld update `FUN_140786e30` (**Observed**, decompile), so it adds no source; the first build step on it ruins the building ([construction tick](#construction-tick)). Dismantle (slot 73, its
   only damage path for machines) is offered only when slot 79 (`FUN_14029c380`) holds: the owner is a player faction. So raids and fights never break a
@@ -813,7 +939,7 @@ wind; a level building's mult comes from its data as its sound emitter's efficie
 needing neither operators nor power their `output rate`, other machines 0; engine choice).
 
 **Storage** (**Verified**, 603 buildings): 87 have `has inventory`; default 18 x 18, `itemtype limit` 4; `stackable bonus
-mult` 1 to 100000; `limit inventory` restricts the items. Grid (**Observed**, the building loader): a building whose `limit inventory`
+mult` 1 to 100000; `limit inventory` restricts the items. Loader note (`FUN_14057cc70`:192-202, 555-567, **Verified**): when the functionality record's int `flags` has bit 4 set the loader only prints the log line 'Warning: Nest building loaded <name>' and goes on, no state changes. Grid (**Observed**, the building loader): a building whose `limit inventory`
 names exactly one item is that item's `inventory footprint` (Iron Plates 4 x 3, Building Materials 6 x 3, steel bars 6 x 1), else
 `storage size`, for built and town-placed storages alike (`MachineData.StorageGrid`). Its window (**Observed**, screenshots) is
 `Kenshi_InventoryGenericWindow`: caption STORAGE, the one limited item's name as heading, `Max Capacity: N` with N the `stackable bonus
@@ -823,19 +949,45 @@ storage` (function 2); Large Barrels also hold Water. Other `itemtype limit`s (*
 (Armour Storage, Armour Stand), WEAPON (weapon stands, cabinets, display boards), CROSSBOW (Crossbow Locker); none takes
 CONTAINER (backpacks). Shop counters (function 9) have no type limit in Meitou (`IsStorage` is functions 2 and 13 only).
 
+
+### NPC town machines
+
+- **Output add** (`FUN_1402984b0`, **Verified**): when a producer's accumulator reaches 1 and its output inventory cannot take the item, the accumulator resets to 0, so a full output loses
+  the progress (and `isMachineOutputFull`, status 1, stops the operators: row 87 needs !63). Nothing else in the production building removes items.
+- **Who empties it** (**Verified**, a scan of every AI package in the merged data): rows 87, 92, 93, 113, 114, 124, 152, 221, 242 and 247 are in no package; NPCs reach them only through
+  the planner from goal 189 (effect IS_WORKING, provider 87: needs !63, !62, !89, !169) and the player's jobs. For a full output the provider of !63 is 92 (`Task_EmptyMachine`,
+  `FUN_14033cd10`: needs 82 room for the machine's output item and isAtLocation); for no room the provider of 82 is 114 (a `Task_Blank` goal with effect !62; its finder `FUN_1405a70a0` = the nearest storage or machine that accepts a carried item type; the
+  filler of 62 is 93 `Task_FillMachine`, `FUN_140344510`, which puts the carried items into a storage through `FUN_140340da0`). **Verified** (state 62 on a storage is not the question): state 62
+  (`FUN_1405974e0`) reads the building's production component (virtual `0x2f8`, which a pure storage lacks: `FUN_140344510` takes its storage branch on exactly that), so 62 is false for a storage and
+  the effect `!62` of rows 113 / 114 / 242 already holds there, but the planner never tests an effect before following it: the node expansion `FUN_14051bae0` puts the effect first in the list of states
+  it opens children for, B entries after it only when unmet, and the child maker `FUN_14051c240` asks nothing of the state; so the providers of `!62` (93 alone: the only row listing `!62` in A)
+  are made whether or not it holds, with the effect target (the finder's storage) as their target. Row 242, 114 and 113 share the finder (`FUN_1405a59a0` through the stub `FUN_1405a70a0`:
+  the nearest storage taking a carried item). "Can run" (`FUN_14060f940`) tests B first, then the effect on its target (false and the effect reported unmet when it does not hold); it only gates the accepting of a finder-less acting node. Row 93 then needs 67 (carries something the target
+  takes), 2, `!169` and isAtLocation, and acts (`FUN_140344510`): a ditch into a storage is plan `[93, 114, ...]`, not blocked by 62. A workplace the plan cannot make runnable (inputs to fetch: 94 then 66 from another machine's output, 113) fails goal 189, and goal 190
+  (pretend, row 221, which asks nothing of the machine) is what the NPC does.
+- **Task_EmptyMachine** (`FUN_14033cd10`, **Verified**): at the building, takes its output item types in order and moves units into the character's inventory while there is room
+  (backpack included); a production building at status 1 goes to 2 after a take; ends when nothing is left.
+- **State evaluators** (**Observed**, read from the decompile, meanings of the virtual calls inferred): 66 `FUN_140597530` the character carries the machine's output item; 67 `FUN_1405a45f0` it carries an item the machine (an input) or storage accepts;
+  82 `FUN_14059bd80` inventory or worn backpack has room for the target's item (a machine: its output item); 105 `FUN_1405a2c40` machine output empty; 169 `FUN_1405975d0` input invalid
+  (production type 6 flag).
+- **Meitou** (`ProductionSystem.TownWork`, `AiSystem.WorkAtMachine`): the town building a worker of goal 189 stands at is a virtual complete site `townwork:<building key>` of the town's
+  faction (like a rock or a training dummy: no registry site, not drawn, saved or built; its machine is kept in memory and in the save), made when the first worker arrives and kept in the save ([town machines](../formats/save.md)). A worker whose plan starts with
+  87 operates it every tick (skill factor, operating XP: the player's operator lines), with 92 empties it into its inventory. Only producers run: a research bench counts for the player's
+  research alone and a crafting bench with no queue refuses an operator, so both stay pretence. Ditching: rows 113 / 114 / 93 (`TownDutySystem.DitchStore` and the Ditch errand, [ai-tasks](ai-tasks.md#ditching)). Row 94 (`WANT_TO_FILL_MACHINE`, effect 66) and its finder `FUN_14059d9b0` (**Verified**: for each input item of the target machine in list order, `FUN_14059d000` looks for a cached earlier pick, then loose ground items, then the nearest building whose production component's output lists the item (identity for ITEM records, same record type otherwise) with some in it, the buildings split by the owner test of vfunc `0x3b0`, within the sight range of the AI's range mode) give the chain 92 at the source, 94, 93 at the machine, 87: Meitou plans it (`PlanContext.Find` row 94, states 66 / 67 on machine targets), the worker walks to the source (`AiSystem.StepBuilding`), `TownWorkers` empties it (92), fills the inputs (93, `FillInputs`) and operates. Not modelled (**Unknown** or undecoded): the cached pick, ground items, the `0x3b0` split and the building mask `0x4002436` (the town's workplaces stand in). A machine exists only once a worker has been at its building; the original's has its empty output from the start, so a source with no output yet is none in both. Unpowered: town machines draw no player grid (power held true).
+  A town machine is no player machine for the hauling jobs (`ProductionSystem.Takes`).
 ### Hauling
 
 - **Tasks** (**Verified** classes, **Observed** meaning): `Task_EmptyMachine` (92 "Collecting resource", 284 "Looting")
   moves a building's output into the character's inventory while it has room (`FUN_14033cd10`). **Observed** (Meitou `TaskDataTable`/`TaskPlanner`): row 92 lists !63 among its achieved states; the provider map uses these list-A states, so a full output can lead goal 189 from row 87 to 92 when state 82 (inventory room) and arrival hold. Original planner parity of that transition is **Unknown**. `Task_FillMachine`
   (93 "Filling machine", 124 "Hauling to") puts carried items, main grid and backpack, into a machine or a storage
-  (`FUN_140344510`). GOAP rows: [ai-tasks](ai-tasks.md); states 62 machineHasEmptyInputs, 63 isMachineOutputFull,
+  (`FUN_140344510`) (**Verified** by re-reading it): the target building without a production component is a storage, whose inventory takes the character's items and its backpack's (`FUN_140340da0`); one with a production component takes what its inputs accept (`FUN_140343780`, or `FUN_140340f10` for type 4); the task ends the first update that moves nothing. GOAP rows: [ai-tasks](ai-tasks.md); states 62 machineHasEmptyInputs, 63 isMachineOutputFull,
   66 haveSomeResourcesFrom, 67 haveSomeResourcesFor, 82 gotInventoryRoomForResources, 169 isMachineInputInvalid.
 - **Option** (**Verified**, string): "If they have nothing else to do, characters will automatically put any excess
   materials they are carrying into storage."
 - **Jobs** (**Verified**, [perma-jobs](ai-tasks.md#perma-jobs)): Shift with an order on a machine adds job 87 "Operating machine";
   on a storage 124 "Hauling to" (several targets allowed); an automatic machine (152) adds 152 plus 124 on it. The first job in a
-  character's list that can run wins; operating is skipped while the machine's output is full or its inputs are empty (task 87's start
-  conditions), so a character moves down its list and returns when the machine can work again.
+  character's list that can run wins; operating is skipped while the machine's output is full or its inputs are empty (row 87's !63 and !62 unmet at the job's root,
+  [perma-jobs](ai-tasks.md#perma-jobs)), so a character moves down its list and returns when the machine can work again.
 - **Unknown:** how the original picks the storage (nearest, same town, a range), when an operator leaves a
   machine to haul, where a 124 job takes its items from, and whether 152 / 124 on an automatic machine ever empty its output
   (152's goal is only "no empty inputs", !62).
@@ -857,10 +1009,39 @@ interior meshes but no functionality record, their level states lack `sell home`
 Meitou reads `sell home` from the saved state, else the level state, else the resident template; **Unknown** whether the
 original falls back to the template.
 
+## Ruined by residents
+
+**Verified** (decompile): the squad setup `FUN_14057f1f0` calls slot 104 (set destroyed) on the squad's home with `building ruined` of its template and slot 105
+(`FUN_14055b520`, can be destroyed): true when the building's class (+0x198) is 7, GatewayBuilding, the `is wall gate` building (**Verified**, [pathfinding](pathfinding.md)), or it, or a part reached through `parts` at any depth, has a
+`destroyed mesh`. So a home whose template is not ruined is set intact. **Observed** (data, base game and its mods): 26 SQUAD_TEMPLATEs set `building ruined`, among
+them `_ruined empty building (DEFAULT)` (`44421-rebirth.mod`), the `default resident` of Old Village (Deadcat, `50243-rebirth.mod`), whose level states are
+intact and name no template. Its houses are ruins in the original (issue #145).
+
+**A ruin holds no furniture.** **Verified** (decompile): set destroyed (`FUN_140557280`) destroys the interior's internal buildings and furniture (`FUN_14054f4d0`,
+`FUN_140548580`), after the squad setup has loaded the template's interior; the layout names stay, and housing names a ruin's layouts as any home's
+([layouts](factions-squads-towns.md#town-residents)). **Observed** (saves METARU, autosaves 1 and 2, redev, Beep Fan Club 1): no saved building lies inside any ruin
+(0 of 56, 56, 23, 23, 62), while 283 of 284 standing buildings with an interior name hold furniture; every saved ruin names no interior layout (its template
+names none). Whether a ruin's interior is laid out again when it next loads (the interior loader `FUN_1405621e0` has no destroyed test) is **Unknown**: no save
+has a ruin whose name is set. Meitou: no reader lays out a ruin's layouts (drawing, lamps, effects, emitters, navmesh, and `TownBuildings`: no beds, nodes,
+fixtures or item slots).
+
+Meitou (`ResidentRuins`): before anything reads the level data's `destroyed`, every town is housed by the population's rule ([town residents](factions-squads-towns.md#town-residents))
+and each home of a ruined template that has a destroyed mesh is set destroyed in its level state; 71 base-game buildings (Old Village 10 of 10, Abandoned Town 9 of 9,
+the library ruins). A saved `destroyed` false does not undo a level ruin unless the player's repair saved it (`meitou town construction`; engine choice: saves
+made before this pass wrote those buildings intact). A town's baked distant mesh is a fixed file of the install, drawn as it is (as in the original). Meitou: `ResidentRuins.CanBeDestroyed` tests `is wall gate` for the class. Not modelled: setting a level ruin intact (13 level ruins get a template that is not ruined, e.g. Bast's and Endin's
+`Trashed building w/squatters`, yet those towns are ruins in the original, so where the original skips the call is **Unknown**).
+
+A [town override](factions-squads-towns.md#town-overrides) reads its zone back from the level file and houses the replacement's residents, so Meitou
+(`FixtureRegistry.ApplyTownRuins`) sets each of the town's buildings in its own zone that is not the player's: a home of a ruined template that can be destroyed is a
+ruin, any other as its level file has it (a resident ruin of the old town stands again). Its other zones keep their state, but such a home there becomes a ruin
+too. A loaded save takes its ruins of standing buildings back, then applies its replacements again; the building states it writes carry them. The host replaces those
+buildings' level placements (drawing, navmesh, lamps) and drops a ruin's particle effects (a standing one's come back); doors, locks and indoor sight follow. **Observed** (data):
+95 overrides change ruins, e.g. Stoat (override) half destroyed 8, Catun (override) fishman takeover 14; Free Settlement to The Free City stands 7 up again.
+
 ## Unknowns
 
 - How often Building slot 28 resets the builder counter, which HUD orders set the AI
   range mode, and what `FUN_14025c6d0` (holding dismantle work) tests.
 - Event types of the queue at `DAT_1421346d8` other than 8 (research progress) and 11 (build work).
 - `vfunc_0x520` (a consumer counted as active): 1 for every class but `LightBuilding`, whose answer is in [lights](../formats/lights.md#when-a-light-is-on).
-- Option slider defaults; the third value of reference triples; the record field of `BuildingClassType`.
+- Option slider defaults; the third value of reference triples.

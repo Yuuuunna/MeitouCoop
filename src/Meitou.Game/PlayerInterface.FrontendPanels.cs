@@ -59,10 +59,10 @@ sealed partial class PlayerInterface
             bool wrap = lastWraps && i == lines.Count - 1;
             var labelBounds = new UiRect(area.X + 0.03f * width, top, (wrap ? 0.96f : value.Length > 0 ? 0.93f : 0.96f) * width, wrap ? area.Y + area.Height - top : pitch);
             controls.Add(new($"{panel}-label-{i}", "TextBox", labelBounds, label, "", "Kenshi_TextboxStandardText", true,
-                new Dictionary<string, string> { ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.InkText, ["WordWrap"] = wrap ? "true" : "false" }, Vector4.Zero, Pickable: false, Clip: clip));
+                new Dictionary<string, string> { ["TextAlign"] = "Left Top", ["TextColour"] = MyGuiColours.TemplateInk(uiResources, "Kenshi_TextboxStandardText"), ["WordWrap"] = wrap ? "true" : "false" }, Vector4.Zero, Pickable: false, Clip: clip));
             if (value.Length == 0) continue;
             controls.Add(new($"{panel}-value-{i}", "TextBox", new(area.X + 0.03f * width, top, 0.93f * width, pitch), value, "", "Kenshi_TextboxStandardText", true,
-                new Dictionary<string, string> { ["TextAlign"] = "Right Top", ["TextColour"] = MyGuiColours.InkText }, Vector4.Zero, Pickable: false, Clip: clip));
+                new Dictionary<string, string> { ["TextAlign"] = "Right Top", ["TextColour"] = MyGuiColours.TemplateInk(uiResources, "Kenshi_TextboxStandardText") }, Vector4.Zero, Pickable: false, Clip: clip));
         }
     }
 

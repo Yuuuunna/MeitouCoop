@@ -26,6 +26,12 @@
           Link="licenses/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="$(StreamlineRuntimePath)/LICENSE*"
           Link="licenses/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+
   </ItemGroup>
 
+  <Target Name="RequireCodeModJitPublish" BeforeTargets="PrepareForPublish"
+          Condition="'$(MSBuildProjectName)' == 'Meitou.Game' or '$(MSBuildProjectName)' == 'Meitou.Server' or '$(MSBuildProjectName)' == 'Meitou.Tools'">
+    <Error Condition="'$(PublishTrimmed)' == 'true' or '$(PublishAot)' == 'true' or '$(PublishSingleFile)' == 'true'"
+           Text="Code mods require an untrimmed JIT publish with separate managed assemblies." />
+  </Target>
 </Project>

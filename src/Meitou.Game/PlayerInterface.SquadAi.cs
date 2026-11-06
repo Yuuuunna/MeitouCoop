@@ -25,13 +25,17 @@ sealed partial class PlayerInterface
         (SquadAi.Share, "Share Food", "Characters in a squad will automatically share any of their food that is in a backpack (if in range)."),
         (SquadAi.Feed, "Feed Animals", "If food is running low, you can elect not to feed your animals."),
         (SquadAi.ShootFirst, "Shoot first, ask later", "Your turret gunners will shoot at any potentially dangerous but neutral targets, such as wild animals or bandits, without waiting for them to attack the base first."),
+        // Meitou-only lines (not in the original's tab).
+        (SquadAi.HealNeutrals, "Heal Neutrals", "Characters with the medic job will also heal downed characters of factions that are not hostile"),
+        (SquadAi.HealAll, "Heal All", "Characters with the medic job will heal any downed character, enemies included"),
     ];
 
     void AddAiContent(List<UiControl> controls)
     {
         if (faithfulScreens.GetTab("overview", "TabsMain") != AiTab || controls.FirstOrDefault(c => c.Name == "AIOptions") is not { } panel) return;
         var on = session.CurrentSnapshot.SquadAi;
-        float line = MathF.Max(22, 30 * InventoryScale);
+        // The original's panel is sized for its nine lines and the formation; lines shrink when the Meitou-only ones do not fit.
+        float line = MathF.Min(MathF.Max(22, 30 * InventoryScale), panel.Bounds.Height / (AiOptionRows.Length + 1));
         for (int i = 0; i < AiOptionRows.Length; i++)
         {
             bool ticked = (on & AiOptionRows[i].Option) != 0;
@@ -84,11 +88,12 @@ sealed partial class PlayerInterface
 
     /// <summary>
     /// Gives an order on a character, or with Shift held the job it becomes (the original's order dispatcher <c>FUN_1407fa650</c>; docs/game/ai-tasks.md "Perma-jobs"): First Aid,
-    /// Splint Injuries, an attack and a loot become Medic (Robotics on a robot), Splint Rigging, Attacking enemies and Foraging animals.
+    /// Splint Injuries, an attack (Attack Unprovoked too) and a loot become Medic (Robotics on a robot), Splint Rigging, Attacking enemies and Foraging animals. Bodyguard is always the
+    /// job, Shift or not (the dispatcher adds 45 as a job at once).
     /// </summary>
     void OrderOrJob(Meitou.Data.Gameplay.Ai.TaskType ordered, CharacterId target, Action order)
     {
-        if (SlowModifier && Meitou.Simulation.Production.PermaJobs.JobOf(ordered) is not null)
+        if ((SlowModifier || ordered == Meitou.Data.Gameplay.Ai.TaskType.BODYGUARD) && Meitou.Simulation.Production.PermaJobs.JobOf(ordered) is not null)
             Say(new Meitou.Simulation.Production.AddOrderJob(SelectedIds(), ordered, target) { Tick = session.CommandTick });
         else order();
     }
@@ -97,7 +102,9 @@ sealed partial class PlayerInterface
     static readonly Dictionary<string, Meitou.Data.Gameplay.Ai.TaskType> JobVerbs = new()
     {
         ["Attack Target"] = Meitou.Data.Gameplay.Ai.TaskType.MELEE_ATTACK,
+        ["Attack Unprovoked"] = Meitou.Data.Gameplay.Ai.TaskType.UNPROVOKED_FOCUSED_MELEE_ATTACK,
         ["First Aid"] = Meitou.Data.Gameplay.Ai.TaskType.FIRST_AID_ORDER,
+        ["Repairs"] = Meitou.Data.Gameplay.Ai.TaskType.FIRST_AID_ROBOT,
         ["Splint Injuries"] = Meitou.Data.Gameplay.Ai.TaskType.SPLINT_ORDER,
         ["Loot"] = Meitou.Data.Gameplay.Ai.TaskType.LOOT_TARGET,
         ["Follow"] = Meitou.Data.Gameplay.Ai.TaskType.STAY_CLOSE_TO_TARGET,

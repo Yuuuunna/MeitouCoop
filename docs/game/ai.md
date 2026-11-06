@@ -45,6 +45,8 @@ routing use [perception](perception.md), [population](factions-squads-towns.md),
 | DIALOGUE_LINE `AI contract` (169 uses; val0 = hours), `change AI` (190 uses), `has package` (751 uses) | `change AI` replaces the squad's packages, `AI contract` runs one aimed at the dialogue target: [dialogue Effects](dialogue.md#effects) | **Observed** |
 | AI_SCHEDULE | Empty in the base game set (0 records in the merged database); fcs.def says its `packages` list switches packages by hour (val0), but no runtime use was found | **Verified** (count) |
 
+AI contract start (**Verified**, `FUN_140272240`, called by `FUN_140272740` and `FUN_140272570`, `FUN_140272c20`): does nothing when the platoon's running contract (+0x210) already has the same package record (+0x68), so a repeated identical contract keeps its end time and target. Otherwise it ends the old contract with `FUN_14026a110` (event 30 on the leader's dialogue state, the old package's end text, notice to the old target; also what a natural end runs), then builds the new one (end = now + hours; under 1 hour is the constant 10 minutes). Meitou: `Blackboard.StartContract`; the event 30 fires only with a `ContractEndTalk` (a small difference).
+
 ### Enums
 
 | Enum | Values | Source, label |
@@ -106,7 +108,8 @@ A slave's Slave role list runs through the Obedient Slave job (187): [role lists
   +0x60 can start, +0x68 finished, +0x90 may hand over to `Leads to` (base: yes; a finished package whose `Leads to` is refused fails its slot), +0x18 speed
   mode (base 4, PassingByTownAssault 2, Refugee and DefendPlayerBase 1). Package fields: +0x8 `mission town`, +0x28 `mission target`, +0x48 `mission employer` (saved under these keys).
 - Blackboard current town (+0x138, `FUN_1402688d0`, before the choice): the leader's town, else the nearest town (any type but nest markers) whose radius
-  (`FUN_140926d50` × 1) holds the platoon; entering one sets the arrival hour (+0x140) and fires the leader's ENTER_TOWN (49).
+  (`FUN_140926d50` × 1) holds the platoon; entering one sets the arrival hour (+0x140) and fires the leader's ENTER_TOWN (49). The leader's own town is the `+0x88` of the
+  object at Character `+0x1a0`; Character slot 15 (`FUN_1405c89b0`) reads that field for any member (Town slot 70 compares it, [campaigns](factions-squads-towns.md#campaigns)).
 - **Package_HangAroundBar** (17/26): can start in its home town, or in a town not hostile to it that has bars (`vfunc 0x2d0` kind 3); finished in a player town
   that is not `is public` (the squad not the player's) or when it can no longer start. So a bar package runs where the squad is.
 - **Package_WanderingTrader** (16): start draws the stay W = uniform[5, 8) h, state 0 and the next town with the chooser `FUN_14092c5e0` (faction = own, from the
@@ -121,15 +124,21 @@ A slave's Slave role list runs through the Obedient Slave job (187): [role lists
   {last end, running}: free while one runs; a faction that never ended one is free; else more than the wait since the last end) and that town's faction has someone
   within 2500 of it (and Town vfunc 0x2f0, +0x3b0 set, **Unknown**). Start: the wait for next time by `attacks` (`FUN_140286a70`, uniform, game hours **Observed**: 0 none, 1 [6, 48),
   2 [32, 96), 3 [72, 144), 4 [130, 188)), the town as mission town and target, its faction the enemy (+0x100), start hour, and the enemy's people within 2500 as targets;
-  each one seen later is added and tagged squad memory 4. End: the faction's running count drops, at 0 the last-end hour is set. Finished: not intact (spent); else not
-  before 0.25 h, not while a target stands (alive, up, in the town; the town-compare polarity is **Observed**), then (spent) with at least 2 members up. May lead
+  each one seen later (and every enemy-tagged, awake, posture-0 character in a town in the members' sensed lists, `FUN_140294980`) is added, never removed, and tagged squad memory 4 (the tag has no expiry and the end does not clear it, **Verified** `FUN_140296150` never calls the clearer; Meitou: `AggroSystem.Refresh` emits it for every sensed character of `Squad.War`, the hook's in-view gate `+0x1a9` taken as always true, engine choice). End: the faction's running count drops, at 0 the last-end hour is set. Finished: not intact (spent); else not
+  before 0.25 h, not while a target stands (**Verified**, `FUN_14028eca0` and the hand-over `FUN_14028ea90`: its current town is the mission town — the hand compare vfunc `0x10`, `FUN_1400cd0b0`, returns "differs", the test wants it false — with the inside-town-walls value `0x118` non-zero, not unconscious or dead, `+0x2f8` not 2 caged, posture 0; Meitou `AiSystem.DefenderStanding`, the walls value not modelled), then (spent) with at least 2 members up. May lead
   (to the occupation): intact, no target standing, at least 2 up. Data (rebirth.mod): 33 bandit/raider templates have it at slot 1-3 with `hostile occupy town` above it.
-- **Sensing hooks** (package slots 10 `assessNeutral` and 11 `assessEnemy`, **Verified**; run on one sensed character per update, and only when the listener or the target is on
-  screen or the target is with the player): base: TEMP ENEMY on a target of the squad faction's current campaign; `Contract_HiredAlly` (12): the employer's faction TEMP ALLY, and a
+- **Sensing hooks** (package slots 10 `assessNeutral` and 11 `assessEnemy`, **Verified**; called from `FUN_140859680`, which `FUN_14085a5f0` feeds one sensed-list entry per Character update
+  (`FUN_1405c7d40`, vfunc 79) through a cursor at `+0x100` that wraps at the list's end, so every entry is visited in turn; the hook runs only when the listener or the target is on
+  screen (`+0x1a9`, the camera frustum test of `FUN_1405c9f60`) or the target is with the player (`FUN_140856bc0`). Meitou: `AggroSystem.HookRuns` applies the gate from the host's camera (`World.View`, `MedicalClock.OnScreen`; a world never told a camera runs the hooks), and each look takes every accepted sensed character at once instead of one per update (the cursor only spreads the visits over updates; a look every 15 ticks stands for the walk
+  through the list, **Observed**)): base: TEMP ENEMY on a target of the squad faction's current campaign; `Contract_HiredAlly` (12): the employer's faction TEMP ALLY, and a
   target the employer is allied with is cleared of TEMP ENEMY / criminal / aggressor, tagged TEMP ALLY and not sensed as an enemy; `Contract_DefendPlayerBase` (15): the mission
-  town's faction TEMP ALLY; `Contract_UntilOutOfDanger` none; `Package_WarAssault` / `_Cannibal`: TEMP ENEMY on anyone not an animal, not of a fake faction, not a bandit
-  (`fundamentalNPCType` 8), in the mission town or in no town. Meitou (`AggroSystem`): a hired squad never takes its hirer's faction (or, 12, its allies) as an enemy, 15 takes the
-  hirer's faction for the town's; an Everyone war target skips animals and bandits; no memory tags are written, and the on-screen gate is not modelled.
+  town's faction TEMP ALLY; `Contract_UntilOutOfDanger` none; `Package_WarAssault` / `_Cannibal` (`FUN_14028a3f0`, **Verified**): TEMP ENEMY on anyone not an animal (Character vfunc 0x248 null), of a faction whose `not real` flag (`+0x1d0`) is clear and whose
+  `fundamental type` (`+0x34`) is not 8 (the faction's, not the character's class), and whose current town is none or the package's mission town (a hand comparison that returns true on a
+  difference, so another town is skipped; there is no distance test). Meitou (`AggroSystem.WarEnemy`, `WarTargets.Town`): a hired squad never takes its hirer's faction (or, 12, its allies) as an enemy, 15 takes the
+  hirer's faction for the town's; an Everyone war target follows the rules above and each one the looker sees or hears this look is tagged TEMP ENEMY in its squad's memory (`FUN_140674300` tag 4, the time refreshed each look; same-faction refused;
+  `AggroSystem.TagEffect`, applied serially), which makes it an enemy of every member until the tag fades (6 h, `SquadMemory.Age`). `Contract_HiredAlly`'s hook (`FUN_140289570`, **Verified**: the employer handle, a character or platoon, resolves and its faction equals the sensed
+  character's) tags TEMP ALLY (3) the same way, setting the squad's player TEMP ALLY flag for a player-faction character; Meitou writes it for each such character the looker sees or hears (a look that picks no fights
+  does not run the scan, so tags the hook would write there are missed); the base and other hooks write no tags yet. `Contract_DefendPlayerBase` (hook `FUN_14028a290`, ctor `FUN_14028a0c0`, start `FUN_14028a170`; **Verified**): the exempt faction is the owner of the player town nearest the platoon leader (the mission town, set at the start; none when there is no player town), not a stored hirer, and seeing it tags the character TEMP ALLY (`FUN_140674300` kind 3). Meitou: `AggroSystem.EmployerOf` (signal 15), `Scan.EmployerTags`; signal 12 keeps the hirer's faction. The package **update** (vtable +0x48; `Contract_HiredAlly` `FUN_1402910e0`, `Contract_UntilOutOfDanger` `FUN_140290f90`, both defend classes `FUN_140291410`, **Verified**) also tags the mission target itself (+0x28, a character or squad) TEMP ALLY in the platoon's memory every update; the defend classes only with a mission town set, else they run the start. Meitou `AiSystem.TagMissionTarget` (characters; signals 12, 14, 15 with a player town; the campaign's defend package is run by the campaign).
 - **Package_OccupyTown** (30): never starts on its own (only by `Leads to`). Start: the leader's town as mission town, its faction the enemy (+0xb8, memory 4 on sight),
   each member fires TAKEN_OVER_PLAYER_TOWN (73), the platoon made persistent if it was not (undone at the end). Update: the platoon joins the town's occupier set
   (Town +0x118; its count +0x128 is "Hostile Occupiers:" in the town panel, `FUN_140922e60`). End: removed from the set, "{1} squad has been removed from {2}"
@@ -160,7 +169,7 @@ A slave's Slave role list runs through the Obedient Slave job (187): [role lists
    package as just activated, then calls the goal loader (`FUN_140270850`).
 2. `inherits from` is processed first, recursively, so a parent's entries are added first. Adding goes through `FUN_140268e10`, which
    calls `FUN_14027b3a0`; that skips an entry whose task type and target hand equal one already in the list, so **the parent's
-   entry wins**.
+   entry wins**. The hand (`FUN_1400cd060`) is equal when both are null or kind and all four id words match; at load (`FUN_1402704e0`) only `targeting` 2 LEADER, 3 SQUAD_MISSION and 4 HOME_GATE fill it, so two same-type entries with `targeting` SPECIFIC and/or SELF (hands null; SELF's is filled at goal sync, after) count as duplicates (**Verified**; Meitou `AiData.SameHand`; a LEADER or SQUAD_MISSION hand that is null at activation would also match them in the original, not modelled).
    One base-game record has two parents (`warrior guild`: `Guard building, residents` and `Shop-24hr`, which share an ancestor; **Observed** in the data 2026-10-14); Meitou
    loads them in the listed order and counts only a true cycle as a problem. Whether the original walks every parent is **Unknown**.
 3. Entries go into five role lists on the Blackboard (index to offset is identical in `FUN_140268e10` and the sync `FUN_14026b790`,
@@ -174,12 +183,29 @@ A slave's Slave role list runs through the Obedient Slave job (187): [role lists
 | 3 | (unused) | +0x1e0 | never filled by this loader |
 | 4 | Slave | +0x1f8 | `Slave AI Goals` only |
 
+### Requests
+
+A Blackboard also holds requests one character makes of another (map at +0x158, keyed by the asker's hand). **Verified** (`FUN_140269ff0` add, `FUN_14026a320`
+countdown, `FUN_140269240` reader): an entry has the asker, a task type, a subject hand, a target hand, a tier, a float and a time to live of 3.0 s; the asker
+asking itself adds nothing, asking again renews the entry, and the Blackboard update counts the time down by its dt and erases it below 0. The tier pass
+(`FUN_140510d60`, [precedence](ai-tasks.md#precedence) step 4) adds the entries of its tier whose subject is none or the character itself as candidates.
+The float (1.4 in both callers) is read as the candidate's weight (**Observed**). Callers: `FUN_1403346d0` (`Task_MakeTargetStandStill`, and every update of
+the first aid tasks, [medic jobs](ai-tasks.md#medic-jobs)) asks 62 Standing still of the target at tier 3 on the target's platoon Blackboard (`FUN_140791ba0`).
+Meitou models only that caller ([medic jobs](ai-tasks.md#medic-jobs)).
+
+### Update cadence and scope (engine choices)
+
+**Verified** (original; `FUN_140787940` -> `FUN_1402e7590` -> `FUN_1406b98d0`, `FUN_140786e30`): every faction keeps a cursor over its loaded platoons and steps exactly one platoon per kick (count x accumulated dt, then the platoon's update slot), one kick per rendered frame, so a platoon updates every N kicks (N = its faction's loaded platoon count); the unloaded list (`+0x230`, cursor `+0x23c`, `FUN_1406b9970`) runs on its own elapsed game time. The logic tick (character slot 29, where the AI update runs) goes to at most 8 characters per frame in round-robin over the active set, so a character thinks every ceil(N/8) frames.
+**Meitou (engine choice, deliberate):** `AiSystem.SlowWorld` updates every AI-run squad on a fixed 30-tick cadence (`AiSettings.PackageEveryTicks`) and `AiSystem.Think` runs a character when `(tick + slot) % ThinkEveryTicks (15) == 0` or its mind version changed. The simulated time per platoon agrees; only the granularity and the dependence on faction size and frame rate differ. A faithful port needs a defined kick-per-tick mapping and would make the simulation frame-rate dependent and non-deterministic. A package change thinks at once.
+
+Scope: of the 143 task types with a real `Task_*` class (147 of 290 fall to `Task_Blank`, [taskType to Task class](ai-tasks.md#tasktype-to-task-class)) `TaskBehaviours.Table` maps 49 types to an `AiBehaviour` (17 of them among those 143, the rest are goal markers with no class of their own); `AiSystem.Desire` is 0 for the rest, so those are never chosen as goals by the decision ladder. The 126 with a class and no behaviour, many acted by other systems (player orders, door and lock work, carrying, first aid, combat), by `TaskType` id: 1, 2, 3, 4, 5, 6, 7, 12, 25, 26, 27, 28, 29, 31, 40, 51, 52, 60, 61, 62, 64, 65, 67, 68, 69, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 87, 92, 93, 95, 96, 97, 98, 99, 100, 102, 103, 107, 108, 110, 116, 119, 121, 123, 124, 129, 133, 134, 136, 140, 147, 150, 156, 159, 161, 162, 163, 164, 165, 166, 170, 174, 176, 181, 182, 185, 186, 196, 198, 199, 200, 201, 207, 208, 213, 219, 220, 221, 224, 225, 226, 227, 228, 229, 231, 235, 236, 240, 241, 244, 246, 247, 249, 253, 256, 257, 258, 261, 262, 263, 264, 266, 267, 269, 272, 274, 278, 280, 284, 285, 286, 287, 289, 290.
+
 ## Unknowns
 
 - Which of the six category registries (flag bits 1, 2, 4, 0x10, 0x20, 0x40; [planner](ai-tasks.md#planner)) a character plans with; the meaning of the `*` marker on some
   condition entries (the entry's second flag byte) and of the TaskData flag +0x14.
 - The extra x1.25 under an owner-object condition in scoring; the rule that drops a candidate whose B list holds with no effect.
-- The "AI flag +0xbc" that lets kind-2 (turret) perma-jobs run before urgent tasks; +0x70 of `OrdersReceiver` is the one-shot order list ([perma-jobs](ai-tasks.md#perma-jobs)).
+- (Answered: AI +0xbc is the senses' `numEnemies`, [perception](perception.md#senses).) +0x70 of `OrdersReceiver` is the one-shot order list ([perma-jobs](ai-tasks.md#perma-jobs)).
 - Why `clears existing jobs` has no string reference in the exe (editor-only field, or read some other way).
 - Which AI packages use which `unloaded func` value, beyond the shipping ones (signals 11 and 28: all four have 5 TRAVEL_TARGET, **Verified**
   by a base-data dump of the AI_PACKAGE records). The unloaded update itself, the keep test `FUN_1407ec570`

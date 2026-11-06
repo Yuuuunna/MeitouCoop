@@ -42,9 +42,11 @@ public sealed partial class DialogueSystem
             switch (effect.Action)
             {
                 case DialogueActions.Trade:
+                    // The window opens whatever the speaker's squad stocks (FUN_1409524f0 tests no stock); a squad with none trades from an empty one (TradeSystem.StockFor).
                     c.Ended = true;
-                    if (mc is { SquadId: >= 0 } && world.Squads.Find(mc.SquadId)?.Shop is not null)
+                    if (mc is { SquadId: >= 0 })
                         DeferPlayer(world, c, new Trading.OpenTrade(target, me) { Tick = world.Tick + 1 });
+
                     return;
                 case DialogueActions.AffectRelations when mc is not null && tc is not null:
                     ChangeRelation(world, mc.Faction, tc.Faction, effect.Value);
@@ -54,10 +56,12 @@ public sealed partial class DialogueSystem
                     break;
                 case DialogueActions.AttackChaseForever or DialogueActions.AttackStayNearHome:
                     if (mc is not null && tc is not null) FlagFrom(world, mc, me, target, tc, MemoryTag.TempEnemy);
+                    Aggro?.Notice(world, me, target);
                     Attack(world, me, target);
                     break;
                 case DialogueActions.AttackIfNoCoexist when mc is not null && tc is not null && !data.Relations.Coexists(mc.Faction, tc.Faction):
                     FlagFrom(world, mc, me, target, tc, MemoryTag.TempEnemy);
+                    Aggro?.Notice(world, me, target);
                     Attack(world, me, target);
                     break;
                 case DialogueActions.TakeMoney when tc is not null:
@@ -90,8 +94,10 @@ public sealed partial class DialogueSystem
                     return;
                 case DialogueActions.AssignBounty when tc is not null && mc is not null && effect.Value > 0 && data.Relations.Contains(mc.Faction):
                 {
-                    tc.Bounties ??= new Crime.BountyLedger();
-                    tc.Bounties.Get(mc.Faction, data.Factions[mc.Faction].Name).Amount += effect.Value;
+                    // FUN_140853e20 (Verified): marks the pending crime booked, then adds the amount to the speaker's faction's booking entry (none kept without one).
+                    if (tc.Pending is { } pending) pending.Booked = true;
+                    if (Crime.CrimeFactions.BookingKey(data.Relations, mc.Faction) is var key and >= 0)
+                        (tc.Bounties ??= new Crime.BountyLedger()).Get(key, data.Factions[key].Name).Amount += effect.Value;
                     break;
                 }
                 // Without an amount only a speaker whose CHARACTER has `assigns bounties` books the target's pending crime (Character::canAssignBounties, Verified).
@@ -105,8 +111,10 @@ public sealed partial class DialogueSystem
                     break;
                 case DialogueActions.PayBounty:
                     Arrests?.PayBounty(world, me, target);
+                    if (tc is { Carrying.IsNone: false }) takeOver = true;   // the original hands the body over whether or not a bounty was paid, in any town
                     break;
-                case DialogueActions.ArrestTargetsCarriedPerson when tc is { Carrying.IsNone: false }:
+                // Only in the speaker's own town (the squad's town is the one it stands in); DA_ENSLAVE_TARGETS_CARRIED_PERSON has no such test.
+                case DialogueActions.ArrestTargetsCarriedPerson when tc is { Carrying.IsNone: false } && Arrests is { } law && world.Characters.TryResolveNext(me, out int guardSlot) && law.InOwnTown(world, guardSlot):
                     takeOver = true;   // after the line's other effects: the original only gives the speaker the lift task, so DA_PAY_BOUNTY still finds the body
                     break;
                 case DialogueActions.EnslaveTargetsCarriedPerson when tc is { Carrying.IsNone: false }:
@@ -122,9 +130,12 @@ public sealed partial class DialogueSystem
                     TalkToLeader(world, c, mc, target, tc);
                     break;
                 case DialogueActions.ArrestTarget when tc is not null:
-                    ArrestMemory(world, me, mc, target, tc);
-                    Arrests?.ArrestFromDialogue(world, me, target);
+                {
+                    bool capture = Arrests?.CapturesInTown(world, me, tc) == true;   // one answer for the memory and the task
+                    ArrestMemory(world, me, mc, target, tc, capture);
+                    Arrests?.ArrestFromDialogue(world, me, target, capture);
                     break;
+                }
                 case DialogueActions.TagEscapedSlave when tc is not null:
                     Locks.FixtureRegistry.TagEscaped(world, tc);
                     break;
@@ -132,8 +143,8 @@ public sealed partial class DialogueSystem
                     Locks.FixtureRegistry.FreeSlave(world, freed, tc);
                     break;
                 case DialogueActions.ClearBounty when tc?.Bounties is { } ledger && mc is not null:
-                    if (ledger.Of(mc.Faction) is { } entry) ledger.Remove(entry);
-                    if (Position(world, target) is { } at && TownAt(at) is >= 0 and var town && town < data.SiteFactions.Count && ledger.Of(data.SiteFactions[town]) is { } local)
+                    if (ledger.BookedFor(data.Relations, mc.Faction) is { } entry) ledger.Remove(entry);
+                    if (Position(world, target) is { } at && TownAt(at) is >= 0 and var town && town < data.SiteFactions.Count && ledger.BookedFor(data.Relations, data.SiteFactions[town]) is { } local)
                         ledger.Remove(local);
                     if (ledger.Count == 0) tc.Bounties = null;
                     tc.Recognition = 0;
@@ -149,6 +160,7 @@ public sealed partial class DialogueSystem
                     break;
                 case DialogueActions.FollowWhileTalking when !target.IsNone && mc is { IsPlayer: false }:
                     followers[me] = target;
+                    StartFollowing(world, me, target);
                     break;
                 case DialogueActions.ThugHunter when !target.IsNone && mc is { IsPlayer: false }:
                     stalkers[me] = new Stalk(target);
@@ -189,6 +201,9 @@ public sealed partial class DialogueSystem
                 case DialogueActions.JoinSquadWithEdit or DialogueActions.JoinSquadFast:
                     if (!Recruit(world, c, me, effect.Action == DialogueActions.JoinSquadWithEdit)) return;
                     break;
+                default:
+                    ModEffect(world, me, target, effect);
+                    break;
             }
         }
         if (takeOver) Arrests?.TakeOver(world, me, target, enslave);
@@ -202,6 +217,26 @@ public sealed partial class DialogueSystem
 
     /// <summary>The arrest system the bounty desk's effects pay and hand over through (<c>DA_PAY_BOUNTY</c>, <c>DA_ARREST_TARGETS_CARRIED_PERSON</c>); null: they do nothing.</summary>
     public Crime.ArrestSystem? Arrests { get; set; }
+
+    /// <summary>The dialogue codes code mods handle (docs/modding.md); null without mods.</summary>
+    public SimulationExtensions? Extensions { get; set; }
+
+    /// <summary>A mod's effect code (<see cref="SimulationExtensions.FirstModCode"/> and up); an unregistered code does nothing, as an unknown vanilla one.</summary>
+    void ModEffect(World world, CharacterId me, CharacterId target, DialogueEffect effect)
+    {
+        if (effect.Action >= SimulationExtensions.FirstModCode && Extensions?.DialogueEffects.GetValueOrDefault(effect.Action) is { } handler)
+            handler(new DialogueAct(world, me, target, effect));
+    }
+
+    /// <summary>A mod's condition code: the handler's answer, or "no" when no mod handles it (as an unknown vanilla code computes).</summary>
+    bool ModCondition(World world, CharacterId me, CharacterId subject, DialogueCondition dc)
+    {
+        if (Extensions?.DialogueConditions.GetValueOrDefault(dc.Condition) is not { } handler) return dc.Value <= 0;
+        return handler(new DialogueCheck(world, me, subject, dc));
+    }
+
+    /// <summary>The attack-on-sight system a massive alarm alarms each member's hearing of the target through (<see cref="AggroSystem.Alarm"/>); null: no alarm.</summary>
+    public AggroSystem? Aggro { get; set; }
 
     /// <summary>
     /// <c>give item</c> (<c>FUN_140680560</c>): each listed item made and put into the target's inventory, val0 2..49 its stack count, and "Received &lt;name&gt;" posted. What does not fit
@@ -220,7 +255,7 @@ public sealed partial class DialogueSystem
 
     /// <summary>
     /// <c>DA_SURRENDER_NON_HUMANS</c> (47, <c>FUN_140680560</c>): the target faction's characters within 100 of the speaker, not animals, whose race is not the speaker's
-    /// (<c>FUN_14042ecd0</c>: its race or one of its sub-races; engine reading: the same RACE record) become slaves owned by the speaker's faction (<c>FUN_14032e590</c>), and each
+    /// (<c>FUN_14042ecd0</c>: the speaker's race is the member's own or one of the member's RACE_GROUP) become slaves owned by the speaker's faction (<c>FUN_14032e590</c>), and each
     /// one's squad remembers the speaker. Their squads are left as they are (what follows is not read).
     /// </summary>
     void SurrenderNonHumans(World world, CharacterId me, CharacterCold mc, CharacterCold tc)
@@ -231,7 +266,7 @@ public sealed partial class DialogueSystem
         for (int i = 0; i < table.HighWater; i++)
         {
             if (!table.Next[i].Alive || table.Cold(i) is not { Medical.Dead: false } c || c.Faction != tc.Faction || c.SlaveState != 0) continue;
-            if (c.Fighter?.IsAnimal == true || c.Appearance?.Animal is not null || c.Race is null || c.Race.StringId == race.StringId) continue;
+            if (c.Fighter?.IsAnimal == true || c.Appearance?.Animal is not null || c.Race is null || dialogue.RaceMatches(c.Race.StringId, race.StringId)) continue;
             if (Vector3.DistanceSquared(table.Next[i].Position, at) > 100 * 100) continue;
             Locks.FixtureRegistry.Enslave(world, c, mc.Faction, mc.SquadId);
             Memory.Remember(world, c.SquadId, me, MemoryTag.None);   // its squad remembers the speaker (the tag is not visible in the decompile; engine: none)
@@ -239,15 +274,13 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// DA_ARREST_TARGET's memory (<c>FUN_140680560</c>): in the speaker's home town (and the target no animal) the target's squad tags the speaker MY_CAPTOR; elsewhere the speaker's squad
-    /// tags the target TEMP_ENEMY.
+    /// DA_ARREST_TARGET's memory (<c>FUN_140680560</c>): when the speaker captures (<see cref="Crime.ArrestSystem.CapturesInTown"/>: in his own town, the target no animal) the target's
+    /// squad tags the speaker MY_CAPTOR; otherwise the speaker's squad tags the target TEMP_ENEMY.
     /// </summary>
-    void ArrestMemory(World world, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold tc)
+    void ArrestMemory(World world, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold tc, bool capture)
     {
         if (mc is null) return;
-        bool inTown = world.Squads.Find(mc.SquadId) is { Town: >= 0 } squad && Position(world, me) is { } here && TownAt(here) == squad.Town
-            && tc.Fighter?.IsAnimal != true && tc.Appearance?.Animal is null;
-        if (inTown) Memory.Remember(world, tc.SquadId, me, MemoryTag.Captor);
+        if (capture) Memory.Remember(world, tc.SquadId, me, MemoryTag.Captor);
         else Memory.Flag(world, mc.SquadId, target, MemoryTag.TempEnemy);
     }
 
@@ -296,27 +329,35 @@ public sealed partial class DialogueSystem
         return true;
     }
 
-    /// <summary>The speaker and the awake members of its squad near the target attack it from the next tick (DA_ATTACK_CHASE_FOREVER's task 101 on the target's squad, engine reading).</summary>
+    /// <summary>
+    /// The speaker alone is stopped (orders cleared) and attacks the target from the next tick (DA 6/55/57, docs/game/dialogue.md).
+    /// Its squad mates are not ordered: they follow through the TEMP ENEMY tag the caller writes.
+    /// </summary>
     static void Attack(World world, CharacterId me, CharacterId target)
     {
         var table = world.Characters;
-        if (!table.TryResolveNext(target, out int t)) return;
-        var at = table.Next[t].Position;
-        var fighters = new List<CharacterId>();
-        foreach (var m in SquadOf(world, me))
-        {
-            if (!table.TryResolveNext(m, out int s) || !table.Next[s].Alive || table.Cold(s) is not { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, Fighter.CanAttack: true } mc) continue;
-            float r = 2 * AggroSystem.RangeOf(mc, AggroSystem.OutdoorSight);
-            if (m == me || Vector3.DistanceSquared(table.Next[s].Position, at) <= r * r) fighters.Add(m);
-        }
-        if (fighters.Count > 0) world.Defer(new Combat.AttackOrder(fighters, target) { Tick = world.Tick + 1 });
+        if (!table.TryResolveNext(target, out _) || !table.TryResolveNext(me, out int s) || !table.Next[s].Alive) return;
+        TaskStart.Stand(table, s);
+        if (world.SystemOf<Ai.AiSystem>() is { } ai && table.Cold(s) is { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, Fighter.CanAttack: true } && ai.OrderAssault(world, me, target)) return;
+        if (table.Cold(s) is { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, Fighter.CanAttack: true })
+            world.Defer(new Combat.AttackOrder([me], target) { Tick = world.Tick + 1, Source = TaskSource.Npc });
     }
 
     /// <summary>
     /// The text tokens (docs/game/dialogue.md "Tokens"): <c>/NAME/</c> pairs until none is left; COST, MYNAME, YOURNAME, TARGETFACTION and PLAYERFACTION are built in, any other name
     /// is the WORD_SWAPS record of that name (its lines chosen like a line's children, one of their texts; none: empty). A token at the start or after ". ", "! ", "? " is capitalised.
     /// </summary>
-    string Expand(World world, Conversation c, DialogueNode line, string text, CharacterId me, CharacterId other, int depth = 0)
+    /// <summary>A built line as shown: through the censorship when the player turned it on.</summary>
+    string Said(string text) => Settings.Censored?.Invoke() == true ? Censorship.Apply(text) : text;
+
+    /// <summary>
+    /// A new character's name with its text tokens expanded (docs/characters.md "Names"): a name holding a <c>/</c> goes through the same expansion and censorship as a said line,
+    /// spoken by the character itself to no one (<c>FUN_14062b210</c> end into <c>FUN_14067e8b0</c>), so a mod's "Trader /GENNAME/" takes a line of its GENNAME word swap.
+    /// </summary>
+    public string ExpandName(World world, CharacterId me, string name) =>
+        name.IndexOf('/') < 0 ? name : Said(Expand(world, new Conversation { Npc = me, Player = CharacterId.None, Event = 0 }, null, name, me, CharacterId.None));
+
+    string Expand(World world, Conversation c, DialogueNode? line, string text, CharacterId me, CharacterId other, int depth = 0)
     {
         if (depth > 4 || text.IndexOf('/') < 0) return text;
         var sb = new StringBuilder(text.Length + 16);
@@ -337,28 +378,26 @@ public sealed partial class DialogueSystem
         return sb.ToString();
     }
 
-    string Token(World world, Conversation c, DialogueNode line, string token, CharacterId me, CharacterId other, int depth)
+    string Token(World world, Conversation c, DialogueNode? line, string token, CharacterId me, CharacterId other, int depth)
     {
         switch (token)
         {
-            case "COST": return line.Cost is { } cost ? cost.ToString("N0", CultureInfo.InvariantCulture) : "";
+            case "COST": return line?.Cost is { } cost ? cost.ToString("N0", CultureInfo.InvariantCulture) : "";
             case "MYNAME": return NameOf(world, me);
             case "YOURNAME": return Cold(world, other)?.Name ?? "you";
             case "TARGETFACTION": return Cold(world, other) is { } o && data.Relations.Contains(o.Faction) ? data.Factions[o.Faction].Name : "you";
             case "PLAYERFACTION": return data.Relations.Contains(c.Faction) ? world.Factions.Find(c.Faction)?.Name ?? data.Factions[c.Faction].Name : "";
         }
         if (dialogue.WordSwap(token) is not { } swap) return "";
-        var candidates = new List<DialogueNode>();
-        int best = int.MinValue;
-        foreach (var child in swap.Children)
-        {
-            if (child.Score < best) break;
-            if (!Check(world, c, child, me, other)) continue;
-            if (child.Score > best) { best = child.Score; candidates.Clear(); }
-            candidates.Add(child);
-        }
-        if (candidates.Count == 0) return "";
-        var pick = candidates.Count == 1 ? candidates[0] : candidates[Rng.Int(NextRoll(world, me), candidates.Count)];
-        return Expand(world, c, pick, PickText(world, me, pick), me, other, depth + 1);
+        // The full line walk over the swap's lines (FUN_14067a530 :168-220 into FUN_14067a0c0): the target is the conversation's, or the passed one when that is the owner; run a second time
+        // when the first finds nothing; the picked line and its parents (the swap, a root it came through) are stamped used (FUN_140675630).
+        var walkTarget = c.Player.IsNone || c.Player == me ? other : c.Player;
+        var picked = Pick(world, c, swap.Children, 0, walkTarget) ?? Pick(world, c, swap.Children, 0, walkTarget);
+        if (picked is not { } p) return "";
+        double now = world.GameHours;
+        lastUse[p.Line.StringId] = now;
+        lastUse[swap.StringId] = now;
+        if (p.Root is { } through) lastUse[through.StringId] = now;
+        return Expand(world, c, p.Line, PickText(world, p.Speaker, p.Line), me, other, depth + 1);
     }
 }

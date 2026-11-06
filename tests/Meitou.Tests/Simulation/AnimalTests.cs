@@ -94,8 +94,12 @@ public class AnimalTests(ITestOutputHelper output)
     static string Human(GameDatabase db) => db.OfType(FcsRecordType.CHARACTER)
         .First(r => r.GetReferences("race").Any(x => x.Values.Value0 > 0 && db.Find(x.TargetStringId)?.Name == "Greenlander") && r.GetReferences("stats").Count > 0).StringId;
 
+    /// <summary>
+    /// A bonedog's fight with a person goes through the hit pipeline (bites with pierce, the person's hits on its body, no block or dodge). The attack is ordered: its attack on sight is a goal of
+    /// its squad's AI package (16), and this world runs no AI.
+    /// </summary>
     [Fact]
-    public void A_hostile_bonedog_attacks_a_person_in_sight_and_the_fight_goes_through_the_hit_pipeline()
+    public void A_hostile_bonedogs_attack_on_a_person_goes_through_the_hit_pipeline()
     {
         var db = Db();
         var data = Data(db);
@@ -111,8 +115,9 @@ public class AnimalTests(ITestOutputHelper output)
         stats[StatsEnumerated.Toughness] = 50;
         int mine = table.Cold(me.Slot)!.Faction, theirs = table.Cold(dog.Slot)!.Faction;
         Assert.True(AggroSystem.IsEnemy(data.Relations, theirs, mine));
+        world.Commands.Enqueue(new Meitou.Simulation.Combat.AttackOrder([dog], me) { Tick = world.Tick });
         world.RunTicks(60);
-        Assert.True(table.Cold(dog.Slot)!.InCombat, "the dog saw the player and attacked");
+        Assert.True(table.Cold(dog.Slot)!.InCombat, "the dog attacks the player");
         world.RunTicks(1800);
         var log = systems.Combat!.Log;
         var bites = log.Where(e => e.Attacker == dog.Slot && e.Outcome == BlowOutcome.Hit).ToList();

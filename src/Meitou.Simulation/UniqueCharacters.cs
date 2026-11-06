@@ -99,13 +99,24 @@ public sealed class UniqueCharacters
     }
 
     /// <summary>Death (<c>FUN_1407a6200</c>): state 0; the player flag is set (never cleared here) when the killer is the player's.</summary>
-    public void Died(string recordId, bool byPlayer, int? faction = null)
+    public void Died(string recordId, bool byPlayer, int? faction = null, int deadFaction = -1)
     {
         Version++;
         var e = Entry(recordId);
+        if (e.State != UniqueState.Dead && deadFaction >= 0) fallen.Add(deadFaction);
         e.State = UniqueState.Dead;
         e.Player |= byPlayer;
         if (byPlayer && faction is >= 0) e.involvedFactions.Add(faction.Value);
+    }
+
+    readonly List<int> fallen = [];
+
+    /// <summary>The factions of the uniques that died since the last call, in order (the population lowers their prosperity, <c>FUN_1407a6200</c>).</summary>
+    internal List<int> TakeFallen()
+    {
+        var list = new List<int>(fallen);
+        fallen.Clear();
+        return list;
     }
 
     /// <summary>Imprisoned or captured (<c>FUN_140330600</c>): state 2 unless dead; the player flag set when the captor is the player's.</summary>

@@ -3,6 +3,7 @@ using Meitou.Data;
 using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay.Ai;
 using Meitou.Simulation;
+using Meitou.Simulation.Items;
 using Meitou.Simulation.Ai;
 using Meitou.Data.World;
 using static Meitou.Tests.Simulation.SyntheticTown;
@@ -67,6 +68,35 @@ public class AiTests(ITestOutputHelper output)
         SyntheticTown.Database(residentSquads, extra: Records(), changePatrol: p => p.References["AI packages"] =
             packages.Length == 0 ? [Ref("111-t", 0), Ref("112-t", 1)] : [.. packages.Select(x => Ref(x.Id, x.Slot))]);
 
+    /// <summary>docs/game/ai-tasks.md (Task_EquipBestWeapon, FUN_140346c30): an NPC of a non-player faction with no weapon on its back or hip draws the first weapon of its inventory of the task's kind; a player-side character does not.</summary>
+    [Fact]
+    public void An_npc_without_a_back_or_hip_weapon_draws_the_first_matching_weapon_of_its_inventory()
+    {
+        var ai = new AiSystem(new PopulationData { Db = new GameDatabase(), Sites = [], Factions = [], Relations = Meitou.Data.Gameplay.FactionRelations.Build([]) });
+        using var world = new SimWorld(new WorldSettings { Seed = 1, PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 150), []);
+        world.Player.Faction = 1;
+        ItemInstance Weapon(string record, FcsRecordType type) => new() { Record = record, Type = type, Section = "main", Width = 1, Height = 2 };
+        CharacterCold Make(int faction, params ItemInstance[] items)
+        {
+            var cold = new Meitou.Tests.Combat.Combatant { Name = "c" }.MakeCold();
+            cold.Faction = faction;
+            cold.Inventory = new Inventory();
+            foreach (var item in items) cold.Inventory.Items.Add(item);
+            world.Characters.Spawn(new CharacterHot { Position = Vector3.Zero, Health = 100 }, cold, 0);
+            return cold;
+        }
+        var sabre = Weapon("sabre", FcsRecordType.WEAPON);
+        var bow = Weapon("bow", FcsRecordType.CROSSBOW);
+        var raider = Make(2, Weapon("bread", FcsRecordType.ITEM), bow, sabre);
+        Assert.True(ai.DrawFromInventory(world, raider, ranged: false));
+        Assert.Equal("back", sabre.Section);   // the first weapon section it fits; the crossbow waits for task 264
+        Assert.Equal("main", bow.Section);
+        Assert.True(ai.DrawFromInventory(world, raider, ranged: true));
+        Assert.NotEqual("main", bow.Section);
+        var recruit = Make(1, Weapon("katana", FcsRecordType.WEAPON));
+        Assert.False(ai.DrawFromInventory(world, recruit, ranged: false));
+    }
+
     [Fact]
     public void Packages_load_the_parent_first_and_the_parent_wins()
     {
@@ -117,15 +147,16 @@ public class AiTests(ITestOutputHelper output)
 
     static SimWorld Town(int threads, out PopulationData data) => Town(threads, out data, null, null);
 
-    static SimWorld Town(int threads, out PopulationData data, PopulationData? given, AiSettings? settings, double startHours = 24 + 13)
+    static SimWorld Town(int threads, out PopulationData data, PopulationData? given, AiSettings? settings, double startHours = 24 + 13, ITickSystem? extra = null,
+        StandardParts more = StandardParts.None)
     {
         data = given ?? SyntheticTown.Data(Database());
         var walk = new OpenGroundWalkability(Ground);
         var systems = StandardSystems.Build(data, walk, new StandardSystemOptions
         {
-            Parts = StandardParts.Population | StandardParts.Movement | StandardParts.Ai, SynchronousPaths = true, Ai = settings,
+            Parts = StandardParts.Population | StandardParts.Movement | StandardParts.Ai | more, SynchronousPaths = true, Ai = settings,
         }).Systems;
-        var world = new SimWorld(new WorldSettings { Seed = 5, Threads = threads, StartHours = startHours, MinPartitionSize = 4 }, walk, systems);
+        var world = new SimWorld(new WorldSettings { Seed = 5, Threads = threads, StartHours = startHours, MinPartitionSize = 4 }, walk, extra is null ? systems : [.. systems, extra]);
         world.Commands.Enqueue(new FocusCommand(Centre) { Tick = 0 });
         return world;
     }
@@ -169,14 +200,20 @@ public class AiTests(ITestOutputHelper output)
 
     // ------------------------------------------------------------------ homes, package classes, stances, platoons
 
-    /// <summary>The synthetic town with two buildings: a shop (a shopkeeper node, two beds) east of the centre and a house (three beds) west of it.</summary>
-    static PopulationData WithHomes(GameDatabase db, out TownBuilding shop, out TownBuilding house)
+    /// <summary>
+    /// The synthetic town with two buildings: a shop (a shopkeeper node, two beds) east of the centre and a house (three beds,
+    /// <paramref name="bedGap"/> apart) west of it.
+    /// </summary>
+    static PopulationData WithHomes(GameDatabase db, out TownBuilding shop, out TownBuilding house, float bedGap = 10)
     {
         Vector3 At(float dx, float dz) => new(Centre.X + dx, 300, Centre.Z + dz);
         shop = new TownBuilding("shop", "b-shop", "Shop", At(80, 0), 0, true, false,
             [new HomeSpot(HomeSpotKind.Shopkeeper, At(80, 12), 0), new HomeSpot(HomeSpotKind.Bed, At(90, 0), 0), new HomeSpot(HomeSpotKind.Bed, At(90, -10), 0)]);
         house = new TownBuilding("house", "b-house", "House", At(-80, 0), 0, false, false,
-            [new HomeSpot(HomeSpotKind.Bed, At(-90, 0), 0), new HomeSpot(HomeSpotKind.Bed, At(-90, 10), 0), new HomeSpot(HomeSpotKind.Bed, At(-90, 20), 0)]);
+            [
+                new HomeSpot(HomeSpotKind.Bed, At(-90, 0), 0), new HomeSpot(HomeSpotKind.Bed, At(-90, bedGap), 0),
+                new HomeSpot(HomeSpotKind.Bed, At(-90, 2 * bedGap), 0),
+            ]);
         return PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)], buildings: new Dictionary<string, List<TownBuilding>> { ["inst"] = [shop, house] });
     }
 
@@ -218,10 +255,265 @@ public class AiTests(ITestOutputHelper output)
         }
     }
 
-    /// <summary>A character's world for the planner: in bed or not, at the node or not; nothing drawn, carried or attacking; the rest held true.</summary>
-    sealed class PlanStub(bool inBed, bool atNode) : IPlanWorld
+    /// <summary>
+    /// An AI walk that another system stopped (a captive job's or lock round's stand) is neither arrival nor a failed walk (docs/game/ai-tasks.md "Planner", #314): the character walks to its
+    /// spot again. Catches such a stop counting as arrival, which left a slaver standing where a job had left it all day.
+    /// </summary>
+    [Fact]
+    public void A_walk_another_system_stopped_is_neither_arrival_nor_a_failed_walk()
     {
-        public int Category => 1;
+        var data = WithHomes(Database(2), out var shop, out _);
+        var outside = new Outside();
+        using var world = Town(1, out _, data, null, extra: outside);
+        var table = world.Characters;
+        world.RunTicks(400);   // the shop's leader stands at its shopkeeper node
+        var leader = world.Squads.All.Single(s => s.TemplateId == "10-t" && s.Ai!.Home == shop).Leader;
+        var mind = table.Cold(leader.Slot)!.Ai!;
+
+        outside.Next = w => w.Characters.Next[leader.Slot].Position += new Vector3(0, 0, 40);   // shoved off its node: it walks back
+        for (int t = 0; t < 60 && !mind.Walking; t++) world.RunTick();
+        Assert.True(mind.Walking);
+
+        outside.Next = w => TaskStart.End(w, leader.Slot, TaskEnd.Stopped);   // another system stands it still mid-walk
+        world.RunTick();
+        Assert.Equal(CharacterTask.Idle, (CharacterTask)table.Previous[leader.Slot].Task);
+        for (int t = 0; t < 200 && (CharacterTask)table.Previous[leader.Slot].Task != CharacterTask.GoTo; t++) world.RunTick();
+
+        Assert.Equal(0, mind.FailedWalks);
+        Assert.True(mind.Walking);
+        Assert.Equal(CharacterTask.GoTo, (CharacterTask)table.Previous[leader.Slot].Task);
+    }
+
+    /// <summary>A stand-in for another system: runs one action in the next tick's inputs.</summary>
+    sealed class Outside : ITickSystem
+    {
+        public Action<SimWorld>? Next { get; set; }
+
+        public void Inputs(SimWorld world, IReadOnlyList<SimCommand> commands)
+        {
+            var act = Next;
+            Next = null;
+            act?.Invoke(world);
+        }
+    }
+
+    /// <summary>
+    /// A shopkeeper with goal 86 (Opening up) outside its own home, whose doors are all locked from the level data (no lock-up round set the house flag), has the door unlocked in its hours
+    /// and stands at its node inside (docs/game/locks.md "Lock-up", #293). Catches the opener waiting for a round-locked flag that level data never sets.
+    /// </summary>
+    [Fact]
+    public void A_shopkeeper_outside_its_home_unlocks_a_door_locked_from_level_data_and_stands_inside()
+    {
+        var open = Task("140-t", TaskType.OPEN_UP_SHOP_DOORS, TaskPriority.NonUrgent);
+        var package = Rec("141-t", FcsRecordType.AI_PACKAGE, "Shop");
+        package.References["Leader AI Goals"] = [Ref("100-t", 0, 100, 0), Ref("140-t", 6, 22, 0)];
+        var door = Rec("151-t", FcsRecordType.BUILDING, "Door");
+        var building = Rec("152-t", FcsRecordType.BUILDING, "Shed");
+        building.References["doors"] = [Ref("151-t")];
+        var db = SyntheticTown.Database(1, extra: [.. Records(), open, package, door, building], changePatrol: p => p.References["AI packages"] = [Ref("141-t", 0)]);
+        var at = Centre + new Vector3(80, 0, 0);
+        var node = at + new Vector3(0, 0, 12);
+        var shop = new TownBuilding("shop", "152-t", "Shop", at, 0, true, false, [new HomeSpot(HomeSpotKind.Shopkeeper, node, 0)]) { Zone = WorldLayout.ZoneOf(at.X, at.Z) };
+        var data = PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)], buildings: new Dictionary<string, List<TownBuilding>> { ["inst"] = [shop] });
+        var outside = new Outside();
+        using var world = Town(1, out _, data, null, extra: outside, more: StandardParts.Crime);
+        world.RunTicks(2);
+        world.Fixtures.RegisterSite(world, data, 0);
+        Assert.True(world.Fixtures.SetDoorsLocked(shop.Key, true));
+        Assert.True(world.Fixtures.AllDoorsLocked(shop.Key));
+        var leader = world.Squads.All.Single(s => s.TemplateId == "10-t").Leader;
+        outside.Next = w => w.Characters.Next[leader.Slot].Position = at + new Vector3(0, 0, 150);   // outside, away from the door
+        world.RunTicks(1200);
+
+        Assert.False(world.Fixtures.AllDoorsLocked(shop.Key));
+        Assert.All(world.Fixtures.OfBuilding(shop.Key).Where(f => f.Kind == Meitou.Simulation.Locks.FixtureKind.Door), f => Assert.False(f.Lock!.Locked));
+        var p = world.Characters.Previous[leader.Slot].Position;
+        Assert.InRange(Vector2.Distance(new Vector2(p.X, p.Z), new Vector2(node.X, node.Z)), 0, 13);
+    }
+
+    /// <summary>
+    /// The synthetic town for the work goals: one resident squad whose package gives every member 189 all day, a house, a quarry west of it and a refinery
+    /// east of it, which no machine runs. <paramref name="quarryRecord"/> names the quarry's BUILDING record (null: none, so no operator limit).
+    /// </summary>
+    static PopulationData WithWork(out TownBuilding quarry, out TownBuilding refinery, string? quarryRecord = null, IEnumerable<FcsRecord>? extra = null)
+    {
+        var work = Task("140-t", TaskType.AUTO_LABOURING_MINES, TaskPriority.NonUrgent);
+        var package = Rec("119-t", FcsRecordType.AI_PACKAGE, "Workers");
+        package.References["Leader AI Goals"] = [Ref("140-t", 0, 24, 0)];
+        package.References["Squad AI Goals"] = [Ref("140-t", 0, 24, 0)];
+        var db = SyntheticTown.Database(1, extra: [.. Records(), work, package, .. extra ?? []], changePatrol: p => p.References["AI packages"] = [Ref("119-t", 0)]);
+        Vector3 At(float dx, float dz) => new(Centre.X + dx, 300, Centre.Z + dz);
+        var house = new TownBuilding("house", "b-house", "House", At(0, -80), 0, false, false, [new HomeSpot(HomeSpotKind.Bed, At(0, -90), 0)]);
+        quarry = new TownBuilding("quarry", quarryRecord ?? "b-quarry", "Quarry", At(-90, 40), 0, false, false, []) { Function = 1 };
+        refinery = new TownBuilding("refinery", "b-refinery", "Refinery", At(90, 40), 0, false, false, []) { Function = TownBuildings.RefineryFunction };
+        return PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)],
+            buildings: new Dictionary<string, List<TownBuilding>> { ["inst"] = [house, quarry, refinery] });
+    }
+
+    /// <summary>The members of the resident squad whose goal is 189 Worker, with their minds.</summary>
+    static List<(CharacterId Id, AiMind Mind)> Workers(SimWorld world)
+    {
+        var workers = new List<(CharacterId, AiMind)>();
+        foreach (var squad in world.Squads.All.Where(s => s.TemplateId == "10-t"))
+            foreach (var m in squad.Members)
+                if (world.Characters.Cold(m.Slot)?.Ai is { Goal.Task.Type: TaskType.AUTO_LABOURING_MINES } mind) workers.Add((m, mind));
+        return workers;
+    }
+
+    /// <summary>
+    /// 189 Worker only takes a workplace it can run (docs/game/ai-tasks.md "Worker": 87's B list needs !62, and an NPC town's machines run nothing): a squad on 189 in
+    /// a town with a quarry and an unfed refinery holds only the quarry and works there. Catches the pick over every workplace, which set Rebirth's slaves at its four
+    /// unfed Manual Stone Processors where the original's work only the quarries.
+    /// </summary>
+    [Fact]
+    public void Workers_take_only_the_workplace_they_can_run()
+    {
+        using var world = Town(1, out _, WithWork(out var quarry, out _), null);
+        world.RunTicks(600);
+        var workers = Workers(world);
+        Assert.True(workers.Count >= 3, $"{workers.Count} members on 189");
+        Assert.All(workers, w => Assert.Same(quarry, w.Mind.WorkPost));
+        Assert.All(workers, w => Assert.InRange(Off(world, w.Id, quarry.Position), 0, 35));
+    }
+
+    /// <summary>
+    /// A bar package needs a bar (docs/game/ai-tasks.md "Town goals", the hang-around-bar package): the town's squad on its normal kind (signal 17),
+    /// whose package gives 214 Relaxing at full weight and 118 Shopping at half, in its town with no bar but an outdoor table and a public house, gets
+    /// no table, so nobody relaxes and its members shop. Catches the fallback onto the outdoor table, which set a Holy Prisoner Caravan relaxing at
+    /// Rebirth's stone processors where the original's shops.
+    /// </summary>
+    [Fact]
+    public void A_bar_package_in_a_town_without_a_bar_takes_no_table_and_its_members_shop()
+    {
+        var relax = Task("131-t", TaskType.RELAX_IN_TOWN_PACKAGE, TaskPriority.NonUrgent);
+        var shop = Task("132-t", TaskType.SHOPPING, TaskPriority.NonUrgent);
+        var bar = Rec("118-t", FcsRecordType.AI_PACKAGE, "Hang out in a bar");
+        bar.Ints["signal func"] = 17;
+        bar.References["Leader AI Goals"] = [Ref("131-t", 0, 24, 0), Ref("132-t", 0, 24, 50)];
+        bar.References["Squad AI Goals"] = [Ref("131-t", 0, 24, 0), Ref("132-t", 0, 24, 50)];
+        var db = SyntheticTown.Database(1, extra: [.. Records(), relax, shop, bar], changePatrol: p => p.References["AI packages"] = [Ref("118-t", 0)]);
+        Vector3 At(float dx, float dz) => new(Centre.X + dx, 300, Centre.Z + dz);
+        var house = new TownBuilding("house", "b-house", "House", At(-80, 0), 0, false, false, [new HomeSpot(HomeSpotKind.Bed, At(-90, 0), 0)])
+        {
+            HasInterior = true,
+        };
+        var table = new TownBuilding("table", "b-table", "Table", At(60, 40), 0, false, false, []) { Function = TownBuildings.TableFunction };
+        var data = PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)],
+            buildings: new Dictionary<string, List<TownBuilding>> { ["inst"] = [house, table] });
+
+        using var world = Town(1, out _, data, null);
+        world.RunTicks(300);
+        var squad = Assert.Single(world.Squads.All, s => s.TemplateId == "10-t");
+        Assert.Equal(-1, squad.Ai!.BarTable);
+        Assert.NotSame(table, squad.Ai.Home);
+        var goals = squad.Members.Select(m => world.Characters.Cold(m.Slot)?.Ai?.Goal?.Task.Type).ToList();
+        Assert.DoesNotContain(TaskType.RELAX_IN_TOWN_PACKAGE, goals.Cast<TaskType?>());
+        Assert.Contains(TaskType.SHOPPING, goals.Cast<TaskType?>());
+    }
+
+    /// <summary>
+    /// The synthetic town for 157 Static town guard: one resident squad whose package gives every member 157 from 6 to 22, a house with beds, and two
+    /// towers north of it with <paramref name="west"/> and <paramref name="east"/> guard posts, 30 apart.
+    /// </summary>
+    static PopulationData WithPosts(int west, int east, out TownBuilding[] towers)
+    {
+        var guard = Task("130-t", TaskType.STAND_AT_GUARD_NODE_HOMETOWN_OUTSIDE, TaskPriority.NonUrgent);
+        var package = Rec("116-t", FcsRecordType.AI_PACKAGE, "Town guards");
+        package.References["Leader AI Goals"] = [Ref("130-t", 6, 22, 0)];
+        package.References["Squad AI Goals"] = [Ref("130-t", 6, 22, 0)];
+        var db = SyntheticTown.Database(1, extra: [.. Records(), guard, package], changePatrol: p => p.References["AI packages"] = [Ref("116-t", 0)]);
+        Vector3 At(float dx, float dz) => new(Centre.X + dx, 300, Centre.Z + dz);
+        TownBuilding Tower(string id, float dx, int posts) => new(id, "b-" + id, "Tower", At(dx, 60), 0, false, false,
+            [.. Enumerable.Range(0, posts).Select(i => new HomeSpot(HomeSpotKind.Guard, At(dx + 30 * i, 70), 0) { NodeType = 2 })]);
+        towers = [Tower("tower-w", -150, west), Tower("tower-e", 30, east)];
+        var house = new TownBuilding("house", "b-house", "House", At(0, -80), 0, false, false,
+            [new HomeSpot(HomeSpotKind.Bed, At(-10, -90), 0), new HomeSpot(HomeSpotKind.Bed, At(0, -90), 0), new HomeSpot(HomeSpotKind.Bed, At(10, -90), 0)]);
+        return PopulationData.Create(db, [new TownPlacement("inst", "30-t", Centre, null)],
+            buildings: new Dictionary<string, List<TownBuilding>> { ["inst"] = [house, .. towers] });
+    }
+
+    /// <summary>The members of the resident squad whose goal is 157 Static town guard, with their minds.</summary>
+    static List<(CharacterId Id, AiMind Mind)> TownGuards(SimWorld world)
+    {
+        var guards = new List<(CharacterId, AiMind)>();
+        foreach (var squad in world.Squads.All.Where(s => s.TemplateId == "10-t"))
+            foreach (var m in squad.Members)
+                if (world.Characters.Cold(m.Slot)?.Ai is { Goal.Task.Type: TaskType.STAND_AT_GUARD_NODE_HOMETOWN_OUTSIDE } mind) guards.Add((m, mind));
+        return guards;
+    }
+
+    /// <summary>
+    /// 157 Static town guard holds a guard post of its town (docs/game/ai-tasks.md "Town goals"): of a squad of four or more on 157, three draw the
+    /// town's three posts, one each, and stand at them; the others hold none. Catches the goal aimed at the home building's spots (the members stayed
+    /// at their own posts, as a gate's stayed at its gate) and two members drawn onto one post.
+    /// </summary>
+    [Fact]
+    public void Town_guards_take_different_free_posts_of_their_town()
+    {
+        using var world = Town(1, out _, WithPosts(2, 1, out var towers), null);
+        world.RunTicks(900);
+        var guards = TownGuards(world);
+        Assert.True(guards.Count >= 4, $"{guards.Count} members on 157");
+        var holders = guards.Where(g => g.Mind.TownPost is not null).ToList();
+        var posts = holders.Select(g => g.Mind.TownPost!.Value).ToList();
+        Assert.Equal(3, posts.Distinct().Count());
+        Assert.Equal(3, holders.Count);
+        Assert.All(posts, p => Assert.Contains(p.Building, towers));
+        Assert.All(holders, g => Assert.InRange(Off(world, g.Id, g.Mind.TownPost!.Value.Spot.Position), 0, 13));
+    }
+
+    /// <summary>
+    /// A town guard keeps its post while its goal stays 157 and lets it go when the goal ends: the posts drawn stay the same over 20 more package
+    /// cadences, and at 23:00, outside the goal's hours, no member holds one. Catches a draw on every cadence (the guards walking from post to post)
+    /// and a post still held after the goal.
+    /// </summary>
+    [Fact]
+    public void A_town_guard_keeps_its_post_until_its_goal_ends()
+    {
+        using var world = Town(1, out _, WithPosts(4, 4, out _), null);
+        world.RunTicks(300);
+        var held = TownGuards(world).ToDictionary(g => g.Id, g => g.Mind.TownPost);
+        Assert.True(held.Count >= 3, $"{held.Count} members on 157");
+        Assert.All(held.Values, p => Assert.NotNull(p));
+        world.RunTicks(600);
+        Assert.All(held, h => Assert.Equal(h.Value, world.Characters.Cold(h.Key.Slot)!.Ai!.TownPost));
+
+        world.GameHours = 24 + 23;
+        world.RunTicks(300);
+        Assert.All(held.Keys, id => Assert.Null(world.Characters.Cold(id.Slot)!.Ai!.TownPost));
+    }
+
+    /// <summary>
+    /// A committed goal ends with its hours (docs/game/ai-tasks.md "Precedence", goal end): sleepers on a 153 of 22 to 0 with their commitment running
+    /// have no goal past midnight, when nothing else of theirs is open, and lie on in their beds. Catches the committed mode keeping a goal out of its
+    /// window, which kept Rebirth's garrison on 153 past its hours, and the default task getting a sleeper up, which the original's do not.
+    /// </summary>
+    [Fact]
+    public void A_committed_bed_goal_ends_with_its_hours_and_its_sleepers_lie_on_with_no_goal()
+    {
+        var package = Rec("132-t", FcsRecordType.AI_PACKAGE, "Night shift");
+        package.References["Leader AI Goals"] = package.References["Squad AI Goals"] = [Ref("102-t", 22, 0, 50), Ref("101-t", 6, 22, 0)];
+        var db = SyntheticTown.Database(1, extra: [.. Records(), package], changePatrol: p => p.References["AI packages"] = [Ref("132-t", 0)]);
+        using var world = Town(1, out _, WithHomes(db, out _, out _), null);
+        world.RunTicks(400);
+        world.GameHours = 24 + 22.2;
+        world.RunTicks(1200);
+        var sleepers = world.Squads.All.Where(s => s.TemplateId == "10-t").SelectMany(s => s.Members).Select(m => world.Characters.Cold(m.Slot)!)
+            .Where(c => c.InSomething == Meitou.Simulation.Locks.HeldState.Bed && c.Ai?.Goal?.Task.Type == TaskType.GO_HOME_AND_GO_TO_BED).ToList();
+        Assert.NotEmpty(sleepers);
+        Assert.True(world.GameHours < 48, $"{world.GameHours} h");
+
+        // Past midnight, the commitment (at least 2 hours from going to bed) still runs.
+        world.GameHours = 48.1;
+        Assert.All(sleepers, c => Assert.True(c.Ai!.CommitUntil > world.GameHours, $"commitment {c.Ai.CommitUntil}"));
+        world.RunTicks(300);
+        Assert.All(sleepers, c => Assert.Equal((Meitou.Simulation.Locks.HeldState.Bed, (TaskType?)null), (c.InSomething, c.Ai!.Goal?.Task.Type)));
+    }
+
+    /// <summary>A character's world for the planner: in bed or not, at the node or not; nothing drawn, carried or attacking; the rest held true.</summary>
+    sealed class PlanStub(bool inBed, bool atNode, int category = 1) : IPlanWorld
+    {
+        public int Category => category;
         public bool Squadless => false;
         public float Desire(TaskDataRow row, in PlanTarget target) => 1;
         public PlanTarget Find(TaskDataRow row, in PlanTarget from) => new(1, new Vector3(10, 0, 10));
@@ -313,7 +605,7 @@ public class AiTests(ITestOutputHelper output)
                 save.Write(folder);
                 using var b = Town(1, out _, data, null);
                 Meitou.Simulation.Saving.SaveLoader.Load(b, Meitou.Data.Save.SaveGame.Load(folder), data);
-                b.RunTicks(50);
+                b.RunTicks(170);   // past the unloaded platoon's 5 s activation dwell
                 var board = Assert.Single(b.Squads.All, s => s.Ai?.Contract is not null).Ai!;
                 Assert.Equal(("115-t", "113-t"), (board.Contract!.Id, board.Replacement?.Id));
                 Assert.Equal((float)end, (float)board.ContractEnd);
@@ -341,5 +633,27 @@ public class AiTests(ITestOutputHelper output)
             Assert.Equal("116-t", again.Platoons.Single(x => x.Name == "Testfolk_7").Record.Strings["currentPackage"]);
         }
         finally { if (Directory.Exists(platoonFolder)) Directory.Delete(platoonFolder, recursive: true); }
+    }
+
+    /// <summary>Every loaded platoon runs its blackboard in the original (<c>FUN_1402732b0</c>), a roaming one too; no town building is claimed, and the population still moves a package that does not travel.</summary>
+    [Fact]
+    public void A_loaded_roaming_platoons_squad_runs_a_blackboard_without_claiming_a_home_and_keeps_its_engine_routine()
+    {
+        var near = Rec("116-t", FcsRecordType.AI_PACKAGE, "Patrol near home");
+        near.Ints["unloaded func"] = 2;
+        var data = WithHomes(SyntheticTown.Database(roaming: true, extra: [.. Records(), near],
+            changePatrol: p => p.References["AI packages"] = [Ref("111-t", 0), Ref("112-t", 1)], changeFolk: t => t.References["AI packages"] = [Ref("116-t", 0)]), out _, out _);
+        using var world = Town(1, out _, data, null);
+        world.RunTicks(700);
+        var roamers = world.Platoons.All.Where(p => !p.Pinned && p.State == PlatoonState.Loaded).ToList();
+        Assert.NotEmpty(roamers);
+        foreach (var platoon in roamers)
+        {
+            var squad = world.Squads.Find(platoon.SquadId)!;
+            Assert.Equal("116-t", squad.Ai?.Current?.Id);
+            Assert.Null(squad.Ai!.OwnHome);
+            Assert.False(AiSystem.BoardMoves(squad.Ai));
+            Assert.All(squad.Members, m => Assert.True(world.Characters.Cold(world.Characters.TryResolveNext(m, out int s) ? s : -1)!.Ai!.Engine));
+        }
     }
 }

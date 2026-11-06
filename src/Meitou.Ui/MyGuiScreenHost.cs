@@ -34,6 +34,7 @@ public sealed partial class MyGuiScreenHost(MyGuiResources resources)
     public event Action<MyGuiEvent>? Activated;
     public bool HasWindows => open.Count > 0;
     public bool HasModal => open.Any(id => screens[id].Modal);
+    public bool IsModal(string id) => screens[id].Modal;
     /// <summary>Modal screens whose empty surroundings let a click through to the screens under them (the title's windows: another title button replaces them).</summary>
     public Func<string, bool>? PassThrough { get; set; }
     public bool CapturesPointer => drag is not null || CapturesWidget;

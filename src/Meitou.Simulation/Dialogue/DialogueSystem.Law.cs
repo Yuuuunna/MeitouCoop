@@ -39,6 +39,7 @@ public sealed partial class DialogueSystem
         if (offers.Count == 0) Post(world, c, Loc.Tr("Nobody here to bail out."));
         state.BailList = [.. offers.Select(o => o.Prisoner)];
         state.Open = c;
+
         Hold(world, n);
     }
 

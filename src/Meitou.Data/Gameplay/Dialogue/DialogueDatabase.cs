@@ -70,8 +70,8 @@ public sealed class DialogueNode
     public IReadOnlySet<string> HasPackage { get; internal set; } = Empty;
     public IReadOnlySet<string> TargetCarryingCharacter { get; internal set; } = Empty;
     public IReadOnlySet<string> TargetHasItem { get; internal set; } = Empty;
-    /// <summary><c>target has item type</c>: the referenced items' <c>item function</c> values.</summary>
-    public IReadOnlySet<int> TargetHasItemFunction { get; internal set; } = new HashSet<int>();
+    /// <summary><c>target has item type</c>: the <c>item function</c> of its first reference only (0: no test, also when the reference does not resolve).</summary>
+    public int TargetHasItemFunction { get; internal set; }
     public IReadOnlyList<(string Id, bool Value)> WorldStates { get; internal set; } = [];
     public IReadOnlyList<(string Item, int Count)> GiveItems { get; internal set; } = [];
     public IReadOnlyList<(string Faction, int Amount)> ChangeRelations { get; internal set; } = [];
@@ -157,6 +157,38 @@ public sealed class DialogueDatabase(GameDatabase db)
 
     public GameDatabase Db => db;
 
+    Dictionary<string, (string Group, string[] Races)>? raceGroups;
+
+    /// <summary>
+    /// The RACE_GROUP a race belongs to and the group's races (the game's race loader, <c>FUN_140430070</c>): each group's <c>races</c> in data order,
+    /// a race listed by several groups keeping the last. Null: the race is in no group.
+    /// </summary>
+    public (string Group, string[] Races)? RaceGroupOf(string raceId)
+    {
+        var map = Volatile.Read(ref raceGroups);
+        if (map is null)
+        {
+            map = new(StringComparer.Ordinal);
+            foreach (var g in db.OfType(FcsRecordType.RACE_GROUP))
+            {
+                string[] races = [.. g.GetReferences("races").Select(r => r.TargetStringId)];
+                foreach (string r in races) map[r] = (g.StringId, races);
+            }
+            Volatile.Write(ref raceGroups, map);
+        }
+        return map.TryGetValue(raceId, out var group) ? group : null;
+    }
+
+    /// <summary>
+    /// A dialogue race test (<c>FUN_14042ecd0</c>): the race is listed, or a race of its RACE_GROUP is.
+    /// </summary>
+    public bool RaceMatches(string raceId, IReadOnlySet<string> listed) =>
+        listed.Contains(raceId) || (RaceGroupOf(raceId) is { } g && g.Races.Any(listed.Contains));
+
+    /// <summary><see cref="RaceMatches(string, IReadOnlySet{string})"/> against a single listed race.</summary>
+    public bool RaceMatches(string raceId, string listed) =>
+        raceId == listed || (RaceGroupOf(raceId) is { } g && g.Races.Contains(listed));
+
     /// <summary>The node of a dialogue record; null when it is none (or its name marks it <c>Unfinished</c>, which the game skips).</summary>
     public DialogueNode? Node(string id)
     {
@@ -218,6 +250,7 @@ public sealed class DialogueDatabase(GameDatabase db)
         }
         var byEvent = new Dictionary<int, List<DialogueNode>>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var packageIds = new HashSet<string>(StringComparer.Ordinal);
         void Add(int ev, string dialogue)
         {
             if (ev <= 0 || ev == 100 || ev > DialogueEvents.Max || Node(dialogue) is not { IsRoot: true } node) return;
@@ -227,6 +260,7 @@ public sealed class DialogueDatabase(GameDatabase db)
         void Package(string id)
         {
             if (!seen.Add(id) || db.Find(id) is not { Type: FcsRecordType.DIALOGUE_PACKAGE } p || p.Name.Contains("Unfinished", StringComparison.Ordinal)) return;
+            packageIds.Add(id);   // an Unfinished package is neither a package of the character nor followed (FUN_14067fab0)
             foreach (var parent in p.GetReferences("inheritsFrom")) Package(parent.TargetStringId);
             foreach (var d in p.GetReferences("dialogs"))
             {
@@ -238,7 +272,7 @@ public sealed class DialogueDatabase(GameDatabase db)
         foreach (var p in packages) Package(p.TargetStringId);
         foreach (var d in Refs(character, "dialogue")) Add(DialogueEvents.PlayerTalkToMe, d.TargetStringId);
         var sorted = byEvent.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<DialogueNode>)[.. kv.Value.OrderByDescending(n => n.ListScore)]);
-        return new DialogueSet(sorted, seen);
+        return new DialogueSet(sorted, packageIds);
     }
 
     DialogueNode Build(GameRecord record, List<DialogueNode> built)
@@ -263,7 +297,7 @@ public sealed class DialogueDatabase(GameDatabase db)
         node.Monologue = record.GetBool("monologue");
 
         var conditions = new List<DialogueCondition>();
-        int tagConditions = 0;
+        int tagConditions = 0, requiredTags = 0;
         foreach (var c in record.GetReferences("conditions"))
         {
             if (db.Find(c.TargetStringId) is not { } a) continue;
@@ -272,6 +306,7 @@ public sealed class DialogueDatabase(GameDatabase db)
             if (dc is DialogueConditions.PersonalityTag or DialogueConditions.HasTag)
             {
                 tagConditions++;
+                if (c.Values.Value0 == 1) requiredTags++;
                 if (tag is < 0 or > 31) continue;
                 uint bit = 1u << tag;
                 bool required = c.Values.Value0 == 1;
@@ -297,7 +332,10 @@ public sealed class DialogueDatabase(GameDatabase db)
         node.HasPackage = Set("has package");
         node.TargetCarryingCharacter = Set("target carrying character");
         node.TargetHasItem = Set("target has item");
-        node.TargetHasItemFunction = record.GetReferences("target has item type").Select(r => db.Find(r.TargetStringId)?.GetInt("item function") ?? -1).Where(f => f >= 0).ToHashSet();
+        // Only the first reference is read (FUN_14067b070); it scores +2 once it resolves, whatever its function.
+        var typeRefs = record.GetReferences("target has item type");
+        bool itemTyped = typeRefs.Count > 0 && db.Find(typeRefs[0].TargetStringId) is not null;
+        if (itemTyped) node.TargetHasItemFunction = db.Find(typeRefs[0].TargetStringId)!.GetInt("item function");
         node.WorldStates = [.. record.GetReferences("world state").Select(r => (r.TargetStringId, r.Values.Value0 != 0))];
         node.GiveItems = [.. record.GetReferences("give item").Select(r => (r.TargetStringId, r.Values.Value0))];
         node.ChangeRelations = [.. record.GetReferences("change relations").Select(r => (r.TargetStringId, r.Values.Value0))];
@@ -317,8 +355,8 @@ public sealed class DialogueDatabase(GameDatabase db)
         if (node.Speaker != Talker.Me) score++;
         if (node.Locked) score += 2;
         foreach (var set in new[] { node.InTownOf, node.MyFaction, node.TargetFaction, node.TargetRace }) if (set.Count > 0) score += 2;
-        if (node.TargetHasItemFunction.Count > 0) score += 2;
-        score += 2 * node.TargetHasItem.Count + 2 * node.WorldStates.Count + conditions.Count + 2 * tagConditions;
+        if (itemTyped) score += 2;
+        score += 2 * node.TargetHasItem.Count + 2 * node.WorldStates.Count + conditions.Count + tagConditions + requiredTags;
         if (node.ChancePermanent < 99) score++;
         if (node.TargetIsType > 0) score++;
         if (node.Interjection) score += 2;

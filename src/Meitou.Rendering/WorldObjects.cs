@@ -87,7 +87,11 @@ sealed class WorldObjects : IDisposable
             Layouts = new BuildingLayouts(db, levels.Interiors),
             DistantTowns = Meitou.Data.World.DistantTowns.Find(install, db, levels),
         };
+        // The factions' building swaps, once, for every consumer of the placements and of their layouts' furniture.
+        int swapped = levels.ApplyBuildingSwaps(db, objects.Layouts);
+        if (swapped > 0) Console.WriteLine($"world     {swapped} building(s) replaced or skipped by the factions' swaps");
         foreach (var t in objects.DistantTowns) objects.bakedTowns.Add(t.InstanceId);
+        int ruins = ResidentRuins.Apply(db, levels, objects.Layouts);
         foreach (var b in levels.Buildings())
         {
             if (!objects.buildingsByZone.TryGetValue(b.Zone, out var list)) objects.buildingsByZone[b.Zone] = list = [];
@@ -96,7 +100,7 @@ sealed class WorldObjects : IDisposable
         objects.interiorCollisions = new InteriorCollisions(install);
         objects.heights = new ThreadLocal<TerrainHeightmap>(() => TerrainHeightmap.Open(install), trackAllValues: true);
         Console.WriteLine($"objects   {objects.buildingsByZone.Values.Sum(l => l.Count)} placed buildings and {objects.Features.All().Count()} map features in {objects.PopulatedZones.Count()} zones, " +
-            $"{objects.DistantTowns.Count} towns with a distant mesh, {objects.Layouts.Count} building layouts ({watch.ElapsedMilliseconds} ms)");
+            $"{objects.DistantTowns.Count} towns with a distant mesh, {objects.Layouts.Count} building layouts, {ruins} ruined by their residents ({watch.ElapsedMilliseconds} ms)");
         return objects;
     }
 
@@ -218,7 +222,7 @@ sealed class WorldObjects : IDisposable
             string key = b.Key;
             if (sounds && BuildingEmitters.For(Database, record, key, position, b.Rotation) is { } emitter) result.Add(emitter);
             foreach (var layout in layouts)
-                foreach (var item in Layouts.Items(layout))
+                foreach (var item in Layouts.Items(layout, b))
                 {
                     if (item.Building.GetReferences("sounds").Count == 0) continue;
                     var (at, rotation) = BuildingLayouts.Place(position, b.Rotation, item);
@@ -246,7 +250,7 @@ sealed class WorldObjects : IDisposable
             if (record.GetReferences("bird attractor").Count > 0) result.Add((b.Key, record, position));
             foreach (bool exterior in (ReadOnlySpan<bool>)[true, false])
                 if (state?.GetString(exterior ? "exterior layout name" : "interior layout name") is { Length: > 0 } name && Layouts.Find(record, name, exterior) is { } layout)
-                    foreach (var item in Layouts.Items(layout))
+                    foreach (var item in Layouts.Items(layout, b))
                         if (item.Building.GetReferences("bird attractor").Count > 0)
                             result.Add(($"{b.Key}/{item.InstanceId}", item.Building, BuildingLayouts.Place(position, b.Rotation, item).Position));
         }
@@ -317,7 +321,7 @@ sealed class WorldObjects : IDisposable
                     if (b.LayoutName(state, exterior) is not { Length: > 0 } layoutName) continue;
                     if (Layouts.Find(record, layoutName, exterior) is not { } layout) { Interlocked.Increment(ref layoutsNotFound); continue; }
                     Interlocked.Increment(ref layouts);
-                    foreach (var item in Layouts.Items(layout))
+                    foreach (var item in Layouts.Items(layout, b))
                     {
                         var (at, rotation) = BuildingLayouts.Place(position, b.Rotation, item);
                         var placed = WorldObjectLayout.Building(db, item.Building, $"{b.InstanceId}/{item.InstanceId}", at, rotation,

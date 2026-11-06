@@ -33,6 +33,8 @@ public sealed record BuildingBuildData
     public float MaxSlope { get; init; }
     public bool MatchSlope { get; init; }
     public float VerticalPositionTolerance { get; init; }
+    /// <summary>The record's <c>scale</c> (a part's footprint nodes are laid out in it, <c>FUN_140429470</c>); 1 when missing or not positive.</summary>
+    public float Scale { get; init; } = 1;
     public bool CreatesPlayerTown { get; init; }
     /// <summary><c>links together</c>: a wall piece (ghost class <c>PreviewBuilding_Wall</c>); it joins a town but never makes one itself (docs/game/buildings-production.md "Placement").</summary>
     public bool LinksTogether { get; init; }
@@ -101,6 +103,7 @@ public sealed record BuildingBuildData
             MaxSlope = RecordReading.Float(r, "max slope", 0),
             MatchSlope = RecordReading.Bool(r, "match slope", false),
             VerticalPositionTolerance = RecordReading.Float(r, "vertical position tolerance", 0),
+            Scale = RecordReading.Float(r, "scale", 1) is > 0 and var scale ? scale : 1,
             CreatesPlayerTown = RecordReading.Bool(r, "creates player town", false),
             LinksTogether = RecordReading.Bool(r, "links together", false),
             IsInteriorFurniture = RecordReading.Bool(r, "is interior furniture", false),

@@ -66,11 +66,10 @@ public sealed partial class ArrestSystem
     {
         var table = world.Characters;
         var next = table.Next;
-        int player = world.Player.Faction;
         var seen = new HashSet<(CharacterId, CharacterId)>();
         for (int s = 0; s < table.HighWater; s++)
         {
-            if (!next[s].Alive || table.Cold(s) is not { } c || c.Faction != player || player < 0) continue;
+            if (!next[s].Alive || table.Cold(s) is not { } c || !world.IsPlayerFaction(c.Faction)) continue;
             (c.DisguiseLevel, c.DisguiseFaction) = c.Medical is { Dead: true } ? (0, -1) : DisguiseOf(c.Inventory);
             if (c.DisguiseMarks is { } marks) for (int m = 0; m < marks.Length; m++) marks[m] = MathF.Max(0, marks[m] - seconds);
             if (c.DisguiseFaction < 0 || c.DisguiseLevel <= DisguiseWorks || c.RecentlyWanted > 0 || !Suspect(world, s)) continue;
@@ -80,9 +79,9 @@ public sealed partial class ArrestSystem
             for (int w = 0; w < table.HighWater; w++)
             {
                 if (w == s || !next[w].Alive || next[w].Task == (byte)CharacterTask.Rest) continue;
-                if (table.Cold(w) is not { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true } wc || wc.Faction == player || !Crimes.Relations.Contains(wc.Faction)) continue;
+                if (table.Cold(w) is not { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true } wc || wc.Faction == c.Faction || !Crimes.Relations.Contains(wc.Faction)) continue;
                 if (Vector3.DistanceSquared(next[w].Position, at) > DisguiseRange * DisguiseRange) continue;
-                float v = world.Sight.Sees(w, s, next[w].Position, next[w].Yaw, at, DisguiseRange);
+                float v = world.Sight.Sees(w, s, next[w].Position, at, DisguiseRange);
                 if (v <= 0) continue;
                 var key = (table.IdOf(w), target);
                 seen.Add(key);
@@ -129,7 +128,7 @@ public sealed partial class ArrestSystem
     /// <summary>A looker has seen through the disguise: event 44 when the character is wanted by the looker's faction, else blown for 250 s.</summary>
     void SeeThrough(World world, int w, int s, CharacterCold c, CharacterCold wc)
     {
-        if (c.Bounties?.Of(wc.Faction) is { Claimed: false, Amount: > 0 })
+        if (c.Bounties?.BookedFor(Crimes.Factions.Relations, wc.Faction) is { Claimed: false, Amount: > 0 })
         {
             if (!FreeGuard(world, w)) return;
             if (Talks) Spotted(world, w, s, BountySpotted);
@@ -166,7 +165,7 @@ public sealed partial class ArrestSystem
         if (town.Site < 0 || data.Sites[town.Site].Town.Type == TownType.Nest) return false;
         int owner = town.Site < data.SiteFactions.Count ? data.SiteFactions[town.Site] : -1;
         var relations = Crimes.Relations;
-        if (!relations.Contains(owner) || owner == world.Player.Faction || relations.Factions[owner].NotReal) return false;
+        if (!relations.Contains(owner) || world.IsPlayerFaction(owner) || relations.Factions[owner].NotReal) return false;
         return owner == faction || !relations.Contains(faction) || !relations.IsHostile(faction, owner);
     }
 

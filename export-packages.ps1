@@ -1,7 +1,7 @@
 #requires -Version 7.0
 <#
 .SYNOPSIS
-Publishes and packages the Windows x64 multiplayer client and server.
+Publishes and packages the Windows x64 multiplayer client (with mod-check tools) and server.
 .EXAMPLE
 pwsh -File ./export-packages.ps1
 .EXAMPLE
@@ -49,10 +49,41 @@ try {
         Write-Host "Publishing $($target.Kind) (Release, win-x64, self-contained)..."
         $runtimeArgs = if ($target.Kind -eq 'client') { @("-p:StreamlineRuntimePath=$graphicsRuntimeRoot") } else { @() }
         dotnet publish (Join-Path $repo $target.Project) -c Release -r win-x64 --self-contained true `
-            -p:PublishSingleFile=false -p:PublishTrimmed=false `
+            -p:PublishSingleFile=false -p:PublishTrimmed=false -p:PublishAot=false `
             -o (Join-Path $stageRoot $target.Kind) @runtimeArgs
         if ($LASTEXITCODE -ne 0) {
             throw "Publishing $($target.Kind) failed (exit code $LASTEXITCODE). Staging: $stageRoot"
+        }
+    }
+
+    # Build tools from this checkout with the same runtime/configuration. Verify shared files before merging;
+    # a tools publish must never replace a different engine/runtime binary in the client stage.
+    $toolsStage = Join-Path $stageRoot 'tools'
+    $clientStage = Join-Path $stageRoot 'client'
+    Write-Host 'Publishing mod-check tools (Release, win-x64, self-contained)...'
+    dotnet publish (Join-Path $repo 'tools/Meitou.Tools/Meitou.Tools.csproj') -c Release -r win-x64 --self-contained true `
+        -p:PublishSingleFile=false -p:PublishTrimmed=false -p:PublishAot=false -o $toolsStage
+    if ($LASTEXITCODE -ne 0) {
+        throw "Publishing tools failed (exit code $LASTEXITCODE). Staging: $stageRoot"
+    }
+    $toolFiles = @(Get-ChildItem -LiteralPath $toolsStage -File -Recurse)
+    foreach ($toolFile in $toolFiles) {
+        $relative = [IO.Path]::GetRelativePath($toolsStage, $toolFile.FullName)
+        $clientFile = Join-Path $clientStage $relative
+        if (Test-Path -LiteralPath $clientFile) {
+            if (-not (Test-Path -LiteralPath $clientFile -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $toolFile.FullName -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $clientFile -Algorithm SHA256).Hash) {
+                throw "Client/tools publish mismatch: $relative. Export again from one unchanged checkout. Staging: $stageRoot"
+            }
+        }
+    }
+    foreach ($toolFile in $toolFiles) {
+        $relative = [IO.Path]::GetRelativePath($toolsStage, $toolFile.FullName)
+        $clientFile = Join-Path $clientStage $relative
+        if (-not (Test-Path -LiteralPath $clientFile)) {
+            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($clientFile)) -Force | Out-Null
+            Copy-Item -LiteralPath $toolFile.FullName -Destination $clientFile
         }
     }
 

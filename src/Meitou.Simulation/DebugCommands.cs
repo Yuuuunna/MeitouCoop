@@ -16,14 +16,23 @@ public sealed record DebugMoney(long Delta) : DebugCommand;
 /// <summary>Puts the characters on the ground at <see cref="Target"/> (side by side, 10 units apart) and drops their orders.</summary>
 public sealed record DebugTeleport(IReadOnlyList<CharacterId> Characters, Vector3 Target) : DebugCommand;
 
-/// <summary>Heals the characters fully (<see cref="MedicalState.Heal"/>).</summary>
-public sealed record DebugHeal(IReadOnlyList<CharacterId> Characters) : DebugCommand;
+/// <summary>Heals the characters (<see cref="MedicalState.Heal"/>); with <see cref="Limbs"/> their lost and crushed limbs come back first (<see cref="MedicalState.RestoreLimbs"/>).</summary>
+public sealed record DebugHeal(IReadOnlyList<CharacterId> Characters, bool Limbs = false) : DebugCommand;
 
 /// <summary>Sets every stat of the characters to 100.</summary>
 public sealed record DebugMaxSkills(IReadOnlyList<CharacterId> Characters) : DebugCommand;
 
-/// <summary>One cut of <see cref="Cut"/> damage to each character, on a part chosen as a blow's is.</summary>
-public sealed record DebugDamage(IReadOnlyList<CharacterId> Characters, float Cut) : DebugCommand;
+/// <summary>
+/// One cut of <see cref="Cut"/> damage to each character: on the part whose template string id is <see cref="Part"/> (a character without one is skipped),
+/// else on a part chosen as a blow's is.
+/// </summary>
+public sealed record DebugDamage(IReadOnlyList<CharacterId> Characters, float Cut, string? Part = null) : DebugCommand;
+
+/// <summary>Makes every blow land on <see cref="Part"/> (template string id, name) from now on, or as usual when null (<see cref="BodyOptions.ForcedHitPart"/>).</summary>
+public sealed record DebugForceHits((string Id, string Name)? Part) : DebugCommand;
+
+/// <summary>Sets the <b>Global damage multiplier</b> (<see cref="BodyOptions.GlobalDamageMultiplier"/>) of the running world: blows and XP read it at once, a crossbow when it is next equipped.</summary>
+public sealed record DebugDamageMultiplier(float Multiplier) : DebugCommand;
 
 /// <summary>
 /// Puts <see cref="Quantity"/> of item record <see cref="Record"/> on the character, at <see cref="Quality"/> (0 to 100) for the types that have one: one unit into its free
@@ -53,6 +62,12 @@ public sealed record DebugGiveItem(CharacterId Character, string Record, int Qua
         [FcsRecordType.WEAPON, FcsRecordType.ARMOUR, FcsRecordType.ITEM, FcsRecordType.CONTAINER, FcsRecordType.BLUEPRINT, FcsRecordType.MAP_ITEM, FcsRecordType.CROSSBOW, FcsRecordType.LIMB_REPLACEMENT];
 }
 
+/// <summary>
+/// Removes the characters' bounties (every player character when <see cref="Characters"/> is empty): only <see cref="Faction"/>'s entry, or every entry when null.
+/// A character left without bounties is no longer recently wanted.
+/// </summary>
+public sealed record DebugClearBounties(IReadOnlyList<CharacterId> Characters, int? Faction = null) : DebugCommand;
+
 /// <summary>Finishes every research and repetition (<see cref="Construction.ResearchState.CompleteAll"/>).</summary>
 public sealed record DebugUnlockResearch : DebugCommand;
 
@@ -75,14 +90,19 @@ static class DebugCheats
                 {
                     if (!table.TryResolveNext(id, out int slot)) continue;
                     float x = teleport.Target.X + 10 * k++, z = teleport.Target.Z;
-                    MovementSystem.Stop(table, slot);
+                    TaskStart.Stand(table, slot);
                     table.Next[slot].Position = new Vector3(x, world.Walkability.GroundHeight(x, z, teleport.Target.Y), z);
                     table.Next[slot].Velocity = Vector3.Zero;
                 }
                 break;
             case DebugHeal heal when data is not null:
                 foreach (var id in heal.Characters)
-                    if (Body(world, data, id) is ({ } medical, var ctx)) medical.Heal(ctx);
+                    if (Body(world, data, id) is ({ } medical, var ctx))
+                    {
+                        // The look and kit follow the limbs (boots, two-handed holds), as after a prosthetic is fitted.
+                        if (heal.Limbs && medical.RestoreLimbs() && table.TryResolveNext(id, out int healed)) assembly?.RefreshEquipment(table.Cold(healed)!);
+                        medical.Heal(ctx);
+                    }
                 break;
             case DebugMaxSkills max:
                 foreach (var id in max.Characters)
@@ -94,15 +114,25 @@ static class DebugCheats
                 var events = new List<MedicalEvent>();
                 foreach (var id in damage.Characters)
                 {
-                    if (Body(world, data, id) is not ({ } medical, var ctx) || medical.ChoosePart(ctx) is not (var part and >= 0) || !table.TryResolveNext(id, out int slot)) continue;
+                    if (Body(world, data, id) is not ({ } medical, var ctx) || DamagePart(medical, ctx, damage.Part) is not (var part and >= 0) || !table.TryResolveNext(id, out int slot)) continue;
                     events.Clear();
                     medical.ApplyHit(part, new HitDamage(damage.Cut, 0, 0), ctx, events);
                     foreach (var e in events)
                     {
-                        if (e.Kind is MedicalEventKind.Died or MedicalEventKind.KnockedOut) { MovementSystem.Stop(table, slot); table.Next[slot].Velocity = Vector3.Zero; }
+                        if (e.Kind is MedicalEventKind.Died or MedicalEventKind.KnockedOut) { TaskStart.Stand(table, slot); table.Next[slot].Velocity = Vector3.Zero; }
                         else if (e.Kind == MedicalEventKind.PartSevered) table.LimbsChanged.Enqueue((slot, medical.Parts[e.Part].Template.LimbSlot));
+                        else if (e.Kind == MedicalEventKind.Decapitated) table.LimbsChanged.Enqueue((slot, -1));
                     }
                 }
+                break;
+            case DebugForceHits force when data is not null:
+                data.BodyOptions.ForcedHitPart = force.Part;
+                break;
+            case DebugDamageMultiplier multiplier when data is not null:
+                data.BodyOptions.GlobalDamageMultiplier = multiplier.Multiplier;
+                break;
+            case DebugClearBounties clear:
+                world.Post($"Bounties cleared: {ClearBounties(world, clear)}.");
                 break;
             case DebugUnlockResearch when data is not null:
                 world.Post($"Research unlocked: {world.Research.CompleteAll(data.Db)} finished.");
@@ -114,7 +144,7 @@ static class DebugCheats
                 else if (item.Type == FcsRecordType.WEAPON && DebugGiveItem.Grade(data.Db, give.Quality) is { } grade)
                     (item.CompanyId, item.MaterialId, item.Level) = (CraftBench.PlayerWeapons, grade.Model, grade.Level);
                 else if (DebugGiveItem.QualityTypes.Contains(item.Type)) item.Level = Math.Clamp(give.Quality, 0, 100);
-                if (Items.InventoryCommands.TryEquip(inventory, item.WithQuantity(1)))
+                if (Items.InventoryCommands.TryEquip(inventory, item.WithQuantity(1), table.Cold(owner)))
                 {
                     // One unit is worn when its slot is free (as the trade window's right click); the rest of a stack goes to the grids.
                     assembly?.RefreshEquipment(table.Cold(owner)!);
@@ -128,13 +158,56 @@ static class DebugCheats
         }
     }
 
+    /// <summary>Clears the bounties of <see cref="DebugClearBounties"/>; returns how many entries went.</summary>
+    static int ClearBounties(World world, DebugClearBounties clear)
+    {
+        int removed = 0;
+        foreach (var c in BountyTargets(world, clear.Characters))
+        {
+            if (c.Bounties is not { } ledger) continue;
+            for (int k = ledger.Count - 1; k >= 0; k--)
+            {
+                var e = ledger.Entries[k];
+                if (clear.Faction is { } only && e.Faction != only) continue;
+                ledger.Remove(e);
+                removed++;
+            }
+            if (ledger.Count > 0) continue;
+            c.Bounties = null;
+            c.RecentlyWanted = 0;
+        }
+        return removed;
+    }
+
+    /// <summary>The characters <paramref name="ids"/> names, else every player character.</summary>
+    static IEnumerable<CharacterCold> BountyTargets(World world, IReadOnlyList<CharacterId> ids)
+    {
+        var table = world.Characters;
+        if (ids.Count > 0)
+        {
+            foreach (var id in ids)
+                if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { } c) yield return c;
+            yield break;
+        }
+        for (int s = 0; s < table.HighWater; s++)
+            if (table.Next[s].Alive && table.Cold(s) is { IsPlayer: true } c) yield return c;
+    }
+
+    static int DamagePart(MedicalState medical, in MedicalContext ctx, string? part)
+    {
+        if (part is null) return medical.ChoosePart(ctx);
+        for (int i = 0; i < medical.Parts.Count; i++)
+            if (medical.Parts[i].Template.StringId == part) return i;
+        return -1;
+    }
+
     static (MedicalState, MedicalContext)? Body(World world, PopulationData data, CharacterId id)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { Medical: { } medical, Race: { } race } cold) return null;
         return (medical, new MedicalContext(data.Bodies.Constants, data.Bodies.Options, race)
         {
-            Toughness = cold.Stats?.Toughness ?? 0,
+            Toughness = cold.Stats?.ScaledToughness ?? 0,
             Strength = cold.Stats?.Strength ?? 50,
             HasStats = cold.Stats is not null,
             Seed = world.Seed,

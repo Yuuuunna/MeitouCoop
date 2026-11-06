@@ -11,6 +11,8 @@ public enum InputAction
     ZoomIn, ZoomOut,
     /// <summary>Held, the mouse movement turns the camera.</summary>
     Orbit,
+    /// <summary>The game view's mouse buttons: Select (the game's left button) picks characters and presses the interface; Command (the right button) gives orders and opens menus.</summary>
+    Select, Command,
     /// <summary>The game's <c>toggle_fps_camera</c> (docs/formats/camera.md).</summary>
     ToggleFreeCamera,
     Pause, TimeFaster, TimeSlower,
@@ -33,6 +35,8 @@ public enum InputAction
     ToggleInventory, ToggleCharacterStats, ToggleMap, ToggleFaction, ToggleResearch, ToggleCrafting, ToggleHelp,
     /// <summary>The game's <c>change_squad</c> (0x23), <c>select_all</c> (0x22), <c>character_next</c> / <c>character_prev</c> (0x26 / 0x27) and <c>focus_char</c> (0x11).</summary>
     ChangeSquad, SelectAll, NextCharacter, PreviousCharacter, FocusCharacter,
+    /// <summary>The game's <c>select_0</c> .. <c>select_9</c> (events 100..109, keys 1..9 and 0): the active squad's members by position.</summary>
+    SelectMember1, SelectMember2, SelectMember3, SelectMember4, SelectMember5, SelectMember6, SelectMember7, SelectMember8, SelectMember9, SelectMember10,
     /// <summary>The game's <c>stop_movement</c> (0x16) and <c>toggle_build</c> (10).</summary>
     StopMovement, ToggleBuild,
     /// <summary>
@@ -125,6 +129,7 @@ public sealed class InputBindings
         Set(InputAction.NextCharacter, Key.RightBracket);
         Set(InputAction.PreviousCharacter, Key.LeftBracket);
         Set(InputAction.FocusCharacter, Key.F);
+        for (int i = 0; i < 10; i++) Set(InputAction.SelectMember1 + i, i < 9 ? Key.D1 + i : Key.D0);   // select_0..8 on 1..9, select_9 on 0
         Set(InputAction.StopMovement, Key.R);
         Set(InputAction.ToggleBuild, Key.B);
         // The orders on the numpad as in the game; Medic and Rescue keep Meitou's H and J besides, Jobs and Prospect are unbound in the game too.
@@ -141,7 +146,9 @@ public sealed class InputBindings
         Set(InputAction.Prospect);
         Set(InputAction.Rest, Key.L);
         Set(InputAction.PutDown, Key.K);
-        Set(InputAction.Orbit, MouseButton.Middle, Key.LeftControl, Key.RightControl);   // right is the command button (move order)
+        Set(InputAction.Orbit, MouseButton.Middle, Key.LeftControl);
+        Set(InputAction.Select, MouseButton.Left);   // the game's buttons, rebindable: orbit with the right button and select with the middle one, say
+        Set(InputAction.Command, MouseButton.Right);
         Set(InputAction.ToggleFreeCamera, Key.Semicolon);
         Set(InputAction.Pause, Key.Space);
         Set(InputAction.TimeFaster);   // the game has no such keys (. and , are its camera tilt); F2..F4 set the speed

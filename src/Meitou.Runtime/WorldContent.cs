@@ -33,9 +33,11 @@ public sealed class WorldContent : IDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         var layouts = Levels is null ? null : new BuildingLayouts(database, Levels.Interiors);
+        if (layouts is not null) Levels!.ConfigurePreparedLayouts(layouts);
         var buildings = Levels is null ? null : TownBuildings.Build(database, Levels, layouts!, (x, z) => ground((float)x, (float)z));
         var data = PopulationData.Create(database, Towns, Population.Appearances, Population.BodyOptions, Population.Biomes,
             buildings: buildings, roads: Levels?.Roads(), townZones: Levels?.TownZones(), level: Levels?.Level);
+        data.Layouts = layouts;
         data.Sight = Levels is null ? null : new BuildingSight(install, database, Levels, layouts!);
         data.ResourceNodes = Population.ResourceNodes;
         return data;
@@ -64,7 +66,7 @@ public sealed class WorldContent : IDisposable
             system.ZoneGate = Navigation.IsReady;
         return Navigation is null ? result : result with
         {
-            Systems = [.. result.Systems, new WorldBuildings(database, new NavigationBuildingSink(Navigation)),
+            Systems = [.. result.Systems, new WorldFoliageOwnership(Levels!, data, Navigation), new WorldBuildings(database, new NavigationBuildingSink(Navigation)),
                 new WorldRegionNavigation(new NavigationRegions(Navigation)), new WorldNavigation(Navigation), new WorldGateRegions(Navigation)],
         };
     }
@@ -86,6 +88,9 @@ public sealed class WorldContent : IDisposable
             IWalkability walkability = new OpenGroundWalkability(height);
             if (levels is not null)
             {
+                layouts ??= new BuildingLayouts(db, levels.Interiors);
+                levels.ApplyBuildingSwaps(db, layouts);
+                ResidentRuins.Apply(db, levels, layouts);
                 nav = new NavSystem(install, db, levels, height, deferPublication: true);
                 geometry = new RagdollGeometry(install, db, levels, height, nav.Runtime);
                 walkability = new NavAdapter(nav.Walkability);
@@ -105,6 +110,7 @@ public sealed class WorldContent : IDisposable
                 roads: levels?.Roads(), townZones: levels?.TownZones(), level: levels?.Level);
             if (levels is not null)
             {
+                data.Layouts = layouts;
                 data.Sight = new BuildingSight(install, db, levels, layouts!);
                 nav!.Walkability.Roads = data.Roads;
                 var catalog = FoliageCatalog.Load(db);

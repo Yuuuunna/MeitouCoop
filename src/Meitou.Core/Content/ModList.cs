@@ -14,6 +14,9 @@ public static class ModList
     /// <summary>The file in a mod's folder that makes it an RE_Kenshi plugin mod (docs/formats/rekenshi.md); Meitou ignores its DLLs.</summary>
     public const string NativePluginFile = "RE_Kenshi.json";
 
+    /// <summary>The file in a mod's folder that makes it a Meitou code mod (docs/modding.md "Discovery").</summary>
+    public const string CodeManifestFile = "meitou.json";
+
     /// <summary>
     /// Mod names (without <c>.mod</c>) from <c>mods.cfg</c>, with the game's rules: lines are taken as they are
     /// (not trimmed); empty lines and lines starting with <c>#</c>, <c>/</c> or <c>;</c> are skipped; the text
@@ -58,16 +61,33 @@ public static class ModList
             {
                 var name = Path.GetFileName(folder);
                 var file = Path.Combine(folder, name + ".mod");
-                if (File.Exists(file))
+                if (GameFiles.Exists(file))
                     mods[name] = new ModInfo(name, file, ModSource.Local);
             }
         return [.. mods.Values.OrderBy(m => m.Name, StringComparer.Ordinal)];
     }
 
-    /// <summary>The enabled mods named in <c>data/mods.cfg</c>, in order, without duplicates; empty when the file is missing.</summary>
+    /// <summary>The file the enabled mods are read from instead of <c>data/mods.cfg</c> (<c>--mods-cfg</c>, <see cref="UseModsCfg"/>); null: the install's own. Saving always writes the install's file.</summary>
+    public static string? ModsCfgOverride { get; private set; }
+
+    /// <summary>Reads the enabled mods from <paramref name="file"/> from now on (<c>--mods-cfg</c>, <c>MEITOU_MODS_CFG</c>); a missing file is an error, not an empty list.</summary>
+    public static void UseModsCfg(string file)
+    {
+        file = Path.GetFullPath(file);
+        if (!File.Exists(file)) throw new FileNotFoundException($"mods.cfg file not found: {file}", file);
+        ModsCfgOverride = file;
+    }
+
+    /// <summary>Back to the install's own <c>data/mods.cfg</c> (tests).</summary>
+    public static void ClearModsCfg() => ModsCfgOverride = null;
+
+    /// <summary>The file the enabled mods are read from: <see cref="ModsCfgOverride"/>, else <c>data/mods.cfg</c>.</summary>
+    public static string ModsCfgPath(GameInstall install) => ModsCfgOverride ?? Path.Combine(install.DataDirectory, "mods.cfg");
+
+    /// <summary>The enabled mods named in <c>data/mods.cfg</c> (or the <c>--mods-cfg</c> file), in order, without duplicates; empty when the file is missing.</summary>
     public static List<string> ReadEnabled(GameInstall install)
     {
-        var path = Path.Combine(install.DataDirectory, "mods.cfg");
+        var path = ModsCfgPath(install);
         return File.Exists(path) ? [.. ParseModsCfg(File.ReadAllLines(path)).Distinct(StringComparer.Ordinal)] : [];
     }
 
@@ -144,6 +164,7 @@ public sealed class ModInfo(string name, string path, ModSource source)
     ModHeader? header;
     bool headerRead;
     bool? nativePlugin;
+    bool? code;
 
     public string Name { get; } = name;
     public string Path { get; } = path;
@@ -151,7 +172,12 @@ public sealed class ModInfo(string name, string path, ModSource source)
     public string Folder => System.IO.Path.GetDirectoryName(Path)!;
 
     /// <summary>An RE_Kenshi plugin mod: its data loads in Meitou, its DLLs do not. Checked on first use.</summary>
-    public bool HasNativePlugin => nativePlugin ??= File.Exists(System.IO.Path.Combine(Folder, ModList.NativePluginFile));
+    public bool HasNativePlugin => nativePlugin ??= GameFiles.Exists(System.IO.Path.Combine(Folder, ModList.NativePluginFile));
+
+    /// <summary>A Meitou code mod: its folder has <see cref="ModList.CodeManifestFile"/>, so it runs C# code of its own once allowed. Checked on first use.</summary>
+    public bool HasCode => code ??= GameFiles.Exists(CodeManifestPath);
+
+    public string CodeManifestPath => GameFiles.Resolve(System.IO.Path.Combine(Folder, ModList.CodeManifestFile));
 
     /// <summary>The <c>.mod</c> file's header, read on first use; null when it is unreadable.</summary>
     public ModHeader? Header
@@ -173,7 +199,7 @@ public sealed record ModHeader(int FileType, string Author, string Description, 
     {
         try
         {
-            using var r = new BinaryReader(File.OpenRead(path));
+            using var r = new BinaryReader(File.OpenRead(GameFiles.Resolve(path)));
             int type = r.ReadInt32();
             if (type is not (16 or 17)) return null;
             if (type == 17) r.ReadUInt32(); // header length

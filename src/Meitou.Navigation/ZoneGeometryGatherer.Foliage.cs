@@ -17,6 +17,7 @@ internal sealed partial class ZoneGeometryGatherer
     readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), Lazy<byte[]>> overlayTiles = new();
     FoliageCatalog? foliageCatalog;
     const int MaxCachedFoliageZones = 64;
+    System.Collections.Frozen.FrozenSet<(int X, int Z)>? foliageOwnership;
 
     /// <summary>How far (units) past the margin a foliage object may stand and still be used (engine choice; its collision reaches into the margin).</summary>
     const float FoliageReach = 200;
@@ -24,6 +25,13 @@ internal sealed partial class ZoneGeometryGatherer
     /// <summary>The obstacle list of a zone's foliage, placed once and kept (neighbouring zones share their rings), placed in parallel for the missing ones.</summary>
     FoliageObstacle[][] FoliageOf(IReadOnlyList<ZoneCoordinate> zones)
     {
+        var ownership = ownershipSnapshot ?? levels.FoliageOwnership;
+        if (foliageOwnership is null || !foliageOwnership.SetEquals(ownership))
+        {
+            foliageOwnership = ownership;
+            foliageZones.Clear();
+            while (foliagePool.TryTake(out var old)) old.Dispose();
+        }
         var missing = zones.Where(z => !foliageZones.ContainsKey(z)).ToList();
         if (missing.Count > 0)
         {
@@ -32,7 +40,7 @@ internal sealed partial class ZoneGeometryGatherer
             if (overlayTiles.Count > 6) overlayTiles.Clear();
             Parallel.ForEach(missing, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Math.Min(missing.Count, Environment.ProcessorCount - 1)) }, z =>
             {
-                if (!foliagePool.TryTake(out var world)) world = new FoliageWorld(install, db, levels, foliageCatalog, overlayTiles);
+                if (!foliagePool.TryTake(out var world)) world = new FoliageWorld(install, db, levels, foliageCatalog, overlayTiles, ownedTowns: ownership);
                 try
                 {
                     var list = new List<FoliageObstacle>();
@@ -84,11 +92,15 @@ internal sealed partial class ZoneGeometryGatherer
                 var prepared = collision.Get(o.Collision);
                 if (prepared is null) continue;
                 g.Stats.FoliageInstances++;
+                int solids = g.Solids.Count;
                 foreach (var shape in prepared.Shapes)
                 {
                     g.Stats.FoliageShapes++;
-                    AddShape(g, shape, o.Transform, o.Walkable ? TerrainSlopeDegrees : 0, carve: CarveConvexObstacles && !o.Walkable);
+                    if (!shape.IsConvex) g.Stats.FoliageMeshes++;
+                    // Walkable foliage meshes (swamp tree domes, open below) hold no ground under them in the original's tiles (docs/game/pathfinding.md, "Map features").
+                    AddShape(g, shape, o.Transform, o.Walkable ? TerrainSlopeDegrees : 0, carve: CarveConvexObstacles && !o.Walkable, meshSolid: o.Walkable);
                 }
+                for (int k = solids; k < g.Solids.Count; k++) g.Solids[k].Feature = true;
             }
     }
 }

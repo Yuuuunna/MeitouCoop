@@ -12,46 +12,134 @@ namespace Meitou.Game;
 /// The debug menu (F10; Ctrl+F10 on Metal, where F10 is the settings panel; docs/game/ui-input.md "Debug menu"): cheats sent to the world as
 /// <see cref="DebugCommand"/>s. Up/Down pick a row, typing fills its field, Enter applies it, Esc or the close key closes; while open it takes every key.
 /// Teleport and spawn use the camera's target (the middle of the screen); heal, max skills and damage the selected characters, else the inspected one.
+/// Heal keeps lost limbs; its sub-row Heal fully gives them back. Clear bounties clears the selected characters' (else every player character's), all or one faction's.
 /// </summary>
 sealed partial class GameHost
 {
-    enum DebugRow { Teleport, SpawnNpc, GiveItem, Money, Heal, MaxSkills, Damage, UnlockResearch }
+    enum DebugRow { Teleport, SpawnNpc, GiveItem, Money, Heal, HealFully, MaxSkills, Damage, ForceHits, DamageMultiplier, UnlockResearch, ClearBounties }
 
-    static readonly string[] DebugLabels = ["Teleport selected here", "Spawn NPC (hostile)", "Give item (name x5 q80)", "Money (+/- cats)", "Heal", "Max out skills", "Damage (cut)", "Unlock all research"];
-    readonly string[] debugFields = ["", "", "", "1000", "", "", "20", ""];
+    static readonly string[] DebugLabels =
+    [
+        "Teleport selected here", "Spawn NPC (hostile)", "Give item (name x5 q80)", "Money (+/- cats)", "Heal", "  Heal fully (restore limbs)", "Max out skills", "Damage (cut)",
+        "Force hits to", "Damage multiplier", "Unlock all research", "Clear bounties",
+    ];
+    // The rows' typed text: the vanilla rows', then one per code mod row (EnsureDebugFields).
+    readonly List<string> debugFields = ["", "", "", "1000", "", "", "", "20", "", "1", "", ""];
     readonly Dictionary<(bool Character, string Text), (string Id, string Name)?> debugMatches = [];
     bool debugMenuOpen;
     int debugRow;
     string debugStatus = "";
+    /// <summary>
+    /// The open row's sub-list (Enter or Right opens it, Esc or Left closes it). Damage and Force hits: "Random" or "Off", then the first target's parts as (template id, name);
+    /// Clear bounties: "All factions", then each faction with a bounty as (faction index, name and total).
+    /// </summary>
+    (string? Id, string Name)[]? debugParts;
+    int debugPart;
 
-    static bool DebugHasField(int row) => (DebugRow)row is not (DebugRow.Teleport or DebugRow.Heal or DebugRow.MaxSkills or DebugRow.UnlockResearch);
+    bool DebugHasField(int row) => row >= DebugLabels.Length ? ModDebugRows[row - DebugLabels.Length].HasField
+        : (DebugRow)row is not (DebugRow.Teleport or DebugRow.Heal or DebugRow.HealFully or DebugRow.MaxSkills or DebugRow.ForceHits or DebugRow.UnlockResearch or DebugRow.ClearBounties);
+
+    /// <summary>The rows that open the body part list.</summary>
+    static bool DebugPicksPart(int row) => (DebugRow)row is DebugRow.Damage or DebugRow.ForceHits or DebugRow.ClearBounties;
+
 
     void DebugMenuKey(EngineKey key)
     {
+        EnsureDebugFields();
         string field = debugFields[debugRow];
+        if (debugParts is { } parts)
+        {
+            switch (key)
+            {
+                case EngineKey.Escape or EngineKey.Left: debugParts = null; break;
+                case EngineKey.Up: debugPart = (debugPart + parts.Length - 1) % parts.Length; break;
+                case EngineKey.Down: debugPart = (debugPart + 1) % parts.Length; break;
+                case EngineKey.Backspace when field.Length > 0: debugFields[debugRow] = field[..^1]; break;
+                case EngineKey.Enter: debugStatus = DebugApply((DebugRow)debugRow, field.Trim(), parts[debugPart]); break;
+            }
+            return;
+        }
         switch (key)
         {
+            case EngineKey.Enter or EngineKey.Right when DebugPicksPart(debugRow):
+                debugParts = (DebugRow)debugRow == DebugRow.ClearBounties ? DebugBountyList() : DebugPartList();
+                if (debugParts is not null) debugPart = Math.Min(debugPart, debugParts.Length - 1);
+                break;
             case EngineKey.Escape: debugMenuOpen = false; break;
-            case EngineKey.Up: debugRow = (debugRow + DebugLabels.Length - 1) % DebugLabels.Length; break;
-            case EngineKey.Down: debugRow = (debugRow + 1) % DebugLabels.Length; break;
+            case EngineKey.Up: debugRow = (debugRow + DebugRowCount - 1) % DebugRowCount; break;
+            case EngineKey.Down: debugRow = (debugRow + 1) % DebugRowCount; break;
             case EngineKey.Backspace when field.Length > 0: debugFields[debugRow] = field[..^1]; break;
             case EngineKey.Enter: debugStatus = DebugApply((DebugRow)debugRow, field.Trim()); break;
         }
     }
 
+    (string? Id, string Name)[]? DebugPartList()
+    {
+        if (DebugTargets() is not [var first, ..])
+        {
+            debugStatus = "select or inspect a character first";
+            return null;
+        }
+        if (session.IsRemote)
+        {
+            var remoteParts = session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == first)?.HealthParts ?? [];
+            return [(null, (DebugRow)debugRow == DebugRow.Damage ? "Random (as a blow)" : "Off (as a blow)"),
+                .. remoteParts.Select(p => ((string?)p.Id, p.Name))];
+        }
+        var table = LocalSession.World.Characters;
+        var body = table.TryResolveNext(first, out int slot) ? table.Cold(slot)?.Medical?.Parts : null;
+        var parts = (body ?? []).Select(p => ((string?)p.Template.StringId, p.Template.Name.Length > 0 ? p.Template.Name : p.Template.StringId));
+        return [(null, (DebugRow)debugRow == DebugRow.Damage ? "Random (as a blow)" : "Off (as a blow)"), .. parts];
+    }
+
+    /// <summary>The Clear bounties list: every faction with a bounty on the selected characters (else on any player character), with its total.</summary>
+    (string? Id, string Name)[]? DebugBountyList()
+    {
+        if (session.IsRemote)
+        {
+            var remote = session.CurrentSnapshot.Characters.Where(c => c.Selected || c.Inspected).SelectMany(c => c.Bounties)
+                .GroupBy(b => b.Faction).Select(g => ((string?)g.Key, $"{g.Key}   c.{g.Sum(b => b.Amount):N0}"));
+            return [(null, "All factions"), .. remote];
+        }
+        var table = LocalSession.World.Characters;
+        var selected = LocalSession.World.Player.Selection.ToArray();
+        var ledgers = new List<Meitou.Simulation.Crime.BountyLedger>();
+        for (int s = 0; s < table.HighWater; s++)
+            if (table.Next[s].Alive && table.Cold(s) is { Bounties: { } ledger } c && (selected.Length > 0 ? selected.Contains(table.IdOf(s)) : c.IsPlayer)) ledgers.Add(ledger);
+        var factions = ledgers.SelectMany(l => l.Entries).GroupBy(e => e.Faction).OrderBy(g => g.Key)
+            .Select(g => ((string?)g.Key.ToString(CultureInfo.InvariantCulture), $"{g.First().FactionName}   c.{g.Sum(e => e.Amount).ToString("N0", CultureInfo.InvariantCulture)}")).ToArray();
+        if (factions.Length == 0)
+        {
+            debugStatus = selected.Length > 0 ? "no bounties on the selected characters" : "no bounties on your characters";
+            return null;
+        }
+        return [(null, "All factions"), .. factions];
+    }
+
     void DebugMenuText(char c)
     {
+        EnsureDebugFields();
         if (DebugHasField(debugRow) && !char.IsControl(c)) debugFields[debugRow] += c;
     }
 
-    string DebugApply(DebugRow row, string field)
+    /// <summary>Heal, max skills and damage: the selected characters, else the inspected one.</summary>
+    CharacterId[] DebugTargets()
+    {
+        if (session.IsRemote) return session.CurrentSnapshot.Characters.Where(c => c.Selected || c.Inspected).Select(c => c.Id).ToArray();
+        var player = LocalSession.World.Player;
+        var selected = player.Selection.ToArray();
+        return selected.Length > 0 ? selected : player.Inspected.IsNone ? [] : [player.Inspected];
+    }
+
+    string DebugApply(DebugRow row, string field, (string? Id, string Name) part = default)
     {
         if (session.IsRemote) return "Debug mutations are controlled by the server.";
         var world = LocalSession.World;
         long tick = world.Tick;
         var selected = world.Player.Selection.ToArray();
-        CharacterId[] targets = selected.Length > 0 ? selected : world.Player.Inspected.IsNone ? [] : [world.Player.Inspected];
+        var targets = DebugTargets();
         var here = session.Camera.Current.Target;
+        if ((int)row >= DebugLabels.Length) return ModDebugApply((int)row - DebugLabels.Length, field, selected, here, tick);
         switch (row)
         {
             case DebugRow.Teleport:
@@ -74,10 +162,11 @@ sealed partial class GameHost
                 if (!long.TryParse(field, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long delta)) return "money: a whole number, e.g. 500 or -500";
                 world.Commands.Enqueue(new DebugMoney(delta) { Tick = tick });
                 return $"money {delta.ToString("+#;-#;0", CultureInfo.InvariantCulture)}";
-            case DebugRow.Heal:
+            case DebugRow.Heal or DebugRow.HealFully:
                 if (targets.Length == 0) return "select or inspect a character first";
-                world.Commands.Enqueue(new DebugHeal(targets) { Tick = tick });
-                return $"healed {targets.Length}";
+                bool limbs = row == DebugRow.HealFully;
+                world.Commands.Enqueue(new DebugHeal(targets, limbs) { Tick = tick });
+                return $"healed {targets.Length}{(limbs ? ", limbs restored" : "")}";
             case DebugRow.MaxSkills:
                 if (targets.Length == 0) return "select or inspect a character first";
                 world.Commands.Enqueue(new DebugMaxSkills(targets) { Tick = tick });
@@ -85,8 +174,21 @@ sealed partial class GameHost
             case DebugRow.Damage:
                 if (targets.Length == 0) return "select or inspect a character first";
                 if (!float.TryParse(field, NumberStyles.Float, CultureInfo.InvariantCulture, out float cut) || !(cut > 0)) return "damage: a positive number";
-                world.Commands.Enqueue(new DebugDamage(targets, cut) { Tick = tick });
-                return $"{cut:0.#} cut damage to {targets.Length}";
+                world.Commands.Enqueue(new DebugDamage(targets, cut, part.Id) { Tick = tick });
+                return $"{cut:0.#} cut damage to {targets.Length}{(part.Id is null ? "" : $" on {part.Name}")}";
+            case DebugRow.ForceHits:
+                world.Commands.Enqueue(new DebugForceHits(part.Id is { } forced ? (forced, part.Name ?? forced) : null) { Tick = tick });
+                return part.Id is null ? "blows land as usual" : $"every blow lands on {part.Name} (by name on other bodies)";
+            case DebugRow.DamageMultiplier:
+                if (!float.TryParse(field, NumberStyles.Float, CultureInfo.InvariantCulture, out float multiplier) || !(multiplier >= 0) || multiplier > 100) return "damage multiplier: a number from 0 to 100 (new game: 0.5 to 4)";
+                world.Commands.Enqueue(new DebugDamageMultiplier(multiplier) { Tick = tick });
+                return $"damage x{multiplier:0.##} (crossbows when next equipped)";
+            case DebugRow.ClearBounties:
+                int? faction = part.Id is { } f ? int.Parse(f, CultureInfo.InvariantCulture) : null;
+                world.Commands.Enqueue(new DebugClearBounties(selected, faction) { Tick = tick });
+                debugParts = null;
+                string whose = selected.Length > 0 ? $"{selected.Length} selected" : "your characters";
+                return faction is null ? $"every bounty cleared on {whose}" : $"{part.Name?.Split("   ")[0]} bounties cleared on {whose}";
             case DebugRow.UnlockResearch:
                 world.Commands.Enqueue(new DebugUnlockResearch { Tick = tick });
                 return "every research finished";
@@ -131,9 +233,12 @@ sealed partial class GameHost
         var world = LocalSession.World;
         var here = session.Camera.Current.Target;
         var lines = new List<string>();
-        for (int i = 0; i < DebugLabels.Length; i++)
+        int highlight = 0;
+        EnsureDebugFields();
+        for (int i = 0; i < DebugRowCount; i++)
         {
-            string line = (i == debugRow ? "> " : "  ") + DebugLabels[i];
+            if (i == debugRow) highlight = lines.Count;
+            string line = (i == debugRow && debugParts is null ? "> " : "  ") + DebugLabel(i);
             if (DebugHasField(i))
             {
                 string field = debugFields[i];
@@ -141,10 +246,20 @@ sealed partial class GameHost
                 if ((DebugRow)i is DebugRow.SpawnNpc or DebugRow.GiveItem && field.Trim().Length > 0)
                     line += DebugRecord((DebugRow)i == DebugRow.GiveItem ? DebugItemField(field.Trim()).Name : field, (DebugRow)i == DebugRow.SpawnNpc) is { } r ? $"   -> {r.Name}" : "   -> no match";
             }
+            if ((DebugRow)i == DebugRow.DamageMultiplier) line += $"   now x{popData?.BodyOptions.GlobalDamageMultiplier ?? 1:0.##}";
+            if ((DebugRow)i == DebugRow.ForceHits) line = $"{line,-26} {popData?.BodyOptions.ForcedHitPart?.Name ?? "off"}";
+            if (DebugPicksPart(i) && i == debugRow && debugParts is null) line += (DebugRow)i == DebugRow.ClearBounties ? "   Enter/Right: pick the faction" : "   Enter/Right: pick the body part";
             lines.Add(line);
+            if (DebugPicksPart(i) && i == debugRow && debugParts is { } parts)
+                for (int k = 0; k < parts.Length; k++)
+                {
+                    if (k == debugPart) highlight = lines.Count;
+                    lines.Add((k == debugPart ? "    > " : "      ") + parts[k].Name);
+                }
         }
         string info = $"{world.Player.Selection.Count} selected   here {here.X:0}, {here.Z:0}   money c.{world.Player.Money.ToString("N0", CultureInfo.InvariantCulture)}";
-        string hint = $"Up/Down pick   type to edit   Enter apply   Esc/{close} close";
+        string hint = debugParts is null ? $"Up/Down pick   type to edit   Enter apply   Esc/{close} close"
+            : $"Up/Down pick {((DebugRow)debugRow == DebugRow.ClearBounties ? "a faction" : "a part")}   {((DebugRow)debugRow == DebugRow.Damage ? "type the damage   " : "")}Enter apply   Esc/Left back";
         var dim = new Vector4(0.7f, 0.75f, 0.8f, 1);
         float pad = 10, x0 = 16, y0 = top + 16;
         int chars = Math.Max(lines.Max(l => l.Length), Math.Max(info.Length, Math.Max(hint.Length, debugStatus.Length)));
@@ -155,7 +270,7 @@ sealed partial class GameHost
         y += 1.5f * o.LineHeight;
         for (int i = 0; i < lines.Count; i++, y += o.LineHeight)
         {
-            if (i == debugRow) o.Rect(x0 + 4, y, x0 + w - 4, y + o.LineHeight, new Vector4(0.25f, 0.4f, 0.65f, 0.6f));
+            if (i == highlight) o.Rect(x0 + 4, y, x0 + w - 4, y + o.LineHeight, new Vector4(0.25f, 0.4f, 0.65f, 0.6f));
             o.Text(lines[i], x0 + pad, y, DebugOverlay.TextColour);
         }
         y += 0.5f * o.LineHeight;

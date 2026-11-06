@@ -29,8 +29,45 @@ public sealed record ServerConnectionProfile(string Host, int Port, Guid Account
 public static class ServerCompatibility
 {
     public const string EngineBuild = "meitou-experimental-1";
+
+    // Hash without loading DLLs: connecting never grants permission to execute installed code.
+    public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
+    {
+        if (trusted is null || trusted.Count == 0) yield break;
+        var discovered = ModList.Discover(install).ToDictionary(m => m.Name, StringComparer.Ordinal);
+        foreach (string name in ModList.ReadEnabled(install))
+        {
+            if (!trusted.Contains(name) || !discovered.TryGetValue(name, out var mod) || !mod.HasCode) continue;
+            var manifest = CodeModManifest.Read(GameFiles.Resolve(mod.CodeManifestPath));
+            string prefix = "code/" + name + "/";
+            // Include private managed/native dependencies and configuration as well as declared entry DLLs.
+            foreach (string file in Directory.EnumerateFiles(mod.Folder, "*", SearchOption.AllDirectories)
+                .OrderBy(f => Path.GetRelativePath(mod.Folder, f).Replace('\\', '/'), StringComparer.Ordinal))
+                yield return new ContentFile(ContentKind.GameplayAsset, prefix + Path.GetRelativePath(mod.Folder, file).Replace('\\', '/'), file);
+            foreach (string assembly in manifest.Assemblies)
+                if (!File.Exists(GameFiles.Resolve(Path.Combine(mod.Folder, assembly))))
+                    throw new InvalidDataException($"Code mod {name} is missing {assembly}.");
+        }
+    }
+
+    public static IReadOnlyDictionary<string, string> WithCodeSettings(IReadOnlyDictionary<string, string> rules, GameInstall install,
+        IReadOnlySet<string>? trusted, IReadOnlyDictionary<string, Dictionary<string, string>>? settings)
+    {
+        var result = rules.Where(p => !p.Key.StartsWith("code-setting/", StringComparison.Ordinal)).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        var mods = ModList.Discover(install).ToDictionary(m => m.Name, StringComparer.Ordinal);
+        foreach (string name in ModList.ReadEnabled(install))
+        {
+            if (trusted?.Contains(name) != true || !mods.TryGetValue(name, out var mod) || !mod.HasCode) continue;
+            string id = CodeModManifest.Read(GameFiles.Resolve(mod.CodeManifestPath)).Id;
+            if (settings is null || !settings.TryGetValue(id, out var values)) continue;
+            foreach (var (key, value) in values) result.Add($"code-setting/{id}/{key}", value);
+        }
+        return result;
+    }
+
     public static CompatibilityHello CreateHello(GameInstall install, string engineBuild, IReadOnlyDictionary<string, string> rules,
-        IEnumerable<string>? gameplayAssets = null)
+        IEnumerable<string>? gameplayAssets = null, IReadOnlySet<string>? trustedCodeMods = null,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? modSettings = null)
     {
         var assets = (gameplayAssets ?? []).Select(relative =>
         {
@@ -38,7 +75,8 @@ public static class ServerCompatibility
                 throw new InvalidDataException("Gameplay assets must use relative installation paths.");
             return new ContentFile(ContentKind.GameplayAsset, relative.Replace('\\', '/'), GameFiles.Resolve(Path.Combine(install.Root, relative)));
         }).ToArray();
-        var manifest = ContentManifest.ReadLoadOrder(LoadOrder.FromInstall(install), assets);
-        return new(CompatibilityHandshake.Protocol, engineBuild, ContentManifest.RulesDigest(rules), manifest.Digest);
+        var codeFiles = CodeEvidence(install, trustedCodeMods);
+        var manifest = ContentManifest.ReadLoadOrder(LoadOrder.FromInstall(install), assets.Concat(codeFiles));
+        return new(CompatibilityHandshake.Protocol, engineBuild, ContentManifest.RulesDigest(WithCodeSettings(rules, install, trustedCodeMods, modSettings)), manifest.Digest);
     }
 }

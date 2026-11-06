@@ -44,7 +44,7 @@ public static class ArmourTooltip
     /// </summary>
     public static IReadOnlyList<Line> Head(ArmourData a, float quality)
     {
-        var piece = ArmourPiece.Create(a, quality <= 0 ? 1f : Math.Clamp(quality, 0, 100) * 0.01f);   // level x 0.01 in single precision, as the original (80 x 0.01 is just below 0.8: 71 pts, not 72)
+        var piece = ArmourPiece.Create(a, ArmourPiece.QualityOf(a, quality), ArmourPiece.Graded(a, quality));   // level x 0.01 in single precision, as the original (80 x 0.01 is just below 0.8: 71 pts, not 72)
         int grade = GradeOf(quality);
         string material = a.Material == ArmourType.MetalPlate ? "Metal Plate" : a.Material.ToString();
         var lines = new List<Line>
@@ -68,7 +68,7 @@ public static class ArmourTooltip
     /// </summary>
     public static IReadOnlyList<Line> Tail(ArmourData a, Func<string, string?> partName, float quality)
     {
-        float t = (quality <= 0 ? 1f : Math.Clamp(quality, 0, 100) * 0.01f) + a.LevelBonus * 0.01f;   // level 0: full strength, t = 1 (Observed)
+        float t = ArmourPiece.QualityOf(a, quality) + a.LevelBonus * 0.01f;   // level 0: full strength, t = 1 (Observed)
         var lines = new List<Line>();
         var parts = a.Coverage.Select(c => (Name: partName(c.PartStringId) ?? c.PartStringId, c.Percent)).ToList();
         if (parts.Count > 0)
@@ -87,11 +87,11 @@ public static class ArmourTooltip
         void Bonus(string label, int bonus) { if (bonus != 0) skills.Add(new("-" + label, bonus.ToString(CultureInfo.InvariantCulture), LineKind.Effect, bonus < 0 ? -1 : 1)); }
         Multiplier("Crossbows effect", a.RangedSkillMult);
         Multiplier("Precision shooting effect", a.RangedSkillMult);
-        Multiplier("Stealth effect", ArmourPiece.StealthOf(a, t));
+        Multiplier("Stealth effect", ArmourPiece.StealthOf(a, t, ArmourPiece.Graded(a, quality)));
         Multiplier("Dodge skill effect", a.DodgeMult);
         Multiplier("Athletics effect", ArmourPiece.AthleticsOf(a, t), hideNearOne: true);
         // The class table's combat speed column (heavy 0.9 to 1, else 1); a hat is forced to 1.
-        Multiplier("Combat speed effect", a.Slot == 3 ? 1 : a.CombatSpeedMult * (a.Class == ArmourClass.Heavy ? WeaponStats.Lerp(t, 0.9f, 1f) : 1f));
+        Multiplier("Combat speed effect", ArmourPiece.CombatSpeedOf(a, t));
         Multiplier("Attack damage effect", a.DamageOutputMult);
         Multiplier("Assassination skill", a.AssassinationMult);
         Bonus("Melee attack bonus", a.CombatAttackBonus);

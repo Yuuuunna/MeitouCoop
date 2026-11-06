@@ -37,12 +37,14 @@ public sealed class SitePools
     public bool Ded { get; set; }
     public float DiedAt { get; set; }
 
-    /// <summary>Both pools as the original grows them (<c>FUN_1408f6760</c>): residents, then roaming once the residents are within 1 of full.</summary>
+    /// <summary>
+    /// Both pools as the original grows them (<c>FUN_1408f6760</c>): residents, then roaming once the residents are within 1 of full. A roaming pool not grown keeps its stamp,
+    /// so the time it waited is credited when it grows again (<b>Verified</b>, <c>FUN_1408f4c20</c>).
+    /// </summary>
     public void Grow(double nowHours)
     {
         Residents.Grow(nowHours);
         if (Residents.Current >= Residents.Desired - 1) Roaming.Grow(nowHours);
-        else Roaming.Stamp = nowHours;
     }
 
     /// <summary>Reads a town state's pool keys (<c>pop</c>, <c>popd</c>, <c>pop2</c>, <c>popd2</c>, <c>started</c>, <c>ded</c>, <c>tod</c>), stamped at <paramref name="nowHours"/>.</summary>
@@ -134,8 +136,9 @@ public sealed partial class PopulationSystem
     public const int WipeRoamingLiving = 25;
 
     /// <summary>
-    /// Town wipe-out (<c>TownPopulationManager::vfunc_4</c> <c>FUN_1408f7a80</c>, docs/game/factions-squads-towns.md "Town wipe"): a started town that is not yet <c>ded</c>, whose roaming
-    /// pool is at most 3 and whose roaming platoons have at most 25 living, and none of whose resident squads (any with a home; engine reading of the resident pool) has anyone alive, is <c>ded</c> for good: it
+    /// Town wipe-out (<c>TownPopulationManager::vfunc_4</c> <c>FUN_1408f7a80</c>, docs/game/factions-squads-towns.md "Town wipe"): a started town in a loaded zone that is not yet <c>ded</c>, whose roaming
+    /// pool is at most 3 and whose roaming platoons have at most 25 living, and none of whose resident squads (any with a home; engine reading of the resident pool) is intact
+    /// (<see cref="ResidentIntact"/>: the platoon's flag, which a squad with a member held keeps true), is <c>ded</c> for good: it
     /// remakes no depleted squads (<see cref="CheckRegeneration"/>) and its <c>regenerates</c> squads die. Nothing is posted (the town's <c>setDead</c> is empty).
     /// </summary>
     void CheckTownWipes(World world)
@@ -148,25 +151,52 @@ public sealed partial class PopulationSystem
             if (p.Origin < 0 || p.Origin >= resident.Length || p.Wild) continue;
             if (p.Pinned)
             {
-                if (p.Stored is not { HomeBuilding: null } && LivingOf(world, p) > 0) resident[p.Origin] = true;
+                if (p.Stored is { HomeBuilding: null }) continue;
+                if (RoamingMilitary(p.TemplateId)) roamers[p.Origin] += LivingOf(world, p);
+                else if (ResidentIntact(world, p)) resident[p.Origin] = true;
             }
             else roamers[p.Origin] += LivingOf(world, p);
         }
         for (int s = 0; s < states.Length && s < resident.Length; s++)
             foreach (int id in states[s].Squads)
-                if (world.Squads.Find(id) is { } squad && squad.HomeBuilding is not null && squad.Members.Any(m => Living(world, m))) resident[s] = true;
+            {
+                if (world.Squads.Find(id) is not { HomeBuilding: not null } squad) continue;
+                if (RoamingMilitary(squad.TemplateId)) roamers[s] += squad.PlatoonId < 0 ? squad.Members.Count(m => Living(world, m)) : 0;   // a platoon's own are counted above
+                else if ((squad.Ai?.Intact ?? true) && squad.Members.Any(m => Living(world, m))) resident[s] = true;
+            }
         for (int s = 0; s < resident.Length; s++)
         {
             // A town coming into the world has neither its squads nor its platoons for a moment: not judged then.
             if (s < states.Length && (states[s].Status == SiteStatus.Loading || states[s].Pending)) continue;
             // A town of the player's faction is the player's to keep (as the repopulation and remake passes leave it alone).
             if (data.SiteFactions[s] is >= 0 and var owner && world.IsPlayerFaction(owner)) continue;
+            // Judged only while the zone at the town's position is loaded (zone byte +0xb1, FUN_1408f6760).
+            if (world.LoadedZones is { } loaded && !loaded.Contains(Meitou.Data.World.WorldLayout.ZoneOf(data.Sites[s].Position.X, data.Sites[s].Position.Z))) continue;
             if (townPools[s] is not { Started: true, Ded: false } pools || resident[s] || pools.Roaming.Current > WipeRoamingPool || roamers[s] > WipeRoamingLiving) continue;
             pools.Ded = true;
             pools.DiedAt = (float)Hours(world);
             if (townLog.Count >= 256) townLog.RemoveAt(0);
             townLog.Add($"{data.Sites[s].Town.Name} wiped out");
         }
+    }
+
+    /// <summary>
+    /// A template with <c>roaming military</c> is made in squad mode 2 even from a town's resident list (<c>FUN_140583a10</c>, <b>Verified</b>): the mode only picks the town pool set the platoon is
+    /// registered in (<c>FUN_1407ec8d0</c>), so it still has its home and stands in the town. Meitou takes it into account at the town wipe: it is no resident there and counts with the roaming living.
+    /// </summary>
+    bool RoamingMilitary(string templateId) => data.Db.Find(templateId)?.GetBool("roaming military") == true;
+
+    /// <summary>
+    /// Whether a resident platoon keeps its town from being wiped: <c>Platoon::isIntact</c> (<c>FUN_1407ac7b0</c>, <b>Verified</b>), false once declared dead, else its flag, which a loaded squad's
+    /// AI keeps current (<see cref="Ai.Blackboard.Intact"/>, the rule of <c>FUN_1407a5be0</c>) and an unloaded platoon holds as it was at unload (or in the save). Meitou also needs someone
+    /// alive in a platoon not in the world: its off-screen fights can kill members the flag never saw.
+    /// </summary>
+    bool ResidentIntact(World world, Platoon p)
+    {
+        if (p.Dead) return false;
+        if (p.State == PlatoonState.Loaded && world.Squads.Find(p.SquadId) is { } squad)
+            return p.IntactFlag = squad.Ai?.Intact ?? SquadIntact(world, squad);
+        return p.IntactFlag && LivingOf(world, p) > 0;
     }
 
     /// <summary>SQUAD_TEMPLATE <c>regenerates</c> (<c>Platoon::declareDead</c>, <b>Verified</b>): a squad of it whose last member dies is not declared dead while its town is not <c>ded</c>; it is made afresh on its next activation.</summary>
@@ -186,7 +216,7 @@ public sealed partial class PopulationSystem
         int running = 0;
         foreach (var p in world.Platoons.All)
         {
-            if (p.Origin != site || !p.Pinned || p.State != PlatoonState.Unloaded) continue;
+            if (p.Origin != site || !p.Pinned || p.State != PlatoonState.Unloaded || p.Unmade) continue;
             // Residents only: the pool counts them (base saves: <c>pop</c> = the resident platoons' size, not the bar squads').
             if (p.Faction != data.SiteFactions[site]) continue;   // and of the town's faction (save 2: Squin's 36 = its Shek residents, without a Tech Hunters shop)
             if (p.Stored is { HomeBuilding: null } || p.Saved is { } r && !r.Source.Record.Bools.GetValueOrDefault("is resident")) continue;
@@ -220,14 +250,7 @@ public sealed partial class PopulationSystem
         var home = p.Stored?.HomeBuilding ?? (p.Saved is { } sp ? Saving.SavedCharacters.SavedHome(world, sp, site) : null);
         // Its unique members are freed first, so the fresh squad makes them again rather than their replacements.
         ReleaseUniques(world, p);
-        // A template whose members are each by chance can plan no one: a few rolls (engine choice).
-        BuiltSquad? built = null;
-        ulong key = 0;
-        for (int t = 0; t < 8 && built is null; t++)
-        {
-            key = Rng.Mix(SeedSalts.RoamingPool ^ (ulong)p.Id << 8 ^ (ulong)world.Tick << 24 ^ (ulong)t << 56);
-            built = BuildRoamer(p.TemplateId, p.Faction, key, world.Seed, p.Position);
-        }
+        var (built, key) = RollTemplate(world, p);
         if (built is null) return null;
         var fresh = new Platoon
         {
@@ -246,11 +269,50 @@ public sealed partial class PopulationSystem
         }
         var squad = SpawnSquad(world, built with { Home = home }, site, radius, platoonId: fresh.Id, pinned: true);
         squad.Money = p.Money;
+        MoveOutOfPlayerWalls(world, squad);
         fresh.SquadId = squad.Id;
         world.Platoons.Add(fresh);
         Despawn(world, p, release: false);   // its uniques were freed above and the fresh squad holds them
         if (townLog.Count >= 256) townLog.RemoveAt(0);
         townLog.Add($"{site.Town.Name}: {fresh.Stored.Name} made afresh ({squad.Members.Count})");
+        return squad;
+    }
+
+    /// <summary>A template whose members are each by chance can plan no one: a few rolls (engine choice). Null when none plans anyone.</summary>
+    (BuiltSquad? Built, ulong Key) RollTemplate(World world, Platoon p)
+    {
+        for (int t = 0; t < 8; t++)
+        {
+            ulong key = Rng.Mix(SeedSalts.RoamingPool ^ (ulong)p.Id << 8 ^ (ulong)world.Tick << 24 ^ (ulong)t << 56);
+            if (BuildRoamer(p.TemplateId, p.Faction, key, world.Seed, p.Position) is { } built) return (built, key);
+        }
+        return (null, 0);
+    }
+
+    /// <summary>
+    /// A save's never-made town squad (<see cref="Platoon.Unmade"/>) comes into the world made from its template into the same platoon, as the original builds the
+    /// platoon object it has (<c>FUN_1404ffad0</c>, +0x114 set): homed at its <c>homebuilding</c>, it keeps the save's record, which the next save writes back with its
+    /// characters and <c>never been activated</c> false (<c>FUN_140372ef0</c>). Returns its squad (null when the template plans no one).
+    /// </summary>
+    Squad? MakeUnmade(World world, Platoon p)
+    {
+        var site = data.Sites[p.Origin];
+        float radius = site.Town.SizeRadius * site.Town.TownRadiusMult;
+        var home = p.Saved is { } sp ? Saving.SavedCharacters.SavedHome(world, sp, site) : null;
+        if (RollTemplate(world, p).Built is not { } built) return null;
+        var squad = SpawnSquad(world, built with { Home = home }, site, radius, platoonId: p.Id, pinned: true);
+        squad.Money = p.Money;
+        MoveOutOfPlayerWalls(world, squad);
+        p.Stored = new StoredSquad { Name = data.Db.Find(p.TemplateId)?.Name ?? p.TemplateId, HomeBuilding = home };
+        p.Size = built.Plan.TotalMembers;
+        p.Unmade = false;
+        // Activation clears +0x114 on the platoon itself: once made, no later save rebuilds it from the template, whatever becomes of its squad.
+        if (p.Saved is { } made) made.Source.Record.Bools["never been activated"] = false;
+        p.State = PlatoonState.Loaded;
+        p.SquadId = squad.Id;
+        p.UnloadAtTick = -1;
+        if (townLog.Count >= 256) townLog.RemoveAt(0);
+        townLog.Add($"{site.Town.Name}: {p.Stored.Name} made from its template ({squad.Members.Count})");
         return squad;
     }
 
@@ -287,45 +349,60 @@ public sealed partial class PopulationSystem
         return n;
     }
 
+    /// <summary>The squared distance within which the camera focus stops a nest making squads (<c>FUN_1408f8740</c>:154-170, 1250 = 35.4 units; before any candidate is drawn).</summary>
+    public const float NestFocusBlockSquared = 1250;
+
+    /// <summary>Whether the camera focus (none: no test) is within sqrt(<see cref="NestFocusBlockSquared"/>) of the nest centre in 3D, the centre taken on the ground.</summary>
+    bool FocusBlocksNest(World world, Vector2 centre) =>
+        focus is { } f && Vector3.DistanceSquared(f, new Vector3(centre.X, world.Walkability.GroundHeight(centre.X, centre.Y), centre.Y)) < NestFocusBlockSquared;
+
     /// <summary>The radius round a nest within which a player's character stops it making squads (<c>FUN_1407866d0</c>, 1250).</summary>
     public const float NestGuardRadius = 1250;
 
     /// <summary>
-    /// Loaded nests make one more squad when their pool has room (built on the population thread, one per look at most): not a wiped-out nest, not one with a player
-    /// character within <see cref="NestGuardRadius"/> (it is only weighed then, so a nest left with nothing to make is still found wiped out).
+    /// One nest a tick, in turn over every nest (<c>TownList::vfunc_4</c>'s nest cursor, <b>Verified</b>; the original's frame is the tick here): when loaded and its pool has room it makes
+    /// one more squad (built on the population thread): not a wiped-out nest, not one with a player character within <see cref="NestGuardRadius"/> (it is only weighed then, so a nest
+    /// left with nothing to make is still found wiped out). The turn is the tick modulo the nest count, so it needs no saved cursor.
     /// </summary>
-    void TopUpNests(World world)
+    void TopUpNest(World world)
     {
         if (wildSites is null) return;
-        Vector2[]? players = null;
-        foreach (int i in wildLoaded)
+        if (nests is null || nestsOf != wildSites.Count)
         {
-            var site = wildSites[i];
-            var state = wildStates[i];
-            if (site.Kind != WildKind.Nest || state.Status != SiteStatus.Loaded || state.Pending || !active.Contains(site.Zone)) continue;   // held only by a squad away
-            var centre = wildCentres[i] ?? site.Spots[0];
-            var pools = NestPools(world, site);
-            if (pools.Ded) continue;
-            players ??= PlayerSpots(world);
-            bool guarded = false;
-            foreach (var at in players)
-                if (Vector2.DistanceSquared(at, centre) < NestGuardRadius * NestGuardRadius) { guarded = true; break; }
-            var budget = new NestBudget((int)MathF.Floor(pools.Roaming.Current), NestLiving(world, i, state), TemplateCounts(world, site, state), state.Made, 4, 1, !guarded, centre);
-            if (budget.Members >= budget.Cap)
-            {
-                // Full: nothing to make. A pool spent below one member with no one left alive can make nothing again: wiped out.
-                if (budget.Members == 0) CheckWipe(world, site, state);
-                continue;
-            }
-            state.Pending = true;
-            long loadId = state.LoadId;
-            ulong seed = world.Seed;
-            var walk = world.Walkability;
-            var spots = players;
-            if (work is null) SpawnWild(world, BuildNest(site, loadId, seed, walk, spots, budget));
-            else work.Add(() => builtWild.Enqueue(BuildNest(site, loadId, seed, walk, spots, budget)));
+            nests = [.. Enumerable.Range(0, wildSites.Count).Where(i => wildSites[i].Kind == WildKind.Nest)];
+            nestsOf = wildSites.Count;
         }
+        if (nests.Length == 0) return;
+        int i = nests[(int)(world.Tick % nests.Length)];
+        if (!wildLoaded.Contains(i)) return;
+        var site = wildSites[i];
+        var state = wildStates[i];
+        if (site.Kind != WildKind.Nest || state.Status != SiteStatus.Loaded || state.Pending || !active.Contains(site.Zone)) return;   // held only by a squad away
+        var centre = wildCentres[i] ?? site.Spots[0];
+        var pools = NestPools(world, site);
+        if (pools.Ded) return;
+        var players = PlayerSpots(world);
+        bool guarded = FocusBlocksNest(world, centre);
+        foreach (var at in players)
+            if (Vector2.DistanceSquared(at, centre) < NestGuardRadius * NestGuardRadius) { guarded = true; break; }
+        var budget = new NestBudget((int)MathF.Floor(pools.Roaming.Current), NestLiving(world, i, state), TemplateCounts(world, site, state), state.Made, 4, 1, !guarded, centre);
+        if (budget.Members >= budget.Cap)
+        {
+            // Full: nothing to make. A pool spent below one member with no one left alive can make nothing again: wiped out.
+            if (budget.Members == 0) CheckWipe(world, site, state);
+            return;
+        }
+        state.Pending = true;
+        long loadId = state.LoadId;
+        ulong seed = world.Seed;
+        var walk = world.Walkability;
+        var spots = players;
+        if (work is null) SpawnWild(world, BuildNest(site, loadId, seed, walk, spots, budget));
+        else work.Add(() => builtWild.Enqueue(BuildNest(site, loadId, seed, walk, spots, budget)));
     }
+
+    int[]? nests;
+    int nestsOf;
 
     /// <summary>Squads per entry of a nest's <c>roaming squads</c> it has now: in the world (the dead ones too, while they lie there) and the save's held ones.</summary>
     int[] TemplateCounts(World world, WildSite site, SiteState state)
@@ -342,6 +419,13 @@ public sealed partial class PopulationSystem
         return counts;
     }
 
+    /// <summary>A squad left the world: no site's squad list names it any more, so the nest wipe test (<see cref="CheckWipe"/>) sees no dangling handle.</summary>
+    internal void ForgetSquad(int id)
+    {
+        if (wildStates is null) return;
+        foreach (var state in wildStates) state.Squads.Remove(id);
+    }
+
     /// <summary>
     /// A nest that could make no squad (no entry fits or weighs anything) and has no squad left standing is wiped out for good (<c>FUN_140927440</c>, <c>Nest::vfunc_103</c>):
     /// <c>ded</c>, the hour as <c>tod</c>, and "{nest} has been wiped out". Engine choice for the original's "intact" here (its rule is Unknown): a squad with someone alive.
@@ -351,7 +435,7 @@ public sealed partial class PopulationSystem
         var pools = NestPools(world, site);
         if (pools.Ded) return;
         foreach (int id in state.Squads)
-            if (world.Squads.Find(id) is { } squad && squad.Members.Any(m => Living(world, m))) return;
+            if (world.Squads.Find(id) is not { } squad || squad.Members.Any(m => Living(world, m))) return;   // a handle that no longer resolves keeps the nest (FUN_1408f8740)
         if (HoldOf(world, site.Index) is { Members: > 0 }) return;
         pools.Ded = true;
         pools.DiedAt = (float)Hours(world);
@@ -361,17 +445,33 @@ public sealed partial class PopulationSystem
     }
 
     /// <summary>
-    /// A nest's squads leave the world: one that lost someone (engine choice for "not intact") takes its living members out of the pool (<c>FUN_140796b30</c>, the
-    /// original's despawn of a damaged squad it does not keep).
+    /// A town's roamer leaves the world for good (<c>FUN_1406bab60</c> -> <c>FUN_140796b30</c>, <b>Verified</b>): one not intact and not regenerating takes its living members out of its
+    /// town's roaming pool, only while the pool is above 0 and with no floor. Its faction's prosperity drops by 10 (floor 0) with it, pool or not (<c>FUN_1406bab60</c>; platoon +0xa4
+    /// read as the member count).
+    /// </summary>
+    void PayRoamerDespawn(World world, Platoon p, Squad squad)
+    {
+        if (Intact(world, p)) return;
+        if (squad.Members.Count > 0) LowerProsperity(world, p.Faction, DamagedDespawnProsperity);
+        if (p.Regenerate || p.Origin < 0 || p.Origin >= townPools.Length || townPools[p.Origin] is not { } pools) return;
+        if (pools.Roaming.Current > 0) pools.Roaming.Current -= squad.Members.Count(m => Living(world, m));
+    }
+
+    /// <summary>
+    /// A wild site's squads leave the world: one that is not intact (the squad-intact rule, <see cref="SquadIntact"/>, <b>Verified</b>) takes its living members out of the pool while it is above 0, with no
+    /// floor (<c>FUN_140796b30</c>, the original's despawn of a damaged squad it does not keep).
     /// </summary>
     void PayNestDespawn(World world, WildSite site, SiteState state)
     {
-        if (site.Kind != WildKind.Nest || !nestPools.TryGetValue(site.Index, out var pools)) return;
+        nestPools.TryGetValue(site.Index, out var pools);
         foreach (int id in state.Squads)
         {
             if (world.Squads.Find(id) is not { } squad) continue;
+            if (SquadIntact(world, squad)) continue;
             int living = squad.Members.Count(m => Living(world, m));
-            if (living < squad.SpawnSize) pools.Roaming.Current = MathF.Max(0, pools.Roaming.Current - living);
+            // Every non-persistent platoon taken out of the world while not intact lowers its faction's prosperity (FUN_1406bab60), nest squads and homeless ones too.
+            if (squad.Members.Count > 0) LowerProsperity(world, squad.Faction, DamagedDespawnProsperity);
+            if (site.Kind == WildKind.Nest && pools is not null && pools.Roaming.Current > 0) pools.Roaming.Current -= living;
         }
     }
 }

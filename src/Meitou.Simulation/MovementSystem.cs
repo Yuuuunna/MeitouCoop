@@ -1,3 +1,4 @@
+using Meitou.Data.Gameplay.Ai;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using Meitou.Data.World;
@@ -15,9 +16,10 @@ namespace Meitou.Simulation;
 /// <item>Separation: the repulsion along self-other is nonzero only closer than R and proportional to 100 x (1 - d/R), over at most
 /// 26 neighbours (Observed); R is twice the footprint radius 4 of a human (<see cref="SeparationRadius"/>), and the scale from that
 /// proportionality to a speed is an engine choice (<see cref="SeparationStrength"/>).</item>
-/// <item>Body contact (engine choice; whether the original's characters collide is Unknown): two standing bodies (<see cref="BodyShare"/> of their footprints) do not stay
+/// <item>Body contact (engine choice; the original only avoids the standing bodies round a character, no physical collision was found: docs/game/pathfinding.md "Bodies in the way"): two standing bodies (<see cref="BodyShare"/> of their footprints) do not stay
 /// overlapped. Each takes half of the overlap between its stepped position and the other's last position, averaged over the bodies it overlaps, so a walker shoves a stander
-/// aside; an imprisoned or bedded one does not give. Its own velocity into a body it already touches is dropped, so a crowd pressing on does not squash its front. A sitter is never moved, by contact or separation (the original pushes no sitter, Observed), and is not solid to others.</item>
+/// aside; an imprisoned or bedded one does not give. Its own velocity into a body it already touches is dropped, so a crowd pressing on does not squash its front. A sitter is never moved, by contact or separation (the original pushes no sitter, Observed), and is not solid to others. Downed, dead and carried bodies neither push (separation) nor
+/// block (contact, the walk's covered goal, root motion): the original's avoidance list leaves them out (docs/game/pathfinding.md "Bodies in the way").</item>
 /// <item>Paths: a character that wants one is flagged in Think; the Schedule step of the next tick asks the <see cref="PathService"/>;
 /// an answer is applied in a serial step, so a path is never read while it is replaced.</item>
 /// </list>
@@ -27,13 +29,13 @@ namespace Meitou.Simulation;
 /// onto a heading that eases toward the leader's, one second ahead of the leader; anyone else keeps a drawn 20..40 from its target. Its speed is the original's desired speed
 /// (<see cref="FollowSpeedFor"/>), capped by its top speed only (engine choice: the original's cap by speed mode is Unknown, and only this lets it settle in its slot). Within
 /// <see cref="DirectDistance"/> it steers straight at the aim, else it takes paths, and for <see cref="FollowPathSeconds"/> after a blocked step (engine choice). Not done: the
-/// original's aim outside a building the follower cannot enter, and its 50-100 hysteresis (practically nil).</item>
+/// original's aim outside a building the follower cannot enter.</item>
 /// <item>Turning: a walker out of combat faces the way it moves while its velocity follows the agent's acceleration (the original's model, Verified); its drawn
 /// body turns after the facing at a limited rate (<see cref="AnimationSystem.FollowFacing"/>). Fighters and direct followers keep the heading limit <see cref="TurnRate"/>
 /// and the cosine cut (engine choice).</item>
-/// Queued orders (<see cref="CharacterCold.OrderQueue"/>) and the formation (<see cref="Formation"/>) exist.
+/// Queued move orders (row-29 entries of <see cref="CharacterCold.OrderQueue"/>) and the formation (<see cref="Formation"/>) exist.
 /// </summary>
-public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDisposable
+public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDisposable, ITaskOwner, ITaskHandler, IOrderOwner
 {
     /// <summary>The fights the steering reads (null: no fight steering, as in worlds without combat; the world's combat system unless set).</summary>
     public Combat.CombatSystem? Fights { get; set; }
@@ -48,12 +50,28 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     public const float BodyShare = 0.6f;
     /// <summary>A character within this distance of a waypoint has reached it.</summary>
     public const float ArriveRadius = 10;
-    /// <summary>Maximum distance for a player's failed move path to fall back to walking straight to a walkable goal (engine choice: a few metres).</summary>
+    /// <summary>
+    /// How far (units) a player's order with no path at all may stand in for one by walking straight at its goal (a few metres, the width of a room: one shoved into furniture
+    /// is that close). A goal further off is off the mesh as a rule, and walking at it would go on for ever, so the order is dropped (engine choice; what the original does is unknown).
+    /// </summary>
     public const float StraightOrderReach = 64;
     /// <summary>
     /// How near (units) a walker comes to a corner it may not cut (<see cref="CanCut"/>) before it turns for the next waypoint (engine choice: about a step).
     /// </summary>
     public const float CornerReach = 2;
+
+    /// <summary>
+    /// Whether a walker off every surface (shoved into something that cuts a hole in the mesh) may step to (<paramref name="x"/>, <paramref name="z"/>): only nearer its path's current
+    /// point, and only when that point is a surface it can stand on, so it walks out and never further in (docs/game/pathfinding.md "Own builder", shoved into furniture).
+    /// </summary>
+    static bool EscapesToward(IWalkability walk, in CharacterHot n, CharacterCold cold, Vector3 from, float x, float z)
+    {
+        if ((n.Flags & (ushort)MoveFlags.HasPath) == 0 || n.PathCursor >= cold.Path.Length) return false;
+        var point = cold.Path[n.PathCursor];
+        var aim = new Vector2(point.X, point.Z);
+        if (Vector2.Distance(new Vector2(x, z), aim) >= Vector2.Distance(new Vector2(from.X, from.Z), aim)) return false;
+        return walk.TryStand(point.X, point.Z, from.Y, out _);
+    }
 
     /// <summary>
     /// Whether a walker at <paramref name="from"/> can step straight toward <paramref name="to"/> for <see cref="ArriveRadius"/> units, its height carried on as each step's is: a corner
@@ -68,6 +86,26 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         for (float d = 1; d <= MathF.Min(length, ArriveRadius); d += 1)
             if (!walk.TryStand(from.X + leg.X * (d / length), from.Z + leg.Y * (d / length), y, out y)) return false;
         return true;
+    }
+
+    /// <summary>How far a walker's height may be from its path's before the step looks for a layer at the path's height (<see cref="CorridorHeight"/>).</summary>
+    const float CorridorSlack = 4;
+
+    /// <summary>
+    /// The height of the walker's navmesh path at (x, z): the leg to its next point, the point's height projected along it; null off a path or on its
+    /// provisional part (engine choice: the walker's own height alone is held to <c>StandDrop</c>, and a 17-unit stair top below a floor's edge, which the
+    /// mesh joins over a slope of ~2 units, stopped walkers there, Observed: Ancient Lab with TwoStorey, zone 28.60).
+    /// </summary>
+    static float? CorridorHeight(in CharacterHot n, CharacterCold cold, float x, float z)
+    {
+        if (((MoveFlags)n.Flags & MoveFlags.HasPath) == 0 || n.PathCursor >= cold.Path.Length || n.PathCursor >= cold.PathExact) return null;
+        var b = cold.Path[n.PathCursor];
+        if (n.PathCursor == 0) return b.Y;
+        var a = cold.Path[n.PathCursor - 1];
+        var leg = new Vector2(b.X - a.X, b.Z - a.Z);
+        float length2 = leg.LengthSquared();
+        float t = length2 < 1e-6f ? 1 : Math.Clamp(((x - a.X) * leg.X + (z - a.Z) * leg.Y) / length2, 0, 1);
+        return a.Y + (b.Y - a.Y) * t;
     }
 
     /// <summary>
@@ -85,7 +123,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     const float CornerMargin = 1, CornerLength = 10;
 
     /// <summary>
-    /// The nav agent's braking for the corner it heads for (<b>Observed</b>, <c>FUN_140147fd0</c> with the corner from <c>FUN_140146a60</c>; docs/game/pathfinding.md):
+    /// The nav agent's braking for the corner it heads for (<b>Verified</b>, <c>FUN_140147fd0</c> with the corner from <c>FUN_140146a60</c>; docs/game/pathfinding.md):
     /// once the corner along its heading is within its stopping distance (<see cref="CornerMargin"/> added), its wanted speed drops to
     /// sqrt(2 a <see cref="CornerLength"/> |sin θ|), θ between its velocity and the way to the corner; when even the wanted speed fits under that, it steers square
     /// across its velocity toward the corner's side at that speed.
@@ -134,10 +172,15 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     public const int ProvisionalBlockedLimit = 5;
     /// <summary>
     /// How many times running a walker stopped on the navmesh part of its path (no ground it can stand on ahead) asks for the path again from where it stands before it drops it
-    /// and the order (engine choice: from a slightly different spot the path can start elsewhere, docs/game/pathfinding.md "Own builder"). Blocks while awaiting a request
-    /// or authoritative navigation do not count: the walker stands until the answer comes.
+    /// (engine choice: from a slightly different spot the path can start elsewhere, docs/game/pathfinding.md "Own builder"). A block while a request is in flight
+    /// does not count: the walker stands until the answer comes. A player's move order (<see cref="CharacterCold.OrderMove"/>) is not dropped for it (<see cref="BlockedRetrySeconds"/>).
     /// </summary>
     public const int BlockedRepathLimit = 3;
+    /// <summary>
+    /// Seconds between the requests of a move-order walker still blocked past <see cref="BlockedRepathLimit"/> / <see cref="ProvisionalBlockedLimit"/>: it keeps the order, stands
+    /// and asks again from where it stands (the original's agent asks again after 5 s off its path and never gives the walk up; docs/game/pathfinding.md "Walls").
+    /// </summary>
+    public const float BlockedRetrySeconds = 5;
 
     public PathService Paths { get; } = paths;
 
@@ -169,7 +212,11 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             }
             if (command is FollowOrder follow)
             {
-                Follow(world, follow);
+                // Row 45 Bodyguard or 31 Staying close to each of the characters (the selection when empty) but the target.
+                if (!table.TryResolveNext(follow.Target, out int led)) continue;
+                foreach (var id in world.CommandCharacters(follow, follow.Characters))
+                    if (table.TryResolveNext(id, out int s) && s != led)
+                        PlayerOrders.Give(world, s, world.BindOrder(follow, new OrderEntry(follow.Guard ? TaskType.BODYGUARD : TaskType.STAY_CLOSE_TO_TARGET, this) { Target = follow.Target }), follow.Queued);
                 continue;
             }
             if (command is not MoveOrder order) continue;
@@ -179,32 +226,30 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             var slots = new List<int>();
             foreach (var id in who)
             {
-                if (!table.TryResolveNext(id, out int found) || table.Cold(found)!.IsImprisoned) continue;   // a prisoner stays in its cage
+                if (!table.TryResolveNext(id, out int found)) continue;
+                if (!TaskStart.Eligible(world, table.Cold(found)!, TaskType.MOVE_CUS_ORDERED))
+                {
+                    // A prisoner stays in its cage (row 29 is not registered for the imprisoned or chained): the order waits in its queue.
+                    PlayerOrders.Give(world, found, world.BindOrder(order, new OrderEntry(TaskType.MOVE_CUS_ORDERED, this) { Point = order.Target }), order.Queued);
+                    continue;
+                }
                 if (table.Cold(found)!.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, id);   // an order gets a sleeper up
                 slots.Add(found);
             }
-            var targets = Formation.Place([.. slots.Select(s => new Vector2(table.Next[s].Position.X, table.Next[s].Position.Z))], new Vector2(order.Target.X, order.Target.Z));
+            var targets = Formation.Scatter(slots.Count, new Vector2(order.Target.X, order.Target.Z));
             for (int k = 0; k < slots.Count; k++)
             {
                 int slot = slots[k];
-                ref var n = ref table.Next[slot];
-                var cold = table.Cold(slot)!;
                 var target = targets[k];
-                cold.FollowOrder = CharacterId.None;
-                bool busy = n.Task == (byte)CharacterTask.GoTo && (n.Flags & (ushort)MoveFlags.AnyPath) != 0;
-                if (order.Queued && busy)
-                {
-                    cold.OrderQueue.Add(target);   // after the order in hand (shift + right click)
-                    continue;
-                }
-                GoToFloor(world, slot, new Vector3(target.X, order.Target.Y, target.Y), cold.RunSpeed);
-                if ((cold.Orders & CharacterOrders.Hold) != 0) cold.HoldPoint = target;   // Task_Move sets the hold point to its destination while on Hold
+                table.Cold(slot)!.FollowOrder = CharacterId.None;
+                // Shift + right click: after the order in hand.
+                PlayerOrders.Give(world, slot, world.BindOrder(order, new OrderEntry(TaskType.MOVE_CUS_ORDERED, this) { Point = new Vector3(target.X, order.Target.Y, target.Y) }), order.Queued);
             }
         }
         foreach (var squad in world.Squads.All) RefreshFormation(world, squad);
     }
 
-    internal void InvalidatePaths(World world, IReadOnlySet<Meitou.Data.World.ZoneCoordinate>? zones)
+    internal void InvalidatePaths(World world, IReadOnlySet<Meitou.Data.World.ZoneCoordinate>? zones, bool onlyAddedZones = false)
     {
         var table = world.Characters;
         long obsolete = Paths.Submitted;
@@ -215,6 +260,15 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             if ((n.Flags & (ushort)MoveFlags.AnyPath) == 0 && !cold.NavigationWaiting) continue;
             if (zones is not null && !cold.NavigationWaiting && (n.Flags & (ushort)(MoveFlags.Pending | MoveFlags.NeedPath)) == 0
                 && !Crosses(n.Position, cold.Path, n.PathCursor, zones)) continue;
+            if (onlyAddedZones && !cold.NavigationWaiting && (n.Flags & (ushort)MoveFlags.HasPath) != 0)
+            {
+                n.Flags = (ushort)(n.Flags & ~(ushort)(MoveFlags.Pending | MoveFlags.NeedPath));
+                cold.PathRequest = 0;
+                cold.PathApplied = Math.Max(cold.PathApplied, obsolete);
+                ClearSplice(cold);
+                AskSplice(ref n, cold, zones);
+                continue;
+            }
             n.Flags = (ushort)((n.Flags & ~(ushort)(MoveFlags.Pending | MoveFlags.HasPath)) | (ushort)MoveFlags.NeedPath);
             n.PathCursor = 0; cold.PathRequest = 0; cold.PathApplied = Math.Max(cold.PathApplied, obsolete);
             cold.NavigationWaiting = false;
@@ -229,6 +283,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     static void RefreshFormation(World world, Squad squad)
     {
         var table = world.Characters;
+        squad.ForceSpeed = world.ForcedSpeeds is { } forced && forced.TryGetValue(squad.TemplateId, out byte force) ? force : Squad.NoForceSpeed;
         var head = FormationHead(table, squad);
         int type = squad.Faction >= 0 && world.FactionFormations is { } formations && squad.Faction < formations.Count ? formations[squad.Faction] : (int)SquadFormation.Random;
         ulong key = Rng.Mix((ulong)type ^ Rng.Key(head) << 2);
@@ -284,7 +339,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// Sends a character to a point at a speed mode, dropping its queue (serial phases only). A path it is following is kept until the new one
+    /// Sends a character to a point at a speed mode (serial phases only). A path it is following is kept until the new one
     /// arrives, so a new order given on the move (holding the right button) does not stop it for the ticks the path takes.
     /// </summary>
     public static void GoTo(CharacterTable table, int slot, Vector2 target, byte mode)
@@ -292,9 +347,11 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         ref var n = ref table.Next[slot];
         var cold = table.Cold(slot)!;
         cold.NavigationWaiting = false;
-        cold.OrderQueue.Clear();
+        cold.OrderMove = false;
         cold.ArriveWithin = 0;
         cold.BlockedRepaths = 0;
+        cold.BlockedRetryTick = 0;
+        cold.WalkEnd = WalkEnd.None;
         n.Task = (byte)CharacterTask.GoTo;
         n.Goal = target;
         n.Mode = mode;
@@ -303,11 +360,11 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         ClearSplice(cold);
     }
 
-    /// <summary>Drops a character's orders and path and makes it stand (serial phases only).</summary>
     /// <summary>
     /// <see cref="FollowOrder"/>: each awake, free character (not the target) drops what it does and follows the target (<see cref="CharacterCold.FollowOrder"/>); a sleeper gets up first.
+    /// The order is row 45 Bodyguard or 31 Staying close; a job's follow (<paramref name="source"/> <see cref="TaskSource.Job"/>) runs the job's <paramref name="row"/>.
     /// </summary>
-    internal static void Follow(World world, FollowOrder order)
+    internal static void Follow(World world, FollowOrder order, TaskSource source = TaskSource.Order, int job = -1, TaskType? row = null)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(order.Target, out int led)) return;
@@ -315,37 +372,148 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         {
             if (!table.TryResolveNext(id, out int s) || s == led || table.Cold(s) is not { IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true } cold) continue;
             if (cold.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, id);
-            Stop(table, s);
-            cold.FollowOrder = order.Target;
-            cold.Guarding = order.Guard;
-            cold.FollowPathTime = 0;
-            cold.FollowHeading = Vector2.Zero;
-            table.Next[s].Task = (byte)CharacterTask.Follow;
-            table.Next[s].TaskTime = 0;
-            BreakCircle(table, id);
+            TaskStart.Start(world, s, new TaskRequest(CharacterTask.Follow, row ?? (order.Guard ? TaskType.BODYGUARD : TaskType.STAY_CLOSE_TO_TARGET), source) { Job = job, Target = order.Target });
         }
     }
 
     /// <summary>
-    /// The original drops a follow order that would close a circle (<c>FUN_1405c8c10</c>, run by the order giver <c>FUN_1405c8da0</c> for orders 31 and 45, <b>Observed</b>;
-    /// docs/game/animals.md "Following"): walking from whom <paramref name="leader"/> follows, the first character found following <paramref name="leader"/> stops (at most one).
+    /// A follow row (31, 45, 289) whose fight was a step of it (<see cref="TaskStart.Start"/> keeps the row's provenance over a goal's or reaction's fight) is over: the character stands idle
+    /// out of the fight and its provenance still names the row with the fight as its task.
     /// </summary>
-    static void BreakCircle(CharacterTable table, CharacterId leader)
+    internal static bool FightStepOver(CharacterTable table, int slot, CharacterCold cold) =>
+        cold.Running is { Task: CharacterTask.Attack } run && Production.PermaJobs.Follows(run.Row) && table.Next[slot].Task == (byte)CharacterTask.Idle && !cold.InCombat;
+
+    /// <summary>
+    /// The follow row takes its follow up again where its fight left it (serial; the decision step, for an order or a job: the original's plan goes on with the row's follow after 13): its walk
+    /// is asked anew under the row's provenance. False, with the row dropped (no provenance, no <see cref="CharacterCold.FollowOrder"/>), when the followed character is gone.
+    /// </summary>
+    internal static bool FollowAgain(World world, int slot, CharacterCold cold)
     {
-        var at = table.Cold(leader.Slot)!.FollowOrder;
-        for (int guard = 0; guard < 64 && !at.IsNone && table.TryResolveNext(at, out int slot); guard++)
+        var table = world.Characters;
+        if (cold.FollowOrder.IsNone || !table.TryResolveNext(cold.FollowOrder, out _))
         {
-            var cold = table.Cold(slot)!;
-            if (cold.FollowOrder == leader)
+            cold.Running = null;
+            cold.FollowOrder = CharacterId.None;
+            return false;
+        }
+        cold.Running = cold.Running! with { Task = CharacterTask.Follow };
+        TaskStart.Step(table, slot, CharacterTask.Follow);
+        table.Next[slot].TaskTime = 0;
+        cold.FollowPathTime = 0;
+        return true;
+    }
+
+    public void RegisterTasks(TaskHandlers tasks)
+    {
+        tasks.Register(CharacterTask.GoTo, this);
+        tasks.Register(CharacterTask.Follow, this);
+        tasks.Register(CharacterTask.Idle, this);
+        tasks.Register(CharacterTask.Wander, this);
+    }
+
+    /// <summary>A move order (29) needs an awake character (one out cold keeps it queued until it wakes); a follow order (31, 45) a target that is there, and an awake, free character (not caged or carried).</summary>
+    OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
+    {
+        var table = world.Characters;
+        if (order.IsMove) return table.Cold(slot)!.Medical?.Incapacitated == true ? OrderCheck.Blocked() : OrderCheck.Run;
+        if (!table.TryResolveNext(order.Target, out int led) || led == slot) return OrderCheck.Gone;
+        return table.Cold(slot) is { IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true } ? OrderCheck.Run : OrderCheck.Blocked();
+    }
+
+    /// <summary>A sleeper gets up first; then the move's walk or the follow starts (<see cref="ITaskHandler.Start"/>).</summary>
+    void IOrderOwner.Start(World world, int slot, OrderEntry order)
+    {
+        if (!world.ValidOrder(slot, order)) return;
+        var table = world.Characters;
+        if (table.Cold(slot)!.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, table.IdOf(slot));
+        TaskStart.Start(world, slot, order.IsMove
+            ? new TaskRequest(CharacterTask.GoTo, TaskType.MOVE_CUS_ORDERED, TaskSource.Order) { Point = order.Point }
+            : new TaskRequest(CharacterTask.Follow, order.Row, TaskSource.Order) { Target = order.Target });
+    }
+
+    /// <summary>
+    /// A move order's walk (row 29: <see cref="CharacterCold.OrderMove"/>, the Hold point follows it) to <see cref="TaskRequest.Point"/>'s floor, or a follow of <see cref="TaskRequest.Target"/>
+    /// (<see cref="CharacterCold.FollowOrder"/>; row 45 guards it). An order's follow breaks a circle of followers back to the character (<see cref="BreakCircle(CharacterTable, CharacterId)"/>).
+    /// An engine walk goes to <see cref="TaskRequest.Goal"/> as given (<see cref="GoTo"/>); an engine's idle, wander or follow of the squad's leader (no target) stops the character on it.
+    /// </summary>
+    void ITaskHandler.Start(World world, int slot, in TaskRequest request)
+    {
+        var table = world.Characters;
+        var cold = table.Cold(slot)!;
+        if (request.Task == CharacterTask.GoTo)
+        {
+            if (request.Goal is { } goal)
             {
-                cold.FollowOrder = CharacterId.None;
-                if (table.Next[slot].Task == (byte)CharacterTask.Follow) Stop(table, slot);
+                GoTo(table, slot, goal, request.Mode ?? cold.RunSpeed);
                 return;
             }
-            at = cold.FollowOrder;
+            GoToFloor(world, slot, request.Point, request.Mode ?? cold.RunSpeed);
+            cold.OrderMove = request.Row == TaskType.MOVE_CUS_ORDERED;
+            return;
+        }
+        Stop(table, slot);
+        if (request.Task != CharacterTask.Follow || request.Target.IsNone)
+        {
+            // A standing task, or following the squad's leader (an engine start): the character stops and takes it up.
+            table.Next[slot].Task = (byte)request.Task;
+            return;
+        }
+        cold.FollowOrder = request.Target;
+        cold.FollowPathTime = 0;
+        cold.FollowHeading = Vector2.Zero;
+        table.Next[slot].Task = (byte)CharacterTask.Follow;
+        table.Next[slot].TaskTime = 0;
+        if (request.Source == TaskSource.Order) BreakCircle(world, table.IdOf(slot));
+    }
+
+    /// <summary>A walk or a follow holds nothing: the next start sets the movement (the follow's <see cref="CharacterCold.FollowOrder"/> stays for the task it goes back to).</summary>
+    void ITaskHandler.End(World world, int slot, CharacterTask task, TaskEnd reason) { }
+
+    /// <summary>
+    /// The original drops what would close a circle back to the character just ordered to follow or guard (<paramref name="ordered"/>; <c>FUN_1405c8c10</c>, run by the order giver
+    /// <c>FUN_1405c8da0</c> after it adds a one-shot order or a job 31 or 45, <b>Verified</b>; docs/game/animals.md "Following"). Walking the chain from the ordered character (a character
+    /// once at most), whoever it reaches loses its one-shot follow of the ordered character and every Staying close / Bodyguard job on it; the walk goes on through the target of the
+    /// one-shot follow and of each such job. The jobs are only looked at while the character has a Staying close 31 job (so an animal's 289 and its Bodyguard are not walked).
+    /// </summary>
+    internal static void BreakCircle(World world, CharacterId ordered)
+    {
+        if (world.Characters.TryResolveNext(ordered, out int start)) BreakCircle(world, ordered, start, new List<int>(4));
+    }
+
+    static void BreakCircle(World world, CharacterId ordered, int slot, List<int> seen)
+    {
+        var table = world.Characters;
+        // Engine guard: the original has none on the job walk; a chain is cut at 64 characters like the one-shot walk was.
+        if (seen.Count >= 64 || seen.Contains(slot)) return;
+        seen.Add(slot);
+        var cold = table.Cold(slot)!;
+        // The one-shot follow (a running follow job's FollowOrder is the job's, handled with the jobs).
+        var order = cold.FollowOrder;
+        bool jobRuns = Production.PermaJobs.ListJob(cold, (CharacterTask)table.Next[slot].Task) is { } running && Production.PermaJobs.Follows(running.Row);
+        if (!order.IsNone && !jobRuns)
+        {
+            if (order == ordered)
+            {
+                cold.FollowOrder = CharacterId.None;
+                if (table.Next[slot].Task == (byte)CharacterTask.Follow) TaskStart.Stand(table, slot);
+            }
+            else if (table.TryResolveNext(order, out int next)) BreakCircle(world, ordered, next, seen);
+        }
+        if (!cold.Jobs.Exists(j => j.Type == Meitou.Data.Gameplay.Ai.TaskType.STAY_CLOSE_TO_TARGET)) return;
+        for (int k = 0; k < cold.Jobs.Count; k++)
+        {
+            var job = cold.Jobs[k];
+            if (job.Type is not (Meitou.Data.Gameplay.Ai.TaskType.STAY_CLOSE_TO_TARGET or Meitou.Data.Gameplay.Ai.TaskType.BODYGUARD)) continue;
+            if (job.Character == ordered)
+            {
+                Production.ProductionSystem.RemoveJob(world, slot, k);
+                k--;
+            }
+            else if (!job.Character.IsNone && table.TryResolveNext(job.Character, out int next)) BreakCircle(world, ordered, next, seen);
         }
     }
 
+    /// <summary>Drops a character's path and makes it stand (serial phases only); its order queue is the queue's (<see cref="PlayerOrders"/>).</summary>
     public static void Stop(CharacterTable table, int slot)
     {
         ref var n = ref table.Next[slot];
@@ -354,10 +522,10 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         n.PathCursor = 0;
         var cold = table.Cold(slot)!;
         cold.NavigationWaiting = false;
-        cold.OrderQueue.Clear();
         cold.PathRequest = 0;
         ClearSplice(cold);
         cold.FollowHeading = Vector2.Zero;
+        cold.WalkEnd = WalkEnd.None;   // stopped from outside: neither arrived nor failed
     }
 
     public void Schedule(World world)
@@ -446,8 +614,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             }
             else
             {
-                // A short player order can leave a disconnected pocket by heading straight at a walkable goal; ordinary step checks still apply.
-                // Distant or off-mesh goals retain the failed-path behavior so the walker cannot keep chasing them indefinitely.
+                // A player ordered out of a spot no path can leave (shut in a hollow the navmesh does not cross, or shoved into one) walks straight at the order's goal instead of
+                // losing the order: the ordinary step test still refuses what it cannot walk, and EscapesToward above clears the step out of a hole that cuts the mesh. Only a short
+                // order with a goal on the mesh: a goal off it (a click that hit nothing, an order restored from a save) would be walked at for ever, through walls, so it keeps the drop.
                 float toGoal = new Vector2(n.Goal.X - n.Position.X, n.Goal.Y - n.Position.Z).Length();
                 bool shortHop = toGoal <= StraightOrderReach && world.Walkability.IsWalkable(n.Goal.X, n.Goal.Y, n.Position.Y);
                 if (cold.IsPlayer && n.Task == (byte)CharacterTask.GoTo && shortHop)
@@ -461,17 +630,24 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 else
                 {
                     // No way there: the old path (an order given on the move) is dropped too.
+                    bool following = (n.Flags & (ushort)MoveFlags.HasPath) != 0;
                     cold.PathFailed = true;
                     n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.HasPath);
                     n.PathCursor = 0;
                     n.TaskTime = FailedPathWait;
-                    if (n.Task == (byte)CharacterTask.GoTo) { n.Task = (byte)CharacterTask.Idle; cold.OrderQueue.Clear(); }
+                    if (n.Task == (byte)CharacterTask.GoTo)
+                    {
+                        LogDropped(world, n, cold, following ? "no path found on asking again (the path it followed is dropped)" : "no path found");
+                        cold.WalkEnd = WalkEnd.Failed;
+                        TaskStart.Step(table, slot, CharacterTask.Idle);
+                        cold.OrderQueue.Clear();
+                    }
                 }
             }
         }
     }
 
-    /// <summary>Follows a found, non-waiting path, joining where the walker has reached since it asked.</summary>
+    /// <summary>Follows a found path from its point after the start (the start is where the walker stood when it asked), entering it at <see cref="Join"/>.</summary>
     static void TakePath(IWalkability walk, ref CharacterHot n, CharacterCold cold, PathResult path)
     {
         cold.Path = [.. path.Points.Skip(1)];
@@ -481,12 +657,13 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         n.Flags |= (ushort)MoveFlags.HasPath;
     }
 
-    /// <summary>Maximum distance from a new path's leg at which the walker may join it (engine choice).</summary>
+    /// <summary>How far (units) a walker may be off a leg of its new path to enter the path there (<see cref="Join"/>; engine choice: a stride).</summary>
     public const float JoinSlack = ArriveRadius;
 
     /// <summary>
-    /// Enters an answered path at the end of its nearest leg within the distance walked since the request, plus <see cref="JoinSlack"/>.
-    /// Only joins within that slack and where the walker can step toward the leg's end; otherwise starts at point zero.
+    /// The point of a new path a walker heads for first. A path asked for on the move (the provisional part of a long route asks every few seconds) starts where the walker
+    /// stood then; it has walked on meanwhile, and heading for the path's first point would turn it back and round (engine choice). So the end of the leg nearest it, among
+    /// the legs within the distance it has come, when it is within <see cref="JoinSlack"/> of that leg and can step toward its end; else 0.
     /// </summary>
     static int Join(IWalkability walk, Vector3 at, Vector3 start, Vector3[] path)
     {
@@ -522,10 +699,10 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         var table = world.Characters;
         var prev = table.Previous;
         var next = table.Next;
-        float dt = world.TickSeconds;
         for (int i = part.Start; i < part.End; i++)
         {
-            if (!prev[i].Alive) continue;
+            if (!prev[i].Alive || prev[i].Dormant || !world.Steps(i)) continue;
+            float dt = world.StepSeconds(i);   // a far character's step covers the ticks since its last (the far cadence, World.StepTicks)
             ref var n = ref next[i];
             var task = (CharacterTask)n.Task;
             var flags = (MoveFlags)n.Flags;
@@ -539,14 +716,14 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 if (!cold.FollowOrder.IsNone && !table.IsAlive(cold.FollowOrder))
                 {
                     cold.FollowOrder = CharacterId.None;
-                    n.Task = (byte)CharacterTask.Idle;
+                    TaskStart.Step(table, i, CharacterTask.Idle);
                     continue;
                 }
                 var squad = cold.SquadId >= 0 ? world.Squads.Find(cold.SquadId) : null;
-                var leader = Followed(squad, cold);
+                var leader = Followed(world, squad, cold);
                 if (leader.IsNone || leader.Slot == i || !table.IsAlive(leader))
                 {
-                    n.Task = (byte)CharacterTask.Wander;
+                    TaskStart.Step(table, i, CharacterTask.Wander);
                     continue;
                 }
                 if (table.Cold(leader.Slot)?.CarriedBy == table.IdOf(i)) continue;   // it carries its leader: the squad follows it, it does not follow itself
@@ -566,7 +743,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                     if (heading == Vector2.Zero) heading = leadDir;
                     else if (moving)
                     {
-                        heading += (leadDir - heading) * (HeadingEase * dt);
+                        heading += (leadDir - heading) * MathF.Min(1, HeadingEase * dt);
                         heading = heading.LengthSquared() > 1e-8f ? Vector2.Normalize(heading) : leadDir;
                     }
                     cold.FollowHeading = heading;
@@ -586,11 +763,26 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 bool otherFloor = !shutOut && climb > FloorSlack && MathF.Abs(world.Walkability.GroundHeight(leadAt.X, leadAt.Y, n.Position.Y) - lead.Position.Y) > FloorSlack;
                 if (otherFloor) slotPos = leadAt;
                 float away = Vector2.Distance(here, slotPos) + (otherFloor ? climb : 0);
-                cold.FollowSpeed = FollowSpeedFor(away, moving, leadDir, new Vector2(MathF.Sin(prev[i].Yaw), MathF.Cos(prev[i].Yaw)));
+                // The catch-up factor reads the two movement vectors (+0xd0 / +0xd8 normalised), not the facings (FUN_14033b350, Verified).
+                cold.FollowSpeed = FollowSpeedFor(away, moving, Direction(lead.Velocity), Direction(prev[i].Velocity));
                 n.Mode = lead.Mode;
+                // Task_Follow sets the follower's sneaking each update (FUN_14033b350, Verified): on while the leader sneaks out of a fight and the follower regards it as friendly (vfunc 0x3f0; here:
+                // the same faction or an allied one, as Carry.Friendly reads it), off otherwise; dropping it also stands it up. A leader that follows someone itself may change its own flag in this same
+                // parallel pass, so its followers are left as they are (engine choice, keeps the step deterministic).
+                if (lead.Task != (byte)CharacterTask.Follow && table.Cold(leader.Slot) is { } leaderCold)
+                {
+                    bool sneak = (leaderCold.Orders & CharacterOrders.Sneak) != 0 && !leaderCold.InCombat && (leaderCold.Faction == cold.Faction || Fights?.Relations is { } rel && rel.Contains(cold.Faction) && rel.Contains(leaderCold.Faction) && rel.IsAlly(cold.Faction, leaderCold.Faction));
+                    if (sneak) cold.Orders |= CharacterOrders.Sneak;
+                    else if ((cold.Orders & CharacterOrders.Sneak) != 0)
+                    {
+                        cold.Orders &= ~CharacterOrders.Sneak;
+                        if (cold.Medical is { } med) med.StayingLow = false;
+                    }
+                }
                 n.TaskTime -= dt;
                 if (cold.FollowPathTime > 0) cold.FollowPathTime = MathF.Max(cold.FollowPathTime - dt, 0);
-                if (away < DirectDistance && !otherFloor && cold.FollowPathTime <= 0)
+                bool direct = FollowDirect(cold, away, n.Position, new Vector2(prev[i].Velocity.X, prev[i].Velocity.Z).Length());
+                if (direct && !otherFloor && cold.FollowPathTime <= 0)
                 {
                     // Near its aim: Move steers it straight there (a path it had is dropped).
                     n.Goal = slotPos;
@@ -629,9 +821,36 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         }
     }
 
-    /// <summary>Whom a follower keeps its slot by: the target of its <see cref="FollowOrder"/>, a contract's mission target (Ai.AiMind.FollowTarget), else its squad's leader.</summary>
-    static CharacterId Followed(Squad? squad, CharacterCold cold) =>
-        !cold.FollowOrder.IsNone ? cold.FollowOrder : cold.Ai is { FollowTarget.IsNone: false } follows ? follows.FollowTarget : squad?.Leader ?? CharacterId.None;
+    /// <summary>
+    /// Whom a follower keeps its slot by: the target of its <see cref="FollowOrder"/>, a contract's mission target (Ai.AiMind.FollowTarget), its owner (a slave's: Task_FollowLeader, the owner first, <c>FUN_14033b160</c>;
+    /// Meitou's owner is the leader of the master squad, <see cref="Kidnap.ObedientSlave.OwnerOf"/>), else its squad's leader.
+    /// </summary>
+    static CharacterId Followed(World world, Squad? squad, CharacterCold cold) =>
+        !cold.FollowOrder.IsNone ? cold.FollowOrder : cold.Ai is { FollowTarget.IsNone: false } follows ? follows.FollowTarget
+        : Kidnap.ObedientSlave.OwnerOf(world, cold) is { } owner ? owner : squad?.Leader ?? CharacterId.None;
+
+    /// <summary>A velocity's horizontal unit direction (zero stays zero, as Ogre's normalise leaves it).</summary>
+    static Vector2 Direction(Vector3 velocity)
+    {
+        var flat = new Vector2(velocity.X, velocity.Z);
+        return flat.LengthSquared() > 0 ? Vector2.Normalize(flat) : Vector2.Zero;
+    }
+
+    /// <summary>The squared distance within which a follower steers straight at its aim (the original's 50), and beyond which it always takes paths (100).</summary>
+    const float DirectNear2 = DirectDistance * DirectDistance, DirectFar2 = 100 * 100;
+
+    /// <summary>
+    /// Whether a follower steers straight at its aim (<c>Task_Follow</c> flag <c>+0xac</c>, FUN_14033b350, <b>Verified</b>): set within 50; between 50 and 100 it stays set only while the distance
+    /// it moved since the last update exceeds its speed squared (else it drops and paths); cleared beyond 100. The distance moved is kept for the next update.
+    /// </summary>
+    static bool FollowDirect(CharacterCold cold, float away, Vector3 position, float speed)
+    {
+        float d2 = away * away;
+        if (d2 < DirectNear2) cold.FollowDirect = true;
+        else if (cold.FollowDirect && (d2 >= DirectFar2 || Vector3.Distance(position, cold.FollowLast) <= speed * speed)) cold.FollowDirect = false;
+        cold.FollowLast = position;
+        return cold.FollowDirect;
+    }
 
     /// <summary>How far a follower that is not its target's squad mate keeps from it: 20..40, drawn per follower and target (the original draws it when the follow task is made).</summary>
     static float PlainDistance(ulong seed, CharacterId self, CharacterId target) =>
@@ -735,16 +954,23 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         return slowest;
     }
 
+    /// <summary>
+    /// Whether a medic's ask to stand still holds the character (<see cref="CharacterCold.StandStillUntil"/>): the original's patient takes 62 Standing still as an urgent goal, which its
+    /// orders outrank and whose row needs no attack on it (<c>!isAggressionTowardsMe</c>). Engine reading: an NPC (the player's characters move by orders), not fighting or fleeing.
+    /// </summary>
+    static bool AskedToStandStill(in CharacterHot n, CharacterCold cold, long tick) =>
+        cold.StandStillUntil > tick && !cold.IsPlayer && !cold.InCombat && !cold.Fleeing && cold.CarriedBy.IsNone && n.Task != (byte)CharacterTask.Attack;
+
     public void Move(World world, Partition part)
     {
         var table = world.Characters;
         var prev = table.Previous;
         var next = table.Next;
         var walk = world.Walkability;
-        float dt = world.TickSeconds;
         for (int i = part.Start; i < part.End; i++)
         {
-            if (!prev[i].Alive) continue;
+            if (!prev[i].Alive || prev[i].Dormant || !world.Steps(i)) continue;
+            float dt = world.StepSeconds(i);   // a far character's step covers the ticks since its last (the far cadence, World.StepTicks)
             ref readonly var p = ref prev[i];
             ref var n = ref next[i];
             var cold = table.Cold(i)!;
@@ -756,7 +982,14 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 cold.AgentSpeed = 0;
                 continue;
             }
-            if (n.Task != (byte)CharacterTask.Attack && cold.StaggeredUntil > world.Tick || cold.GettingUpUntil > world.Tick
+            if (n.Position != p.Position)
+            {
+                // Placed earlier this tick (a debug teleport): a step from last tick's position would put it back, as a neighbour's push does to one in a crowd.
+                n.Velocity = Vector3.Zero;
+                cold.AgentSpeed = 0;
+                continue;
+            }
+            if (n.Task != (byte)CharacterTask.Attack && cold.StaggeredUntil > world.Tick || CharacterFacts.GettingUp(cold, world.Tick)
                 || n.Task != (byte)CharacterTask.Attack && cold.Animation is { HoldsStill: true } && ((MoveFlags)n.Flags & MoveFlags.AnyPath) != 0)
             {
                 // A stagger outside a fight stops the movement while the stumble clip plays (Character::_startStumble), and getting up after a knockout in or out of
@@ -779,6 +1012,18 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 n.Velocity = Vector3.Zero; cold.AgentSpeed = 0;
                 continue;
             }
+            if (AskedToStandStill(n, cold, world.Tick))
+            {
+                // A medic treating it asked it to stand still (FirstAidSystem): it stops where it is; its own walk is kept and goes on when the ask lapses.
+                n.Velocity = Vector3.Zero;
+                cold.AgentSpeed = 0;
+                continue;
+            }
+            // An order move on Hold makes its destination the hold point on every step (Task_Move update FUN_140354600, Verified): a queued move as it starts, and over
+            // the position Hold was turned on at mid-walk.
+            if (n.Task == (byte)CharacterTask.GoTo && cold.OrderMove && Orders.Holding(cold)) cold.HoldPoint = new Vector3(n.Goal.X, n.Position.Y, n.Goal.Y);
+            // Every player order sets the centre of movement to its point (Character::addOrder -> AI::setCenterOfMovement); it matters only while the mode is not ROAM_FAR.
+            if (n.Task == (byte)CharacterTask.GoTo && cold.OrderMove && cold.Manoeuvre != ManoeuvreMode.RoamFar) cold.CentreOfMovement = new Vector3(n.Goal.X, n.Position.Y, n.Goal.Y);
             float speed = MathF.Sqrt(p.Velocity.X * p.Velocity.X + p.Velocity.Z * p.Velocity.Z);
             var dir = Vector2.Zero;
             bool facing = false, agentWalk = false;
@@ -839,6 +1084,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                     byte mode = cold.ModeOverride ?? n.Mode;
                     // A carrier in walk mode is raised to run mode (the original's speed selector, Observed; docs/game/carry-loot.md "Speed and weight").
                     if (mode == SpeedMode.Walk && !cold.Carrying.IsNone) mode = SpeedMode.Run;
+                    // Its squad template's force speed 0..2 replaces the AI's mode (FUN_140332390 never lowers an explicit task mode, so only a raise is applied; docs/game/pathfinding.md "Force speed").
+                    if (!cold.IsPlayer && cold.Ai?.Squad is { ForceSpeed: < Squad.NoForceSpeed } forcing && mode < forcing.ForceSpeed) mode = forcing.ForceSpeed;
                     float top = water > 0 && cold.Race is { } race ? Speed.InWater(water, n.MaxSpeed, race, cold.SwimSpeed) : n.MaxSpeed;
                     desired = cold.SpeedOverride > 0 ? cold.SpeedOverride
                         : n.Task == (byte)CharacterTask.Follow ? MathF.Min(top, cold.FollowSpeed)   // a follower's own desired speed, not its mode's cap
@@ -847,6 +1094,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                     if (cold.InCombat && !cold.CombatRunning && n.Task == (byte)CharacterTask.Attack) desired = MathF.Min(desired, Combat.CombatTuning.FootworkSpeed);
                     if (mode == SpeedMode.Group && cold.SpeedOverride <= 0 && n.Task != (byte)CharacterTask.Follow) desired = MathF.Min(desired, GroupSpeed(world, i, cold, p.Position));
                     if ((cold.Orders & CharacterOrders.Sneak) != 0 && cold.SpeedOverride <= 0) desired = MathF.Min(desired, Orders.SneakSpeed(desired, Orders.Stealth(cold)));
+                    if (cold.PaceCap is { } pace && n.Task == (byte)CharacterTask.GoTo && !cold.InCombat) desired = MathF.Min(desired, pace);   // a campaign follower near its trail point
                     if (cold.Medical is { Crawling: true } && cold.CarriedBy.IsNone) desired = Bodies.Speed.Crippled;   // the final override, after water and sneaking
                     // Braking into the last point, never past it.
                     if (last) desired = MathF.Min(desired, MathF.Min(MathF.Sqrt(2 * PathAcceleration(cold) * dist), dist / dt));
@@ -875,6 +1123,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             }
 
             if (!steering && n.Task == (byte)CharacterTask.Attack && Fights is not null && Fights.SwingAim(world, i, out var swingAim)) n.Yaw = MathF.Atan2(swingAim.X, swingAim.Y);   // a swing turns at once to its target (FUN_140666400, FUN_14060a590)
+            else if (!steering && n.Task == (byte)CharacterTask.Attack && Fights is not null && Fights.DefenceAim(world, i, out var defenceAim)) n.Yaw = MathF.Atan2(defenceAim.X, defenceAim.Y);   // a defence turns at once to the swing it follows (FUN_140609c70)
             if (steering) { }   // its velocity is the steering's
             else if (finished)
             {
@@ -886,14 +1135,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 bool replaced = ((MoveFlags)n.Flags & (MoveFlags.NeedPath | MoveFlags.Pending)) != 0;
                 if (!replaced && n.Task == (byte)CharacterTask.GoTo)
                 {
-                    if (cold.OrderQueue.Count > 0)
-                    {
-                        // The next queued order (shift + right click): a path to it is asked for next tick.
-                        n.Goal = cold.OrderQueue[0];
-                        cold.OrderQueue.RemoveAt(0);
-                        n.Flags |= (ushort)MoveFlags.NeedPath;
-                    }
-                    else n.Task = (byte)CharacterTask.Idle;
+                    cold.WalkEnd = WalkEnd.Finished;
+                    // The move order leaves the queue; a queued move after it (shift + right click) starts: a path to it is asked for next tick.
+                    if (!PlayerOrders.Arrived(world, i, cold, ref n)) TaskStart.Step(table, i, CharacterTask.Idle);
                 }
                 else if (!replaced && n.Task == (byte)CharacterTask.Attack) n.TaskTime = PursuitSystem.RepathSeconds;   // a fighter at the end of its path to a moving target asks for the next one soon (PursuitSystem)
                 else if (!replaced)
@@ -954,11 +1198,12 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             world.Grid.Query(p.Position.X, p.Position.Z, SeparationRadius, ref push, static (int other, ref SeparationState s) =>
                 {
                     if (other == s.Self || s.Count >= MaxSeparationContributions) return;
-                    if (s.Table.Cold(other) is { CarriedBy.IsNone: false }) return;   // a carried body is on its carrier's shoulder, not in anyone's way
                     var all = s.Table.Previous;
                     var d = new Vector2(all[s.Self].Position.X - all[other].Position.X, all[s.Self].Position.Z - all[other].Position.Z);
                     float len = d.Length();
                     if (len >= SeparationRadius) return;
+                    // A carried body is on its carrier's shoulder and a downed or dead one lies out of the flocking list: neither is in anyone's way (docs/game/pathfinding.md "Bodies in the way").
+                    if (s.Table.Cold(other) is { } them && (!them.CarriedBy.IsNone || them.Medical is { Incapacitated: true })) return;
                     s.Near[s.Count++] = other;
                     // Exactly on top of each other: the lower slot is pushed one way, the other the opposite.
                     s.Sum += (len > 1e-4f ? d / len : (s.Self < other ? Vector2.UnitX : -Vector2.UnitX)) * (100 * (1 - len / SeparationRadius));
@@ -966,7 +1211,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
 
             // Closing on its spot it is not held off by those standing round it (they are pushed aside as it arrives); a sitter is not moved at all.
             bool seated = Seated(n, cold);
-            if (closing || seated || steering) push.Sum = Vector2.Zero;   // a steering fighter's repulsion is its separation
+            // A steering fighter keeps it too: its repulsion is too weak to keep bodies apart in a crowd, and without it Contact shoves back out what the steering walks in.
+            if (closing || seated) push.Sum = Vector2.Zero;
             var drive = closing || seated ? dir * speed : Blocked(world, cold, ref push, new Vector2(p.Position.X, p.Position.Z), dir * speed);
             var step = (drive + push.Sum * SeparationStrength) * dt;
             var shove = closing || seated ? Vector2.Zero : Contact(world, i, cold, ref push, new Vector2(p.Position.X, p.Position.Z) + step);
@@ -991,7 +1237,15 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             {
                 // One already off every surface near its height (a stale height) is not held there: it steps down onto what is below.
                 if (!stands) stands = walk.TryStand(x, z, p.Position.Y, out y);
-                if (stands || !walk.IsWalkable(p.Position.X, p.Position.Z, p.Position.Y) && walk.IsWalkable(x, z))
+                // On its navmesh path, a drop or climb beyond the stand limits that the corridor itself takes (a stair top short of a floor's edge) is stepped:
+                // the layer is looked for at the path's height there (docs/game/pathfinding.md "Heights").
+                if (!stands && !steering && CorridorHeight(n, cold, x, z) is { } along && MathF.Abs(along - p.Position.Y) > CorridorSlack)
+                    stands = walk.TryStand(x, z, along, out y);
+                bool offSurface = !stands && !walk.IsWalkable(p.Position.X, p.Position.Z, p.Position.Y);
+                // Shoved into something that cuts a hole in the mesh (a market stall), it walks out along its path toward the surface the path starts on, at its own height.
+                bool escaping = offSurface && !steering && !walk.IsWalkable(x, z) && EscapesToward(walk, n, cold, p.Position, x, z);
+                if (escaping) y = p.Position.Y;
+                if (stands || offSurface && walk.IsWalkable(x, z) || escaping)
                 {
                     n.Position = new Vector3(x, y, z);
                     if (speed > 0.1f && !facing) n.Yaw = MathF.Atan2(dir.X, dir.Y);
@@ -1005,25 +1259,12 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 }
                 else
                 {
-                    // Blocked on the provisional part of a long route (the terrain-only route met a wall or a building): stand and ask again.
-                    // Blocked on its navmesh part: ask again from where it stands a few times before giving up.
-                    if (n.PathCursor >= cold.PathExact ? ++cold.ProvisionalBlocked <= ProvisionalBlockedLimit : ++cold.BlockedRepaths <= BlockedRepathLimit)
-                    {
-                        speed = 0;
-                        dir = Vector2.Zero;
-                        Reroute(world, ref n, cold, now: true);
-                        goto moved;
-                    }
-                    // Blocked (no surface to walk on there): drop the path and wait before trying again; a follower steering at its slot takes paths for a while.
+                    // Blocked (no surface to walk on there): it stands and asks for the path again, or gives the walk up.
                     speed = 0;
-                    if (n.Task == (byte)CharacterTask.Follow) cold.FollowPathTime = FollowPathSeconds;
-                    ClearSplice(cold);
-                    n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.HasPath);
-                    n.TaskTime = FailedPathWait;
-                    if (n.Task == (byte)CharacterTask.GoTo) { n.Task = (byte)CharacterTask.Idle; cold.OrderQueue.Clear(); }
+                    dir = Vector2.Zero;
+                    if (!AsksAgainBlocked(world, ref n, cold)) DropBlocked(world, i, ref n, cold, x, z);
                 }
             }
-        moved:
             n.Velocity = new Vector3(dir.X * speed, 0, dir.Y * speed);
             n.Animation = (ushort)(speed < 1 ? 0 : speed <= n.WalkSpeed + 1 ? 1 : 2);
             n.AnimationTime = n.Animation == p.Animation ? p.AnimationTime + dt : 0;
@@ -1035,14 +1276,66 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// seabed, while here a character on the water keeps the navmesh's flat water surface for its height, so the depth is taken from the terrain below while it is at the surface
     /// (<see cref="Speed.WaterSlack"/> over the water level; a deck or floor higher up counts as dry). The race's size scale is taken as 1 (what humans have, <b>Observed</b>).
     /// </summary>
-    static int WaterStateAt(IWalkability walk, Vector3 at, CharacterCold cold)
+    internal static int WaterStateAt(IWalkability walk, Vector3 at, CharacterCold cold)
     {
         if (cold.Race is not { } race || !cold.CarriedBy.IsNone) return 0;
         float standY = at.Y <= WorldWater.Height + Speed.WaterSlack ? MathF.Min(at.Y, walk.TerrainHeight(at.X, at.Z)) : at.Y;
         return Speed.WaterState(standY, 1, race.Swims);
     }
 
-    /// <summary>Asks for the path to the goal again (partition-safe: the character's own state), at most every <see cref="ProvisionalRepathSeconds"/> unless <paramref name="now"/>.</summary>
+    /// <summary>
+    /// A walker blocked on its path (no surface to step on, no request in flight) asks for the path again from where it stands, up to <see cref="ProvisionalBlockedLimit"/> times
+    /// on the provisional part of a long route (the terrain-only route met a wall or a building) and <see cref="BlockedRepathLimit"/> on its navmesh part. Past that a player's move
+    /// order keeps its path and asks again every <see cref="BlockedRetrySeconds"/>; false: the walk is given up (<see cref="DropBlocked"/>).
+    /// </summary>
+    static bool AsksAgainBlocked(World world, ref CharacterHot n, CharacterCold cold)
+    {
+        bool provisional = n.PathCursor >= cold.PathExact;
+        bool within = provisional ? ++cold.ProvisionalBlocked <= ProvisionalBlockedLimit : ++cold.BlockedRepaths <= BlockedRepathLimit;
+        if (!within && !cold.OrderMove) return false;
+
+        if (within || world.Tick >= cold.BlockedRetryTick)
+        {
+            if (!within && cold.BlockedRetryTick == 0) LogHeld(world, n, cold, provisional);
+            cold.BlockedRetryTick = within ? 0 : world.Tick + (long)MathF.Ceiling(BlockedRetrySeconds / world.TickSeconds);
+            Reroute(world, ref n, cold, now: true);
+        }
+        return true;
+    }
+
+    /// <summary>A blocked walk given up (<see cref="AsksAgainBlocked"/>): the path is dropped and the walker waits before trying again; a follower steering at its slot takes paths for a while.</summary>
+    static void DropBlocked(World world, int slot, ref CharacterHot n, CharacterCold cold, float x, float z)
+    {
+        if (n.Task == (byte)CharacterTask.Follow) cold.FollowPathTime = FollowPathSeconds;
+        n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.HasPath);
+        n.TaskTime = FailedPathWait;
+        if (n.Task != (byte)CharacterTask.GoTo) return;
+
+        string why = n.PathCursor >= cold.PathExact
+            ? $"blocked {cold.ProvisionalBlocked} times on the provisional long-range part (limit {ProvisionalBlockedLimit})"
+            : $"blocked {cold.BlockedRepaths} times on the navmesh part (limit {BlockedRepathLimit})";
+        LogDropped(world, n, cold, $"{why}, waypoint {n.PathCursor} of {cold.Path.Length}, stuck stepping to {x:0}, {z:0}");
+        cold.WalkEnd = WalkEnd.Failed;
+        TaskStart.Step(world.Characters, slot, CharacterTask.Idle);
+        cold.OrderQueue.Clear();
+    }
+
+    /// <summary>A player's move order held blocked past the try limit (<see cref="AsksAgainBlocked"/>): logged once per stretch of blocks (docs/game/pathfinding.md "Dropped orders").</summary>
+    static void LogHeld(World world, in CharacterHot n, CharacterCold cold, bool provisional)
+    {
+        string part = provisional ? "provisional long-range part" : "navmesh part";
+        Console.WriteLine($"order     {cold.Name} blocked on the {part} at tick {world.Tick}, keeps its move and asks again every {BlockedRetrySeconds:0} s; " +
+            $"at {n.Position.X:0}, {n.Position.Y:0}, {n.Position.Z:0}, goal {n.Goal.X:0}, {n.Goal.Y:0}");
+    }
+
+    /// <summary>A player's move order dropped: why and where, in the log (docs/game/pathfinding.md "Dropped orders"). Other characters' drops are not logged.</summary>
+    static void LogDropped(World world, in CharacterHot n, CharacterCold cold, string why)
+    {
+        if (!cold.IsPlayer) return;
+        Console.WriteLine($"order     {cold.Name} dropped its move at tick {world.Tick}: {why}; at {n.Position.X:0}, {n.Position.Y:0}, {n.Position.Z:0}, goal {n.Goal.X:0}, {n.Goal.Y:0}");
+    }
+
+    /// <summary>Asks for the path again (partition-safe: the character's own state), at most every <see cref="ProvisionalRepathSeconds"/> unless <paramref name="now"/>.</summary>
     static void Reroute(World world, ref CharacterHot n, CharacterCold cold, bool now = false)
     {
         if ((n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0 || !now && world.Tick < cold.ProvisionalRepathTick) return;
@@ -1139,7 +1432,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         var state = new OccupiedState { Table = world.Characters, Self = self, Goal = new Vector2(goal.X, goal.Z) };
         world.Grid.Query(goal.X, goal.Z, 30, ref state, static (int other, ref OccupiedState s) =>
         {
-            if (s.Found || other == s.Self || !s.Table.Previous[other].Alive || s.Table.Cold(other) is not { CarriedBy.IsNone: true } c) return;
+            if (s.Found || other == s.Self || !s.Table.Previous[other].Alive || s.Table.Cold(other) is not { CarriedBy.IsNone: true } c || c.Medical is { Incapacitated: true }) return;
             var at = s.Table.Previous[other].Position;
             float r = Combat.CombatTuning.Footprint(c);
             if (Vector2.DistanceSquared(new Vector2(at.X, at.Z), s.Goal) < r * r) s.Found = true;
@@ -1156,7 +1449,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     static bool Seated(in CharacterHot h, CharacterCold c) => ((MoveFlags)h.Flags & MoveFlags.HasPath) == 0
-        && (h.Task == (byte)CharacterTask.Rest || h.Task == (byte)CharacterTask.Operate && c.Implicit == Meitou.Data.Gameplay.Ai.TaskType.SIT_AROUND);
+        && (h.Task == (byte)CharacterTask.Rest || h.Task == (byte)CharacterTask.Operate && c.Running is { Implicit: true, Row: Meitou.Data.Gameplay.Ai.TaskType.SIT_AROUND } run && run.Runs(CharacterTask.Operate));
 
     /// <summary>
     /// The heading turned from <paramref name="yaw"/> towards <paramref name="wanted"/> by at most <see cref="TurnRate"/> x <paramref name="dt"/>,

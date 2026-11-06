@@ -10,9 +10,9 @@ GPU and simulation ownership stay separate. [Simulation contracts](simulation.md
 
 WorldSession owns world, clocks, input/bindings, camera and last two snapshots. Control30Hz real
 (default config tickRate), max10 ticks/frame; simulation1/30 game second, speed0/1/2/5 and
-6*speed budget. Control precedes simulation; interpolation uses each clock's alpha, shortest
+2*speed budget. Control precedes simulation; interpolation uses each clock's alpha, shortest
 angle rotation and cuts on mode changes. The authoritative time/order/determinism details are
-in simulation. Host copies camera state into WorldCamera and snapshots into CharacterDrawList. The next world tick runs on its own
+in simulation. Host copies camera state into WorldCamera and snapshots into CharacterDrawList (every frame for characters in reach; those beyond it in `Distant`, refilled only when the snapshot changes; emptied when the title takes over the list). The next world tick runs on its own
 thread during the world draw ([simulation](simulation.md#tick-ahead)).
 
 `GameHost` holds an `IClientSession`, exposing control ticks, camera, clock and snapshots without a World.
@@ -92,24 +92,30 @@ preserve world on failure. Gameplay warm-up waits for nearby population, terrain
 assets and used textures (including deferred loads), then <40ms frames for0.5s (max5s for frame pacing).
 After 5s of continuous `VramGuard` pressure, content it holds back is no longer waited for (it cannot load until the use falls).
 A game's warm-up waits only for the characters within 3000 units of the camera's focus (`CharacterRenderer.LoadingFocus`, `LoadingReach`); the rest are prepared once
-the screen lifts. The original's loaded zones (the camera's 3 x 3 block) can hold hundreds of NPCs, whose meshes' generated levels are made on every load (no disk
-cache). **Observed** (a Great Desert save near Heng, RTX 4090): 479 looks pending and a 130 s wait before this rule, 35 and 40 s with it.
+the screen lifts. The original's loaded zones (the camera's 3 x 3 block) can hold hundreds of NPCs, whose meshes' generated levels are built once and then read from a disk
+cache ([character-renderer](character-renderer.md#content-lod-and-memory)). **Observed** (a Great Desert save near Heng, RTX 4090): 479 looks pending and a 130 s wait before this rule, 35 and 40 s with it.
 The warm-up (title and game) waits for grass only within the range of the default grass distance (`FoliageRenderer.LoadingPending`, `DefaultGrassRange`);
 pages a longer setting reaches grow in, nearest first, after the screen lifts. **Observed** (save siwa-test4, the Ultra tier's grass distance x 2): the title waited
 107 s and the game about as long for 16 000 and 27 000 grass pages made at about 400 a second, everything else ready.
+Under the cover the streams' frames need not be smooth: the character, foliage and object renderers (`Covered`, set by the host each frame) upload and build for up
+to 16 ms a frame instead of their play budgets, foliage layouts and grass pages are queued four per streaming thread (`BackgroundWork.Threads`; finished ones are
+taken once a frame), and objects take eight times the zones and resolves a frame. Once the warm-up's content is ready the streams are back at their play budgets, so
+its run of smooth frames measures play. **Observed** (siwa-test, Ultra settings, 662 mods, RTX 4090, 9800X3D, warm disk caches): the game's warm-up went from 20.8
+to about 6.5 s with this, the grass picking, the coarsening rule and the character LOD cache.
 Population builds are queued/applied at frame boundaries without advancing game time, AI or movement;
 navmesh-gated spawns are retried while loading. Warm-up and the flight hold the simulation paused.
 The Faithful title does not wait: its picture is opaque, so the start ends with the splash ([ui-screens](game/ui-screens.md#splash)) and the boot.
 The Meitou title waits for terrain, scenery, character assets and used textures (including deferred loads), then
 one full second of <40ms frames (max5s of ready content for frame pacing, so slow GPUs reach the menu). Its menu artwork/fonts/pipelines warm under the opaque cover too;
 streaming uploads retire and a compacting GC completes before that final smooth run.
-**GC:** the stock runtime (server GC, four heaps, gen0 budget at most 16 MB: `System.GC.Gen0MaxBudget`) in builds and release zips alike; the startup `gc` line names the collector (`GcName`).
+**GC:** the stock runtime (server GC, four heaps, gen0 budget at most 16 MB: `System.GC.Gen0MaxBudget`, GC threads not pinned: `System.GC.NoAffinitize`) in builds and release zips alike; the startup `gc` line names the collector (`GcName`).
 **Observed** (2026-10-24, play benchmark, 5 min, ~160 MB/s allocated, RTX 4090): the default budget let ~1 GB build up between collections, 27 gen0/gen1 collections paused
 20-190 ms (median ~26); at 16 MB, 330 collections paused 2.5 ms median and 31 ms at most, total pause about the same. 64 MB: max 122 ms; workstation concurrent GC: max 25 ms
 but 3.6 s of pauses in all; DATAS (`DynamicAdaptationMode=1`): max 66 ms. `System.GC.Gen0MaxBudget` is read from runtimeconfig (**Verified**: collection counts with
 and without it); `GCgen0MaxBudget` there is ignored and `DOTNET_GCgen0size` changed nothing. The
 experimental Satori GC (github.com/VSadov/Satori, `PublishWithSatoriGC` SDK) is not used in official builds. **Observed** earlier A/B (RTX 4070, 10.0.13
 Satori vs stock 10.0.12 fast flight): longest GC pause 15-21 ms stock vs 1-18 ms Satori, frames unchanged (long frames are foliage updates, docs/viewer.md).
+**Observed** (2026-11-01, headless simulation probe of a ~1600-character town save, Ryzen 5600X, 60 s runs): `HeapCount` pins the four GC threads to CPUs 0-3, and about 1 in 40 ephemeral collections paused 100-290 ms while doing 1.5-3 ms of GC work: the time is between the suspension finishing and the collection starting (GC events `SuspendEEStop` to `GCStart`). Pinned: 6 such pauses in 5 runs; `NoAffinitize`: none in 5 (max 2.6 ms); workstation GC: none in 3. Loading CPUs 0-3 with normal-priority busy loops did not reproduce it, so what holds the pinned core is **Unknown** (interrupt or driver work is a guess). The game was not measured.
 `GCConserveMemory` is not set. **Observed** A/B (`DOTNET_GCConserveMemory=5`, 3600-frame fly benchmark, 3 clean runs each): managed heap at the end
 1.42 vs 1.93 GB, working set 3.37 vs 3.93 GB, but gen2 GCs 12-14 vs 7-8 and pause totals 54-306 vs 36-53 ms (one run 64 frames over 33 ms).
 Process memory beyond the GC heap is mostly untouched write-combined commit (~6 GB at 6.7 GB of VRAM in use), not resident RAM.
@@ -128,7 +134,7 @@ Not pooled, kept by their owners: `HeightWindow` arrays (read through `HeightSna
 particle texture decodes (preloads not drawn within 30 s are dropped). How to rank allocation sites: docs/bench.md.
 **Native buffers** (`Meitou.Data.NativeBuffer`, a `MemoryManager<byte>` over `NativeMemory`): outside the GC heap, freed at once on `Dispose`, so a
 transient buffer leaves no LOH garbage or holes. No finalizer (CA2015: it could free a block a `Span` still reads), so an undisposed block leaks;
-`NativeBuffer.LiveBytes` (F11 `ram` line, the flight's `gc` line) shows what is held. Used for impostor atlases read from the cache: `ImpostorAtlas.Read`
+`NativeBuffer.LiveBytes` (in the F11 `ram` total, the flight's `gc` line) shows what is held. Used for impostor atlases read from the cache: `ImpostorAtlas.Read`
 inflates every kept level into one block, the levels are `ReadOnlyMemory<byte>` slices of it (baked atlases stay managed arrays; disposing them does
 nothing). The atlas's owner disposes it where it lets go: `FoliageRenderer` after the upload completes, on a refused upload, an abandoned or
 finished refine, a mismatched load, and `UnloadImpostor`/teardown (after the `Next` textures that read it). `ImpostorTextures` never frees.
@@ -147,9 +153,10 @@ from the main menu and returning to it; `inGameTransitions` covers save loads/ne
 Each has a persisted speed slider (`mainMenuTransitionSpeed` / `inGameTransitionSpeed`, 0.25–4x, default 1.5x).
 Disabling either uses the regular loading screen and warm-up. Enabled scene loads in Meitou use `SkyArrival`, the load starting at once:
 the hour runs forward to the destination's (title: its morning; save: CAMERA `time hour`/`minute`, handed over by
-the reading worker as soon as `quick.save` is parsed), 0.8 s + 1 s per 6 h, accelerating over its first half and braking over the second, while
-the title's wanderer blends from standing into `sitting idle` over 1.8 s (the data has no sit-down clip); a 0.5 s wall-clock hold; a 3.4 s ascent about the fixed eye to
-the sky at that hour (a day save shows day sky, not stars); a wait there for the load; a 0.3 s fade to black once its stages are done, under
+the reading worker as soon as `quick.save` is parsed), 0.8 s + 1 s per 6 h, accelerating over its first half and braking over the second;
+a 0.5 s wall-clock hold; a 3.4 s ascent about
+the fixed eye to the sky. In play, and from the title when the run is at most 3 h (known once the save's hour is), the view climbs at once, without
+the hold, the hour running forward meanwhile. The sky is at the destination hour (a day save shows day sky, not stars); a wait there for the load; a 0.3 s fade to black once its stages are done, under
 which the destination warms up from the landing view; then a 3 s descent that fades in from black over its first 1.4 s, starting 300 units above the view and
 orbiting 1.2 rad round its target onto the view's heading. All but the hold are divided by the selected speed. Ascent ramps speed over its
 first/last 40%; descent ramps up over 30% and brakes over 20%. Integrated smoothstep velocity brings
@@ -211,12 +218,24 @@ because the game ships none as a file ([ui-screens](game/ui-screens.md#title-art
 No title actor enters gameplay or save data; the normal camera lens and character source
 are restored when leaving the title.
 Title character preparation starts ahead of ordinary streaming during boot; the complete scene uses the readiness contract above.
-`--title-preview --screenshot <path>` captures it for visual QA; `--ticks` advances the fight. Save arrival still uses the
+`--title-preview --screenshot <path>` captures it for visual QA (`--settings-showcase` the settings menu's Graphics page in its states); `--ticks` advances the fight. Save arrival still uses the
 loader's leader-focused camera contract; saved camera pose restoration remains unimplemented.
+
+### Eye height
+
+Engine choice (`EyeLift`): loading adds the eye's height above the ground beyond the game's highest camera (1840, `KenshiCamera.MaxHeightAbovePivot`)
+to a distance across the ground, so the game's camera heights load as before and a free camera high above the land loads only what it can see. It
+measures the terrain's biome textures and which load at full size (`TerrainTextures.UpdateBiomes`), the object zones laid out, kept and unparked
+(`ObjectStreamer.NearZone`), foliage zones and grass pages ([render-foliage](render-foliage.md)). Characters: only those within drawing reach of the eye
+(6000, 3000 while lifted, `CharacterRenderer.LiftedReach`) or 3000 of a kept point or a flight's arrival are built (meshes, textures); all were before,
+the draw list holding every loaded character. **Observed** (play benchmark flights, ~1,400 characters): character textures 576 MB to 122 MB. Drawing
+and the kept points and arrivals still measure as before.
+A free camera over 3000 above the ground under it (`KenshiCamera.FlightHeight`, the focus gate in [camera](formats/camera.md)) has the weather's fog and
+camera particle effects off, the fog thinning over the 500 below it (`SkyRenderer.WeatherFogScale`): they surround a ground-level eye and would fill a flight's whole view.
 
 ## Rendering and upscaling
 
-WorldFrame prepares/streams sky/shadows/reflection, scene depth slices and post. Algorithms
+WorldFrame prepares/streams sky/shadows/reflection, the scene (one depth) and post. Algorithms
 live in render-* references; Data holds backend-independent terrain/placement/light rules.
 Own GLSL compiles through bundled shaderc, explicit native resource/state recording and ordered
 secondary jobs. [Native API](renderer-native.md).

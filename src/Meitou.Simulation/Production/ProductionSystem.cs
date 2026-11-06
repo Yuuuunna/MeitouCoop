@@ -1,3 +1,4 @@
+using Meitou.Data.Gameplay.Ai;
 using System.Numerics;
 using Meitou.Data;
 using Meitou.Data.Fcs;
@@ -43,7 +44,7 @@ public sealed class ProductionSettings
 /// </list>
 /// Placed after construction and before combat; everything here is serial and reads only the world's state and the command order.
 /// </summary>
-public sealed partial class ProductionSystem : ITickSystem
+public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHandler, IOrderOwner, IDecisionOwner, IGoalSource
 {
     /// <summary>The research falloff per earlier contribution in the same tick (<b>Observed</b>, <c>FUN_140836b70</c>).</summary>
     public const float ResearchFalloff = 0.6f;
@@ -59,6 +60,15 @@ public sealed partial class ProductionSystem : ITickSystem
     List<ResearchData>? allResearch;
     ResearchSnapshot? publishedResearch;
     long researchVersion = -1, machinesVersion = -1;
+    /// <summary>Where the camera looks (the last <see cref="FocusCommand"/>; null: not told, as in headless runs): research costs are counted round it. Derived from the commands, not saved or hashed.</summary>
+    readonly Dictionary<PlayerId, Vector3> focuses = [];
+    PlayerId researchViewer = PlayerId.Local;
+    /// <summary>The focus zone <see cref="publishedResearch"/> was built for.</summary>
+    Meitou.Data.World.ZoneCoordinate? researchZone;
+    /// <summary>The research lists' sizes and the tick <see cref="publishedResearch"/> was built at (<see cref="ResearchView"/>).</summary>
+    (int, int, int, int) researchLists;
+    long researchBuilt;
+    const int ResearchRefreshTicks = 30;
     // Some character may still hold a machine that is gone.
     bool sweep;
 
@@ -121,20 +131,24 @@ public sealed partial class ProductionSystem : ITickSystem
             Site = site.Id,
             Data = data,
             Position = site.Position,
+            WindRotor = data.IsWind && db.Find(site.Record) is { } record ? Meitou.Data.World.WorldObjectLayout.WindRotor(db, record, site.Position) : null,
             Inputs = [.. data.Inputs.Select(i => new InputSlot(i))],
             Output = data.Output is { } o ? new OutputSlot(o) : null,
             Storage = data.HasInventory ? new Inventory(data.StorageWidth, data.StorageHeight) { StackBonusMult = data.StackBonusMult, Limited = data.StorageLimit.Count > 0 }
                 : data.IsFurnace ? FurnaceGrid() : null,
             Farm = data.Farm is { } fd ? new FarmState(Meitou.Data.Gameplay.Construction.FarmLayout.Count(fd)) : null,
             Craft = data.IsCrafting ? new CraftState() : null,
+            Status = (byte)(data.IsProducer ? 2 : 0),   // the constructor FUN_1402a3750 starts a production building at 2 (not saved, so a load does too)
         };
         var p = site.Position;
         if (data.Farm is { } farm)
         {
-            float fertility = farm.Indoor ? 1 : resources.Value(MachineData.GroundResource, p.X, p.Y, p.Z);
+            // Every farm alike (FUN_1400e8420): the fertility effect 0 of a hydroponic one makes the ground matter only at or below the minimum, the biome's water usage applies, and the crop match is the biome's unless the farm stands inside a building.
+            float fertility = resources.Value(MachineData.GroundResource, p.X, p.Y, p.Z);
             m.Yield = farm.FertilityFactor(fertility);
-            m.CropMatch = resources.CropMatch(farm, p.X, p.Z);
-            m.WaterRate = farm.ConsumptionRate / MachineData.DaySeconds * (farm.Indoor ? 1 : resources.WaterUsage(p.X, p.Z));
+            m.Indoors = IsIndoors(data, site);   // the power tick keeps it
+            m.CropMatch = resources.CropMatch(farm, p.X, p.Z, m.Indoors);
+            m.WaterRate = farm.ConsumptionRate / MachineData.DaySeconds * resources.WaterUsage(p.X, p.Z);
             Replant(world, m);
         }
         // The yield (FUN_14029c670, Verified): a rock its own value, at least 0.1; any other building what the ground or the nearest rock gives, and 0 becomes 0.5 for one not the
@@ -244,19 +258,13 @@ public sealed partial class ProductionSystem : ITickSystem
                 case OperateOrder order:
                 {
                     var site = Site(world, order.Site);
-                    if (site is not { Complete: true } || !MayStartWork(world, order, site) || (Ensure(world, site) is not { } machine) || !(machine.Data.Operable || machine.Data.IsTraining)) break;
+                    if (site is not { Complete: true } || !MayStartWork(world, order, site) || (Ensure(world, site) is not { } machine)) break;
                     var table = world.Characters;
+                    if (!(machine.Data.Operable || machine.Data.IsTraining || IsSeat(machine))) break;
+                    var row = machine.Data.IsTraining ? TaskType.USE_TRAINING_DUMMY : TaskType.OPERATE_MACHINERY;
                     foreach (var id in world.CommandCharacters(order, order.Characters))
-                    {
-                        if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold || !Able(cold) || !MayWork(world, cold, site)) continue;
-                        if (cold.OperateSite == site.Id) continue;
-                        if (OperatorsOf(world, site.Id) >= machine.Data.MaxOperators)
-                        {
-                            world.Post(order.Issuer ?? PlayerId.Local, $"{site.Name} is already in use.");
-                            break;
-                        }
-                        Begin(world, slot, site, machine);
-                    }
+                        if (table.TryResolveNext(id, out int slot) && PlayerOrders.Give(world, slot, world.BindOrder(order, new OrderEntry(row, this) { Site = site.Id }), order.Queued) is { Posted: true })
+                            break;   // the machine is in use: said once
                     break;
                 }
                 case UseTurretOrder turret: UseTurret(world, turret); break;
@@ -268,6 +276,7 @@ public sealed partial class ProductionSystem : ITickSystem
                 case MoveJob move: MoveJobTo(world, move); break;
                 case PutInMachine put: Put(world, put); break;
                 case TakeFromMachine take: Take(world, take); break;
+                case FocusCommand look: focuses[look.Issuer ?? PlayerId.Local] = look.Position; break;
                 case QueueResearch queue when world.CommandFaction(queue, FactionPermission.ManageAssets) is { } faction:
                     Queue(world, queue.Research, faction.Index, queue.Issuer); break;
                 case CancelResearch cancel when world.CommandFaction(cancel, FactionPermission.ManageAssets) is { } faction:
@@ -302,15 +311,56 @@ public sealed partial class ProductionSystem : ITickSystem
         int best = -1;
         float bestGap = float.MaxValue;
         foreach (var id in world.CommandCharacters(order, order.Characters))
-            if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } cold && Able(cold) && MayWork(world, cold, site) && Gap(table.Next[slot].Position, spot) is var gap && gap < bestGap)
+            if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } cold && Able(cold) && TaskStart.Eligible(world, cold, TaskType.USE_TURRET) && MayWork(world, cold, site) && Gap(table.Next[slot].Position, spot) is var gap && gap < bestGap)
                 (best, bestGap) = (slot, gap);
-        if (best < 0 || table.Cold(best)!.OperateSite == site.Id) return;
-        if (OperatorsOf(world, site.Id) >= m.Data.MaxOperators)
+        if (best >= 0) PlayerOrders.Give(world, best, world.BindOrder(order, new OrderEntry(TaskType.USE_TURRET, this) { Site = site.Id }), order.Queued);
+    }
+
+    /// <summary>
+    /// The orders of machines (operate 87, training 97, turret gunner 146, a haul trip to a storage 124) and prospecting (150): a player character's (else the order leaves the queue) on a
+    /// complete site that has its machine (or a turret's post); one already working that machine needs nothing more; the character must be able to work (<see cref="Able"/>), the machine have
+    /// a free operator place ("is already in use", posted), and a prospector must not swim.
+    /// </summary>
+    OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
+    {
+        var cold = world.Characters.Cold(slot)!;
+        if (!cold.IsPlayer || !world.ValidOrderOrQuery(slot, order)) return OrderCheck.Gone;
+        if (order.Row == TaskType.PROSPECTING) return Able(cold) && cold.WaterState != 3 ? OrderCheck.Run : OrderCheck.Blocked();
+        if (order.Site is not { } id || Site(world, id) is not { Complete: true } site || world.Machines.Find(id) is not { } m
+            || order.Row == TaskType.USE_TURRET && TurretPostOf(site) is null) return OrderCheck.Gone;
+        if (!MayWork(world, cold, site) || order.SourceCommand is SiteWorkCommand command && !MayStartWork(world, command, site)) return OrderCheck.Gone;
+        if (order.Row == TaskType.FEED_CORPSE_INTO_MACHINE)
         {
-            world.Post(order.Issuer ?? PlayerId.Local, $"{site.Name} is already in use.");
-            return;
+            if (m.Data.Function != Meitou.Data.World.TownBuildings.CorpseDisposalFunction || cold.Carrying != order.Target || !world.Characters.TryResolveNext(order.Target, out int body) || world.Characters.Cold(body)?.Medical is not { Dead: true }) return OrderCheck.Gone;
+            return cold.Medical is { Incapacitated: false } && cold.CarriedBy.IsNone ? OrderCheck.Run : OrderCheck.Blocked();
         }
-        Begin(world, best, site, m);
+        if (order.Row == TaskType.OPERATE_STORAGE) return Able(cold) ? OrderCheck.Run : OrderCheck.Blocked();
+        if (cold.OperateSite == id) return OrderCheck.Run;
+        if (!Able(cold)) return OrderCheck.Blocked();
+        if (IsSeat(m) && SeatOccupied(world, site)) return OrderCheck.Blocked($"{site.Name} is already in use.", posted: true);
+        return OperatorsOf(world, id) >= m.Data.MaxOperators ? OrderCheck.Blocked($"{site.Name} is already in use.", posted: true) : OrderCheck.Run;
+    }
+
+    void IOrderOwner.Start(World world, int slot, OrderEntry order)
+    {
+        if (!world.ValidOrder(slot, order)) return;
+        if (!((IOrderOwner)this).CanRun(world, slot, order).CanRun) return;
+        var table = world.Characters;
+        switch (order.Row)
+        {
+            case TaskType.FEED_CORPSE_INTO_MACHINE:
+                TaskStart.Start(world, slot, new TaskRequest(CharacterTask.GoTo, order.Row, TaskSource.Order) { Site = order.Site, Target = order.Target, Detail = order });
+                break;
+            case TaskType.PROSPECTING:
+                if (table.Next[slot].Task != (byte)CharacterTask.Prospect) TaskStart.Start(world, slot, new TaskRequest(CharacterTask.Prospect, TaskType.PROSPECTING, TaskSource.Order));   // one at it keeps its progress
+                break;
+            case TaskType.OPERATE_STORAGE:
+                TaskStart.Start(world, slot, new TaskRequest(CharacterTask.Haul, TaskType.OPERATE_STORAGE, TaskSource.Order) { Site = order.Site });
+                break;
+            default:
+                if (table.Cold(slot)!.OperateSite != order.Site) TaskStart.Start(world, slot, new TaskRequest(CharacterTask.Operate, order.Row, TaskSource.Order) { Site = order.Site });
+                break;
+        }
     }
 
     /// <summary>A player turret's post (its functionality's <c>use range</c> and <c>gun turret</c>), null for a building that is no turret.</summary>
@@ -349,9 +399,13 @@ public sealed partial class ProductionSystem : ITickSystem
     // The gunner spots of the player's turrets, as their walks found them (derived from the site and the ground; not saved, not hashed).
     readonly Dictionary<string, Vector2> turretSpots = [];
 
-    /// <summary>A character that can work: awake, not fighting, not carrying or carried, not caged.</summary>
+    /// <summary>
+    /// A character that can work: awake, not carrying or carried. A fight is no gate: an order's new task ends it (<see cref="TaskStart.Start"/>; docs/game/combat.md "Fight lifecycle and
+    /// orders"), and a fight that starts ends the work the same way. Nor is a cage: no production row registers the imprisoned or chained repertoire (<see cref="TaskStart.Eligible"/>), and
+    /// a caging ends the task (<see cref="Locks.FixtureRegistry.Imprison"/>).
+    /// </summary>
     static bool Able(CharacterCold cold) =>
-        cold.Medical is not { Incapacitated: true } && !cold.InCombat && cold.CarriedBy.IsNone && cold.Carrying.IsNone && !cold.IsImprisoned;
+        cold.Medical is not { Incapacitated: true } && cold.CarriedBy.IsNone && cold.Carrying.IsNone;
 
     static int OperatorsOf(World world, string site)
     {
@@ -368,7 +422,10 @@ public sealed partial class ProductionSystem : ITickSystem
         return MathF.Sqrt(dx * dx + dz * dz);
     }
 
-    bool AtSite(in CharacterHot n, BuildSite site, Machine m)
+    /// <summary>Building slot 59 (<c>isIndoors</c>, <b>Verified</b>): a machine whose record is interior furniture and which stands in a building. One rule for the power tick, a light's work and a farm's crop match and rain.</summary>
+    static bool IsIndoors(MachineData data, BuildSite? site) => data.InteriorFurniture && site?.Parent is not null;
+
+    bool AtSite(World world, in CharacterHot n, BuildSite site, Machine m)
     {
         // A turret's gunner stands at its spot (once its walk has found it).
         if (turretSpots.TryGetValue(site.Id, out var spot))
@@ -380,7 +437,7 @@ public sealed partial class ProductionSystem : ITickSystem
         if (naturalBounds.TryGetValue(site.Id, out var rock))
             return rock.Touches(n.Position) || SiteReach.Within(n, Vector2.Distance(new Vector2(n.Position.X, n.Position.Z), rock.Flat), m.Data.UseRange);
         // The machine's use range (UseableStuff::getReachRange).
-        return SiteReach.Within(n, GapTo(site, n.Position), m.Data.UseRange);
+        return SiteReach.Within(n, GapTo(site, n.Position), m.Data.UseRange) && SiteReach.AtHeight(n, site, world.Fixtures.DoorsByBuilding[site.Id].Any());
     }
 
     /// <summary>
@@ -407,13 +464,72 @@ public sealed partial class ProductionSystem : ITickSystem
     /// <summary>The clip a turret's gunner holds.</summary>
     public const string TurretClip = "combatstance";
 
+    public void RegisterTasks(TaskHandlers tasks)
+    {
+        tasks.Register(CharacterTask.Operate, this);
+        tasks.Register(CharacterTask.Haul, this);
+        tasks.Register(CharacterTask.Prospect, this);
+        tasks.Register(TaskType.FEED_CORPSE_INTO_MACHINE, this);
+    }
+
+    /// <summary>
+    /// Operating <see cref="TaskRequest.Site"/> (rows 87, 97, 146, the jobs 152 and 234, the implicit sitting 275), a haul trip to the storage <see cref="TaskRequest.Site"/> (124, the implicit
+    /// ditching 242), or prospecting where the character stands (150).
+    /// </summary>
+    bool ITaskHandler.Runs(World world, int slot, RunningTask running) =>
+        running.Row == TaskType.FEED_CORPSE_INTO_MACHINE ? errands.ContainsKey(world.Characters.IdOf(slot)) && (CharacterTask)world.Characters.Next[slot].Task is CharacterTask.Idle or CharacterTask.GoTo
+            : running.Runs((CharacterTask)world.Characters.Next[slot].Task);
+
+    bool ITaskHandler.Done(World world, int slot, CharacterTask task) =>
+        world.Characters.Cold(slot)!.Running is { Row: TaskType.FEED_CORPSE_INTO_MACHINE } ? !errands.ContainsKey(world.Characters.IdOf(slot)) : world.Characters.Next[slot].Task != (byte)task;
+
+    void ITaskHandler.Start(World world, int slot, in TaskRequest request)
+    {
+        if (request.Row == TaskType.FEED_CORPSE_INTO_MACHINE)
+        {
+            StartDisposal(world, slot, (OrderEntry)request.Detail!);
+            return;
+        }
+        if (request.Task == CharacterTask.Prospect)
+        {
+            ProspectStart(world, slot);
+            return;
+        }
+        var site = Site(world, request.Site!)!;
+        var m = Ensure(world, site)!;
+        if (request.Task == CharacterTask.Haul) StartHaulTrip(world, slot, site, m, ditch: request.Row == TaskType.DITCH_ALL_RESOURCES);
+        else Begin(world, slot, site, m);
+    }
+
+    /// <summary>An operator, hauler or prospector that another task replaces or the Stop order ends lets go of its machine, trip or progress (the task it goes back to is the new start's).</summary>
+    void ITaskHandler.End(World world, int slot, CharacterTask task, TaskEnd reason)
+    {
+        var cold = world.Characters.Cold(slot)!;
+        if (cold.Running is { Row: TaskType.FEED_CORPSE_INTO_MACHINE })
+        {
+            errands.Remove(world.Characters.IdOf(slot));
+            return;
+        }
+        if (task == CharacterTask.Prospect)
+        {
+            cold.Prospecting = null;
+            cold.ProspectControl = null;
+            return;
+        }
+        cold.OperateSite = null;
+        cold.HaulSite = null;
+        cold.HaulFetch = null;
+        cold.Operating = false;
+        cold.HaulTo = null;
+    }
+
     void Begin(World world, int slot, BuildSite site, Machine m)
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
         if (!MayWork(world, cold, site)) return;
         ref var n = ref table.Next[slot];
-        MovementSystem.Stop(table, slot);
+        TaskStart.Stand(table, slot);
         n.Task = (byte)CharacterTask.Operate;
         n.Mode = SpeedMode.Free;
         n.TaskTime = 0;
@@ -421,49 +537,39 @@ public sealed partial class ProductionSystem : ITickSystem
         // A gunner holds "combatstance" (Verified, Task_UseTurret FUN_1403474f0), not its functionality's clip.
         cold.OperateClip = m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction ? TurretClip : m.Data.Animation;
         cold.OperateTool = m.Data.Tool;
+        cold.OperateFunctionality = m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction ? null : m.Data.Functionality;
         cold.OperateHungerRate = m.Data.HungerRate;
         cold.HaulSite = null;
         cold.HaulFetch = null;
         cold.Operating = false;
-        cold.JobIndex = -1;
-        cold.Implicit = null;
         cold.HaulTo = null;
         var goal = GoalOf(world, site, m);
-        if (!AtSite(n, site, m)) WalkToSite(ref n, cold, site, goal);
+        if (!AtSite(world, n, site, m)) WalkToSite(ref n, cold, site, goal);
         sweep = true;
     }
 
-    static void End(CharacterTable table, int slot)
+    /// <summary>
+    /// Ends the task of a job, an operator's or a haul trip by itself (serial phases; <see cref="TaskEnd.Done"/>): the character stands idle and the decision step decides it again. A follow
+    /// job's follow ends with it (its <see cref="CharacterCold.FollowOrder"/> is dropped).
+    /// </summary>
+    static void End(World world, int slot)
     {
+        var table = world.Characters;
         var cold = table.Cold(slot)!;
-        ref var n = ref table.Next[slot];
-        bool followJob = n.Task == (byte)CharacterTask.Follow && cold.JobIndex >= 0 && cold.JobIndex < cold.Jobs.Count
-            && cold.Jobs[cold.JobIndex].Type is Meitou.Data.Gameplay.Ai.TaskType.BODYGUARD or Meitou.Data.Gameplay.Ai.TaskType.STAY_CLOSE_TO_TARGET;
-        if (followJob) cold.FollowOrder = CharacterId.None;   // the job's follow ends with it; the character follows its squad's leader again
-        if (followJob || n.Task is (byte)CharacterTask.Operate or (byte)CharacterTask.Haul or (byte)CharacterTask.Sleep)
-        {
-            MovementSystem.Stop(table, slot);
-            // A job's task goes back to the following or wandering it took the character from.
-            n.Task = (byte)((cold.JobIndex >= 0 || cold.Implicit is not null) && cold.ResumeTask is CharacterTask.Wander or CharacterTask.Follow ? cold.ResumeTask : CharacterTask.Idle);
-            n.TaskTime = 0;
-        }
+        var task = (CharacterTask)table.Next[slot].Task;
+        bool followJob = PermaJobs.ListJob(cold, task) is { } job && PermaJobs.Follows(job.Row);
+        if (followJob) cold.FollowOrder = CharacterId.None;
+        if (followJob || task is CharacterTask.Operate or CharacterTask.Haul or CharacterTask.Sleep) TaskStart.End(world, slot, TaskEnd.Done);
         cold.OperateSite = null;
         cold.HaulSite = null;
         cold.HaulFetch = null;
         cold.Operating = false;
-        cold.JobIndex = -1;
-        cold.Implicit = null;
         cold.HaulTo = null;
     }
 
     public void Schedule(World world)
     {
-        // Job lists also run for the engineer job while a site is unfinished or damaged, and with no machine they can still send the injured to bed
-        // (the "Sleep when injured" option).
-        if (world.Tick % 30 == 0) ScanFollowJobs(world);
-        if (world.Machines.Count == 0 && !sweep && !followJobs && (Construction is null || !world.Buildings.AnyNeedsWork)
-            && !(Beds is not null && world.Players.All.Any(p => (p.State.SquadAi & SquadAi.Sleep) != 0) && world.Fixtures.Count > 0)) return;
-        PickJobs(world);
+        if (world.Machines.Count == 0 && !sweep) return;
         var table = world.Characters;
         float dt = world.TickSeconds;
         for (int i = 0; i < table.HighWater; i++)
@@ -475,7 +581,7 @@ public sealed partial class ProductionSystem : ITickSystem
             {
                 if (cold.HaulSite is { } to && Site(world, to) is { Complete: true } leg && world.Machines.Find(to) is { } legMachine && Able(cold)
                     && MayWork(world, cold, leg) && cold.HaulTo is { } destination && Site(world, destination) is { } storage && MayWork(world, cold, storage)) Approach(world, ref n, cold, leg, legMachine, dt);
-                else End(table, i);
+                else End(world, i);
                 continue;
             }
             if (n.Task == (byte)CharacterTask.Sleep) continue;   // the bed of the "Sleep when injured" option, in OperateSite (BedSystem walks it)
@@ -498,7 +604,7 @@ public sealed partial class ProductionSystem : ITickSystem
             var m = world.Machines.Find(id);
             if (site is not { Complete: true } || m is null || !Able(cold) || !MayWork(world, cold, site))
             {
-                End(table, i);
+                End(world, i);
                 continue;
             }
             // A hauling operator walks to its storage instead.
@@ -513,7 +619,7 @@ public sealed partial class ProductionSystem : ITickSystem
     {
         const ushort Path = (ushort)MoveFlags.AnyPath;
         if (m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction && !turretSpots.ContainsKey(site.Id)) GoalOf(world, site, m);
-        if (AtSite(n, site, m))
+        if (AtSite(world, n, site, m))
         {
             if ((n.Flags & Path) != 0)
             {
@@ -533,6 +639,20 @@ public sealed partial class ProductionSystem : ITickSystem
     }
 
     // ------------------------------------------------------------------ the tick
+
+    static int NearestOwnTown(World world, CharacterCold cold, System.Numerics.Vector2 at)
+    {
+        int best = 0;
+        float bestD2 = float.MaxValue;
+        foreach (var t in world.Buildings.Towns)
+        {
+            var centre = new System.Numerics.Vector2(t.Position.X, t.Position.Z);
+            float d2 = System.Numerics.Vector2.DistanceSquared(centre, at);
+            if (t.Owner != cold.Faction || d2 > t.Radius * t.Radius || d2 >= bestD2) continue;
+            (best, bestD2) = (t.Number, d2);
+        }
+        return best;
+    }
 
     readonly Dictionary<int, int> researchBenches = [], researchContributions = [];
 
@@ -560,7 +680,7 @@ public sealed partial class ProductionSystem : ITickSystem
             var research = faction.Research;
             research.Rate = 0;
             int bench = researchBenches.GetValueOrDefault(faction.Index);
-            if (bench == research.BenchLevel) continue;
+            if (bench <= research.BenchLevel) continue;
             research.BenchLevel = bench;
             publishedResearch = null;
         }
@@ -574,9 +694,17 @@ public sealed partial class ProductionSystem : ITickSystem
             farm.LiveHours = world.GameHours;
             FarmTick(world, m, dt);
         }
-        // An automatic machine works with nobody at it, at skill factor 1 (Verified, ProductionBuilding::vfunc_28 calls slot 150 with no operator when +0x3a9 is clear).
+        // A machine that takes operators clears its blocked status by itself (Verified, ProductionBuilding::vfunc_28 FUN_14029ad90, when +0x3a9 is set): output full (1) goes back to 2 once the
+        // output has room, nothing to work with (0) once no input is empty. An operator's step below sets it again the same tick if it is still blocked.
         foreach (var m in world.Machines.All)
-            if (m.Data.IsAutomatic && m.Data.IsProducer && Site(world, m.Site) is { Complete: true } && Live(world, m)) ProduceStep(world, m, 1, dt);
+            if (m.Data.IsProducer && !m.Data.Unattended && m.Output is { } held && Site(world, m.Site) is { Complete: true } && Live(world, m))
+            {
+                if (m.Status == 1 && !held.Full) m.Status = 2;
+                if (m.Status == 0 && !m.HasEmptyInputs) m.Status = 2;
+            }
+        // An unattended machine (max operators 0, or both records negative) works with nobody at it, at skill factor 1 (Verified, ProductionBuilding::vfunc_28 calls slot 150 with no operator when +0x3a9 is clear).
+        foreach (var m in world.Machines.All)
+            if (m.Data.Unattended && m.Data.IsProducer && Site(world, m.Site) is { Complete: true } && Live(world, m)) ProduceStep(world, m, 1, dt);
             else if (m.Data.IsFurnace && m.Storage is { } grid)
             {
                 if (m.Burning && Site(world, m.Site) is { Complete: true } && Live(world, m)) FurnaceStep(world, m, dt);
@@ -595,31 +723,29 @@ public sealed partial class ProductionSystem : ITickSystem
             var cold = table.Cold(i)!;
             if (cold.OperateSite is not { } id || Site(world, id) is not { Complete: true } site || world.Machines.Find(id) is not { } m || !Able(cold) || !MayWork(world, cold, site))
             {
-                End(table, i);
+                End(world, i);
                 continue;
             }
             cold.Operating = false;
             if (Hauling(world, cold) is { } haul)
             {
-                if (AtSite(n, haul.Site, haul.Machine)) HaulAt(world, cold, m, haul.Machine);
+                if (AtSite(world, n, haul.Site, haul.Machine)) HaulAt(world, cold, m, haul.Machine);
                 continue;
             }
-            if (!AtSite(n, site, m)) continue;
+            if (!AtSite(world, n, site, m)) continue;
             // A rock (an "is foliage" building) becomes the operator's faction's once a player character works it, and joins a player town whose area holds it (Task_OperateMachine
             // slot 1, FUN_14035b430; the town by its radius here).
             if (cold.IsPlayer && world.IsPlayerFaction(cold.Faction) && IsNatural(site.Id)
                 && (site.Owner < 0 || !world.Players.RequiresExplicitControl && site.Owner != cold.Faction))
             {
                 site.Owner = cold.Faction;
-                var at = new System.Numerics.Vector2(site.Position.X, site.Position.Z);
-                site.Town = world.Buildings.Towns.Where(t => t.Owner == cold.Faction && System.Numerics.Vector2.Distance(new(t.Position.X, t.Position.Z), at) <= t.Radius)
-                    .OrderBy(t => System.Numerics.Vector2.DistanceSquared(new(t.Position.X, t.Position.Z), at)).Select(t => t.Number).FirstOrDefault();
+                site.Town = NearestOwnTown(world, cold, new System.Numerics.Vector2(site.Position.X, site.Position.Z));
             }
             // A turret: manned, facing it; the combat system fires it (docs/simulation.md "Combat", turrets). Its gunner counts as an operator, so it draws its power.
             if (m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction)
             {
                 // A broken turret makes manning impossible (Task_UseTurret FUN_1403474f0 -> AITaskSytem::taskImpossible): the job ends.
-                if (m.Broken) { End(table, i); continue; }
+                if (m.Broken) { End(world, i); continue; }
                 if (n.Velocity.X == 0 && n.Velocity.Z == 0) n.Yaw = FacingTo(n, site);
                 m.Operators++;
                 cold.Operating = true;
@@ -633,8 +759,13 @@ public sealed partial class ProductionSystem : ITickSystem
                 Train(ref n, cold, site, m, dt);
                 continue;
             }
-            // A chair (an implicit job): sat on, no work.
-            if (!m.Data.Operable) { Settle(ref n, cold, site, m); continue; }
+            // A chair (an order or an implicit job): sat on, no work.
+            if (!m.Data.Operable)
+            {
+                if (IsSeat(m) && SeatOccupied(world, site)) { End(world, i); continue; }
+                Settle(world, ref n, cold, site, m);
+                continue;
+            }
             // An automatic machine (the 152 job): its hauler fills its inputs and carries its output away; the machine works by itself.
             if (m.Data.IsAutomatic)
             {
@@ -646,7 +777,8 @@ public sealed partial class ProductionSystem : ITickSystem
             m.Operators++;
             var stat = (StatsEnumerated)m.Data.Stat;
             float skill = m.Data.Stat > 0 ? Effective(cold, stat) : -1;
-            float s = skill < 0 ? 1 : Lerp(0.5f, 1.4f, Math.Clamp(skill, 0, 100) / 100);
+            // No clamp on s: a stat above 100 lifts it past 1.4 (Verified, FUN_1408852a0 hands the lerp straight to the work slot in FUN_14035bc90).
+            float s = skill < 0 ? 1 : Lerp(0.5f, 1.4f, skill / 100);
             bool worked;
             if (m.Data.IsResearch)
             {
@@ -654,7 +786,7 @@ public sealed partial class ProductionSystem : ITickSystem
                 worked = ResearchStep(world, m, s, dt, ref contributions);
                 researchContributions[site.Owner] = contributions;
             }
-            else if (m.Data.IsCrafting) worked = CraftStep(world, m, skill, s, dt);
+            else if (m.Data.IsCrafting) { m.Smith = table.IdOf(i); worked = CraftStep(world, m, skill, s, dt); }
             // A growing crop with water is tended: the operator plays the farm's clip (engine reading of task 87's start conditions, docs/game/buildings-production.md "Farming").
             else if (m.Farm is not null) worked = HarvestStep(world, m, skill, s, dt) || Tended(m);
             else worked = ProduceStep(world, m, s, dt);
@@ -747,51 +879,79 @@ public sealed partial class ProductionSystem : ITickSystem
         UnloadedProduction || world.ActiveZones is not { } active || active.Contains(Meitou.Data.World.WorldLayout.ZoneOf(m.Position.X, m.Position.Z));
 
     /// <summary>
-    /// A farm's catch-up for <paramref name="h"/> unloaded game hours (<b>Verified</b>, <c>FarmBuilding::timeSkip</c>, docs/game/buildings-production.md "Unloaded zones"): the crop advances along its
-    /// cycle (growth, harvest time, death time) for the watered hours, then at the drought rate while its death grows; a completed cycle replants. An NPC farm ignores water.
+    /// A farm's catch-up for <paramref name="h"/> unloaded game hours (<b>Verified</b>, <c>FarmBuilding::timeSkip</c> <c>FUN_1400df6e0</c>, docs/game/buildings-production.md "Unloaded zones"): the crop
+    /// advances along its cycle (growth G, harvest H, death D) for the watered hours; an NPC farm ignores water. A finished cycle only wraps (nothing is harvested, nothing replants); the hours
+    /// short of water stretch only the growth phase (G / drought multiplier) and add to the death that was already there.
     /// </summary>
     internal void TimeSkip(World world, Machine m, float h, bool ignoreWater)
     {
         var f = m.Farm!;
         var fd = m.Data.Farm!;
-        float g = fd.GrowthTime / MathF.Max(m.Yield * m.Power, 1e-6f), cycle = g + fd.HarvestTime + fd.DeathTime;
+        float g = fd.GrowthTime / MathF.Max(m.Yield, 1e-6f), cycle = g + fd.HarvestTime + fd.DeathTime;
         if (cycle <= 0) return;
         float p = f.Growth < 1 ? MathF.Max(f.Growth, 0) * g : f.Growth < 2 ? g + (f.Growth - 1) * fd.HarvestTime : g + fd.HarvestTime + f.Death * fd.DeathTime;
-        float perHour = m.WaterRate * (MachineData.DaySeconds / 24), water = float.MaxValue;
+        float rate = m.WaterRate, water = float.MaxValue;
         foreach (var input in m.Inputs) water = MathF.Min(water, input.Level + input.Count);
-        // The watered hours divide by h as well, as the game writes it.
-        float w = m.Inputs.Length == 0 || perHour <= 0 ? float.MaxValue : water / (perHour * h);
-        bool replant = false;
-        float death = 0;
+        // The watered share mixes the per-second water rate with the skipped game hours and divides by h as well, as the game writes it (FUN_1400df6e0).
+        float w = m.Inputs.Length == 0 ? float.MaxValue : rate > 0 ? water / (rate * h) : h;
+        float death, growthLength = g;
         if (ignoreWater || h <= w)
         {
             p += h;
-            replant = p > cycle;
+            death = 0;
+            if (p > cycle)
+            {
+                f.Harvested = 0;
+                p -= MathF.Floor(p / cycle) * cycle;
+            }
         }
-        else
-        {
-            p = (p + w) % cycle;
-            float dm = fd.DroughtMultiplier > 0 ? fd.DroughtMultiplier : 1e-8f;
-            p += (h - w) * dm;
-            death = fd.DroughtDeathTime > 0 ? (h - w) / fd.DroughtDeathTime : 0;
-            if (death > 1) { replant = true; death %= 1; }
-            replant |= p > cycle;
-        }
-        p %= cycle;
-        if (replant) Replant(world, m);
-        float growth = p < g ? p / g : p < g + fd.HarvestTime ? 1 + (p - g) / MathF.Max(fd.HarvestTime, 1e-6f) : 2;
-        float delta = growth - f.Growth;
-        for (int i = 0; i < f.Plants.Length; i++)
-            if (f.Plants[i] >= -1) f.Plants[i] = MathF.Min(f.Plants[i] + delta, MathF.Min(growth, 1));
-        f.Growth = growth;
-        f.Death = growth >= 2 ? (p - g - fd.HarvestTime) / MathF.Max(fd.DeathTime, 1e-6f) : death;
+        else (p, death, growthLength) = DroughtSkip(f, fd, p, g, w, h, cycle);
+        float harvest = MathF.Max(fd.HarvestTime, 1e-6f);
+        float growth = p < growthLength ? p / growthLength : p < growthLength + fd.HarvestTime ? 1 + (p - growthLength) / harvest : 2;
+        if (growth >= 2) death += (p - growthLength - fd.HarvestTime) / MathF.Max(fd.DeathTime, 1e-6f);
+        f.Growth = growth;   // the plants' own growth is not touched: while below 1 the next tick sets the growth to the lowest plant again (FUN_1400e5580)
+        f.Death = death;
         if (ignoreWater) return;
         foreach (var input in m.Inputs)
         {
-            float need = MathF.Min(w, h) * perHour - input.Level;
+            float need = w * rate * input.Rate - input.Level;
             input.Level = 0;
-            if (need > 0) input.Count = Math.Max(0, input.Count - (int)MathF.Ceiling(need));
+            if (need <= 0) continue;
+            if (input.Count <= need) input.Count = 0;
+            else
+            {
+                float whole = MathF.Floor(need);
+                input.Count -= (int)whole;
+                input.Level = 1 - (need - whole);
+            }
         }
+    }
+
+    /// <summary>
+    /// The short-of-water branch of <see cref="TimeSkip"/> (<c>FUN_1400df6e0</c>, <b>Verified</b>): the position after the <paramref name="w"/> watered hours wraps on the normal cycle, the other hours
+    /// move it unstretched; the death time adds (h - w) / drought death time to the death already there, and past 1 nothing is harvested, the death keeps its fraction and the position becomes
+    /// that fraction of the drought death time; the position then wraps on the drought cycle (growth G / drought multiplier, 1e8 when that is 0). Returns the position, the death and the growth length.
+    /// </summary>
+    static (float P, float Death, float GrowthLength) DroughtSkip(FarmState f, FarmData fd, float p, float g, float w, float h, float cycle)
+    {
+        p += w;
+        p -= MathF.Floor(p / cycle) * cycle;
+        float growthLength = fd.DroughtMultiplier != 0 ? g / fd.DroughtMultiplier : 1e8f;
+        float droughtCycle = growthLength + fd.HarvestTime + fd.DeathTime;
+        p += h - w;
+        float death = f.Death;
+        if (fd.DroughtDeathTime > 0)
+        {
+            death += (h - w) / fd.DroughtDeathTime;
+            if (death > 1)
+            {
+                f.Harvested = 0;
+                death -= MathF.Floor(death);
+                p = death * fd.DroughtDeathTime;
+            }
+        }
+        p -= MathF.Floor(p / droughtCycle) * droughtCycle;
+        return (p, death, growthLength);
     }
 
     /// <summary>How ripe a farm is, 0..1 over its growth (the HUD's figure): the growth while growing, 1 once ripe.</summary>
@@ -819,16 +979,17 @@ public sealed partial class ProductionSystem : ITickSystem
     /// <summary>The factor of the rain's water (the exe's constant at <c>14168a254</c>, <b>Verified</b>).</summary>
     const float RainWaterFactor = 3;
 
-    /// <summary>The farm tick (<b>Observed</b>, <c>FarmBuilding::vfunc_28</c>), every tick whether anyone is there. An outdoor farm's first input is rained on first: level += wetness x water rate x rate x dt x 3, at most 1 (<b>Verified</b>, <c>FUN_1400e5580</c>).</summary>
+    /// <summary>The farm tick (<b>Observed</b>, <c>FarmBuilding::vfunc_28</c>), every tick whether anyone is there. A farm not inside a building (<see cref="Machine.Indoors"/>, slot 59; its own indoor flag, fertility effect 0, is not read) has its first input rained on first: level += wetness x water rate x rate x dt x 3, at most 1 (<b>Verified</b>, <c>FUN_1400e5580</c>).</summary>
     void FarmTick(World world, Machine m, float dt)
     {
         var f = m.Farm!;
         var fd = m.Data.Farm!;
         float h = dt / (MachineData.DaySeconds / 24);
-        if (m.Inputs.Length > 0 && !fd.Indoor && world.Weather?.At(m.Position.X, m.Position.Z) is { Wetness: > 0 } rain)
+        if (m.Inputs.Length > 0 && !m.Indoors && world.Weather?.At(m.Position.X, m.Position.Z) is { Wetness: > 0 } rain)
             m.Inputs[0].Level = MathF.Min(1, m.Inputs[0].Level + rain.Wetness * m.WaterRate * m.Inputs[0].Rate * dt * RainWaterFactor);
         bool watered = m.Inputs.Length == 0 || DrawWater(m, dt * m.WaterRate);
-        float inc = h * m.Yield * m.Power / fd.GrowthTime;
+        float inc = h * m.Yield / fd.GrowthTime;
+        if (Rated(world, m) != 0) inc *= m.Health * m.Power;   // slot 109 only for a farm that uses power (FUN_1402976a0)
         if (!watered) inc *= fd.DroughtMultiplier;
         bool changed = false;
         if (f.Growth >= 1)
@@ -857,7 +1018,7 @@ public sealed partial class ProductionSystem : ITickSystem
         if (fd.DroughtDeathTime > 0 && f.Growth > 0 && f.Growth < 1)
         {
             if (!watered) f.Death += h / fd.DroughtDeathTime;
-            else if (f.Death > 0 && f.Death < 0.6f) f.Death = MathF.Max(0, f.Death - h / fd.DroughtDeathTime);
+            else if (f.Death > 0 && f.Death < 0.6f) f.Death -= h / fd.DroughtDeathTime;   // no floor: one step can overshoot below 0 (FUN_1400e5580)
             if (f.Death > 0) changed = true;
         }
         if (f.Death >= 1 || f.Harvested >= f.Plants.Length) Replant(world, m);
@@ -869,30 +1030,31 @@ public sealed partial class ProductionSystem : ITickSystem
     }
 
     /// <summary>
-    /// One operator's work on a farm (<b>Observed</b>, <c>FarmBuilding::vfunc_150</c>): a ripe crop is harvested plant by plant (<c>P x dt x s x harvest rate</c>, each plant rolling its
-    /// <c>output per plant</c> against the efficiency), a dead one cleared (<c>clear rate</c>).
+    /// One operator's work on a farm (<b>Observed</b>, <c>FarmBuilding::vfunc_150</c>): a ripe crop is harvested plant by plant (<c>health x powerSat x P x dt x s x harvest rate</c>;
+    /// when the progress completes the output's room is tested, else status 1 keeps the progress; then ceil(<c>output per plant</c>) rolls against the efficiency and the fraction once), a dead one cleared (<c>clear rate</c>, the same factors; slot 109, <b>Verified</b> <c>FUN_1400e59e0</c>).
     /// </summary>
     bool HarvestStep(World world, Machine m, float farming, float s, float dt)
     {
         var f = m.Farm!;
         var fd = m.Data.Farm!;
-        float work = constants.ProductionSpeed * dt * s;
+        float work = m.Health * m.Power * constants.ProductionSpeed * dt * s;
         if (f.Growth >= 1 && f.Death < fd.DeathThreshold && f.Harvested < f.Plants.Length)
         {
-            if (m.Output is not { } output) return false;
-            if (output.Full)
-            {
-                f.Status = FarmStatus.OutputFull;
-                return false;
-            }
+            if (m.Output is not { } output || f.Status == FarmStatus.OutputFull) return false;   // status 1: the work function does nothing (FUN_1400e59e0)
             f.HarvestProgress += work * fd.HarvestRate / MachineData.DaySeconds;
             if (f.HarvestProgress < 1) return true;
+            if (output.Full)
+            {
+                f.Status = FarmStatus.OutputFull;   // the progress is kept; the tick lets go of it once there is room
+                return false;
+            }
             float skill = farming < 0 ? 0.01f : farming * 0.01f;
             float e = Math.Clamp(Lerp(0.5f, 2, skill), 0, 1) * m.CropMatch * m.Yield;
             ulong key = Rng.StableHash(m.Site);
             int whole = (int)fd.OutputPerPlant;
             int made = 0;
-            for (int u = 0; u < whole; u++)
+            // ceil(output) rolls against e, then the fraction rolled once against itself (a do-while on a positive output).
+            for (float u = 0; u < fd.OutputPerPlant; u++)
                 if (Rng.Float(Rng.Hash(world.Seed, key, RngPurpose.Farm, (1UL << 40) | (uint)f.Rolls++)) < e) made++;
             float frac = fd.OutputPerPlant - whole;
             if (frac > 0 && Rng.Float(Rng.Hash(world.Seed, key, RngPurpose.Farm, (1UL << 40) | (uint)f.Rolls++)) < frac) made++;
@@ -968,7 +1130,7 @@ public sealed partial class ProductionSystem : ITickSystem
             research.Dequeue(item.Id);
             return false;
         }
-        if (item.Seconds > data.Hours(constants, Settings.ResearchOption) * (MachineData.DaySeconds / 24))
+        if (item.Seconds > data.Hours(constants, Settings.ResearchOption, research.Times(data.Id)) * (MachineData.DaySeconds / 24))
         {
             research.Complete(db, item.Id);
             publishedResearch = null;
@@ -1011,52 +1173,63 @@ public sealed partial class ProductionSystem : ITickSystem
     public bool Available(World world, ResearchData r) => Available(world, r, world.Player.Faction);
 
     public bool Available(World world, ResearchData r, int faction) =>
-        !r.BlueprintOnly && !ResearchFor(world, faction).Exhausted(db, r.Id) && !ResearchFor(world, faction).IsQueued(r.Id) && r.Level <= ResearchFor(world, faction).TechLevel && Met(world, r, faction);
+        !r.BlueprintOnly && !ResearchFor(world, faction).Exhausted(db, r.Id) && !ResearchFor(world, faction).IsQueued(r.Id) && r.LevelAt(ResearchFor(world, faction).Times(r.Id)) <= ResearchFor(world, faction).TechLevel && Met(world, r.Requirements, faction, lenient: true);
 
-    bool Met(World world, ResearchData r, int faction)
+    bool Met(World world, ResearchData r, int faction) => Met(world, r.Requirements, faction, false);
+
+    bool Met(World world, IEnumerable<string> requirements, int faction, bool lenient)
     {
-        foreach (var req in r.Requirements)
+        foreach (var req in requirements)
         {
             var record = db.Find(req);
             if (record is null) continue;
-            if (record.Type == FcsRecordType.RESEARCH ? !ResearchFor(world, faction).IsDone(req) : !ResearchFor(world, faction).IsUnlocked(req)) return false;
+            if (record.Type == FcsRecordType.RESEARCH ? ResearchFor(world, faction).IsDone(req) : ResearchFor(world, faction).IsUnlocked(req)) continue;
+            if (!lenient || !Met(world, record.GetReferences("requirements").Select(link => link.TargetStringId), faction, false)) return false;
         }
         return true;
     }
 
+    Meitou.Data.World.ZoneCoordinate? FocusZone(PlayerId viewer) => focuses.TryGetValue(viewer, out var at) ? Meitou.Data.World.WorldLayout.ZoneOf(at.X, at.Z) : null;
+
     /// <summary>The items of the player's research benches (where costs are paid from; engine: every bench, the original takes the benches near the player).</summary>
-    IEnumerable<Inventory> Benches(World world, int faction)
+    IEnumerable<Inventory> Benches(World world, int faction, PlayerId? viewer = null)
     {
+        var near = FocusZone(viewer ?? PlayerId.Local);
         foreach (var m in world.Machines.All)
-            if (m.Data.IsResearch && m.Storage is { } s && Site(world, m.Site) is { Complete: true } site && site.Owner == faction) yield return s;
+        {
+            if (!m.Data.IsResearch || m.Storage is not { } storage || Site(world, m.Site) is not { Complete: true } site || site.Owner != faction) continue;
+            if (near is { } zone && Meitou.Data.World.WorldLayout.ZoneOf(m.Position.X, m.Position.Z) is var at && (Math.Abs(at.X - zone.X) > 1 || Math.Abs(at.Y - zone.Y) > 1)) continue;
+            yield return storage;
+        }
     }
 
-    int CountInBenches(World world, string item, int faction)
+    int CountInBenches(World world, string item, int faction, PlayerId? viewer = null)
     {
         int n = 0;
-        foreach (var s in Benches(world, faction))
+        foreach (var s in Benches(world, faction, viewer))
             foreach (var i in s.Items)
                 if (i.Record == item) n += i.Quantity;
         return n;
     }
 
-    bool Affordable(World world, ResearchData r, int faction)
+    bool Affordable(World world, ResearchData r, int faction, PlayerId? viewer = null)
     {
         if (ResearchFor(world, faction).Paid.Contains(r.Id, StringComparer.Ordinal)) return true;
         foreach (var (item, count) in r.CostAt(ResearchFor(world, faction).Times(r.Id)))
-            if (CountInBenches(world, item, faction) < count) return false;
+            if (CountInBenches(world, item, faction, viewer) < count) return false;
         return true;
     }
 
     void Queue(World world, string id, int faction, PlayerId? recipient)
     {
         if (Research(id) is not { } r || !Available(world, r, faction)) return;
-        if (r.Level > ResearchFor(world, faction).BenchLevel)
+        int level = r.LevelAt(ResearchFor(world, faction).Times(id));
+        if (level > ResearchFor(world, faction).BenchLevel)
         {
-            world.Post(recipient ?? PlayerId.Local, ResearchFor(world, faction).BenchLevel == 0 ? "Research needs a research bench." : $"{r.Name} needs a level {r.Level} research bench.");
+            world.Post(recipient ?? PlayerId.Local, ResearchFor(world, faction).BenchLevel == 0 ? "Research needs a research bench." : $"{r.Name} needs a level {level} research bench.");
             return;
         }
-        if (!Affordable(world, r, faction))
+        if (!Affordable(world, r, faction, recipient))
         {
             world.Post(recipient ?? PlayerId.Local, $"Not enough materials in the research benches for {r.Name}.");
             return;
@@ -1065,7 +1238,7 @@ public sealed partial class ProductionSystem : ITickSystem
             foreach (var (item, count) in r.CostAt(ResearchFor(world, faction).Times(id)))
             {
                 int left = count;
-                foreach (var s in Benches(world, faction))
+                foreach (var s in Benches(world, faction, recipient))
                     foreach (var i in s.Items.Where(i => i.Record == item).ToList())
                     {
                         int take = Math.Min(left, i.Quantity);
@@ -1082,23 +1255,32 @@ public sealed partial class ProductionSystem : ITickSystem
     /// <summary>The research state for the host (rebuilt when it or the machines changed).</summary>
     public ResearchSnapshot ResearchView(World world) => ResearchView(world, world.Player.Faction);
 
-    public ResearchSnapshot ResearchView(World world, int faction)
+    public ResearchSnapshot ResearchView(World world, int faction) => ResearchView(world, faction, PlayerId.Local);
+
+    public ResearchSnapshot ResearchView(World world, int faction, PlayerId viewer)
     {
-        if (publishedResearch is not null && publishedResearchFaction == faction && researchVersion == ResearchFor(world, faction).Version && machinesVersion == world.Machines.Version) return publishedResearch;
+        var zone = FocusZone(viewer);
+        var state = ResearchFor(world, faction);
+        if (publishedResearch is not null && publishedResearchFaction == faction && researchViewer == viewer && researchVersion == state.Version && machinesVersion == world.Machines.Version && researchZone == zone) return publishedResearch;
+        var lists = (state.Completed.Count, state.Queue.Count, state.Paid.Count, state.BenchLevel);
+        if (publishedResearch is not null && publishedResearchFaction == faction && researchViewer == viewer && researchLists == lists && (ulong)(world.Tick - researchBuilt) < ResearchRefreshTicks) return publishedResearch;
+        researchLists = lists;
+        researchBuilt = world.Tick;
+        researchZone = zone;
+        researchViewer = viewer;
         publishedResearchFaction = faction;
         researchVersion = ResearchFor(world, faction).Version;
         machinesVersion = world.Machines.Version;
         allResearch ??= ResearchData.LoadAll(db);
-        var state = ResearchFor(world, faction);
-        var queue = state.Queue.Select(q => (q.Id, Research(q.Id)?.Name ?? q.Id, Research(q.Id) is { } d ? Math.Clamp(q.Seconds / (d.Hours(constants, Settings.ResearchOption) * (MachineData.DaySeconds / 24)), 0, 1) : 0)).ToArray();
+        var queue = state.Queue.Select(q => (q.Id, Research(q.Id)?.Name ?? q.Id, Research(q.Id) is { } d ? Math.Clamp(q.Seconds / (d.Hours(constants, Settings.ResearchOption, state.Times(q.Id)) * (MachineData.DaySeconds / 24)), 0, 1) : 0)).ToArray();
         var available = allResearch.Where(r => Available(world, r, faction))
-            .Select(r => new ResearchOption(r.Id, r.Name, r.Category, r.Level, r.Hours(constants, Settings.ResearchOption), Affordable(world, r, faction), r.Level > state.BenchLevel,
-                state.Partial.TryGetValue(r.Id, out float s) ? Math.Clamp(s / (r.Hours(constants, Settings.ResearchOption) * (MachineData.DaySeconds / 24)), 0, 1) : 0)
+            .Select(r => new ResearchOption(r.Id, r.Name, r.Category, r.LevelAt(state.Times(r.Id)), r.Hours(constants, Settings.ResearchOption, state.Times(r.Id)), Affordable(world, r, faction, viewer), r.LevelAt(state.Times(r.Id)) > state.BenchLevel,
+                state.Partial.TryGetValue(r.Id, out float s) ? Math.Clamp(s / (r.Hours(constants, Settings.ResearchOption, state.Times(r.Id)) * (MachineData.DaySeconds / 24)), 0, 1) : 0)
             {
                 Description = r.Description,
                 Paid = state.Paid.Contains(r.Id, StringComparer.Ordinal),
                 Cost = state.Paid.Contains(r.Id, StringComparer.Ordinal) ? []
-                    : [.. r.CostAt(state.Times(r.Id)).Select(c => (items.Info(c.Item)?.Name ?? c.Item, c.Count, CountInBenches(world, c.Item, faction) >= c.Count))],
+                    : [.. r.CostAt(state.Times(r.Id)).Select(c => (items.Info(c.Item)?.Name ?? c.Item, c.Count, CountInBenches(world, c.Item, faction, viewer) >= c.Count))],
                 // The description lists the RESEARCH requirements only (FUN_140495e00 looks them up as type 21).
                 Requirements = [.. r.Requirements.Select(db.Find).Where(q => q is { Type: FcsRecordType.RESEARCH })
                     .Select(q => (q!.Name, state.IsDone(q.StringId), state.IsQueued(q.StringId)))],
@@ -1141,7 +1323,7 @@ public sealed partial class ProductionSystem : ITickSystem
         if (owner is null) return;
         if (put.X < 0)
         {
-            if (InventoryCommands.MoveUnits(owner, item, put.Count, storage) > 0) { Assembly?.RefreshEquipment(cold); world.Machines.Touch(); }
+            if (InventoryCommands.MoveUnits(owner, item, InventoryCommands.ClickCount(item, put.Count), storage) > 0) { Assembly?.RefreshEquipment(cold); world.Machines.Touch(); }
             return;
         }
         if (!PutAt(owner, item, put.Count, storage, put.X, put.Y)) return;
@@ -1175,10 +1357,10 @@ public sealed partial class ProductionSystem : ITickSystem
         bool authorized = take.Issuer is { } issuer && world.Players.Find(issuer)?.HasPermission(container.Owner, FactionPermission.ManageAssets) == true;
         if (!authorized && world.SystemOf<Crime.CrimeSystem>() is { } crimes && world.Characters.TryResolveNext(take.Character, out int thief)
             && crimes.Steal(world, thief, container, Crime.CrimeCode.Theft)) return;
-        int mark = item.StolenFrom;
-        if (!authorized && container.Owner >= 0 && container.Owner != cold.Faction) item.StolenFrom = container.Owner;
-        int moved = InventoryCommands.MoveInto(storage, item, take.Count, cold.Inventory!, take.BagFirst, out bool worn, cold);
-        if (storage.Items.Contains(item)) item.StolenFrom = mark;   // what stayed keeps its mark
+        var mark = item.Mark;
+        if (!authorized && container.Owner >= 0 && container.Owner != cold.Faction && Crime.CrimeSystem.IsStealing(world, container) && mark == StolenMark.None) item.StolenFrom = container.Owner;
+        int moved = InventoryCommands.MoveInto(storage, item, InventoryCommands.ClickCount(item, take.Count), cold.Inventory!, take.BagFirst, out bool worn, cold);
+        if (storage.Items.Contains(item)) item.Mark = mark;   // what stayed keeps its mark
         if (worn) Assembly?.RefreshEquipment(cold);
         if (moved > 0) world.Machines.Touch();
     }
@@ -1237,7 +1419,7 @@ public sealed partial class ProductionSystem : ITickSystem
             }
             if (put.X < 0)
             {
-                if (InventoryCommands.MoveUnits(owner, item, put.Count, storage) > 0) { Assembly?.RefreshEquipment(cold); world.Machines.Touch(); }
+                if (InventoryCommands.MoveUnits(owner, item, InventoryCommands.ClickCount(item, put.Count), storage) > 0) { Assembly?.RefreshEquipment(cold); world.Machines.Touch(); }
                 return;
             }
             if (!PutAt(owner, item, put.Count, storage, put.X, put.Y)) return;
@@ -1261,7 +1443,7 @@ public sealed partial class ProductionSystem : ITickSystem
         {
             if (m.Storage is not { } storage || m.Closed || take.Index < 0 || take.Index >= storage.Items.Count) return;
             // What does not fit stays in the storage.
-            if (InventoryCommands.MoveInto(storage, storage.Items[take.Index], take.Count, root, take.BagFirst, out bool worn, cold) > 0) world.Machines.Touch();
+            if (InventoryCommands.MoveInto(storage, storage.Items[take.Index], InventoryCommands.ClickCount(storage.Items[take.Index], take.Count), root, take.BagFirst, out bool worn, cold) > 0) world.Machines.Touch();
             if (worn) Assembly?.RefreshEquipment(cold);
             return;
         }
@@ -1285,6 +1467,8 @@ public sealed partial class ProductionSystem : ITickSystem
             || command.StorageRevision != 0 && world.InventoryRevision(PlayerSystem.GridOf(world, container)) == command.StorageRevision);
 
     internal int StorageOwner(World world, string site) => world.Fixtures.Find(site)?.Owner ?? Site(world, site)?.Owner ?? -1;
+
+    internal BuildSite? SaveWorkSite(World world, string key) => Site(world, key);
 
     public ulong WorkSiteRevision(World world, string id) => Site(world, id) is { } site ? world.BuildingRevision(site) : 0;
 

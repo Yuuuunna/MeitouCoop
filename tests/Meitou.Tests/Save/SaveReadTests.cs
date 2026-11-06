@@ -51,4 +51,24 @@ public class SaveReadTests
             .Select(BitConverter.SingleToUInt32Bits)];
         Assert.Equal(Bits(saved), Bits(packed));
     }
+
+    [Fact]
+    public void Surface_blood_marks_survive_a_save_round_trip_beside_the_terrain_decals()
+    {
+        // A splash on an upper floor and a floor pool, the colour with its top bit set; a second write with fewer marks leaves none of the first's behind.
+        SurfaceBloodDecal[] marks =
+        [
+            new(TerrainDecalType.Splash, 7, new Vector3(-1234.5f, 210.9f, 88.25f), 1.25f, 0.6f, 42.5f, 0xFF8000FF, false),
+            new(TerrainDecalType.Pool, 3, new Vector3(10, 20, 30), -0.5f, 1.1f, 99, 0x80102030, true),
+        ];
+        var record = new FcsRecord { Type = (int)FcsRecordType.TERRAIN_DECALS, StringId = "1-quick.save-INGAME" };
+        SaveDecals.Write(record, []);
+        SaveSurfaceDecals.Write(record, [marks[0], marks[0], marks[0]]);
+        SaveSurfaceDecals.Write(record, marks);
+        var file = new SaveFile();
+        file.Records.Add(record);
+        var back = SaveFile.Read(file.ToBytes()).Records[0];
+        Assert.Equal(marks, SaveSurfaceDecals.Read(back));
+        Assert.Empty(SaveDecals.Read(back));
+    }
 }

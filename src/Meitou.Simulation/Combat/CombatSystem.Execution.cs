@@ -26,13 +26,14 @@ public sealed partial class CombatSystem
         float skill = Eff(ac, fighter.WeaponSkill);
         float str = Eff(ac, StatsEnumerated.Strength);
         var packet = fighter.Unarmed
-            ? DamageFormulas.UnarmedPacket(UnarmedRating(ac, fighter), Eff(ac, StatsEnumerated.Toughness), str, fighter.FistsItem, kind, race.StringId, fighter.DamageOutput, combat)
+            ? DamageFormulas.UnarmedPacket(UnarmedRating(world, a, ac, fighter), Eff(ac, StatsEnumerated.Toughness), str, fighter.FistsItem, kind, race.StringId, fighter.DamageOutput, combat)
             : DamageFormulas.Packet(skill, Eff(ac, StatsEnumerated.Dexterity) * fighter.DexterityMult, str, fighter.Weapon!, kind, race.StringId, fighter.DamageOutput, combat);
         var ctx = MakeContext(world, d, dc);
         var events = hitEvents;
         events.Clear();
         ReadOnlySpan<ArmourPiece> armour = dc.Fighter is { } df ? df.Armour : default;
         var cover = new CoverRoll(world.Seed, Rng.Key(table.IdOf(d)), a, blow, 0);
+        bool wasIncapacitated = medical.Incapacitated;
         var (part, damage, absorbed) = HitResolver.LandDetailed(medical, ctx, packet, armour, cover, toughness, false, false, combat, events);
         FloatHit(world, d, dc, ac.IsPlayer, part, damage, absorbed, world.PresentationOwner(table.IdOf(a)));
         ref var D = ref write[d];
@@ -45,6 +46,7 @@ public sealed partial class CombatSystem
             switch (ev.Kind)
             {
                 case MedicalEventKind.Died: death = true; break;
+                case MedicalEventKind.Decapitated: table.LimbsChanged.Enqueue((d, -1)); break;   // the look loses its head (nothing drops)
                 case MedicalEventKind.PartSevered:
                     xp.ToughnessFromLimbLoss(dc.Stats!, race);
                     table.LimbsChanged.Enqueue((d, medical.Parts[ev.Part].Template.LimbSlot));
@@ -56,14 +58,31 @@ public sealed partial class CombatSystem
         {
             D.Down = true;
             D.AttackTech = -1;
+            D.CancelTick = (int)world.Tick;
             D.NextBlow = 0;
             D.ReactTech = -1;
         }
         var toAttacker = new Vector2(prev[a].Position.X - prev[d].Position.X, prev[a].Position.Z - prev[d].Position.Z);
         Sound(world, SoundKind.Hit, d, a, prev[d].Position, unarmed: fighter.Unarmed, robot: ac.Race!.IsRobot);
         Splash(world, d, dc, -toAttacker, damage.Cut + damage.Blunt + damage.Pierce);
+        if (death) Knockdown(world, d, dc, -toAttacker, damage.Cut + damage.Blunt + damage.Pierce, part);
         if (medical.Incapacitated) Sound(world, SoundKind.Down, d, a, prev[d].Position, fatal: death);
         if (death && world.Uniques.RecordOf(table.IdOf(d)) is { } unique) world.Uniques.Died(unique, ac.IsPlayer, world.Players.RequiresExplicitControl ? ac.Faction : null);
+        if (part >= 0) ObserveExecution(world, a, d, blow, part, damage, absorbed, -toAttacker, wasIncapacitated);
         return death;
+    }
+
+    /// <summary>
+    /// The execution blow as a <see cref="CombatHit"/> for the mods' observers and hit feeds: always the intended target, alive before it
+    /// (<see cref="Execute"/>).
+    /// </summary>
+    static void ObserveExecution(World world, int a, int d, int blow, int part, HitDamage damage, ArmourAbsorbed absorbed, Vector2 travel,
+        bool wasIncapacitated)
+    {
+        if (!world.WantsCombatHits) return;
+        var table = world.Characters;
+        var victim = table.Previous[d];
+        world.ObserveCombatHit(new CombatHit(world.Tick, CombatHitSource.Execution, table.IdOf(a), table.IdOf(d), 0, blow, part,
+            damage, absorbed, victim.Position, new(travel.X, 0, travel.Y), victim.Yaw, -1, false, true, true, wasIncapacitated));
     }
 }

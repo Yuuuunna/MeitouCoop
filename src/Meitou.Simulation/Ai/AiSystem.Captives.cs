@@ -59,7 +59,7 @@ public sealed partial class AiSystem
         var leaderRace = table.Cold(ls)!.Race?.StringId;
         foreach (var f in world.Fixtures.All)
         {
-            if (f.Kind != FixtureKind.Cage || f.Site != site || f.Owner < 0 || f.Owner == world.Player.Faction) continue;
+            if (f.Kind != FixtureKind.Cage || f.Site != site || f.Owner < 0 || world.IsPlayerFaction(f.Owner)) continue;
             if (f.Owner != squad.Faction && !(data.Relations.Contains(f.Owner) && data.Relations.Contains(squad.Faction) && data.Relations.IsAlly(squad.Faction, f.Owner))) continue;
             if (FixtureRegistry.IsFree(table, f) || !table.TryResolveNext(f.Occupant, out int s) || table.Cold(s) is not { Medical.Incapacitated: false, IsPlayer: false } c) continue;
             if (unholy && c.Appearance is not { Female: true } && c.Race?.StringId == leaderRace) continue;
@@ -130,5 +130,5 @@ public sealed partial class AiSystem
 
     /// <summary><c>GoOutOnPatrol_Cannibal</c> slot 12 (<c>FUN_140289d80</c>): no patrol while every cage of the squad's faction in its town is taken (CAGES_ARE_ALL_FULL).</summary>
     bool CannibalPatrolHeld(World world, Squad squad, Blackboard board, AiPackage package) =>
-        package.Signal == 4 && board.Town >= 0 && CaptiveSystem.CagesFull(world, data, board.Town, squad.Faction);
+        package.Signal == 4 && board.Town >= 0 && world.Characters.TryResolveNext(squad.Leader, out int leader) && world.Characters.Cold(leader) is { } who && CaptiveSystem.CagesFull(world, data, board.Town, who);
 }

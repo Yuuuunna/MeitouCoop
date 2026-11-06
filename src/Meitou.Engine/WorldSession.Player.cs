@@ -6,6 +6,7 @@ namespace Meitou.Engine;
 public sealed partial class WorldSession : IPlayerSession
 {
     object presentationIdentity = new();
+    public GameplayRules AuthorityRules => GameplayRules.Capture(World);
     public object WorldIdentity => presentationIdentity;
     public PlayerMessageBatch Messages => World.Player.Messages.Capture();
     public Meitou.Data.World.WeatherFrame? Weather => (World.Weather as IWeatherPresentationSource)?.CaptureWeather();
@@ -37,6 +38,10 @@ public sealed partial class WorldSession : IPlayerSession
     public void TogglePause() => Simulation.TogglePause();
     public void SetModalPause(bool paused) => Simulation.RequestedPause = paused;
     public void Submit(SimCommand command) => World.Commands.Enqueue(command);
+    public VerbFacts? VerbFactsOf(CharacterId lead, CharacterId target) => World.VerbFactsOf(lead, target);
+    public bool RegardsFriendly(CharacterId target, CharacterId lead) => World.RegardsFriendly(target, lead);
+    public bool? ArrivalForget(int serial) => World.ArrivalForget(serial);
+    public void SetPointed(CharacterId target) => World.Player.Pointed = target;
     public bool CanTalk(CharacterId target, CharacterId? speaker = null) => World.CanTalk(target, speaker);
     public bool WantsToTalk(CharacterId target) => World.WantsToTalk(target);
     public ProspectReport? Prospected => World.Prospected;

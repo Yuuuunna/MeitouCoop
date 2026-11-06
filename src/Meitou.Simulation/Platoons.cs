@@ -27,8 +27,8 @@ public sealed class Platoon
     public required string TemplateId { get; init; }
     public int Faction { get; init; } = -1;
     public required ulong Key { get; init; }
-    /// <summary>Members when made: what the pool counts.</summary>
-    public int Size { get; init; }
+    /// <summary>Members when made: what the pool counts (a save's never-made platoon: its <c>char count</c> until it is made, <see cref="Unmade"/>).</summary>
+    public int Size { get; set; }
     public Vector2 Position { get; set; }
     /// <summary>The town it is travelling to (-1: none chosen, it waits).</summary>
     public int Target { get; set; } = -1;
@@ -50,11 +50,12 @@ public sealed class Platoon
     public Ai.PlatoonJob Job { get; set; }
     /// <summary>A short-range patrol's next point (null: none; it goes to <see cref="Target"/> instead).</summary>
     public Vector2? Point { get; set; }
-    /// <summary>The save's platoon this stand-in is (null: one the population made): its characters are made from the save, not from <see cref="Key"/>.</summary>
+    /// <summary>The save's platoon this stand-in is (null: one the population made): its characters are made from the save, not from <see cref="Key"/> (a never-made one's from its template, <see cref="Unmade"/>).</summary>
     public Saving.SavedPlatoon? Saved { get; init; }
     /// <summary>
     /// A squad the population made, kept as its characters while it is not in the world (null: none): a town's squad since its town unloaded, or (the Meitou
-    /// <see cref="PopulationSystem.KeepRoamers"/> switch) a roaming one since it first left. Made of them again, never rolled anew.
+    /// <see cref="PopulationSystem.KeepRoamers"/> switch) a roaming one since it first left. Made of them again, never rolled anew. Set with <see cref="Saved"/> on a save's
+    /// never-made platoon once made (<see cref="Unmade"/>): this holds its squad, the save's record is written with it.
     /// </summary>
     public StoredSquad? Stored { get; set; }
     /// <summary>A platoon of its town's own (residents, bar squads, slaves; saved or stored): it never travels, its squad is run by the AI like the town's, and it is not in the roaming pool.</summary>
@@ -66,10 +67,42 @@ public sealed class Platoon
     /// <summary>A town's own squad that lost so many that its town makes it afresh when it next comes into the world (<see cref="PopulationSystem"/> regeneration).</summary>
     public bool Regenerate { get; set; }
     /// <summary>
+    /// A save's town squad the game never made (<see cref="Saving.SaveLoader"/> "unmade": no file, <c>never been activated</c>, a <c>char count</c> and a home building):
+    /// a stand-in made from its template when it activates (<c>FUN_1404ffad0</c>), into this same platoon: it then keeps the save's record (<see cref="Saved"/>, no members)
+    /// and holds its squad as a population's own (<see cref="Stored"/>), and this is cleared. Not saved.
+    /// </summary>
+    public bool Unmade { get; set; }
+    /// <summary>
     /// The faction campaign it marches in (null: none; <c>PopulationCampaigns.cs</c>): kept (never despawned) until the campaign is removed, moved by the campaign off
     /// screen and led to <see cref="CampaignGoal"/> while loaded, out of the roaming pools.
     /// </summary>
     public CampaignInstance? Campaign { get; set; }
+    /// <summary>The platoon's intact flag (+0x100, <c>FUN_1407ac7b0</c>): the squad-intact rule, refreshed while loaded and kept as it was at unload; saved as <c>intact</c> (<b>Verified</b>, <c>FUN_1407ed0f0</c>). Hashed while false.</summary>
+    public bool IntactFlag { get; set; } = true;
+    /// <summary>
+    /// The platoon was declared dead (+0x1f0, <c>Platoon::declareDead</c> <c>FUN_140797090</c>, <b>Verified</b>; saved as <c>dead</c>): every member is a dead character. It is out of its
+    /// town's pools and never intact, and no longer kept: a loaded one is destroyed when it unloads (a campaign's stays with its campaign). Hashed while set.
+    /// </summary>
+    public bool Dead { get; set; }
+    /// <summary>
+    /// The platoon's <c>imprisoned</c> (+0x1f1, <b>Verified</b>, <c>FUN_1407ef4b0</c>): set at each unload to whether a member is held in a cage or restraint, else the save's value;
+    /// while set its stand-in neither travels nor takes a job (<c>FUN_1407ee790</c>).
+    /// </summary>
+    public bool Imprisoned { get; set; }
+    /// <summary>The platoon is persistent without a save's record to say so (the flag a prisoner's own platoon takes from its old platoon or its unique member, <c>FUN_14079c1c0</c>): the original never removes one.</summary>
+    public bool Persistent { get; set; }
+    /// <summary>
+    /// Spawn mode 3 (+0x118, <c>FUN_1404ffad0</c>, <b>Verified</b>): the platoon's home town was replaced by an override town it does not belong to; its activation is refused and
+    /// the keep test refuses it (<c>FUN_1407ec570</c>). Not saved (set again at the next activation).
+    /// </summary>
+    public bool ReplacedHome { get; set; }
+    /// <summary>The original's activation took the persistent flag off (<c>FUN_1407ebdd0</c>(platoon, 0)); overrides a save's <c>persistent</c>. Not saved: the platoon is gone within a minute.</summary>
+    public bool PersistentCleared { get; set; }
+    /// <summary>
+    /// The unloaded platoon's activation dwell (+0x78, <c>FUN_1407ebf30</c>, <b>Verified</b>): 5 s when it becomes unloaded, 2 s again whenever it stands outside its zone's
+    /// activation box; inside, it counts down and the platoon activates once it is below 0. Not saved (a loaded platoon starts at 5).
+    /// </summary>
+    public float DwellLeft { get; set; } = 5;
     /// <summary>Where its campaign sends it (the target for the leader platoon, the leader for the others; set each population look).</summary>
     public Vector2? CampaignGoal { get; set; }
     /// <summary>The roads it takes off screen to <see cref="RouteGoal"/> (null: straight there; <see cref="PopulationSystem"/> roads), and the next point of it. Not saved: worked out again.</summary>
@@ -87,7 +120,7 @@ public sealed class StoredSquad
     public required string Name { get; init; }
     /// <summary>A town's own squad (else a roaming one, which travels).</summary>
     public bool Pinned { get; init; } = true;
-    public Meitou.Data.World.TownBuilding? HomeBuilding { get; init; }
+    public Meitou.Data.World.TownBuilding? HomeBuilding { get; set; }
     public Trading.Shop? Shop { get; set; }
     /// <summary>The squad's <see cref="Squad.NextHomeFillTick"/>, so an emptied home is not refilled when it comes back.</summary>
     public long NextHomeFillTick { get; set; }
@@ -104,6 +137,11 @@ public sealed class StoredSquad
     public double StoredHours { get; set; }
     /// <summary>The characters while the platoon is not in the world (empty while it is).</summary>
     public List<StoredMember> Members { get; } = [];
+    /// <summary>
+    /// The squad's dead, kept in the record as the original serialises the whole member list (<c>FUN_1404ff410</c>) while their bodies leave the world at the unload (<c>FUN_1404feed0</c>);
+    /// they come back as corpses where they lay when the squad is made again. Not counted as members (<see cref="Members"/> is the living).
+    /// </summary>
+    public List<StoredMember> Dead { get; } = [];
 }
 
 /// <summary>A character of a <see cref="StoredSquad"/>: its cold state, cleared of what only meant something in the world, and its place.</summary>
@@ -114,11 +152,15 @@ public sealed class PlatoonRegistry
 {
     readonly SortedDictionary<int, Platoon> platoons = [];
     int nextId;
+    // The ids of a save's never-made town squads (Platoon.Unmade), counted down from the top so that they leave every other
+    // platoon's id (and what is rolled from it) as it would be without them, and come last in id order.
+    int nextReserved = int.MaxValue;
 
     public int Count => platoons.Count;
     public IEnumerable<Platoon> All => platoons.Values;
     public Platoon? Find(int id) => platoons.GetValueOrDefault(id);
     public int NextId() => nextId++;
+    public int NextReservedId() => nextReserved--;
     public void Add(Platoon p) => platoons[p.Id] = p;
     public bool Remove(int id) => platoons.Remove(id);
 
@@ -126,6 +168,7 @@ public sealed class PlatoonRegistry
     {
         h.Add(platoons.Count);
         h.Add(nextId);
+        if (nextReserved != int.MaxValue) h.Add(nextReserved);   // only once used: a world without unmade squads hashes as before
         foreach (var p in platoons.Values)
         {
             h.Add(p.Id);
@@ -158,9 +201,13 @@ public sealed class PlatoonRegistry
                     h.Add(m.Position);
                     if (!m.Cold.Entity.IsNone) { h.Add(0x456E7469); h.Add(m.Cold.Entity.Value); }
                 }
+                if (stored.Dead.Count > 0) { h.Add(0x44656164); h.Add(stored.Dead.Count); }
                 h.Add(stored.Anchor);
                 h.Add(stored.Pinned);
             }
+            if (!p.IntactFlag) h.Add(0x496E7463);   // likewise while not intact
+            if (p.Persistent) h.Add(0x50657273);   // only a split-off prisoner's, likewise
+            if (p.Dead) h.Add(0x44656164);   // only once declared dead, so worlds without one hash as before
             if (p.OrphanSeconds > 0) h.Add(p.OrphanSeconds);   // only while counting, so worlds without it hash as before
             if (p.Campaign is { } campaign)
             {

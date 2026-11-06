@@ -9,7 +9,7 @@ public sealed partial class MedicalState
 
     /// <summary>
     /// The game's F10 debug heal (Meitou only, not the original's): every part whole (no wear, stun, bandage or splint), full blood, no wounds and no KO time left,
-    /// so the next body tick wakes the character. A dead character stays dead.
+    /// so the next body tick wakes the character. A dead character stays dead; a stump or crushed limb stays one (<see cref="RestoreLimbs"/> gives it back).
     /// </summary>
     public void Heal(in MedicalContext ctx)
     {
@@ -27,6 +27,20 @@ public sealed partial class MedicalState
         KoTimer = 0;
     }
 
+    /// <summary>The F10 debug full heal's limbs (Meitou only): every stump and crushed limb is the original again; a fitted prosthetic stays. True when one changed.</summary>
+    public bool RestoreLimbs()
+    {
+        if (Dead) return false;
+        bool changed = false;
+        foreach (var p in parts)
+            if (p.Limb is LimbState.Stump or LimbState.Crushed)
+            {
+                p.Limb = LimbState.Original;
+                changed = true;
+            }
+        return changed;
+    }
+
     float NextRoll(in MedicalContext ctx) => BodyRolls.Float(ctx.Seed, ctx.CharacterKey, BodyRolls.MedicalDomain, rollCounter++);
 
     /// <summary>
@@ -39,24 +53,8 @@ public sealed partial class MedicalState
     public int ChoosePart(in MedicalContext ctx, bool lowStrike = false, bool directionSix = false)
     {
         if (Parts.Count == 0) return -1;
-        float total = 0;
-        for (int i = 0; i < Parts.Count; i++) total += Weight(Parts[i], lowStrike, directionSix);
-        int chosen = Parts.Count - 1;
-        if (total > 0)
-        {
-            float target = NextRoll(ctx) * total;
-            int last = -1;
-            chosen = -1;
-            for (int i = 0; i < Parts.Count; i++)
-            {
-                float w = Weight(Parts[i], lowStrike, directionSix);
-                if (w <= 0) continue;
-                last = i;
-                if (target < w) { chosen = i; break; }
-                target -= w;
-            }
-            if (chosen < 0) chosen = last;
-        }
+        int chosen = Forced(ctx.Options.ForcedHitPart);
+        if (chosen < 0) chosen = Rolled(ctx, lowStrike, directionSix);
         var p = Parts[chosen];
         float cap = float.NegativeInfinity;
         if (!Alive(p)) p.HitMult = 0;
@@ -68,6 +66,42 @@ public sealed partial class MedicalState
         else cap = 4;
         if (p.HitMult < cap) p.HitMult += 1;
         return chosen;
+    }
+
+    int Rolled(in MedicalContext ctx, bool lowStrike, bool directionSix)
+    {
+        float total = 0;
+        for (int i = 0; i < Parts.Count; i++) total += Weight(Parts[i], lowStrike, directionSix);
+        if (total <= 0) return Parts.Count - 1;
+        float target = NextRoll(ctx) * total;
+        int last = -1;
+        for (int i = 0; i < Parts.Count; i++)
+        {
+            float w = Weight(Parts[i], lowStrike, directionSix);
+            if (w <= 0) continue;
+            last = i;
+            if (target < w) return i;
+            target -= w;
+        }
+        return last;
+    }
+
+    /// <summary>
+    /// The debug menu's forced part (<see cref="BodyOptions.ForcedHitPart"/>): the part of that template string id, else of that name (another race's body), when a blow could pick it
+    /// (whatever the strike's height); -1 without one, and no roll is drawn.
+    /// </summary>
+    int Forced((string Id, string Name)? forced)
+    {
+        if (forced is not ({ } id, { } name)) return -1;
+        int named = -1;
+        for (int i = 0; i < Parts.Count; i++)
+        {
+            var p = Parts[i];
+            if (Weight(p, false, true) <= 0) continue;
+            if (p.Template.StringId == id) return i;
+            if (named < 0 && string.Equals(p.Template.Name, name, StringComparison.OrdinalIgnoreCase)) named = i;
+        }
+        return named;
     }
 
     /// <summary>A part a blow can still pick: its flesh is above -M, and it is not the stump of a limb.</summary>
@@ -90,7 +124,6 @@ public sealed partial class MedicalState
     public void ApplyHit(int part, in HitDamage hit, in MedicalContext ctx, List<MedicalEvent>? events = null)
     {
         if (Dead) return;
-        bool standing = Standing;   // the posture before the blow (a leg lost in it still counts from a standing start)
         var c = ctx.Constants;
         var race = ctx.Race;
         var p = Parts[part];
@@ -104,11 +137,12 @@ public sealed partial class MedicalState
         // Opened whatever the race's bleed rate; a bloodless race's wounds drain nothing but still need first aid.
         if (MathF.Max(hit.Cut, hit.Pierce) > 0) wounds.Add(MathF.Max(hit.Cut, hit.Pierce) * c.BleedRate * hit.Scale);
 
-        CheckPart(part, ctx, events, inHitPath: true, standing);
+        CheckPart(part, ctx, events, inHitPath: true);
         CheckBlood(ctx, events);
+        LegCollapse(events);
     }
 
-    void CheckPart(int index, in MedicalContext ctx, List<MedicalEvent>? events, bool inHitPath, bool standing)
+    void CheckPart(int index, in MedicalContext ctx, List<MedicalEvent>? events, bool inHitPath)
     {
         if (Dead) return;
         var p = Parts[index];
@@ -119,44 +153,88 @@ public sealed partial class MedicalState
         p.WasDown = down;
         bool destroyed = inHitPath ? p.IsDestroyed : p.Flesh - p.Stun < -p.MaxHp;
         if (!destroyed) return;
-        if (p.IsVital) { Die(DeathCause.VitalPart, events); return; }
         // The cut-off rule (FUN_14064f300 for a blow, FUN_14064f5c0 for a tick, <b>Verified</b>): a blow needs the setting at Rare or more, a stats object and an original or
         // crushed limb; the tick (a wound worsening) needs Frequent and an original limb. A prosthetic is never cut off (FUN_14064edc0 returns for a replaced slot).
         var setting = ctx.Options.Dismemberment;
-        bool severs = inHitPath
-            ? (setting >= Dismemberment.Rare && ctx.HasStats && HasStatsObject && (p.Limb is LimbState.Original or LimbState.Crushed))
-            : (setting >= Dismemberment.Frequent && p.Limb == LimbState.Original);
-        if (severs && p.Template.Severance) Sever(index, ctx, standing, events);
+        bool blowSevers = setting >= Dismemberment.Rare && ctx.HasStats && HasStatsObject && (p.Limb is LimbState.Original or LimbState.Crushed) && p.Template.Severance;
+        if (p.IsVital)
+        {
+            Die(DeathCause.VitalPart, events);
+            // Meitou (Decapitation): the blow's rule cuts the head off too; the original returns here for every vital part (the head's record has severance set).
+            if (inHitPath && ctx.Options.Decapitation && blowSevers && p.Template.Type == BodyPartType.Head) Decapitate(events);
+            return;
+        }
+        bool severs = inHitPath ? blowSevers : setting >= Dismemberment.Frequent && p.Limb == LimbState.Original && p.Template.Severance;
+        if (severs) Sever(index, ctx, events);
+    }
+
+    /// <summary>The head was cut off by the blow that killed the character (Meitou, <see cref="BodyOptions.Decapitation"/>); saved as <c>meitou decapitated</c>.</summary>
+    public bool Decapitated { get; private set; }
+
+    /// <summary>Cuts the head off a character the blow has just killed (<see cref="BodyOptions.Decapitation"/>): only the look changes, nothing drops.</summary>
+    public void Decapitate(List<MedicalEvent>? events = null)
+    {
+        if (Decapitated) return;
+        Decapitated = true;
+        events?.Add(new MedicalEvent(MedicalEventKind.Decapitated, -1));
     }
 
     /// <summary>
     /// Cuts a limb off (<c>FUN_14064edc0</c>, <b>Verified</b>): the part becomes a stump (base HP 5), the character loses rand(5, 30) blood and gets a wound of strength <c>bleed rate</c> x 200.
-    /// A leg lost while <paramref name="standing"/> (posture 0) also knocks the character out for <see cref="LegLossKo"/> times a uniform roll in [0, 1), the KO time set before the blood
-    /// is lost; a leg lost while crawling, staying low, or already out does not. The caller awards the toughness XP (<see cref="XpService.ToughnessFromLimbLoss"/>) and spawns the
-    /// severed limb item from the race's <c>severed limbs</c>.
+    /// A leg's stump is down, so a character standing (posture 0) is knocked out by <see cref="LegCollapse"/>, which the caller runs after its checks. The caller awards the toughness XP
+    /// (<see cref="XpService.ToughnessFromLimbLoss"/>) and spawns the severed limb item from the race's <c>severed limbs</c>.
     /// </summary>
-    public void Sever(int part, in MedicalContext ctx, bool standing, List<MedicalEvent>? events = null)
+    public void Sever(int part, in MedicalContext ctx, List<MedicalEvent>? events = null)
     {
         var p = Parts[part];
         p.Limb = LimbState.Stump;
         p.Replacement = null;
-        if (standing && p.Template.LimbSlot is 2 or 3) ApplyKo(LegLossKo(ctx) * NextRoll(ctx), events);
         Blood -= 5 + 25 * NextRoll(ctx);
         wounds.Add(ctx.Constants.BleedRate * 200);
         events?.Add(new MedicalEvent(MedicalEventKind.PartSevered, part));
     }
 
     /// <summary>
-    /// The leg-loss KO time before its roll (<c>FUN_140644980</c>, <b>Verified</b> by decompile): max(3, (2 x <c>knockout time base</c> + |capacity - blood| x k x 0.5) x (1 - toughness / 100) x 4),
-    /// k = lerp(<c>knockout mult 1</c>, <c>knockout mult 99</c>, toughness / 100). Only the missing blood enters it; the other parts' terms of <see cref="KoTerms"/> do not.
+    /// The KO time a leg going down at posture 0 writes, in seconds of character time (<b>Verified</b> in game for a leg cut off standing, #134): the collapse check (<c>FUN_140649320</c>)
+    /// sets posture 2 for a leg down at posture 0, and the posture setter (<c>FUN_1405c7e20</c>) writes 3 over the KO timer on that change (docs/game/character-stats.md
+    /// "Cut-off and leg loss"). The sever's own rolled time (<c>FUN_140644980</c> x a roll) is always overwritten, so it is not modelled.
     /// </summary>
-    public float LegLossKo(in MedicalContext ctx)
+    public const float LegLossKoSeconds = 3;
+
+    /// <summary>Posture 0 (<c>PS_NORMAL</c>) as of the end of the last <see cref="Tick"/>, or unknown before the first.</summary>
+    enum PostureState : byte { Unknown, Normal, Other }
+
+    /// <summary>
+    /// The posture the character update last set (the original's <c>getProneState</c>, refreshed once a tick from <see cref="Standing"/>): a knock-out turns it from 0 only on the
+    /// next update, so a leg going down between (another blow of the same tick) still finds it at 0. Not saved: unknown after a load, when the live <see cref="Standing"/> stands in.
+    /// </summary>
+    PostureState posture;
+
+    bool PostureNormal => posture == PostureState.Unknown ? Standing : posture == PostureState.Normal;
+
+    /// <summary>
+    /// The posture setter's 0 -> 2 change (<c>FUN_140649320</c> then <c>FUN_1405c7e20</c>, <b>Verified</b> decompile): a leg down (stump, crushed or under the KO point,
+    /// <see cref="HealthPart.LegDown"/>) while the posture is 0 sets posture 2 and writes <see cref="LegLossKoSeconds"/> to the KO timer, over any running knock-out, and the
+    /// character is out until it runs down. Cut off or not, standing or already knocked out by a vital part since the last update.
+    /// </summary>
+    void LegCollapse(List<MedicalEvent>? events)
+    {
+        if (Dead || !PostureNormal || !LegsDown) return;
+        posture = PostureState.Other;
+        RestartKo(LegLossKoSeconds, events);
+    }
+
+    /// <summary>
+    /// <c>FUN_140644980</c> (<b>Verified</b>): max(3, (2 x <c>knockout time base</c> + |capacity - blood| x k x 0.5) x <paramref name="factor"/> x 4), k = lerp(<c>knockout mult 1</c>,
+    /// <c>knockout mult 99</c>, toughness / 100).
+    /// </summary>
+    float KoBlood(in MedicalContext ctx, float factor)
     {
         var c = ctx.Constants;
-        float t = Math.Clamp(ctx.Toughness / 100, 0, 1);
+        float t = ctx.Toughness / 100;
         float k = c.KnockoutMult1 + (c.KnockoutMult99 - c.KnockoutMult1) * t;
         float missingBlood = MathF.Abs(Capacity(ctx) - Blood) * k * 0.5f;
-        return MathF.Max(3, (2 * c.KnockoutTimeBase + missingBlood) * (1 - t) * 4);
+        return MathF.Max(3, (2 * c.KnockoutTimeBase + missingBlood) * factor * 4);
     }
 
     /// <summary>
@@ -202,14 +280,16 @@ public sealed partial class MedicalState
     }
 
     /// <summary>
-    /// One CHARACTER <c>starting health</c> entry on a new body (<c>FUN_140645ef0</c>): below -M a limb becomes a stump (flesh 0, the treated pool 5); otherwise the flesh is
-    /// <paramref name="value"/> clamped to [-M, M] and the rest, M - flesh, is already treated. A part the anatomy lacks is ignored.
+    /// One CHARACTER <c>starting health</c> entry on a new body (<c>FUN_140645ef0</c>): a limb becomes a stump (flesh 0, the treated pool 5) when the value is below -M, or when the limb
+    /// is no longer original (an earlier entry or fit already changed it, only reachable with a second entry for the same limb); otherwise the flesh is <paramref name="value"/> clamped to
+    /// [-M, M] and the rest, M - flesh, is already treated. A part the anatomy lacks is ignored. A non-limb entry below -M is a stump in the original too (it writes past its limb table);
+    /// that is not copied (no base-game record has one: all 8 entries are arms or legs).
     /// </summary>
     public void ApplyStartingHealth(string partId, float value)
     {
         if (Parts.FirstOrDefault(p => p.Template.StringId == partId) is not { } p) return;
         float max = p.MaxHp;
-        if (value < -max && p.Template.LimbSlot is >= 0 and < 4)
+        if (p.Template.LimbSlot is >= 0 and < 4 && (value < -max || p.Limb != LimbState.Original))
         {
             p.Limb = LimbState.Stump;
             p.Flesh = 0;
@@ -234,11 +314,10 @@ public sealed partial class MedicalState
     public static float PutDownKoFactor(float assassination) => 0.1f + 0.3f * Math.Clamp(assassination / 100, 0, 1);
 
     /// <summary>
-    /// The KO time of a character put down by a non-friendly carrier, in seconds of character time: max(3, (2 x <c>knockout time base</c> + <see cref="KoTerms"/>) x <paramref name="factor"/> x 4),
-    /// with no random roll. <b>Gap</b>: the original's <c>FUN_140644980</c> (the function this follows) has only the blood term, not <see cref="KoTerms"/> (<b>Verified</b> by decompile;
-    /// docs/game/character-stats.md "Cut-off and leg loss"). Not changed here: the put-down, stealth and shackle knock-outs are not the leg task.
+    /// The KO time of a character put down by a non-friendly carrier, knocked out by stealth or shackled, in seconds of character time, with no random roll: <see cref="KoBlood"/> with the
+    /// caller's <paramref name="factor"/> (<c>FUN_140644980</c>, <b>Verified</b>: the one KO-time function of leg loss, put-down, stealth and shackles).
     /// </summary>
-    public float PutDownKoSeconds(in MedicalContext ctx, float factor) => MathF.Max(3, (2 * ctx.Constants.KnockoutTimeBase + KoTerms(ctx)) * factor * 4);
+    public float PutDownKoSeconds(in MedicalContext ctx, float factor) => KoBlood(ctx, factor);
 
     /// <summary>Knocks the character out for <paramref name="seconds"/> seconds of character time from outside the medical rules (a drug, a scripted event); a longer running KO is kept.</summary>
     public void KnockOut(float seconds, List<MedicalEvent>? events = null) => ApplyKo(seconds, events);
@@ -275,11 +354,10 @@ public sealed partial class MedicalState
         events?.Add(new MedicalEvent(MedicalEventKind.Died, Cause: cause));
     }
 
-    /// <summary>Blood rules shared by a hit and the tick: blood at 0 (or -25 once flagged) starts a KO, at -capacity the character dies, above 25 the flag clears.</summary>
+    /// <summary>Blood rules shared by a hit and the tick: blood at 0 (or -25 once flagged) starts a KO, at -capacity the character dies. The flag clears in <c>TickBlood</c>.</summary>
     void CheckBlood(in MedicalContext ctx, List<MedicalEvent>? events)
     {
         if (Dead) return;
-        if (Blood > 25) BloodKo = false;
         float cap = Capacity(ctx);
         if (Blood <= -cap) { Die(DeathCause.BloodLoss, events); return; }
         if (Blood <= 0 && !BloodKo) { BloodKo = true; StartKo(ctx, events); }

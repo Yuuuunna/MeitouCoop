@@ -14,6 +14,7 @@ public interface IPlayerSession
 {
     WorldSnapshot CurrentSnapshot { get; }
     bool HasWorldView => true;
+    GameplayRules? AuthorityRules => null;
     PlayerMessageBatch Messages => PlayerMessageBatch.Empty;
     Meitou.Data.World.WeatherFrame? Weather => null;
     Meitou.Data.Particles.WeatherEffectFrame? WeatherEffects => null;
@@ -42,11 +43,16 @@ public interface IPlayerSession
     bool CanSaveWorld { get; }
     bool CanChangeSpeed { get; }
     double TimeScale { get; }
+    bool IsPaused => TimeScale == 0;
     void SetSpeed(double speed);
     void TogglePause();
     /// <summary>A local menu/loading pause request. A remote implementation must not pause the shared world.</summary>
     void SetModalPause(bool paused);
     void Submit(SimCommand command);
+    VerbFacts? VerbFactsOf(CharacterId lead, CharacterId target) => CurrentSnapshot.VerbLead == lead ? CurrentSnapshot.Verbs.FirstOrDefault(v => v.Target == target)?.Facts : null;
+    bool RegardsFriendly(CharacterId target, CharacterId lead) => VerbFactsOf(lead, target)?.RegardsLead == true;
+    bool? ArrivalForget(int serial) => CurrentSnapshot.ArrivalSerial == serial ? CurrentSnapshot.ArrivalForget : null;
+    void SetPointed(CharacterId target) => Submit(new PointedCommand(target) { Tick = CommandTick });
     bool CanTalk(CharacterId target, CharacterId? speaker = null);
     /// <summary>True while eligibility is unknown; callers must not turn this into an attack fallback.</summary>
     bool TalkHintPending(CharacterId target, CharacterId? speaker = null) => false;
