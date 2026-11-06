@@ -284,8 +284,8 @@ emulation. Dead roles provide no observation anchor. An optional filter of at mo
 reduce observation and never activates simulation/navigation. Loaded owned roles remain available for roster
 details outside the filter, including corpses; unloaded identity/grant records remain in the role list.
 
-Public characters/machines use explicit field allowlists. Inventory, jobs, stats/path detail are only generated
-for the recipient's owned roles; same-faction membership is insufficient. Machine stocks, crafting options,
+Public characters/machines use explicit field allowlists. Private inventory, jobs and path details require
+ownership or the relevant authorized interaction; same-faction membership is insufficient. Machine stocks, crafting options,
 site materials and remote asset management require ManageAssets. Nearby machine/farm presentation remains
 public. Balances require ReadFunds, independently of SpendFunds. Membership permits faction research views;
 ManageSquads permits the faction roster, otherwise squad lists contain only owned members.
@@ -294,11 +294,16 @@ cached windows cannot survive revocation/regrant merely because the character ha
 Exploration and interface selection come from the recipient, never World.Player. Parallel character projection
 consumes serially captured inventory/job revision stamps. Legacy publication uses the same character builder.
 
+**Observed** (source review): inspecting a visible NPC or another player's character publishes the recipient's
+`Inspected` flag and information/medical-panel fields, including stats, status and health parts. It preserves
+own selection without granting control, inventory, jobs or paths. `BodySystem` refreshes extended stats for
+every player's inspected target. Visibility filters still apply, and clearing inspection removes these fields.
+
 **Verified** by `PlayerWorldViewTests` and the authorized-publication case in `TradeTests`: independent private
 views/balances, same-faction separation, permission loss/transfer, bounded observation without activation,
 dead/carried roles, preparation/reconnect gates, machine stock redaction, stale trade exclusion and stable
-revision stamps across 601 owned roles. [Wire replication](networking.md#state-replication) consumes these views;
-graphical remote UI, detailed inspection/loot workflows and event delivery remain integration work.
+revision stamps across 601 owned roles. [Wire replication](networking.md#state-replication) consumes these views.
+These checks do not establish in-game graphical inspection or every loot workflow.
 
 ## Shared runtime
 

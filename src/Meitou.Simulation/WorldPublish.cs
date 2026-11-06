@@ -233,8 +233,9 @@ public sealed partial class World
             var cold = table.Cold(i);
             // The details only the selection shows: asked once per character, the selection is a list.
             bool eligible = detailEligible?.Invoke(id) ?? true;
-            bool selected = eligible && cold is { IsPlayer: true } && viewer.Selection.Contains(id), inspected = eligible && !selected && id == viewer.Inspected;
-            bool detailed = eligible && (fullDetails || selected || inspected);
+            bool selected = eligible && cold is { IsPlayer: true } && viewer.Selection.Contains(id), inspected = !selected && id == viewer.Inspected;
+            // Inspection supplies HUD details for a visible target without granting inventory or control access.
+            bool detailed = eligible && (fullDetails || selected) || inspected;
             bool shown = detailed || id == pointed;
             bool sneaking = cold is { IsPlayer: true } && (cold.Orders & CharacterOrders.Sneak) != 0;
             var watchers = sneaking ? WatchersOf(cold!) : [];

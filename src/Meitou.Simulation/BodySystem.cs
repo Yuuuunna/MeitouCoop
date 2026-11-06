@@ -97,6 +97,7 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
 
     /// <summary>Per slot: not safe to get up this tick (<see cref="MedicalContext.PlayDead"/>), from <see cref="Schedule"/>.</summary>
     bool[] playDead = [];
+    readonly HashSet<CharacterId> inspected = [];
 
     /// <summary>How often a character playing dead looks again whether it is safe (engine choice, in ticks; the first test, as its knockout ends, is at once).</summary>
     const int PlayDeadRecheckTicks = 15;
@@ -110,6 +111,9 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
     /// </summary>
     public void Schedule(World world)
     {
+        inspected.Clear();
+        foreach (var player in world.Players.All)
+            if (!player.State.Inspected.IsNone) inspected.Add(player.State.Inspected);
         medicalBudget.Run(world);
         var table = world.Characters;
         if (playDead.Length < table.HighWater) Array.Resize(ref playDead, table.HighWater);
@@ -234,7 +238,7 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
             if ((cold.Orders & CharacterOrders.Sneak) != 0 && !medical.Incapacitated && (cold.IsPlayer || world.IsPlayerFaction(cold.Faction))
                 && cold.InSomething == Locks.HeldState.None && cold.CarriedBy.IsNone)
                 SneakXp(world, i, cold, stats, race, n.Velocity.X * n.Velocity.X + n.Velocity.Z * n.Velocity.Z > SneakMoving * SneakMoving, dt);
-            if (cold.IsPlayer || table.IdOf(i) == world.Player.Inspected) cold.Extended = ExtendedOf(cold, stats, race, medical, n.MaxSpeed, encumbrance, in ctx, carrying);
+            if (cold.IsPlayer || inspected.Contains(table.IdOf(i))) cold.Extended = ExtendedOf(cold, stats, race, medical, n.MaxSpeed, encumbrance, in ctx, carrying);
             n.Health = Math.Clamp(medical.Blood / MathF.Max(MedicalState.BloodCapacity(race, stats.Strength), 1) * 100, 0, 100);
             foreach (var e in events)
             {

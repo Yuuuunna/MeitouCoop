@@ -69,7 +69,7 @@ public class PlayerWorldViewTests
     }
 
     [Fact]
-    public void EachRecipientGetsOwnDetailsAndFundsWhileNearbyOthersHavePublicAppearanceOnly()
+    public void EachRecipientGetsOwnPrivateDetailsAndFundsWhileInspectionKeepsOthersPrivateDataHidden()
     {
         using var s = new Scene();
         // Even a stale or forged view selection cannot turn another player's character into private detail.
@@ -80,7 +80,7 @@ public class PlayerWorldViewTests
         var other = a.Snapshot.Characters.Single(c => c.Id == s.Second);
         Assert.True(own.Selected); Assert.NotNull(own.ItemGrid); Assert.Single(own.Jobs);
         Assert.Null(other.ItemGrid); Assert.Empty(other.Jobs); Assert.Equal(0ul, other.JobsRevision);
-        Assert.False(other.Selected); Assert.False(other.Inspected); Assert.False(other.IsPlayer);
+        Assert.False(other.Selected); Assert.False(other.IsPlayer);
         Assert.NotNull(b.Snapshot.Characters.Single(c => c.Id == s.Second).ItemGrid);
         Assert.Null(b.Snapshot.Characters.Single(c => c.Id == s.First).ItemGrid);
         Assert.Empty(s.World.Player.Selection); Assert.Empty(s.World.Snapshot.Characters);
