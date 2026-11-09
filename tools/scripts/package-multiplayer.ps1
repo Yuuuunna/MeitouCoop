@@ -28,6 +28,9 @@ Meitou 多人测试包 — 仅输入服务器地址 / Windows x64 / .NET 自包�
 解压客户端，双击 start-client.cmd，选择“多人游戏”，输入服务器 IP:端口即可。
 同一电脑可填 localhost:27800。不需要账号、密码、签发账号或 connection.json。
 首次连接自动建立并记住本机身份，选择出身、完成捏脸后入场；再次使用同一地址连接会恢复原角色。
+同机双身份：分别双击 start-client-player1.cmd 和 start-client-player2.cmd，再连接同一服务器。
+玩家 1 沿用原有身份；玩家 2 独立保存在 %LOCALAPPDATA%/Meitou/identities-player2，首次连接创建新玩家，以后恢复该玩家。
+两个脚本也可在终端附加 --connect 服务器IP:端口；独立身份仅适用于按地址连接，不适用于共享的 connection.json。
 新势力由服务端自动分配不重名的名称，例如“无名者 2”。出身包含服务器加载的原版和模组内容，并受服务器角色数量和种族规则限制。
 
 3. 本机身份与重连
@@ -71,6 +74,9 @@ foreach ($kind in @('client', 'server')) {
     if ($kind -eq 'server') {
         [IO.File]::WriteAllText((Join-Path $destination 'start-server.cmd'), "@echo off`r`ncd /d `"%~dp0`"`r`nMeitou.Server.exe --config server.json`r`npause`r`n")
     } else {
+        foreach ($script in @('start-client-player1.cmd', 'start-client-player2.cmd')) {
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $destination
+        }
         [IO.File]::WriteAllText((Join-Path $destination 'start-client.cmd'), "@echo off`r`ncd /d `"%~dp0`"`r`nMeitouClient.exe`r`nif errorlevel 1 pause`r`n")
     }
     $assemblyHashes = Get-ChildItem -LiteralPath $destination -File | Where-Object { $_.Name -like 'Meitou*.dll' -or $_.Name -like 'Meitou*.exe' } | ForEach-Object {

@@ -43,6 +43,7 @@ internal sealed class NavMeshService : IDisposable
     readonly Dictionary<Vector3, long> keepChecked = [];
     readonly Thread worker;
     long generation, incarnation, publication;
+    bool keptDirty;
     bool disposed;
     Exception? failedStartup;
 
@@ -164,6 +165,7 @@ internal sealed class NavMeshService : IDisposable
             var wanted = requeuePending ? pending.Keys.Concat(failed.Keys).Distinct().ToArray() : [];
             foreach (var request in pending.Values) Cancel(request);
             pending.Clear(); failed.Clear(); keepRequests.Clear(); keepChecked.Clear(); standing.Clear(); live.Clear();
+            keptDirty = true;
             foreach (var zone in wanted) Issue(zone);
         }
     }
@@ -193,13 +195,14 @@ internal sealed class NavMeshService : IDisposable
             foreach (var zone in removed.Concat(deferred ? dirty : []).Distinct())
             {
                 if (world.Contains(zone)) { world = world.Without(zone); changed.Add(zone); }
-                full.Remove(zone); live.Remove(zone); standing.Remove(zone);
+                keptDirty |= full.Remove(zone); live.Remove(zone); standing.Remove(zone);
             }
             removed.Clear();
             foreach (var request in pending.Values.Where(r => r.Result is not null).OrderBy(r => r.Zone.X).ThenBy(r => r.Zone.Y).ToArray())
             {
                 var result = request.Result!;
                 full[request.Zone] = result.Mesh;
+                keptDirty = true;
                 live.Remove(request.Zone);
                 dirty.Remove(request.Zone); pending.Remove(request.Zone); completed.Add((request, result));
             }
@@ -211,13 +214,20 @@ internal sealed class NavMeshService : IDisposable
                 if (!SeedPruner.Extend(mesh, test, [at], Settings)) continue;
                 if (!standing.TryGetValue(zone, out var points)) standing[zone] = points = [];
                 points.Add(at);
+                keptDirty = true;
             }
-            foreach (var (zone, keep) in ZoneKeptClosure.Resolve(full, Settings, standing))
+            // Most boundaries have no navigation changes. Re-solving every loaded border
+            // here monopolizes the world owner even when the published mesh is unchanged.
+            if (keptDirty)
             {
-                if (live.TryGetValue(zone, out var before) && before.AsSpan().SequenceEqual(keep) && world.Contains(zone)) continue;
-                live[zone] = keep;
-                world = world.With(full[zone].WithKept(keep).WithoutPruned());
-                changed.Add(zone);
+                foreach (var (zone, keep) in ZoneKeptClosure.Resolve(full, Settings, standing))
+                {
+                    if (live.TryGetValue(zone, out var before) && before.AsSpan().SequenceEqual(keep) && world.Contains(zone)) continue;
+                    live[zone] = keep;
+                    world = world.With(full[zone].WithKept(keep).WithoutPruned());
+                    changed.Add(zone);
+                }
+                keptDirty = false;
             }
             if (changed.Count > 0) { Walkability.SetWorld(world); publication = checked(publication + 1); keepChecked.Clear(); }
             foreach (var at in keepRequests) keepChecked[at] = publication;

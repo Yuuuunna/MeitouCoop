@@ -4,7 +4,7 @@ namespace Meitou.Game;
 
 /// <summary>
 /// log.txt next to MeitouClient.exe: everything the game writes to its output and error, appended across runs. Past <see cref="Cap"/> the
-/// oldest lines are cut, down to <see cref="Keep"/>. Only one running game writes it; a second one started from the same folder logs nothing.
+/// oldest lines are cut, down to <see cref="Keep"/>. Concurrent instances fall back to a log named with their process ID.
 /// </summary>
 sealed class GameLog : TextWriter
 {
@@ -46,15 +46,23 @@ sealed class GameLog : TextWriter
     }
 
     public override Encoding Encoding => writer.Encoding;
+    public static string? CurrentPath { get; private set; }
 
-    /// <summary>The log of this run, or null when it cannot be opened (another game has it, or the folder is read-only).</summary>
+    /// <summary>The log of this run, or null when neither log path can be opened.</summary>
     public static GameLog? Open()
+    {
+        return Open("log.txt") ?? Open($"log-{Environment.ProcessId}.txt");
+    }
+
+    static GameLog? Open(string name)
     {
         try
         {
-            var file = new FileStream(Path.Combine(AppContext.BaseDirectory, "log.txt"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+            string path = Path.Combine(AppContext.BaseDirectory, name);
+            var file = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
             file.Seek(0, SeekOrigin.End);
             var log = new GameLog(file);
+            CurrentPath = path;
             log.WriteLine($"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} meitou {string.Join(' ', Environment.GetCommandLineArgs().Skip(1))}");
             return log;
         }

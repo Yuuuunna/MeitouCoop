@@ -15,6 +15,8 @@ namespace Meitou.Game;
 sealed partial class PlayerInterface
 {
     public GameInstall? OnlineInstall { get; set; }
+    public string LastServerAddress { get; set; } = "localhost:27800";
+    public Action<string>? RememberServerAddress { get; set; }
     OnlineLobby? lobby;
     Task? onlineWork;
     Action? onlineDone;
@@ -58,6 +60,7 @@ sealed partial class PlayerInterface
             if (session.IsRemote || OnlineInstall is null) return true;
             CloseTitleWindows();
             faithfulScreens.Open("online");
+            faithfulScreens.SetText("online", "ServerAddress", LastServerAddress);
             return true;
         }
         if (e.Screen != "online") return false;
@@ -65,6 +68,8 @@ sealed partial class PlayerInterface
         if (e.Widget != "OnlineConnect" || onlineWork is not null || lobby is not null || OnlineInstall is null || gameData is null) return true;
         string address = faithfulScreens.GetText("online", "ServerAddress").Trim();
         if (address.Length == 0) { onlineStatus = "Enter the server address."; return true; }
+        LastServerAddress = address;
+        RememberServerAddress?.Invoke(address);
         lobby = new(OnlineInstall, gameData);
         StartOnlineWork(() => lobby.ConnectAsync(address), "Connecting and checking content…", () =>
         {

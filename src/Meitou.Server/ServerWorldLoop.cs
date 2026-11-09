@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Meitou.Runtime;
 
@@ -17,25 +18,37 @@ public sealed class ServerWorldLoop : IAsyncDisposable
     public WorldRuntime Runtime => runtime;
     public ServerWorldLoop(WorldRuntime runtime) { this.runtime = runtime; Completion = Task.Run(Run); }
     interface IWork { void Execute(); void Fail(Exception error); }
-    sealed class Work<T>(Func<T> action, CancellationToken cancellation) : IWork
+    sealed class Work<T>(Func<T> action, CancellationToken cancellation, string origin) : IWork
     {
+        readonly long queued = Stopwatch.GetTimestamp();
         public TaskCompletionSource<T> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Execute()
         {
             if (cancellation.IsCancellationRequested) { Result.TrySetCanceled(cancellation); return; }
+            long started = Stopwatch.GetTimestamp();
             try { Result.TrySetResult(action()); } catch (Exception e) { Result.TrySetException(e); }
+            finally
+            {
+                double queueMs = Stopwatch.GetElapsedTime(queued, started).TotalMilliseconds;
+                double executeMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                if (executeMs >= 100 || queueMs >= 500)
+                    Console.WriteLine($"server    {DateTime.UtcNow:O} slow owner job: origin={origin} queueMs={queueMs:F0} executeMs={executeMs:F0}");
+            }
         }
         public void Fail(Exception error) => Result.TrySetException(error);
     }
     /// <summary>Cancellation prevents queued work from starting. Once a synchronous mutation starts, its result is observed so callers can clean it up.</summary>
-    public async Task<T> InvokeAsync<T>(Func<T> action, CancellationToken cancellation = default)
+    public async Task<T> InvokeAsync<T>(Func<T> action, CancellationToken cancellation = default,
+        [CallerFilePath] string source = "", [CallerMemberName] string member = "", [CallerLineNumber] int line = 0)
     {
         ArgumentNullException.ThrowIfNull(action);
-        var item = new Work<T>(action, cancellation);
+        var item = new Work<T>(action, cancellation, $"{Path.GetFileName(source)}:{line}/{member}");
         await work.Writer.WriteAsync(item, cancellation).ConfigureAwait(false);
         return await item.Result.Task.ConfigureAwait(false);
     }
-    public Task InvokeAsync(Action action, CancellationToken cancellation = default) => InvokeAsync(() => { action(); return true; }, cancellation);
+    public Task InvokeAsync(Action action, CancellationToken cancellation = default,
+        [CallerFilePath] string source = "", [CallerMemberName] string member = "", [CallerLineNumber] int line = 0) =>
+        InvokeAsync(() => { action(); return true; }, cancellation, source, member, line);
     async Task Run()
     {
         Exception? failure = null;

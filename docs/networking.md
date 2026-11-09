@@ -314,6 +314,20 @@ appearances and private inventory. These checks do not constitute final multi-cl
 public compatibility metadata, validates local content and atomically persists a random per-endpoint
 GUID/256-bit credential before registration. LocalApplicationData/Meitou/identities is private client state;
 missing state creates a new identity, but malformed state or rejected credentials never silently replace it.
+**Observed** (source): clicking Connect stores the trimmed address in `meitou.user.json`'s
+`lastServerAddress`; reopening Multiplayer restores it even if the previous connection failed.
+Discovery retries a transport IO/socket failure once on a fresh connection; cancellation, malformed
+metadata and TLS authentication failures are not retried. Authentication and creation are not replayed
+by this retry. The cause of the reported first-query connection resets remains **Unknown**.
+**Verified** (`DiscoveryRetriesOneInterruptedReadAndStopsAfterTheSecond`): closing a real TLS
+discovery connection before its reply triggers one retry; a second EOF is reported rather than looped.
+**Verified** (`LobbyRecoversRejectedSavedQualificationWithoutASecondConnection`): an unknown saved
+creation request is replayed unchanged; a definitive qualification rejection clears it and requests
+the current catalogue within the same connection. Pending/unknown outcomes retain the request.
+Successful entry clears the completed journal. Server eligibility still decides whether creation is offered.
+**Observed** (source review): `MEITOU_IDENTITY_DIRECTORY` overrides the default credential directory;
+an explicit `PrepareAsync` directory takes precedence. Packaged player 1/2 scripts select the default
+and `LocalApplicationData/Meitou/identities-player2` respectively; legacy profile credentials are unchanged.
 The menu omits the initial faction name; the server derives a unique name from its player-faction template
 and player ID, adding a suffix on collision. Explicit names still reject duplicates. Vulkan only; Metal online entry remains unsupported.
 
@@ -349,6 +363,18 @@ explicit duplicate names reject, and receipt replay preserves the faction. Creat
 log the phase/request ID and reason on the server; graphical connection failures log their exception locally.
 
 ## Local latency acceptance
+
+**Observed** (2026-11-09 dual-client report): server passes included 1.55–1.78 s of owner work,
+504–737 ms simulation passes and up to 5.05 s of tick debt. Their individual causes and graphical
+latency remain **Unknown**. A later 30 s live dual-client sampled-thread-time trace attributed about
+22 s of owner-thread execution to `ZoneKeptClosure.Resolve`: navigation recomputed unchanged loaded
+zone connectivity at every runtime boundary. Closure invalidation is described in
+[zone borders](game/pathfinding.md). A 30 s dual-client trace after invalidation gating measured
+0.013 s in closure resolution and 9.45 s in the owner loop, versus 21.95 s and 28.28 s before.
+These are sampled execution estimates, not command-to-display measurements or controlled capacity tests;
+weather simulation, pathfinding and worker-side publication encoding remain significant costs.
+Concurrent clients in one directory use `log.txt` for the first writer
+and `log-<process-id>.txt` for another; feedback attaches the submitting process's log.
 
 Project budgets, not an industry standard: 30 Hz simulation and 10 Hz publications imply mean scheduling
 waits of about 16.7 + 50 ms before processing/presentation. Sources:

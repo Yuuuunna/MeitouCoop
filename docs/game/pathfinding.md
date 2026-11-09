@@ -488,6 +488,8 @@ applies on that side, so ground enclosed by a building straddling the line is ke
 #144) the terrain inside the Ancient Citadel's hollow concrete base (zones 26.13/26.12, 124 polygons, nothing in the original's tile) was such an island
 and NPCs spawned there could not leave. A path that fails from a pruned polygon keeps the region the walker stands on (`NavMeshService.KeepAt`, kept while
 the zone is loaded, not cached) and asks again.
+**Observed** (source): deferred navigation recomputes this closure only after mesh addition/removal,
+new standing-region seeds or a world-incarnation reset; unchanged runtime boundaries reuse it.
 **Observed** ("6 dudes" save): a character in 14.26, 2,300 from its borders, stood on a pruned polygon and could not path; the original
 `tile14.26.hkt` has a polygon under it (y 702). **Observed** (World's End, zones 25..27 × 12..14, `meitou-tools navmesh --around 1`): with neighbour seeds
 zone 26.14 kept 7,943 polygons in raster order and 3,790 in reverse; with the closure every order gives the same kept sets and paths.

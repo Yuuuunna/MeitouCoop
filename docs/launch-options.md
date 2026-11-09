@@ -263,6 +263,7 @@ These have no user-facing docs; options are from their top-level argument loops.
 
 | Variable | Read by (file) | Effect |
 |---|---|---|
+| `MEITOU_IDENTITY_DIRECTORY` | `src/Meitou.Networking/DeviceConnection.cs` | Directory for per-server device credentials, for both menu and CLI address connections; blank/unset uses the existing default. Legacy JSON profiles are unaffected. Packaged `start-client-player1.cmd` uses the default; `start-client-player2.cmd` uses `%LOCALAPPDATA%/Meitou/identities-player2`. |
 | `KENSHI_PATH` | `src/Meitou.Core/Content/GameInstall.cs`, `tools/scripts/*.ps1` | Kenshi install folder. Also used by the test suite through `GameInstall.Locate`; tests skip when it is missing. |
 | `MEITOU_MODS_CFG` | `src/Meitou.Game/Program.cs` | Same as `--mods-cfg <file>`; the option wins. |
 | `DYLD_LIBRARY_PATH` | `src/Meitou.Rendering/Gpu/Core/VulkanDevice.cs`, `launcher/Meitou.Launcher/MacSupport.cs` | macOS Vulkan loader search path; only named in the error message the viewer prints. The launcher sets it. |

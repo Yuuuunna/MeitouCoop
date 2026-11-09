@@ -63,6 +63,47 @@ public class CrimeTests
         Assert.False(CrimeSystem.IsLootTheft(town.World, town.Cold(attacker), town.Cold(victim)));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PlayersInNewFactionsCanAttackEachOther(bool reverse)
+    {
+        using var town = new Town();
+        town.Relations.PlayerFaction = -1;
+        int first = town.Relations.RegisterFaction("player-one", "Player One", Player);
+        int second = town.Relations.RegisterFaction("player-two", "Player Two", Player);
+        var attacker = town.PlayerCharacter(O);
+        var victim = town.PlayerCharacter(O + new Vector2(0, 20));
+        town.Cold(attacker).Faction = reverse ? second : first;
+        town.Cold(victim).Faction = reverse ? first : second;
+        town.Say(new AttackOrder([attacker], victim) { Tick = town.World.Tick, Picked = true, Unprovoked = true });
+        town.World.RunTicks(10);
+        Assert.Equal(CrimeCode.Assault, town.Cold(attacker).Pending!.Code);
+        Assert.Equal(town.Cold(victim).Faction, town.Cold(attacker).Pending!.VictimFaction);
+        Assert.True(town.Cold(attacker).Ordered);
+    }
+
+    [Fact]
+    public void CrimeFactionQueriesFollowRuntimeRegistrations()
+    {
+        var relations = Relations();
+        var crime = new CrimeFactions(relations);
+        int city = relations.RegisterFaction("new-city", "New City", City);
+        int bandits = relations.RegisterFaction("new-bandits", "New Bandits", Bandits);
+        int wildlife = relations.RegisterFaction("new-wildlife", "New Wildlife", Wildlife);
+        Assert.True(crime.Books(city));
+        Assert.Equal(city, crime.BookingOf(city));
+        Assert.False(crime.Lawless(city));
+        Assert.False(crime.Hunts(city));
+        Assert.True(crime.Bandit(bandits));
+        Assert.True(crime.Lawless(bandits));
+        Assert.True(crime.NotReal(wildlife));
+        Assert.True(crime.Lawless(wildlife));
+        Assert.Equal(-1, crime.BookingOf(bandits));
+        Assert.False(crime.Books(-1));
+        Assert.True(crime.Lawless(relations.Count));
+    }
+
     // ------------------------------------------------------------------ worlds
 
     sealed class Town : IDisposable

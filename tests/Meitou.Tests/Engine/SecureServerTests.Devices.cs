@@ -1,5 +1,7 @@
 using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Net;
+using System.Net.Sockets;
 using Meitou.Content;
 using Meitou.Networking;
 
@@ -7,6 +9,65 @@ namespace Meitou.Tests.Engine;
 
 public partial class SecureServerTests
 {
+    [Fact]
+    public async Task LobbyRecoversRejectedSavedQualificationWithoutASecondConnection()
+    {
+        var information = DeviceInformation();
+        await using var scene = new Scene(information: information, creations: true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var credential = DeviceCredential();
+        var session = await RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
+            credential, new(scene.Data.Db), cancellationToken: timeout.Token, deviceIdentity: true);
+        Directory.CreateDirectory(Path.Combine(scene.Root, "data"));
+        File.WriteAllBytes(Path.Combine(scene.Root, "data", "gamedata.base"), []);
+        await using var lobby = new Meitou.Game.OnlineLobby(GameInstall.Open(scene.Root), scene.Data.Db);
+        string journal = Path.Combine(scene.Root, "stale.creation.json");
+        var request = new Meitou.Simulation.PlayerCreationRequest(Guid.NewGuid(), 9999, 1, "40-t");
+        File.WriteAllText(journal, System.Text.Json.JsonSerializer.Serialize(request));
+        await lobby.PrepareAdmissionAsync(session, journal).WaitAsync(timeout.Token);
+        Assert.NotNull(lobby.Catalog);
+        Assert.NotEmpty(lobby.Catalog.Starts);
+        Assert.Null(lobby.Request);
+        Assert.False(File.Exists(journal));
+        Assert.Null(session.State.Disconnection);
+        Assert.Empty(session.State.Admission.State.Roles);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DiscoveryRetriesOneInterruptedReadAndStopsAfterTheSecond(bool alwaysClose)
+    {
+        var information = DeviceInformation();
+        using var certificate = GameTlsTests.Certificate();
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        int requests = 0;
+        var serving = Task.Run(async () =>
+        {
+            for (int i = 0; i < 2; i++)
+            {
+                using var tcp = await listener.AcceptTcpClientAsync(timeout.Token);
+                await using var tls = await GameTls.AcceptAsync(tcp.GetStream(), certificate, timeout.Token);
+                var query = await WireFrame.ReadAsync(tls, timeout.Token);
+                Assert.Equal(WireMessage.ServerInformationQuery, query!.Kind);
+                requests++;
+                if (i == 1 && !alwaysClose) await WireFrame.WriteAsync(tls, ServerDiscovery.Encode(information), timeout.Token);
+                await tls.ShutdownAsync().WaitAsync(timeout.Token);
+            }
+        }, timeout.Token);
+        var pending = ServerDiscovery.QueryAsync("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port, null, timeout.Token);
+        if (alwaysClose) await Assert.ThrowsAnyAsync<IOException>(() => pending);
+        else
+        {
+            var reply = await pending;
+            Assert.Equal(information.Hello, reply.Information.Hello);
+        }
+        await serving;
+        Assert.Equal(2, requests);
+    }
+
     static ServerInformation DeviceInformation(bool enabled = true) => new(
         Hello() with { RulesDigest = ContentManifest.RulesDigest(new Dictionary<string, string>()) }, [], [], enabled);
     static AuthenticationRequest DeviceCredential() => new(Guid.NewGuid(), Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));

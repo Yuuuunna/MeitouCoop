@@ -28,7 +28,10 @@ public static class DeviceConnection
     public static async Task<ServerConnectionProfile> PrepareAsync(GameInstall install, string address, CancellationToken token, string? identityDirectory = null)
     {
         var (host, port) = ParseAddress(address);
-        string folder = identityDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "identities");
+        string? configuredDirectory = Environment.GetEnvironmentVariable("MEITOU_IDENTITY_DIRECTORY");
+        string folder = identityDirectory ?? (string.IsNullOrWhiteSpace(configuredDirectory)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "identities")
+            : configuredDirectory);
         Directory.CreateDirectory(folder);
         string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{host}:{port}")));
         string path = Path.Combine(folder, key + ".json");

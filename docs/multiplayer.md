@@ -131,6 +131,9 @@ power for different owners at town 0; existing construction/house-repair tests r
 Core bounty credits, bail payments and automatic fines use the acting/charged character's faction funds.
 An overflowing bounty credit leaves the claim available. Different player factions are not exempt from
 assault, theft or kidnapping merely because both roles have `IsPlayer`.
+**Verified** (`CrimeTests.PlayersInNewFactionsCanAttackEachOther` and
+`CrimeFactionQueriesFollowRuntimeRegistrations`): crime queries use the live faction catalogue;
+factions registered after system initialization support assault and bounty lookup in both player directions.
 
 ## Squads and automatic behaviour
 

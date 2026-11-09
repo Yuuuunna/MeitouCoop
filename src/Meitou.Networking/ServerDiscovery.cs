@@ -54,6 +54,20 @@ public static class ServerDiscovery
 
     public static async Task<(ServerInformation Information, string Certificate)> QueryAsync(string host, int port, string? knownCertificate, CancellationToken token)
     {
+        try { return await QueryOnceAsync(host, port, knownCertificate, token).ConfigureAwait(false); }
+        catch (Exception e) when (!token.IsCancellationRequested &&
+            e is IOException or SocketException)
+        {
+            // Discovery is read-only. Retry one interrupted transport, never malformed
+            // metadata, authentication failures or state-changing creation requests.
+            Console.WriteLine($"network   {DateTime.UtcNow:O} discovery transport interrupted ({e.GetType().Name}); retrying once");
+            await Task.Delay(250, token).ConfigureAwait(false);
+            return await QueryOnceAsync(host, port, knownCertificate, token).ConfigureAwait(false);
+        }
+    }
+
+    static async Task<(ServerInformation Information, string Certificate)> QueryOnceAsync(string host, int port, string? knownCertificate, CancellationToken token)
+    {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
         using var tcp = new TcpClient { NoDelay = true };

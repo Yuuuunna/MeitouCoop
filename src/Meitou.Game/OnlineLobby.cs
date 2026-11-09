@@ -37,6 +37,13 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
             throw new InvalidDataException($"Local content does not match the connection profile: {mismatch}.");
         connection = await RemoteGameSession.ConnectAsync(profile.Host, profile.Port, hello,
             new(profile.Account, profile.Token), new WorldViewCodec(database), profile.CertificateSha256, Token, deviceIdentity: true).ConfigureAwait(false);
+        await PrepareAdmissionAsync(connection, journal).ConfigureAwait(false);
+    }
+
+    internal async Task PrepareAdmissionAsync(RemoteGameSession authenticated, string journalPath)
+    {
+        connection = authenticated;
+        journal = journalPath;
         await OnlineBootstrap.WaitAdmissionAsync(connection, Token).ConfigureAwait(false);
         if (OnlineBootstrap.SelectRole(connection.State.Admission.State.Roles, null) is { } role)
         { await EnterAsync(role).ConfigureAwait(false); return; }
@@ -48,8 +55,8 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
             if (recovered.Outcome == CreationOutcome.Committed) { await EnterAsync(recovered.Receipt!.Roles[0]).ConfigureAwait(false); return; }
             if (recovered.Outcome != CreationOutcome.Unknown) throw Failure(recovered);
             // An unanswered commit is immutable: reconnect resumes this exact draft.
-            await CommitAsync(Request).ConfigureAwait(false);
-            return;
+            await CommitAsync(Request, recovering: true).ConfigureAwait(false);
+            if (Ready) return;
         }
         CreationReply reply;
         using (var wait = CancellationTokenSource.CreateLinkedTokenSource(Token))
@@ -76,7 +83,7 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
         Preview = reply.Preview;
     }
 
-    public async Task CommitAsync(PlayerCreationRequest request)
+    public async Task CommitAsync(PlayerCreationRequest request, bool recovering = false)
     {
         if (!File.Exists(journal))
         {
@@ -100,6 +107,15 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
         {
             // A definite rejection created nothing; an interrupted/unknown operation retains the journal.
             if (reply.Outcome == CreationOutcome.Rejected && reply.Failure != CreationFailure.Persistence) File.Delete(journal);
+            // A saved draft can outlive its qualification (for example after a server reset).
+            // Only a definitive qualification rejection permits returning to the catalogue;
+            // never replace an unknown or still-pending durable operation.
+            if (recovering && reply is { Outcome: CreationOutcome.Rejected, Failure: CreationFailure.Qualification })
+            {
+                Console.WriteLine("online    saved creation qualification rejected; requesting current catalogue");
+                Request = null;
+                return;
+            }
             throw Failure(reply);
         }
         await EnterAsync(reply.Receipt!.Roles[0]).ConfigureAwait(false);
@@ -111,6 +127,7 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
         deadline.CancelAfter(TimeSpan.FromMinutes(5));
         connection!.RequestEntry(role);
         await OnlineBootstrap.WaitReadyAsync(connection, role, deadline.Token).ConfigureAwait(false);
+        if (File.Exists(journal)) File.Delete(journal);
         Ready = true;
     }
 

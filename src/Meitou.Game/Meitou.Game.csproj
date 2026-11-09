@@ -18,6 +18,8 @@
 
   <ItemGroup>
     <Using Include="Meitou.Localisation" />
+    <None Include="../../tools/scripts/start-client-player*.cmd" Link="%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

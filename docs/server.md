@@ -108,6 +108,8 @@ thrash a 256-tile terrain cache, repeatedly reading full TIFF rows. `TerrainSour
 correctness is covered by `HeadlessContentTests.TerrainCachePreservesHeightsAtTileBoundariesAndEvictionUnderParallelReads`.
 Local latency results and remaining graphical measurement limits are in
 [networking acceptance](networking.md#local-latency-acceptance). Slow owner passes and peer exceptions are logged.
+**Observed** (source): owner jobs also log call-site, queue and execution time when execution reaches
+100 ms or waiting reaches 500 ms; labels contain code locations, not account or command values.
 
 
 **Observed** (source review): `Program` disables local whole-world display snapshots; network capture

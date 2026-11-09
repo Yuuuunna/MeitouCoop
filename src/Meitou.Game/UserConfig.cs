@@ -23,6 +23,7 @@ enum MetalUpscalerMode { Native, Temporal, Spatial, Taa }
 sealed class UserConfig
 {
     public const string FileName = "meitou.user.json";
+    public string LastServerAddress { get; set; } = "localhost:27800";
 
     /// <summary>
     /// The layout of this file, its <c>version</c> key; a file without one (written before it existed) is 1. Raise it when a key is renamed,

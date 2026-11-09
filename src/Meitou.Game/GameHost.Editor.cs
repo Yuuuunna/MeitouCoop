@@ -20,6 +20,8 @@ sealed partial class GameHost
         if (popData is not { } data) return;
         ui.EditorData = (data.Db, install.Root);
         if (!metalRenderer && !session.IsRemote) ui.OnlineInstall = install;
+        ui.LastServerAddress = string.IsNullOrWhiteSpace(config.LastServerAddress) ? "localhost:27800" : config.LastServerAddress;
+        ui.RememberServerAddress = address => { config.LastServerAddress = address; config.Save(); };
         ui.PreviewSource = (recordId, loadout) => data.Appearances?.Create(recordId, loadout);
         ui.PreviewReady = look => ActiveCharacters?.IsPrepared(look) ?? true;
         // The editor's looks are close-ups: their meshes without generated levels (CharacterContent.PrepareMesh), so a new hair or head shows at once, as in the original.

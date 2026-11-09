@@ -159,7 +159,7 @@ sealed partial class GameHost
             saveWritten = saveWrite;
         }
         string[] mods = [.. Meitou.Data.LoadOrder.FromInstall(install).Entries.Select(e => e.Name)];
-        string? log = form.Log && File.Exists(Path.Combine(AppContext.BaseDirectory, "log.txt")) ? Path.Combine(AppContext.BaseDirectory, "log.txt") : null;
+        string? log = form.Log && File.Exists(GameLog.CurrentPath) ? GameLog.CurrentPath : null;
         var package = new FeedbackPackage(form, BuildVersion.Tag, BuildVersion.Commit, FeedbackSender.Platform(), mods, form.Screenshot ? feedbackPicture : null,
             form.Navmesh ? feedbackNavPicture : null, feedbackLocation, saveFolder, saveWritten, log);
         feedbackStatus = feedbackStatusShown = form.Save ? "Saving the game..." : "Sending...";
