@@ -31,7 +31,7 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     ulong requestCounter;
     bool disposed;
     Task? disposal;
-    double elapsed, lastPublicationAt, blendSeconds = .1, blendAge, blendStartTick;
+    double elapsed, blendSeconds = .2, blendAge, blendStartTick;
     double lastGameHours;
     bool clockReady;
 
@@ -187,6 +187,7 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             float previousAlpha = SimulationAlpha;
             double displayedTick = PresentationTick;
             bool first = view is null;
+            bool sameTick = !first && next.Snapshot.Tick == previous.Tick;
             view = next;
             if (eventBaseline && floatersEnabled)
                 foreach (var item in next.Events.Floaters.Where(e => e.Id > eventHighWater && e.Id > floaterFloor).OrderBy(e => e.Id))
@@ -215,22 +216,30 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             // Only retain old poses for still-visible entities. Previous frames never retain revoked private details.
             var old = previous.Characters.ToDictionary(c => c.Id);
             var oldFrom = previousFrom.Characters.ToDictionary(c => c.Id);
-            blendStartTick = first ? CurrentSnapshot.Tick : Math.Min(displayedTick, CurrentSnapshot.Tick);
+            blendStartTick = first ? CurrentSnapshot.Tick : sameTick ? blendStartTick : Math.Min(displayedTick, CurrentSnapshot.Tick);
+            float startAlpha = sameTick ? 0 : previousAlpha;
             PreviousSnapshot = CurrentSnapshot with { Tick = (long)blendStartTick, Characters = CurrentSnapshot.Characters.Select(c =>
             {
                 if (!old.TryGetValue(c.Id, out var before)) return c;
                 var from = oldFrom.GetValueOrDefault(c.Id, before);
                 // A packet may arrive before the previous blend finishes. Start at the pose actually
                 // being displayed, not its unreached endpoint, or bursty delivery makes actors jump.
-                return c with { Position = Vector3.Lerp(from.Position, before.Position, previousAlpha),
-                    Yaw = Interp.LerpAngle(from.Yaw, before.Yaw, previousAlpha),
+                return c with { Position = Vector3.Lerp(from.Position, before.Position, startAlpha),
+                    Yaw = Interp.LerpAngle(from.Yaw, before.Yaw, startAlpha),
                     DrawYaw = Interp.LerpAngle(float.IsNaN(from.DrawYaw) ? from.Yaw : from.DrawYaw,
-                        float.IsNaN(before.DrawYaw) ? before.Yaw : before.DrawYaw, previousAlpha),
-                    Animations = before.Animations, Carry = before.Carry, Ragdoll = before.Ragdoll };
+                        float.IsNaN(before.DrawYaw) ? before.Yaw : before.DrawYaw, startAlpha),
+                    Animations = sameTick ? from.Animations : before.Animations,
+                    Carry = sameTick ? from.Carry : before.Carry, Ragdoll = sameTick ? from.Ragdoll : before.Ragdoll };
             }).ToArray() };
-            blendSeconds = Math.Clamp(elapsed - lastPublicationAt, 1.0 / 30, .25);
-            blendAge = first || previous.Tick >= CurrentSnapshot.Tick ? blendSeconds : 0;
-            lastPublicationAt = elapsed;
+            if (!sameTick)
+            {
+                // Keep roughly two ordinary publications of visual headroom. Use simulation
+                // distance, not the previous packet's arrival gap, to avoid alternating fast
+                // catch-up and a stationary endpoint when delivery is uneven. Never extrapolate.
+                double remaining = Math.Max(0, CurrentSnapshot.Tick - blendStartTick) * SimulationStepSeconds;
+                blendSeconds = Math.Clamp(Math.Max(.2, remaining / (TimeScale > 0 ? TimeScale : 1)), .2, .5);
+                blendAge = first || previous.Tick > CurrentSnapshot.Tick ? blendSeconds : 0;
+            }
             if (!clockReady || next.GameHours < lastGameHours)
             {
                 double day = Math.Floor(next.GameHours / 24);

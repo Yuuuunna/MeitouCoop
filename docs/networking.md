@@ -117,7 +117,13 @@ bytes after content comparison. Clients decode only changed components and rebui
 Whole-component replacement preserves private-field removal; optional character fields equal to their declared
 defaults are omitted and reset on replacement. Patch structure is checked once, before typed component decoding. Typed caches contain only the current authorized
 view and clear on withdrawal/resync. Orphan appearances and embedded character appearances are rejected.
-`RemotePlayerSession` still caps interpolation at 250 ms; longer publication gaps can leave poses stationary.
+**Verified** (`SecureServerTests.RemoteMovementToleratesLateAndSameTickPublications`): a 150 ms
+arrival gap after 100 ms publications keeps movement continuous, and a repeated simulation tick does
+not snap an unfinished blend to its endpoint. `RemotePlayerSession` blends from the displayed pose
+using remaining simulation time and a 200 ms minimum window (500 ms maximum), rather than copying
+the previous packet's arrival interval. Same-tick updates retain blend progress while refreshing
+authorized details. This adds visual headroom; no positions extrapolate beyond the latest snapshot,
+so sufficiently long delivery gaps still stop movement. Graphical latency remains unmeasured.
 
 `ClientWorldReplica` has no Simulation.World. It commits a typed view only after the entire patch and hash
 validate. Missing bases clear usable state and require a new baseline. Reordered/duplicate older publications
