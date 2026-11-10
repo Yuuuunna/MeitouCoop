@@ -27,18 +27,21 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     ulong eventHighWater;
     bool eventBaseline, floatersEnabled = true;
     PlayerWorldView? view;
+    RemotePresentationFrame? presentationFrame;
     int? chosenFaction;
     ulong requestCounter;
     bool disposed;
     Task? disposal;
-    double elapsed, blendSeconds = .2, blendAge, blendStartTick;
-    double lastGameHours;
+
+    double elapsed, lastGameHours;
     bool clockReady;
+    long receivedVersion = -1;
 
     public RemotePlayerSession(RemoteGameSession connection, Func<float, float, float> ground, InputBindings? bindings = null,
         GameClock? clock = null, double tickRate = FixedStepClock.DefaultTickRate)
     {
         this.connection = connection;
+        connection.RegisterPresentationEventConsumer();
         Bindings = bindings ?? new();
         Clock = clock ?? new(); Ticks = new(tickRate);
         Camera = new((x, z) => MathF.Max(ground(x, z), Meitou.Data.World.WorldWater.Height));
@@ -46,6 +49,12 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     }
 
     public RemoteGameSession Connection => connection;
+    /// <summary>Called only after submitting a visible world root to the renderer's draw list.</summary>
+    public void TraceRendererRootSubmission(CharacterId character, Vector3 root, long frame)
+    {
+        if (view is not null && presentationFrame is { } sampled)
+            connection.TraceRendererRootSubmission(sampled, character, root, frame);
+    }
     public object WorldIdentity { get; } = new();
     public bool HasWorldView => !disposed && view is not null && connection.State.View is not null;
     public GameplayRules? AuthorityRules => HasWorldView ? view?.AuthorityRules : null;
@@ -55,9 +64,8 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     public bool TryDequeuePublicSpeech(out SaidLine line) => publicSpeech.TryDequeue(out line);
     public WorldSnapshot CurrentSnapshot { get; private set; } = WorldSnapshot.Empty;
     public WorldSnapshot PreviousSnapshot { get; private set; } = WorldSnapshot.Empty;
-    public float SimulationAlpha => (float)Math.Clamp(blendAge / blendSeconds, 0, 1);
-    public double PresentationTick => CurrentSnapshot.Tick < 0 ? 0
-        : blendStartTick + (CurrentSnapshot.Tick - blendStartTick) * SimulationAlpha;
+    public float SimulationAlpha => 1;
+    public double PresentationTick => presentationFrame?.Tick ?? 0;
     public double PresentationSeconds => Math.Max(0, Clock.GameSeconds - Math.Max(0, CurrentSnapshot.Tick - PresentationTick) / SimulationClock.TickRate);
     public long CommandTick => Math.Max(0, CurrentSnapshot.Tick);
     public float SimulationStepSeconds => view?.SimulationStepSeconds ?? 1f / 30;
@@ -170,76 +178,49 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!double.IsFinite(realSeconds) || realSeconds < 0) throw new ArgumentOutOfRangeException(nameof(realSeconds));
-        elapsed += realSeconds; blendAge += realSeconds;
+        elapsed += realSeconds;
+        connection.AdvancePresentation(realSeconds);
         PumpTalkHints();
-        var state = connection.State;
+        presentationFrame = connection.CapturePresentation();
+        var state = presentationFrame.State;
         if (state.View is not { } next)
         {
             view = null; selection.Clear(); chosenFaction = null;
             ClearProjectionRevisions();
-            floaters.Clear(); sounds.Clear(); publicSpeech.Clear(); ClearCombatVisuals(); eventBaseline = false;
+            // Clear withdrawn payloads, but keep the same-session dedup cursor across view replacement.
+            floaters.Clear(); sounds.Clear(); publicSpeech.Clear(); ClearCombatVisuals();
             PreviousSnapshot = CurrentSnapshot = WorldSnapshot.Empty;
         }
-        else if (view?.Publication != next.Publication)
+        else if (receivedVersion != state.Version)
         {
-            var previous = CurrentSnapshot;
-            var previousFrom = PreviousSnapshot;
-            float previousAlpha = SimulationAlpha;
-            double displayedTick = PresentationTick;
             bool first = view is null;
-            bool sameTick = !first && next.Snapshot.Tick == previous.Tick;
             view = next;
+            var presentationEvents = connection.ReadPresentationEvents();
             if (eventBaseline && floatersEnabled)
-                foreach (var item in next.Events.Floaters.Where(e => e.Id > eventHighWater && e.Id > floaterFloor).OrderBy(e => e.Id))
+                foreach (var item in presentationEvents.Floaters.Where(e => e.Id > eventHighWater && e.Id > floaterFloor).OrderBy(e => e.Id))
                 {
                     if (floaters.Count == 128) floaters.Dequeue();
                     floaters.Enqueue(item.Value);
                 }
             if (eventBaseline && soundsEnabled)
-                foreach (var item in next.Events.Sounds.Where(e => e.Id > eventHighWater && e.Id > soundFloor).OrderBy(e => e.Id))
+                foreach (var item in presentationEvents.Sounds.Where(e => e.Id > eventHighWater && e.Id > soundFloor).OrderBy(e => e.Id))
                 {
                     if (sounds.Count == 128) sounds.Dequeue();
                     sounds.Enqueue(item.Value);
                 }
             if (eventBaseline)
-                foreach (var item in next.Events.Speech.Where(e => e.Id > eventHighWater).OrderBy(e => e.Id))
+                foreach (var item in presentationEvents.Speech.Where(e => e.Id > eventHighWater).OrderBy(e => e.Id))
                 {
                     if (publicSpeech.Count == 128) publicSpeech.Dequeue();
                     publicSpeech.Enqueue(item.Line);
                 }
-            ReceiveCombatVisuals(next.Events);
-            eventHighWater = Math.Max(eventHighWater, next.Events.HighWater); eventBaseline = true;
+            ReceiveCombatVisuals(presentationEvents);
+            eventHighWater = Math.Max(eventHighWater, presentationEvents.HighWater); eventBaseline = true;
+            connection.AcknowledgePresentationEvents(eventHighWater);
             if (chosenFaction is { } faction && !next.Factions.Any(f => f.Faction == faction)) chosenFaction = null;
             selection.RemoveAll(id => !next.Roles.Any(r => r.Character == id && r.Available && !r.Dead));
             if (first) selection.AddRange(next.Snapshot.Characters.Where(c => c.Selected && next.Roles.Any(r => r.Character == c.Id && r.Available)).Select(c => c.Id));
             RefreshPresentation();
-            // Only retain old poses for still-visible entities. Previous frames never retain revoked private details.
-            var old = previous.Characters.ToDictionary(c => c.Id);
-            var oldFrom = previousFrom.Characters.ToDictionary(c => c.Id);
-            blendStartTick = first ? CurrentSnapshot.Tick : sameTick ? blendStartTick : Math.Min(displayedTick, CurrentSnapshot.Tick);
-            float startAlpha = sameTick ? 0 : previousAlpha;
-            PreviousSnapshot = CurrentSnapshot with { Tick = (long)blendStartTick, Characters = CurrentSnapshot.Characters.Select(c =>
-            {
-                if (!old.TryGetValue(c.Id, out var before)) return c;
-                var from = oldFrom.GetValueOrDefault(c.Id, before);
-                // A packet may arrive before the previous blend finishes. Start at the pose actually
-                // being displayed, not its unreached endpoint, or bursty delivery makes actors jump.
-                return c with { Position = Vector3.Lerp(from.Position, before.Position, startAlpha),
-                    Yaw = Interp.LerpAngle(from.Yaw, before.Yaw, startAlpha),
-                    DrawYaw = Interp.LerpAngle(float.IsNaN(from.DrawYaw) ? from.Yaw : from.DrawYaw,
-                        float.IsNaN(before.DrawYaw) ? before.Yaw : before.DrawYaw, startAlpha),
-                    Animations = sameTick ? from.Animations : before.Animations,
-                    Carry = sameTick ? from.Carry : before.Carry, Ragdoll = sameTick ? from.Ragdoll : before.Ragdoll };
-            }).ToArray() };
-            if (!sameTick)
-            {
-                // Keep roughly two ordinary publications of visual headroom. Use simulation
-                // distance, not the previous packet's arrival gap, to avoid alternating fast
-                // catch-up and a stationary endpoint when delivery is uneven. Never extrapolate.
-                double remaining = Math.Max(0, CurrentSnapshot.Tick - blendStartTick) * SimulationStepSeconds;
-                blendSeconds = Math.Clamp(Math.Max(.2, remaining / (TimeScale > 0 ? TimeScale : 1)), .2, .5);
-                blendAge = first || previous.Tick > CurrentSnapshot.Tick ? blendSeconds : 0;
-            }
             if (!clockReady || next.GameHours < lastGameHours)
             {
                 double day = Math.Floor(next.GameHours / 24);
@@ -248,6 +229,9 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             else Clock.Advance((next.GameHours - lastGameHours) * GameClock.SecondsPerGameHour);
             clockReady = true; lastGameHours = next.GameHours;
         }
+        receivedVersion = state.Version;
+        if (view is not null) RefreshPresentation();
+        PreviousSnapshot = CurrentSnapshot;
         foreach (var item in pending.Where(p => p.Reply.IsCompleted).ToArray())
         {
             pending.Remove(item);
@@ -274,9 +258,10 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     {
         if (view is null) return;
         var faction = Faction;
-        CurrentSnapshot = ProjectRevisions(view.Snapshot) with
+        var presented = presentationFrame?.Snapshot ?? view.Snapshot;
+        CurrentSnapshot = ProjectRevisions(presented) with
         {
-            Characters = view.Snapshot.Characters.Select(c => c with { Selected = selection.Contains(c.Id) }).ToArray(),
+            Characters = presented.Characters.Select(c => c with { Selected = selection.Contains(c.Id) }).ToArray(),
             Research = faction?.Research ?? ResearchSnapshot.Empty,
             UnlockedBuildings = faction?.UnlockedBuildings ?? new HashSet<string>(),
             PlayerSquads = faction?.Squads ?? [],

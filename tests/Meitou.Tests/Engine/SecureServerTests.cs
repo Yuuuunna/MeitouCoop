@@ -1,5 +1,6 @@
 using System.Net;
-using System.Net.Security;
+using Meitou.Networking.VNext;
+using Meitou.Networking.VNext.Transport;
 using System.Net.Sockets;
 using System.Numerics;
 using System.Security.Cryptography;
@@ -22,16 +23,19 @@ public partial class SecureServerTests
     sealed record Actor(IssuedCredential Credential, PlayerId Player, CharacterId Role, CharacterControl Grant);
     sealed class Scene : IAsyncDisposable
     {
-        public string Root { get; } = SaveSamples.Temp("secure-server");
+        public string Root { get; } = CreateRoot();
+        static string CreateRoot() { NativeFixture.Require(); return SaveSamples.Temp("secure-server"); }
         public PopulationData Data { get; } = PopulationData.Create(SyntheticTown.Database(items: true), []);
         public WorldRuntime Runtime { get; }
         public ServerWorldLoop Loop { get; }
         public TokenAccountStore Accounts { get; }
         public Actor[] Actors { get; }
         public X509Certificate2 Certificate { get; } = GameTlsTests.Certificate();
-        public TcpGameServer Server { get; }
-        public Scene(Func<AuthorityConnection, EntityId, CancellationToken, Task<bool>>? prepare = null, int maximumConnections = 32, bool creations = false, bool production = false, bool dialogue = false, ServerInformation? information = null)
+        public QuicGameServer Server { get; }
+        readonly TcpDiscoveryServer? discovery;
+        public Scene(Func<AuthorityConnection, EntityId, CancellationToken, Task<bool>>? prepare = null, int maximumConnections = 32, bool creations = false, bool production = false, bool dialogue = false, ServerInformation? information = null, bool movement = false, bool synchronousPaths = true, int catalogDescriptionBytes = 0, Action<GameStatePublication>? publicationObserved = null)
         {
+            NativeFixture.Require();
             Data.Relations.PlayerFaction = -1;
             if (dialogue)
             {
@@ -45,6 +49,7 @@ public partial class SecureServerTests
             ITickSystem[] systems = creations ? [new PlayerSystem(Data), new PopulationSystem(Data, new PopulationSettings { Background = false })] : [new PlayerSystem(Data)];
             if (production) systems = [.. systems, new Meitou.Simulation.Production.ProductionSystem(Data)];
             if (dialogue) systems = [.. systems, new Meitou.Simulation.Dialogue.DialogueSystem(Data)];
+            if (movement) systems = [.. systems, new MovementSystem(new PathService(new OpenGroundWalkability((_, _) => 300), synchronous: synchronousPaths))];
             Runtime = new(new WorldSettings { PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 300),
                 systems);
             Runtime.Speed = 0;
@@ -56,7 +61,8 @@ public partial class SecureServerTests
                 int faction = Data.RegisterFaction("peer:" + i, "Faction " + i, Data.PlayerFaction);
                 Runtime.World.Players.SetMembership(player.Id, faction, FactionPermission.All); player.State.Money = (i + 1) * 100;
                 var squad = SquadManagement.NewSquad(Runtime.World, Data.Db, new(i * 20, 300, 0), "Squad " + i, faction);
-                var role = Runtime.World.Characters.Spawn(new CharacterHot { Position = squad.Position }, new CharacterCold
+                var role = Runtime.World.Characters.Spawn(new CharacterHot { Position = squad.Position,
+                    Health = movement ? 100 : 0, MaxSpeed = movement ? 80 : 0, WalkSpeed = movement ? 15 : 0 }, new CharacterCold
                 {
                     Name = "Role " + i, RecordId = Data.Db.OfType(FcsRecordType.CHARACTER).First().StringId,
                     Faction = faction, SquadId = squad.Id, IsPlayer = true, Inventory = new(),
@@ -68,16 +74,17 @@ public partial class SecureServerTests
             var coordinator = new WorldCheckpointCoordinator(Runtime, Data, new CheckpointStore(Root), new SaveCaptureOptions { DataFiles = Data.Db.Files });
             var sessions = new ServerAccountSessions(Accounts, Runtime, coordinator);
             Loop = new(Runtime);
-            var start = NewGameStart.From(Data.Db.Find("40-t")!) with { ForceStartPos = true, StartPosition = new Vector2(1000, 2000), Money = 1234 };
+            var start = NewGameStart.From(Data.Db.Find("40-t")!) with { ForceStartPos = true, StartPosition = new Vector2(1000, 2000), Money = 1234, Description = new string('x', catalogDescriptionBytes) };
             var creation = creations ? new ServerCreationEndpoint(Loop, coordinator, Data, [new("initial", 10, [new(start, Data.PlayerFaction)])],
                 (_, _, _) => Task.FromResult(true), initialRuleset: "initial") : null;
             var peer = new SecureServerPeer(Loop, sessions, information?.Hello ?? Hello(), new(Data.Db), prepare ?? ((_, _, _) => Task.FromResult(true)),
-                new ServerPeerOptions { Observation = new(100) }, creation, new ServerInvitationEndpoint(Loop, coordinator, creation), information);
+                new ServerPeerOptions { Observation = new(100), PublicationObserved = publicationObserved }, creation, new ServerInvitationEndpoint(Loop, coordinator, creation), information);
             Server = new(new(IPAddress.Loopback, 0), Certificate, peer, maximumConnections);
+            if (information is not null) discovery = new(Server.Endpoint, Certificate, information);
         }
         public async ValueTask DisposeAsync()
         {
-            try { await Server.DisposeAsync(); }
+            try { if (discovery is not null) await discovery.DisposeAsync(); await Server.DisposeAsync(); }
             finally
             {
                 try { await Loop.DisposeAsync(); }
@@ -85,17 +92,31 @@ public partial class SecureServerTests
             }
         }
     }
-    internal sealed class Client(TcpClient tcp, SslStream stream, AdmissionMessage admission, WorldViewCodec codec) : IAsyncDisposable
+    internal sealed class TestReplica { public PlayerWorldView? Current { get; set; } }
+    internal sealed class TestState { public TestReplica Replica { get; } = new(); }
+    internal sealed class Client(NativeGameConnection connection, AdmissionMessage admission, WorldViewCodec codec) : IAsyncDisposable
     {
         public AdmissionMessage Admission { get; private set; } = admission;
-        public ClientStateReceiver State { get; } = new(admission.Identity, codec);
+        public TestState State { get; } = new();
         public int StateFrames { get; private set; }
-        public Task Send(WireFrame frame, CancellationToken token) => WireFrame.WriteAsync(stream, frame, token).AsTask();
+        public ulong ViewEpoch => view;
+        public WireFrame? LastWithheldBulkAck { get; private set; }
+        GameStateReplica? replica;
+        BulkTransferReceiver? bulk;
+        StagedBulkTransfer? staged;
+        ulong session, view, publication;
+        WireMessage? businessKind;
+        Guid businessQuery;
+        bool active;
+        Task? disposal;
+        public Task Send(WireFrame frame, CancellationToken token) { token.ThrowIfCancellationRequested(); connection.SendControl(frame); return Task.CompletedTask; }
+        public Task SendStaleControl(WireFrame frame, ulong oldView, CancellationToken token)
+        { token.ThrowIfCancellationRequested(); connection.Send(QuicLane.Control, GameControlCodec.Encode(frame, session, oldView)); return Task.CompletedTask; }
         public async Task<CreationReply> Creation(WireFrame request, CancellationToken token)
         {
             await Send(request, token);
-            var frame = await Until(f => f.Kind == WireMessage.CreationReply, token);
-            var reply = CreationProtocol.ReadReply(frame, codec); Assert.Equal(Admission.Identity, reply.Identity); return reply;
+            var reply = CreationProtocol.ReadReply(await Until(f => f.Kind == WireMessage.CreationReply, token), codec);
+            Assert.Equal(Admission.Identity, reply.Identity); return reply;
         }
         public async Task<InvitationReply> Invitation(InvitationRequest request, CancellationToken token)
         {
@@ -103,21 +124,80 @@ public partial class SecureServerTests
             var reply = InvitationProtocol.ReadReply(await Until(f => f.Kind == WireMessage.InvitationReply, token));
             Assert.Equal(Admission.Identity, reply.Identity); return reply;
         }
+        void Ready()
+        {
+            if (publication == 0 || staged is null) return;
+            ulong stagedPublicationWatermark = staged.Identity.LifecycleWatermark;
+            GameViewProtocol.Unpack(staged.Bytes.Span, bytes => replica!.Apply(bytes.Span));
+            staged.Dispose(); staged = null;
+            Assert.True(replica!.View!.Publication >= publication);
+            Assert.Equal(publication, stagedPublicationWatermark);
+            connection.SendControl(GameViewProtocol.Epoch(WireMessage.ViewReady, session, view, publication));
+        }
         public async Task<WireFrame> Until(Func<WireFrame, bool> done, CancellationToken token, bool acknowledge = true)
         {
             while (true)
             {
-                var frame = await WireFrame.ReadAsync(stream, token) ?? throw new EndOfStreamException();
-                if (frame.Kind == WireMessage.Admission)
+                var message = await connection.ReadAsync(token);
+                if (message.Lane != QuicLane.Control)
                 {
-                    var status = SessionProtocol.ReadAdmission(frame); Assert.Equal(Admission.Identity, status.Identity);
-                    if (status.State.Sequence > Admission.State.Sequence) Admission = status;
+                    StateFrames++;
+                    if (message.Lane == QuicLane.Bulk)
+                    {
+                        var chunk = BulkChunkCodec.Decode(message.Payload.Span);
+                        Assert.Contains(bulk!.AcceptChunk(chunk), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
+                        var acknowledgement = GameViewProtocol.Ack(chunk.Identity, bulk.ContiguousBytes);
+                        if (acknowledge) connection.SendControl(acknowledgement); else LastWithheldBulkAck = acknowledgement;
+                        if (bulk.TryComplete(out var complete) == BulkTransferOutcome.Accepted)
+                        {
+                            if (businessKind is { } kind)
+                            {
+                                WireFrame reply;
+                                using (complete) reply = new(kind, complete!.Bytes.ToArray());
+                                Assert.Equal(businessQuery, BusinessBulkProtocol.Query(reply, codec)); businessKind = null;
+                                if (done(reply)) return reply;
+                            }
+                            else { staged?.Dispose(); staged = complete; Ready(); }
+                        }
+                    }
+                    else if (message.Lane == QuicLane.Lifecycle)
+                    {
+                        if (message.Payload.Span.StartsWith("MTN2"u8))
+                        {
+                            var motion = MotionDatagramCodec.Decode(message.Payload.Span); replica!.ApplyMotion(motion);
+                            connection.SendControl(GameViewProtocol.Epoch(WireMessage.MotionCheckpointAck, session, view, motion.Header.PacketSequence));
+                        }
+                        else replica!.Apply(message.Payload.Span);
+                    }
+                    else if (active) replica!.ApplyMotion(MotionDatagramCodec.Decode(message.Payload.Span));
+                    if (active) State.Replica.Current = replica!.View;
+                    continue;
                 }
-                if (frame.Kind is WireMessage.StateChunk or WireMessage.StateWithdrawn)
+                var frame = connection.DecodeControl(message.Payload.Span);
+                switch (frame.Kind)
                 {
-                    StateFrames++; var result = State.Receive(frame);
-                    if (acknowledge && result == ReplicaResult.Applied && State.Acknowledgement is { } ack) await Send(ack, token);
-                    if (result == ReplicaResult.NeedsBaseline && frame.Kind != WireMessage.StateWithdrawn) await Send(State.ResyncRequest(), token);
+                    case WireMessage.ViewBegin:
+                        var epoch = GameViewProtocol.ReadEpoch(frame); session = epoch.Session; view = epoch.View;
+                        active = false; publication = 0; State.Replica.Current = null; staged?.Dispose(); staged = null;
+                        replica = new(codec, session, view); bulk = new(session, view); break;
+                    case WireMessage.BusinessBulkManifest:
+                        var business = BusinessBulkProtocol.ReadManifest(frame); businessKind = business.Kind; businessQuery = business.Query;
+                        bulk ??= new(business.Manifest.Identity.SessionEpoch, business.Manifest.Identity.ViewEpoch);
+                        Assert.Contains(bulk.Begin(business.Manifest), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
+                        connection.SendControl(GameViewProtocol.Epoch(WireMessage.BulkManifestAck, business.Manifest.Identity.SessionEpoch, business.Manifest.Identity.ViewEpoch, business.Manifest.Identity.BaselineId)); break;
+                    case WireMessage.BusinessBulkCancelled: throw new IOException("Test business reply was withdrawn.");
+                    case WireMessage.BulkManifest:
+                        publication = 0;
+                        var manifest = GameViewProtocol.ReadManifest(frame);
+                        Assert.Contains(bulk!.Begin(manifest), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
+                        connection.SendControl(GameViewProtocol.Epoch(WireMessage.BulkManifestAck, session, view, manifest.Identity.BaselineId)); break;
+                    case WireMessage.ViewCommit: publication = GameViewProtocol.ReadEpoch(frame).Publication; Ready(); break;
+                    case WireMessage.ViewActive: active = true; State.Replica.Current = replica!.View; break;
+                    case WireMessage.Admission:
+                        var status = SessionProtocol.ReadAdmission(frame); Assert.Equal(Admission.Identity, status.Identity);
+                        if (status.State.Sequence > Admission.State.Sequence) Admission = status;
+                        if (status.State.Phase == AdmissionPhase.Preparing) { State.Replica.Current = null; active = false; }
+                        break;
                 }
                 if (done(frame)) return frame;
             }
@@ -128,31 +208,41 @@ public partial class SecureServerTests
             await Until(_ => Admission.State.Phase == AdmissionPhase.Active && State.Replica.Current is not null, token);
             Assert.NotNull(State.Replica.Current);
         }
-        public async ValueTask DisposeAsync() { tcp.Dispose(); await stream.DisposeAsync(); }
+        public ValueTask DisposeAsync() => new(disposal ??= DisposeCore());
+        async Task DisposeCore() { staged?.Dispose(); await connection.DisposeAsync(); }
     }
     static Task<Client> Connect(Scene scene, IssuedCredential credential, CancellationToken token)
         => Connect(scene.Server.Endpoint, scene.Certificate, Hello(), credential, new(scene.Data.Db), token);
     internal static async Task<Client> Connect(IPEndPoint endpoint, X509Certificate2 certificate, CompatibilityHello hello,
         IssuedCredential credential, WorldViewCodec codec, CancellationToken token)
     {
-        var tcp = new TcpClient();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(15)); token = deadline.Token;
+        var connection = await NativeFixture.Connect(endpoint, certificate, token);
         try
         {
-            await tcp.ConnectAsync(endpoint, token);
-            var tls = await GameTls.ConnectAsync(tcp.GetStream(), "localhost", certificate.GetCertHashString(HashAlgorithmName.SHA256), token);
-            await WireFrame.WriteAsync(tls, new(WireMessage.Hello, CompatibilityHandshake.Encode(hello)), token);
-            Assert.Equal(WireMessage.Compatible, (await WireFrame.ReadAsync(tls, token))!.Kind);
-            await WireFrame.WriteAsync(tls, AuthenticationProtocol.Encode(new(credential.Account, credential.Token)), token);
-            var reply = (await WireFrame.ReadAsync(tls, token))!; Assert.Equal(WireMessage.Authenticated, reply.Kind);
-            return new(tcp, tls, SessionProtocol.ReadAdmission(reply), codec);
+            connection.SendControl(new(WireMessage.Hello, CompatibilityHandshake.Encode(hello)));
+            Assert.Equal(WireMessage.Compatible, (await connection.ReadControlAsync(token)).Kind);
+            connection.SendControl(AuthenticationProtocol.Encode(new(credential.Account, credential.Token)));
+            var reply = await connection.ReadControlAsync(token);
+            if (reply.Kind == WireMessage.AuthenticationPending)
+            {
+                Assert.Equal(4, reply.Payload.Length);
+                uint milliseconds = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(reply.Payload.Span);
+                Assert.InRange(milliseconds, 1u, 180000u);
+                deadline.CancelAfter(TimeSpan.FromMilliseconds(milliseconds));
+                reply = await connection.ReadControlAsync(token);
+            }
+            Assert.Equal(WireMessage.Authenticated, reply.Kind);
+            return new(connection, SessionProtocol.ReadAdmission(reply), codec);
         }
-        catch { tcp.Dispose(); throw; }
+        catch { await connection.DisposeAsync(); throw; }
     }
     static WireFrame Select(Client client, Actor actor, ulong request) => CommandProtocol.Encode(client.Admission.Identity.World, request,
         new SelectCommand([actor.Role]) { Tick = long.MaxValue }, new([new(actor.Grant.Entity, actor.Grant.Faction, actor.Grant.Revision)], -1, 0));
 
     [Fact]
-    public async Task ThreeAuthenticatedClientsEnterIndependentFactionsAndExecuteDeduplicatedCommandsThroughTls()
+    public async Task ThreeAuthenticatedClientsEnterIndependentFactionsAndExecuteDeduplicatedCommandsThroughQuic()
     {
         await using var scene = new Scene(); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await using var a = await Connect(scene, scene.Actors[0].Credential, timeout.Token);
@@ -212,17 +302,16 @@ public partial class SecureServerTests
     public async Task CompatibilityOrCredentialRejectionCannotOpenAuthorityOrCommitAPlayerBinding(bool incompatible)
     {
         await using var scene = new Scene(); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        using var tcp = new TcpClient(); await tcp.ConnectAsync(scene.Server.Endpoint, timeout.Token);
-        await using var tls = await GameTls.ConnectAsync(tcp.GetStream(), "localhost", scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256), timeout.Token);
+        await using var connection = await NativeFixture.Connect(scene.Server.Endpoint, scene.Certificate, timeout.Token);
         var hello = incompatible ? Hello() with { EngineBuild = "different" } : Hello();
-        await WireFrame.WriteAsync(tls, new(WireMessage.Hello, CompatibilityHandshake.Encode(hello)), timeout.Token);
-        var response = (await WireFrame.ReadAsync(tls, timeout.Token))!;
+        connection.SendControl(new(WireMessage.Hello, CompatibilityHandshake.Encode(hello)));
+        var response = await connection.ReadControlAsync(timeout.Token);
         if (incompatible) Assert.Equal(WireMessage.Incompatible, response.Kind);
         else
         {
             Assert.Equal(WireMessage.Compatible, response.Kind);
-            await WireFrame.WriteAsync(tls, AuthenticationProtocol.Encode(new(scene.Actors[0].Credential.Account, new string('0', 64))), timeout.Token);
-            Assert.Equal(WireMessage.AuthenticationFailed, (await WireFrame.ReadAsync(tls, timeout.Token))!.Kind);
+            connection.SendControl(AuthenticationProtocol.Encode(new(scene.Actors[0].Credential.Account, new string('0', 64))));
+            Assert.Equal(WireMessage.AuthenticationFailed, (await connection.ReadControlAsync(timeout.Token)).Kind);
         }
         Assert.False(await scene.Loop.InvokeAsync(() => scene.Runtime.World.Authority.HasHistory, timeout.Token));
         Assert.False(File.Exists(Path.Combine(scene.Root, "current.json")));
@@ -232,12 +321,16 @@ public partial class SecureServerTests
     public async Task ConnectionLimitIncludesUnauthenticatedSocketsAndListenerContinuesAfterRejection()
     {
         await using var scene = new Scene(maximumConnections: 1); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        using var stalled = new TcpClient(); await stalled.ConnectAsync(scene.Server.Endpoint, timeout.Token);
+        var stalled = await NativeFixture.Connect(scene.Server.Endpoint, scene.Certificate, timeout.Token);
         while (scene.Server.ActiveConnections == 0) await Task.Delay(10, timeout.Token);
-        using var rejected = new TcpClient(); await rejected.ConnectAsync(scene.Server.Endpoint, timeout.Token);
-        Assert.Equal(0, await rejected.GetStream().ReadAsync(new byte[1], timeout.Token));
-        Assert.Equal(1, scene.Server.RejectedConnections);
-        stalled.Dispose();
+        var config = NativeFixture.Options(scene.Certificate);
+        using (var rejected = new NativeQuicEndpoint(config.NativeDirectory, config.ShimSha256, false, config.CaFile))
+        {
+            rejected.Connect(IPAddress.Loopback, checked((ushort)scene.Server.Endpoint.Port), "localhost");
+            while (scene.Server.RejectedConnections == 0) await Task.Delay(2, timeout.Token);
+            Assert.Equal(1, scene.Server.ActiveConnections);
+        }
+        await stalled.DisposeAsync();
         while (scene.Server.ActiveConnections != 0) await Task.Delay(10, timeout.Token);
         await using var valid = await Connect(scene, scene.Actors[0].Credential, timeout.Token);
         Assert.Equal(scene.Actors[0].Player, valid.Admission.Identity.Player);

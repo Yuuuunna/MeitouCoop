@@ -41,7 +41,7 @@ public partial class SecureServerTests
         Assert.Contains("A private dialogue", uiA.MessagesText()); Assert.DoesNotContain("A private dialogue", uiB.MessagesText());
         Assert.Contains("Public nearby speech", uiA.MessagesText()); Assert.Contains("Public nearby speech", uiB.MessagesText());
         ulong publication = a.Connection.State.View!.Publication;
-        a.Connection.RequestBaseline(); await PumpPlayer(a, () => a.Connection.State.View!.Publication > publication, token);
+        await RefreshBaseline(a, token);
         uiA.PollSessionMessages();
         Assert.Equal(1, uiA.PendingNoticeCount);
         Assert.Equal(2, uiA.MessagesText().Split("Public nearby speech", StringSplitOptions.None).Length);

@@ -24,6 +24,9 @@ public sealed class CharacterAnimation
         public float Rate;
         /// <summary>The clip's length in seconds as the character's skeleton has it (set while the time advances; derived, not hashed): the sound events' fractions need it.</summary>
         public float Length;
+        // Presentation derivatives, deliberately separate from Rate (the fading block's remembered forward rate).
+        public float PlaybackRate, BlendSpeed, PlaybackEnd;
+        public bool PlaybackLoops, PlaybackPredictable;
     }
 
     public readonly Layer[] Layers = new Layer[MaxLayers];
@@ -340,10 +343,13 @@ public sealed class AnimationSystem(AnimationLibrary library, AnimationLengths l
         var slot = combat.StateOf(id);
         int technique = -1;
         float progress = 0;
+        float progressRate = float.NaN;
         if (combat.Playing(id, tick) is { } playing)
         {
             technique = Library.IndexOfTechnique(playing.Technique.StringId);
             progress = playing.Progress;
+            int ticks = playing.IsAttack ? slot.AttackTicks : slot.ReactTicks;
+            progressRate = progress >= 1 ? 0 : 1 / (ticks * tickSeconds);
         }
         else if (combat.RangedPoseOf(id, tick, tickSeconds) is { } pose)
         {
@@ -355,9 +361,15 @@ public sealed class AnimationSystem(AnimationLibrary library, AnimationLengths l
                 RangedPose.Shot => (aimClip, 0.5f + pose.Progress * 0.5f),
                 _ => (ReloadClip(cold), pose.Progress),
             };
+            progressRate = pose.Progress >= 1 ? 0 : pose.Pose switch
+            {
+                RangedPose.Aim => .5f / RangedFormulas.SteadyAim,
+                RangedPose.Shot => .5f / CombatSystem.ShotSeconds,
+                _ => slot.ReloadTime > 0 ? 1 / slot.ReloadTime : float.NaN,
+            };
         }
         string? part = slot.HitPart >= 0 && cold.Medical is { } body && slot.HitPart < body.Parts.Count ? body.Parts[slot.HitPart].Template.StringId : null;
-        return new CombatView(technique, progress, slot.HitTick, slot.HitHeavy, slot.HitBehind, part, slot.StumbleClip, slot.StumbleStart);
+        return new CombatView(technique, progress, slot.HitTick, slot.HitHeavy, slot.HitBehind, part, slot.StumbleClip, slot.StumbleStart) { ProgressRate = progressRate };
     }
 
     /// <summary>
@@ -594,6 +606,15 @@ public sealed class AnimationSystem(AnimationLibrary library, AnimationLengths l
             for (int k = wanted.Count - 1; k >= 0; k--)
                 if (!Plays(a, cold, wanted[k].Index)) { wanted.RemoveAt(k); if (k < legs) legs--; }
         var root = Settle(a, wanted, legs, lift, liftTime, technique, fight, speed, dt, Lengths, 1, seed, key, tick, legsShare);
+        if (lift >= 0)
+            for (int k = 0; k < a.Count; k++)
+                if (a.Layers[k].Definition == lift)
+                {
+                    ref var layer = ref a.Layers[k];
+                    layer.PlaybackPredictable = true;
+                    layer.PlaybackRate = task == CharacterTask.StealthKo ? Carrying.CarrySystem.KnockoutPlaySpeed
+                        : (Library.Definitions[lift].PlaySpeed > 0 ? Library.Definitions[lift].PlaySpeed : 1) * (task == CharacterTask.PutDown ? -1 : 1);
+                }
         if (cold.StandingUp) FinishStandUp(a, cold, moving: a.HeldIndex < 0);
         else if (CrouchGoal(cold) != 0) FinishCrouch(a, cold, CrouchGoal(cold));
         if (cold.LeavingBed && !cold.BedExitDone) FinishBedExit(a, cold);
@@ -757,6 +778,21 @@ public sealed class AnimationSystem(AnimationLibrary library, AnimationLengths l
             float length = lengths.Of(d.Clip);
             layer.Length = length;
             bool synched = d.Synchs && d.MoveSpeed != 0;
+            layer.BlendSpeed = dt > 0 ? step / dt : BlendStep(d, layer.Target > 0, a.Rate, speed);
+            layer.PlaybackLoops = d.Loop || synched || IsStrafe(d);
+            layer.PlaybackEnd = length * 0.999f;
+            layer.PlaybackPredictable = layer.Definition != lift && layer.Definition != technique;
+            layer.PlaybackRate = layer.Definition == a.Action ? (a.ActionTime < 0 ? 0 : d.PlaySpeed > 0 ? d.PlaySpeed : 1)
+                : layer.Target <= 0 && !RunsFading(d, synched) ? d.Technique && d.Area == AnimationArea.Upper ? -layer.Rate : 0
+                : IsStrafe(d) ? a.Rate * d.PlaySpeed * a.StrafeSpeed
+                : synched ? a.PhaseRate * length
+                : d.MoveSpeed != 0 ? a.Rate * d.PlaySpeed * speed
+                : (d.PlaySpeed > 0 ? d.PlaySpeed : d.Technique ? 1 : 0) * (layer.Definition == a.HeldIndex ? a.HeldRate : 1);
+            if (layer.Definition == technique && float.IsFinite(fight.ProgressRate))
+            {
+                layer.PlaybackPredictable = true;
+                layer.PlaybackRate = fight.ProgressRate * length;
+            }
             if (layer.Definition == lift) layer.Time = liftTime;
             else if (layer.Definition == technique) layer.Time = fight.Progress * length;   // the combat system's timing: the blow lands at its frame
             else if (layer.Definition == a.Action) layer.Time = MathF.Max(a.ActionTime, 0);   // held at the start while getting up blends out of a ragdoll
@@ -1031,6 +1067,12 @@ public sealed class AnimationSystem(AnimationLibrary library, AnimationLengths l
     static bool HoldsForRagdoll(CharacterAnimation a, bool down, bool carried, RagdollView ragdoll)
     {
         if (!down || carried || !ragdoll.Has || a.Count == 0) return false;
+        for (int k = 0; k < a.Count; k++)
+        {
+            a.Layers[k].PlaybackRate = 0;
+            a.Layers[k].BlendSpeed = 0;
+            a.Layers[k].PlaybackPredictable = true;
+        }
         a.WasDown = true;
         a.Action = -1;
         return true;
@@ -1138,6 +1180,7 @@ public interface IAnimationSource
 /// </summary>
 public readonly record struct CombatView(int Technique, float Progress, int HitTick, bool HitHeavy, bool HitBehind, string? HitPart, int StumbleClip = -1, int StumbleStart = -1)
 {
+    public float ProgressRate { get; init; } = float.NaN;
     public static readonly CombatView None = new(-1, 0, -1, false, false, null);
 }
 

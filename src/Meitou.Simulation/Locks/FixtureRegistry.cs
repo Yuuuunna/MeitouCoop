@@ -947,7 +947,7 @@ public sealed partial class FixtureRegistry
         {
             if (IsFree(table, f) || !table.TryResolveNext(f.Occupant, out int s) || table.Cold(s) is not { InSomething: HeldState.Imprisoned } c || c.InWhat != f.Id) continue;
             ref var n = ref table.Next[s];
-            if (n.Position != f.Position || n.Yaw != f.Yaw) table.Place(s, f.Position, f.Yaw);
+            if (n.Position != f.Position || n.Yaw != f.Yaw) table.Reposition(s, f.Position, f.Yaw);
         }
         HoldSleepers(world);
     }
@@ -966,9 +966,7 @@ public sealed partial class FixtureRegistry
             ref var n = ref table.Next[s];
             var (at, yaw) = LieSpot(f, n.Position, world.GameHours);
             if (n.Position == at && n.Yaw == yaw) continue;
-            (byte task, var time) = (n.Task, n.TaskTime);
-            table.Place(s, at, yaw);
-            (n.Task, n.TaskTime) = (task, time);   // Place stands it; a sleeper stays asleep
+            table.Reposition(s, at, yaw);
         }
     }
 

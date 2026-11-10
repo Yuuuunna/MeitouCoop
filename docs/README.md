@@ -48,6 +48,7 @@ Not built, by design: the original's in-game level editor and fog editor (`Kensh
 - [simulation](simulation.md)
 - [multiplayer](multiplayer.md): authority, faction resources, character identity and shared runtime contracts
 - [networking](networking.md): compatibility, command dispatch, state replication and client replica
+- [networking-next](networking-next.md): replacement protocol, latency correlation, budgets and cutover gates (acceptance pending)
 - [server](server.md): account credentials, persistent player bindings and TLS transport
 - [audio](audio.md): what the game sends to Wwise, Meitou's player, ambience rules
 - [viewer](viewer.md)

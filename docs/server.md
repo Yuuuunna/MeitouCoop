@@ -107,40 +107,37 @@ thrash a 256-tile terrain cache, repeatedly reading full TIFF rows. `TerrainSour
 (~33 MiB of samples), retaining full-resolution interpolation and bounded LRU eviction. Parallel edge/eviction
 correctness is covered by `HeadlessContentTests.TerrainCachePreservesHeightsAtTileBoundariesAndEvictionUnderParallelReads`.
 Local latency results and remaining graphical measurement limits are in
-[networking acceptance](networking.md#local-latency-acceptance). Slow owner passes and peer exceptions are logged.
+[networking acceptance](networking.md#local-latency-results-protocol-20-baseline-historical). Slow owner passes and peer exceptions are logged.
 **Observed** (source): owner jobs also log call-site, queue and execution time when execution reaches
 100 ms or waiting reaches 500 ms; labels contain code locations, not account or command values.
 
 
 **Observed** (source review): `Program` disables local whole-world display snapshots; network capture
 independently projects each recipient. Queued work wakes the owner immediately. A tick's runtime-service
-boundary is not repeated by the loop. `SecureServerPeer` captures/detaches on the owner, encodes/diffs/hashes/
-chunks on a worker, then rechecks grants and commits history on the owner. Resync/withdrawal fences discard
-obsolete encodings; ACKs never wait for worker encoding under a shared lock. One encoding job per peer bounds
-worker backlog. Appearances and turret angle arrays detach before encoding.
+boundary is not repeated by the loop. `SecureServerPeer` captures/detaches on the owner and runs transport
+work off-loop; publication checks recipient grants before sending. One bounded encoding job per peer limits
+worker backlog. This describes current source, not measured throughput or end-to-end acceptance.
 Ordinary saves serialize capture/commit requests: capture remains on the owner, while weather JSON/Brotli
 encoding and checkpoint disk IO run on a worker. The weather pool copy retains the capture tick; world
 replacement/disposal and durable creation retain their coordinator fences. Shutdown awaits saves. Save files
 clone their ordered records, references, instances, slot lists and header metadata directly rather than
 serializing and parsing them twice during capture; mutable collections remain detached. Capture itself still
-costs world-thread time; see [local acceptance](networking.md#local-latency-acceptance).
+costs world-thread time; see [local acceptance](networking.md#local-latency-results-protocol-20-baseline-historical).
 
-`TcpGameServer` bounds concurrent connections including unauthenticated sockets (default 32, configurable
-1–1024). `SecureServerPeer` requires TLS -> one compatibility hello -> authentication -> private admission.
-Wrong credentials close without a world view. Default deadlines: handshake 15 s, writes 10 s, preparation
-3 min. Token-bucket input limits default to 120 messages/2 MiB per second with one-second bursts; headers
-count toward bytes. Publication defaults to 100 ms. Each peer has one reader and serialized writer; complete
-state batches cannot interleave. A 64-frame/4 MiB inbound queue lets the reader detect disconnects during
-preparation; overflow closes the peer. Up to 64 command receipts can wait independently without blocking
-the next input. Loader cancellation releases preparation on disconnect. Failure counters retain exception types, not credentials. These bounds are
-not measured player/NPC capacity guarantees; per-address admission throttling remains pending.
+`QuicGameServer` accepts protocol 21 connections through the pinned native QUIC transport; TCP is used
+only by `TcpDiscoveryServer` to obtain compatibility metadata and native transport configuration. The client
+validates discovery metadata and certificate policy before opening QUIC, then `SecureServerPeer` requires
+compatibility, authentication and private admission in order. Wrong credentials close without a world view.
+The listener defaults to 32 concurrent connections. Control, lifecycle, bulk and state use separate reliable
+streams/datagrams with bounded application queues; current limits and framing are in
+[networking-next](networking-next.md#protocol-and-transport-boundaries). Source review does not establish
+VPS capacity, accepted-throughput targets or graphical gameplay acceptance; see
+[networking acceptance](networking-next.md#acceptance-gates-requirements-not-measured-achievements).
 
 Admission messages have a monotonic connection-local sequence, private roles/qualifications and command
 high-water. Busy durable transactions expose no speculative roles/qualifications. Entry names an owned
 persistent role; the host loader runs outside the loop, then ownership/liveness are checked again before
-Synchronizing. ACKs use the [baseline grant fence](networking.md#state-replication); stale ACKs request a fresh
-baseline. Clients ignore older admission sequences and require both Active and a usable replica to enable
-controls. Role loss withdraws the replica. Reconnect invalidates old commands/connections.
+Synchronizing. ACKs use the protocol 21 view/epoch grant fence in [networking-next](networking-next.md#replication-model); stale admission state requires a fresh view. Clients ignore older admission sequences and require both Active and a usable replica to enable controls. Role loss withdraws the replica. Reconnect invalidates old commands/connections.
 
 `HeadlessEntryPreparation` retains an owned role's stored/current region (carrier position when carried),
 prepares navigation off-loop, and publishes/checks readiness on-loop. Grant changes, replacement, death or

@@ -175,6 +175,14 @@ public sealed partial class World : IDisposable
     /// <summary>Player and test commands, applied at the tick they are stamped with.</summary>
     public CommandQueue Commands { get; }
     public AuthorityGateway Authority { get; }
+    public MovementTraceObserver? MovementTrace { get; private set; }
+    /// <summary>Opt-in owner-boundary observer. Its state is excluded from snapshots, saves and hashes.</summary>
+    public void ObserveLatency(Meitou.Diagnostics.ILatencyTraceSink? sink)
+    {
+        if (!AtTickBoundary) throw new InvalidOperationException("Tracing changes at the world boundary only.");
+        MovementTrace?.Dispose();
+        MovementTrace = sink is null ? null : new MovementTraceObserver(this, sink);
+    }
     public Trading.PlayerTradeService PlayerTrades { get; }
     public CreationQualifications CreationQualifications { get; }
     public FactionInvitations Invitations { get; }
@@ -441,6 +449,7 @@ public sealed partial class World : IDisposable
         Tick++;
         StateRevision = checked(StateRevision + 1);
         GameHours += TickSeconds / SecondsPerGameHour;
+        MovementTrace?.AfterTick();
         RuntimeBoundary?.Invoke(this);
         if (publish && Settings.PublishSnapshots) Publish(prof, farShared: true);
         prof?.Lap(TickProfile.Publish);
@@ -709,6 +718,7 @@ public sealed partial class World : IDisposable
 
     public void Dispose()
     {
+        MovementTrace?.Dispose();
         PlayerTrades.Clear();
         Authority.Dispose();
         pool.Dispose();

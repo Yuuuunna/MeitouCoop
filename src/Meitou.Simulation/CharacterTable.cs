@@ -614,6 +614,7 @@ public sealed class CharacterCold
 /// </summary>
 public sealed class CharacterTable
 {
+    internal MovementTraceObserver? MovementTrace;
     CharacterHot[] previous;
     CharacterHot[] next;
     CharacterCold?[] cold;
@@ -776,6 +777,16 @@ public sealed class CharacterTable
 
     /// <summary>Bounded transient evidence for network departures. Missing/expired evidence means loss of scope, never inferred destruction.</summary>
     public bool ConfirmedDestroyed(CharacterId id) => recentRemovals.GetValueOrDefault(id);
+
+    /// <summary>Updates a held character's position and facing without changing its task, path or orders.</summary>
+    internal void Reposition(int slot, Vector3 position, float yaw)
+    {
+        if (phase == TablePhase.Parallel) throw new InvalidOperationException("characters are placed in the serial phases only");
+        if (!inTick) next[slot] = previous[slot];
+        next[slot].Position = position;
+        next[slot].Yaw = yaw;
+        if (!inTick) previous[slot] = next[slot];
+    }
 
     /// <summary>
     /// Puts a character at <paramref name="position"/> facing <paramref name="yaw"/>, standing still with no path (a teleport: into a cage), its task

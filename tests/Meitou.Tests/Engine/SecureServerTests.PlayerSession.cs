@@ -1,5 +1,6 @@
 using System.Numerics;
 using Meitou.Engine;
+using Meitou.Engine.Time;
 using Meitou.Game;
 using Meitou.Networking;
 using Meitou.Simulation;
@@ -9,7 +10,7 @@ namespace Meitou.Tests.Engine;
 public partial class SecureServerTests
 {
     [Fact]
-    public async Task EarlyRemotePublicationContinuesFromTheDisplayedPoseWithoutJumpingToTheOldTarget()
+    public async Task EarlyRemotePublicationDoesNotAdvanceThePresentationTimelineWithoutElapsedTime()
     {
         await using var scene = new Scene(); using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var token = timeout.Token; var actor = scene.Actors[0];
@@ -35,9 +36,9 @@ public partial class SecureServerTests
             session.CurrentSnapshot.Characters.Single(c => c.Id == actor.Role).Position, session.SimulationAlpha);
         double shownTick = session.PresentationTick;
         await PublishPosition(20); session.Advance(0);
-        Assert.Equal(shown, session.PreviousSnapshot.Characters.Single(c => c.Id == actor.Role).Position);
+        Assert.Equal(shown, session.CurrentSnapshot.Characters.Single(c => c.Id == actor.Role).Position);
         Assert.Equal(shownTick, session.PresentationTick);
-        Assert.Equal(20, session.CurrentSnapshot.Characters.Single(c => c.Id == actor.Role).Position.X);
+        Assert.Equal(20, connection.State.View!.Snapshot.Characters.Single(c => c.Id == actor.Role).Position.X);
     }
 
     [Fact, Bench]
@@ -96,12 +97,19 @@ public partial class SecureServerTests
         Assert.True(client.Clock.GameSeconds >= animationTime);
         double stopped = client.Clock.GameSeconds;
         ulong publication = connection.State.View!.Publication;
-        await PumpPlayer(remote, () => connection.State.View!.Publication > publication, token);
+        await PumpPlayer(remote, () => connection.State.View?.Publication > publication, token);
         Assert.Equal(stopped, client.Clock.GameSeconds, 8);
         client.Advance(10);
         Assert.Equal(stopped, client.Clock.GameSeconds, 8);
-        Assert.InRange(client.PresentationTick, Math.Max(0, client.PreviousSnapshot.Tick), client.CurrentSnapshot.Tick);
-        Assert.Equal(stopped, client.PresentationSeconds, 8);
+        Assert.InRange(client.PresentationTick, 0, connection.State.View!.Snapshot.Tick);
+        Assert.Equal(Math.Max(0, stopped - Math.Max(0, client.CurrentSnapshot.Tick - client.PresentationTick) / SimulationClock.TickRate), client.PresentationSeconds, 8);
+    }
+
+    static async Task RefreshBaseline(RemotePlayerSession session, CancellationToken token)
+    {
+        ulong epoch = session.Connection.ViewEpoch;
+        session.Connection.RequestBaseline();
+        await PumpPlayer(session, () => session.Connection.ViewEpoch > epoch && session.Connection.State.CanControl, token);
     }
 
     static async Task PumpPlayer(RemotePlayerSession session, Func<bool> done, CancellationToken token)
@@ -109,7 +117,7 @@ public partial class SecureServerTests
         while (true)
         {
             session.Advance(.01);
-            if (done()) return;
+            if (done()) { session.Advance(0); return; }
             Assert.Null(session.Connection.State.Disconnection);
             await Task.Delay(10, token);
         }

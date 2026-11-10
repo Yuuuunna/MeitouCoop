@@ -22,7 +22,7 @@ Meitou 多人测试包 — 仅输入服务器地址 / Windows x64 / .NET 自包�
 解压服务端，双击 start-server.cmd。看到 Listening 后即可连接。默认 localhost:27800。
 首次生成 server.json 和 server-data；保留 server-data，它包含身份、证书和世界存档。
 输入 save 保存，输入 stop 正常停机。
-局域网：停服后将 server.json 的 BindAddress 设为 0.0.0.0、AdvertisedHost 设为服务器局域网 IP，允许 TCP 27800 入站，再启动。
+局域网：停服后将 server.json 的 BindAddress 设为 0.0.0.0、AdvertisedHost 设为服务器局域网 IP，允许 TCP 和 UDP 27800 入站，再启动。TCP 只提供公开连接信息，游戏使用 QUIC/UDP。
 
 2. 连接
 解压客户端，双击 start-client.cmd，选择“多人游戏”，输入服务器 IP:端口即可。
@@ -64,6 +64,12 @@ foreach ($kind in @('client', 'server')) {
         $_.Name -notin @('log.txt', 'meitou.local.json', 'meitou.user.json', 'server.json') -and $_.Extension -in @('.dll', '.exe', '.json', '.pdb', '.config')
     } | Copy-Item -Destination $destination
     # Vendor runtimes are optional client dependencies; retain their nested notices from publish output.
+    $quicRuntime = Join-Path (Join-Path $stageRoot $kind) 'native/quic'
+    foreach ($required in @('Meitou.QuicTransport.dll', 'msquic.dll', 'manifest.json')) {
+        if (!(Test-Path -LiteralPath (Join-Path $quicRuntime $required) -PathType Leaf)) { throw "Missing protocol 21 runtime: $kind/$required" }
+    }
+    New-Item -ItemType Directory -Path (Join-Path $destination 'native') | Out-Null
+    Copy-Item -LiteralPath $quicRuntime -Destination (Join-Path $destination 'native/quic') -Recurse
     $runtimeLicenses = Join-Path (Join-Path $stageRoot $kind) 'licenses'
     if ($kind -eq 'client' -and (Test-Path -LiteralPath $runtimeLicenses -PathType Container)) {
         Copy-Item -LiteralPath $runtimeLicenses -Destination $destination -Recurse
@@ -82,7 +88,7 @@ foreach ($kind in @('client', 'server')) {
     $assemblyHashes = Get-ChildItem -LiteralPath $destination -File | Where-Object { $_.Name -like 'Meitou*.dll' -or $_.Name -like 'Meitou*.exe' } | ForEach-Object {
         @{ name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     }
-    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=20; engine='meitou-experimental-1'; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
+    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=21; engine='meitou-experimental-1'; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination 'build-info.json') -Encoding utf8
     [IO.Compression.ZipFile]::CreateFromDirectory($destination, (Join-Path $outputRoot "$name.zip"), [IO.Compression.CompressionLevel]::Optimal, $true)
 }

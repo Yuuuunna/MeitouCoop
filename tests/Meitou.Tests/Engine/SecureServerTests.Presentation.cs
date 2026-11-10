@@ -35,8 +35,7 @@ public partial class SecureServerTests
         Assert.Equal(SoundKind.Hit, Assert.Single(bv).Kind); Assert.True(bv[0].Other.IsNone);
         Assert.Equal("private-item", av[2].Item);
         ulong publication = a.Connection.State.View!.Publication;
-        a.Connection.RequestBaseline();
-        await PumpPlayer(a, () => a.Connection.State.View!.Publication > publication, token);
+        await RefreshBaseline(a, token);
         Assert.False(a.TryDequeueSound(out _));
         a.EnableSounds(false);
         ulong seen = a.Connection.State.View!.Events.HighWater;
@@ -109,15 +108,14 @@ public partial class SecureServerTests
         Assert.False(af[1].TargetIsPlayer); Assert.True(af[1].SourceIsPlayer);
         Assert.True(bf[1].TargetIsPlayer); Assert.False(bf[1].SourceIsPlayer);
         ulong publication = a.Connection.State.View!.Publication;
-        a.Connection.RequestBaseline();
-        await PumpPlayer(a, () => a.Connection.State.View!.Publication > publication, token);
+        await RefreshBaseline(a, token);
         Assert.False(a.TryDequeueFloater(out _));
         a.EnableFloaters(false);
         ulong seen = a.Connection.State.View!.Events.HighWater;
         await scene.Loop.InvokeAsync(() => scene.Runtime.World.EmitFloater(Floater.Text(aa.Role, Vector3.Zero, "disabled")), token);
         await PumpPlayer(a, () => a.Connection.State.View!.Events.HighWater > seen, token);
         a.EnableFloaters(true); publication = a.Connection.State.View!.Publication;
-        await PumpPlayer(a, () => a.Connection.State.View!.Publication > publication, token);
+        await PumpPlayer(a, () => a.Connection.State.View?.Publication > publication, token);
         Assert.False(a.TryDequeueFloater(out _));
         await scene.Loop.InvokeAsync(() => scene.Runtime.World.EmitFloater(Floater.Text(aa.Role, Vector3.Zero, "new")), token);
         var after = new List<Floater>();

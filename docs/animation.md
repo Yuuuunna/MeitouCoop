@@ -345,3 +345,43 @@ Evidence scopes below apply only to their named sources/checks.
 - Combat footwork and strafing (`AnimationClassHuman` slots 28 and 29, `@ 14051fc60`, `@ 14051de70`)
 - The formulas (Verified, decompilation and disassembly of `@ 14052e6c0`; implemented in `CharacterShape`)
 - Muscle definition and the body's normal maps (Verified, `@ 14052bc70`, `@ 140531820`)
+
+## Network playback export
+
+**Verified** (local `AuthorityAnimationExporterTests`, current Meitou simulation, not original-game evidence):
+`AnimationPlaybackExport` captures raw layer weights, targets, blend duration, area and lower-manager
+consumption after the animation step. Presentation derivatives are separate from `Layer.Rate`, which
+remembers a block's forward rate for its reverse fade. Synched movement uses phase rate times clip
+length; melee uses authoritative attack/reaction tick duration; lift/put-down use signed record rate.
+**Observed** (current animation implementation): ranged uses reload, steady-aim and shot clocks;
+ragdoll-held layers freeze both time and weight.
+`AuthorityAnimationExporter` emits changed envelopes and renews at the protocol segment horizon (at most 60 simulation seconds), comparing raw
+predicted phase/weight rather than normalized publication weights. An explicitly unavailable external
+clock expires at its source tick rather than transmitting an inferred rate. Root motion and events stay
+separate. Installed-content graphical parity remains **Unknown**.
+
+**Verified** (`AuthorityAnimationExporterTests`): a world with no `AnimationSystem` exports its literal
+snapshot poses as constant, already normalized weights and zero playback rate. This explicit no-driver
+case does not infer rates from snapshots. The same frozen-pose branch applies to restored/paused
+characters before their first driver state exists: `WorldPublish` publishes the hot-state fallback pose
+until `CharacterCold.Animation` is initialized. First driver update replaces it with exact raw envelopes.
+
+**Verified** (installed checkpoint copy, InstalledAnimationExportTests): source captures replace segments
+immediately on parameter changes or raw phase/weight prediction error above 0.0001. The ten-second
+restored-scene check compares every sampled layer against current AnimationSystem.Publish; this covers
+headless pose parameters, not graphical or wire-budget acceptance. Opt-in
+MEITOU_ANIMATION_EXPORT_DIAGNOSTICS=1 counts numeric emission reasons (initial, parameters, rate, phase,
+weight, expiry, tick duration and unavailable external clock), without character names or positions.
+
+**Verified** (`CompactAnimationPlaybackCodecTests`, installed replay): production playback states are
+absolute dynamic values referencing a session/view catalog of at most 4,096 immutable descriptors.
+Descriptors hold name, definition, clip length, wrap/end and blend area/lower consumption. Dynamic
+phase, rate, raw weights, blend duration and wanted flag retain exact IEEE bits; validated varints
+encode counters. Missing descriptors and conflicting IDs reject. Definitions precede states on each
+reliable lane; a late baseline adds definitions without replacing newer ones. No previous playback
+state is needed to decode a dynamic state. The full codec remains the equality reference.
+
+**Verified** (receive-backlog tests and installed replay): validated publication clocks advance mature
+playback before applying records, including during renderer/content loading. A mature absolute state
+uses no future-queue slot; genuinely future transitions retain the 32-entry bound and ordered checks.
+Overflow diagnostics contain only opaque entity/epoch IDs, ticks and pending count.

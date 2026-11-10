@@ -41,7 +41,7 @@ public partial class SecureServerTests
         a.Connection.Observe(new());
         await PumpPlayer(a, () => a.DescribeFaction(bb.Grant.Faction) is not null, token);
         await scene.Loop.InvokeAsync(() => scene.Runtime.World.Players.SetMembership(aa.Player, bb.Grant.Faction, FactionPermission.ReadFunds), token);
-        await PumpPlayer(a, () => a.Connection.State.View!.Factions.Count == 2, token);
+        await PumpPlayer(a, () => a.CanControl && a.Connection.State.View?.Factions.Count == 2, token);
         a.SelectFaction(bb.Grant.Faction);
         Assert.Equal(200, a.Money); Assert.True(a.StandingTowards(aa.Grant.Faction)!.Ally);
         Assert.Single(a.Connection.State.View!.Roles);

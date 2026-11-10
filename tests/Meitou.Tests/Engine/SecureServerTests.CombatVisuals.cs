@@ -40,8 +40,7 @@ public partial class SecureServerTests
         await PumpPlayer(b, () => { Drain(b, bv); return bv.Count == 1; }, token);
         Assert.Equal(aa.Role, av[0].Mark.Who); Assert.True(av[1].Mark.Who.IsNone); Assert.Equal(bb.Role, bv[0].Mark.Who);
         Assert.Equal(aa.Role, Assert.Single(sparks)); Assert.True(b.TryDequeueBlockSpark(out var bs)); Assert.Equal(bb.Role, bs);
-        ulong publication = a.Connection.State.View!.Publication; a.Connection.RequestBaseline();
-        await PumpPlayer(a, () => a.Connection.State.View!.Publication > publication, token);
+        ulong publication = a.Connection.State.View!.Publication; await RefreshBaseline(a, token);
         Assert.False(a.TryDequeueBlood(out _)); Assert.False(a.TryDequeueBlockSpark(out _));
         a.EnableBlood(false); a.EnableBlockSparks(false);
         ulong before = a.Connection.State.View!.Events.HighWater;

@@ -578,6 +578,7 @@ sealed partial class GameHost
             if (!Covered) session.Advance(frameDt);   // loading and arrival preserve the loaded world's exact time
             else if (session.IsRemote) session.Advance(0); // ingest authoritative readiness even while presentation is covered
             ReportOnlineDisconnection();
+            RunOnlineAcceptance(frameDt, totalFrames, Covered);
             DuelHoldClock();
             double advanceMs = Stopwatch.GetElapsedTime(a0).TotalMilliseconds;
             advanceTotal += advanceMs;
@@ -831,6 +832,11 @@ sealed partial class GameHost
                 characterTris += gpu.Characters?.DrawnTriangles ?? 0;
                 if (gpu.Foliage is { Enabled: true } drawnFoliage) grassBlades += drawnFoliage.DrawnBlades;
                 if (takeFile is not null) { FramebufferCapture.SavePng(display.Context, finalPicture ?? backbuffer, takeFile, size.X, size.Y, topDown: finalPicture is not null); cinema.FrameDone(); }
+                else if (shot && acceptancePicture is { } acceptanceFile)
+                {
+                    FramebufferCapture.SavePng(display.Context, finalPicture ?? backbuffer, acceptanceFile, size.X, size.Y, topDown: finalPicture is not null);
+                    acceptancePicture = null;
+                }
                 else if (shot && GameScreenshots.Multiplier(install.Root) is >= 2 and var multiplier) SaveSupersampled(display.Context, multiplier, size.X, size.Y);
                 else if (shot) SaveScreenshot(display.Context, finalPicture ?? backbuffer, size.X, size.Y, topDown: finalPicture is not null);
                 if (shot) player.EndScreenshot();

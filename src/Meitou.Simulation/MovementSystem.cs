@@ -344,6 +344,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// </summary>
     public static void GoTo(CharacterTable table, int slot, Vector2 target, byte mode)
     {
+        table.MovementTrace?.GoTo(slot);
         ref var n = ref table.Next[slot];
         var cold = table.Cold(slot)!;
         cold.NavigationWaiting = false;
@@ -516,6 +517,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// <summary>Drops a character's path and makes it stand (serial phases only); its order queue is the queue's (<see cref="PlayerOrders"/>).</summary>
     public static void Stop(CharacterTable table, int slot)
     {
+        table.MovementTrace?.Stop(slot);
         ref var n = ref table.Next[slot];
         n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.AnyPath);
         n.Task = (byte)CharacterTask.Idle;
@@ -553,8 +555,10 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             float nearY = cold.GoalHeightAt == next[i].Goal && !float.IsNaN(cold.GoalHeight) ? cold.GoalHeight : next[i].Position.Y;
             var splice = SpliceTarget(next[i], cold);
             var to = splice ?? new Vector3(next[i].Goal.X, world.Walkability.GroundHeight(next[i].Goal.X, next[i].Goal.Y, nearY), next[i].Goal.Y);
-            cold.PathRequest = Paths.Submit(new CharacterId(i, next[i].Generation), next[i].Position, to, cold.FootprintRadius,
-                WaterCost.Of(cold.WaterFactor, next[i].MaxSpeed, cold.Race, cold.SwimSpeed), cold.RoadPreference);
+            cold.PathRequest = Paths.SubmitObserved(new CharacterId(i, next[i].Generation), next[i].Position, to, cold.FootprintRadius,
+                WaterCost.Of(cold.WaterFactor, next[i].MaxSpeed, cold.Race, cold.SwimSpeed), cold.RoadPreference,
+                observeLatency: world.MovementTrace?.Tracks(i) == true);
+            world.MovementTrace?.PathQueued(i, Paths, cold.PathRequest);
             if (splice is null) ClearSplice(cold);
             else cold.SpliceRequest = cold.LastSplice = cold.PathRequest;
             next[i].Flags = (ushort)((next[i].Flags & ~(ushort)MoveFlags.NeedPath) | (ushort)MoveFlags.Pending);
@@ -583,6 +587,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
                 continue;
             }
             n.Flags = (ushort)(n.Flags & ~(ushort)MoveFlags.Pending);
+            world.MovementTrace?.PathApplied(slot, Paths, answer);
             if (answer.Id <= cold.LastSplice && answer.Id != cold.SpliceRequest)
             {
                 // A cancelled splice still targets a local seam, never the current order's goal.

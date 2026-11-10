@@ -120,6 +120,7 @@ sealed partial class GameHost
     /// </summary>
     void FillWorldDrawList(CharacterDrawList list)
     {
+        long latencyFrame = ++latencyRenderFrame;
         var current = session.CurrentSnapshot;
         IndexPrevious();
         float alpha = session.SimulationAlpha;
@@ -161,6 +162,8 @@ sealed partial class GameHost
             }
             var bones = Blend(before is null || Reanchored(before, c) ? null : before.Ragdoll, c.Ragdoll, alpha, ref Slot(ref ragdollsBySlot, c.Id.Slot), ref Slot(ref spareRagdollsBySlot, c.Id.Slot));
             list.Add(Drawn(c, c.Appearance, position, yaw, poses, rotation, bones, hiddenIndoors.Contains(c.Id), c.IsPlayer));
+            if (!Covered && !hiddenIndoors.Contains(c.Id) && c.Carry is null && c.Ragdoll is null && session is RemotePlayerSession remote)
+                remote.TraceRendererRootSubmission(c.Id, position, latencyFrame);
         }
     }
 
@@ -169,6 +172,7 @@ sealed partial class GameHost
     /// A character as the renderer is handed it, by both draw-list sources (<see cref="FillDrawListCore"/>, the interface-less <see cref="FillWorldDrawList"/> of the Metal loop):
     /// everything the snapshot says of its look, so a field is added here once (the stuck bolts, the limb in an animal's mouth, the weapon stance, the build, the blood).
     /// </summary>
+    long latencyRenderFrame;
     CharacterInstance Drawn(CharacterSnapshot c, Meitou.Data.Characters.CharacterAppearance look, Vector3 position, float yaw, IReadOnlyList<CharacterPose> poses, Quaternion? rotation,
         Meitou.Data.Characters.BonePose? bones, bool hidden, bool fullRate) =>
         new(DrawKey(c.Id), look, position, yaw, poses)
@@ -263,6 +267,7 @@ sealed partial class GameHost
 
     void FillDrawListCore(CharacterDrawList list)
     {
+        ++latencyRenderFrame;
         if (player.OnlineEditor)
         {
             if (player.OnlineEditorAppearance is { } look && player.EditorFocus is { } focus)
@@ -351,6 +356,8 @@ sealed partial class GameHost
             var instance = Drawn(c, look, position, yaw, poses, rotation, bones, hidden, fullRated);
             if (glide is { } mixed) instance = instance with { BlendFrom = mixed.From, Blend = mixed.Blend };
             list.Add(instance);
+            if (!Covered && !hidden && editing is null && c.Carry is null && c.Ragdoll is null && session is RemotePlayerSession remote)
+                remote.TraceRendererRootSubmission(c.Id, position, latencyRenderFrame);
             // The editor's next preview look, listed hidden so the renderer prepares it while the last one is still shown.
             if (player.EditorPending(c.Id) is { } pending)
                 list.Add(new CharacterInstance(DrawKey(c.Id) ^ (1L << 55), pending, position, yaw, poses) { Hidden = true });

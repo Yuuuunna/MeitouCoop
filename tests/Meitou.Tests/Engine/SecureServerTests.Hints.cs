@@ -31,6 +31,7 @@ public partial class SecureServerTests
         var hidden = await a.Connection.TalkHintAsync(query with { Query = Guid.NewGuid() }, token);
         Assert.Equal(TalkHintStatus.Unknown, hidden.Hint.Status);
         await scene.Loop.InvokeAsync(() => scene.Runtime.World.Players.SetMembership(actor.Player, actor.Grant.Faction, FactionPermission.ReadFunds), token);
+        await PumpPlayer(a, () => a.CanControl && a.Connection.State.View?.Factions.FirstOrDefault(f => f.Faction == actor.Grant.Faction)?.MembershipRevision is { } revision && revision != membership, token);
         var stale = await a.Connection.TalkHintAsync(query with { Query = Guid.NewGuid() }, token);
         Assert.Equal(TalkHintStatus.StaleAuthority, stale.Hint.Status);
     }

@@ -272,6 +272,8 @@ These have no user-facing docs; options are from their top-level argument loops.
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_DATA_DIRS` | `src/Meitou.Core/Content/GameInstallSources.cs` | Linux and macOS install discovery and the `meitou/config.json` location. |
 | `MTL_CAPTURE_ENABLED` | Metal framework (not project code) | Enables Metal GPU capture; the game's Ctrl+/ key uses it (per the usage text). |
 | `MEITOU_PASS_STATS` | `tools/Meitou.ModelViewer/PassMeter.cs`, `src/Meitou.Rendering/Gpu/FrameLoop.cs` | `1`: per-pass GPU cost breakdown. |
+| `MEITOU_REMOTE_ACCEPTANCE` | `src/Meitou.Game/GameHost.NetworkAcceptance.cs` | `1`: isolated-copy online acceptance driver; selects `--role`, warms 35 s, submits short stationary movement orders and logs numeric 10 s transport/frame samples. Uses real input/network/rendering; fails on disconnection. |
+| `MEITOU_REMOTE_ACCEPTANCE_PICTURES` | `GameHost.NetworkAcceptance.cs` | Optional output folder for 12 actual GPU frames. Use a separate visual run: synchronous PNG capture contaminates latency measurements. |
 | `MEITOU_PASS_STATS_SKIP` | `tools/Meitou.ModelViewer/PassMeter.cs` | Frames skipped before the breakdown (default 60). |
 | `MEITOU_BENCH_ORBIT` | `tools/Meitou.ModelViewer/WorldApp.Benchmark.cs` | Pixels per frame the benchmark camera orbits (0.005 rad per pixel). |
 | `MEITOU_BENCH_SKIP` | `WorldApp.Benchmark.cs` (default 1), `src/Meitou.Rendering/SpikeLog.cs` (default 0) | Frames left out of benchmark percentiles and spike logs. |

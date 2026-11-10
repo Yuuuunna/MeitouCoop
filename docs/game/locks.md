@@ -446,6 +446,12 @@ Shackles: the item's INVENTORY_ITEM_STATE record carries the same four keys (`Lo
 `CharacterTable.Place`, clearing movement and updating position for existing character snapshot replication.
 `GetOutOrder` actor authorization and release access checks still precede placement; no new wire fields.
 
+**Verified** (Meitou `HeldPlacementTests` and `InstalledHeldPlacementTests`, original pre-cutover
+checkpoint copy with 134 characters/14 occupied cages): ongoing cage/bed holding uses
+`CharacterTable.Reposition` for position/facing only, preserving task, path, goal and task time.
+Three saved placement corrections, including a Follow prisoner, preserve the task-start invariant
+through the first real Debug tick. Exiting still uses the separate movement-clearing placement above.
+
 **Observed** (source inspection; no new/run tests): attributed lock, door, shackle and bed orders
 use explicit controlled actors. Door-panel toggles require the named owner's ManageAssets permission,
 current membership revision and observed door-group revision. Ordinary opening, lockpicking, forcing

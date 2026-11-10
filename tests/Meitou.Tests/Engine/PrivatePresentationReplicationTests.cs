@@ -13,12 +13,12 @@ public class PrivatePresentationReplicationTests
         var db = WorldViewCodecTests.Database(); var codec = new WorldViewCodec(db);
         var message = new PlayerMessage(1, PlayerMessageKind.Notice, "", "Private notice");
         var view = WorldViewCodecTests.View(db) with { Messages = new(1, [message]) };
-        var identity = ReplicationIdentity.Of(view); var server = new ServerStateReplicator(identity, codec); var client = new ClientWorldReplica(identity, codec);
-        Assert.Equal(ReplicaResult.Applied, client.Receive(server.Publish(view).Payload)); Assert.True(server.Acknowledge(client.Acknowledgement!));
-        var next = server.Publish(view with { Publication = 2, GameHours = view.GameHours + 1 });
-        Assert.DoesNotContain(StatePatchProtocol.Decode(next.Payload).Changes, c => c.Key == "messages");
-        Assert.Equal(ReplicaResult.Applied, client.Receive(next.Payload));
-        Assert.Equal(message, Assert.Single(client.Current!.Messages.Items));
+        var peer = new GameReplicationFixture(codec);
+        peer.Apply(peer.Capture(view));
+        var next = peer.Capture(view with { Publication = 2, GameHours = view.GameHours + 1 });
+        Assert.False(GameReplicationFixture.Changes(next, "Messages"));
+        peer.Apply(next);
+        Assert.Equal(message, Assert.Single(peer.Client.View!.Messages.Items));
         Assert.Throws<InvalidDataException>(() => codec.Encode(view with { Messages = new(0, [message]) }));
         Assert.Throws<InvalidDataException>(() => codec.Encode(view with { Messages = new(1, [message, message]) }));
     }
@@ -31,18 +31,16 @@ public class PrivatePresentationReplicationTests
     {
         var db = WorldViewCodecTests.Database(); var codec = new WorldViewCodec(db);
         var view = WorldViewCodecTests.View(db) with { Prospected = Report() };
-        var identity = ReplicationIdentity.Of(view); var server = new ServerStateReplicator(identity, codec); var client = new ClientWorldReplica(identity, codec);
-        var first = server.Publish(view);
-        Assert.Equal(ReplicaResult.Applied, client.Receive(first.Payload)); Assert.True(server.Acknowledge(client.Acknowledgement!));
-        Assert.Equal(Report().Map!.Heights, client.Current!.Prospected!.Map!.Heights);
-        Assert.Null(client.Current.Prospected.Map.Fields[1]); Assert.Single(client.Current.Prospected.Map.Rocks[1]);
-        var second = server.Publish(view with { Publication = 2, GameHours = view.GameHours + 1 });
-        var patch = StatePatchProtocol.Decode(second.Payload);
-        Assert.DoesNotContain(patch.Changes, c => c.Key == "prospect");
-        Assert.Equal(ReplicaResult.Applied, client.Receive(second.Payload)); Assert.NotNull(client.Current!.Prospected);
-        Assert.True(server.Acknowledge(client.Acknowledgement!));
-        var third = server.Publish(view with { Publication = 3, Prospected = null });
-        Assert.Equal(ReplicaResult.Applied, client.Receive(third.Payload)); Assert.Null(client.Current!.Prospected);
+        var peer = new GameReplicationFixture(codec);
+        var first = peer.Capture(view);
+        peer.Apply(first);
+        Assert.Equal(Report().Map!.Heights, peer.Client.View!.Prospected!.Map!.Heights);
+        Assert.Null(peer.Client.View.Prospected.Map.Fields[1]); Assert.Single(peer.Client.View.Prospected.Map.Rocks[1]);
+        var second = peer.Capture(view with { Publication = 2, GameHours = view.GameHours + 1 });
+        Assert.False(GameReplicationFixture.Changes(second, "Prospected"));
+        peer.Apply(second); Assert.NotNull(peer.Client.View!.Prospected);
+        var third = peer.Capture(view with { Publication = 3, Prospected = null });
+        peer.Apply(third); Assert.Null(peer.Client.View!.Prospected);
     }
 
     [Fact]
@@ -55,7 +53,9 @@ public class PrivatePresentationReplicationTests
         Assert.Throws<InvalidDataException>(() => codec.Encode(view with { Events = new(1, [floater, floater]) }));
         var sound = new SoundEventEntry(1, new(SoundKind.Hit, floater.Value.Target, CharacterId.None, Vector3.Zero));
         Assert.Throws<InvalidDataException>(() => codec.Encode(view with { Events = new(1, [floater]) { Sounds = [sound] } }));
-        var decoded = codec.Decode(codec.Encode(view with { Prospected = Report(), Events = new(2, [floater]) { Sounds = [sound with { Id = 2 }] } }));
+        var peer = new GameReplicationFixture(codec);
+        peer.Apply(peer.Capture(view with { Prospected = Report(), Events = new(2, [floater]) { Sounds = [sound with { Id = 2 }] } }));
+        var decoded = peer.Client.View!;
         Assert.Equal("private", Assert.Single(decoded.Events.Floaters).Value.Part); Assert.NotNull(decoded.Prospected!.Map);
         Assert.Equal(SoundKind.Hit, Assert.Single(decoded.Events.Sounds).Value.Kind);
     }

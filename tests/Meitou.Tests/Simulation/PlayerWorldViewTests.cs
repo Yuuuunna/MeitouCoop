@@ -13,6 +13,39 @@ namespace Meitou.Tests.Simulation;
 public class PlayerWorldViewTests
 {
     [Fact]
+    public void OnePinnedBaselineSurvivesMotionCaptureHistoryWithoutPinningEveryPublication()
+    {
+        using var s = new Scene();
+        var authority = s.World.Authority;
+        ulong baseline = s.View().Publication;
+        Assert.True(authority.PinPublishedView(s.ConnectionA, baseline));
+        ulong newest = baseline;
+        for (int i = 0; i < 20; i++) newest = s.View().Publication;
+        Assert.False(authority.PinPublishedView(s.ConnectionA, newest));
+        authority.ReleasePublishedView(s.ConnectionA, newest); // late/unrelated completion cannot release the pin
+        Assert.True(authority.CanRetainPublishedView(s.ConnectionA, baseline));
+        Assert.True(authority.ActivateAfterView(s.ConnectionA, baseline));
+        authority.ReleasePublishedView(s.ConnectionA, baseline);
+        Assert.False(authority.CanRetainPublishedView(s.ConnectionA, baseline));
+        Assert.True(authority.CanRetainPublishedView(s.ConnectionA, newest));
+    }
+
+    [Fact]
+    public void PinnedEvidenceNeverPreservesRevokedAuthorityOrSurvivesWithdrawal()
+    {
+        using var s = new Scene();
+        var authority = s.World.Authority;
+        ulong baseline = s.View().Publication;
+        Assert.True(authority.PinPublishedView(s.ConnectionA, baseline));
+        for (int i = 0; i < 12; i++) s.View();
+        s.World.Players.RemoveMembership(s.A.Id, 7);
+        Assert.False(authority.CanRetainPublishedView(s.ConnectionA, baseline));
+        Assert.False(authority.ActivateAfterView(s.ConnectionA, baseline));
+        authority.WithdrawView(s.ConnectionA);
+        Assert.False(authority.PinPublishedView(s.ConnectionA, baseline));
+    }
+
+    [Fact]
     public void EffectNodesFollowAuthorizedObservationAndCannotBeRevealedByRequestedZones()
     {
         using var s = new Scene();

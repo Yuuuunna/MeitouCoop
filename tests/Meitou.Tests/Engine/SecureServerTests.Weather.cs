@@ -33,8 +33,7 @@ public partial class SecureServerTests
         await PumpPlayer(a, () => a.WeatherEffects!.Nodes[0].Age == 0.6f, token);
         await PumpPlayer(b, () => b.WeatherEffects!.Nodes.Count == 0, token);
         display.Accept(a.WeatherEffects!, Resolve); Assert.Same(root, display.Groups[0].Units[0]); Assert.Equal(moved.Position, root.Position);
-        ulong publication = a.Connection.State.View!.Publication; a.Connection.RequestBaseline();
-        await PumpPlayer(a, () => a.Connection.State.View!.Publication > publication, token);
+        ulong publication = a.Connection.State.View!.Publication; await RefreshBaseline(a, token);
         display.Accept(a.WeatherEffects!, Resolve); Assert.Same(root, display.Groups[0].Units[0]);
         await scene.Loop.InvokeAsync(() => scene.Runtime.World.Players.RemoveMembership(aa.Player, aa.Grant.Faction), token);
         // The transport may withdraw between presentation frames; getters must not expose its old roots until Advance runs.

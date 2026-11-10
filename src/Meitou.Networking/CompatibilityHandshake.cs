@@ -10,7 +10,7 @@ public enum CompatibilityPhase { AwaitingHello, Compatible, Rejected }
 /// <summary>Compatibility only. Matching content never authenticates an account or activates a player.</summary>
 public sealed class CompatibilityHandshake
 {
-    public const ushort Protocol = 20;
+    public const ushort Protocol = 21;
     public const int MaximumHelloBytes = 4096;
     readonly CompatibilityHello expected;
     static readonly JsonSerializerOptions json = new()

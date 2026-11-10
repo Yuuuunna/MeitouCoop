@@ -1,5 +1,18 @@
 <Project>
 
+  <PropertyGroup>
+    <MeitouQuicRuntimePath Condition="'$(MeitouQuicRuntimePath)' == ''">$(MSBuildThisFileDirectory)artifacts/network-vnext-transport/win-x64</MeitouQuicRuntimePath>
+  </PropertyGroup>
+  <ItemGroup Condition="('$(MSBuildProjectName)' == 'Meitou.Game' or '$(MSBuildProjectName)' == 'Meitou.Server') and ('$(RuntimeIdentifier)' == 'win-x64' or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))))">
+    <None Include="$(MeitouQuicRuntimePath)/*.dll;$(MeitouQuicRuntimePath)/manifest.json;$(MeitouQuicRuntimePath)/LICENSE*;$(MeitouQuicRuntimePath)/THIRD-PARTY-NOTICES*"
+          Link="native/quic/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="RequireQuicRuntimeForWindowsPublish" BeforeTargets="PrepareForPublish"
+          Condition="('$(MSBuildProjectName)' == 'Meitou.Game' or '$(MSBuildProjectName)' == 'Meitou.Server') and '$(RuntimeIdentifier)' == 'win-x64'">
+    <Error Condition="!Exists('$(MeitouQuicRuntimePath)/Meitou.QuicTransport.dll') or !Exists('$(MeitouQuicRuntimePath)/msquic.dll') or !Exists('$(MeitouQuicRuntimePath)/manifest.json')"
+           Text="Build tools/Meitou.QuicTransport/build.ps1 before publishing the paired protocol 21 runtime." />
+  </Target>
+
   <!-- Local vendor binaries stay outside source control; both executable projects need the same runtime. Each one present is copied: Streamline
        for DLSS, amd_fidelityfx_vk.dll for FSR (the release zips fetch them in tools/scripts/package-release.ps1). -->
   <PropertyGroup>

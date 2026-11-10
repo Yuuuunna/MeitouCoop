@@ -1,9 +1,12 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using Meitou.Diagnostics;
 
 namespace Meitou.Simulation;
 
 public enum AdmissionPhase { Preparing, Synchronizing, Active }
+public enum PublicationRetentionFailure { None, ConnectionReplaced, Preparing, DurableMutation, MissingPublication, NoRole, MembershipChanged, RoleGrantChanged, RoleStatusChanged }
+
 public enum AuthorityStatus
 {
     Evaluated, InvalidConnection, NotActive, InvalidRequest, Unsupported, Conflict, Expired,
@@ -32,6 +35,8 @@ public sealed class AuthorityConnection
     internal ulong ViewSequence;
     internal ulong AdmissionSequence;
     internal readonly SortedDictionary<ulong, ViewGrantStamp> PublishedGrants = [];
+    internal ulong PinnedPublication;
+    internal ViewGrantStamp? PinnedGrant;
     internal HashSet<CharacterId> PublishedCharacters = [];
     internal HashSet<string> PublishedSites = new(StringComparer.Ordinal);
 }
@@ -85,6 +90,7 @@ public sealed class AuthorityGateway : IDisposable
             if (faulted) throw new InvalidOperationException("The authority world has faulted.");
             if (world.Players.Find(player) is null) throw new ArgumentException("Unknown player.", nameof(player));
             if (!players.TryGetValue(player, out var ledger)) players.Add(player, ledger = new Ledger());
+            if (ledger.Connection is { } previous) world.MovementTrace?.Close(previous.Player.Value, previous.Generation);
             var connection = new AuthorityConnection(incarnation, player, checked(++ledger.Generation));
             if (ledger.Generation > 1) ledger.NeedsCleanup = true;
             ledger.Connection = connection;
@@ -175,6 +181,8 @@ public sealed class AuthorityGateway : IDisposable
             EnsureOwnerBoundary();
             if (!Current(connection) || connection.Phase == AdmissionPhase.Preparing || world.HasPendingDurableMutation) return null;
             if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return null; }
+            world.MovementTrace?.Emit(new(LatencyStage.CaptureStarted, connection.World, connection.Player.Value, connection.Generation,
+                Publication: connection.ViewSequence + 1));
             var view = world.CapturePlayerView(connection, request, rules);
             connection.PublishedCharacters = view.Snapshot.Characters.Select(c => c.Id).ToHashSet();
             connection.PublishedSites = view.Snapshot.Buildings.Select(b => b.Id).Concat(view.Snapshot.DoorPicks.Select(d => d.Building))
@@ -184,7 +192,11 @@ public sealed class AuthorityGateway : IDisposable
             connection.PublishedGrants.Add(connection.ViewSequence, new(view.Roles.ToArray(),
                 view.Factions.Select(f => new ViewMembership(f.Faction, f.Permissions, f.MembershipRevision)).ToArray()));
             while (connection.PublishedGrants.Count > 8) connection.PublishedGrants.Remove(connection.PublishedGrants.Keys.First());
-            return view with { Publication = connection.ViewSequence };
+            var publication = view with { Publication = connection.ViewSequence };
+            world.MovementTrace?.Publication(connection, publication);
+            world.MovementTrace?.Emit(new(LatencyStage.CaptureFinished, connection.World, connection.Player.Value, connection.Generation,
+                Publication: connection.ViewSequence, Revision: world.StateRevision));
+            return publication;
         }
     }
 
@@ -193,6 +205,8 @@ public sealed class AuthorityGateway : IDisposable
         lock (gate) if (Current(connection))
         {
             players[connection.Player].Connection = null;
+            connection.PinnedPublication = 0;
+            connection.PinnedGrant = null;
             closed[connection.Player] = connection.Generation;
         }
     }
@@ -229,6 +243,8 @@ public sealed class AuthorityGateway : IDisposable
             EnsureOwnerBoundary();
             if (!Current(connection)) return null;
             connection.PublishedGrants.Clear();
+            connection.PinnedPublication = 0;
+            connection.PinnedGrant = null;
             connection.PublishedCharacters.Clear();
             connection.PublishedSites.Clear();
             return connection.ViewSequence = checked(connection.ViewSequence + 1);
@@ -242,7 +258,7 @@ public sealed class AuthorityGateway : IDisposable
         {
             EnsureOwnerBoundary();
             if (!Current(connection) || connection.Phase != AdmissionPhase.Synchronizing || world.HasPendingDurableMutation ||
-                !connection.PublishedGrants.TryGetValue(publication, out var stamp)) return false;
+                !TryPublicationStamp(connection, publication, out var stamp)) return false;
             if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return false; }
             var player = world.Players.Find(connection.Player)!;
             var memberships = player.Memberships.Select(m => new ViewMembership(m.Key, m.Value, player.MembershipRevision(m.Key)));
@@ -259,12 +275,68 @@ public sealed class AuthorityGateway : IDisposable
         lock (gate)
         {
             EnsureOwnerBoundary();
-            if (!Current(connection) || connection.Phase == AdmissionPhase.Preparing || world.HasPendingDurableMutation ||
-                !connection.PublishedGrants.TryGetValue(publication, out var stamp) || !HasRole(connection.Player)) return false;
-            var player = world.Players.Find(connection.Player)!;
-            return stamp.Memberships.SequenceEqual(player.Memberships.Select(m => new ViewMembership(m.Key, m.Value, player.MembershipRevision(m.Key)))) &&
-                stamp.Roles.SequenceEqual(DescribeRoles(connection.Player));
+            PublicationRetentionFailure failure;
+            if (!Current(connection)) failure = PublicationRetentionFailure.ConnectionReplaced;
+            else if (connection.Phase == AdmissionPhase.Preparing) failure = PublicationRetentionFailure.Preparing;
+            else if (world.HasPendingDurableMutation) failure = PublicationRetentionFailure.DurableMutation;
+            else if (!TryPublicationStamp(connection, publication, out var stamp)) failure = PublicationRetentionFailure.MissingPublication;
+            else if (!HasRole(connection.Player)) failure = PublicationRetentionFailure.NoRole;
+            else
+            {
+                var player = world.Players.Find(connection.Player)!;
+                var roles = DescribeRoles(connection.Player);
+                if (!stamp.Memberships.SequenceEqual(player.Memberships.Select(m => new ViewMembership(m.Key, m.Value, player.MembershipRevision(m.Key))))) failure = PublicationRetentionFailure.MembershipChanged;
+                else if (stamp.Roles.SequenceEqual(roles)) return true;
+                else if (stamp.Roles.Length == roles.Length && stamp.Roles.Zip(roles).All(pair => pair.First.Entity == pair.Second.Entity && pair.First.Faction == pair.Second.Faction && pair.First.Revision == pair.Second.Revision))
+                {
+                    failure = PublicationRetentionFailure.RoleStatusChanged;
+                    foreach (var pair in stamp.Roles.Zip(roles).Where(pair => pair.First != pair.Second))
+                    {
+                        static ulong Status(PlayerRoleView role) => (role.Available ? 1ul : 0) | (role.Dead ? 2ul : 0) | ((ulong)role.Availability << 2);
+                        world.MovementTrace?.Emit(new(LatencyStage.PublicationRetentionRejected, connection.World, connection.Player.Value, connection.Generation,
+                            Entity: pair.First.Entity.Value, Publication: publication, Tick: world.Tick,
+                            Revision: (Status(pair.First) << 32) | Status(pair.Second), Value: (long)failure));
+                    }
+                }
+                else failure = PublicationRetentionFailure.RoleGrantChanged;
+            }
+            world.MovementTrace?.Emit(new(LatencyStage.PublicationRetentionRejected, connection.World, connection.Player.Value, connection.Generation,
+                Publication: publication, Tick: world.Tick, Value: (long)failure));
+            return false;
         }
+    }
+
+    /// <summary>Pin one in-flight baseline's grant stamp while newer motion captures retire ordinary history.
+    /// This retains evidence, not permission: every use still revalidates current grants.</summary>
+    public bool PinPublishedView(AuthorityConnection connection, ulong publication)
+    {
+        lock (gate)
+        {
+            EnsureOwnerBoundary();
+            if (connection.PinnedPublication != 0 && connection.PinnedPublication != publication) return false;
+            if (!CanRetainPublishedView(connection, publication) || !TryPublicationStamp(connection, publication, out var stamp)) return false;
+            connection.PinnedPublication = publication;
+            connection.PinnedGrant = stamp;
+            return true;
+        }
+    }
+
+    /// <summary>Release only the named transfer's evidence; a late completion cannot release a newer pin.</summary>
+    public void ReleasePublishedView(AuthorityConnection connection, ulong publication)
+    {
+        lock (gate)
+        {
+            if (connection.PinnedPublication != publication) return;
+            connection.PinnedPublication = 0;
+            connection.PinnedGrant = null;
+        }
+    }
+
+    static bool TryPublicationStamp(AuthorityConnection connection, ulong publication, out ViewGrantStamp stamp)
+    {
+        if (publication != 0 && connection.PinnedPublication == publication && connection.PinnedGrant is { } pinned)
+        { stamp = pinned; return true; }
+        return connection.PublishedGrants.TryGetValue(publication, out stamp!);
     }
 
     public bool BeginSynchronization(AuthorityConnection connection)
@@ -298,13 +370,23 @@ public sealed class AuthorityGateway : IDisposable
     /// <summary>Freezes payloads. Request numbers increase per player across connections; Tick is assigned by the server.</summary>
     public Task<AuthorityReceipt> Submit(AuthorityConnection connection, ulong number, SimCommand command, AuthorityContext context)
     {
+        Task<AuthorityReceipt> Reject(AuthorityStatus status)
+        {
+            if (connection is not null && world.MovementTrace is { } trace)
+            {
+                var key = trace.Key(connection, number);
+                trace.Emit(key with { Stage = LatencyStage.AuthorityReceipt, Value = (long)status });
+                trace.Emit(key with { Stage = LatencyStage.Terminal, Outcome = LatencyOutcome.Rejected, Value = (long)status });
+            }
+            return Rejected(number, status);
+        }
         lock (gate)
         {
-            if (disposed) return Rejected(number, AuthorityStatus.WorldClosed);
-            if (faulted) return Rejected(number, AuthorityStatus.WorldFaulted);
-            if (!Current(connection)) return Rejected(number, AuthorityStatus.InvalidConnection);
-            if (number == 0 || command is null || context?.Characters is null) return Rejected(number, AuthorityStatus.InvalidRequest);
-            if (!PlayerCommandRouting.Supports(command)) return Rejected(number, AuthorityStatus.Unsupported);
+            if (disposed) return Reject(AuthorityStatus.WorldClosed);
+            if (faulted) return Reject(AuthorityStatus.WorldFaulted);
+            if (!Current(connection)) return Reject(AuthorityStatus.InvalidConnection);
+            if (number == 0 || command is null || context?.Characters is null) return Reject(AuthorityStatus.InvalidRequest);
+            if (!PlayerCommandRouting.Supports(command)) return Reject(AuthorityStatus.Unsupported);
             SimCommand frozen;
             AuthorityContext expected;
             byte[] hash;
@@ -319,31 +401,33 @@ public sealed class AuthorityGateway : IDisposable
                 payload.Position = 0;
                 frozen = (SimCommand)JsonSerializer.Deserialize(payload, command.GetType(), json)!;
                 if (frozen is Construction.PlaceBuildings placement && placement.Plans.Any(p => p is null))
-                    return Rejected(number, AuthorityStatus.InvalidRequest);
-                if (context.Characters.Count > 4096) return Rejected(number, AuthorityStatus.InvalidRequest);
+                    return Reject(AuthorityStatus.InvalidRequest);
+                if (context.Characters.Count > 4096) return Reject(AuthorityStatus.InvalidRequest);
                 expected = context with { Characters = context.Characters.OrderBy(c => c.Entity.Value).ToArray() };
                 using var fingerprint = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 fingerprint.AppendData(System.Text.Encoding.UTF8.GetBytes(command.GetType().FullName!));
                 fingerprint.AppendData(payload.GetBuffer().AsSpan(0, bytes));
                 fingerprint.AppendData(JsonSerializer.SerializeToUtf8Bytes(expected, json));
                 hash = fingerprint.GetHashAndReset();
-                if (PlayerCommandRouting.Characters(frozen) is null) return Rejected(number, AuthorityStatus.InvalidRequest);
+                if (PlayerCommandRouting.Characters(frozen) is null) return Reject(AuthorityStatus.InvalidRequest);
             }
             catch (Exception e) when (e is JsonException or NotSupportedException or ArgumentException or PayloadTooLargeException)
-            { return Rejected(number, AuthorityStatus.InvalidRequest); }
+            { return Reject(AuthorityStatus.InvalidRequest); }
 
             var ledger = players[connection.Player];
             if (ledger.Receipts.TryGetValue(number, out var previous))
-                return hash.AsSpan().SequenceEqual(previous.Fingerprint) ? previous.Completion.Task : Rejected(number, AuthorityStatus.Conflict);
-            if (number <= ledger.HighWater) return Rejected(number, AuthorityStatus.Expired);
-            if (connection.Phase != AdmissionPhase.Active) return Rejected(number, AuthorityStatus.NotActive);
-            if (pending.Count >= MaxPending || queuedBytes + bytes > MaxBytes) return Rejected(number, AuthorityStatus.Busy);
+                return hash.AsSpan().SequenceEqual(previous.Fingerprint) ? previous.Completion.Task : Reject(AuthorityStatus.Conflict);
+            if (number <= ledger.HighWater) return Reject(AuthorityStatus.Expired);
+            if (connection.Phase != AdmissionPhase.Active) return Reject(AuthorityStatus.NotActive);
+            if (pending.Count >= MaxPending || queuedBytes + bytes > MaxBytes) return Reject(AuthorityStatus.Busy);
             var entry = new Entry(hash);
             var request = new Pending(connection, number, frozen, expected, entry, bytes);
             ledger.HighWater = number;
             ledger.Receipts.Add(number, entry);
             pending.Enqueue(request);
             queuedBytes += bytes;
+            if (world.MovementTrace is { } trace)
+                trace.Emit(trace.Key(connection, number) with { Stage = LatencyStage.AuthorityQueued });
             return entry.Completion.Task;
         }
     }
@@ -360,7 +444,10 @@ public sealed class AuthorityGateway : IDisposable
             if (processing) throw new InvalidOperationException("Recursive authority processing.");
             foreach (var (player, generation) in closed)
                 if (players.TryGetValue(player, out var ledger) && ledger.Generation == generation && ledger.Connection is null)
+                {
+                    world.MovementTrace?.Close(player.Value, generation);
                     world.ResetPlayerInteractions(player);
+                }
             closed.Clear();
             foreach (var (player, ledger) in players) Cleanup(player, ledger);
             processing = true;
@@ -376,11 +463,18 @@ public sealed class AuthorityGateway : IDisposable
                     {
                         var status = Validate(request);
                         if (status == AuthorityStatus.Evaluated)
-                            world.ApplyAuthorityCommand(request.Command with
+                        {
+                            world.MovementTrace?.Begin(request.Connection, request.Number, request.Command, request.Context);
+                            try
                             {
-                                Tick = world.Tick, Issuer = request.Connection.Player,
-                                ControlGrants = request.Context.Characters, FactionGrantRevision = request.Context.MembershipRevision,
-                            });
+                                world.ApplyAuthorityCommand(request.Command with
+                                {
+                                    Tick = world.Tick, Issuer = request.Connection.Player,
+                                    ControlGrants = request.Context.Characters, FactionGrantRevision = request.Context.MembershipRevision,
+                                });
+                            }
+                            finally { world.MovementTrace?.End(); }
+                        }
                         Observe();
                         Complete(request, status, operation);
                     }
@@ -432,6 +526,12 @@ public sealed class AuthorityGateway : IDisposable
     Task<AuthorityReceipt> Rejected(ulong number, AuthorityStatus status) => Task.FromResult(new AuthorityReceipt(number, status, 0, observedRevision, observedTick));
     void Complete(Pending request, AuthorityStatus status, ulong sequence)
     {
+        if (world.MovementTrace is { } trace)
+        {
+            var key = trace.Key(request.Connection, request.Number);
+            trace.Emit(key with { Stage = LatencyStage.AuthorityReceipt, Value = (long)status, Revision = observedRevision });
+            if (status != AuthorityStatus.Evaluated) trace.Emit(key with { Stage = LatencyStage.Terminal, Outcome = LatencyOutcome.Rejected, Value = (long)status });
+        }
         var ledger = players[request.Connection.Player];
         request.Entry.Completion.TrySetResult(new AuthorityReceipt(request.Number, status, sequence, observedRevision, observedTick));
         ledger.Completed.Enqueue(request.Number);

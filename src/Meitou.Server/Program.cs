@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using Meitou.Content;
 using Meitou.Data.Gameplay;
 using Meitou.Networking;
+using Meitou.Networking.VNext;
 using Meitou.Runtime;
 using Meitou.Simulation;
 
@@ -25,6 +26,7 @@ static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        await using var latency = Meitou.Diagnostics.LatencyTraceSession.FromEnvironment();
         try
         {
             string configFile = "server.json"; string? accountName = null, output = null; double? runSeconds = null;
@@ -86,6 +88,7 @@ static class Program
             }
             rules = ServerCompatibility.WithCodeSettings(config.Rules(GameplayRules.Capture(host.World)), install,
                 config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
+            host.World.ObserveLatency(Meitou.Diagnostics.LatencyTrace.Sink);
             hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets,
                 config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
             host.Population.Relations.PlayerFaction = -1;
@@ -111,12 +114,17 @@ static class Program
             var handler = new SecureServerPeer(loop, sessions, hello, new WorldViewCodec(host.Population.Db), entry.PrepareAsync,
                 creation: creation, invitations: invitations,
                 information: new(hello, rules.ToDictionary(), config.GameplayAssets, config.AllowDeviceRegistration));
-            await using var listener = new TcpGameServer(new IPEndPoint(IPAddress.Parse(config.BindAddress), config.Port), certificate, handler, config.MaximumPlayers);
+            var native = QuicDeployment.ResolveNative();
+            var address = new IPEndPoint(IPAddress.Parse(config.BindAddress), config.Port);
+            await using var listener = new QuicGameServer(address, native.Directory, native.ShimSha256,
+                Path.Combine(config.DataDirectory, "server.pfx"), handler, config.MaximumPlayers);
+            await using var discovery = new TcpDiscoveryServer(address, certificate,
+                new(hello, rules.ToDictionary(), config.GameplayAssets, config.AllowDeviceRegistration));
             using var stop = new CancellationTokenSource();
             if (runSeconds is { } seconds) stop.CancelAfter(TimeSpan.FromSeconds(seconds));
             ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; stop.Cancel(); };
             Console.CancelKeyPress += cancel;
-            Console.WriteLine($"Listening on {listener.Endpoint}; maximum {config.MaximumPlayers} connections. Enter stop or save.");
+            Console.WriteLine($"Listening on {listener.Endpoint} (QUIC/UDP game, TCP public discovery); maximum {config.MaximumPlayers} connections. Enter stop or save.");
             Console.WriteLine("Compatibility covers database merge order and " + config.GameplayAssets.Length + " configured gameplay assets.");
             using var saves = new SemaphoreSlim(1, 1);
             async Task Save()
@@ -154,9 +162,10 @@ static class Program
                 while (!stop.IsCancellationRequested)
                 {
                     var delay = Task.Delay(1000, stop.Token);
-                    var completed = await Task.WhenAny(delay, loop.Completion, listener.Completion).ConfigureAwait(false);
+                    var completed = await Task.WhenAny(delay, loop.Completion, listener.Completion, discovery.Completion).ConfigureAwait(false);
                     if (completed == loop.Completion) { await loop.Completion.ConfigureAwait(false); throw new IOException("World loop stopped unexpectedly."); }
                     if (completed == listener.Completion) { await listener.Completion.ConfigureAwait(false); throw new IOException("Listener stopped unexpectedly."); }
+                    if (completed == discovery.Completion) { await discovery.Completion.ConfigureAwait(false); throw new IOException("Public discovery stopped unexpectedly."); }
                     await delay.ConfigureAwait(false);
                     await loop.InvokeAsync(() => host.Runtime.Speed = config.PauseWhenEmpty && !host.World.Players.All.Any(p => host.World.Authority.IsActive(p.Id)) ? 0 : 1, stop.Token).ConfigureAwait(false);
                     if (config.Gameplay.AutoSaveSeconds > 0 && DateTime.UtcNow >= nextSave)

@@ -100,7 +100,7 @@ public sealed class WorldCheckpointCoordinator
         return new CapturedCheckpoint(this, checked(++nextCapture), point, save, metadata, weather);
     }
 
-    public Guid Commit(CapturedCheckpoint captured)
+    public Guid Commit(CapturedCheckpoint captured, Action<CheckpointStage>? observer = null)
     {
         ArgumentNullException.ThrowIfNull(captured);
         if (!ReferenceEquals(captured.Producer, this)) throw new ArgumentException("Capture belongs to a different checkpoint producer.", nameof(captured));
@@ -109,7 +109,7 @@ public sealed class WorldCheckpointCoordinator
             if (captured.Sequence < committed) throw new InvalidOperationException("A newer capture has already committed.");
             if (captured.Sequence == committed) return committedId;
             if (captured.Weather is { } weather) WeatherCheckpoint.Encode(weather, captured.World);
-            var id = store.Commit(captured.World, captured.Metadata);
+            var id = store.Commit(captured.World, captured.Metadata, observer);
             committed = captured.Sequence;
             committedId = id;
             return id;

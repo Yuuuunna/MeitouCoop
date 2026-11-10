@@ -1,4 +1,6 @@
 using System.Net;
+using Meitou.Networking.VNext;
+using Meitou.Networking.VNext.Transport;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using Meitou.Networking;
@@ -12,7 +14,7 @@ public partial class SecureServerTests
 {
     static Task<RemoteGameSession> ConnectRemote(Scene scene, IssuedCredential credential, CancellationToken token)
         => RemoteGameSession.ConnectAsync("127.0.0.1", scene.Server.Endpoint.Port, Hello(), new(credential.Account, credential.Token),
-            new(scene.Data.Db), scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256), token);
+            new(scene.Data.Db), scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256), token, transportOptions: NativeFixture.Options(scene.Certificate));
 
     static async Task<RemoteSessionState> WaitRemote(RemoteGameSession client, Func<RemoteSessionState, bool> condition, CancellationToken token)
     {
@@ -113,20 +115,31 @@ public partial class SecureServerTests
     [Fact]
     public async Task RemoteClientChecksServerHelloBeforeSendingCredentialsEvenWhenServerClaimsCompatibility()
     {
+        NativeFixture.Require();
         using var certificate = GameTlsTests.Certificate();
-        using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15)); var token = timeout.Token;
-        var peer = Task.Run(async () =>
+        var config = NativeFixture.Options(certificate);
+        string pfx = Path.ChangeExtension(config.CaFile, ".pfx");
+        File.WriteAllBytes(pfx, certificate.Export(System.Security.Cryptography.X509Certificates.X509ContentType.Pkcs12, ""));
+        try
         {
-            using var socket = await listener.AcceptTcpClientAsync(token);
-            await using var stream = await GameTls.AcceptAsync(socket.GetStream(), certificate, token);
-            Assert.Equal(WireMessage.Hello, (await WireFrame.ReadAsync(stream, token))!.Kind);
-            await WireFrame.WriteAsync(stream, new(WireMessage.Compatible, CompatibilityHandshake.Encode(Hello() with { ContentDigest = new('C', 64) })), token);
-            Assert.Null(await WireFrame.ReadAsync(stream, token)); // no credential was sent
-        }, token);
-        await Assert.ThrowsAsync<InvalidDataException>(() => RemoteGameSession.ConnectAsync("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port,
-            Hello(), new(Guid.NewGuid(), new('0', 64)), new(SyntheticTown.Database(items: true)), certificate.GetCertHashString(HashAlgorithmName.SHA256), token));
-        await peer;
+            using var listener = new NativeQuicEndpoint(config.NativeDirectory, config.ShimSha256, true, pfx);
+            listener.Listen(IPAddress.Loopback, 0);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15)); var token = timeout.Token;
+            var peer = Task.Run(async () =>
+            {
+                NativeQuicEndpoint? accepted = null;
+                while (!listener.TryAccept(out accepted)) await Task.Delay(2, token);
+                await using var transport = new NativeGameConnection(accepted!);
+                Assert.Equal(WireMessage.Hello, (await transport.ReadControlAsync(token)).Kind);
+                transport.SendControl(new(WireMessage.Compatible, CompatibilityHandshake.Encode(Hello() with { ContentDigest = new('C', 64) })));
+                // Rejection must close the transport before an authentication message arrives.
+                await Assert.ThrowsAnyAsync<Exception>(async () => await transport.ReadControlAsync(token));
+            }, token);
+            await Assert.ThrowsAsync<InvalidDataException>(() => RemoteGameSession.ConnectAsync("127.0.0.1", listener.LocalPort,
+                Hello(), new(Guid.NewGuid(), new('0', 64)), new(SyntheticTown.Database(items: true)), cancellationToken: token, transportOptions: config));
+            await peer;
+        }
+        finally { File.Delete(pfx); File.Delete(config.CaFile); }
     }
 
     [Fact]
@@ -177,4 +190,28 @@ public partial class SecureServerTests
         Assert.Null(client.State.View); Assert.False(client.State.CanControl);
         Assert.True(await scene.Loop.InvokeAsync(() => scene.Runtime.World.Players.Validate(scene.Actors[0].Grant), token));
     }
+    [Fact]
+    public async Task LargeBusinessCatalogUsesActualBulkWhileIndependentCommandsAndCancelledWaitsRemainUsable()
+    {
+        await using var scene = new Scene(creations: true, catalogDescriptionBytes: 32768);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60)); var token = timeout.Token;
+        await using var active = await ConnectRemote(scene, scene.Actors[0].Credential, token);
+        active.RequestEntry(scene.Actors[0].Grant.Entity); await WaitRemote(active, state => state.CanControl, token);
+        await using var creator = await ConnectRemote(scene, scene.Accounts.Create("bulk-catalog"), token);
+        using var waiter = new CancellationTokenSource();
+        var canceled = creator.CatalogAsync(new(Guid.NewGuid()), waiter.Token);
+        waiter.Cancel(); await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceled);
+        var actor = scene.Actors[0];
+        var bound = ClientCommandBinding.Bind(active.State.View!, new SelectCommand([actor.Role]) { Tick = 0 }, [], actor.Grant.Faction);
+        var command = active.CommandAsync(1, bound.Command, bound.Expected, token);
+        var lookup = creator.LookupAsync(new(Guid.NewGuid(), Guid.NewGuid()), token);
+        Assert.Equal(AuthorityStatus.Evaluated, (await command).Receipt.Status);
+        Assert.Equal(CreationOutcome.Unknown, (await lookup).Outcome);
+        var reply = await creator.CatalogAsync(new(Guid.NewGuid()), token);
+        Assert.Equal(CreationOutcome.Catalog, reply.Outcome);
+        Assert.True(CreationProtocol.Reply(reply, new(scene.Data.Db)).Payload.Length > 16 * 1024);
+        Assert.Equal(new string('x', 32768), Assert.Single(reply.Catalog!.Starts).Description);
+        Assert.Null(creator.State.Disconnection); Assert.True(active.State.CanControl);
+    }
+
 }

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Numerics;
+using Meitou.Diagnostics;
 
 namespace Meitou.Simulation;
 
@@ -18,6 +19,14 @@ public readonly record struct PathAnswer(long Id, CharacterId Character, PathRes
 /// </summary>
 public sealed class PathService : IDisposable
 {
+    public Guid TraceIncarnation { get; } = Guid.NewGuid();
+    public ILatencyTraceSink? TraceSink { get; set; }
+    readonly ConcurrentDictionary<long, byte> traced = new();
+    void Trace(LatencyStage stage, long id, LatencyOutcome outcome = LatencyOutcome.None)
+    {
+        if (TraceSink is { } sink && traced.ContainsKey(id))
+            LatencyTrace.Emit(sink, new(stage, PathService: TraceIncarnation, Path: id, Outcome: outcome));
+    }
     readonly IWalkability walkability;
     readonly BlockingCollection<PathRequest>? requests;
     readonly ConcurrentQueue<PathAnswer> answers = new();
@@ -57,9 +66,18 @@ public sealed class PathService : IDisposable
 
     /// <summary>Asks for a path; returns the request id.</summary>
     public long Submit(CharacterId character, Vector3 from, Vector3 to, float radius = 0, WaterCost water = default, float roadPreference = 0)
+        => SubmitObserved(character, from, to, radius, water, roadPreference, observeLatency: false);
+
+    internal long SubmitObserved(CharacterId character, Vector3 from, Vector3 to, float radius, WaterCost water, float roadPreference, bool observeLatency)
     {
         long id = Interlocked.Increment(ref nextId);
         var request = new PathRequest(id, character, from, to, radius, water, roadPreference);
+        if (observeLatency && TraceSink is not null)
+        {
+            if (traced.Count < 4096) traced.TryAdd(id, 0);
+            else LatencyTrace.Emit(TraceSink, new(LatencyStage.Terminal, PathService: TraceIncarnation, Path: id, Outcome: LatencyOutcome.Capacity));
+        }
+        Trace(LatencyStage.PathQueued, id);
         if (IsSynchronous) { answers.Enqueue(Answer(request)); return id; }
         newest[character] = id;
         Interlocked.Increment(ref pending);
@@ -67,14 +85,29 @@ public sealed class PathService : IDisposable
         return id;
     }
 
-    PathAnswer Answer(PathRequest r) => new(r.Id, r.Character, (r.Radius > 0 || r.Water.IsSet || r.RoadPreference > 0) && walkability is IAgentWalkability agent
-        ? agent.FindPath(r.From, r.To, r.Radius, r.Water, r.RoadPreference) : walkability.FindPath(r.From, r.To));
+    PathAnswer Answer(PathRequest r)
+    {
+        Trace(LatencyStage.PathStarted, r.Id);
+        try
+        {
+            var path = (r.Radius > 0 || r.Water.IsSet || r.RoadPreference > 0) && walkability is IAgentWalkability agent
+                ? agent.FindPath(r.From, r.To, r.Radius, r.Water, r.RoadPreference) : walkability.FindPath(r.From, r.To);
+            Trace(LatencyStage.PathFinished, r.Id, path.WaitingForNavigation ? LatencyOutcome.NavigationWaiting : !path.Found ? LatencyOutcome.NoPath : LatencyOutcome.None);
+            return new(r.Id, r.Character, path);
+        }
+        finally { traced.TryRemove(r.Id, out _); }
+    }
 
     void Work()
     {
         foreach (var r in requests!.GetConsumingEnumerable())
         {
-            if (newest.TryGetValue(r.Character, out long latest) && latest != r.Id) Interlocked.Increment(ref skipped);
+            if (newest.TryGetValue(r.Character, out long latest) && latest != r.Id)
+            {
+                Interlocked.Increment(ref skipped);
+                Trace(LatencyStage.Terminal, r.Id, LatencyOutcome.Superseded);
+                traced.TryRemove(r.Id, out _);
+            }
             else
             {
                 answers.Enqueue(Answer(r));

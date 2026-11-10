@@ -2,9 +2,11 @@ using System.Buffers.Binary;
 
 namespace Meitou.Networking;
 
-public enum WireMessage : ushort { Hello = 1, Compatible = 2, Incompatible = 3, Authenticate = 4, Authenticated = 5, AuthenticationFailed = 6, Admission = 7, EnterWorld = 8, AdmissionQuery = 9, Observe = 10, ServerInformationQuery = 11, ServerInformation = 12, AuthenticateDevice = 13, Command = 16, CommandReceipt = 17, StateChunk = 32, StateAck = 33, StateResync = 34, StateWithdrawn = 35, CreationCatalogQuery = 40, CreationPreview = 41, CreationCommit = 42, CreationLookup = 43, CreationReply = 44, InvitationRequest = 48, InvitationReply = 49, TalkHintQuery = 56, TalkHintReply = 57 }
+public enum WireMessage : ushort { Hello = 1, Compatible = 2, Incompatible = 3, Authenticate = 4, Authenticated = 5, AuthenticationFailed = 6, Admission = 7, EnterWorld = 8, AdmissionQuery = 9, Observe = 10, ServerInformationQuery = 11, ServerInformation = 12, AuthenticateDevice = 13, AuthenticationPending = 14, OperationNotDispatched = 15, Command = 16, CommandReceipt = 17, StateChunk = 32, StateAck = 33, StateResync = 34, StateWithdrawn = 35, CreationCatalogQuery = 40, CreationPreview = 41, CreationCommit = 42, CreationLookup = 43, CreationReply = 44, InvitationRequest = 48, InvitationReply = 49, TalkHintQuery = 56, TalkHintReply = 57, ViewBegin = 64, BulkManifest = 65, BulkAck = 66, ViewCommit = 67, ViewReady = 68, ViewActive = 69, MotionCheckpointAck = 70, BulkManifestAck = 71, BusinessBulkManifest = 72, BusinessBulkCancelled = 73 }
 public sealed record WireFrame(WireMessage Kind, ReadOnlyMemory<byte> Payload)
 {
+    public ulong SessionEpoch { get; init; }
+    public ulong ViewEpoch { get; init; }
     public const ushort Format = 1;
     public const int MaximumPayload = 1024 * 1024;
     const uint Magic = 0x314E544D; // MTN1

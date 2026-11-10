@@ -16,6 +16,7 @@ static class Program
         if (args is ["--settings-schema", var schema]) return LauncherSchema.Write(schema);
         if (args is [HardwareProbeFlag, var report]) return HardwareProbe.Write(report);
         GameConsole.StartLog();
+        using var latency = Meitou.Diagnostics.LatencyTraceSession.FromEnvironment();
         RenderJobs.RaiseRenderThread();
         GameOptions game;
         string[] rest;
@@ -231,7 +232,11 @@ static class Program
             Console.WriteLine($"online    joined player {view.Player}, {view.Roles.Count} role(s), server tick {view.Snapshot.Tick}");
             if (game.ConnectionCheck) return 0;
             var own = view.Roles.Where(r => r.Available && !r.Dead).Select(r => r.Character).ToHashSet();
-            var focus = view.Snapshot.Characters.FirstOrDefault(c => own.Contains(c.Id))?.Position ?? throw new IOException("No visible entry role.");
+            var requestedCharacter = game.OnlineRole is { } requestedRole
+                ? view.Roles.FirstOrDefault(r => r.Entity.Value == requestedRole)?.Character : null;
+            var focus = (view.Snapshot.Characters.FirstOrDefault(c => c.Id == requestedCharacter && own.Contains(c.Id))
+                ?? view.Snapshot.Characters.FirstOrDefault(c => c.Selected && own.Contains(c.Id))
+                ?? view.Snapshot.Characters.FirstOrDefault(c => own.Contains(c.Id)))?.Position ?? throw new IOException("No visible entry role.");
             (world.X, world.Z, world.Town, world.Zone) = (focus.X, focus.Z, null, null);
             world.Day = (int)Math.Floor(view.GameHours / 24); world.Hour = (float)(view.GameHours % 24);
             var db = Meitou.Data.GameDatabase.Load(Meitou.Data.LoadOrder.FromInstall(install));
