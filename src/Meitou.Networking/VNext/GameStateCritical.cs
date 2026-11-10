@@ -24,6 +24,7 @@ public sealed partial class GameStatePublisher
         var roots = CaptureMotionOnly(view);
         var records = new List<CriticalRecord>();
         var committed = new Dictionary<(ulong Entity, ushort Field), byte[]>();
+        var committedObjects = new Dictionary<(ulong Entity, ushort Field), object?>();
         var gone = new List<ulong>();
         var events = GameComponentSchema.ViewFields.Single(f => f.Id == 7).Encode(codec, view);
         if (!previous.TryGetValue((0,7), out var oldEvents) || !oldEvents.AsSpan().SequenceEqual(events))
@@ -52,8 +53,22 @@ public sealed partial class GameStatePublisher
                 gone.Add(known.Key); continue;
             }
             if (motionRetired.Contains(known.Key) || animations?.TryGetValue(known.Key,out var state) != true) continue;
-            var value = CompactAnimationPlaybackCodec.Encode(state!, animationDescriptors, out var used);
-            foreach (ushort descriptor in used.Distinct())
+            byte[] value;
+            ushort[] distinctUsed;
+            if (previousObjects.TryGetValue((known.Key, 3002), out var cachedAnim) &&
+                cachedAnim is TrackedAnimation prevAnim &&
+                ReferenceEquals(prevAnim.State, state))
+            {
+                value = prevAnim.Bytes;
+                distinctUsed = prevAnim.Descriptors;
+            }
+            else
+            {
+                value = CompactAnimationPlaybackCodec.Encode(state!, animationDescriptors, out var used);
+                distinctUsed = used.Distinct().ToArray();
+                committedObjects[(known.Key, 3002)] = new TrackedAnimation(state!, distinctUsed, value);
+            }
+            foreach (ushort descriptor in distinctUsed)
                 if (criticalAnimationDescriptors.Add(descriptor)) records.Add(new(9,0,0,3003,animationDescriptors.EncodeDefinition(descriptor)));
             if (!previous.TryGetValue((known.Key,3002),out var old) || !old.AsSpan().SequenceEqual(value))
             { records.Add(new(2,known.Key,known.Value.Generation,3002,value)); committed[(known.Key,3002)] = value; }
@@ -87,10 +102,11 @@ public sealed partial class GameStatePublisher
         }
         sequence = finalRevision;
         foreach (var pair in committed) previous[pair.Key] = pair.Value;
+        foreach (var pair in committedObjects) previousObjects[pair.Key] = pair.Value;
         foreach (var entity in gone)
         {
             entities.Remove(entity); motion.Remove(entity); motionRetired.Remove(entity);
-            foreach (var key in previous.Keys.Where(k=>k.Entity==entity).ToArray()) previous.Remove(key);
+            foreach (var key in previous.Keys.Where(k=>k.Entity==entity).ToArray()) { previous.Remove(key); previousObjects.Remove(key); }
         }
         return result.AsReadOnly();
     }

@@ -1,6 +1,8 @@
 using System.Numerics;
 using System.Security.Cryptography;
+using Meitou.Data.Characters;
 using Meitou.Simulation;
+using Meitou.Simulation.Crime;
 
 namespace Meitou.Networking.VNext;
 
@@ -21,10 +23,15 @@ public sealed record GameStatePublication(ulong Sequence, bool Baseline, IReadOn
 /// Field IDs and typed delegates are static; capture never reflects or encodes a whole view/character.</summary>
 public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<CharacterId, ulong> entityOf, ulong sessionEpoch, ulong viewEpoch)
 {
+    internal sealed record TrackedAnimation(AnimationPlaybackState State, ushort[] Descriptors, byte[] Bytes);
+    sealed record TrackedHealthParts(HealthPartView[] Parts, float? KoPoint);
+    sealed record TrackedBounties(double BaseGameHours, BountyLine[]? Values);
+    sealed record TrackedPrison(double BaseGameHours, PrisonView Value);
     readonly AnimationDescriptorCatalog animationDescriptors = new();
     readonly HashSet<ushort> bulkAnimationDescriptors = [];
     readonly HashSet<ushort> criticalAnimationDescriptors = [];
     readonly Dictionary<(ulong Entity, ushort Field), byte[]> previous = new();
+    readonly Dictionary<(ulong Entity, ushort Field), object?> previousObjects = new();
     readonly Dictionary<ulong, (CharacterId Id, uint Generation)> entities = new();
     readonly Dictionary<ulong, uint> generations = new();
     readonly HashSet<ulong> motionRetired = new();
@@ -56,13 +63,21 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         var withdrawals = new List<(ulong Entity, uint Generation)>();
         long capturedBytes = 0;
         var records = new List<(byte Kind, ulong Entity, uint Generation, ushort Field, byte[] Data)>();
-        void Add(ulong entity, uint generation, ushort field, byte[] data)
+        void Add(ulong entity, uint generation, ushort field, byte[] data, object? tracked = null, bool trackObject = false)
         {
             capturedBytes += data.Length + 19;
             if (capturedBytes > GameStateWire.MaximumBytes) throw new InvalidDataException("Captured recipient components exceed bulk bound.");
             var key = (entity, field);
-            if (!previous.TryGetValue(key, out var old) || !old.AsSpan().SequenceEqual(data))
-            { records.Add((2, entity, generation, field, data)); previous[key] = data; }
+            if (!previous.TryGetValue(key, out var prior) || (!ReferenceEquals(prior, data) && !prior.AsSpan().SequenceEqual(data)))
+            {
+                records.Add((2, entity, generation, field, data));
+                previous[key] = data;
+                if (trackObject) previousObjects[key] = tracked;
+            }
+            else if (trackObject && !previousObjects.ContainsKey(key))
+            {
+                previousObjects[key] = tracked;
+            }
         }
         foreach (var f in GameComponentSchema.ViewFields.Where(f => !GameCollectionSchema.Ids.Contains(f.Id) && (baseline || f.Id != 7))) Add(0, 0, f.Id, f.Encode(codec, view));
         foreach (var f in GameComponentSchema.SnapshotFields.Where(f => !GameCollectionSchema.Ids.Contains(f.Id))) Add(0, 0, f.Id, f.Encode(codec, view.Snapshot));
@@ -78,12 +93,16 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
             {
                 if (!generations.ContainsKey(entity) && generations.Count >= 4096) throw new InvalidDataException("Interest fence capacity requires a new view.");
                 generations[entity] = generation; entities[entity] = (c.Id, generation); motionRetired.Remove(entity);
-                foreach (var k in previous.Keys.Where(k => k.Entity == entity).ToArray()) previous.Remove(k);
+                foreach (var k in previous.Keys.Where(k => k.Entity == entity).ToArray()) { previous.Remove(k); previousObjects.Remove(k); }
             }
             captures.Add(CaptureRoot(view, c, entity, generation, spawn));
             // Identity is reliable lifecycle data, emitted only for a new interest generation.
             if (spawn) records.Add((1, entity, generation, 0, codec.EncodeComponent(c.Id)));
-            foreach (var f in GameComponentSchema.CharacterFields) Add(entity, generation, f.Id, f.Encode(codec, c));
+            foreach (var f in GameComponentSchema.CharacterFields)
+            {
+                EncodeCharacterField(f, entity, c, view, spawn, out byte[] fieldBytes, out object? tracked, out bool trackObject);
+                Add(entity, generation, f.Id, fieldBytes, tracked, trackObject);
+            }
             // Initial roots are reliable; ongoing roots arrive through MotionDatagramCodec/checkpoints.
             if (spawn)
             {
@@ -95,8 +114,22 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
             if (spawn) Add(entity, generation, 3001, BitConverter.GetBytes(c.DrawYaw));
             if (animations?.TryGetValue(entity, out var animation) == true)
             {
-                byte[] dynamicState = CompactAnimationPlaybackCodec.Encode(animation, animationDescriptors, out var used);
-                foreach (ushort descriptor in used.Distinct())
+                byte[] dynamicState;
+                ushort[] distinctUsed;
+                if (previousObjects.TryGetValue((entity, 3002), out var cachedAnim) &&
+                    cachedAnim is TrackedAnimation prevAnim &&
+                    ReferenceEquals(prevAnim.State, animation))
+                {
+                    dynamicState = prevAnim.Bytes;
+                    distinctUsed = prevAnim.Descriptors;
+                }
+                else
+                {
+                    dynamicState = CompactAnimationPlaybackCodec.Encode(animation, animationDescriptors, out var used);
+                    distinctUsed = used.Distinct().ToArray();
+                    previousObjects[(entity, 3002)] = new TrackedAnimation(animation, distinctUsed, dynamicState);
+                }
+                foreach (ushort descriptor in distinctUsed)
                     if (bulkAnimationDescriptors.Add(descriptor)) records.Add((9, 0, 0, 3003, animationDescriptors.EncodeDefinition(descriptor)));
                 Add(entity, generation, 3002, dynamicState);
             }
@@ -106,7 +139,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         {
             records.Add(((byte)(destroyedEntities?.Contains(gone) == true ? 4 : 3), gone, entities[gone].Generation, 0, []));
             withdrawals.Add((gone, entities[gone].Generation)); motion.Remove(gone); entities.Remove(gone); motionRetired.Remove(gone);
-            foreach (var key in previous.Keys.Where(k => k.Entity == gone).ToArray()) previous.Remove(key);
+            foreach (var key in previous.Keys.Where(k => k.Entity == gone).ToArray()) { previous.Remove(key); previousObjects.Remove(key); }
         }
         records = records.OrderBy(r => r.Kind == 9 ? 0 : 1).ToList();
         writer.Write(records.Count);
@@ -115,6 +148,87 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         if (stream.Length > GameStateWire.MaximumBytes) throw new InvalidDataException("Game publication exceeds bulk bound.");
         return new(revision, baseline, GameStateWire.Split(sessionEpoch, viewEpoch, revision, baseline, stream.ToArray())) { Motion = captures.AsReadOnly(), WithdrawnMotion = withdrawals.AsReadOnly(), ComponentBytes = records.GroupBy(r => r.Field).ToDictionary(g => g.Key, g => g.Sum(r => 19L + r.Data.Length)) };
     }
+
+    void EncodeCharacterField(GameComponentSchema.Field<CharacterSnapshot> f, ulong entity, CharacterSnapshot c, PlayerWorldView view, bool spawn,
+        out byte[] data, out object? tracked, out bool trackObject)
+    {
+        var key = (entity, f.Id);
+        bool hasPrior = !spawn && previous.TryGetValue(key, out var oldBytes) && previousObjects.TryGetValue(key, out var oldObj);
+        byte[]? priorBytes = hasPrior ? previous[key] : null;
+        object? priorObj = hasPrior ? previousObjects[key] : null;
+        switch (f.Id)
+        {
+            case 2006:
+                trackObject = true;
+                if (hasPrior && ((priorObj is null && c.Build is null) ||
+                    (priorObj is BodyBuild oldBuild && c.Build is { } curBuild && GameComponentEquivalence.SameBuild(oldBuild, curBuild))))
+                { data = priorBytes!; tracked = priorObj; return; }
+                data = BodyBuildCodec.Encode(c.Build);
+                tracked = c.Build;
+                return;
+
+            case 2039:
+                trackObject = true;
+                bool detailed = c.IsPlayer || c.Selected || c.Inspected;
+                if (hasPrior && ((priorObj is null && c.Body is null) ||
+                    (priorObj is BodyStatus oldBody && c.Body is { } curBody && GameComponentEquivalence.SameBody(oldBody, curBody, detailed))))
+                { data = priorBytes!; tracked = priorObj; return; }
+                data = BodyStatusCodec.Encode(c.Body);
+                tracked = c.Body;
+                return;
+
+            case 2040:
+                trackObject = true;
+                float? curKo = c.Hud?.KoPoint ?? c.Hud?.Extended?.KoPoint;
+                if (hasPrior && priorObj is TrackedHealthParts oldHealth &&
+                    GameComponentEquivalence.SameHealthParts(oldHealth.Parts, oldHealth.KoPoint, c.HealthParts, curKo))
+                { data = priorBytes!; tracked = priorObj; return; }
+                data = f.Encode(codec, c);
+                tracked = new TrackedHealthParts(c.HealthParts.ToArray(), curKo);
+                return;
+
+            case 2048:
+                trackObject = true;
+                if (hasPrior && priorObj is TrackedBounties oldBounties &&
+                    GameComponentEquivalence.SameBounties((oldBounties.BaseGameHours, oldBounties.Values), c.Bounties, view.GameHours))
+                { data = priorBytes!; tracked = priorObj; return; }
+                data = GameHoursCountdownCodec.EncodeBounties(c.Bounties, view.GameHours);
+                tracked = new TrackedBounties(view.GameHours, c.Bounties?.ToArray());
+                return;
+
+            case 2070:
+                trackObject = true;
+                if (hasPrior && GameComponentEquivalence.SameHud(priorObj as HudView, c.Hud))
+                { data = priorBytes!; tracked = priorObj; return; }
+                data = f.Encode(codec, c);
+                tracked = c.Hud is null ? null : c.Hud with { Stats = c.Hud.Stats.ToArray() };
+                return;
+
+            case 2071:
+                trackObject = true;
+                if (hasPrior && GameComponentEquivalence.SameItemGrid(priorObj as InventoryView, c.ItemGrid))
+                { data = priorBytes!; tracked = priorObj; return; }
+                data = f.Encode(codec, c);
+                tracked = c.ItemGrid is null ? null : c.ItemGrid with { Items = c.ItemGrid.Items.ToArray() };
+                return;
+
+            case 2088:
+                trackObject = true;
+                (double BaseGameHours, PrisonView Value)? oldPrison = priorObj is TrackedPrison tp ? (tp.BaseGameHours, tp.Value) : null;
+                if (hasPrior && GameComponentEquivalence.SamePrison(oldPrison, c.Prison, view.GameHours))
+                { data = priorBytes!; tracked = priorObj; return; }
+                data = GameHoursCountdownCodec.EncodePrison(c.Prison, view.GameHours);
+                tracked = c.Prison is { } curPrison ? new TrackedPrison(view.GameHours, curPrison) : null;
+                return;
+
+            default:
+                trackObject = false;
+                tracked = null;
+                data = f.Encode(codec, c);
+                return;
+        }
+    }
+
     /// <summary>While reliable component bulk is busy, capture only already-announced roots without encoding fields or advancing their delivery baseline.</summary>
     public GameStateMotionPublication CaptureMotionOnly(PlayerWorldView view)
     {
@@ -187,6 +301,10 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
         internal ulong DeclarationRevision;
         internal uint MotionRevision;
         internal AnimationTimeline? Animation;
+        internal (double BaseGameHours, PrisonView Value)? PrisonTerm;
+        internal bool HasPrisonTerm;
+        internal (double BaseGameHours, BountyLine[]? Values) BountyTerms = (0.0, []);
+        internal bool HasBountyTerms;
         internal readonly List<(ulong Tick, Vector3 Position, float Yaw, float DrawYaw, ulong Publication, ulong PacketSequence, uint Revision, bool Checkpoint)> History = [];
         internal MotionRecord? LastMotion;
     }
@@ -417,6 +535,18 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             if (e.Animation.Apply(new(sessionEpoch, viewEpoch, entity, generation), state) == AnimationApplyResult.NeedsResync)
                 throw new InvalidDataException($"Animation transition queue overflow: entity={entity}, epoch={state.Epoch}, startTick={state.StartTick}, timelineTick={e.Animation.PresentedTick:R}, pending={e.Animation.PendingTransitions}, replicaTick={presentedTick:R}, receivedTick={latestServerTick}.");
         }
+        else if (field == 2048)
+        {
+            e.BountyTerms = GameHoursCountdownCodec.DecodeBounties(value);
+            e.HasBountyTerms = true;
+            e.Character = e.Character with { Bounties = GameHoursCountdownCodec.ProjectBounties(e.BountyTerms, view!.GameHours) };
+        }
+        else if (field == 2088)
+        {
+            e.PrisonTerm = GameHoursCountdownCodec.DecodePrison(value);
+            e.HasPrisonTerm = true;
+            e.Character = e.Character with { Prison = GameHoursCountdownCodec.ProjectPrison(e.PrisonTerm, view!.GameHours) };
+        }
         else if (GameComponentSchema.CharacterFields.FirstOrDefault(f => f.Id == field) is { } cf) e.Character = cf.Apply(codec, e.Character, value);
         else throw new InvalidDataException("Unknown character component.");
     }
@@ -427,7 +557,22 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
         return reader.ReadBytes(length);
     }
     void RefreshCharacters()
-    { if (view is not null) view = view with { Snapshot = view.Snapshot with { Characters = entities.OrderBy(p => p.Key).Select(p => p.Value.Character).ToArray() } }; }
+    {
+        if (view is null) return;
+        double hours = view.GameHours;
+        foreach (var e in entities.Values)
+        {
+            if (e.HasPrisonTerm || e.HasBountyTerms)
+            {
+                e.Character = e.Character with
+                {
+                    Prison = e.HasPrisonTerm ? GameHoursCountdownCodec.ProjectPrison(e.PrisonTerm, hours) : e.Character.Prison,
+                    Bounties = e.HasBountyTerms ? GameHoursCountdownCodec.ProjectBounties(e.BountyTerms, hours) : e.Character.Bounties,
+                };
+            }
+        }
+        view = view with { Snapshot = view.Snapshot with { Characters = entities.OrderBy(p => p.Key).Select(p => p.Value.Character).ToArray() } };
+    }
     public bool ApplyMotion(MotionDatagram packet, bool checkpoint = false)
     {
         if (packet.Header.SessionEpoch != sessionEpoch || packet.Header.ViewEpoch != viewEpoch || view is null || !initialized || failed) return false;

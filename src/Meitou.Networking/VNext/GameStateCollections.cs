@@ -24,6 +24,7 @@ internal interface IGameCollection
 }
 internal static class GameCollectionSchema
 {
+    static readonly UTF8Encoding StrictUtf8=new(false,true);
     sealed class Collection<T>(ushort id,Func<PlayerWorldView,IReadOnlyList<T>> get,Func<T,string> key,
         Func<PlayerWorldView,IReadOnlyList<T>,bool,bool,PlayerWorldView> set,Func<PlayerWorldView,bool>? present=null,Func<PlayerWorldView,bool>? enabled=null):IGameCollection
     {
@@ -65,7 +66,107 @@ internal static class GameCollectionSchema
         if(bytes.Length<3)throw new InvalidDataException("Truncated keyed entry.");
         int length=System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(bytes);
         if(length>1024||length>bytes.Length-2)throw new InvalidDataException("Invalid keyed entry bounds.");
-        string key=new UTF8Encoding(false,true).GetString(bytes,2,length);ValidateKey(key);return(key,bytes.AsSpan(2+length).ToArray());
+        string key=StrictUtf8.GetString(bytes,2,length);ValidateKey(key);return(key,bytes.AsSpan(2+length).ToArray());
+    }
+    internal static byte[] EncodeManifest(CollectionManifest manifest)
+    {
+        int count=manifest.Keys.Count;
+        if(count>65536)throw new InvalidDataException("Collection exceeds record bound.");
+        long[]? ints=count>0?new long[count]:null;
+        if(ints is not null)
+        {
+            for(int i=0;i<count;i++)
+            {
+                string key=manifest.Keys[i];
+                if(!long.TryParse(key,NumberStyles.None,CultureInfo.InvariantCulture,out long v)||v<0||v.ToString(CultureInfo.InvariantCulture)!=key)
+                {ints=null;break;}
+                ints[i]=v;
+            }
+        }
+        using var stream=new MemoryStream(ints is not null?32:Math.Min(65536,8+count*16));
+        using var writer=new BinaryWriter(stream);
+        writer.Write((byte)1);
+        byte flags=(byte)((manifest.Present?1:0)|(manifest.Enabled?2:0)|(ints is not null?4:0));
+        writer.Write(flags);
+        writer.Write7BitEncodedInt(count);
+        if(ints is not null)
+        {
+            var runs=new List<(long Start,int Extra)>();
+            for(int i=0;i<ints.Length;)
+            {
+                long start=ints[i];int extra=0;
+                while(i+1+extra<ints.Length&&ints[i+extra]<long.MaxValue&&ints[i+1+extra]==ints[i+extra]+1)extra++;
+                runs.Add((start,extra));
+                i+=1+extra;
+            }
+            writer.Write7BitEncodedInt(runs.Count);
+            long prevEnd=0;
+            foreach(var (start,extra) in runs)
+            {
+                long delta=start-prevEnd;
+                ulong zigzag=(ulong)((delta<<1)^(delta>>63));
+                writer.Write7BitEncodedInt64(unchecked((long)zigzag));
+                writer.Write7BitEncodedInt(extra);
+                prevEnd=start+extra;
+            }
+        }
+        else
+        {
+            foreach(var key in manifest.Keys)
+            {
+                ValidateKey(key);
+                byte[] utf8=StrictUtf8.GetBytes(key);
+                writer.Write7BitEncodedInt(utf8.Length);
+                writer.Write(utf8);
+            }
+        }
+        return stream.ToArray();
+    }
+    internal static CollectionManifest DecodeManifest(byte[] bytes)
+    {
+        if(bytes.Length<3||bytes[0]!=1||(bytes[1]&~0x07)!=0)throw new InvalidDataException("Invalid collection manifest header.");
+        bool present=(bytes[1]&1)!=0,enabled=(bytes[1]&2)!=0,integerKeys=(bytes[1]&4)!=0;
+        using var stream=new MemoryStream(bytes,false);
+        using var reader=new BinaryReader(stream);
+        try
+        {
+            _=reader.ReadByte();_=reader.ReadByte();
+            int count=reader.Read7BitEncodedInt();
+            if(count<0||count>65536||(count==0&&integerKeys))throw new InvalidDataException("Invalid collection manifest count.");
+            var keys=new string[count];
+            if(integerKeys)
+            {
+                int runs=reader.Read7BitEncodedInt();
+                if(runs<=0||runs>count)throw new InvalidDataException("Invalid collection manifest runs.");
+                long prevEnd=0;int index=0;
+                for(int r=0;r<runs;r++)
+                {
+                    ulong zigzag=unchecked((ulong)reader.Read7BitEncodedInt64());
+                    long delta=(long)(zigzag>>1)^-(long)(zigzag&1UL);
+                    int extra=reader.Read7BitEncodedInt();
+                    Int128 start128=(Int128)prevEnd+delta;
+                    if(extra<0||extra>count-1-index||start128<0||start128+extra>long.MaxValue)throw new InvalidDataException("Invalid collection manifest integer run.");
+                    long start=(long)start128;
+                    for(int j=0;j<=extra;j++)keys[index++]=(start+j).ToString(CultureInfo.InvariantCulture);
+                    prevEnd=start+extra;
+                }
+                if(index!=count)throw new InvalidDataException("Incomplete collection manifest runs.");
+            }
+            else
+            {
+                for(int i=0;i<count;i++)
+                {
+                    int len=reader.Read7BitEncodedInt();
+                    if(len<=0||len>1024||len>stream.Length-stream.Position)throw new InvalidDataException("Invalid collection manifest key length.");
+                    keys[i]=StrictUtf8.GetString(reader.ReadBytes(len));
+                }
+            }
+            if(stream.Position!=stream.Length)throw new InvalidDataException("Trailing collection manifest bytes.");
+            return new(present,enabled,keys);
+        }
+        catch(EndOfStreamException e){throw new InvalidDataException("Truncated collection manifest.",e);}
+        catch(FormatException e){throw new InvalidDataException("Invalid collection manifest varint.",e);}
+        catch(DecoderFallbackException e){throw new InvalidDataException("Invalid UTF-8 in collection manifest.",e);}
     }
 }
 
@@ -80,12 +181,16 @@ public sealed partial class GameStatePublisher
         foreach(var schema in GameCollectionSchema.All)
         {
             var captured=schema.Capture(codec,view);var current=captured.Items.ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
-            total+=codec.EncodeComponent(captured.Manifest).Length+19;
-            total+=current.Sum(p=>(long)p.Value.Length+Encoding.UTF8.GetByteCount(p.Key)+21);
-            if(total>GameStateWire.MaximumBytes)throw new InvalidDataException("Keyed collection capture exceeds bulk bound.");
+            byte[]? encodedManifest=null;
             collections.TryGetValue(schema.Id,out var previousCollection);
             if(previousCollection is null||captured.Manifest.Present!=previousCollection.Manifest.Present||captured.Manifest.Enabled!=previousCollection.Manifest.Enabled||!captured.Manifest.Keys.SequenceEqual(previousCollection.Manifest.Keys))
-                add(6,schema.Id,codec.EncodeComponent(captured.Manifest));
+            {
+                encodedManifest=GameCollectionSchema.EncodeManifest(captured.Manifest);
+                add(6,schema.Id,encodedManifest);
+            }
+            total+=(encodedManifest?.Length??16)+19;
+            total+=current.Sum(p=>(long)p.Value.Length+Encoding.UTF8.GetByteCount(p.Key)+21);
+            if(total>GameStateWire.MaximumBytes)throw new InvalidDataException("Keyed collection capture exceeds bulk bound.");
             foreach(var item in captured.Items)
                 if(previousCollection is null||!previousCollection.Items.TryGetValue(item.Key,out var old)||!old.AsSpan().SequenceEqual(item.Value))add(7,schema.Id,GameCollectionSchema.Entry(item.Key,item.Value));
             if(previousCollection is not null)
@@ -109,7 +214,7 @@ public sealed partial class GameStateReplica
             if(state.Revision>revision)return;
             byte[] digest=SHA256.HashData(value);
             if(state.Revision==revision){if(!digest.AsSpan().SequenceEqual(state.ManifestDigest))throw new InvalidDataException("Conflicting collection manifest.");return;}
-            WorldViewCodec.ValidateJson(value);var manifest=codec.DecodeComponent<CollectionManifest>(value);
+            var manifest=GameCollectionSchema.DecodeManifest(value);
             if(field!=9&&(!manifest.Present||!manifest.Enabled)||!manifest.Present&&manifest.Enabled)throw new InvalidDataException("Invalid collection presence flags.");
             if(manifest.Keys is null||manifest.Keys.Count>65536||manifest.Keys.Distinct(StringComparer.Ordinal).Count()!=manifest.Keys.Count||!manifest.Present&&manifest.Keys.Count!=0||!manifest.Enabled&&manifest.Keys.Count!=0)throw new InvalidDataException("Invalid collection manifest.");
             foreach(var key in manifest.Keys)GameCollectionSchema.ValidateKey(key);

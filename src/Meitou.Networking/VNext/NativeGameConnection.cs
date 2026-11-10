@@ -8,15 +8,13 @@ namespace Meitou.Networking.VNext;
 public sealed record QuicGameTransportOptions(string NativeDirectory, string ShimSha256, string CaFile, string? ServerName = null);
 public readonly record struct GameLaneMessage(QuicLane Lane, ReadOnlyMemory<byte> Payload);
 
-/// <summary>One bounded native connection owner. Stream framing, native ownership and pacing are independent per lane.</summary>
+/// <summary>One bounded native connection owner. Stream framing and native ownership are independent per lane.</summary>
 public sealed class NativeGameConnection : IAsyncDisposable
 {
     readonly NativeQuicEndpoint endpoint;
-    readonly NativeGameBandwidthGroup? bandwidthGroup;
-    readonly ulong groupPeer;
-    readonly HashSet<ulong> globalReserved = [];
     readonly object gate = new();
     readonly CancellationTokenSource stop = new();
+    readonly SemaphoreSlim signal = new(0, 1);
     readonly Channel<GameLaneMessage> incoming = Channel.CreateBounded<GameLaneMessage>(128);
     readonly BandwidthScheduler scheduler;
     readonly Dictionary<ulong, ScheduledSend> submitted = [];
@@ -34,9 +32,9 @@ public sealed class NativeGameConnection : IAsyncDisposable
     ulong nextKey = 1;
     ulong controlSession, controlView;
     readonly int[] queuedLaneBytes = new int[4], queuedLaneItems = new int[4];
-    public NativeGameConnection(NativeQuicEndpoint endpoint, NativeGameBandwidthGroup? bandwidthGroup = null)
+    public NativeGameConnection(NativeQuicEndpoint endpoint)
     {
-        this.endpoint = endpoint; this.bandwidthGroup = bandwidthGroup; groupPeer = bandwidthGroup?.Register() ?? 0;
+        this.endpoint = endpoint;
         long origin = Stopwatch.GetTimestamp();
         scheduler = new(() => Stopwatch.GetElapsedTime(origin));
         scheduler.RegisterPeer(1);
@@ -55,7 +53,7 @@ public sealed class NativeGameConnection : IAsyncDisposable
         lock (gate)
         {
             int length = body.Length + (lane == QuicLane.State ? 0 : 4);
-            int chunk = lane == QuicLane.State ? 1150 : lane == QuicLane.Bulk ? 5600 : 7600;
+            int chunk = lane == QuicLane.State ? 1150 : NativeQuicEndpoint.MaximumChunkBytes;
             int count = (length + chunk - 1) / chunk;
             if (queuedLaneBytes[(int)lane] + length > 240 * 1024 || queuedLaneItems[(int)lane] + count > (lane == QuicLane.Control ? 64 : 256)) return false;
             Send(lane, body, submitted: submitted, released: released); return true;
@@ -67,7 +65,7 @@ public sealed class NativeGameConnection : IAsyncDisposable
         lock (gate)
         {
             long bytes = frames.Sum(frame => frame.Length + 4L);
-            int items = frames.Sum(frame => (frame.Length + 4 + 7599) / 7600);
+            int items = frames.Sum(frame => (frame.Length + 4 + NativeQuicEndpoint.MaximumChunkBytes - 1) / NativeQuicEndpoint.MaximumChunkBytes);
             // Admission is atomic across the complete framed publication. Small critical batches do
             // not sit behind a queue of ordinary UI state; that state uses the independent bulk lane.
             if (bytes > 64 * 1024 || queuedLaneBytes[(int)QuicLane.Lifecycle] + bytes > 64 * 1024 ||
@@ -86,8 +84,7 @@ public sealed class NativeGameConnection : IAsyncDisposable
         {
             stop.Token.ThrowIfCancellationRequested();
             var scheduledLane = Map(lane);
-            // Split stream frames before admission; all fragments retain lane order.
-            int chunk = lane == QuicLane.State ? 1150 : lane == QuicLane.Bulk ? 5600 : 7600;
+            int chunk = lane == QuicLane.State ? 1150 : NativeQuicEndpoint.MaximumChunkBytes;
             for (int offset = 0; offset < bytes.Length; offset += chunk)
             {
                 byte[] part = bytes.AsSpan(offset, Math.Min(chunk, bytes.Length - offset)).ToArray();
@@ -104,8 +101,14 @@ public sealed class NativeGameConnection : IAsyncDisposable
                     ownershipCompletions.Add(key, completion); completions.Add(completion.Task);
                 }
             }
+            NotifyPump();
         }
         return Task.WhenAll(completions);
+    }
+    void NotifyPump()
+    {
+        if (signal.CurrentCount == 0)
+            try { signal.Release(); } catch (SemaphoreFullException) { } catch (ObjectDisposedException) { }
     }
     public T WithScheduler<T>(Func<BandwidthScheduler, T> operation) { lock (gate) return operation(scheduler); }
     public void SetControlEpoch(ulong session, ulong view)
@@ -185,9 +188,12 @@ public sealed class NativeGameConnection : IAsyncDisposable
         {
             while (!stop.IsCancellationRequested)
             {
+                bool progressed = false;
                 int events = 0;
-                while (events++ < 128 && endpoint.TryPoll(buffer, out var item))
+                while (events < 128 && endpoint.TryPoll(buffer, out var item))
                 {
+                    events++;
+                    progressed = true;
                     switch (item.Kind)
                     {
                         case QuicTransportEventKind.Connected:
@@ -223,26 +229,20 @@ public sealed class NativeGameConnection : IAsyncDisposable
                 lock (gate)
                 {
                     // Native UDP payload counters are actual traffic, but omit IP overhead; expose that limitation to callers.
-                    var statistics = endpoint.GetStatistics(); finalStatistics = statistics;
-                    bandwidthGroup?.Observe(groupPeer, statistics.SentUdpPayloadBytes);
-                    scheduler.ObserveWireTotals(1, checked((long)statistics.SentUdpPayloadBytes), checked((long)statistics.ReceivedUdpPayloadBytes));
+                    finalStatistics = endpoint.GetStatistics();
                     while (scheduler.TryAdmit(out var next)) waiting.Add(next!);
-                    for (int index = waiting.Count - 1; index >= 0; index--)
+                    for (int index = 0; index < waiting.Count;)
                     {
                         var send = waiting[index];
-                        if (bandwidthGroup is not null && !globalReserved.Contains(send.Reservation))
-                        {
-                            if (!bandwidthGroup.TryReserve(groupPeer, send.ReservedWireBytes)) continue;
-                            globalReserved.Add(send.Reservation);
-                        }
-                        if (!endpoint.TrySend(Map(send.Lane), send.Payload, send.Reservation)) continue;
-                        globalReserved.Remove(send.Reservation);
+                        if (!endpoint.TrySend(Map(send.Lane), send.Payload, send.Reservation)) { index++; continue; }
+                        progressed = true;
                         submitted.Add(send.Reservation, send); waiting.RemoveAt(index);
                         if (send.Lane == ScheduledLane.State) Observe(() => StateSendObserved?.Invoke(send.Payload, false));
                         else if (sendObservers.TryGetValue(send.Key, out var observed)) Observe(observed.Submitted);
                     }
                 }
-                await Task.Delay(2, stop.Token).ConfigureAwait(false);
+                if (progressed) await Task.Yield();
+                else await signal.WaitAsync(TimeSpan.FromMilliseconds(2), stop.Token).ConfigureAwait(false);
             }
         }
         catch (Exception error)
@@ -255,8 +255,8 @@ public sealed class NativeGameConnection : IAsyncDisposable
         {
             lock (gate)
             {
-                try { finalStatistics = endpoint.GetStatistics(); bandwidthGroup?.Observe(groupPeer, finalStatistics.SentUdpPayloadBytes); } catch (Exception) { /* preserve original terminal failure */ }
-                terminal = true; endpoint.Dispose(); bandwidthGroup?.Remove(groupPeer);
+                try { finalStatistics = endpoint.GetStatistics(); } catch (Exception) { /* preserve original terminal failure */ }
+                terminal = true; endpoint.Dispose();
             }
             incoming.Writer.TryComplete();
             lock (gate) { foreach (var completion in ownershipCompletions.Values) completion.TrySetException(new IOException("Native game connection closed before send ownership release.")); ownershipCompletions.Clear(); }
@@ -265,7 +265,7 @@ public sealed class NativeGameConnection : IAsyncDisposable
     static void Observe(Action? observer) { try { observer?.Invoke(); } catch { /* diagnostics cannot affect transport */ } }
     public void Close()
     {
-        lock (gate) if (!terminal) stop.Cancel();
+        lock (gate) if (!terminal) { stop.Cancel(); NotifyPump(); }
     }
     public ValueTask DisposeAsync()
     {
@@ -275,6 +275,7 @@ public sealed class NativeGameConnection : IAsyncDisposable
     {
         await stop.CancelAsync().ConfigureAwait(false);
         await pump.ConfigureAwait(false);
+        signal.Dispose();
         stop.Dispose();
     }
 }

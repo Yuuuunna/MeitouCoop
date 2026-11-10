@@ -16,10 +16,23 @@ public sealed class AuthorityAnimationExporter
 {
     readonly Dictionary<ulong, AnimationPlaybackState> previous = [];
     readonly bool diagnostics;
+    readonly double phaseTolerance, weightTolerance, rateTolerance, targetWeightTolerance;
     readonly Dictionary<AnimationExportReason, long> reasons = [];
     long captures, suppressed;
-    public AuthorityAnimationExporter(bool diagnostics = false) => this.diagnostics = diagnostics ||
-        Environment.GetEnvironmentVariable("MEITOU_ANIMATION_EXPORT_DIAGNOSTICS") == "1";
+    public AuthorityAnimationExporter(bool diagnostics = false, double phaseTolerance = .0001, double weightTolerance = .0001,
+        double rateTolerance = 0, double targetWeightTolerance = 0)
+    {
+        if (!double.IsFinite(phaseTolerance) || phaseTolerance < 0 ||
+            !double.IsFinite(weightTolerance) || weightTolerance < 0 ||
+            !double.IsFinite(rateTolerance) || rateTolerance < 0 ||
+            !double.IsFinite(targetWeightTolerance) || targetWeightTolerance < 0)
+            throw new ArgumentOutOfRangeException(nameof(phaseTolerance));
+        this.diagnostics = diagnostics || Environment.GetEnvironmentVariable("MEITOU_ANIMATION_EXPORT_DIAGNOSTICS") == "1";
+        this.phaseTolerance = phaseTolerance;
+        this.weightTolerance = weightTolerance;
+        this.rateTolerance = rateTolerance;
+        this.targetWeightTolerance = targetWeightTolerance;
+    }
     public AnimationExportDiagnostics Diagnostics => new(captures, suppressed, new Dictionary<AnimationExportReason, long>(reasons));
     public void Withdraw(ulong entity) => previous.Remove(entity);
     public void Clear() => previous.Clear();
@@ -47,7 +60,7 @@ public sealed class AuthorityAnimationExporter
             foreach (var flag in Enum.GetValues<AnimationExportReason>())
                 if (flag != AnimationExportReason.None && (reason & flag) != 0) reasons[flag] = reasons.GetValueOrDefault(flag) + 1;
         // The contract already bounds prediction to 60 simulation seconds. Every source capture checks
-        // exact parameters and phase/weight error; semantic changes replace the segment immediately.
+        // parameters and phase/weight error; semantic changes replace the segment immediately.
         // Stable deterministic playback therefore renews at the protocol horizon, not on a wall timer.
         ulong duration = predictable ? (ulong)Math.Floor(AnimationPlaybackValidation.MaximumSegmentSeconds / tickSeconds) : 0;
         var state = new AnimationPlaybackState((old?.Epoch ?? 0) + 1, tick, tickSeconds, 0, checked(tick + duration), layers);
@@ -56,7 +69,7 @@ public sealed class AuthorityAnimationExporter
         return state;
     }
 
-    static AnimationExportReason Compare(AnimationPlaybackState old, AnimationPlaybackLayer[] layers, ulong tick)
+    AnimationExportReason Compare(AnimationPlaybackState old, AnimationPlaybackLayer[] layers, ulong tick)
     {
         if (old.Layers.Count != layers.Length || tick < old.StartTick) return AnimationExportReason.Parameters;
         AnimationExportReason reason = AnimationExportReason.None;
@@ -64,18 +77,28 @@ public sealed class AuthorityAnimationExporter
         for (int i = 0; i < layers.Length; i++)
         {
             var a = old.Layers[i]; var b = layers[i];
+            bool sameTarget = targetWeightTolerance == 0
+                ? a.TargetWeight == b.TargetWeight
+                : (a.TargetWeight <= 0) == (b.TargetWeight <= 0) &&
+                  (a.TargetWeight >= 1) == (b.TargetWeight >= 1) &&
+                  Math.Abs(a.TargetWeight - b.TargetWeight) <= targetWeightTolerance;
             if (a.Name != b.Name || a.Definition != b.Definition || a.LengthSeconds != b.LengthSeconds ||
-                a.Wrap != b.Wrap || a.EndSeconds != b.EndSeconds || a.TargetWeight != b.TargetWeight ||
+                a.Wrap != b.Wrap || a.EndSeconds != b.EndSeconds || !sameTarget ||
                 a.Area != b.Area || a.Wanted != b.Wanted || a.ConsumesLower != b.ConsumesLower) reason |= AnimationExportReason.Parameters;
-            if (a.Rate != b.Rate) reason |= AnimationExportReason.Rate;
+            bool sameRate = rateTolerance == 0
+                ? a.Rate == b.Rate
+                : (a.Rate == 0) == (b.Rate == 0) &&
+                  Math.Sign(a.Rate) == Math.Sign(b.Rate) &&
+                  Math.Abs(a.Rate - b.Rate) <= rateTolerance;
+            if (!sameRate) reason |= AnimationExportReason.Rate;
             double time = a.PhaseSeconds + seconds * a.Rate;
             time = a.Wrap == AnimationWrap.Loop ? time - Math.Floor(time / a.LengthSeconds) * a.LengthSeconds : Math.Clamp(time, 0, a.EndSeconds);
             double weight = a.StartWeight + (a.TargetWeight - a.StartWeight) * (a.WeightSeconds == 0 ? 1 : Math.Min(1, seconds / a.WeightSeconds));
             double phaseError = Math.Abs(time - b.PhaseSeconds);
             if (a.Wrap == AnimationWrap.Loop) phaseError = Math.Min(phaseError, Math.Abs(phaseError - a.LengthSeconds));
-            if (phaseError > .0001) reason |= AnimationExportReason.Phase;
-            if (Math.Abs(weight - b.StartWeight) > .0001 ||
-                Math.Abs(Math.Max(0, a.WeightSeconds - seconds) - b.WeightSeconds) > .0001) reason |= AnimationExportReason.Weight;
+            if (phaseError > phaseTolerance) reason |= AnimationExportReason.Phase;
+            if (Math.Abs(weight - b.StartWeight) > weightTolerance ||
+                Math.Abs(Math.Max(0, a.WeightSeconds - seconds) - b.WeightSeconds) > weightTolerance) reason |= AnimationExportReason.Weight;
         }
         return reason;
     }

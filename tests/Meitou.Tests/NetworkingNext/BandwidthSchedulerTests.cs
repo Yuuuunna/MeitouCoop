@@ -22,7 +22,7 @@ public class BandwidthSchedulerTests
     }
 
     [Fact]
-    public void PriorityFairnessAndActualWireDebtGateAdmission()
+    public void PriorityAndPeerRoundRobinFairness()
     {
         var scheduler = new BandwidthScheduler(() => TimeSpan.Zero);
         foreach (ulong peer in new ulong[] { 1, 2 })
@@ -34,13 +34,12 @@ public class BandwidthSchedulerTests
         Assert.True(scheduler.TryAdmit(out var first));
         Assert.Equal(1UL, first!.Peer);
         Assert.Equal(ScheduledLane.Control, first.Lane);
-        scheduler.ObserveWireTotals(1, 1000, 100_000);
         scheduler.CompleteSend(first);
         Assert.Throws<InvalidOperationException>(() => scheduler.CompleteSend(first));
         Assert.True(scheduler.TryAdmit(out var second));
         Assert.Equal(2UL, second!.Peer);
+        Assert.Equal(ScheduledLane.Control, second.Lane);
         scheduler.CompleteSend(second);
-        Assert.True(scheduler.TryAdmit(out _)); // inbound debt does not consume another peer budget
     }
 
     [Fact]
@@ -55,45 +54,14 @@ public class BandwidthSchedulerTests
         for (ulong key = 0; key < 64; key++)
             scheduler.Enqueue(1, ScheduledLane.Control, key, 1, () => [1]);
         Assert.Equal(ScheduleOutcome.Busy, scheduler.Enqueue(1, ScheduledLane.Control, 100, 1, () => [1]));
-        Assert.True(scheduler.TryAdmit(out var send));
-        Assert.False(scheduler.TryAdmit(out _));
-        Assert.Throws<ArgumentOutOfRangeException>(() => scheduler.ObserveWireTotals(1, -1, 0));
-        scheduler.CompleteSend(send!);
-        Assert.True(scheduler.TryAdmit(out _));
-    }
-    [Fact]
-    public void CounterResetRejectsAndUnusedEstimateNeverRefundsOrHidesFutureTraffic()
-    {
-        var scheduler = new BandwidthScheduler(() => TimeSpan.Zero);
-        scheduler.RegisterPeer(1);
-        scheduler.Enqueue(1, ScheduledLane.Control, 1, 1000, () => [1]);
-        Assert.True(scheduler.TryAdmit(out var send));
-        scheduler.CompleteSend(send!);
-        scheduler.ObserveWireTotals(1, 1, 0);
-        scheduler.ObserveWireTotals(1, 1, 0); // duplicate observation
-        Assert.Throws<ArgumentOutOfRangeException>(() => scheduler.ObserveWireTotals(1, 0, 0));
-        scheduler.ObserveWireTotals(1, 1, 8000); // expired overestimate cannot cover new ingress
-        scheduler.Enqueue(1, ScheduledLane.Control, 2, 1, () => [1]);
-        Assert.False(scheduler.TryAdmit(out _));
-    }
-
-    [Fact]
-    public void SustainedNonzeroServiceIsPacedWithBoundedInitialBurst()
-    {
-        TimeSpan time = TimeSpan.Zero;
-        var scheduler = new BandwidthScheduler(() => time);
-        scheduler.RegisterPeer(1);
-        long bytes = 0;
-        for (int step = 0; step < 1000; step++)
+        var sends = new List<ScheduledSend>();
+        for (int i = 0; i < BandwidthScheduler.MaximumOutstandingSends; i++)
         {
-            time = TimeSpan.FromMilliseconds(step * 10);
-            scheduler.Enqueue(1, ScheduledLane.State, 1, 1000, () => new byte[1000]);
-            if (!scheduler.TryAdmit(out var send)) continue;
-            bytes += send!.ReservedWireBytes;
-            scheduler.CompleteSend(send);
-            scheduler.ObserveWireTotals(1, bytes, 0);
+            Assert.True(scheduler.TryAdmit(out var send));
+            sends.Add(send!);
         }
-        Assert.InRange(bytes, 300_000, 8_000 + 10 * 40_000);
+        Assert.False(scheduler.TryAdmit(out _));
+        foreach (var send in sends) scheduler.CompleteSend(send);
     }
 
     [Fact]
@@ -101,40 +69,15 @@ public class BandwidthSchedulerTests
     {
         var scheduler = new BandwidthScheduler(() => TimeSpan.Zero);
         scheduler.RegisterPeer(1);
-        scheduler.Enqueue(1, ScheduledLane.Bulk, 1, 1000, () => new byte[1000]);
-        Assert.True(scheduler.TryAdmit(out var bulk));
-        scheduler.Enqueue(1, ScheduledLane.Control, 2, 1000, () => new byte[1000]);
+        for (ulong key = 1; key <= BandwidthScheduler.MaximumLaneOutstandingSends; key++)
+        {
+            scheduler.Enqueue(1, ScheduledLane.Bulk, key, 1000, () => new byte[1000]);
+            Assert.True(scheduler.TryAdmit(out _));
+        }
+        scheduler.Enqueue(1, ScheduledLane.Control, 99, 1000, () => new byte[1000]);
         Assert.True(scheduler.TryAdmit(out var control));
         Assert.Equal(ScheduledLane.Control, control!.Lane);
         scheduler.CompleteSend(control);
-        scheduler.CompleteSend(bulk!);
-    }
-    [Fact]
-    public void GlobalSaturationResumesAtNextPeerAfterRefill()
-    {
-        TimeSpan time = TimeSpan.Zero;
-        var scheduler = new BandwidthScheduler(() => time);
-        for (ulong peer = 1; peer <= 100; peer++)
-        {
-            scheduler.RegisterPeer(peer);
-            scheduler.Enqueue(peer, ScheduledLane.State, 1, 1000, () => new byte[1000]);
-        }
-        long bytes = 0;
-        ulong lastPeer = 0;
-        while (scheduler.TryAdmit(out var send))
-        {
-            Assert.Equal(lastPeer + 1, send!.Peer);
-            lastPeer = send.Peer;
-            bytes += send.ReservedWireBytes;
-            scheduler.CompleteSend(send);
-        }
-        Assert.InRange(lastPeer, 40UL, 80UL);
-        Assert.InRange(bytes, BandwidthScheduler.GlobalBurstBytes - 4000, BandwidthScheduler.GlobalBurstBytes);
-        time += TimeSpan.FromMilliseconds(10);
-        Assert.True(scheduler.TryAdmit(out var resumed));
-        Assert.Equal(lastPeer + 1, resumed!.Peer);
-        bytes += resumed.ReservedWireBytes;
-        Assert.True(bytes <= BandwidthScheduler.GlobalBurstBytes + BandwidthScheduler.GlobalWireBytesPerSecond * 0.01);
     }
 
     [Fact]
@@ -152,47 +95,30 @@ public class BandwidthSchedulerTests
     }
 
     [Fact]
-    public void SustainedIngressAboveBudgetStopsStateAndClockRollbackRejects()
+    public void ClockRollbackRejects()
     {
-        TimeSpan time = TimeSpan.Zero;
+        TimeSpan time = TimeSpan.FromSeconds(1);
         var scheduler = new BandwidthScheduler(() => time);
         scheduler.RegisterPeer(1);
-        for (int second = 1; second <= 5; second++)
-        {
-            time = TimeSpan.FromSeconds(second);
-            scheduler.ObserveWireTotals(1, 0, second * 80_000L);
-            scheduler.Enqueue(1, ScheduledLane.State, 1, 1000, () => new byte[1000]);
-            Assert.False(scheduler.TryAdmit(out _));
-        }
         time -= TimeSpan.FromMilliseconds(1);
         Assert.Throws<InvalidOperationException>(() => scheduler.TryAdmit(out _));
     }
 
     [Fact]
-    public void RemovingPeerPreservesItsActualGlobalEgressDebt()
+    public void MaximumAcceptedBulkItemFitsLaneBound()
     {
         var scheduler = new BandwidthScheduler(() => TimeSpan.Zero);
         scheduler.RegisterPeer(1);
-        scheduler.ObserveWireTotals(1, 100_000, 0);
-        scheduler.RemovePeer(1);
-        scheduler.RegisterPeer(2);
-        scheduler.Enqueue(2, ScheduledLane.Control, 1, 1, () => [1]);
-        Assert.False(scheduler.TryAdmit(out _));
-    }
-
-    [Fact]
-    public void MaximumAcceptedBulkItemFitsBurstAndPriorityReserve()
-    {
-        var scheduler = new BandwidthScheduler(() => TimeSpan.Zero);
-        scheduler.RegisterPeer(1);
-        int maximum = BandwidthScheduler.PeerBurstBytes - BandwidthScheduler.PriorityReserveBytes - BandwidthScheduler.EstimatedOverheadBytes;
+        const int maximum = 64 * 1024;
         Assert.Throws<ArgumentOutOfRangeException>(() => scheduler.Enqueue(1, ScheduledLane.Bulk, 1, maximum + 1, () => []));
         Assert.Equal(ScheduleOutcome.Queued, scheduler.Enqueue(1, ScheduledLane.Bulk, 1, maximum, () => new byte[maximum]));
         Assert.True(scheduler.TryAdmit(out var bulk));
         Assert.Equal(maximum, bulk!.Payload.Length);
         scheduler.Enqueue(1, ScheduledLane.Control, 2, 1000, () => new byte[1000]);
         Assert.True(scheduler.TryAdmit(out _));
+        scheduler.CompleteSend(bulk);
     }
+
     [Fact]
     public void DiscardPendingReleasesOldClosuresAndPreservesNativeCompletion()
     {
@@ -213,6 +139,7 @@ public class BandwidthSchedulerTests
         scheduler.CompleteSend(newer);
         Assert.Equal(0, oldEncoded);
     }
+
     [Fact]
     public void CancellingStateKeyPreservesControlAndOtherState()
     {

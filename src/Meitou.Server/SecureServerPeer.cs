@@ -29,7 +29,6 @@ public sealed record ServerPeerOptions
 public sealed class SecureServerPeer
 {
     readonly ServerWorldLoop loop;
-    readonly NativeGameBandwidthGroup bandwidth = new();
     readonly ServerAccountSessions sessions;
     readonly CompatibilityHello hello;
     readonly WorldViewCodec codec;
@@ -59,7 +58,7 @@ public sealed class SecureServerPeer
 
     public async Task RunAsync(NativeQuicEndpoint endpoint, CancellationToken cancellation = default)
     {
-        await using (var transport = new NativeGameConnection(endpoint, bandwidth))
+        await using (var transport = new NativeGameConnection(endpoint))
         using (var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellation, loop.Stopping))
         using (var writes = new SemaphoreSlim(1))
         using (var handshake = CancellationTokenSource.CreateLinkedTokenSource(stop.Token))
@@ -109,7 +108,8 @@ public sealed class SecureServerPeer
                 BulkTransferSender? bulkSender = null;
                 BulkChunk? pendingBulkChunk = null;
                 MotionReplicationProducer? motion = null;
-                var animations = new AuthorityAnimationExporter(options.AnimationObserved is not null);
+                var animations = new AuthorityAnimationExporter(options.AnimationObserved is not null,
+                    phaseTolerance: .02, weightTolerance: .015, rateTolerance: .015, targetWeightTolerance: .01);
                 var sentCheckpoints = new HashSet<ulong>();
                 bool viewActive = false;
                 bool viewInitialized = false;
@@ -379,7 +379,7 @@ public sealed class SecureServerPeer
                     if (bulkSender is null || !manifestAcknowledged) return;
                     while (true)
                     {
-                        if (pendingBulkChunk is null && !bulkSender.TryTakeChunk(out pendingBulkChunk)) return;
+                        if (pendingBulkChunk is null && (bulkSender.UnacknowledgedBytes >= 128 * 1024 || !bulkSender.TryTakeChunk(out pendingBulkChunk))) return;
                         var trace = bulkTrace;
                         Action? submittedTrace = activeBusiness is null && pendingBulkChunk!.Offset == 0 ? () => LatencyTrace.Emit(LatencyTrace.Sink, trace with { Stage = LatencyStage.PublicationWriteStarted }) : null;
                         Action? releasedTrace = activeBusiness is null && pendingBulkChunk!.Offset + pendingBulkChunk.Payload.Length == bulkTotalBytes ? () => LatencyTrace.Emit(LatencyTrace.Sink, trace with { Stage = LatencyStage.PublicationWriteComplete }) : null;

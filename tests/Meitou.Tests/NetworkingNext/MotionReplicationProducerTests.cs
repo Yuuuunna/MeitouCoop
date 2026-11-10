@@ -64,7 +64,7 @@ public class MotionReplicationProducerTests(ITestOutputHelper output)
             {
                 producer.Pump((ulong)step);
                 if (!scheduler.TryAdmit(out var send)) break;
-                charged += send!.ReservedWireBytes;
+                charged += send!.Payload.Length;
                 Assert.InRange(send.Payload.Length, 1, 1150);
                 if (send.Lane == ScheduledLane.Lifecycle)
                 {
@@ -84,8 +84,7 @@ public class MotionReplicationProducerTests(ITestOutputHelper output)
                 scheduler.CompleteSend(send);
             }
         }
-        output.WriteLine($"Candidate declared charges: {charged} bytes /120s = {charged / 120.0:F2} bytes/s; active maximum gap {activeMaximumGap}ms.");
-        Assert.True(charged <= 120L * BandwidthScheduler.ApplicationWireBytesPerSecond + BandwidthScheduler.PeerBurstBytes);
+        output.WriteLine($"Candidate application payload: {charged} bytes /120s = {charged / 120.0:F2} bytes/s; active maximum gap {activeMaximumGap}ms.");
         Assert.InRange(activeMaximumGap, 1, 100);
         Assert.Equal(124, received.Count);
         Assert.All(received.Values, r => { Assert.Equal(MotionFlags.None, r.Flags); Assert.Equal(2359, r.Position.X); });
@@ -176,7 +175,7 @@ public class MotionReplicationProducerTests(ITestOutputHelper output)
         Assert.Equal(4096U, Assert.Single(MotionDatagramCodec.Decode(send!.Payload).Records).Revision);
         scheduler.CompleteSend(send);
     }    [Fact]
-    public void WireDebtReportsReducedCadenceAndRetainsImportantState()
+    public void OverduePumpReportsReducedCadenceAndRetainsImportantState()
     {
         TimeSpan time = TimeSpan.Zero;
         var scheduler = new BandwidthScheduler(() => time);
@@ -184,14 +183,10 @@ public class MotionReplicationProducerTests(ITestOutputHelper output)
         var producer = new MotionReplicationProducer(scheduler, 1, 99, 1, 1, () => time);
         var record = new MotionRecord(1, 1, 1, Vector3.One, Vector3.Zero, 0, MotionFlags.Moving);
         producer.Capture(1, 1, 0, record, MotionRelevance.Controlled);
-        scheduler.ObserveWireTotals(1, 0, 100_000);
         time = TimeSpan.FromMilliseconds(200);
         Assert.Equal(MotionPumpOutcome.ReducedCadence, producer.Pump(0));
-        Assert.False(scheduler.TryAdmit(out _));
         Assert.Single(producer.PendingCheckpoints);
         Assert.Equal(1, producer.RetainedKeys);
-        time = TimeSpan.FromSeconds(3);
-        producer.Pump(0);
         Assert.True(scheduler.TryAdmit(out var send));
         Assert.Equal(record, Assert.Single(MotionDatagramCodec.Decode(send!.Payload).Records));
         scheduler.CompleteSend(send);

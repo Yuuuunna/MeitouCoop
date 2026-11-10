@@ -183,14 +183,17 @@ graphical parity and impaired-link acceptance remain open.
 
 ## Acceptance gates (requirements, not measured achievements)
 
-**Observed** (2026-11-10, installed pre-cutover checkpoint copy, production async paths/8 threads,
-123 authorized entities, native loopback; `production-233fb0056c03447d8566fc2ed2090f89/report.json`):
-120 s means were 325.87 kbit/s for one peer and 326.32/326.38 for two, using encrypted UDP totals plus
-a conservative IPv4-header upper bound. Maximum 10 s window was 328.14 kbit/s; received ticks progressed
-at 30.00/s. All 33 moves were retained: receipt P95 74.91 ms, acceptance-to-motion P95 70.90 ms,
-client-authoritative-root P95 199.52 ms; zero sampled trace loss. This is not VPS/impairment acceptance.
-A separate live account-binding run measured 182.43 ms owner capture, 954.36 ms worker commit and a
-260.87 ms worst concurrent command receipt; that join-time stall remains distinct from warmed movement.
+**Observed** (2026-11-11, installed pre-cutover checkpoint copy without application rate limiting,
+production async paths/8 threads, 123 authorized entities, native loopback;
+`slimmed-measure-bfa26fea/report.json`): after binary encoding for `Build` (21 B), `GameHours`-anchored
+countdown projection for `Prison`/`Bounties`, RLE/varint `CollectionManifest` encoding, UI-precision
+delta deadbands (`Body`, `Hud`, `HealthParts`, `ItemGrid`) against last-sent state, and bounded network
+animation tolerances, 120 s conservative IPv4 upper-bound means met the <=500 kbit/s target at
+362.11 kbit/s (raw UDP 335.25; 10 s windows 312.28–432.38) for one peer and 325.77/332.23 kbit/s
+(raw UDP 300.78/311.74; 10 s windows 292.60–360.73) for two. Received ticks progressed at 30.00/30.00
+per second. All 33 moves were retained: receipt P95 43.32 ms, acceptance-to-motion P95 57.86 ms,
+client-authoritative-root P95 113.06 ms; zero sampled trace loss. Live account binding measured
+207.67 ms worst concurrent command receipt.
 
 **Observed** (actual Vulkan client, 2026-11-10, `quiet-20261110-210138/gui-acceptance-summary.json`):
 100 s at 117 FPS with 123 authorized entities; all 12 movement samples joined through actual renderer
@@ -259,13 +262,10 @@ framing). Raw animation snapshots cannot become the new lifecycle payload; autho
 remain required.
 
 **Verified** (local scheduler tests): pre-serialization admission, coalescing/expiry, independent lane
-ownership, peer fairness, overflow and cumulative wire debt are bounded. The current conservative pacer
-charges 40,000 bytes/s per peer with an 8,000-byte burst and 2,000-byte priority reserve. Bulk chunks
-must fit 5,872 payload bytes; control/lifecycle chunks 7,872; state 1,150. Reliable frames can span chunks.
-These are scheduling limits, not measured wire rates. Arbitrary serializer closure storage is outside
-declared payload bounds; production capture must own bounded data. Native completion releases ownership
-only; bulk peer-ACK credit remains separately required. Delayed counter observations may conservatively
-double-charge estimates; no optimistic bandwidth refunds are issued.
+ownership, peer fairness, overflow and bounded native send reservations are enforced without artificial
+application rate limiting. Control frames fit 16 KiB, lifecycle/bulk chunks 64 KiB, and state 1,150 bytes.
+Arbitrary serializer closure storage is outside declared payload bounds; production capture must own bounded
+data. Native completion releases buffer ownership only; bulk peer-ACK credit remains separately required.
 
 **Verified** (local bulk tests): one transfer stages at most 32 MiB, in 4,096-byte chunks with a 52-byte
 binary identity/offset header, plus reliable framing. Only contiguous peer ACKs release the 256 KiB
@@ -298,9 +298,7 @@ Ready names the captured authority publication, and authority activation precede
 deltas use the same bounded bulk transaction. Bulk ACKs release application credit; native ownership
 release separately frees queued-byte credit. Bulk submission rechecks the recipient's authority stamp.
 Reliable motion checkpoints share component revisions with datagrams and receive explicit peer ACKs.
-Server peers share `NativeGameBandwidthGroup` for aggregate egress admission and actual encrypted
-UDP-payload reconciliation; each connection separately paces its own traffic. These counters still omit
-IP overhead. Component encoding runs on a worker after owner-thread detachment and is followed by an
+Component encoding runs on a worker after owner-thread detachment and is followed by an
 authority-stamp recheck. Motion carries its capture publication directly, so a component/bulk delay cannot
 hold movement behind a reliable lifecycle publication. Renderer and client root traces retain the actual
 motion packet sequence; reliable checkpoints reserve its high bit and use explicit peer receipt ACKs.
