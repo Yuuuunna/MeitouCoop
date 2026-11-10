@@ -57,12 +57,12 @@ public partial class SecureServerTests
                 await tls.ShutdownAsync().WaitAsync(timeout.Token);
             }
         }, timeout.Token);
-        var pending = ServerDiscovery.QueryAsync("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port, null, timeout.Token);
+        var pending = ServerDiscovery.QueryAsync("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port, timeout.Token);
         if (alwaysClose) await Assert.ThrowsAnyAsync<IOException>(() => pending);
         else
         {
             var reply = await pending;
-            Assert.Equal(information.Hello, reply.Information.Hello);
+            Assert.Equal(information.Hello, reply.Hello);
         }
         await serving;
         Assert.Equal(2, requests);
@@ -79,17 +79,16 @@ public partial class SecureServerTests
         await using var scene = new Scene(information: information);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         int count = scene.Accounts.List().Count;
-        var discovered = await ServerDiscovery.QueryAsync("localhost", scene.Server.Endpoint.Port, null, timeout.Token);
-        Assert.Equal(information.Hello, discovered.Information.Hello);
-        Assert.Equal(scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256), discovered.Certificate);
+        var discovered = await ServerDiscovery.QueryAsync("localhost", scene.Server.Endpoint.Port, timeout.Token);
+        Assert.Equal(information.Hello, discovered.Hello);
         Assert.Equal(count, scene.Accounts.List().Count); // Public discovery must not register an account.
         var credential = DeviceCredential();
         Meitou.Simulation.PlayerId player;
         await using (var first = await RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
-            credential, new(scene.Data.Db), discovered.Certificate, timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)))
+            credential, new(scene.Data.Db), timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)))
             player = first.State.Admission.Identity.Player;
         await using var again = await RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
-            credential, new(scene.Data.Db), discovered.Certificate, timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate));
+            credential, new(scene.Data.Db), timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate));
         Assert.Equal(player, again.State.Admission.Identity.Player);
         Assert.Equal(count + 1, scene.Accounts.List().Count);
         Assert.DoesNotContain(credential.Token, File.ReadAllText(Path.Combine(scene.Root, "accounts.json")));
@@ -101,32 +100,18 @@ public partial class SecureServerTests
         var information = DeviceInformation();
         await using var scene = new Scene(information: information);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        string pin = scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256);
         var credential = DeviceCredential();
         await using (var first = await RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
-            credential, new(scene.Data.Db), pin, timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate))) { }
+            credential, new(scene.Data.Db), timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate))) { }
         int count = scene.Accounts.List().Count;
         await Assert.ThrowsAsync<AuthenticationException>(() => RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
-            credential with { Token = DeviceCredential().Token }, new(scene.Data.Db), pin, timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)));
+            credential with { Token = DeviceCredential().Token }, new(scene.Data.Db), timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)));
         Assert.NotNull(scene.Accounts.Authenticate(credential));
         scene.Accounts.SetEnabled(credential.Account, false);
         await Assert.ThrowsAsync<AuthenticationException>(() => RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
-            credential, new(scene.Data.Db), pin, timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)));
+            credential, new(scene.Data.Db), timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)));
         Assert.Equal(count, scene.Accounts.List().Count);
         Assert.False(scene.Accounts.List().Single(a => a.Id == credential.Account).Enabled);
-    }
-
-    [Fact]
-    public async Task PreReleaseDiscoveryAcceptsAChangedCertificateWithoutRegisteringAnAccount()
-    {
-        await using var scene = new Scene(information: DeviceInformation());
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        using var previous = GameTlsTests.Certificate();
-        int count = scene.Accounts.List().Count;
-        var discovered = await ServerDiscovery.QueryAsync("localhost", scene.Server.Endpoint.Port,
-            previous.GetCertHashString(HashAlgorithmName.SHA256), timeout.Token);
-        Assert.Equal(scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256), discovered.Certificate);
-        Assert.Equal(count, scene.Accounts.List().Count);
     }
 
     [Fact]
@@ -135,13 +120,12 @@ public partial class SecureServerTests
         var information = DeviceInformation(enabled: false);
         await using var scene = new Scene(information: information);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        string pin = scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256);
         var existing = scene.Actors[0];
         await using var client = await RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
-            new(existing.Credential.Account, existing.Credential.Token), new(scene.Data.Db), pin, timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate));
+            new(existing.Credential.Account, existing.Credential.Token), new(scene.Data.Db), timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate));
         Assert.Equal(existing.Player, client.State.Admission.Identity.Player);
         await Assert.ThrowsAsync<AuthenticationException>(() => RemoteGameSession.ConnectAsync("localhost", scene.Server.Endpoint.Port, information.Hello,
-            DeviceCredential(), new(scene.Data.Db), pin, timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)));
+            DeviceCredential(), new(scene.Data.Db), timeout.Token, deviceIdentity: true, transportOptions: NativeFixture.Options(scene.Certificate)));
         Assert.Equal(3, scene.Accounts.List().Count);
     }
 
@@ -159,7 +143,6 @@ public partial class SecureServerTests
         var second = await DeviceConnection.PrepareAsync(install!, address, timeout.Token, directory);
         Assert.Equal(first.Account, second.Account);
         Assert.Equal(first.Token, second.Token);
-        Assert.Equal(first.CertificateSha256, second.CertificateSha256);
         string state = Directory.GetFiles(directory, "*.json").Single();
         await File.WriteAllTextAsync(state, "null", timeout.Token);
         await Assert.ThrowsAsync<InvalidDataException>(() => DeviceConnection.PrepareAsync(install!, address, timeout.Token, directory));

@@ -25,7 +25,7 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
     public async Task ConnectAsync(string address)
     {
         var profile = await DeviceConnection.PrepareAsync(install, address, Token).ConfigureAwait(false);
-        string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}/{profile.CertificateSha256.ToUpperInvariant()}")));
+        string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}")));
         string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "connections");
         Directory.CreateDirectory(folder);
         journal = Path.Combine(folder, key + ".creation.json");
@@ -36,7 +36,7 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
         if (new CompatibilityHandshake(hello).Receive(profile.Hello) is var mismatch && mismatch != CompatibilityFailure.None)
             throw new InvalidDataException($"Local content does not match the connection profile: {mismatch}.");
         connection = await RemoteGameSession.ConnectAsync(profile.Host, profile.Port, hello,
-            new(profile.Account, profile.Token), new WorldViewCodec(database), profile.CertificateSha256, Token, deviceIdentity: true).ConfigureAwait(false);
+            new(profile.Account, profile.Token), new WorldViewCodec(database), Token, deviceIdentity: true).ConfigureAwait(false);
         await PrepareAdmissionAsync(connection, journal).ConfigureAwait(false);
     }
 

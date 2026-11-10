@@ -1,17 +1,12 @@
 using System.Net.Security;
 using System.Security.Authentication;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Meitou.Networking;
 
-/// <summary>TLS game transport. The host supplies handshake deadlines; pre-release builds temporarily skip server identity verification.</summary>
+/// <summary>TLS transport for encrypted public discovery. Self-signed server certificates are accepted without pinning.</summary>
 public static class GameTls
 {
-    // TEMPORARILY DISABLED at the user's request for all pre-release builds (including Release).
-    // Restore to true before the official release. TLS encryption and account/token authentication stay enabled.
-    public static bool VerifyServerCertificates { get; } = false;
-
     public static X509Certificate2 LoadServerCertificate(string path, string? password = null)
         => X509CertificateLoader.LoadPkcs12FromFile(path, password,
             OperatingSystem.IsWindows() ? X509KeyStorageFlags.UserKeySet : X509KeyStorageFlags.EphemeralKeySet);
@@ -31,32 +26,16 @@ public static class GameTls
         }
         catch { await tls.DisposeAsync().ConfigureAwait(false); throw; }
     }
-    public static async Task<SslStream> ConnectAsync(Stream stream, string targetHost, string? certificateSha256, CancellationToken cancellationToken)
+    public static async Task<SslStream> ConnectAsync(Stream stream, string targetHost, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(targetHost)) throw new ArgumentException("A server hostname is required.", nameof(targetHost));
-        byte[]? pin = null;
-        if (certificateSha256 is not null)
-        {
-            if (certificateSha256.Length != 64 || !certificateSha256.All(char.IsAsciiHexDigit)) throw new ArgumentException("Invalid SHA-256 certificate pin.", nameof(certificateSha256));
-            pin = Convert.FromHexString(certificateSha256);
-        }
-        bool Validate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors errors)
-        {
-            if (!VerifyServerCertificates) return true;
-            if (pin is null) return errors == SslPolicyErrors.None;
-            if (certificate is null) return false;
-            using var copy = X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
-            var now = DateTime.UtcNow;
-            return now >= copy.NotBefore.ToUniversalTime() && now <= copy.NotAfter.ToUniversalTime()
-                && CryptographicOperations.FixedTimeEquals(pin, copy.GetCertHash(HashAlgorithmName.SHA256));
-        }
-        var tls = new SslStream(stream, leaveInnerStreamOpen: false, Validate);
+        var tls = new SslStream(stream, leaveInnerStreamOpen: false, static (_, certificate, _, _) => certificate is not null);
         try
         {
             await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
             {
                 TargetHost = targetHost, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13, AllowRenegotiation = false,
-                CertificateRevocationCheckMode = VerifyServerCertificates && pin is null ? X509RevocationMode.Online : X509RevocationMode.NoCheck,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
             }, cancellationToken).ConfigureAwait(false);
             return tls;
         }

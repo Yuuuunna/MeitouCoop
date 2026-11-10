@@ -136,13 +136,13 @@ public sealed class RemoteGameSession : IAsyncDisposable
     }
 
     public static async Task<RemoteGameSession> ConnectAsync(string host, int port, CompatibilityHello hello,
-        AuthenticationRequest credential, WorldViewCodec codec, string? certificateSha256 = null, CancellationToken cancellationToken = default, bool deviceIdentity = false,
+        AuthenticationRequest credential, WorldViewCodec codec, CancellationToken cancellationToken = default, bool deviceIdentity = false,
         QuicGameTransportOptions? transportOptions = null)
     {
         ArgumentNullException.ThrowIfNull(codec);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
-        var settings = transportOptions ?? await QuicDeployment.ClientOptionsAsync(host, port, certificateSha256, deadline.Token).ConfigureAwait(false);
+        var settings = transportOptions ?? await QuicDeployment.ClientOptionsAsync(host, port, deadline.Token).ConfigureAwait(false);
         var addresses = await Dns.GetHostAddressesAsync(host, deadline.Token).ConfigureAwait(false);
         var endpoint = new NativeQuicEndpoint(settings.NativeDirectory, settings.ShimSha256, false, settings.CaFile);
         NativeGameConnection? transport = null;

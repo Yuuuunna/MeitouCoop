@@ -206,8 +206,7 @@ public sealed class InstalledQuicAcceptanceTests
             // Keep a private local profile/config for a separate real graphical submission run; do not print or commit their contents.
             var graphicalConfig = serverConfig with { Port = server.Endpoint.Port };
             await File.WriteAllTextAsync(Path.Combine(output, "server.json"), JsonSerializer.Serialize(graphicalConfig, new JsonSerializerOptions { WriteIndented = true }), token);
-            new ServerConnectionProfile("localhost", server.Endpoint.Port, credential.Account, credential.Token,
-                certificate.GetCertHashString(HashAlgorithmName.SHA256), hello) { Rules = rules, GameplayAssets = shipping.GameplayAssets }.Write(Path.Combine(output, "private-client.json"));
+            new ServerConnectionProfile("localhost", server.Endpoint.Port, credential.Account, credential.Token, hello) { Rules = rules, GameplayAssets = shipping.GameplayAssets }.Write(Path.Combine(output, "private-client.json"));
 
             var config = NativeFixture.Options(certificate);
             if (Environment.GetEnvironmentVariable("MEITOU_QUIC_ACCEPTANCE_SETUP_ONLY") == "1")

@@ -4,7 +4,7 @@ using Meitou.Data;
 
 namespace Meitou.Networking;
 
-public sealed record ServerConnectionProfile(string Host, int Port, Guid Account, string Token, string CertificateSha256, CompatibilityHello Hello)
+public sealed record ServerConnectionProfile(string Host, int Port, Guid Account, string Token, CompatibilityHello Hello)
 {
     public IReadOnlyDictionary<string, string> Rules { get; init; } = new Dictionary<string, string>();
     public string[] GameplayAssets { get; init; } = [];
@@ -13,7 +13,7 @@ public sealed record ServerConnectionProfile(string Host, int Port, Guid Account
     {
         var profile = JsonSerializer.Deserialize<ServerConnectionProfile>(File.ReadAllBytes(path)) ?? throw new InvalidDataException("Missing connection profile.");
         if (string.IsNullOrWhiteSpace(profile.Host) || profile.Port is < 1 or > 65535 || profile.Account == Guid.Empty ||
-            !AuthenticationProtocol.ValidCredential(new(profile.Account, profile.Token)) || !ContentManifest.ValidHash(profile.CertificateSha256)
+            !AuthenticationProtocol.ValidCredential(new(profile.Account, profile.Token))
             || profile.Hello is null || profile.Rules is null || profile.GameplayAssets is null) throw new InvalidDataException("Invalid connection profile.");
         return profile;
     }

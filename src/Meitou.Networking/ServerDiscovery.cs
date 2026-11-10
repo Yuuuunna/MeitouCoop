@@ -1,8 +1,4 @@
-using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Authentication;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -10,7 +6,7 @@ namespace Meitou.Networking;
 
 public sealed record ServerInformation(CompatibilityHello Hello, Dictionary<string, string> Rules, string[] GameplayAssets, bool DeviceRegistration);
 
-/// <summary>Public connection metadata. First contact pins the certificate; subsequent contact must match it.</summary>
+/// <summary>Public connection metadata over encrypted TLS, without server certificate pinning.</summary>
 public static class ServerDiscovery
 {
     const int MaximumBytes = 128 * 1024;
@@ -52,9 +48,9 @@ public static class ServerDiscovery
             throw new InvalidDataException("Server rules do not match its compatibility digest.");
     }
 
-    public static async Task<(ServerInformation Information, string Certificate)> QueryAsync(string host, int port, string? knownCertificate, CancellationToken token)
+    public static async Task<ServerInformation> QueryAsync(string host, int port, CancellationToken token)
     {
-        try { return await QueryOnceAsync(host, port, knownCertificate, token).ConfigureAwait(false); }
+        try { return await QueryOnceAsync(host, port, token).ConfigureAwait(false); }
         catch (Exception e) when (!token.IsCancellationRequested &&
             e is IOException or SocketException)
         {
@@ -62,43 +58,19 @@ public static class ServerDiscovery
             // metadata, authentication failures or state-changing creation requests.
             Console.WriteLine($"network   {DateTime.UtcNow:O} discovery transport interrupted ({e.GetType().Name}); retrying once");
             await Task.Delay(250, token).ConfigureAwait(false);
-            return await QueryOnceAsync(host, port, knownCertificate, token).ConfigureAwait(false);
+            return await QueryOnceAsync(host, port, token).ConfigureAwait(false);
         }
     }
 
-    static async Task<(ServerInformation Information, string Certificate)> QueryOnceAsync(string host, int port, string? knownCertificate, CancellationToken token)
+    static async Task<ServerInformation> QueryOnceAsync(string host, int port, CancellationToken token)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
         using var tcp = new TcpClient { NoDelay = true };
         await tcp.ConnectAsync(host, port, deadline.Token).ConfigureAwait(false);
-        SslStream tls;
-        string? observed = knownCertificate;
-        if (knownCertificate is not null && GameTls.VerifyServerCertificates) tls = await GameTls.ConnectAsync(tcp.GetStream(), host, knownCertificate, deadline.Token).ConfigureAwait(false);
-        else
-        {
-            // Public discovery records the presented certificate; the shared pre-release policy also applies here.
-            tls = new SslStream(tcp.GetStream(), false, (_, certificate, _, _) =>
-            {
-                if (certificate is null) return false;
-                using var copy = X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
-                var now = DateTime.UtcNow;
-                if (GameTls.VerifyServerCertificates && (now < copy.NotBefore.ToUniversalTime() || now > copy.NotAfter.ToUniversalTime())) return false;
-                observed = copy.GetCertHashString(HashAlgorithmName.SHA256);
-                return true;
-            });
-            try
-            {
-                await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
-                { TargetHost = host, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13, AllowRenegotiation = false }, deadline.Token).ConfigureAwait(false);
-            }
-            catch { await tls.DisposeAsync().ConfigureAwait(false); throw; }
-        }
-        await using (tls)
-        {
-            await WireFrame.WriteAsync(tls, new(WireMessage.ServerInformationQuery, ReadOnlyMemory<byte>.Empty), deadline.Token).ConfigureAwait(false);
-            var frame = await WireFrame.ReadAsync(tls, deadline.Token).ConfigureAwait(false) ?? throw new EndOfStreamException("Server does not support address-only connection. Update the server.");
-            return (Decode(frame), observed ?? throw new AuthenticationException("No server certificate."));
-        }
+        await using var tls = await GameTls.ConnectAsync(tcp.GetStream(), host, deadline.Token).ConfigureAwait(false);
+        await WireFrame.WriteAsync(tls, new(WireMessage.ServerInformationQuery, ReadOnlyMemory<byte>.Empty), deadline.Token).ConfigureAwait(false);
+        var frame = await WireFrame.ReadAsync(tls, deadline.Token).ConfigureAwait(false) ?? throw new EndOfStreamException("Server does not support address-only connection. Update the server.");
+        return Decode(frame);
     }
 }

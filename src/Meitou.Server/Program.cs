@@ -60,8 +60,7 @@ static class Program
                 var issued = accounts.Create(accountName);
                 string path = output is null ? Path.Combine(config.DataDirectory, "connections", issued.Account.ToString("N") + ".json") : Path.GetFullPath(output);
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                var profile = new ServerConnectionProfile(config.AdvertisedHost, config.Port, issued.Account, issued.Token,
-                    certificate.GetCertHashString(HashAlgorithmName.SHA256), hello) { Rules = rules, GameplayAssets = config.GameplayAssets };
+                var profile = new ServerConnectionProfile(config.AdvertisedHost, config.Port, issued.Account, issued.Token, hello) { Rules = rules, GameplayAssets = config.GameplayAssets };
                 if (File.Exists(path)) throw new IOException("Connection output already exists; use another --output path.");
                 profile.Write(path);
                 if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);

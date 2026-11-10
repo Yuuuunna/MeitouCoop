@@ -33,7 +33,7 @@ and final saves run on the world owner after peer teardown. Failed critical pers
 snapshot and reports failure; the last complete checkpoint remains authoritative. Checkpoint retention is
 currently manual; immutable checkpoint directories accumulate.
 
-Profiles contain endpoint, account/token, certificate SHA-256 pin, expected Hello, rules and explicit relative
+Profiles contain endpoint, account/token, expected Hello, rules and explicit relative
 `GameplayAssets`. Both executables call `ServerCompatibility.CreateHello` against their own installation.
 The default hashes database load order and all database bytes; optional paths add selected gameplay assets.
 This intentionally avoids a whole-install scan and does not prove mesh/navigation/animation asset parity.
@@ -46,7 +46,7 @@ per minute per process and the account store retains its 10000-account limit. On
 stored; account-to-player binding still crosses the durable checkpoint boundary. Retrying after a lost
 registration reply reuses the client's saved credential. Discovery publishes rules/assets/Hello only.
 **Verified** by `SecureServerTests.Devices`: TLS discovery, registration/reconnect identity, wrong-token
-and disabled-account rejection, changed-certificate discovery under the pre-release policy and existing login with registration closed.
+and disabled-account rejection, and existing login with registration closed.
 
 `TokenAccountStore` issues a random 256-bit bearer token and GUID account ID. The label is not an identity.
 Only SHA-256 token digests are stored; comparisons use fixed-time byte comparison. Credential/request
@@ -62,11 +62,8 @@ contract, not a hardware/power-loss durability guarantee. Store files and certif
 in server state outside source control. There is no password login or public registration endpoint.
 
 `AuthenticationProtocol` accepts only account GUID/token, at most 512 bytes, with no PlayerId. Production
-hosts must accept it after TLS and compatibility. `GameTls` allows TLS 1.2/1.3. **Observed** (source):
-`GameTls.VerifyServerCertificates` is temporarily false in every pre-release configuration, including Release,
-at the user's request. Discovery and authentication skip certificate identity/validity checks; encryption and
-account authentication remain enabled. Restore the flag and strict-pin test expectations before official release.
-The retained validation path checks system trust/hostname, or a SHA-256 pin plus validity dates.
+hosts must accept it after TLS and compatibility. `GameTls` allows TLS 1.2/1.3 and accepts self-signed server
+certificates without SHA-256 pinning while keeping TLS encryption and account/device authentication enabled.
 Hosts supply handshake/IO deadlines and connection/rate limits.
 PFX loading uses a temporary user-key container on Windows (Schannel rejects ephemeral keys), ephemeral
 keys elsewhere. Callers own/dispose certificates and streams.
@@ -89,8 +86,8 @@ an old world does not restore a revoked token. Ordinary world/checkpoint rollbac
 **Verified** by `ServerAccountTests`, `GameTlsTests` and the three-faction disk-save test: digest-only storage,
 rotation/revocation, failed replacement, corruption rejection, save-failure retry across resolver replacement,
 persistent account-to-player mapping (including an empty world's first account), authenticated login after a
-complete checkpoint restore, conservative migration, duplicate binding rejection, encrypted credential
-frames and encrypted transport with changed pins under the temporary pre-release policy.
+complete checkpoint restore, conservative migration, duplicate binding rejection, and encrypted discovery/credential
+frames with self-signed server certificates.
 
 ## Connection host
 

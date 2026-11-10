@@ -42,9 +42,8 @@ public class HeadlessContentTests
             var peer = new Meitou.Server.SecureServerPeer(loop, sessions, hello, new(data.Db), arrival.PrepareAsync, creation: creation);
             await using var server = new Meitou.Server.QuicGameServer(new(System.Net.IPAddress.Loopback, 0), certificate, peer);
             using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
-            string pin = certificate.GetCertHashString(HashAlgorithmName.SHA256);
             await using var client = await RemoteGameSession.ConnectAsync("127.0.0.1", server.Endpoint.Port, hello,
-                new(credential.Account, credential.Token), new(data.Db), pin, timeout.Token, transportOptions: NativeFixture.Options(certificate));
+                new(credential.Account, credential.Token), new(data.Db), timeout.Token, transportOptions: NativeFixture.Options(certificate));
             Assert.Equal(PlayerEntryRoute.NewPlayer, client.State.Admission.State.Entry!.Route);
             Assert.Equal(0, await loop.InvokeAsync(() => host.World.Characters.Count, timeout.Token));
             var offered = await client.CatalogAsync(new(Guid.NewGuid()), timeout.Token);
@@ -84,7 +83,7 @@ public class HeadlessContentTests
             var restoredPeer = new Meitou.Server.SecureServerPeer(restoredLoop, restoredSessions, hello, new(host.Population.Db), restoredArrival.PrepareAsync);
             await using var restoredServer = new Meitou.Server.QuicGameServer(new(System.Net.IPAddress.Loopback, 0), certificate, restoredPeer);
             await using var resumed = await RemoteGameSession.ConnectAsync("127.0.0.1", restoredServer.Endpoint.Port, hello,
-                new(credential.Account, credential.Token), new(host.Population.Db), pin, timeout.Token, transportOptions: NativeFixture.Options(certificate));
+                new(credential.Account, credential.Token), new(host.Population.Db), timeout.Token, transportOptions: NativeFixture.Options(certificate));
             Assert.NotEqual(client.State.Admission.Identity.World, resumed.State.Admission.Identity.World);
             Assert.Contains(resumed.State.Admission.State.Roles, r => r.Entity == entity && !r.Dead);
             await Enter(resumed, entity);

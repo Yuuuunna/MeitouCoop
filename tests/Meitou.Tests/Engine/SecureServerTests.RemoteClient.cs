@@ -14,7 +14,7 @@ public partial class SecureServerTests
 {
     static Task<RemoteGameSession> ConnectRemote(Scene scene, IssuedCredential credential, CancellationToken token)
         => RemoteGameSession.ConnectAsync("127.0.0.1", scene.Server.Endpoint.Port, Hello(), new(credential.Account, credential.Token),
-            new(scene.Data.Db), scene.Certificate.GetCertHashString(HashAlgorithmName.SHA256), token, transportOptions: NativeFixture.Options(scene.Certificate));
+            new(scene.Data.Db), token, transportOptions: NativeFixture.Options(scene.Certificate));
 
     static async Task<RemoteSessionState> WaitRemote(RemoteGameSession client, Func<RemoteSessionState, bool> condition, CancellationToken token)
     {

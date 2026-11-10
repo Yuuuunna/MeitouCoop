@@ -9,7 +9,7 @@ namespace Meitou.Game;
 /// <summary>Headless online admission before the graphical host starts; never creates a local world.</summary>
 internal static class OnlineBootstrap
 {
-    sealed record SavedCreation(string Host, int Port, Guid Account, string CertificateSha256, PlayerCreationRequest Request);
+    sealed record SavedCreation(string Host, int Port, Guid Account, PlayerCreationRequest Request);
     static readonly TimeSpan PreparationTimeout = TimeSpan.FromMinutes(5);
 
     public static async Task<RemoteGameSession> ConnectAsync(GameInstall install, string profileFile,
@@ -22,7 +22,7 @@ internal static class OnlineBootstrap
         var profile = device ? await DeviceConnection.PrepareAsync(install, profileFile, token).ConfigureAwait(false) : ServerConnectionProfile.Read(profileFile);
         if (device)
         {
-            string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}/{profile.CertificateSha256.ToUpperInvariant()}")));
+            string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}")));
             string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "connections");
             Directory.CreateDirectory(folder);
             profileFile = Path.Combine(folder, key);
@@ -39,7 +39,7 @@ internal static class OnlineBootstrap
         token.ThrowIfCancellationRequested();
         Console.WriteLine("Online: connecting and authenticating...");
         var session = await RemoteGameSession.ConnectAsync(profile.Host, profile.Port, hello,
-            new AuthenticationRequest(profile.Account, profile.Token), new WorldViewCodec(database), profile.CertificateSha256, token, deviceIdentity: device).ConfigureAwait(false);
+            new AuthenticationRequest(profile.Account, profile.Token), new WorldViewCodec(database), token, deviceIdentity: device).ConfigureAwait(false);
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -132,7 +132,6 @@ internal static class OnlineBootstrap
             saved = JsonSerializer.Deserialize<SavedCreation>(await File.ReadAllBytesAsync(journal, token).ConfigureAwait(false))
                 ?? throw new InvalidDataException("Invalid saved online creation request.");
             if (saved.Host != profile.Host || saved.Port != profile.Port || saved.Account != profile.Account
-                || !string.Equals(saved.CertificateSha256, profile.CertificateSha256, StringComparison.OrdinalIgnoreCase)
                 || saved.Request is null || saved.Request.Id == Guid.Empty || saved.Request.FactionName != faction)
                 throw new InvalidOperationException("The saved creation request belongs to a different server/account/faction. Retry its original profile and faction name; do not replace an unresolved request.");
             Console.WriteLine("Online: recovering the saved creation request...");
@@ -152,7 +151,7 @@ internal static class OnlineBootstrap
             if (catalogReply is not { Outcome: CreationOutcome.Catalog, Catalog: { } catalog }) throw CreationError(catalogReply);
             if (catalog.Qualification.Grant.Kind != CreationQualificationKind.InitialStart || catalog.Starts.Length == 0)
                 throw new InvalidOperationException("The server did not offer an independent new-player start.");
-            saved = new(profile.Host, profile.Port, profile.Account, profile.CertificateSha256,
+            saved = new(profile.Host, profile.Port, profile.Account,
                 new(Guid.NewGuid(), catalog.Qualification.Grant.Id, catalog.Qualification.Grant.Revision, catalog.Starts[0].Id, faction));
             // The request reaches disk before any commit can be sent, including after a lost reply or process crash.
             WriteJournal(journal, saved);

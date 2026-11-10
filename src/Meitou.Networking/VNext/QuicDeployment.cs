@@ -30,11 +30,9 @@ public static class QuicDeployment
     }
 
     public static async Task<QuicGameTransportOptions> ClientOptionsAsync(string host, int port,
-        string? certificateSha256, CancellationToken cancellationToken)
+        CancellationToken cancellationToken)
     {
         var deployment = ResolveNative();
-        if (certificateSha256 is not null && !ContentManifest.ValidHash(certificateSha256))
-            throw new ArgumentException("Invalid certificate pin.", nameof(certificateSha256));
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
         using var tcp = new TcpClient { NoDelay = true };
@@ -43,13 +41,8 @@ public static class QuicDeployment
         await using var tls = new SslStream(tcp.GetStream(), false, (_, certificate, _, _) =>
         {
             if (certificate is null) return false;
-            using var leaf = X509CertificateLoader.LoadCertificate(certificate.GetRawCertData());
-            var now = DateTime.UtcNow;
-            if (now < leaf.NotBefore.ToUniversalTime() || now > leaf.NotAfter.ToUniversalTime()) return false;
-            if (certificateSha256 is not null && !CryptographicOperations.FixedTimeEquals(
-                leaf.GetCertHash(HashAlgorithmName.SHA256), Convert.FromHexString(certificateSha256))) return false;
-            certificateBytes = leaf.RawData;
-            return true; // First contact contains public metadata only; the caller persists the observed pin.
+            certificateBytes = certificate.GetRawCertData();
+            return true;
         });
         await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
         {

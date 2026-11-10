@@ -17,20 +17,17 @@ public class QuicBootstrapTests
     }
 
     [Fact, Trait("Category", "Slow")]
-    public async Task PublicBootstrapPinsLeafAndSelectsItsActualTlsIdentity()
+    public async Task PublicBootstrapExportsLeafPemAndSelectsItsActualTlsIdentity()
     {
         Assert.SkipWhen(Environment.GetEnvironmentVariable("MEITOU_QUIC_NATIVE_DIRECTORY") is null,
             "Set the trusted built native artifact directory for bootstrap integration.");
         using var certificate = GameTlsTests.Certificate();
         await using var server = new TcpDiscoveryServer(new(IPAddress.Loopback, 0), certificate, Information());
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var options = await QuicDeployment.ClientOptionsAsync("127.0.0.1", server.Endpoint.Port,
-            certificate.GetCertHashString(HashAlgorithmName.SHA256), timeout.Token);
+        var options = await QuicDeployment.ClientOptionsAsync("127.0.0.1", server.Endpoint.Port, timeout.Token);
         Assert.Equal("localhost", options.ServerName);
         Assert.Equal(certificate.ExportCertificatePem(), await File.ReadAllTextAsync(options.CaFile, timeout.Token));
         File.Delete(options.CaFile);
-        await Assert.ThrowsAsync<AuthenticationException>(() => QuicDeployment.ClientOptionsAsync("127.0.0.1",
-            server.Endpoint.Port, new string('0', 64), timeout.Token));
     }
 
     [Fact]
@@ -41,7 +38,7 @@ public class QuicBootstrapTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         using var tcp = new TcpClient();
         await tcp.ConnectAsync(server.Endpoint, timeout.Token);
-        await using var tls = await GameTls.ConnectAsync(tcp.GetStream(), "localhost", certificate.GetCertHashString(HashAlgorithmName.SHA256), timeout.Token);
+        await using var tls = await GameTls.ConnectAsync(tcp.GetStream(), "localhost", timeout.Token);
         await WireFrame.WriteAsync(tls, new(WireMessage.Authenticate, ReadOnlyMemory<byte>.Empty), timeout.Token);
         try { Assert.Null(await WireFrame.ReadAsync(tls, timeout.Token)); }
         catch (IOException error) when (error.InnerException is SocketException { SocketErrorCode: SocketError.ConnectionReset or SocketError.ConnectionAborted })

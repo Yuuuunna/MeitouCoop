@@ -336,9 +336,10 @@ admitted (4,096 entries/256 KiB maximum); overflow is explicit. Clock-only ordin
 
 Motion capture runs at 20 Hz independently of the 10 Hz animation/critical/UI schedule. Before the
 first actual renderer root submission, receive samples re-anchor the presentation reservoir so initial
-content loading cannot leave a late-entry client permanently behind authority. Native/TLS/credential
-exchange has a 15 s deadline; verified credentials receive an explicit bounded account-binding stage
-(up to 3 min). Registration captures remain on the world owner; detached commit uses the existing
+content loading cannot leave a late-entry client permanently behind authority. Native/TLS/credential exchange has a 15 s deadline; verified credentials receive an explicit bounded
+account-binding stage (up to 3 min). Public TCP discovery (`GameTls` / `QuicDeployment.ClientOptionsAsync`)
+and `DeviceConnection` do not pin or verify self-signed server certificates, while keeping TLS 1.2/1.3
+discovery encryption and leaf-PEM QUIC TLS 1.3 transport encryption. Registration captures remain on the world owner; detached commit uses the existing
 checkpoint coordinator on a worker, with current-world/principal confirmation only after durable success.
 
 Stale-view requests receive a bounded correlated `NotDispatched` outcome in the current epoch; only the

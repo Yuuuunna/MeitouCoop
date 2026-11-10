@@ -166,12 +166,11 @@ and `LocalApplicationData/Meitou/identities-player2` respectively; legacy profil
 The menu omits the initial faction name; the server derives a unique name from its player-faction template
 and player ID, adding a suffix on collision. Explicit names still reject duplicates. Vulkan only; Metal online entry remains unsupported.
 
-Discovery sends no credentials. First contact trusts the presented, unexpired TLS certificate and pins it
-only after metadata/content validation (TOFU, not independently verified server identity). Subsequent
-contacts and the separate authentication connection require that pin; certificate changes fail closed.
+Discovery sends no credentials and runs over encrypted TLS without server certificate pinning, so replacing
+a self-signed server certificate does not block clients.
 ServerInformation is bounded to 128 KiB, 128 rules and 1024 relative install asset paths. No assets or
 credentials are downloaded. Old servers without discovery must be updated. Legacy CLI profiles still work.
-**Verified** by `SecureServerTests.Devices`: address parsing, traversal rejection, certificate changes,
+**Verified** by `SecureServerTests.Devices`: address parsing, traversal rejection, public metadata discovery,
 and installed-content identity persistence without silently replacing corrupt local state.
 
 `OnlineLobby` authenticates asynchronously. Existing living/stored roles resume entry; eligible roleless
@@ -183,7 +182,7 @@ squad is spawned. Difficulty remains server-owned. Esc/cancel abandons preparati
 accepted commit. A cancelled/failed connection can be retried from the form.
 
 Before commit, a flushed atomic journal under LocalApplicationData/Meitou/connections stores the request
-without credentials, keyed by endpoint/account/certificate. A per-key lock excludes concurrent launchers.
+without credentials, keyed by endpoint/account. A per-key lock excludes concurrent launchers.
 Reconnect queries/resumes that exact request; unknown outcomes retain it, definite non-persistence
 rejections release it. Once admitted, the lobby transfers connection ownership to a fresh graphical host;
 the online exit menu disposes that host and returns to the title.
