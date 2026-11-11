@@ -128,16 +128,24 @@ sealed class CharacterEditorHost(GameHost host)
     {
         if (host.ActiveCharacters is not { } characters) return;
         _editorStaged = true;
-        if (host.Player.CharacterEditor.EditorView() is not { } view
-                || host.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == view.Character) is not { } c)
+        if (host.Player.CharacterEditor.EditorView() is not { } view)
         {
             characters.StageRequest = null;
             return;
         }
+
+        // Online drafts have synthetic ids and are not part of a world until the server commits them.
+        var c = host.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == view.Character);
+        if (!host.Player.OnlineEditor && c is null)
+        {
+            characters.StageRequest = null;
+            return;
+        }
+
         characters.StageRequest = new EditorStageRequest(host.DrawKey(view.Character), width, height, view.Yaw, view.Elevation, view.Distance,
             view.Head, host.Camera.FieldOfView, EditorStageShift);
         characters.SetView(width, height, host.Camera.FieldOfView);
-        if (!posed) characters.Update(host.DrawnPosition(c));
+        if (!posed) characters.Update(host.Player.OnlineEditor ? Vector3.Zero : host.DrawnPosition(c!));
         characters.DrawStage();
         DrawEditorPlatform(view.Character, characters);
         characters.ResolveStage();

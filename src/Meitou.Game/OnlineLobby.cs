@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,9 +24,14 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
     public CancellationToken Token => _lifetime.Token;
     public void Cancel() => _lifetime.Cancel();
 
+    /// <summary>
+    /// Discovers compatible content, authenticates and prepares admission, timing each stage without logging credentials.
+    /// </summary>
     public async Task ConnectAsync(string address)
     {
+        var watch = Stopwatch.StartNew();
         var profile = await DeviceConnection.PrepareAsync(install, address, Token).ConfigureAwait(false);
+        LogStep("discovery and content check", watch);
         string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}")));
         string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "connections");
         Directory.CreateDirectory(folder);
@@ -36,9 +42,14 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
             userConfig.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), userConfig.ModSettings);
         if (new CompatibilityHandshake(hello).Receive(profile.Hello) is var mismatch && mismatch != CompatibilityFailure.None)
             throw new InvalidDataException($"Local content does not match the connection profile: {mismatch}.");
+        LogStep("client compatibility check", watch);
+
         _connection = await RemoteGameSession.ConnectAsync(profile.Host, profile.Port, hello,
             new(profile.Account, profile.Token), new WorldViewCodec(database), Token, deviceIdentity: true).ConfigureAwait(false);
+        LogStep("authentication", watch);
+
         await PrepareAdmissionAsync(_connection, _journal).ConfigureAwait(false);
+        LogStep("admission preparation", watch);
     }
 
     internal async Task PrepareAdmissionAsync(RemoteGameSession authenticated, string journalPath)
@@ -74,14 +85,28 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
         Catalog = catalog;
     }
 
+    /// <summary>
+    /// Requests the server's authoritative appearance preview and records its round-trip duration.
+    /// </summary>
     public async Task PreviewAsync(PlayerCreationRequest request)
     {
+        var watch = Stopwatch.StartNew();
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(Token);
         wait.CancelAfter(TimeSpan.FromMinutes(2));
         var reply = await _connection!.PreviewAsync(new(Guid.NewGuid(), 1, request), wait.Token).ConfigureAwait(false);
         if (reply.Outcome != CreationOutcome.Preview) throw Failure(reply);
         Request = request;
         Preview = reply.Preview;
+        LogStep("appearance preview", watch);
+    }
+
+    /// <summary>
+    /// Records a completed admission stage and starts timing the next one; no account or request data is written.
+    /// </summary>
+    static void LogStep(string stage, Stopwatch watch)
+    {
+        Console.WriteLine($"online    {DateTime.UtcNow:O} {stage}: {watch.Elapsed.TotalMilliseconds:0} ms");
+        watch.Restart();
     }
 
     public async Task CommitAsync(PlayerCreationRequest request, bool recovering = false)

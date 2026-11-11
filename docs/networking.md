@@ -193,6 +193,14 @@ confirmation validates and durably commits the final choices before requesting e
 squad is spawned. Difficulty remains server-owned. Esc/cancel abandons preparation; it cannot undo an
 accepted commit. A cancelled/failed connection can be retried from the form.
 
+**Observed** (source: `CharacterEditorHost.DrawEditorStage`, `GameHost.FillDrawListCore`): online drafts use
+synthetic character IDs and a stage origin of zero; drawing their server-provided appearances must not
+require a matching world snapshot character. In-world editors still require that snapshot.
+`GameSaves.PrintSavedLog` reads NPC save logs only from a local `WorldSession`, never a remote replica.
+`OnlineLobby` logs elapsed milliseconds separately for discovery/content checking, client compatibility,
+authentication, admission preparation and appearance preview, without credentials. **Unknown**: the cause
+of the reported connection/start-preview slowdown; stage timings and server preparation logs are needed.
+
 Before commit, a flushed atomic journal under LocalApplicationData/Meitou/connections stores the request
 without credentials, keyed by endpoint/account. A per-key lock excludes concurrent launchers.
 Reconnect queries/resumes that exact request; unknown outcomes retain it, definite non-persistence

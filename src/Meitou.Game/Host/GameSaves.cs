@@ -258,7 +258,8 @@ sealed class GameSaves(GameHost host)
     /// </summary>
     internal void PrintSavedLog()
     {
-        if (host.LocalSession.World.Saved is { } saved)
+        if (host.Session is not WorldSession local) return;
+        if (local.World.Saved is { } saved)
             foreach (var line in saved.TakeLog()) Console.WriteLine($"saved     {line}");
     }
 
