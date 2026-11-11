@@ -3,6 +3,7 @@ using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Server;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
 using Meitou.Simulation.Locks;
 namespace Meitou.Tests.Engine;
 

@@ -10,30 +10,54 @@ namespace Meitou.Localisation;
 /// </summary>
 public sealed class GettextCatalog
 {
-    /// <summary>Separator of a message context and its text in a key (<c>msgctxt</c> + 0x04 + <c>msgid</c>).</summary>
+    /// <summary>
+    /// Separator of a message context and its text in a key (<c>msgctxt</c> + 0x04 + <c>msgid</c>).
+    /// </summary>
     const char ContextSeparator = '\u0004';
 
-    // Key (msgid, or msgctxt 0x04 msgid) -> translated forms; a message without plural has one form.
-    readonly Dictionary<string, string[]> messages = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Key (msgid, or msgctxt 0x04 msgid) -> translated forms; a message without plural has one form.
+    /// </summary>
+    readonly Dictionary<string, string[]> _messages = new(StringComparer.Ordinal);
 
-    // The same messages keyed without case, made on demand (see FindIgnoringCase): a UI layout captions a section "SKILLS" while the catalog's key is "Skills".
-    Dictionary<string, string[]>? byCase;
-    int byCaseVersion = -1;
-    int version;
+    /// <summary>
+    /// The same messages keyed without case, made on demand (see FindIgnoringCase): a UI layout captions a section "SKILLS" while the catalog's key
+    /// is "Skills".
+    /// </summary>
+    Dictionary<string, string[]>? _byCase;
 
-    /// <summary>Stores one message and marks the case-free index stale.</summary>
+    /// <summary>
+    /// The <see cref="_version"/> <see cref="_byCase"/> was made at.
+    /// </summary>
+    int _byCaseVersion = -1;
+
+    /// <summary>
+    /// Bumped by every stored message.
+    /// </summary>
+    int _version;
+
+    /// <summary>
+    /// Stores one message and marks the case-free index stale.
+    /// </summary>
     void Set(string key, string[] forms)
     {
-        messages[key] = forms;
-        version++;
+        _messages[key] = forms;
+        _version++;
     }
 
+    /// <summary>
+    /// The plural rule of the catalog's <c>Plural-Forms</c> header; <see cref="PluralRule.Germanic"/> until a header names one.
+    /// </summary>
     public PluralRule Plurals { get; private set; } = PluralRule.Germanic;
 
-    /// <summary>How many messages have a translation.</summary>
-    public int Count => messages.Count;
+    /// <summary>
+    /// How many messages have a translation.
+    /// </summary>
+    public int Count => _messages.Count;
 
-    /// <summary>A catalog with no messages: every lookup returns null.</summary>
+    /// <summary>
+    /// A catalog with no messages: every lookup returns null.
+    /// </summary>
     public static GettextCatalog Empty { get; } = new();
 
     /// <summary>
@@ -57,18 +81,24 @@ public sealed class GettextCatalog
         return Empty;
     }
 
-    /// <summary>Every message's key and first form.</summary>
-    public IEnumerable<KeyValuePair<string, string>> Messages => messages.Select(m => new KeyValuePair<string, string>(m.Key, m.Value[0]));
+    /// <summary>
+    /// Every message's key and first form.
+    /// </summary>
+    public IEnumerable<KeyValuePair<string, string>> Messages => _messages.Select(m => new KeyValuePair<string, string>(m.Key, m.Value[0]));
 
-    /// <summary>Puts <paramref name="later"/>'s messages over this catalog's (a later file overrides an earlier one); the plural rule stays.</summary>
+    /// <summary>
+    /// Puts <paramref name="later"/>'s messages over this catalog's (a later file overrides an earlier one); the plural rule stays.
+    /// </summary>
     public void Add(GettextCatalog later)
     {
-        foreach (var (key, forms) in later.messages) Set(key, forms);
+        foreach (var (key, forms) in later._messages) Set(key, forms);
     }
 
-    /// <summary>The translation of <paramref name="msgid"/> (first form), or null when the catalog has none.</summary>
+    /// <summary>
+    /// The translation of <paramref name="msgid"/> (first form), or null when the catalog has none.
+    /// </summary>
     public string? Find(string msgid, string? context = null) =>
-        messages.TryGetValue(context is null ? msgid : context + ContextSeparator + msgid, out var forms) ? forms[0] : null;
+        _messages.TryGetValue(context is null ? msgid : context + ContextSeparator + msgid, out var forms) ? forms[0] : null;
 
     /// <summary>
     /// The translation of <paramref name="msgid"/> ignoring case, or null: a UI layout captions what the catalog keys, but in capitals
@@ -76,25 +106,30 @@ public sealed class GettextCatalog
     /// </summary>
     public string? FindIgnoringCase(string msgid)
     {
-        if (byCaseVersion != version || byCase is null)
+        if (_byCaseVersion != _version || _byCase is null)
         {
             // Touched by hand: the catalog can hold the same word in two cases ("Map" and "MAP"), so the first spelling wins instead of throwing.
-            byCase = new(StringComparer.OrdinalIgnoreCase);
-            foreach (var message in messages) byCase.TryAdd(message.Key, message.Value);
-            byCaseVersion = version;
+            _byCase = new(StringComparer.OrdinalIgnoreCase);
+            foreach (var message in _messages) _byCase.TryAdd(message.Key, message.Value);
+            _byCaseVersion = _version;
         }
-        return byCase.TryGetValue(msgid, out var forms) ? forms[0] : null;
+        return _byCase.TryGetValue(msgid, out var forms) ? forms[0] : null;
     }
 
-    /// <summary>The translated plural form for <paramref name="n"/> of the message whose singular source text is <paramref name="singular"/>, or null.</summary>
+    /// <summary>
+    /// The translated plural form for <paramref name="n"/> of the message whose singular source text is <paramref name="singular"/>, or null.
+    /// </summary>
     public string? FindPlural(string singular, long n, string? context = null)
     {
-        if (!messages.TryGetValue(context is null ? singular : context + ContextSeparator + singular, out var forms)) return null;
+        if (!_messages.TryGetValue(context is null ? singular : context + ContextSeparator + singular, out var forms))
+            return null;
         int index = Plurals.Index(n);
         return forms[index < forms.Length ? index : forms.Length - 1];
     }
 
-    /// <summary>The catalog of a <c>.mo</c> file (either byte order; revision 0 or 1).</summary>
+    /// <summary>
+    /// The catalog of a <c>.mo</c> file (either byte order; revision 0 or 1).
+    /// </summary>
     public static GettextCatalog ReadMo(byte[] data)
     {
         if (data.Length < 28) throw new InvalidDataException("not a .mo file (too short)");
@@ -106,7 +141,8 @@ public sealed class GettextCatalog
         if (U32(4) >> 16 > 1) throw new InvalidDataException("unsupported .mo revision");
         long count = U32(8);
         long originals = U32(12), translations = U32(16);
-        if (originals + count * 8 > data.Length || translations + count * 8 > data.Length) throw new InvalidDataException("truncated .mo file");
+        if (originals + count * 8 > data.Length || translations + count * 8 > data.Length)
+            throw new InvalidDataException("truncated .mo file");
 
         ReadOnlySpan<byte> String(long table, long i)
         {
@@ -129,7 +165,8 @@ public sealed class GettextCatalog
             int zero = original.IndexOf((byte)0);
             string key = Encoding.UTF8.GetString(zero < 0 ? original : original[..zero]);
             var forms = Encoding.UTF8.GetString(translated).Split('\0');
-            if (forms.Length == 0 || forms[0].Length == 0) continue;   // untranslated: msgfmt leaves these out, a hand-made file might not
+            if (forms.Length == 0 || forms[0].Length == 0)
+                continue;   // untranslated: msgfmt leaves these out, a hand-made file might not
             catalog.Set(key, forms);
         }
         return catalog;
@@ -140,107 +177,184 @@ public sealed class GettextCatalog
     /// </summary>
     public static GettextCatalog ReadPo(string text)
     {
-        var catalog = new GettextCatalog();
-        string? context = null, id = null;
-        var plural = new List<string>();
-        var current = new StringBuilder();
-        string? field = null;
-        bool fuzzy = false;
-        int pluralIndex = 0;
+        var reader = new PoReader();
+        foreach (var raw in text.Split('\n')) reader.ReadLine(raw.Trim());
+        reader.Finish();
+        return reader.Catalog;
+    }
 
-        void Flush()
-        {
-            if (field is null) return;
-            Store(field, pluralIndex);
-            field = null;
-        }
+    /// <summary>
+    /// Reads a <c>.po</c> file line by line into <see cref="Catalog"/>: the entry being read, and the field whose quoted text is being gathered.
+    /// </summary>
+    sealed class PoReader
+    {
+        /// <summary>
+        /// The entry's <c>msgctxt</c>, null when it has none.
+        /// </summary>
+        string? _context;
 
-        void Store(string name, int index)
+        /// <summary>
+        /// The entry's <c>msgid</c>, null until read.
+        /// </summary>
+        string? _id;
+
+        /// <summary>
+        /// The entry's translated forms (<c>msgstr</c>, or <c>msgstr[n]</c> by index).
+        /// </summary>
+        readonly List<string> _plural = [];
+
+        /// <summary>
+        /// The text of the field being read, its continuation lines appended.
+        /// </summary>
+        readonly StringBuilder _current = new();
+
+        /// <summary>
+        /// The keyword of the field being read (<c>msgstr[]</c> for an indexed form), null between fields.
+        /// </summary>
+        string? _field;
+
+        /// <summary>
+        /// The entry is marked <c>#, fuzzy</c>.
+        /// </summary>
+        bool _fuzzy;
+
+        /// <summary>
+        /// The index of the <c>msgstr[n]</c> being read.
+        /// </summary>
+        int _pluralIndex;
+
+        /// <summary>
+        /// The messages read so far.
+        /// </summary>
+        public GettextCatalog Catalog { get; } = new();
+
+        /// <summary>
+        /// Reads one trimmed line: a blank line or a comment after the entry's text ends the entry, a quoted line continues the field, a keyword
+        /// starts one.
+        /// </summary>
+        public void ReadLine(string line)
         {
-            string value = current.ToString();
-            current.Clear();
-            switch (name)
+            if (line.Length == 0)
             {
-                case "msgctxt": context = value; break;
-                case "msgid": id = value; break;
-                case "msgstr":
-                    plural.Clear();
-                    plural.Add(value);
-                    break;
-                case "msgstr[]":
-                    while (plural.Count <= index) plural.Add("");
-                    plural[index] = value;
-                    break;
+                Finish();
+                return;
             }
-        }
-
-        void Finish()
-        {
-            Flush();
-            if (id is not null)
-            {
-                if (id.Length == 0)
-                {
-                    if (plural.Count > 0) catalog.ReadHeader(plural[0]);
-                }
-                else if (!fuzzy && plural.Count > 0 && plural[0].Length > 0)
-                    catalog.Set(context is null ? id : context + ContextSeparator + id, [.. plural]);
-            }
-            context = id = null;
-            plural.Clear();
-            fuzzy = false;
-            pluralIndex = 0;
-        }
-
-        foreach (var raw in text.Split('\n'))
-        {
-            var line = raw.Trim();
-            if (line.Length == 0) { Finish(); continue; }
-            if (line.StartsWith("#~", StringComparison.Ordinal)) continue;   // obsolete entry
+            if (line.StartsWith("#~", StringComparison.Ordinal)) return;   // obsolete entry
             if (line[0] == '#')
             {
                 // A comment after the entry's text starts the next entry.
-                if (field is not null || id is not null) Finish();
-                if (line.StartsWith("#,", StringComparison.Ordinal) && line.Contains("fuzzy", StringComparison.Ordinal)) fuzzy = true;
-                continue;
+                if (_field is not null || _id is not null) Finish();
+                if (line.StartsWith("#,", StringComparison.Ordinal) && line.Contains("fuzzy", StringComparison.Ordinal))
+                    _fuzzy = true;
+                return;
             }
             if (line[0] == '"')
             {
-                current.Append(Unquote(line));
-                continue;
+                _current.Append(Unquote(line));
+                return;
             }
             Flush();
+            ReadKeyword(line);
+        }
+
+        /// <summary>
+        /// Ends the entry: stores it when it has a translation (the empty <c>msgid</c> is the header), then clears it.
+        /// </summary>
+        public void Finish()
+        {
+            Flush();
+            if (_id is not null)
+            {
+                if (_id.Length == 0)
+                {
+                    if (_plural.Count > 0) Catalog.ReadHeader(_plural[0]);
+                }
+                else if (!_fuzzy && _plural.Count > 0 && _plural[0].Length > 0)
+                    Catalog.Set(_context is null ? _id : _context + ContextSeparator + _id, [.. _plural]);
+            }
+            _context = _id = null;
+            _plural.Clear();
+            _fuzzy = false;
+            _pluralIndex = 0;
+        }
+
+        /// <summary>
+        /// A keyword line (<c>msgctxt</c>, <c>msgid</c>, <c>msgid_plural</c>, <c>msgstr</c>, <c>msgstr[n]</c>) starts its field; a
+        /// <c>msgctxt</c> or <c>msgid</c> after an entry's text starts the next entry. Other lines are ignored.
+        /// </summary>
+        void ReadKeyword(string line)
+        {
             int space = line.IndexOf(' ');
-            if (space < 0) continue;
+            if (space < 0) return;
             string keyword = line[..space];
             if (keyword == "msgctxt" || keyword == "msgid" || keyword == "msgid_plural" || keyword == "msgstr")
             {
-                if (keyword == "msgctxt" && (id is not null || plural.Count > 0)) Finish();
-                if (keyword == "msgid" && plural.Count > 0) Finish();
-                field = keyword;
-                current.Clear().Append(Unquote(line[(space + 1)..]));
+                if (keyword == "msgctxt" && (_id is not null || _plural.Count > 0)) Finish();
+                if (keyword == "msgid" && _plural.Count > 0) Finish();
+                _field = keyword;
+                _current.Clear().Append(Unquote(line[(space + 1)..]));
             }
             else if (keyword.StartsWith("msgstr[", StringComparison.Ordinal) && keyword.EndsWith(']')
                 && int.TryParse(keyword.AsSpan(7, keyword.Length - 8), out int index))
             {
-                field = "msgstr[]";
-                pluralIndex = index;
-                current.Clear().Append(Unquote(line[(space + 1)..]));
+                _field = "msgstr[]";
+                _pluralIndex = index;
+                _current.Clear().Append(Unquote(line[(space + 1)..]));
             }
         }
-        Finish();
-        return catalog;
+
+        /// <summary>
+        /// Stores the field being read, if any.
+        /// </summary>
+        void Flush()
+        {
+            if (_field is null) return;
+            Store(_field, _pluralIndex);
+            _field = null;
+        }
+
+        /// <summary>
+        /// Stores the gathered text as field <paramref name="name"/> (form <paramref name="index"/> of <c>msgstr[]</c>).
+        /// </summary>
+        void Store(string name, int index)
+        {
+            string value = _current.ToString();
+            _current.Clear();
+            switch (name)
+            {
+                case "msgctxt":
+                    _context = value;
+                    break;
+                case "msgid":
+                    _id = value;
+                    break;
+                case "msgstr":
+                    _plural.Clear();
+                    _plural.Add(value);
+                    break;
+                case "msgstr[]":
+                    while (_plural.Count <= index) _plural.Add("");
+                    _plural[index] = value;
+                    break;
+            }
+        }
     }
 
-    // The header message (msgid ""): "Content-Type: ...; charset=..." and "Plural-Forms: ...".
+    /// <summary>
+    /// Reads the header message (msgid ""): "Content-Type: ...; charset=..." and "Plural-Forms: ...".
+    /// </summary>
     void ReadHeader(string header)
     {
         foreach (var line in header.Split('\n'))
+        {
             if (line.StartsWith("Plural-Forms:", StringComparison.OrdinalIgnoreCase))
                 Plurals = PluralRule.Parse(line["Plural-Forms:".Length..]);
+        }
     }
 
-    // The text inside the quotes of a .po string, with the C escapes resolved.
+    /// <summary>
+    /// The text inside the quotes of a .po string, with the C escapes resolved.
+    /// </summary>
     static string Unquote(string quoted)
     {
         quoted = quoted.Trim();
@@ -253,11 +367,21 @@ public sealed class GettextCatalog
         for (int i = 0; i < inner.Length; i++)
         {
             char c = inner[i];
-            if (c != '\\' || i + 1 >= inner.Length) { result.Append(c); continue; }
+            if (c != '\\' || i + 1 >= inner.Length)
+            {
+                result.Append(c);
+                continue;
+            }
             char next = inner[++i];
             result.Append(next switch
             {
-                'n' => '\n', 't' => '\t', 'r' => '\r', 'a' => '\a', 'b' => '\b', 'f' => '\f', 'v' => '\v',
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                'a' => '\a',
+                'b' => '\b',
+                'f' => '\f',
+                'v' => '\v',
                 _ => next,   // \" \\ and unknown escapes
             });
         }

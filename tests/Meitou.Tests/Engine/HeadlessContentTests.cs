@@ -8,10 +8,13 @@ using Meitou.Data.Gameplay;
 using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Runtime.Placement;
-using Meitou.Navigation;
+using Meitou.Simulation.Navigation;
 using Meitou.Data.Gameplay.Construction;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Tests.Engine;
 
@@ -64,7 +67,7 @@ public class HeadlessContentTests
             Assert.Equal(start.Money, Assert.Single(client.State.View!.Factions).Money);
             Assert.Contains(client.State.View.Snapshot.Characters, c => c.Name == "First online role" && c.ItemGrid is not null);
             Assert.NotNull(client.State.View.Weather);
-            var weatherView = new Meitou.Rendering.WorldWeather(WeatherWorld.Create(data.Db, install!, 999, WeatherTime.At(0))) { Log = false };
+            var weatherView = new Meitou.Game.Rendering.Sky.WorldWeather(WeatherWorld.Create(data.Db, install!, 999, WeatherTime.At(0))) { Log = false };
             weatherView.AcceptRemoteAuthority(client.State.View.Weather!);
             Assert.Equal(client.State.View.Weather!.Regions.OrderBy(r => r.RegionId), weatherView.World.Snapshot().OrderBy(r => r.RegionId));
             Assert.False(await loop.InvokeAsync(() => host.World.Player.Exists, timeout.Token));
@@ -201,7 +204,7 @@ public class HeadlessContentTests
         host.World.Commands.Enqueue(new PlaceBuildings([accepted!]) { Tick = host.World.Tick, Faction = host.World.Player.Faction });
         host.World.ApplyPausedInterfaceCommands();
         Assert.Equal(before + 1, host.World.Buildings.Count);
-        var blockerRecord = host.Content.Population.Db.OfType(Meitou.Data.Fcs.FcsRecordType.BUILDING)
+        var blockerRecord = host.Content.Population.Db.OfType(Meitou.Data.Fcs.FcsRecordType.Building)
             .First(r => r.GetInt("path mode", 2) != 0 && r.GetReferences("interior mask").Any());
         var blocker = new BuildSite { Id = "runtime-navigation-test", Record = blockerRecord.StringId,
             Position = centre + new Vector3(200, 0, 0), Owner = host.World.Player.Faction, Complete = true, Materials = [] };
@@ -216,7 +219,7 @@ public class HeadlessContentTests
         var newcomer = host.World.Players.Register(new PlayerId(2));
         multiplayerData.Relations.PlayerFaction = -1;
         // Runtime's dependency closure must remain usable by a process without a renderer.
-        Assert.DoesNotContain(typeof(HeadlessWorld).Assembly.GetReferencedAssemblies(), a => a.Name!.StartsWith("Meitou.Rendering", StringComparison.Ordinal));
+        Assert.DoesNotContain(typeof(HeadlessWorld).Assembly.GetReferencedAssemblies(), a => a.Name!.StartsWith("Meitou.Game.Rendering", StringComparison.Ordinal));
         Assert.NotEmpty(Meitou.Simulation.Saving.PlayerRegistrySave.Capture(host.World, host.Content.Population));
         string checkpointRoot = Meitou.Tests.Save.SaveSamples.Temp("installed-runtime-checkpoint");
         try
@@ -226,7 +229,7 @@ public class HeadlessContentTests
             var service = new PlayerCreationService(coordinator, (ruleset, id) => ruleset == "headless-start" && id == start.Id
                 ? new ApprovedCreationStart(start with { ForceStartPos = true, StartPosition = place }, multiplayerData.PlayerFaction) : null);
             var qualification = host.World.CreationQualifications.IssueInitial(newcomer.Id, "headless-start", multiplayerData.Bodies.Constants.MaxSquadSize);
-            var editableRace = Meitou.Data.Characters.CharacterDraft.PlayableRaces(multiplayerData.Db).SelectMany(g => g.Races).First();
+            var editableRace = Meitou.Data.Characters.PlayableRaces.Of(multiplayerData.Db).SelectMany(g => g.Races).First();
             var choice = new Meitou.Data.Characters.CreationAppearanceChoice(editableRace.StringId, false,
                 [new(Meitou.Data.Characters.EditorTab.Hair, Meitou.Data.Characters.EditorControlKind.HairHue, "Hair colour", 37)], []);
             var request = new PlayerCreationRequest(Guid.NewGuid(), qualification.Id, qualification.Revision, start.Id, "Headless newcomer",

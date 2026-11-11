@@ -5,6 +5,7 @@ using Meitou.Networking.VNext;
 using Meitou.Runtime;
 using Meitou.Server;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
 
 namespace Meitou.Tests.Engine;
 

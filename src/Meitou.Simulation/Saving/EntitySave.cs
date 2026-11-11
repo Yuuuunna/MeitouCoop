@@ -5,7 +5,9 @@ using Meitou.Data.Save;
 
 namespace Meitou.Simulation.Saving;
 
-/// <summary>Meitou extension: persistent identities, including unloaded/dead/removed entities, in the same save as character records.</summary>
+/// <summary>
+/// Meitou extension: persistent identities, including unloaded/dead/removed entities, in the same save as character records.
+/// </summary>
 public static class EntitySave
 {
     public const string CharacterKey = "meitou entity";
@@ -35,7 +37,9 @@ public static class EntitySave
         else save.Camera.Record.Strings[RegistryKey] = JsonSerializer.Serialize(registry);
     }
 
-    /// <summary>Validate the entire identity map before modifying the target world or allocating any entity.</summary>
+    /// <summary>
+    /// Validate the entire identity map before modifying the target world or allocating any entity.
+    /// </summary>
     internal static void Restore(World world, SaveGame save)
     {
         Registry registry;

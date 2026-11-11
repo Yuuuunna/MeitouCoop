@@ -61,6 +61,9 @@ a texture is unloaded after 20 s unused.
 Under `VramGuard` pressure no texture is refined, but one that something draws still loads *lean*: top side at most 256
 (`WorldTextureCache.LeanSize`), while the use stays under 94.5% of the budget (`AllowsLean`). It is refined once the pressure ends. Before this, a
 6 GB laptop (3.5 GB budget, never back under 80%) drew characters with no texture at all (**Observed**, issue #135 log).
+Zones within 3000 of the camera (`VramGuard.NearReach`) are still laid out and their object meshes decoded under pressure, also while the use stays under
+94.5% (`StreamsNear`); farther ones wait for the pressure to end. Before this, a 4 GB laptop (3.4 GB budget, never back under 80%) never loaded the town the
+start put it in (**Observed**, issue #336 log).
 An allocation the driver refuses is retried after the spare blocks are freed, then (render thread only) after the submitted frames are waited for,
 their deferred frees run and the empty blocks are given back (`GpuAllocator.Reclaim`). A refusal that survives puts the guard into pressure.
 The post targets of a resize can't use that path (the old ones are released in the same frame), so when they can't be made the frame draws no world
@@ -96,7 +99,7 @@ zone and come back by one zone test against the current ranges. **Observed** (of
 ## Batching and depth
 
 Batch compatible mesh/material/state instances; sort colour batches near-first when enabled.
-Open building meshes are double-sided. Fade uses per-instance dither lo/hi windows; solid,
+Building parts cull back faces in colour (**Verified**: `objects.material` sets no `cull_hardware`, Ogre's default is clockwise; **Observed** by a mesh probe: Tower of Abuse's level-1 inner wall faces inward, so from outside its near side is not seen), double-sided materials excepted; in shadows only interior parts cull (the game's casters cull clockwise too; engine choice). Other open meshes are double-sided. Floor view: a part is drawn when its floor (clamped to 3) is at most the building's viewed floor, 4 (all) for a building not in the view (**Observed**, decompile `FUN_14092add0`, the clamp in `FUN_14055f6e0`; Meitou does not clamp, so a floor-4 roof hides at viewed floor 3). Fade uses per-instance dither lo/hi windows; solid,
 fading and distant-town batches have different coverage needs. `EarlyDepth.Enabled` selects
 opaque, discard-free colour only for no-cutout/non-fading parts. Draw solids first; retain
 cutout/dither shaders for other batches. Cache native state per program so solid/fading variants
@@ -133,19 +136,19 @@ materials): green valid, red invalid, blue queued. Not drawn in shadow or landma
 
 **Farm plants.** The host lays out each farm machine of the snapshot once (`FarmLayout.Plant`, seeded by the building id) and
 recomputes its plants' transforms (`FarmLayout.Transform`) when the farm's growth, death or harvest count changes
-([farm plants](game/buildings-production.md#farm-plants)). `WorldObjectRenderer.SetFarmPlants` keeps one `Loose` instance per
+([farm plants](game/buildings-production.md#farm-plants)). `FarmPlants.Set` keeps one `Loose` instance per
 plant mesh (a `BuildingPart` of the farm building, its FARM_PART material) and draws the shown ones through `DrawReal`, shadows
 included. The original draws one merged mesh per farm with a `plantData` shader array; Meitou instances each plant (batched by
 mesh). Each plant's colour (`FarmLayout.Tint`, the death tint and brightness of
 [farm plants](game/buildings-production.md#farm-plants)) multiplies its albedo, packed into a negative spare `M44`
-(`WorldObjectRenderer.PackTint`: 8 bits per channel over [0, 1.275]).
+(`FarmPlants.PackTint`: 8 bits per channel over [0, 1.275]).
 
 ## Doors
 
 Door parts carry `PlacedMesh.DoorIndex` (their entry in the building's `doors` list) and take the parent building's `scale`, not
 their own, as the door collision does ([collision](formats/collision.md#placement-and-groups); **Observed**: Defensive Gate III/IV
 are 0.85 with doors at 1, and the leaf drawn at 1 sat oversized and off-centre in the frame). The host hands the renderer the snapshot's
-open amounts (`WorldObjectRenderer.Doors`, by placement id and index); `DrawReal` poses a door part from its closed placement by
+open amounts (`DoorPoses.Open`, by placement id and index); `DrawReal` poses a door part from its closed placement by
 `DoorLeaf.LocalOffset` ([motion](game/locks.md#doors)) along the axes of the part's collision box (`DoorFrame`, the first box of its
 `xml collision`, PhysX Z-up mapped to the part's Y-up), in world units, when its amount changed. Colour and shadow passes see the moved leaf; the GI acceleration structures take
 the instance transform only when they gather instances (not checked for leaves in motion).
@@ -156,11 +159,11 @@ leaves it shown is **Unknown** in code, inferred from those common houses.
 
 ## Turrets
 
-A turret's turning parts (BUILDING_PART `rotation function` ROTATION_TARGET) are joints: the layout (`WorldObjectLayout.AddPart`) gives each part that is or hangs from one
+A turret's turning parts (BUILDING_PART `rotation function` ROTATION_TARGET) are joints: the layout (`WorldObjectLayout.PartJoints`) gives each part that is or hangs from one
 `PlacedMesh.Joints` (the joints above it and its own, outermost first; `TurnJoint` = part record, pivot = its node's place, axis = its node's Y for a yaw part or X for the
-gun's pitch, both as placed). The host (`GameHost.UpdateTurretPoses`) gives the renderer `WorldObjectRenderer.Turrets` (placement id = turret key → `TurretPose`: the
+gun's pitch, both as placed). The host (`GameHost.UpdateTurretPoses`) gives the renderer `JointPoses.Turrets` (placement id = turret key → `TurretPose`: the
 simulation's `TurretRig` angles from `MannedTurret.Angles`, interpolated between the last two snapshots by the simulation's alpha, kept after the gunner leaves).
-`DrawReal` poses a part (`PoseJoints`) when the pose's version changed: its placement times, from the innermost joint out, a turn about the joint's pivot and axis by its
+`DrawReal` poses a part (`JointPoses.Pose`) when the pose's version changed: its placement times, from the innermost joint out, a turn about the joint's pivot and axis by its
 angle. **Verified** by a probe over every turret building of the install (random yaw, position and angles): the posed part's origin and its Z and Y directions equal the
 simulation's `TurretRig.Derived` (30 of 30 parts). **Unknown**: the pose has not been looked at in a rendered frame. Only simulated turrets (the combat system) turn; the
 viewer never does. Parts that are not joints (the six-barrel add-on, the lamp) ride on their joint.
@@ -169,9 +172,9 @@ viewer never does. Parts that are not joints (the six-barrel add-on, the lamp) r
 
 Parts with `rotation function` 1 to 4 ([facts](game/buildings-production.md#rotating-parts)) are joints too: `TurnJoint.Rotor` (`RotorSpec`: function, speeds, wind
 range, start roll, parent X/Z) with pivot = the node's place and axis = its `rotation axis` in world, as placed (at the start roll). The six-barrel now spins on the
-turret's joints; the wind generator's blades ride on its head. A part's state (`WorldObjectRenderer.Rotors.cs`, by placement, part and pivot) is made when one of
-its meshes is first drawn and dropped 600 frames after the last; the host (`GameHost.UpdateRotors`) calls `AdvanceRotors` once a frame with real time x speed (0
-paused), the scheduled wind (`WeatherWorld.WindAt`, a forced weather does not count) and the mult (`MachineSnapshot.Rotation`, level buildings by data); construction sites stand still (`RotorUnbuilt`). A head
+turret's joints; the wind generator's blades ride on its head. A part's state (`RotatingParts`, by placement, part and pivot) is made when one of
+its meshes is first drawn and dropped 600 frames after the last; the host (`GameHost.UpdateRotors`) calls `RotatingParts.Advance` once a frame with real time x speed (0
+paused), the scheduled wind (`WeatherWorld.WindAt`, a forced weather does not count) and the mult (`MachineSnapshot.Rotation`, level buildings by data); construction sites stand still (`RotatingParts.Unbuilt`). A head
 hears the weather when the wind at it differs from the last frame (the original's notifications come while it interpolates). Joint meshes under a rotor are posed
 every frame: angle less the start roll (functions 1 to 3 stay at the roll until they first move). **Unknown**: not looked at in a rendered frame; shadow caches and
 motion vectors of moving parts not checked.

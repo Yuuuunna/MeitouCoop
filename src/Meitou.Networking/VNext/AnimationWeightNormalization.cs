@@ -1,3 +1,4 @@
+using Meitou.Simulation.Movement;
 using Meitou.Simulation;
 
 namespace Meitou.Networking.VNext;
@@ -13,21 +14,35 @@ internal static class AnimationWeightNormalization
         for (int i = 0; i < layers.Length; i++)
         {
             float weight = layers[i].Weight;
-            if (weight <= 0) continue;
+            if (weight <= 0)
+                continue;
             var layer = metadata[i];
             if (layer.Area == AnimationBlendArea.Lower)
             {
-                if (layer.Wanted) lowerWanted += weight; else lowerFading += weight;
+                if (layer.Wanted)
+                    lowerWanted += weight;
+                else
+                    lowerFading += weight;
             }
             else if (layer.Area != AnimationBlendArea.Overlay)
             {
-                if (layer.Wanted) upperWanted += weight; else upperFading += weight;
-                if (layer.ConsumesLower) { if (layer.Wanted) fullWanted += weight; else fullFading += weight; }
+                if (layer.Wanted)
+                    upperWanted += weight;
+                else
+                    upperFading += weight;
+                if (layer.ConsumesLower)
+                {
+                    if (layer.Wanted)
+                        fullWanted += weight;
+                    else
+                        fullFading += weight;
+                }
             }
         }
-        var (upperWantedScale, upperFadingScale) = Fill(upperWanted, upperFading, 1);
+
+        var(upperWantedScale, upperFadingScale) = Fill(upperWanted, upperFading, 1);
         float room = MathF.Max(0, 1 - fullWanted * upperWantedScale - fullFading * upperFadingScale);
-        var (lowerWantedScale, lowerFadingScale) = Fill(lowerWanted, lowerFading, room);
+        var(lowerWantedScale, lowerFadingScale) = Fill(lowerWanted, lowerFading, room);
         for (int i = 0; i < layers.Length; i++)
         {
             var layer = metadata[i];
@@ -37,9 +52,13 @@ internal static class AnimationWeightNormalization
                 AnimationBlendArea.Overlay => 1,
                 _ => layer.Wanted ? upperWantedScale : upperFadingScale,
             };
-            layers[i] = layers[i] with { Weight = layers[i].Weight * scale };
+            layers[i] = layers[i] with
+            {
+                Weight = layers[i].Weight * scale
+            };
         }
     }
+
     static (float Wanted, float Fading) Fill(float wanted, float fading, float total)
     {
         float wantedScale = wanted > 0 && total - fading > wanted ? (total - fading) / wanted : 1;

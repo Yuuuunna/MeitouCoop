@@ -1,0 +1,1623 @@
+using EffectType = Meitou.Data.Particles.EffectType;
+using WeatherEffectEntry = Meitou.Data.Particles.WeatherEffectEntry;
+using Meitou.Data.World;
+using Meitou.Data.Fcs;
+using Meitou.Data;
+using System.Diagnostics;
+using System.Numerics;
+using Meitou.Content;
+using Meitou.Data.Ogre;
+using Meitou.Data.Particles;
+using Meitou.Data.Textures;
+using Meitou.Game.Rendering.Frame;
+using Meitou.Game.Rendering.Gpu;
+using Meitou.Game.Rendering.Post;
+using Meitou.Game.Rendering.Sky;
+using Meitou.Game.Rendering.Water;
+
+namespace Meitou.Game.Rendering.Particles;
+public sealed unsafe partial class ParticleRenderer
+{
+    /// <summary>
+    /// The billboards' vertex stage: each instance's quad placed by its billboard type and anchor, camera-relative, with the Meitou lighting and haze
+    /// per vertex.
+    /// </summary>
+    static readonly string Vertex = "#version 330 core\n" + AtmosphereShaders.Functions + FogVolumeShaders.Functions + """
+
+        layout(location = 0) in vec2 aCorner;       // the quad's corner, -0.5 .. 0.5, in triangle-strip order
+        layout(location = 1) in vec4 aPositionRotation;   // camera-relative position, texture rotation (radians)
+        layout(location = 2) in vec4 aDirectionWidth;     // unit direction of travel, width
+        layout(location = 3) in vec4 aColour;
+        layout(location = 4) in vec4 aHeight;             // height, depth
+        uniform mat4 uViewProjection;               // world-from-camera-relative included: the positions are relative to the eye
+        uniform vec3 uCameraRight;
+        uniform vec3 uCameraUp;
+        uniform int uMode;                          // 0 point, 1 oriented_common, 2 oriented_self, 3 perpendicular_common, 4 perpendicular_self
+        uniform vec2 uAnchor;                       // the origin of the quad as an offset from its centre, in widths and heights (bottom_center: 0, -0.5)
+        uniform vec3 uCommonDirection;
+        uniform vec3 uCommonUp;
+        uniform vec4 uColourScale;                  // the fragment program's `colour` parameter, with the ambient factor in rgb
+        out vec2 vUv;
+        out vec4 vColour;
+        out float vDepth;                           // the view depth (clip w), for the soft fade
+        out float vSoft;                            // the soft fade's distance: a quarter of the sprite's size, 2 to 300 units
+        uniform vec4 uLitVertex;                    // x 1: lit (Meitou fog switch), z the glow towards the sun
+        uniform vec3 uParticleEye;                  // the eye in the world (the positions are relative to it)
+        out vec3 vHazeMul, vHazeAdd;                // the haze and the fog volumes in front of the corner: colour * mul + add
+        out float vSun;                             // the sun's visibility through the sprite's volume (the same at every corner)
+        out float vGlow;                            // the light scattered forward when the sprite is seen towards the sun
+
+        // The sun's visibility averaged through a sprite's volume: eight bilinear compares at the corners of a cube half its size about its centre, each
+        // in the first cascade that holds it (1 beyond them). Read at each fragment of the flat quad, the shadow printed the outline of every tree and
+        // rock on every sprite, so overlapping dust showed blurred copies of them at the sprites' depths.
+        float particleSun(vec3 centre, float size)
+        {
+            float lit = 0.0;
+            for (int i = 0; i < 8; i++)
+            {
+                vec3 w = centre + (vec3(i & 1, (i >> 1) & 1, (i >> 2) & 1) - 0.5) * (0.5 * size);
+                int c = shadowCascade(w);
+                if (c < 0)
+                {
+                    lit += 1.0;
+                    continue;
+                }
+                vec3 tile = (uShadowTile[c] * vec4(w - uShadowOrigin.xyz, 1.0)).xyz;
+                lit += shadowCascadeLayer(tile.xy, c, tile.z);
+            }
+            return lit * 0.125;
+        }
+
+        void main()
+        {
+            vec3 position = aPositionRotation.xyz;
+            float width = aDirectionWidth.w;
+            float height = aHeight.x;
+            vSoft = clamp(0.25 * max(width, height), 2.0, 300.0);
+            vec2 q = (aCorner - uAnchor) * vec2(width, height);
+            vec2 middle = -uAnchor * vec2(width, height);   // the quad's centre, as q
+            vec3 right, up;
+            if (uMode == 0)
+            {
+                float c = cos(aPositionRotation.w), s = sin(aPositionRotation.w);
+                q = vec2(c * q.x - s * q.y, s * q.x + c * q.y);
+                middle = vec2(c * middle.x - s * middle.y, s * middle.x + c * middle.y);
+                right = uCameraRight;
+                up = uCameraUp;
+            }
+            else if (uMode == 1 || uMode == 2)
+            {
+                // The quad's up axis is the common direction (1) or the direction of travel (2); it turns about it to face the eye.
+                up = uMode == 1 ? normalize(uCommonDirection) : (dot(aDirectionWidth.xyz, aDirectionWidth.xyz) > 0.5 ? aDirectionWidth.xyz : uCameraUp);
+                vec3 toEye = -position;
+                right = cross(up, toEye);
+                float l = length(right);
+                right = l > 1e-5 ? right / l : uCameraRight;
+            }
+            else
+            {
+                // A flat quad: facing along the common direction (3) or the direction of travel (4), its up the common up vector.
+                vec3 normal = uMode == 3 ? normalize(uCommonDirection) : (dot(aDirectionWidth.xyz, aDirectionWidth.xyz) > 0.5 ? aDirectionWidth.xyz : normalize(uCommonDirection));
+                up = uCommonUp;
+                right = cross(up, normal);
+                float l = length(right);
+                right = l > 1e-5 ? right / l : uCameraRight;
+                up = normalize(cross(normal, right));
+            }
+            vec3 world = position + right * q.x + up * q.y;
+            gl_Position = uViewProjection * vec4(world, 1.0);
+            vDepth = gl_Position.w;
+            vUv = vec2(aCorner.x + 0.5, 0.5 - aCorner.y);
+            vColour = vec4(aColour.rgb * uColourScale.rgb, aColour.a * uColourScale.a);
+            vHazeMul = vec3(1.0);
+            vHazeAdd = vec3(0.0);
+            vSun = 1.0;
+            vGlow = 1.0;
+            if (uLitVertex.x > 0.5)
+            {
+                vSun = particleSun(uParticleEye + position + right * middle.x + up * middle.y, max(width, height));
+                atmoApplyCoefficients(uParticleEye, uParticleEye + world, vHazeMul, vHazeAdd);
+                // And the placed fog volumes and the effects' fog spheres in front of it, blended over that as the game blends them over the hazed scene
+                // (the sprites came after them, so a dust cloud behind a fog bank showed through it).
+                float dist = length(world);
+                vec3 fogAdd;
+                float fogTrans;
+                fogVolumesAccumulate(uParticleEye, world / max(dist, 1e-3), dist, fogAdd, fogTrans);
+                vHazeMul *= fogTrans;
+                vHazeAdd = vHazeAdd * fogTrans + fogAdd;
+                vGlow = 1.0 + uLitVertex.z * pow(max(dot(normalize(world), uAtmoSun.xyz), 0.0), 8.0);
+            }
+        }
+        """;
+    /// <summary>
+    /// The billboards' fragment stage: the textured colour (lit with the Meitou fog switch), the Meitou soft fade against the scene depth, and the
+    /// coverage outputs for the reactive mask and the low-resolution target.
+    /// </summary>
+    static readonly string Fragment = """
+        #version 330 core
+        in vec2 vUv;
+        in vec3 vHazeMul, vHazeAdd;
+        in float vSun;
+        in float vGlow;
+        uniform vec4 uLitFragment;                  // x 1: lit (Meitou fog switch), y how much of the light the sun's shadow takes, z 0 alpha blend, 1 additive, 2 neither
+        in vec4 vColour;
+        in float vDepth;
+        in float vSoft;
+        out vec4 fragColour;
+        uniform sampler2D uTexture;
+        uniform sampler2D uSoftDepth;               // the scene's depth at this target's size (the Meitou fog switch), as a colour
+        uniform vec4 uSoft;                         // x: 0 hard (the game's), 1 fade the alpha, 2 the colour and alpha (additive), 3 towards white (modulate); y, z: the scene depth's near, far; w unused
+        uniform float uCoverageMax, uCoverageGain;
+        uniform int uCoverage;                      // 0: colour; 1: the particle's alpha, 2: its brightest channel (the upscalers' reactive mask); 3 / 4: the low-resolution target's premultiplied alpha / additive
+        """ + DepthConvention.Glsl + """
+        void main()
+        {
+            // basic.hlsl: texture * colour * vertex colour. A recoloured burst (negative vertex rgb, Burst's recolour) takes that colour instead of the texture's hue, keeping its brightness.
+            vec4 t = texture(uTexture, vUv);
+            if (min(vColour.r, min(vColour.g, vColour.b)) < 0.0) t.rgb = vec3(max(t.r, max(t.g, t.b)));
+            vec4 c = t * abs(vColour);
+            // Meitou fog: dust and smoke lit as the scene is (the game's sprites are flat, and not fogged): darker where the sun is shadowed, brighter seen
+            // towards the sun, then seen through the haze in front of them like the land behind; an additive sprite (fire) only dimmed by the haze.
+            if (uLitFragment.x > 0.5 && uLitFragment.z < 1.5)
+            {
+                if (uLitFragment.z < 0.5)
+                {
+                    c.rgb *= (1.0 - uLitFragment.y * (1.0 - vSun)) * mix(1.0, vGlow, vSun);
+                    c.rgb = c.rgb * vHazeMul + vHazeAdd;
+                }
+                else c.rgb *= vHazeMul;
+            }
+            // Meitou fog: the sprite fades out over its last vSoft units before the surface behind it, instead of cutting into it.
+            if (uSoft.x > 0.0)
+            {
+                float d = texelFetch(uSoftDepth, ivec2(gl_FragCoord.xy), 0).r;
+                float scene = depthViewZ(d, uSoft.yz);
+                float fade = clamp((scene - vDepth) / vSoft, 0.0, 1.0);
+                if (uSoft.x == 1.0) c.a *= fade;
+                else if (uSoft.x == 2.0) c *= fade;
+                else c.rgb = mix(vec3(1.0), c.rgb, fade);
+            }
+            // Alpha for alpha-blended sprites (rgb where alpha is 0 shows nothing), brightness times alpha for additive ones, times uCoverageGain (RecordDraws).
+            if (uCoverage == 1) c = vec4(clamp(c.a * uCoverageGain, 0.0, uCoverageMax));
+            else if (uCoverage == 2) c = vec4(clamp(max(c.r, max(c.g, c.b)) * c.a * uCoverageGain, 0.0, uCoverageMax));
+            else if (uCoverage == 3) c = vec4(c.rgb * c.a, c.a);   // premultiplied "over": rgb = colour added, a = opacity (1 - transmittance); blend (one, 1 - src alpha)
+            else if (uCoverage == 4) c = vec4(c.rgb, 0.0);          // additive: the same blend adds rgb and leaves the opacity
+            fragColour = c;
+        }
+        """;
+
+    /// <summary>
+    /// The size of an instance row (four vec4 attributes), in bytes.
+    /// </summary>
+    const int InstanceBytes = 64;
+    /// <summary>
+    /// The farthest a unit is drawn.
+    /// </summary>
+    public const float DrawRange = 20400;
+
+    /// <summary>
+    /// The device the particles are drawn on.
+    /// </summary>
+    readonly IGpuContext _gpu;
+    /// <summary>
+    /// A material's texture name to its file: Ogre's lookup by bare name, mods' folders included (<see cref="AssetLocator"/>).
+    /// </summary>
+    readonly Func<string, string?> _findTexture;
+    /// <summary>
+    /// The billboard program.
+    /// </summary>
+    readonly LegacyProgram _program;
+    /// <summary>
+    /// The native segment the draws are recorded through.
+    /// </summary>
+    readonly NativeSegment _segment;
+    /// <summary>
+    /// The quad's four corners (a triangle strip).
+    /// </summary>
+    readonly DeviceBuffer _quad;
+    /// <summary>
+    /// The vertex bindings: the quad corner and the four instance rows.
+    /// </summary>
+    readonly VertexArrayBindings _vertexSource;
+    /// <summary>
+    /// Scratch for the draws' vertex buffer bindings.
+    /// </summary>
+    readonly GpuBufferBinding[] _bindings = new GpuBufferBinding[5];
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _viewProjection;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _cameraRight;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _cameraUp;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _mode;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _anchor;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _commonDirection;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _commonUp;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _colourScale;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _coverageMode;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _coverageLimit;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _coverageGain;
+    /// <summary>
+    /// The program's camera, billboard and coverage uniforms.
+    /// </summary>
+    readonly UniformHandle _soft;
+    /// <summary>
+    /// The program's uniforms for the Meitou lighting.
+    /// </summary>
+    readonly UniformHandle _litVertex;
+    /// <summary>
+    /// The program's uniforms for the Meitou lighting.
+    /// </summary>
+    readonly UniformHandle _litFragment;
+    /// <summary>
+    /// The program's uniforms for the Meitou lighting.
+    /// </summary>
+    readonly UniformHandle _particleEye;
+    /// <summary>
+    /// Meitou (the <c>fog</c> switch): alpha sprites lit as the scene is, darker where the sun is shadowed (by <see cref="SunShade"/>), brighter seen
+    /// towards the sun, and seen through the haze in front of them; additive ones dimmed by the haze. The game's are flat and not fogged, so a dust
+    /// cloud had one brightness everywhere, in sun and in shade, near and far (docs/render-post.md "Fog").
+    /// </summary>
+    public bool Lit { get; set; }
+    /// <summary>
+    /// How much of the light on a sprite the sun's shadow takes (the light shafts' darkening: the sun's share of the light).
+    /// </summary>
+    public float SunShade { get; set; }
+    /// <summary>
+    /// How much brighter a sprite seen straight towards the sun is (forward scattering; falls off as the eighth power of the cosine).
+    /// </summary>
+    public const float SunGlow = 0.5f;
+    /// <summary>
+    /// This frame's eye (<see cref="StoreFrame"/>).
+    /// </summary>
+    Vector3 _frameEye;
+    /// <summary>
+    /// The program's texture and soft-depth samplers.
+    /// </summary>
+    readonly SamplerSlot _textureSlot;
+    /// <summary>
+    /// The program's texture and soft-depth samplers.
+    /// </summary>
+    readonly SamplerSlot _softDepthSlot;
+    /// <summary>
+    /// The 1 × 1 white stand-in for a missing texture.
+    /// </summary>
+    readonly SampledImage _white;
+    /// <summary>
+    /// The uploaded textures by name (null: missing or failed).
+    /// </summary>
+    readonly Dictionary<string, SampledImage?> _textures = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// A texture's name to the pixels across its sprites need to keep their detail (<see cref="ParticleTextureDetail"/>; missing: 1).
+    /// </summary>
+    readonly Dictionary<string, float> _pixelsNeeded = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The weather's groups, the map's placers, the bursts and the buildings' effects.
+    /// </summary>
+    readonly EffectGroupSet _groups;
+    /// <summary>
+    /// Runs the units' simulation on the thread pool.
+    /// </summary>
+    readonly EffectSimulator _simulator = new();
+    /// <summary>
+    /// Scratch: the units to simulate this frame.
+    /// </summary>
+    readonly List<EffectUnit> _simulationWork = [];
+    /// <summary>
+    /// Scratch: the units drawn this frame, with whether each is rain and whether it is placed.
+    /// </summary>
+    readonly List<(EffectUnit Unit, bool Rain, bool Placed)> _drawUnits = [];
+    /// <summary>
+    /// This frame's draws (<see cref="Prepare"/>).
+    /// </summary>
+    readonly List<DrawItem> _draws = [];
+    /// <summary>
+    /// The frame clock at the last <see cref="Update"/> (NaN before the first).
+    /// </summary>
+    double _lastSeconds = double.NaN;
+    /// <summary>
+    /// Particles and units drawn in the last frame, and the units active.
+    /// </summary>
+    int _drawnParticles;
+    /// <summary>
+    /// Particles and units drawn in the last frame, and the units active.
+    /// </summary>
+    int _drawnUnits;
+    /// <summary>
+    /// Particles and units drawn in the last frame, and the units active.
+    /// </summary>
+    int _activeUnits;
+    /// <summary>
+    /// The simulation running (null: none).
+    /// </summary>
+    EffectSimulator.Job? _simulation;
+    /// <summary>
+    /// The last frame's simulation and wait ticks, their totals, and the frames simulated.
+    /// </summary>
+    long _simulationTicks;
+    /// <summary>
+    /// The last frame's simulation and wait ticks, their totals, and the frames simulated.
+    /// </summary>
+    long _waitTicks;
+    /// <summary>
+    /// The last frame's simulation and wait ticks, their totals, and the frames simulated.
+    /// </summary>
+    long _simulationTotal;
+    /// <summary>
+    /// The last frame's simulation and wait ticks, their totals, and the frames simulated.
+    /// </summary>
+    long _waitTotal;
+    /// <summary>
+    /// The last frame's simulation and wait ticks, their totals, and the frames simulated.
+    /// </summary>
+    long _simulationFrames;
+    /// <summary>
+    /// Mean simulation and main-thread wait per simulated frame since the start (for the benchmarks).
+    /// </summary>
+    public (double Simulation, double Wait) MeanMilliseconds => _simulationFrames == 0 ? (0,
+        0) : (_simulationTotal * 1000.0 / Stopwatch.Frequency / _simulationFrames, _waitTotal * 1000.0 / Stopwatch.Frequency / _simulationFrames);
+
+    /// <summary>
+    /// The particle systems and materials the groups are made from.
+    /// </summary>
+    public ParticleLibrary Library { get; }
+    /// <summary>
+    /// What the groups need of the world: the ground height, the area effects are placed in. The viewer fills it once; the scheduler's hookup can
+    /// change <see cref="EffectWorld.Area"/> with the region.
+    /// </summary>
+    public EffectWorld World { get; } = new();
+    /// <summary>
+    /// The viewer's <c>--no-particles</c>: nothing is simulated or drawn.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+    /// <summary>
+    /// The Tab panel's weather particles slider at 0: the weather's groups are neither simulated nor drawn (the map's effect placers, fires and
+    /// smoke, stay; so do the effects' fog volumes).
+    /// </summary>
+    public bool WeatherParticles { get; set; } = true;
+    /// <summary>
+    /// Meitou (the <c>fog</c> switch): each unit is drawn faded by its distance (<see cref="EffectUnit.RangeFade"/>). The game simulates an effect
+    /// only within a distance of the camera; a unit coming into it appeared with its whole cloud at once and one leaving it vanished (clouds of dust
+    /// popping in and out some 14 km away in the Great Desert's streamers).
+    /// </summary>
+    public bool RangeFade { get; set; }
+    /// <summary>
+    /// Seconds simulated before the first picture, for the new groups: null (the default) is each system's longest particle life, capped at
+    /// <see cref="MaxAutoPrewarm"/>; 0 starts empty.
+    /// </summary>
+    public float? PrewarmSeconds { get => _groups.Weather.PrewarmSeconds; set => _groups.Weather.PrewarmSeconds = value; }
+    /// <summary>
+    /// The longest automatic prewarm, in seconds (<see cref="WeatherGroups.MaxAutoPrewarm"/>).
+    /// </summary>
+    public const float MaxAutoPrewarm = WeatherGroups.MaxAutoPrewarm;
+    /// <summary>
+    /// The seed of the groups' random numbers (a group takes the seed plus its place in the list).
+    /// </summary>
+    public int Seed { get => _groups.Weather.Seed; set => _groups.Weather.Seed = value; }
+    /// <summary>
+    /// Seconds the camera must stay in another weather region before the groups are rebuilt for it (<see cref="WeatherGroups.RegionDwell"/>); 0
+    /// rebuilds at once.
+    /// </summary>
+    public float RegionDwell { get => _groups.Weather.RegionDwell; set => _groups.Weather.RegionDwell = value; }
+    /// <summary>
+    /// Whether a changed weather is warmed on a worker while the old groups run on (the default); false makes and warms it at once on the render
+    /// thread (<see cref="WeatherGroups.Background"/>).
+    /// </summary>
+    public bool BackgroundWeather { get => _groups.Weather.Background; set => _groups.Weather.Background = value; }
+    /// <summary>
+    /// Particles drawn in the last frame, for the statistics.
+    /// </summary>
+    public int DrawnParticles => _drawnParticles;
+    /// <summary>
+    /// Units drawn in the last frame.
+    /// </summary>
+    public int DrawnUnits => _drawnUnits;
+    /// <summary>
+    /// Units simulated in the last frame.
+    /// </summary>
+    public int ActiveUnits => _activeUnits;
+    /// <summary>
+    /// The last frame's simulation time (summed over its threads' work: the wall time of the background task) and how long the main thread waited for
+    /// it, in milliseconds.
+    /// </summary>
+    public double SimulationMilliseconds => _simulationTicks * 1000.0 / Stopwatch.Frequency;
+    /// <summary>
+    /// See <see cref="SimulationMilliseconds"/>.
+    /// </summary>
+    public double WaitMilliseconds => _waitTicks * 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>
+    /// The particles alive in the weather's groups and the placers (waits for the simulation).
+    /// </summary>
+    public int ParticleCount
+    {
+        get
+        {
+            Sync();
+            return AllGroups.Sum(g => g.ParticleCount);
+        }
+    }
+
+    /// <summary>
+    /// The weather's groups (not the map placers').
+    /// </summary>
+    public IReadOnlyList<EffectGroup> Groups => _groups.Weather.Groups.Where(ShowLocal).Concat(_presented.Groups.Where(g => g.Entry is not null)).ToArray();
+    /// <summary>
+    /// The map placers' groups.
+    /// </summary>
+    public IReadOnlyList<EffectGroup> PlacerGroups => _groups.Placers.Where(ShowLocal).Concat(_presented.Groups.Where(g => g.Entry is null)).ToArray();
+    /// <summary>
+    /// The entries of the weather's effect list that have no group (a type that is not a weather effect, or an unknown particle system).
+    /// </summary>
+    public IReadOnlyList<WeatherEffectEntry> Skipped => _groups.Weather.Skipped;
+
+    /// <summary>
+    /// A streak from <see cref = "Tail"/> to <see cref = "Head"/> (world positions), <see cref = "Width"/> units wide, in <see cref = "Colour"/> (its alpha
+    /// at the head, fading to nothing at the tail).
+    /// </summary>
+    public readonly record struct Tracer(Vector3 Head, Vector3 Tail, float Width, Vector4 Colour);
+
+    /// <summary>
+    /// The Meitou <c>tracers</c> switch's streaks behind the bolts (docs/game/combat.md "Bolt visuals"), which the game fills every frame: drawn
+    /// after the effects as one oriented_self technique, alpha blended, unlit (as bright by night as by day), always at full size, and counted in the
+    /// upscalers' reactive mask as rain is (thin and fast).
+    /// </summary>
+    public List<Tracer> Tracers { get; } = [];
+
+    /// <summary>
+    /// One technique's draw: its instances in the frame's constants, its material, texture and target size.
+    /// </summary>
+    struct DrawItem
+    {
+        /// <summary>
+        /// The instance rows.
+        /// </summary>
+        public Transient Instances;
+        /// <summary>
+        /// How many instances, and how many of the first are nearer than the near plane.
+        /// </summary>
+        public int Count;
+        /// <summary>
+        /// How many instances, and how many of the first are nearer than the near plane.
+        /// </summary>
+        public int Close;
+        /// <summary>
+        /// The technique drawn.
+        /// </summary>
+        public PuTechniqueDef Technique;
+        /// <summary>
+        /// Its material.
+        /// </summary>
+        public ParticleMaterial Material;
+        /// <summary>
+        /// Its texture.
+        /// </summary>
+        public SampledImage Texture;
+        /// <summary>
+        /// 1: drawn into the scene at full size; 2 or 4: into the low-resolution accumulation target of 1/2 or 1/4 the render size (Meitou).
+        /// </summary>
+        public int Divisor;
+        /// <summary>
+        /// The sprites' total area in screens (layers of overdraw, before clipping and the depth test).
+        /// </summary>
+        public float Fill;
+        /// <summary>
+        /// Rain (a <c>CAMERA_RAIN</c> or <c>CAMERA_ACID_RAIN</c> effect's draw) and fire (a placed effect's additive draw: flames, sparks): full size
+        /// at every setting, each with its own coverage (RecordDraws).
+        /// </summary>
+        public bool Rain;
+        /// <summary>
+        /// Rain (a <c>CAMERA_RAIN</c> or <c>CAMERA_ACID_RAIN</c> effect's draw) and fire (a placed effect's additive draw: flames, sparks): full size
+        /// at every setting, each with its own coverage (RecordDraws).
+        /// </summary>
+        public bool Fire;
+        /// <summary>
+        /// The <see cref="Tracers"/>' draw: full size, counted in the reactive mask as rain.
+        /// </summary>
+        public bool Tracer;
+    }
+
+    /// <summary>
+    /// Compiles the program, resolves its handles and makes the quad, the white stand-in and the tracers' texture.
+    /// </summary>
+    ParticleRenderer(IGpuContext gpu, Func<string, string?> findTexture, ParticleLibrary library)
+    {
+        this._gpu = gpu;
+        this._findTexture = findTexture;
+        Library = library;
+        _groups = new EffectGroupSet(library, World);
+        _presented = new PresentedEffectSet(library, World);
+        _program = LegacyProgram.Create(gpu, Vertex, Fragment, "particles");
+        _segment = new NativeSegment(gpu, _program, PrimitiveType.TriangleStrip, "particles");
+        _viewProjection = _program.Uniform("uViewProjection");
+        _cameraRight = _program.Uniform("uCameraRight");
+        _cameraUp = _program.Uniform("uCameraUp");
+        _mode = _program.Uniform("uMode");
+        _anchor = _program.Uniform("uAnchor");
+        _commonDirection = _program.Uniform("uCommonDirection");
+        _commonUp = _program.Uniform("uCommonUp");
+        _colourScale = _program.Uniform("uColourScale");
+        _coverageMode = _program.Uniform("uCoverage");
+        _coverageLimit = _program.Uniform("uCoverageMax");
+        _coverageGain = _program.Uniform("uCoverageGain");
+        _textureSlot = _program.Sampler("uTexture");
+        _softDepthSlot = _program.Sampler("uSoftDepth");
+        _soft = _program.Uniform("uSoft");
+        (_litVertex, _litFragment, _particleEye) = (_program.Uniform("uLitVertex"), _program.Uniform("uLitFragment"), _program.Uniform("uParticleEye"));
+        float[] corners = [-0.5f, -0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f];
+        _quad = DeviceBuffer.Create(gpu, sizeof(float) * (ulong)corners.Length, BufferUse.Vertex, "particle quad");
+        using (var batch = gpu.Uploads.Begin())
+            batch.Write(_quad, 0, System.Runtime.InteropServices.MemoryMarshal.AsBytes(corners.AsSpan()));
+        var attributes = new LegacyProgram.Attribute? [5];
+        attributes[0] = WaterRenderer.QuadAttribute(_quad);
+        for (int a = 0; a < 4; a++)
+            attributes[1 + a] = new LegacyProgram.Attribute(default, InternalFormat.Rgba32F, InstanceBytes, true);
+        _vertexSource = new VertexArrayBindings(attributes, default);
+        _white = SampledImage.Rgba8(gpu, 1, 1, [255, 255, 255, 255], repeat: false, mipmaps: false, "particle white");
+        _tracerTexture = SampledImage.Rgba8(gpu, TracerTextureWidth, TracerTextureHeight, TracerPixels(), repeat: false, mipmaps: true, "particle tracer");
+    }
+
+    /// <summary>
+    /// The tracers' texture size in pixels.
+    /// </summary>
+    const int TracerTextureWidth = 16;
+    /// <summary>
+    /// The tracers' texture size in pixels.
+    /// </summary>
+    const int TracerTextureHeight = 64;
+    /// <summary>
+    /// The tracers' technique: an oriented_self billboard.
+    /// </summary>
+    static readonly PuTechniqueDef TracerTechnique = new()
+    {
+        Name = "meitou tracer",
+        Renderer = new PuRendererDef { TypeName = "Billboard", BillboardType = "oriented_self" },
+        Source = new PuNode("technique", [], 0),
+    };
+    /// <summary>
+    /// The tracers' material: alpha blended, depth tested and not written, unlit, clamped.
+    /// </summary>
+    static readonly ParticleMaterial TracerMaterial = new("meitou tracer", null, ParticleBlend.Alpha, DepthCheck: true, DepthWrite: false,
+        Ambient: false, Vector4.One, Clamp: true);
+    /// <summary>
+    /// The tracers' streak (<see cref="TracerPixels"/>).
+    /// </summary>
+    readonly SampledImage _tracerTexture;
+
+    /// <summary>
+    /// The tracers' white streak: v 0 is the head (an oriented_self quad's top, along the travel), its alpha falling off linearly towards the tail at
+    /// v 1 and softly across the width, with a short taper at the very head so the front end is not a hard edge.
+    /// </summary>
+    static byte[] TracerPixels()
+    {
+        var rgba = new byte[TracerTextureWidth * TracerTextureHeight * 4];
+        for (int y = 0; y < TracerTextureHeight; y++)
+            for (int x = 0; x < TracerTextureWidth; x++)
+            {
+                float v = (y + 0.5f) / TracerTextureHeight, across = (x + 0.5f) / TracerTextureWidth * 2 - 1;
+                float along = (1 - v) * Math.Min(1, v / 0.04f);
+                float a = along * (1 - across * across);
+                int i = (y * TracerTextureWidth + x) * 4;
+                rgba[i] = rgba[i + 1] = rgba[i + 2] = 255;
+                rgba[i + 3] = (byte)MathF.Round(Math.Clamp(a, 0, 1) * 255);
+            }
+        return rgba;
+    }
+
+    /// <summary>
+    /// The renderer over <paramref name="library"/>, or over the scripts and materials of the base game and the enabled mods
+    /// (<see cref="ParticleLibrary.Load(OgreScriptResources, OgreMaterialLibrary)"/>).
+    /// </summary>
+    public static ParticleRenderer Create(IGpuContext gpu, AssetLocator assets, ParticleLibrary? library = null)
+    {
+        // the group kinds' code is compiled off the render thread, before the first weather change needs it
+        BackgroundWork.Run(EffectGroups.PrimeJit);
+        return new(gpu, assets.Find, library ?? ParticleLibrary.Load(assets.Configured, assets.Materials));
+    }
+
+    /// <summary>
+    /// Sets the weather's effect list, strength and wind, every frame. The groups are rebuilt when the list object (<c>Effects</c>, so a caller may
+    /// pass a fresh input every frame for the strength and wind) or its <see cref = "WeatherEffectInput.Version"/> changed, but not here and not at
+    /// once (<see cref = "WeatherGroups"/>): the camera crossing into another weather region waits <see cref = "RegionDwell"/> seconds, and the new
+    /// groups are warmed on a worker and swapped in when they are ready, the old weather's particles being drawn until then; the very first groups
+    /// are made at the next <see cref = "Update"/>. An entry whose type is not a weather effect (NONE) or whose particle system is unknown is skipped.
+    /// </summary>
+    public void SetWeather(WeatherEffectInput weather) => _groups.Weather.Want(FilterWeather(weather), Now());
+
+    /// <summary>
+    /// The time in seconds on the high-resolution clock.
+    /// </summary>
+    static double Now() => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+    /// <summary>
+    /// The map's effect placers (docs/formats/weather.md "Effect placers on the map"): always on, whatever the weather. Replaces the previous list.
+    /// </summary>
+    public void SetPlacers(IReadOnlyList<MapEffectPlacement> placements)
+    {
+        Sync();
+        _groups.SetPlacers(placements);
+        _mapPlacerGroups.Clear();
+        _mapPlacerGroups.UnionWith(_groups.MapPlacers);
+    }
+
+    /// <summary>
+    /// The keys with building effects (<see cref="SetBuildingEffects"/>) and their groups, one group per effect of a key.
+    /// </summary>
+    public (int Buildings, int Groups) BuildingEffectCount => _groups.BuildingEffectCount;
+
+    /// <summary>
+    /// The EFFECT instances of a building (docs/formats/lights.md, "Effects on buildings") under <paramref name="key"/>, replacing what the key had;
+    /// drawn with the map's placers, whatever the weather switch. The records' sounds are left out: the buildings' own emitters play their fire.
+    /// </summary>
+    public void SetBuildingEffects(string key, IReadOnlyList<Data.World.PlacedEffect> effects)
+    {
+        Sync();
+        if (_groups.SetBuildingEffects(key, effects) is { } groups) PreloadTextures(groups);
+    }
+
+    /// <summary>
+    /// Drops the building effects of <paramref name="key"/> (<see cref="SetBuildingEffects"/>).
+    /// </summary>
+    public void RemoveBuildingEffects(string key)
+    {
+        Sync();
+        _groups.RemoveBuildingEffects(key);
+    }
+
+    /// <summary>
+    /// Fires the particle system <paramref name="system"/> once at <paramref name="position"/>, its emitters turned by
+    /// <paramref name="orientation"/>, emitting for
+    /// <paramref name="seconds"/> of the frame clock, the particles <paramref name="size"/> times as big and <paramref name="lifeScale"/> times as
+    /// long-lived (luckyren Mode's blood). With <paramref name="recolour"/> the particles take that colour (rgb, 0 to about 2) in place of their
+    /// texture's hue (a race's <c>blood colour</c>). Drawn with the map's placers; an unknown system does nothing. Returns the burst's unit (null:
+    /// none), for <see cref="MoveBurst"/>.
+    /// </summary>
+    public EffectUnit? Burst(string system, Vector3 position, Quaternion orientation, float seconds, float size = 1, float lifeScale = 1,
+        Vector3? recolour = null)
+    {
+        if (!Enabled) return null;
+        Sync();
+        return _groups.BurstGroup(system)?.Spawn(position, orientation, seconds, size, lifeScale, recolour);
+    }
+
+    /// <summary>
+    /// Moves a <see cref="Burst"/>'s emitter to <paramref name="position"/>, turned by <paramref name="orientation"/>, from the next
+    /// <see cref="Update"/> (no wait for the running simulation); the particles it threw already stay where they are (a neck's spurt that follows the
+    /// falling body).
+    /// </summary>
+    public void MoveBurst(EffectUnit unit, Vector3 position, Quaternion orientation) => _groups.MoveBurst(unit, position, orientation);
+
+    /// <summary>
+    /// Makes the <see cref="Burst"/> groups of <paramref name="systems"/> and starts decoding their textures, so a first burst is not drawn without
+    /// them.
+    /// </summary>
+    public void PrepareBursts(params string[] systems)
+    {
+        Sync();
+        foreach (var system in systems)
+            if (_groups.BurstGroup(system) is { } group) PreloadTextures([group]);
+    }
+
+    /// <summary>
+    /// The effects' fog volumes as they stand after the last <see cref = "Update"/> (main thread), into <paramref name = "into"/> (cleared first): one
+    /// per EFFECT_FOG_VOLUME of each unit, at the unit's position plus the record's offset, with the unit's fade. <see cref = "FogVolumes"/> draws them
+    /// with the placed volumes (the game's <c>FogSphere</c> / <c>FogCylinder</c>, docs/formats/weather.md "Fog volumes").
+    /// </summary>
+    internal void CollectFogVolumes(List<FogVolumes.EffectFog> into)
+    {
+        into.Clear();
+        if (!Enabled)
+            return;
+        for (int gi = 0; gi < GroupCount; gi++)
+        {
+            var g = GroupAt(gi);
+            if (!GroupVisible(gi, g))
+                continue;
+            for (int ui = 0; ui < g.Units.Count; ui++)
+            {
+                var u = g.Units[ui];
+                if (u.Effect.FogVolumes.Count == 0)
+                    continue;
+                float fade = u.FogFade;
+                if (fade <= 0)
+                    continue;
+                foreach (var f in u.Effect.FogVolumes)
+                {
+                    into.Add(new FogVolumes.EffectFog(f.Name, f.Cylinder, u.Position + f.Offset, u.Position + f.Offset2, f.Radius, f.Distance, f.Colour, Math.Clamp(f.Alpha, 0, 1), f.Additive, fade));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Engine choice (2026-10-12, the user's taste): weather effects drawn fainter than the game's data says. Vain's red rain (`Kenshi_red_Rain`) at
+    /// half its opacity.
+    /// </summary>
+    static float EffectOpacity(string effect) => effect.Equals("Kenshi_red_Rain", StringComparison.OrdinalIgnoreCase) ? 0.5f : 1;
+
+    /// <summary>
+    /// The most a unit's particles are drawn ahead along their velocity (its slowest step, 10 Hz).
+    /// </summary>
+    const float MaxDrawAhead = 0.1f;
+
+    /// <summary>
+    /// Steps the groups to <paramref name="seconds"/> on the frame clock (the first call only sets the clock, so a held-still frame advances nothing)
+    /// and, once after a weather change, runs the start-up so particles are present at the first picture. The simulation of the units (the particles)
+    /// then runs on the thread pool, one unit per task, while the caller does the rest of its frame; <see cref="Prepare"/> waits for it.
+    /// </summary>
+    public void Update(double seconds, WorldCamera camera)
+    {
+        long start = Stopwatch.GetTimestamp();
+        UpdateInner(seconds, camera);
+        _updateTotal += Stopwatch.GetTimestamp() - start;
+        _updateFrames++;
+    }
+
+    /// <summary>
+    /// The update without its timing.
+    /// </summary>
+    void UpdateInner(double seconds, WorldCamera camera)
+    {
+        Sync();
+        _groups.ApplyBurstMoves();
+        _coveragePending = false;
+        if (!Enabled)
+        {
+            _lastSeconds = seconds;
+            return;
+        }
+
+        var view = new EffectCamera(camera.Eye, camera.Forward);
+        bool changed = _groups.Weather.Advance(view, Now());
+        if (changed || (_groups.Weather.Building && !ReferenceEquals(_groups.Weather.BuildingGroups, _preloaded)))
+        {
+            _preloaded = _groups.Weather.Building ? _groups.Weather.BuildingGroups : _groups.Weather.Groups;
+            PreloadTextures(_preloaded);
+        }
+
+        DropStalePreloads();
+        if (!HasGroups)
+        {
+            _lastSeconds = seconds;
+            return;
+        }
+
+        float dt = double.IsNaN(_lastSeconds) ? 0 : (float)Math.Clamp(seconds - _lastSeconds, 0, 0.25);
+        _lastSeconds = seconds;
+        _groups.Step(dt, view, ShowLocal);
+        foreach (var g in _presented.Groups)
+            g.Update(dt, view, _groups.Weather.Input);
+        StartSimulation();
+    }
+
+    /// <summary>
+    /// The groups whose textures were last preloaded.
+    /// </summary>
+    IReadOnlyList<EffectGroup>? _preloaded;
+    /// <summary>
+    /// Starts the simulation of the active units on the thread pool.
+    /// </summary>
+    void StartSimulation()
+    {
+        var work = _simulationWork;
+        work.Clear();
+        _activeUnits = 0;
+        for (int gi = 0; gi < GroupCount; gi++)
+        {
+            var g = GroupAt(gi);
+            if (!GroupVisible(gi, g))
+                continue;
+            for (int ui = 0; ui < g.Units.Count; ui++)
+            {
+                var u = g.Units[ui];
+                if (!u.Active)
+                    continue;
+                if (!WeatherParticles && g.Entry is not null)
+                {
+                    u.Pending = 0;
+                    continue;
+                }
+
+                _activeUnits++;
+                float due = u.DistanceToCamera > 9000 ? 0.1f : u.DistanceToCamera > 4000 ? 0.05f : 0;
+                if (u.Pending > 0 && u.Pending >= due)
+                    work.Add(u);
+            }
+        }
+
+        if (work.Count == 0)
+        {
+            _simulationTicks = 0;
+            return;
+        }
+
+        work.Sort((a, b) => b.Pending.CompareTo(a.Pending));
+        _simulation = _simulator.Start(work.ToArray());
+    }
+
+    /// <summary>
+    /// One line per effect unit with its place relative to the eye (for the viewer's log): which effects exist, how far and in which direction,
+    /// whether simulated.
+    /// </summary>
+    public IEnumerable<string> Describe(Vector3 eye, int max = 60)
+    {
+        Sync();
+        int n = 0;
+        foreach (var g in AllGroups)
+            foreach (var u in g.Units)
+            {
+                if (g is CameraEffectGroup)
+                    continue;
+                if (n++ >= max)
+                {
+                    yield return "  ...";
+                    yield break;
+                }
+
+                var d = u.Position - eye;
+                yield return $"  {u.Effect.Name, -26} [{u.Effect.Type}] {(u.Active ? "sim " : "idle")} " + $"{u.Simulation?.ParticleCount ?? 0, 6} particles  " + $"at {u.DistanceToCamera, 7:0} ({d.X:+0;-0}, {d.Y:+0;-0}, {d.Z:+0;-0}) " + $"= world ({u.Position.X:0}, {u.Position.Y:0}, {u.Position.Z:0})  " + $"life {(float.IsPositiveInfinity(u.Life) ? "inf" : u.Life.ToString("0"))}  radius {u.Radius:0}  age {u.Age:0.0} " + $"pending {u.Pending:0.00}{(u.Stopped ? " stopped" : "")} emission-scale {u.Environment.EmissionScale:0.00}";
+            }
+    }
+
+    /// <summary>
+    /// Waits for the frame's particle simulation.
+    /// </summary>
+    void Sync()
+    {
+        if (_simulation is null) return;
+        long start = Stopwatch.GetTimestamp();
+        var job = _simulation;
+        _simulation = null;
+        job.Wait();
+        _waitTicks = Stopwatch.GetTimestamp() - start;
+        _waitTotal += _waitTicks;
+        _simulationTicks = job.RunTicks;
+        _simulationTotal += job.RunTicks;
+        _simulationFrames++;
+    }
+
+    /// <summary>
+    /// Writes this frame's instances into the frame's constants (the CPU half; <see cref="Record"/> draws them). Called once per frame only (units
+    /// beyond <see cref="DrawRange"/> are not drawn). The viewer's near plane grows with the camera's height (to 200), the game's is a few units: a
+    /// particle nearer than the camera's near plane (<paramref name="nearPlane"/>) is drawn with
+    /// <paramref name="closeViewProjection"/> (a projection with a near plane of 0.5) and no depth test, which is right because nothing of
+    /// the scene is nearer than that plane; the others as usual, tested against the scene's depth. Units are drawn far to near.
+    /// </summary>
+    /// <param name="pixelsPerUnit">Meitou: the render size in pixels of one world unit at distance 1 (0: everything full size). Alpha and additive
+    /// draws whose sprites are big on screen go to a low-resolution target, the biggest to a quarter-size one (<see cref="QuarterPixels"/>,
+    /// <see cref="HalfPixels"/>); small ones (rain) stay full size.</param>
+    /// <param name="forcedDivisor">0: by sprite size; 1, 2 or 4: every eligible draw there but rain and fire (for measuring, and the Half and Quarter
+    /// settings).</param>
+    public void Prepare(Matrix4x4 viewProjectionMatrix, Matrix4x4 closeViewProjection, float nearPlane, Matrix4x4 view, Vector3 eye,
+        Vector3 sunDirection, float pixelsPerUnit, float screenPixels, int forcedDivisor = 0,
+        Matrix4x4? lowViewProjection = null, Matrix4x4? lowCloseViewProjection = null)
+    {
+        long start = Stopwatch.GetTimestamp();
+        PrepareInner(viewProjectionMatrix, closeViewProjection, nearPlane, view, eye, sunDirection, pixelsPerUnit, screenPixels, forcedDivisor,
+            late: lowViewProjection is not null);
+
+        // The low-resolution draws' own matrices: unjittered when they are blended after the upscaler (PostProcess.ParticlesAfterUpscale), whose
+        // output is.
+        _frameLowVp = lowViewProjection is { } lowVp ? Matrix4x4.CreateTranslation(eye) * lowVp : _frameVp;
+        _frameLowCloseVp = lowCloseViewProjection is { } lowClose ? Matrix4x4.CreateTranslation(eye) * lowClose : _frameCloseVp;
+        long ticks = Stopwatch.GetTimestamp() - start;
+        _drawTotal += ticks;
+        _drawFrames++;
+    }
+
+    /// <summary>
+    /// Mean screen size (the square root of the mean sprite area, in render pixels) from which a draw goes to the half-size and to the quarter-size
+    /// target.
+    /// </summary>
+    public const float HalfPixels = 20;
+    /// <summary>
+    /// Mean screen size (the square root of the mean sprite area, in render pixels) from which a draw goes to the half-size and to the quarter-size
+    /// target.
+    /// </summary>
+    public const float QuarterPixels = 80;
+    /// <summary>
+    /// The overdraw (sprite area in screens) a size needs before it is used at all: the two extra passes cost about as much as 10 million pixels of
+    /// blending.
+    /// </summary>
+    public const float MinLayers = 6;
+    /// <summary>
+    /// The draws prepared for each size, by divisor.
+    /// </summary>
+    readonly int[] _divisorCounts = new int[5];
+    /// <summary>
+    /// The draws prepared for each size: 1 the scene's, 2 and 4 the low-resolution targets'.
+    /// </summary>
+    public int CountFor(int divisor) => _divisorCounts[divisor];
+    /// <summary>
+    /// Draws prepared this frame for the scene target (full size).
+    /// </summary>
+    public int FullCount => _divisorCounts[1];
+    /// <summary>
+    /// Draws prepared this frame for the low-resolution targets.
+    /// </summary>
+    public int LowCount => _divisorCounts[2] + _divisorCounts[4];
+
+    /// <summary>
+    /// Records the draws of the last <see cref="Prepare"/> into the open pass: the full-size ones (colour into the scene) or the low-resolution ones
+    /// (premultiplied into the accumulation target, whose pass the caller opened).
+    /// </summary>
+    public void Record(int divisor, SoftDepth? softDepth = null)
+    {
+        if (_divisorCounts[divisor] == 0) return;
+        bool low = divisor > 1;
+        var cmd = _gpu.BeginGuest(low ? "particles low" : "particles");
+        var targets = _gpu.CurrentTargets();
+        bool hasDepth = targets.Formats.Depth != InternalFormat.None, hasColour = targets.Formats.Colour != InternalFormat.None;
+        var baseState = _gpu.CurrentState();
+        cmd.SetViewport(targets.Viewport);
+        cmd.SetScissor(targets.Scissor);
+
+        // The alpha channel of the scene target carries the characters' mask: particles write colour only (the low-resolution target uses all four).
+        const ColorMask rgb = ColorMask.R | ColorMask.G | ColorMask.B;
+        RecordDraws(cmd, in baseState, in targets, hasDepth, hasColour, low ? rgb | ColorMask.A : rgb, low ? Kind.Low : Kind.Colour, softDepth,
+            divisor);
+        _gpu.EndGuest(cmd);
+    }
+
+    /// <summary>
+    /// Scratch for a technique's instances, grown as needed.
+    /// </summary>
+    ParticleInstance[] _scratch = new ParticleInstance[4096];
+    /// <summary>
+    /// The draw, update and collection ticks summed and their frame counts (for the means).
+    /// </summary>
+    long _drawTotal;
+    /// <summary>
+    /// The draw, update and collection ticks summed and their frame counts (for the means).
+    /// </summary>
+    long _drawFrames;
+    /// <summary>
+    /// The draw, update and collection ticks summed and their frame counts (for the means).
+    /// </summary>
+    long _updateTotal;
+    /// <summary>
+    /// The draw, update and collection ticks summed and their frame counts (for the means).
+    /// </summary>
+    long _updateFrames;
+    /// <summary>
+    /// The draw, update and collection ticks summed and their frame counts (for the means).
+    /// </summary>
+    long _collectTotal;
+    /// <summary>
+    /// Mean per-frame cost of filling the instance buffers (inside Draw), in ms.
+    /// </summary>
+    public double CollectMilliseconds => _drawFrames == 0 ? 0 : _collectTotal * 1000.0 / Stopwatch.Frequency / _drawFrames;
+    /// <summary>
+    /// Mean main-thread cost of Update and Draw (draw includes the wait for the simulation) per frame, in ms (for the benchmarks).
+    /// </summary>
+    public (double Update,
+        double Draw) MeanMainThreadMilliseconds => (_updateFrames == 0 ? 0 : _updateTotal * 1000.0 / Stopwatch.Frequency / _updateFrames,
+        _drawFrames == 0 ? 0 : _drawTotal * 1000.0 / Stopwatch.Frequency / _drawFrames);
+
+    /// <summary>
+    /// The prepare without its timing.
+    /// </summary>
+    void PrepareInner(Matrix4x4 viewProjectionMatrix, Matrix4x4 closeViewProjection, float nearPlane, Matrix4x4 view, Vector3 eye, Vector3 sunDirection, float pixelsPerUnit, float screenPixels, int forcedDivisor, bool late)
+    {
+        (_lastDivisors, _nextDivisors) = (_nextDivisors, _lastDivisors);
+        _nextDivisors.Clear();
+        Sync();
+        Array.Clear(_divisorCounts);
+        _drawnParticles = 0;
+        _drawnUnits = 0;
+        _coveragePending = false;
+        if (!Enabled || (!HasGroups && Tracers.Count == 0))
+            return;
+        _draws.Clear();
+        var frame = _gpu.Frame;
+        var forward = -new Vector3(view.M13, view.M23, view.M33);
+        CollectUnits(WorldCamera.FrustumPlanes(viewProjectionMatrix));
+        foreach (var(u, rain, placed)in _drawUnits)
+        {
+            var offset = u.Anchor - eye;
+            if (u.Simulation is not { } sim || u.CatchingUp)
+                continue;
+            float shown = RangeFade ? u.RangeFade : 1;
+            if (shown <= 0)
+                continue;
+            _drawnUnits++;
+            for (int t = 0; t < sim.Techniques.Count; t++)
+            {
+                int n = sim.TechniqueParticleCount(t);
+                var def = sim.Techniques[t];
+                if (n == 0 || !def.Enabled || !def.Renderer.IsBillboard)
+                    continue;
+                var material = Library.FindMaterial(def.Material);
+                if (material is null || TextureFor(material)is not { } texture)
+                    continue;
+                long collectStart = Stopwatch.GetTimestamp();
+                if (_scratch.Length < n)
+                    _scratch = new ParticleInstance[Math.Max(n, _scratch.Length * 2)];
+                int written = sim.Collect(t, _scratch.AsSpan(0, n), material.Blend == ParticleBlend.Add ? u.Tint * shown : u.Tint, u.Alpha * EffectOpacity(u.Effect.Name) * shown, offset, Math.Min(u.Pending, MaxDrawAhead));
+                if (written == 0)
+                    continue;
+                int close = PartitionByDepth(_scratch.AsSpan(0, written), forward, nearPlane);
+                if (_gpu is not GpuContext)
+                    close = 0;
+                var instances = frame.AllocateConstants((ulong)(written * InstanceBytes), 16);
+                _scratch.AsSpan(0, written).CopyTo(new Span<ParticleInstance>(instances.Pointer, written));
+                long collected = Stopwatch.GetTimestamp() - collectStart;
+                _collectTotal += collected;
+                int divisor = 1;
+                float fill = 0;
+                bool fire = placed && material.Blend == ParticleBlend.Add;
+                if (pixelsPerUnit > 0 && !rain && !fire && (material.Blend == ParticleBlend.Alpha || material.Blend == ParticleBlend.Add))
+                {
+                    float needed = material.Texture is { } name && _pixelsNeeded.TryGetValue(name, out float texels) ? texels : 1;
+                    (divisor, fill) = DivisorFor(_scratch.AsSpan(0, written), forward, nearPlane, pixelsPerUnit, screenPixels, forcedDivisor, _lastDivisors.TryGetValue((u, t), out int last) ? last : 0, needed);
+                    _nextDivisors[(u, t)] = divisor;
+                }
+
+                _draws.Add(new DrawItem { Instances = instances, Count = written, Close = close, Technique = def, Material = material, Texture = texture, Divisor = divisor, Fill = fill, Rain = rain, Fire = fire });
+                _drawnParticles += written;
+            }
+        }
+
+        if (Tracers.Count > 0)
+            AddTracers(frame, eye, forward, nearPlane);
+        ChooseSizes(late, forcedDivisor);
+        for (int i = 0; i < _draws.Count; i++)
+            _divisorCounts[_draws[i].Divisor]++;
+        if (_draws.Count == 0)
+            return;
+        StoreFrame(eye, viewProjectionMatrix, closeViewProjection, view, sunDirection);
+    }
+
+    /// <summary>
+    /// Lists the units to draw, farthest first: the weather's and the placed ones that are within the draw range and in view.
+    /// </summary>
+    void CollectUnits(Vector4[] planes)
+    {
+        var units = _drawUnits;
+        units.Clear();
+        for (int gi = 0; gi < GroupCount; gi++)
+        {
+            var g = GroupAt(gi);
+            if (!GroupVisible(gi, g))
+                continue;
+            for (int ui = 0; ui < g.Units.Count; ui++)
+            {
+                var u = g.Units[ui];
+                if (!WeatherParticles && g.Entry is not null)
+                    continue;
+                if (u.Radius != float.PositiveInfinity)
+                {
+                    if (u.DistanceToCamera - u.Radius > DrawRange)
+                        continue;
+                    if (!InFrustum(planes, u.Position, u.Radius))
+                        continue;
+                }
+
+                units.Add((u, g.Effect.Type is EffectType.CameraRain or EffectType.CameraAcidRain, g.Entry is null));
+            }
+        }
+
+        units.Sort((a, b) => b.Unit.DistanceToCamera.CompareTo(a.Unit.DistanceToCamera));
+    }
+
+    /// <summary>
+    /// Picks each size (half and quarter resolution) by its layers: taken up from <see cref="MinLayers"/> and left below half that. Not when a
+    /// vendor upscaler forces the divisor (<paramref name="forcedDivisor"/>).
+    /// </summary>
+    void ChooseSizes(bool late, int forcedDivisor)
+    {
+        if (forcedDivisor != 0) return;
+        for (int s = 0; s < 2; s++)
+        {
+            int size = s == 0 ? 2 : 4;
+            float layers = 0;
+            foreach (var d in _draws)
+            {
+                if (d.Divisor == size) layers += d.Fill;
+            }
+
+            _sizeInUse[s] = late || (_sizeInUse[s] ? layers >= MinLayers * 0.5f : layers >= MinLayers);
+            if (_sizeInUse[s]) continue;
+            for (int i = 0; i < _draws.Count; i++)
+            {
+                if (_draws[i].Divisor != size) continue;
+                var d = _draws[i];
+                d.Divisor = 1;
+                _draws[i] = d;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Keeps the frame's camera-relative matrices, right and up, ambient light and eye for the draws.
+    /// </summary>
+    void StoreFrame(Vector3 eye, Matrix4x4 viewProjectionMatrix, Matrix4x4 closeViewProjection, Matrix4x4 view, Vector3 sunDirection)
+    {
+        // Camera-relative positions: the matrix takes the eye back out (view and projection were built for world positions).
+        var vp = Matrix4x4.CreateTranslation(eye) * viewProjectionMatrix;
+        var closeVp = Matrix4x4.CreateTranslation(eye) * closeViewProjection;
+        var right = new Vector3(view.M11, view.M21, view.M31);
+        var up = new Vector3(view.M12, view.M22, view.M32);
+        float ambient = Math.Clamp(sunDirection.Y * 5 + 0.2f, 0.1f, 1f);
+        (_frameVp, _frameCloseVp, _frameRight, _frameUp, _frameAmbient, _frameEye) = (vp, closeVp, right, up, ambient, eye);
+        _coveragePending = true;
+    }
+
+    /// <summary>
+    /// The <see cref="Tracers"/> as one draw, after the effects': each a quad centred between its ends, as long as they are apart, its up along the
+    /// travel.
+    /// </summary>
+    void AddTracers(IGpuFrame frame, Vector3 eye, Vector3 forward, float nearPlane)
+    {
+        int n = 0;
+        if (_scratch.Length < Tracers.Count) _scratch = new ParticleInstance[Math.Max(Tracers.Count, _scratch.Length * 2)];
+        foreach (var t in Tracers)
+        {
+            var along = t.Head - t.Tail;
+            float length = along.Length();
+            if (length < 1e-3f || Vector3.Distance(t.Head, eye) - length > DrawRange) continue;
+            _scratch[n++] = new ParticleInstance { Position = (t.Head + t.Tail) * 0.5f - eye, Direction = along / length, Width = t.Width,
+                Height = length, Colour = t.Colour };
+        }
+        if (n == 0) return;
+        int close = _gpu is not GpuContext ? 0 : PartitionByDepth(_scratch.AsSpan(0, n), forward, nearPlane);
+        var instances = frame.AllocateConstants((ulong)(n * InstanceBytes), 16);
+        _scratch.AsSpan(0, n).CopyTo(new Span<ParticleInstance>(instances.Pointer, n));
+        _draws.Add(new DrawItem { Instances = instances, Count = n, Close = close, Technique = TracerTechnique, Material = TracerMaterial,
+            Texture = _tracerTexture, Divisor = 1, Tracer = true });
+        _drawnParticles += n;
+    }
+
+    /// <summary>
+    /// This frame's camera-relative view-projections: the scene's, the close one, and the low-resolution draws' pair.
+    /// </summary>
+    Matrix4x4 _frameVp;
+    /// <summary>
+    /// This frame's camera-relative view-projections: the scene's, the close one, and the low-resolution draws' pair.
+    /// </summary>
+    Matrix4x4 _frameCloseVp;
+    /// <summary>
+    /// This frame's camera-relative view-projections: the scene's, the close one, and the low-resolution draws' pair.
+    /// </summary>
+    Matrix4x4 _frameLowVp;
+    /// <summary>
+    /// This frame's camera-relative view-projections: the scene's, the close one, and the low-resolution draws' pair.
+    /// </summary>
+    Matrix4x4 _frameLowCloseVp;
+    /// <summary>
+    /// The camera's right and up axes.
+    /// </summary>
+    Vector3 _frameRight;
+    /// <summary>
+    /// The camera's right and up axes.
+    /// </summary>
+    Vector3 _frameUp;
+    /// <summary>
+    /// The sprites' ambient light from the sun's height.
+    /// </summary>
+    float _frameAmbient;
+    /// <summary>
+    /// Whether this frame's draws have not yet been written into the reactive mask.
+    /// </summary>
+    bool _coveragePending;
+
+    /// <summary>
+    /// Whether this frame drew particles that <see cref="DrawCoverage"/> has not yet written into the upscalers' reactive mask.
+    /// </summary>
+    public bool HasCoverage => _coveragePending && _draws.Count > 0;
+
+    /// <summary>
+    /// The frame's particles again into the upscalers' reactive mask (docs/renderer-native.md 8.20): the same quads and matrices as the colour draw,
+    /// adding their alpha (or brightness times alpha, for additive ones) into <paramref name="mask"/>'s channels. Without it the temporal history
+    /// keeps about 90% of what was behind a fast, thin particle (rain), which then barely shows. Both post chains pass <paramref name="depthTest"/>
+    /// with the scene's depth bound, so a particle hidden behind terrain does not make its pixels less stable. Called by the post chain with the
+    /// target bound (cleared or loaded as it wants), once per frame after <c>Draw</c>.
+    /// </summary>
+    public void DrawCoverage(ColorMask mask, bool depthTest = false, SoftDepth? softDepth = null)
+    {
+        if (!HasCoverage || FullCount == 0) return;
+        var cmd = _gpu.BeginGuest("particle coverage");
+        var targets = _gpu.CurrentTargets();
+        var baseState = _gpu.CurrentState();
+        cmd.SetViewport(targets.Viewport);
+        cmd.SetScissor(targets.Scissor);
+        RecordDraws(cmd, in baseState, in targets, depthTest, true, mask, Kind.Coverage, softDepth);
+        _gpu.EndGuest(cmd);
+    }
+
+    /// <summary>
+    /// What a draw records: colour into the scene, coverage for the upscalers' reactive mask, or into the low-resolution accumulation target.
+    /// </summary>
+    enum Kind
+    {
+        /// <summary>
+        /// Colour into the scene.
+        /// </summary>
+        Colour,
+        /// <summary>
+        /// Coverage for the upscalers' reactive mask.
+        /// </summary>
+        Coverage,
+        /// <summary>
+        /// Premultiplied into the low-resolution accumulation target.
+        /// </summary>
+        Low
+    }
+
+    /// <summary>
+    /// The scene's depth for the Meitou <c>fog</c> switch's soft fade (docs/render-post.md "Fog"): a colour copy at the pass's size (the depth
+    /// attachment itself cannot be read while it is tested), with the scene projection's near and far planes.
+    /// </summary>
+    public readonly record struct SoftDepth(SampledTexture Texture, float Near, float Far);
+
+    /// <summary>
+    /// Whether the last <see cref="Prepare"/> has low-resolution draws, whose coverage the post chain derives from the accumulation target
+    /// (<see cref="PostProcess"/>).
+    /// </summary>
+    public bool HasLowCoverage => _coveragePending && LowCount > 0;
+
+    /// <summary>
+    /// Each unit's techniques' sizes last frame and this one (<see cref = "DivisorFor"/>'s hysteresis), and whether each low-resolution size (half,
+    /// quarter) was in use last frame.
+    /// </summary>
+    Dictionary<(EffectUnit, int), int> _lastDivisors = [];
+    /// <summary>
+    /// Each unit's techniques' sizes last frame and this one (<see cref = "DivisorFor"/>'s hysteresis), and whether each low-resolution size (half,
+    /// quarter) was in use last frame.
+    /// </summary>
+    Dictionary<(EffectUnit, int), int> _nextDivisors = [];
+    /// <summary>
+    /// See <see cref="_lastDivisors"/>: whether each low-resolution size (half, quarter) was in use last frame.
+    /// </summary>
+    readonly bool[] _sizeInUse = new bool[2];
+
+    /// <summary>
+    /// The size a draw of these particles gets: the larger their mean screen size, the smaller the target (soft big sprites lose nothing at a
+    /// fraction of the pixels; thin streaks keep their full size). With <paramref name="last"/> (the size the same technique of the same unit had
+    /// last frame) a size is left only 15 % past its threshold, so a draw near one does not flip between sizes, which looked different, as the camera
+    /// moves. A smaller target must also leave the sprites the pixels their texture needs (<paramref name="needed"/>,
+    /// <see cref="ParticleTextureDetail"/>): the Border Zone's dust swirls carry crisp dark twigs, 5 to 20 units, that a quarter-size target blurred
+    /// into smudges whenever a few flew close to the camera.
+    /// </summary>
+    static (int Divisor, float Fill) DivisorFor(ReadOnlySpan<ParticleInstance> instances, Vector3 forward, float nearPlane, float pixelsPerUnit,
+        float screenPixels, int forced, int last = 0,
+        float needed = 1)
+    {
+        double area = 0;
+        foreach (ref readonly var p in instances)
+        {
+            float scale = pixelsPerUnit / Math.Max(Vector3.Dot(p.Position, forward), nearPlane);
+            area += (double)p.Width * p.Height * scale * scale;
+        }
+        float fill = (float)(area / screenPixels);
+        if (forced > 0) return (forced >= 3 ? 4 : forced, fill);
+        double size = Math.Sqrt(area / instances.Length);
+        int divisor = size >= QuarterPixels ? 4 : size >= HalfPixels ? 2 : 1;
+        if (last == 4 && size >= QuarterPixels * 0.85) divisor = 4;
+        else if (last >= 2 && divisor < 2 && size >= HalfPixels * 0.85) divisor = 2;
+        else if (last == 2 && divisor == 4 && size < QuarterPixels * 1.15) divisor = 2;
+        else if (last == 1 && divisor == 2 && size < HalfPixels * 1.15) divisor = 1;
+        while (divisor > 1 && size / divisor < needed * (last >= divisor ? 0.85 : 1)) divisor /= 2;
+        return (divisor, fill);
+    }
+
+    /// <summary>
+    /// Records the prepared draws of <paramref name="divisor"/> for <paramref name="kind"/>: per draw the far particles depth tested, then the ones
+    /// nearer than the near plane without the test.
+    /// </summary>
+    void RecordDraws(IGpuCommandList cmd, in DrawState baseState, in PassTargets targets, bool hasDepth, bool hasColour,
+        ColorMask rgb, Kind kind, SoftDepth? softDepth, int divisor = 1)
+    {
+        int coverage = kind == Kind.Coverage ? 1 : 0;
+        var (vp, closeVp, right, up, ambient) = (_frameVp, _frameCloseVp, _frameRight, _frameUp, _frameAmbient);
+        _program.ApplyGlobals();   // the atmosphere's and the shadows' uniforms (the Meitou lit sprites)
+        if (kind == Kind.Low) (vp, closeVp) = (_frameLowVp, _frameLowCloseVp);
+        foreach (var d in _draws)
+        {
+            if (d.Divisor != divisor) continue;
+            var m = d.Material;
+            var r = d.Technique.Renderer;
+
+            // The far particles first (tested against the scene's depth), then the ones nearer than the near plane (no depth test).
+            for (int pass = 0; pass < 2; pass++)
+            {
+                bool close = pass == 1;
+                int first = close ? 0 : d.Close, count = close ? d.Close : d.Count - d.Close;
+                if (count == 0) continue;
+                var state = baseState with
+                {
+                    Cull = CullMode.None,
+                    DepthTest = hasDepth && m.DepthCheck && !close,
+                    DepthWrite = false,
+                    ColourMask = rgb,
+                    Blend = BlendOf(m, rgb, kind, coverage, hasColour),
+                };
+                SetCoverage(d, m, rgb, kind, coverage);
+                var matrix = close ? closeVp : vp;
+                _program.Set(this._viewProjection, in matrix);
+                _program.Set(_cameraRight, right);
+                _program.Set(_cameraUp, up);
+                _program.Set(_mode, ModeOf(r.BillboardType));
+                _program.Set(_anchor, AnchorOf(r.Origin));
+                _program.Set(_commonDirection, r.CommonDirection);
+                _program.Set(_commonUp, r.CommonUp);
+                float lit = m.Ambient ? ambient : 1;
+                _program.Set(_colourScale, m.ColourScale.X * lit, m.ColourScale.Y * lit, m.ColourScale.Z * lit, m.ColourScale.W);
+                _program.Bind(_textureSlot, d.Texture.Sampled());
+                SetSoftAndLight(m, coverage, softDepth);
+                RecordPass(cmd, state, targets, d, first, count);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The blend of a pass: premultiplied over into the low-resolution target, the coverage's into the reactive mask, else the material's.
+    /// </summary>
+    static BlendState BlendOf(ParticleMaterial m, ColorMask rgb, Kind kind, int coverage, bool hasColour) =>
+        kind == Kind.Low ? new BlendState(true, BlendingFactor.One, BlendingFactor.OneMinusSrcAlpha)
+            // The reactive mask is a per-pixel confidence in [0, 1]: overlapping particles must not add past 1.
+            // (TAA's motion alpha keeps the additive 2 = all-current-frame convention.)
+            : coverage != 0 ? rgb == ColorMask.R
+                ? new BlendState(true, BlendingFactor.One, BlendingFactor.One, BlendOperation.Max, BlendOperation.Max)
+                : new BlendState(true, BlendingFactor.One, BlendingFactor.One)
+            : hasColour ? BlendFor(m.Blend) : BlendState.Off;
+
+    /// <summary>
+    /// The coverage uniforms of a draw: what it writes into the reactive mask, at most how much and with which gain.
+    /// </summary>
+    void SetCoverage(in DrawItem d, ParticleMaterial m, ColorMask rgb, Kind kind, int coverage)
+    {
+        _program.Set(_coverageMode,
+            kind == Kind.Low ? (m.Blend == ParticleBlend.Alpha ? 3 : 4) : coverage == 0 ? 0 : m.Blend == ParticleBlend.Alpha ? 1 : 2);
+
+        // The TAA takes half the motion target's alpha, so 2 is "all current frame". Rain's streaks change fast with a small alpha per pixel:
+        // the history would keep most of what is behind them, so they count 30x, saturating. Fire counts its brightness, at most 0.9 of
+        // "all current frame" (AMD's guidance for FSR's reactive mask), so a distant flame a few pixels high keeps some history and does not
+        // flicker. The other sprites count as they are: 30x on big soft ones (dust, smoke) would fill the mask and leave FSR and TAA no
+        // history (docs/render-post.md).
+        float all = rgb == ColorMask.A ? 2f : 1f;
+        _program.Set(_coverageLimit, d.Fire ? 0.9f * all : all);
+        _program.Set(_coverageGain, d.Rain || d.Tracer ? 30f : 1f);
+    }
+
+    /// <summary>
+    /// The soft fade against the scene's depth and the Meitou sun lighting of a material's sprites.
+    /// </summary>
+    void SetSoftAndLight(ParticleMaterial m, int coverage, SoftDepth? softDepth)
+    {
+        // The soft fade by blend: an alpha sprite fades its alpha, an additive or colour-blended one its colour, a modulating one towards
+        // white.
+        int fade = softDepth is null ? 0 : m.Blend switch
+        {
+            ParticleBlend.Alpha => 1,
+            ParticleBlend.Add or ParticleBlend.ColourBlend => 2,
+            ParticleBlend.Modulate => 3,
+            _ => 0,
+        };
+        var sd = softDepth.GetValueOrDefault();
+        _program.Set(_soft, fade, sd.Near, sd.Far, 0f);
+        bool litOn = Lit && coverage == 0;
+        _program.Set(_litVertex, litOn ? 1 : 0, 0, SunGlow, 0);
+        _program.Set(_litFragment, litOn ? 1 : 0, Math.Clamp(SunShade, 0, 1),
+            m.Blend == ParticleBlend.Alpha ? 0 : m.Blend == ParticleBlend.Add ? 1 : 2, 0);
+        _program.Set(_particleEye, _frameEye);
+        _program.Bind(_softDepthSlot, softDepth is { } bound ? bound.Texture : _white.Sampled());
+    }
+
+    /// <summary>
+    /// Records one pass of a draw: its raster and depth state, the pipeline, the quad and instance buffers, and the instanced draw.
+    /// </summary>
+    void RecordPass(IGpuCommandList cmd, in DrawState state, in PassTargets targets, in DrawItem d, int first, int count)
+    {
+        cmd.SetRaster(state.Cull, state.Front);
+        cmd.SetDepth(state.DepthTest, state.DepthWrite, state.Compare);
+        cmd.SetDepthBias(state.BiasEnable, state.BiasConstant, state.BiasSlope);
+        cmd.BindPipeline(_segment.Get(state, targets.Formats, _vertexSource));
+        _bindings[0] = new GpuBufferBinding(_quad.Handle, 0);
+        for (int a = 0; a < 4; a++) _bindings[1 + a] = new GpuBufferBinding(d.Instances.Handle, d.Instances.Offset + (ulong)(16 * a));
+        cmd.BindVertexBuffers(0, _bindings);
+        _program.Flush(cmd);
+        cmd.Draw(4, (uint)count, 0, (uint)first);
+    }
+
+    /// <summary>
+    /// Whether the sphere at <paramref name="centre"/> of <paramref name="radius"/> is not wholly outside any of <paramref name="planes"/>.
+    /// </summary>
+    static bool InFrustum(Vector4[] planes, Vector3 centre, float radius)
+    {
+        foreach (var p in planes)
+            if (p.X * centre.X + p.Y * centre.Y + p.Z * centre.Z + p.W < -radius * new Vector3(p.X, p.Y, p.Z).Length()) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Moves the particles whose depth along <paramref name="forward"/> (positions are camera-relative) is under <paramref name="nearPlane"/> to the
+    /// front; returns how many there are.
+    /// </summary>
+    static int PartitionByDepth(Span<ParticleInstance> instances, Vector3 forward, float nearPlane)
+    {
+        int front = 0;
+        for (int i = 0; i < instances.Length; i++)
+        {
+            if (Vector3.Dot(instances[i].Position, forward) >= nearPlane) continue;
+            (instances[front], instances[i]) = (instances[i], instances[front]);
+            front++;
+        }
+        return front;
+    }
+
+    /// <summary>
+    /// The blend of a material's <paramref name="blend"/> mode.
+    /// </summary>
+    static BlendState BlendFor(ParticleBlend blend) => blend switch
+    {
+        ParticleBlend.Add => new BlendState(true, BlendingFactor.One, BlendingFactor.One),
+        ParticleBlend.Modulate => new BlendState(true, BlendingFactor.DstColor, BlendingFactor.Zero),
+        ParticleBlend.ColourBlend => new BlendState(true, BlendingFactor.SrcColor, BlendingFactor.OneMinusSrcColor),
+        ParticleBlend.Opaque => BlendState.Off,
+        _ => new BlendState(true, BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha),
+    };
+
+    /// <summary>
+    /// The shader's billboard mode: 0 point (and any other), 1 oriented_common, 2 oriented_self (and oriented_shape), 3 perpendicular_common, 4
+    /// perpendicular_self.
+    /// </summary>
+    static int ModeOf(string billboardType) => billboardType switch
+    {
+        "oriented_common" => 1,
+        "oriented_self" or "oriented_shape" => 2,   // oriented_shape: Unknown, drawn as oriented_self
+        "perpendicular_common" => 3,
+        "perpendicular_self" => 4,
+        _ => 0,
+    };
+
+    /// <summary>
+    /// Ogre's billboard origins as the anchor point's offset from the quad's centre in quad units (y up).
+    /// </summary>
+    static Vector2 AnchorOf(string origin) => origin switch
+    {
+        "top_left" => new(-0.5f, 0.5f),
+        "top_center" => new(0, 0.5f),
+        "top_right" => new(0.5f, 0.5f),
+        "center_left" => new(-0.5f, 0),
+        "center_right" => new(0.5f, 0),
+        "bottom_left" => new(-0.5f, -0.5f),
+        "bottom_center" => new(0, -0.5f),
+        "bottom_right" => new(0.5f, -0.5f),
+        _ => Vector2.Zero,
+    };
+
+    /// <summary>
+    /// The decodes of the particle textures in flight (<see cref="BackgroundWork"/>): a file is read and decoded off the render thread; the upload is
+    /// quick.
+    /// </summary>
+    readonly Dictionary<string, (Task<(RgbaImage Image, float PixelsNeeded)?> Task, long Started)> _decoding = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A preloaded decode not drawn this long after it started is dropped (a decoded 2048² texture is 16 MB; a later first sight decodes it again).
+    /// </summary>
+    const long PreloadKeepMilliseconds = 30_000;
+
+    /// <summary>
+    /// Starts reading and decoding a texture on a worker, with the pixels it needs (<see cref="ParticleTextureDetail"/>); null on failure.
+    /// </summary>
+    Task<(RgbaImage Image, float PixelsNeeded)?> StartDecode(string name)
+    {
+        string? path = _findTexture(name);
+        var task = BackgroundWork.Run<(RgbaImage, float)?>(() =>
+        {
+            if (path is null || !File.Exists(path)) return null;
+            try
+            {
+                var image = TextureLoader.LoadFile(path, allMips: false).Levels[0];
+                return (image, ParticleTextureDetail.PixelsNeeded(image));
+            }
+            catch (Exception e) when (e is IOException or InvalidDataException or NotSupportedException)
+            {
+                Console.WriteLine($"warning   particle texture {name}: {e.Message}");
+                return null;
+            }
+        });
+        _decoding[name] = (task, Environment.TickCount64);
+        return task;
+    }
+
+    /// <summary>
+    /// Drops the finished decodes nothing drew within <see cref="PreloadKeepMilliseconds"/> (effects preloaded but never shown).
+    /// </summary>
+    void DropStalePreloads()
+    {
+        long now = Environment.TickCount64;
+        foreach (var (name, (task, started)) in _decoding)
+            if (task.IsCompleted && now - started > PreloadKeepMilliseconds) _decoding.Remove(name);
+    }
+
+    /// <summary>
+    /// Starts decoding the textures the groups' techniques will draw with (the ones not yet loaded), so they are there when the groups are shown.
+    /// </summary>
+    void PreloadTextures(IEnumerable<EffectGroup> groups)
+    {
+        foreach (var g in groups)
+            foreach (var t in g.System.Techniques)
+                if (Library.FindMaterial(t.Material)?.Texture is { } name
+                    && !_textures.ContainsKey(name) && !_decoding.ContainsKey(name)) StartDecode(name);
+    }
+
+    /// <summary>
+    /// The first frames of a view wait for the texture decodes they start (a screenshot has no frames to spare).
+    /// </summary>
+    const int FramesThatWaitForTextures = 3;
+
+    /// <summary>
+    /// The material's texture, or null while it is still being read and decoded on a worker (the technique is then left out of the frame: a first
+    /// sight of a fire or of rain shows a frame or two late instead of stalling the render thread for the 3 to 5 ms of a PNG decode, Observed). The
+    /// first frames wait for it, so a still picture has its particles.
+    /// </summary>
+    SampledImage? TextureFor(ParticleMaterial material)
+    {
+        if (material.Texture is not { } name) return _white;
+        if (_textures.TryGetValue(name, out var cached)) return cached ?? _white;
+        var task = _decoding.TryGetValue(name, out var pending) ? pending.Task : StartDecode(name);
+        if (!task.IsCompleted)
+        {
+            if (_drawFrames > FramesThatWaitForTextures) return null;
+            task.Wait();
+        }
+        _decoding.Remove(name);
+        SampledImage? image = null;
+        if (task.IsFaulted) Console.WriteLine($"warning   particle texture {name}: {task.Exception?.GetBaseException().Message}");
+        else if (task.Result is { } decoded)
+        {
+            image = SampledImage.Rgba8(_gpu, decoded.Image, repeat: !material.Clamp, mipmaps: true, "particle " + name);
+            _pixelsNeeded[name] = decoded.PixelsNeeded;
+        }
+        _textures[name] = image;
+        return image ?? _white;
+    }
+
+    /// <summary>
+    /// Waits for the simulation, then frees the groups, the simulator, the textures, the quad and the program.
+    /// </summary>
+    public void Dispose()
+    {
+        Sync();
+        _groups.Weather.Dispose();
+        _simulator.Dispose();
+        foreach (var t in _textures.Values) t?.Dispose();
+        _white.Dispose();
+        _tracerTexture.Dispose();
+        _quad.Dispose();
+        _program.Dispose();
+    }
+
+}

@@ -1,6 +1,11 @@
+using Meitou.Simulation.Bodies;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 namespace Meitou.Simulation;
 
-/// <summary>Public world-wide rules. Contains no account, role, faction-resource or mod-private state.</summary>
+/// <summary>
+/// Public world-wide rules. Contains no account, role, faction-resource or mod-private state.
+/// </summary>
 public sealed record GameplayRules
 {
     public float GlobalDamageMultiplier { get; init; } = 1;
@@ -20,6 +25,10 @@ public sealed record GameplayRules
     public bool PunchReachFix { get; init; } = true;
     public bool BenchFacingFix { get; init; } = true;
     public bool DoorsCloseBehind { get; init; } = true;
+    /// <summary>
+    /// Whether player animals may collect loose items into their bags.
+    /// </summary>
+    public bool AnimalsPickUp { get; init; } = false;
     public float SquadSize { get; init; } = 1;
     public float Population { get; init; } = 1;
     public float RaidSize { get; init; } = 1;
@@ -48,25 +57,40 @@ public sealed record GameplayRules
         var locks = world.Systems.OfType<Locks.LockSystem>().FirstOrDefault();
         return new()
         {
-            GlobalDamageMultiplier = bodies?.GlobalDamageMultiplier ?? 1, HungerTime = bodies?.HungerTime ?? 1,
-            ChanceOfDeath = bodies?.ChanceOfDeath ?? 1, ProductionSpeed = production?.Settings.ProductionOption ?? 1,
+            GlobalDamageMultiplier = bodies?.GlobalDamageMultiplier ?? 1,
+            HungerTime = bodies?.HungerTime ?? 1,
+            ChanceOfDeath = bodies?.ChanceOfDeath ?? 1,
+            ProductionSpeed = production?.Settings.ProductionOption ?? 1,
             ResearchSpeed = production?.Settings.ResearchOption ?? 1,
             BuildingSpeed = world.Systems.OfType<Construction.ConstructionSystem>().FirstOrDefault()?.Settings.BuildingSpeed ?? 1,
             NestsMultiplier = population?.Settings.NestsMultiplier ?? 1,
             Dismemberment = bodies?.Dismemberment ?? Bodies.Dismemberment.Rare,
-            Decapitation = bodies?.Decapitation ?? true, AdvancedRagdolls = bodies?.AdvancedRagdolls ?? true,
-            AttackSlots = combat?.AttackSlots, HarpoonLimit = combat?.StuckLimit ?? 60,
-            LateDefences = combat?.LateDefences ?? false, GunnerFacesBarrel = combat?.GunnerFacesBarrel ?? true,
-            PunchReachFix = combat?.PunchReachFix ?? true, BenchFacingFix = world.BenchFacingFix,
+            Decapitation = bodies?.Decapitation ?? true,
+            AdvancedRagdolls = bodies?.AdvancedRagdolls ?? true,
+            AttackSlots = combat?.AttackSlots,
+            HarpoonLimit = combat?.StuckLimit ?? 60,
+            LateDefences = combat?.LateDefences ?? false,
+            GunnerFacesBarrel = combat?.GunnerFacesBarrel ?? true,
+            PunchReachFix = combat?.PunchReachFix ?? true,
+            BenchFacingFix = world.BenchFacingFix,
             DoorsCloseBehind = locks?.DoorsCloseBehind ?? true,
-            SquadSize = population?.Settings.SquadSizeMultiplier ?? 1, Population = population?.Settings.PopulationMultiplier ?? 1,
-            RaidSize = population?.Settings.RaidSizeMult ?? 1, RaidFrequency = population?.Settings.RaidFrequencyMult ?? 1,
-            TownAttacks = ai?.Settings.TownAttacks ?? 2, FastZoneHopping = population?.Settings.FastZoneHopping ?? false,
-            KeepRoamers = population?.KeepRoamers ?? true, OffscreenFights = population?.OffscreenFights ?? true,
-            OffscreenHealing = population?.OffscreenHealing ?? true, CampaignAncestorsOnce = population?.CampaignAncestorsOnce ?? true,
-            KeepWild = population?.KeepWild ?? true, ResidentSchedule = population?.ResidentSchedule ?? true,
-            UnloadedProduction = production?.UnloadedProduction ?? true, Luckyren = world.Luckyren,
-            GroundItemLimit = world.GroundItems.Limit, InteriorLampsAllDay = world.Sight.InteriorLampsAllDay,
+            AnimalsPickUp = world.SystemOf<PlayerSystem>()?.AnimalsPickUp ?? false,
+            SquadSize = population?.Settings.SquadSizeMultiplier ?? 1,
+            Population = population?.Settings.PopulationMultiplier ?? 1,
+            RaidSize = population?.Settings.RaidSizeMult ?? 1,
+            RaidFrequency = population?.Settings.RaidFrequencyMult ?? 1,
+            TownAttacks = ai?.Settings.TownAttacks ?? 2,
+            FastZoneHopping = population?.Settings.FastZoneHopping ?? false,
+            KeepRoamers = population?.KeepRoamers ?? true,
+            OffscreenFights = population?.OffscreenFights ?? true,
+            OffscreenHealing = population?.OffscreenHealing ?? true,
+            CampaignAncestorsOnce = population?.CampaignAncestorsOnce ?? true,
+            KeepWild = population?.KeepWild ?? true,
+            ResidentSchedule = population?.ResidentSchedule ?? true,
+            UnloadedProduction = production?.UnloadedProduction ?? true,
+            Luckyren = world.Luckyren,
+            GroundItemLimit = world.GroundItems.Limit,
+            InteriorLampsAllDay = world.Sight.InteriorLampsAllDay,
             AutoSaveSeconds = world.AuthorityAutoSaveSeconds,
         };
     }
@@ -74,6 +98,8 @@ public sealed record GameplayRules
 
 public sealed partial class World
 {
-    /// <summary>Host persistence policy, exposed to clients as a read-only rule; zero disables scheduled saves.</summary>
+    /// <summary>
+    /// Host persistence policy, exposed to clients as a read-only rule; zero disables scheduled saves.
+    /// </summary>
     public int AuthorityAutoSaveSeconds { get; set; } = 600;
 }

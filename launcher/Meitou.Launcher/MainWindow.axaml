@@ -103,9 +103,6 @@
           <StackPanel DockPanel.Dock="Left" Spacing="4" Margin="4,0,0,0" VerticalAlignment="Center">
             <TextBlock Classes="caps" Text="MEITOU LAUNCHER" />
             <TextBlock x:Name="LauncherVersionText" Classes="desc" />
-            <Button x:Name="ReportButton" Classes="link" Click="Report_Click" IsVisible="False" Padding="0" ToolTip.Tip="Tell the roadmap a system works or is broken">
-              <TextBlock Text="Report to the roadmap" />
-            </Button>
           </StackPanel>
           <!-- The status line, and under it the running download's progress (seen from any page, not just Versions) -->
           <StackPanel VerticalAlignment="Center" Spacing="6" Margin="24,0,16,0">
@@ -193,7 +190,8 @@
         <DockPanel x:Name="ModsPage" IsVisible="False">
           <Border DockPanel.Dock="Top" Classes="header" Margin="0,0,0,10">
             <DockPanel>
-              <TextBlock x:Name="ModCount" DockPanel.Dock="Right" Classes="aside" />
+              <Button DockPanel.Dock="Right" Classes="aside" Content="Refresh" Click="RefreshMods_Click"
+                      ToolTip.Tip="List the mods folder and the Steam workshop items again" />
               <TextBlock Text="Mods" />
             </DockPanel>
           </Border>
@@ -207,13 +205,11 @@
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Button Content="Select all" Click="SelectAll_Click" />
               <Button Content="Select none" Click="SelectNone_Click" />
-              <Button Content="Refresh" Click="RefreshMods_Click" />
+              <Button Content="Arrange" Click="ArrangeMods_Click"
+                      ToolTip.Tip="Propose an order where each enabled mod loads after the mods it needs; nothing moves until you accept" />
             </StackPanel>
           </DockPanel>
           <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
-            <Button DockPanel.Dock="Left" Content="Save mod list" Click="SaveMods_Click" ToolTip.Tip="Write data/mods.cfg (Play does this too)" />
-            <Button DockPanel.Dock="Left" Content="Code mods" Click="CodeMods_Click" Margin="6,0,0,0"
-                    ToolTip.Tip="Choose which code mods may run their own C# code; the others load as data only" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
               <TextBox x:Name="PresetName" Width="240" PlaceholderText="New preset name" />
               <Button Content="Save as preset" Click="SavePreset_Click" />

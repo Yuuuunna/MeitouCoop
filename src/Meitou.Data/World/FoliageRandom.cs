@@ -3,7 +3,6 @@ using System.Globalization;
 namespace Meitou.Data.World;
 
 public sealed record FoliageRandomState(int Index, int Count, uint[] Words);
-
 /// <summary>
 /// The random numbers of Kenshi's foliage placer (docs/formats/foliage.md, "Random numbers"): a 32-bit Mersenne Twister
 /// (MT19937, the standard initialisation and tempering), reseeded for every foliage layer of every zone, with the game's
@@ -11,63 +10,86 @@ public sealed record FoliageRandomState(int Index, int Count, uint[] Words);
 /// </summary>
 public sealed class FoliageRandom
 {
-    const int N = 624, M = 397;
-    readonly uint[] state = new uint[N];
-    int index;
+    /// <summary>
+    /// MT19937's state size (n) and shift offset (m), in words.
+    /// </summary>
+    const int N = 624;
+    /// <summary>
+    /// MT19937's state size (n) and shift offset (m), in words.
+    /// </summary>
+    const int M = 397;
+    /// <summary>
+    /// The generator's state words.
+    /// </summary>
+    readonly uint[] _state = new uint[N];
+    /// <summary>
+    /// The next state word to temper; the block is twisted first when it reaches <see cref="N"/>.
+    /// </summary>
+    int _index;
 
+    /// <summary>
+    /// A generator seeded with <paramref name="seed"/>.
+    /// </summary>
     public FoliageRandom(uint seed) => Seed(seed);
 
-    /// <summary>A generator in the same state, which then draws on its own.</summary>
+    /// <summary>
+    /// A generator in the same state, which then draws on its own.
+    /// </summary>
     public FoliageRandom Clone()
     {
-        var copy = new FoliageRandom(0) { index = index, Count = Count };
-        state.CopyTo(copy.state, 0);
+        var copy = new FoliageRandom(0) { _index = _index, Count = Count };
+        _state.CopyTo(copy._state, 0);
         return copy;
     }
 
-    public FoliageRandomState Capture() => new(index, Count, state.ToArray());
-    public void Restore(FoliageRandomState saved)
-    {
-        if (saved is null || saved.Index is < 0 or > N || saved.Words is not { Length: N } || saved.Words.All(v => v == 0))
-            throw new InvalidDataException("Invalid random state.");
-        saved.Words.CopyTo(state, 0); index = saved.Index; Count = saved.Count;
-    }
-
-    /// <summary>Number of 32-bit results drawn since the last seed.</summary>
+    /// <summary>
+    /// Number of 32-bit results drawn since the last seed.
+    /// </summary>
     public int Count { get; private set; }
 
+    /// <summary>
+    /// Seeds the generator with MT19937's standard initialisation and resets <see cref="Count"/>.
+    /// </summary>
     public void Seed(uint seed)
     {
-        state[0] = seed;
+        _state[0] = seed;
         for (int i = 1; i < N; i++)
-            state[i] = unchecked(1812433253u * (state[i - 1] ^ (state[i - 1] >> 30)) + (uint)i);
+            _state[i] = unchecked(1812433253u * (_state[i - 1] ^ (_state[i - 1] >> 30)) + (uint)i);
         // The game regenerates the block right after seeding (the first draw then reads index 0).
         Twist();
         Count = 0;
     }
 
-    // The block in three runs, so no index wraps (a modulo per word was 40% of a grass page's time; grass reseeds per page and patch).
+    /// <summary>
+    /// Twists the block in three runs, so no index wraps (a modulo per word was 40% of a grass page's time; grass reseeds per page and patch).
+    /// </summary>
     void Twist()
     {
-        var s = state.AsSpan();
+        var s = _state.AsSpan();
         int i = 0;
         for (; i < N - M; i++) s[i] = Mix(s[i], s[i + 1], s[i + M]);
         for (; i < N - 1; i++) s[i] = Mix(s[i], s[i + 1], s[i + M - N]);
         s[N - 1] = Mix(s[N - 1], s[0], s[M - 1]);
-        index = 0;
+        _index = 0;
     }
 
+    /// <summary>
+    /// MT19937's step for one word: the top bit of <paramref name="current"/> and the low bits of <paramref name="next"/>, mixed into
+    /// <paramref name="far"/>.
+    /// </summary>
     static uint Mix(uint current, uint next, uint far)
     {
         uint y = (current & 0x80000000u) | (next & 0x7FFFFFFFu);
         return far ^ (y >> 1) ^ (0u - (y & 1) & 0x9908B0DFu);
     }
 
-    /// <summary>The next tempered 32-bit result.</summary>
+    /// <summary>
+    /// The next tempered 32-bit result.
+    /// </summary>
     public uint Next()
     {
-        if (index >= N) Twist();
-        uint y = state[index++];
+        if (_index >= N) Twist();
+        uint y = _state[_index++];
         y ^= y >> 11;
         y ^= (y << 7) & 0x9D2C5680u;
         y ^= (y << 15) & 0xEFC60000u;
@@ -76,7 +98,9 @@ public sealed class FoliageRandom
         return y;
     }
 
-    /// <summary>The game's float draw: <c>min + u / (2^32 − 1) × (max − min)</c> in double precision, rounded to single.</summary>
+    /// <summary>
+    /// The game's float draw: <c>min + u / (2^32 − 1) × (max − min)</c> in double precision, rounded to single.
+    /// </summary>
     public float Float(float min, float max) => (float)(Next() * (1.0 / uint.MaxValue) * (double)(max - min) + min);
 
     /// <summary>
@@ -108,7 +132,9 @@ public sealed class FoliageRandom
         return unchecked((uint)(id - (int)v));
     }
 
-    /// <summary>Like a C++ stream read of an int: optional sign, then digits; 0 when there are none.</summary>
+    /// <summary>
+    /// Like a C++ stream read of an int: optional sign, then digits; 0 when there are none.
+    /// </summary>
     public static int LeadingInteger(string s)
     {
         int i = 0;
@@ -118,6 +144,16 @@ public sealed class FoliageRandom
         while (i < s.Length && char.IsAsciiDigit(s[i])) i++;
         return int.TryParse(s.AsSpan(start, i - start), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int v) ? v : 0;
     }
+
+    public FoliageRandomState Capture() => new(_index, Count, _state.ToArray());
+    public void Restore(FoliageRandomState saved)
+    {
+        if (saved is null || saved.Index is < 0 or > N || saved.Words is not { Length: N } || saved.Words.All(v => v == 0))
+            throw new InvalidDataException("Invalid random state.");
+        saved.Words.CopyTo(_state, 0);
+        _index = saved.Index;
+        Count = saved.Count;
+    }
 }
 
 /// <summary>
@@ -126,7 +162,9 @@ public sealed class FoliageRandom
 /// </summary>
 public static class FoliageNoise
 {
-    /// <summary>The exe's π for the cosine interpolation (a double constant 3.1415927).</summary>
+    /// <summary>
+    /// The exe's π for the cosine interpolation (a double constant 3.1415927).
+    /// </summary>
     const double Pi = 3.1415927;
 
     /// <summary>
@@ -143,10 +181,14 @@ public static class FoliageNoise
         }
     }
 
-    /// <summary>The hash as a value in (−1, 1]: <c>1 − h / 2^30</c>.</summary>
+    /// <summary>
+    /// The hash as a value in (−1, 1]: <c>1 − h / 2^30</c>.
+    /// </summary>
     public static double Value(int x, int z) => 1.0 - Hash(x, z) * (1.0 / 1073741824);
 
-    /// <summary>The value at an integer point smoothed with its neighbours: sides / 8, corners / 16, centre / 4.</summary>
+    /// <summary>
+    /// The value at an integer point smoothed with its neighbours: sides / 8, corners / 16, centre / 4.
+    /// </summary>
     public static float Smooth(float x, float z)
     {
         int ix = (int)x, iz = (int)z, xm = (int)(x - 1), xp = (int)(x + 1), zm = (int)(z - 1), zp = (int)(z + 1);
@@ -158,7 +200,9 @@ public static class FoliageNoise
         return s;
     }
 
-    /// <summary>Smoothed values at the four surrounding integer points, cosine interpolated.</summary>
+    /// <summary>
+    /// Smoothed values at the four surrounding integer points, cosine interpolated.
+    /// </summary>
     public static float Interpolated(float x, float z)
     {
         float fx0 = MathF.Floor(x), fz0 = MathF.Floor(z);

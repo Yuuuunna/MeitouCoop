@@ -2,93 +2,203 @@ using System.Numerics;
 using Meitou.Data.Fcs;
 
 namespace Meitou.Data.Particles;
-
-/// <summary>The EFFECT record's <c>type</c> (<c>EffectType</c> of <c>fcs_enums.def</c>): how the weather spawns and places the effect.</summary>
-public enum EffectType { None, Camera, Point, Wandering, Global, CameraRain, CameraAcidRain, PointLighting, WanderingStorm, WanderingGas, GlobalPoint }
+/// <summary>
+/// The EFFECT record's <c>type</c> (<c>EffectType</c> of <c>fcs_enums.def</c>): how the weather spawns and places the effect.
+/// </summary>
+public enum EffectType
+{
+    /// <summary>
+    /// NONE (0): no group is made.
+    /// </summary>
+    None,
+    /// <summary>
+    /// CAMERA (1): a camera group, in front of the camera and moving with it.
+    /// </summary>
+    Camera,
+    /// <summary>
+    /// POINT (2): units at random places, respawned on the entry's timer.
+    /// </summary>
+    Point,
+    /// <summary>
+    /// WANDERING (3): respawned units that move at the <c>wandering speed</c>.
+    /// </summary>
+    Wandering,
+    /// <summary>
+    /// GLOBAL (4): <c>count</c> units following the camera, their particles wrapped round it.
+    /// </summary>
+    Global,
+    /// <summary>
+    /// CAMERA_RAIN (5): a camera group.
+    /// </summary>
+    CameraRain,
+    /// <summary>
+    /// CAMERA_ACID_RAIN (6): a camera group.
+    /// </summary>
+    CameraAcidRain,
+    /// <summary>
+    /// POINT_LIGHTING (7): lightning strikes, respawned like POINT.
+    /// </summary>
+    PointLighting,
+    /// <summary>
+    /// WANDERING_STORM (8): wandering units.
+    /// </summary>
+    WanderingStorm,
+    /// <summary>
+    /// WANDERING_GAS (9): wandering units.
+    /// </summary>
+    WanderingGas,
+    /// <summary>
+    /// GLOBAL_POINT (10): units on the ground in rings round the camera.
+    /// </summary>
+    GlobalPoint
+}
 
 /// <summary>
-/// An EFFECT_FOG_VOLUME record (docs/formats/weather.md "Fog volumes"): a sphere (all 8 base records are) or cylinder of coloured fog attached to
-/// an effect, offset from the effect's node; <see cref="Distance"/> is the "density distance" and <see cref="Alpha"/> the volume's opacity.
+/// An EFFECT_FOG_VOLUME record (docs/formats/weather.md "Fog volumes"): a sphere (all 8 base records are) or cylinder of coloured fog attached to an
+/// effect, offset from the effect's node; <see cref = "Distance"/> is the "density distance" and <see cref = "Alpha"/> the volume's opacity.
 /// </summary>
 public sealed record EffectFogVolume(string Name, bool Cylinder, float Radius, float Distance, Vector3 Colour, float Alpha, bool Additive, Vector3 Offset, Vector3 Offset2, bool GroundMovement)
 {
-    public static EffectFogVolume From(GameRecord r) => new(r.Name, r.GetInt("type") == 1, r.GetFloat("radius", 1), r.GetFloat("distance", 1), EffectRecord.UnpackRgb(r.GetInt("colour", 0xFFFFFF)),
-        r.GetFloat("alpha", 1), r.GetBool("additive colour"), new Vector3(r.GetFloat("position x"), r.GetFloat("position y"), r.GetFloat("position z")),
+    /// <summary>
+    /// Reads an EFFECT_FOG_VOLUME record: <c>type</c> 1 a cylinder, its radius, distance, colour, alpha, additive flag, the two positions and
+    /// <c>ground movement</c>.
+    /// </summary>
+    public static EffectFogVolume From(GameRecord r) => new(
+        r.Name, r.GetInt("type") == 1, r.GetFloat("radius", 1), r.GetFloat("distance", 1), EffectRecord.UnpackRgb(r.GetInt("colour", 0xFFFFFF)),
+        r.GetFloat("alpha", 1), r.GetBool("additive colour"),
+        new Vector3(r.GetFloat("position x"), r.GetFloat("position y"), r.GetFloat("position z")),
         new Vector3(r.GetFloat("position 2 x"), r.GetFloat("position 2 y"), r.GetFloat("position 2 z")), r.GetBool("ground movement"));
 }
 
 /// <summary>
-/// An EFFECT record (docs/formats/weather.md "Effects", fields from <c>fcs.def</c>): the particle system and the weather fields the groups use.
-/// The altitude / slope window (<see cref="MinAltitude"/> ...), the fade times, the fog volumes and the lights are init-only extras with the
+/// An EFFECT record (docs/formats/weather.md "Effects", fields from <c>fcs.def</c>): the particle system and the weather fields the groups use. The
+/// altitude / slope window (<see cref = "MinAltitude"/> ...), the fade times, the fog volumes and the lights are init-only extras with the
 /// <c>fcs.def</c> defaults.
 /// </summary>
-public sealed record EffectRecord(string Name, EffectType Type, string ParticleSystem, bool WindAffected, bool WindDirectionEmission, float WindSpeedMultiplier,
-    float MinWindSpan, float MaxWindSpan, Vector3 ColourMultiplier, float SkyColourMultiplier, bool GroundColour, float MaximumViewDistance,
-    float ParticleFadeOutDelay, float MinTimeToLive, float MaxTimeToLive, float WanderingSpeed)
+public sealed record EffectRecord(string Name, EffectType Type, string ParticleSystem, bool WindAffected, bool WindDirectionEmission, float WindSpeedMultiplier, float MinWindSpan, float MaxWindSpan, Vector3 ColourMultiplier, float SkyColourMultiplier, bool GroundColour, float MaximumViewDistance, float ParticleFadeOutDelay, float MinTimeToLive, float MaxTimeToLive, float WanderingSpeed)
 {
-    public string? RecordId { get; init; }
-    /// <summary>The ground height window and the terrain normal's y window an effect may be placed in (<c>min/max altitude</c>, <c>min/max slope</c>; Verified (decompiled), FUN_1408fc3c0).</summary>
+    /// <summary>
+    /// The ground height window and the terrain normal's y window an effect may be placed in (<c>min/max altitude</c>, <c>min/max slope</c>; Verified
+    /// (decompiled), FUN_1408fc3c0).
+    /// </summary>
     public float MinAltitude { get; init; } = 200;
+    /// <summary>
+    /// See <see cref="MinAltitude"/>; default 100000.
+    /// </summary>
     public float MaxAltitude { get; init; } = 100000;
+    /// <summary>
+    /// See <see cref="MinAltitude"/>; default 0.
+    /// </summary>
     public float MinSlope { get; init; }
+    /// <summary>
+    /// See <see cref="MinAltitude"/>; default 1.
+    /// </summary>
     public float MaxSlope { get; init; } = 1;
+    /// <summary>
+    /// <c>fog fade in duration</c>: seconds the fog volumes grow over from the unit's start (<see cref="EffectUnit.FogFade"/>); 0 no fade.
+    /// </summary>
     public float FogFadeIn { get; init; }
+    /// <summary>
+    /// <c>fog fade out duration</c>: seconds the fog volumes shrink over from the unit's stop; 0 gone at once.
+    /// </summary>
     public float FogFadeOut { get; init; }
+    /// <summary>
+    /// The <c>fog volumes</c> attached; empty when read without the database.
+    /// </summary>
     public IReadOnlyList<EffectFogVolume> FogVolumes { get; init; } = [];
-    /// <summary>The LIGHT records attached (names): none of the base game's lightning has one.</summary>
+    /// <summary>
+    /// The LIGHT records attached (names): none of the base game's lightning has one.
+    /// </summary>
     public IReadOnlyList<string> Lights { get; init; } = [];
     /// <summary>
-    /// The looping sound of every unit of the effect (<c>sound</c>, its first entry; docs/audio.md "Point emitters"): null for none. An effect's emitter is made without a game object
-    /// of a building or character, so it never needs power and ignores the efficiency multiplier (<c>FUN_140259a80</c>).
+    /// The looping sound of every unit of the effect (<c>sound</c>, its first entry; docs/audio.md "Point emitters"): null for none. An effect's
+    /// emitter is made without a game object of a building or character, so it never needs power and ignores the efficiency multiplier
+    /// (<c>FUN_140259a80</c>).
     /// </summary>
     public World.AmbientSound? Sound { get; init; }
     /// <summary>
-    /// <c>affect type</c>, <c>effect radius</c> and <c>effect strength min</c>: what a unit does to the outdoor characters within the radius (docs/formats/weather.md "Effects on characters").
-    /// The strength a unit gets between min and max was not traced; the base game's affecting effects of the kinds that act (burning, gas) have min = max.
+    /// <c>affect type</c>, <c>effect radius</c> and <c>effect strength min</c>: what a unit does to the outdoor characters within the radius
+    /// (docs/formats/weather.md "Effects on characters"). The strength a unit gets between min and max was not traced; the base game's affecting
+    /// effects of the kinds that act (burning, gas) have min = max.
     /// </summary>
     public World.WeatherAffecting AffectType { get; init; }
+    /// <summary>
+    /// See <see cref="AffectType"/>.
+    /// </summary>
     public float EffectRadius { get; init; }
+    /// <summary>
+    /// See <see cref="AffectType"/>.
+    /// </summary>
     public float EffectStrength { get; init; }
 
-    public static EffectRecord From(GameRecord r, GameDatabase? db = null) => new(r.Name, (EffectType)Math.Clamp(r.GetInt("type"), 0, (int)EffectType.GlobalPoint), r.GetString("particle system"),
-        r.GetBool("wind affected"), r.GetBool("wind direction emission"), r.GetFloat("wind speed mult", 1), r.GetFloat("min wind span rate"), r.GetFloat("max wind span rate"),
-        UnpackRgb(r.GetInt("colour multiplier", 0xFFFFFF)), r.GetFloat("sky colour multiplier", 1), r.GetBool("ground colour"), r.GetFloat("maximum view distance"),
-        r.GetFloat("particle fade out delay"), r.GetFloat("min time to live"), r.GetFloat("max time to live", 30), r.GetFloat("wandering speed", 10))
+    /// <summary>
+    /// Reads an EFFECT record with the <c>fcs.def</c> defaults; with <paramref name = "db"/> also its fog volumes, lights and sound.
+    /// </summary>
+    public static EffectRecord From(GameRecord r, GameDatabase? db = null) => new(r.Name, (EffectType)Math.Clamp(r.GetInt("type"), 0, (int)EffectType.GlobalPoint), r.GetString("particle system"), r.GetBool("wind affected"), r.GetBool("wind direction emission"), r.GetFloat("wind speed mult", 1), r.GetFloat("min wind span rate"), r.GetFloat("max wind span rate"), UnpackRgb(r.GetInt("colour multiplier", 0xFFFFFF)), r.GetFloat("sky colour multiplier", 1), r.GetBool("ground colour"), r.GetFloat("maximum view distance"), r.GetFloat("particle fade out delay"), r.GetFloat("min time to live"), r.GetFloat("max time to live", 30), r.GetFloat("wandering speed", 10))
     {
         RecordId = r.StringId,
-        MinAltitude = r.GetFloat("min altitude", 200), MaxAltitude = r.GetFloat("max altitude", 100000),
-        MinSlope = r.GetFloat("min slope"), MaxSlope = r.GetFloat("max slope", 1),
-        FogFadeIn = r.GetFloat("fog fade in duration"), FogFadeOut = r.GetFloat("fog fade out duration"),
+        MinAltitude = r.GetFloat("min altitude", 200),
+        MaxAltitude = r.GetFloat("max altitude", 100000),
+        MinSlope = r.GetFloat("min slope"),
+        MaxSlope = r.GetFloat("max slope", 1),
+        FogFadeIn = r.GetFloat("fog fade in duration"),
+        FogFadeOut = r.GetFloat("fog fade out duration"),
         AffectType = Enum.IsDefined((World.WeatherAffecting)r.GetInt("affect type")) ? (World.WeatherAffecting)r.GetInt("affect type") : World.WeatherAffecting.None,
-        EffectRadius = r.GetFloat("effect radius"), EffectStrength = r.GetFloat("effect strength min"),
-        FogVolumes = db is null ? [] : [.. r.GetReferences("fog volumes").Select(f => db.Find(f.TargetStringId)).Where(f => f is { Type: FcsRecordType.EFFECT_FOG_VOLUME }).Select(f => EffectFogVolume.From(f!))],
-        Lights = db is null ? [] : [.. r.GetReferences("lights").Select(l => db.Find(l.TargetStringId)?.Name ?? "?")],
-        Sound = db is null ? null : World.AmbientSound.FirstOf(db, r, "sound") is { } sound ? sound with { NeedsPower = false, EfficiencyMultiplier = 0 } : null,
+        EffectRadius = r.GetFloat("effect radius"),
+        EffectStrength = r.GetFloat("effect strength min"),
+        FogVolumes = db is null ? [] : [..r.GetReferences("fog volumes").Select(f => db.Find(f.TargetStringId)).Where(f => f is { Type: FcsRecordType.EffectFogVolume }).Select(f => EffectFogVolume.From(f!))],
+        Lights = db is null ? [] : [..r.GetReferences("lights").Select(l => db.Find(l.TargetStringId)?.Name ?? "?")],
+        Sound = db is null ? null : World.AmbientSound.FirstOf(db, r, "sound")is { } sound ? sound with
+        {
+            NeedsPower = false,
+            EfficiencyMultiplier = 0
+        }
+
+        : null,
     };
 
+    /// <summary>
+    /// A packed <c>0xRRGGBB</c> colour as 0..1 floats.
+    /// </summary>
     internal static Vector3 UnpackRgb(int rgb) => new(((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f);
 
-    /// <summary>Whether the group is a camera group (CAMERA, CAMERA_RAIN, CAMERA_ACID_RAIN).</summary>
+    /// <summary>
+    /// Whether the group is a camera group (CAMERA, CAMERA_RAIN, CAMERA_ACID_RAIN).
+    /// </summary>
     public bool IsCameraGroup => Type is EffectType.Camera or EffectType.CameraRain or EffectType.CameraAcidRain;
-    /// <summary>Whether the effect has no life: <c>max time to live</c> 0 or less (Verified (decompiled), FUN_1401034f0: the handler never ends).</summary>
+    /// <summary>
+    /// Whether the effect has no life: <c>max time to live</c> 0 or less (Verified (decompiled), FUN_1401034f0: the handler never ends).
+    /// </summary>
     public bool Immortal => MaxTimeToLive <= 0;
+    public string? RecordId { get; init; }
 }
 
-/// <summary>One entry of a WEATHER's <c>effects</c> list: the effect, how many may be active at once (0 = no limit) and the respawn times in real seconds (0 / 0: all at once).</summary>
-public sealed record WeatherEffectEntry(EffectRecord Effect, int Count, int RespawnMin, int RespawnMax);
-
 /// <summary>
-/// What the effect groups need of the weather, per frame (docs/formats/weather.md "Effects"): the camera region's active effects, the
-/// weather's strength and the wind. The scheduler fills it from its state; <see cref="WeatherEffectAdapter"/> makes one from a forced WEATHER record.
+/// One entry of a WEATHER's <c>effects</c> list: the effect, how many may be active at once (0 = no limit) and the respawn times in real seconds (0 /
+/// 0: all at once).
+/// </summary>
+public sealed record WeatherEffectEntry(EffectRecord Effect, int Count, int RespawnMin, int RespawnMax);
+/// <summary>
+/// What the effect groups need of the weather, per frame (docs/formats/weather.md "Effects"): the camera region's active effects, the weather's
+/// strength and the wind. The scheduler fills it from its state; <see cref = "WeatherEffectAdapter"/> makes one from a forced WEATHER record.
 /// </summary>
 public sealed class WeatherEffectInput
 {
+    /// <summary>
+    /// The camera region's active effect entries.
+    /// </summary>
     public IReadOnlyList<WeatherEffectEntry> Effects { get; init; } = [];
-    /// <summary>The weather's strength <c>s</c> (0..1).</summary>
+    /// <summary>
+    /// The weather's strength <c>s</c> (0..1).
+    /// </summary>
     public float Strength { get; init; } = 1;
-    /// <summary>The wind as a velocity in x and z, units per second.</summary>
+    /// <summary>
+    /// The wind as a velocity in x and z, units per second.
+    /// </summary>
     public Vector2 Wind { get; init; }
-    /// <summary>Bumped by whoever fills the input when <see cref="Effects"/> changed (a new weather), so the groups are rebuilt.</summary>
+    /// <summary>
+    /// Bumped by whoever fills the input when <see cref="Effects"/> changed (a new weather), so the groups are rebuilt.
+    /// </summary>
     public int Version { get; init; }
     /// <summary>
     /// The weather region the camera is in (empty: a forced weather, or unknown). The camera crossing into another region is the one change that
@@ -96,33 +206,51 @@ public sealed class WeatherEffectInput
     /// </summary>
     public string Region { get; init; } = "";
 
-    /// <summary>Whether both lists are the same effect list (the object the scheduler keeps per weather) in the same version: the groups made for one serve the other.</summary>
+    /// <summary>
+    /// Whether both lists are the same effect list (the object the scheduler keeps per weather) in the same version: the groups made for one serve
+    /// the other.
+    /// </summary>
     public bool SameEffects(WeatherEffectInput other) => ReferenceEquals(Effects, other.Effects) && Version == other.Version;
 
+    /// <summary>
+    /// No effects.
+    /// </summary>
     public static readonly WeatherEffectInput None = new();
 }
 
+/// <summary>
+/// Makes a <see cref = "WeatherEffectInput"/> from a WEATHER record, for a forced weather without the scheduler.
+/// </summary>
 public static class WeatherEffectAdapter
 {
-    /// <summary>The WEATHER record named <paramref name="name"/> (exact, else a substring, as <see cref="World.SkyWeather.Find"/>), or null.</summary>
+    /// <summary>
+    /// The WEATHER record named <paramref name="name"/> (exact, else a substring, as <see cref="World.SkyWeather.Find"/>), or null.
+    /// </summary>
     public static GameRecord? FindWeather(GameDatabase db, string? name)
     {
-        var all = db.OfType(FcsRecordType.WEATHER).ToList();
+        var all = db.OfType(FcsRecordType.Weather).ToList();
         name ??= "Default";
         return all.FirstOrDefault(w => w.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             ?? all.FirstOrDefault(w => w.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>The effect list of a WEATHER record, at strength 1 with the wind at its fastest and blowing along +x (Observed: a forced weather has no scheduler to roll them).</summary>
+    /// <summary>
+    /// The effect list of a WEATHER record, at strength 1 with the wind at its fastest and blowing along +x (Observed: a forced weather has no
+    /// scheduler to roll them).
+    /// </summary>
     public static WeatherEffectInput FromWeather(GameDatabase db, GameRecord weather)
     {
         var entries = new List<WeatherEffectEntry>();
         foreach (var reference in weather.GetReferences("effects"))
-            if (db.Find(reference.TargetStringId) is { Type: FcsRecordType.EFFECT } effect)
-                entries.Add(new WeatherEffectEntry(EffectRecord.From(effect, db), reference.Values.Value0, reference.Values.Value1, reference.Values.Value2));
+            if (db.Find(reference.TargetStringId) is { Type: FcsRecordType.Effect } effect)
+                entries.Add(new WeatherEffectEntry(
+                    EffectRecord.From(effect, db), reference.Values.Value0, reference.Values.Value1, reference.Values.Value2));
         return new WeatherEffectInput { Effects = entries, Strength = 1, Wind = new Vector2(weather.GetFloat("wind speed max"), 0) };
     }
 
+    /// <summary>
+    /// <see cref="FromWeather"/> of the WEATHER found by <paramref name="name"/> (<c>Default</c> when null); no effects when none is found.
+    /// </summary>
     public static WeatherEffectInput FromName(GameDatabase db, string? name) =>
         FindWeather(db, name) is { } weather ? FromWeather(db, weather) : WeatherEffectInput.None;
 }

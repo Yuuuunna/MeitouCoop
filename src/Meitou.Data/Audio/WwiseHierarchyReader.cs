@@ -9,6 +9,10 @@ namespace Meitou.Data.Audio;
 /// </summary>
 static class WwiseHierarchyReader
 {
+    /// <summary>
+    /// Splits the section into its objects, decoded when <paramref name="decode"/>, else all kept raw; <see cref="InvalidDataException"/> when an
+    /// object runs past the section or bytes are left over.
+    /// </summary>
     public static List<WwiseObject> Read(ReadOnlySpan<byte> hirc, bool decode)
     {
         int count = BinaryPrimitives.ReadInt32LittleEndian(hirc);
@@ -19,7 +23,8 @@ static class WwiseHierarchyReader
             if (p + 9 > hirc.Length) throw new InvalidDataException($"HIRC object {i} header runs past the section");
             var type = (WwiseObjectType)hirc[p];
             int size = BinaryPrimitives.ReadInt32LittleEndian(hirc[(p + 1)..]);
-            if (size < 4 || p + 5 + (long)size > hirc.Length) throw new InvalidDataException($"HIRC object {i} runs past the section");
+            if (size < 4 || p + 5 + (long)size > hirc.Length)
+                throw new InvalidDataException($"HIRC object {i} runs past the section");
             uint id = BinaryPrimitives.ReadUInt32LittleEndian(hirc[(p + 5)..]);
             var body = hirc.Slice(p + 9, size - 4);
             objects.Add(decode ? Decode(type, id, body) : new WwiseRawObject(type, id, body.ToArray(), null));
@@ -29,6 +34,9 @@ static class WwiseHierarchyReader
         return objects;
     }
 
+    /// <summary>
+    /// Decodes one object's <paramref name="body"/> (after its id) by its type; a type not decoded, a layout error or bytes left over keep it raw.
+    /// </summary>
     static WwiseObject Decode(WwiseObjectType type, uint id, ReadOnlySpan<byte> body)
     {
         if (type is WwiseObjectType.Bus or WwiseObjectType.AuxBus) return Bus(id, body, type == WwiseObjectType.AuxBus);
@@ -62,6 +70,9 @@ static class WwiseHierarchyReader
         }
     }
 
+    /// <summary>
+    /// An action: type, target, target-is-bus, properties, then the fields of its kind (docs/formats/wwise-bnk.md "Action").
+    /// </summary>
     static WwiseAction Action(ref Reader r, uint id)
     {
         ushort actionType = r.U16();
@@ -79,7 +90,12 @@ static class WwiseHierarchyReader
                 or WwiseActionKind.SetBusVolume or WwiseActionKind.ResetBusVolume or WwiseActionKind.SetLowPass or WwiseActionKind.ResetLowPass:
                 return action with
                 {
-                    FadeCurve = r.U8(), ValueMeaning = r.U8(), Value = r.F32(), ValueMin = r.F32(), ValueMax = r.F32(), Exceptions = Exceptions(ref r),
+                    FadeCurve = r.U8(),
+                    ValueMeaning = r.U8(),
+                    Value = r.F32(),
+                    ValueMin = r.F32(),
+                    ValueMax = r.F32(),
+                    Exceptions = Exceptions(ref r),
                 };
             case WwiseActionKind.SetState:
                 return action with { GroupId = r.U32(), StateId = r.U32() };
@@ -90,6 +106,9 @@ static class WwiseHierarchyReader
         }
     }
 
+    /// <summary>
+    /// An action's exception list: u32 count, then per entry a u32 id and a u8 is-bus flag.
+    /// </summary>
     static (uint, bool)[] Exceptions(ref Reader r)
     {
         var list = new (uint, bool)[r.Count(r.U32(), 5)];
@@ -97,7 +116,9 @@ static class WwiseHierarchyReader
         return list;
     }
 
-    /// <summary>u8 count, the ids, the u32 values; then u8 count, the ids, the (min, max) float pairs.</summary>
+    /// <summary>
+    /// u8 count, the ids, the u32 values; then u8 count, the ids, the (min, max) float pairs.
+    /// </summary>
     static WwiseProperties Properties(ref Reader r)
     {
         int n = r.U8();
@@ -111,6 +132,9 @@ static class WwiseHierarchyReader
         return n == 0 && m == 0 ? WwiseProperties.Empty : new WwiseProperties(values, ranges);
     }
 
+    /// <summary>
+    /// A sound or track source: plugin, stream type, source and file ids; an embedded one (stream type 0) adds its offset and size in the bank.
+    /// </summary>
     static WwiseSource Source(ref Reader r)
     {
         uint plugin = r.U32();
@@ -129,6 +153,9 @@ static class WwiseHierarchyReader
         return new WwiseSource(plugin, stream, source, file, offset, size, bits, parameters);
     }
 
+    /// <summary>
+    /// The parameters every sound and container starts with (docs/formats/wwise-bnk.md "Node base").
+    /// </summary>
     static WwiseNodeBase NodeBase(ref Reader r)
     {
         bool overrideFx = r.U8() != 0;
@@ -163,6 +190,9 @@ static class WwiseHierarchyReader
             maxInstances, below, adv2, states, Rtpcs(ref r));
     }
 
+    /// <summary>
+    /// A node's positioning: its bits, and when it overrides its parent's and is 3D, the 3D settings and any paths.
+    /// </summary>
     static WwisePositioning Positioning(ref Reader r)
     {
         byte bits = r.U8();
@@ -191,6 +221,9 @@ static class WwiseHierarchyReader
         return new WwisePositioning(bits, bits3D, attenuation, pathMode, transition, vertices, paths, ranges);
     }
 
+    /// <summary>
+    /// An RTPC list: u16 count, then per RTPC its parameter, type, accumulation, target property, curve id, scaling and points.
+    /// </summary>
     static WwiseRtpc[] Rtpcs(ref Reader r)
     {
         var list = new WwiseRtpc[r.Count(r.U16(), 14)];
@@ -205,6 +238,9 @@ static class WwiseHierarchyReader
         return list;
     }
 
+    /// <summary>
+    /// <paramref name="count"/> curve points of (f32 x, f32 y, u32 interpolation).
+    /// </summary>
     static WwiseCurvePoint[] Points(ref Reader r, uint count)
     {
         var points = new WwiseCurvePoint[r.Count(count, 12)];
@@ -212,6 +248,9 @@ static class WwiseHierarchyReader
         return points;
     }
 
+    /// <summary>
+    /// A random or sequence container: node base, loop and transition settings, modes, children and the weighted playlist.
+    /// </summary>
     static WwiseRandomSequence RandomSequence(ref Reader r, uint id)
     {
         var node = NodeBase(ref r);
@@ -226,6 +265,9 @@ static class WwiseHierarchyReader
             randomMode, mode, flags, children, playlist);
     }
 
+    /// <summary>
+    /// A switch container: node base, the switch or state group, its default, the children, each switch's nodes and the per-node parameters.
+    /// </summary>
     static WwiseSwitchContainer Switch(ref Reader r, uint id)
     {
         var node = NodeBase(ref r);
@@ -269,7 +311,8 @@ static class WwiseHierarchyReader
             uint states = r.U32();
             if (states != 0) throw new InvalidDataException($"{states} state groups on a bus, not decoded");
             if (r.Remaining != 0) throw new InvalidDataException($"{r.Remaining} bytes left over");
-            return new WwiseBus(id, parent, new WwiseProperties(values, new Dictionary<byte, (float, float)>()), rtpcs, body.ToArray(), aux, slots, bypass);
+            return new WwiseBus(id, parent, new WwiseProperties(values, new Dictionary<byte, (float, float)>()), rtpcs, body.ToArray(), aux, slots,
+                    bypass);
         }
         catch (InvalidDataException e)
         {
@@ -312,6 +355,9 @@ static class WwiseHierarchyReader
         return new WwiseEffect(type, id, plugin, parameters, rtpcs);
     }
 
+    /// <summary>
+    /// A layer (blend) container: node base, children and the layers with their crossfade curves.
+    /// </summary>
     static WwiseLayerContainer Layer(ref Reader r, uint id)
     {
         var node = NodeBase(ref r);
@@ -345,9 +391,14 @@ static class WwiseHierarchyReader
         return new WwiseMusicNode(flags, node, children, meter);
     }
 
+    /// <summary>
+    /// A music fade: s32 time (ms), u32 curve, s32 offset (ms).
+    /// </summary>
     static WwiseFade Fade(ref Reader r) => new(r.I32(), r.U32(), r.I32());
 
-    /// <summary>Transition rules of a music switch or playlist. A rule with a transition segment is not decoded (none in Kenshi).</summary>
+    /// <summary>
+    /// Transition rules of a music switch or playlist. A rule with a transition segment is not decoded (none in Kenshi).
+    /// </summary>
     static WwiseMusicTransition[] Transitions(ref Reader r)
     {
         var rules = new WwiseMusicTransition[r.Count(r.U32(), 64)];
@@ -363,6 +414,9 @@ static class WwiseHierarchyReader
         return rules;
     }
 
+    /// <summary>
+    /// A music segment: music node, length (ms) and its markers (id, position, ASCII name).
+    /// </summary>
     static WwiseMusicSegment MusicSegment(ref Reader r, uint id)
     {
         var music = MusicNode(ref r);
@@ -377,7 +431,9 @@ static class WwiseHierarchyReader
         return new WwiseMusicSegment(id, music, duration, markers);
     }
 
-    /// <summary>A music track. Track types other than 0 (random, sequence, switch tracks) are not decoded (none in Kenshi).</summary>
+    /// <summary>
+    /// A music track. Track types other than 0 (random, sequence, switch tracks) are not decoded (none in Kenshi).
+    /// </summary>
     static WwiseMusicTrack MusicTrack(ref Reader r, uint id)
     {
         byte flags = r.U8();
@@ -394,6 +450,9 @@ static class WwiseHierarchyReader
         return new WwiseMusicTrack(id, flags, sources, clips, subTracks, automation, node, trackType, r.I32());
     }
 
+    /// <summary>
+    /// A music switch: music node, transition rules, continue-playback flag, the decision tree's switch or state groups and the tree.
+    /// </summary>
     static WwiseMusicSwitch MusicSwitch(ref Reader r, uint id)
     {
         var music = MusicNode(ref r);
@@ -420,12 +479,16 @@ static class WwiseHierarchyReader
         var (key, value, weight, probability) = flat[index];
         if (level == depth) return new WwiseDecisionNode(key, value, weight, probability, []);
         int first = (int)(value & 0xFFFF), count = (int)(value >> 16);
-        if (first + count > flat.Length || first <= index) throw new InvalidDataException($"Decision node {index} children {first}+{count} out of range");
+        if (first + count > flat.Length || first <= index)
+            throw new InvalidDataException($"Decision node {index} children {first}+{count} out of range");
         var children = new WwiseDecisionNode[count];
         for (int i = 0; i < count; i++) children[i] = DecisionNode(flat, first + i, level + 1, depth);
         return new WwiseDecisionNode(key, 0, weight, probability, children);
     }
 
+    /// <summary>
+    /// A music playlist: music node, transition rules and the playlist tree, stored depth-first.
+    /// </summary>
     static WwiseMusicPlaylist MusicPlaylist(ref Reader r, uint id)
     {
         var music = MusicNode(ref r);
@@ -451,42 +514,86 @@ static class WwiseHierarchyReader
         uint weight = r.U32();
         ushort avoid = r.U16();
         bool usingWeight = r.U8() != 0, shuffle = r.U8() != 0;
-        if (childCount > count - read) throw new InvalidDataException($"Playlist item {itemId:X8} has {childCount} children, more than the count");
+        if (childCount > count - read)
+            throw new InvalidDataException($"Playlist item {itemId:X8} has {childCount} children, more than the count");
         var children = new WwisePlaylistItem[childCount];
         for (int i = 0; i < children.Length; i++) children[i] = PlaylistItem(ref r, ref read, count);
         return new WwisePlaylistItem(segment, itemId, type, loop, loopMin, loopMax, weight, avoid, usingWeight, shuffle, children);
     }
 
+    /// <summary>
+    /// A bounds-checked little-endian cursor over one object's body; reading past it throws <see cref="InvalidDataException"/>.
+    /// </summary>
     ref struct Reader(ReadOnlySpan<byte> span)
     {
-        readonly ReadOnlySpan<byte> span = span;
-        int p;
+        /// <summary>
+        /// The object's body.
+        /// </summary>
+        readonly ReadOnlySpan<byte> _span = span;
+        /// <summary>
+        /// The read position in <see cref="_span"/>.
+        /// </summary>
+        int _p;
 
-        public readonly int Remaining => span.Length - p;
+        /// <summary>
+        /// Bytes not read yet; a decoded object must leave none.
+        /// </summary>
+        public readonly int Remaining => _span.Length - _p;
 
+        /// <summary>
+        /// The next <paramref name="n"/> bytes; <see cref="InvalidDataException"/> when fewer are left.
+        /// </summary>
         ReadOnlySpan<byte> Take(int n)
         {
-            if (n > span.Length - p) throw new InvalidDataException($"Read of {n} bytes at {p} runs past the object ({span.Length} bytes)");
-            var s = span.Slice(p, n);
-            p += n;
+            if (n > _span.Length - _p)
+                throw new InvalidDataException($"Read of {n} bytes at {_p} runs past the object ({_span.Length} bytes)");
+            var s = _span.Slice(_p, n);
+            _p += n;
             return s;
         }
 
+        /// <summary>
+        /// Reads a byte.
+        /// </summary>
         public byte U8() => Take(1)[0];
+        /// <summary>
+        /// Reads a little-endian uint16.
+        /// </summary>
         public ushort U16() => BinaryPrimitives.ReadUInt16LittleEndian(Take(2));
+        /// <summary>
+        /// Reads a little-endian uint32.
+        /// </summary>
         public uint U32() => BinaryPrimitives.ReadUInt32LittleEndian(Take(4));
+        /// <summary>
+        /// Reads a little-endian int32.
+        /// </summary>
         public int I32() => BinaryPrimitives.ReadInt32LittleEndian(Take(4));
+        /// <summary>
+        /// Reads a little-endian float.
+        /// </summary>
         public float F32() => BinaryPrimitives.ReadSingleLittleEndian(Take(4));
+        /// <summary>
+        /// Reads a little-endian double.
+        /// </summary>
         public double F64() => BinaryPrimitives.ReadDoubleLittleEndian(Take(8));
+        /// <summary>
+        /// Reads <paramref name="n"/> bytes into a new array.
+        /// </summary>
         public byte[] Bytes(int n) => Take(n).ToArray();
 
-        /// <summary>A count, checked against what is left (each element at least <paramref name="minSize"/> bytes).</summary>
+        /// <summary>
+        /// A count, checked against what is left (each element at least <paramref name="minSize"/> bytes).
+        /// </summary>
         public readonly int Count(uint n, int minSize)
         {
-            if (n > (uint)(Remaining / minSize)) throw new InvalidDataException($"Count {n} at {p} is more than the object holds");
+            if (n > (uint)(Remaining / minSize))
+                throw new InvalidDataException($"Count {n} at {_p} is more than the object holds");
             return (int)n;
         }
 
+        /// <summary>
+        /// Reads <paramref name="n"/> uint32 ids.
+        /// </summary>
         public uint[] Ids(uint n)
         {
             var ids = new uint[Count(n, 4)];

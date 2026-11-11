@@ -3,6 +3,10 @@ using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Items;
 using SimWorld = Meitou.Simulation.World;
@@ -28,7 +32,7 @@ public class SquadAuthorityTests
     }
     sealed class Scene : IDisposable
     {
-        readonly MovementSystem movement;
+        readonly MovementSystem _movement;
         public PopulationData Data { get; }
         public SimWorld World { get; }
         public WorldPlayer A { get; }
@@ -41,15 +45,15 @@ public class SquadAuthorityTests
 
         public Scene(bool sameFaction = false)
         {
-            var hunters = SyntheticTown.Rec(SquadManagement.DismissFaction, FcsRecordType.FACTION, "Hunters");
-            var limits = SyntheticTown.Rec("limits", FcsRecordType.CONSTANTS, "Limits");
+            var hunters = SyntheticTown.Rec(SquadManagement.DismissFaction, FcsRecordType.Faction, "Hunters");
+            var limits = SyntheticTown.Rec("limits", FcsRecordType.Constants, "Limits");
             limits.Ints["max squad size"] = 2;
             limits.Ints["max squads"] = 8;
             Data = SyntheticTown.Data(SyntheticTown.Database(extra: [hunters, limits]));
             int other = sameFaction ? Data.PlayerFaction : Data.RegisterFaction("remote", "Remote", Data.PlayerFaction);
             var walk = new OpenGroundWalkability((_, _) => 300);
-            movement = new MovementSystem(new PathService(walk, true));
-            World = new SimWorld(new WorldSettings { PublishSnapshots = false }, walk, [new PlayerSystem(Data), movement]);
+            _movement = new MovementSystem(new PathService(walk, true));
+            World = new SimWorld(new WorldSettings { PublishSnapshots = false }, walk, [new PlayerSystem(Data), _movement]);
             A = World.Players.Register(new PlayerId(2)); B = World.Players.Register(new PlayerId(3));
             World.Players.SetMembership(A.Id, Data.PlayerFaction, FactionPermission.All);
             World.Players.SetMembership(B.Id, other, FactionPermission.All);
@@ -69,7 +73,7 @@ public class SquadAuthorityTests
             return id;
         }
         public void Send(WorldPlayer actor, SimCommand command) => World.Commands.Enqueue(actor.Id, command with { Tick = World.Tick });
-        public void Dispose() { World.Dispose(); movement.Dispose(); }
+        public void Dispose() { World.Dispose(); _movement.Dispose(); }
     }
 
     [Fact]

@@ -10,36 +10,69 @@ namespace Meitou.Data.Audio;
 /// </summary>
 public sealed class WwiseVorbis
 {
+    /// <summary>
+    /// Channel count, 1..8 (<c>fmt </c> offset 2).
+    /// </summary>
     public int Channels { get; private init; }
+    /// <summary>
+    /// Samples per second per channel (<c>fmt </c> offset 4).
+    /// </summary>
     public int SampleRate { get; private init; }
+    /// <summary>
+    /// The average data rate the <c>fmt </c> chunk states (offset 8); the rebuilt identification header writes it as the nominal bitrate.
+    /// </summary>
     public int AverageBytesPerSecond { get; private init; }
-    /// <summary>The number of sample frames the sound plays.</summary>
+    /// <summary>
+    /// The number of sample frames the sound plays.
+    /// </summary>
     public int SampleCount { get; private init; }
+    /// <summary>
+    /// Where the setup packet starts in <see cref="Data"/>.
+    /// </summary>
     public int SetupOffset { get; private init; }
+    /// <summary>
+    /// Where the first audio packet starts in <see cref="Data"/>.
+    /// </summary>
     public int FirstAudioOffset { get; private init; }
+    /// <summary>
+    /// The short block size as a power of two (6..13).
+    /// </summary>
     public int Blocksize0Exponent { get; private init; }
+    /// <summary>
+    /// The long block size as a power of two (at least <see cref="Blocksize0Exponent"/>, at most 13).
+    /// </summary>
     public int Blocksize1Exponent { get; private init; }
+    /// <summary>
+    /// The WEM's own id from the <c>fmt </c> chunk; the Ogg stream's serial number.
+    /// </summary>
     public uint Uid { get; private init; }
-    /// <summary>The <c>data</c> chunk: the setup packet, then the audio packets, each after a u16 size.</summary>
+    /// <summary>
+    /// The <c>data</c> chunk: the setup packet, then the audio packets, each after a u16 size.
+    /// </summary>
     public ReadOnlyMemory<byte> Data { get; private init; }
 
-    /// <summary>Reads the RIFF header of a WEM with the 66-byte <c>fmt </c> chunk (Wwise 2016 layout, the only one in Kenshi).</summary>
+    /// <summary>
+    /// Reads the RIFF header of a WEM with the 66-byte <c>fmt </c> chunk (Wwise 2016 layout, the only one in Kenshi).
+    /// </summary>
     public static WwiseVorbis Read(ReadOnlyMemory<byte> wem)
     {
         var s = wem.Span;
-        if (s.Length < 12 || !s.StartsWith("RIFF"u8) || !s[8..12].SequenceEqual("WAVE"u8)) throw new InvalidDataException("Not a RIFF/WAVE file");
+        if (s.Length < 12 || !s.StartsWith("RIFF"u8) || !s[8..12].SequenceEqual("WAVE"u8))
+            throw new InvalidDataException("Not a RIFF/WAVE file");
         int fmt = -1, fmtLength = 0, data = -1, dataLength = 0;
         for (int p = 12; p + 8 <= s.Length;)
         {
             int len = BinaryPrimitives.ReadInt32LittleEndian(s[(p + 4)..]);
-            if (len < 0 || p + 8 + (long)len > s.Length) throw new InvalidDataException("RIFF chunk runs past the file");
+            if (len < 0 || p + 8 + (long)len > s.Length)
+                throw new InvalidDataException("RIFF chunk runs past the file");
             var tag = s.Slice(p, 4);
             if (tag.SequenceEqual("fmt "u8)) (fmt, fmtLength) = (p + 8, len);
             else if (tag.SequenceEqual("data"u8)) (data, dataLength) = (p + 8, len);
             p += 8 + len + (len & 1);
         }
         if (fmt < 0 || data < 0) throw new InvalidDataException("WEM without fmt or data");
-        if (BinaryPrimitives.ReadUInt16LittleEndian(s[fmt..]) != 0xFFFF) throw new InvalidDataException("Not Wwise Vorbis");
+        if (BinaryPrimitives.ReadUInt16LittleEndian(s[fmt..]) != 0xFFFF)
+            throw new InvalidDataException("Not Wwise Vorbis");
         if (fmtLength != 66) throw new InvalidDataException($"fmt chunk of {fmtLength} bytes not decoded");
         int vorb = fmt + 0x18;
         var w = new WwiseVorbis
@@ -55,12 +88,15 @@ public sealed class WwiseVorbis
             Blocksize1Exponent = s[vorb + 0x29],
             Data = wem.Slice(data, dataLength),
         };
-        if (w.Channels is < 1 or > 8 || w.Blocksize0Exponent is < 6 or > 13 || w.Blocksize1Exponent < w.Blocksize0Exponent || w.Blocksize1Exponent > 13)
+        if (w.Channels is < 1 or > 8 || w.Blocksize0Exponent is < 6 or > 13 || w.Blocksize1Exponent < w.Blocksize0Exponent
+                || w.Blocksize1Exponent > 13)
             throw new InvalidDataException("Implausible Wwise Vorbis header");
         return w;
     }
 
-    /// <summary>The whole sound as an Ogg Vorbis stream.</summary>
+    /// <summary>
+    /// The whole sound as an Ogg Vorbis stream.
+    /// </summary>
     public byte[] ToOgg(WwiseCodebookLibrary library)
     {
         var ogg = new OggWriter((int)Uid);
@@ -91,13 +127,16 @@ public sealed class WwiseVorbis
             bool last = i == packets.Count - 1;
             bool previousLong = i > 0 && modeLong[modes[i - 1]];
             bool nextLong = !last && modeLong[modes[i + 1]];
-            ogg.Packet(AudioPacket(packets[i].Span, modeBits, isLong, previousLong, nextLong), last ? SampleCount : Math.Min(granule, SampleCount), last);
+            ogg.Packet(AudioPacket(packets[i].Span, modeBits, isLong, previousLong, nextLong), last ? SampleCount : Math.Min(granule, SampleCount),
+                    last);
         }
         ogg.Flush();
         return ogg.ToArray();
     }
 
-    /// <summary>The sound decoded to interleaved float samples (<see cref="SampleCount"/> × <see cref="Channels"/>).</summary>
+    /// <summary>
+    /// The sound decoded to interleaved float samples (<see cref="SampleCount"/> × <see cref="Channels"/>).
+    /// </summary>
     public float[] Decode(WwiseCodebookLibrary library)
     {
         using var stream = new MemoryStream(ToOgg(library));
@@ -113,6 +152,9 @@ public sealed class WwiseVorbis
         return read == samples.Length ? samples : samples[..read];
     }
 
+    /// <summary>
+    /// The packet at <paramref name="offset"/> in <see cref="Data"/> (after its u16 size); <paramref name="next"/> is where the following one starts.
+    /// </summary>
     ReadOnlyMemory<byte> Packet(int offset, out int next)
     {
         var d = Data.Span;
@@ -123,6 +165,9 @@ public sealed class WwiseVorbis
         return Data.Slice(offset + 2, size);
     }
 
+    /// <summary>
+    /// The Vorbis identification header (packet type 1) rebuilt from the <c>fmt </c> chunk.
+    /// </summary>
     byte[] IdentificationHeader()
     {
         var w = new VorbisBitWriter();
@@ -140,6 +185,9 @@ public sealed class WwiseVorbis
         return w.ToArray();
     }
 
+    /// <summary>
+    /// A Vorbis comment header (packet type 3) with Meitou's vendor string and no comments.
+    /// </summary>
     static byte[] CommentHeader()
     {
         var w = new VorbisBitWriter();
@@ -153,7 +201,9 @@ public sealed class WwiseVorbis
         return w.ToArray();
     }
 
-    /// <summary>Rebuilds the setup header; <paramref name="modeLong"/> gets each mode's block flag.</summary>
+    /// <summary>
+    /// Rebuilds the setup header; <paramref name="modeLong"/> gets each mode's block flag.
+    /// </summary>
     byte[] SetupHeader(ReadOnlySpan<byte> packet, WwiseCodebookLibrary library, out bool[] modeLong, out int modeBits)
     {
         var r = new VorbisBitReader(packet);
@@ -161,6 +211,25 @@ public sealed class WwiseVorbis
         w.Write(5, 8);
         w.WriteBytes("vorbis"u8);
 
+        CopyCodebooks(ref r, w, library);
+
+        w.Write(0, 6); // one time-domain transform
+        w.Write(0, 16); // of type 0
+
+        CopyFloors(ref r, w);
+        CopyResidues(ref r, w);
+        CopyMappings(ref r, w);
+        CopyModes(ref r, w, out modeLong, out modeBits);
+        w.Write(true); // framing
+        if (r.Remaining >= 8) throw new InvalidDataException($"Setup packet has {r.Remaining} bits left over");
+        return w.ToArray();
+    }
+
+    /// <summary>
+    /// The codebooks: each a 10-bit index into <paramref name="library"/>, expanded to the standard layout.
+    /// </summary>
+    static void CopyCodebooks(ref VorbisBitReader r, VorbisBitWriter w, WwiseCodebookLibrary library)
+    {
         int codebooks = (int)r.Read(8) + 1;
         w.Write((uint)codebooks - 1, 8);
         for (int i = 0; i < codebooks; i++)
@@ -168,10 +237,13 @@ public sealed class WwiseVorbis
             var book = new VorbisBitReader(library.Packed((int)r.Read(10)));
             Codebook(ref book, w);
         }
+    }
 
-        w.Write(0, 6); // one time-domain transform
-        w.Write(0, 16); // of type 0
-
+    /// <summary>
+    /// The floors, each given back its type field (always floor 1).
+    /// </summary>
+    static void CopyFloors(ref VorbisBitReader r, VorbisBitWriter w)
+    {
         int floors = (int)r.Read(6) + 1;
         w.Write((uint)floors - 1, 6);
         for (int i = 0; i < floors; i++)
@@ -203,7 +275,13 @@ public sealed class WwiseVorbis
             foreach (var c in classes)
                 for (int k = 0; k < dimensions[c]; k++) w.Copy(ref r, rangeBits);
         }
+    }
 
+    /// <summary>
+    /// The residues: Wwise's 2-bit type widened to the standard 16 bits, the rest copied.
+    /// </summary>
+    static void CopyResidues(ref VorbisBitReader r, VorbisBitWriter w)
+    {
         int residues = (int)r.Read(6) + 1;
         w.Write((uint)residues - 1, 6);
         for (int i = 0; i < residues; i++)
@@ -236,10 +314,16 @@ public sealed class WwiseVorbis
                 for (int k = 0; k < 8; k++)
                     if ((c & (1u << k)) != 0) w.Copy(ref r, 8);
         }
+    }
 
+    /// <summary>
+    /// The mappings, each given back its type field (mapping 0); the coupling steps and the channel muxes depend on <see cref="Channels"/>.
+    /// </summary>
+    void CopyMappings(ref VorbisBitReader r, VorbisBitWriter w)
+    {
         int mappings = (int)r.Read(6) + 1;
         w.Write((uint)mappings - 1, 6);
-        int channelBits = VorbisBitWriter.ILog((uint)Channels - 1);
+        int channelBits = VorbisBitWriter.Log((uint)Channels - 1);
         for (int i = 0; i < mappings; i++)
         {
             w.Write(0, 16); // mapping type 0
@@ -266,7 +350,14 @@ public sealed class WwiseVorbis
                 for (int c = 0; c < Channels; c++) w.Copy(ref r, 4);
             for (int k = 0; k < submaps; k++) w.Copy(ref r, 24); // time (unused), floor, residue
         }
+    }
 
+    /// <summary>
+    /// The modes, each given back its window and transform types; <paramref name="modeLong"/> gets each mode's block flag and
+    /// <paramref name="modeBits"/> the bits an audio packet's mode number takes.
+    /// </summary>
+    static void CopyModes(ref VorbisBitReader r, VorbisBitWriter w, out bool[] modeLong, out int modeBits)
+    {
         int modes = (int)r.Read(6) + 1;
         w.Write((uint)modes - 1, 6);
         modeLong = new bool[modes];
@@ -278,13 +369,12 @@ public sealed class WwiseVorbis
             w.Write(0, 16); // transform type
             w.Copy(ref r, 8); // mapping
         }
-        modeBits = VorbisBitWriter.ILog((uint)modes - 1);
-        w.Write(true); // framing
-        if (r.Remaining >= 8) throw new InvalidDataException($"Setup packet has {r.Remaining} bits left over");
-        return w.ToArray();
+        modeBits = VorbisBitWriter.Log((uint)modes - 1);
     }
 
-    /// <summary>Expands a packed codebook into the standard Vorbis codebook layout.</summary>
+    /// <summary>
+    /// Expands a packed codebook into the standard Vorbis codebook layout.
+    /// </summary>
     static void Codebook(ref VorbisBitReader r, VorbisBitWriter w)
     {
         w.Write(0x564342, 24);
@@ -299,7 +389,7 @@ public sealed class WwiseVorbis
             uint current = 0;
             while (current < entries)
             {
-                int bits = VorbisBitWriter.ILog(entries - current);
+                int bits = VorbisBitWriter.Log(entries - current);
                 uint number = r.Read(bits);
                 w.Write(number, bits);
                 current += number;
@@ -337,7 +427,9 @@ public sealed class WwiseVorbis
         }
     }
 
-    /// <summary>The bits a packed codebook uses (used to find and check the library).</summary>
+    /// <summary>
+    /// The bits a packed codebook uses (used to find and check the library).
+    /// </summary>
     internal static int PackedCodebookBits(ReadOnlySpan<byte> packed)
     {
         var r = new VorbisBitReader(packed);
@@ -345,7 +437,9 @@ public sealed class WwiseVorbis
         return r.Position;
     }
 
-    /// <summary>The largest integer v with v^dimensions &lt;= entries (Vorbis <c>lookup1_values</c>).</summary>
+    /// <summary>
+    /// The largest integer v with v^dimensions &lt;= entries (Vorbis <c>lookup1_values</c>).
+    /// </summary>
     static uint Lookup1Values(uint entries, uint dimensions)
     {
         if (dimensions == 0) throw new InvalidDataException("Codebook with zero dimensions");
@@ -366,7 +460,9 @@ public sealed class WwiseVorbis
         }
     }
 
-    /// <summary>Puts back the packet type bit (0) and, for a long block, the previous and next window flags.</summary>
+    /// <summary>
+    /// Puts back the packet type bit (0) and, for a long block, the previous and next window flags.
+    /// </summary>
     static byte[] AudioPacket(ReadOnlySpan<byte> packet, int modeBits, bool isLong, bool previousLong, bool nextLong)
     {
         var r = new VorbisBitReader(packet);
@@ -382,64 +478,112 @@ public sealed class WwiseVorbis
         return w.ToArray();
     }
 
-    /// <summary>Builds Ogg pages: packets are laced into pages of up to 255 segments; <see cref="Flush"/> ends a page.</summary>
+    /// <summary>
+    /// Builds Ogg pages: packets are laced into pages of up to 255 segments; <see cref="Flush"/> ends a page.
+    /// </summary>
     sealed class OggWriter(int serial)
     {
-        readonly MemoryStream output = new();
-        readonly List<byte> segments = [];
-        readonly MemoryStream body = new();
-        long granule = -1;
-        int sequence;
-        bool first = true, ended;
+        /// <summary>
+        /// The CRC-32 table of the Ogg checksum (polynomial 0x04C11DB7, no reflection).
+        /// </summary>
+        static readonly uint[] Table = MakeTable();
 
+        /// <summary>
+        /// The pages written so far.
+        /// </summary>
+        readonly MemoryStream _output = new();
+
+        /// <summary>
+        /// The open page's lacing values.
+        /// </summary>
+        readonly List<byte> _segments = [];
+
+        /// <summary>
+        /// The open page's body bytes.
+        /// </summary>
+        readonly MemoryStream _body = new();
+
+        /// <summary>
+        /// The granule position of the last packet added.
+        /// </summary>
+        long _granule = -1;
+
+        /// <summary>
+        /// The next page's sequence number.
+        /// </summary>
+        int _sequence;
+
+        /// <summary>
+        /// The open page is the stream's first; the last packet added ends the stream.
+        /// </summary>
+        bool _first = true, _ended;
+
+        /// <summary>
+        /// The open page continues a packet the previous page did not finish.
+        /// </summary>
+        bool _continuation;
+
+        /// <summary>
+        /// Adds <paramref name="packet"/> with its granule position, split into lacing segments; a page is written once it holds over 8 KiB, at 255
+        /// segments, and after the <paramref name="last"/> packet.
+        /// </summary>
         public void Packet(byte[] packet, long packetGranule, bool last)
         {
             int left = packet.Length, at = 0;
             do
             {
-                if (segments.Count == 255) Flush(continued: true);
+                if (_segments.Count == 255) Flush(continued: true);
                 int n = Math.Min(255, left);
-                segments.Add((byte)n);
-                body.Write(packet, at, n);
+                _segments.Add((byte)n);
+                _body.Write(packet, at, n);
                 at += n;
                 left -= n;
             }
-            while (left > 0 || segments[^1] == 255);
-            granule = packetGranule;
-            ended = last;
-            if (body.Length > 8192 || last) Flush();
+            while (left > 0 || _segments[^1] == 255);
+            _granule = packetGranule;
+            _ended = last;
+            if (_body.Length > 8192 || last) Flush();
         }
 
+        /// <summary>
+        /// Writes the open page, if any, so the next packet starts a new page.
+        /// </summary>
         public void Flush() => Flush(continued: false);
 
-        bool continuation;
-
+        /// <summary>
+        /// Writes the open page with its header and CRC; <paramref name="continued"/> when a packet goes on into the next page (granule position
+        /// -1 then).
+        /// </summary>
         void Flush(bool continued)
         {
-            if (segments.Count == 0) return;
-            var header = new byte[27 + segments.Count];
+            if (_segments.Count == 0) return;
+            var header = new byte[27 + _segments.Count];
             "OggS"u8.CopyTo(header);
-            header[5] = (byte)((continuation ? 1 : 0) | (first ? 2 : 0) | (ended && !continued ? 4 : 0));
-            BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(6), continued ? -1 : granule);
+            header[5] = (byte)((_continuation ? 1 : 0) | (_first ? 2 : 0) | (_ended && !continued ? 4 : 0));
+            BinaryPrimitives.WriteInt64LittleEndian(header.AsSpan(6), continued ? -1 : _granule);
             BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(14), serial);
-            BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(18), sequence++);
-            header[26] = (byte)segments.Count;
-            for (int i = 0; i < segments.Count; i++) header[27 + i] = segments[i];
-            var bodyBytes = body.ToArray();
+            BinaryPrimitives.WriteInt32LittleEndian(header.AsSpan(18), _sequence++);
+            header[26] = (byte)_segments.Count;
+            for (int i = 0; i < _segments.Count; i++) header[27 + i] = _segments[i];
+            var bodyBytes = _body.ToArray();
             uint crc = Crc(Crc(0, header), bodyBytes);
             BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(22), crc);
-            output.Write(header);
-            output.Write(bodyBytes);
-            segments.Clear();
-            body.SetLength(0);
-            first = false;
-            continuation = continued;
+            _output.Write(header);
+            _output.Write(bodyBytes);
+            _segments.Clear();
+            _body.SetLength(0);
+            _first = false;
+            _continuation = continued;
         }
 
-        public byte[] ToArray() => output.ToArray();
+        /// <summary>
+        /// The pages written so far as one Ogg stream.
+        /// </summary>
+        public byte[] ToArray() => _output.ToArray();
 
-        static readonly uint[] Table = MakeTable();
-
+        /// <summary>
+        /// The Ogg CRC-32 table (polynomial 0x04C11DB7, not reflected).
+        /// </summary>
         static uint[] MakeTable()
         {
             var t = new uint[256];
@@ -452,6 +596,9 @@ public sealed class WwiseVorbis
             return t;
         }
 
+        /// <summary>
+        /// Folds <paramref name="data"/> into the running Ogg CRC <paramref name="crc"/>.
+        /// </summary>
         static uint Crc(uint crc, ReadOnlySpan<byte> data)
         {
             foreach (var b in data) crc = (crc << 8) ^ Table[(crc >> 24) ^ b];

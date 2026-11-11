@@ -1,3 +1,26 @@
+using Meitou.Data;
+using Meitou.Data.Fcs;
+using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
+using Meitou.Data.Gameplay.Bodies;
+using Meitou.Data.Gameplay.Construction;
+using Meitou.Data.Save;
+using Meitou.Data.World;
+using Meitou.Simulation.Aggro;
+using Meitou.Simulation.Ai;
+using Meitou.Simulation.Bodies;
+using Meitou.Simulation.Carrying;
+using Meitou.Simulation.Combat;
+using Meitou.Simulation.Construction;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Locks;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Perception;
+using Meitou.Simulation.Population;
+using System.Globalization;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using Meitou.Simulation.Player;
 using Meitou.Simulation.Items;
 
 namespace Meitou.Simulation.Production;
@@ -71,6 +94,9 @@ public abstract record StorageTransferCommand : InventoryCommand
 /// </summary>
 public sealed record TakeFromMachine(CharacterId Character, string Site, int Slot, int Index = 0, int Count = 0) : StorageTransferCommand
 {
+    /// <summary>
+    /// A storage item goes into the character's open bag first (the right click's move).
+    /// </summary>
     public bool BagFirst { get; init; }
 }
 

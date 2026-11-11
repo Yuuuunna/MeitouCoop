@@ -1,6 +1,9 @@
 using System.Numerics;
 using Meitou.Data.Gameplay.Ai;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Ai;
 using SimWorld = Meitou.Simulation.World;
 

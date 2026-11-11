@@ -1,100 +1,529 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Numerics;
 using Meitou.Content;
-using Meitou.Engine;
-using Meitou.Engine.Cameras;
-using Meitou.Engine.Input;
-using Meitou.Engine.Time;
-using Meitou.Rendering;
-using Meitou.Rendering.Characters;
+using Meitou.Data.Ogre;
+using Meitou.Game.Audio;
+using Meitou.Game.DevTools;
+using Meitou.Game.DevTools.Agents;
+using Meitou.Game.Editor;
+using Meitou.Game.Effects;
+using Meitou.Game.Host;
+using Meitou.Game.Host.Cameras;
+using Meitou.Game.Host.Input;
+using Meitou.Game.Host.WorldSync;
+using Meitou.Game.Rendering.Characters;
+using Meitou.Game.Rendering.Display;
+using Meitou.Game.Rendering.Foliage;
+using Meitou.Game.Rendering.Frame;
+using Meitou.Game.Rendering.Objects;
+using Meitou.Game.Rendering.Overlays;
+using Meitou.Game.Rendering.Particles;
+using Meitou.Game.Rendering.Sky;
+using Meitou.Game.Rendering.Terrain;
+using Meitou.Game.Scenarios;
+using Meitou.Game.Settings;
+using Meitou.Game.Title;
+using Meitou.Game.Ui;
+using Meitou.Modding;
 using Meitou.Simulation;
-using Meitou.Runtime;
-using Meitou.Networking;
-using Meitou.Rendering.Gpu;
-using Meitou.Rendering.Display;
-using Silk.NET.Maths;
-using Silk.NET.Windowing;
-using EngineKey = Meitou.Engine.Input.Key;
-using EngineButton = Meitou.Engine.Input.MouseButton;
-using SilkKey = Silk.NET.Input.Key;
-using SilkButton = Silk.NET.Input.MouseButton;
+using Meitou.Simulation.Session;
+using EngineButton = Meitou.Game.Host.Input.MouseButton;
+using EngineKey = Meitou.Game.Host.Input.Key;
 
 namespace Meitou.Game;
 
 /// <summary>
-/// The game loop: a real-time control tick (<see cref="FixedStepClock"/>, 30 Hz by default) runs the input actions, the camera rig
-/// and pause/speed; a game-time simulation tick (<see cref="SimulationClock"/>) advances the game clock; each displayed frame draws the camera interpolated between the last two ticks at the display rate.
+/// The game loop: a real-time control tick (<see cref="FixedStepClock"/>, 30 Hz by default) runs the input actions, the camera rig and pause/speed; a
+/// game-time simulation tick (<see cref="SimulationClock"/>) advances the game clock; each displayed frame draws the camera interpolated between the
+/// last two ticks at the display rate.
 /// </summary>
-sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocator assets, WorldOptions o, GameOptions g, UserConfig config, Meitou.Data.Gameplay.NewGameStart? start)
+sealed partial class GameHost(
+    GameInstall install, WorldScene scene, AssetLocator assets, WorldOptions o, GameOptions g, UserConfig config, Data.Gameplay.NewGameStart? start)
 {
-    /// <summary>The save the run starts in (<c>--load</c>), loaded at the end of <see cref="Boot"/> through the menu's load path; null for a new world.</summary>
-    public Meitou.Data.Save.SaveGame? StartSave { get; init; }
-    /// <summary>Reads the world in the interactive run, on a worker behind the loading screen (the host owns the scene then); null: the scene was given.</summary>
-    public Func<WorldScene?>? LoadScene { get; init; }
-    WorldScene? ownedScene;
-    /// <summary>The native splash shown since the program started; closed when the game window first shows.</summary>
-    public IDisposable? Splash { get; init; }
-    IClientSession session = null!;   // disposed with the host (Run)
-    public Meitou.Networking.RemoteGameSession? OnlineConnection { get; init; }
-    IReadOnlyList<ITickSystem> LocalSystems => session is WorldSession local ? local.World.Systems : [];
-    WorldSession LocalSession => session as WorldSession ?? throw new InvalidOperationException("This operation requires a local simulation session.");
-    Meitou.Simulation.PopulationSystem? population;
-    /// <summary>The fights started by faction hostility (printed to the log); null in the sandbox and without the population.</summary>
-    // The game data the world was built from, kept to build the next world of a quickload (GameHost.Saving.cs).
-    Meitou.Simulation.PopulationData? popData;
-    IReadOnlyList<Meitou.Data.World.TownPlacement> townPlacements = [];
-    // The level data, for the zone files and town handles of a save (null in the sandbox and the duel).
-    Meitou.Data.World.WorldLevelData? saveLevels;
-    Meitou.Simulation.IWalkability? simWalkability;
-    Meitou.Data.Characters.CharacterRigs? characterRigs;
-    Meitou.Navigation.RagdollGeometry? ragdollGeometry;
-    Meitou.Navigation.NavSystem? nav;
-    /// <summary>Zones whose mesh went live since the last <see cref="Meitou.Simulation.RepathCommand"/> (filled on the nav thread, under its own lock).</summary>
-    /// <summary>Seconds between <see cref="Meitou.Simulation.RepathCommand"/>s at least: zones go live in runs along a long walk, and are sent together (engine choice).</summary>
-    /// <summary>The far cadence (docs/simulation.md "Far cadence"): a character far from the camera and from every player character steps once in this many ticks.</summary>
-    const int FarTickPeriod = 4;
-    PlayerInterface player = null!;
-    Meitou.Simulation.Squad? playerSquad;
-    WorldFrame.Gpu gpu = null!;
-    /// <summary>This run uses the native Metal loop: the shared world object exists, but its Vulkan post/loading path does not drive it.</summary>
-    bool metalRenderer = false;   // set by the Metal loop (GameHost.Metal.cs, macOS builds only)
-    // Fallback services for a host whose renderers are not in WorldFrame.Gpu yet (the shared title, audio and save code asks through these).
-    WorldWeather? fallbackWeather = null;
-    WorldObjectRenderer? hostObjects = null;
-    FoliageRenderer? hostFoliage = null;
-    CharacterRenderer? hostCharacters = null;
-    WorldLamps? hostLamps = null;
-    Func<float, float, float>? hostGround = null;
-    WorldWeather? ActiveWeather => gpu is null ? fallbackWeather : gpu.Weather ?? fallbackWeather;
-    WorldObjectRenderer? ActiveObjects => gpu is null ? hostObjects : gpu.Objects ?? hostObjects;
-    FoliageRenderer? ActiveFoliage => gpu is null ? hostFoliage : gpu.Foliage ?? hostFoliage;
-    CharacterRenderer? ActiveCharacters => gpu is null ? hostCharacters : gpu.Characters ?? hostCharacters;
-    WorldLamps? ActiveLamps => gpu is null ? hostLamps : gpu.Lamps ?? hostLamps;
-    float ActiveGround(float x, float z) => hostGround?.Invoke(x, z) ?? (gpu is null ? 0 : gpu.Terrain.HeightAt(x, z));
-    WorldCamera camera = null!;
-    WorldRenderOptions render = null!;
-    readonly Stopwatch realTime = Stopwatch.StartNew();
-    Meitou.Rendering.Upscalers.Streamline? streamline;
-    Meitou.Rendering.Upscalers.Ngx? ngx;
-    bool screenshotRequested;
-    // The interactive run's animation clock (foliage sway, clouds, water): the frame steps, which are exact while the cinema records; off, the real time.
-    double animSeconds;
-    bool animClock;
-    // Draw-list state (GameHost.Characters.cs): the previous snapshot indexed by id, and the last camera focus sent to the world.
-    WorldSnapshot? indexedFor;
-    readonly Dictionary<CharacterId, CharacterSnapshot> previousById = [];
-    Meitou.Data.Gameplay.AnimationLengths? animationLengths;
-    Meitou.Data.Gameplay.AnimationLibrary? animationLibrary;
-    Vector3 lastFocus;
-    bool sentFocus;
-    // Profile of the interactive run (printed by --quit-after).
-    double advanceTotal, fillTotal;
-    long fillCalls;
-    // --quit-after keeps the exposed menu's frame pacing separate from covered loading work.
-    double menuFrameSeconds, menuLongestFrame;
-    long menuFrames, menuSlowFrames;
+    #region Inputs
 
+    // Primary-constructor parameters the feature classes read.
+    /// <summary>
+    /// The game install.
+    /// </summary>
+    internal readonly GameInstall Install = install;
+    /// <summary>
+    /// The world's data and level (replaced when the host reads it itself).
+    /// </summary>
+    internal WorldScene Scene = scene;
+    /// <summary>
+    /// Finds the game's asset files.
+    /// </summary>
+    internal readonly AssetLocator Assets = assets;
+    /// <summary>
+    /// The world and renderer options of the command line.
+    /// </summary>
+    internal readonly WorldOptions WorldOptions = o;
+    /// <summary>
+    /// The game's own options of the command line.
+    /// </summary>
+    internal readonly GameOptions GameOptions = g;
+    /// <summary>
+    /// The player's settings (<c>meitou.user.json</c>).
+    /// </summary>
+    internal readonly UserConfig Config = config;
+    /// <summary>
+    /// The scene the host read itself (<see cref="LoadScene"/>), disposed with it; null when it was given.
+    /// </summary>
+    internal WorldScene? OwnedScene;
+
+    /// <summary>
+    /// The save the run starts in (<c>--load</c>), loaded at the end of <see cref="Boot"/> through the menu's load path; null for a new world.
+    /// </summary>
+    public Data.Save.SaveGame? StartSave { get; init; }
+
+    /// <summary>
+    /// Reads the world in the interactive run, on a worker behind the loading screen (the host owns the scene then); null: the scene was given.
+    /// </summary>
+    public Func<WorldScene?>? LoadScene { get; init; }
+
+    /// <summary>
+    /// The native splash shown since the program started; closed when the game window first shows.
+    /// </summary>
+    public IDisposable? Splash { get; init; }
+
+    #endregion
+
+    #region Features
+
+    // The features, each a class of its own taking the host (made first in Run).
+    /// <summary>
+    /// The game loop: the window, the device, the input and the frames.
+    /// </summary>
+    internal GameLoop GameLoop = null!;
+    /// <summary>
+    /// The game's sound.
+    /// </summary>
+    internal GameSound Sound = null!;
+    /// <summary>
+    /// The title screen's world.
+    /// </summary>
+    internal TitleScreen TitleScreen = null!;
+    /// <summary>
+    /// Leaving for the main menu and starting a new game.
+    /// </summary>
+    internal NewGameLaunch NewGame = null!;
+    /// <summary>
+    /// Quicksave, quickload, import and the autosave.
+    /// </summary>
+    internal GameSaves Saves = null!;
+    /// <summary>
+    /// The code mods.
+    /// </summary>
+    internal GameMods Modding = null!;
+    /// <summary>
+    /// The battle scenario (<c>--battle</c>).
+    /// </summary>
+    internal BattleScenario Battle = null!;
+    /// <summary>
+    /// The trailer duel (<c>--duel</c>).
+    /// </summary>
+    internal DuelScenario Duel = null!;
+    /// <summary>
+    /// The animation sandbox (<c>--sandbox</c>).
+    /// </summary>
+    internal SandboxScenario Sandbox = null!;
+
+    /// <summary>
+    /// The player's construction sites from the snapshot to the renderer, the navmesh and the lamps.
+    /// </summary>
+    internal BuildingSync BuildingSync = null!;
+    /// <summary>
+    /// The crops of the player's farms.
+    /// </summary>
+    internal FarmCrops FarmCrops = null!;
+    /// <summary>
+    /// The bought houses and the ruins under the renderer.
+    /// </summary>
+    internal TownChanges TownChanges = null!;
+    /// <summary>
+    /// The loose items on the ground.
+    /// </summary>
+    internal GroundItemSync GroundItemSync = null!;
+    /// <summary>
+    /// The interior view of the buildings holding a player character.
+    /// </summary>
+    internal InteriorView Interiors = null!;
+    /// <summary>
+    /// The weather the simulation reads.
+    /// </summary>
+    internal WeatherFeed WeatherFeed = null!;
+    /// <summary>
+    /// The item icons Meitou draws.
+    /// </summary>
+    internal ItemIconFiles ItemIconFiles = null!;
+
+    /// <summary>
+    /// The blood on the ground.
+    /// </summary>
+    internal BloodDecals BloodDecals = null!;
+    /// <summary>
+    /// The birds.
+    /// </summary>
+    internal Birds Birds = null!;
+    /// <summary>
+    /// The flying and lying debris (bursts, limbs, bolts).
+    /// </summary>
+    internal Debris Debris = null!;
+    /// <summary>
+    /// Meitou decapitation's falling heads and spurts.
+    /// </summary>
+    internal Decapitation Decapitation = null!;
+    /// <summary>
+    /// The corpse flies.
+    /// </summary>
+    internal CorpseFlies CorpseFlies = null!;
+
+    /// <summary>
+    /// The character editor's host side.
+    /// </summary>
+    internal CharacterEditorHost CharacterEditor = null!;
+    /// <summary>
+    /// The level editor's host side.
+    /// </summary>
+    internal LevelEditorHost LevelEditorHost = null!;
+    /// <summary>
+    /// The interior editor.
+    /// </summary>
+    internal InteriorEditorHost InteriorEditorHost = null!;
+
+    /// <summary>
+    /// The debug menu (F10).
+    /// </summary>
+    internal DebugMenu DebugMenu = null!;
+    /// <summary>
+    /// The debug views over the world.
+    /// </summary>
+    internal DebugOverlays DebugOverlays = null!;
+    /// <summary>
+    /// The dev console.
+    /// </summary>
+    internal DevConsoleHost DevConsoleHost = null!;
+    /// <summary>
+    /// The agent control channel (debug only).
+    /// </summary>
+    internal AgentChannel AgentChannel = null!;
+    /// <summary>
+    /// The agent control channel's play commands.
+    /// </summary>
+    internal AgentPlay AgentPlay = null!;
+    /// <summary>
+    /// The agent control channel's world commands.
+    /// </summary>
+    internal AgentWorld AgentWorld = null!;
+    /// <summary>
+    /// The play benchmark (<c>--play-bench</c>).
+    /// </summary>
+    internal PlayBench PlayBench = null!;
+    /// <summary>
+    /// The <c>--screenshot</c> runs.
+    /// </summary>
+    internal ScreenshotScenes ScreenshotScenes = null!;
+    /// <summary>
+    /// The feedback button's host side.
+    /// </summary>
+    internal FeedbackCapture FeedbackCapture = null!;
+
+    /// <summary>
+    /// Makes the feature classes; first in <see cref="Run"/>, before anything reads them.
+    /// </summary>
+    void CreateFeatures()
+    {
+        GameLoop = new(this);
+        Online = new(this);
+        NetworkAcceptance = new(this);
+        Sound = new(this);
+        TitleScreen = new(this);
+        NewGame = new(this);
+        Saves = new(this);
+        Modding = new(this);
+        Battle = new(this);
+        Duel = new(this);
+        Sandbox = new(this);
+
+        BuildingSync = new(this);
+        FarmCrops = new(this);
+        TownChanges = new(this);
+        GroundItemSync = new(this);
+        Interiors = new(this);
+        WeatherFeed = new(this);
+        ItemIconFiles = new(this);
+
+        BloodDecals = new(this);
+        Birds = new(this);
+        Debris = new(this);
+        Decapitation = new(this);
+        CorpseFlies = new(this);
+
+        CharacterEditor = new(this);
+        LevelEditorHost = new(this);
+        InteriorEditorHost = new(this);
+
+        DebugMenu = new(this);
+        DebugOverlays = new(this);
+        DevConsoleHost = new(this);
+        AgentChannel = new(this);
+        AgentPlay = new(this);
+        AgentWorld = new(this);
+        PlayBench = new(this);
+        ScreenshotScenes = new(this);
+        FeedbackCapture = new(this);
+    }
+
+    #endregion
+
+    #region World state
+
+    /// <summary>
+    /// The world, its clocks, camera rig and input; disposed with the host (Run).
+    /// </summary>
+    internal IClientSession Session = null!;
+    /// <summary>
+    /// The local authority, available only in single-player.
+    /// </summary>
+    internal WorldSession LocalSession => Session as WorldSession ?? throw new InvalidOperationException("This operation requires a local simulation session.");
+    /// <summary>
+    /// Local systems; an online client owns no simulation systems.
+    /// </summary>
+    internal IReadOnlyList<ITickSystem> LocalSystems => Session is WorldSession local ? local.World.Systems : [];
+    /// <summary>
+    /// The online connection supplied by admission.
+    /// </summary>
+    public Meitou.Networking.RemoteGameSession? OnlineConnection { get; init; }
+    /// <summary>
+    /// The admission, disconnection and optional network acceptance driver.
+    /// </summary>
+    internal OnlineGame Online = null!;
+    /// <summary>
+    /// The optional graphical network acceptance driver.
+    /// </summary>
+    internal NetworkAcceptance NetworkAcceptance = null!;
+    /// <summary>
+    /// The CPU content and authoritative services shared by successive local worlds.
+    /// </summary>
+    internal Meitou.Runtime.WorldContent? SimulationContent;
+
+    /// <summary>
+    /// The world's population system; null without population.
+    /// </summary>
+    internal Simulation.Population.PopulationSystem? Population;
+
+    // The game data the world was built from, kept to build the next world of a quickload (GameSaves).
+    /// <summary>
+    /// The population's data.
+    /// </summary>
+    internal Simulation.Population.PopulationData? PopData;
+    /// <summary>
+    /// The towns' placements of the data, for the saves.
+    /// </summary>
+    internal IReadOnlyList<Meitou.Data.World.TownPlacement> TownPlacements = [];
+
+    /// <summary>
+    /// The level data, for the zone files and town handles of a save (null in the sandbox and the duel).
+    /// </summary>
+    internal Meitou.Data.World.WorldLevelData? SaveLevels;
+
+    /// <summary>
+    /// The walkability the simulation's systems read (the navmesh, else the terrain).
+    /// </summary>
+    internal IWalkability? SimWalkability;
+    /// <summary>
+    /// The characters' skeletons, for the ragdolls.
+    /// </summary>
+    internal Data.Characters.CharacterRigs? CharacterRigs;
+    /// <summary>
+    /// The ragdolls' collision geometry; disposed with the host.
+    /// </summary>
+    internal Simulation.Navigation.RagdollGeometry? RagdollGeometry;
+    /// <summary>
+    /// The navmesh system; null without one; disposed with the host.
+    /// </summary>
+    internal Simulation.Navigation.NavSystem? Nav;
+    /// <summary>
+    /// The animations' lengths, for the simulation.
+    /// </summary>
+    internal Data.Gameplay.AnimationLengths? AnimationLengths;
+    /// <summary>
+    /// The animation library, for the simulation.
+    /// </summary>
+    internal Data.Gameplay.AnimationLibrary? AnimationLibrary;
+
+    /// <summary>
+    /// The player's interface.
+    /// </summary>
+    internal PlayerInterface Player = null!;
+    /// <summary>
+    /// The player's squad in the world; null without one.
+    /// </summary>
+    internal Simulation.Factions.Squad? PlayerSquad;
+
+    /// <summary>
+    /// The camera the world is drawn with.
+    /// </summary>
+    internal WorldCamera Camera = null!;
+    /// <summary>
+    /// The render options.
+    /// </summary>
+    internal WorldRenderOptions Render = null!;
+    /// <summary>
+    /// The real time since the host was made.
+    /// </summary>
+    internal readonly Stopwatch RealTime = Stopwatch.StartNew();
+
+    /// <summary>
+    /// The next frame is saved as a screenshot (the Screenshot action).
+    /// </summary>
+    internal bool ScreenshotRequested;
+
+    /// <summary>
+    /// Frames in a row that could not be drawn while a control screenshot waits; at 30 the screenshot is answered with an error.
+    /// </summary>
+    internal int ShotNoFrame;
+
+    // The interactive run's animation clock (foliage sway, clouds, water): the frame steps, which are exact while the cinema records; off, the
+    // real time.
+    /// <summary>
+    /// The frame steps' seconds.
+    /// </summary>
+    internal double AnimSeconds;
+    /// <summary>
+    /// The animation clock runs on <see cref="AnimSeconds"/> instead of the real time.
+    /// </summary>
+    internal bool AnimClock;
+
+    // Draw-list state (GameHost.Characters.cs): the previous snapshot indexed by id, and the last camera focus sent to the world.
+    /// <summary>
+    /// The previous snapshot indexed.
+    /// </summary>
+    internal WorldSnapshot? IndexedFor;
+    /// <summary>
+    /// The previous snapshot's characters by id (<see cref="IndexPrevious"/>).
+    /// </summary>
+    internal readonly Dictionary<CharacterId, CharacterSnapshot> PreviousById = [];
+    /// <summary>
+    /// The camera focus last sent to the world.
+    /// </summary>
+    Vector3 _lastFocus;
+    /// <summary>
+    /// A camera focus was sent to the world.
+    /// </summary>
+    bool _sentFocus;
+
+    // Profile of the interactive run (printed by --quit-after).
+    /// <summary>
+    /// The world's advance and the draw list's fill, summed (ms).
+    /// </summary>
+    internal double AdvanceTotal, FillTotal;
+    /// <summary>
+    /// The draw list's fills.
+    /// </summary>
+    internal long FillCalls;
+
+    // --quit-after keeps the exposed menu's frame pacing separate from covered loading work.
+    /// <summary>
+    /// The menu frames' summed and longest time (seconds).
+    /// </summary>
+    internal double MenuFrameSeconds, MenuLongestFrame;
+    /// <summary>
+    /// The menu frames, and those that were slow.
+    /// </summary>
+    internal long MenuFrames, MenuSlowFrames;
+
+    #endregion
+
+    #region Renderer services
+
+    /// <summary>
+    /// The world's renderers.
+    /// </summary>
+    internal WorldGpu Gpu = null!;
+    /// <summary>
+    /// NVIDIA Streamline (DLSS frame generation); null when not loaded.
+    /// </summary>
+    internal Rendering.Upscalers.Streamline? Streamline;
+    /// <summary>
+    /// NVIDIA NGX (DLSS); null when not loaded.
+    /// </summary>
+    internal Rendering.Upscalers.Ngx? Ngx;
+
+    /// <summary>
+    /// This run uses the native Metal loop: the shared world object exists, but its Vulkan post/loading path does not drive it.
+    /// </summary>
+    internal bool MetalRenderer = false;   // set by the Metal loop (GameHost.Metal.cs, macOS builds only)
+
+    // Fallback services for a host whose renderers are not in WorldGpu yet (the shared title, audio and save code asks through these).
+    /// <summary>
+    /// The weather.
+    /// </summary>
+    WorldWeather? _fallbackWeather = null;
+    /// <summary>
+    /// The object renderer for a host without one in <see cref="Gpu"/>.
+    /// </summary>
+    WorldObjectRenderer? _hostObjects = null;
+    /// <summary>
+    /// The foliage renderer for a host without one in <see cref="Gpu"/>.
+    /// </summary>
+    FoliageRenderer? _hostFoliage = null;
+    /// <summary>
+    /// The character renderer for a host without one in <see cref="Gpu"/>.
+    /// </summary>
+    CharacterRenderer? _hostCharacters = null;
+    /// <summary>
+    /// The lamps for a host without them in <see cref="Gpu"/>.
+    /// </summary>
+    WorldLamps? _hostLamps = null;
+    /// <summary>
+    /// The ground height for a host without a terrain in <see cref="Gpu"/>.
+    /// </summary>
+    Func<float, float, float>? _hostGround = null;
+
+    /// <summary>
+    /// The weather drawn: the renderer's, else the fallback.
+    /// </summary>
+    internal WorldWeather? ActiveWeather => Gpu is null ? _fallbackWeather : Gpu.Weather ?? _fallbackWeather;
+    /// <summary>
+    /// The object renderer: the renderer's, else the fallback.
+    /// </summary>
+    internal WorldObjectRenderer? ActiveObjects => Gpu is null ? _hostObjects : Gpu.Objects ?? _hostObjects;
+    /// <summary>
+    /// The foliage renderer: the renderer's, else the fallback.
+    /// </summary>
+    internal FoliageRenderer? ActiveFoliage => Gpu is null ? _hostFoliage : Gpu.Foliage ?? _hostFoliage;
+    /// <summary>
+    /// The character renderer: the renderer's, else the fallback.
+    /// </summary>
+    internal CharacterRenderer? ActiveCharacters => Gpu is null ? _hostCharacters : Gpu.Characters ?? _hostCharacters;
+    /// <summary>
+    /// The lamps: the renderer's, else the fallback.
+    /// </summary>
+    internal WorldLamps? ActiveLamps => Gpu is null ? _hostLamps : Gpu.Lamps ?? _hostLamps;
+    /// <summary>
+    /// The ground height at a point: the fallback's, else the terrain's (0 without a renderer).
+    /// </summary>
+    internal float ActiveGround(float x, float z) => _hostGround?.Invoke(x, z) ?? (Gpu is null ? 0 : Gpu.Terrain.HeightAt(x, z));
+
+    #endregion
+
+    #region Run
+
+    /// <summary>
+    /// A prepared connection the next host takes after the current window closes.
+    /// </summary>
+    internal Meitou.Networking.RemoteGameSession? NextOnline;
+    /// <summary>
+    /// Recreates a local title host after leaving an online session.
+    /// </summary>
+    internal bool ReturnToTitle;
+
+    /// <summary>
+    /// Runs the game: the features, then the Metal loop, a screenshot run or the game loop; the world, the navmesh, the ragdolls and an owned scene
+    /// are disposed after. Returns the exit code.
+    /// </summary>
     public int Run()
     {
         GameHost host = this;
@@ -115,298 +544,231 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
                 }
                 else
                 {
-                    (o.X, o.Z, o.Town, o.Zone) = (focus.Value.X, focus.Value.Z, null, null);
-                    o.Day = (int)Math.Floor(view!.GameHours / 24); o.Hour = (float)(view.GameHours % 24);
+                    (WorldOptions.X, WorldOptions.Z, WorldOptions.Town, WorldOptions.Zone) = (focus.Value.X, focus.Value.Z, null, null);
+                    WorldOptions.Day = (int)Math.Floor(view!.GameHours / 24); WorldOptions.Hour = (float)(view.GameHours % 24);
                 }
             }
-            host = new GameHost(install, null!, assets, o, g, config, null)
-            { OnlineConnection = next, LoadScene = () => WorldFrame.Load(install, o) };
+            host = new GameHost(Install, null!, Assets, WorldOptions, GameOptions, Config, null)
+            { OnlineConnection = next, LoadScene = () => WorldFrame.Load(Install, WorldOptions) };
         }
     }
 
-    RemoteGameSession? NextOnline;
-    bool ReturnToTitle;
-
+    /// <summary>
+    /// Runs one host and releases its presentation, connection and local CPU resources.
+    /// </summary>
     int RunOnce()
     {
+        CreateFeatures();
         try
         {
 #if MEITOU_METAL
-            if (g.Renderer == "metal") return Metal();
+            if (GameOptions.Renderer == "metal") return Metal();
 #endif
-            if (g.Renderer != "vulkan")
+            if (GameOptions.Renderer != "vulkan")
             {
-                Console.Error.WriteLine($"the {g.Renderer} renderer is macOS only.");
+                Console.Error.WriteLine($"the {GameOptions.Renderer} renderer is macOS only.");
                 return 2;
             }
-            return o.Screenshot is not null ? Screenshot() : Interactive();
+
+            return WorldOptions.Screenshot is not null ? ScreenshotScenes.Screenshot() : GameLoop.Run();
         }
         finally
         {
-            birdStep?.Dispose(); birdStep = null;
-            player?.DisposeOnline();
-            DisposeAudio(); DisposeTitleScene(); DisposeClientSession();
-            if (session is not RemotePlayerSession) OnlineConnection?.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            simulationContent?.Dispose(); ownedScene?.Dispose();
+            Birds.Dispose();
+            Sound.DisposeAudio();
+            TitleScreen.DisposeTitleScene();
+            Player?.DisposeOnline();
+            if (Session is IAsyncDisposable asynchronous) asynchronous.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            else if (Session is IDisposable disposable) disposable.Dispose();
+            SimulationContent?.Dispose();
+            if (SimulationContent is null)
+            {
+                Nav?.Dispose();
+                RagdollGeometry?.Dispose();
+            }
+            if (Session is not RemotePlayerSession) OnlineConnection?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            OwnedScene?.Dispose();
         }
     }
 
-    void DisposeClientSession()
+    /// <summary>
+    /// The start opens on the title (no start, save, sandbox or duel was asked for).
+    /// </summary>
+    internal bool OpensOnTitle(bool interactive)
     {
-        if (session is IAsyncDisposable asynchronous) asynchronous.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        else if (session is IDisposable local) local.Dispose();
+        if (OnlineConnection is not null) return false;
+        if (GameOptions.TitlePreview) return true;
+
+        bool startAsked = start is not null || StartSave is not null || Sandbox.IsSandbox || Duel.IsDuel || Battle.IsBattle;
+        return interactive && !startAsked && !GameOptions.NoPopulation;
     }
 
-    /// <summary>The start opens on the title (no start, save, sandbox or duel was asked for).</summary>
-    bool OpensOnTitle(bool interactive) => OnlineConnection is null && (g.TitlePreview || interactive && start is null && StartSave is null && !IsSandbox && !IsDuel && !IsBattle && !g.NoPopulation);
+    #endregion
 
-    void Boot(VulkanDisplay display, bool interactive)
+    #region Boot
+
+    /// <summary>
+    /// The far cadence (docs/simulation.md "Far cadence"): a character far from the camera and from every player character steps once in this
+    /// many ticks.
+    /// </summary>
+    internal const int FarTickPeriod = 4;
+
+    /// <summary>
+    /// Boots the world: the simulation's data read on a worker while the renderers are made a step at a time, then the session and the player.
+    /// </summary>
+    internal void Boot(VulkanDisplay display, bool interactive)
     {
-        if (OnlineConnection is { } online) { BootOnline(display, interactive, online); return; }
-        var context = display.Context;
-        o.Day ??= (int)GameClock.DefaultStartDay;   // the weather schedule starts on the clock's first day (--day moves both)
+        if (OnlineConnection is { } online)
+        {
+            Online.BootOnline(display, interactive, online);
+            return;
+        }
+        WorldOptions.Day ??= (int)GameClock.DefaultStartDay;   // the weather schedule starts on the clock's first day (--day moves both)
+
         // --crowd in the game: simulated characters (SpawnCrowd), not the viewer's posed harness, which would take the renderer's place.
-        crowd = o.Crowd;
-        o.Crowd = 0;
-        // The simulation's data (the navmesh system, the towns' homes, the population's data and systems) is read on a worker while the renderer is made here,
-        // a step at a time with a loading frame between the steps (docs/engine.md "Loading").
+        Sandbox.Crowd = WorldOptions.Crowd;
+        WorldOptions.Crowd = 0;
+
+        // The simulation's data (the navmesh system, the towns' homes, the population's data and systems) is read on a worker while the renderer is
+        // made here, a step at a time with a loading frame between the steps (docs/engine.md "Loading").
         var simulation = Task.Run(() =>
         {
-            var grid = new Meitou.Data.World.GroundHeights(scene.Window, scene.Coarse, scene.CoarseSize, WorldFrame.CoarseStep);
+            var grid = new Meitou.Data.World.GroundHeights(Scene.Window, Scene.Coarse, Scene.CoarseSize, WorldFrame.CoarseStep);
             return (Grid: grid, Parts: BootSimulation(grid, interactive));
         });
-        gpu = WorldFrame.CreateGpu(context, install, scene, assets, o, interactive, LoadingStep, AwaitLoading);
-        if (!o.NoParticles) titleParticleFactory = () => ParticleRenderer.Create(context, assets, gpu.Particles?.Library);
-        if (gpu.Post is { } vendorPost) vendorPost.UpscalerFactory = Meitou.Rendering.Upscalers.VendorUpscalers.Factory(display.Context, streamline, ngx);
-        (camera, render) = WorldFrame.Setup(scene, o);
-        render.Grid = IsFlat;
+        CreateRenderer(display, interactive);
+
         LoadingStep("people");
-        var (heights, (walkability, systems, constants)) = AwaitLoading(simulation);
+        var (_, (walkability, systems, constants)) = AwaitLoading(simulation);
+
         LoadingStep("world");
-        var clock = GameClockFor(constants ??= scene.Database is { } clockDb ? Meitou.Data.Gameplay.GameConstants.FromDatabase(clockDb) : null, o.Hour, o.Day ?? GameClock.DefaultStartDay);
-        session = new WorldSession(scene.Focus, (scene.X0, scene.Z0, scene.X1, scene.Z1), gpu.Terrain.HeightAt, o.Hour, config.TickRate,
-            clock: clock,
-            simulation: worldSettings = new Meitou.Simulation.WorldSettings
-            {
-                Seed = g.Seed, MinPartitionSize = 32, Threads = Math.Max(1, config.SimThreads ?? Math.Clamp(Environment.ProcessorCount / 2, 1, 8)),
-                Sunrise = (float)clock.Sunrise, Sunset = (float)clock.Sunset, FarTickPeriod = FarTickPeriod,
-            },
-            systems: systems, walkability: walkability);
-        LocalSession.World.BenchFacingFix = config.FixBenchFacing;
-        if (gpu.Characters is { } nearChars) LocalSession.World.NearRadius = nearChars.NearReach;   // every drawn character steps every tick (docs/simulation.md "Far cadence")
+        CreateSession(walkability, systems, constants);
         BootPlayer(display, interactive);
     }
 
-    /// <summary>The level data read afresh (no scene objects to share), with the factions' building swaps applied as the scene's are.</summary>
-    Meitou.Data.World.WorldLevelData LoadedLevels(Meitou.Data.GameDatabase gameDb) { var levels = Meitou.Data.World.WorldLevelData.Load(install, includeInteriors: true); Meitou.Data.World.BuildingSwapPass.ApplyBuildingSwaps(levels, gameDb); return levels; }
-
     /// <summary>
-    /// The simulation's side of <see cref="Boot"/>, on a worker (it reads the game data and the scene's level data and makes no GPU resource): the navmesh system, the
-    /// population's data and its systems. Returns the walkability, the systems and the game constants for the session.
+    /// Makes the world's renderers (a step at a time between loading frames), the camera and the render options.
     /// </summary>
-    WorldContent? simulationContent;
-
-    (Meitou.Simulation.IWalkability Walkability, IReadOnlyList<Meitou.Simulation.ITickSystem> Systems, Meitou.Data.Gameplay.GameConstants? Constants) BootSimulation(
-        Meitou.Data.World.GroundHeights heights, bool interactive)
-    {
-        if (g.NoPopulation || scene.Database is not { } gameDb)
-            return (new Meitou.Simulation.OpenGroundWalkability(heights.HeightAt), [], null);
-        var levels = IsSandbox || IsDuel || IsBattle ? null
-            : scene.Objects?.Levels ?? Meitou.Data.World.WorldLevelData.Load(install, includeInteriors: true);
-        simulationContent = WorldContent.Load(install, gameDb, assets, heights.HeightAt, levels,
-            Meitou.Simulation.Bodies.BodyOptions.Default with { Dismemberment = Gameplay.Dismemberment, Decapitation = config.Decapitation, AdvancedRagdolls = config.AdvancedRagdolls },
-            scene.Objects?.Layouts, Console.WriteLine);
-        nav = simulationContent.Navigation;
-        ragdollGeometry = simulationContent.RagdollGeometry;
-        characterRigs = simulationContent.Rigs;
-        animationLengths = simulationContent.AnimationLengths;
-        animationLibrary = simulationContent.AnimationLibrary;
-        popData = simulationContent.Population;
-        townPlacements = simulationContent.Towns;
-        saveLevels = levels;
-        simWalkability = simulationContent.Walkability;
-        simulationWeather = levels is not null ? SimulationWeather.Load(install, gameDb, heights.HeightAt) : null;
-        StartMods(gameDb, popData);
-        StartDeferredWarmup();
-        var built = BuildSystems(interactive);
-        population = built.Population;
-        if (nav is not null) population!.ZoneGate = nav.IsReady;
-        return (simWalkability, built.Systems, popData.Bodies.Constants);
-    }
-
-    /// <summary>
-    /// The callbacks the interface asks the host for: the game data, the map, the build services, the tooltips and the character editor. Shared by the Vulkan
-    /// and Metal loops so the two expose the same interaction layer.
-    /// </summary>
-    void ConfigurePlayerInterface(PlayerInterface ui)
-    {
-        ConnectModUi(ui);
-        ui.FixLoadButton = config.FixLoadButton;
-        ui.SaveInUse = folder => session.CanSaveWorld && session.HasPlayer && saveInUse is { } used && string.Equals(Path.GetFullPath(used), Path.GetFullPath(folder), StringComparison.OrdinalIgnoreCase);
-        ui.DeleteSave = folder =>
-        {
-            try { Directory.Delete(folder, recursive: true); return null; }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return "Failed to delete save: " + e.Message; }
-        };
-        // The region (BIOME_GROUP) under a point, for the biome banner.
-        ui.RegionAt = (x, z) => ActiveWeather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
-        ui.BuildHost = MakeBuildServices();
-        ConfigureFactionPresentation(ui);
-        // A BUILDING's construction target (its Condition rows): the sum of its materials' required amounts.
-        ui.BuildTarget = record => popData?.Db.Find(record) is { Type: Meitou.Data.Fcs.FcsRecordType.BUILDING } r
-            ? Meitou.Data.Gameplay.Construction.BuildingBuildData.From(r).Materials.Sum(m => m.Required) : null;
-        // The upgrade chain of a BUILDING (the panel's [UPGRADE] / [DOWNGRADE]) and its build data (their tooltips' materials).
-        ui.UpgradeOf = record => popData is { } d ? Meitou.Simulation.Construction.BuildingUpgrades.UpgradeOf(d.Db, record) : null;
-        ui.DowngradeOf = record => popData is { } d ? Meitou.Simulation.Construction.BuildingUpgrades.DowngradeOf(d.Db, record) : null;
-        ui.BuildingData = record => popData?.Db.Find(record) is { Type: Meitou.Data.Fcs.FcsRecordType.BUILDING } r ? Meitou.Data.Gameplay.Construction.BuildingBuildData.From(r) : null;
-        ui.PowerOutput = record => popData?.Db.Find(record)?.GetInt("power output");
-        ui.SquadLimits = () => popData?.Bodies.Constants;
-        ui.Rocks = () => popData?.ResourceNodes;
-        ui.MapTowns = () => popData?.Sites ?? [];
-        ui.ArmourOf = record => popData?.Combat.Armour(record);
-        ui.RecordName = id => popData?.Db.Find(id)?.Name;
-        Meitou.Data.Gameplay.Economy.PriceConstants? priceConstants = null;
-        Meitou.Simulation.Trading.Market? shelf = null;
-        ui.PricesOf = tip =>
-        {
-            if (popData is not { } d || d.Db.Find(tip.Record) is not { } r) return null;
-            if (r.Type is Meitou.Data.Fcs.FcsRecordType.ARMOUR or Meitou.Data.Fcs.FcsRecordType.WEAPON or Meitou.Data.Fcs.FcsRecordType.CROSSBOW)
-                return Meitou.Simulation.Trading.Market.GearPrices(d.Db, priceConstants ??= Meitou.Data.Gameplay.Economy.PriceConstants.FromDatabase(d.Db), tip.Record, tip.Level, tip.Company) is { } gear
-                    ? (gear.Value, gear.Sell, null) : null;
-            // No trader, so no town or culture factor (the seed only rolls those). StolenFrom is set only when the item is stolen for its holder; holder -1 keeps that.
-            var m = shelf ??= new Meitou.Simulation.Trading.Market(d, 0);
-            var item = new Meitou.Simulation.Items.ItemInstance
-            {
-                Record = tip.Record, Type = d.Db.Find(tip.Company) is { Type: Meitou.Data.Fcs.FcsRecordType.RESEARCH } ? Meitou.Data.Fcs.FcsRecordType.BLUEPRINT : r.Type, Quality = tip.Quality, Level = tip.Level, CompanyId = tip.Company, Charges = tip.Charges, MaxCharges = tip.MaxCharges,
-                Quantity = tip.Quantity, StolenFrom = tip.StolenFrom,
-            };
-            var none = Meitou.Simulation.Trading.Trader.None;
-            return (m.UnitPrice(item, false, none, -1), m.UnitPrice(item, true, none, -1), m.AveragePrice(item));
-        };
-        ui.ArtifactOf = id => popData?.Db.Find(id)?.GetBool("artifact") == true;
-        ui.ItemRecordOf = id => popData?.Db.Find(id);
-        var specialFoodRaces = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal);
-        ui.SpecialFoodRaces = id => popData is { } d ? specialFoodRaces.GetOrAdd(id, item => Meitou.Data.Gameplay.Bodies.SpecialFood.EatenBy(d.Db, item)) : "";
-        ui.CombatOf = () => popData?.Combat;
-        ui.RangedDamageMultiplier = () => session.AuthorityRules?.GlobalDamageMultiplier ?? 1;
-        ui.MapItemTowns = record =>
-        {
-            if (session.IsRemote) return null; // exact map discoveries require the server's hidden world seed
-            if (popData is not { } d || d.Db.Find(record) is not { Type: Meitou.Data.Fcs.FcsRecordType.MAP_ITEM } map) return null;
-            return [.. Meitou.Simulation.Items.MapItems.Reveals(d, map, session.CurrentSnapshot.Towns, LocalSession.World.Seed).Select(i => d.Sites[i].Town.Name)];
-        };
-        ConfigureEditor(ui);
-    }
-
-    /// <summary>The rest of <see cref="Boot"/> once the session exists: bindings, the player's interface, the start (a new game's squad, the sandbox, the duel), the camera, a <c>--load</c> save.</summary>
-    void BootPlayer(VulkanDisplay display, bool interactive)
+    internal void CreateRenderer(VulkanDisplay display, bool interactive)
     {
         var context = display.Context;
-        var target = camera.Target;
-        foreach (var problem in session.Bindings.Apply(config.Bindings)) Console.Error.WriteLine($"config    binding skipped: {problem}");
-        // Right is the command button by default; older saved configs bound it to orbit (kept when Command has moved off it).
-        if (session.Bindings.Get(InputAction.Command).Contains(Binding.Of(EngineButton.Right)))
-            session.Bindings.Set(InputAction.Orbit, [.. session.Bindings.Get(InputAction.Orbit).Where(b => !(b.IsMouse && b.Button == EngineButton.Right))]);
-        // Left Control orbits as the middle button does (mouse_rotate, FUN_1403636c0: only code 0x1d); older saved configs had the middle button alone.
-        if (session.Bindings.Get(InputAction.Orbit).SequenceEqual([Binding.Of(EngineButton.Middle)])) session.Bindings.Set(InputAction.Orbit, EngineButton.Middle, EngineKey.LeftControl);
-        // F12 is the profiler now (as in the viewer); older saved configs took it for the screenshot.
-        if (session.Bindings.Get(InputAction.Screenshot).SequenceEqual([Binding.Of(EngineKey.F12)])) session.Bindings.Set(InputAction.Screenshot, EngineKey.F8, EngineKey.PrintScreen);
-        // The profiler and debug menu were briefly on F10 and Insert; configs saved then go back to F12 and F10.
-        if (session.Bindings.Get(InputAction.CycleProfiler).SequenceEqual([Binding.Of(EngineKey.F10)])
-            && session.Bindings.Get(InputAction.ToggleDebugMenu).SequenceEqual([Binding.Of(EngineKey.Insert)]))
-        { session.Bindings.Set(InputAction.CycleProfiler, EngineKey.F12); session.Bindings.Set(InputAction.ToggleDebugMenu, EngineKey.F10); }
-        // F9 is the game's quickload now (F5 quicksave); older saved configs took F9 for the fps counter, which is on Ctrl+F9 and unbound here.
-        if (session.Bindings.Get(InputAction.ToggleFps).SequenceEqual([Binding.Of(EngineKey.F9)])) session.Bindings.Set(InputAction.ToggleFps);
-        // Tab is the game's change_squad, not the settings (they open from the Esc menu); older saved configs bound Tab to them.
-        if (session.Bindings.Get(InputAction.ToggleSettings).SequenceEqual([Binding.Of(EngineKey.Tab)])) session.Bindings.Set(InputAction.ToggleSettings);
+        Gpu = WorldFrame.CreateGpu(context, Install, Scene, Assets, WorldOptions, interactive, LoadingStep, AwaitLoading);
+        if (!WorldOptions.NoParticles)
+            TitleScreen.TitleParticleFactory = () => ParticleRenderer.Create(context, Assets, Gpu.Particles?.Library);
+        if (Gpu.Post is { } vendorPost)
+            vendorPost.UpscalerFactory = Rendering.Upscalers.VendorUpscalers.Factory(context, Streamline, Ngx);
+
+        (Camera, Render) = WorldFrame.Setup(Scene, WorldOptions);
+        Render.Grid = Battle.IsFlat;
+    }
+
+    /// <summary>
+    /// Makes the world session: its clock from the game constants (read from the data when the population did not), its simulation settings
+    /// and systems.
+    /// </summary>
+    void CreateSession(IWalkability walkability, IReadOnlyList<ITickSystem> systems, Data.Gameplay.GameConstants? constants)
+    {
+        constants ??= Scene.Database is { } clockDb ? Data.Gameplay.GameConstants.FromDatabase(clockDb) : null;
+        var clock = GameClockFor(constants, WorldOptions.Hour, WorldOptions.Day ?? GameClock.DefaultStartDay);
+
+        var settings = new WorldSettings
+        {
+            Seed = GameOptions.Seed,
+            MinPartitionSize = 32,
+            Threads = Math.Max(1, Config.SimThreads ?? Math.Clamp(Environment.ProcessorCount / 2, 1, 8)),
+            Sunrise = (float)clock.Sunrise,
+            Sunset = (float)clock.Sunset,
+            FarTickPeriod = FarTickPeriod,
+        };
+        Duel.WorldSettings = settings;
+
+        var bounds = (Scene.X0, Scene.Z0, Scene.X1, Scene.Z1);
+        Session = new WorldSession(Scene.Focus, bounds, Gpu.Terrain.HeightAt, WorldOptions.Hour, Config.TickRate,
+            clock: clock, simulation: settings, systems: systems, walkability: walkability);
+
+        LocalSession.World.BenchFacingFix = Config.FixBenchFacing;
+        LocalSession.Simulation.SetFastSpeeds(Config.FastSpeed, Config.FastestSpeed);
+        if (Gpu.Characters is { } nearChars)
+            LocalSession.World.NearRadius = nearChars.NearReach;   // every drawn character steps every tick (docs/simulation.md "Far cadence")
+    }
+
+    /// <summary>
+    /// The simulation's side of <see cref="Boot"/>, on a worker (it reads the game data and the scene's level data and makes no GPU resource): the
+    /// world's content (<see cref="WorldBoot"/>), the code mods and the systems. Returns the walkability, the systems and the game constants for
+    /// the session.
+    /// </summary>
+    internal (IWalkability Walkability, IReadOnlyList<ITickSystem> Systems, Data.Gameplay.GameConstants? Constants) BootSimulation(
+        Meitou.Data.World.GroundHeights heights, bool interactive)
+    {
+        if (GameOptions.NoPopulation || Scene.Database is not { } gameDb)
+            return (new OpenGroundWalkability(heights.HeightAt), [], null);
+
+        bool ownCharactersOnly = Sandbox.IsSandbox || Duel.IsDuel || Battle.IsBattle;
+        var levels = ownCharactersOnly ? null : Scene.Objects?.Levels ?? WorldBoot.LoadLevels(Install, gameDb);
+        SimulationContent = Meitou.Runtime.WorldContent.Load(Install, gameDb, Assets, heights.HeightAt, levels,
+            Simulation.Bodies.BodyOptions.Default with
+            {
+                Dismemberment = Saves.Gameplay.Dismemberment,
+                Decapitation = Config.Decapitation,
+                AdvancedRagdolls = Config.AdvancedRagdolls,
+            }, Scene.Objects?.Layouts, Console.WriteLine);
+        Nav = SimulationContent.Navigation;
+        RagdollGeometry = SimulationContent.RagdollGeometry;
+        CharacterRigs = SimulationContent.Rigs;
+        AnimationLengths = SimulationContent.AnimationLengths;
+        AnimationLibrary = SimulationContent.AnimationLibrary;
+        PopData = SimulationContent.Population;
+        TownPlacements = SimulationContent.Towns;
+        SaveLevels = levels;
+        SimWalkability = SimulationContent.Walkability;
+        WeatherFeed.SimulationWeather = levels is null ? null : Meitou.Runtime.SimulationWeather.Load(Install, gameDb, heights.HeightAt);
+        Modding.StartMods(gameDb, PopData);
+        Modding.StartDeferredWarmup();
+        var built = Saves.BuildSystems(interactive);
+        Population = built.Population;
+        if (Nav is not null) Population!.ZoneGate = Nav.IsReady;
+        return (SimWalkability, built.Systems, PopData.Bodies.Constants);
+    }
+
+    /// <summary>
+    /// The game clock with sunrise, sunset and days per year from the CONSTANTS record (defaults without data).
+    /// </summary>
+    internal static GameClock GameClockFor(Data.Gameplay.GameConstants? c, double startHour, long startDay)
+    {
+        if (c is null) return new GameClock(startHour, startDay);
+
+        return new GameClock(startHour, startDay, sunrise: c.Sunrise, sunset: c.Sunset, daysPerYear: c.DaysPerYear);
+    }
+
+    #endregion
+
+    #region Boot: the player
+
+    /// <summary>
+    /// The rest of <see cref="Boot"/> once the session exists: bindings, the player's interface, the start (a new game's squad, the sandbox, the
+    /// duel), the camera, a <c>--load</c> save.
+    /// </summary>
+    internal void BootPlayer(VulkanDisplay display, bool interactive)
+    {
+        var context = display.Context;
+        var target = Camera.Target;
+        MigrateBindings();
+
         LoadingStep("interface");
-        // Picks against the drawn terrain (the streamed fine window): the boot window's heights fall back to a 144-unit grid away from the start.
-        player = new PlayerInterface(session, gpu.Terrain.HeightAt, DrawnPosition);
-        player.LoadUi(g.UiMode ?? config.UiMode, assets.Find);
-        player.SpeedUnit = config.SpeedUnit;
-        player.ShowNames = config.ShowNames;
-        player.Floaters = config.Floaters;
-        player.FeedbackButtonInPlay = config.FeedbackButton;
-        player.FixLoadButton = config.FixLoadButton;
-        // The region (BIOME_GROUP) under a point, for the biome banner.
-        player.RegionAt = (x, z) => gpu.Weather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
-        player.Markers = gpu.Markers ??= MarkerRenderer.Create(context, assets.Find);
-        SetUpBlood(context);
-        gpu.HoverOutline ??= new HoverOutlineRenderer(context);
-        gpu.NavmeshOverlay ??= new NavmeshOverlayRenderer(context);
-        navOverlayRenderer = gpu.NavmeshOverlay;
-        player.MeshHit = (id, origin, direction) => gpu.Characters?.RayHit(DrawKey(id), origin, direction);
-        player.Floor = (() => viewedFloor, StepFloor);
-        player.HiddenInWorld = hiddenIndoors.Contains;
-        player.AboveViewedFloor = AboveViewedFloor;
-        player.GroundItemShape = GroundShape;
-        player.GroundItemHidden = hiddenGround.Contains;
-        player.BuildingMoveHit = (origin, direction, distance) => gpu.Objects?.MoveHit(origin, direction, viewedFloor, distance);
-        player.SurfaceMoveHit = SurfaceMoveHit;
-        player.ClosedBuildingHit = (origin, direction, distance) => gpu.Objects?.ClosedBuildingHit(origin, direction, distance);
-        player.ShownInteriorHit = (origin, direction, distance) => gpu.Objects?.ShownInteriorHit(origin, direction, distance);
-        player.DoorShape = (record, door) => nav?.Walkability.DoorGeometry?.Shape(record, door) ?? [];
-        ConfigurePlayerInterface(player);
-        if (IsSandbox) player.ReservedKeys.UnionWith([Meitou.Engine.Input.Key.Z, Meitou.Engine.Input.Key.X, Meitou.Engine.Input.Key.C, Meitou.Engine.Input.Key.Y, Meitou.Engine.Input.Key.P, Meitou.Engine.Input.Key.G]);
-        player.ConfigureFrontend(scene.Database,
-            () => Meitou.Data.Save.SaveCatalog.Scan(Meitou.Simulation.Saving.QuickSave.DefaultRoot, install.SaveDirectory,
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "kenshi", "save")),
-            assets.Find("credits.txt") is { } creditsFile ? File.ReadAllText(creditsFile) : "");
-        player.DataProblems = (scene.Database?.Issues.Count ?? 0) + (scene.Objects?.Levels.Problems().Count ?? 0);
-        if (scene.Database is { } db)
-        {
-            player.Mods = ModReport.Build(install, db, mods?.Refused);
-            LogMods(player.Mods);
-        }
-        if (OpensOnTitle(interactive)) player.ShowTitle();
-        if (nav is not null && (start is not null || !interactive))
-        {
-            // The squad is placed on the mesh, and a still has its town at once: wait for the zones round the start (a cold build is about 2 s, then cached).
-            var watch = Stopwatch.StartNew();
-            var zones = Meitou.Simulation.ZoneActivation.ZonesAround(scene.Focus, 0);
-            using var preparation = LocalSession.World.Regions.Retain(zones, simulation: false);
-            LoadingStep("navmesh");
-            AwaitLoading(Task.WhenAll(zones.Select(z => (Task)nav.PrepareZone(z))));
-            LocalSession.SynchronizeWorld();
-            Console.WriteLine($"navmesh   {zones.Count} zone(s) round the start ready in {watch.ElapsedMilliseconds} ms");
-        }
-        if (start is not null && population is not null)
-        {
-            playerSquad = population.StartPlayer(LocalSession.World, start);
-            var lead = LocalSession.World.Characters.Previous[playerSquad.Leader.Slot].Position;
-            target = lead;
-            Console.WriteLine($"player    {playerSquad.Members.Count} characters, leader at {lead.X:0}, {lead.Z:0}");
-            // --new-game is a shortcut past the menus: the start's characters stay as rolled (the menu's New game opens the character editor); a still keeps the creation
-            // open for the showcase's editor pictures.
-            if (interactive) LocalSession.World.Commands.Enqueue(new Meitou.Simulation.Editing.FinishCreation { Tick = LocalSession.World.Tick });
-        }
-        if (IsSandbox && population is not null) target = SandboxSpawn();
-        if (IsDuel && population is not null) target = DuelStart();
-        if (IsBattle && population is not null) target = BattleStart();
-        if (!IsSandbox && crowd > 0 && population is not null) SpawnCrowd(target, crowd);
+        CreatePlayer(context);
+        ConnectPicking();
+        ConfigurePlayerInterface(Player);
+        Player.LevelEditorPanel.LevelHost = LevelEditorHost.MakeLevelEditorServices();
+        ConfigureFrontend(interactive);
+
+        LoadStartZones(interactive);
+        target = PlaceStart(target, interactive);
+
         LoadingStep("characters");
-        if (scene.Database is { } characterDb && !g.NoPopulation && gpu.Characters is null)
-            gpu.Characters = new CharacterRenderer(context, install, characterDb, assets, characterRigs) { DrawDistance = GameplaySettings.NpcRange(install), Source = FillDrawList, Guard = gpu.Guard, GeneratedLod = o.CharacterLod, SkinShading = o.SkinShading, SkinRaces = config.SkinRaces, EnhancedIcons = o.MeitouIcons,
-                PoseClock = () => animClock ? animSeconds : realTime.Elapsed.TotalSeconds };   // the frame clock DrawWorld gives the foliage sway: a recorded flight poses the same every take
-        var rig = session.Camera;
-        rig.Place(new Vector2(target.X, target.Z), (o.Yaw ?? 30) * MathF.PI / 180,
-            (o.Pitch ?? Meitou.Data.World.KenshiCamera.InitialPitchDegrees) * MathF.PI / 180, o.Distance ?? Meitou.Data.World.KenshiCamera.InitialDistance);
-        SendFocus();
-        ApplyCamera(session.Camera.Current);
-        if (TitleVisible) ApplyTitleCamera();
-        if (StartSave is { } save && g.Load is { } folder)
-        {
-            readingFolder = folder;
-            Task navmesh;
-            string summary;
-            try { navmesh = SwapInSave(Task.FromResult(save), interactive, out summary); }
-            catch (SceneLoadFailed e) { throw new InvalidDataException($"--load {folder}: {e.Message}"); }
-            LoadingStep("navmesh");
-            AwaitLoading(navmesh);
-            LocalSession.SynchronizeWorld();
-            SettleNewWorld();
-            FinishLoadNotice(summary);
-        }
+        CreateCharacterRenderer(context);
+        PlaceCamera(target);
+        LoadStartSave(interactive);
+
         if (interactive)
         {
             LoadingStep("finishing");
@@ -415,134 +777,634 @@ sealed partial class GameHost(GameInstall install, WorldScene scene, AssetLocato
         }
     }
 
-    /// <summary>Logs the mod list the game data was loaded from: enabled (the names the list file gives), loaded (those whose .mod file was found), problems.</summary>
+    /// <summary>
+    /// Takes the install's controls.cfg and the config's bindings, then moves those of older saved configs off the keys the game has since given
+    /// to other actions.
+    /// </summary>
+    void MigrateBindings()
+    {
+        var bindings = Session.Bindings;
+        UseSavedBindings(bindings, Install, Config);
+
+        // Right is the command button by default; older saved configs bound it to orbit (kept when Command has moved off it).
+        if (bindings.Get(InputAction.Command).Contains(Binding.Of(EngineButton.Right)))
+            bindings.Set(InputAction.Orbit, [.. bindings.Get(InputAction.Orbit).Where(b => !(b.IsMouse && b.Button == EngineButton.Right))]);
+
+        // Left Control orbits as the middle button does (mouse_rotate, FUN_1403636c0: only code 0x1d); older saved configs had the middle
+        // button alone.
+        if (BoundOnlyTo(InputAction.Orbit, Binding.Of(EngineButton.Middle)))
+            bindings.Set(InputAction.Orbit, EngineButton.Middle, EngineKey.LeftControl);
+
+        // F12 is the profiler now (as in the viewer); older saved configs took it for the screenshot.
+        if (BoundOnlyTo(InputAction.Screenshot, Binding.Of(EngineKey.F12)))
+            bindings.Set(InputAction.Screenshot, EngineKey.F8, EngineKey.PrintScreen);
+
+        // The profiler and debug menu were briefly on F10 and Insert; configs saved then go back to F12 and F10.
+        if (BoundOnlyTo(InputAction.CycleProfiler, Binding.Of(EngineKey.F10)) && BoundOnlyTo(InputAction.ToggleDebugMenu, Binding.Of(EngineKey.Insert)))
+        {
+            bindings.Set(InputAction.CycleProfiler, EngineKey.F12);
+            bindings.Set(InputAction.ToggleDebugMenu, EngineKey.F10);
+        }
+
+        // F9 is the game's quickload now (F5 quicksave); older saved configs took F9 for the fps counter, which is on Ctrl+F9 and unbound here.
+        if (BoundOnlyTo(InputAction.ToggleFps, Binding.Of(EngineKey.F9))) bindings.Set(InputAction.ToggleFps);
+
+        // Tab is the game's change_squad, not the settings (they open from the Esc menu); older saved configs bound Tab to them.
+        if (BoundOnlyTo(InputAction.ToggleSettings, Binding.Of(EngineKey.Tab)))
+            bindings.Set(InputAction.ToggleSettings);
+    }
+
+    /// <summary>
+    /// The install's controls.cfg as the defaults, then the config's changes over them; skipped lines are reported on the console.
+    /// </summary>
+    internal static void UseSavedBindings(InputBindings bindings, GameInstall install, UserConfig config)
+    {
+        bindings.UseGameControls(GameControls.Read(install.Root, out var problems));
+        foreach (var problem in problems) Console.Error.WriteLine($"controls.cfg binding skipped: {problem}");
+        foreach (var problem in bindings.ApplySaved(config.Bindings)) Console.Error.WriteLine($"config    binding skipped: {problem}");
+    }
+
+    /// <summary>
+    /// Whether an action is bound to that one binding alone.
+    /// </summary>
+    bool BoundOnlyTo(InputAction action, Binding binding) => Session.Bindings.Get(action).SequenceEqual([binding]);
+
+    /// <summary>
+    /// Makes the player's interface with the config's settings, and the overlays it draws with.
+    /// </summary>
+    void CreatePlayer(Rendering.Gpu.GpuContext context)
+    {
+        // Picks against the drawn terrain (the streamed fine window): the boot window's heights fall back to a 144-unit grid away from the start.
+        Player = new PlayerInterface(Session, Gpu.Terrain.HeightAt, DrawnPosition);
+        Player.LoadUi(GameOptions.UiMode ?? Config.UiMode, Assets.Find);
+        Player.MeitouMainMenu = GameOptions.MeitouMainMenu ?? Config.MeitouMainMenu;
+        Player.SpeedUnit = Config.SpeedUnit;
+        Player.ShowNames = Config.ShowNames;
+        Player.Floaters = Config.Floaters;
+        Player.FeedbackButtonInPlay = Config.FeedbackButton;
+        Player.Frontend.FixLoadButton = Config.FixLoadButton;
+        Player.BuildingSelection.DeselectBuildings = Config.DeselectBuildings;
+
+        // The region (BIOME_GROUP) under a point, for the biome banner.
+        Player.BiomeBanner.RegionAt = (x, z) => Gpu.Weather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
+
+        Player.Markers = Gpu.Markers ??= MarkerRenderer.Create(context, Assets.Find);
+        BloodDecals.SetUpBlood(context);
+        Gpu.HoverOutline ??= new HoverOutlineRenderer(context);
+        Gpu.NavmeshOverlay ??= new NavmeshOverlayRenderer(context);
+        DebugOverlays.NavOverlayRenderer = Gpu.NavmeshOverlay;
+        Gpu.InspectorOverlay ??= new NavmeshOverlayRenderer(context);
+    }
+
+    /// <summary>
+    /// What the interface's picks and visibility tests ask the drawn world: character meshes and heads, buildings, floors, doors, ground items.
+    /// </summary>
+    void ConnectPicking()
+    {
+        Player.Picking.MeshHit = (id, origin, direction) => Gpu.Characters?.RayHit(DrawKey(id), origin, direction);
+        Player.Picking.BuildingMoveHit = (origin, direction, distance) => Gpu.Objects?.MoveHit(origin, direction, Interiors.ViewedFloorValue, distance);
+        Player.Picking.SurfaceMoveHit = Interiors.SurfaceMoveHit;
+        Player.Picking.ClosedBuildingHit = (origin, direction, distance) => Gpu.Objects?.ClosedBuildingHit(origin, direction, distance);
+        Player.Picking.ShownInteriorHit = (origin, direction, distance) => Gpu.Objects?.ShownInteriorHit(origin, direction, distance);
+
+        Player.Floor = (() => Interiors.ViewedFloorValue, Interiors.StepFloor);
+        Player.StealthView.HiddenInWorld = Interiors.HiddenIndoors.Contains;
+        Player.StealthView.DrawnHead = id => Gpu.Characters?.BonePosition(DrawKey(id), "Bip01 Head");
+        Player.Furniture.AboveViewedFloor = Interiors.AboveViewedFloor;
+        Player.Furniture.DoorShape = (record, door) => Nav?.Walkability.DoorGeometry?.Shape(record, door) ?? [];
+
+        Player.GroundItemPicks.GroundItemShape = GroundItemSync.GroundShape;
+        Player.GroundItemPicks.GroundItemHidden = GroundItemSync.HiddenGround.Contains;
+    }
+
+    /// <summary>
+    /// The title and menus: the save list, the credits, the data problems and mod list, and the title itself when the run opens on it.
+    /// </summary>
+    void ConfigureFrontend(bool interactive)
+    {
+        if (Sandbox.IsSandbox) Player.ReservedKeys.UnionWith([Key.Z, Key.X, Key.C, Key.Y, Key.P, Key.G]);
+
+        string localSaves = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "kenshi", "save");
+        string credits = Assets.Find("credits.txt") is { } creditsFile ? File.ReadAllText(creditsFile) : "";
+        Player.Frontend.ConfigureFrontend(Scene.Database,
+            () => Data.Save.SaveCatalog.Scan(Simulation.Saving.QuickSave.DefaultRoot, Install.SaveDirectory, localSaves), credits);
+
+        Player.TitleMenu.DataProblems = (Scene.Database?.Issues.Count ?? 0) + (Scene.Objects?.Levels.Problems().Count ?? 0);
+        if (Scene.Database is { } db)
+        {
+            Player.TitleMenu.Mods = ModReport.Build(Install, db, Modding.Mods?.Refused);
+            LogMods(Player.TitleMenu.Mods);
+        }
+
+        Player.OnlineInstall = Install;
+        Player.LastServerAddress = Config.LastServerAddress;
+        Player.RememberServerAddress = address => { Config.LastServerAddress = address; Config.Save(); };
+        if (OpensOnTitle(interactive)) Player.Frontend.ShowTitle();
+    }
+
+    /// <summary>
+    /// Logs the mod list the game data was loaded from: enabled (the names the list file gives), loaded (those whose .mod file was found), problems.
+    /// </summary>
     void LogMods(ModReport report)
     {
-        string file = Meitou.Content.ModList.ModsCfgOverride ?? "data/mods.cfg";
+        string file = ModList.ModsCfgOverride ?? "data/mods.cfg";
         string problems = report.Problems == 1 ? "problem" : "problems";
         Console.WriteLine($"mods      {report.Enabled} enabled, {report.Loaded} loaded, {report.Problems} {problems}, from {file}");
     }
 
-    /// <summary>The game clock with sunrise, sunset and days per year from the CONSTANTS record (defaults without data).</summary>
-    static GameClock GameClockFor(Meitou.Data.Gameplay.GameConstants? c, double startHour, long startDay)
+    /// <summary>
+    /// Waits for the navmesh round the start when a new game's squad is placed on it or a still is taken: the squad stands on the mesh, and a still
+    /// has its town at once (a cold build is about 2 s, then cached).
+    /// </summary>
+    void LoadStartZones(bool interactive)
     {
-        if (c is null) return new GameClock(startHour, startDay);
-        return new GameClock(startHour, startDay, sunrise: c.Sunrise, sunset: c.Sunset, daysPerYear: c.DaysPerYear);
-    }
+        if (Nav is null || start is null && interactive) return;
 
-    void ApplyCamera(CameraState s)
-    {
-        camera.Target = s.Target;
-        camera.Yaw = s.Yaw;
-        camera.Pitch = s.Pitch;
-        camera.Distance = s.Distance;
+        var watch = Stopwatch.StartNew();
+        var zones = Simulation.Population.ZoneActivation.ZonesAround(Scene.Focus, 0);
+        LoadingStep("navmesh");
+        using var preparation = LocalSession.World.Regions.Retain(zones, simulation: false);
+        AwaitLoading(Task.WhenAll(zones.Select(z => (Task)Nav.PrepareZone(z))));
+        LocalSession.SynchronizeWorld();
+
+        Console.WriteLine($"navmesh   {zones.Count} zone(s) round the start ready in {watch.ElapsedMilliseconds} ms");
     }
 
     /// <summary>
-    /// Waits for requested startup geometry when asked. Runtime owns navigation publication and gate labels.
+    /// Places the start's characters (a new game's squad, the sandbox, the duel, the battle, a <c>--crowd</c>) and returns where the camera
+    /// looks first.
     /// </summary>
-    Task navUnload = Task.CompletedTask;
-    HashSet<Meitou.Data.World.ZoneCoordinate> navUnloading = [];
-
-    /// <summary>Waits for the zones being dropped (a load right after must not be undone by it).</summary>
-    void FinishNavUnload()
+    Vector3 PlaceStart(Vector3 target, bool interactive)
     {
-        if (navUnloading.Count == 0) return;
-        navUnload.Wait();
-        navUnloading = [];
+        if (Population is null) return target;
+
+        if (start is not null)
+        {
+            PlayerSquad = Population.StartPlayer(LocalSession.World, start);
+            var lead = LocalSession.World.Characters.Previous[PlayerSquad.Leader.Slot].Position;
+            target = lead;
+            Console.WriteLine($"player    {PlayerSquad.Members.Count} characters, leader at {lead.X:0}, {lead.Z:0}");
+
+            // --new-game is a shortcut past the menus: the start's characters stay as rolled (the menu's New game opens the character editor); a
+            // still keeps the creation open for the showcase's editor pictures.
+            if (interactive)
+                LocalSession.World.Commands.Enqueue(new Simulation.Editing.FinishCreation { Tick = LocalSession.World.Tick });
+        }
+
+        if (Sandbox.IsSandbox) target = Sandbox.SandboxSpawn();
+        if (Duel.IsDuel) target = Duel.DuelStart();
+        if (Battle.IsBattle) target = Battle.BattleStart();
+        if (!Sandbox.IsSandbox && Sandbox.Crowd > 0) Sandbox.SpawnCrowd(target, Sandbox.Crowd);
+
+        return target;
     }
 
-    void UpdateNav(bool wait = false)
+    /// <summary>
+    /// Makes the character renderer (with population data and none yet).
+    /// </summary>
+    void CreateCharacterRenderer(Rendering.Gpu.GpuContext context)
     {
-        if (nav is null || population is null || !wait || session is not WorldSession local) return;
-        var pending = new List<Task<Meitou.Navigation.NavZoneReady>>();
-        if (wait)
+        if (Scene.Database is not { } characterDb || GameOptions.NoPopulation || Gpu.Characters is not null) return;
+
+        Gpu.Characters = new CharacterRenderer(context, Install, characterDb, Assets, CharacterRigs)
         {
-            local.SynchronizeWorld();
-            var wanted = population.ActiveZones.Concat(local.World.Regions.Capture(simulation: false).Keys)
-                .Concat(nav.Walkability.RouteZones(TimeSpan.FromSeconds(30))).Distinct().ToArray();
-            using var preparation = local.World.Regions.Retain(wanted, simulation: false);
-            foreach (var zone in wanted) if (!nav.IsReady(zone)) pending.Add(nav.PrepareZone(zone));
-            Task.WaitAll([.. pending]); local.SynchronizeWorld();
-        }
+            DrawDistance = GameplaySettings.NpcRange(Install),
+            Source = FillDrawList,
+            Guard = Gpu.Guard,
+            GeneratedLod = WorldOptions.CharacterLod,
+            SkinShading = WorldOptions.SkinShading,
+            SkinRaces = Config.SkinRaces,
+            EnhancedIcons = WorldOptions.MeitouIcons,
+            // The frame clock DrawWorld gives the foliage sway: a recorded flight poses the same every take.
+            PoseClock = () => AnimClock ? AnimSeconds : RealTime.Elapsed.TotalSeconds
+        };
     }
 
-    /// <summary>Gives the player interface the camera it picks with.</summary>
-    void UpdateView(int width, int height)
+    /// <summary>
+    /// Places the strategy camera on <paramref name="target"/> with the command line's yaw, pitch and distance (else the game's start view), and
+    /// sends the focus.
+    /// </summary>
+    void PlaceCamera(Vector3 target)
     {
-        player.ViewProjection = camera.View * camera.Projection(width / (float)Math.Max(height, 1), camera.Near, camera.ViewDistance);
-        player.Eye = camera.Eye;
-        player.Width = width;
-        player.Height = height;
+        var yaw = (WorldOptions.Yaw ?? 30) * MathF.PI / 180;
+        var pitch = (WorldOptions.Pitch ?? Data.World.KenshiCamera.InitialPitchDegrees) * MathF.PI / 180;
+        var distance = WorldOptions.Distance ?? Data.World.KenshiCamera.InitialDistance;
+        Session.Camera.Place(new Vector2(target.X, target.Z), yaw, pitch, distance);
+
+        SendFocus();
+        ApplyCamera(Session.Camera.Current);
+        if (TitleScreen.TitleVisible) TitleScreen.ApplyTitleCamera();
     }
 
-    void DrawWorld(int width, int height)
+    /// <summary>
+    /// Swaps in the <c>--load</c> save through the menu's load path and waits for its navmesh.
+    /// </summary>
+    void LoadStartSave(bool interactive)
     {
-        // The stage and the portraits finished as the world is (a change of the options redraws the portraits).
-        if (gpu.Characters is { } previews)
-        {
-            previews.Look = Meitou.Rendering.Characters.PreviewLook.Of(o.Post);
-            player.PortraitSize = Meitou.Rendering.Characters.CharacterRenderer.PortraitSizeFor(previews.Look);
-            SyncIconLook();
-        }
-        if (!player.EditorOpen) ClearEditorBar();
-        if (TitleVisible) { DrawTitleWorld(width, height); return; }
-        if (player.EditorOpen) { DrawEditorScene(width, height); return; }
-        if (gpu.Characters is { StageRequest: not null } staged) staged.StageRequest = null;
-        ClearEditorStage();
-        double seconds = animClock ? animSeconds : realTime.Elapsed.TotalSeconds;
-        if (gpu.Foliage is { } foliage && o.Screenshot is null) foliage.SwaySeconds = seconds;
-        // The heat haze's gameTime: game hours since the start (it stops while paused, as in the game).
-        gpu.GameHours = session.Clock.HoursSinceStart;
-        // The sim's sight counts the interior lamps the renderer shows (the interiorlamps switch).
-        if (session is WorldSession sightOwner) sightOwner.World.Sight.InteriorLampsAllDay = gpu.Lamps?.InteriorAllDay ?? o.InteriorLamps;
-        else if (session.AuthorityRules is { } rules && gpu.Lamps is { } remoteLamps) remoteLamps.InteriorAllDay = rules.InteriorLampsAllDay;
-        // The weather's three time bases: the game day and time of day (the hour below), the game speed (the last non-zero one while paused) and the paused flag.
-        if (gpu.Weather is { } weather)
-        {
-            weather.Day = (int)session.Clock.Day;
-            weather.Paused = session.IsPaused || skyArrival is not null;
-            weather.GameSpeed = (float)(session.TimeScale > 0 ? session.TimeScale : session is WorldSession localWeather ? localWeather.Simulation.LastNonZeroSpeed : 1);
-        }
-        Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Host);   // the profiler: the host's frame so far, then the blood marks apart from the terrain's update
-        UpdateBlood();
-        UpdateModHits();
-        Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Blood, "blood marks");
-        birdAspect = width / (float)Math.Max(height, 1);
-        UpdateFoliageOwnership();
-        UpdateBirds();
-        Meitou.Rendering.StageClock.Lap(Meitou.Rendering.StageClock.Birds, "birds");
-        UpdateWeatherSource();
-        UpdateInteriorView();
-        // The frame's animation time (particles, water, wet surfaces) is game time: still while paused, faster at higher speeds.
-        float gameTime = (float)(session.PresentationSeconds / 600 % 1e4);
-        // The next world tick runs on its own thread while the world is drawn from the shown snapshots (docs/simulation.md "Tick ahead"): from here to the
-        // join nothing the renderer calls back may touch the world, only the session's snapshots.
-        if (tickAhead && session is WorldSession local) local.BeginTickAhead();
+        if (StartSave is not { } save || GameOptions.Load is not { } folder) return;
+
+        Saves.ReadingFolder = folder;
+        Task navmesh;
+        string summary;
         try
         {
-            WorldFrame.Draw(gpu, scene, camera, render, width, height, presentationHour ?? (float)session.Clock.HourOfDay, gameTime, o.FogDistance,
-                weatherHour: (float)session.Clock.HourOfDay);
+            navmesh = Saves.SwapInSave(Task.FromResult(save), interactive, out summary);
         }
-        finally { if (session is WorldSession completedLocal) completedLocal.EndTickAhead(); }
-        if (tickAhead && session is WorldSession) NoteAheadTick();
+        catch (SceneLoadFailed e)
+        {
+            throw new InvalidDataException($"--load {folder}: {e.Message}");
+        }
+
+        LoadingStep("navmesh");
+        AwaitLoading(navmesh);
+        LocalSession.SynchronizeWorld();
+        SettleNewWorld();
+        Saves.FinishLoadNotice(summary);
     }
 
-    /// <summary>This frame's world draw overlaps the next world tick (set by the interactive loop; never in stills, the duel, recorded flights or the play benchmark).</summary>
-    bool tickAhead;
+    #endregion
+
+    #region Player interface services
 
     /// <summary>
-    /// Meitou's dynamic tick ahead (engine choice): on once a world tick takes <see cref="AheadOnMs"/> (smoothed), off again under <see cref="AheadOffMs"/>, so a quiet
-    /// world keeps the game's input delay and a big fight or crowd overlaps; a tick run ahead is slower (it shares the cores with the draw), hence the gap.
+    /// The callbacks the interface asks the host for: the game data, the map, the build services, the tooltips and the character editor. Shared by
+    /// the Vulkan and Metal loops so the two expose the same interaction layer.
+    /// </summary>
+    internal void ConfigurePlayerInterface(PlayerInterface ui)
+    {
+        Modding.ConnectModUi(ui);
+        ConnectSaves(ui);
+
+        // The region (BIOME_GROUP) under a point, for the biome banner.
+        ui.BiomeBanner.RegionAt = (x, z) => ActiveWeather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
+        ui.Build.BuildHost = BuildingSync.MakeBuildServices();
+        ui.SquadWindows.SquadLimits = () => PopData?.Bodies.Constants;
+        ui.Furniture.Rocks = () => PopData?.ResourceNodes;
+
+        ConnectFactions(ui);
+        ConnectBuildings(ui);
+        ConnectWorldMap(ui);
+        ConnectItems(ui);
+        CharacterEditor.ConfigureEditor(ui);
+    }
+
+    /// <summary>
+    /// The save windows' services: the Load button fix, the save in use and deleting a save.
+    /// </summary>
+    void ConnectSaves(PlayerInterface ui)
+    {
+        ui.Frontend.FixLoadButton = Config.FixLoadButton;
+        ui.Frontend.SaveInUse = SaveInUse;
+        ui.Frontend.DeleteSave = DeleteSave;
+    }
+
+    /// <summary>
+    /// The save folder is the one the running world was loaded from or last saved to.
+    /// </summary>
+    bool SaveInUse(string folder)
+    {
+        if (!Session.CanSaveWorld || !Session.HasPlayer || Saves.SaveInUse is not { } used) return false;
+
+        return string.Equals(Path.GetFullPath(used), Path.GetFullPath(folder), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Deletes a save folder; returns the message to show when that failed, else null.
+    /// </summary>
+    static string? DeleteSave(string folder)
+    {
+        try
+        {
+            Directory.Delete(folder, recursive: true);
+            return null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return "Failed to delete save: " + e.Message;
+        }
+    }
+
+    /// <summary>
+    /// The faction services: names, the rename's test, the faction tab's list and its info panel.
+    /// </summary>
+    void ConnectFactions(PlayerInterface ui)
+    {
+        ui.FactionName = faction => Session.DescribeFaction(faction)?.Name is { Length: > 0 } name ? name : null;
+        ui.PlayerFactionName = () => ui.FactionName?.Invoke(Session.ActiveFaction) ?? "";
+        ui.FactionWindow.FactionNameTaken = name => Session.FactionCatalogue.Any(f => f.Faction != Session.ActiveFaction && f.Name == name);
+        ui.FactionWindow.FactionInfo = () => Session.FactionInformation;
+        ui.FactionWindow.FactionRelations = () => Session.ActiveFaction < 0 ? [] : Session.FactionCatalogue
+            .Where(f => f.Faction != Session.ActiveFaction && Session.CurrentSnapshot.KnownFactions.Contains(f.Faction)
+                && !f.NotReal && f.RecordId != "GENERATION_TEMPLATE_FACTION")
+            .Select(f => (Faction: f, Standing: Session.StandingTowards(f.Faction)))
+            .Where(p => p.Standing is not null)
+            .Select(p => (p.Faction.Name, p.Standing!.Relation)).ToArray();
+    }
+
+    /// <summary>
+    /// The building panel's services: the build target, the upgrade chain, the build data and the power output.
+    /// </summary>
+    void ConnectBuildings(PlayerInterface ui)
+    {
+        var selection = ui.BuildingSelection;
+
+        // A BUILDING's construction target (its Condition rows): the sum of its materials' required amounts.
+        selection.BuildTarget = record => BuildingDataOf(record)?.Materials.Sum(m => m.Required);
+
+        // The upgrade chain of a BUILDING (the panel's [UPGRADE] / [DOWNGRADE]) and its build data (their tooltips' materials).
+        selection.UpgradeOf = record => PopData is { } d ? Simulation.Construction.BuildingUpgrades.UpgradeOf(d.Db, record) : null;
+        selection.DowngradeOf = record => PopData is { } d ? Simulation.Construction.BuildingUpgrades.DowngradeOf(d.Db, record) : null;
+        selection.BuildingData = BuildingDataOf;
+        selection.PowerOutput = record => PopData?.Db.Find(record)?.GetInt("power output");
+    }
+
+    /// <summary>
+    /// The build data of a BUILDING record; null for another record or without data.
+    /// </summary>
+    Data.Gameplay.Construction.BuildingBuildData? BuildingDataOf(string record) =>
+        PopData?.Db.Find(record) is { Type: Data.Fcs.FcsRecordType.Building } r ? Data.Gameplay.Construction.BuildingBuildData.From(r) : null;
+
+    /// <summary>
+    /// The world map's services: the towns, their factions and the towns a map item reveals.
+    /// </summary>
+    void ConnectWorldMap(PlayerInterface ui)
+    {
+        ui.WorldMap.MapTowns = () => PopData?.Sites ?? [];
+        ui.WorldMap.MapFactionOf = MapFactionOf;
+        ui.WorldMap.MapFactionId = faction => Session.DescribeFaction(faction)?.RecordId;
+        ui.WorldMap.MapItemTowns = record =>
+        {
+            if (Session.IsRemote) return null;
+            if (PopData is not { } d || d.Db.Find(record) is not { Type: Data.Fcs.FcsRecordType.MapItem } map)
+                return null;
+
+            var revealed = Simulation.Items.MapItems.Reveals(d, map, Session.CurrentSnapshot.Towns, LocalSession.World.Seed);
+            return [.. revealed.Select(i => d.Sites[i].Town.Name)];
+        };
+    }
+
+    /// <summary>
+    /// A town's faction on the map, with the player's standing towards it.
+    /// </summary>
+    MapFaction? MapFactionOf(string? id)
+    {
+        if (id is null || Session.DescribeFaction(id) is not { } faction) return null;
+        var relation = Session.StandingTowards(faction.Faction);
+        var standing = faction.Faction == Session.ActiveFaction ? MapStanding.Player
+            : relation?.Ally == true ? MapStanding.Ally
+            : relation?.Relation < -30 ? MapStanding.Enemy : MapStanding.Neutral;
+        return new MapFaction(faction.Name, relation?.Relation ?? 0, standing, faction.NotReal);
+    }
+
+    /// <summary>
+    /// The item services: armour, names, prices and the rest the interface asks of the data.
+    /// </summary>
+    void ConnectItems(PlayerInterface ui)
+    {
+        ui.ArmourOf = record => PopData?.Combat.Armour(record);
+        ui.RecordName = id => PopData?.Db.Find(id)?.Name;
+        ui.PricesOf = PriceLookup();
+        ui.GroundItemPicks.ArtifactOf = id => PopData?.Db.Find(id)?.GetBool("artifact") == true;
+
+        var specialFoodRaces = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+        ui.TooltipRuntime.ItemRecordOf = id => PopData?.Db.Find(id);
+        ui.TooltipRuntime.SpecialFoodRaces = id =>
+            PopData is { } d ? specialFoodRaces.GetOrAdd(id, item => Data.Gameplay.Bodies.SpecialFood.EatenBy(d.Db, item)) : "";
+        ui.TooltipRuntime.CombatOf = () => PopData?.Combat;
+        ui.TooltipRuntime.RangedDamageMultiplier = () => Session.AuthorityRules?.GlobalDamageMultiplier ?? 1;
+    }
+
+    /// <summary>
+    /// The tooltips' prices of an item: gear by its own price rules, anything else at a shelf with no trader. The price constants and the shelf are
+    /// made on first use.
+    /// </summary>
+    Func<TooltipRuntime.ItemTip, (int Value, int Sell, int? Average)?> PriceLookup()
+    {
+        Data.Gameplay.Economy.PriceConstants? priceConstants = null;
+        Simulation.Trading.Market? shelf = null;
+        return tip =>
+        {
+            if (PopData is not { } d || d.Db.Find(tip.Record) is not { } r) return null;
+
+            if (r.Type is Data.Fcs.FcsRecordType.Armour or Data.Fcs.FcsRecordType.Weapon or Data.Fcs.FcsRecordType.Crossbow)
+            {
+                priceConstants ??= Data.Gameplay.Economy.PriceConstants.FromDatabase(d.Db);
+                return Simulation.Trading.Market.GearPrices(d.Db, priceConstants, tip.Record, tip.Level, tip.Company) is { } gear
+                    ? (gear.Value, gear.Sell, null) : null;
+            }
+
+            // No trader, so no town or culture factor (the seed only rolls those).
+            var market = shelf ??= new Simulation.Trading.Market(d, 0);
+            var item = ShelfItem(d.Db, r.Type, tip);
+            var none = Simulation.Trading.Trader.None;
+            return (market.UnitPrice(item, false, none, -1), market.UnitPrice(item, true, none, -1), market.AveragePrice(item));
+        };
+    }
+
+    /// <summary>
+    /// The item a tooltip shows, as a shelf would hold it. StolenFrom is set only when the item is stolen for its holder; holder -1 keeps that.
+    /// </summary>
+    static Simulation.Items.ItemInstance ShelfItem(Data.GameDatabase db, Data.Fcs.FcsRecordType type, TooltipRuntime.ItemTip tip) => new()
+    {
+        Record = tip.Record,
+        Type = db.Find(tip.Company) is { Type: Data.Fcs.FcsRecordType.Research } ? Data.Fcs.FcsRecordType.Blueprint : type,
+        Quality = tip.Quality,
+        Level = tip.Level,
+        CompanyId = tip.Company,
+        Charges = tip.Charges,
+        MaxCharges = tip.MaxCharges,
+        Quantity = tip.Quantity,
+        StolenFrom = tip.StolenFrom,
+    };
+
+    #endregion
+
+    #region Camera
+
+    /// <summary>
+    /// The drawn camera from a rig state.
+    /// </summary>
+    internal void ApplyCamera(CameraState s)
+    {
+        Camera.Target = s.Target;
+        Camera.Yaw = s.Yaw;
+        Camera.Pitch = s.Pitch;
+        Camera.Distance = s.Distance;
+    }
+
+    /// <summary>
+    /// Gives the player interface the camera it picks with.
+    /// </summary>
+    internal void UpdateView(int width, int height)
+    {
+        Player.ViewProjection = Camera.View * Camera.Projection(width / (float)Math.Max(height, 1), Camera.Near, Camera.ViewDistance);
+        Player.Eye = Camera.Eye;
+        Player.Width = width;
+        Player.Height = height;
+    }
+
+    #endregion
+
+    #region Nav streaming
+
+    /// <summary>
+    /// Waits for requested startup navigation, published by the local runtime.
+    /// </summary>
+    internal void UpdateNav(bool wait = false)
+    {
+        if (Nav is null || Population is null || !wait || Session is not WorldSession local) return;
+        local.SynchronizeWorld();
+        var wanted = Population.ActiveZones.Concat(local.World.Regions.Capture(simulation: false).Keys)
+            .Concat(Nav.Walkability.RouteZones(TimeSpan.FromSeconds(30))).Distinct().ToArray();
+        using var preparation = local.World.Regions.Retain(wanted, simulation: false);
+        Task.WaitAll([.. wanted.Where(z => !Nav.IsReady(z)).Select(z => (Task)Nav.PrepareZone(z))]);
+        local.SynchronizeWorld();
+    }
+
+    #endregion
+
+    #region Frame
+
+    /// <summary>
+    /// Draws one frame of the world: the title's, the character editor's scene, or the world with its clocks and per-frame effects.
+    /// </summary>
+    internal void DrawWorld(int width, int height)
+    {
+        SyncPreviewLook();
+        if (!Player.CharacterEditor.EditorOpen) CharacterEditor.Bar.ClearEditorBar();
+
+        if (TitleScreen.TitleVisible)
+        {
+            TitleScreen.DrawTitleWorld(width, height);
+            return;
+        }
+        if (Player.CharacterEditor.EditorOpen)
+        {
+            CharacterEditor.Bar.DrawEditorScene(width, height);
+            return;
+        }
+
+        if (Gpu.Characters is { StageRequest: not null } staged) staged.StageRequest = null;
+        CharacterEditor.ClearEditorStage();
+
+        FeedFrameClocks();
+        UpdateFrameEffects(width / (float)Math.Max(height, 1));
+        DrawFrame(width, height);
+    }
+
+    /// <summary>
+    /// The stage and the portraits finished as the world is (a change of the options redraws the portraits).
+    /// </summary>
+    void SyncPreviewLook()
+    {
+        if (Gpu.Characters is not { } previews) return;
+
+        previews.Look = PreviewLook.Of(WorldOptions.Post);
+        Player.PortraitBar.PortraitSize = CharacterRenderer.PortraitSizeFor(previews.Look);
+        ItemIconFiles.SyncIconLook();
+    }
+
+    /// <summary>
+    /// Hands the renderers and the sim's sight this frame's times: the foliage sway, the heat haze, the interior lamps and the weather's time bases.
+    /// </summary>
+    void FeedFrameClocks()
+    {
+        double seconds = AnimClock ? AnimSeconds : RealTime.Elapsed.TotalSeconds;
+        if (Gpu.Foliage is { } foliage && WorldOptions.Screenshot is null) foliage.SwaySeconds = seconds;
+
+        // The heat haze's gameTime: game hours since the start (it stops while paused, as in the game).
+        Gpu.GameHours = Session.Clock.HoursSinceStart;
+
+        // The sim's sight counts the interior lamps the renderer shows (the interiorlamps switch).
+        if (Session is WorldSession local) local.World.Sight.InteriorLampsAllDay = Gpu.Lamps?.InteriorAllDay ?? WorldOptions.InteriorLamps;
+        else if (Session.AuthorityRules is { } rules && Gpu.Lamps is { } lamps) lamps.InteriorAllDay = rules.InteriorLampsAllDay;
+
+        // The weather's three time bases: the game day and time of day (the hour DrawFrame passes), the game speed (the last non-zero one while
+        // paused) and the paused flag.
+        if (Gpu.Weather is { } weather)
+        {
+            weather.Day = (int)Session.Clock.Day;
+            weather.Paused = Session.IsPaused || SkyArrival is not null;
+            weather.GameSpeed = (float)(Session.TimeScale > 0 ? Session.TimeScale : Session is WorldSession localWeather ? localWeather.Simulation.LastNonZeroSpeed : 1);
+        }
+    }
+
+    /// <summary>
+    /// The per-frame effects before the draw, each lapped on the profiler: blood marks, the mods' hits, birds, then the weather source and the
+    /// interior view.
+    /// </summary>
+    void UpdateFrameEffects(float aspect)
+    {
+        // The profiler: the host's frame so far, then the blood marks apart from the terrain's update.
+        Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Host);
+        BloodDecals.UpdateBlood();
+        Modding.UpdateModHits();
+        Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Blood, "blood marks");
+
+        Online.UpdateFoliageOwnership();
+        Birds.UpdateBirds(aspect);
+        Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Birds, "birds");
+
+        WeatherFeed.UpdateWeatherSource();
+        Interiors.UpdateInteriorView();
+    }
+
+    /// <summary>
+    /// Draws the world at the shown game time, overlapping the next world tick when <see cref="TickAhead"/>.
+    /// </summary>
+    void DrawFrame(int width, int height)
+    {
+        // The frame's animation time (particles, water, wet surfaces) is game time: still while paused, faster at higher speeds. The clock moves in
+        // whole 1/30 s ticks, so it runs on by the alpha the characters are drawn at; at 1x the weather particles otherwise moved at 30 Hz.
+        double shownSeconds = Session.PresentationSeconds;
+        float gameTime = (float)(shownSeconds / 600 % 1e4);
+        float hour = (float)Session.Clock.HourOfDay;
+
+        // The next world tick runs on its own thread while the world is drawn from the shown snapshots (docs/simulation.md "Tick ahead"): from here
+        // to the join nothing the renderer calls back may touch the world, only the session's snapshots.
+        if (TickAhead && Session is WorldSession) LocalSession.BeginTickAhead();
+        try
+        {
+            WorldFrame.Draw(Gpu, Scene, Camera, Render, width, height, PresentationHour ?? hour, gameTime, WorldOptions.FogDistance, weatherHour: hour);
+        }
+        finally
+        {
+            if (Session is WorldSession local) local.EndTickAhead();
+        }
+
+        if (TickAhead) NoteAheadTick();
+    }
+
+    #endregion
+
+    #region Tick ahead
+
+    /// <summary>
+    /// This frame's world draw overlaps the next world tick (set by the interactive loop; never in stills, the duel, recorded flights or the
+    /// play benchmark).
+    /// </summary>
+    internal bool TickAhead;
+
+    /// <summary>
+    /// Meitou's dynamic tick ahead (engine choice): on once a world tick takes <see cref="AheadOnMs"/> (smoothed), off again under
+    /// <see cref="AheadOffMs"/>, so a quiet world keeps the game's input delay and a big fight or crowd overlaps; a tick run ahead is slower (it
+    /// shares the cores with the draw), hence the gap.
     /// </summary>
     const double AheadOnMs = 4, AheadOffMs = 2;
-    bool worldBusy;
+    /// <summary>
+    /// A world tick took long enough for the dynamic tick ahead (<see cref="AheadOnMs"/>, off again under <see cref="AheadOffMs"/>).
+    /// </summary>
+    bool _worldBusy;
 
-    bool TickAheadWanted() => session is WorldSession local && config.TickAhead switch
+    /// <summary>
+    /// Whether the next frame's draw should overlap a world tick, by <see cref="UserConfig.TickAhead"/>.
+    /// </summary>
+    internal bool TickAheadWanted() => Session is WorldSession && Config.TickAhead switch
     {
         TickAheadMode.Always => true,
-        TickAheadMode.Dynamic => worldBusy = local.TickMs >= (worldBusy ? AheadOffMs : AheadOnMs),
+        TickAheadMode.Dynamic => _worldBusy = LocalSession.TickMs >= (_worldBusy ? AheadOffMs : AheadOnMs),
         _ => false,
     };
 
+    #endregion
 }

@@ -10,38 +10,93 @@ namespace Meitou.Data.Audio;
 /// </summary>
 public sealed class WwiseBank
 {
-    /// <summary>The bank version whose objects the reader decodes.</summary>
+    /// <summary>
+    /// The bank version whose objects the reader decodes.
+    /// </summary>
     public const uint DecodedVersion = 112;
 
-    readonly byte[] data;
-    readonly Dictionary<uint, WwiseObject> byId = [];
-    readonly Dictionary<uint, WwiseMedia> mediaById = [];
+    /// <summary>
+    /// The whole bank file; media are slices of it.
+    /// </summary>
+    readonly byte[] _data;
+    /// <summary>
+    /// The HIRC objects by id.
+    /// </summary>
+    readonly Dictionary<uint, WwiseObject> _byId = [];
+    /// <summary>
+    /// The embedded media by WEM id.
+    /// </summary>
+    readonly Dictionary<uint, WwiseMedia> _mediaById = [];
 
-    WwiseBank(byte[] data) => this.data = data;
+    /// <summary>
+    /// A bank over <paramref name="data"/>; <see cref="Read"/> fills it.
+    /// </summary>
+    WwiseBank(byte[] data) => this._data = data;
 
+    /// <summary>
+    /// The bank version from <c>BKHD</c>: 112 for Kenshi's banks but <c>SFX_Bank.bnk</c> (88).
+    /// </summary>
     public uint Version { get; private set; }
+    /// <summary>
+    /// The bank's id from <c>BKHD</c>: the hash of its name.
+    /// </summary>
     public uint Id { get; private set; }
+    /// <summary>
+    /// The language id from <c>BKHD</c>.
+    /// </summary>
     public uint LanguageId { get; private set; }
-    /// <summary>The sections in file order: tag, offset of the body, body length.</summary>
+    /// <summary>
+    /// The sections in file order: tag, offset of the body, body length.
+    /// </summary>
     public IReadOnlyList<(string Tag, int Offset, int Length)> Sections { get; private set; } = [];
+    /// <summary>
+    /// The embedded WEMs in <c>DIDX</c> order; empty when the bank has none.
+    /// </summary>
     public IReadOnlyList<WwiseMedia> Media { get; private set; } = [];
-    /// <summary>The <c>STID</c> table: bank ids and names (Kenshi's banks list only themselves).</summary>
+    /// <summary>
+    /// The <c>STID</c> table: bank ids and names (Kenshi's banks list only themselves).
+    /// </summary>
     public IReadOnlyDictionary<uint, string> BankNames { get; private set; } = new Dictionary<uint, string>();
+    /// <summary>
+    /// The <c>HIRC</c> objects in file order, decoded in a version <see cref="DecodedVersion"/> bank and raw otherwise.
+    /// </summary>
     public IReadOnlyList<WwiseObject> Objects { get; private set; } = [];
-    /// <summary><c>STMG</c> (only in <c>Init.bnk</c>): each game parameter's default value, by id.</summary>
+    /// <summary>
+    /// <c>STMG</c> (only in <c>Init.bnk</c>): each game parameter's default value, by id.
+    /// </summary>
     public IReadOnlyDictionary<uint, float> GameParameterDefaults { get; private set; } = new Dictionary<uint, float>();
-    /// <summary><c>STMG</c>: each state group's default transition time in ms, by id.</summary>
+    /// <summary>
+    /// <c>STMG</c>: each state group's default transition time in ms, by id.
+    /// </summary>
     public IReadOnlyDictionary<uint, int> StateGroupTransitions { get; private set; } = new Dictionary<uint, int>();
 
-    public WwiseObject? Find(uint id) => byId.GetValueOrDefault(id);
-    public T? Find<T>(uint id) where T : WwiseObject => byId.GetValueOrDefault(id) as T;
-    public WwiseMedia? FindMedia(uint id) => mediaById.TryGetValue(id, out var m) ? m : null;
+    /// <summary>
+    /// The <c>HIRC</c> object with id <paramref name="id"/>; null when the bank has none.
+    /// </summary>
+    public WwiseObject? Find(uint id) => _byId.GetValueOrDefault(id);
+    /// <summary>
+    /// The <c>HIRC</c> object with id <paramref name="id"/> when it is a <typeparamref name="T"/>; null otherwise.
+    /// </summary>
+    public T? Find<T>(uint id) where T : WwiseObject => _byId.GetValueOrDefault(id) as T;
+    /// <summary>
+    /// The embedded WEM with id <paramref name="id"/>; null when the bank does not hold it.
+    /// </summary>
+    public WwiseMedia? FindMedia(uint id) => _mediaById.TryGetValue(id, out var m) ? m : null;
 
-    /// <summary>The bytes of an embedded WEM.</summary>
-    public ReadOnlyMemory<byte> MediaBytes(WwiseMedia media) => data.AsMemory(media.Offset, media.Length);
+    /// <summary>
+    /// The bytes of an embedded WEM.
+    /// </summary>
+    public ReadOnlyMemory<byte> MediaBytes(WwiseMedia media) => _data.AsMemory(media.Offset, media.Length);
 
-    public static WwiseBank ReadFile(string path) => Read(File.ReadAllBytes(Meitou.Content.GameFiles.Resolve(path)));
+    /// <summary>
+    /// <see cref="Read"/> of the file at <paramref name="path"/>, its case resolved as on disk.
+    /// </summary>
+    public static WwiseBank ReadFile(string path) => Read(File.ReadAllBytes(Content.GameFiles.Resolve(path)));
 
+    /// <summary>
+    /// Reads a whole bank: its sections, the media table, the bank names, the global settings and the objects. <see cref="InvalidDataException"/>
+    /// when it is not a bank or a section runs past the end.
+    /// </summary>
     public static WwiseBank Read(byte[] data)
     {
         var bank = new WwiseBank(data);
@@ -55,7 +110,8 @@ public sealed class WwiseBank
             string tag = Encoding.ASCII.GetString(data, p, 4);
             int length = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(p + 4));
             int body = p + 8;
-            if (length < 0 || body + (long)length > data.Length) throw new InvalidDataException($"Section {tag} at {p} runs past the end of the file");
+            if (length < 0 || body + (long)length > data.Length)
+                throw new InvalidDataException($"Section {tag} at {p} runs past the end of the file");
             sections.Add((tag, body, length));
             var span = data.AsSpan(body, length);
             switch (tag)
@@ -84,28 +140,46 @@ public sealed class WwiseBank
             }
             p = body + length;
         }
-        if (sections.Count == 0 || sections[0].Item1 != "BKHD") throw new InvalidDataException("Not a Wwise bank (no BKHD)");
+        if (sections.Count == 0 || sections[0].Item1 != "BKHD")
+            throw new InvalidDataException("Not a Wwise bank (no BKHD)");
         bank.Sections = sections;
 
-        if (index.Count > 0)
-        {
-            var dataSection = sections.FirstOrDefault(s => s.Item1 == "DATA");
-            if (dataOffset < 0) throw new InvalidDataException("DIDX without DATA");
-            var media = new List<WwiseMedia>(index.Count);
-            foreach (var (id, offset, len) in index)
-            {
-                if (offset + (long)len > dataSection.Item3) throw new InvalidDataException($"Media {id:X8} runs past DATA");
-                var m = new WwiseMedia(id, dataOffset + (int)offset, (int)len, (int)offset);
-                media.Add(m);
-                bank.mediaById[id] = m;
-            }
-            bank.Media = media;
-        }
+        AddMedia(bank, sections, index, dataOffset);
 
-        foreach (var (tag, offset, length) in sections)
-            if (tag == "HIRC") bank.Objects = WwiseHierarchyReader.Read(data.AsSpan(offset, length), bank.Version == DecodedVersion);
-        foreach (var o in bank.Objects) bank.byId.TryAdd(o.Id, o);
+        ReadObjects(bank, data, sections);
         return bank;
+    }
+
+    /// <summary>
+    /// The media table (the <c>DIDX</c> entries) with each file's place in <c>DATA</c>; none when the bank has no index.
+    /// </summary>
+    static void AddMedia(WwiseBank bank, List<(string, int, int)> sections, List<(uint Id, uint Offset, uint Length)> index, int dataOffset)
+    {
+        if (index.Count == 0) return;
+
+        var dataSection = sections.FirstOrDefault(s => s.Item1 == "DATA");
+        if (dataOffset < 0) throw new InvalidDataException("DIDX without DATA");
+        var media = new List<WwiseMedia>(index.Count);
+        foreach (var (id, offset, len) in index)
+        {
+            if (offset + (long)len > dataSection.Item3)
+                throw new InvalidDataException($"Media {id:X8} runs past DATA");
+            var m = new WwiseMedia(id, dataOffset + (int)offset, (int)len, (int)offset);
+            media.Add(m);
+            bank._mediaById[id] = m;
+        }
+        bank.Media = media;
+    }
+
+    /// <summary>
+    /// The object hierarchy (the <c>HIRC</c> section), indexed by id.
+    /// </summary>
+    static void ReadObjects(WwiseBank bank, byte[] data, List<(string, int, int)> sections)
+    {
+        foreach (var (tag, offset, length) in sections)
+            if (tag == "HIRC")
+                bank.Objects = WwiseHierarchyReader.Read(data.AsSpan(offset, length), bank.Version == DecodedVersion);
+        foreach (var o in bank.Objects) bank._byId.TryAdd(o.Id, o);
     }
 
     /// <summary>
@@ -142,6 +216,9 @@ public sealed class WwiseBank
         bank.GameParameterDefaults = defaults;
     }
 
+    /// <summary>
+    /// Reads the little-endian int32 at <paramref name="p"/> of an <c>STMG</c> section and moves past it.
+    /// </summary>
     static int U32(ReadOnlySpan<byte> s, ref int p)
     {
         if (p + 4 > s.Length) throw new InvalidDataException("STMG is truncated");
@@ -150,7 +227,9 @@ public sealed class WwiseBank
         return v;
     }
 
-    /// <summary><c>STID</c>: u32 string type (1), u32 count, then per entry u32 bank id, u8 length, the name (ASCII, no terminator).</summary>
+    /// <summary>
+    /// <c>STID</c>: u32 string type (1), u32 count, then per entry u32 bank id, u8 length, the name (ASCII, no terminator).
+    /// </summary>
     static Dictionary<uint, string> ReadStringTable(ReadOnlySpan<byte> span)
     {
         var names = new Dictionary<uint, string>();
@@ -168,5 +247,7 @@ public sealed class WwiseBank
     }
 }
 
-/// <summary>An embedded WEM: its source id, where its bytes are in the bank file, and its offset inside <c>DATA</c> (what sounds refer to).</summary>
+/// <summary>
+/// An embedded WEM: its source id, where its bytes are in the bank file, and its offset inside <c>DATA</c> (what sounds refer to).
+/// </summary>
 public readonly record struct WwiseMedia(uint Id, int Offset, int Length, int DataOffset);

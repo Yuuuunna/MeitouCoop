@@ -8,7 +8,7 @@ public sealed record PlayerTalkHint(TalkHintStatus Status, ulong StateRevision);
 
 public sealed partial class World
 {
-    internal bool TalkBusy(CharacterId npc, PlayerId actor) => dialogues?.IsBusy(this, npc, actor) == true;
+    internal bool TalkBusy(CharacterId npc, PlayerId actor) => _dialogues?.IsBusy(this, npc, actor) == true;
     Vector3? ObservationAnchor(CharacterControl grant)
     {
         if (!Players.Validate(grant) || !Entities.TryResolve(grant.Entity, out var id) || Characters.Cold(id.Slot) is not { } cold) return null;

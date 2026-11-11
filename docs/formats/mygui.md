@@ -98,7 +98,7 @@ Sources: the configured Kenshi install's `data/gui/`, the existing
   - `TabWidth` is the tab's advance in pixels (0: eight spaces). `Distance` is the gap
     between glyphs in MyGUI's own texture (default 1): no layout effect. Inline `#RRGGBB`
     colour codes are handled by `TextView` (Meitou: `MyGuiTextTags`, [Inline colour tags](../game/ui-screens.md#inline-colour-tags)).
-- Meitou draws text through `UiFont` (`src/Meitou.Rendering/Ui/`): FreeType 2.13.2 (via
+- Meitou draws text through `UiFont` (`src/Meitou.Game/Rendering/Ui/`): FreeType 2.13.2 (via
   FreeTypeSharp), one face per file, one size per `UiFont`, glyphs rasterised into an atlas
   on demand (any code point, UTF-16 pairs as one), the atlas grows to 2048 square and then
   starts over; text geometry caches are dropped when it moves. Measuring, wrapping and
@@ -242,7 +242,8 @@ Code: `UiDocument.Widgets.cs` (layout), `MyGuiScreenHost.Widgets.cs` (input). **
 - **Lines and long text** (**Observed**, the save list at 1440 lines): a list with a `SkinLine` lays its lines across the whole client and the
   line skin places the text (Meitou's 3 px inset and padding only without one); a resource font's line longer than its widget is cropped, never
   shortened with "..." (Faithful). The save list's lines are 28 px apart at 1440 lines: the template's `HeightLine` 21 times height / 1080, which
-  Meitou applies to the load, save and import windows (whether every template scales so is **Unknown**).
+  Meitou applies to the load, save and import windows and the HUD (the squad tabs' `HeaderPlace` scales so too, **Observed**; whether every
+  template does is **Unknown**).
 - **EditBox** (`EditBox.cpp` with `ScrollViewBase.cpp`; **Observed** in the editor's race description, `Kenshi_WordWrap`, which sets no `VisibleVScroll`):
   the vertical bar shows only when the text is taller than the client (and `VisibleVScroll` is not false); hidden, its thickness goes to the client, so text
   wraps up to 6 px inside the frame (a Hive Prince's description); shown, its thickness comes off the template's client, so the text keeps 14 px clear of it (a
@@ -266,7 +267,7 @@ Code: `UiDocument.Widgets.cs` (layout), `MyGuiScreenHost.Widgets.cs` (input). **
   newest first, arrow "Down"), column 0 Fill, column 1 Fixed; rows are the save names with `{1,datetime}` of the modified time in column 1. The two captions are localised strings (the pot has "Name" and "Date" from
   `savemanager.cpp`; which the window uses is **Unknown**). Meitou's `GamesList` (load and save) uses these columns, the name cell with the save's origin appended; `Kenshi_ImportGamePanel` is not registered.
 - **Window** (Verified, `Window.cpp`; layouts): `Snap` (set by every Kenshi window template) snaps an edge to the viewport's within 10 px (`|left| <= 10`, `|right - width| < 10`, likewise top / bottom) while dragging,
-  without clamping; Meitou then keeps the window fully on screen. `Movable` false (`Kenshi_MessageBox`, `Kenshi_AdvancedOptionsWindow`) stops the drag; `MinSize` / `MaxSize` (`Kenshi_OpenSaveFileDialog` 200 200) bound the
+  without clamping; Meitou lets a dragged window leave the screen but keeps its top edge and 48 px of it in view (`KeepVisible`), and places others fully on screen. `Movable` false (`Kenshi_MessageBox`, `Kenshi_AdvancedOptionsWindow`) stops the drag; `MinSize` / `MaxSize` (`Kenshi_OpenSaveFileDialog` 200 200) bound the
   size a resize gives. **Observed**: no Kenshi window template has a child with the user strings `Action` or `Scale` (MyGUI's resize / move markers), so the original has no user resizing; the generic grips (`Scale`
   = left, top, width, height multipliers of the pointer's travel, or `Action` Move / Left / Right / Top / Bottom) are supported for mods. On a viewport change a moved window keeps its distance to the edges its alignment
   names (Right / Bottom / centre; Left / Top by default; Stretch keeps both) and a pixel-positioned Stretch root grows by the change; an unmoved window stays centred. This is Meitou's approximation: MyGUI's own

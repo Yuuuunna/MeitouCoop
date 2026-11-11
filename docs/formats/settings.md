@@ -81,7 +81,7 @@ i.e. everything).
 | `grass density` | float; slider 0 … 2 | 1 | Grass Density | Multiplies grass candidates per page (FUN_1406d0340) | Zones loaded afterwards |
 | `foliage range` | float; slider 0.1 … 4 | 1; **≤ 0 → 0.1** | Foliage View Range | Mesh foliage page range multiplier (FUN_1406d3e30); a zone gets foliage only when it is above 0 (FUN_1409f9560), which the clamp always makes true | Zones loaded afterwards |
 | `objects view range` | float; slider 1000 … 8000 | 3000; **< 1000 → 1000** | Objects View Range | Rendering distance of building parts ([zones.md](zones.md#placement-files-and-assembly); FUN_140558b40, FUN_14055f6e0) | Objects created afterwards |
-| `npc range` | float; slider 1000 … 8000 | 3250; **< 1000 → 3000** | NPC View Range | Character relevance radius ([game-loop.md](../game/game-loop.md)) | Yes: the character draw distance (`GameplaySettings.NpcRange`, from the eye; the in-view flag and the race `+0x78` factor are not modelled) |
+| `npc range` | float; slider 1000 … 8000 | 3250; **< 1000 → 3000** | NPC View Range | Character relevance radius ([game-loop.md](../game/game-loop.md)) | Yes: the character draw distance (`GameplaySettings.NpcRange`, from the eye; the in-view flag and the race `+0x78` factor are not modelled). The start value; the Graphics > Characters slider `Character draw distance` (the game's range, steps of 50, saved in `meitou.user.json`) overrides it, also for the simulation's on-screen test |
 | `feature range` | int, stored as float; slider 0 … 8 | 2; **clamped 0 … 6** | Terrain Feature Range | Square of ±N zones (64 × 64 zone grid) around the camera's zone that map features load for (FUN_140a098e0) | No |
 | `distant town range` | int, stored as float; slider 0 … 8 | 6; **clamped 0 … 10** | Distant Towns Range | Square of ±N zones around the camera's zone that distant towns show for (FUN_140a0b340) | No |
 | `generate distant towns` | bool | 0 | Generate Distant Towns | Build distant meshes for towns without a baked one ([zones.md](zones.md#placement-files-and-assembly); FUN_1400d8350) | Towns loaded afterwards |
@@ -115,6 +115,8 @@ i.e. everything).
 | `censorship` | bool | 0 | Language censorship | Filters swearing in dialogue (FUN_14067e8b0) |
 | `language` | string, locale code | see text | none in options | The locale folder `locale/<code>/` used for translations; empty falls back to `steam_language`, unknown is `en_GB` ([localisation](localisation.md)). Meitou reads it; the launcher's Language setting writes this line, nothing else of the file ([launcher](../launcher.md)) |
 | `steam_language` | string, Steam language name | see text | none | The Steam language the `language` was last chosen from; decides when `language` is empty (**Verified**, FUN_140175a90) |
+
+Meitou adds an **Interface scale** slider (Interface page, 50 … 200 %, default 100 %; `UserConfig.InterfaceScale` in `meitou.user.json`, no `settings.cfg` key; the game has none). The UI scale is height / 1080 × it: fonts, template pixel sizes, every skin piece (their offsets and tile sizes are fixed pixels in the files; Meitou scales them in both modes) and Meitou's own panels follow it, and a window as large as its layout says (the window host's roots, the save/load window) grows by the setting. Panels placed by screen fractions inside a full-screen layout do not grow, so above 100 % their text can outgrow them.
 
 ### Audio
 

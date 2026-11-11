@@ -4,6 +4,8 @@ using Meitou.Data.Save;
 using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Locks;
 using Meitou.Simulation.Production;
@@ -18,12 +20,12 @@ public partial class ProductionTests
     static (PopulationData Data, TownBuilding House) LateMachineData()
     {
         var db = Database(); var definitions = new FcsFile();
-        var player = Rec("204-gamedata.base", FcsRecordType.FACTION, "Nameless");
-        var owner = Rec("owner", FcsRecordType.FACTION, "Owner");
-        var town = Rec("town", FcsRecordType.TOWN, "Town");
+        var player = Rec("204-gamedata.base", FcsRecordType.Faction, "Nameless");
+        var owner = Rec("owner", FcsRecordType.Faction, "Owner");
+        var town = Rec("town", FcsRecordType.Town, "Town");
         town.Ints["type"] = 2; town.References["faction"] = [new("owner", 0, 0, 0)];
-        var function = Rec("house-function", FcsRecordType.BUILDING_FUNCTIONALITY, "House"); function.Ints["function"] = 19;
-        var building = Rec("house-machine", FcsRecordType.BUILDING, "House machine");
+        var function = Rec("house-function", FcsRecordType.BuildingFunctionality, "House"); function.Ints["function"] = 19;
+        var building = Rec("house-machine", FcsRecordType.Building, "House machine");
         building.Ints["build materials"] = 32; building.Bools["has inventory"] = true;
         building.Ints["storage size width"] = building.Ints["storage size height"] = 8;
         building.References["functionality"] = [new("house-function", 0, 0, 0)];
@@ -52,13 +54,13 @@ public partial class ProductionTests
         world.Players.SetMembership(player.Id, remote, FactionPermission.All);
         var builder = SaveCapture.PrepareBase(data);
         var zone = new SaveZone(house.Zone, new SaveFile()); builder.Game.Zones.Add(house.Zone, zone);
-        var list = new FcsRecord { Id = 1, StringId = WorldLevelData.BuildingListId, RecordType = FcsRecordType.INSTANCE_COLLECTION };
-        var state = new FcsRecord { Id = 2, StringId = "arbitrary-house-state", RecordType = FcsRecordType.GAMESTATE_BUILDING };
+        var list = new FcsRecord { Id = 1, StringId = WorldLevelData.BuildingListId, RecordType = FcsRecordType.InstanceCollection };
+        var state = new FcsRecord { Id = 2, StringId = "arbitrary-house-state", RecordType = FcsRecordType.GamestateBuilding };
         state.Strings["owner faction ID"] = data.Factions[remote].Id;
         state.Bools[FixtureRegistry.PurchasedKey] = true;
         state.Bools["meitou town construction"] = true;
         state.Bools["is complete"] = false; state.Bools["destroyed"] = false; state.Floats["construction progress"] = 7;
-        new Hand((int)FcsRecordType.BUILDING, zone.ContainerId, 11111, 1, 1).Write(state, "handle");
+        new Hand((int)FcsRecordType.Building, zone.ContainerId, 11111, 1, 1).Write(state, "handle");
         var instance = new FcsInstance { Id = house.InstanceId, Target = house.BuildingId, Position = house.Position, Rotation = Quaternion.Identity };
         instance.States.Add(state.StringId); list.Instances.Add(instance); zone.File.Records.AddRange([list, state]); zone.File.SlotLists.Add([1]);
         world.Fixtures.Saved = HeldSave.BuildingStates(builder.Game);

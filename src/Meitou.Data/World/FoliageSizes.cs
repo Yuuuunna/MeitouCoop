@@ -1,28 +1,41 @@
 namespace Meitou.Data.World;
 
-/// <summary>How big a foliage mesh is, for the Meitou <c>range</c> switch (docs/render-foliage.md; not a game concept).</summary>
+/// <summary>
+/// How big a foliage mesh is, for the Meitou <c>range</c> switch (docs/render-foliage.md; not a game concept).
+/// </summary>
 public enum FoliageSizeClass
 {
-    /// <summary>Litter and small plants: skeleton parts, small boulders, junk pieces, skulls, cacti, small leaves.</summary>
+    /// <summary>
+    /// Litter and small plants: skeleton parts, small boulders, junk pieces, skulls, cacti, small leaves.
+    /// </summary>
     Small,
-    /// <summary>Junk, boulders, bushes, ruin blocks, palms and other plants up to a few metres.</summary>
+    /// <summary>
+    /// Junk, boulders, bushes, ruin blocks, palms and other plants up to a few metres.
+    /// </summary>
     Medium,
-    /// <summary>Trees, rocks, cliffs, pillars, rock stacks, hoodoos, resource rocks, ruins, wrecks, houses and walls (trees take the normal impostor distance: <see cref="FoliageSizes.LargeBillboard"/>).</summary>
+    /// <summary>
+    /// Trees, rocks, cliffs, pillars, rock stacks, hoodoos, resource rocks, ruins, wrecks, houses and walls (trees take the normal impostor distance:
+    /// <see cref="FoliageSizes.LargeBillboard"/>).
+    /// </summary>
     Large,
 }
 
 /// <summary>
-/// Size classes of foliage meshes from their bounds (docs/formats/foliage.md, "Mesh sizes"): a mesh's size is its bounding radius (half
-/// the diagonal of the box around the mesh and its leaves mesh, at least 1) times the largest scale its record allows. The thresholds
-/// follow from the first class ranges (<see cref="ThresholdSmallRange"/> and the others, 800 / 2500 / 5000): the largest small mesh at the end of the small range looks as big as the
-/// largest medium one at the end of the medium range (40 / 800 = 125 / 2500), and the smallest large mesh ends at twice that.
+/// Size classes of foliage meshes from their bounds (docs/formats/foliage.md, "Mesh sizes"): a mesh's size is its bounding radius (half the diagonal
+/// of the box around the mesh and its leaves mesh, at least 1) times the largest scale its record allows. The thresholds follow from the first class
+/// ranges (<see cref="ThresholdSmallRange"/> and the others, 800 / 2500 / 5000): the largest small mesh at the end of the small range looks as big as
+/// the largest medium one at the end of the medium range (40 / 800 = 125 / 2500), and the smallest large mesh ends at twice that.
 /// </summary>
 public static class FoliageSizes
 {
-    /// <summary>Sizes from this up are medium, and from <see cref="LargeFrom"/> up large (units, radius × largest scale).</summary>
+    /// <summary>
+    /// Sizes from this up are medium, and from <see cref="LargeFrom"/> up large (units, radius × largest scale).
+    /// </summary>
     public const float MediumFrom = 40, LargeFrom = 125;
 
-    /// <summary>The ranges the thresholds were chosen from (the first Meitou defaults), 800 / 2500 / 5000.</summary>
+    /// <summary>
+    /// The ranges the thresholds were chosen from (the first Meitou defaults), 800 / 2500 / 5000.
+    /// </summary>
     public const float ThresholdSmallRange = 800, ThresholdMediumRange = 2500, ThresholdLargeRange = 5000;
 
     /// <summary>
@@ -32,17 +45,27 @@ public static class FoliageSizes
     /// </summary>
     public const float DefaultSmallRange = 3500, DefaultMediumRange = 12000, DefaultLargeRange = 50000;
 
-    /// <summary>A mesh's size: its bounding radius (unscaled) times the larger of its record's two scale limits (some records have them swapped).</summary>
+    /// <summary>
+    /// A mesh's size: its bounding radius (unscaled) times the larger of its record's two scale limits (some records have them swapped).
+    /// </summary>
     public static float Size(float boundsRadius, FoliageMesh mesh) => boundsRadius * Math.Max(mesh.MinScale, mesh.MaxScale);
 
-    public static FoliageSizeClass Classify(float size) => size >= LargeFrom ? FoliageSizeClass.Large : size >= MediumFrom ? FoliageSizeClass.Medium : FoliageSizeClass.Small;
+    /// <summary>
+    /// The size class of a mesh of <paramref name="size"/> (<see cref="Size"/>).
+    /// </summary>
+    public static FoliageSizeClass Classify(float size) => size >= LargeFrom ? FoliageSizeClass.Large
+        : size >= MediumFrom ? FoliageSizeClass.Medium
+        : FoliageSizeClass.Small;
 
-    /// <summary>Vegetation at least this big (sizes of the giant trees and swamp canopies, 1339 to 3169) keeps the large impostor distance: it is a landmark.</summary>
+    /// <summary>
+    /// Vegetation at least this big (sizes of the giant trees and swamp canopies, 1339 to 3169) keeps the large impostor distance: it is a landmark.
+    /// </summary>
     public const float GiantFrom = 1000;
 
     /// <summary>
-    /// Whether a mesh file is in the game's own vegetation folders, <c>Assets/Plants</c> (trees, ferns, palms, grass clumps) or <c>foliage/Trees</c>; rocks are in
-    /// <c>Assets/Rocks</c>, ruins and wrecks in <c>Assets/Things</c>, houses and walls in <c>Assets/Buildings</c> (docs/formats/foliage.md, "Mesh sizes").
+    /// Whether a mesh file is in the game's own vegetation folders, <c>Assets/Plants</c> (trees, ferns, palms, grass clumps) or <c>foliage/Trees</c>;
+    /// rocks are in <c>Assets/Rocks</c>, ruins and wrecks in <c>Assets/Things</c>, houses and walls in <c>Assets/Buildings</c>
+    /// (docs/formats/foliage.md, "Mesh sizes").
     /// </summary>
     public static bool IsVegetation(string meshPath)
     {

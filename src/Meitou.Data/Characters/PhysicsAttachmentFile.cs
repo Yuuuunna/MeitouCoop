@@ -10,17 +10,34 @@ namespace Meitou.Data.Characters;
 /// </summary>
 public sealed class PhysicsAttachmentFile
 {
+    /// <summary>
+    /// The file's version float (the first four bytes); later versions add fields.
+    /// </summary>
     public float Version { get; private init; }
+
+    /// <summary>
+    /// The actors, in file order.
+    /// </summary>
     public List<PhysicsActor> Actors { get; } = [];
-    /// <summary>Attachment points stored outside any actor (version 1.4+), e.g. the preview skeleton mesh.</summary>
+
+    /// <summary>
+    /// Attachment points stored outside any actor (version 1.4+), e.g. the preview skeleton mesh.
+    /// </summary>
     public List<PhysicsAttachmentPoint> LoosePoints { get; } = [];
 
+    /// <summary>
+    /// Reads the file at <paramref name="path"/>.
+    /// </summary>
     public static PhysicsAttachmentFile ReadFile(string path)
     {
         using var stream = File.OpenRead(path);
         return Read(stream);
     }
 
+    /// <summary>
+    /// Reads a physics file from <paramref name="stream"/>; a truncated file throws <see cref="FormatException"/>, one with collision
+    /// shapes <see cref="NotSupportedException"/>.
+    /// </summary>
     public static PhysicsAttachmentFile Read(Stream stream)
     {
         var r = new BinaryReader(stream, Encoding.Latin1, leaveOpen: true);
@@ -46,10 +63,14 @@ public sealed class PhysicsAttachmentFile
         }
     }
 
+    /// <summary>
+    /// Reads one actor: its counts, position, name (1.2+), bone and bone transform (1.4+) and attachment points; its physical properties are skipped.
+    /// </summary>
     static PhysicsActor ReadActor(BinaryReader r, float v)
     {
         int shapes = r.ReadInt32(), points = r.ReadInt32(), extras = r.ReadInt32();
-        if (shapes < 0 || points < 0 || extras < 0 || points > 10_000 || extras > 10_000) throw new FormatException("Bad actor counts.");
+        if (shapes < 0 || points < 0 || extras < 0 || points > 10_000 || extras > 10_000)
+            throw new FormatException("Bad actor counts.");
         r.ReadInt32();
         var position = ReadVector(r);
         r.ReadBytes(4 + 4 + 1 + 4 + 4 + 4 + 32 + 4 + 8 + 12 + 36); // physical properties, not needed here
@@ -72,13 +93,17 @@ public sealed class PhysicsAttachmentFile
             boneRotation = FromColumns(ReadVector(r), ReadVector(r), ReadVector(r));
             r.ReadByte();
         }
-        if (shapes > 0) throw new NotSupportedException($"Actor '{name}' has {shapes} collision shapes (record size unknown).");
+        if (shapes > 0)
+            throw new NotSupportedException($"Actor '{name}' has {shapes} collision shapes (record size unknown).");
         var actor = new PhysicsActor(name, position, bone is { Length: > 0 } ? bone : null, bonePosition, boneRotation);
         for (int i = 0; i < points; i++) actor.Points.Add(ReadPoint(r));
         Skip(r, extras, 0x7c);
         return actor;
     }
 
+    /// <summary>
+    /// Reads one attachment point: rotation columns, position, mesh name and scale.
+    /// </summary>
     static PhysicsAttachmentPoint ReadPoint(BinaryReader r)
     {
         var rotation = FromColumns(ReadVector(r), ReadVector(r), ReadVector(r));
@@ -89,6 +114,9 @@ public sealed class PhysicsAttachmentFile
         return new PhysicsAttachmentPoint(position, rotation, mesh, scale);
     }
 
+    /// <summary>
+    /// Reads a record count (0 to 100 000).
+    /// </summary>
     static int Count(BinaryReader r)
     {
         int n = r.ReadInt32();
@@ -96,11 +124,17 @@ public sealed class PhysicsAttachmentFile
         return n;
     }
 
+    /// <summary>
+    /// Skips <paramref name="count"/> records of <paramref name="size"/> bytes.
+    /// </summary>
     static void Skip(BinaryReader r, int count, int size)
     {
         if (count > 0) r.ReadBytes(checked(count * size));
     }
 
+    /// <summary>
+    /// Reads a length-prefixed Latin-1 string, cut at its first NUL.
+    /// </summary>
     static string ReadString(BinaryReader r)
     {
         int length = r.ReadInt32();
@@ -111,9 +145,14 @@ public sealed class PhysicsAttachmentFile
         return Encoding.Latin1.GetString(bytes, 0, nul < 0 ? bytes.Length : nul);
     }
 
+    /// <summary>
+    /// Reads three floats as a vector.
+    /// </summary>
     static Vector3 ReadVector(BinaryReader r) => new(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 
-    /// <summary>Rotation whose matrix has the three vectors as columns (column-vector convention, as Ogre's Matrix3).</summary>
+    /// <summary>
+    /// Rotation whose matrix has the three vectors as columns (column-vector convention, as Ogre's Matrix3).
+    /// </summary>
     public static Quaternion FromColumns(Vector3 x, Vector3 y, Vector3 z)
     {
         // System.Numerics uses row vectors: the rotation matrix there is the transpose, i.e. rows = the columns above.
@@ -122,9 +161,14 @@ public sealed class PhysicsAttachmentFile
     }
 }
 
-/// <summary>An actor of a physics file; for attachment files the name is the attachment slot ("hip", "back").</summary>
+/// <summary>
+/// An actor of a physics file; for attachment files the name is the attachment slot ("hip", "back").
+/// </summary>
 public sealed record PhysicsActor(string Name, Vector3 Position, string? Bone, Vector3 BonePosition, Quaternion BoneRotation)
 {
+    /// <summary>
+    /// The attachment points of the actor, in file order.
+    /// </summary>
     public List<PhysicsAttachmentPoint> Points { get; } = [];
 
     /// <summary>
@@ -138,5 +182,7 @@ public sealed record PhysicsActor(string Name, Vector3 Position, string? Bone, V
     }
 }
 
-/// <summary>A point in model space (binding pose), with the mesh the editor previews there.</summary>
+/// <summary>
+/// A point in model space (binding pose), with the mesh the editor previews there.
+/// </summary>
 public sealed record PhysicsAttachmentPoint(Vector3 Position, Quaternion Rotation, string Mesh, Vector3 Scale);

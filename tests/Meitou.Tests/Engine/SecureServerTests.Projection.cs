@@ -1,8 +1,9 @@
 using System.Numerics;
 using Meitou.Data.Fcs;
 using Meitou.Data.World;
-using Meitou.Engine;
+using Meitou.Game.Host;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Production;
 using Meitou.Tests.Simulation;
@@ -18,9 +19,9 @@ public partial class SecureServerTests
         var token = timeout.Token; var actor = scene.Actors[0]; int owner = scene.Actors[1].Grant.Faction;
         await scene.Loop.InvokeAsync(() =>
         {
-            var function = SyntheticTown.Rec("projection-fn", FcsRecordType.BUILDING_FUNCTIONALITY, "Storage");
+            var function = SyntheticTown.Rec("projection-fn", FcsRecordType.BuildingFunctionality, "Storage");
             function.Ints["function"] = TownBuildings.GeneralStorageFunction;
-            var record = SyntheticTown.Rec("projection-store", FcsRecordType.BUILDING, "Storage");
+            var record = SyntheticTown.Rec("projection-store", FcsRecordType.Building, "Storage");
             record.Bools["has inventory"] = true; record.References["functionality"] = [SyntheticTown.Ref(function.StringId)];
             var file = new FcsFile(); file.Records.AddRange([function, record]); scene.Data.Db.Apply(file, "projection.mod");
             var world = scene.Runtime.World; var production = world.Systems.OfType<ProductionSystem>().Single();

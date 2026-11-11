@@ -2,7 +2,9 @@ using System.Runtime.CompilerServices;
 
 namespace Meitou.Simulation.Editing;
 
-/// <summary>Transient, server-issued permission to finish one dialogue editor. Never restored from a save.</summary>
+/// <summary>
+/// Transient, server-issued permission to finish one dialogue editor. Never restored from a save.
+/// </summary>
 public static class CharacterEditSessions
 {
     internal sealed record Session(Guid Id, PlayerId Player, CharacterId Character, CharacterId Surgeon,
@@ -10,7 +12,7 @@ public static class CharacterEditSessions
     {
         public bool Applied;
     }
-    static readonly ConditionalWeakTable<World, Dictionary<Guid, Session>> sessions = new();
+    static readonly ConditionalWeakTable<World, Dictionary<Guid, Session>> Sessions = new();
 
     public static Guid Open(World world, PlayerId? issuer, CharacterId character, CharacterId surgeon, EditKind kind, bool paid)
     {
@@ -43,20 +45,20 @@ public static class CharacterEditSessions
             || System.Numerics.Vector3.Distance(world.Characters.Next[slot].Position, world.Characters.Next[npc].Position) > CharacterEditing.SurgeonReach)) return Guid.Empty;
         var session = new Session(Guid.NewGuid(), actor, character, surgeon, kind, control, cold.Faction,
             world.Players.Find(actor)?.MembershipRevision(cold.Faction) ?? 0, paid, renameOnly);
-        sessions.GetOrCreateValue(world)[session.Id] = session;
+        Sessions.GetOrCreateValue(world)[session.Id] = session;
         return session.Id;
     }
 
     public static void CloseForPlayer(World world, PlayerId player)
     {
-        var all = sessions.GetOrCreateValue(world);
+        var all = Sessions.GetOrCreateValue(world);
         foreach (var id in all.Where(pair => pair.Value.Player == player).Select(pair => pair.Key).ToArray()) all.Remove(id);
     }
 
     internal static Session? Find(World world, EditCharacter edit)
     {
         var actor = edit.Issuer ?? PlayerId.Local;
-        if (edit.SessionId == Guid.Empty || !sessions.GetOrCreateValue(world).TryGetValue(edit.SessionId, out var session)
+        if (edit.SessionId == Guid.Empty || !Sessions.GetOrCreateValue(world).TryGetValue(edit.SessionId, out var session)
             || session.Player != actor || session.RenameOnly && edit.Appearance is not null || session.Id != edit.SessionId || session.Character != edit.Character || session.Surgeon != edit.Surgeon || session.Kind != edit.Kind) return null;
         if (session.Control is { } grant && (!world.Players.Validate(grant)
             || world.Players.Find(actor)?.MembershipRevision(session.Faction) != session.Membership)) return null;

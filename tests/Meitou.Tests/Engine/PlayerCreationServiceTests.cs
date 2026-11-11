@@ -1,7 +1,9 @@
+using Meitou.Simulation.Player;
 using System.Numerics;
 using Meitou.Data.Gameplay;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Saving;
 using Meitou.Tests.Save;
 using Meitou.Tests.Simulation;

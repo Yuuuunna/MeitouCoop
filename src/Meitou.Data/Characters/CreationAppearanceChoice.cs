@@ -27,13 +27,13 @@ public static class CreationAppearanceEditing
                 choices.Select(r => new CreationEditorOption(r?.StringId, r?.Name ?? "None")).ToArray());
         }).ToArray();
         return new(draft.Race.StringId, draft.Female, !draft.Race.GetBool("single gender"),
-            CharacterDraft.PlayableRaces(db).SelectMany(g => g.Races).Select(r => r.StringId).Prepend(draft.Race.StringId).Distinct(StringComparer.Ordinal).ToArray(), controls, pickers);
+            PlayableRaces.Of(db).SelectMany(g => g.Races).Select(r => r.StringId).Prepend(draft.Race.StringId).Distinct(StringComparer.Ordinal).ToArray(), controls, pickers);
     }
 
     public static FcsRecord Apply(GameDatabase db, string installRoot, FcsRecord original, CreationAppearanceChoice choice, int seed)
     {
         var race = db.Find(choice.Race);
-        if (race is not { Type: FcsRecordType.RACE } || choice.Female && race.GetBool("single gender"))
+        if (race is not { Type: FcsRecordType.Race } || choice.Female && race.GetBool("single gender"))
             throw new InvalidDataException("Invalid creation race/gender.");
         var draft = new CharacterDraft(db, installRoot, original, "");
         draft.SetRace(race, seed); draft.SetFemale(choice.Female, seed);

@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Text.Json;
 using Meitou.Diagnostics;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
 using SimWorld = Meitou.Simulation.World;
 
 namespace Meitou.Tests.Simulation;

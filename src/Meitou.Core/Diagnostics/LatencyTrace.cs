@@ -38,17 +38,17 @@ public interface ILatencyTraceSink
 public static class LatencyTrace
 {
     /// <summary>Optional process sink. Null by default; lifecycle belongs to the host.</summary>
-    static ILatencyTraceSink? sink;
-    public static ILatencyTraceSink? Sink { get => Volatile.Read(ref sink); set => Volatile.Write(ref sink, value); }
+    static ILatencyTraceSink? s_sink;
+    public static ILatencyTraceSink? Sink { get => Volatile.Read(ref s_sink); set => Volatile.Write(ref s_sink, value); }
 
     public static void Emit(ILatencyTraceSink? sink, in LatencyTraceEvent value)
     {
         if (sink is null) return;
         // Diagnostics must not fault authority, transport or presentation, even for a broken custom sink.
         try { sink.Emit(value.Timestamp == 0 ? value with { Timestamp = Stopwatch.GetTimestamp() } : value); }
-        catch { Interlocked.Increment(ref failed); }
+        catch { Interlocked.Increment(ref s_failed); }
     }
 
-    static long failed;
-    public static long FailedEmissions => Interlocked.Read(ref failed);
+    static long s_failed;
+    public static long FailedEmissions => Interlocked.Read(ref s_failed);
 }

@@ -5,6 +5,7 @@ using Meitou.Data.Gameplay;
 using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Items;
@@ -37,10 +38,10 @@ public class WorldBuildingsTests
 
     static GameDatabase Database()
     {
-        var solid = SyntheticTown.Rec("solid", FcsRecordType.BUILDING, "Solid"); solid.Ints["path mode"] = 2; solid.Ints["build materials"] = 1;
-        var threshold = SyntheticTown.Rec("threshold", FcsRecordType.BUILDING, "Threshold"); threshold.Ints["path mode"] = 2; threshold.Floats["build threshold"] = 50;
-        var ignored = SyntheticTown.Rec("ignored", FcsRecordType.BUILDING, "Ignored"); ignored.Ints["path mode"] = 0;
-        var unlock = SyntheticTown.Rec("unlock", FcsRecordType.RESEARCH, "Unlock"); unlock.References["enable buildings"] = [SyntheticTown.Ref("solid")];
+        var solid = SyntheticTown.Rec("solid", FcsRecordType.Building, "Solid"); solid.Ints["path mode"] = 2; solid.Ints["build materials"] = 1;
+        var threshold = SyntheticTown.Rec("threshold", FcsRecordType.Building, "Threshold"); threshold.Ints["path mode"] = 2; threshold.Floats["build threshold"] = 50;
+        var ignored = SyntheticTown.Rec("ignored", FcsRecordType.Building, "Ignored"); ignored.Ints["path mode"] = 0;
+        var unlock = SyntheticTown.Rec("unlock", FcsRecordType.Research, "Unlock"); unlock.References["enable buildings"] = [SyntheticTown.Ref("solid")];
         return SyntheticTown.Database(extra: [solid, threshold, ignored, unlock]);
     }
     static BuildSite Site(string id, string record = "solid", bool complete = false, BuildingPlacement? level = null) => new()

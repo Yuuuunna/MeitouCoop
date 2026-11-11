@@ -1,8 +1,11 @@
 using Meitou.Data.Gameplay;
+using Meitou.Simulation.Movement;
 
 namespace Meitou.Simulation;
 
-/// <summary>Detached raw animation envelopes; no network identity or normalized snapshot weights.</summary>
+/// <summary>
+/// Detached raw animation envelopes; no network identity or normalized snapshot weights.
+/// </summary>
 public sealed record AnimationPlaybackCapture(IReadOnlyList<AnimationPlaybackCaptureLayer> Layers);
 public readonly record struct AnimationPlaybackCaptureLayer(string Name, int Definition, float Length,
     float Time, float Rate, bool Loop, float End, float Weight, float Target, float BlendSeconds,
@@ -25,7 +28,9 @@ public static class AnimationPlaybackExport
                 MathF.Max(.000001f, MathF.Max(l.Length, l.Time)), l.Time, 0, false, l.Time,
                 l.Weight, l.Weight, 0, AnimationArea.Overlay, true, false, true)).ToArray());
 
-    /// <summary>Owner-thread capture after a committed tick. The caller supplies only authorized IDs.</summary>
+    /// <summary>
+    /// Owner-thread capture after a committed tick. The caller supplies only authorized IDs.
+    /// </summary>
     public static IReadOnlyDictionary<CharacterId, AnimationPlaybackCapture> Capture(World world, IEnumerable<CharacterId> authorized)
     {
         var system = world.Systems.OfType<AnimationSystem>().FirstOrDefault();

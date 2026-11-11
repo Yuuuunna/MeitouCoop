@@ -3,6 +3,8 @@ using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Save;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Player;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Saving;
 
@@ -48,7 +50,7 @@ public partial class SaveWorldTests
         var position = g.World.Characters.Current[leader.Slot].Position;
         cold.Name = "Stored role"; cold.Stats![StatsEnumerated.Strength] = 53; cold.Medical!.Blood = 42;
         cold.Inventory = new Inventory(); var item = g.Data.Items.Create("70-t", 3)!; item.Charges = 40; cold.Inventory.Items.Add(item);
-        cold.Jobs.Add(Meitou.Simulation.Production.PermaJob.Untargeted(TaskType.JOB_MEDIC)); cold.Orders = CharacterOrders.Hold | CharacterOrders.Jobs;
+        cold.Jobs.Add(Meitou.Simulation.Production.PermaJob.Untargeted(TaskType.JobMedic)); cold.Orders = CharacterOrders.Hold | CharacterOrders.Jobs;
         SquadManagement.NewSquad(g.World, g.Data.Db, position, "Empty", g.Data.PlayerFaction);
         var save = SaveCapture.Capture(g.World, g.Data, new SaveClock(1, 12, 0)); var metadata = PlayerRegistrySave.Capture(g.World, g.Data);
         using var restored = new Meitou.Simulation.World(new WorldSettings { PublishSnapshots = false }, g.World.Walkability, [new PlayerSystem(g.Data)]);
@@ -73,7 +75,7 @@ public partial class SaveWorldTests
         Assert.Equal(position, restored.Characters.Current[current.Slot].Position); Assert.Equal(53, actual.Stats!.Strength);
         Assert.Equal(42, actual.Medical!.Blood); Assert.Equal("Stored role", actual.Name);
         Assert.Equal(40, Assert.Single(actual.Inventory!.Items).Charges); Assert.Equal(3, actual.Inventory.Items[0].Quantity);
-        Assert.Contains(actual.Jobs, j => j.Type == TaskType.JOB_MEDIC); Assert.Equal(cold.Orders, actual.Orders);
+        Assert.Contains(actual.Jobs, j => j.Type == TaskType.JobMedic); Assert.Equal(cold.Orders, actual.Orders);
         Assert.True(restored.Players.Validate(grant)); Assert.True(restored.Authority.BeginSynchronization(connection));
         Assert.True(restored.StoredPlayerRoles.Restore(grant.Entity, _ => true)); Assert.Equal(5, restored.Characters.Count);
         restored.Characters.Remove(current);

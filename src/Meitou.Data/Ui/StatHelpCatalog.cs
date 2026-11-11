@@ -2,27 +2,53 @@ using Meitou.Data.Gameplay.Bodies;
 
 namespace Meitou.Data.Ui;
 
-/// <summary>Stat help read from the user's English gettext template, never embedded game text; shown in the active language when its catalog translates the paragraph.</summary>
+/// <summary>
+/// Stat help read from the user's English gettext template, never embedded game text; shown in the active language when its catalog translates the
+/// paragraph.
+/// </summary>
 public sealed class StatHelpCatalog
 {
+    /// <summary>
+    /// A stat paragraph of the template: the <c>statswindow.cpp</c> lines that reference it, its text in the active language and the length of its
+    /// English msgid.
+    /// </summary>
     sealed record Entry(int[] Lines, string Text, int EnglishLength);
-    readonly List<Entry> entries = [];
+    /// <summary>
+    /// Every template entry referenced from <c>kenshi/statswindow.cpp</c>, in template order.
+    /// </summary>
+    readonly List<Entry> _entries = [];
+    /// <summary>
+    /// The help of one stat: its description, the lines naming what it affects and how it trains, and its physical effect ("" when none).
+    /// </summary>
     public sealed record Help(string Description, IReadOnlyList<string> Affected, IReadOnlyList<string> Training, string PhysicalEffect);
 
-    public string TextAt(int line) => entries.Where(e => e.Lines.Contains(line)).MaxBy(e => e.EnglishLength)?.Text ?? "";
+    /// <summary>
+    /// The text referenced from source line <paramref name="line"/>, the longest English msgid when several share it; "" when none.
+    /// </summary>
+    public string TextAt(int line) => _entries.Where(e => e.Lines.Contains(line)).MaxBy(e => e.EnglishLength)?.Text ?? "";
 
+    /// <summary>
+    /// <see cref="From"/> the gettext template at <paramref name="path"/>.
+    /// </summary>
     public static StatHelpCatalog Read(string? path) => From(PotTemplate.Read(path));
 
+    /// <summary>
+    /// The catalog of the template's entries referenced from <c>kenshi/statswindow.cpp</c>.
+    /// </summary>
     public static StatHelpCatalog From(IEnumerable<PotEntry> template)
     {
         var result = new StatHelpCatalog();
-        // The structure (which paragraph answers which stat) comes from the English template; the text shown is its translation when the language has one.
+        // The structure (which paragraph answers which stat) comes from the English template; the text shown is its translation when the language
+        // has one.
         foreach (var entry in template)
             if (entry.References.Where(r => r.File == "kenshi/statswindow.cpp").Select(r => r.Line).Distinct().ToArray() is { Length: > 0 } lines)
-                result.entries.Add(new(lines, Meitou.Localisation.Loc.Tr(entry.Id), entry.Id.Length));
+                result._entries.Add(new(lines, Loc.Tr(entry.Id), entry.Id.Length));
         return result;
     }
 
+    /// <summary>
+    /// The help of <paramref name="stat"/>, from the source lines of its paragraphs in the 1.0.68 template; empty texts for a stat without help.
+    /// </summary>
     public Help For(StatsEnumerated stat)
     {
         // Source references in the installed 1.0.68 main.pot identify stat paragraphs and help groups.
@@ -64,7 +90,7 @@ public sealed class StatHelpCatalog
             StatsEnumerated.Polearms => (955, 681, 684, 688, 0),
             _ => (0, 0, 0, 0, 0),
         };
-        string[] Between(int from, int to) => entries.SelectMany(e => e.Lines.Where(l => l > from && l < to).Select(l => (Line: l, e.Text)))
+        string[] Between(int from, int to) => _entries.SelectMany(e => e.Lines.Where(l => l > from && l < to).Select(l => (Line: l, e.Text)))
             .OrderBy(e => e.Line).Select(e => e.Text).Distinct().ToArray();
         return new(TextAt(description), Between(affected, training), Between(training, end + 1), TextAt(physical));
     }

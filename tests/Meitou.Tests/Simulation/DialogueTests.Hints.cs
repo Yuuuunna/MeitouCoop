@@ -1,6 +1,8 @@
 using System.Numerics;
 using Meitou.Data.Fcs;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Dialogue;
 using static Meitou.Tests.Gameplay.EconomyTests;
 
@@ -12,12 +14,12 @@ public partial class DialogueTests
     public void RevocationStopsPendingPrivateBubbleLinesBeforeExpansionAndLogging()
     {
         var data = PopulationData.Create(Db([
-            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
-            Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
-            Rec("npc-d", FcsRecordType.CHARACTER, r => r.Name = "Speaker"),
-            Rec("mono-d", FcsRecordType.DIALOGUE, r => { r.Bools["monologue"] = true; r.References["lines"] = [Ref("first-l")]; }),
-            Rec("first-l", FcsRecordType.DIALOGUE_LINE, r => { r.Strings["text0"] = "First line."; r.References["lines"] = [Ref("later-l")]; }),
-            Rec("later-l", FcsRecordType.DIALOGUE_LINE, r => r.Strings["text0"] = "Private future line."),
+            Rec("204-gamedata.base", FcsRecordType.Faction, r => r.Name = "Nameless"),
+            Rec("f-d", FcsRecordType.Faction, r => r.Name = "Villagers"),
+            Rec("npc-d", FcsRecordType.Character, r => r.Name = "Speaker"),
+            Rec("mono-d", FcsRecordType.Dialogue, r => { r.Bools["monologue"] = true; r.References["lines"] = [Ref("first-l")]; }),
+            Rec("first-l", FcsRecordType.DialogueLine, r => { r.Strings["text0"] = "First line."; r.References["lines"] = [Ref("later-l")]; }),
+            Rec("later-l", FcsRecordType.DialogueLine, r => r.Strings["text0"] = "Private future line."),
         ]), []);
         using var v = new MultiplayerVillage(data);
         v.World.Commands.Enqueue(new DialogueEvent(v.NpcA, v.First, 3, "mono-d") { Tick = 0 });
@@ -48,17 +50,17 @@ public partial class DialogueTests
     public void FollowupInterruptBelongsToItsPlayerEvenWhenAnotherMemberSharesTheFaction()
     {
         var data = PopulationData.Create(Db([
-            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
-            Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
-            Rec("npc-d", FcsRecordType.CHARACTER, r => r.References["dialogue"] = [Ref("intro-d")]),
-            Rec("intro-d", FcsRecordType.DIALOGUE, r => r.References["lines"] = [Ref("intro-l")]),
-            Rec("intro-l", FcsRecordType.DIALOGUE_LINE, r =>
+            Rec("204-gamedata.base", FcsRecordType.Faction, r => r.Name = "Nameless"),
+            Rec("f-d", FcsRecordType.Faction, r => r.Name = "Villagers"),
+            Rec("npc-d", FcsRecordType.Character, r => r.References["dialogue"] = [Ref("intro-d")]),
+            Rec("intro-d", FcsRecordType.Dialogue, r => r.References["lines"] = [Ref("intro-l")]),
+            Rec("intro-l", FcsRecordType.DialogueLine, r =>
             {
                 r.Strings["text0"] = "Come back later.";
                 r.References["locks"] = [Ref("intro-d")]; r.References["interrupt"] = [Ref("follow-d")];
             }),
-            Rec("follow-d", FcsRecordType.DIALOGUE, r => r.References["lines"] = [Ref("follow-l")]),
-            Rec("follow-l", FcsRecordType.DIALOGUE_LINE, r => r.Strings["text0"] = "Your promised follow-up."),
+            Rec("follow-d", FcsRecordType.Dialogue, r => r.References["lines"] = [Ref("follow-l")]),
+            Rec("follow-l", FcsRecordType.DialogueLine, r => r.Strings["text0"] = "Your promised follow-up."),
         ]), []);
         using var v = new MultiplayerVillage(data, sharedFaction: true);
         v.Send(v.A.Id, new TalkOrder(v.First, v.NpcA) { Tick = 0 }); v.World.RunTicks(2);
@@ -138,11 +140,11 @@ public partial class DialogueTests
         Assert.False(Meitou.Runtime.HeadlessWorld.ConfigureGameplay(disabled, new GameplayRules()).Dialogue!.AmbientEvents);
 
         var data = PopulationData.Create(Db([
-            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
-            Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
-            Rec("npc-d", FcsRecordType.CHARACTER, r => r.Name = "Speaker"),
-            Rec("self-d", FcsRecordType.DIALOGUE, r => { r.Bools["monologue"] = true; r.References["lines"] = [Ref("self-l")]; }),
-            Rec("self-l", FcsRecordType.DIALOGUE_LINE, r => r.Strings["text0"] = "Still breathing."),
+            Rec("204-gamedata.base", FcsRecordType.Faction, r => r.Name = "Nameless"),
+            Rec("f-d", FcsRecordType.Faction, r => r.Name = "Villagers"),
+            Rec("npc-d", FcsRecordType.Character, r => r.Name = "Speaker"),
+            Rec("self-d", FcsRecordType.Dialogue, r => { r.Bools["monologue"] = true; r.References["lines"] = [Ref("self-l")]; }),
+            Rec("self-l", FcsRecordType.DialogueLine, r => r.Strings["text0"] = "Still breathing."),
         ]), []);
         using var v = new MultiplayerVillage(data);
         v.World.Commands.Enqueue(new DialogueEvent(v.First, CharacterId.None, 3, "self-d") { Tick = 0 });

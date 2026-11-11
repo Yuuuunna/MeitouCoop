@@ -1,6 +1,7 @@
 using System.Numerics;
 using Meitou.Data.Fcs;
 using Meitou.Simulation;
+using Meitou.Simulation.Player;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Production;
 using SimWorld = Meitou.Simulation.World;
@@ -21,8 +22,8 @@ public class InventoryActorTests
 
         public Scene(params FcsRecord[] extra)
         {
-            var tech = SyntheticTown.Rec("tech", FcsRecordType.RESEARCH, "Private research");
-            var map = SyntheticTown.Rec("map", FcsRecordType.MAP_ITEM, "Town map");
+            var tech = SyntheticTown.Rec("tech", FcsRecordType.Research, "Private research");
+            var map = SyntheticTown.Rec("map", FcsRecordType.MapItem, "Town map");
             map.References["towns"] = [SyntheticTown.Ref("t1-t")];
             var data = TradeTests.Data([tech, map, .. extra]);
             int other = data.RegisterFaction("remote", "Remote", data.PlayerFaction);
@@ -63,7 +64,7 @@ public class InventoryActorTests
     {
         using var s = new Scene();
         int faction = s.A.State.Faction;
-        var cash = new ItemInstance { Record = "cats-t", Type = FcsRecordType.ITEM, ItemFunction = PlayerSystem.MoneyFunction, Quantity = 20, StackLimit = 100 };
+        var cash = new ItemInstance { Record = "cats-t", Type = FcsRecordType.Item, ItemFunction = PlayerSystem.MoneyFunction, Quantity = 20, StackLimit = 100 };
         Assert.True(s.FirstBag.Add(cash));
         s.A.State.Money = 10; s.B.State.Money = 100;
         var token = s.Token(s.FirstBag, cash);
@@ -94,8 +95,8 @@ public class InventoryActorTests
     public void BlueprintAndMapAffectOnlyTheirReaderAndFaction()
     {
         using var s = new Scene();
-        var blueprint = new ItemInstance { Record = "blueprint-look", Type = FcsRecordType.BLUEPRINT, CompanyId = "tech" };
-        var map = new ItemInstance { Record = "map", Type = FcsRecordType.MAP_ITEM };
+        var blueprint = new ItemInstance { Record = "blueprint-look", Type = FcsRecordType.Blueprint, CompanyId = "tech" };
+        var map = new ItemInstance { Record = "map", Type = FcsRecordType.MapItem };
         Assert.True(s.FirstBag.Add(blueprint)); Assert.True(s.FirstBag.Add(map));
         s.Send(s.A.Id, new QuickMoveItem(s.First, s.Token(s.FirstBag, blueprint), false, false)
             { Tick = 0, InventoryRevision = s.World.InventoryRevision(s.FirstBag) });
@@ -146,7 +147,7 @@ public class InventoryActorTests
     {
         using var s = new Scene();
         s.ControlBoth();
-        var item = new ItemInstance { Record = "food", Type = FcsRecordType.ITEM, Quantity = 5, StackLimit = 10, Charges = 30, MaxCharges = 100 };
+        var item = new ItemInstance { Record = "food", Type = FcsRecordType.Item, Quantity = 5, StackLimit = 10, Charges = 30, MaxCharges = 100 };
         s.FirstBag.Items.Add(item);
         var stale = s.Transfer(s.First, s.Second, item, 2);
         s.SecondBag.Items.Add(new ItemInstance { Record = "arrived", X = 5 });
@@ -193,8 +194,8 @@ public class InventoryActorTests
         using var s = new Scene();
         var cold = s.World.Characters.Cold(s.First.Slot)!;
         cold.Race = new Meitou.Data.Gameplay.Bodies.RaceData { StringId = "no-hats", NoHats = true };
-        var hat = new ItemInstance { Record = "hat", Type = FcsRecordType.ARMOUR, EquipmentSection = "head" };
-        var shackles = new ItemInstance { Record = "shackles", Type = FcsRecordType.ARMOUR, EquipmentSection = "boots", Section = "boots",
+        var hat = new ItemInstance { Record = "hat", Type = FcsRecordType.Armour, EquipmentSection = "head" };
+        var shackles = new ItemInstance { Record = "shackles", Type = FcsRecordType.Armour, EquipmentSection = "boots", Section = "boots",
             Lock = new Meitou.Simulation.Locks.LockState { Locked = true, Level = 10 } };
         s.FirstBag.Items.AddRange([hat, shackles]);
         s.Send(s.A.Id, s.Transfer(s.First, s.First, hat, section: "head"));
@@ -207,13 +208,13 @@ public class InventoryActorTests
     [Fact]
     public void ProstheticDragUpdatesTheBodyOnlyWhenTheInventoryCommitSucceeds()
     {
-        var record = SyntheticTown.Rec("left-arm", FcsRecordType.LIMB_REPLACEMENT, "Left arm");
+        var record = SyntheticTown.Rec("left-arm", FcsRecordType.LimbReplacement, "Left arm");
         record.Ints["slot"] = 50;
         using var s = new Scene(record);
         var body = s.World.Characters.Cold(s.First.Slot)!.Medical!;
         var part = body.LimbPart(0)!;
         part.Limb = Meitou.Simulation.Bodies.LimbState.Stump;
-        var arm = new ItemInstance { Record = "left-arm", Type = FcsRecordType.LIMB_REPLACEMENT, LimbDamage = 12, LimbWear = 7, LimbStun = 3 };
+        var arm = new ItemInstance { Record = "left-arm", Type = FcsRecordType.LimbReplacement, LimbDamage = 12, LimbWear = 7, LimbStun = 3 };
         s.FirstBag.Items.Add(arm);
         s.Send(s.A.Id, s.Transfer(s.First, s.First, arm, section: "right_arm_replace"));
         s.World.ApplyPausedInterfaceCommands();
@@ -238,13 +239,13 @@ public class InventoryActorTests
     {
         using var s = new Scene();
         var contents = new Inventory();
-        var bag = new ItemInstance { Record = "bag", Type = FcsRecordType.CONTAINER, Section = "backpack_attach", Contents = contents };
+        var bag = new ItemInstance { Record = "bag", Type = FcsRecordType.Container, Section = "backpack_attach", Contents = contents };
         s.FirstBag.Items.Add(bag);
         s.Send(s.A.Id, s.Transfer(s.First, s.First, bag, section: "backpack_content"));
         s.World.ApplyPausedInterfaceCommands();
         Assert.Same(bag, Assert.Single(s.FirstBag.Items)); Assert.Empty(contents.Items);
-        var source = new ItemInstance { Record = "ore", Type = FcsRecordType.ITEM, Quantity = 3, StackLimit = 5 };
-        var target = new ItemInstance { Record = "ore", Type = FcsRecordType.ITEM, Quantity = 4, StackLimit = 5, X = 2 };
+        var source = new ItemInstance { Record = "ore", Type = FcsRecordType.Item, Quantity = 3, StackLimit = 5 };
+        var target = new ItemInstance { Record = "ore", Type = FcsRecordType.Item, Quantity = 4, StackLimit = 5, X = 2 };
         s.FirstBag.Items.AddRange([source, target]);
         s.Send(s.A.Id, s.Transfer(s.First, s.First, source, 2, x: 2));
         s.World.ApplyPausedInterfaceCommands();

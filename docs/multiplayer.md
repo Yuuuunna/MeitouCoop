@@ -108,6 +108,10 @@ a newly assigned town. `WorldContent` supplies `IConstructionPlacement` through 
 attributed placement without a validator is rejected. Preview and authority share `PlacementCheck`.
 Authority uses live sites/roles, complete CPU footprints, resource readings and owned-parent floor surfaces;
 missing declared collision cannot count as empty space. Parent references are canonical world keys.
+
+**Observed** (`PlacementCheck.SlopeBlock`): exterior placement retains the positive `max slope` limit when no `affects footprint` node
+has readable bounds, even without `match slope`; missing bounds cannot establish the ghost's vertical tolerances.
+
 Transforms, world bounds, floors 0..3 and the existing preview's 1000-unit height adjustment are bounded.
 Requests contain at most 2048 plans, checked sequentially against earlier committed sites. Current policy
 requires a controlled role within 5000 units or the faction's outpost radius, and ready navigation at the

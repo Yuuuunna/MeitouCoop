@@ -93,12 +93,13 @@ binary in `package-release.ps1` is the real fix (not set up).
 `release.yml` and `nightly.yml` run `tools/scripts/package-release.ps1 -Rid <rid>` on one runner per RID (win-x64 on Windows, linux-x64 on Ubuntu,
 both osx RIDs on macOS) and attaches all four zips to the one `v<version>` release. Each zip has a single top folder
 `Meitou-<version>-<rid>/` with the game (named by `Meitou.Game`'s `AssemblyName`), `meitou-viewer` and the self-contained .NET runtime. Unix zips are made with
-`zip(1)` (execute bits kept), macOS binaries and dylibs are ad-hoc signed, runtime debug symbols (`*.dbg`, ~250 MB) are dropped.
+`zip(1)` (execute bits kept), macOS binaries (and Apple Silicon dylibs; Intel ones stay as shipped, as re-signing corrupts the unpadded shaderc and spirv-cross) are
+ad-hoc signed, runtime debug symbols (`*.dbg`, ~250 MB) are dropped.
 
 Native dependencies off Windows:
 - Bundled from NuGet runtimes (**Verified** in the linux-x64 publish output): `libopenal.so`/`.dylib` (OpenAL Soft 1.23.1),
   `libglfw.so.3`/`.3.dylib` (GLFW 3.4), `libshaderc_shared`.
-- Only in the win-x64 zip: DLSS/Streamline 2.14.16 (`sl.*.dll`, `nvngx_dlss.dll`, `NvLowLatencyVk.dll`) and FSR (`amd_fidelityfx_vk.dll`),
+- Only in the win-x64 zip: DLSS/Streamline 2.14.16 (`sl.*.dll`, `nvngx_dlss.dll`, `nvngx_dlssg.dll`, `NvLowLatencyVk.dll`) and FSR (`amd_fidelityfx_vk.dll`),
   copied from the vendor SDK zips by `package-release.ps1`; both load via `NativeLibrary.TryLoad` and report a reason when missing. `FsrUpscaler` also loads the Vulkan loader by name (`vulkan-1.dll`, `libvulkan.1.dylib` on macOS).
 - Only in the linux-x64 zip: the DLSS model `libnvidia-ngx-dlss.so.310.9.16` (NVIDIA DLSS SDK 310.9.16, `lib/Linux_x86_64/rel`) and NGX's
   client library `libmeitou_ngx.so` (the SDK's static `libnvsdk_ngx.a`, linked by `tools/scripts/build-ngx-shim.sh`), with NVIDIA's licence,
@@ -152,7 +153,7 @@ folder containing `data/gamedata.base`. DepotDownloader is not bundled or automa
 
 ## Steam overlay and play time
 
-- In a Debug launcher run, Play uses `src/Meitou.Game/bin/Debug/net10.0/MeitouClient.exe` when available, so source changes are tested instead of an older downloaded release; Release builds continue using the selected installed version. Debug runs redirect the child's stdout/stderr into the launcher's console and debugger output.
+- In a Debug launcher run, Play uses `src/Meitou.Game/bin/Debug/net11.0/MeitouClient.exe` when available, so source changes are tested instead of an older downloaded release; Release builds continue using the selected installed version. Debug runs redirect the child's stdout/stderr into the launcher's console and debugger output.
 - Settings → **Launch as Kenshi on Steam** (Windows, `LaunchAsSteamKenshi`, on by default; also asked in the first-start dialog) gates this. Off, Play sets no app ID, removes inherited `SteamAppId`/`SteamGameId` and a leftover `steam_appid.txt` holding `233860`, so the game skips Steamworks (no overlay or play time).
 - On, on Windows Kenshi installs that include `steam_api64.dll`, Play writes `steam_appid.txt` (`233860`) in the working directory and beside the Meitou executable and sets `SteamAppId`/`SteamGameId` for the game, then removes the files when Meitou exits (or on the next Play, if the launcher closed first). If either place already holds another ID, it writes nothing and sets no variables. The game (not for `--screenshot` or a start listing) loads the install's Steamworks DLL and calls `SteamAPI_InitFlat` when exported, else `SteamAPI_Init`, before creating its graphics device, and `SteamAPI_Shutdown` on exit; Meitou ships no Steamworks binaries. Other platforms and installs without the DLL skip it.
 - **Unknown** (from the [Steamworks API](https://partner.steamgames.com/doc/sdk/api) and [overlay](https://partner.steamgames.com/doc/features/overlay) docs, not yet checked against a Steam run): a direct launch with `steam_appid.txt` counts as Kenshi play time, needs a Kenshi licence and a running Steam client, and gets the overlay on Vulkan, whose FPS counter is under Steam Settings → In Game.
@@ -178,7 +179,7 @@ setting reaches the launcher with its release; the launcher knows none of them. 
 - Each schema section is a tab: Display (with `tickAhead`, the world tick alongside drawing), then the game's Graphics sub-pages (Lighting, Sky & weather, Colour, World, Characters)
   as `SettingsMenu.Section` / `ToggleSection` place them, switches first. Interior lamps is not listed: it changes the stealth sight, so it
   is on the game's Advanced page only.
-- A section's `groups` (null in older schemas: flat rows) are the menu's features (`SettingsMenu.FeatureGroups`): one row headed by
+- A section's `groups` (null in older schemas: flat rows) are the menu's features (`FeatureGrouping.FeatureGroups`): one row headed by
   a setting (`header`) or a `title` and `description`, with an arrow folding its `members` under it (closed until opened; open ones stay
   open while the launcher runs), named without the feature's name they repeat, as in the game.
 - The Look row is the game's look bar: Faithful | Meitou, the preset (`looks.presets`, then the player's files), the changes from it
@@ -190,7 +191,7 @@ setting reaches the launcher with its release; the launcher knows none of them. 
   `values`). A look is a set of `graphics` values, as the game's menu applies it: `looks.faithful` (every Faithful / Meitou effect
   switch off but the performance ones, the look sliders at the game's value) or `looks.meitou` with the preset's own values over them (the quality tier's
   switches are left to the tier). Choosing one writes them, so the rows show it at once and the game counts no change from it; at Low
-  the game still holds the tier's look switches off at start unless kept on (`SettingsMenu.ApplySavedPreset`). No `faithfulLook`
+  the game still holds the tier's look switches off at start unless kept on (`QualityTiers.ApplySavedPreset`). No `faithfulLook`
   reads Faithful when every switch Faithful turns off and Meitou turns on is saved off, as the game does (unsaved, not written back). A look slider's Default writes the look's value.
 - `presets` (null in older schemas: no row) is the Quality preset row over the top-level `graphicsPreset`. The game saves the preset its
   settings sit at (Custom when none) and at start applies a saved one they do not sit at (not under `--low-end`, `--benchmark-baseline`, `--meitou` or `--faithful`), so a preset chosen in
@@ -207,7 +208,8 @@ setting reaches the launcher with its release; the launcher knows none of them. 
   A failed detection is tried again at the next start.
 - Each setting has one control: a switch a Faithful (0) / Meitou (1) drop-down, a slider with `labels` a drop-down of them, a slider with `modes`
   (named values; render scale's Ultra performance 0.33 to DLAA 1.00) a drop-down of them and Custom with the slider under it, locked to the
-  mode's value but under Custom (the game's Display page alike; a value none of them reads Custom), any other slider a slider with a typed value; unsaved, a row shows the game's start value (`shown`). A look setting that differs from the look's
+  mode's value but under Custom (the game's Display page alike; a value none of them reads Custom), any other slider a slider with a typed value; unsaved, a row shows the game's start value (`shown`). A setting with `shownWhen` (`key`, `value`)
+  is shown only while that setting is at that value (the DLSS preset while anti-aliasing is DLSS; the game's Display page alike). A look setting that differs from the look's
   value has its name in brass and a Reset link that writes it, and so does its feature's header (for all of them, as in the game); quality and display settings are never marked (the Quality row reads Custom),
   as in the game's menu. Reset graphics, in a footer
   under the scrolling rows, removes `graphics`, `graphicsPreset`, `faithfulLook` and `lookPreset`. A top-level Default writes the schema's `default`.
@@ -239,10 +241,6 @@ interpolated string, which no translation could match.
 - A value of the wrong type is dropped by its JSON path and takes its default; the rest stay. Unparsable JSON gives all defaults.
   Either way the file is first copied to `meitou.user.<yyyyMMdd-HHmmss>.bak.json`.
 
-## Play reports
-
-"Report to the roadmap" sends a play report to the reports service: [play-reports](play-reports.md).
-
 ## Mod list
 
 `ModList` (Meitou.Core) holds the discovery and `mods.cfg` rules shared with `LoadOrder`
@@ -250,23 +248,24 @@ interpolated string, which no translation could match.
 
 - Shown as the original launcher shows it: enabled mods in `mods.cfg` order first, then the rest after their header dependencies.
   Mods in a dependency cycle are kept at the end, where the original drops them. Mods not in `__mods.list` are new and start enabled.
-- Saving (Save, Play) writes `mods.cfg` (enabled `<name>.mod`, list order, CRLF) and `__mods.list` (every listed name, plus old
-  names not on disk). These are the files the original game reads, so the mod list applies to it too.
-- Discovery and the header reads run off the UI thread while the window opens; until they finish (or when they fail) Save, Play
-  and the preset buttons refuse, so an unloaded list never overwrites `mods.cfg`.
+- Every change to the list (a tick, a drag, a preset, Arrange, From save) and Play write `mods.cfg` (enabled `<name>.mod`, list
+  order, CRLF) and `__mods.list` (every listed name, plus old names not on disk). These are the files the original game reads, so the mod list applies to it too.
+- Discovery and the header reads run off the UI thread while the window opens; until they finish (or when they fail) Play and the
+  preset buttons refuse, and nothing is saved, so an unloaded list never overwrites `mods.cfg`.
 - A preset is a named, ordered list of names with enabled flags. Applying one reorders the list. Mods the preset doesn't name go
-  to the end, disabled, and mods it names that aren't on disk are reported. Applying doesn't save.
+  to the end, disabled, and mods it names that aren't on disk are reported. Applying saves.
 - From save lists the save folders (with `quick.save`) of Meitou's save root, the install's `save` and the per-user Kenshi save folder,
   newest first and labelled by root, and applies the chosen save's CAMERA `mods` list ([save](formats/save.md#camera-type-56-id-1051-the-world-record))
   as an all-enabled preset, without `base` and the core mods. `SaveModList` (Meitou.Core) reads it; **Verified** equal to
   `SaveCamera.Mods` on 22 of the owner's saves (0 to 180 mods).
 - A mod folder with `RE_Kenshi.json` is marked as a plugin mod whose DLLs Meitou ignores ([RE_Kenshi](formats/rekenshi.md)), unless it
   also has `meitou.json`: then only the code-mod note shows.
-- A mod folder with `meitou.json` is marked as a code mod ([modding](modding.md)). Play asks about the enabled code mods not decided
-  yet; the Code mods button beside Save mod list asks about every code mod in the list, so a choice can be changed or revoked. The
-  question has a box per mod (ticked: allowed now) and three answers: Data only all, Trust all, Apply (the ticks). Escape decides
-  nothing. Allowed names go to `trustedCodeMods` in `meitou.user.json` (kept by game releases since 2026-10-20, which keep unknown
-  keys); data-only names go to the launcher's `DataOnlyCodeMods`, so Play does not ask about them again.
+- A mod folder with `meitou.json` is marked as a code mod ([modding](modding.md)); enabled, its code runs, with no question
+  ([Trust](modding.md#trust)).
+- A code mod's row lists what it requires, loads after and conflicts with, and each refusal the game would make without its code
+  (preliminary: DLLs and initialization are checked only at start); **Arrange** proposes an
+  order meeting the enabled mods' code and `.mod` header dependencies, applied only when accepted and saved only by Save or Play; a
+  contradiction moves nothing and is shown ([dependencies](modding-dependencies.md#launcher)).
 
 ## Continue
 
@@ -295,7 +294,7 @@ News videos are hosted on the site, not in git: `tools/scripts/upload-media.sh` 
 support; the site is not behind Cloudflare. **Observed** 2026-10-25: GitHub plays no repository `.webm` in the browser (its file page
 offers only the raw file, which raw.githubusercontent.com sends as an attachment), so it cannot host the full video either.
 
-A `.webm` in place of an image is a video (`VideoView`, the post's full width): its first MB is fetched with a Range request (`NewsFeed.HeadAsync`, cached as `.head`) for the poster, the whole file (cached like an image) only on the first Play, the button dimmed meanwhile; `WebmFile` reads the
+A `.webm` in place of an image is a video (`VideoView`, the post's full width): its first MB is fetched with a Range request (`NewsMediaCache.HeadAsync`, cached as `.head`) for the poster, the whole file (cached like an image) only on the first Play, the button dimmed meanwhile; `WebmFile` reads the
 first video and audio track (Matroska elements, Block lacing), and the first decoded picture is the poster under a play button.
 A click plays it; then a click or Space pauses and resumes, the bottom bar (shown while paused or hovered) skips 10 s back or forward (or Left/Right) and seeks by click or drag. Every play, resume or seek is a new session from that time: decode from the keyframe before it without drawing, show it, then sound from its first Vorbis packet at or after it (Vorbis can start at any packet). Sessions of all videos run one after another, so two never hold OpenAL's current context. One plays at a time; it pauses when the Home page is left, returns to the poster at the end or when the post is rebuilt.
 Pictures: VP8/VP9 through libvpx (`VpxDecoder`, BSD), 8-bit only, converted BT.601 studio range to BGRA. Sound: Vorbis only

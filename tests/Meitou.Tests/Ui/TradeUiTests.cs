@@ -3,23 +3,28 @@ using Meitou.Content;
 using Meitou.Data;
 using Meitou.Data.Ogre;
 using Meitou.Data.Ui;
-using Meitou.Engine;
-using Meitou.Engine.Input;
+using Meitou.Game.Host;
+using Meitou.Game.Host.Input;
 using Meitou.Game;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Items;
+using Meitou.Simulation.Player;
 using Meitou.Simulation.Trading;
 using Meitou.Tests.Simulation;
 
 namespace Meitou.Tests.Ui;
 
-/// <summary>The Faithful trade (docs/simulation.md "Trade"): the trader window opens with the trade, drags between it and the pockets buy and sell at the next tick, closing it ends the trade.</summary>
+/// <summary>
+/// The Faithful trade (docs/simulation.md "Trade"): the trader window opens with the trade, drags between it and the pockets buy and sell at the next
+/// tick, closing it ends the trade.
+/// </summary>
 public class TradeUiTests
 {
-    sealed class StockSource : ITickSystem, Meitou.Simulation.Trading.ITradeSource
+    sealed class StockSource : ITickSystem, ITradeSource
     {
-        public Meitou.Simulation.Trading.TradeView? Trade { get; set; }
-        public Meitou.Simulation.Trading.TradeView? PublishTrade() => Trade;
+        public TradeView? Trade { get; set; }
+        public TradeView? PublishTrade() => Trade;
     }
     static Vector2 Centre(UiControl c) => new(c.Bounds.X + c.Bounds.Width / 2, c.Bounds.Y + c.Bounds.Height / 2);
 
@@ -34,13 +39,16 @@ public class TradeUiTests
     public void Scrolled_stock_keeps_its_cells_and_buys_the_visible_item()
     {
         const UiMode mode = UiMode.Faithful;
-        var install = GameInstall.Locate(); Assert.SkipWhen(install is null, "No Kenshi install configured");
+        var install = GameInstall.Locate();
+        Assert.SkipWhen(install is null, "No Kenshi install configured");
         var stock = new StockSource();
         using var session = new WorldSession(Vector3.Zero, (-100, -100, 100, 100), (_, _) => 0, systems: [new PlayerSystem(), stock]);
         var hero = session.World.Characters.Spawn(new(), new() { Name = "Hero", IsPlayer = true, Inventory = new Inventory() }, 0);
-        session.World.Player.Faction = 0; session.World.Player.Selection.Add(hero);
+        session.World.Player.Faction = 0;
+        session.World.Player.Selection.Add(hero);
         stock.Trade = new(hero, new CharacterId(1, 0), "Armour King", 1000, 1000, 20, 100,
-            [new(0, "top", "Top", "main", 0, 0, 1, 1, 1, 1, 1, 1, false), new(1, "bottom", "Bottom", "main", 0, 99, 1, 1, 1, 1, 1, 1, false)], [], false);
+            [new(0, "top", "Top", "main", 0, 0, 1, 1, 1, 1, 1, 1, false), new(1, "bottom", "Bottom", "main", 0, 99, 1, 1, 1, 1, 1, 1, false)],
+            [], false);
         session.World.RunTick();
         var resources = OgreScriptResources.ForInstall(install!, LoadOrder.FromInstall(install!));
         var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position) { Width = 1600, Height = 900 };
@@ -64,7 +72,10 @@ public class TradeUiTests
             Assert.Equal(ItemHolder.Character, Assert.Single(sent.OfType<PlaceHeld>()).Into.Holder);
             Assert.DoesNotContain(ui.UiFrame, c => c.Name == "trade-item-1" && c.Caption.Contains("c.", StringComparison.Ordinal));
         }
-        finally { ui.DisposeUi(); }
+        finally
+        {
+            ui.DisposeUi();
+        }
     }
 
     [Theory, Slow]
@@ -72,9 +83,11 @@ public class TradeUiTests
     [InlineData(UiMode.Meitou)]
     public void Dragging_between_the_trader_window_and_the_pockets_buys_and_sells(UiMode mode)
     {
-        var install = GameInstall.Locate(); Assert.SkipWhen(install is null, "No Kenshi install configured");
+        var install = GameInstall.Locate();
+        Assert.SkipWhen(install is null, "No Kenshi install configured");
         var data = TradeTests.Data(TradeTests.Shops);
-        using var session = new WorldSession(Vector3.Zero, (-100, -100, 100, 100), (_, _) => 150, systems: [new PlayerSystem(), new TradeSystem(data)]);
+        using var session = new WorldSession(Vector3.Zero, (-100, -100, 100, 100), (_, _) => 150,
+                systems: [new PlayerSystem(), new TradeSystem(data)]);
         var world = session.World;
         CharacterId Spawn(string name, float x, int faction, bool player, string template)
         {
@@ -129,6 +142,9 @@ public class TradeUiTests
             world.RunTicks(2);
             Assert.Null(world.Snapshot.Trade);
         }
-        finally { ui.DisposeUi(); }
+        finally
+        {
+            ui.DisposeUi();
+        }
     }
 }

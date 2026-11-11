@@ -1,19 +1,22 @@
+using Meitou.Simulation.Ai;
 using Meitou.Simulation.Items;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
 
 namespace Meitou.Simulation.Carrying;
 
 public sealed partial class CarrySystem
 {
-    readonly Dictionary<CharacterId, (SimCommand Command, CharacterId Target, CharacterTask Task)> issuedTasks = [];
-    readonly Dictionary<PlayerId, CharacterControl> lootGrants = [];
+    readonly Dictionary<CharacterId, (SimCommand Command, CharacterId Target, CharacterTask Task)> _issuedTasks = [];
+    readonly Dictionary<PlayerId, CharacterControl> _lootGrants = [];
 
     void Remember(World world, int slot, SimCommand command)
     {
         if (command.Issuer is null) return;
         var table = world.Characters;
-        issuedTasks[table.IdOf(slot)] = (command, table.Cold(slot)!.CarryTarget, (CharacterTask)table.Next[slot].Task);
+        _issuedTasks[table.IdOf(slot)] = (command, table.Cold(slot)!.CarryTarget, (CharacterTask)table.Next[slot].Task);
         if (command is OpenLootOrder && world.Players.ControlOf(table.IdOf(slot)) is { } grant)
-            lootGrants[command.Issuer.Value] = grant;
+            _lootGrants[command.Issuer.Value] = grant;
     }
 
     void RememberJob(World world, int slot)
@@ -25,16 +28,16 @@ public sealed partial class CarrySystem
 
     void ValidateTasks(World world)
     {
-        foreach (var (actor, issued) in issuedTasks.ToArray())
+        foreach (var (actor, issued) in _issuedTasks.ToArray())
         {
-            if (!world.Characters.TryResolveNext(actor, out int slot)) { issuedTasks.Remove(actor); continue; }
+            if (!world.Characters.TryResolveNext(actor, out int slot)) { _issuedTasks.Remove(actor); continue; }
             var cold = world.Characters.Cold(slot)!;
             if ((CharacterTask)world.Characters.Next[slot].Task != issued.Task || cold.CarryTarget != issued.Target)
-            { issuedTasks.Remove(actor); continue; }
+            { _issuedTasks.Remove(actor); continue; }
             if (world.MayOrder(issued.Command, actor)) continue;
             // End the instruction, preserving any body already attached to the carrier.
             End(world, slot);
-            issuedTasks.Remove(actor);
+            _issuedTasks.Remove(actor);
         }
     }
 
@@ -44,7 +47,7 @@ public sealed partial class CarrySystem
         var player = world.PlayerOf(actor);
         if (player is null || player.LootWalker != actor || player.OpeningLoot != world.Characters.Cold(slot)!.CarryTarget) return null;
         if (world.Players.RequiresExplicitControl && (world.Players.ControlOf(actor) is not { } current
-            || !lootGrants.TryGetValue(current.Player, out var original) || original != current || !world.Players.Validate(original))) return null;
+            || !_lootGrants.TryGetValue(current.Player, out var original) || original != current || !world.Players.Validate(original))) return null;
         return player;
     }
 
@@ -93,14 +96,14 @@ public sealed partial class CarrySystem
             state.LootOpener = state.LootWalker = CharacterId.None;
             state.LootSessionId++;
         }
-        lootGrants.Remove(player);
-        seenLoot.Remove(player);
-        foreach (var (actor, issued) in issuedTasks.ToArray())
+        _lootGrants.Remove(player);
+        _seenLoot.Remove(player);
+        foreach (var (actor, issued) in _issuedTasks.ToArray())
         {
             if (issued.Command.Issuer != player) continue;
             if (world.Characters.TryResolveNext(actor, out int slot) && world.Characters.Cold(slot)!.CarryTarget == issued.Target
                 && (CharacterTask)world.Characters.Next[slot].Task == issued.Task) End(world, slot);
-            issuedTasks.Remove(actor);
+            _issuedTasks.Remove(actor);
         }
     }
 

@@ -1,14 +1,18 @@
+using Meitou.Simulation.Aggro;
+using Meitou.Simulation.Ai;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
 namespace Meitou.Simulation.FirstAid;
 
 public sealed partial class FirstAidSystem
 {
-    readonly Dictionary<CharacterId, CharacterControl?> activityAuthority = [];
+    readonly Dictionary<CharacterId, CharacterControl?> _activityAuthority = [];
 
     void RememberActivity(World world, int slot) =>
-        activityAuthority[world.Characters.IdOf(slot)] = world.Players.ControlOf(world.Characters.IdOf(slot));
+        _activityAuthority[world.Characters.IdOf(slot)] = world.Players.ControlOf(world.Characters.IdOf(slot));
 
     bool ActivityAllowed(World world, int slot) =>
-        !world.Players.RequiresExplicitControl || world.Characters.Cold(slot) is { IsPlayer: false } && (!activityAuthority.TryGetValue(world.Characters.IdOf(slot), out var prior) || prior is null)
+        !world.Players.RequiresExplicitControl || world.Characters.Cold(slot) is { IsPlayer: false } && (!_activityAuthority.TryGetValue(world.Characters.IdOf(slot), out var prior) || prior is null)
         || world.Players.ControlOf(world.Characters.IdOf(slot)) is { } grant && world.Players.Validate(grant);
 
     bool JobsAllowed(World world, int slot) => ActivityAllowed(world, slot);
@@ -16,16 +20,16 @@ public sealed partial class FirstAidSystem
     void PruneAuthority(World world)
     {
         var table = world.Characters;
-        foreach (var id in activityAuthority.Keys.ToArray())
+        foreach (var id in _activityAuthority.Keys.ToArray())
         {
-            if (!table.TryResolveNext(id, out int slot)) { activityAuthority.Remove(id); continue; }
+            if (!table.TryResolveNext(id, out int slot)) { _activityAuthority.Remove(id); continue; }
             var task = (CharacterTask)table.Next[slot].Task;
-            if (task is not (CharacterTask.Treat or CharacterTask.Rest)) { activityAuthority.Remove(id); continue; }
+            if (task is not (CharacterTask.Treat or CharacterTask.Rest)) { _activityAuthority.Remove(id); continue; }
             if (ActivityAllowed(world, slot)) continue;
             TaskStart.End(world, slot, TaskEnd.Stopped);
             MovementSystem.Stop(table, slot);
             table.Next[slot].Task = (byte)CharacterTask.Idle;
-            activityAuthority.Remove(id);
+            _activityAuthority.Remove(id);
         }
     }
 

@@ -7,27 +7,29 @@ public sealed record PlayerMessageBatch(ulong HighWater, IReadOnlyList<PlayerMes
     public static PlayerMessageBatch Empty { get; } = new(0, []);
 }
 
-/// <summary>Recipient-owned, non-destructive UI history. Not gameplay state or a checkpoint record.</summary>
+/// <summary>
+/// Recipient-owned, non-destructive UI history. Not gameplay state or a checkpoint record.
+/// </summary>
 public sealed class PlayerMessageHistory
 {
-    readonly object gate = new();
-    readonly Queue<PlayerMessage> entries = [];
-    ulong sequence;
-    PlayerMessageBatch? captured;
+    readonly object _gate = new();
+    readonly Queue<PlayerMessage> _entries = [];
+    ulong _sequence;
+    PlayerMessageBatch? _captured;
     internal void Add(PlayerMessageKind kind, string owner, string text, bool player = false)
     {
         if (text.Length == 0) return;
         if (owner.Length > 256) owner = owner[..256];
         if (text.Length > 4096) text = text[..4096];
-        lock (gate)
+        lock (_gate)
         {
-            if (entries.Count == 200) entries.Dequeue();
-            entries.Enqueue(new(checked(++sequence), kind, owner, text, player));
-            captured = null;
+            if (_entries.Count == 200) _entries.Dequeue();
+            _entries.Enqueue(new(checked(++_sequence), kind, owner, text, player));
+            _captured = null;
         }
     }
     public PlayerMessageBatch Capture()
     {
-        lock (gate) return captured ??= new(sequence, entries.ToArray());
+        lock (_gate) return _captured ??= new(_sequence, _entries.ToArray());
     }
 }

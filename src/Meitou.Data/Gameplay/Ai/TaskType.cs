@@ -3,300 +3,1173 @@ namespace Meitou.Data.Gameplay.Ai;
 /// <summary>
 /// The game's <c>taskType</c>: the <c>enum</c> field of an AI_TASK record and the number the AI, the Tasker factory and the player's context-menu
 /// verbs key on (docs/game/ai-tasks.md "taskType to Task class", Verified: names from <c>fcs_enums.def</c>, numbers as the record values and the
-/// exe's tables use them). 0 is the enum's first entry, which no record uses and no table names here (<see cref="None"/>); 289 and 290 exist in
-/// the exe's tables without a name (Unknown why).
+/// exe's tables use them). 0 is the enum's first entry, which no record uses and no table names here (<see cref="None"/>); 289 and 290 exist in the
+/// exe's tables without a name (Unknown why).
 /// </summary>
 public enum TaskType
 {
+    /// <summary>
+    /// The enum's first entry (<c>NULL_TASK</c> in fcs_enums.def): no record uses it and the Tasker factory has no case for it.
+    /// </summary>
     None = 0,
-    MOVE_ON_FREE_WILL = 1,
-    BUILD = 2,
-    PICKUP = 3,
-    MELEE_ATTACK = 4,
-    FOCUSED_MELEE_ATTACK = 5,
-    EQUIP_WEAPON = 6,
-    UNEQUIP_WEAPON = 7,
-    FIND_WEAPON = 8,
-    CHOOSE_ENEMY_AND_ATTACK = 9,
-    CHOOSE_ATTACKER_OF_ALLY = 10,
-    ATTACK_CHARACTERS_ATTACKER = 11,
-    PLAYER_TALK_TO = 12,
-    ATTACK_ATTACKERS_OF = 13,
-    IDLE = 14,
-    PROTECT_ALLIES = 15,
-    ATTACK_ENEMIES = 16,
-    PROTECTION = 17,
-    RAID_TOWN = 18,
-    GO_HOMEBUILDING = 19,
-    STAND_AT_SHOPKEEPER_NODE = 20,
-    ATTACK_ENEMIES_AND_NEUTRALS = 21,
-    PATROL = 22,
-    ATTACK_TOWN = 23,
-    WANDERER = 24,
-    FIRST_AID_ORDER = 25,
-    LOOT_TARGET = 26,
-    CROUCH = 27,
-    STAND_UP = 28,
-    MOVE_CUS_ORDERED = 29,
-    HOLD_POSITION = 30,
-    STAY_CLOSE_TO_TARGET = 31,
-    SELF_PRESERVATION = 32,
-    QUELL_AGGRESSION = 33,
-    ATTACK_TROUBLE_MAKERS = 34,
-    RUN_AWAY = 35,
-    PATROL_TOWN = 36,
-    WANDER_TOWN = 37,
-    STAND_AT_GUARD_NODE_HOMEBUILDING = 38,
-    WANDERING_TRADER = 39,
-    GET_NEAR_TO = 40,
-    ATTACK_ENEMIES_OF_MY_SLAVEMASTER = 41,
-    NOT_BE_UNARMED = 42,
-    STAY_IN_HOME = 43,
-    FOLLOW_PLAYER_ORDER = 44,
-    BODYGUARD = 45,
-    CHASE = 46,
-    STAND_AT_GENERAL_NODE = 47,
-    STAND_AT_DEFENSIVE_NODE = 48,
-    STAND_AT_BUILDING_GUARD_NODE = 49,
-    STAND_AT_BUILDING_DEFENSIVE_NODE = 50,
-    STAND_AT_NODE = 51,
-    __aoeu__ = 52,
-    TRAVEL_TO_TARGET_TOWN = 53,
-    REST = 54,
-    RECRUIT_AT_JOBCENTER = 55,
-    SWITCH_FOLLOW_ME_MODE_ON = 56,
-    JOB_REPAIR_ROBOT = 57,
-    JOB_MEDIC = 58,
-    GET_READY_FOR_ACTION = 59,
-    FIRST_AID_ROBOT = 60,
-    UNPROVOKED_FOCUSED_MELEE_ATTACK = 61,
-    STAND_STILL = 62,
-    SQUAD_WAIT_FOR_ME = 63,
-    MAKE_TARGET_STAND_STILL = 64,
-    GET_UP = 65,
-    FORCE_GET_UP = 66,
-    MOVE_ON_FREE_WILL_FAST = 67,
-    LIFT_PERSON = 68,
-    PUT_DOWN_OBJECT = 69,
-    PUT_DOWN_CHARACTER_IN_BED = 70,
-    ADD_MATERIALS_TO_BUILDING = 71,
-    OPEN_DOOR = 72,
-    CLOSE_DOOR = 73,
-    OPEN_DOOR_HERE = 74,
-    CLOSE_DOOR_HERE = 75,
-    PICK_LOCK = 76,
-    LOCK_DOOR = 77,
-    UNLOCK_DOOR = 78,
-    LOCK_DOOR_HERE = 79,
-    UNLOCK_DOOR_HERE = 80,
-    BASH_DOOR = 81,
-    MOVE_TO_BUILDING_DOOR = 82,
-    MOVE_TO_CURRENT_LOCATION_BUILDING_DOOR = 83,
-    OPEN_DOOR_FOR_CURRENT_LOCATION = 84,
-    OPEN_DOOR_FOR_DESTINATION = 85,
-    OPEN_UP_SHOP_DOORS = 86,
-    OPERATE_MACHINERY = 87,
-    DELIVER_RESOURCES = 88,
-    JOB_KEEP_EVERYTHING_RUNNING = 89,
-    UNJAM_ALL_MACHINES = 90,
-    UNJAM_MACHINE = 91,
-    COLLECT_OUTPUT_RESOURCE = 92,
-    FILL_MACHINE = 93,
-    WANT_TO_FILL_MACHINE = 94,
-    REPAIR = 95,
-    DISMANTLE = 96,
-    USE_TRAINING_DUMMY = 97,
-    USE_BED = 98,
-    PUT_SOMEONE_IN_BED = 99,
-    GET_PUT_IN_BED = 100,
-    DEFEAT_SQUAD = 101,
-    SEEK_AND_TALK_AND_SEND_SIGNAL = 102,
-    MAKE_ANNOUNCEMENT = 103,
-    ALWAYS_IMPOSSIBLE_TASK = 104,
-    FIND_AND_RESCUE = 105,
-    FIND_BED_AND_PUT_IN = 106,
-    USE_CAGE = 107,
-    PUT_IN_CAGE = 108,
-    KNOCKOUT_PRISONER = 109,
-    RELEASE_PRISONER = 110,
-    BREAKOUT_PRISONER = 111,
-    FIND_CAGE_AND_PUT_IN = 112,
-    EMPTY_MACHINE_OUTPUTS = 113,
-    GET_RID_OF_RESOURCES_IN_MY_INVENTORY = 114,
-    FIND_SOME_BUILDING_MATERIALS = 115,
-    GET_OUT_OF_BED = 116,
-    FIND_A_SHOP = 117,
-    SHOPPING = 118,
-    BUY_SHIT = 119,
-    MOVE_INSIDE_BUILDING = 120,
-    MOVE_TO_FORTIFICATION_GATE = 121,
-    OPEN_FORTIFICATION_GATE = 122,
-    BASH_GATE = 123,
-    OPERATE_STORAGE = 124,
-    JOB_BUILDER = 125,
-    TALKTO_NEAREST_PLAYER_CHARACTER = 126,
-    RUN_AWAY_HOMETOWN = 127,
-    RETREAT_HOMETOWN = 128,
-    MAKE_ANNOUNCEMENT_FAST = 129,
-    TRAVEL_TO_TARGET_TOWN_FAST = 130,
-    LOOT_FOOD_AND_STUFF = 131,
-    FIND_AND_KIDNAP = 132,
-    GET_OUT_OF_CAGE_LEGIT = 133,
-    KILL_CAGE_OCCUPANT = 134,
-    KILL_A_RANDOM_CAGE_OCCUPANT = 135,
-    FEED_CORPSE_INTO_MACHINE = 136,
-    DEAD_GUYS_GO_IN_THE_POT = 137,
-    FIND_A_DEAD_GUY = 138,
-    EAT_A_RANDOM_CAGE_OCCUPANT = 139,
-    UNLOCK_DOOR_PLAYER_ORDER = 140,
-    FOLLOW_SQUADLEADER = 141,
-    FIND_AND_RESCUE_LEADER = 142,
-    PROTECT_OWN_SQUAD = 143,
-    TERRITORIAL_AGGRESSION_BUT_DONT_LEAVE_HOME = 144,
-    GET_RE_EQUIPPED = 145,
-    USE_TURRET = 146,
-    STUMBLE_TASK_FORCED = 147,
-    FIND_AND_RESCUE_IF_THERES_BEDS = 148,
-    MAN_A_TURRET = 149,
-    PROSPECTING = 150,
-    EMPTYING_MACHINE = 151,
-    OPERATE_AUTOMATIC_MACHINERY = 152,
-    GO_HOME_AND_GO_TO_BED = 153,
-    GO_TO_THE_BAR_AND_DRINK = 154,
-    LOCK_ALL_MY_DOORS = 155,
-    ENTER_BUILDING = 156,
-    STAND_AT_GUARD_NODE_HOMETOWN_OUTSIDE = 157,
-    SHOO_STRANGERS_OUT_OF_MY_BUILDING = 158,
-    SEND_DIALOGUE_SIGNAL = 159,
-    SEND_DIALOGUE_SIGNAL_REPEAT = 160,
-    SEND_DIALOGUE_SIGNAL_WITHOUT_MOVING = 161,
-    LOCK_DOOR_FROM_INSIDE = 162,
-    MOVE_TO_BUILDING_DOOR_INSIDEPOS = 163,
-    FOLLOW_WHILE_TALKING = 164,
-    TOWN_STALKER = 165,
-    CHAIN_TARGET = 166,
-    CAPTURE_NEW_SLAVES = 167,
-    CARRY_WOUNDED_SLAVES = 168,
-    PUT_DOWN_CARRIED_DUDE_IF_THEY_CAN_WALK = 169,
-    LIFT_OBJECT_BUT_HEAL_FIRST = 170,
-    FOLLOW_SLAVEMASTER = 171,
-    SLAVE_GET_IN_MY_MASTERS_CAGE = 172,
-    GATHER_SLAVES_FROM_CAGES = 173,
-    GET_SLAVE = 174,
-    SLEEP_ON_FLOOR = 175,
-    HUNTING_BLOODSMELL = 176,
-    LOOT_THE_DEAD = 177,
-    LOOT_TO_REPLACE_MISSING_WEAPON = 178,
-    HUNT_MY_THIEF = 179,
-    MAN_THE_GATE = 180,
-    STRIP_TARGETS_WEAPONS = 181,
-    PROCESS_AND_STRIP_NEW_SLAVE = 182,
-    SLAVE_WATCHING = 183,
-    PUT_LOOT_IN_STORAGE = 184,
-    CUT_SHACKLES = 185,
-    BRUTE_FORCE_SHACKLES = 186,
-    _SLAVE_OBEDIENCE = 187,
-    WORK_THE_SLAVES = 188,
-    AUTO_LABOURING_MINES = 189,
-    AUTO_LABOURING_MINES_PRETEND = 190,
-    GO_TO_NEAREST_HQ = 191,
-    GO_TO_SOMEWHERE_FOR_DELIVERING_SLAVES = 192,
-    CAPTURE_ESCAPING_SLAVES = 193,
-    GIVE_ALL_MY_SLAVES_TO = 194,
-    LOCK_ALL_THE_CAGES = 195,
-    BEAT_CAGE_OCCUPANT = 196,
-    LOCK_ALL_MY_DOORS_FROM_OUTSIDE = 197,
-    LOCK_DOOR_FROM_OUTSIDE = 198,
-    MOVE_TO_BUILDING_DOOR_OUTSIDEPOS = 199,
-    LEAVE_BUILDING = 200,
-    PICK_LOCK_ON_SHACKLES = 201,
-    TOTAL_ESCAPE = 202,
-    ARREST_TARGET = 203,
-    HUNT_BOUNTIES = 204,
-    ARREST_TARGETS_CARRIED_PERSON = 205,
-    FIND_CAGE_AND_PUT_IN_IF_BOUNTY = 206,
-    GET_OUT_OF_CAGE_ESCAPE = 207,
-    GET_OUT_OF_BED_IF_ITS_EMERGENCY = 208,
-    INVESTIGATE_ALARMS = 209,
-    INVESTIGATE_ALARMS_ALLIES_ONLY = 210,
-    POLICE_FREE_PRISONERS_WHEN_DONE = 211,
-    LOOT_STOLEN_GOODS = 212,
-    LIFT_PERSON_SNATCHING_ALLOWED = 213,
-    RELAX_IN_TOWN_PACKAGE = 214,
-    TRAVEL_TO_TARGET_PACKAGE = 215,
-    RUN_AROUND_TOWN_LOOKING_FOR_PEOPLE = 216,
-    GATHER_SLAVES_FROM_CAGES_IF_ITS_AN_EXPORT_TOWN = 217,
-    GIVE_ALL_MY_SLAVES_TO_IF_ITS_AN_IMPORT_TOWN = 218,
-    TAKE_OFF_MY_SHACKLES = 219,
-    EAT_TARGET_ALIVE = 220,
-    PRETEND_TO_OPERATE_MACHINERY = 221,
-    MAN_A_TURRET_ON_BUILDING = 222,
-    PICKUP_INTRUDERS = 223,
-    TAKE_INTRUDER_OUTSIDE = 224,
-    LIFT_PERSON_PLAYER_ORDER = 225,
-    BASH_DOOR_PLAYER_ORDER = 226,
-    MELEE_ATTACK_ANIMAL = 227,
-    STEALTH_KNOCKOUT = 228,
-    STEALTH_KILL = 229,
-    EAT_A_RANDOM_DEAD_BODY = 230,
-    EAT_CROPS = 231,
-    FIND_CROPS_TO_EAT = 232,
-    EAT_A_RANDOM_KO_BODY = 233,
-    MAN_A_TURRET_PLAYER_JOB = 234,
-    SHOOT_AT_TARGET = 235,
-    WORSHIP_TARGET = 236,
-    FOGMAN_WORSHIP_VICTIM = 237,
-    LOOT_ANIMALS_JOB = 238,
-    GO_HOME_AND_GO_TO_BED_SECURE = 239,
-    LIFT_PERSON_SNATCHING_ALLOWED_IN_TOWN_ONLY = 240,
-    LOOT_RESOURCE_ITEMS_WE_HAVE_STORAGE_FOR = 241,
-    DITCH_ALL_RESOURCES = 242,
-    AQUIRE_FOOD_AT_HOMEBASE = 243,
-    GRAB_ONE_FOOD = 244,
-    GATHER_SLAVES_FROM_CAGES_IF_FEMALE_OR_BEAST = 245,
-    KIDNAP_ORDER = 246,
-    COLLECT_OUTPUT_RESOURCE_BUILD_MATS = 247,
-    DEFEAT_SQUAD_LIMIT_CHASE_RANGE = 248,
-    SPLINT_ORDER = 249,
-    SPLINT_JOB = 250,
-    ESCAPE_KIDNAP = 251,
-    ESCAPE_KIDNAP_STR = 252,
-    FOLLOW_URGENT_ESCAPE = 253,
-    FINAL_KIDNAPPER_CAGE_JOB = 254,
-    SIT_ON_THRONE = 255,
-    GET_OUT_OF_CAGE_OPPORTUNISTIC = 256,
-    GET_OUT_OF_BED_ONCE_HEALED = 257,
-    USE_BED_ORDER = 258,
-    EAT_FOOD_ON_GROUND = 259,
-    NEW_SLAVE_PROCESSING = 260,
-    SLEEP_ON_FLOOR_FAKE_AMBUSH = 261,
-    RANGED_ATTACK = 262,
-    RANGED_ATTACK_FOCUSED = 263,
-    EQUIP_CROSSBOW = 264,
-    UNEQUIP_CROSSBOW = 265,
-    RANGED_ATTACK_FOCUSED_UNPROVOKED = 266,
-    MOVE_IN_BOW_RANGE = 267,
-    STAND_AT_GUARD_NODE_HOMEBUILDING_INDOORS_ONLY = 268,
-    HEAL_MY_LEGS = 269,
-    ASSAULT_FORTIFICATIONS_PREFER_GATES = 270,
-    ASSAULT_FORTIFICATIONS_PREFER_WALLS = 271,
-    SMASH_BUILDING = 272,
-    PICKUP_INTRUDERS_TOWN = 273,
-    TAKE_INTRUDER_OUTSIDE_TOWN = 274,
-    SIT_AROUND = 275,
-    LIBERATE_ALL_THE_PRISONERS = 276,
-    ANIMAL_FETCH_A_LIMB = 277,
-    PLAY_BECAUSE_I_HAVE_A_LIMB_IN_MOUTH = 278,
-    CHASE_ALLY_DOGS_WITH_MOUTH_LIMBS = 279,
-    RUN_AWAY_FORCED = 280,
-    FIND_CAGE_AND_PUT_DEADGUY_IN = 281,
-    EAT_A_RANDOM_CAGE_OCCUPANT_MEASURED_RATE = 282,
-    SHOO_STRANGERS_OUT_OF_MY_BUILDING_IF_PRIVATE = 283,
-    LOOT_CONTAINER = 284,
-    CUT_LOCK = 285,
-    BRUTE_FORCE_LOCK = 286,
-    BASH_DOOR_HERE = 287,
-    PROTECT_ALLIES_STAY_IN_TOWN = 288,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Move</c>; TaskData text "Moving".
+    /// </summary>
+    MoveOnFreeWill = 1,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Build</c>; TaskData text "Building".
+    /// </summary>
+    Build = 2,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Loot_AI</c> / <c>Task_Pickup</c>; TaskData text "Collecting item".
+    /// </summary>
+    Pickup = 3,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MeleeAttack</c>; TaskData text "Attacking".
+    /// </summary>
+    MeleeAttack = 4,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FocusedMeleeAttack</c>; TaskData text "Attacking target".
+    /// </summary>
+    FocusedMeleeAttack = 5,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EquipBestWeapon</c>; TaskData text "Equipping weapon".
+    /// </summary>
+    EquipWeapon = 6,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_SheatheWeapon</c>; TaskData text "Sheathing weapon".
+    /// </summary>
+    UnequipWeapon = 7,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Finding weapon".
+    /// </summary>
+    FindWeapon = 8,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    ChooseEnemyAndAttack = 9,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    ChooseAttackerOfAlly = 10,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    AttackCharactersAttacker = 11,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PlayerTalkto</c>; TaskData text "Talking".
+    /// </summary>
+    PlayerTalkTo = 12,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Attacking attackers of".
+    /// </summary>
+    AttackAttackersOf = 13,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Idleness".
+    /// </summary>
+    Idle = 14,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Protect allies".
+    /// </summary>
+    ProtectAllies = 15,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Attacking enemies".
+    /// </summary>
+    AttackEnemies = 16,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Protection".
+    /// </summary>
+    Protection = 17,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    RaidTown = 18,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Going home".
+    /// </summary>
+    GoHomebuilding = 19,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Shopkeeper".
+    /// </summary>
+    StandAtShopkeeperNode = 20,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Attacking others".
+    /// </summary>
+    AttackEnemiesAndNeutrals = 21,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Patrol</c>; TaskData text "Patrolling".
+    /// </summary>
+    Patrol = 22,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    AttackTown = 23,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Wandering".
+    /// </summary>
+    Wanderer = 24,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FirstAid</c>; TaskData text "First aid".
+    /// </summary>
+    FirstAidOrder = 25,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Loot_Order</c>; TaskData text "Looting".
+    /// </summary>
+    LootTarget = 26,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Crouch</c>; not in the TaskData registry.
+    /// </summary>
+    Crouch = 27,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UnCrouch</c>; TaskData text "Standing".
+    /// </summary>
+    StandUp = 28,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Move</c>; TaskData text "Move order".
+    /// </summary>
+    MoveCusOrdered = 29,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Holding position".
+    /// </summary>
+    HoldPosition = 30,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Follow</c>; TaskData text "Staying close".
+    /// </summary>
+    StayCloseToTarget = 31,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Self preservation".
+    /// </summary>
+    SelfPreservation = 32,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    QuellAggression = 33,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Attacking trouble makers".
+    /// </summary>
+    AttackTroubleMakers = 34,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Runaway</c>; TaskData text "Running away".
+    /// </summary>
+    RunAway = 35,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PatrolTown</c>; TaskData text "Patrolling town".
+    /// </summary>
+    PatrolTown = 36,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Wandering town".
+    /// </summary>
+    WanderTown = 37,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Static guard".
+    /// </summary>
+    StandAtGuardNodeHomebuilding = 38,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Wandering trader".
+    /// </summary>
+    WanderingTrader = 39,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Move</c>; TaskData text "Following".
+    /// </summary>
+    GetNearTo = 40,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Fighting for master".
+    /// </summary>
+    AttackEnemiesOfMySlavemaster = 41,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Getting a weapon".
+    /// </summary>
+    NotBeUnarmed = 42,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Staying home".
+    /// </summary>
+    StayInHome = 43,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Follow</c>; TaskData text "Following".
+    /// </summary>
+    FollowPlayerOrder = 44,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Bodyguard".
+    /// </summary>
+    Bodyguard = 45,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    Chase = 46,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "general node".
+    /// </summary>
+    StandAtGeneralNode = 47,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    StandAtDefensiveNode = 48,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    StandAtBuildingGuardNode = 49,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    StandAtBuildingDefensiveNode = 50,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_StandAtNode</c>; TaskData text "Stand at node".
+    /// </summary>
+    StandAtNode = 51,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetUp</c>; TaskData text "Waking up".
+    /// </summary>
+    Aoeu = 52,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TravelToTargetTown</c>; TaskData text "Travelling".
+    /// </summary>
+    TravelToTargetTown = 53,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    Rest = 54,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Recruiting".
+    /// </summary>
+    RecruitAtJobcenter = 55,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    SwitchFollowMeModeOn = 56,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Robotics".
+    /// </summary>
+    JobRepairRobot = 57,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Medic".
+    /// </summary>
+    JobMedic = 58,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Get ready".
+    /// </summary>
+    GetReadyForAction = 59,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FirstAid</c>; TaskData text "Repairing".
+    /// </summary>
+    FirstAidRobot = 60,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FocusedMeleeAttack</c>; TaskData text "Attacking target unprovoked".
+    /// </summary>
+    UnprovokedFocusedMeleeAttack = 61,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_StandStill</c>; TaskData text "Standing still".
+    /// </summary>
+    StandStill = 62,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    SquadWaitForMe = 63,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MakeTargetStandStill</c>; TaskData text "Stand still dammit!".
+    /// </summary>
+    MakeTargetStandStill = 64,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetUp</c>; TaskData text "Getting up".
+    /// </summary>
+    GetUp = 65,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    ForceGetUp = 66,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Move</c>; TaskData text "Running".
+    /// </summary>
+    MoveOnFreeWillFast = 67,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LiftSomething</c>; TaskData text "Lifting".
+    /// </summary>
+    LiftPerson = 68,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PutDownObject</c>; TaskData text "Putting down".
+    /// </summary>
+    PutDownObject = 69,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    PutDownCharacterInBed = 70,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_AddMaterialsToBuilding</c>; TaskData text "Adding materials".
+    /// </summary>
+    AddMaterialsToBuilding = 71,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_OpenDoor</c>; TaskData text "Opening door".
+    /// </summary>
+    OpenDoor = 72,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_CloseDoor</c>; TaskData text "Closing door".
+    /// </summary>
+    CloseDoor = 73,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_OpenDoor</c>; TaskData text "Opening door here".
+    /// </summary>
+    OpenDoorHere = 74,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_CloseDoor</c>; TaskData text "Closing door here".
+    /// </summary>
+    CloseDoorHere = 75,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PickLock</c>; TaskData text "Lockpicking".
+    /// </summary>
+    PickLock = 76,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LockDoor</c>; TaskData text "Locking door".
+    /// </summary>
+    LockDoor = 77,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UnlockDoor</c>; TaskData text "Unlocking door".
+    /// </summary>
+    UnlockDoor = 78,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LockDoor</c>; TaskData text "Locking door here".
+    /// </summary>
+    LockDoorHere = 79,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UnlockDoor</c>; TaskData text "Unlocking door here".
+    /// </summary>
+    UnlockDoorHere = 80,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BashDoor</c>; TaskData text "Bashing door".
+    /// </summary>
+    BashDoor = 81,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MoveToDoor</c>; TaskData text "Moving to door".
+    /// </summary>
+    MoveToBuildingDoor = 82,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MoveToDoor_CurrentLocation</c>; TaskData text "Moving to current door".
+    /// </summary>
+    MoveToCurrentLocationBuildingDoor = 83,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Open current door".
+    /// </summary>
+    OpenDoorForCurrentLocation = 84,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Open destination door".
+    /// </summary>
+    OpenDoorForDestination = 85,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Opening up".
+    /// </summary>
+    OpenUpShopDoors = 86,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_OperateMachine</c>; TaskData text "Operating machine".
+    /// </summary>
+    OperateMachinery = 87,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Delivering".
+    /// </summary>
+    DeliverResources = 88,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Keeping everything running".
+    /// </summary>
+    JobKeepEverythingRunning = 89,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Unjam all machines".
+    /// </summary>
+    UnjamAllMachines = 90,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Unjamming machine".
+    /// </summary>
+    UnjamMachine = 91,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EmptyMachine</c> / <c>Task_Pickup</c>; TaskData text "Collecting resource".
+    /// </summary>
+    CollectOutputResource = 92,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FillMachine</c>; TaskData text "Filling machine".
+    /// </summary>
+    FillMachine = 93,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Try filling machine".
+    /// </summary>
+    WantToFillMachine = 94,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Build</c>; TaskData text "Repairing".
+    /// </summary>
+    Repair = 95,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Dismantle</c>; TaskData text "Demolishing".
+    /// </summary>
+    Dismantle = 96,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UseTrainingDummy</c>; TaskData text "Training".
+    /// </summary>
+    UseTrainingDummy = 97,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UseBed</c>; TaskData text "Sleeping".
+    /// </summary>
+    UseBed = 98,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PutInSomething</c>; TaskData text "Put in bed".
+    /// </summary>
+    PutSomeoneInBed = 99,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UseBed</c>; TaskData text "Sleeping".
+    /// </summary>
+    GetPutInBed = 100,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Assault".
+    /// </summary>
+    DefeatSquad = 101,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TalktoPlayer</c>; TaskData text "Making announcement".
+    /// </summary>
+    SeekAndTalkAndSendSignal = 102,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MakeAnnouncement</c>; TaskData text "Diplomatting".
+    /// </summary>
+    MakeAnnouncement = 103,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "null".
+    /// </summary>
+    AlwaysImpossibleTask = 104,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find and rescue".
+    /// </summary>
+    FindAndRescue = 105,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find and put in bed".
+    /// </summary>
+    FindBedAndPutIn = 106,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UseCage</c>; TaskData text "Imprisoned".
+    /// </summary>
+    UseCage = 107,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PutInSomething</c>; TaskData text "Put in prison".
+    /// </summary>
+    PutInCage = 108,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    KnockoutPrisoner = 109,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_ReleasePrisoner</c>; TaskData text "Release from prison".
+    /// </summary>
+    ReleasePrisoner = 110,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    BreakoutPrisoner = 111,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find and put in cage".
+    /// </summary>
+    FindCageAndPutIn = 112,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Try emptying machine".
+    /// </summary>
+    EmptyMachineOutputs = 113,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Ditching to make space".
+    /// </summary>
+    GetRidOfResourcesInMyInventory = 114,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Finding building mats".
+    /// </summary>
+    FindSomeBuildingMaterials = 115,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetOutOfBed</c>; TaskData text "Getting out of bed".
+    /// </summary>
+    GetOutOfBed = 116,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    FindAShop = 117,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Shopping".
+    /// </summary>
+    Shopping = 118,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Shopping</c>; TaskData text "Shopping".
+    /// </summary>
+    BuyShit = 119,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    MoveInsideBuilding = 120,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MoveToDoor_Gate_ChooseSide</c>; TaskData text "Moving to gate".
+    /// </summary>
+    MoveToFortificationGate = 121,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Open gate".
+    /// </summary>
+    OpenFortificationGate = 122,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BashDoor</c>; TaskData text "Bashing gate".
+    /// </summary>
+    BashGate = 123,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FillMachine</c>; TaskData text "Hauling to".
+    /// </summary>
+    OperateStorage = 124,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Engineer".
+    /// </summary>
+    JobBuilder = 125,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    TalktoNearestPlayerCharacter = 126,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GoHomeTownFast</c>; TaskData text "Retreating fast".
+    /// </summary>
+    RunAwayHometown = 127,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GoHomeTown</c>; TaskData text "Retreating".
+    /// </summary>
+    RetreatHometown = 128,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MakeAnnouncement</c>; TaskData text "Approaching fast".
+    /// </summary>
+    MakeAnnouncementFast = 129,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TravelToTargetTown</c>; TaskData text "Travelling quickly".
+    /// </summary>
+    TravelToTargetTownFast = 130,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Looting food".
+    /// </summary>
+    LootFoodAndStuff = 131,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find and kidnap".
+    /// </summary>
+    FindAndKidnap = 132,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetOutOfCage</c>; TaskData text "Get out of cage".
+    /// </summary>
+    GetOutOfCageLegit = 133,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_KillPrisoner</c>; TaskData text "Kill prisoner".
+    /// </summary>
+    KillCageOccupant = 134,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Kill random prisoner".
+    /// </summary>
+    KillARandomCageOccupant = 135,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FeedCorpseIntoMachine</c>; TaskData text "Disposing of corpse".
+    /// </summary>
+    FeedCorpseIntoMachine = 136,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Corpse disposal".
+    /// </summary>
+    DeadGuysGoInThePot = 137,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find corpses".
+    /// </summary>
+    FindADeadGuy = 138,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Eat random prisoner".
+    /// </summary>
+    EatARandomCageOccupant = 139,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UnlockDoor</c>; TaskData text "Unlocking door".
+    /// </summary>
+    UnlockDoorPlayerOrder = 140,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FollowLeader</c>; TaskData text "Following leader".
+    /// </summary>
+    FollowSquadleader = 141,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find and rescue leader".
+    /// </summary>
+    FindAndRescueLeader = 142,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Protect close allies".
+    /// </summary>
+    ProtectOwnSquad = 143,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Home territory aggression".
+    /// </summary>
+    TerritorialAggressionButDontLeaveHome = 144,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    GetReEquipped = 145,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_OperateMachine</c> / <c>Task_UseTurret</c>; TaskData text "Turret gunner".
+    /// </summary>
+    UseTurret = 146,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Stumble</c>; TaskData text "Stumbling".
+    /// </summary>
+    StumbleTaskForced = 147,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find and rescue".
+    /// </summary>
+    FindAndRescueIfTheresBeds = 148,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Turret guard".
+    /// </summary>
+    ManATurret = 149,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Prospecting</c>; TaskData text "Prospecting".
+    /// </summary>
+    Prospecting = 150,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    EmptyingMachine = 151,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Operating automatic machine".
+    /// </summary>
+    OperateAutomaticMachinery = 152,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Going to bed".
+    /// </summary>
+    GoHomeAndGoToBed = 153,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    GoToTheBarAndDrink = 154,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Locking up".
+    /// </summary>
+    LockAllMyDoors = 155,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EnterBuilding</c>; TaskData text "Entering building".
+    /// </summary>
+    EnterBuilding = 156,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Static town guard".
+    /// </summary>
+    StandAtGuardNodeHometownOutside = 157,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Shooing".
+    /// </summary>
+    ShooStrangersOutOfMyBuilding = 158,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TalktoPlayer</c>; TaskData text "Talking".
+    /// </summary>
+    SendDialogueSignal = 159,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    SendDialogueSignalRepeat = 160,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TalktoPlayer</c>; TaskData text "Talking".
+    /// </summary>
+    SendDialogueSignalWithoutMoving = 161,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LockDoor</c>; TaskData text "Locking door from inside".
+    /// </summary>
+    LockDoorFromInside = 162,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MoveToDoor_Inside</c>; TaskData text "Moving to door inside".
+    /// </summary>
+    MoveToBuildingDoorInsidepos = 163,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Follow</c> / <c>Task_FollowAndTalk</c>; TaskData text "Following and talking".
+    /// </summary>
+    FollowWhileTalking = 164,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TownStalker</c>; TaskData text "Stalking".
+    /// </summary>
+    TownStalker = 165,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_CuffTarget</c>; TaskData text "Restraining".
+    /// </summary>
+    ChainTarget = 166,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Capturing slave".
+    /// </summary>
+    CaptureNewSlaves = 167,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Carrying slaves".
+    /// </summary>
+    CarryWoundedSlaves = 168,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Putting down".
+    /// </summary>
+    PutDownCarriedDudeIfTheyCanWalk = 169,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LiftSomething</c>; TaskData text "Lifting and healing".
+    /// </summary>
+    LiftObjectButHealFirst = 170,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FollowLeader</c>; TaskData text "Following master".
+    /// </summary>
+    FollowSlavemaster = 171,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Getting in my cage".
+    /// </summary>
+    SlaveGetInMyMastersCage = 172,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Gathering slaves".
+    /// </summary>
+    GatherSlavesFromCages = 173,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetSlave</c>; TaskData text "Ordering slaves".
+    /// </summary>
+    GetSlave = 174,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_SleepOnFloor</c>; TaskData text "Sleeping on ground".
+    /// </summary>
+    SleepOnFloor = 175,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_HuntingSmell</c>; TaskData text "Blood tracking".
+    /// </summary>
+    HuntingBloodsmell = 176,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Looting the dead".
+    /// </summary>
+    LootTheDead = 177,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    LootToReplaceMissingWeapon = 178,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    HuntMyThief = 179,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_ManTheGate</c>; TaskData text "Gate guard".
+    /// </summary>
+    ManTheGate = 180,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_StripWeapons</c>; TaskData text "Stripping weapons".
+    /// </summary>
+    StripTargetsWeapons = 181,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_ProcessNewSlave</c>; TaskData text "Processing slave".
+    /// </summary>
+    ProcessAndStripNewSlave = 182,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Watching slaves".
+    /// </summary>
+    SlaveWatching = 183,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Ditching loot".
+    /// </summary>
+    PutLootInStorage = 184,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_CutShackles</c>; TaskData text "Cutting shackles".
+    /// </summary>
+    CutShackles = 185,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BruteForceShackles</c>; TaskData text "Breaking shackles".
+    /// </summary>
+    BruteForceShackles = 186,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Obedient Slave".
+    /// </summary>
+    SlaveObedience = 187,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Working the slaves".
+    /// </summary>
+    WorkTheSlaves = 188,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Worker".
+    /// </summary>
+    AutoLabouringMines = 189,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Worker".
+    /// </summary>
+    AutoLabouringMinesPretend = 190,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    GoToNearestHq = 191,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Delivering slaves".
+    /// </summary>
+    GoToSomewhereForDeliveringSlaves = 192,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    CaptureEscapingSlaves = 193,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Selling slaves".
+    /// </summary>
+    GiveAllMySlavesTo = 194,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Locking up cages".
+    /// </summary>
+    LockAllTheCages = 195,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_KillPrisoner</c>; TaskData text "Beat prisoner".
+    /// </summary>
+    BeatCageOccupant = 196,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Locking up from outside".
+    /// </summary>
+    LockAllMyDoorsFromOutside = 197,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LockDoor</c>; TaskData text "Locking door from outside".
+    /// </summary>
+    LockDoorFromOutside = 198,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MoveToDoor_Outside</c>; TaskData text "Moving to door outside".
+    /// </summary>
+    MoveToBuildingDoorOutsidepos = 199,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LeaveBuilding</c>; TaskData text "Leaving building".
+    /// </summary>
+    LeaveBuilding = 200,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PickLock_Shackles</c>; TaskData text "Lockpicking Shackles".
+    /// </summary>
+    PickLockOnShackles = 201,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Escaping".
+    /// </summary>
+    TotalEscape = 202,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Arresting".
+    /// </summary>
+    ArrestTarget = 203,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Bounty hunting".
+    /// </summary>
+    HuntBounties = 204,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    ArrestTargetsCarriedPerson = 205,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    FindCageAndPutInIfBounty = 206,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetOutOfCage</c>; TaskData text "Escape cage".
+    /// </summary>
+    GetOutOfCageEscape = 207,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetOutOfBed</c>; TaskData text "Getting out of bed!".
+    /// </summary>
+    GetOutOfBedIfItsEmergency = 208,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_InvestigateAlarms</c>; TaskData text "Investigating".
+    /// </summary>
+    InvestigateAlarms = 209,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_InvestigateAlarms</c>; TaskData text "Investigating".
+    /// </summary>
+    InvestigateAlarmsAlliesOnly = 210,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Freeing prisoner".
+    /// </summary>
+    PoliceFreePrisonersWhenDone = 211,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Confiscating goods".
+    /// </summary>
+    LootStolenGoods = 212,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LiftSomething</c>; TaskData text "Lifting/Snatching".
+    /// </summary>
+    LiftPersonSnatchingAllowed = 213,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Relaxing".
+    /// </summary>
+    RelaxInTownPackage = 214,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TravelToMissionTarget_ArmyFormation</c>; TaskData text "Mission formation".
+    /// </summary>
+    TravelToTargetPackage = 215,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_PatrolTownViolent</c>; TaskData text "Ransacking town".
+    /// </summary>
+    RunAroundTownLookingForPeople = 216,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Gathering slaves for shipping".
+    /// </summary>
+    GatherSlavesFromCagesIfItsAnExportTown = 217,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Selling slaves".
+    /// </summary>
+    GiveAllMySlavesToIfItsAnImportTown = 218,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TakeOffCuffs</c>; TaskData text "Removing Shackles".
+    /// </summary>
+    TakeOffMyShackles = 219,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EatPrisoner</c>; TaskData text "Eat prisoner".
+    /// </summary>
+    EatTargetAlive = 220,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_OperateMachine</c>; TaskData text "Operating machine".
+    /// </summary>
+    PretendToOperateMachinery = 221,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Turret home guard".
+    /// </summary>
+    ManATurretOnBuilding = 222,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Remove Home Intruder".
+    /// </summary>
+    PickupIntruders = 223,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TakeIntruderOutside</c>; TaskData text "Intruder out".
+    /// </summary>
+    TakeIntruderOutside = 224,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LiftSomething</c>; TaskData text "Lifting/Snatching Order".
+    /// </summary>
+    LiftPersonPlayerOrder = 225,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BashDoor</c>; TaskData text "Bashing door".
+    /// </summary>
+    BashDoorPlayerOrder = 226,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MeleeAttack</c>; TaskData text "Attacking".
+    /// </summary>
+    MeleeAttackAnimal = 227,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_StealthKO</c>; TaskData text "Taking out".
+    /// </summary>
+    StealthKnockout = 228,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_StealthKO</c>; not in the TaskData registry.
+    /// </summary>
+    StealthKill = 229,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Eat corpse".
+    /// </summary>
+    EatARandomDeadBody = 230,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EatingCrops</c>; TaskData text "Eating crops".
+    /// </summary>
+    EatCrops = 231,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find crops".
+    /// </summary>
+    FindCropsToEat = 232,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Eat body".
+    /// </summary>
+    EatARandomKoBody = 233,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Turret guard".
+    /// </summary>
+    ManATurretPlayerJob = 234,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_OperateMachine</c> / <c>Task_UseTurret</c>; TaskData text "Turret gunner".
+    /// </summary>
+    ShootAtTarget = 235,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_WorshipTarget</c>; TaskData text "Worshiping".
+    /// </summary>
+    WorshipTarget = 236,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Worshiping".
+    /// </summary>
+    FogmanWorshipVictim = 237,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Foraging animals".
+    /// </summary>
+    LootAnimalsJob = 238,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Going to bed".
+    /// </summary>
+    GoHomeAndGoToBedSecure = 239,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_LiftSomething</c>; TaskData text "Capture Target".
+    /// </summary>
+    LiftPersonSnatchingAllowedInTownOnly = 240,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Loot_ResourcesWeHaveStorageFor</c>; TaskData text "Looting resources".
+    /// </summary>
+    LootResourceItemsWeHaveStorageFor = 241,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Ditching resources".
+    /// </summary>
+    DitchAllResources = 242,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Getting food".
+    /// </summary>
+    AquireFoodAtHomebase = 243,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_grabOneFood</c>; TaskData text "Grabbing food".
+    /// </summary>
+    GrabOneFood = 244,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Gathering unholy slaves".
+    /// </summary>
+    GatherSlavesFromCagesIfFemaleOrBeast = 245,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Kidnapping</c>; TaskData text "Kidnapping".
+    /// </summary>
+    KidnapOrder = 246,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EmptyMachine_BuildMats</c> / <c>Task_Pickup</c>; TaskData text "Collecting resource".
+    /// </summary>
+    CollectOutputResourceBuildMats = 247,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Attacking Squad".
+    /// </summary>
+    DefeatSquadLimitChaseRange = 248,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FirstAidRig</c>; TaskData text "Splinting".
+    /// </summary>
+    SplintOrder = 249,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Splint Rigging".
+    /// </summary>
+    SplintJob = 250,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    EscapeKidnap = 251,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    EscapeKidnapStr = 252,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Follow</c>; TaskData text "Following".
+    /// </summary>
+    FollowUrgentEscape = 253,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Kidnapper".
+    /// </summary>
+    FinalKidnapperCageJob = 254,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Reigning".
+    /// </summary>
+    SitOnThrone = 255,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetOutOfCage</c>; TaskData text "Get out of cage".
+    /// </summary>
+    GetOutOfCageOpportunistic = 256,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_GetOutOfBed</c>; TaskData text "Getting out of bed".
+    /// </summary>
+    GetOutOfBedOnceHealed = 257,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_UseBed</c>; TaskData text "Sleeping".
+    /// </summary>
+    UseBedOrder = 258,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Picking up food".
+    /// </summary>
+    EatFoodOnGround = 259,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Watching for new slaves".
+    /// </summary>
+    NewSlaveProcessing = 260,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_SleepOnFloor</c>; TaskData text "Hiding".
+    /// </summary>
+    SleepOnFloorFakeAmbush = 261,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_RangedAttack</c>; TaskData text "Shooting".
+    /// </summary>
+    RangedAttack = 262,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_RangedAttack</c>; TaskData text "Shooting".
+    /// </summary>
+    RangedAttackFocused = 263,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EquipBestWeapon</c>; TaskData text "Equipping crossbow".
+    /// </summary>
+    EquipCrossbow = 264,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    UnequipCrossbow = 265,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_RangedAttack</c>; TaskData text "Shooting".
+    /// </summary>
+    RangedAttackFocusedUnprovoked = 266,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_MoveBowRange</c>; not in the TaskData registry.
+    /// </summary>
+    MoveInBowRange = 267,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Static guard indoors".
+    /// </summary>
+    StandAtGuardNodeHomebuildingIndoorsOnly = 268,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_FirstAid</c>; TaskData text "Fixing Legs".
+    /// </summary>
+    HealMyLegs = 269,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Assaulting town".
+    /// </summary>
+    AssaultFortificationsPreferGates = 270,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); not in the TaskData registry.
+    /// </summary>
+    AssaultFortificationsPreferWalls = 271,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BashDoor</c>; TaskData text "Smashing".
+    /// </summary>
+    SmashBuilding = 272,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Remove Intruder".
+    /// </summary>
+    PickupIntrudersTown = 273,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_TakeIntruderOutsideTown</c>; TaskData text "Throwing out".
+    /// </summary>
+    TakeIntruderOutsideTown = 274,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Sitting around".
+    /// </summary>
+    SitAround = 275,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Liberating prisoners".
+    /// </summary>
+    LiberateAllThePrisoners = 276,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Fetch".
+    /// </summary>
+    AnimalFetchALimb = 277,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_DogLimbRunningPlay</c>; TaskData text "Playing 'Limbs'".
+    /// </summary>
+    PlayBecauseIHaveALimbInMouth = 278,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Limb Jealousy".
+    /// </summary>
+    ChaseAllyDogsWithMouthLimbs = 279,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Runaway</c>; TaskData text "Running away".
+    /// </summary>
+    RunAwayForced = 280,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Find and put in cage".
+    /// </summary>
+    FindCageAndPutDeadguyIn = 281,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Dinner time".
+    /// </summary>
+    EatARandomCageOccupantMeasuredRate = 282,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Shooing".
+    /// </summary>
+    ShooStrangersOutOfMyBuildingIfPrivate = 283,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_EmptyMachine</c>; TaskData text "Looting".
+    /// </summary>
+    LootContainer = 284,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_CutLock</c>; TaskData text "Cutting lock".
+    /// </summary>
+    CutLock = 285,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BruteForceLock</c>; TaskData text "Breaking lock".
+    /// </summary>
+    BruteForceLock = 286,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BashDoor</c>; TaskData text "Bashing door".
+    /// </summary>
+    BashDoorHere = 287,
+    /// <summary>
+    /// The Tasker factory builds the factory default <c>Task_Blank</c> (no act of its own); TaskData text "Protect allies".
+    /// </summary>
+    ProtectAlliesStayInTown = 288,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_Follow</c>; TaskData text "Staying close".
+    /// </summary>
     Unnamed289 = 289,
+    /// <summary>
+    /// The Tasker factory builds <c>Task_BashDoor</c>; TaskData text "Bashing gate".
+    /// </summary>
     Unnamed290 = 290,
 }

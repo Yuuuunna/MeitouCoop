@@ -12,7 +12,7 @@ public class WeatherHazardCheckpointTests
 {
     internal static (GameDatabase Data, SimulationWeather Weather) Scene()
     {
-        var record = SyntheticTown.Rec("saved-gas", FcsRecordType.EFFECT, "Saved gas");
+        var record = SyntheticTown.Rec("saved-gas", FcsRecordType.Effect, "Saved gas");
         record.Ints["type"] = (int)Meitou.Data.Particles.EffectType.WanderingGas;
         record.Ints["affect type"] = (int)WeatherAffecting.Gas;
         record.Strings["particle system"] = "saved_gas";

@@ -1,6 +1,8 @@
 using Meitou.Networking.VNext;
 using Meitou.Data.Gameplay;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
 
 namespace Meitou.Tests.NetworkingNext;
 

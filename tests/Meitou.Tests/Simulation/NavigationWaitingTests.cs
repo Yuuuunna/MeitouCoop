@@ -1,7 +1,9 @@
+using Meitou.Simulation.Player;
 using System.Numerics;
 using Meitou.Data.World;
-using Meitou.Navigation;
+using Meitou.Simulation.Navigation;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
 using SimWorld = Meitou.Simulation.World;
 
 namespace Meitou.Tests.Simulation;
@@ -67,12 +69,12 @@ public class NavigationWaitingTests
     {
         public readonly TaskCompletionSource First = new(TaskCreationOptions.RunContinuationsAsynchronously), Second = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly ManualResetEventSlim ReleaseFirst = new(), ReleaseSecond = new();
-        int calls;
+        int _calls;
         public float GroundHeight(float x, float z) => 300;
         public bool IsWalkable(float x, float z) => true;
         public PathResult FindPath(Vector3 from, Vector3 to)
         {
-            int call = Interlocked.Increment(ref calls);
+            int call = Interlocked.Increment(ref _calls);
             if (call == 1) { First.TrySetResult(); if (!ReleaseFirst.Wait(TimeSpan.FromSeconds(15))) throw new TimeoutException(); return new([from, to]); }
             if (call == 2) { Second.TrySetResult(); if (!ReleaseSecond.Wait(TimeSpan.FromSeconds(15))) throw new TimeoutException(); }
             return new([from, new(0, 300, 50), to]);

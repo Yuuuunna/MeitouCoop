@@ -1,16 +1,19 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Meitou.Data.Gameplay;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Saving;
 
-/// <summary>Versioned authority and faction-resource checkpoint metadata. Does not replace character records or account authentication.</summary>
+/// <summary>
+/// Versioned authority and faction-resource checkpoint metadata. Does not replace character records or account authentication.
+/// </summary>
 public static class PlayerRegistrySave
 {
     sealed record Document(int Version, FactionCatalogueState Catalogue, FactionDiplomacyState Diplomacy, ulong EntityHighWater,
         ulong[] Entities, PlayerRegistryState Authority, SavedFactionResources[] Resources, CreationQualificationState? Qualifications = null, InvitationState? Invitations = null,
         CampaignTargetState? Campaigns = null, Dialogue.AreaArrivalMemory[]? AreaArrivals = null);
-    static readonly JsonSerializerOptions json = new()
+    static readonly JsonSerializerOptions Json = new()
     {
         RespectNullableAnnotations = true,
         RespectRequiredConstructorParameters = true,
@@ -34,17 +37,21 @@ public static class PlayerRegistrySave
         CampaignTargetSave.Validate(campaigns, data);
         var arrivals = world.Systems.OfType<Dialogue.DialogueSystem>().FirstOrDefault()?.CaptureAreaArrivals() ?? [];
         return JsonSerializer.SerializeToUtf8Bytes(new Document(9, catalogue, diplomacy,
-            world.Entities.LastAllocated, world.Entities.All.Select(e => e.Value).ToArray(), authority, resources, qualifications, invitations, campaigns, arrivals), json);
+            world.Entities.LastAllocated, world.Entities.All.Select(e => e.Value).ToArray(), authority, resources, qualifications, invitations, campaigns, arrivals), Json);
     }
 
-    /// <summary>On exclusive candidate data, before SaveLoader.Load. Does not restore diplomacy until after the legacy loader.</summary>
+    /// <summary>
+    /// On exclusive candidate data, before SaveLoader.Load. Does not restore diplomacy until after the legacy loader.
+    /// </summary>
     public static void PrepareCatalogue(PopulationData data, ReadOnlySpan<byte> bytes)
     {
         var document = Decode(bytes);
         FactionCatalogueSave.Restore(data, document.Catalogue);
     }
 
-    /// <summary>Player-faction classifications for the world loader, after catalogue preparation.</summary>
+    /// <summary>
+    /// Player-faction classifications for the world loader, after catalogue preparation.
+    /// </summary>
     public static IReadOnlySet<string>? PlayerFactionIds(PopulationData data, ReadOnlySpan<byte> bytes)
     {
         var document = Decode(bytes);
@@ -59,7 +66,7 @@ public static class PlayerRegistrySave
     static Document Decode(ReadOnlySpan<byte> bytes)
     {
         Document document;
-        try { document = JsonSerializer.Deserialize<Document>(bytes, json) ?? throw new InvalidDataException("Empty player registry."); }
+        try { document = JsonSerializer.Deserialize<Document>(bytes, Json) ?? throw new InvalidDataException("Empty player registry."); }
         catch (JsonException e) { throw new InvalidDataException("Malformed player registry.", e); }
         if (document.Version is not (2 or 3 or 4 or 5 or 6 or 7 or 8 or 9) || document.Catalogue?.Factions is null || document.Catalogue.Factions.Any(f => f is null) ||
             document.Diplomacy is null || document.Entities is null || document.Authority is null || document.Resources is null)
@@ -77,12 +84,19 @@ public static class PlayerRegistrySave
             if (document.Authority.Version != 1 || document.Authority.Players is null || document.Authority.Controls is null || document.Authority.Players.Any(p => p is null))
                 throw new InvalidDataException("Invalid legacy player registry.");
             // No current grant does not prove that a role was never assigned. Preserve that uncertainty on migration.
-            document = document with { Version = 3, Authority = document.Authority with
+            document = document with
             {
-                Version = 2,
-                Players = document.Authority.Players.Select(p => p with { RoleHistory = document.Authority.Controls.Any(c => c.Player == p.Id)
-                    ? PlayerRoleHistory.Assigned : PlayerRoleHistory.Unknown }).ToArray(),
-            } };
+                Version = 3,
+                Authority = document.Authority with
+                {
+                    Version = 2,
+                    Players = document.Authority.Players.Select(p => p with
+                    {
+                        RoleHistory = document.Authority.Controls.Any(c => c.Player == p.Id)
+                        ? PlayerRoleHistory.Assigned : PlayerRoleHistory.Unknown
+                    }).ToArray(),
+                }
+            };
         }
         if (document.Authority.Version != (document.Version >= 8 ? 4 : document.Version >= 6 ? 3 : 2) || document.Authority.Players is null ||
             document.Authority.Players.Any(p => p is null || !Enum.IsDefined(p.RoleHistory)))
@@ -144,7 +158,9 @@ public static class PlayerRegistrySave
         return document;
     }
 
-    /// <summary>Candidate loading only: restore faction resources, research and ownership classification before asset initialization.</summary>
+    /// <summary>
+    /// Candidate loading only: restore faction resources, research and ownership classification before asset initialization.
+    /// </summary>
     internal static void PrepareResources(World world, PopulationData data, ReadOnlySpan<byte> bytes)
     {
         var document = ValidateWorld(world, data, bytes);
@@ -152,7 +168,9 @@ public static class PlayerRegistrySave
         FactionResourceSave.Restore(world, document.Resources, data.Db);
     }
 
-    /// <summary>Use the same checkpoint's already-loaded world; a different catalogue or entity allocator is rejected.</summary>
+    /// <summary>
+    /// Use the same checkpoint's already-loaded world; a different catalogue or entity allocator is rejected.
+    /// </summary>
     public static void Restore(World world, PopulationData data, ReadOnlySpan<byte> bytes)
     {
         var document = ValidateWorld(world, data, bytes);

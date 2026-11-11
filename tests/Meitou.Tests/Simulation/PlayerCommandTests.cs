@@ -1,5 +1,7 @@
+using Meitou.Simulation.Player;
 using System.Numerics;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
 using SimWorld = Meitou.Simulation.World;
 
 namespace Meitou.Tests.Simulation;
@@ -8,7 +10,7 @@ public class PlayerCommandTests
 {
     sealed class Scene : IDisposable
     {
-        readonly MovementSystem movement;
+        readonly MovementSystem _movement;
         public SimWorld World { get; }
         public PlayerId A { get; } = new(2);
         public PlayerId B { get; } = new(3);
@@ -18,8 +20,8 @@ public class PlayerCommandTests
         public Scene(bool sameFaction = false)
         {
             var walk = new OpenGroundWalkability((_, _) => 300);
-            movement = new MovementSystem(new PathService(walk, true));
-            World = new SimWorld(new WorldSettings { PublishSnapshots = false }, walk, [new PlayerSystem(), movement]);
+            _movement = new MovementSystem(new PathService(walk, true));
+            World = new SimWorld(new WorldSettings { PublishSnapshots = false }, walk, [new PlayerSystem(), _movement]);
             World.Players.Register(A);
             World.Players.Register(B);
             World.Players.SetMembership(A, 6, FactionPermission.All);
@@ -35,7 +37,7 @@ public class PlayerCommandTests
             new CharacterCold { IsPlayer = true, Faction = faction, Race = Bodies.BodyFixtures.Human,
                 Medical = Bodies.BodyFixtures.Healthy(), Stats = new Meitou.Simulation.Bodies.CharacterStats() }, 0);
 
-        public void Dispose() { World.Dispose(); movement.Dispose(); }
+        public void Dispose() { World.Dispose(); _movement.Dispose(); }
     }
 
     [Fact]

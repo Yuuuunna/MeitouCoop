@@ -2,8 +2,15 @@ using Meitou.Simulation.Production;
 
 namespace Meitou.Simulation;
 
+/// <summary>
+/// The world's last prospecting, for the host.
+/// </summary>
 public sealed partial class World
 {
-    /// <summary>The local player's last completed survey. Remote players have independent PlayerState reports.</summary>
+
+    /// <summary>
+    /// The last finished prospecting (null: none yet). Written by the production system's serial step, read by the host's window;
+    /// never part of the state hash.
+    /// </summary>
     public ProspectReport? Prospected { get => Player.Prospected; internal set => Player.Prospected = value; }
 }

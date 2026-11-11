@@ -2,45 +2,90 @@ using System.Numerics;
 
 namespace Meitou.Data.World;
 
-/// <summary>One placed foliage mesh: where, how big and turned, from which layer (docs/formats/foliage.md, "Placing").</summary>
-public readonly record struct FoliageInstance(FoliageMesh Mesh, FoliageLayer Layer, Vector3 Position, float Scale, float YawDegrees, Quaternion Orientation)
+/// <summary>
+/// One placed foliage mesh: where, how big and turned, from which layer (docs/formats/foliage.md, "Placing").
+/// </summary>
+public readonly record struct FoliageInstance(FoliageMesh Mesh, FoliageLayer Layer, Vector3 Position, float Scale, float YawDegrees,
+    Quaternion Orientation)
 {
+    /// <summary>
+    /// The instance's transform (<see cref="TransformOf"/>).
+    /// </summary>
     public Matrix4x4 Transform => TransformOf(Scale, Orientation, Position);
 
-    /// <summary>The transform of an instance of this scale, orientation and position (<see cref="Transform"/>; also for records read straight from the layout cache).</summary>
+    /// <summary>
+    /// The transform of an instance of this scale, orientation and position (<see cref="Transform"/>; also for records read straight from the layout
+    /// cache).
+    /// </summary>
     public static Matrix4x4 TransformOf(float scale, Quaternion orientation, Vector3 position) =>
         Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(orientation) * Matrix4x4.CreateTranslation(position);
 }
 
-/// <summary>A grass layer of a zone: its grass types and the zone's 129² coverage map (0..255, row = +Z) they grow by.</summary>
+/// <summary>
+/// A grass layer of a zone: its grass types and the zone's 129² coverage map (0..255, row = +Z) they grow by.
+/// </summary>
 public sealed record FoliageGrassPatch(FoliageLayer Layer, FoliageGrass Grass, int Channel, byte[] Density, float X0, float Z0, float X1, float Z1);
 
-/// <summary>Everything the foliage system puts into one zone.</summary>
+/// <summary>
+/// Everything the foliage system puts into one zone.
+/// </summary>
 public sealed class FoliageZone
 {
+    /// <summary>
+    /// The zone.
+    /// </summary>
     public required ZoneCoordinate Zone { get; init; }
+    /// <summary>
+    /// The placed meshes.
+    /// </summary>
     public List<FoliageInstance> Instances { get; } = [];
+    /// <summary>
+    /// The grass layers.
+    /// </summary>
     public List<FoliageGrassPatch> Grass { get; } = [];
-    /// <summary>Instances of meshes with a <c>building type</c> (mineable rocks), also in <see cref="Instances"/>.</summary>
+    /// <summary>
+    /// Instances of meshes with a <c>building type</c> (mineable rocks), also in <see cref="Instances"/>.
+    /// </summary>
     public int Resources { get; set; }
-    /// <summary>False when only the far layers were placed (<see cref="FoliageLayout.Place"/> with <c>farOnly</c>): no grass, no MEDIUM or CLOSE meshes.</summary>
+    /// <summary>
+    /// False when only the far layers were placed (<see cref="FoliageLayout.Place"/> with <c>farOnly</c>): no grass, no MEDIUM or CLOSE meshes.
+    /// </summary>
     public bool Complete { get; set; } = true;
 }
 
-/// <summary>What the placer needs to know about a zone besides its records.</summary>
+/// <summary>
+/// What the placer needs to know about a zone besides its records.
+/// </summary>
 public sealed class FoliageZoneInput
 {
+    /// <summary>
+    /// The zone.
+    /// </summary>
     public required ZoneCoordinate Zone { get; init; }
+    /// <summary>
+    /// The zone's height grid.
+    /// </summary>
     public required FoliageGround Ground { get; init; }
-    /// <summary>The overlay around the zone; the placer writes grass coverage (R) and grass spots (G) into it.</summary>
+    /// <summary>
+    /// The overlay around the zone; the placer writes grass coverage (R) and grass spots (G) into it.
+    /// </summary>
     public required FoliageOverlay Overlay { get; init; }
-    /// <summary>The zone's biomes (index colours), in blend-info slot order.</summary>
+    /// <summary>
+    /// The zone's biomes (index colours), in blend-info slot order.
+    /// </summary>
     public required IReadOnlyList<uint> Biomes { get; init; }
-    /// <summary>Biome index colour at a world point (biomemap.png).</summary>
+    /// <summary>
+    /// Biome index colour at a world point (biomemap.png).
+    /// </summary>
     public required Func<float, float, uint> BiomeAt { get; init; }
-    /// <summary>The nearest town (not a nest marker) to a point: X/Z, its <c>no-foliage range</c> and whether the player's faction owns it; null when there is none.</summary>
+    /// <summary>
+    /// The nearest town (not a nest marker) to a point: X/Z, its <c>no-foliage range</c> and whether the player's faction owns it; null when there is
+    /// none.
+    /// </summary>
     public Func<float, float, FoliageTown?>? NearestTown { get; init; }
-    /// <summary>Water surface height for <c>floating</c> meshes.</summary>
+    /// <summary>
+    /// Water surface height for <c>floating</c> meshes.
+    /// </summary>
     public float WaterHeight { get; init; } = WorldWater.Height;
 }
 
@@ -52,19 +97,35 @@ public sealed class FoliageZoneInput
 /// </summary>
 public static class FoliageLayout
 {
-    /// <summary>The game's TreeLoader3D scale range (the bounds of its 8-bit scale).</summary>
+    /// <summary>
+    /// The game's TreeLoader3D scale range (the bounds of its 8-bit scale).
+    /// </summary>
     public const float MinScale = 0.01f, MaxScale = 10f;
 
-    /// <summary>Base distances per FoliageVisibilityRange before × 10 and the range setting.</summary>
+    /// <summary>
+    /// The game's TreeLoader3D page size for the mesh layers: half a zone (the zone's width × 0.5 at the PagedGeometry made for them,
+    /// <c>FUN_1406d3e30</c> at 0x1406d4bae, verified by disassembly).
+    /// </summary>
+    const float LoaderPageSize = WorldLayout.ZoneSize * 0.5f;
+
+    /// <summary>
+    /// Base distances per FoliageVisibilityRange before × 10 and the range setting.
+    /// </summary>
     static readonly float[] Ranges = [50, 100, 800, 4000];
 
-    /// <summary>{50, 100, 800, 4000}[v] × 10 × <paramref name="setting"/> (the settings.cfg <c>foliage range</c> / <c>grass range</c>).</summary>
+    /// <summary>
+    /// {50, 100, 800, 4000}[v] × 10 × <paramref name="setting"/> (the settings.cfg <c>foliage range</c> / <c>grass range</c>).
+    /// </summary>
     public static float VisibilityRange(FoliageVisibility v, float setting = 1) => Ranges[(int)v] * 10 * setting;
 
-    /// <summary>Overlay R + G above which a point counts as a grass area (<c>limit to grass areas</c>).</summary>
+    /// <summary>
+    /// Overlay R + G above which a point counts as a grass area (<c>limit to grass areas</c>).
+    /// </summary>
     public const int GrassAreaThreshold = 149;
 
-    /// <summary>A mesh layer drawn beyond the MEDIUM range: visibility FAR or FEATURE (the far tier of the viewer's zone layout).</summary>
+    /// <summary>
+    /// A mesh layer drawn beyond the MEDIUM range: visibility FAR or FEATURE (the far tier of the viewer's zone layout).
+    /// </summary>
     public static bool IsFarLayer(FoliageLayer layer) => !layer.IsGrass && layer.Visibility >= FoliageVisibility.Far;
 
     /// <summary>
@@ -121,8 +182,15 @@ public static class FoliageLayout
         return zone;
     }
 
+    /// <summary>
+    /// One mesh layer's placing: the zone's input and output, the layer, its random sequence and the zone's X/Z bounds.
+    /// </summary>
     sealed record Context(FoliageZoneInput Input, FoliageZone Zone, FoliageLayer Layer, FoliageRandom Rng, float X0, float Z0, float X1, float Z1);
 
+    /// <summary>
+    /// Places <paramref name="count"/> copies of <paramref name="mesh"/> (in clusters when it is clustered), each accepted after the slope, zone,
+    /// town, altitude and road tests, with its children placed round it; <paramref name="biome"/>, when given, ends a cluster at another biome.
+    /// </summary>
     static void PlaceMesh(Context c, FoliageMesh mesh, int count, uint? biome)
     {
         var rng = c.Rng;
@@ -169,14 +237,18 @@ public static class FoliageLayout
         }
     }
 
-    /// <summary>Ogre's Vector2::normalise: unchanged when the length is 0.</summary>
+    /// <summary>
+    /// Ogre's Vector2::normalise: unchanged when the length is 0.
+    /// </summary>
     static Vector2 Normalise(Vector2 v)
     {
         float l = v.Length();
         return l > 1e-8f ? v / l : v;
     }
 
-    /// <summary>One attempt at a point; false when the slope or height rules it out (which ends a cluster).</summary>
+    /// <summary>
+    /// One attempt at a point; false when the slope or height rules it out (which ends a cluster).
+    /// </summary>
     static bool Place(Context c, FoliageMesh mesh, Vector2 p)
     {
         var input = c.Input;
@@ -185,7 +257,8 @@ public static class FoliageLayout
         if (slope > mesh.MaxSlope || slope < mesh.MinSlope) return false;
         if (p.X < c.X0 || p.X > c.X1 || p.Y < c.Z0 || p.Y > c.Z1) return true;
         bool rejected = false;
-        // A resource mesh (one with a building type) is not rejected inside the no-foliage range of a town the player's faction owns (FUN_1406d2410:146-156, Verified).
+        // A resource mesh (one with a building type) is not rejected inside the no-foliage range of a town the player's faction owns
+        // (FUN_1406d2410:146-156, Verified).
         if (mesh.AvoidTowns && input.NearestTown?.Invoke(p.X, p.Y) is { } town && !(mesh.BuildingType is not null && town.Owned) &&
             Vector2.DistanceSquared(town.At, p) < town.Range * town.Range)
             rejected = true;
@@ -202,7 +275,7 @@ public static class FoliageLayout
         {
             float qScale = Quantise(scale, MinScale, MaxScale);
             float qYaw = (byte)(long)(yaw / 360 * 255) * (360f / 255);
-            var position = new Vector3(p.X, y, p.Y);
+            var position = new Vector3(LoaderSnap(p.X, c.X0), y, LoaderSnap(p.Y, c.Z0));
             c.Zone.Instances.Add(new FoliageInstance(mesh, c.Layer, position, qScale, qYaw, Orientation(mesh, input.Ground, position, qYaw)));
             if (mesh.BuildingType is not null) c.Zone.Resources++;
         }
@@ -221,7 +294,23 @@ public static class FoliageLayout
         return true;
     }
 
-    /// <summary>The 8-bit scale of PagedGeometry's TreeLoader3D: <c>min + trunc((s − min) / max × 255) / 255 × max</c>.</summary>
+    /// <summary>
+    /// Where TreeLoader3D keeps a tree on one axis (<c>FUN_140a46970</c>, run on the copy of the point the instance is made from): 16 bits across
+    /// its page from the zone's edge <paramref name="left"/>, floored to a whole unit. The orientation's noise reads the snapped point, so a
+    /// fraction just above a whole unit can move a rock's seed (issue #406). Float arithmetic as the game's.
+    /// </summary>
+    static float LoaderSnap(float v, float left)
+    {
+        float d = v - left;
+        int page = (int)MathF.Floor(d / LoaderPageSize);
+        float local = d - page * LoaderPageSize;
+        float step = (ushort)(long)(65535f * local / LoaderPageSize);
+        return MathF.Floor(left + page * LoaderPageSize + step / 65535f * LoaderPageSize);
+    }
+
+    /// <summary>
+    /// The 8-bit scale of PagedGeometry's TreeLoader3D: <c>min + trunc((s − min) / max × 255) / 255 × max</c>.
+    /// </summary>
     static float Quantise(float s, float min, float max) => max / 255 * (byte)(long)((s - min) / max * 255) + min;
 
     /// <summary>
@@ -245,7 +334,9 @@ public static class FoliageLayout
         return Quaternion.CreateFromAxisAngle(axis, noise * 360 * MathF.PI / 180);
     }
 
-    /// <summary>The shortest rotation taking direction <paramref name="from"/> onto <paramref name="to"/> (Ogre's getRotationTo).</summary>
+    /// <summary>
+    /// The shortest rotation taking direction <paramref name="from"/> onto <paramref name="to"/> (Ogre's getRotationTo).
+    /// </summary>
     static Quaternion RotationTo(Vector3 from, Vector3 to)
     {
         from = Vector3.Normalize(from);
@@ -258,7 +349,9 @@ public static class FoliageLayout
         return Quaternion.Normalize(new Quaternion(axis, s * 0.5f));
     }
 
-    /// <summary>The game's road test: any road weight on the box's first row, its centre pixel, last row or side columns.</summary>
+    /// <summary>
+    /// The game's road test: any road weight on the box's first row, its centre pixel, last row or side columns.
+    /// </summary>
     static bool NearRoad(FoliageOverlay o, Vector2 p, float r)
     {
         int ix0 = o.PixelX(p.X - r), iz0 = o.PixelZ(p.Y - r), ix1 = o.PixelX(p.X + r), iz1 = o.PixelZ(p.Y + r);
@@ -273,7 +366,9 @@ public static class FoliageLayout
         return false;
     }
 
-    /// <summary>A mesh's <c>grass spot</c>: a disc of grass coverage (G) of radius <c>grass spot × scale</c> around it.</summary>
+    /// <summary>
+    /// A mesh's <c>grass spot</c>: a disc of grass coverage (G) of radius <c>grass spot × scale</c> around it.
+    /// </summary>
     static void GrassSpot(FoliageOverlay o, Vector2 p, float r)
     {
         int ix0 = o.PixelX(p.X - r), iz0 = o.PixelZ(p.Y - r), ix1 = o.PixelX(p.X + r), iz1 = o.PixelZ(p.Y + r);
@@ -315,14 +410,17 @@ public static class FoliageLayout
                 fade = Math.Clamp(fade, 0, 1);
                 float dirt = o.Get(2, i, j) > 70 ? 0 : 255;
                 float n = FoliageNoise.Coverage(x, z, scale, grass.ZeroCutoff, grass.BrightnessBoost, grass.Cap);
-                if (grass.Blackout) n *= FoliageNoise.Coverage(x + 50007f, z + 50007f, blackoutScale, grass.BlackoutZeroCutoff, grass.BrightnessBoost, grass.Cap);
+                if (grass.Blackout)
+                    n *= FoliageNoise.Coverage(x + 50007f, z + 50007f, blackoutScale, grass.BlackoutZeroCutoff, grass.BrightnessBoost, grass.Cap);
                 if (o.Get(3, i, j) > 10) continue;
                 byte v = (byte)(long)(n * dirt * fade);
                 if (o.Get(0, i, j) < v) o.Set(0, i, j, v);
             }
     }
 
-    /// <summary>The density map of a grass layer: the zone's 129² of R (channel 0) or G (other channels).</summary>
+    /// <summary>
+    /// The density map of a grass layer: the zone's 129² of R (channel 0) or G (other channels).
+    /// </summary>
     static FoliageGrassPatch GrassPatch(FoliageZoneInput input, FoliageLayer layer, FoliageGrass grass, int channel, uint? biome)
     {
         var o = input.Overlay;

@@ -1,8 +1,10 @@
+using Meitou.Simulation.Player;
 using System.Numerics;
 using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay.Construction;
 using Meitou.Data.World;
 using Meitou.Simulation;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Locks;
@@ -27,15 +29,15 @@ public class ContainerAuthorityTests
         public Inventory Bag(CharacterId id) => World.Characters.Cold(id.Slot)!.Inventory!;
         public Scene()
         {
-            var chest = SyntheticTown.Rec("chest", FcsRecordType.BUILDING, "Chest");
+            var chest = SyntheticTown.Rec("chest", FcsRecordType.Building, "Chest");
             chest.Bools["has lock"] = true; chest.Bools["has inventory"] = true;
-            var house = SyntheticTown.Rec("house", FcsRecordType.BUILDING, "House");
-            var function = SyntheticTown.Rec("store-fn", FcsRecordType.BUILDING_FUNCTIONALITY, "Storage");
+            var house = SyntheticTown.Rec("house", FcsRecordType.Building, "House");
+            var function = SyntheticTown.Rec("store-fn", FcsRecordType.BuildingFunctionality, "Storage");
             function.Ints["function"] = TownBuildings.GeneralStorageFunction;
-            var store = SyntheticTown.Rec("store", FcsRecordType.BUILDING, "Storage");
+            var store = SyntheticTown.Rec("store", FcsRecordType.Building, "Storage");
             store.Bools["has inventory"] = true;
             store.References["functionality"] = [SyntheticTown.Ref("store-fn")];
-            var ore = SyntheticTown.Rec("ore", FcsRecordType.ITEM, "Ore"); ore.Ints["stackable"] = 10;
+            var ore = SyntheticTown.Rec("ore", FcsRecordType.Item, "Ore"); ore.Ints["stackable"] = 10;
             var db = SyntheticTown.Database(extra: [chest, house, store, function, ore]);
             var at = SyntheticTown.Centre;
             var building = new TownBuilding("home", "house", "House", at, 0, true, false, [])
@@ -224,14 +226,14 @@ public class ContainerAuthorityTests
     {
         using var s = new Scene();
         s.Open(s.A, s.First);
-        var food = new ItemInstance { Record = "ore", Type = FcsRecordType.ITEM, Quantity = 5, StackLimit = 10, Charges = 20, MaxCharges = 100 };
+        var food = new ItemInstance { Record = "ore", Type = FcsRecordType.Item, Quantity = 5, StackLimit = 10, Charges = 20, MaxCharges = 100 };
         s.Box.Contents!.Items.Add(food);
         s.Send(s.A, s.Take(s.A, s.First) with { Count = 1 }); s.Apply();
         Assert.Equal((4, 20f), (food.Quantity, food.Charges));
         var taken = Assert.Single(s.Bag(s.First).Items);
         Assert.Equal((1, 100f), (taken.Quantity, taken.Charges));
         s.Bag(s.First).Items.Clear();
-        var carried = new ItemInstance { Record = "other", Type = FcsRecordType.ITEM, Quantity = 5, StackLimit = 10, Charges = 30, MaxCharges = 100 };
+        var carried = new ItemInstance { Record = "other", Type = FcsRecordType.Item, Quantity = 5, StackLimit = 10, Charges = 30, MaxCharges = 100 };
         s.Bag(s.First).Items.Add(carried);
         s.Send(s.A, new PutInMachine(s.First, new(0, "other", "main", 0, 0, 5, 0), "box", -1, X: -1, Count: 2)
         { Tick = 0, InventoryRevision = s.World.InventoryRevision(s.Bag(s.First)), StorageRevision = s.World.InventoryRevision(s.Box.Contents), ContainerSessionId = s.A.State.ContainerSessionId });

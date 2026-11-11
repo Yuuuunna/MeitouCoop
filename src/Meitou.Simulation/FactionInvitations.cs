@@ -12,14 +12,16 @@ public sealed record FactionInvitation(Guid Id, PlayerId Inviter, ulong InviterR
 public sealed record FactionInvitationView(FactionInvitation Invitation, InvitationEligibility Eligibility);
 public sealed record InvitationState(int Version, FactionInvitation[] Invitations);
 
-/// <summary>World-owner invitation ledger. Accepted results remain historical after membership, role or permission changes.</summary>
+/// <summary>
+/// World-owner invitation ledger. Accepted results remain historical after membership, role or permission changes.
+/// </summary>
 public sealed class FactionInvitations(World world)
 {
-    readonly Dictionary<Guid, FactionInvitation> invitations = [];
+    readonly Dictionary<Guid, FactionInvitation> _invitations = [];
     const int MaximumInvitations = 16384;
     const int MaximumRoleReferences = 65536;
-    int roleReferences;
-    bool restored;
+    int _roleReferences;
+    bool _restored;
     void Boundary(bool pending = false)
     {
         if (!world.AtTickBoundary || world.HasPendingDurableMutation != pending) throw new InvalidOperationException("Invitation operation requires its world boundary.");
@@ -49,12 +51,12 @@ public sealed class FactionInvitations(World world)
     public FactionInvitation Offer(PlayerId inviter, FactionInviteRequest request)
     {
         Boundary(); request = Freeze(request); string fingerprint = Fingerprint(request);
-        if (invitations.Values.FirstOrDefault(i => i.Inviter == inviter && i.Offer.Request == request.Request) is { } previous)
+        if (_invitations.Values.FirstOrDefault(i => i.Inviter == inviter && i.Offer.Request == request.Request) is { } previous)
         {
             if (previous.Fingerprint != fingerprint) throw new InvalidOperationException("Invitation request has a different payload.");
             return Copy(previous);
         }
-        if (invitations.Count >= MaximumInvitations || roleReferences + request.Roles.Length > MaximumRoleReferences || invitations.Values.Count(i => i.Inviter == inviter && i.Status == InvitationStatus.Pending) >= 128)
+        if (_invitations.Count >= MaximumInvitations || _roleReferences + request.Roles.Length > MaximumRoleReferences || _invitations.Values.Count(i => i.Inviter == inviter && i.Status == InvitationStatus.Pending) >= 128)
             throw new InvalidOperationException("Invitation limit reached.");
         if (inviter == request.Recipient || world.Players.Find(request.Recipient) is not { } recipient || !Rights(inviter, request)
             || recipient.IsMember(request.Faction) && (request.Permissions != FactionPermission.None || request.Roles.Length == 0 && request.CreationRuleset is null)
@@ -62,7 +64,7 @@ public sealed class FactionInvitations(World world)
             throw new InvalidOperationException("Invitation is not authorized.");
         var invitation = new FactionInvitation(Guid.NewGuid(), inviter, world.Players.Find(inviter)!.MembershipRevision(request.Faction), recipient.MembershipRevision(request.Faction), request, fingerprint,
             Guid.NewGuid(), InvitationStatus.Pending, []);
-        invitations.Add(invitation.Id, invitation); roleReferences += request.Roles.Length; return Copy(invitation);
+        _invitations.Add(invitation.Id, invitation); _roleReferences += request.Roles.Length; return Copy(invitation);
     }
     public InvitationEligibility Eligibility(FactionInvitation invitation)
     {
@@ -78,30 +80,30 @@ public sealed class FactionInvitations(World world)
     }
     public IReadOnlyList<FactionInvitationView> For(PlayerId actor)
     {
-        Boundary(); return invitations.Values.Where(i => i.Inviter == actor || i.Offer.Recipient == actor).OrderBy(i => i.Id)
+        Boundary(); return _invitations.Values.Where(i => i.Inviter == actor || i.Offer.Recipient == actor).OrderBy(i => i.Id)
             .Select(i => new FactionInvitationView(Copy(i), Eligibility(i))).ToArray();
     }
-    public FactionInvitation? FindFor(PlayerId actor, Guid id) => invitations.TryGetValue(id, out var invitation)
+    public FactionInvitation? FindFor(PlayerId actor, Guid id) => _invitations.TryGetValue(id, out var invitation)
         && (invitation.Inviter == actor || invitation.Offer.Recipient == actor) ? Copy(invitation) : null;
     public IReadOnlyList<FactionInvitationView> Page(PlayerId actor, Guid after, int limit, bool includeClosed)
     {
         Boundary();
         if (limit is < 1 or > 129) throw new ArgumentOutOfRangeException(nameof(limit));
-        return invitations.Values.Where(i => (i.Inviter == actor || i.Offer.Recipient == actor) && i.Id.CompareTo(after) > 0
+        return _invitations.Values.Where(i => (i.Inviter == actor || i.Offer.Recipient == actor) && i.Id.CompareTo(after) > 0
             && (includeClosed || i.Status == InvitationStatus.Pending)).OrderBy(i => i.Id).Take(limit)
             .Select(i => new FactionInvitationView(Copy(i), Eligibility(i))).ToArray();
     }
     public bool Close(PlayerId actor, Guid id, bool decline)
     {
         Boundary();
-        if (!invitations.TryGetValue(id, out var invitation) || invitation.Status != InvitationStatus.Pending ||
+        if (!_invitations.TryGetValue(id, out var invitation) || invitation.Status != InvitationStatus.Pending ||
             (decline ? invitation.Offer.Recipient != actor : invitation.Inviter != actor)) return false;
-        invitations[id] = invitation with { Status = decline ? InvitationStatus.Declined : InvitationStatus.Revoked }; return true;
+        _invitations[id] = invitation with { Status = decline ? InvitationStatus.Declined : InvitationStatus.Revoked }; return true;
     }
     internal FactionInvitation PrepareAcceptance(PlayerId recipient, Guid id)
     {
         Boundary();
-        if (!invitations.TryGetValue(id, out var invitation) || invitation.Offer.Recipient != recipient) throw new InvalidOperationException("Unknown invitation.");
+        if (!_invitations.TryGetValue(id, out var invitation) || invitation.Offer.Recipient != recipient) throw new InvalidOperationException("Unknown invitation.");
         if (invitation.Status == InvitationStatus.Accepted) return Copy(invitation);
         if (Eligibility(invitation) != InvitationEligibility.Eligible) throw new InvalidOperationException("Invitation is no longer eligible.");
         var qualifications = world.CreationQualifications.Capture();
@@ -114,16 +116,16 @@ public sealed class FactionInvitations(World world)
     internal FactionInvitation AcceptPrepared(FactionInvitation prepared)
     {
         Boundary(pending: true);
-        if (!invitations.TryGetValue(prepared.Id, out var current) || current.Status != InvitationStatus.Pending || current.Fingerprint != prepared.Fingerprint
+        if (!_invitations.TryGetValue(prepared.Id, out var current) || current.Status != InvitationStatus.Pending || current.Fingerprint != prepared.Fingerprint
             || Eligibility(current) != InvitationEligibility.Eligible) throw new InvalidOperationException("Invitation changed before acceptance.");
         var assigned = world.Players.AcceptInvitation(current);
         var offer = current.Offer;
         ulong qualification = offer.CreationRuleset is null ? 0 : world.CreationQualifications.ApproveFaction(current.Inviter, current.ApprovalId, offer.Recipient,
             offer.Faction, offer.CreationRuleset, offer.CharacterLimit, offer.Cost, offer.ExpiresAtHours).Id;
         var accepted = current with { Status = InvitationStatus.Accepted, Assigned = assigned, CreationQualification = qualification };
-        invitations[current.Id] = accepted; return Copy(accepted);
+        _invitations[current.Id] = accepted; return Copy(accepted);
     }
-    public InvitationState Capture() { if (!world.AtTickBoundary) throw new InvalidOperationException("Capture requires a world boundary."); return new(1, invitations.Values.OrderBy(i => i.Id).Select(Copy).ToArray()); }
+    public InvitationState Capture() { if (!world.AtTickBoundary) throw new InvalidOperationException("Capture requires a world boundary."); return new(1, _invitations.Values.OrderBy(i => i.Id).Select(Copy).ToArray()); }
     internal static void Validate(InvitationState state, PlayerRegistryState players, CreationQualificationState qualifications, int factionCount, IReadOnlySet<EntityId> entities)
     {
         if (state?.Version != 1 || state.Invitations is null || state.Invitations.Length > MaximumInvitations) throw new InvalidDataException("Invalid invitation state.");
@@ -159,15 +161,15 @@ public sealed class FactionInvitations(World world)
     }
     internal void Restore(InvitationState state)
     {
-        if (restored || invitations.Count != 0 || !world.AtTickBoundary) throw new InvalidOperationException("Invitation state restores once into a candidate world.");
-        foreach (var invitation in state.Invitations) { invitations.Add(invitation.Id, Copy(invitation)); roleReferences += invitation.Offer.Roles.Length; }
-        restored = true;
+        if (_restored || _invitations.Count != 0 || !world.AtTickBoundary) throw new InvalidOperationException("Invitation state restores once into a candidate world.");
+        foreach (var invitation in state.Invitations) { _invitations.Add(invitation.Id, Copy(invitation)); _roleReferences += invitation.Offer.Roles.Length; }
+        _restored = true;
     }
     internal void Hash(ref StateHasher h)
     {
-        if (invitations.Count == 0) return;
+        if (_invitations.Count == 0) return;
         h.Add(0x496E7674);
-        foreach (var i in invitations.Values.OrderBy(i => i.Id))
+        foreach (var i in _invitations.Values.OrderBy(i => i.Id))
         {
             h.Add(Rng.StableHash(i.Id.ToString("N"))); h.Add(i.Inviter.Value); h.Add(i.InviterRevision); h.Add(Rng.StableHash(i.Fingerprint));
             h.Add(Rng.StableHash(i.ApprovalId.ToString("N")));
@@ -186,7 +188,7 @@ public sealed partial class WorldPlayers
         var recipient = Required(offer.Recipient);
         if ((invitation.RecipientRevision == 0 ? recipient.IsMember(offer.Faction) : recipient.MembershipRevision(offer.Faction) != invitation.RecipientRevision)
             || offer.Roles.Any(g => !Validate(g))) throw new InvalidOperationException("Invitation membership or roles changed.");
-        _ = checked(revision + (ulong)offer.Roles.Length + (invitation.RecipientRevision == 0 ? 1ul : 0));
+        _ = checked(_revision + (ulong)offer.Roles.Length + (invitation.RecipientRevision == 0 ? 1ul : 0));
     }
     internal CharacterControl[] AcceptInvitation(FactionInvitation invitation)
     {
@@ -196,7 +198,7 @@ public sealed partial class WorldPlayers
         foreach (var previous in offer.Roles)
         {
             var grant = new CharacterControl(offer.Recipient, previous.Entity, offer.Faction, NextRevision());
-            controls[grant.Entity] = grant; assigned.Add(grant); PruneView(Required(previous.Player));
+            _controls[grant.Entity] = grant; assigned.Add(grant); PruneView(Required(previous.Player));
         }
         if (assigned.Count != 0) Required(offer.Recipient).RoleHistory = PlayerRoleHistory.Assigned;
         return assigned.ToArray();

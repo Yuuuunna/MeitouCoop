@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Meitou.Content;
+using Meitou.Game.Host;
 using Meitou.Data;
 using Meitou.Networking;
 using Meitou.Simulation;

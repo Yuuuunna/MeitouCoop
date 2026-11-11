@@ -1,5 +1,5 @@
-using Meitou.Rendering.Gpu;
-using Meitou.Rendering.Gpu.Core;
+using Meitou.Game.Rendering.Gpu;
+using Meitou.Game.Rendering.Gpu.Core;
 using Silk.NET.Vulkan;
 
 namespace Meitou.Tests.Vulkan;
@@ -12,7 +12,8 @@ public unsafe class CoreTests(ITestOutputHelper output)
         {
             return VulkanDevice.Create(new VulkanDeviceOptions { Validation = validation, FramesInFlight = frames });
         }
-        catch (Exception e) when (e is VulkanException or DllNotFoundException or EntryPointNotFoundException or Silk.NET.Core.Loader.SymbolLoadingException)
+        catch (Exception e) when (e is VulkanException or DllNotFoundException or EntryPointNotFoundException
+            or Silk.NET.Core.Loader.SymbolLoadingException)
         {
             return null;
         }
@@ -33,6 +34,7 @@ public unsafe class CoreTests(ITestOutputHelper output)
         var buffers = new List<BufferAllocation>();
         var images = new List<ImageAllocation>();
         const BufferUsageFlags usage = BufferUsageFlags.TransferSrcBit | BufferUsageFlags.TransferDstBit | BufferUsageFlags.UniformBufferBit;
+
         for (int i = 0; i < 300; i++)
         {
             ulong size = (ulong)rng.Next(1, 3) switch
@@ -44,6 +46,7 @@ public unsafe class CoreTests(ITestOutputHelper output)
             var b = d!.Allocator.CreateBuffer(size, usage, kind, "test buffer " + i);
             Assert.Equal(kind != MemoryKind.DeviceLocal, b.Mapped != null || b.Allocation.MappedPointer != 0);
             buffers.Add(b);
+
             if (i % 3 == 0)
             {
                 int w = rng.Next(4, 600), h = rng.Next(4, 600);
@@ -62,6 +65,7 @@ public unsafe class CoreTests(ITestOutputHelper output)
                 };
                 images.Add(d.Allocator.CreateImage(in info, MemoryKind.DeviceLocal, "test image " + i));
             }
+
             // free some along the way, in scattered order
             if (i % 7 == 6)
             {
@@ -70,6 +74,7 @@ public unsafe class CoreTests(ITestOutputHelper output)
                 buffers.RemoveAt(k);
             }
         }
+
         // One request above half a block: its own dedicated block, gone again on free.
         var big = d!.Allocator.CreateBuffer(d.Allocator.BlockSize / 2 + 1, BufferUsageFlags.StorageBufferBit, MemoryKind.DeviceLocal, "big");
         Assert.Contains(d.Allocator.GetBlocks(), b => b.Dedicated);
@@ -78,7 +83,8 @@ public unsafe class CoreTests(ITestOutputHelper output)
 
         Assert.True(d.Allocator.BlockCount > 0);
         Assert.True(d.Allocator.TotalUsedBytes > 0 && d.Allocator.TotalAllocatedBytes >= d.Allocator.TotalUsedBytes);
-        output.WriteLine($"{d.Allocator.BlockCount} blocks, {d.Allocator.TotalAllocatedBytes >> 20} MB held, {d.Allocator.TotalUsedBytes >> 10} KB used");
+        output.WriteLine($"{d.Allocator.BlockCount} blocks, {d.Allocator.TotalAllocatedBytes >> 20} MB held, "
+            + $"{d.Allocator.TotalUsedBytes >> 10} KB used");
 
         foreach (var b in buffers.OrderBy(_ => rng.Next())) d.Allocator.Free(b);
         foreach (var i in images.OrderBy(_ => rng.Next())) d.Allocator.Free(i);
@@ -87,12 +93,14 @@ public unsafe class CoreTests(ITestOutputHelper output)
         Assert.Equal(0UL, d.Allocator.TotalUsedBytes);
         var blocks = d.Allocator.GetBlocks();
         output.WriteLine(string.Join("\n", blocks));
+
         foreach (var group in blocks.GroupBy(b => (b.MemoryTypeIndex, b.Optimal)))
         {
             var one = Assert.Single(group);
             Assert.Equal(0UL, one.Used);
             Assert.Equal(1, one.FreeRanges);
         }
+
         ExpectClean(d);
     }
 }

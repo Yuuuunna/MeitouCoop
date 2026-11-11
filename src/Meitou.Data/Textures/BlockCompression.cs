@@ -7,9 +7,18 @@ namespace Meitou.Data.Textures;
 /// </summary>
 public static class BlockCompression
 {
-    public static int BlockBytes(DdsFormat format) => format is DdsFormat.Bc1 or DdsFormat.Bc4 ? 8 : 16;   // Bc7 and Rxgb: 16
+    /// <summary>
+    /// Bc7 and Rxgb: 16 Bytes per 4x4 block of a block-compressed <paramref name="format"/>: 8 for BC1 and BC4, else 16.
+    /// </summary>
+    public static int BlockBytes(DdsFormat format) => format is DdsFormat.Bc1 or DdsFormat.Bc4 ? 8 : 16;
 
+    /// <summary>
+    /// Bytes of a BC1 surface of <paramref name="width"/> x <paramref name="height"/> pixels (8 per 4x4 block, partial blocks rounded up).
+    /// </summary>
     public static int Bc1Size(int width, int height) => (width + 3) / 4 * ((height + 3) / 4) * 8;
+    /// <summary>
+    /// Bytes of a BC3 surface of <paramref name="width"/> x <paramref name="height"/> pixels (16 per 4x4 block, partial blocks rounded up).
+    /// </summary>
     public static int Bc3Size(int width, int height) => (width + 3) / 4 * ((height + 3) / 4) * 16;
 
     /// <summary>
@@ -75,12 +84,20 @@ public static class BlockCompression
         return result;
     }
 
-    /// <summary>Encodes RGBA8 pixels as BC1 (alpha ignored, four-colour blocks).</summary>
+    /// <summary>
+    /// Encodes RGBA8 pixels as BC1 (alpha ignored, four-colour blocks).
+    /// </summary>
     public static byte[] EncodeBc1(ReadOnlySpan<byte> rgba, int width, int height) => Encode(rgba, width, height, alpha: false);
 
-    /// <summary>Encodes RGBA8 pixels as BC3.</summary>
+    /// <summary>
+    /// Encodes RGBA8 pixels as BC3.
+    /// </summary>
     public static byte[] EncodeBc3(ReadOnlySpan<byte> rgba, int width, int height) => Encode(rgba, width, height, alpha: true);
 
+    /// <summary>
+    /// Encodes <paramref name="rgbaSpan"/> into BC1 blocks, or BC3 ones when <paramref name="alpha"/>; edge blocks repeat the last row and column.
+    /// Block rows run in parallel.
+    /// </summary>
     static byte[] Encode(ReadOnlySpan<byte> rgbaSpan, int width, int height, bool alpha)
     {
         int bw = (width + 3) / 4, bh = (height + 3) / 4, stride = alpha ? 16 : 8;
@@ -105,7 +122,9 @@ public static class BlockCompression
         return result;
     }
 
-    /// <summary>Endpoints from the colour bounding box (pulled in by 1/16 of its extent), indices to the nearest of the four palette colours.</summary>
+    /// <summary>
+    /// Endpoints from the colour bounding box (pulled in by 1/16 of its extent), indices to the nearest of the four palette colours.
+    /// </summary>
     static void EncodeColour(ReadOnlySpan<byte> px, Span<byte> dst)
     {
         Span<int> lo = [255, 255, 255], hi = [0, 0, 0];
@@ -148,7 +167,9 @@ public static class BlockCompression
         for (int i = 0; i < 4; i++) dst[4 + i] = (byte)(indices >> (8 * i));
     }
 
-    /// <summary>Alpha from the block's minimum and maximum (eight-value mode), indices to the nearest of the eight values.</summary>
+    /// <summary>
+    /// Alpha from the block's minimum and maximum (eight-value mode), indices to the nearest of the eight values.
+    /// </summary>
     static void EncodeAlpha(ReadOnlySpan<byte> px, Span<byte> dst)
     {
         int lo = 255, hi = 0;
@@ -174,8 +195,14 @@ public static class BlockCompression
         for (int i = 0; i < 6; i++) dst[2 + i] = (byte)(indices >> (8 * i));
     }
 
+    /// <summary>
+    /// Packs 8-bit RGB into an RGB565 colour, each channel rounded to the nearest level.
+    /// </summary>
     static ushort Pack565(int r, int g, int b) => (ushort)((r * 31 + 127) / 255 << 11 | (g * 63 + 127) / 255 << 5 | (b * 31 + 127) / 255);
 
+    /// <summary>
+    /// Expands an RGB565 colour to 8-bit RGB into <paramref name="rgb"/>, the top bits repeated into the low ones.
+    /// </summary>
     static void Expand565(ushort c, Span<int> rgb)
     {
         int r = c >> 11, g = c >> 5 & 63, b = c & 31;

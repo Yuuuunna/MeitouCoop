@@ -10,7 +10,10 @@ namespace Meitou.Data.World;
 /// </summary>
 public sealed class TerrainHeightBounds
 {
-    readonly float[][] min, max;
+    /// <summary>
+    /// Per level, the lowest and highest height of each cell (row = +Z).
+    /// </summary>
+    readonly float[][] _min, _max;
 
     /// <param name="coarse">(<paramref name="size"/>)² raw samples covering the world, size = 2^n + 1 (row = +Z).</param>
     public TerrainHeightBounds(ushort[] coarse, int size, HeightWindow? fine = null)
@@ -21,8 +24,8 @@ public sealed class TerrainHeightBounds
         Cells = cells;
         CellSize = (double)WorldLayout.WorldSize / cells;
         int levels = (int)Math.Log2(cells) + 1;
-        min = new float[levels][];
-        max = new float[levels][];
+        _min = new float[levels][];
+        _max = new float[levels][];
         var mn = new float[cells * cells];
         var mx = new float[cells * cells];
         for (int z = 0; z < cells; z++)
@@ -32,21 +35,23 @@ public sealed class TerrainHeightBounds
                 mn[z * cells + x] = WorldLayout.RawToHeight(Math.Min(Math.Min(a, b), Math.Min(c, d)));
                 mx[z * cells + x] = WorldLayout.RawToHeight(Math.Max(Math.Max(a, b), Math.Max(c, d)));
             }
-        min[0] = mn;
-        max[0] = mx;
+        _min[0] = mn;
+        _max[0] = mx;
         for (int l = 1; l < levels; l++)
         {
-            min[l] = new float[(cells >> l) * (cells >> l)];
-            max[l] = new float[(cells >> l) * (cells >> l)];
+            _min[l] = new float[(cells >> l) * (cells >> l)];
+            _max[l] = new float[(cells >> l) * (cells >> l)];
         }
         if (fine is not null) Apply(Measure(fine), rebuildAll: false);
         Rebuild(0, 0, cells - 1, cells - 1);
     }
 
-    /// <summary>Recomputes the levels above 0 over the level-0 cell rectangle (inclusive) and what depends on it.</summary>
+    /// <summary>
+    /// Recomputes the levels above 0 over the level-0 cell rectangle (inclusive) and what depends on it.
+    /// </summary>
     void Rebuild(int cx0, int cz0, int cx1, int cz1)
     {
-        for (int l = 1; l < min.Length; l++)
+        for (int l = 1; l < _min.Length; l++)
         {
             cx0 >>= 1; cz0 >>= 1; cx1 >>= 1; cz1 >>= 1;
             int n = Cells >> l, p = n * 2;
@@ -54,13 +59,15 @@ public sealed class TerrainHeightBounds
                 for (int x = cx0; x <= cx1; x++)
                 {
                     int a = 2 * z * p + 2 * x, b = a + 1, c = a + p, d = c + 1;
-                    min[l][z * n + x] = Math.Min(Math.Min(min[l - 1][a], min[l - 1][b]), Math.Min(min[l - 1][c], min[l - 1][d]));
-                    max[l][z * n + x] = Math.Max(Math.Max(max[l - 1][a], max[l - 1][b]), Math.Max(max[l - 1][c], max[l - 1][d]));
+                    _min[l][z * n + x] = Math.Min(Math.Min(_min[l - 1][a], _min[l - 1][b]), Math.Min(_min[l - 1][c], _min[l - 1][d]));
+                    _max[l][z * n + x] = Math.Max(Math.Max(_max[l - 1][a], _max[l - 1][b]), Math.Max(_max[l - 1][c], _max[l - 1][d]));
                 }
         }
     }
 
-    /// <summary>The height range of a fine window's samples per level-0 cell, ready for <see cref="Apply"/>.</summary>
+    /// <summary>
+    /// The height range of a fine window's samples per level-0 cell, ready for <see cref="Apply"/>.
+    /// </summary>
     /// <param name="Cx0">First level-0 cell column of the patch.</param>
     public sealed record Patch(int Cx0, int Cz0, int Width, int Height, float[] Min, float[] Max);
 
@@ -111,6 +118,10 @@ public sealed class TerrainHeightBounds
     /// </summary>
     public void Apply(Patch patch) => Apply(patch, rebuildAll: true);
 
+    /// <summary>
+    /// Widens the cells of <paramref name="patch"/>, and with <paramref name="rebuildAll"/> refreshes the levels above them (the constructor rebuilds
+    /// every level itself).
+    /// </summary>
     void Apply(Patch patch, bool rebuildAll)
     {
         for (int z = 0; z < patch.Height; z++)
@@ -118,20 +129,27 @@ public sealed class TerrainHeightBounds
             {
                 int k = (patch.Cz0 + z) * Cells + patch.Cx0 + x, p = z * patch.Width + x;
                 if (patch.Min[p] == float.MaxValue) continue;
-                min[0][k] = Math.Min(min[0][k], patch.Min[p]);
-                max[0][k] = Math.Max(max[0][k], patch.Max[p]);
+                _min[0][k] = Math.Min(_min[0][k], patch.Min[p]);
+                _max[0][k] = Math.Max(_max[0][k], patch.Max[p]);
             }
         if (rebuildAll) Rebuild(patch.Cx0, patch.Cz0, patch.Cx0 + patch.Width - 1, patch.Cz0 + patch.Height - 1);
     }
 
-    /// <summary>Level-0 cells per side and their edge length in world units.</summary>
+    /// <summary>
+    /// Level-0 cells per side and their edge length in world units.
+    /// </summary>
     public int Cells { get; }
+    /// <summary>
+    /// See <see cref="Cells"/>.
+    /// </summary>
     public double CellSize { get; }
 
-    /// <summary>Height range over the square from (<paramref name="x0"/>, <paramref name="z0"/>) with edge <paramref name="size"/>.</summary>
+    /// <summary>
+    /// Height range over the square from (<paramref name="x0"/>, <paramref name="z0"/>) with edge <paramref name="size"/>.
+    /// </summary>
     public (float Min, float Max) Range(double x0, double z0, double size)
     {
-        int level = Math.Clamp((int)Math.Floor(Math.Log2(Math.Max(size / CellSize, 1))), 0, min.Length - 1);
+        int level = Math.Clamp((int)Math.Floor(Math.Log2(Math.Max(size / CellSize, 1))), 0, _min.Length - 1);
         int n = Cells >> level;
         double cell = CellSize * (1 << level);
         int cx0 = Math.Clamp((int)Math.Floor((x0 + WorldLayout.HalfWorldSize) / cell + 1e-9), 0, n - 1);
@@ -142,14 +160,16 @@ public sealed class TerrainHeightBounds
         for (int z = cz0; z <= cz1; z++)
             for (int x = cx0; x <= cx1; x++)
             {
-                lo = Math.Min(lo, min[level][z * n + x]);
-                hi = Math.Max(hi, max[level][z * n + x]);
+                lo = Math.Min(lo, _min[level][z * n + x]);
+                hi = Math.Max(hi, _max[level][z * n + x]);
             }
         return (lo, hi);
     }
 }
 
-/// <summary>A node chosen for drawing: a square of the quadtree drawn with one LOD level's grid.</summary>
+/// <summary>
+/// A node chosen for drawing: a square of the quadtree drawn with one LOD level's grid.
+/// </summary>
 /// <param name="Quadrant">-1: the whole node; 0..3: only that quarter (bit 0 = +X half, bit 1 = +Z half).</param>
 public readonly record struct TerrainNode(int Level, double X0, double Z0, double Size, int Quadrant);
 
@@ -165,6 +185,19 @@ public readonly record struct TerrainNode(int Level, double X0, double Z0, doubl
 /// </summary>
 public sealed class TerrainQuadtree
 {
+    /// <summary>
+    /// Where in a level's distance band the morph starts (<see cref="SetRanges(ReadOnlySpan{float})"/>).
+    /// </summary>
+    readonly float _morphFraction;
+    /// <summary>
+    /// The rule the ranges were last taken from; null when they were set directly.
+    /// </summary>
+    TerrainLod? _lastLod;
+    /// <summary>
+    /// See <see cref="FloorLevel"/>.
+    /// </summary>
+    int _floorLevel;
+
     /// <param name="finestSpacing">Vertex spacing wanted at level 0 in world units (the finest heightmap spacing drawn).</param>
     /// <param name="lodDistance">Range of a level in multiples of its node size (at least 2 keeps neighbours within one level).</param>
     public TerrainQuadtree(float finestSpacing, int gridCells = 32, float lodDistance = 2.5f, float morphFraction = 0.7f)
@@ -177,7 +210,7 @@ public sealed class TerrainQuadtree
         while (levels < 20 && WorldLayout.WorldSize / (double)(1 << levels) / gridCells >= finestSpacing - 1e-6) levels++;
         LevelCount = levels;
         LeafSize = WorldLayout.WorldSize / (double)(1 << (levels - 1));
-        this.morphFraction = morphFraction;
+        this._morphFraction = morphFraction;
         Ranges = new float[levels];
         MorphStart = new float[levels];
         MorphEnd = new float[levels];
@@ -187,21 +220,21 @@ public sealed class TerrainQuadtree
         SetRanges(ranges);
     }
 
-    /// <summary>A tree whose level ranges come from a screen-space error rule (<see cref="TerrainLod.Ranges"/>).</summary>
+    /// <summary>
+    /// A tree whose level ranges come from a screen-space error rule (<see cref="TerrainLod.Ranges"/>).
+    /// </summary>
     public TerrainQuadtree(float finestSpacing, int gridCells, TerrainLod lod) : this(finestSpacing, gridCells) => SetRanges(lod);
 
-    readonly float morphFraction;
-
-    /// <summary>Takes the level ranges of <paramref name="lod"/>; false when they are the ones in use already.</summary>
+    /// <summary>
+    /// Takes the level ranges of <paramref name="lod"/>; false when they are the ones in use already.
+    /// </summary>
     public bool SetRanges(TerrainLod lod)
     {
-        if (lod == lastLod) return false;   // the frame's passes ask every time; the rule rarely changes
+        if (lod == _lastLod) return false;   // the frame's passes ask every time; the rule rarely changes
         bool changed = SetRanges(lod.Ranges(LevelCount, LeafSize, GridCells));
-        lastLod = lod;
+        _lastLod = lod;
         return changed;
     }
-
-    TerrainLod? lastLod;
 
     /// <summary>
     /// Sets the level ranges (increasing; the last one is ignored: the root is drawn wherever nothing finer is) and the morph
@@ -211,7 +244,7 @@ public sealed class TerrainQuadtree
     public bool SetRanges(ReadOnlySpan<float> ranges)
     {
         if (ranges.Length != LevelCount) throw new ArgumentException($"{LevelCount} ranges needed, got {ranges.Length}", nameof(ranges));
-        lastLod = null;
+        _lastLod = null;
         bool same = true;
         for (int l = 0; l + 1 < LevelCount; l++) same &= Ranges[l] == ranges[l];
         if (same && Ranges[^1] == float.MaxValue) return false;
@@ -224,7 +257,7 @@ public sealed class TerrainQuadtree
         {
             float lo = l == 0 ? 0 : Ranges[l - 1];
             MorphEnd[l] = Ranges[l];
-            MorphStart[l] = lo + (Ranges[l] - lo) * morphFraction;
+            MorphStart[l] = lo + (Ranges[l] - lo) * _morphFraction;
         }
         // The root is drawn wherever nothing finer is: it covers the whole world from any eye position.
         Ranges[LevelCount - 1] = float.MaxValue;
@@ -232,27 +265,60 @@ public sealed class TerrainQuadtree
         return true;
     }
 
+    /// <summary>
+    /// Grid cells per node side, the same at every level.
+    /// </summary>
     public int GridCells { get; }
+    /// <summary>
+    /// How many levels the tree has; the root is the last.
+    /// </summary>
     public int LevelCount { get; }
+    /// <summary>
+    /// The edge of a level-0 node in world units.
+    /// </summary>
     public double LeafSize { get; }
+    /// <summary>
+    /// The edge of a node of <paramref name="level"/> in world units.
+    /// </summary>
     public double NodeSize(int level) => LeafSize * (1 << level);
+    /// <summary>
+    /// The vertex spacing of <paramref name="level"/>'s grid in world units.
+    /// </summary>
     public double Spacing(int level) => NodeSize(level) / GridCells;
+    /// <summary>
+    /// Per level, the distance from the eye within which a node of the level is drawn; the root's is infinite.
+    /// </summary>
     public float[] Ranges { get; }
+    /// <summary>
+    /// Per level, the distance at which a vertex starts to slide onto the coarser grid.
+    /// </summary>
     public float[] MorphStart { get; }
+    /// <summary>
+    /// Per level, the distance at which a vertex has slid onto the coarser grid: the level's range.
+    /// </summary>
     public float[] MorphEnd { get; }
 
-    /// <summary>Nodes of this level or finer are never split: a node at this level is drawn whole wherever the distance rule would have split it (the shadow cascades' coarser casters, ShadowLod). 0: the distance rule alone.</summary>
-    public int FloorLevel { get => floorLevel; set => floorLevel = Math.Max(value, 0); }
-    int floorLevel;
+    /// <summary>
+    /// Nodes of this level or finer are never split: a node at this level is drawn whole wherever the distance rule would have split it (the shadow
+    /// cascades' coarser casters, ShadowLod). 0: the distance rule alone.
+    /// </summary>
+    public int FloorLevel { get => _floorLevel; set => _floorLevel = Math.Max(value, 0); }
 
-    /// <summary>The nodes to draw for an eye position, skipping those <paramref name="visible"/> rejects (box min, max).</summary>
+    /// <summary>
+    /// The nodes to draw for an eye position, skipping those <paramref name="visible"/> rejects (box min, max).
+    /// </summary>
     public void Select(Vector3 eye, TerrainHeightBounds bounds, Func<Vector3, Vector3, bool>? visible, List<TerrainNode> result)
     {
         result.Clear();
         Select(LevelCount - 1, -WorldLayout.HalfWorldSize, -WorldLayout.HalfWorldSize, eye, bounds, visible, result);
     }
 
-    bool Select(int level, double x0, double z0, Vector3 eye, TerrainHeightBounds bounds, Func<Vector3, Vector3, bool>? visible, List<TerrainNode> result)
+    /// <summary>
+    /// Adds the nodes to draw within the node of <paramref name="level"/> at (<paramref name="x0"/>, <paramref name="z0"/>); false when the node is
+    /// out of range, so its parent draws that quarter.
+    /// </summary>
+    bool Select(int level, double x0, double z0, Vector3 eye, TerrainHeightBounds bounds, Func<Vector3, Vector3, bool>? visible,
+        List<TerrainNode> result)
     {
         double size = NodeSize(level);
         var (lo, hi) = bounds.Range(x0, z0, size);
@@ -275,6 +341,9 @@ public sealed class TerrainQuadtree
         return true;
     }
 
+    /// <summary>
+    /// Whether the sphere of <paramref name="radius"/> round <paramref name="centre"/> touches the box (always for an infinite radius).
+    /// </summary>
     public static bool SphereTouchesBox(Vector3 centre, float radius, Vector3 min, Vector3 max)
     {
         if (radius == float.MaxValue) return true;
@@ -282,9 +351,12 @@ public sealed class TerrainQuadtree
         return d.LengthSquared() <= radius * radius;
     }
 
-    /// <summary>How far a vertex of <paramref name="level"/> at <paramref name="distance"/> from the eye has slid onto the coarser grid (0..1).</summary>
-    public float Morph(int level, float distance) =>
-        MorphStart[level] == float.MaxValue ? 0 : Math.Clamp((distance - MorphStart[level]) / Math.Max(MorphEnd[level] - MorphStart[level], 1e-3f), 0, 1);
+    /// <summary>
+    /// How far a vertex of <paramref name="level"/> at <paramref name="distance"/> from the eye has slid onto the coarser grid (0..1).
+    /// </summary>
+    public float Morph(int level, float distance) => MorphStart[level] == float.MaxValue
+        ? 0
+        : Math.Clamp((distance - MorphStart[level]) / Math.Max(MorphEnd[level] - MorphStart[level], 1e-3f), 0, 1);
 
     /// <summary>
     /// A grid coordinate (0..<see cref="GridCells"/>) after morphing by <paramref name="k"/>: odd coordinates move

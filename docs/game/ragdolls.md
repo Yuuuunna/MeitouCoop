@@ -137,6 +137,7 @@ and keeps those leg ragdoll bits on; the character tick `FUN_1405d00b0` sets pos
 - The sever's own knock-out (`FUN_14064edc0`, a leg lost at posture 0) is overwritten by that 3 s one ([cut-off and leg loss](character-stats.md#cut-off-and-leg-loss)), then it wakes into the crawl. A character that collapses and is out cold at once is a vital part or blood knock-out in the same blow.
 - **Observed**: the first tick that sets the flag (not in furniture, not carried) also calls `FUN_1405c8330`. It acts on the AI (`Character +0x648`: its vfunc `0x60`) and the orders receiver (`+0x650 +0x20`, the same object that holds the order queue `+0x40`, [ai-tasks](ai-tasks.md)): it sets the receiver's stop flag `+0x26c`, deletes its queued tasks (`FUN_14050d1b0` on `+0x300`) and its active ones (`FUN_140507530`). So the running task, queued orders and fight go; whether the AI's goal list is also dropped is **Unknown**, and no replan is requested there (the chooser finds the task gone). Skipped when the AI's current task has the flag at task data `+0x22`: 28 Standing, 65 Get up, 147 Stumbling.
   Meitou: `MedicalState.CollapseOnset` (set by `Tick` when a leg is down where the last update had none; the first tick after a load only learns it), taken by `BodySystem.SlowWorld` the same tick (the medical update is parallel): `OrderQueue.Clear()` and `TaskStart.End(Stopped)` (ends the task and fight, stops, asks the decision step; an NPC's AI picks again from idle). Spared: carried, in a bed or cage, stumbling or getting up (`StaggeredUntil`; Meitou has no task 28).
+  So a character splinting or bandaging **itself** stops when that leg first goes down mid-treatment, while another medic's treatment of it goes on (as the original, kept on purpose; issue #518; **Observed** headless).
 - **Observed**: going from posture ≠ 0 to 0 with the crippled flag clear (a leg back up, a stun worn off) makes `FUN_1405c7e20` queue the get-up task 65 (`standing up 3`, [Getting up](#getting-up)) unless one is queued.
 - Leg test `FUN_140644450`: down when a stump or crushed (limb state 1/3), when h − s < −(base × mult ×
   scale) − wear (severed), or when h − s + b (bandage, `+0x48`; not the rig `+0x4c`) is under the KO point
@@ -198,7 +199,9 @@ player order gets it up (1 when sneaking), as does a thief's watcher noticing.
   event 0x18. Without the order the get-up only says 0x17 / 0x18.
 - Meitou: `MedicalState.PlayingDead` (not saved): a knockout that ends while `MedicalContext.PlayDead` is set keeps the
   character `Unconscious` (so everyone treats it as down) with no timer. The get-up line (`DialogueSystem.SeeGettingUp`) is 23 / 25 / 24 by these counts. `BodySystem.Schedule` sets it serially from the last
-  tick by the character's senses' counts (`BodySystem.Senses`, [senses](perception.md#senses)); a player
+  tick by the character's senses' counts (`BodySystem.Senses`, [senses](perception.md#senses); the character looks while playing dead or about to wake, faded counts would always read safe); the waking window is Act's longest step, so a far character is asked too. A vital part or
+  the blood ends a knockout on the tick it heals, which no window foresees: one whose senses faded (`SenseBlock.Faded`, not carried
+  or a slave) is held down, unconscious, until its next look (`MedicalContext.GetUpUnasked`, engine choice), then asked; a player
   order standing it up grants the toughness (`BodySystem.GotUpByOrder`); animals never play dead. Rechecked every 15 ticks
   (engine choice). `MedicalState.StandUp` ends it. Health header: `HudText.HealthWord`.
 
@@ -227,8 +230,7 @@ The carry bone is a skeleton bone, not a body name: its body is the one the ragd
 carrier node rotation x the attach bone's derived rotation x its binding-pose inverse (the bone's turn from its binding pose), position the attach bone's world position
 (`FUN_1405b1c50`, the carrier's position when zero) + the bone's world rotation x the vector at controller `+0x160`. The attach (`vfunc_15` `FUN_1407d5290`) subtracts from that vector a
 per-bone vector of the carrier's `AnimationClass` (`FUN_1405b83a0`, map entry `+0x28`, zero when the bone is missing); its starting value and meaning are **Unknown**.
-Meitou (`RagdollSystem.AnimalAttach`): places the animal's node so that its carry bone's actor has exactly that pose (the actor has no rotation of its own and sits at the bone's
-binding position, [phs](../formats/phs.md); Meitou's body is its shape, placed on it), with the vector taken as zero (engine choice); the rest hangs. Headless probe (Bonedog on a
+Meitou (`RagdollSystem.AnimalAttach`): places the animal's node so that its carry bone's actor has exactly that pose (the actor has no rotation of its own, [phs](../formats/phs.md); Meitou's body is its shape, placed on it), with the vector taken as zero (engine choice); the rest hangs. Headless probe (Bonedog on a
 Greenlander, issue #307): the dog's `Bip01` on the shoulder bone, its head level with it out to the carrier's left, the front paws 8 to 11 below; with the human rule it stood 6 above
 the shoulder, over the head.
 
@@ -237,6 +239,10 @@ legs included, is pinned to the animation. The carried body's scene node is **no
 carry placement of [carry-loot](carry-loot.md) sets it each frame. The pick-up attach (`FUN_1405ced90`) clears the active mask (`+0x2f8` = 0) and the CARRY_MODE request then rebuilds the ragdoll from the
 animated pose; put-down / drop (`FUN_1405ce9c0(0)`) requests CARRY_MODE off, the medical tick requests WHOLE again for a still-unconscious body. Meitou: `RagdollSystem` (`Simulates`, `Rebuild`) does the
 same; the limbs that swing are the forearms and the head, so a body's upper arms and legs follow only the `carry me` clip (`play speed` 0.006: almost still).
+Where the release leaves the scene node, which the new WHOLE ragdoll is built at, is **Unknown** (`FUN_1405ce1e0` not traced past the detach and the clip stop). Meitou (engine choice)
+starts the pinned bodies of a body set down or dropped from the placement it hung in (`Ragdoll.HungIn`), so it falls from the shoulder (issue #327). Re-placing the `carry me` pose upright at the body's new position hung the trunk up to 10 units under the floor.
+**Observed**, headless put-down on the upper floor of an Outpost s-IV in zone 47.16, before and after the change: 5 of 13 bodies started 1 to 8 under the floor and froze there (the
+two-sided floor held them under it); now all 13 start 10 to 15 above it and rest 0.3 to 2.4 above it.
 The animal's pinned body is matched by **bone**, not by actor name: `FUN_1405b8720` keys its pin map by the bone names it hands to `disableBone`. **Verified** (probe of the shipped
 `.phs` files): Bonedog `dog1.phs`, River Raptor, Small Spider, Spider and Skimmer name their root actor `Actor` (bone `Bip01`), and the Bonedog, River Raptor and Small Spider have no `carry bone`, so
 their root fallback `Bip01` is that actor; matched by name, nothing would be pinned and the carried body would fall off the shoulder. Meitou: `RagdollSystem.CarryBoneOf` (a bone handle).
@@ -289,9 +295,14 @@ Driver `FUN_1405b8180` (AnimationClass), update `FUN_1407d3c00`:
 
 - Root: for WHOLE (or a carried animal) the scene node is set to the root body's position
   (`FUN_1407d1490`: the body named at RagdollAnimation `+0x48`, else the first simulated one);
-  otherwise the node keeps the movement position.
+  otherwise the node keeps the movement position. The body's position is the actor's origin (the phs actor `position`), not its shape's centre. Meitou:
+  `RagdollDefinition.RootAt`. **Observed**: whale2.phs (Big-Bones) is about 1.3 x its skeleton, so its Bip01 capsule centre lies 29 from the actor; following
+  the centre left a looter 5 m off a downed Cleanser Unit.
 - Bones (`FUN_1407d3a30`): a simulated body writes its orientation into its manually controlled Ogre
   bone (plus position for a bone without parent); a pinned body is moved to the animated pose.
+  Meitou (`RagdollBody.BoneInBody`): the bone sits at its actor's origin, so a parentless bone is drawn there and the other bones keep the skeleton's offsets; a pinned or new
+  body puts its actor on the animated bone (engine choice for the pinned case: the same convention both ways, so no jump on entering a ragdoll). Where the file and skeleton
+  differ (whale2: Bip01 actor 24 from the bone) the shapes keep their offsets from the actor, not from the skeleton's bone.
 - Carried animal: the carry-bone body is moved kinematically to the carrier's attach bone.
 - Partial (non-WHOLE) ragdolls are woken every frame (wake 20) and never freeze.
 - Water (only when byte `+0x79` of the character's race data is set): when the root is at or below

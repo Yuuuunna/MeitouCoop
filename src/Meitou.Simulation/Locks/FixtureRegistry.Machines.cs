@@ -1,21 +1,22 @@
 using System.Numerics;
-using Meitou.Data.World;
 using Meitou.Data.Gameplay.Construction;
+using Meitou.Data.World;
 using Meitou.Simulation.Construction;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Locks;
 
 public sealed partial class FixtureRegistry
 {
     // Placement metadata only: registering a town never starts all its automatic producers.
-    readonly Dictionary<string, (PopulationData Data, int Site, TownBuilding Building, int Owner)> townMachines = new(StringComparer.Ordinal);
+    readonly Dictionary<string, (PopulationData Data, int Site, TownBuilding Building, int Owner)> _townMachines = new(StringComparer.Ordinal);
 
     /// <summary>The fixture-resolved owner of an ordinary town placement, including placements without lockable fixtures.</summary>
-    public int? TownMachineOwner(string building) => townMachines.TryGetValue(building, out var source) ? source.Owner : null;
+    public int? TownMachineOwner(string building) => _townMachines.TryGetValue(building, out var source) ? source.Owner : null;
 
     void RegisterTownMachine(World world, PopulationData data, int site, TownBuilding building, int owner)
     {
-        townMachines[building.Key] = (data, site, building, owner);
+        _townMachines[building.Key] = (data, site, building, owner);
         if (world.Buildings.Find(building.Key) is { LevelMachine: true } known)
         {
             if (known.Owner != owner) TransferTownMachine(world, building.Key, owner);
@@ -32,7 +33,7 @@ public sealed partial class FixtureRegistry
     public BuildSite? GetTownMachineSite(World world, TownBuilding building)
     {
         if (world.Buildings.Find(building.Key) is { } existing) return existing;
-        if (!townMachines.TryGetValue(building.Key, out var source) || source.Building.BuildingId != building.BuildingId
+        if (!_townMachines.TryGetValue(building.Key, out var source) || source.Building.BuildingId != building.BuildingId
             || source.Owner < 0 || source.Owner >= source.Data.Factions.Count
             || source.Data.Db.Find(building.BuildingId) is not { } record) return null;
         building = source.Building;
@@ -46,9 +47,20 @@ public sealed partial class FixtureRegistry
             building.Position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, building.Yaw), building.LevelState?.StringId, building.Position.Y);
         var site = new BuildSite
         {
-            Id = building.Key, Record = building.BuildingId, Name = building.Name, LevelMachine = true, LevelPlacement = placement,
-            LevelTownName = source.Data.Sites[source.Site].Town.Name, Position = building.Position, Rotation = placement.Rotation,
-            Owner = source.Owner, Complete = true, Target = build.Target, Progress = build.Target, Rate = build.Rate, Materials = [],
+            Id = building.Key,
+            Record = building.BuildingId,
+            Name = building.Name,
+            LevelMachine = true,
+            LevelPlacement = placement,
+            LevelTownName = source.Data.Sites[source.Site].Town.Name,
+            Position = building.Position,
+            Rotation = placement.Rotation,
+            Owner = source.Owner,
+            Complete = true,
+            Target = build.Target,
+            Progress = build.Target,
+            Rate = build.Rate,
+            Materials = [],
         };
         world.Buildings.Add(site);
         return site;
@@ -56,7 +68,7 @@ public sealed partial class FixtureRegistry
 
     void TransferTownMachine(World world, string key, int owner)
     {
-        if (townMachines.TryGetValue(key, out var source)) townMachines[key] = (source.Data, source.Site, source.Building, owner);
+        if (_townMachines.TryGetValue(key, out var source)) _townMachines[key] = (source.Data, source.Site, source.Building, owner);
         if (world.Buildings.Find(key) is { LevelPlacement: not null } machine) { machine.Owner = owner; world.Buildings.Touch(); }
         ClearTownWorkers(world, key);
     }

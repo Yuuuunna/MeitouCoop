@@ -8,6 +8,16 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $stageRoot = [IO.Path]::GetFullPath($Stage, $repo)
 $outputRoot = [IO.Path]::GetFullPath($Output, $repo)
 if (Test-Path -LiteralPath $outputRoot) { throw 'Output already exists; choose a new release folder.' }
+# The authoritative constants have no standalone metadata command. Require exactly one literal declaration;
+# a source layout or expression change must fail packaging rather than silently label incompatible binaries.
+$engineSource = [IO.File]::ReadAllText((Join-Path $repo 'src/Meitou.Networking/ServerConnectionProfile.cs'))
+$engineDeclarations = [regex]::Matches($engineSource, '(?m)^\s*public\s+const\s+string\s+EngineBuild\s*=\s*"([A-Za-z0-9._-]+)";\s*$')
+if ($engineDeclarations.Count -ne 1) { throw 'Expected one literal ServerCompatibility.EngineBuild declaration.' }
+$engineBuild = $engineDeclarations[0].Groups[1].Value
+$protocolSource = [IO.File]::ReadAllText((Join-Path $repo 'src/Meitou.Networking/CompatibilityHandshake.cs'))
+$protocolDeclarations = [regex]::Matches($protocolSource, '(?m)^\s*public\s+const\s+ushort\s+Protocol\s*=\s*(\d+);\s*$')
+if ($protocolDeclarations.Count -ne 1) { throw 'Expected one literal CompatibilityHandshake.Protocol declaration.' }
+$protocol = [ushort]::Parse($protocolDeclarations[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
 foreach ($entry in @('client/MeitouClient.exe', 'client/meitou-tools.exe', 'server/Meitou.Server.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $entry))) { throw "Missing published executable: $entry" }
 }
@@ -88,7 +98,7 @@ foreach ($kind in @('client', 'server')) {
     $assemblyHashes = Get-ChildItem -LiteralPath $destination -File | Where-Object { $_.Name -like 'Meitou*.dll' -or $_.Name -like 'Meitou*.exe' } | ForEach-Object {
         @{ name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     }
-    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=21; engine='meitou-experimental-1'; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
+    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=$protocol; engine=$engineBuild; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination 'build-info.json') -Encoding utf8
     [IO.Compression.ZipFile]::CreateFromDirectory($destination, (Join-Path $outputRoot "$name.zip"), [IO.Compression.CompressionLevel]::Optimal, $true)
 }

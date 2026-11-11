@@ -4,6 +4,9 @@ using System.Text.Json.Nodes;
 using Meitou.Data.Fcs;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Saving;
 using Meitou.Tests.Save;
@@ -51,7 +54,7 @@ public class PlayerInvitationServiceTests
             Roles = Enumerable.Range(0, 3).Select(i =>
             {
                 var id = World.Characters.Spawn(new CharacterHot { Position = new(i * 10, 300, 20), Health = 42 },
-                    new CharacterCold { Name = "role-" + i, RecordId = Data.Db.OfType(FcsRecordType.CHARACTER).First().StringId,
+                    new CharacterCold { Name = "role-" + i, RecordId = Data.Db.OfType(FcsRecordType.Character).First().StringId,
                         Faction = squad.Faction, SquadId = squad.Id, IsPlayer = true, Orders = CharacterOrders.Hold, Inventory = new Inventory() }, 0);
                 World.Characters.Cold(id.Slot)!.Inventory!.Items.Add(Data.Items.Create("70-t", 3)!);
                 squad.Members.Add(id); World.Players.AssignInitial(Sender.Id, id); return id;

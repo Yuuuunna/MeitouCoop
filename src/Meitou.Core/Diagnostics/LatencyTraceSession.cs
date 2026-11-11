@@ -3,11 +3,11 @@ namespace Meitou.Diagnostics;
 /// <summary>Explicit host lifetime for opt-in tracing. No IO is performed by emission callers.</summary>
 public sealed class LatencyTraceSession : IDisposable, IAsyncDisposable
 {
-    readonly BoundedLatencyTraceWriter? writer;
-    readonly ILatencyTraceSink? previous;
+    readonly BoundedLatencyTraceWriter? _writer;
+    readonly ILatencyTraceSink? _previous;
     LatencyTraceSession(BoundedLatencyTraceWriter? writer)
     {
-        this.writer = writer; previous = LatencyTrace.Sink;
+        this._writer = writer; _previous = LatencyTrace.Sink;
         if (writer is not null) LatencyTrace.Sink = writer;
     }
 
@@ -39,10 +39,10 @@ public sealed class LatencyTraceSession : IDisposable, IAsyncDisposable
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
     public async ValueTask DisposeAsync()
     {
-        if (writer is null) return;
-        if (ReferenceEquals(LatencyTrace.Sink, writer)) LatencyTrace.Sink = previous;
-        try { await writer.DisposeAsync().ConfigureAwait(false); }
+        if (_writer is null) return;
+        if (ReferenceEquals(LatencyTrace.Sink, _writer)) LatencyTrace.Sink = _previous;
+        try { await _writer.DisposeAsync().ConfigureAwait(false); }
         catch (Exception error) { Console.Error.WriteLine("Latency trace could not close: " + error.GetType().Name); }
-        if (writer.Failure is not null) Console.Error.WriteLine("Latency trace writer failed; capture is incomplete: " + writer.Failure.GetType().Name);
+        if (_writer.Failure is not null) Console.Error.WriteLine("Latency trace writer failed; capture is incomplete: " + _writer.Failure.GetType().Name);
     }
 }

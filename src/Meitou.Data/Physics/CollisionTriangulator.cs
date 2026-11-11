@@ -10,13 +10,19 @@ namespace Meitou.Data.Physics;
 /// </summary>
 public static class CollisionTriangulator
 {
-    /// <summary>Sides of the capsule prism.</summary>
+    /// <summary>
+    /// Sides of the capsule prism.
+    /// </summary>
     public const int CapsuleSides = 16;
 
-    /// <summary>Exporter space to Ogre/Kenshi space: (x, y, z) → (x, z, −y), a −90° rotation about X.</summary>
+    /// <summary>
+    /// Exporter space to Ogre/Kenshi space: (x, y, z) → (x, z, −y), a −90° rotation about X.
+    /// </summary>
     public static Vector3 ToWorldAxes(Vector3 p) => new(p.X, p.Z, -p.Y);
 
-    /// <summary>Appends the shape's triangles (outward-facing under <c>cross(v1 - v0, v2 - v0)</c>) to the lists. Returns the number of triangles added.</summary>
+    /// <summary>
+    /// Appends the shape's triangles (outward-facing under <c>cross(v1 - v0, v2 - v0)</c>) to the lists. Returns the number of triangles added.
+    /// </summary>
     public static int Triangulate(CollisionShape shape, List<Vector3> vertices, List<int> indices)
     {
         int before = indices.Count;
@@ -53,6 +59,9 @@ public static class CollisionTriangulator
         return (indices.Count - before) / 3;
     }
 
+    /// <summary>
+    /// Appends triangle <paramref name="a"/>, <paramref name="b"/>, <paramref name="c"/>, wound the other way when <paramref name="flip"/>.
+    /// </summary>
     static void Add(List<int> indices, int a, int b, int c, bool flip)
     {
         indices.Add(a);
@@ -60,6 +69,9 @@ public static class CollisionTriangulator
         else { indices.Add(b); indices.Add(c); }
     }
 
+    /// <summary>
+    /// Appends a box of half extents <paramref name="h"/> under <paramref name="pose"/>: 8 corners, 12 triangles.
+    /// </summary>
     static void AddBox(Vector3 h, Pose pose, bool flip, List<Vector3> vertices, List<int> indices)
     {
         int b = vertices.Count;
@@ -82,6 +94,10 @@ public static class CollisionTriangulator
         }
     }
 
+    /// <summary>
+    /// Appends a capsule as a <see cref="CapsuleSides"/>-sided prism along local Y from -(height/2 + r) to +(height/2 + r), its ends closed by
+    /// flat fans.
+    /// </summary>
     static void AddCapsule(float r, float height, Pose pose, bool flip, List<Vector3> vertices, List<int> indices)
     {
         int b = vertices.Count;

@@ -1,9 +1,10 @@
 using System.Numerics;
-using Meitou.Engine;
-using Meitou.Engine.Time;
+using Meitou.Game.Host;
+using Meitou.Simulation.Session;
 using Meitou.Game;
 using Meitou.Networking;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 
 namespace Meitou.Tests.Engine;
 
@@ -86,9 +87,9 @@ public partial class SecureServerTests
         await scene.Loop.InvokeAsync(() => scene.Runtime.Speed = 1, token);
         await PumpPlayer(remote, () => remote.CurrentSnapshot.Tick > 0 && remote.TimeScale == 1 && remote.Clock.GameSeconds > 0, token);
         double animationTime = client.Clock.GameSeconds;
-        client.Bindings.Set(Meitou.Engine.Input.InputAction.Pause, Meitou.Engine.Input.Key.Space);
-        client.Input.SetKey(Meitou.Engine.Input.Key.Space, true);
-        Assert.True(client.Tick().Pressed(Meitou.Engine.Input.InputAction.Pause));
+        client.Bindings.Set(Meitou.Game.Host.Input.InputAction.Pause, Meitou.Game.Host.Input.Key.Space);
+        client.Input.SetKey(Meitou.Game.Host.Input.Key.Space, true);
+        Assert.True(client.Tick().Pressed(Meitou.Game.Host.Input.InputAction.Pause));
         Assert.Equal(1, await scene.Loop.InvokeAsync(() => scene.Runtime.Speed, token));
         client.SetModalPause(true);
         Assert.False(client.IsPaused);

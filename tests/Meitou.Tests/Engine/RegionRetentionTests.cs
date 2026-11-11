@@ -3,6 +3,7 @@ using Meitou.Data.Gameplay.Construction;
 using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Production;
 using SimWorld = Meitou.Simulation.World;

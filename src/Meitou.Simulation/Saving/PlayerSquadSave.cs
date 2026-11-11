@@ -1,8 +1,11 @@
 using Meitou.Data.Save;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Saving;
 
-/// <summary>Meitou multiplayer role/squad markers. Faction membership does not claim NPC squads.</summary>
+/// <summary>
+/// Meitou multiplayer role/squad markers. Faction membership does not claim NPC squads.
+/// </summary>
 public static class PlayerSquadSave
 {
     public const string WorldKey = "meitou multiplayer";

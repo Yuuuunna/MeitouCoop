@@ -3,6 +3,9 @@ using Meitou.Data.Fcs;
 using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Saving;
 using Meitou.Tests.Save;
 using Meitou.Tests.Simulation;
@@ -118,7 +121,7 @@ public partial class WorldCheckpointCoordinatorTests
             var squad = SquadManagement.NewSquad(world, Data.Db, Vector3.Zero, "A", faction);
             Role = world.Characters.Spawn(new CharacterHot { Position = Vector3.One }, new CharacterCold
             {
-                Name = "Saved role", RecordId = Data.Db.OfType(FcsRecordType.CHARACTER).First().StringId,
+                Name = "Saved role", RecordId = Data.Db.OfType(FcsRecordType.Character).First().StringId,
                 Faction = faction, IsPlayer = true, SquadId = squad.Id,
             }, 0);
             squad.Members.Add(Role); squad.Leader = Role;

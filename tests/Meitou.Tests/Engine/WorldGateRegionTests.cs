@@ -1,5 +1,5 @@
 using System.Numerics;
-using Meitou.Navigation;
+using Meitou.Simulation.Navigation;
 using Meitou.Runtime;
 using Meitou.Simulation;
 using Meitou.Simulation.Bodies;

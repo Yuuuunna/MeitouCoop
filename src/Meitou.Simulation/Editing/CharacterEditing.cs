@@ -1,53 +1,88 @@
+using Meitou.Data;
 using Meitou.Data.Characters;
 using Meitou.Data.Fcs;
+using Meitou.Simulation.Bodies;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Saving;
 
 namespace Meitou.Simulation.Editing;
 
-/// <summary>Why the character editor is open (docs/characters.md "Character editor"): making the start's characters, or a plastic surgeon's work.</summary>
-/// <summary>The editor's use: the new game's characters, a plastic surgeon, or a recruit (DA_JOIN_SQUAD_WITH_EDIT; free, race and gender kept as at a surgeon).</summary>
-public enum EditKind : byte { Creation, Surgery, Recruit }
+/// <summary>
+/// Why the character editor is open (docs/characters.md "Character editor"): making the start's characters, or a plastic surgeon's work. The
+/// editor's use: the new game's characters, a plastic surgeon, or a recruit (DA_JOIN_SQUAD_WITH_EDIT; free, race and gender kept as at a surgeon).
+/// </summary>
+public enum EditKind : byte
+{
+    /// <summary>
+    /// The new game's characters.
+    /// </summary>
+    Creation,
+    /// <summary>
+    /// A plastic surgeon's work, paid.
+    /// </summary>
+    Surgery,
+    /// <summary>
+    /// A recruit's edit (DA_JOIN_SQUAD_WITH_EDIT): free, race and gender kept.
+    /// </summary>
+    Recruit
+}
 
 /// <summary>
-/// The character editor's result for one character: its new look (a CHARACTER_APPEARANCE, normally a <see cref="CharacterDraft"/> of its current one) and name.
-/// Validated when applied (<see cref="CharacterEditing.Apply"/>): a player character; at creation only while the new game's editor is open
-/// (<see cref="PlayerState.InCreation"/>), in surgery only beside the <see cref="Surgeon"/> and with the race and gender unchanged.
+/// The character editor's result for one character: its new look (a CHARACTER_APPEARANCE, normally a <see cref="CharacterDraft"/> of its current one)
+/// and name. Validated when applied (<see cref="CharacterEditing.Apply"/>): a player character; at creation only while the new game's editor is open
+/// (<see cref="PlayerState.InCreation"/>), in surgery only beside the <see cref="Surgeon"/> and with the race and gender unchanged. A null look
+/// renames only: an animal's page in the editor offers its name and nothing else (docs/characters.md "Character editor"). Allowed in every kind: a
+/// bought animal is named through the in-play (Recruit) editor; only a creation rename needs the creation to be open.
 /// </summary>
 public sealed record EditCharacter(CharacterId Character, FcsRecord? Appearance, string Name, EditKind Kind) : SimCommand
 {
-    /// <summary>The plastic surgeon doing the work (surgery only).</summary>
+    /// <summary>
+    /// The plastic surgeon doing the work (surgery only).
+    /// </summary>
     public CharacterId Surgeon { get; init; } = CharacterId.None;
-    /// <summary>Legacy UI hint only; payment authority comes from SessionId.</summary>
+
+    /// <summary>
+    /// The surgery was paid already (a surgeon's dialogue line takes the money, DA_TAKE_MONEY, before it opens the editor).
+    /// </summary>
     public bool Paid { get; init; }
-    /// <summary>Opaque permission issued by the server dialogue, not a client assertion of payment.</summary>
+    /// <summary>
+    /// Opaque permission issued by the server dialogue, not a client assertion of payment.
+    /// </summary>
     public Guid SessionId { get; init; }
+
 }
 
-/// <summary>Ends the new game's character creation: the start's characters cannot be remade any more.</summary>
+/// <summary>
+/// Ends the new game's character creation: the start's characters cannot be remade any more.
+/// </summary>
 public sealed record FinishCreation : SimCommand;
 
-/// <summary>Applies <see cref="EditCharacter"/> (the player system's inputs).</summary>
+/// <summary>
+/// Applies <see cref="EditCharacter"/> (the player system's inputs).
+/// </summary>
 public static class CharacterEditing
 {
-    /// <summary>The longest name the editor takes (the layout's <c>NameText</c> <c>MaxTextLength</c>).</summary>
+    /// <summary>
+    /// The longest name the editor takes (the layout's <c>NameText</c> <c>MaxTextLength</c>).
+    /// </summary>
     public const int MaxNameLength = 30;
-    /// <summary>How near (world units) the surgeon must stand: the talk range of a dialogue (engine choice, <b>Unknown</b> in the original).</summary>
+
+    /// <summary>
+    /// How near (world units) the surgeon must stand: the talk range of a dialogue (engine choice, <b>Unknown</b> in the original).
+    /// </summary>
     public const float SurgeonReach = 60;
 
-    /// <summary>What <paramref name="id"/>'s surgery costs: its record's dialogue, or its squad template's leader dialogue when it leads the squad; null: not a surgeon.</summary>
-    internal static int? SurgeryCost(World world, Meitou.Data.Characters.SurgeonDialogues surgeons, CharacterId id, CharacterCold cold)
+    /// <summary>
+    /// What <paramref name="id"/>'s surgery costs: its record's dialogue, or its squad template's leader dialogue when it leads the squad; null: not
+    /// a surgeon.
+    /// </summary>
+    internal static int? SurgeryCost(World world, SurgeonDialogues surgeons, CharacterId id, CharacterCold cold)
     {
         var squad = cold.SquadId >= 0 ? world.Squads.Find(cold.SquadId) : null;
         return surgeons.CostOf(cold.RecordId, squad?.TemplateId, squad is not null && squad.Leader == id);
     }
-
-    public static Guid OpenSession(World world, PlayerId? issuer, CharacterId character, CharacterId surgeon, EditKind kind, bool paid = true)
-        => CharacterEditSessions.Open(world, issuer, character, surgeon, kind, paid);
-
-    public static IReadOnlyDictionary<CharacterId, Guid> OpenAnimalSessions(World world, PlayerId? issuer, IReadOnlyList<CharacterId> characters) =>
-        CharacterEditSessions.OpenAnimals(world, issuer, characters);
-
-    public static void CloseForPlayer(World world, PlayerId player) => CharacterEditSessions.CloseForPlayer(world, player);
 
     public static void Apply(World world, PopulationData data, EditCharacter edit)
     {
@@ -92,11 +127,11 @@ public static class CharacterEditing
         if (look.Animal is not null) { Post("An animal's appearance cannot be changed."); return; }
         var currentRace = look.Race;
         var proposedRace = edit.Appearance.References.TryGetValue("race", out var refs) && refs.Count > 0 ? data.Db.Find(refs[0].TargetStringId) : null;
-        if (proposedRace is not { Type: FcsRecordType.RACE }) { Post("The edited look has no race."); return; }
+        if (proposedRace is not { Type: FcsRecordType.Race }) { Post("The edited look has no race."); return; }
         if (edit.Kind == EditKind.Creation)
         {
             if (!player.InCreation) { Post("Characters can only be made at the start of a new game."); return; }
-            if (!CharacterDraft.PlayableRaces(data.Db, player.CreationRaces).Any(g => g.Races.Any(r => r.StringId == proposedRace.StringId)))
+            if (!PlayableRaces.Of(data.Db, player.CreationRaces).Any(g => g.Races.Any(r => r.StringId == proposedRace.StringId)))
             {
                 Post($"{proposedRace.Name} is not a playable race.");
                 return;
@@ -182,6 +217,34 @@ public static class CharacterEditing
         if (name.Length > 0) cold.Name = name;
         if (session is not null) session.Applied = true;
     }
+
+    /// <summary>
+    /// The race record the edited look names (its first <c>race</c> reference); null when it names none.
+    /// </summary>
+    static GameRecord? ProposedRace(PopulationData data, FcsRecord appearance) =>
+        appearance.References.TryGetValue("race", out var refs) && refs.Count > 0 ? data.Db.Find(refs[0].TargetStringId) : null;
+
+    /// <summary>
+    /// The prosthetics a body wears (a start's <c>robot limbs</c>), to fit on the body a race switched in the creator gives it: without them the new
+    /// body has natural limbs while their items still sit in the limb sections, so only the default race kept them (#360).
+    /// </summary>
+    static List<(Meitou.Data.Gameplay.Bodies.LimbReplacement Limb, Items.ItemInstance? Item)> Prosthetics(MedicalState? medical)
+    {
+        var list = new List<(Meitou.Data.Gameplay.Bodies.LimbReplacement, Items.ItemInstance?)>();
+        for (int k = 0; k < 4; k++)
+        {
+            if (medical?.LimbPart(k) is { Limb: LimbState.Replaced, Replacement: { } limb } part) list.Add((limb, part.ReplacementItem));
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// The end of the new game's creation (<see cref="FinishCreation"/>; the editor's close in mode 0, <c>FUN_1405f5d10</c>): every human of the
+    /// start's squad has its inventory sections validated for the race it has now (<see cref="Items.InventoryCommands.ValidateSections"/>,
+    /// <c>validateInventorySections</c>), so one switched in the editor to a race with <c>no hats</c>, <c>no shirts</c> or <c>no shoes</c> loses what
+    /// it wore there, and its worn look and gear are refreshed.
+    /// </summary>
     internal static void EndCreation(World world, CharacterAssembly? assembly)
     {
         if (world.Players.RequiresExplicitControl || !world.Player.InCreation || world.Squads.Find(world.Player.Squad) is not { } squad) return;
@@ -189,10 +252,24 @@ public static class CharacterEditing
         {
             if (!world.Characters.TryResolveNext(id, out int slot) || world.Characters.Cold(slot) is not { IsPlayer: true, Inventory: { } inventory } cold
                 || cold.Faction != world.Player.Faction || SquadRegistry.IsAnimal(cold)) continue;
+
             int before = inventory.Items.Count;
             Items.InventoryCommands.ValidateSections(world, slot, cold);
-            if (inventory.Items.Count != before) assembly?.RefreshEquipment(cold);
+            if (inventory.Items.Count != before)
+            {
+                assembly?.RefreshEquipment(cold);
+            }
         }
     }
+
+    public static Guid OpenSession(World world, PlayerId? issuer, CharacterId character, CharacterId surgeon, EditKind kind, bool paid = true)
+        => CharacterEditSessions.Open(world, issuer, character, surgeon, kind, paid);
+
+
+    public static IReadOnlyDictionary<CharacterId, Guid> OpenAnimalSessions(World world, PlayerId? issuer, IReadOnlyList<CharacterId> characters) =>
+        CharacterEditSessions.OpenAnimals(world, issuer, characters);
+
+
+    public static void CloseForPlayer(World world, PlayerId player) => CharacterEditSessions.CloseForPlayer(world, player);
 
 }

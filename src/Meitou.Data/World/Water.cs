@@ -11,18 +11,32 @@ namespace Meitou.Data.World;
 /// </summary>
 public static class WorldWater
 {
-    /// <summary>World height of the water surface everywhere (Verified, kenshi_x64.exe: set once when water is created).</summary>
+    /// <summary>
+    /// World height of the water surface everywhere (Verified, kenshi_x64.exe: set once when water is created).
+    /// </summary>
     public const float Height = 100f;
 
-    /// <summary>Edge length of the per-zone water planes (one zone) and of the distant water plane.</summary>
+    /// <summary>
+    /// Edge length of the per-zone water planes (one zone) and of the distant water plane.
+    /// </summary>
     public const float ZonePlaneSize = WorldLayout.ZoneSize;
+    /// <summary>
+    /// Edge length of the distant water plane.
+    /// </summary>
     public const float DistantPlaneSize = 500000f;
 
-    /// <summary>Within this distance the near (per-zone, alpha-blended) water is drawn; beyond it the opaque distant water.</summary>
+    /// <summary>
+    /// Within this distance the near (per-zone, alpha-blended) water is drawn; beyond it the opaque distant water.
+    /// </summary>
     public const float NearDistance = 4000f;
 
-    /// <summary>World maps under <c>data/newland/land/overlaymaps/</c> that the water material samples over the whole world.</summary>
+    /// <summary>
+    /// World maps under <c>data/newland/land/overlaymaps/</c> that the water material samples over the whole world.
+    /// </summary>
     public const string ColourMap = "newland/land/overlaymaps/watercolourmap.png";
+    /// <summary>
+    /// The flow map (see <see cref="ColourMap"/>).
+    /// </summary>
     public const string FlowMap = "newland/land/overlaymaps/flowmap.png";
 }
 
@@ -32,31 +46,71 @@ public static class WorldWater
 /// </summary>
 public sealed record BiomeWater
 {
+    /// <summary>
+    /// The record's string id.
+    /// </summary>
     public required string StringId { get; init; }
+    /// <summary>
+    /// The record's name.
+    /// </summary>
     public required string Name { get; init; }
-    /// <summary>Biome map colour (<c>index</c>), RGB.</summary>
+    /// <summary>
+    /// Biome map colour (<c>index</c>), RGB.
+    /// </summary>
     public required uint Index { get; init; }
-    /// <summary><c>water color</c> (RGB 0..1). The game does not hand this to the shader: it is baked into <c>watercolourmap.png</c>.</summary>
+    /// <summary>
+    /// <c>water color</c> (RGB 0..1). The game does not hand this to the shader: it is baked into <c>watercolourmap.png</c>.
+    /// </summary>
     public required Vector3 Colour { get; init; }
-    /// <summary>Shader <c>scale</c>: (<c>water scale X</c>, <c>Y</c>, <c>scum scale X</c>, <c>Y</c>) / 5000, texture repeats per world unit.</summary>
+    /// <summary>
+    /// Shader <c>scale</c>: (<c>water scale X</c>, <c>Y</c>, <c>scum scale X</c>, <c>Y</c>) / 5000, texture repeats per world unit.
+    /// </summary>
     public required Vector4 Scale { get; init; }
-    /// <summary>Shader <c>invStrength</c>: 1 / max(<c>water strength</c>, 0.0001); divides the normal map's up component.</summary>
+    /// <summary>
+    /// Shader <c>invStrength</c>: 1 / max(<c>water strength</c>, 0.0001); divides the normal map's up component.
+    /// </summary>
     public required float InvStrength { get; init; }
-    /// <summary>Shader <c>invOpacity</c>: 1 / max(<c>water visibility</c> × 10, 1).</summary>
+    /// <summary>
+    /// Shader <c>invOpacity</c>: 1 / max(<c>water visibility</c> × 10, 1).
+    /// </summary>
     public required float InvOpacity { get; init; }
+    /// <summary>
+    /// Shader <c>gloss</c>: <c>water gloss</c>.
+    /// </summary>
     public required float Gloss { get; init; }
+    /// <summary>
+    /// Shader <c>glow</c>: <c>water glow</c>.
+    /// </summary>
     public required float Glow { get; init; }
-    /// <summary>Shader <c>distortion</c>: (<c>water distortion</c>, <c>scum distortion</c> / mean scum scale).</summary>
+    /// <summary>
+    /// Shader <c>distortion</c>: (<c>water distortion</c>, <c>scum distortion</c> / mean scum scale).
+    /// </summary>
     public required Vector2 Distortion { get; init; }
-    /// <summary>Texture paths as stored (null when empty): normal map, scum diffuse and normal, turbulence map.</summary>
+    /// <summary>
+    /// Texture paths as stored (null when empty): normal map, scum diffuse and normal, turbulence map.
+    /// </summary>
     public string? NormalMap { get; init; }
+    /// <summary>
+    /// See <see cref="NormalMap"/>: <c>texture scum</c>.
+    /// </summary>
     public string? ScumMap { get; init; }
+    /// <summary>
+    /// See <see cref="NormalMap"/>: <c>texture scum normal</c>.
+    /// </summary>
     public string? ScumNormal { get; init; }
+    /// <summary>
+    /// See <see cref="NormalMap"/>: <c>turbulence map</c>.
+    /// </summary>
     public string? TurbulenceMap { get; init; }
 
-    /// <summary>The game's divisor for the texture scales (the same 5000 units as the terrain's tiling).</summary>
+    /// <summary>
+    /// The game's divisor for the texture scales (the same 5000 units as the terrain's tiling).
+    /// </summary>
     public const float ScaleUnit = 5000f;
 
+    /// <summary>
+    /// The water of BIOMES record <paramref name="r"/>, missing fields at their fcs.def defaults.
+    /// </summary>
     public static BiomeWater FromRecord(GameRecord r)
     {
         static string? Tex(GameRecord r, string field) => r.GetPath(field) is { Length: > 0 } p ? p : null;
@@ -82,14 +136,19 @@ public sealed record BiomeWater
         };
     }
 
-    /// <summary>All BIOMES records' water by <see cref="Index"/> colour (the first record by id wins if two share a colour).</summary>
+    /// <summary>
+    /// All BIOMES records' water by <see cref="Index"/> colour (the first record by id wins if two share a colour).
+    /// </summary>
     public static Dictionary<uint, BiomeWater> ByIndex(GameDatabase db)
     {
         var result = new Dictionary<uint, BiomeWater>();
-        foreach (var r in db.OfType(FcsRecordType.BIOMES).OrderBy(r => r.StringId, StringComparer.Ordinal))
+        foreach (var r in db.OfType(FcsRecordType.Biomes).OrderBy(r => r.StringId, StringComparer.Ordinal))
             result.TryAdd((uint)r.GetInt("index") & 0xFFFFFF, FromRecord(r));
         return result;
     }
 
+    /// <summary>
+    /// The install's <see cref="WorldWater.ColourMap"/>.
+    /// </summary>
     public static string ColourMapPath(GameInstall install) => Path.Combine(install.DataDirectory, WorldWater.ColourMap);
 }

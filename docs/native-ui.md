@@ -3,26 +3,26 @@
 UI mode (--ui/Tab) is independent of graphics. Both modes use the installed MyGUI layouts,
 skins and fonts for the in-game HUD, windows and Escape menu. Meitou customises the title,
 scene transitions and settings; Faithful retains their original presentation where implemented.
-Vulkan paints both, choice persisted. `Meitou.Ui` has no window/GPU/simulation dependency.
+Vulkan paints both, choice persisted. `Meitou.Game.Ui` uses no window, GPU or simulation types.
 Host supplies snapshot text/availability and actions that enqueue commands. Extensions receive
 read-only binding copies, never mutable world. [MyGUI](formats/mygui.md), [parity](faithful-ui-parity.md).
 
 ## Settings
 
 `SettingsMenu` shares category/row geometry and input between both modes: Display, Graphics, Interface, Controls, Advanced, Audio, Gameplay,
-Fixes, Mods, Mod settings. Faithful uses MyGUI skins; Meitou the [UI kit](meitou-ui.md)'s rust plates and paper Save. Tab or Options opens it;
+Fixes, Mods. Faithful uses MyGUI skins; Meitou the [UI kit](meitou-ui.md)'s rust plates and paper Save. Tab or Options opens it;
 Esc/X/Save saves and returns. Changes apply live (the active upscaler shown beside the requested one); texture quality needs a
 restart. Display and Graphics rows come from the launcher's catalogue (`LauncherSchema.Find` / `Order`: name, range, direction,
 value text, choices, impact, order), so the game and the [launcher](launcher.md#graphics) show them alike; the Tab panel slider
 only reads and writes the value.
 
-Mods (`SettingsMenu.Mods.cs`) is read-only: the mods of the load order with each `.mod` header and its game data problems (`ModReport`), a Copy
+Mods (`ModsPage`): the mods of the load order with each `.mod` header and its game data problems (`ModReport`), a Copy
 button for the selected mod and one for all problems; a summary line under the version text opens it. Separator files (`[1]---[...]---.mod`) are listed without detail.
+Under a mod's row, a Settings group holds the settings its code registered (`ModSettingsRows`, [modding](modding.md), "Settings"),
+open the first time it is shown, its rows the page's own switches, sliders and lists; a changed row is brass with a Reset link. A group whose mod
+mods.cfg does not list comes after the list under the mod's name.
 
-Mod settings (`SettingsMenu.ModSettings.cs`) lists the settings code mods registered ([modding](modding.md), "Settings"): a group per mod in load
-order, open the first time it is shown, its rows the page's own switches, sliders and lists; a changed row is brass with a Reset link.
-
-Graphics (`SettingsMenu.Looks.cs`, `.Presets.cs`, `.Groups.cs`; `--settings-showcase` with `--screenshot` captures it) has two
+Graphics (`LookPresets`, `QualityTiers`, `FeatureGrouping`; `--settings-showcase` with `--screenshot` captures it) has two
 rows above its tabs:
 - **Look**: Faithful | Meitou (`faithfulLook`). Faithful is the game as it ships: every Faithful / Meitou effect switch off,
   look sliders at the game's value (the one the label names, "(0 = game)"), a strength under a switch kept. It is a starting
@@ -36,8 +36,8 @@ rows above its tabs:
   not added. Unsaved `faithfulLook` is guessed from the effect switches (tier switches and bloom ignored) and not saved;
   `--faithful all` / `--meitou all` set it, a partial list leaves it guessed.
 - **Quality**: Low / Medium / High / Ultra / Custom, always the tier the settings sit at (`CurrentPreset`; a moved slider makes
-  it Custom). It sets the distance, foliage, grass, reflection, shadow, particle density, filtering, texture, ground relief and
-  shaft quality sliders, the fifth cascade and the relief switches (rock smoothing and outline refinement at Ultra;
+  it Custom). It sets the distance, foliage, grass, reflection, shadow, particle density, filtering, texture, ground relief quality and
+  depth (20 cm), shaft quality sliders, the fifth cascade and the relief switches (rock smoothing and outline refinement at Ultra;
   Meitou only). High is the start default and sets render scale Quality 0.67 (`UpscaleOptions.DefaultScale`; 1 without TAA, FSR or DLSS),
   not counted when reading the tier; Medium and Ultra leave the scale; distances that follow a switch's side (Draw distances, Shadows) are multiples of that
   side's mark, so a tier reads the same in either look. Low is `--low-end` (`WorldOptions.LowEnd*`): also shadows and relief

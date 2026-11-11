@@ -26,7 +26,8 @@ flag. A unique with no entry counts as alive, so a new game answers by the data 
 v0..v1, reversed range givesv0. Apply size multiplier/truncation/min1 unless dont-multiply.
 Create leader role2, random choosefrom then squad role0/squad2 role1, animals/animals2, slaves
 as recursive squads (**Verified** `FUN_140583a10`: after the recursive call every member of the slave squad from index 0, the leader included, gets member
-type 4 through `FUN_1406215c0` (status `+0x25c`), whatever the slave template says; the squad's leader pointer is not touched), prisoners into available home cages. First member can become leader.
+type 4 through `FUN_1406215c0` (status `+0x25c`), whatever the slave template says, then its head is shaven, the owner set and `setChainedMode(true)` puts
+locked shackles on it; the squad's leader pointer is not touched), prisoners into available home cages. First member can become leader.
 **Prisoners** (`FUN_140583a10`, **Observed**): only with a home building; its cages (`BuildingFinder_CagesWithinBuilding`) are counted, then each `prisoners` entry makes a
 platoon of the entry's `faction` (else the owner's) whose members each go into a random remaining cage (`FUN_140330600`, lock set) with `Character+0x190 = 9999999` (meaning
 **Unknown**); with no cage left, one member is removed and placing stops. A housed trader that made prisoner or slave squads still stocks its home containers ([economy](economy.md#building-shops-observed-decompile)).
@@ -46,8 +47,9 @@ state 3+) and not `inSomething` (`+0x2f8`, bed or cage), else the backup under t
 stands in a loaded or requested zone, cached as the backup; else the leader itself, usable or not. That member scan tests the *leader's* `+0x2f8`, not the member's (so a leader in a
 bed or cage is kept). The stored leader is never replaced there. Who becomes `squadleader` after the leader dies is **Unknown**. Meitou (`PopulationSystem.EffectiveLeader`, `Squad.Backup`):
 the same rule for a loaded platoon's place and the unload anchor; down = out (unconscious or dead) or carried, a limb hold and playing dead are not modelled. A campaign's announcement is task 129 in the leader's AI package, and animals get only
-`dialog animal`, so an animal never announces. Meitou keeps one leader: a squad without one (death, leaving, a save or stand-in without a leader) takes its
-first member that is not an animal, else its first (`SquadRegistry.Successor`, engine choice). A player squad edited on the squads screen still makes its index 0 the leader.
+`dialog animal`, so an animal never announces. Meitou keeps one leader: a squad without one (leaving, a save or stand-in without a leader), and an NPC squad whose leader died while a member
+lives, takes its first living member that is not an animal, else its first living one (`SquadRegistry.Successor`, engine choice), who then acts
+the leader's goals (a patrol), so the squad does not stand by the corpse. A player squad edited on the squads screen still makes its index 0 the leader.
 
 ## Unique characters
 
@@ -190,7 +192,7 @@ faction) when no member is a character that is not dead: with the template's `re
 (and may run again); else it logs "Platoon::declareDead: <name>" to death.log, takes the platoon out of its town's pool set (lowering the pool by its living count, 0 here), sets the saved
 `dead` flag (+0x1f0) and clears `persistent` (destroyed at its next unload, its PLATOON record deleted by `FUN_1407ec5e0`; a campaign's platoon stays with its campaign, `FUN_1407ec570`); a save before then leaves it out unless the player is near ([save.md](../formats/save.md#npc-platoons-meitou-mapping)).
 Meitou: `Platoon.Dead` (saved as `dead`, read at load), set in `StepLoaded`; the platoon leaves the pool counts at once, is not kept and is despawned when it unloads (its dead lie where they fell).
-Meitou (g-008): a town unloads with its coverage zones only; a town squad with a living member in the loaded box of an active zone then stays in the world as a loaded pinned platoon (`PopulationSystem.KeepLoaded`) that unloads by its own place after `TownUnloadGraceSeconds` (0), as each original platoon checks itself (the old "town stays loaded while a member is active" engine choice is gone; wild sites keep it).
+Meitou (g-008): a town unloads with its coverage zones only; a town squad with a living member in the loaded box of an active zone, or one carrying a player character (the carry test of `FUN_1404febd0`), then stays in the world as a loaded pinned platoon (`PopulationSystem.KeepLoaded`) that unloads by its own place after `TownUnloadGraceSeconds` (0), as each original platoon checks itself (the old "town stays loaded while a member is active" engine choice is gone; wild sites keep it).
 No distance, age or emptiness rule removes a persistent platoon. A wiped-out town refills only through its pools, with non-persistent squads;
 no path re-running the initial resident placement was found (**Unknown** whether one exists).
 
@@ -391,7 +393,7 @@ flag `+0xa8` wants it: the first set holding the building answers nothing when `
 `createBuilding` `FUN_14057cc70` reads it from the zone's content object (the zone slot `FUN_140a08ae0`, 0x168 bytes each), where `+0xa8` is `ZoneMapContent::newGameFirstTimeLoaded`
 ([save.md](../formats/save.md); **Observed**, the identity rests on that one offset; the decompile's `Vector3 *` here is one byte wide, as the position floats read at `+0` / `+4` / `+8` show, so `[0xa8]` is the byte at `+0xa8`), so swaps happen only while a zone's buildings are made fresh in a new game, never for a zone loaded
 from a save. The faction asked is the passed owner faction, else the owning town's, with a further town-based override for non-player owners whose exact conditions (the
-`createBuilding` parameters `param_8`, `param_14`, the "creates player town" flag) are **Unknown**. Meitou (`BuildingSwaps`, `BuildingSwapPass.ApplyBuildingSwaps`, run once on the level data right after it is read, `WorldObjects.Load`): the placement's owner is its state's `owner faction ID`, else the faction of the town whose radius holds it; a replaced placement takes the new building's id and a skipped one is cleared, so the drawn world, the town buildings, the fixtures and the navmesh share the result. Engine choices: every placement is treated as made in a fresh zone (a zone the player has saved keeps what it was made as, which the same rolls reproduce), and the weighted pick's roll is fixed by the placement (a hash of its zone and id) instead of an unseeded `rand()` kept in the saved zone file, so a game and its reloads agree. A per-game roll kept in the save (the seed would ride CAMERA `meitou seed`, already written and restored) is not done: the swaps are applied once when the world scene loads, and the town building lists, `PopulationData` and the navmesh footprints derived from them are built once per process (`GameHost.BootSimulation`), before any new game or save names its seed, so a per-game result needs those rebuilt per game (**Unknown**: how much of the navmesh a swapped building changes). **Measured** (base game plus the load-order mods, 30,481 placements): 339 change or go with today's rolls, 214 of them to `2887-gamedata.base`; the placements with a weighted (several-entry) answer for some faction number about 2,500 by owner-agnostic count, so the per-game part is a few hundred placements. The derived state copies the placements at construction: `TownBuildings.Build`, `BuildingEffects`, `WorldLights`, `WorldObjects` (drawn objects per zone), `BuildingFootprints` (route obstacles), `ZoneGeometryGatherer` and `NavSystem`'s id map, `BuildingSight`, the fixtures, and the nav mesh cache's zones; a refresh in place has to patch every one and rebuild the nav zones whose buildings changed while the game runs (**Unverified plan, not done**). The furniture of a building's layouts (made by other `createBuilding` callers, with the owner of the building they furnish) goes through the owner's swaps too: `BuildingLayouts.Items(layout, placement)` (swaps turned on by `ApplyBuildingSwaps(db, layouts)`), the roll fixed by the placement and the piece. The `GameHost` fallback that reads the levels again turns the layouts' swaps on only for placements, not their furniture.
+`createBuilding` parameters `param_8`, `param_14`, the "creates player town" flag) are **Unknown**. Meitou (`BuildingSwaps`, `BuildingSwapPass.ApplyBuildingSwaps`, run once on the level data right after it is read, `WorldObjects.Load`): the placement's owner is its state's `owner faction ID`, else the faction of the town whose radius holds it; a replaced placement takes the new building's id and a skipped one is cleared, so the drawn world, the town buildings, the fixtures and the navmesh share the result. Engine choices: every placement is treated as made in a fresh zone (a zone the player has saved keeps what it was made as, which the same rolls reproduce), and the weighted pick's roll is fixed by the placement (a hash of its zone and id) instead of an unseeded `rand()` kept in the saved zone file, so a game and its reloads agree. A per-game roll kept in the save (the seed would ride CAMERA `meitou seed`, already written and restored) is not done: the swaps are applied once when the world scene loads, and the town building lists, `PopulationData` and the navmesh footprints derived from them are built once per process (`GameHost.BootSimulation`), before any new game or save names its seed, so a per-game result needs those rebuilt per game (**Unknown**: how much of the navmesh a swapped building changes). **Measured** (base game plus the load-order mods, 30,481 placements): 339 change or go with today's rolls, 214 of them to `2887-gamedata.base`; the placements with a weighted (several-entry) answer for some faction number about 2,500 by owner-agnostic count, so the per-game part is a few hundred placements. The derived state copies the placements at construction: `TownBuildings.Build`, `BuildingEffects`, `WorldLights`, `WorldObjects` (drawn objects per zone), `BuildingFootprints` (route obstacles), `ZoneGeometryGatherer` and `NavSystem`'s id map, `BuildingSight`, the fixtures, and the nav mesh cache's zones; a refresh in place has to patch every one and rebuild the nav zones whose buildings changed while the game runs (**Unverified plan, not done**). The furniture of a building's layouts (made by other `createBuilding` callers, with the owner of the building they furnish) goes through the owner's swaps too: `BuildingLayouts.Items(layout, placement)`, the roll fixed by the placement and the piece. The levels keep the swaps and owners (`WorldLevelData.FurnitureSwaps`) and every `BuildingLayouts` read from them calls `UseSwaps(levels)` (drawn objects, lamps, navmesh gatherer, `GameHost` fallbacks), so a piece the owner skips is neither drawn nor walled off in the navmesh (**Observed**, #345/#346: the rebirth Outpost's 10 Beds go for its robot owner).
 
 ### Loose items in buildings
 
@@ -451,7 +453,8 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   to the template's `faction` (else the town's), clears its interior and exterior objects, sets the interior layout name (LayoutInterior vfunc 12
   `FUN_14054c420`, a name only) to the template's `layout interior` and the exterior one to `layout exterior`, empty ones included, whatever the level
   state said, and reloads the exterior; ruins are not exempt. The interior loads its layout when the squad is made (`FUN_14057f820` → `FUN_1405621e0`)
-  or when it is next loaded; an empty name loads nothing (`Layout::loadLayout` `FUN_1405512a0`), nor does a name the building has no layout for
+  or when it is next loaded; an empty name loads nothing (`Layout::loadLayout` `FUN_1405512a0`; **Observed**, rebirth: template `lost armoury` names none, so the Lost Armoury's Outpost s-II at
+  -57215, -136537 stands bare, without containers for its gear artifacts, #346), nor does a name the building has no layout for
   (logged), nor any layout of a player-owned building that is not a wall (the name is cleared; when a bought house's exterior is next loaded, so whether its
   signs go, is **Unknown**: Meitou drops only its interior). With `layout interior` set, a building that does not
   offer it is not housed (`FUN_14055ad40`, before anything changes). A non-empty interior name also becomes the building's display name, then the
@@ -557,6 +560,21 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   **Observed**) and never spawns again. New nests come only from the area tick, up to `num nests` per biome group; whether a dead nest
   frees its count is **Unknown**. A group with `nests at fixed markers only` picks among its NEST_MARKER towns, leaving out every marker whose
   nearest town (by XZ, markers skipped) is within 2500 (3D) (**Verified**, `FUN_1408f6350`, 6,250,000 squared).
+- **Spot finder** (**Verified** by decompile; nests and homeless squads): a new nest (`FUN_1408f6350`) draws up to 10 random sectors of its group,
+  skipping the one in view and town-flagged ones, and takes the first where `FUN_1408f50d0` places a spot; failing that, a random sector and whatever
+  the finder left, unchecked (the sector's own position, +0x18, when nothing passed: the finder writes the out point only on a pass). `FUN_1408f50d0`:
+  4 rounds of a uniform point in the sector, each pushed up to 10 times out of a town's radius × 1.4 (another faction's × 3; the nest call's
+  arguments) and from within 1382.4 of the camera focus; a point passes when `FUN_1408f4d70` does: terrain height (`Terrain::getHeight`) not under
+  95 (`DAT_141685034`; -99, no terrain, passes) and a pixel of `areasmap.tga` with any of its three bytes non-zero. The image is the area manager's
+  `RealWorldEditableImage` (`FUN_1408fb580` loads "areasmap" from Overlaymaps over (-147456, -147456)..(147456, 147456)); the pixel is
+  `(int)((coordinate + 147456) / (294912 / 256))` per axis, clamped. Then the point is dropped inside a non-Ruins town or when its gate code
+  (`NavMesh::getGateCode` `FUN_1403a30f0`, [gate codes](pathfinding.md#gate-codes)) is above 0: inside town walls. So no spot is deeper than 5 in
+  the water (surface 100). **Data** (vanilla `areasmap.tga`, 256 × 256): 33 % black; black cells are the base `NONE` group, which has no nests or
+  homeless spawns; 917 black pixels (2 %) lie inside other groups' cells, at region edges. Meitou (`PopulationWild.cs` `SpotRefused`): the same three
+  tests for a homeless spot; a nest's candidate spots take the height and pixel tests at layout and the gate code (where the navmesh is loaded)
+  when it picks its centre; a nest roll whose cell has no passing spot passes to the next roll key (up to 10 a nest). The unchecked fallback is not
+  modelled: **Observed** (`probe nests`, the seed of a save): every nest finds a passing spot, so it would not fire (#496: before, navmesh water
+  counted as walkable and camps stood in lakes).
 - **Nest furniture** (**Verified** by code unless marked): when an area loads (`FUN_1409fdbd0` → `FUN_1408f5e70`; "area load" **Observed**), each of its nests runs `Nest` slot 64
   (`FUN_1409278a0`), which queues its TOWN record at its position, owner none; the queue (`FUN_140928410`, "delayedSpawningChecks") runs `TownBase` slot 113
   (`FUN_140938440`) once the zone is loaded. That seeds `srand` from the nest's X/Z and places: `debris` (ITEM / NEST_ITEM, `FUN_140937510`, within
@@ -575,7 +593,7 @@ Meitou: [ground items](../simulation.md#items-and-eating).
     [lo, hi], clamped, so lo when lo > hi), scale v2 × 0.01 (v2 0: 1). A NEST_ITEM without `physics file`: a point within `size radius`, then `cluster min`
     to `cluster max` meshes, each within `cluster range` × scale of the one before, yaw random, scale ± 0.1, its `ground mesh` (else `mesh`); with
     `number of meshes` n > 1 the bare name less its last character plus an int in [1, n] (`FUN_14092bdc0`: `bone1.mesh`, 6 → `bone1`..`bone6`). Drawn
-    only (a static batch). With a `physics file` (`Beak Thing Egg`): as many real items within `cluster range` of the entry's point, each persisted to
+    only (a static batch); every variant takes the item's own `material`, as the named mesh does (engine reading: the data names only the first). With a `physics file` (`Beak Thing Egg`): as many real items within `cluster range` of the entry's point, each persisted to
     the nest. Then the item's own `cluster` list from the last one placed (v0 to v1 clusters within v2; the egg's `Bone Fragment=15,0,0` is 15).
   - `loot spawn` (VENDOR_LIST): the list for the nest's faction (`FUN_1409592a0`), v0 to v1 items rolled as an item slot's (`FUN_1409540d0`), each at
     a point within `size radius` snapped to the navmesh, none below height 1; persisted to the nest.
@@ -584,14 +602,14 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   - Meitou (`NestFurniture`, `PopulationCamps.cs`): all of it when a nest's zone activates, removed when it unloads (NPCs in its cages let out); a
     `spawn in town centre` town's when it is made, kept (again when its TOWN record changed). Its own rolls keyed by the camp's place; the navmesh query
     is the walkability at the centre's height within 60. The items are loose ground items, laid once per camp in this world and only in a zone the
-    loaded save has no file of. A nest's cage of a kidnapper's faction is always a candidate, and a standing nest is a town for the fogman worship finder
+    loaded save has no file of. Its pieces are fixtures: cages, locked containers and beds (a bandit camp's Camp Beds, #362). A nest's cage of a kidnapper's faction is always a candidate, and a standing nest is a town for the fogman worship finder
     (nest markers skipped). Not modelled: the dedupe of a town's saved pieces (Meitou makes them again, not saving them).
 - **Homeless squads** (area tick `FUN_1408f9240`, every 2 s, per island): the island's load (sum over its loaded sectors of intact +
   0.5 × not-intact squads, [counts](#off-screen-world) above; clamped to [0, 2] for a sector with its own town or the town flag `FUN_1408f62e0` / +0x30) is compared with `FUN_1408f5ca0`, the sum of P × `homeless spawn
   amount` over the loaded zones of the island; while below, one sector is picked by weight max(0, P × amount + 1 − load), halved when its own town stands in it (`FUN_1408f62e0`; only a
   sector the flag leaves free, e.g. Ruins), (w + 1) × 2 when its load is 0 (**Verified**, `FUN_1408f9240`), and one squad is made there (`FUN_1408f8060`) if its intact count is below P × amount, retrying other sectors when that
   fails: the draw takes each sector out of the tree and loops while `FUN_1408f8060` returns 0 (no template left, no spot `FUN_1408f50d0`, or the spot inside a town, `FUN_140926d50`; 1
-  only after the squad is created; **Verified**), so one 2 s tick ends with a squad or an empty tree. Meitou: the sectors in weighted draw order without replacement, built in turn by one job until one makes a squad. Sectors a town stands in never enter the pick: `Town::setup` (`FUN_1409353c0`) sets sector byte +0x30 for every sector of the
+  only after the squad is created; **Verified**), so one 2 s tick ends with a squad or an empty tree. Meitou: the sectors in weighted draw order without replacement, built in turn by one job until one makes a squad. The load counts a save's homeless platoons like the squads made since (`AddPlatoonLoad`; **Observed**, KenshiOracle hold of a save at Sho-Battai: beside its 12 saved desert squads the original made 6 in an hour, 18 in all). Sectors a town stands in never enter the pick: `Town::setup` (`FUN_1409353c0`) sets sector byte +0x30 for every sector of the
   town's zone list (or of its position), +0x31 when the Town int at +0xd8 is 1 (its type, **Observed**), unless the type (+0xd8) is 4 (Ruins) or 9 (point of interest), so a
   Ruins town does not block its sectors and a nest marker (type 8, which `setup` handles itself) does; the pick, the spot fallbacks `FUN_1408f6350` / `FUN_1408fc1a0` and
   the patrol's town branch (below) read it (**Verified**, decompile; whether `setup` runs for the Null type (10) is **Unknown**). Meitou gives a sector
@@ -599,7 +617,7 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   lists a sector's towns but nest markers, points of interest and Null, Ruins included). The sector in view is never drawn either: the draw loop redraws a sector equal to
   `DAT_142135230`, which `FUN_1408f6940` (every frame, from the zone update `FUN_140a12c70`) sets to the sector at the GameWorld +0x580 object's position (`FUN_140785f90` → `FUN_1407f2960`: its scene node;
   **Verified**). +0x580 is `DAT_142134690`, the camera focus object of [corpses](character-stats.md#corpses) (same address, **Verified**; its constructor `FUN_1407f6b30` is `PlayerInterface`).
-  Meitou: weight 0 for the zone of the focus the zone loader uses (`FocusCommand`, else the first player character); a sector's load-time fill is not subject to it (engine choice). So a loaded sector is refilled as its squads die or walk out (**Verified** by code). The squad is given a home town: the
+  Meitou: weight 0 for the zone of the focus the zone loader uses (`FocusCommand`, else the first player character); a sector's load-time fill is not subject to it (engine choice). The load-time fill (a sector's ceil(P × amount) at once, engine choice) makes no more than the island's room: the sum of P × amount over the loaded sectors less their squads, those asked for and not spawned yet and the save's homeless squads standing in them (`PopulationSystem.IslandRoom`), so a save whose homeless squads fill the island adds none (**Observed**, a save at Sho-Battai: the original made 1 squad beside its 12 saved desert squads). So a loaded sector is refilled as its squads die or walk out (**Verified** by code). The squad is given a home town: the
   sector's own town when its faction is the squad's, else the faction's nearest town, or its nearest nest when that is 9216 nearer, none
   beyond 50000 (`createRandomUnloadedSquad` → `Ownerships::setHomeTown`, KenshiLib 1ce4a16 names; **Verified** by code). It tethers the
   patrol (below). Saved homeless platoons have no `basetown`/`hometown` ([save.md](../formats/save.md)); whether the home is saved
@@ -638,6 +656,7 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   is moved the same way; neither: the town position. Meitou: `TownExit` serves the patrols and the intruder errand 274 (`TownDutySystem.Outside`; placed towns by their level buildings, a player town by its complete sites; the point's cache is **Unknown**, not modelled). A town without buildings: a door point of the object under the town position
   (`FUN_1409b2ab0`, a ray from 1000 above), else the position. So bandits never aim inside a walled town, the Hub included (its two
   `Defensive Gate IV` are ruins in the level data; a ruin has no door ([locks](locks.md#doors)), so the wall branch applies, skipping the first wall, a `Defensive Wall IV Connector` without `interior`; **Observed**).
+  The point still lies within the town radius (2500), so the squad counts as in the town and its loot goals walk it in through the ruined gates (**Observed**, headless, Rebirth save: Dust Bandit roamers at the Hub's west gate run LOOT_THE_DEAD inside the walls).
   The move: `CharMovement::setPatrolInput` (`FUN_14065eaa0`, vtable +0xa0) in mode 3 (a `PatrolInfo` with a biome group) draws the point
   above and sends the character to it exactly; it redraws (up to 10 times) only a point whose ground is present and below 95 when the
   byte at +0x79 of the object at Character +0x2e0 is set (a race flag, water below 95: **Observed**), else accepts it (**Verified**). The
@@ -648,9 +667,9 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   idle, reached or failed), so the squad walks up to 200 outside the gate, stops, and turns to the next sector or town. Off screen a new
   point is picked within 500 of the last (`FUN_1407ee790`).
   Meitou (`PopulationHomeless.PatrolPoint`): the weights above with n the homeless squads standing in the zone and 10 for an empty active
-  one (engine choice), the tether, re-pick within 100 of the point for a loaded squad (the exact point, mill 50: engine choices; 500 only off screen); with no neighbour, a point of the home's sector, else of its own (engine choice).
+  one (engine choice), the tether, the leader walking to the exact point and the next drawn within 100 of it for a loaded squad (100 and the 2 s step: engine reading of the move's end; 500 only off screen); with no neighbour, a point of the home's sector, else of its own (engine choice).
   A drawn town's point is the outside point above (`OutsideTown`: the first non-ruined `is wall gate` building with gate code 0 or unknown (unknown = outside, engine choice) or `links together` building with `interior` references, its origin
-  moved 200 outward from the town position); the squad mills a 50 disc round it and re-picks within 100 (origin, outward and both radii: engine choices).
+  moved 200 outward from the town position); the leader walks to it and the next is drawn within 100 (origin, outward and the radius: engine choices).
   `patrol approaches towns` is set on 933 of 961 squad templates of the merged load order, the Starving Bandit and Dust Bandit roamers
   among them, so their patrols target NPC towns as above; no other town check was found (**Verified**, record dump).
 - **Traders**: restocked only while active, when the clock passes the platoon's `inventory refresh time`; an unloaded one catches up at
@@ -836,7 +855,7 @@ every message {1} is the campaign's name and {2} the target town's (the cancel m
   the polarity of the import handle test; other readers of `unique` (`FUN_14067b070` dialogue conditions, `FUN_1407609e0` / `FUN_140761550`) not opened.
 - Town overrides: what sets the ZoneManager +8 byte; the buildinglist entry field tested in `FUN_1409fe340` ([town overrides](#town-overrides)).
 - The direction of the town waypoint's 200 offset and whether `Town::setup` runs for the Null town type ([patrol task](#off-screen-world)).
-- Patrol routes: `Task_PatrolTown` and `GoOutOnPatrol*` were not decoded here (`Task_Patrol` is above; class mapping: [ai-tasks.md](ai-tasks.md#tasktype-to-task-class); packages: [ai.md](ai.md#signal-functions-and-the-package-classes)); no fixed route data
+- Patrol routes: `GoOutOnPatrol*` was not decoded here (`Task_Patrol` is above, `Task_PatrolTown` in [town goals](ai-tasks.md#town-goals); class mapping: [ai-tasks.md](ai-tasks.md#tasktype-to-task-class); packages: [ai.md](ai.md#signal-functions-and-the-package-classes)); no fixed route data
   was found in FCS records (squad templates only name `AI packages`; `patrol approaches towns` is a bool).
 
 ## Expression reference

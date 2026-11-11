@@ -2,65 +2,90 @@ using Meitou.Simulation;
 
 namespace Meitou.Runtime;
 
-/// <summary>Serialized acceptance transaction. Membership, transfers, optional creation approval and receipt commit in one checkpoint.</summary>
+/// <summary>
+/// Serialized acceptance transaction. Membership, transfers, optional creation approval and receipt commit in one checkpoint.
+/// </summary>
 public sealed class PlayerInvitationService
 {
-    readonly WorldCheckpointCoordinator checkpoints;
-    readonly World world;
-    Pending? pending;
+    readonly WorldCheckpointCoordinator _checkpoints;
+    readonly World _world;
+    Pending? _pending;
+    public PlayerInvitationService(WorldCheckpointCoordinator checkpoints)
+    {
+        this._checkpoints = checkpoints;
+        _world = checkpoints.Source;
+        if (_world.HasPendingDurableMutation)
+            throw new InvalidOperationException("Invitation service requires an idle world.");
+    }
+
     sealed record Pending(PlayerId Recipient, Guid Invitation, World.DurableMutation Barrier)
     {
         public CapturedCheckpoint? Capture;
     }
-    public PlayerInvitationService(WorldCheckpointCoordinator checkpoints)
-    {
-        this.checkpoints = checkpoints; world = checkpoints.Source;
-        if (world.HasPendingDurableMutation) throw new InvalidOperationException("Invitation service requires an idle world.");
-    }
+
     void Check(AuthorityConnection connection)
     {
-        checkpoints.VerifyActive();
-        if (world.Authority.GetPhase(connection) is null) throw new InvalidOperationException("Invitation connection was replaced.");
+        _checkpoints.VerifyActive();
+        if (_world.Authority.GetPhase(connection)is null)
+            throw new InvalidOperationException("Invitation connection was replaced.");
     }
+
     public FactionInvitation Offer(AuthorityConnection connection, FactionInviteRequest offer)
     {
-        Check(connection); return world.Invitations.Offer(connection.Player, offer);
+        Check(connection);
+        return _world.Invitations.Offer(connection.Player, offer);
     }
+
     public FactionInvitation Accept(AuthorityConnection connection, Guid id)
     {
         Check(connection);
-        if (pending is { } current)
+        if (_pending is { } current)
         {
-            if (current.Recipient != connection.Player || current.Invitation != id) throw new InvalidOperationException("An invitation is waiting for persistence.");
+            if (current.Recipient != connection.Player || current.Invitation != id)
+                throw new InvalidOperationException("An invitation is waiting for persistence.");
             return Persist(current);
         }
-        world.RequireNoDurableMutation();
-        var prepared = world.Invitations.PrepareAcceptance(connection.Player, id);
-        if (prepared.Status == InvitationStatus.Accepted) return prepared;
-        var barrier = checkpoints.BeginDurableMutation();
+
+        _world.RequireNoDurableMutation();
+        var prepared = _world.Invitations.PrepareAcceptance(connection.Player, id);
+        if (prepared.Status == InvitationStatus.Accepted)
+            return prepared;
+        var barrier = _checkpoints.BeginDurableMutation();
         try
         {
-            world.Invitations.AcceptPrepared(prepared);
-            world.AdvanceDurableRevision(barrier);
-            pending = new(connection.Player, id, barrier);
+            _world.Invitations.AcceptPrepared(prepared);
+            _world.AdvanceDurableRevision(barrier);
+            _pending = new(connection.Player, id, barrier);
         }
-        catch { checkpoints.Runtime.FaultDurableMutation(); throw; }
-        return Persist(pending);
+        catch
+        {
+            _checkpoints.Runtime.FaultDurableMutation();
+            throw;
+        }
+
+        return Persist(_pending);
     }
+
     public Guid? PendingFor(AuthorityConnection connection)
     {
-        Check(connection); return pending is { } current && current.Recipient == connection.Player ? current.Invitation : null;
+        Check(connection);
+        return _pending is { } current && current.Recipient == connection.Player ? current.Invitation : null;
     }
+
     public FactionInvitation? Lookup(AuthorityConnection connection, Guid id)
     {
         Check(connection);
-        if (world.HasPendingDurableMutation) return null; // in-memory accepted outcomes are not durable success
-        return world.Invitations.FindFor(connection.Player, id);
+        if (_world.HasPendingDurableMutation)
+            return null; // in-memory accepted outcomes are not durable success
+        return _world.Invitations.FindFor(connection.Player, id);
     }
+
     FactionInvitation Persist(Pending operation)
     {
-        operation.Capture ??= checkpoints.CaptureDurable(operation.Barrier);
-        checkpoints.Commit(operation.Capture); operation.Barrier.Complete(); pending = null;
-        return world.Invitations.FindFor(operation.Recipient, operation.Invitation)!;
+        operation.Capture ??= _checkpoints.CaptureDurable(operation.Barrier);
+        _checkpoints.Commit(operation.Capture);
+        operation.Barrier.Complete();
+        _pending = null;
+        return _world.Invitations.FindFor(operation.Recipient, operation.Invitation)!;
     }
 }

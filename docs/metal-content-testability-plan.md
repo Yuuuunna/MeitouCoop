@@ -10,7 +10,7 @@ Vulkan remains the reference path.
 
 The content data and simulation are already shared. Metal loads the same world, population,
 towns, items, dialogue, trade, crafting, construction, farming, combat and saves. The gaps below
-are mostly host wiring in `GameHost.Metal.cs`, plus a few renderer-only features that affect
+are mostly host wiring in `Host/MetalGameLoop.cs`, plus a few renderer-only features that affect
 visual checks. This plan does not include GI work, and it does not change `--renderer vulkan`.
 
 ## Priority summary
@@ -86,7 +86,7 @@ NPC scale. Vulkan sets them up in `GameHost.BootPlayer`; Metal does not.
 
 ### Changes
 
-- In `GameHost.Metal.cs`, mirror the Vulkan boot ordering:
+- In `Host/MetalGameLoop.cs`, mirror the Vulkan boot ordering:
   - set `crowd = o.Crowd; o.Crowd = 0` before `WorldFrame.CreateGpu` so a `--crowd` run uses the
     simulation, not only the renderer's posed harness;
   - after the session and population exist, choose the start target:
@@ -128,7 +128,7 @@ teleport, spawn, items, money, healing, skills and damage.
 
 ### Changes
 
-- Reuse `GameHost.DebugMenu.cs` directly:
+- Reuse `DebugMenu` directly:
   - add `debugMenuOpen` state to the Metal loop;
   - route keys and text to `DebugMenuKey` / `DebugMenuText` while open;
   - call `DrawDebugMenu` over the finished picture;
@@ -240,7 +240,7 @@ Ground severed limbs, stuck bolts and an animal's held limb (`mouth` point) are 
   - advances debris by game time.
 - Leave `BloodForNewWorld` and `WriteDecals` in the shared save path; they will now have a store
   to use on Metal.
-- Confirm `gpu.Decals`, `gpu.DecalStore` and `gpu.DebrisPieces` are disposed by `WorldFrame.Gpu`.
+- Confirm `gpu.Decals`, `gpu.DecalStore` and `gpu.DebrisPieces` are disposed by `WorldGpu`.
 
 ### Acceptance
 
@@ -266,7 +266,7 @@ Metal warm-up frames render without advancing the simulation.
 
 ### Changes
 
-- Extract the still preparation from `GameHost.Screenshot.cs` into a shared helper usable by both
+- Extract the still preparation from `ScreenshotScenes` into a shared helper usable by both
   hosts:
   - select the player squad for `--ui-showcase`;
   - apply `--move-to` through a `MoveOrder` and advance the requested ticks;

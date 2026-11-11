@@ -1,11 +1,13 @@
+using Meitou.Simulation.Player;
 using System.Numerics;
 using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Gameplay.Construction;
-using Meitou.Navigation;
+using Meitou.Simulation.Navigation;
 using Meitou.Runtime.Placement;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Items;
@@ -29,20 +31,20 @@ public class PlacementAuthorityTests
         public List<PlacedFootprint> Static { get; } = [];
         public static readonly Vector3 At = new(1020, 300, 2000);
         public static PlannedBuilding Plan => new("build", At, Quaternion.Identity);
-        readonly BuildingFootprint footprint = new([new(-5, -5), new(5, -5), new(5, 5), new(-5, 5)], 0, 20);
+        readonly BuildingFootprint _footprint = new([new(-5, -5), new(5, -5), new(5, 5), new(-5, 5)], 0, 20);
 
         public Scene(bool validator = true)
         {
-            var build = SyntheticTown.Rec("build", FcsRecordType.BUILDING, "Build");
+            var build = SyntheticTown.Rec("build", FcsRecordType.Building, "Build");
             build.Ints["build materials"] = 1; build.Floats["max slope"] = 5;
-            var parent = SyntheticTown.Rec("parent", FcsRecordType.BUILDING, "Parent");
-            var tech = SyntheticTown.Rec("tech", FcsRecordType.RESEARCH, "Tech");
+            var parent = SyntheticTown.Rec("parent", FcsRecordType.Building, "Parent");
+            var tech = SyntheticTown.Rec("tech", FcsRecordType.Research, "Tech");
             tech.References["enable buildings"] = [SyntheticTown.Ref("build")];
             var db = SyntheticTown.Database(extra: [build, parent, tech]);
             Placement = new WorldPlacement(db, _ => new PlacementServices
             {
                 Ground = (x, z) => Ground(x, z),
-                Footprint = _ => MissingGeometry ? throw new InvalidDataException("missing collision") : footprint,
+                Footprint = _ => MissingGeometry ? throw new InvalidDataException("missing collision") : _footprint,
                 StaticAround = (_, _) => Static,
                 Readout = (_, _) => Resource is { } value ? new PlacementReadout(1, value) : null,
             }, (world, faction, plan) => world.Buildings.Find(plan.Parent!) is { } site

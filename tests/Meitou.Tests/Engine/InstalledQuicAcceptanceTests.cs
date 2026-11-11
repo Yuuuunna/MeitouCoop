@@ -5,13 +5,17 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Meitou.Content;
 using Meitou.Diagnostics;
-using Meitou.Engine;
+using Meitou.Game.Host;
 using Meitou.Networking;
 using Meitou.Networking.VNext.Transport;
 using Meitou.Networking.VNext;
 using Meitou.Runtime;
 using Meitou.Server;
 using Meitou.Simulation;
+using Meitou.Simulation.Ai;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
 using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay;
 
@@ -22,27 +26,27 @@ public sealed class InstalledQuicAcceptanceTests
 {
     sealed class Sink : ILatencyTraceSink
     {
-        readonly Lock gate = new();
-        readonly List<LatencyTraceRecord> records = [];
-        readonly Guid run = Guid.NewGuid();
-        readonly HashSet<(Guid World, ulong Connection, ulong Generation, ulong Entity)> sampled = [];
+        readonly Lock _gate = new();
+        readonly List<LatencyTraceRecord> _records = [];
+        readonly Guid _run = Guid.NewGuid();
+        readonly HashSet<(Guid World, ulong Connection, ulong Generation, ulong Entity)> _sampled = [];
         public long Drops { get; private set; }
         public long IgnoredUnsampled { get; private set; }
         public long Attempts { get; private set; }
         public void Emit(in LatencyTraceEvent e)
         {
-            lock (gate)
+            lock (_gate)
             {
                 Attempts++;
                 var key = (e.World, e.Connection, e.Generation, e.Entity);
-                if (e.Stage == LatencyStage.Intent) sampled.Add(key);
-                if (e.Stage is LatencyStage.MotionSendQueued or LatencyStage.MotionWriteStarted or LatencyStage.MotionWriteComplete && !sampled.Contains(key))
+                if (e.Stage == LatencyStage.Intent) _sampled.Add(key);
+                if (e.Stage is LatencyStage.MotionSendQueued or LatencyStage.MotionWriteStarted or LatencyStage.MotionWriteComplete && !_sampled.Contains(key))
                 { IgnoredUnsampled++; return; }
-                if (records.Count >= 500000) { Drops++; return; }
-                records.Add(new(run, Guid.Empty, Stopwatch.Frequency, e));
+                if (_records.Count >= 500000) { Drops++; return; }
+                _records.Add(new(_run, Guid.Empty, Stopwatch.Frequency, e));
             }
         }
-        public LatencyTraceRecord[] Records { get { lock (gate) return records.ToArray(); } }
+        public LatencyTraceRecord[] Records { get { lock (_gate) return _records.ToArray(); } }
     }
     sealed record RoleMetadata(ulong Entity, int Faction, ulong GrantRevision, int CharacterSlot, int CharacterGeneration, bool Loaded, bool Dead, int Availability, bool Valid);
     static RoleMetadata[] Roles(Meitou.Simulation.World world, PlayerId player) => world.Players.KnownRoles(player).Select(grant =>
@@ -58,7 +62,7 @@ public sealed class InstalledQuicAcceptanceTests
         Assert.True(world.Entities.TryResolve(entity, out var character));
         var cold = world.Characters.Cold(character.Slot)!; var hot = world.Characters.Current[character.Slot];
         return new(entity.Value, cold.IsPlayer, cold.IsImprisoned, cold.Medical?.Incapacitated ?? true, !cold.CarriedBy.IsNone,
-            (byte)cold.InSomething, hot.Task, hot.Velocity.LengthSquared(), TaskStart.Eligible(world, cold, TaskType.MOVE_CUS_ORDERED));
+            (byte)cold.InSomething, hot.Task, hot.Velocity.LengthSquared(), TaskStart.Eligible(world, cold, TaskType.MoveCusOrdered));
     }
     sealed record Window(int Clients, double StartSeconds, double EndSeconds, int Peer, ulong UdpPayloadBytes, ulong QuicPackets, ulong ConservativeIpv4Bytes, double ConservativeKbitPerSecond, int VisibleEntities, long AuthorityTick);
 
@@ -168,7 +172,7 @@ public sealed class InstalledQuicAcceptanceTests
                     cold.Save = null;
                     squad.Members.Add(candidates[index]); squad.Leader = candidates[index];
                     host.World.Players.Find(players[index])!.State.Squad = squad.Id;
-                    Assert.True(TaskStart.Eligible(host.World, cold, TaskType.MOVE_CUS_ORDERED));
+                    Assert.True(TaskStart.Eligible(host.World, cold, TaskType.MoveCusOrdered));
                     host.World.Players.SetMembership(players[index], cold.Faction, FactionPermission.All);
                     grants[index] = host.World.Players.AssignInitial(players[index], candidates[index]);
                 }

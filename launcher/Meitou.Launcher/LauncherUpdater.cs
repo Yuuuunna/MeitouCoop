@@ -10,25 +10,39 @@ namespace Meitou.Launcher;
 /// </summary>
 public sealed class LauncherUpdater(Releases releases, bool prereleases)
 {
-    readonly UpdateManager manager = new(new LauncherReleaseSource(releases, prereleases), new UpdateOptions { ExplicitChannel = Releases.Rid });
-    UpdateInfo? pending;
+    /// <summary>
+    /// Velopack's update manager over the launcher releases of this repository, on this runtime's channel.
+    /// </summary>
+    readonly UpdateManager _manager = new(new LauncherReleaseSource(releases, prereleases), new UpdateOptions { ExplicitChannel = Releases.Rid });
 
-    public bool IsInstalled => manager.IsInstalled;
+    /// <summary>
+    /// The update found by the last check, downloaded and waiting to be applied; null when none.
+    /// </summary>
+    UpdateInfo? _pending;
 
-    /// <summary>The newer launcher version on GitHub, or null (none, or not installed).</summary>
+    /// <summary>
+    /// Whether the launcher was installed by its Setup or AppImage, so it can update itself.
+    /// </summary>
+    public bool IsInstalled => _manager.IsInstalled;
+
+    /// <summary>
+    /// The newer launcher version on GitHub, or null (none, or not installed).
+    /// </summary>
     public async Task<string?> CheckAsync()
     {
-        if (!manager.IsInstalled) return null;
-        pending = await manager.CheckForUpdatesAsync();
-        return pending?.TargetFullRelease.Version.ToString();
+        if (!_manager.IsInstalled) return null;
+        _pending = await _manager.CheckForUpdatesAsync();
+        return _pending?.TargetFullRelease.Version.ToString();
     }
 
-    /// <summary>Downloads the update <see cref="CheckAsync"/> found, then restarts into it.</summary>
+    /// <summary>
+    /// Downloads the update <see cref="CheckAsync"/> found, then restarts into it.
+    /// </summary>
     public async Task UpdateAndRestartAsync(Action<int> progress, CancellationToken ct)
     {
-        if (pending is null) return;
-        await manager.DownloadUpdatesAsync(pending, progress, ct);
-        manager.ApplyUpdatesAndRestart(pending.TargetFullRelease);
+        if (_pending is null) return;
+        await _manager.DownloadUpdatesAsync(_pending, progress, ct);
+        _manager.ApplyUpdatesAndRestart(_pending.TargetFullRelease);
     }
 
     /// <summary>
@@ -43,13 +57,25 @@ public sealed class LauncherUpdater(Releases releases, bool prereleases)
             var (list, _) = await releases.FetchAsync();
             return [.. list
                 .Where(r => r.Kind == ReleaseKind.Launcher && (includePrereleases || !r.Prerelease))
-                .Select(r => new GithubRelease
-                {
-                    Name = r.Title,
-                    Prerelease = r.Prerelease,
-                    PublishedAt = r.Published.UtcDateTime,
-                    Assets = [.. r.Assets.Select(a => new GithubReleaseAsset { Name = a.Name, BrowserDownloadUrl = a.Url, Url = a.Url, ContentType = "application/octet-stream" })],
-                })];
+                .Select(ToGithubRelease)];
         }
+
+        /// <summary>
+        /// <paramref name="r"/> as Velopack's GitHub source lists a release.
+        /// </summary>
+        static GithubRelease ToGithubRelease(Release r) =>
+            new GithubRelease
+            {
+                Name = r.Title,
+                Prerelease = r.Prerelease,
+                PublishedAt = r.Published.UtcDateTime,
+                Assets = [.. r.Assets.Select(ToGithubAsset)],
+            };
+
+        /// <summary>
+        /// <paramref name="a"/> as Velopack's GitHub source lists a release's file.
+        /// </summary>
+        static GithubReleaseAsset ToGithubAsset(ReleaseAsset a) =>
+            new GithubReleaseAsset { Name = a.Name, BrowserDownloadUrl = a.Url, Url = a.Url, ContentType = "application/octet-stream" };
     }
 }

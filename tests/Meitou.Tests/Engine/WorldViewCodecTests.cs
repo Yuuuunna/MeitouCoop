@@ -7,6 +7,8 @@ using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay.Ai;
 using Meitou.Networking;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Movement;
 using Meitou.Simulation.Locks;
 using Meitou.Simulation.Production;
 using Meitou.Tests.Simulation;
@@ -30,7 +32,7 @@ public class WorldViewCodecTests
     }
 
     internal static GameDatabase Database() => SyntheticTown.Database(extra:
-        [SyntheticTown.Rec("wire-race", FcsRecordType.RACE, "Race"), SyntheticTown.Rec("wire-clothes", FcsRecordType.ARMOUR, "Clothes")]);
+        [SyntheticTown.Rec("wire-race", FcsRecordType.Race, "Race"), SyntheticTown.Rec("wire-clothes", FcsRecordType.Armour, "Clothes")]);
     internal static PlayerWorldView View(GameDatabase db)
     {
         var look = new CharacterAppearance { Race = db.Find("wire-race")!, Shape = new CharacterShapeInput
@@ -41,7 +43,7 @@ public class WorldViewCodecTests
         var pose = new BonePose(2) { Weight = .75f }; pose.Set[1] = true; pose.Rotation[1] = Quaternion.Identity; pose.Position[1] = new(4, 5, 6);
         var character = new CharacterSnapshot(new(1, 2), look, new(10, 20, 30), .5f, [new("idle", .3f, 1)])
         {
-            Jobs = [PermaJob.Untargeted(TaskType.JOB_MEDIC)], Ragdoll = pose,
+            Jobs = [PermaJob.Untargeted(TaskType.JobMedic)], Ragdoll = pose,
             ItemGrid = new(10, 10, 0, 0, [new(0, "private-item", "Item", "main", 0, 0, 1, 1, 5, 1, .2f)]) { Revision = 9 },
         };
         var research = new ResearchSnapshot(2, 3, [("science", "Science", .5f)], 1, []) { Known = new HashSet<string> { "known" } };
@@ -72,7 +74,7 @@ public class WorldViewCodecTests
         Assert.True(double.IsNaN(copy.Factions[0].Contracts[0].ToLine().Hours)); Assert.Equal(5, copy.Factions[0].Contracts[1].ToLine().Hours);
         Assert.True(float.IsNaN(character.DrawYaw)); Assert.Equal(new Vector3(10, 20, 30), character.Position);
         Assert.Equal(5, Assert.Single(character.ItemGrid!.Items).Quantity); Assert.Equal(9ul, character.ItemGrid.Revision);
-        Assert.Equal(TaskType.JOB_MEDIC, Assert.Single(character.Jobs).Type);
+        Assert.Equal(TaskType.JobMedic, Assert.Single(character.Jobs).Type);
         Assert.Equal(.75f, character.Ragdoll!.Weight); Assert.True(character.Ragdoll.Set[1]); Assert.Equal(new Vector3(4, 5, 6), character.Ragdoll.Position[1]);
         Assert.Same(db.Find("wire-race"), character.Appearance!.Race); Assert.Same(db.Find("wire-clothes"), Assert.Single(character.Appearance.Parts).Record);
         Assert.Equal(125, character.Appearance.Shape!.Sliders["Height"]); Assert.Contains(Limb.LeftArm, character.Appearance.Shape.Missing);

@@ -2,7 +2,9 @@ using System.Buffers.Binary;
 
 namespace Meitou.Launcher;
 
-/// <summary>One frame of a track: its time from the start of the file and its bytes.</summary>
+/// <summary>
+/// One frame of a track: its time from the start of the file and its bytes.
+/// </summary>
 public readonly record struct WebmFrame(TimeSpan Time, bool Key, ReadOnlyMemory<byte> Data);
 
 /// <summary>
@@ -11,30 +13,85 @@ public readonly record struct WebmFrame(TimeSpan Time, bool Key, ReadOnlyMemory<
 /// </summary>
 public sealed class WebmFile
 {
+    #region Reading
+
+    /// <summary>
+    /// The Matroska element IDs read.
+    /// </summary>
     const uint EbmlHeader = 0x1A45DFA3, Segment = 0x18538067, Info = 0x1549A966, TimecodeScale = 0x2AD7B1, Tracks = 0x1654AE6B,
         TrackEntry = 0xAE, TrackNumber = 0xD7, TrackType = 0x83, CodecId = 0x86, CodecPrivate = 0x63A2, VideoSettings = 0xE0,
         PixelWidth = 0xB0, PixelHeight = 0xBA, AudioSettings = 0xE1, SamplingFrequency = 0xB5, Channels = 0x9F, Cluster = 0x1F43B675,
         ClusterTimecode = 0xE7, SimpleBlock = 0xA3, BlockGroup = 0xA0, Block = 0xA1;
+
+    /// <summary>
+    /// The size of an element whose size is unknown (a live cluster).
+    /// </summary>
     const long UnknownSize = -1;
 
-    /// <summary><c>V_VP8</c> or <c>V_VP9</c>; null without a video track.</summary>
+    /// <summary>
+    /// <c>V_VP8</c> or <c>V_VP9</c>; null without a video track.
+    /// </summary>
     public string? VideoCodec { get; private set; }
+
+    /// <summary>
+    /// The video's width in pixels.
+    /// </summary>
     public int Width { get; private set; }
+
+    /// <summary>
+    /// The video's height in pixels.
+    /// </summary>
     public int Height { get; private set; }
-    /// <summary><c>A_VORBIS</c>, <c>A_OPUS</c>, ...; null without an audio track.</summary>
+
+    /// <summary>
+    /// <c>A_VORBIS</c>, <c>A_OPUS</c>, ...; null without an audio track.
+    /// </summary>
     public string? AudioCodec { get; private set; }
+
+    /// <summary>
+    /// The audio's sample rate.
+    /// </summary>
     public int SampleRate { get; private set; }
+
+    /// <summary>
+    /// The audio's channel count.
+    /// </summary>
     public int AudioChannels { get; private set; }
-    /// <summary>The Vorbis identification, comment and setup headers (the track's CodecPrivate, Xiph-laced).</summary>
+
+    /// <summary>
+    /// The Vorbis identification, comment and setup headers (the track's CodecPrivate, Xiph-laced).
+    /// </summary>
     public List<ReadOnlyMemory<byte>> AudioHeaders { get; } = [];
+
+    /// <summary>
+    /// The video frames in file order.
+    /// </summary>
     public List<WebmFrame> VideoFrames { get; } = [];
+
+    /// <summary>
+    /// The audio frames in file order.
+    /// </summary>
     public List<WebmFrame> AudioFrames { get; } = [];
 
-    readonly ReadOnlyMemory<byte> data;
-    long timecodeScale = 1_000_000; // nanoseconds per timecode tick
-    ulong videoTrack, audioTrack;
+    /// <summary>
+    /// The file's bytes.
+    /// </summary>
+    readonly ReadOnlyMemory<byte> _data;
 
-    WebmFile(ReadOnlyMemory<byte> data) => this.data = data;
+    /// <summary>
+    /// Nanoseconds per timecode tick (the segment's TimecodeScale).
+    /// </summary>
+    long _timecodeScale = 1_000_000; // nanoseconds per timecode tick
+
+    /// <summary>
+    /// The track numbers of the first video and audio tracks (0: none yet).
+    /// </summary>
+    ulong _videoTrack, _audioTrack;
+
+    /// <summary>
+    /// Wraps the file's bytes.
+    /// </summary>
+    WebmFile(ReadOnlyMemory<byte> data) => this._data = data;
 
     /// <summary>
     /// Reads a WebM file; throws <see cref="InvalidDataException"/> when it is not one. A <paramref name="head"/> is only the file's
@@ -57,18 +114,28 @@ public sealed class WebmFile
                 pos = end;
             }
         }
-        catch (InvalidDataException) when (head) { }
+        catch (InvalidDataException) when (head)
+        {
+        }
         return file;
     }
 
+    /// <summary>
+    /// Reads a segment: its info, tracks and clusters (each cluster's timecode with its blocks).
+    /// </summary>
     void ReadSegment(int pos, int end)
     {
         long clusterTime = 0;
         while (pos < end)
         {
             var (id, size, start) = Header(ref pos);
+
             // A live-written Cluster has no size: its children follow until the next top-level element.
-            if (id == Cluster && size == UnknownSize) { pos = start; continue; }
+            if (id == Cluster && size == UnknownSize)
+            {
+                pos = start;
+                continue;
+            }
             int childEnd = End(start, size, end);
             switch (id)
             {
@@ -98,16 +165,22 @@ public sealed class WebmFile
         }
     }
 
+    /// <summary>
+    /// Reads the segment info: the timecode scale.
+    /// </summary>
     void ReadInfo(int pos, int end)
     {
         while (pos < end)
         {
             var (id, size, start) = Header(ref pos);
             pos = End(start, size, end);
-            if (id == TimecodeScale) timecodeScale = (long)UInt(start, pos);
+            if (id == TimecodeScale) _timecodeScale = (long)UInt(start, pos);
         }
     }
 
+    /// <summary>
+    /// Reads a track entry: the first video track's codec and size and the first audio track's codec, rate, channels and headers.
+    /// </summary>
     void ReadTrack(int pos, int end)
     {
         ulong number = 0, type = 0;
@@ -123,8 +196,8 @@ public sealed class WebmFile
             {
                 case TrackNumber: number = UInt(start, pos); break;
                 case TrackType: type = UInt(start, pos); break;
-                case CodecId: codec = System.Text.Encoding.ASCII.GetString(data.Span[start..pos]).TrimEnd('\0'); break;
-                case CodecPrivate: codecPrivate = data[start..pos]; break;
+                case CodecId: codec = System.Text.Encoding.ASCII.GetString(_data.Span[start..pos]).TrimEnd('\0'); break;
+                case CodecPrivate: codecPrivate = _data[start..pos]; break;
                 case VideoSettings:
                     for (int p = start; p < pos;)
                     {
@@ -147,41 +220,48 @@ public sealed class WebmFile
         }
         if (type == 1 && VideoCodec is null)
         {
-            (videoTrack, VideoCodec, Width, Height) = (number, codec, width, height);
+            (_videoTrack, VideoCodec, Width, Height) = (number, codec, width, height);
         }
         else if (type == 2 && AudioCodec is null)
         {
-            (audioTrack, AudioCodec, SampleRate, AudioChannels) = (number, codec, (int)rate, channels);
-            if (codec == "A_VORBIS" && codecPrivate.Length > 0) AudioHeaders.AddRange(Laced(codecPrivate, 1, codecPrivate.Span[0] + 1, xiph: true));
+            (_audioTrack, AudioCodec, SampleRate, AudioChannels) = (number, codec, (int)rate, channels);
+            if (codec == "A_VORBIS" && codecPrivate.Length > 0)
+                AudioHeaders.AddRange(Laced(codecPrivate, 1, codecPrivate.Span[0] + 1, xiph: true));
         }
     }
 
-    /// <summary>A (Simple)Block: track number, timecode relative to the cluster, flags, then one frame or a lace of them.</summary>
+    /// <summary>
+    /// A (Simple)Block: track number, timecode relative to the cluster, flags, then one frame or a lace of them.
+    /// </summary>
     void ReadBlock(int pos, int end, long clusterTime, bool key = true)
     {
-        var span = data.Span;
+        var span = _data.Span;
         ulong track = VarInt(ref pos, stripMarker: true);
-        if (track != videoTrack && track != audioTrack || pos + 3 > end) return;
+        if (track != _videoTrack && track != _audioTrack || pos + 3 > end) return;
         short relative = BinaryPrimitives.ReadInt16BigEndian(span[pos..]);
         byte flags = span[pos + 2];
         pos += 3;
-        var time = TimeSpan.FromTicks((clusterTime + relative) * timecodeScale / 100);
+        var time = TimeSpan.FromTicks((clusterTime + relative) * _timecodeScale / 100);
         if (key) key = (flags & 0x80) != 0; // a SimpleBlock says; a Block in a BlockGroup is treated as a delta frame
-        var target = track == videoTrack ? VideoFrames : AudioFrames;
+        var target = track == _videoTrack ? VideoFrames : AudioFrames;
         int lacing = (flags >> 1) & 3;
         if (lacing == 0)
         {
-            target.Add(new WebmFrame(time, key, data[pos..end]));
+            target.Add(new WebmFrame(time, key, _data[pos..end]));
             return;
         }
         int count = span[pos] + 1;
+
         // Laced frames share the block's time (audio only; the player plays them back to back).
-        foreach (var frame in Laced(data[(pos + 1)..end], 0, count, xiph: lacing == 1, fixedSize: lacing == 2, ebml: lacing == 3))
+        foreach (var frame in Laced(_data[(pos + 1)..end], 0, count, xiph: lacing == 1, fixedSize: lacing == 2, ebml: lacing == 3))
             target.Add(new WebmFrame(time, key, frame));
     }
 
-    /// <summary>Splits <paramref name="count"/> frames laced from <paramref name="offset"/>: Xiph sizes, EBML sizes or equal parts.</summary>
-    IEnumerable<ReadOnlyMemory<byte>> Laced(ReadOnlyMemory<byte> lace, int offset, int count, bool xiph = false, bool fixedSize = false, bool ebml = false)
+    /// <summary>
+    /// Splits <paramref name="count"/> frames laced from <paramref name="offset"/>: Xiph sizes, EBML sizes or equal parts.
+    /// </summary>
+    IEnumerable<ReadOnlyMemory<byte>> Laced(ReadOnlyMemory<byte> lace, int offset, int count, bool xiph = false, bool fixedSize = false,
+            bool ebml = false)
     {
         var span = lace.Span;
         var sizes = new long[count];
@@ -199,7 +279,12 @@ public sealed class WebmFile
                 {
                     long size = 0;
                     byte b;
-                    do { b = span[pos++]; size += b; } while (b == 255);
+                    do
+                    {
+                        b = span[pos++];
+                        size += b;
+                    }
+                    while (b == 255);
                     sizes[i] = size;
                 }
                 else if (ebml)
@@ -223,6 +308,13 @@ public sealed class WebmFile
         return frames;
     }
 
+    #endregion
+
+    #region EBML values
+
+    /// <summary>
+    /// An element's header at <paramref name="pos"/>: its ID, its size (<see cref="UnknownSize"/> when all ones) and where its data starts.
+    /// </summary>
     (uint Id, long Size, int Start) Header(ref int pos)
     {
         uint id = (uint)VarInt(ref pos, stripMarker: false);
@@ -230,19 +322,27 @@ public sealed class WebmFile
         return (id, size == (1UL << (7 * length)) - 1 ? UnknownSize : (long)size, pos);
     }
 
+    /// <summary>
+    /// Where an element's data ends: its size, else the parent's end; never past the file (a file cut short).
+    /// </summary>
     int End(int start, long size, int parentEnd = int.MaxValue)
     {
-        long end = size == UnknownSize ? Math.Min(parentEnd, data.Length) : start + size;
-        if (end > data.Length) end = data.Length; // a file cut short: read what is there
+        long end = size == UnknownSize ? Math.Min(parentEnd, _data.Length) : start + size;
+        if (end > _data.Length) end = _data.Length; // a file cut short: read what is there
         return (int)Math.Min(end, parentEnd);
     }
 
+    /// <summary>
+    /// A variable-length integer at <paramref name="pos"/>.
+    /// </summary>
     ulong VarInt(ref int pos, bool stripMarker) => VarInt(ref pos, stripMarker, out _);
 
-    /// <summary>An EBML variable-length number: the leading zero bits of its first byte give its length.</summary>
+    /// <summary>
+    /// An EBML variable-length number: the leading zero bits of its first byte give its length.
+    /// </summary>
     ulong VarInt(ref int pos, bool stripMarker, out int length)
     {
-        var span = data.Span;
+        var span = _data.Span;
         if (pos >= span.Length) throw new InvalidDataException("WebM cut short");
         byte first = span[pos];
         length = System.Numerics.BitOperations.LeadingZeroCount((uint)first) - 23;
@@ -253,17 +353,25 @@ public sealed class WebmFile
         return value;
     }
 
+    /// <summary>
+    /// A big-endian unsigned integer over the bytes.
+    /// </summary>
     ulong UInt(int start, int end)
     {
         ulong value = 0;
-        foreach (var b in data.Span[start..end]) value = (value << 8) | b;
+        foreach (var b in _data.Span[start..end]) value = (value << 8) | b;
         return value;
     }
 
+    /// <summary>
+    /// A big-endian float of 4 or 8 bytes; 0 for any other length.
+    /// </summary>
     double Float(int start, int end) => (end - start) switch
     {
-        4 => BinaryPrimitives.ReadSingleBigEndian(data.Span[start..]),
-        8 => BinaryPrimitives.ReadDoubleBigEndian(data.Span[start..]),
+        4 => BinaryPrimitives.ReadSingleBigEndian(_data.Span[start..]),
+        8 => BinaryPrimitives.ReadDoubleBigEndian(_data.Span[start..]),
         _ => 0,
     };
+
+    #endregion
 }

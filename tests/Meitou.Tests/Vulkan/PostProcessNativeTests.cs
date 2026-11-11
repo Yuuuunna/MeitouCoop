@@ -1,12 +1,15 @@
 using System.Numerics;
 using Meitou.Data.World;
-using Meitou.Rendering;
-using Meitou.Rendering.Gpu;
-using Meitou.Rendering.Gpu.Core;
+using Meitou.Game.Rendering.Frame;
+using Meitou.Game.Rendering.Gpu;
+using Meitou.Game.Rendering.Gpu.Core;
+using Meitou.Game.Rendering.Post;
 
 namespace Meitou.Tests.Vulkan;
 
-/// <summary>The post-processing chain's native targets (docs/renderer-native.md 8, phase 8 stage 2): named allocations, a resize, the exposure readback.</summary>
+/// <summary>
+/// The post-processing chain's native targets (docs/renderer-native.md 8, phase 8 stage 2): named allocations, a resize, the exposure readback.
+/// </summary>
 [Collection("StageClock")]
 public unsafe class PostProcessNativeTests
 {
@@ -17,8 +20,15 @@ public unsafe class PostProcessNativeTests
     public void The_chain_owns_named_native_targets_survives_a_resize_and_reads_its_exposure_back(UpscalerKind upscaler)
     {
         VulkanDevice? d;
-        try { d = VulkanDevice.Create(new VulkanDeviceOptions { Validation = true, SyncValidation = true }); }
-        catch (Exception e) when (e is VulkanException or DllNotFoundException or EntryPointNotFoundException or Silk.NET.Core.Loader.SymbolLoadingException) { d = null; }
+        try
+        {
+            d = VulkanDevice.Create(new VulkanDeviceOptions { Validation = true, SyncValidation = true });
+        }
+        catch (Exception e) when (e is VulkanException or DllNotFoundException or EntryPointNotFoundException
+            or Silk.NET.Core.Loader.SymbolLoadingException)
+        {
+            d = null;
+        }
         using var device = d;
         Assert.SkipWhen(device is null, "No Vulkan 1.3 device");
         using (var ctx = new GpuContext(device!))

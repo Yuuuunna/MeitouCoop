@@ -1,6 +1,7 @@
 using Meitou.Data;
 using Meitou.Data.Fcs;
 using Meitou.Simulation.Construction;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Saving;
 
@@ -10,7 +11,9 @@ internal sealed record SavedResearch(string[] Completed, SavedResearchProgress[]
     SavedResearchProgress[] Partial, long Version, bool Changed);
 internal sealed record SavedFactionResources(int Faction, long Money, string? Name, SavedRank[] Ranks, SavedResearch Research);
 
-/// <summary>The faction-resource portion of multiplayer metadata; independent of the legacy CAMERA money/RESEARCH aliases.</summary>
+/// <summary>
+/// The faction-resource portion of multiplayer metadata; independent of the legacy CAMERA money/RESEARCH aliases.
+/// </summary>
 internal static class FactionResourceSave
 {
     internal static SavedFactionResources[] Capture(World world) => world.Factions.All.Select(f => new SavedFactionResources(
@@ -32,7 +35,7 @@ internal static class FactionResourceSave
             foreach (var rank in faction.Ranks)
                 if (rank is null || rank.Faction < 0 || rank.Faction >= data.Factions.Count || rank.Rank < 0 || !ranks.Add(rank.Faction))
                     throw new InvalidDataException("Invalid faction rank.");
-            bool Id(string id) => id is not null && data.Db.Find(id) is { Type: FcsRecordType.RESEARCH };
+            bool Id(string id) => id is not null && data.Db.Find(id) is { Type: FcsRecordType.Research };
             bool Progress(SavedResearchProgress p) => p is not null && Id(p.Id) && float.IsFinite(p.Seconds) && p.Seconds >= 0;
             if (!research.Completed.All(Id) || !research.Paid.All(Id) || !research.Queue.All(Progress) || !research.Partial.All(Progress) ||
                 research.Paid.Distinct(StringComparer.Ordinal).Count() != research.Paid.Length ||

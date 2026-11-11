@@ -1,8 +1,9 @@
 using System.Diagnostics;
 using System.Numerics;
 using Meitou.Diagnostics;
-using Meitou.Engine;
+using Meitou.Game.Host;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
 
 namespace Meitou.Tests.Engine;
 
@@ -14,11 +15,11 @@ public partial class SecureServerTests
 {
     sealed class LatencySink : ILatencyTraceSink
     {
-        readonly Lock gate = new();
-        readonly List<LatencyTraceRecord> records = [];
-        readonly Guid run = Guid.NewGuid();
-        public void Emit(in LatencyTraceEvent e) { lock (gate) records.Add(new(run, Guid.Empty, Stopwatch.Frequency, e)); }
-        public LatencyTraceRecord[] Records { get { lock (gate) return records.ToArray(); } }
+        readonly Lock _gate = new();
+        readonly List<LatencyTraceRecord> _records = [];
+        readonly Guid _run = Guid.NewGuid();
+        public void Emit(in LatencyTraceEvent e) { lock (_gate) _records.Add(new(_run, Guid.Empty, Stopwatch.Frequency, e)); }
+        public LatencyTraceRecord[] Records { get { lock (_gate) return _records.ToArray(); } }
     }
 
     [Theory]

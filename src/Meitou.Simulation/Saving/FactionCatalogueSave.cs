@@ -1,9 +1,12 @@
+using Meitou.Simulation.Population;
 namespace Meitou.Simulation.Saving;
 
 public sealed record SavedFactionDefinition(string Id, string Name, string Template);
 public sealed record FactionCatalogueState(int Version, int ContentCount, SavedFactionDefinition[] Factions);
 
-/// <summary>Stable faction-index catalogue. Restore on exclusive candidate data before any world records are loaded.</summary>
+/// <summary>
+/// Stable faction-index catalogue. Restore on exclusive candidate data before any world records are loaded.
+/// </summary>
 public static class FactionCatalogueSave
 {
     public static FactionCatalogueState Capture(PopulationData data)
@@ -14,7 +17,9 @@ public static class FactionCatalogueSave
         return state;
     }
 
-    /// <summary>All definitions are checked before appending. Never remove or reorder an existing runtime faction.</summary>
+    /// <summary>
+    /// All definitions are checked before appending. Never remove or reorder an existing runtime faction.
+    /// </summary>
     public static void Restore(PopulationData data, FactionCatalogueState state)
     {
         Validate(data, state, complete: false);

@@ -4,20 +4,30 @@ namespace Meitou.Data.Save;
 
 /// <summary>
 /// An object handle of the save (docs/formats/save.md "Object handles and slot lists"): the class of the object, the container it lives in with the
-/// container's serial, its slot in that container and its own random serial. Stored as five ints under one key prefix
-/// (<c>handleTYPE</c>, <c>handleC</c>, <c>handleCS</c>, <c>handleI</c>, <c>handleS</c>). Type 11 is the null handle; the other parts of a null handle are
-/// stale values nobody reads, so <see cref="IsNull"/> tests the type only.
+/// container's serial, its slot in that container and its own random serial. Stored as five ints under one key prefix (<c>handleTYPE</c>,
+/// <c>handleC</c>, <c>handleCS</c>, <c>handleI</c>, <c>handleS</c>). Type 11 is the null handle; the other parts of a null handle are stale values
+/// nobody reads, so <see cref="IsNull"/> tests the type only.
 /// </summary>
-public readonly record struct Hand(int Type, int C, int CS, int I, int S)
+public readonly record struct Hand(int Type, int C, int Cs, int I, int S)
 {
-    /// <summary>The <c>TYPE</c> of the null handle (<see cref="FcsRecordType.NULL_ITEM"/>).</summary>
+    /// <summary>
+    /// The <c>TYPE</c> of the null handle (<see cref="FcsRecordType.NullItem"/>).
+    /// </summary>
     public const int NullType = 11;
 
+    /// <summary>
+    /// The null handle (<see cref="NullType"/>, every other part 0).
+    /// </summary>
     public static readonly Hand Null = new(NullType, 0, 0, 0, 0);
 
+    /// <summary>
+    /// Whether this is the null handle (see <see cref="NullType"/>).
+    /// </summary>
     public bool IsNull => Type == NullType;
 
-    /// <summary>The class of the object when the type is a known <see cref="FcsRecordType"/>.</summary>
+    /// <summary>
+    /// The class of the object when the type is a known <see cref="FcsRecordType"/>.
+    /// </summary>
     public FcsRecordType RecordType => (FcsRecordType)Type;
 
     /// <summary>
@@ -30,22 +40,28 @@ public readonly record struct Hand(int Type, int C, int CS, int I, int S)
         return new Hand(Get(record, prefix + "TYPE"), Get(record, prefix + "C"), Get(record, prefix + "CS"), i, Get(record, prefix + "S"));
     }
 
-    /// <summary>True when the record has all five parts under the prefix.</summary>
+    /// <summary>
+    /// True when the record has all five parts under the prefix.
+    /// </summary>
     public static bool IsComplete(FcsRecord record, string prefix) =>
         record.Ints.ContainsKey(prefix + "TYPE") && record.Ints.ContainsKey(prefix + "C") && record.Ints.ContainsKey(prefix + "CS") &&
         record.Ints.ContainsKey(prefix + "I") && record.Ints.ContainsKey(prefix + "S");
 
-    /// <summary>Writes the five parts under <paramref name="prefix"/> in the order the game does (TYPE, C, CS, I, S).</summary>
+    /// <summary>
+    /// Writes the five parts under <paramref name="prefix"/> in the order the game does (TYPE, C, CS, I, S).
+    /// </summary>
     public void Write(FcsRecord record, string prefix)
     {
         record.Ints[prefix + "TYPE"] = Type;
         record.Ints[prefix + "C"] = C;
-        record.Ints[prefix + "CS"] = CS;
+        record.Ints[prefix + "CS"] = Cs;
         record.Ints[prefix + "I"] = I;
         record.Ints[prefix + "S"] = S;
     }
 
-    /// <summary>The prefixes of the handles in a record: every int key ending in <c>TYPE</c> whose prefix also has an <c>I</c>.</summary>
+    /// <summary>
+    /// The prefixes of the handles in a record: every int key ending in <c>TYPE</c> whose prefix also has an <c>I</c>.
+    /// </summary>
     public static IEnumerable<string> Prefixes(FcsRecord record)
     {
         foreach (var key in record.Ints.Keys)
@@ -53,7 +69,10 @@ public readonly record struct Hand(int Type, int C, int CS, int I, int S)
                 yield return key[..^4];
     }
 
+    /// <summary>
+    /// The int under <paramref name="key"/>, 0 when missing.
+    /// </summary>
     static int Get(FcsRecord record, string key) => record.Ints.GetValueOrDefault(key);
 
-    public override string ToString() => IsNull ? "null" : $"{RecordType}[C{C}/{CS} I{I} S{S}]";
+    public override string ToString() => IsNull ? "null" : $"{RecordType}[C{C}/{Cs} I{I} S{S}]";
 }

@@ -10,34 +10,68 @@ namespace Meitou.Data.Characters;
 /// </summary>
 public sealed class AppearanceFile
 {
+    /// <summary>
+    /// The file's CHARACTER_APPEARANCE record (the first one).
+    /// </summary>
     public required FcsRecord Record { get; init; }
 
+    /// <summary>
+    /// <c>sex female</c>.
+    /// </summary>
     public bool Female => Record.Bools.TryGetValue("sex female", out var f) && f;
 
-    /// <summary>String id of the RACE (reference list <c>race</c>), or null.</summary>
+    /// <summary>
+    /// String id of the RACE (reference list <c>race</c>), or null.
+    /// </summary>
     public string? RaceId => Record.References.TryGetValue("race", out var refs) && refs.Count > 0 ? refs[0].TargetStringId : null;
 
-    /// <summary>String id of the HEAD record, or null when empty.</summary>
+    /// <summary>
+    /// String id of the HEAD record, or null when empty.
+    /// </summary>
     public string? HeadId => NonEmpty("head");
-    /// <summary>String id of the hair ATTACHMENT, or null when empty.</summary>
+
+    /// <summary>
+    /// String id of the hair ATTACHMENT, or null when empty.
+    /// </summary>
     public string? HairId => NonEmpty("hair style");
-    /// <summary>String id of the beard ATTACHMENT, or null when empty.</summary>
+
+    /// <summary>
+    /// String id of the beard ATTACHMENT, or null when empty.
+    /// </summary>
     public string? BeardId => NonEmpty("beard");
+
+    /// <summary>
+    /// The <c>idle stance</c> ANIMATION name, or null when empty.
+    /// </summary>
     public string? IdleStance => NonEmpty("idle stance");
 
-    /// <summary>The <c>Skin Tone</c> colour (RGB 0–1), or null if the file has none.</summary>
-    public Vector3? SkinTone => Record.Vector3s.TryGetValue("Skin Tone", out var v) ? v : null;
+    /// <summary>
+    /// The <c>Skin Tone</c> colour (RGB 0–1), or null if the file has none.
+    /// </summary>
+    public Vector3? SkinTone => Record.Vector3S.TryGetValue("Skin Tone", out var v) ? v : null;
 
+    /// <summary>
+    /// Every float of the record: slider values and pose weights by name.
+    /// </summary>
     public IReadOnlyDictionary<string, float> Floats => Record.Floats;
 
+    /// <summary>
+    /// The float <paramref name="key"/>, or <paramref name="fallback"/> when the file has none.
+    /// </summary>
     public float Get(string key, float fallback = 0) => Record.Floats.TryGetValue(key, out var v) ? v : fallback;
 
+    /// <summary>
+    /// The string <paramref name="key"/>, or null when it is missing or empty.
+    /// </summary>
     string? NonEmpty(string key) => Record.Strings.TryGetValue(key, out var s) && s.Length > 0 ? s : null;
 
+    /// <summary>
+    /// Reads the body file at <paramref name="path"/>; one with no CHARACTER_APPEARANCE record throws.
+    /// </summary>
     public static AppearanceFile Read(string path)
     {
         var file = FcsReader.ReadFile(path);
-        var record = file.Records.FirstOrDefault(r => r.RecordType == FcsRecordType.CHARACTER_APPEARANCE)
+        var record = file.Records.FirstOrDefault(r => r.RecordType == FcsRecordType.CharacterAppearance)
             ?? throw new FcsFormatException("Body file has no CHARACTER_APPEARANCE record.", 0);
         return new AppearanceFile { Record = record };
     }

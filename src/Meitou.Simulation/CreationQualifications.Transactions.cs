@@ -1,50 +1,53 @@
+using Meitou.Simulation.Factions;
 namespace Meitou.Simulation;
 
-/// <summary>Historical creation result. Current role ownership/liveness may change after this receipt was committed.</summary>
+/// <summary>
+/// Historical creation result. Current role ownership/liveness may change after this receipt was committed.
+/// </summary>
 public sealed record CreationReceipt(PlayerId Player, Guid RequestId, string Fingerprint, ulong Qualification,
     ulong QualificationRevision, int Faction, int Squad, EntityId[] Roles, long Paid, bool IncludesStartResources);
 
 public sealed partial class CreationQualifications
 {
-    readonly Dictionary<(PlayerId Player, Guid Request), CreationReceipt> receipts = [];
-    readonly Dictionary<ulong, Reservation> reservations = [];
+    readonly Dictionary<(PlayerId Player, Guid Request), CreationReceipt> _receipts = [];
+    readonly Dictionary<ulong, Reservation> _reservations = [];
     internal sealed record Reservation(CreationQualification Grant, Guid Request, string Fingerprint, int Count, ulong EntityFloor);
 
     static CreationReceipt Copy(CreationReceipt receipt) => receipt with { Roles = receipt.Roles.ToArray() };
     public CreationReceipt? Receipt(PlayerId player, Guid request)
     {
-        Boundary(); return receipts.TryGetValue((player, request), out var receipt) ? Copy(receipt) : null;
+        Boundary(); return _receipts.TryGetValue((player, request), out var receipt) ? Copy(receipt) : null;
     }
     static bool FingerprintValid(string value) => value is { Length: 64 } && value.All(c => c is >= '0' and <= '9' or >= 'A' and <= 'F');
 
     internal Reservation BeginUse(PlayerId player, Guid request, string fingerprint, ulong qualification, ulong expectedRevision, int count)
     {
         Boundary();
-        if (!world.HasPendingDurableMutation) throw new InvalidOperationException("Creation requires a durable mutation barrier.");
+        if (!_world.HasPendingDurableMutation) throw new InvalidOperationException("Creation requires a durable mutation barrier.");
         if (request == Guid.Empty || !FingerprintValid(fingerprint)) throw new ArgumentException("Invalid creation request identity.");
-        if (receipts.ContainsKey((player, request)) || reservations.ContainsKey(qualification) || reservations.Values.Any(r => r.Grant.Player == player && r.Request == request))
+        if (_receipts.ContainsKey((player, request)) || _reservations.ContainsKey(qualification) || _reservations.Values.Any(r => r.Grant.Player == player && r.Request == request))
             throw new InvalidOperationException("Creation request or qualification is already in use.");
         var eligibility = Assess(player, qualification, expectedRevision, count);
         if (eligibility != CreationEligibility.Eligible) throw new InvalidOperationException($"Creation qualification is no longer usable: {eligibility}.");
-        var reservation = new Reservation(grants[qualification], request, fingerprint, count, world.Entities.LastAllocated);
-        reservations.Add(qualification, reservation);
+        var reservation = new Reservation(_grants[qualification], request, fingerprint, count, _world.Entities.LastAllocated);
+        _reservations.Add(qualification, reservation);
         return reservation;
     }
 
     internal void Cancel(Reservation reservation)
     {
         Boundary();
-        if (reservations.TryGetValue(reservation.Grant.Id, out var current) && ReferenceEquals(current, reservation)) reservations.Remove(reservation.Grant.Id);
+        if (_reservations.TryGetValue(reservation.Grant.Id, out var current) && ReferenceEquals(current, reservation)) _reservations.Remove(reservation.Grant.Id);
     }
 
     internal CreationReceipt Complete(Reservation reservation, Squad squad)
     {
         Boundary();
         var grant = reservation.Grant;
-        if (!world.HasPendingDurableMutation || !reservations.TryGetValue(grant.Id, out var current) || !ReferenceEquals(current, reservation) ||
-            grants[grant.Id] != grant || !ReferenceEquals(world.Squads.Find(squad.Id), squad) || !squad.PlayerManaged || squad.Members.Count != reservation.Count)
+        if (!_world.HasPendingDurableMutation || !_reservations.TryGetValue(grant.Id, out var current) || !ReferenceEquals(current, reservation) ||
+            _grants[grant.Id] != grant || !ReferenceEquals(_world.Squads.Find(squad.Id), squad) || !squad.PlayerManaged || squad.Members.Count != reservation.Count)
             throw new InvalidOperationException("Creation reservation changed.");
-        var roles = squad.Members.Select(id => world.Players.ControlOf(id)).ToArray();
+        var roles = squad.Members.Select(id => _world.Players.ControlOf(id)).ToArray();
         if (roles.Any(r => r is null || r.Value.Player != grant.Player || r.Value.Faction != squad.Faction || r.Value.Entity.Value <= reservation.EntityFloor) ||
             roles.Select(r => r!.Value.Entity).Distinct().Count() != roles.Length) throw new InvalidOperationException("Creation output is not a new controlled roster.");
         if (grant.Kind == CreationQualificationKind.FactionApproved)
@@ -52,17 +55,17 @@ public sealed partial class CreationQualifications
             if (squad.Faction != grant.Faction || Assess(grant.Player, grant.Id, grant.Revision, reservation.Count) != CreationEligibility.Eligible)
                 throw new InvalidOperationException("Faction creation authority changed.");
         }
-        else if (world.Players.KnownRoles(grant.Player).Count() != roles.Length || Player(grant.Player).Memberships.Count() != 1 ||
+        else if (_world.Players.KnownRoles(grant.Player).Count() != roles.Length || Player(grant.Player).Memberships.Count() != 1 ||
             !Player(grant.Player).IsMember(squad.Faction)) throw new InvalidOperationException("Initial creation acquired unrelated roles or memberships.");
-        ulong next = checked(revision + 1);
+        ulong next = checked(_revision + 1);
         var receipt = new CreationReceipt(grant.Player, reservation.Request, reservation.Fingerprint, grant.Id, grant.Revision,
             squad.Faction, squad.Id, roles.Select(r => r!.Value.Entity).ToArray(), grant.Cost, grant.IncludesStartResources);
         var consumed = grant with { Revision = next, Status = CreationQualificationStatus.Consumed };
-        receipts.EnsureCapacity(receipts.Count + 1);
-        if (grant.Cost > 0 && world.Factions.Find(grant.Faction)?.TryDebit(grant.Cost) != true) throw new InvalidOperationException("Creation funds changed.");
-        grants[grant.Id] = consumed; revision = next;
-        receipts.Add((grant.Player, reservation.Request), receipt);
-        reservations.Remove(grant.Id);
+        _receipts.EnsureCapacity(_receipts.Count + 1);
+        if (grant.Cost > 0 && _world.Factions.Find(grant.Faction)?.TryDebit(grant.Cost) != true) throw new InvalidOperationException("Creation funds changed.");
+        _grants[grant.Id] = consumed; _revision = next;
+        _receipts.Add((grant.Player, reservation.Request), receipt);
+        _reservations.Remove(grant.Id);
         return Copy(receipt);
     }
 
@@ -88,7 +91,7 @@ public sealed partial class CreationQualifications
 
     void HashReceipts(ref StateHasher h)
     {
-        foreach (var r in receipts.Values.OrderBy(r => r.Player.Value).ThenBy(r => r.RequestId))
+        foreach (var r in _receipts.Values.OrderBy(r => r.Player.Value).ThenBy(r => r.RequestId))
         {
             h.Add(r.Player.Value); foreach (byte b in r.RequestId.ToByteArray()) h.Add(b);
             h.Add(Rng.StableHash(r.Fingerprint)); h.Add(r.Qualification); h.Add(r.QualificationRevision);

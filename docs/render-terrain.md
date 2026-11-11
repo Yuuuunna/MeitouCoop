@@ -67,11 +67,11 @@ Meitou look, not in the game (`GroundRelief`). The parallax and the displacement
 `displace` (Tab "Ground parallax", "Ground displacement (tessellation)"; Faithful: flat ground, as the game). Tab toggles "Terrain outline
 refinement (tessellation)" and "Rock smoothing (tessellation)" (both off by default, on at the Ultra preset); sliders "Ground relief quality" (High by default; Medium and Low reduce
 the march; compiled into the colour programs, one set per quality made on first use: a uniform quality cost High 12% of the terrain's
-GPU time, **Verified** by swamp-low A/B), "Ground relief depth (cm, typical ground)" (default 30), "Ground displacement distance (m)" (100), "Ground parallax
-distance (m)" (60); all on the settings' Graphics > World page, where quality and depth hide while parallax and displacement are both
-off and each distance while its effect is off; viewer K toggles the parallax. The other values are tuned constants, expressed at a 20 cm reference depth and
-settable for a run with the viewer's `--relief Name=value`: target slope 0.2, scale follow 0.5, max depth 80 cm (120 at the default
-30), cliff scale 1, overlay relief 1, self-shadow 0.6, tessellation detail 0.5, refinement 0.5 px, tilt 0.5, broad cut 2 m.
+GPU time, **Verified** by swamp-low A/B), "Ground relief depth (cm, typical ground)" (default 20, set by every preset), "Ground displacement
+distance (m)" (100), "Ground parallax distance (m)" (60); all on the settings' Graphics > World page, where quality and depth hide while parallax
+and displacement are both off and each distance while its effect is off; viewer K toggles the parallax. The other values are tuned constants,
+expressed at a 20 cm reference depth and settable for a run with the viewer's `--relief Name=value`: target slope 0.2, scale follow 0.5, max depth
+80 cm, cliff scale 1, overlay relief 1, self-shadow 0.6, tessellation detail 0.5, refinement 0.5 px, tilt 0.5, broad cut 2 m.
 
 **Heights** (`NormalHeight.FromNormals`, at load, ≤512², an R8 array, one slice per pair slot; no readable normal map: flat, out
 of the relief). The normal map's slopes (`dh/du = x/z`, `dh/dv = -y/z` in the terrain tangent frame) are integrated by FFT
@@ -156,7 +156,7 @@ cost more (the bumps overdraw themselves).
 **Registers** (**Observed**, Nsight GPU Trace, 2560x1440 at render scale 1): with the march in the fragment stage the colour pass held about 220
 registers a thread and a tenth of the pixel warps (SM throughput 20%, texture 22%: latency-bound), whether the parallax ran or not (a uniform branch
 does not lower the allocation). With the parallax off the colour programs are built without the march (`TerrainShaders.FragmentNative(march: false)`,
-`TerrainRenderer.UseColour`; a toggle builds the other set once): the terrain stage 3.37 -> 2.42 ms and the frame 7.0 -> 6.1 ms at a save's view,
+`TerrainPrograms.UseColour`; a toggle builds the other set once): the terrain stage 3.37 -> 2.42 ms and the frame 7.0 -> 6.1 ms at a save's view,
 the picture unchanged. The interior-cut patches' late colour took 1.4 ms for 19 draws with 8 wait-for-idles (the SMs idle a third of it): its `discard` turned the early
 depth test off. Their prepass already discards the cut, so the late colour draws them with the plain program and an equal depth test (both passes
 run the same vertex and tessellation stages, invariant positions): GPU frame 6.14 -> 5.80 ms, the picture unchanged (one pixel over 8 levels at a town view).
@@ -184,7 +184,7 @@ is named at the top left with its tile size and depth. In the game's sandbox Esc
 
 ## Material cache
 
-Meitou, not in the game (`TerrainRenderer.MaterialCache`, A/B `terrain-material-cache`, B: every pixel shades the layers). The patches' layered
+Meitou, not in the game (`MaterialCache`, A/B `terrain-material-cache`, B: every pixel shades the layers). The patches' layered
 material is baked into world-space levels round the eye, and a patch pixel within them reads the cache instead of shading up to five biomes of up
 to 14 layer samples each.
 - **Levels**: 4 of 2048² texels, level k's texel 0.25 × 2^k units (51, 102, 205, 410 m squares), RGBA8 albedo + gloss and RGBA8 tangent-space
@@ -198,15 +198,16 @@ to 14 layer samples each.
 - **Refresh**: the inputs (bindless indices, overlay window, `TerrainTextures.MaterialVersion` = writes to the biomes' parameter rows, relief settings)
   are hashed each frame; a change re-bakes every level 64 rows a frame, finest first, drawn from meanwhile.
 - **Draw**: the level whose texel is the pixel's footprint (short axis, as the layers' 8x anisotropic sampling), blended with the next coarser;
-  beyond the levels, beyond 0.3 × the nearest resident biome's fade distance (the bake has no distance fade), or on faces with n.y ≤ 0.5
-  (an xz texel spans 1 / n.y of the face: **Observed**, cliffs smeared into vertical streaks, their parallax wavy), the layers are shaded. The
+  a footprint finer than level 0's texel (within ~23 m of a 1080p camera), beyond the levels, beyond 0.3 × the nearest resident biome's fade distance (the bake has no distance fade), or on faces with n.y ≤ 0.5
+  (an xz texel spans 1 / n.y of the face: **Observed**, cliffs smeared into vertical streaks, their parallax wavy), the layers are shaded. Level 0's
+  texel is about 5x a layer's (tiling 50: 2048 texels over 100 units); read magnified it blurred the near ground (**Observed**, 2026-11-07). The
   parallax marches the cached height with the march's steps and self-shadow (the sun's from two levels coarser; where displaced, only what the level
   holds finer than one at half the mesh spacing): one read a step, no per-biome work. A per-pixel gather (cliff layers live over a cached ground,
   per-biome fade) cost as much as it saved: terrain 4.0 ms against 3.9 live.
-- **Differences** (**Observed**, viewer A/B stills, 1920x1080 DLSS): mean 0.8-1.1 / 255, 0.35-1.4% of pixels over 12; the ripples' parallax phase
+- **Differences** (**Observed**, viewer A/B stills, 1920x1080 DLSS, before near footprints shaded the layers): mean 0.8-1.1 / 255, 0.35-1.4% of pixels over 12; the ripples' parallax phase
   and self-shadow shift slightly; a slope's parallax (n.y over 0.5) follows the height field instead of the cliff's projections. After a 90 m flight at 12 units a
   frame: mean 1.27 against the live picture, no stale strips. The game's `--screenshot` does not run the cache (its frames skip the hook).
-- **Cost** (**Observed**, `--play-bench` on save "stutter final boss", RTX 4070, 1080p DLSS 0.83, interleaved with master): terrain 3.94 -> 2.33 ms
+- **Cost** (**Observed** before near footprints shaded the layers, `--play-bench` on save "stutter final boss", RTX 4070, 1080p DLSS 0.83, interleaved with master): terrain 3.94 -> 2.33 ms
   idle, orbit 3.98 -> 2.23, pan 3.77 -> 1.77; GPU frame 7.85 -> 6.20; frame p99 unchanged. Viewer A/B at two views: terrain -0.39 and -0.88 ms.
 
 ## Rocks

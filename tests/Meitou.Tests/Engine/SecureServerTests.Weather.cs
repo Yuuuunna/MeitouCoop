@@ -1,6 +1,6 @@
 using System.Numerics;
 using Meitou.Data.Particles;
-using Meitou.Engine;
+using Meitou.Game.Host;
 using Meitou.Tests.World;
 
 namespace Meitou.Tests.Engine;

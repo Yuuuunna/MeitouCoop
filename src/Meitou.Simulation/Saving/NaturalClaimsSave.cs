@@ -1,10 +1,13 @@
 using System.Text.Json;
 using Meitou.Data.Fcs;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Production;
 
 namespace Meitou.Simulation.Saving;
 
-/// <summary>Natural-resource ownership is world state independent of queued orders and transient work-site versions.</summary>
+/// <summary>
+/// Natural-resource ownership is world state independent of queued orders and transient work-site versions.
+/// </summary>
 static class NaturalClaimsSave
 {
     internal const string Key = "meitou natural claims";

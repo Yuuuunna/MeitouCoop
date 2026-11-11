@@ -3,6 +3,7 @@ using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.World;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Production;
@@ -86,7 +87,7 @@ public class PlayerWorldViewTests
         {
             var inventory = new Inventory(); inventory.Items.Add(new ItemInstance { Record = item, Name = item, Quantity = 3 });
             var cold = new CharacterCold { Faction = player.State.Faction, IsPlayer = true, Inventory = inventory, Name = item };
-            cold.Jobs.Add(PermaJob.Untargeted(TaskType.JOB_MEDIC));
+            cold.Jobs.Add(PermaJob.Untargeted(TaskType.JobMedic));
             var id = World.Characters.Spawn(new CharacterHot { Position = position }, cold, World.Tick);
             World.Players.AssignInitial(player.Id, id); return id;
         }
@@ -200,9 +201,9 @@ public class PlayerWorldViewTests
     [Fact]
     public void NearbyMachinePresentationDoesNotExposeOtherFactionsStockAndRevocationRemovesDetails()
     {
-        var function = SyntheticTown.Rec("store-fn", FcsRecordType.BUILDING_FUNCTIONALITY, "Storage");
+        var function = SyntheticTown.Rec("store-fn", FcsRecordType.BuildingFunctionality, "Storage");
         function.Ints["function"] = TownBuildings.GeneralStorageFunction;
-        var store = SyntheticTown.Rec("store", FcsRecordType.BUILDING, "Storage");
+        var store = SyntheticTown.Rec("store", FcsRecordType.Building, "Storage");
         store.Bools["has inventory"] = true; store.References["functionality"] = [SyntheticTown.Ref("store-fn")];
         var data = SyntheticTown.Data(SyntheticTown.Database(extra: [store, function]));
         var production = new ProductionSystem(data.Db, data.Bodies.Constants, data.BodyOptions, data.Items, null);

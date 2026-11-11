@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Meitou.Simulation.Player;
 
 namespace Meitou.Simulation.Items;
 
@@ -20,17 +21,17 @@ internal sealed class InventoryVersions
             item.LimbDamage, item.LimbWear, item.LimbStun, item.StolenFrom, item.LockedOn, item.Death, item.Unique, item.ItemFunction, item.Buyback);
     }
 
-    readonly ConditionalWeakTable<Inventory, Stamp> stamps = new();
-    ulong revision;
+    readonly ConditionalWeakTable<Inventory, Stamp> _stamps = new();
+    ulong _revision;
 
     /// <summary>Call only at a world boundary or during a serial phase, like other inventory reads.</summary>
     public ulong Read(Inventory inventory)
     {
-        var stamp = stamps.GetOrCreateValue(inventory);
+        var stamp = _stamps.GetOrCreateValue(inventory);
         var items = inventory.All().Select(ItemState.Of).ToArray();
         if (stamp.Revision == 0 || !stamp.Items.AsSpan().SequenceEqual(items))
         {
-            stamp.Revision = revision = checked(revision + 1);
+            stamp.Revision = _revision = checked(_revision + 1);
             stamp.Items = items;
         }
         return stamp.Revision;

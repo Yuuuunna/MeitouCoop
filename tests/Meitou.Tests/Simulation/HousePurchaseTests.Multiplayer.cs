@@ -3,6 +3,7 @@ using Meitou.Data.Fcs;
 using Meitou.Data.Save;
 using Meitou.Data.World;
 using Meitou.Simulation;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Locks;
 
 namespace Meitou.Tests.Simulation;
@@ -117,7 +118,7 @@ public partial class HousePurchaseTests
         var site = scene.World.Buildings.Find(scene.House.Key)!;
         site.Destroyed = false; site.Complete = false; site.Ruined = true; site.Paused = true;
         site.Progress = 11; site.Materials[0].Delivered = 12;
-        var state = new FcsRecord { RecordType = FcsRecordType.GAMESTATE_BUILDING, StringId = "owned-house" };
+        var state = new FcsRecord { RecordType = FcsRecordType.GamestateBuilding, StringId = "owned-house" };
         Assert.True(scene.World.Fixtures.WriteBuilding(scene.House.Key, state));
         var file = new SaveFile(); file.Records.Add(state);
         var persisted = SaveFile.Read(file.ToBytes()).Records.Single();
@@ -153,7 +154,7 @@ public partial class HousePurchaseTests
     public void ExplicitUnpurchasedStateIsNotOverriddenByAFactionOwnershipChange()
     {
         using var scene = new MultiplayerHouse();
-        var saved = new FcsRecord { RecordType = FcsRecordType.GAMESTATE_BUILDING, StringId = "npc-house" };
+        var saved = new FcsRecord { RecordType = FcsRecordType.GamestateBuilding, StringId = "npc-house" };
         saved.Strings["owner faction ID"] = scene.Data.Factions[scene.A.State.Faction].Id;
         saved.Bools[FixtureRegistry.PurchasedKey] = false;
         using var world = World(scene.Data);

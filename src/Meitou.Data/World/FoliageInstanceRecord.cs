@@ -5,23 +5,36 @@ namespace Meitou.Data.World;
 
 /// <summary>
 /// One placed foliage mesh as the cull reads it, in the layout a GPU cull will read it from a storage buffer (std430, 96 bytes;
-/// docs/renderer-native.md 5.2, "InstanceRecord"). Built on the layout worker (<see cref="FoliageGrouping"/>, <see cref="FoliageLayoutCache.TryLoadGrouped"/>);
-/// <see cref="Sphere"/> is filled once the mesh's bounds are known (<c>FoliageCull.FillSpheres</c> in the renderer), with the same call the cull made per frame
-/// before, so it is bit-identical. (In Meitou.Rendering until the layout cache built these records itself.)
+/// docs/renderer-native.md 5.2, "InstanceRecord"). Built on the layout worker (<see cref="FoliageGrouping"/>,
+/// <see cref="FoliageLayoutCache.TryLoadGrouped"/>); <see cref="Sphere"/> is filled once the mesh's bounds are known (<c>FoliageCull.FillSpheres</c>
+/// in the renderer), with the same call the cull made per frame before, so it is bit-identical. (In Meitou.Rendering until the layout cache built
+/// these records itself.)
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct FoliageInstanceRecord
 {
-    /// <summary>The instance's transform (row-vector convention, translation in row 4; <c>M14</c> is 0 here and carries the fade once packed).</summary>
+    /// <summary>
+    /// The instance's transform (row-vector convention, translation in row 4; <c>M14</c> is 0 here and carries the fade once packed).
+    /// </summary>
     public Matrix4x4 Transform;
-    /// <summary>Bounding sphere in the world: xyz = <c>Vector3.Transform(mesh centre, Transform)</c>, w = mesh radius × scale.</summary>
+    /// <summary>
+    /// Bounding sphere in the world: xyz = <c>Vector3.Transform(mesh centre, Transform)</c>, w = mesh radius × scale.
+    /// </summary>
     public Vector4 Sphere;
-    /// <summary>x, z of the position (the range is measured along the ground), the scale, and the group's index within its zone; for a TERRAIN-mode rock group on the GPU cull, <c>FoliageCull.RockBits</c> instead (nothing else reads w).</summary>
+    /// <summary>
+    /// x, z of the position (the range is measured along the ground), the scale, and the group's index within its zone; for a TERRAIN-mode rock group
+    /// on the GPU cull, <c>FoliageCull.RockBits</c> instead (nothing else reads w).
+    /// </summary>
     public Vector4 Ground;
 
+    /// <summary>
+    /// Bytes per record (std430).
+    /// </summary>
     public const int Size = 96;
 
-    /// <summary>Bytes a record takes in the GPU's instance arena (<see cref="Pack"/>): 17 floats, 71% of <see cref="Size"/>.</summary>
+    /// <summary>
+    /// Bytes a record takes in the GPU's instance arena (<see cref="Pack"/>): 17 floats, 71% of <see cref="Size"/>.
+    /// </summary>
     public const int GpuSize = 68;
 
     /// <summary>
@@ -41,6 +54,7 @@ public struct FoliageInstanceRecord
         d[12] = r.Sphere.X; d[13] = r.Sphere.Y; d[14] = r.Sphere.Z; d[15] = r.Sphere.W;
         d[16] = r.Ground.W;
         static int Bits(float f) => BitConverter.SingleToInt32Bits(f);
-        return Bits(t.M14) == 0 && Bits(t.M24) == 0 && Bits(t.M34) == 0 && t.M44 == 1f && Bits(r.Ground.X) == Bits(t.M41) && Bits(r.Ground.Y) == Bits(t.M43);
+        return Bits(t.M14) == 0 && Bits(t.M24) == 0 && Bits(t.M34) == 0 && t.M44 == 1f
+            && Bits(r.Ground.X) == Bits(t.M41) && Bits(r.Ground.Y) == Bits(t.M43);
     }
 }

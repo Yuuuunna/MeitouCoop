@@ -1,8 +1,14 @@
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 namespace Meitou.Simulation;
 
-/// <summary>Public identity only. Resource accounts and membership privileges remain in PlayerFactionView.</summary>
+/// <summary>
+/// Public identity only. Resource accounts and membership privileges remain in PlayerFactionView.
+/// </summary>
 public sealed record FactionIdentityView(int Faction, string? RecordId, string Name, bool NotReal, bool PlayerOwned);
-/// <summary>A member faction's directed standing towards a disclosed faction.</summary>
+/// <summary>
+/// A member faction's directed standing towards a disclosed faction.
+/// </summary>
 public sealed record FactionStandingView(int Faction, float Relation, bool Ally, bool Hostile);
 
 public sealed partial class World
@@ -28,7 +34,9 @@ public sealed partial class World
         return new(other, data.Relations.Get(from, other), data.Relations.IsAlly(from, other), data.Relations.IsHostile(from, other));
     }
 
-    /// <summary>Local presentation may inspect its loaded catalogue; remote capture supplies its permitted indices explicitly.</summary>
+    /// <summary>
+    /// Local presentation may inspect its loaded catalogue; remote capture supplies its permitted indices explicitly.
+    /// </summary>
     public IReadOnlyList<FactionIdentityView> LocalFactionCatalogue()
         => DescribeFactions(Enumerable.Range(0, FactionDataForView?.Factions.Count ?? 0).Concat(Factions.All.Select(f => f.Index)));
 

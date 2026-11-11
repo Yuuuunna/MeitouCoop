@@ -1,8 +1,11 @@
+using Meitou.Simulation.Player;
 using System.Numerics;
 using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
 using Meitou.Data.World;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Population;
 using SimWorld = Meitou.Simulation.World;
 
 namespace Meitou.Tests.Simulation;
@@ -32,10 +35,10 @@ public class PlayerCreationFactoryTests
         public int B { get; }
         public Scene()
         {
-            var tech = SyntheticTown.Rec("tech-existing", FcsRecordType.RESEARCH, "Existing technology");
-            var unique = SyntheticTown.Rec("unique-player", FcsRecordType.CHARACTER, "Unique");
+            var tech = SyntheticTown.Rec("tech-existing", FcsRecordType.Research, "Existing technology");
+            var unique = SyntheticTown.Rec("unique-player", FcsRecordType.Character, "Unique");
             unique.Bools["unique"] = true; unique.References["race"] = [new("1-t", 100, 0, 0)];
-            var randomized = SyntheticTown.Rec("random-player", FcsRecordType.CHARACTER, "Randomized");
+            var randomized = SyntheticTown.Rec("random-player", FcsRecordType.Character, "Randomized");
             randomized.Ints["stats randomise"] = 20; randomized.References["race"] = [new("1-t", 100, 0, 0)];
             Data = SyntheticTown.Data(SyntheticTown.Database(extra: [tech, unique, randomized]));
             Data.Relations.PlayerFaction = -1;
@@ -126,7 +129,7 @@ public class PlayerCreationFactoryTests
     public void AssemblyFailureRemovesPartialCharactersWithoutClaimingUniques()
     {
         using var s = new Scene();
-        string normal = s.Data.Db.OfType(FcsRecordType.CHARACTER).First(r => r.StringId != "unique-player").StringId;
+        string normal = s.Data.Db.OfType(FcsRecordType.Character).First(r => r.StringId != "unique-player").StringId;
         var start = s.Start with { Squad = [new RecordLink("unique-player", 1, 0, 0), new RecordLink(normal, 1, 0, 0)] };
         var recipe = s.Population.PreparePlayerSquad(s.World, start, s.A, 10, 2);
         s.Walk.ThrowAt = s.Walk.Calls + recipe.CharacterCount + 3;

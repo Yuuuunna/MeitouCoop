@@ -3,6 +3,7 @@
 Read only the topic/sections needed. Original-game facts use **Verified** (source/check),
 **Observed** (limited evidence), **Unknown** (unresolved). Keep facts current; no development
 diaries, asset dumps or decompiled output. Current choices: [DECISIONS](../DECISIONS.md).
+Current upstream baseline and validation scope: [upstream-sync](upstream-sync.md).
 Class layouts, field names and method names cited as **KenshiLib 1ce4a16** come from
 [BFrizzleFoShizzle/KenshiLib](https://github.com/BFrizzleFoShizzle/KenshiLib) (GPLv3, Kenshi 1.0.65),
 used as a naming reference for our 1.0.68 analysis; they are **Observed** until checked against our exe.
@@ -21,7 +22,7 @@ Not built, by design: the original's in-game level editor and fog editor (`Kensh
 - [impostors](impostors.md)
 - [launch-options](launch-options.md): every command-line option and environment variable
 - [launcher](launcher.md): game release installer, mod list and presets
-- [play-reports](play-reports.md): roadmap upkeep: play reports service, in-game feedback button, Discord, launcher button, issue forms, drift check
+- [feedback](feedback.md): the roadmap page, the in-game feedback button and its service, issue forms and the Haiku area labels
 - [macos-port](macos-port.md): running on MoltenVK, its constraints and fixes; the native Metal path next to it
 - [metal-backend](metal-backend.md): a native Metal path next to Vulkan - what the spike proved and what a second backend would need
 - [metal-content-testability-plan](metal-content-testability-plan.md): the content/testability gaps and the order to close them
@@ -29,6 +30,7 @@ Not built, by design: the original's in-game level editor and fog editor (`Kensh
 - [metal-effects-parity-plan](metal-effects-parity-plan.md): MEP-I, the remaining Metal effect-parity milestones and ship gates
 - [meitou-ui](meitou-ui.md): UI kit for the Meitou UI mode
 - [modding](modding.md): code mods: `meitou.json`, per-mod load context, one game-shipped Harmony, tick anchors, dialogue codes, sidecar saves, UI, F10 rows
+- [modding-dependencies](modding-dependencies.md): code mods building on code mods: versions, `dependencies`, shared assemblies, Arrange
 - [native-ui](native-ui.md)
 - [render-clouds](render-clouds.md)
 - [render-distance-benchmark](render-distance-benchmark.md)
@@ -98,6 +100,8 @@ Not built, by design: the original's in-game level editor and fog editor (`Kensh
 - [birds](game/birds.md): wildlife flocks and their presentation
 - [buildings-production](game/buildings-production.md)
 - [carry-loot](game/carry-loot.md)
+- [interior-editor](game/interior-editor.md): the original's layout editor, Meitou's read-only viewer (F10 Tools)
+- [level-editor](game/level-editor.md): the original's in-game level editor (top bar, buildings tool, Save Mod), Meitou's (F10 Tools)
 - [locks](game/locks.md): cages, beds, doors, lockable containers, lockpicking, shackles
 - [combat](game/combat.md)
 - [dialogue](game/dialogue.md): packages, line choice, conditions, effects, conversation window

@@ -6,16 +6,16 @@ public sealed partial class World
     {
         internal void Complete() => world.FinishDurableMutation(this);
     }
-    DurableMutation? durableMutation;
-    public bool HasPendingDurableMutation => durableMutation is not null;
+    DurableMutation? _durableMutation;
+    public bool HasPendingDurableMutation => _durableMutation is not null;
     internal DurableMutation BeginDurableMutation()
     {
-        if (!AtTickBoundary || durableMutation is not null) throw new InvalidOperationException("A durable mutation requires an idle world boundary.");
-        return durableMutation = new DurableMutation(this);
+        if (!AtTickBoundary || _durableMutation is not null) throw new InvalidOperationException("A durable mutation requires an idle world boundary.");
+        return _durableMutation = new DurableMutation(this);
     }
     internal void VerifyDurableMutation(DurableMutation token)
     {
-        if (!ReferenceEquals(durableMutation, token) || !AtTickBoundary) throw new InvalidOperationException("Invalid durable mutation owner.");
+        if (!ReferenceEquals(_durableMutation, token) || !AtTickBoundary) throw new InvalidOperationException("Invalid durable mutation owner.");
     }
     internal void AdvanceDurableRevision(DurableMutation token)
     {
@@ -23,10 +23,10 @@ public sealed partial class World
     }
     void FinishDurableMutation(DurableMutation token)
     {
-        VerifyDurableMutation(token); durableMutation = null;
+        VerifyDurableMutation(token); _durableMutation = null;
     }
     internal void RequireNoDurableMutation()
     {
-        if (durableMutation is not null) throw new InvalidOperationException("A creation result is waiting for durable persistence.");
+        if (_durableMutation is not null) throw new InvalidOperationException("A creation result is waiting for durable persistence.");
     }
 }

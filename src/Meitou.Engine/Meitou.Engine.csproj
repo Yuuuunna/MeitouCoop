@@ -1,9 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <ProjectReference Include="../Meitou.Networking/Meitou.Networking.csproj" />
-    <ProjectReference Include="../Meitou.Runtime/Meitou.Runtime.csproj" />
-    <ProjectReference Include="..\Meitou.Core\Meitou.Core.csproj" />
-    <ProjectReference Include="..\Meitou.Data\Meitou.Data.csproj" />
-    <ProjectReference Include="..\Meitou.Simulation\Meitou.Simulation.csproj" />
-  </ItemGroup>
-</Project>

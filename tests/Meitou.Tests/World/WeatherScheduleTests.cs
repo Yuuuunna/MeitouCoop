@@ -38,7 +38,7 @@ public class WeatherScheduleTests
         var authority = new WeatherSchedule(MakeWorld());
         authority.Advance(WeatherTime.At(1, 12));
         var snapshot = authority.World.Snapshot();
-        var view = new Meitou.Rendering.WorldWeather(MakeWorld()) { Day = 999, Log = false };
+        var view = new Meitou.Game.Rendering.Sky.WorldWeather(MakeWorld()) { Day = 999, Log = false };
         view.AcceptAuthority(snapshot, authority.Time);
         var before = view.World.Snapshot();
         for (int i = 0; i < 20; i++) view.Update(new Vector3(i * 200, 100, i * -300), 23, 1, held: true);
@@ -52,7 +52,7 @@ public class WeatherScheduleTests
     {
         var source = new WeatherSchedule(MakeWorld()); source.Advance(WeatherTime.At(1, 12));
         var frame = new WeatherFrame(source.Time, source.World.Snapshot());
-        var view = new Meitou.Rendering.WorldWeather(MakeWorld()) { Log = false };
+        var view = new Meitou.Game.Rendering.Sky.WorldWeather(MakeWorld()) { Log = false };
         view.AcceptRemoteAuthority(frame);
         var serials = view.World.Regions.Select(r => r.Serial).ToArray();
         for (int i = 0; i < 5; i++) view.AcceptRemoteAuthority(frame);

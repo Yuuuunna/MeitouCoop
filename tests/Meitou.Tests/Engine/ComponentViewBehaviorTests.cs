@@ -2,6 +2,7 @@ using System.Numerics;
 using Meitou.Networking;
 using Meitou.Networking.VNext;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 namespace Meitou.Tests.Engine;
 
 public sealed class ComponentViewBehaviorTests

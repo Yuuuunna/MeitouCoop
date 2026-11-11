@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Text.Json.Serialization;
 using Meitou.Data.Characters;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation;
 

@@ -1,7 +1,9 @@
+using Meitou.Simulation.Player;
 using Meitou.Data.Particles;
 using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Population;
 using Meitou.Tests.Save;
 
 namespace Meitou.Tests.Engine;

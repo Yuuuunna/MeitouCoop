@@ -1,3 +1,4 @@
+using Meitou.Simulation.Population;
 using System.Net;
 using Meitou.Networking.VNext;
 using Meitou.Networking.VNext.Transport;
@@ -6,6 +7,7 @@ using System.Security.Cryptography;
 using Meitou.Networking;
 using Meitou.Server;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 using Meitou.Tests.Simulation;
 
 namespace Meitou.Tests.Engine;

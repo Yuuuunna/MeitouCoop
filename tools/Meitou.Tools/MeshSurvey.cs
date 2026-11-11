@@ -1,9 +1,14 @@
 using Meitou.Content;
 using Meitou.Data.Ogre;
 
-/// <summary>Reads every .mesh under data/ and reports failures and what the files contain.</summary>
+/// <summary>
+/// Reads every .mesh under data/ and reports failures and what the files contain.
+/// </summary>
 static class MeshSurvey
 {
+    /// <summary>
+    /// Reads every mesh and prints the failures, the versions and the vertex elements the files use; returns the exit code.
+    /// </summary>
     public static int Run(GameInstall install)
     {
         var files = Directory.EnumerateFiles(install.DataDirectory, "*.mesh", SearchOption.AllDirectories).ToList();
@@ -33,17 +38,9 @@ static class MeshSurvey
                     }
                 }
                 if (mesh.Bounds is { } b)
-                    foreach (var vd in mesh.SubMeshes.Select(s => s.VertexData).OfType<OgreVertexData>())
-                        foreach (var p in vd.ReadPositions() ?? [])
-                        {
-                            var tol = 1e-3f * (1 + (b.Max - b.Min).Length());
-                            if (p.X < b.Min.X - tol || p.Y < b.Min.Y - tol || p.Z < b.Min.Z - tol || p.X > b.Max.X + tol || p.Y > b.Max.Y + tol || p.Z > b.Max.Z + tol)
-                            {
-                                outOfBounds++;
-                                break;
-                            }
-                        }
-                else noBounds++;
+                    outOfBounds += CountOutOfBounds(mesh, b);
+                else
+                    noBounds++;
                 foreach (var sub in mesh.SubMeshes)
                 {
                     submeshes++;
@@ -61,12 +58,36 @@ static class MeshSurvey
 
         Console.WriteLine($"{files.Count} meshes, {failures.Count} failed");
         foreach (var (k, v) in versions) Console.WriteLine($"  {k}: {v}");
-        Console.WriteLine($"  {submeshes} submeshes, {vertices} vertices, {indices} indices; {skinned} skinned, {withLod} with LOD, {shared} with shared vertices");
+        Console.WriteLine($"  {submeshes} submeshes, {vertices} vertices, {indices} indices; "
+            + $"{skinned} skinned, {withLod} with LOD, {shared} with shared vertices");
         Console.WriteLine($"  vertex buffers with a position outside the mesh bounds: {outOfBounds}; meshes without bounds: {noBounds}");
         Console.WriteLine("  skipped chunks: " + string.Join(", ", skipped.Select(kv => $"{kv.Key} x{kv.Value}")));
         Console.WriteLine("  vertex elements:");
         foreach (var (k, v) in elements.OrderByDescending(kv => kv.Value)) Console.WriteLine($"    {k,-40} {v,6}");
         foreach (var (file, error) in failures.Take(20)) Console.WriteLine($"  FAIL {file}: {error}");
         return failures.Count == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Vertex buffers that have a position outside the mesh bounds (with a small tolerance), one count per buffer.
+    /// </summary>
+    static int CountOutOfBounds(OgreMesh mesh, OgreBounds b)
+    {
+        int count = 0;
+        foreach (var vd in mesh.SubMeshes.Select(s => s.VertexData).OfType<OgreVertexData>())
+        {
+            foreach (var p in vd.ReadPositions() ?? [])
+            {
+                var tol = 1e-3f * (1 + (b.Max - b.Min).Length());
+                if (p.X < b.Min.X - tol || p.Y < b.Min.Y - tol || p.Z < b.Min.Z - tol || p.X > b.Max.X + tol || p.Y > b.Max.Y + tol
+                        || p.Z > b.Max.Z + tol)
+                {
+                    count++;
+                    break;
+                }
+            }
+        }
+
+        return count;
     }
 }

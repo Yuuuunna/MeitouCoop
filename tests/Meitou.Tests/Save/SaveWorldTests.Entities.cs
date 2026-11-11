@@ -1,6 +1,8 @@
 using System.Numerics;
 using Meitou.Data.Save;
 using Meitou.Simulation;
+using Meitou.Simulation.Bodies;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Saving;
 using Meitou.Tests.Simulation;
 using Meitou.Runtime;
@@ -142,9 +144,9 @@ public partial class SaveWorldTests
     {
         var db = SyntheticTown.Database(extra:
         [
-            SyntheticTown.Rec("tech-a", FcsRecordType.RESEARCH, "A"),
-            SyntheticTown.Rec("tech-b", FcsRecordType.RESEARCH, "B"),
-            SyntheticTown.Rec("tech-c", FcsRecordType.RESEARCH, "C"),
+            SyntheticTown.Rec("tech-a", FcsRecordType.Research, "A"),
+            SyntheticTown.Rec("tech-b", FcsRecordType.Research, "B"),
+            SyntheticTown.Rec("tech-c", FcsRecordType.Research, "C"),
         ]);
         using var game = NewGame(db: db);
         var world = game.World;

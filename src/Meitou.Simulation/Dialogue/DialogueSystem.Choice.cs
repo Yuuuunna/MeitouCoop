@@ -1,19 +1,28 @@
 using System.Numerics;
 using Meitou.Data.Gameplay.Dialogue;
+using Meitou.Simulation.Aggro;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Dialogue;
 
+/// <summary>
+/// The dialogue system's line choice: the line picked, its speaker or interjector, and the checks a line passes.
+/// </summary>
 public sealed partial class DialogueSystem
 {
-    /// <summary>A chosen line, the root it came from (a root's chosen child), and who says it.</summary>
+    /// <summary>
+    /// A chosen line, the root it came from (a root's chosen child), and who says it.
+    /// </summary>
     readonly record struct Picked(DialogueNode Line, DialogueNode? Root, CharacterId Speaker);
 
     /// <summary>
-    /// Chooses a line from <paramref name="list"/> (<c>FUN_14067a0c0</c>, docs/game/dialogue.md "Choosing a line"): the list is sorted by score; the walk stops at the first line whose
-    /// score (with the race bonus) is below the best so far; each node's speaker is resolved and the line check run with that speaker as "me" (the NPC for a player-side line); a
-    /// passing root descends into its children; every passing line scoring at least the best so far is a candidate (earlier lower ones stay) and one candidate is picked at random.
-    /// The checks and the race bonus use the target the walk started with (<paramref name="target"/>): a line check that retargets (<see cref="SetTarget"/>) changes who the
-    /// T_TARGET speakers are for the rest of the walk, not the target the walk tests.
+    /// Chooses a line from <paramref name="list"/> (<c>FUN_14067a0c0</c>, docs/game/dialogue.md "Choosing a line"): the list is sorted by score; the
+    /// walk stops at the first line whose score (with the race bonus) is below the best so far; each node's speaker is resolved and the line check
+    /// run with that speaker as "me" (the NPC for a player-side line); a passing root descends into its children; every passing line scoring at least
+    /// the best so far is a candidate (earlier lower ones stay) and one candidate is picked at random. The checks and the race bonus use the target
+    /// the walk started with (<paramref name="target"/>): a line check that retargets (<see cref="SetTarget"/>) changes who the T_TARGET speakers are
+    /// for the rest of the walk, not the target the walk tests.
     /// </summary>
     Picked? Pick(World world, Conversation c, IReadOnlyList<DialogueNode> list, int depth = 0, CharacterId? target = null)
     {
@@ -54,7 +63,8 @@ public sealed partial class DialogueSystem
 
         int LeafScore(DialogueNode leaf) => leaf.Score + RaceBonus(world, leaf, whom);
 
-        // Every candidate scoring at least the best so far joins the list and sets the best; the list is never cleared, so lower earlier ones stay in the draw.
+        // Every candidate scoring at least the best so far joins the list and sets the best; the list is never cleared, so lower earlier ones stay in
+        // the draw.
         void Consider(int score, Picked p)
         {
             if (score < best) return;
@@ -63,11 +73,15 @@ public sealed partial class DialogueSystem
         }
     }
 
-    /// <summary>+2 when the target's race, or one of its RACE_GROUP, is in the line's <c>target race</c> (<c>FUN_140671bb0</c>).</summary>
+    /// <summary>
+    /// +2 when the target's race, or one of its RACE_GROUP, is in the line's <c>target race</c> (<c>FUN_140671bb0</c>).
+    /// </summary>
     int RaceBonus(World world, DialogueNode node, CharacterId target) =>
-        node.TargetRace.Count > 0 && Cold(world, target)?.Race is { } race && dialogue.RaceMatches(race.StringId, node.TargetRace) ? 2 : 0;
+        node.TargetRace.Count > 0 && Cold(world, target)?.Race is { } race && _dialogue.RaceMatches(race.StringId, node.TargetRace) ? 2 : 0;
 
-    /// <summary>Who says <paramref name="node"/> (<c>FUN_140672bf0</c>); false: nobody (the line is skipped).</summary>
+    /// <summary>
+    /// Who says <paramref name="node"/> (<c>FUN_140672bf0</c>); false: nobody (the line is skipped).
+    /// </summary>
     bool SpeakerOf(World world, Conversation c, DialogueNode node, out CharacterId speaker)
     {
         speaker = node.Speaker switch
@@ -83,7 +97,8 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// T_TARGET_WITH_RACE (<c>FUN_140672bf0</c>): for each listed race in turn, the first member of the target's squad (in squad order, perceived or not) whose race matches it.
+    /// T_TARGET_WITH_RACE (<c>FUN_140672bf0</c>): for each listed race in turn, the first member of the target's squad (in squad order, perceived or
+    /// not) whose race matches it.
     /// </summary>
     CharacterId WithRace(World world, DialogueNode node, CharacterId target)
     {
@@ -91,13 +106,14 @@ public sealed partial class DialogueSystem
         var squad = SquadOf(world, target);
         foreach (string listed in node.TargetRace)
             foreach (var m in squad)
-                if (Cold(world, m)?.Race is { } r && dialogue.RaceMatches(r.StringId, listed)) return m;
+                if (Cold(world, m)?.Race is { } r && _dialogue.RaceMatches(r.StringId, listed)) return m;
         return CharacterId.None;
     }
 
     /// <summary>
-    /// An interjector for <paramref name="node"/> (<c>FUN_140679bc0</c>): an awake member of the NPC's own squad, not an animal, not already talking or interjecting, passing the node's
-    /// check as the speaker; a <c>dumb</c> character only when the node's <c>is character</c> lists it. Weighted by distance (1 within 30, 0 beyond ~450, x0.1 for another race).
+    /// An interjector for <paramref name="node"/> (<c>FUN_140679bc0</c>): an awake member of the NPC's own squad, not an animal, not already talking
+    /// or interjecting, passing the node's check as the speaker; a <c>dumb</c> character only when the node's <c>is character</c> lists it. Weighted
+    /// by distance (1 within 30, 0 beyond ~450, x0.1 for another race).
     /// </summary>
     CharacterId? FindInterjector(World world, Conversation c, DialogueNode node)
     {
@@ -107,7 +123,8 @@ public sealed partial class DialogueSystem
         var weighted = new List<(CharacterId Id, float Weight)>();
         foreach (var m in SquadOf(world, c.Npc))
         {
-            if (m == c.Npc || c.Interjectors.Contains(m) || !table.TryResolveNext(m, out int s) || !Awake(table, s) || table.Cold(s) is not { } mc) continue;
+            if (m == c.Npc || c.Interjectors.Contains(m) || !table.TryResolveNext(m, out int s) || !Awake(table, s) || table.Cold(s) is not { } mc)
+                continue;
             if (mc.Engaged || mc.Fighter?.IsAnimal == true) continue;
             if (!ListsSpeaker(node, mc.RecordId)) continue;
             float d2 = Vector3.DistanceSquared(table.Next[s].Position, at);
@@ -127,32 +144,63 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// The is-character list test of a speaker (<c>FUN_14067e060</c>, <c>FUN_140684d70</c>, <c>FUN_140679bc0</c>, Verified): a <c>dumb</c> record (<c>FUN_1405e89c0</c> false) speaks a root or an interjection only when the list names it, so an empty
-    /// list fails; any other record passes an empty list or one that names it. The later lines of a conversation only test a non-empty list.
+    /// The is-character list test of an interjector or an arrival banter speaker (<c>FUN_14067e060</c>, <c>FUN_140684d70</c>, <c>FUN_140679bc0</c>,
+    /// Verified): a <c>dumb</c> record (<c>FUN_1405e89c0</c> false) speaks a root or an interjection only when the list names it, so an empty list
+    /// fails; any other record passes an empty list or one that names it. The line check has no dumb rule (<see cref="Listed"/>).
     /// </summary>
-    bool ListsSpeaker(DialogueNode node, string record) =>
-        node.IsCharacter.Contains(record) || node.IsCharacter.Count == 0 && !((node.IsRoot || node.Interjection) && data.Db.Find(record)?.GetBool("dumb") == true);
+    internal bool ListsSpeaker(DialogueNode node, string record) =>
+        node.IsCharacter.Contains(record)
+            || node.IsCharacter.Count == 0 && !((node.IsRoot || node.Interjection) && _data.Db.Find(record)?.GetBool("dumb") == true);
 
     /// <summary>
-    /// The line check (<c>FUN_140678f30</c>, docs/game/dialogue.md "Line check") with <paramref name="me"/> as the speaker and <paramref name="other"/> the target: tag masks, the lock,
-    /// <c>chance temporary</c>, the record lists, <c>repetition limit</c>, <c>target is type</c>, <c>chance permanent</c>, then the conditions.
+    /// The line check (<c>FUN_140678f30</c>, docs/game/dialogue.md "Line check") with <paramref name="me"/> as the speaker and
+    /// <paramref name="other"/> the target: tag masks, the lock, <c>chance temporary</c>, the record lists, <c>repetition limit</c>, <c>target is
+    /// type</c>, <c>chance permanent</c>, then the conditions.
     /// </summary>
     bool Check(World world, Conversation c, DialogueNode node, CharacterId me, CharacterId other)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(me, out int ms) || table.Cold(ms) is not { } mc) return false;
         var tc = Cold(world, other);
+        if (!SpeakerPasses(world, c, node, me, ms, mc, tc, other)) return false;
+        if (node.TargetCarryingCharacter.Count > 0 && !CarrierFound(world, c, node, me, other)) return false;
+        var states = _population?.States ?? _data.States;
+        foreach (var (state, value) in node.WorldStates)
+        {
+            if (!IWorldStates.Passes(states, _data.Db, state, value ? 1 : 0)) return false;
+        }
+        if ((node.TargetHasItemFunction != 0 || node.TargetHasItem.Count > 0) && !ItemsFound(world, c, node, me, other)) return false;
+        if (node.TargetRace.Count > 0 && !(tc?.Race is { } targetRace && _dialogue.RaceMatches(targetRace.StringId, node.TargetRace))
+            && !RaceFound(world, c, node, me, other))
+        {
+            return false;
+        }
+        return LastChecksPass(world, c, node, me, mc, tc, other);
+    }
+
+    /// <summary>
+    /// The line check's tests of the speaker <paramref name="mc"/> (slot <paramref name="ms"/>), in order: personality, the squad's tags on the
+    /// target, the lock, one at a time, <c>chance temporary</c>, the town, the factions, the packages and the speaker list.
+    /// </summary>
+    bool SpeakerPasses(
+        World world, Conversation c, DialogueNode node, CharacterId me, int ms, CharacterCold mc, CharacterCold? tc, CharacterId other)
+    {
+        var table = world.Characters;
         if (node.PersonalityRequired != 0 || node.PersonalityForbidden != 0)
         {
             uint bit = 1u << PersonalityOf(world, me, mc);
             if (node.PersonalityRequired != 0 && (node.PersonalityRequired & bit) == 0) return false;
             if ((node.PersonalityForbidden & bit) != 0) return false;
         }
-        // DC_HAS_TAG (FUN_140674c50): the speaker squad's long-term tags on the target hold every required tag and no forbidden one; never noted: only lines that require
-        // nothing pass; no target: not tested.
+
+        // DC_HAS_TAG (FUN_140674c50): the speaker squad's long-term tags on the target hold every required tag and no forbidden one; never noted:
+        // only lines that require nothing pass; no target: not tested.
         if ((node.MemoryRequired | node.MemoryForbidden) != 0 && tc is not null)
         {
-            if (Memory.Find(world, mc.SquadId, other) is not { } known) { if (node.MemoryRequired != 0) return false; }
+            if (Memory.Find(world, mc.SquadId, other) is not { } known)
+            {
+                if (node.MemoryRequired != 0) return false;
+            }
             else if ((known.Long & node.MemoryRequired) != node.MemoryRequired || (known.Long & node.MemoryForbidden) != 0) return false;
         }
         if (node.IsRoot && (mc.DialogueLocks?.TryGetValue(node.StringId, out bool locked) == true ? locked : node.Locked)) return false;
@@ -163,56 +211,90 @@ public sealed partial class DialogueSystem
         if (node.MyFaction.Count > 0 && !node.MyFaction.Contains(FactionId(mc.Faction))) return false;
         if (node.TargetFaction.Count > 0 && (tc is null || !node.TargetFaction.Contains(FactionId(tc.Faction)))) return false;
         if (node.HasPackage.Count > 0 && !node.HasPackage.Overlaps(SetOf(world, ms).Packages)) return false;
-        if (!ListsSpeaker(node, mc.RecordId)) return false;
-        if (node.TargetCarryingCharacter.Count > 0)
+        return Listed(node, mc.RecordId);
+    }
+
+    /// <summary>
+    /// The line check's is-character test (<c>FUN_140678f30</c>): an empty list or one that names the speaker, so a dumb NPC answers its own
+    /// conversations, such as Agnu's recruitment (#446).
+    /// </summary>
+    static bool Listed(DialogueNode node, string record) => node.IsCharacter.Count == 0 || node.IsCharacter.Contains(record);
+
+    /// <summary>
+    /// <c>target carrying character</c>: each listed character in turn, the first member of the target's squad (perceived) carrying it becomes the
+    /// target; any hit passes.
+    /// </summary>
+    bool CarrierFound(World world, Conversation c, DialogueNode node, CharacterId me, CharacterId other)
+    {
+        bool carried = false;
+        foreach (string listed in node.TargetCarryingCharacter)
         {
-            // Each listed character in turn: the first member of the target's squad (perceived) carrying it becomes the target; any hit passes.
-            bool carried = false;
-            foreach (string listed in node.TargetCarryingCharacter)
-                foreach (var m in Known(world, me, other))
-                    if (Cold(world, m) is { Carrying.IsNone: false } carrier && Cold(world, carrier.Carrying) is { } body && body.RecordId == listed)
-                    {
-                        SetTarget(c, me, m);
-                        carried = true;
-                        break;
-                    }
-            if (!carried) return false;
-        }
-        var states = population?.States ?? data.States;
-        foreach (var (state, value) in node.WorldStates) if (!IWorldStates.Passes(states, data.Db, state, value ? 1 : 0)) return false;
-        if (node.TargetHasItemFunction != 0 || node.TargetHasItem.Count > 0)
-        {
-            // One ordered pass over the target's squad (FUN_140678f30): per member the function is seen first (sticky), then the listed items; the first member holding a listed
-            // item (any member when the line lists none) becomes the target and ends the pass. The line needs both flags.
-            bool itemOk = node.TargetHasItem.Count == 0, typeOk = node.TargetHasItemFunction == 0;
             foreach (var m in Known(world, me, other))
             {
-                var items = Cold(world, m)?.Inventory;
-                if (!typeOk && items is not null && items.Items.Any(i => data.Db.Find(i.Record)?.GetInt("item function") == node.TargetHasItemFunction)) typeOk = true;
-                if (!itemOk && items is not null) itemOk = Listed(items).Any(i => node.TargetHasItem.Contains(i.Record));
-                if (!itemOk) continue;
-                SetTarget(c, me, m);
-                break;
+                if (Cold(world, m) is { Carrying.IsNone: false } carrier && Cold(world, carrier.Carrying) is { } body && body.RecordId == listed)
+                {
+                    SetTarget(c, me, m);
+                    carried = true;
+                    break;
+                }
             }
-            if (!itemOk || !typeOk) return false;
         }
-        if (node.TargetRace.Count > 0 && !(tc?.Race is { } targetRace && dialogue.RaceMatches(targetRace.StringId, node.TargetRace)))
+        return carried;
+    }
+
+    /// <summary>
+    /// <c>target has item</c> and its function: one ordered pass over the target's squad (FUN_140678f30): per member the function is seen first
+    /// (sticky), then the listed items; the first member holding a listed item (any member when the line lists none) becomes the target and ends the
+    /// pass. The line needs both flags.
+    /// </summary>
+    bool ItemsFound(World world, Conversation c, DialogueNode node, CharacterId me, CharacterId other)
+    {
+        bool itemOk = node.TargetHasItem.Count == 0, typeOk = node.TargetHasItemFunction == 0;
+        foreach (var m in Known(world, me, other))
         {
-            // The target itself passes with no side effect; else per listed race in turn the first member of its squad of that race becomes the target (the last race to hit decides).
-            bool hit = false;
-            foreach (string listed in node.TargetRace)
-                foreach (var m in Known(world, me, other))
-                    if (Cold(world, m)?.Race is { } r && dialogue.RaceMatches(r.StringId, listed))
-                    {
-                        SetTarget(c, me, m);
-                        hit = true;
-                        break;
-                    }
-            if (!hit) return false;
+            var items = Cold(world, m)?.Inventory;
+            if (!typeOk && items is not null && items.Items.Any(i => _data.Db.Find(i.Record)?.GetInt("item function") == node.TargetHasItemFunction))
+                typeOk = true;
+            if (!itemOk && items is not null) itemOk = Listed(items).Any(i => node.TargetHasItem.Contains(i.Record));
+            if (!itemOk) continue;
+            SetTarget(c, me, m);
+            break;
         }
-        if (node.MyRace.Count > 0 && (mc.Race is null || !dialogue.RaceMatches(mc.Race.StringId, node.MyRace))) return false;
+        return itemOk && typeOk;
+    }
+
+    /// <summary>
+    /// <c>target race</c> when the target itself is of none (it passes with no side effect): per listed race in turn the first member of its squad
+    /// of that race becomes the target (the last race to hit decides).
+    /// </summary>
+    bool RaceFound(World world, Conversation c, DialogueNode node, CharacterId me, CharacterId other)
+    {
+        bool hit = false;
+        foreach (string listed in node.TargetRace)
+        {
+            foreach (var m in Known(world, me, other))
+            {
+                if (Cold(world, m)?.Race is { } r && _dialogue.RaceMatches(r.StringId, listed))
+                {
+                    SetTarget(c, me, m);
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        return hit;
+    }
+
+    /// <summary>
+    /// The line check's last tests, in order: the speaker's race and subrace, the cooldown, <c>target is type</c>, <c>chance permanent</c>, then
+    /// the conditions.
+    /// </summary>
+    bool LastChecksPass(World world, Conversation c, DialogueNode node, CharacterId me, CharacterCold mc, CharacterCold? tc, CharacterId other)
+    {
+        if (node.MyRace.Count > 0 && (mc.Race is null || !_dialogue.RaceMatches(mc.Race.StringId, node.MyRace))) return false;
         if (node.MySubrace.Count > 0 && (mc.Race is null || !node.MySubrace.Contains(mc.Race.StringId))) return false;
-        if (node.CooldownHours > 0 && lastUse.TryGetValue(node.StringId, out double last) && world.GameHours - last < node.CooldownHours) return false;
+        if (node.CooldownHours > 0 && _lastUse.TryGetValue(node.StringId, out double last) && world.GameHours - last < node.CooldownHours)
+            return false;
         if (node.TargetIsType > 0)
         {
             if (tc is null) return false;
@@ -224,37 +306,48 @@ public sealed partial class DialogueSystem
         if (node.ChancePermanent < 99)
         {
             var key = (me, node.StringId);
-            if (!permanent.TryGetValue(key, out bool passed)) permanent[key] = passed = Rng.Float(NextRoll(world, me)) * 100 < node.ChancePermanent;
+            if (!_permanent.TryGetValue(key, out bool passed)) _permanent[key] = passed = Rng.Float(NextRoll(world, me)) * 100 < node.ChancePermanent;
             if (!passed) return false;
         }
         foreach (var condition in node.Conditions)
+        {
             if (!Condition(world, c, condition, me, mc, other)) return false;
+        }
         return true;
     }
 
     /// <summary>
-    /// A line check found <paramref name="member"/> of the target's squad (<c>FUN_140671930</c>): it becomes the conversation's target unless it is the NPC itself or already the target.
-    /// The state written is <paramref name="me"/>'s, so only a check of the conversation's NPC retargets (an interjector candidate's own state is not the conversation's). Happens when
-    /// the test matches, even if a later test of the line fails.
+    /// A line check found <paramref name="member"/> of the target's squad (<c>FUN_140671930</c>): it becomes the conversation's target unless it is
+    /// the NPC itself or already the target. The state written is <paramref name="me"/>'s, so only a check of the conversation's NPC retargets (an
+    /// interjector candidate's own state is not the conversation's). Happens when the test matches, even if a later test of the line fails.
     /// </summary>
     static void SetTarget(Conversation c, CharacterId me, CharacterId member)
     {
         if (me == c.Npc && !member.IsNone && member != c.Npc) c.Player = member;
     }
 
-    /// <summary>What a <c>target has item</c> test scans (<c>FUN_140745f70</c>): the inventory's own flat list, then the worn backpack's own list; no container deeper.</summary>
-    static IEnumerable<Meitou.Simulation.Items.ItemInstance> Listed(Meitou.Simulation.Items.Inventory inventory) =>
+    /// <summary>
+    /// What a <c>target has item</c> test scans (<c>FUN_140745f70</c>): the inventory's own flat list, then the worn backpack's own list; no
+    /// container deeper.
+    /// </summary>
+    static IEnumerable<Items.ItemInstance> Listed(Items.Inventory inventory) =>
         inventory.Backpack?.Contents is { } bag ? inventory.Items.Concat(bag.Items) : inventory.Items;
 
-    static CharacterCold? Cold(World world, CharacterId id) => world.Characters.TryResolveNext(id, out int s) ? world.Characters.Cold(s) : null;
+    /// <summary>
+    /// The character's cold state; null when the id no longer resolves.
+    /// </summary>
+    internal static CharacterCold? Cold(World world, CharacterId id) =>
+        world.Characters.TryResolveNext(id, out int s) ? world.Characters.Cold(s) : null;
 
-    /// <summary>The members of <paramref name="id"/>'s squad (itself alone without one).</summary>
+    /// <summary>
+    /// The members of <paramref name="id"/>'s squad (itself alone without one).
+    /// </summary>
     static IReadOnlyList<CharacterId> SquadOf(World world, CharacterId id) =>
         Cold(world, id) is { SquadId: >= 0 } c && world.Squads.Find(c.SquadId) is { } squad ? squad.Members : [id];
 
     /// <summary>
-    /// The members of <paramref name="target"/>'s squad that <paramref name="me"/> perceives (<c>FUN_140855960</c>): the target itself, and the others within <paramref name="me"/>'s
-    /// sight range (engine stand-in for the original's sensed list).
+    /// The members of <paramref name="target"/>'s squad that <paramref name="me"/> perceives (<c>FUN_140855960</c>): the target itself, and the
+    /// others within <paramref name="me"/>'s sight range (engine stand-in for the original's sensed list).
     /// </summary>
     static IEnumerable<CharacterId> Known(World world, CharacterId me, CharacterId target)
     {
@@ -266,14 +359,25 @@ public sealed partial class DialogueSystem
             || table.TryResolveNext(m, out int s) && Vector3.DistanceSquared(table.Next[s].Position, at) <= r * r);
     }
 
-    /// <summary>The character's personality tag (<see cref="Personality"/>): rolled from its own record, else its faction's.</summary>
-    int PersonalityOf(World world, CharacterId id, CharacterCold cold) => Personality.Of(world, data.Db, id, cold, FactionId(cold.Faction));
+    /// <summary>
+    /// The character's personality tag (<see cref="Personality"/>): rolled from its own record, else its faction's.
+    /// </summary>
+    int PersonalityOf(World world, CharacterId id, CharacterCold cold) => Personality.Of(world, _data.Db, id, cold, FactionId(cold.Faction));
 
-    string FactionId(int faction) => data.Relations.Contains(faction) ? data.Factions[faction].Id : "";
+    /// <summary>
+    /// The record id of <paramref name="faction"/>, empty for a missing one.
+    /// </summary>
+    string FactionId(int faction) => _data.Relations.Contains(faction) ? _data.Factions[faction].Id : "";
 
-    /// <summary>The placed town whose radius holds <paramref name="at"/> (the game's position lookup, <see cref="PopulationData.TownAt"/>: the town status of a character), or -1.</summary>
-    int TownAt(Vector3 at) => data.TownAt(at);
+    /// <summary>
+    /// The placed town whose radius holds <paramref name="at"/> (the game's position lookup, <see cref="PopulationData.TownAt"/>: the town status of
+    /// a character), or -1.
+    /// </summary>
+    int TownAt(Vector3 at) => _data.TownAt(at);
 
+    /// <summary>
+    /// The record id of the faction of the placed town at <paramref name="at"/>; null outside every town or for a town of none.
+    /// </summary>
     string? TownFaction(World world, Vector3 at) =>
-        TownAt(at) is >= 0 and var site && site < data.SiteFactions.Count && data.SiteFactions[site] is >= 0 and var f ? FactionId(f) : null;
+        TownAt(at) is >= 0 and var site && site < _data.SiteFactions.Count && _data.SiteFactions[site] is >= 0 and var f ? FactionId(f) : null;
 }

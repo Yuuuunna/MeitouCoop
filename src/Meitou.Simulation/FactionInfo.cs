@@ -1,23 +1,51 @@
 namespace Meitou.Simulation;
 
-/// <summary>What a row of the Faction tab's info panel is (docs/game/ui-screens.md "Faction tab"): it picks the row's colours.</summary>
-public enum FactionInfoKind : byte { Heading, Name, Detail, Spacer, Queued, Rule }
-
 /// <summary>
-/// A row of the Faction tab's Active Contracts or Upcoming Events: a label and a value, and for a time the game hours left (<see cref="Hours"/>, NaN: none; the interface
-/// prints it as <c>TimeOfDay::getTotalTimeString</c> does).
+/// What a row of the Faction tab's info panel is (docs/game/ui-screens.md "Faction tab"): it picks the row's colours.
 /// </summary>
-public readonly record struct FactionInfoLine(FactionInfoKind Kind, string Label, string Value = "", double Hours = double.NaN);
-/// <summary>Wire-safe faction panel row; absence of a numeric countdown uses null instead of NaN.</summary>
-public sealed record FactionInfoView(FactionInfoKind Kind, string Label, string Value, double? Hours)
+public enum FactionInfoKind : byte
 {
-    public static FactionInfoView From(FactionInfoLine line) => new(line.Kind, line.Label, line.Value, double.IsFinite(line.Hours) ? line.Hours : null);
-    public FactionInfoLine ToLine() => new(Kind, Label, Value, Hours ?? double.NaN);
+    /// <summary>
+    /// A heading: a faction at war with the player.
+    /// </summary>
+    Heading,
+    /// <summary>
+    /// A name row: a contract's title or a campaign.
+    /// </summary>
+    Name,
+    /// <summary>
+    /// A detail row of the name above it.
+    /// </summary>
+    Detail,
+    /// <summary>
+    /// An empty row between entries.
+    /// </summary>
+    Spacer,
+    /// <summary>
+    /// A queued campaign that has not started.
+    /// </summary>
+    Queued,
+    /// <summary>
+    /// A rule line between contracts.
+    /// </summary>
+    Rule,
 }
 
+/// <summary>
+/// A row of the Faction tab's Active Contracts or Upcoming Events: a label and a value, and for a time the game hours left (<see cref="Hours"/>, NaN:
+/// none; the interface prints it as <c>TimeOfDay::getTotalTimeString</c> does).
+/// </summary>
+public readonly record struct FactionInfoLine(FactionInfoKind Kind, string Label, string Value = "", double Hours = double.NaN);
+
+/// <summary>
+/// The world's Faction tab: the contracts and events it lists.
+/// </summary>
 public sealed partial class World
 {
-    /// <summary>The AI signals of the contracts the Faction tab lists: <c>Contract_HiredAlly</c> (bodyguards) and <c>Contract_DefendPlayerBase</c> (base defenders).</summary>
+    /// <summary>
+    /// The AI signals of the contracts the Faction tab lists: <c>Contract_HiredAlly</c> (bodyguards) and <c>Contract_DefendPlayerBase</c>
+    /// (base defenders).
+    /// </summary>
     const int HiredAllySignal = 12, DefendBaseSignal = 15;
 
     /// <summary>
@@ -43,35 +71,11 @@ public sealed partial class World
     }
 }
 
-public sealed partial class PopulationSystem
+/// <summary>
+/// Wire-safe faction panel row; absence of a numeric countdown uses null instead of NaN.
+/// </summary>
+public sealed record FactionInfoView(FactionInfoKind Kind, string Label, string Value, double? Hours)
 {
-    /// <summary>
-    /// Upcoming Events (<c>FUN_1407f2ef0</c> per faction's <c>FactionWarMgr</c>, <c>FUN_1407ac9c0</c>): for a faction with running or queued campaigns a "-{name}-" heading; per running
-    /// campaign against the player's faction that is not ending, its name, "Target:" with the target's faction and name (??? when gone) and a spacer; per queued one (no player
-    /// filter) its display name and the time until it starts.
-    /// </summary>
-    public List<FactionInfoLine> UpcomingEvents(World world, Func<int, string?> factionName, int? targetFaction = null)
-    {
-        var lines = new List<FactionInfoLine>();
-        int player = targetFaction ?? world.Player.Faction;
-        foreach (var war in Wars)
-        {
-            if (war.Actives.Count == 0 && war.Requests.Count == 0) continue;
-            if (targetFaction is not null && !war.Actives.Any(i => i.Phase != 2 && i.Enemy == player) && !war.Requests.Any(r => r.Enemy == player)) continue;
-            lines.Add(new(FactionInfoKind.Heading, "-" + (factionName(war.Faction) ?? "") + "-"));
-            foreach (var inst in war.Actives)
-            {
-                // Phase 2 is Meitou's ending phase (the original's RETREATING and VICTORY are left out).
-                if (inst.Phase == 2 || player < 0 || inst.Enemy != player) continue;
-                lines.Add(new(FactionInfoKind.Name, CampaignOf(inst.CampaignId)?.Name ?? inst.CampaignId));
-                string where = Exists(world, inst.Target) && (targetFaction is null || FactionOfTown(world, inst.Target) == player) ? NameOf(world, inst.Target) : "???";
-                lines.Add(new(FactionInfoKind.Detail, "Target:", (factionName(inst.Enemy) ?? "") + "- " + where));
-                lines.Add(new(FactionInfoKind.Spacer, ""));
-            }
-            foreach (var request in war.Requests)
-                if (targetFaction is null || request.Enemy == player)
-                    lines.Add(new(FactionInfoKind.Queued, CampaignOf(request.CampaignId)?.DisplayName ?? request.CampaignId, "", request.Due - world.GameHours));
-        }
-        return lines;
-    }
+    public static FactionInfoView From(FactionInfoLine line) => new(line.Kind, line.Label, line.Value, double.IsFinite(line.Hours) ? line.Hours : null);
+    public FactionInfoLine ToLine() => new(Kind, Label, Value, Hours ?? double.NaN);
 }

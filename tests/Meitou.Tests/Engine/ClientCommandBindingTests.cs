@@ -1,6 +1,8 @@
 using System.Numerics;
 using Meitou.Networking;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Player;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Locks;

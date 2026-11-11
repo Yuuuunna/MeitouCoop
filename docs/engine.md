@@ -1,14 +1,16 @@
 # Engine architecture
 
-Projects: Core installation; Data clean-room readers/typed game data; Simulation headless world; Runtime world ownership/CPU content/environment;
-Navigation own navmesh; Engine WorldSession/time/input/camera; Rendering Vulkan/content/streaming;
-Rendering.Display window/device/presenter; Game host/UI; ModelViewer debug world/atlas; Tools surveys.
-GPU and simulation ownership stay separate. [Simulation contracts](simulation.md), [authority/runtime contracts](multiplayer.md),
+**Observed** (project references and source layout): Core provides installation, settings and localisation; Data provides clean-room
+readers and pure rules; Simulation owns the headless world, navigation and tick clocks and never references Game. Runtime owns shared
+world execution, CPU content and environment services; Networking and Server remain independent. Game is the executable `MeitouClient`
+with Host, Rendering, Audio and Ui feature slices. The `Meitou.Modding` assembly keeps the code-mod contract and loader independent of Game.
+ModelViewer provides inspection; Tools provides surveys and mod-check. GPU and simulation ownership stay separate.
+[Simulation contracts](simulation.md), [authority/runtime contracts](multiplayer.md),
 [native renderer](renderer-native.md), [viewer controls](viewer.md).
 
 ## Loop, input and camera
 
-WorldSession owns world, clocks, input/bindings, camera and last two snapshots. Control30Hz real
+WorldSession owns clocks, input/bindings, camera and last two snapshots; WorldRuntime owns the local world. Control30Hz real
 (default config tickRate), max10 ticks/frame; simulation1/30 game second, speed0/1/2/5 and
 2*speed budget. Control precedes simulation; interpolation uses each clock's alpha, shortest
 angle rotation and cuts on mode changes. The authoritative time/order/determinism details are
@@ -57,8 +59,10 @@ settings and current key list belong in viewer. Quicksave F5/loadF9; cinematic F
 
 ## Host and loading
 
-GameHost partials own boot/interactive/offscreen, characters, saving, transitions, duel and battle;
-PlayerInterface owns picking/HUD/panels/commands. StandardSystems supplies order. NavAdapter
+`WorldBoot` reads a world's content on a worker with no window (navmesh, towns' buildings, population data, ragdoll rigs, animations);
+GameHost adds the code mods and the systems. GameHost partials keep boot, the Metal loop, loading, transitions and the character feed; each other feature is a class the host holds and makes in
+`CreateFeatures`: `GameLoop` (the Vulkan and headless run), `GameSound`, `GameSaves`, `TitleScreen`, the scenarios, `Host/WorldSync`, `Effects`, `DevTools`, `Editor`;
+PlayerInterface keeps the input entry points, selection, commands and shared UI helpers (core and `PlayerInterface.Ui.cs`); its windows, HUD panels, picking and pointer are classes it makes on first use (`Ui`, `Building`, `Title`, `Editor`). StandardSystems supplies order. NavAdapter
 bridges Navigation; never let UI/rendering duplicate simulation state.
 `PlayerInterface` consumes `IPlayerSession`: snapshots, commands, active-faction funds, camera/input,
 interaction queries and presentation events. It has no direct World/SimulationClock access.
@@ -104,6 +108,7 @@ its run of smooth frames measures play. **Observed** (siwa-test, Ultra settings,
 to about 6.5 s with this, the grass picking, the coarsening rule and the character LOD cache.
 Population builds are queued/applied at frame boundaries without advancing game time, AI or movement;
 navmesh-gated spawns are retried while loading. Warm-up and the flight hold the simulation paused.
+Which title shows is the Interface setting Main menu style (`MeitouMainMenu` in `meitou.user.json`, default Meitou), independent of the UI mode; the main-menu sky flight needs the Meitou title.
 The Faithful title does not wait: its picture is opaque, so the start ends with the splash ([ui-screens](game/ui-screens.md#splash)) and the boot.
 The Meitou title waits for terrain, scenery, character assets and used textures (including deferred loads), then
 one full second of <40ms frames (max5s of ready content for frame pacing, so slow GPUs reach the menu). Its menu artwork/fonts/pipelines warm under the opaque cover too;
@@ -144,7 +149,7 @@ finished refine, a mismatched load, and `UnloadImpostor`/teardown (after the `Ne
 Cancel on window close. Helpers/services dispose/join with their owning scene/session.
 After warm-up, loading panels ease off the left/right edges over 0.7s while the loading image fades to the live scene and UI (Faithful: hidden at once, as the original).
 Input remains blocked through this reveal. A new game ends warm-up as soon as the squad's characters are drawable, skips the sky arrival and opens the
-character editor first (`GameHost.Editor`); once it closes, the loading screen returns and the world warms up as above. Sky loads dismiss only panels that were shown, keeping the sky flight visible.
+character editor first (`CharacterEditorHost`); once it closes, the loading screen returns and the world warms up as above. Sky loads dismiss only panels that were shown, keeping the sky flight visible.
 
 Meitou UI mode presents title controls over a live view of the real world; Faithful retains
 the original title image and loading screen. Advanced settings persist two independent scene-transition

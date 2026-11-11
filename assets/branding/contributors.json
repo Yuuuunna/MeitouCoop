@@ -1,15 +1,15 @@
 {
   "doublevoid": {
-    "commits": 44,
-    "areas": "Navmesh, Navmesh tool, Interior joins, Ragdoll collision, Tests, Docs"
+    "commits": 46,
+    "areas": "Navmesh, Tests, Docs, Ragdoll collision"
   },
   "asc3ns10n": {
     "commits": 17,
     "areas": "New game, Linux, Picking"
   },
   "rockchinq": {
-    "commits": 12,
-    "areas": "Towns, trading, New game"
+    "commits": 13,
+    "areas": "Town houses, Town repairs, Shopkeeper routines, Trading and buyback, Character stats, New-game options, Build orders"
   },
   "hazzael": {
     "commits": 6,
@@ -20,20 +20,20 @@
     "areas": "Audio, Saves"
   },
   "gosuboy": {
-    "commits": 7,
-    "areas": "Metal rendering, Materials, Seat interaction, Mesh paths"
+    "commits": 9,
+    "areas": "Metal, Shaders, Seats"
   },
   "crockmr": {
-    "commits": 26,
-    "areas": "Slaves, Prisoners, Saves"
+    "commits": 51,
+    "areas": "Slaves, Squads, Saves"
   },
   "dmlen": {
-    "commits": 1,
-    "areas": "Projectile tracers"
+    "commits": 6,
+    "areas": "Benchmarks, Crossbow bolt tracers"
   },
   "lucasskrewer": {
-    "commits": 6,
-    "areas": "Benchmarks, Animals"
+    "commits": 12,
+    "areas": "Benchmarks, Animal hunger"
   },
   "dxseba": {
     "commits": 2,
@@ -46,5 +46,13 @@
   "roscatoday": {
     "commits": 1,
     "areas": "Mod settings"
+  },
+  "teppum": {
+    "commits": 23,
+    "areas": "Captive slavery, Chests, Appearance, Logging, Name tags, Animal inventory, Save loading, Beds, Research UI, Help button, Medic finders, Carried bodies, Bolts, Jobs"
+  },
+  "robgreen490": {
+    "commits": 4,
+    "areas": "UI scaling, Inventory UI, Branch merges"
   }
 }

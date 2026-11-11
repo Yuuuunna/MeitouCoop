@@ -2,10 +2,15 @@ using Meitou.Content;
 
 namespace Meitou.Data.Physics;
 
-/// <summary>Finds the collision (and other asset) files that records name by install-relative paths.</summary>
+/// <summary>
+/// Finds the collision (and other asset) files that records name by install-relative paths.
+/// </summary>
 public static class CollisionPaths
 {
-    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Stamp, Dictionary<string, string> Mods)> mods = new();
+    /// <summary>
+    /// The mods found per install root, with the newer write time of its <c>mods</c> and Workshop folders when they were scanned.
+    /// </summary>
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Stamp, Dictionary<string, string> Mods)> ModCache = new();
 
     /// <summary>
     /// <see cref="ModList.FindMods"/> of an install (local mods over Workshop ones), rescanned when its <c>mods</c> or Workshop folder changes,
@@ -15,9 +20,9 @@ public static class CollisionPaths
     {
         var stamp = Directory.GetLastWriteTimeUtc(install.ModsDirectory);
         if (install.WorkshopDirectory is { } workshop && Directory.GetLastWriteTimeUtc(workshop) is var w && w > stamp) stamp = w;
-        if (mods.TryGetValue(install.Root, out var cached) && cached.Stamp == stamp) return cached.Mods;
+        if (ModCache.TryGetValue(install.Root, out var cached) && cached.Stamp == stamp) return cached.Mods;
         var found = ModList.FindMods(install);
-        mods[install.Root] = (stamp, found);
+        ModCache[install.Root] = (stamp, found);
         return found;
     }
 
@@ -47,7 +52,8 @@ public static class CollisionPaths
         var rel = recordPath.Replace('\\', '/').TrimStart('.', '/');
         var full = GameFiles.Resolve(Path.Combine(install.Root, rel));
         if (File.Exists(full)) return full;
-        // A mod's own files: <c>.\mods\Mod Name\x</c> is the folder of that mod, which for a Workshop mod is its Workshop folder, not a folder under the install.
+        // A mod's own files: <c>.\mods\Mod Name\x</c> is the folder of that mod, which for a Workshop mod is its Workshop folder, not a folder under
+        // the install.
         if (rel.StartsWith("mods/", StringComparison.OrdinalIgnoreCase) && rel.IndexOf('/', 5) is var slash and > 5
             && ModFolder(install, rel[5..slash]) is { } folder)
         {

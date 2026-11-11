@@ -1,9 +1,12 @@
+using Meitou.Simulation.Population;
 namespace Meitou.Simulation.Saving;
 
 public sealed record CampaignTargetClock(int Faction, string CampaignId, string TownInstance, double LastStart);
 public sealed record CampaignTargetState(CampaignTargetClock[] Clocks);
 
-/// <summary>Base-specific campaign repeat clocks, keyed by persistent town instance rather than load-order town numbers.</summary>
+/// <summary>
+/// Base-specific campaign repeat clocks, keyed by persistent town instance rather than load-order town numbers.
+/// </summary>
 public static class CampaignTargetSave
 {
     public static CampaignTargetState Capture(World world)
@@ -33,7 +36,9 @@ public static class CampaignTargetSave
                 throw new InvalidDataException("Invalid campaign target clock.");
     }
 
-    /// <summary>After buildings and legacy war records are restored, before the first simulation tick.</summary>
+    /// <summary>
+    /// After buildings and legacy war records are restored, before the first simulation tick.
+    /// </summary>
     public static void Restore(World world, PopulationData data, CampaignTargetState state)
     {
         Validate(state, data);

@@ -1,21 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
-  <!-- The code-mod contract (IMod, ModContext, IModSaveData) and the loader the game runs it with (docs/modding.md). Mods compile against it. -->
-
+  <!-- The CPU code-mod contract and loader share their feature sources with the game. -->
   <ItemGroup>
-    <ProjectReference Include="../Meitou.Core/Meitou.Core.csproj" />
-    <ProjectReference Include="../Meitou.Data/Meitou.Data.csproj" />
     <ProjectReference Include="../Meitou.Simulation/Meitou.Simulation.csproj" />
-    <ProjectReference Include="../Meitou.Ui/Meitou.Ui.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- The one Harmony every mod patches through (docs/modding.md "Loading"): 0Harmony.dll with MonoMod merged in, loaded by the game. -->
-    <PackageReference Include="Lib.Harmony" Version="2.4.3" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="3.0.0-rc.5" />
     <InternalsVisibleTo Include="Meitou.Tests" />
+    <InternalsVisibleTo Include="MeitouClient" />
+    <Compile Include="../Meitou.Game/Mods/*.cs" Exclude="../Meitou.Game/Mods/GameMods.cs;../Meitou.Game/Mods/PlayerUiExtension.cs" Link="Mods/%(Filename)%(Extension)" />
+    <Compile Include="../Meitou.Game/Ui/UiHost.cs;../Meitou.Game/Ui/UiNode.cs" Link="Ui/%(Filename)%(Extension)" />
   </ItemGroup>
-
 </Project>

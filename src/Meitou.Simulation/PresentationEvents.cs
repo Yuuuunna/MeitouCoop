@@ -16,15 +16,17 @@ public sealed record PresentationEventBatch(ulong HighWater, IReadOnlyList<Float
     public static PresentationEventBatch Empty { get; } = new(0, []);
 }
 
-/// <summary>Bounded transient display journal, independent of simulation hashes and checkpoint history.</summary>
+/// <summary>
+/// Bounded transient display journal, independent of simulation hashes and checkpoint history.
+/// </summary>
 internal sealed class PresentationEventJournal(TimeProvider? clock = null)
 {
     internal const int Capacity = 512;
     static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(3);
-    readonly TimeProvider clock = clock ?? TimeProvider.System;
-    readonly object gate = new();
-    readonly Queue<Entry> entries = [];
-    ulong sequence;
+    readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    readonly object _gate = new();
+    readonly Queue<Entry> _entries = [];
+    ulong _sequence;
     sealed record SpeechData(CharacterId Speaker, SaidLine Line);
     sealed record Entry(ulong Id, long Born, Floater? Floater, SoundEvent? Sound, PlayerId? TargetOwner, PlayerId? SourceOwner,
         SpeechData? Speech = null, BloodVisual? Blood = null, CharacterId? Spark = null);
@@ -32,65 +34,65 @@ internal sealed class PresentationEventJournal(TimeProvider? clock = null)
     internal void Add(BloodVisual value)
     {
         if (value.Mark.Race is { Length: > 4096 }) throw new ArgumentException("Blood effect race identity is too long.", nameof(value));
-        lock (gate)
+        lock (_gate)
         {
-            Trim(); if (entries.Count == Capacity) entries.Dequeue();
-            entries.Enqueue(new(checked(++sequence), clock.GetTimestamp(), null, null, null, null, Blood: value));
+            Trim(); if (_entries.Count == Capacity) _entries.Dequeue();
+            _entries.Enqueue(new(checked(++_sequence), _clock.GetTimestamp(), null, null, null, null, Blood: value));
         }
     }
     internal void AddSpark(CharacterId who)
     {
-        lock (gate)
+        lock (_gate)
         {
-            Trim(); if (entries.Count == Capacity) entries.Dequeue();
-            entries.Enqueue(new(checked(++sequence), clock.GetTimestamp(), null, null, null, null, Spark: who));
+            Trim(); if (_entries.Count == Capacity) _entries.Dequeue();
+            _entries.Enqueue(new(checked(++_sequence), _clock.GetTimestamp(), null, null, null, null, Spark: who));
         }
     }
 
     internal void Add(Floater value, PlayerId? targetOwner, PlayerId? sourceOwner)
     {
         if (value.Part.Length > 4096) value = value with { Part = value.Part[..4096] };
-        lock (gate)
+        lock (_gate)
         {
             Trim();
-            if (entries.Count == Capacity) entries.Dequeue();
-            entries.Enqueue(new(checked(++sequence), clock.GetTimestamp(), value, null, targetOwner, sourceOwner));
+            if (_entries.Count == Capacity) _entries.Dequeue();
+            _entries.Enqueue(new(checked(++_sequence), _clock.GetTimestamp(), value, null, targetOwner, sourceOwner));
         }
     }
     internal void Add(SoundEvent value, PlayerId? owner)
     {
         value = value with { Item = value.Kind == SoundKind.ShacklesOn ? value.Item is { Length: > 4096 } item ? item[..4096] : value.Item : null };
-        lock (gate)
+        lock (_gate)
         {
             Trim();
-            if (entries.Count == Capacity) entries.Dequeue();
-            entries.Enqueue(new(checked(++sequence), clock.GetTimestamp(), null, value, owner, null));
+            if (_entries.Count == Capacity) _entries.Dequeue();
+            _entries.Enqueue(new(checked(++_sequence), _clock.GetTimestamp(), null, value, owner, null));
         }
     }
     internal void Add(CharacterId speaker, SaidLine line, PlayerId? owner)
     {
         if (line.Owner.Length > 256) line = line with { Owner = line.Owner[..256] };
         if (line.Text.Length > 4096) line = line with { Text = line.Text[..4096] };
-        lock (gate)
+        lock (_gate)
         {
             Trim();
-            if (entries.Count == Capacity) entries.Dequeue();
-            entries.Enqueue(new(checked(++sequence), clock.GetTimestamp(), null, null, owner, null, new(speaker, line)));
+            if (_entries.Count == Capacity) _entries.Dequeue();
+            _entries.Enqueue(new(checked(++_sequence), _clock.GetTimestamp(), null, null, owner, null, new(speaker, line)));
         }
     }
     void Trim()
     {
-        long now = clock.GetTimestamp();
-        while (entries.TryPeek(out var first) && clock.GetElapsedTime(first.Born, now) > Lifetime) entries.Dequeue();
+        long now = _clock.GetTimestamp();
+        while (_entries.TryPeek(out var first) && _clock.GetElapsedTime(first.Born, now) > Lifetime) _entries.Dequeue();
     }
     internal PresentationEventBatch Capture(PlayerId player, IReadOnlySet<CharacterId> visible, Func<Vector3, bool> nearby)
     {
-        lock (gate)
+        lock (_gate)
         {
             Trim();
             var floaters = new List<FloaterEvent>(); var sounds = new List<SoundEventEntry>(); var speech = new List<SpeechLogEvent>();
             var blood = new List<BloodVisualEvent>(); var sparks = new List<BlockSparkEvent>();
-            foreach (var e in entries)
+            foreach (var e in _entries)
             {
                 if (e.Blood is { } mark && nearby(mark.Mark.Position))
                     blood.Add(new(e.Id, mark with { Mark = mark.Mark with { Who = visible.Contains(mark.Mark.Who) ? mark.Mark.Who : CharacterId.None } }));
@@ -110,30 +112,32 @@ internal sealed class PresentationEventJournal(TimeProvider? clock = null)
                     Other = visible.Contains(sound.Other) ? sound.Other : CharacterId.None,
                 }));
             }
-            return new(sequence, floaters.ToArray()) { Sounds = sounds.ToArray(), Speech = speech.ToArray(), Blood = blood.ToArray(), Sparks = sparks.ToArray() };
+            return new(_sequence, floaters.ToArray()) { Sounds = sounds.ToArray(), Speech = speech.ToArray(), Blood = blood.ToArray(), Sparks = sparks.ToArray() };
         }
     }
 }
 
 public sealed partial class World
 {
-    readonly PresentationEventJournal presentationEvents = new();
+    readonly PresentationEventJournal _presentationEvents = new();
     internal bool HasFloaterSink => Floaters is not null || Players.RequiresExplicitControl;
     internal bool HasSoundSink => Sounds is not null || Players.RequiresExplicitControl;
     internal PlayerId? PresentationOwner(CharacterId character)
         => Characters.TryResolveNext(character, out int slot) && Characters.Cold(slot) is { } cold
             ? Players.KnownControl(cold.Entity)?.Player : null;
 
-    /// <summary>Authoritative producers only. Text is private to the target's controller; hits/labels require authorized visibility.</summary>
+    /// <summary>
+    /// Authoritative producers only. Text is private to the target's controller; hits/labels require authorized visibility.
+    /// </summary>
     public void EmitFloater(Floater value, PlayerId? sourcePlayer = null)
     {
         Floaters?.Enqueue(value);
-        if (Players.RequiresExplicitControl) presentationEvents.Add(value, PresentationOwner(value.Target), sourcePlayer);
+        if (Players.RequiresExplicitControl) _presentationEvents.Add(value, PresentationOwner(value.Target), sourcePlayer);
     }
     public void SaidPublic(CharacterId speaker, string owner, string text, bool player)
     {
         if (text.Length == 0) return;
         if (!Players.RequiresExplicitControl) Said(owner, text, player);
-        else presentationEvents.Add(speaker, new SaidLine(owner, text.ReplaceLineEndings(" "), player), PresentationOwner(speaker));
+        else _presentationEvents.Add(speaker, new SaidLine(owner, text.ReplaceLineEndings(" "), player), PresentationOwner(speaker));
     }
 }

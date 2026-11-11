@@ -251,7 +251,7 @@ responsiveness, throughput and animation, blocks production cutover. Remaining g
 revisions across baseline transitions. These tests are not production transport, rendering or VPS acceptance.
 
 **Verified** (local `RecipientComponentCaptureTests`): the migration capture boundary exhaustively maps
-18 view, 57 world and 97 character fields. Tick/publication/root-motion changes leave static field deltas
+view, world and character fields. Tick/publication/root-motion changes leave static field deltas
 empty; optional-field withdrawal and recipient/generation separation are explicit. It consumes already
 filtered views and serializes detached individual fields for comparison; it is not the final wire schema,
 an authorization filter, or an acknowledged delivery ledger. **Observed** (synthetic 124-character fixture):
@@ -296,6 +296,12 @@ Ready names the captured authority publication, and authority activation precede
 deltas use the same bounded bulk transaction. Bulk ACKs release application credit; native ownership
 release separately frees queued-byte credit. Bulk submission rechecks the recipient's authority stamp.
 Reliable motion checkpoints share component revisions with datagrams and receive explicit peer ACKs.
+
+**Observed** (source): after queuing a baseline bulk, `SecureServerPeer` seeds its fresh `MotionReplicationProducer` from that same detached
+publication's exact motion roots, interest generations and capture tick (`SeedReliableBaseline`). Seeding creates no redundant checkpoint
+or synthetic ACK and retains the `ViewReady` gate. Later captures compare revisions/flags normally; an unseeded producer's first capture
+still generates reliable checkpoints.
+
 Component encoding runs on a worker after owner-thread detachment and is followed by an
 authority-stamp recheck. Motion carries its capture publication directly, so a component/bulk delay cannot
 hold movement behind a reliable lifecycle publication. Renderer and client root traces retain the actual
@@ -316,6 +322,9 @@ credential exchange use bootstrap `0/0`; authenticated admission establishes non
 Transport ACKs have a separate bounded coalescer (4,098 keys, cumulative bulk offsets), rather than
 occupying the 64-operation business queue or its request-rate allowance. Private bulk credit handling
 still rechecks authority before submitting additional bytes.
+
+**Observed** (schema): world field 1055, `ContainerOpener`, belongs to the independent Interaction component. Its recipient projection and
+display-time withdrawal rules are described in [networking](networking.md).
 
 The receiver and renderer share a monotonic authority-clock estimate. Receive-side sampling consumes
 due animation transitions while content/GPU loading has no renderer callbacks; renderer frame deltas do

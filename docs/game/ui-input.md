@@ -8,11 +8,22 @@ tick; host picking/UI issue commands, not direct simulation mutation. [Simulatio
 
 **Verified** code=scancode | Shift0x100 | Ctrl0x200 | Alt0x400. Low-byte OIS scancode; left/right
 modifiers share bits. Low-byte0 mouse=(buttonIndex+1)*4096 (Mouse1/2/3=0x1000/2000/3000).
-Name formatter prefixes Ctrl+Alt+Shift, unnamed Key_n, mouse Mouse_n. Key names are a256-entry
+Name formatter prefixes Ctrl+Alt+Shift, unnamed Key_n, mouse Mouse<n> (`Mouse1` in the install file). Key names are a256-entry
 exe table;111 null. Preserve scancode semantics rather than substituting ASCII key codes.
-Controls.cfg first line version1, repeated action=KeyName entries allow multiple bindings.
+Controls.cfg (install root) first line version1, repeated action=KeyName entries allow multiple bindings.
 Missing/empty file writes defaults; version<1 treats changed camera/floor/build bindings specially
 (exact application partly Observed). Default-unbound and UI-unrebindable actions remain in tables.
+**Verified** (`FUN_140362430`, `FUN_1403622f0`): an action's first line clears its default bindings, each line then adds one, so an
+action the file does not name keeps its defaults. Key names (exe table, **Verified** against the strings and the install's file):
+letters, digits and punctuation are the character, `F1`..`F15`, `NUM0`..`NUM9` `NUM+` `NUM-` `NUM*` `NUM/` `NUM.`, `Left Control` `Right Control`
+`Left Shift` `Right shift` `Left Alt` `Right Alt`, `Return` (main Enter), `Enter` (keypad, by its place in the table: **Observed**), `GRAVE`, `SYSRQ`, `PgUp` `PgDn`, `Mouse1..3`.
+
+Meitou (`GameControls`, `InputBindings.UseGameControls`) reads the file at boot, never writes it, as the defaults of the actions it
+names (the same rule; the version line, modifier names and the build/editor/developer actions are skipped; `camera_tilt+` is `PitchDown`,
+steeper). Medic, Rescue and Highlight get Meitou's H, J and Right Alt back while no other action has them. Its config keeps only the
+bindings that differ from those defaults; in a config that saved every action (older builds) the entries equal to the engine's own
+defaults are ignored.
+Restore defaults returns to controls.cfg.
 
 ## Dispatch and selection
 
@@ -96,11 +107,11 @@ Binding maps: general map at Controls+0x28, build-mode map at +0x50 (checked fir
 
 **Screenshots** (event 0x10, frame-end callback `FUN_14082b6e0`, **Verified** decompile; file layout **Verified** against the install's `screens.cfg` and `_screens/`): the picture is written to `_screens/screenshot_<n>.<format>` in the install folder, `n` = the `count` key of `screens.cfg` + 1 (a short; written back first), `format` the file's `format` key when exactly `bmp` or `png`, else `jpg` (the install has `count=142` and jpg files). **Deliberate departure (format only):** Meitou always writes `.png` with `PngWriter` and ignores the key; location, naming and counter are the original's. A `multiplier` key of 2 or more takes a tiled shot instead (`FUN_140850b50` makes a `ScreenShotTex` of window size and an RGB buffer of (w x n) by (h x n); `FUN_140850f40` adds a second workspace without overlays, zeroes the auto-exposure adaptation rate after copying the live luminance texture, then renders n x n times with the camera's frustum offset to each tile, blitting each tile into the buffer, and saves the one large image; **Verified**, decompile). The `CameraGrid` widget, when visible, is hidden at the event and the shot is taken 2 frames later with the widget shown again afterwards; when hidden or absent the shot is immediate. Meitou: `GameScreenshots`, `PlayerInterface.GateScreenshot` (the grid); the tiled shot is n x n tiles of window size (`GameHost.SaveTiles`, Vulkan host; world only, no interface, as the original's overlay-free workspace), each drawn with the camera frustum offset to its sub-window (`ViewWindow`: `WorldCamera.Projection` and every pass that rebuilds view rays from `right`/`up`/`back` and the half-fov tangents go through `ViewWindow.Tan`/`Back`) and blitted into one picture, so SSAO radius and bloom keep the window's pixel scale. Departures from the original's plain tiles: each tile is drawn with a guard band of max(16, min(w,h)/8) pixels that is cropped, so neighbour-sampling effects have no seam, and its temporal history (TAA/DLSS) is reset and warmed up per tile; the foliage occlusion cull is off during the shot, the light-shaft/fog grids stay whole-view. The live exposure is pinned for the shot and the frame after (`PostProcess.HoldExposure`), as the original zeroes the adaptation rate. **Observed**: a 960x540 window at multiplier 2 and 3 on a battle scene gives 1920x1080 and 2880x1620 pictures, no seam lines, mean difference 1.8/255 against a single 1920x1080 frame (`image-diff`), no exposure offset. Not done in the Metal host (it has no tiled shot; its `PostTaa` goes through the same helpers with the whole view). The install's `screens.cfg` has no `multiplier` key.
 
-Meitou's build map (`PlayerInterface.Build.cs`) is live only in build mode and takes its keys before anything else: the
+Meitou's build map (`BuildMode`) is live only in build mode and takes its keys before anything else: the
 documented speeds, Shift as the slow modifier of the up/down move; NUM+ / NUM- tilt (and are not the cinema camera's while building). `[` `]` tilt there, not
 character_next / prev. Left click queues the ghost. A right click over the world drops the held building (the next one is chosen from the lists again) and leaves the queued ghosts (`FUN_1404e27e0`, **Verified**; the guard flag `DAT_1421337b8` is **Unknown**). The Commands text lists, in this order: Place Building: Left-Click; Clear Building: Right-Click; Rotate: {1} or {2} keys; Change Height: {1} and {2}; Change Slope: {1} and {2}; Undo: Backspace; Cancel All: Esc; a closing "Press [Confirm] when finished" (`FUN_1404d7d90`, **Verified**; the key strings read from the exe data: Rotate `<>` or `,.`, Height `+` and `-`, Slope `[` and `]`, Undo Backspace; each line a `#140806` label, a space and a `#afa68b` value, joined by line breaks; fixed texts, not the bindings above; `PlayerInterface.BuildCommandsText`). Escape discards every ghost and leaves build mode (`FUN_1404d4320`).
 
-Meitou's game view (`PlayerInterface.Hotkeys.cs`, `InputBindings`): every event action above is an `InputAction` with the table's default
+Meitou's game view (`GameHotkeys`, `InputBindings`): every event action above is an `InputAction` with the table's default
 (select_0..9 are `SelectMember1..10`), rebindable on the settings' Controls page; Medic and Rescue also keep H and J, and Meitou adds Rest (L)
 and Put Down (K). `toggle_help` (F1, `InputAction.ToggleHelp`) opens or closes the Tutorials window (event 7, section 6). A numpad key bound to one of these
 actions is the game's, not the cinema camera's ([viewer](../viewer.md#cinematic-camera)), unless Ctrl is held or the cinema's editor is open;
@@ -110,6 +121,8 @@ Mouse buttons (Meitou only, **Observed**; `GameHost.PlayerButton`): `Select` (de
 The interface and world logic keep seeing "left" and "right": a physical button bound to Select arrives as left, to Command as right; any other of left,
 right, middle (e.g. Orbit's) arrives as middle (map pan, no click reaches the world under the HUD). An unbound Select / Command falls back to left / right.
 The settings page itself always takes the physical buttons. Binding a mouse button already used swaps: the other action gets the rebound action's old button.
+Binding a key already used takes it from the other actions, as the original's map holds one action per key; Delete or Backspace in the
+prompt unbinds. The page scrolls with the wheel, Page Up / Down, or by dragging (or clicking) its scroll bar.
 
 ### 6. Event dispatch
 
@@ -138,13 +151,17 @@ selection the first entry of a list at PlayerInterface+0x2c0 (**Unknown** which)
 first); dead counts as not living (the original's test `FUN_1406215b0` is **Unknown**).
 
 Meitou's first aid and rest bindings (2026-10-13, `PlayerInterface`, engine choices; simulation side in [simulation.md](../simulation.md#bodies)). The original's own: `medic` (NUM7, event 0x1f) and `rescue` (NUM8, 0x20) are
-orders-panel toggles forwarded to FUN_1407226e0 (the Medic and Rescue buttons of the panel, [ui-screens.md](ui-screens.md#4-hud-mainbargui)), which dispatch orders 58 and 148: one-shot, or a job with Shift ([perma-jobs](ai-tasks.md#perma-jobs), **Observed**); the targeted order is the context menu
+orders-panel toggles forwarded to FUN_1407226e0 (the Medic and Rescue buttons of the panel, [ui-screens.md](ui-screens.md#4-hud-mainbargui)), which dispatch orders 58 and 148: one-shot, or a job with Shift ([perma-jobs](ai-tasks.md#perma-jobs), **Observed**).
+The Medic button (`FUN_1407fac20`, **Verified** by decompile) then also dispatches 57 Robotics the same way when a member of the active squad (`FUN_1407f5520`) is of a robot race
+(race byte `+0x7c`) or holds an item of function 12 (robot kit) in its own inventory list (`FUN_14004b84e`, flat: not the backpack's contents); the slots (character vfunc `0xd0` race,
+`0x160` inventory) are the ones the [medic finder](ai-tasks.md#medic-jobs) uses. So a Shift press lists Medic then Robotics. Without Shift both are non-queued one-shots, the 57 given last (its
+call's arguments are lost in the decompile, so whether it replaces the 58 is **Unknown**); 57's finder takes every patient 58's does plus robots. Meitou: one look with the Robotics finder. The targeted order is the context menu
 verb 25 "First Aid" (pointer mode 1 `med`, [pointers](#mouse-pointers); Meitou's context menu also provides it). Meitou binds both to the numpad as the original and keeps `H` / `J` as aliases (section 4):
 
 | Input | Effect |
 |---|---|
 | right click on a character with something to bandage (own or not, as the menu's First Aid; the quick click only on the player's own) | the selected characters treat it (`TreatOrder`); a lone selected character on itself treats itself |
-| NUM7, `H` | Medic for the selection: each looks for a patient once; with Shift the medic job (58) is added to their lists |
+| NUM7, `H` | Medic for the selection: each looks for a patient once; with Shift the medic job (58) is added to their lists, and robotics (57) when the active squad has a robot (above) |
 | `L` | the selection rests (sits down; **no binding in the original**); any move order or `R` ends it |
 
 | Input | Effect |
@@ -251,12 +268,33 @@ and the Esc menu hidden), 1 `med`, 2 `search`, 3 `lift`, 4 `pick_item`, 5 `attk`
 The modes a building hover sets are in [building picking](#building-picking-and-selection) (`house` 0x10 is returned by none of them); a ground
 hit with no walkable point sets `invalidmove` (`FUN_140800250`). Callers of the setter (exe scan 2026-11-04): `FUN_1407fb410` characters ([table](#quick-right-click-on-a-character)), `FUN_1407fc6e0` buildings, `FUN_1407fc440` a ground item (`pick_item` 4, or `steal` 0x15 when its owner is a character of a real faction other than the player's; a right click on a stolen item without Alt shows "Hold down the ALT key to steal items" and only walks to it, order 29; **Verified**), `FUN_14048be80` / `FUN_14049ac90` the Overview map pan (`hand` 0x16), `FUN_140800250` no walkable ground (`invalidmove`), and `arrow` from the loading / UI paths (`FUN_1406eb3a0`, `FUN_140800f10`, `FUN_140801630`). The building-hover modes are in the building picking section; `light` and `door_escape` have no setter call in the scanned callers (**Unknown**).
 
-Meitou (`PlayerInterface.Pointer.cs`, engine choices): the window's own cursor is hidden and the pointer drawn last in the frame (not in
+Meitou (`PointerView`, engine choices): the window's own cursor is hidden and the pointer drawn last in the frame (not in
 screenshots or cinema takes). It follows the quick right-click order, so it never disagrees with the click: with a selection, over a
 the [quick right click's table](#quick-right-click-on-a-character) (pointer given also without a selection, the lead then being the nearest of the player's characters): `talk`, `attk`, `knockout`, `med`, `lift`, `search`, `scavenge`, `lockpick`, `green`; a character with no order shows `arrow` with a white outline and a right click does nothing (hostility: [the table](#quick-right-click-on-a-character)), else a loose item (`pick_item`, or `steal` over another faction's item; a right click picks it up, without Alt only the hint and a walk to a stolen one: [ground items](../simulation.md)); Ctrl over a downed character
 `lift`, Alt `search`; otherwise, over the interface, the settings panel or the loading screen, `arrow`. The free camera hides it (as mode 0's
 `invisible`). Interface → Hardware mouse (`HardwareMouse` in meitou.user.json, default off as the game's `hardware_mouse`; settings.cfg is
-not read) shows the Windows cursor instead, applied at once.
+not read) shows the Windows cursor instead, applied at once. Under it, shown only while Hardware mouse is on, Enhanced hardware mouse
+(`EnhancedHardwareMouse`, default on; Meitou only) draws the pointer for the order beside the Windows cursor, its left edge 14 px at 1080 right of the
+mouse and its middle 14 px below it, by the arrow's lower half (none for `arrow`: the walk, the interface, no order), and turns the cursor into the system hand over an enabled button
+(`Button` or a control with an action), a settings-panel widget, or an order pointer other than `hand` and `invalidmove`. With frame generation the
+beside icon is part of the interface, so it trails the cursor by a held-back frame.
+
+### Pointer chance label
+
+**Verified** (decompile of `FUN_1406e4820`, `FUN_1406ea070`, `FUN_1406e4f50`): the pointer setter `FUN_1406e4820` also keeps a lead and a target handle (GUI manager
+`+0x2f0` / `+0x310`) and raises a flag (`+0x2e8`) that the plain setter `FUN_1406e3d60` clears, so any other pointer hides the label. Its callers: the character
+hover `FUN_1407fb410` with `knockout` (0x19; the lead is the nearest selected, no label with nothing selected) and `lockpick` (0xf, a prisoner), and the building
+hover `FUN_1407fc6e0` with `lockpick`. The GUI manager's frame update `FUN_1406ea070` (from the frame loop `FUN_140788a00`) shows, while the flag is set, a
+DatapanelGUI on the `Popup` layer with one row, empty key and value `{1,num}%` = int(f x 100):
+- `knockout`: f = the stealth KO chance (`FUN_1408852f0(lead, target, 1)`, [combat](combat.md#stealth-knock-out)) x 0.01, clamped to 0..1.
+- `lockpick`: f = the lock's pick chance with the lead's lockpicking, clamped to 0..1; the minimum lockpick chance is not applied (only the verb list `FUN_1407f65e0` does).
+- Colour (1 - f, f, 0). Its middle on the mouse x, its bottom 32 x `+0x40` above the mouse y. The text is computed on showing and then once a second (a 1 s
+  timer run down by frame time). **Observed**: `+0x40` is a size over the `Kenshi_UI.png` height (`FUN_1406e3c30`; the size global is unidentified), and the
+  globals read as the mouse x / y are written by `FUN_140829e00` among others.
+
+Meitou (`PlayerInterface.AddPointerChance`): the `knockout` label, from the pointed character's published `StealthKoChance` (the selection's first sneaking
+member, not the nearest); the `lockpick` label, from `Lockpicking.Chance` of the selected character nearest the lock (a caged character's cage, else the
+container, else the door under the mouse). A floating tooltip 32 px at 1080 above the mouse, recomputed every frame (engine choices); drawn with the Hardware mouse too.
 
 ### Character picking
 
@@ -274,7 +312,7 @@ ground-item picks: the ray stops where it meets the building's `interior mask` c
 **Observed** (owner's original-game report): holding Alt highlights building signs in yellow.
 **Observed** (merged installed game data, reader survey): BUILDING `is sign` is true on `993-gamedata.base`
 (Sign Medic) and `3436-otto.mod` (sign3_bar); category `sign` alone is insufficient (`972-gamedata.base`, Weapon Sign, has the flag false).
-Meitou's rebindable `Highlight` action defaults to either Alt key. While held in the focused gameplay view,
+Meitou's rebindable `Highlight` action defaults to either Alt key; it is also the steal and pick-lock modifier, as in the original, and Meitou's loot one. While held in the focused gameplay view,
 real parts whose owning BUILDING has `is sign` receive a yellow tint, including layout objects and both LODs
 during a transition. Release restores their materials. Loading, menus, hidden UI, free camera and cinema suppress it.
 Rendering details: [objects](../render-objects.md#building-sign-highlight).
@@ -290,7 +328,7 @@ Rendering details: [objects](../render-objects.md#building-sign-highlight).
   clears the hand to `NULL_ITEM`. So the original has a portrait menu: the same menu as on the character in the world, after 0.25 s rather than the world's 0.2 s.
 - Right release over the same portrait with the hand still set (a press shorter than 0.25 s) calls `FUN_140413cd0` with the focus flag set: the same select-and-focus as the double click.
   After the menu opened, the release does not focus. No right-click menu on any other path of the bar.
-- Meitou (`PlayerInterface.MouseDown` / `MouseUp`): a press held `PortraitHoldSeconds` (0.25) opens the member's context menu; a quicker right release on the pressed portrait selects it
+- Meitou (`PlayerInterface.PortraitRightDown` / `MouseUp`): a press held `PortraitHoldSeconds` (0.25) opens the member's context menu; a quicker right release on the pressed portrait selects it
   (Shift toggles) and centres / flies the camera as the double click. With no verbs (nothing selected) no menu opens and the release focuses.
 
 ### Ground item labels
@@ -326,7 +364,7 @@ BUILDING handle resolves there). So an item with a null `ownedby` is never stole
 exists. The pick-up verb (`FUN_14079b2d0` case 3) tests `ownedby` alone: Steal when it resolves to such a faction, else Pick Up.
 **Observed** (saves "Beep Fan Club 1", METARU, survey of their `1-itemlist`): 332 / 62 items have only `insideBuilding` (town interiors), 99 / 0 a CHARACTER `ownedby`,
 of which 84 name a character the save no longer holds (one of them inside a building); no other `ownedby` type.
-Meitou (`PlayerInterface.GroundItems.cs`): with the Highlight gating above, every item within 500 units of the camera's focus not hidden by a
+Meitou (`GroundItemPicks`): with the Highlight gating above, every item within 500 units of the camera's focus not hidden by a
 building, name only, coloured as above; a label picks like its item (pointer `pick_item`, right click picks it up at once: a plain item has no inventory, so `FUN_1407a6bc0` adds no verb and a held press shows no menu; **Verified**, decompile). A click on a label is the item's alone: Meitou's Alt / Ctrl loot and lift of a downed body (an extra; in the original Alt is only Highlight) does not take it, so an item lying beside a corpse can be picked up with Alt held (**Observed**: the label is a widget that takes the click, `FUN_140162950`; whether the original prefers the item over a body behind a label is **Unknown**, nothing was traced). Overlapping
 labels are stacked above the nearer one. No quantity. The owner (`GroundItem.OwnedBy`, `Saving/GroundItemSave`) is read once at load: the `ownedby` character's
 platoon faction, else the `insideBuilding` building's `owner faction ID` (also for the verb, engine choice), none for a `not real` faction; items dropped or
@@ -341,15 +379,20 @@ linear depth within 1 % + 1 unit of the scene depth (jittered, render size). Out
 screenshots and cinema takes. Not in the Shift+F1 switch list (a game setting, like Attackers per target).
 
 The selected building ([selection](#building-picking-and-selection)) gets the same outline and tint in white (Advanced → Building outline, `BuildingOutline`, default
-on; Meitou only), under the same conditions, but none while the interior view shows it (occupied or held open). Its mask is what the main view's colour pass drew of its
-parts and the layout objects that go with it (signs), at the levels, fades and construction clip drawn, redrawn alone after the post chain (`WorldObjectRenderer.Selection.cs`).
+on; Meitou only), under the same conditions, but none while the interior view shows it (occupied or held open). The building under the cursor (no character there, picked as
+a left click picks, `HoverBuilding`) is outlined too, in its pointer's colour as a hovered character, Alt held or not; one mask per building. A hovered character or building is outlined only within 2000 units
+of the eye (`OutlineReach`; a building by its hit along the ray); the pointer and the click reach farther. A building's mask is what the main view's colour pass drew of its
+parts and the layout objects that go with it (signs), at the levels, fades and construction clip drawn, redrawn alone after the post chain (`WorldObjectRenderer.Selection.cs`),
+cut at its floor: nothing at or below the height it is placed at (1 unit up, so the base slab's top goes too), so the outline stops where the building meets its base, not
+round the foundations, piers and slab under it. A house's placement height is its ground floor (**Observed**, base data: the interior hulls of `L-House`, `Swamp Shack` and
+`Longhouse` start 1.7 to 2.8 units below it).
 
 ### Building picking and selection
 
 The original's mouse code, kenshi_x64.exe 1.0.68. The panels a selected building fills: [ui-screens](ui-screens.md#selected-building).
 
 **Buttons** (**Verified**: Controls `DAT_142133370`, actions registered in `FUN_1403636c0`): held flags `mouse_select` +0xf3,
-`mouse_command` +0xf4, `highlight` (Left Alt) +0xf2. Each frame `FUN_140801630` stores edges on PlayerInterface (**Observed**): +0x2f1 select
+`mouse_command` +0xf4, `highlight` (Left Alt) +0xf2 (`DAT_142133462`, the flag the steal and pick-lock tests read, so they follow the highlight binding, not Alt). Each frame `FUN_140801630` stores edges on PlayerInterface (**Observed**): +0x2f1 select
 released, +0x2f2 select pressed, +0x2f3 command released, +0x2f4 command pressed; the two command edges are cleared while the context menu
 is visible or was last frame. Then `FUN_140800f10` (drag box) and, unless a box is being dragged, the pick `FUN_140800250` run every frame, so
 hover and clicks share one pick.
@@ -451,27 +494,31 @@ highlight or outline call was found for a selected building (**Unknown** whether
 The object stays selected until something replaces or clears it: a left click on another building or another faction's character replaces it.
 Selecting one of the player's characters without Shift (click, drag box, number keys, `[` / `]`) runs `FUN_1407f3b50`, which clears the
 squad selection, the object slot and the focus. With Shift the object slot stays but the focus (the HUD) moves to the character. A click on the
-ground and Esc do not clear it (**Observed** by absence: `FUN_140800250` has no such path, and `FUN_140917120` does not use the focus handle). Every select source goes through the gate `FUN_1407f7f20`, which refuses a dead character (`FUN_1406215b0`, byte +0x5bc): a drag box over only dead characters still clears the selection (the non-additive clear comes first, `FUN_140800f10`:176-186) and selects nothing (**Verified**, decompile).
+ground and Esc do not clear it (**Observed** by absence: `FUN_140800250` has no such path, and `FUN_140917120` does not use the focus handle). Every select source goes through the gate `FUN_1407f7f20`, which refuses a dead character (`FUN_1406215b0`, byte +0x5bc): a drag box over only dead characters still clears the selection (the non-additive clear comes first, `FUN_140800f10`:176-186) and selects nothing (**Verified**, decompile). A click on one of the player's dead characters is different (**Verified**, decompile):
+the click's select `FUN_1407f9000` clears only for a living player character, so the selection stays (Shift or not), and the gate puts the corpse in the
+object slot and moves the focus to it, as another faction's character (Meitou: `PlayerInterface.DeadOwn`, an inspect). The gate also calls character
+vfunc `0x130` on it (**Unknown**: presumably the selection marker).
 
 Shift toggles (**Verified**): on a single player character a Shift-click in the world (`FUN_140800250` -> `FUN_1407fb410` -> `FUN_1407f9000`), a Shift-click on a squad-bar portrait
 (`FUN_140413cd0`) or Shift with a number key (`FUN_140788100` -> `FUN_1407f90b0` -> `FUN_1407f8f60`) takes it out of the selection when it is in it and the selection holds two or more
 (`FUN_1407f7f20`'s removal branch); alone it stays; one not in it joins. Box select and select_all only add. Whether the Squads window's portrait click toggles is **Unknown**
 (Meitou: it only adds). Meitou: `SelectCommand.Toggle`.
 
-Meitou (`PlayerInterface.BuildingSelect.cs`, engine choices): a left click with no character under the cursor selects the nearest building the ray
+Meitou (`BuildingSelection`, engine choices): a left click with no character under the cursor selects the nearest building the ray
 meets before the ground, among the player's sites and the level data's buildings (not `is node` / `is foliage`). Picking is a ray against a vertical
 prism over the convex hull of the record's collision shapes (`BuildingFootprints`) as the first test, then, for a record with collision files, against its collision
-triangles (`PlayerInterface.CollisionPick.cs`, double sided, nearest hit), so ground, characters and neighbours beside a courtyard or concave building are not taken for it. There are
+triangles (`WorldPicking`, double sided, nearest hit), so ground, characters and neighbours beside a courtyard or concave building are not taken for it. There are
 no interior floors (a part without collision cannot be clicked, as in the original). Only hits before the ground count, for a click and for the hammer pointer alike (a building's hull and
 collision reach below the ground; without the limit the ray, after meeting the ground, found them and the pointer showed the hammer on bare ground beside a building). The character selection stays. The HUD panels show the building as in
 [ui-screens](ui-screens.md#selected-building) (the simulation publishes the selected building's doors, `InspectBuildingCommand`); no outline
 is drawn (as the original). Selecting or inspecting a character clears it, Shift
-included (the original keeps the slot); a site that disappears clears it. Selecting plays the building's select sound ([audio](../audio.md#interface)). A house is not focused as its first door, but its panels list the
+included (the original keeps the slot); a site that disappears clears it. A left click on the ground (no character or building picked) clears it too
+(Advanced → Click away deselects, `DeselectBuildings`, default on; off keeps it, as the original). Selecting plays the building's select sound ([audio](../audio.md#interface)). A house is not focused as its first door, but its panels list the
 first door's lines before the house's, as the door's panel does ([ui-screens](ui-screens.md#selected-building)). World (town) buildings act through their
 fixtures: containers (town storages included, `search` / `scavenge` / `lockpick`), beds, cages and doors are picked, pointed at and ordered like the player's. Not built: the
 machines of a town building (crafting and research benches, generators, a town turret for the player, the furniture of a bought house): machines exist only for the sites of `World.Buildings` (player-built ones and town ruins taken over),
 so they have no window, pointer or order. A door (picked by its collision with the leaf
-where it has slid to, `DoorSpot.Slide` × open amount, `PlayerInterface.Doors.cs`) shows `door` / `lock` / `lockpick` as in the table and a quick right click gives `DoorOrder` (the nearest selected
+where it has slid to, `DoorSpot.Slide` × open amount, `FurnitureUse`) shows `door` / `lock` / `lockpick` as in the table and a quick right click gives `DoorOrder` (the nearest selected
 walks to the door's near side and opens or closes it, "It's locked." at a locked one; another faction's locked door: Alt picks the lock, else the hint
 and a walk there). The right button's target, for the pointer and the click alike, is the nearest along the ray of: a character with a quick order or a menu, a ground item (its collision where it is drawn, as the original makes it ([collision](../formats/collision.md#item-physics)); one without `has collision` only by its label), a door (its collision where the leaf has slid to; one without cannot be picked), a container (its record's collision, as a building; one without cannot be picked (engine choice: how the original selects a building without collision, as a farm, is **Unknown**, see the farms above), nor one above the viewed floor of a building in the interior view, which is not drawn), a bed (its record's collision, as a building; a pixel magnet without one; not above the viewed floor, as a container), a cage (as a container), a rock and a site that is an object; a plain building takes it only when none is there (`PlayerInterface.PickAt`, as the original walks its hits nearest first; an item hit behind a container, bed or cage that lies inside its bounds takes the click, as in the original (its collision's footprint and height for the original's box); what a building seen from outside hides, and what lies past a shown floor or wall of one in the interior view, is left out). Ctrl or Alt over a downed character comes first. Sites of the player's get the `build` pointer only when unfinished; finished ones the class pointer of the table (`mine` for a machine of function 1 or 27, `use` for other machines, furnaces and turrets, `search` for a storage, none for a plain building, as in the original; a quick right click on a furnace walks there and opens its window, on a turret it mans it, [simulation](../simulation.md#production)); a right click on a finished plain building gives way to a container, a ground item, a door or a character under the cursor, so a chest inside a house can be targeted (the building's menu, with Dismantle, opens on a right click held on the building itself; a quick right click on a finished plain building is a move to the hit point's x, z at the terrain height, as the original's target (the goal then takes the walkable surface nearest that height, its floor inside, `Walkability.GroundHeight`; the original's goal snap is about 30, [pathfinding](pathfinding.md)); a level or player building with an interior is picked by its floors instead, even when the hidden roof above is nearer (`FloorSurfaces.MoveHit`: a wall or roof hit drops onto the floor below, upper floors above the viewed one are passed through); on a finished storage of the player's it walks the selection there and, once one of them is within 120, opens the storage window with the character's inventory beside it, with the `search` pointer; a left click on a storage shows its window alone).
 
@@ -559,14 +606,14 @@ Seats (**Observed**, live vanilla Kenshi 1.0.68 on Windows, compared with Meitou
 
 The native outdoor candidate-search boundary, competing reservations, multi-character orders and seated save/load are **Unknown**; authored placement does not establish build-menu availability or placement legality.
 
-Meitou (`PlayerInterface.Seats.cs`, `FixtureRegistry.Seats.cs`): town chairs and thrones are derived fixture targets (not construction or render objects), picked on their collision at the furniture's placed rotation (separate from the sitter's facing); a seat with neither parts nor collision (the invisible spot) is not picked, though AI still sits there. Town and player-built seats show `use`; a quick click is order 87, holding opens Use, Shift adds the operating job, through the operator walk and settle. A seated NPC blocks the order; a seat a character sits on by an order is not claimed by NPCs. Player-built chairs face by their functionality flags towards complete qualifying furniture in the same parent building (layout tables included), else the same player outpost.
+Meitou (`FurnitureUse`, `FixtureRegistry.Seats.cs`): town chairs and thrones are derived fixture targets (not construction or render objects), picked on their collision at the furniture's placed rotation (separate from the sitter's facing); a seat with neither parts nor collision (the invisible spot) is not picked, though AI still sits there. Town and player-built seats show `use`; a quick click is order 87, holding opens Use, Shift adds the operating job, through the operator walk and settle. A seated NPC blocks the order; a seat a character sits on by an order is not claimed by NPCs. Player-built chairs face by their functionality flags towards complete qualifying furniture in the same parent building (layout tables included), else the same player outpost.
 
-Meitou (`PlayerInterface.ContextMenu.cs`; one method per target: characters, `ContainerVerbs`, `DoorVerbs`, `SiteVerbs` in `PlayerInterface.Build.cs`, `CageVerbs` in `PlayerInterface.Cages.cs`):
+Meitou (`ContextMenuWindow`; one method per target: characters, `ContainerVerbs`, `DoorVerbs`, `SiteVerbs` in `BuildMode`, `CageVerbs` in `FurnitureUse`):
 the same labels and order (`VerbOrders`; Meitou's own verbs after), the animals-only filter, the chance column (Stealth KO, Kidnap), Shift on Use giving the job (and on the character verbs listed under [Ordering](ai-tasks.md#perma-jobs)).
 Containers and doors open their menu on a held press (a quick click as before); cages, and another faction's locked doors, open it on the press (above). Built: Put Down, Talk To, Attack Target (hostile), Attack
 Unprovoked, Stealth KO, Follow (`FollowOrder`, [simulation](../simulation.md)), Loot, Trade (the player's own character, standing or down: the nearest selected walks over and its inventory opens beside the
 selection's, as the loot window; both offered when `CharacterSnapshot.CanOpenInventory`, the simulation's own `CarrySystem.Openable`, holds: a carried or playing-dead body too, beside Put Down for its carrier), Pick Up on a standing non-hostile character of another faction that regards the lead as friendly and is not a Diplomat (NPC class 5; a plain 225, never Kidnap, no trader exclusion, `FUN_1407a6bc0`:552-576, **Verified**; the further gate on class 6 and `FUN_1407956a0` is unresolved and ignored), Pick Up and Kidnap (the same pick-up order; Pick Up on the player's own character standing too, when it carries no one: `FUN_1407a6bc0`'s own-faction
-branch adds 26, 45, 31 and, with no selected carrier of it, the pick-up verb for a carriable race not carrying (+0x348) nor carried (+0x3d4), with no down test, **Observed**; Kidnap when the gates above pass (another faction's town, a real faction, not friendly or a trader squad's member or in a campaign force, no bounty, not a Bandit), with its chance, also on a sleeper (with Stealth KO, and Attack Unprovoked, Bodyguard, Talk To when not hostile; Loot on a sleeper or a caged character opens it as a pickpocket, [carry-loot](carry-loot.md#theft-and-witnesses); [carry-loot](carry-loot.md#kidnapping)),
+branch adds 26, 45, 31 and, with no selected carrier of it, the pick-up verb for a carriable race not carrying (+0x348) nor carried (+0x3d4), with no down test, **Observed**; Kidnap when the gates above pass (another faction's town, a real faction, not friendly or a trader squad's member or in a campaign force, no bounty, not a Bandit), with its chance, also on a sleeper (with Stealth KO, and Attack Unprovoked, Bodyguard, Talk To when not hostile; Loot on a sleeper in a bed or a caged character opens it as a pickpocket, [carry-loot](carry-loot.md#theft-and-witnesses); [carry-loot](carry-loot.md#kidnapping)),
 [carry-loot](carry-loot.md)), First Aid, Splint Injuries, Unlock Shackles / Use Tools / Use Strength (shackles), Pick Lock / Use Tools / Use Strength (another faction's locked cage) or Lock / Unlock (the player's own), as its cage row, / Escape / Pick Up / Set Free on a caged
 character, Inventory / Loot / Pick Lock / Use Tools / Use Strength on containers (Loot uses the Alt path: another faction's shop stock is stolen from at once, [locks](locks.md#containers-meitou)),
 Open / Close / Lock / Unlock (all the building's doors) / Pick Lock / Use Tools / Use Strength / Smash on doors ([locks](locks.md#player-orders-on-locks)), Build (any standing unfinished building whatever its owner, **Verified** `FUN_1407a6bc0`: a destroyed one of another faction has no menu; a foreign site is accepted all the way: the order giver `FUN_1407f9e20` has no owner test, row 2's conditions (38, 51, isAtLocation, !26) none, and `Task_Build` update `FUN_14034a440`, the event case 11 and Building slot 70 `FUN_1405595a0` never read the owner (**Verified** by decompile; only the completion message needs a player-faction owner); order 2's acceptance `FUN_1405d1940` tests only the builder's materials), Repair (owned ruined/damaged houses; Shift adds Engineer), Use, Auto-Haul (storage: one haul trip, the Hauling to job with Shift, `FUN_1407fa650`),
@@ -593,14 +640,14 @@ takes it to the nearest free incinerator (`DisposeCorpseOrder`; the order's cond
 - Undo keeps 128 steps. A keystroke is one step; deleting a selection and inserting is one step; edits, pastes and cuts clear the redo steps, undo and copy do not; `setText` and a mode change clear both.
 - **Observed** (grep of the installed `data/gui/layout`): `MaxTextLength` is set once (the character editor's `NameText`, 30), `Password` only `false`, `ReadOnly` `true` on 7 boxes (descriptions, the message log), `OverflowToTheLeft` only in the interior-mode layout.
 
-Meitou (`UiTextBuffer`, `MyGuiScreenHost.Keyboard.cs`, `PlayerInterface.Keyboard.cs`; the shortcuts above are all implemented, Ctrl on every system): the clipboard is the window's system clipboard (Silk keyboard `ClipboardText`; the boxes keep their own
+Meitou (`UiTextBuffer`, `MyGuiScreenHost.Keyboard.cs`, `PlayerInterface.Ui.cs`; the shortcuts above are all implemented, Ctrl on every system): the clipboard is the window's system clipboard (Silk keyboard `ClipboardText`; the boxes keep their own
 without one); an empty Copy leaves it alone; pasted tabs become spaces and other control characters are dropped; the host gives a box its `MaxTextLength`, else 2048 (`UiTextBuffer` alone defaults to 512); the history is a stack of text
 and caret snapshots with MyGUI's step rules. Read-only boxes can be focused by a click (caret at the end; Ctrl+A, Ctrl+C), take only edit keys, so Tab, Enter and the hotkeys work as without a focus; Esc still closes the window. Ctrl+C / Ctrl+V reach the free camera's code only
 when no box is focused. A press in a one-line box places the caret at the character gap nearest the pointer and a drag selects (`UiPainter.EditCaretAt` measures the text as last drawn;
 MyGUI 3.2.2 does both); in a wrapped or multi-line box the press only focuses. Not built: a password mask (no layout turns it on), `OverflowToTheLeft`, `TabPrinting`, pixel-exact Up/Down in wrapped multi-line boxes (they move by `\n` lines); a focused wrapped box (the read-only descriptions and message log) draws its caret and selection as one unwrapped line, so Ctrl+A shows a bar on the first line only.
 
 **Button traversal (Meitou only)**: Tab / Shift+Tab walk the top window's editable boxes and its enabled, visible buttons (not close/pin, scroll bar parts, tab headers or list rows) in layout order; the first Tab goes to the first edit box, else the first
-button. Buttons are reached on modal windows and on windows with an editable box; any other window leaves Tab to change-squad. Enter presses the focused button (else the `DefaultAction` button), Space too; the press runs as a click on the button's middle. A click or a
+button. Buttons are reached on modal windows and on windows with an editable box; any other window leaves Tab to change-squad. A Tab bound to a window key (Inventory, Character, Map...) opens that window instead, but on a modal window; the building window's `OutputText` (an editable EditBox in the layout) is read-only (#383). Enter presses the focused button (else the `DefaultAction` button), Space too; the press runs as a click on the button's middle. A click or a
 new window ends it (Esc is unchanged). Look: the Meitou UI mode draws a 2 px `brass-light` ring offset 2 ([meitou-ui](../meitou-ui.md)); the Faithful mode draws nothing (the original has no key-focus look: **Unknown**, `Button` has no such state), so the focus is invisible there.
 The settings panel and the native Meitou UI have their own keyboard focus ([native-ui](../native-ui.md)).
 
@@ -611,7 +658,37 @@ Rows send `DebugCommand`s, applied in the next tick's Inputs phase: teleport the
 (own squad, first faction hostile to the player), give an item record (`name x5 q80`; quality 0-100: armour's quality, crossbows' and limbs' level, a weapon the `PLAYER_WEAPONS` model of the highest level at or below it (else the lowest) and that level; what does not fit drops at their feet) to the first selected, add or remove money (signed number),
 heal (`MedicalState.Heal`; stumps and crushed limbs stay), heal fully (its sub-row: stumps and crushed limbs become the original again first, `MedicalState.RestoreLimbs`; a fitted prosthetic stays), every stat to 100, one cut of n damage (Enter/Right opens a body part list: random as a blow picks, or a part of the first target by template id; others without it are skipped), force hits to a part (the same list from the first target; every blow, melee, bolt or execution, then lands on that template id, else on a part of that name on another body, while a blow could pick it; Off restores the roll; `BodyOptions.ForcedHitPart`, not saved), set the Global damage multiplier of the running world (0 to 100; blows and XP at once, a crossbow when next equipped; not saved), finish every RESEARCH record and repetition (queue emptied), clear bounties (Enter/Right lists each faction with a bounty and its total; All factions or one faction's entries are removed from the selected characters, else from every player character; one left with none is no longer recently wanted). Heal, stats and damage fall back to the inspected character. Names match a record's string id,
 its exact name, else the shortest name containing the text. Replaces the game's F10 key list (the viewer keeps its own).
-Code mods add rows after these ([modding](../modding.md) "Registration surface").
+Godmode (its own row, a switch) applies to every player character: all stats 1000 (10 x the maximum of 100) and a heal five times a second (`MedicalState.Heal`, stumps and crushed limbs restored, hunger refilled); off, each character gets exactly its own stats back. Boosted stats are never saved (the save writes the kept originals), a character that dies or leaves the player squad gets its stats back at once, one recruited while on is boosted on the next tick, a loaded game starts with it off; training done while on is lost. (`DebugGodmode`, `PlayerState.Godmode`, `DebugCheats.GodTick`.)
+The menu is grouped in labelled sections, each value in one column (typed fields, `on` / `off` for switches): Character (teleport, heal, heal fully, max out skills, godmode, clear bounties), World / Spawn (spawn NPC, give item, money, unlock research), Combat (damage, force hits, damage multiplier), then code mods' rows under Mods ([modding](../modding.md) "Registration surface"), then Tools and Overlays. With the F11 statistics shown the menu stands at the right edge, else below the panels; a long list scrolls to keep the highlighted row in view.
+The Tools and Overlays sections open or switch the debug tools (Enter, Space, Left or Right): the pick & collision inspector's menu (docs/viewer.md "Pick & collision inspector"),
+the interior and level editors (Shift+F12 is the original's `editor_toggle` and opens the level editor), "Teleport on map..." (a switch: while on, every left click on the open Map tab, a press and release within 4 px so panning works, teleports the selected characters there and puts the camera on the spot; it stays on until switched off in the menu; a hint line with the last result shows on the map while on), then under Overlays the navmesh view, the frame statistics, the two tickboxes of the statistics' characters line (Character boxes, Walk paths; the same switches, so panel and menu stay in step, and both stay drawn with the statistics hidden), the fps counter, the VRAM pie (Ctrl+F12) and the profiler; each keeps its own key too.
+
+### Dev console
+
+Meitou only (no original counterpart: the install's `controls.cfg` and changelog name no console or debug-menu key, only `editor_toggle`, so Insert and Ctrl+Backquote are Meitou's choice; not on the macOS Metal path yet). Insert or Ctrl+Backquote opens a panel over the top of the screen (the backquote alone is the game's select-all); Esc or the same key closes it. While open it takes every key, as the debug menu does
+(opening it closes the menu). The input line has a caret (Left/Right/Home/End/Delete, Ctrl+V pastes), Enter runs, Up/Down walk the history, Tab completes a command name or, for `give`, `spawn` and `tp`, a record or town name (one match is filled in whole, several as far as they agree and listed),
+PageUp/PageDown scroll the last 100 output lines. Arguments with spaces are quoted. Every output line is also written to log.txt (`console  ...`). An unknown command or a bad argument prints an error line.
+The target is the selected characters, or the point under the cursor.
+
+World-changing commands enqueue `DebugCommand`s (applied in the next tick's Inputs phase), never touching the world from the UI thread; money, heal, maxstats, give, spawn, tp, tpcursor and research run the F10 menu's own code (`DebugApply`, `DebugGive`), `kill` is the console's. The menu's other rows (damage, force hits, damage multiplier) have no command yet. `DevConsole` (text, history, completion and the command table of `ConsoleCommand(Name, Usage, Help, Run)` with an optional `Complete`)
+is world-free, so a mod's `AddCommand` can register into it later.
+
+| Command | Effect |
+|---|---|
+| `help [word]` | list the commands, or one command's usage; with no exact name, search names, usage and descriptions for the word |
+| `godmode [on\|off]` | god mode for all player characters (no argument toggles) |
+| `clear` | empty the scrollback |
+| `version [--say]` | print `Meitou <tag> (<commit>)`; `--say` also has the first selected (else first living squad) character say it as a speech bubble 1 s later |
+| `money <delta>` | add or (negative) take away cats, never below 0 |
+| `heal` | heal the selected (else the inspected) characters fully |
+| `maxstats` | every stat 100, same targets |
+| `give "<item record>" [qty] [quality]` | as the menu's give: to the first selected; name matched as the menu does |
+| `spawn "<character record>"` | a hostile character at the cursor |
+| `tpcursor` | teleport the selected to the point under the cursor |
+| `tp <x> <z>` | teleport the selected to world X Z (the camera follows the spot) |
+| `tp <town name>` | teleport the selected to a placed town, name case-insensitive, exact else shortest prefix match; its position is the town's centre in the level data (`TownSite.Position`); nest markers are skipped |
+| `kill` | kill the selected: `DebugKill` calls `MedicalState.Kill` (medical state dead, orders dropped), no entity is removed |
+| `research` | finish every research |
 
 ## Unknowns
 

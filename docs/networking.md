@@ -11,6 +11,10 @@ gameplay assets needed for simulation parity; matching database hashes alone do 
 Rules digests retain exact authoritative values. A hash does not prove honest client attestation.
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
+**Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
+The authoritative `AnimalsPickUp` rule is included in gameplay settings and their digest. Older build identities fail admission;
+unknown gameplay rules are not silently accepted. Transport and container framing remain protocol 21.
+
 Authentication and admission are separate from compatibility. The server binds identity from the authenticated
 connection; commands cannot supply player identity, issuer, tick or control grants. Client intents expand selected
 actors against the displayed view and carry expected role/faction/membership revisions. `AuthorityGateway`
@@ -26,6 +30,12 @@ and control grants are incarnation-scoped so a world replacement cannot reuse st
 contracts, faction presentation, weather, messages, events, creation and invitations are described below and in
 [multiplayer](multiplayer.md). Detailed wire encoding and protocol acceptance live only in
 [networking-next](networking-next.md).
+
+**Observed** (source): recipient projection publishes `ContainerOpener` only for a currently authorized, visible container session.
+`RemotePlayerSession` masks container windows in both displayed snapshots using the current visible, available role and positive session ID;
+withdrawal or a mismatched opener/session hides the window. Independently arriving interaction and machine components may temporarily differ.
+This presentation filter preserves raw component values and epoch/revision fences; the codec validates ID structure without requiring
+same-frame references across components. Wire field ownership is specified in [networking-next](networking-next.md#game-connection-integration).
 
 `RemoteGameSession` consumes the typed replica without a local simulation world. Control requires both Active
 admission and a usable view. Creation and invitation replies are private to the connection/player; mutation

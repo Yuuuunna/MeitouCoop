@@ -9,8 +9,8 @@ namespace Meitou.Simulation.Saving;
 public static partial class MachineSave
 {
     static bool HasNativeMachineState(SaveZone zone, FcsInstance instance) => instance.States.Any(id =>
-        zone.File.Records.Any(record => record.StringId == id && (record.RecordType == FcsRecordType.INVENTORY_STATE
-            || record.RecordType == FcsRecordType.GAMESTATE_BUILDING && (record.Bools.GetValueOrDefault("meitou machine state")
+        zone.File.Records.Any(record => record.StringId == id && (record.RecordType == FcsRecordType.InventoryState
+            || record.RecordType == FcsRecordType.GamestateBuilding && (record.Bools.GetValueOrDefault("meitou machine state")
                 || record.Bools.Keys.Any(key => key is "power on" or "gets battery" or "repeat")
                 || record.Floats.Keys.Any(key => key is "resource mult" or "production amount" or "batterycharge" or "plant growth" or "num crafts"
                     || key.StartsWith("consumption amount-", StringComparison.Ordinal))))));
@@ -19,7 +19,7 @@ public static partial class MachineSave
     sealed class LegacyTownMachines
     {
         const string Prefix = "meitou tm";
-        readonly SortedDictionary<string, Row> pending = new(StringComparer.Ordinal);
+        readonly SortedDictionary<string, Row> _pending = new(StringComparer.Ordinal);
 
         internal LegacyTownMachines(SaveGame source)
         {
@@ -49,21 +49,21 @@ public static partial class MachineSave
                     }
                 if (row.Ints.TryGetValue(" st", out int status) && (status < 0 || status > byte.MaxValue))
                     throw new InvalidDataException("A legacy town machine has an invalid status.");
-                if (!pending.TryAdd(key, row)) throw new InvalidDataException("Duplicate legacy town machine identity.");
+                if (!_pending.TryAdd(key, row)) throw new InvalidDataException("Duplicate legacy town machine identity.");
             }
         }
 
-        internal Row? Take(string key) => pending.Remove(key, out var row) ? row : null;
-        internal void Invalidate(string key) => pending.Remove(key);
+        internal Row? Take(string key) => _pending.Remove(key, out var row) ? row : null;
+        internal void Invalidate(string key) => _pending.Remove(key);
 
         internal void WritePending(FcsRecord camera, IEnumerable<string> invalidated)
         {
-            foreach (string key in invalidated) pending.Remove(key);
+            foreach (string key in invalidated) _pending.Remove(key);
             foreach (string key in camera.Strings.Keys.Where(key => Parts(key, out _, out _)).ToArray()) camera.Strings.Remove(key);
             foreach (string key in camera.Ints.Keys.Where(key => Parts(key, out _, out _)).ToArray()) camera.Ints.Remove(key);
             foreach (string key in camera.Floats.Keys.Where(key => Parts(key, out _, out _)).ToArray()) camera.Floats.Remove(key);
             int index = 0;
-            foreach (var row in pending.Values)
+            foreach (var row in _pending.Values)
             {
                 string key = Prefix + (index++).ToString(CultureInfo.InvariantCulture);
                 camera.Strings[key] = row.Key;

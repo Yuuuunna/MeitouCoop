@@ -1,5 +1,6 @@
 using System.Numerics;
 using Meitou.Simulation;
+using Meitou.Simulation.Player;
 using SimWorld = Meitou.Simulation.World;
 
 namespace Meitou.Tests.Simulation;
@@ -142,7 +143,8 @@ sealed class WanderSystem : ITickSystem
                 break;
             case Birth:
                 if (table.Count >= MaxCharacters || !world.Walkability.IsWalkable(effect.Position.X, effect.Position.Z)) return;
-                table.Spawn(new CharacterHot { Position = new(effect.Position.X, world.Walkability.GroundHeight(effect.Position.X, effect.Position.Z), effect.Position.Z), Health = 100 }, new CharacterCold { Name = "child", Faction = 7 }, world.Tick);
+                table.Spawn(new CharacterHot { Position = new(effect.Position.X, world.Walkability.GroundHeight(effect.Position.X, effect.Position.Z),
+                        effect.Position.Z), Health = 100 }, new CharacterCold { Name = "child", Faction = 7 }, world.Tick);
                 break;
         }
     }

@@ -1,6 +1,7 @@
 using Meitou.Networking;
 using Meitou.Networking.VNext;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 using Meitou.Tests.Engine;
 namespace Meitou.Tests.NetworkingNext;
 

@@ -1,3 +1,4 @@
+using Meitou.Simulation.Player;
 namespace Meitou.Simulation;
 
 public sealed record SavedMembership(int Faction, FactionPermission Permissions, ulong Revision);
@@ -8,18 +9,20 @@ public sealed record PlayerRegistryState(int Version, bool ExplicitControl, ulon
 
 public sealed partial class WorldPlayers
 {
-    bool restored;
+    bool _restored;
 
-    /// <summary>Detached authority metadata. Includes unloaded and dead role grants; no connection or interaction sessions.</summary>
+    /// <summary>
+    /// Detached authority metadata. Includes unloaded and dead role grants; no connection or interaction sessions.
+    /// </summary>
     public PlayerRegistryState Capture()
     {
-        if (world.Characters.Phase != TablePhase.Outside) throw new InvalidOperationException("Capture requires the serialized world boundary.");
-        return new PlayerRegistryState(4, explicitControl, revision,
-            players.Values.Select(p => new SavedPlayer(p.Id,
-                !explicitControl || p.IsMember(p.State.Faction) ? p.State.Faction : -1,
+        if (_world.Characters.Phase != TablePhase.Outside) throw new InvalidOperationException("Capture requires the serialized world boundary.");
+        return new PlayerRegistryState(4, _explicitControl, _revision,
+            _players.Values.Select(p => new SavedPlayer(p.Id,
+                !_explicitControl || p.IsMember(p.State.Faction) ? p.State.Faction : -1,
                 p.Memberships.Select(m => new SavedMembership(m.Key, m.Value, p.MembershipRevision(m.Key))).ToArray(), p.RoleHistory, p.Account)).ToArray(),
-            controls.Values.OrderBy(c => c.Entity.Value).ToArray(),
-            world.Factions.All.Where(f => f.PlayerOwned).Select(f => f.Index).ToArray(), CaptureRetiredRoles());
+            _controls.Values.OrderBy(c => c.Entity.Value).ToArray(),
+            _world.Factions.All.Where(f => f.PlayerOwned).Select(f => f.Index).ToArray(), CaptureRetiredRoles());
     }
 
     /// <summary>
@@ -30,17 +33,17 @@ public sealed partial class WorldPlayers
     {
         if (state is { Version: 2, Players: not null } && state.Players.All(p => p is not null && p.Account is null)) state = state with { Version = 3 };
         if (state is { Version: 3, Retired: null or { Length: 0 } }) state = state with { Version = 4, Retired = [] };
-        if (world.Tick != 0 || world.Characters.Phase != TablePhase.Outside || restored || explicitControl || revision != 0 ||
-            players.Count != 1 || controls.Count != 0 || world.Authority.HasHistory || world.Commands.Count != 0)
+        if (_world.Tick != 0 || _world.Characters.Phase != TablePhase.Outside || _restored || _explicitControl || _revision != 0 ||
+            _players.Count != 1 || _controls.Count != 0 || _world.Authority.HasHistory || _world.Commands.Count != 0)
             throw new InvalidOperationException("Authority is restored once, before admission or gameplay.");
         ValidateState(state, factionCount);
-        if (world.Factions.All.Any(f => f.PlayerOwned && !state.PlayerOwnedFactions.Contains(f.Index)))
+        if (_world.Factions.All.Any(f => f.PlayerOwned && !state.PlayerOwnedFactions.Contains(f.Index)))
             throw new InvalidDataException("The target already contains a different player-faction classification.");
         // Prepare every player before committing. Keep the local compatibility state object referenced by World.Player.
         var next = state.Players!.Select(p => (Saved: p, Player: new WorldPlayer(p.Id,
-            p.Id == PlayerId.Local ? world.Player : new PlayerState(world.Factions)))).ToArray();
-        foreach (int faction in state.PlayerOwnedFactions) world.Factions.GetOrCreate(faction).PlayerOwned = true;
-        players.Clear();
+            p.Id == PlayerId.Local ? _world.Player : new PlayerState(_world.Factions)))).ToArray();
+        foreach (int faction in state.PlayerOwnedFactions) _world.Factions.GetOrCreate(faction).PlayerOwned = true;
+        _players.Clear();
         foreach (var (saved, player) in next)
         {
             foreach (var membership in saved.Memberships)
@@ -48,14 +51,14 @@ public sealed partial class WorldPlayers
             player.State.Faction = saved.ViewedFaction;
             player.RoleHistory = saved.RoleHistory;
             player.Account = saved.Account;
-            if (saved.Account is { } account) accounts.Add(account, player.Id);
-            players.Add(player.Id.Value, player);
+            if (saved.Account is { } account) _accounts.Add(account, player.Id);
+            _players.Add(player.Id.Value, player);
         }
-        foreach (var grant in state.Controls) controls.Add(grant.Entity, grant);
-        foreach (var retired in state.Retired!) retiredRoles.Add(retired.Entity, retired.Kind);
-        revision = state.Revision;
-        explicitControl = state.ExplicitControl;
-        restored = true;
+        foreach (var grant in state.Controls) _controls.Add(grant.Entity, grant);
+        foreach (var retired in state.Retired!) _retiredRoles.Add(retired.Entity, retired.Kind);
+        _revision = state.Revision;
+        _explicitControl = state.ExplicitControl;
+        _restored = true;
         Prune();
     }
 
@@ -89,17 +92,17 @@ public sealed partial class WorldPlayers
         var entities = new HashSet<EntityId>();
         foreach (var grant in state.Controls)
         {
-            if (!world.Entities.Contains(grant.Entity) || !entities.Add(grant.Entity) || !Revision(grant.Revision) ||
+            if (!_world.Entities.Contains(grant.Entity) || !entities.Add(grant.Entity) || !Revision(grant.Revision) ||
                 !identities.TryGetValue(grant.Player, out var owner) || owner.RoleHistory != PlayerRoleHistory.Assigned || !owner.Memberships.Any(m => m.Faction == grant.Faction))
                 throw new InvalidDataException("Invalid character authority reference.");
-            if (world.Entities.TryResolve(grant.Entity, out var role) && world.Characters.Cold(role.Slot)!.Faction != grant.Faction)
+            if (_world.Entities.TryResolve(grant.Entity, out var role) && _world.Characters.Cold(role.Slot)!.Faction != grant.Faction)
                 throw new InvalidDataException("The loaded character has a different faction from its saved authority.");
         }
         var retiredIds = new HashSet<EntityId>();
         foreach (var retired in state.Retired)
             if (retired is null || !Enum.IsDefined(retired.Kind) || !entities.Contains(retired.Entity) || !retiredIds.Add(retired.Entity)
-                || world.StoredPlayerRoles?.Locate(retired.Entity) is { State: PlayerRoleAvailability.Stored }
-                || world.Entities.TryResolve(retired.Entity, out var live) && world.Characters.Cold(live.Slot) is { DiedTick: < 0 } cold && cold.Medical?.Dead != true)
+                || _world.StoredPlayerRoles?.Locate(retired.Entity) is { State: PlayerRoleAvailability.Stored }
+                || _world.Entities.TryResolve(retired.Entity, out var live) && _world.Characters.Cold(live.Slot) is { DiedTick: < 0 } cold && cold.Medical?.Dead != true)
                 throw new InvalidDataException("Invalid retired-role state.");
         if (!state.ExplicitControl && (identities.Count != 1 || state.Controls.Length != 0 || state.Retired.Length != 0 || state.Revision != 0 ||
             state.Players.Any(p => p.Account is not null || p.Memberships.Length != 0 || p.RoleHistory == PlayerRoleHistory.Assigned) || state.PlayerOwnedFactions.Length != 0))

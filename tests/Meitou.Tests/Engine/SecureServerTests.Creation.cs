@@ -1,3 +1,4 @@
+using Meitou.Simulation.Population;
 using Meitou.Networking;
 using Meitou.Simulation;
 

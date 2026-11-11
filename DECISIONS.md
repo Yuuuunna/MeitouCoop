@@ -9,8 +9,8 @@ Current choices; implementation details belong in the linked references.
   stateless seeded rolls; agreement across worker counts. [docs/simulation.md](docs/simulation.md).
 - **Ownership:** `WorldSession` owns clocks, input, camera and world; GPU state belongs to Rendering.
   Navigation uses DotRecast and our cache; Havok is a reference. [docs/engine.md](docs/engine.md).
-- **Rendering:** Vulkan only; native API/Core/compiler in `Meitou.Rendering/Gpu/`, windowing in
-  `Meitou.Rendering.Display`. Retain `LegacyProgram` and `GlConventions` while needed. Images use
+- **Rendering:** Vulkan only; native API/Core/compiler in `Meitou.Game/Rendering/Gpu/`, windowing in
+  `Meitou.Game/Rendering/Display/`. Retain `LegacyProgram` and `GlConventions` while needed. Images use
   GENERAL. Require bindless descriptor indexing and multi-draw indirect; no native-model fallback.
   [docs/renderer-native.md](docs/renderer-native.md). Scene depth: one reversed 32-bit float buffer, 0..1 clip depth, far =
   view distance; shadow and preview targets conventional ([docs/renderer-native.md](docs/renderer-native.md) "Depth").
@@ -20,6 +20,9 @@ Current choices; implementation details belong in the linked references.
 - **Latency:** tiered compilation/PGO off, the game's methods compiled ahead on a background thread; server GC with four unpinned heaps and a 16 MB gen0 budget cap, compacting collection after
   loading, SustainedLowLatency during play. Render jobs preserve execution order.
   [docs/engine.md](docs/engine.md), [docs/bench.md](docs/bench.md).
+- **Code mods:** Meitou's own loader with one game-shipped Harmony; `mods.cfg` is the only order for code and data. A code mod may
+  depend on others by manifest id and version range and then shares their loaded assemblies; the loader refuses, never reorders.
+  [docs/modding.md](docs/modding.md), [docs/modding-dependencies.md](docs/modding-dependencies.md).
 - **Upscaling:** single-sample jittered HDR scene; shadow maps/reused reflections unjittered.
   LOD bias `log2(scale)-1` for TAA, FSR and DLSS. [docs/render-post.md](docs/render-post.md).
 - **Vendors:** Vulkan FidelityFX API DLL from SDK 1.1.4 (Windows). DLSS on Windows: Streamline 2.14.16 manual

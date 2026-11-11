@@ -1,87 +1,132 @@
-using Meitou.Data.Gameplay.Ai;
+using Meitou.Data;
+using Meitou.Data.Fcs;
+using Meitou.Data.Gameplay.Bodies;
+using Meitou.Data.Gameplay.Construction;
+using Meitou.Data.Save;
+using Meitou.Simulation.Aggro;
+using Meitou.Simulation.Carrying;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Items;
+using Meitou.Simulation.Locks;
+using Meitou.Simulation.Population;
+using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Numerics;
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.World;
+using Meitou.Simulation.Ai;
+using Meitou.Simulation.Bodies;
+using Meitou.Simulation.Combat;
 using Meitou.Simulation.Construction;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Perception;
+using Meitou.Simulation.Player;
 
 namespace Meitou.Simulation.Production;
-
-// Job lists (Perma-Jobs; docs/simulation.md "Production", the original's rules in docs/game/ai-tasks.md "Perma-jobs"): the decision step takes the first job of a player character's
-// list that can run (ListJobs here is the production pick's contributor), so a higher job takes over as soon as it can run and a blocked one passes to the next. Meitou runs Operating machine (87, the
-// operator below), Operating automatic machine (152: an operator that only hauls for it), Hauling to (124: a machine's output carried to the job's storage, CharacterTask.Haul; on an automatic machine, carried inputs into it), Engineer (125: ConstructionSystem builds the site its finder picks) and Turret guard (234: manning the job's turret as an operator). Blocked
-// uses one test for starting and for going on.
+/// <summary>
+/// Job lists (Perma-Jobs; docs/simulation.md "Production", the original's rules in docs/game/ai-tasks.md "Perma-jobs"): the decision step takes the
+/// first job of a player character's list that can run (ListJobs here is the production pick's contributor), so a higher job takes over as soon as it
+/// can run and a blocked one passes to the next. Meitou runs Operating machine (87, the operator below), Operating automatic machine (152: an
+/// operator that only hauls for it), Hauling to (124: a machine's output carried to the job's storage, CharacterTask.Haul; on an automatic machine,
+/// carried inputs into it), Engineer (125: ConstructionSystem builds the site its finder picks) and Turret guard (234: manning the job's turret as an
+/// operator). Blocked uses one test for starting and for going on.
+/// </summary>
 public sealed partial class ProductionSystem
 {
     /// <summary>
-    /// How often (ticks) the decision step asks again for a player character idle or on a job's task, staggered by slot (<see cref="DecisionSystem.ReAsked"/>; engine choice: the original
-    /// re-plans when its task ends or its commitment runs out).
+    /// How often (ticks) the decision step asks again for a player character idle or on a job's task, staggered by slot
+    /// (<see cref="DecisionSystem.ReAsked"/>; engine choice: the original re-plans when its task ends or its commitment runs out).
     /// </summary>
     public const int JobCheckTicks = 10;
-
+    /// <summary>
+    /// Gives each player character named a job of the order's type on its site (when the site exists).
+    /// </summary>
     void AddJobs(World world, AddJob add)
     {
-        bool builder = add.Type is TaskType.BUILD or TaskType.REPAIR or TaskType.JOB_BUILDER;
+        bool builder = add.Type is TaskType.Build or TaskType.Repair or TaskType.JobBuilder;
         var site = Site(world, add.Site);
         int owner;
-        if (builder && world.Fixtures.Find(add.Site) is { Kind: Locks.FixtureKind.Door } door)
+        if (builder && world.Fixtures.Find(add.Site)is { Kind: Locks.FixtureKind.Door } door)
         {
-            if (add.SiteRevision != 0 && add.SiteRevision != world.Fixtures.RevisionOf(door) || !world.MayManage(add, door.Owner, FactionPermission.ManageAssets)
-                || add.Issuer is { } issuer && (add.SiteRevision == 0 || add.FactionGrantRevision == 0 || world.Players.Find(issuer)?.MembershipRevision(door.Owner) != add.FactionGrantRevision)) return;
+            if (add.SiteRevision != 0 && add.SiteRevision != world.Fixtures.RevisionOf(door) || !world.MayManage(add, door.Owner, FactionPermission.ManageAssets) || add.Issuer is { } issuer && (add.SiteRevision == 0 || add.FactionGrantRevision == 0 || world.Players.Find(issuer)?.MembershipRevision(door.Owner) != add.FactionGrantRevision))
+                return;
             owner = door.Owner;
         }
         else if (builder)
         {
-            var command = new BuildOrder(add.Characters, add.Site) { Tick = add.Tick, Issuer = add.Issuer, SiteRevision = add.SiteRevision, RootRevision = add.RootRevision, FactionGrantRevision = add.FactionGrantRevision };
+            var command = new BuildOrder(add.Characters, add.Site)
+            {
+                Tick = add.Tick,
+                Issuer = add.Issuer,
+                SiteRevision = add.SiteRevision,
+                RootRevision = add.RootRevision,
+                FactionGrantRevision = add.FactionGrantRevision
+            };
             site = ConstructionSystem.CommandSite(world, command, add.Site);
-            if (site is null) return;
+            if (site is null)
+                return;
             owner = site.Owner;
         }
         else
         {
-            if (site is null || !MayStartWork(world, add, site)) return;
+            if (site is null || !MayStartWork(world, add, site))
+                return;
             owner = site.Owner;
         }
-        if (add.Issuer is not null && !builder && add.Type is not (TaskType.OPERATE_MACHINERY or TaskType.OPERATE_AUTOMATIC_MACHINERY
-            or TaskType.OPERATE_STORAGE or TaskType.USE_TURRET or TaskType.MAN_A_TURRET_PLAYER_JOB or TaskType.USE_TRAINING_DUMMY or TaskType.FEED_CORPSE_INTO_MACHINE)) return;
-        if (add.Type == TaskType.FEED_CORPSE_INTO_MACHINE && (site is null || Data(site.Record)?.Function != TownBuildings.CorpseDisposalFunction)) return;
+
+        if (add.Issuer is not null && !builder && add.Type is not (TaskType.OperateMachinery or TaskType.OperateAutomaticMachinery or TaskType.OperateStorage or TaskType.UseTurret or TaskType.ManATurretPlayerJob or TaskType.UseTrainingDummy or TaskType.FeedCorpseIntoMachine))
+            return;
+        if (add.Type == TaskType.FeedCorpseIntoMachine && (site is null || Data(site.Record)?.Function != TownBuildings.CorpseDisposalFunction))
+            return;
         var table = world.Characters;
         foreach (var id in world.CommandCharacters(add, add.Characters))
-            if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } cold && world.MayUseAssets(cold, owner)
-                && PermaJobs.Add(cold, builder ? TaskType.BUILD : add.Type, builder ? new PermaJob(TaskType.BUILD, site?.Id ?? add.Site) : new PermaJob(add.Type, add.Site))) sweep = true;
+            if (table.TryResolveNext(id, out int slot) && table.Cold(slot)is { IsPlayer: true } cold && world.MayUseAssets(cold, owner) && PermaJobs.Add(cold, builder ? TaskType.Build : add.Type, builder ? new PermaJob(TaskType.Build, site?.Id ?? add.Site) : new PermaJob(add.Type, add.Site)))
+                _sweep = true;
     }
 
+    /// <summary>
+    /// Gives a character the job an order makes (a first aid on a robot makes the Robotics job).
+    /// </summary>
     void AddOrderJobs(World world, AddOrderJob add)
     {
-        if (add.Issuer is not null && add.Ordered is not (TaskType.FIRST_AID_ORDER or TaskType.FIRST_AID_ROBOT or TaskType.SPLINT_ORDER
-            or TaskType.LOOT_TARGET or TaskType.MELEE_ATTACK or TaskType.FOCUSED_MELEE_ATTACK or TaskType.UNPROVOKED_FOCUSED_MELEE_ATTACK
-            or TaskType.BODYGUARD or TaskType.STAY_CLOSE_TO_TARGET or TaskType.FIND_AND_RESCUE_IF_THERES_BEDS or TaskType.PICKUP_INTRUDERS or TaskType.PICKUP_INTRUDERS_TOWN)) return;
+        if (add.Issuer is not null && add.Ordered is not (TaskType.FirstAidOrder or TaskType.FirstAidRobot or TaskType.SplintOrder or TaskType.LootTarget or TaskType.MeleeAttack or TaskType.FocusedMeleeAttack or TaskType.UnprovokedFocusedMeleeAttack or TaskType.Bodyguard or TaskType.StayCloseToTarget or TaskType.FindAndRescueIfTheresBeds or TaskType.PickupIntruders or TaskType.PickupIntrudersTown))
+            return;
         var table = world.Characters;
         var ordered = add.Ordered;
-        // A first aid on a robot is the original's robot repair order (60), whose job is Robotics.
-        if (ordered == TaskType.FIRST_AID_ORDER && table.TryResolveNext(add.Target, out int t) && table.Cold(t)?.Race is { IsRobot: true }) ordered = TaskType.FIRST_AID_ROBOT;
-        // Follow (31) and Bodyguard (45) on a character become the jobs that follow it (docs/game/ai-tasks.md "Finders of the jobs": they act on the job's own target).
-        bool onCharacter = ordered is TaskType.BODYGUARD or TaskType.STAY_CLOSE_TO_TARGET;
+        if (ordered == TaskType.FirstAidOrder && table.TryResolveNext(add.Target, out int t) && table.Cold(t)?.Race is { IsRobot: true })
+            ordered = TaskType.FirstAidRobot;
+        bool onCharacter = ordered is TaskType.Bodyguard or TaskType.StayCloseToTarget;
         foreach (var id in world.CommandCharacters(add, add.Characters))
         {
-            if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold) continue;
-            if (!onCharacter) PermaJobs.Add(cold, ordered, PermaJob.Untargeted(ordered));
+            if (!table.TryResolveNext(id, out int slot) || table.Cold(slot)is not { IsPlayer: true } cold)
+                continue;
+            if (!onCharacter)
+                PermaJobs.Give(cold, ordered, PermaJob.Untargeted(ordered));
             else if (id != add.Target && table.IsAlive(add.Target))
             {
-                PermaJobs.Add(cold, ordered, PermaJob.OfCharacter(ordered, add.Target));
-                // The order giver then drops what would close a circle back to the ordered character (FUN_1405c8c10), whether or not the job was new.
+                PermaJobs.Give(cold, ordered, PermaJob.OfCharacter(ordered, add.Target));
                 MovementSystem.BreakCircle(world, id);
             }
         }
     }
 
+    /// <summary>
+    /// Removes a job from a character's list.
+    /// </summary>
     void RemoveJobAt(World world, RemoveJob remove)
     {
-        if (!MayEditJobs(world, remove, remove.Character)) return;
+        if (!MayEditJobs(world, remove, remove.Character))
+            return;
         var table = world.Characters;
-        if (table.TryResolveNext(remove.Character, out int slot)) RemoveJob(world, slot, remove.Index);
+        if (table.TryResolveNext(remove.Character, out int slot))
+            RemoveJob(world, slot, remove.Index);
     }
 
-    /// <summary>Takes the job at <paramref name="index"/> out of a character's list (the list's X, and the circle break of <see cref="MovementSystem"/>): the task of the job it is on ends, the running index follows (serial phases only).</summary>
+    /// <summary>
+    /// Takes the job at <paramref name="index"/> out of a character's list (the list's X, and the circle break of <see cref="MovementSystem"/>): the
+    /// task of the job it is on ends, the running index follows (serial phases only).
+    /// </summary>
     internal static void RemoveJob(World world, int slot, int index)
     {
         var table = world.Characters;
@@ -89,50 +134,74 @@ public sealed partial class ProductionSystem
         if (PermaJobs.ListJob(cold, (CharacterTask)table.Next[slot].Task) is { Implicit: false } on && on.Job == index) End(world, slot);
         cold.Jobs.RemoveAt(index);
         DecisionSystem.Request(cold);
+
         // Any job's provenance keeps pointing at its job; a treatment, lift or loot whose job left the list runs on as a job pass's (no index).
-        if (cold.Running is { Source: TaskSource.Job, Implicit: false, Job: >= 0 } job && job.Job >= index) cold.Running = job with { Job = job.Job == index ? -1 : job.Job - 1 };
+        if (cold.Running is { Source: TaskSource.Job, Implicit: false, Job: >= 0 } job && job.Job >= index)
+            cold.Running = job with { Job = job.Job == index ? -1 : job.Job - 1 };
     }
 
+    /// <summary>
+    /// Moves a job within a character's list.
+    /// </summary>
     void MoveJobTo(World world, MoveJob move)
     {
-        if (!MayEditJobs(world, move, move.Character)) return;
-        if (!world.Characters.TryResolveNext(move.Character, out int slot) || world.Characters.Cold(slot) is not { } cold) return;
+        if (!MayEditJobs(world, move, move.Character))
+            return;
+        if (!world.Characters.TryResolveNext(move.Character, out int slot) || world.Characters.Cold(slot)is not { } cold)
+            return;
         int count = cold.Jobs.Count;
-        if ((uint)move.From >= (uint)count || (uint)move.To >= (uint)count || move.From == move.To) return;
+        if ((uint)move.From >= (uint)count || (uint)move.To >= (uint)count || move.From == move.To)
+            return;
         var job = cold.Jobs[move.From];
         cold.Jobs.RemoveAt(move.From);
         cold.Jobs.Insert(move.To, job);
         DecisionSystem.Request(cold);
         // The job's provenance keeps pointing at it.
-        if (cold.Running is not { Source: TaskSource.Job, Implicit: false, Job: >= 0 } run) return;
+        if (cold.Running is not { Source: TaskSource.Job, Implicit: false, Job: >= 0 } run)
+            return;
         int k = run.Job;
-        if (k == move.From) k = move.To;
-        else if (move.From < k && k <= move.To) k--;
-        else if (move.To <= k && k < move.From) k++;
-        if (k != run.Job) cold.Running = run with { Job = k };
+        if (k == move.From)
+            k = move.To;
+        else if (move.From < k && k <= move.To)
+            k--;
+        else if (move.To <= k && k < move.From)
+            k++;
+        if (k != run.Job)
+            cold.Running = run with
+            {
+                Job = k
+            };
     }
 
-    static bool MayEditJobs(World world, JobListCommand command, CharacterId character) => world.MayOrder(command, character)
-        && (command.Issuer is null && command.JobsRevision == 0 || command.JobsRevision != 0 && world.JobsRevision(character) == command.JobsRevision);
-
     /// <summary>
-    /// The production pick's list jobs as the decision step's contributor (<see cref="IJobSource"/>, step 5; 234 also step 3): Operating machine 87, Operating automatic machine 152, Hauling
-    /// to 124, Training 97, Turret guard 234, Engineer 125 and the follow jobs 31, 45, 289; and the carrying jobs 138, 223, 273 (<see cref="ErrandJobs"/>). A job runs while
-    /// <see cref="Runnable"/> holds; one that no longer does and that nothing replaces ends (<see cref="End"/>).
+    /// The production pick's list jobs as the decision step's contributor (<see cref="IJobSource"/>, step 5; 234 also step 3): Operating machine 87,
+    /// Operating automatic machine 152, Hauling to 124, Training 97, Turret guard 234, Engineer 125 and the follow jobs 31, 45, 289; and the carrying
+    /// jobs 138, 223, 273 (<see cref="ErrandJobs"/>). A job runs while <see cref="Runnable"/> holds; one that no longer does and that nothing
+    /// replaces ends (<see cref="End"/>).
     /// </summary>
     public void RegisterSources(DecisionSystem decisions)
     {
         var jobs = new ListJobs(this);
-        foreach (var type in (ReadOnlySpan<TaskType>)[TaskType.OPERATE_MACHINERY, TaskType.OPERATE_AUTOMATIC_MACHINERY, TaskType.OPERATE_STORAGE, TaskType.USE_TRAINING_DUMMY,
-            TaskType.MAN_A_TURRET_PLAYER_JOB, TaskType.JOB_BUILDER, TaskType.BODYGUARD, TaskType.STAY_CLOSE_TO_TARGET, TaskType.Unnamed289])
+        foreach (var type in (ReadOnlySpan<TaskType>)[TaskType.OperateMachinery, TaskType.OperateAutomaticMachinery, TaskType.OperateStorage,
+            TaskType.UseTrainingDummy, TaskType.ManATurretPlayerJob, TaskType.JobBuilder, TaskType.Bodyguard, TaskType.StayCloseToTarget,
+            TaskType.Unnamed289])
             decisions.RegisterJob(type, jobs);
+
         var errands = new ErrandJobs(this);
-        foreach (var type in (ReadOnlySpan<TaskType>)[TaskType.FIND_A_DEAD_GUY, TaskType.PICKUP_INTRUDERS, TaskType.PICKUP_INTRUDERS_TOWN]) decisions.RegisterJob(type, errands);
+        foreach (var type in (ReadOnlySpan<TaskType>)[TaskType.FindADeadGuy, TaskType.PickupIntruders, TaskType.PickupIntrudersTown])
+            decisions.RegisterJob(type, errands);
+
         decisions.Register(new ImplicitJobs(this));
     }
 
+    /// <summary>
+    /// The production's job contributor (<see cref = "IJobSource"/>) of the list's job types.
+    /// </summary>
     sealed class ListJobs(ProductionSystem owner) : IJobSource
     {
+        /// <summary>
+        /// Whether list job <paramref name="k"/> can run (or runs already) for the character.
+        /// </summary>
         public DecisionCheck CanRun(World world, int slot, int k)
         {
             var table = world.Characters;
@@ -140,52 +209,86 @@ public sealed partial class ProductionSystem
             var task = (CharacterTask)table.Next[slot].Task;
             var type = cold.Jobs[k].Type;
             bool runs = PermaJobs.ListJob(cold, task) is { Implicit: false } on && on.Job == k;
-            if (PermaJobs.Follows(type) && cold.Running is { Source: TaskSource.Job, Implicit: false } follow && follow.Job == k && PermaJobs.Follows(follow.Row))
+            if (PermaJobs.Follows(type) && cold.Running is { Source: TaskSource.Job, Implicit: false } follow && follow.Job == k
+                && PermaJobs.Follows(follow.Row))
             {
                 // Its fight is a step of the row (31 and 45 need state 16, which 13 gives): it runs; once over, the follow is taken up again.
                 if (task == CharacterTask.Attack && follow.Runs(task)) return DecisionCheck.Runs;
-                if (MovementSystem.FightStepOver(table, slot, cold)) return FollowedBy(world, slot, cold, k) is not null ? DecisionCheck.Run : DecisionCheck.No("its character is gone");
+                if (MovementSystem.FightStepOver(table, slot, cold))
+                    return FollowedBy(world, slot, cold, k) is not null ? DecisionCheck.Run : DecisionCheck.No("its character is gone");
             }
-            // An operator carrying or carried looks at no job (and keeps the one it is on).
-            if (!Able(cold)) return runs ? DecisionCheck.Runs : DecisionCheck.No("carrying, carried or down");
-            // 234's effect (using the turret) is planned through 146, whose list B has !158: not while a melee attacker is within 40 (docs/game/ai-tasks.md "Precedence").
-            if (type == TaskType.MAN_A_TURRET_PLAYER_JOB && world.SystemOf<Combat.CombatSystem>() is { } combat && CharacterFacts.ImmediateThreat(combat, world, slot))
+
+            // An operator carrying or carried looks at no job (and keeps the one it is on); an idle carrier still takes up a follow job.
+            bool onErrand = owner._errands.ContainsKey(table.IdOf(slot));
+            if (!AbleFor(cold, type, task, onErrand)) return runs ? DecisionCheck.Runs : DecisionCheck.No("carrying, carried or down");
+
+            // 234's effect (using the turret) is planned through 146, whose list B has !158: not while a melee attacker is within 40
+            // (docs/game/ai-tasks.md "Precedence").
+            if (type == TaskType.ManATurretPlayerJob && world.SystemOf<CombatSystem>() is { } combat
+                && CharacterFacts.ImmediateThreat(combat, world, slot))
                 return DecisionCheck.No("a melee threat within 40 (146 needs !158)");
+
             if (!owner.Runnable(world, slot, cold, k)) return DecisionCheck.No("blocked");
             return runs ? DecisionCheck.Runs : DecisionCheck.Run;
         }
 
+        /// <summary>
+        /// Starts list job <paramref name="k"/> for the character (a follow job whose fight is over follows again).
+        /// </summary>
         public void Start(World world, int slot, int k)
         {
             var table = world.Characters;
             var cold = table.Cold(slot)!;
-            if (MovementSystem.FightStepOver(table, slot, cold) && cold.Running is { Source: TaskSource.Job } run && run.Job == k && MovementSystem.FollowAgain(world, slot, cold)) return;
+            if (MovementSystem.FightStepOver(table, slot, cold) && cold.Running is { Source: TaskSource.Job } run && run.Job == k
+                && MovementSystem.FollowAgain(world, slot, cold))
+                return;
+
             owner.StartJob(world, slot, k);
         }
 
         /// <summary>
-        /// A Turret guard (234, kind 2) is urgent while enemies are sensed (AI <c>+0xbc</c>, the senses' <c>numEnemies</c>, <see cref="SenseBlock.Enemies"/>; <c>FUN_14050e5b0</c>).
+        /// A Turret guard (234, kind 2) is urgent while enemies are sensed (AI <c>+0xbc</c>, the senses' <c>numEnemies</c>,
+        /// <see cref="SenseBlock.Enemies"/>; <c>FUN_14050e5b0</c>).
         /// </summary>
         public bool Urgent(World world, int slot, int k) =>
-            world.Characters.Cold(slot)!.Jobs[k].Type == TaskType.MAN_A_TURRET_PLAYER_JOB && CharacterFacts.Senses(world, slot) is { Enemies: > 0 };
+            world.Characters.Cold(slot)!.Jobs[k].Type == TaskType.ManATurretPlayerJob && CharacterFacts.Senses(world, slot) is { Enemies: > 0 };
 
+        /// <summary>
+        /// Ends the character's list job.
+        /// </summary>
         public void Stop(World world, int slot, int k) => End(world, slot);
     }
 
     /// <summary>
-    /// The implicit jobs (squad AI options) as step 5's source after the list (the original's lowest keys, <c>FUN_14050e5b0</c>): a character idle, on a standing task or on a job's task
-    /// (a list job's that could not run on, or an implicit one) takes the one <see cref="ImplicitPick"/> gives; it runs while that is the one it is on (the same type and site). One on an
-    /// implicit job that no longer holds ends it (<see cref="Passed"/>: the original rebuilds the entry on every pass, so nothing carries over).
+    /// The implicit jobs (squad AI options) as step 5's source after the list (the original's lowest keys, <c>FUN_14050e5b0</c>): a character idle,
+    /// on a standing task or on a job's task (a list job's that could not run on, or an implicit one) takes the one <see cref = "ImplicitPick"/> gives;
+    /// it runs while that is the one it is on (the same type and site). One on an implicit job that no longer holds ends it (<see cref = "Passed"/>:
+    /// the original rebuilds the entry on every pass, so nothing carries over).
     /// </summary>
     sealed class ImplicitJobs(ProductionSystem owner) : IDecisionSource
     {
-        (long Tick, int Slot, TaskType Type, string Site) picked = (-1, -1, TaskType.None, "");
+        /// <summary>
+        /// What the last <see cref="CanRun"/> picked: the tick, the slot, the job type and its site (tick -1: nothing).
+        /// </summary>
+        (long Tick, int Slot, TaskType Type, string Site) _picked = (-1, -1, TaskType.None, "");
 
+        /// <summary>
+        /// The trace name.
+        /// </summary>
         public string Name => "Implicit jobs";
+        /// <summary>
+        /// Step 5, the jobs.
+        /// </summary>
         public DecisionStep Step => DecisionStep.Jobs;
-        /// <summary>After the list (its key 0).</summary>
+        /// <summary>
+        /// After the list (its key 0).
+        /// </summary>
         public int Key => 1;
 
+        /// <summary>
+        /// Whether an implicit job can run for the character: one out of a fight, idle, on a standing task or on a job's task, that
+        /// <see cref="ImplicitPick"/> gives a job.
+        /// </summary>
         public DecisionCheck CanRun(World world, int slot)
         {
             var table = world.Characters;
@@ -196,127 +299,175 @@ public sealed partial class ProductionSystem
             if (job is null && task is not (CharacterTask.Idle or CharacterTask.Wander or CharacterTask.Follow)) return DecisionCheck.No("busy");
             if (!Able(cold)) return job is { Implicit: true } ? DecisionCheck.Runs : DecisionCheck.No("carrying, carried or down");
             if (owner.ImplicitPick(world, slot) is not { } chosen) return DecisionCheck.No("none holds");
-            string? current = chosen.Type == TaskType.DITCH_ALL_RESOURCES ? cold.HaulTo : cold.OperateSite;
+            string? current = chosen.Type == TaskType.DitchAllResources ? cold.HaulTo : cold.OperateSite;
             if (job is { Implicit: true } && chosen.Type == job.Row && chosen.Site == current) return DecisionCheck.Runs;
-            picked = (world.Tick, slot, chosen.Type, chosen.Site);
+            _picked = (world.Tick, slot, chosen.Type, chosen.Site);
             return DecisionCheck.Run;
         }
 
+        /// <summary>
+        /// Starts the implicit job <see cref="CanRun"/> picked this tick.
+        /// </summary>
         public void Start(World world, int slot)
         {
-            if (picked.Tick == world.Tick && picked.Slot == slot) owner.StartImplicit(world, slot, picked.Type, picked.Site);
+            if (_picked.Tick == world.Tick && _picked.Slot == slot) owner.StartImplicit(world, slot, _picked.Type, _picked.Site);
         }
 
+        /// <summary>
+        /// The step passed over it: a character on an implicit job that no longer holds ends it, and a healed one asleep in a bed for no job
+        /// (one loaded so) gets up (<see cref="GetsUpHealed"/>).
+        /// </summary>
         public void Passed(World world, int slot, in DecisionCheck check)
         {
             var table = world.Characters;
             var cold = table.Cold(slot)!;
-            if (Able(cold) && PermaJobs.ListJob(cold, (CharacterTask)table.Next[slot].Task) is { Implicit: true }) End(world, slot);
+            if (!Able(cold)) return;
+
+            var job = PermaJobs.ListJob(cold, (CharacterTask)table.Next[slot].Task);
+            if (job is { Implicit: true } || job is null && owner.GetsUpHealed(world, slot, cold)) End(world, slot);
         }
     }
 
-    /// <summary>How far (X/Z) from where it idles a character sits down on a chair (engine choice: the original's sitter looks in its home town only).</summary>
-    public const float SeatRange = 600;
-
     /// <summary>
-    /// The implicit job of a character whose list has none to run (docs/game/ai-tasks.md "Perma-jobs": the original's lowest keys, in this order), with the jobs switch on, not
-    /// sneaking and not a slave; Sleep and Sit not while it holds position. <see cref="SquadAi.Ditch"/>: carried items a storage takes go there (242; only with no queued orders). <see cref="SquadAi.Sleep"/>: an injured character lies in the bed
-    /// the bed search finds (153, whose target finder it is, <b>Verified</b>; <see cref="Locks.FixtureRegistry.FindBed"/>) until healed (then 257 gets it up). <see cref="SquadAi.Sit"/>: a free
-    /// chair (275). The one it is on is kept while it holds (a bed within <see cref="Locks.FixtureRegistry.BedSearchRange"/>). Distances are from the character.
+    /// How far (X/Z) from where it idles a character sits down on a chair (engine choice: the original's sitter looks in its home town only).
+    /// </summary>
+    public const float SeatRange = 600;
+    /// <summary>
+    /// The implicit job of a character whose list has none to run (docs/game/ai-tasks.md "Perma-jobs": the original's lowest keys, in this order),
+    /// with the jobs switch on, not sneaking and not a slave; Sleep and Sit not while it holds position. <see cref = "SquadAi.Ditch"/>: carried items a
+    /// storage takes go there (242; only with no queued orders). <see cref = "SquadAi.Sleep"/>: an injured character lies in the bed the bed search
+    /// finds (153, whose target finder it is, <b>Verified</b>; <see cref = "Locks.FixtureRegistry.FindBed"/>) until healed (then 257 gets it up).
+    /// <see cref = "SquadAi.Sit"/>: a free chair (275). The one it is on is kept while it holds (a bed within
+    /// <see cref = "Locks.FixtureRegistry.BedSearchRange"/>). Distances are from the character.
     /// </summary>
     (TaskType Type, string Site)? ImplicitPick(World world, int slot)
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
-        if (!world.MayUseAssets(cold, cold.Faction)) return null;
+        if (!world.MayUseAssets(cold, cold.Faction))
+            return null;
         var options = world.PlayerOf(table.IdOf(slot))?.SquadAi ?? SquadAi.None;
-        if ((cold.Orders & CharacterOrders.Jobs) == 0 || (cold.Orders & CharacterOrders.Sneak) != 0 || cold.SlaveState != 0 || options == SquadAi.None) return null;
+        if ((cold.Orders & CharacterOrders.Jobs) == 0 || (cold.Orders & CharacterOrders.Sneak) != 0 || cold.SlaveState != 0 || options == SquadAi.None)
+            return null;
         var at = table.Next[slot].Position;
-        var on = PermaJobs.ListJob(cold, (CharacterTask)table.Next[slot].Task) is { Implicit: true } running ? running.Row : TaskType.None;
+        var on = PermaJobs.ListJob(cold, (CharacterTask)table.Next[slot].Task)is { Implicit: true } running ? running.Row : TaskType.None;
         if ((options & SquadAi.Ditch) != 0)
         {
-            if (on == TaskType.DITCH_ALL_RESOURCES && cold.HaulTo is { } keep && !PlayerOrders.Holds(world, slot) && cold.Inventory is { } held
-                && Site(world, keep) is { Complete: true } keptSite && MayWork(world, cold, keptSite)
-                && Ensure(world, keptSite) is { } keptStore && keptStore.Data.IsStorage && keptStore.Storage is not null && Ditchable(held).Any(item => Stores(keptStore, item)))
-                return (TaskType.DITCH_ALL_RESOURCES, keep);
-            if (!PlayerOrders.Holds(world, slot) && cold.Inventory is { } inv
-                && NearestSite(world, at, Settings.HaulRange, (_, m) => m.Data.IsStorage && m.Storage is not null && Ditchable(inv).Any(item => Stores(m, item)), cold.Faction) is { } store)
-                return (TaskType.DITCH_ALL_RESOURCES, store);
+            if (on == TaskType.DitchAllResources && cold.HaulTo is { } keep && !PlayerOrders.Holds(world, slot) && cold.Inventory is { } held && Site(world, keep)is { Complete: true } keptSite && MayWork(world, cold, keptSite) && Ensure(world, keptSite)is { } keptStore && keptStore.Data.IsStorage && keptStore.Storage is not null && Ditchable(held).Any(item => Stores(keptStore, item)))
+                return (TaskType.DitchAllResources, keep);
+            if (!PlayerOrders.Holds(world, slot) && cold.Inventory is { } inv && NearestSite(world, at, Settings.HaulRange, (_, m) => m.Data.IsStorage && m.Storage is not null && Ditchable(inv).Any(item => Stores(m, item)), cold.Faction)is { } store)
+                return (TaskType.DitchAllResources, store);
         }
+
         // Sleep and Sit not while holding position (FUN_1402b2b90).
-        if (Orders.Holding(cold)) return null;
+        if (Orders.Holding(cold))
+            return null;
         if ((options & SquadAi.Sleep) != 0 && Injured(cold) && Beds is not null)
         {
-            if (on == TaskType.GO_HOME_AND_GO_TO_BED && cold.OperateSite is { } bed && world.Fixtures.Find(bed) is { } kept
-                && Gap(kept.Position, at) <= Locks.FixtureRegistry.BedSearchRange)
-                return (TaskType.GO_HOME_AND_GO_TO_BED, bed);
-            if (Beds.FindFor(world, slot) is { } free) return (TaskType.GO_HOME_AND_GO_TO_BED, free.Id);
+            if (on == TaskType.GoHomeAndGoToBed && cold.OperateSite is { } bed && world.Fixtures.Find(bed)is { } kept && Gap(kept.Position, at) <= Locks.FixtureRegistry.BedSearchRange)
+                return (TaskType.GoHomeAndGoToBed, bed);
+            if (Beds.FindFor(world, slot)is { } free)
+                return (TaskType.GoHomeAndGoToBed, free.Id);
         }
+
         if ((options & SquadAi.Sit) != 0)
         {
-            if (on == TaskType.SIT_AROUND && cold.OperateSite is { } seat && Site(world, seat) is { } kept && Gap(kept.Position, at) <= SeatRange)
-                return (TaskType.SIT_AROUND, seat);
-            if (NearestSite(world, at, SeatRange, (s, m) => IsSeat(m) && Free(world, cold, s, m), cold.Faction) is { } free) return (TaskType.SIT_AROUND, free);
+            if (on == TaskType.SitAround && cold.OperateSite is { } seat && Site(world, seat)is { } kept && Gap(kept.Position, at) <= SeatRange)
+                return (TaskType.SitAround, seat);
+            if (NearestSite(world, at, SeatRange, (s, m) => IsSeat(m) && Free(world, cold, s, m), cold.Faction)is { } free)
+                return (TaskType.SitAround, free);
         }
+
         return null;
     }
 
-    /// <summary>The training dummy's gain per second of the continuous entry (<b>Verified</b>, <c>UseableStuff</c> vfunc 0x4b0: <c>FUN_1408c64f0</c> with 2.0).</summary>
+    /// <summary>
+    /// The training dummy's gain per second of the continuous entry (<b>Verified</b>, <c>UseableStuff</c> vfunc 0x4b0: <c>FUN_1408c64f0</c> with
+    /// 2.0).
+    /// </summary>
     public const float TrainingRate = 2;
 
     /// <summary>
-    /// A user at a training dummy (<c>Task_UseTrainingDummy</c> slot 2 and <c>UseableStuff</c> vfunc 0x4b0, <b>Verified</b> by decompile): facing it, the building's <c>stat used</c> rises every
-    /// tick through <see cref="XpService.Capped"/> at <see cref="TrainingRate"/>, up to the building's cap (<c>output rate</c>: MkI 6, MkII 11, MkIII 16, whose descriptions promise levels 5, 10 and 15,
-    /// <b>Observed</b>; the field read as the cap is +0x1a4, not traced to the record). The gain also depends on the raw stat, not the injured one.
+    /// A user at a training dummy (<c>Task_UseTrainingDummy</c> slot 2 and <c>UseableStuff</c> vfunc 0x4b0, <b>Verified</b> by decompile): facing it,
+    /// the building's <c>stat used</c> rises every tick through <see cref="XpService.Capped"/> at <see cref="TrainingRate"/>, up to the building's
+    /// cap (<c>output rate</c>: MkI 6, MkII 11, MkIII 16, whose descriptions promise levels 5, 10 and 15, <b>Observed</b>; the field read as the cap
+    /// is +0x1a4, not traced to the record). The gain also depends on the raw stat, not the injured one.
     /// </summary>
     void Train(ref CharacterHot n, CharacterCold cold, BuildSite site, Machine m, float dt)
     {
         if (n.Velocity.X == 0 && n.Velocity.Z == 0) n.Yaw = MathF.Atan2(site.Position.X - n.Position.X, site.Position.Z - n.Position.Z);
         m.Operators++;
         cold.Operating = true;
-        if (cold.Stats is { } stats && cold.Race is { } race) xp.Capped(stats, race, (Meitou.Data.Gameplay.Bodies.StatsEnumerated)m.Data.Stat, dt, TrainingRate, m.Data.OutputValue);
+        if (cold.Stats is { } stats && cold.Race is { } race)
+            _xp.Capped(stats, race, (Meitou.Data.Gameplay.Bodies.StatsEnumerated)m.Data.Stat, dt, TrainingRate, m.Data.OutputValue);
     }
 
-    /// <summary>BF_CHAIR and BF_THRONE (17, 24; docs/game/ai-tasks.md "Town goals").</summary>
+    /// <summary>
+    /// BF_CHAIR and BF_THRONE (17, 24; docs/game/ai-tasks.md "Town goals").
+    /// </summary>
     static bool IsSeat(Machine m) => m.Data.Function is TownBuildings.ChairFunction or ThroneFunction;
 
+    /// <summary>
+    /// BF_THRONE.
+    /// </summary>
     const int ThroneFunction = 24;
 
-    /// <summary>Nobody else lies or sits on it.</summary>
-    static bool Free(World world, CharacterCold cold, BuildSite site, Machine m) => OperatorsOf(world, site.Id) - (cold.OperateSite == site.Id ? 1 : 0) < m.Data.MaxOperators;
+    /// <summary>
+    /// Nobody else lies or sits on it.
+    /// </summary>
+    static bool Free(World world, CharacterCold cold, BuildSite site, Machine m) =>
+        OperatorsOf(world, site.Id) - (cold.OperateSite == site.Id ? 1 : 0) < m.Data.MaxOperators;
 
-    /// <summary>A body part below full health (<b>engine choice</b>: the original's injury test is Unknown; its 257 is "get out of bed once healed").</summary>
-    static bool Injured(CharacterCold cold) => cold.Medical is { Dead: false } medical && medical.Parts.Any(p => p.Fraction is >= 0 and < 1);
+    /// <summary>
+    /// A body part at least <see cref="HealedSlack"/> below its maximum (<b>engine choice</b>: the original's injury test is Unknown; its 257 is "get
+    /// out of bed once healed").
+    /// </summary>
+    static bool Injured(CharacterCold cold) =>
+        cold.Medical is { Dead: false } medical && medical.Parts.Any(p => p.MaxHp > 0 && p.Flesh - p.Stun + p.Rig <= p.MaxHp - HealedSlack);
 
-    /// <summary>The player's complete building nearest <paramref name="at"/> within <paramref name="range"/> whose machine passes <paramref name="ok"/> (ties: the lower site id).</summary>
-    string? NearestSite(World world, Vector3 at, float range, Func<BuildSite, Machine, bool> ok, int faction)
-    {
-        string? best = null;
-        float bestGap = float.MaxValue;
-        foreach (var m in world.Machines.All)
-        {
-            if (Site(world, m.Site) is not { Complete: true } site || site.Owner != faction || world.Players.RequiresExplicitControl && !WorkSiteOpen(world, site)) continue;
-            float gap = Gap(site.Position, at);
-            if (gap > range || gap > bestGap || (gap == bestGap && string.CompareOrdinal(m.Site, best) > 0) || !ok(site, m)) continue;
-            best = m.Site;
-            bestGap = gap;
-        }
-        return best;
-    }
+    /// <summary>
+    /// The original's 257 "Getting out of bed once healed", above 153 in the implicit list (docs/game/ai-tasks.md "Perma-jobs"): a player character
+    /// asleep in a bed with no order, under the <see cref="SquadAi.Sleep"/> option and the jobs switch, not sneaking, not a slave, not holding
+    /// position, with no part injured. Engine reading: it applies to any such sleeper, not only one the 153 job put there.
+    /// </summary>
+    bool GetsUpHealed(World world, int slot, CharacterCold cold) =>
+        cold.IsPlayer && cold.InSomething == Locks.HeldState.Bed && world.Characters.Next[slot].Task == (byte)CharacterTask.Sleep
+        && (world.Player.SquadAi & SquadAi.Sleep) != 0 && (cold.Orders & CharacterOrders.Jobs) != 0 && (cold.Orders & CharacterOrders.Sneak) == 0
+        && cold.SlaveState == 0 && !Orders.Holding(cold) && !PlayerOrders.Holds(world, slot) && !Injured(cold);
 
+    /// <summary>
+    /// How far below its maximum a part may stay and count as healed: the HUD shows it full, and healing from the treated pool can stop a hundredth
+    /// short, which nothing heals (#500: a healed sleeper kept going back to bed).
+    /// </summary>
+    const float HealedSlack = 0.5f;
+    /// <summary>
+    /// Starts an implicit job: a bed's sleep, a ditch's haul, else operating the site.
+    /// </summary>
     void StartImplicit(World world, int slot, TaskType type, string siteId)
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
-        if (ImplicitPick(world, slot) is not { } picked || picked.Type != type || picked.Site != siteId) return;
-        var task = type switch { TaskType.GO_HOME_AND_GO_TO_BED => CharacterTask.Sleep, TaskType.DITCH_ALL_RESOURCES => CharacterTask.Haul, _ => CharacterTask.Operate };
+        if (ImplicitPick(world, slot)is not { } picked || picked.Type != type || picked.Site != siteId)
+            return;
+        var task = type switch
+        {
+            TaskType.GoHomeAndGoToBed => CharacterTask.Sleep,
+            TaskType.DitchAllResources => CharacterTask.Haul,
+            _ => CharacterTask.Operate
+        };
         // A bed fixture: the bed system walks it there and lays it in (task Sleep); the job keeps the bed's id.
-        if (task == CharacterTask.Sleep && (world.Fixtures.Find(siteId) is null || Beds is null)) return;
-        if (TaskStart.Start(world, slot, new TaskRequest(task, type, TaskSource.Job) { Site = siteId, Implicit = true }) != StartResult.Started) return;
-        if (task == CharacterTask.Sleep && table.Next[slot].Task == (byte)CharacterTask.Sleep) cold.OperateSite = siteId;
+        if (task == CharacterTask.Sleep && (world.Fixtures.Find(siteId)is null || Beds is null))
+            return;
+        if (TaskStart.Start(world, slot, new TaskRequest(task, type, TaskSource.Job) { Site = siteId, Implicit = true }) != StartResult.Started)
+            return;
+        if (task == CharacterTask.Sleep && table.Next[slot].Task == (byte)CharacterTask.Sleep)
+            cold.OperateSite = siteId;
     }
 
-    /// <summary>A sitter or sleeper at its chair or bed: on the seat's origin facing its way, as the original's <c>Task_OperateMachine</c> (docs/game/ai-tasks.md "Town goals").</summary>
+    /// <summary>
+    /// A sitter or sleeper at its chair or bed: on the seat's origin facing its way, as the original's <c>Task_OperateMachine</c>
+    /// (docs/game/ai-tasks.md "Town goals").
+    /// </summary>
     void Settle(World world, ref CharacterHot n, CharacterCold cold, BuildSite site, Machine m)
     {
         n.Position = site.Position;
@@ -327,33 +478,45 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// The square of how far (3D) from the character a job's target may be (<b>Verified</b>, <c>AI::isTargetInRangeForOrders</c> <c>FUN_140597790</c> in the default ROAM_FAR mode: the walk a job
-    /// plans needs StateType 27 <c>isMovementAllowed</c>; about 6517 units). Farther, the job is skipped, so a character away from its base does not walk back for a job there.
+    /// The square of how far (3D) from the character a job's target may be (<b>Verified</b>, <c>AI::isTargetInRangeForOrders</c> <c>FUN_140597790</c>
+    /// in the default ROAM_FAR mode: the walk a job plans needs StateType 27 <c>isMovementAllowed</c>; about 6517 units). Farther, the job is
+    /// skipped, so a character away from its base does not walk back for a job there.
     /// </summary>
     public const float JobRangeSq = 4.246733e7f;
 
     /// <summary>
-    /// A job of the list that may run now: Meitou runs its type, the jobs switch is on (or the type ignores it), the character is not getting up, its target is within
-    /// <see cref="JobRangeSq"/>, and it is not blocked.
+    /// A job of the list that may run now: Meitou runs its type, the jobs switch is on (or the type ignores it), the character is not getting up, its
+    /// target is within <see cref="JobRangeSq"/>, and it is not blocked.
     /// </summary>
     bool Runnable(World world, int slot, CharacterCold cold, int k)
     {
         var job = cold.Jobs[k];
         if (!TaskStart.Eligible(world, cold, job.Type)) return false;
-        if (PermaJobs.Follows(job.Type)) return ((cold.Orders & CharacterOrders.Jobs) != 0 || job.Type != TaskType.Unnamed289) && FollowedBy(world, slot, cold, k) is not null;
+        if (PermaJobs.Follows(job.Type))
+            return ((cold.Orders & CharacterOrders.Jobs) != 0 || job.Type != TaskType.Unnamed289) && FollowedBy(world, slot, cold, k) is not null;
+
         if (!PermaJobs.Runs(job.Type) || ((cold.Orders & CharacterOrders.Jobs) == 0 && !PermaJobs.IgnoresSwitch(job.Type))) return false;
+
         // The walk to a job needs state 27, false while the character gets up (FUN_1405a3370).
         if (CharacterFacts.GettingUp(cold, world.Tick)) return false;
         var at = world.Characters.Next[slot].Position;
-        // The engineer job ignores its target: its finder picks any site (the original's row 125 finder, docs/game/buildings-production.md "Builders and dismantle"); a pick out of range fails the job, and so does a character with no working arm (row 2's state 38).
-        if (job.Type == TaskType.JOB_BUILDER) return ConstructionSystem.HasWorkingArm(cold) && Construction?.EngineerSite(world, slot) is { } pick && Vector3.DistanceSquared(at, pick.Position) < JobRangeSq;
+
+        // The engineer job ignores its target: its finder picks any site (the original's row 125 finder, docs/game/buildings-production.md "Builders
+        // and dismantle"); a pick out of range fails the job, and so does a character with no working arm (row 2's state 38).
+        if (job.Type == TaskType.JobBuilder)
+        {
+            return ConstructionSystem.HasWorkingArm(cold) && Construction?.EngineerSite(world, slot) is { } pick
+                && Vector3.DistanceSquared(at, pick.Position) < JobRangeSq;
+        }
+
         if (job.Site is { } id && Site(world, id) is { } site && Vector3.DistanceSquared(at, site.Position) >= JobRangeSq) return false;
         return !Blocked(world, cold, job);
     }
 
     /// <summary>
-    /// The character a Bodyguard (45), Staying close (31) or animal Staying close (289) job follows (the row has no finder: it acts on the job's own target, docs/game/ai-tasks.md "Finders of the jobs"): the job's character,
-    /// found again from its saved handle after a load, alive and not the follower itself; for 31 and 289 also standing (the rows' state 7, <c>!isTargetDown</c>). Null: the job is blocked.
+    /// The character a Bodyguard (45), Staying close (31) or animal Staying close (289) job follows (the row has no finder: it acts on the job's own
+    /// target, docs/game/ai-tasks.md "Finders of the jobs"): the job's character, found again from its saved handle after a load, alive and not the
+    /// follower itself; for 31 and 289 also standing (the rows' state 7, <c>!isTargetDown</c>). Null: the job is blocked.
     /// </summary>
     static CharacterId? FollowedBy(World world, int slot, CharacterCold cold, int k)
     {
@@ -366,70 +529,87 @@ public sealed partial class ProductionSystem
                 if (table.Next[s].Alive && table.Cold(s)?.Save?.Source.Handle == job.Saved) target = table.IdOf(s);
             if (!target.IsNone) cold.Jobs[k] = job with { Character = target };
         }
+
         if (target.IsNone || target.Slot == slot || !table.TryResolveNext(target, out int t)) return null;
-        return job.Type != TaskType.BODYGUARD && CharacterFacts.TargetDown(table.Cold(t)) ? null : target;
+        return job.Type != TaskType.Bodyguard && CharacterFacts.TargetDown(table.Cold(t)) ? null : target;
     }
 
     /// <summary>
-    /// Whether a job cannot run (the original skips such a job: an unmet start condition the planner cannot meet, or the target finder found nothing; docs/game/ai-tasks.md "Perma-jobs").
-    /// Operating: the building is gone or not an operable machine, its operator places are taken by others, or it has no work (<see cref="HasWork"/>). Hauling to: the storage is gone, and
-    /// the character carries nothing it takes and no machine within <see cref="ProductionSettings.HaulRange"/> has an output it takes. Automatic machines (152, and 124 on one): <see cref="AutoWork"/>.
+    /// Whether a job cannot run (the original skips such a job: an unmet start condition the planner cannot meet, or the target finder found nothing;
+    /// docs/game/ai-tasks.md "Perma-jobs"). Operating: the building is gone or not an operable machine, its operator places are taken by others, or
+    /// it has no work (<see cref = "HasWork"/>). Hauling to: the storage is gone, and the character carries nothing it takes and no machine within
+    /// <see cref = "ProductionSettings.HaulRange"/> has an output it takes. Automatic machines (152, and 124 on one): <see cref = "AutoWork"/>.
     /// </summary>
     bool Blocked(World world, CharacterCold cold, PermaJob job)
     {
-        if (job.Site is not { } id || Site(world, id) is not { Complete: true } site || !MayWork(world, cold, site) || Ensure(world, site) is not { } m) return true;
+        if (job.Site is not { } id || Site(world, id)is not { Complete: true } site || !MayWork(world, cold, site) || Ensure(world, site)is not { } m)
+            return true;
         switch (job.Type)
         {
-            case TaskType.OPERATE_MACHINERY:
-                if (IsSeat(m)) return SeatOccupied(world, site) || OperatorsOf(world, id) - (cold.OperateSite == id ? 1 : 0) >= m.Data.MaxOperators;
-                if (!m.Data.Operable) return true;
-                if (OperatorsOf(world, id) - (cold.OperateSite == id ? 1 : 0) >= m.Data.MaxOperators || !HasWorkingArm(cold)) return true;
+            case TaskType.OperateMachinery:
+                if (IsSeat(m))
+                    return SeatOccupied(world, site) || OperatorsOf(world, id) - (cold.OperateSite == id ? 1 : 0) >= m.Data.MaxOperators;
+                if (!m.Data.Operable)
+                    return true;
+                if (OperatorsOf(world, id) - (cold.OperateSite == id ? 1 : 0) >= m.Data.MaxOperators || !HasWorkingArm(cold))
+                    return true;
                 return !HasWork(world, site, m, cold);
-            case TaskType.MAN_A_TURRET_PLAYER_JOB:
-                // Turret guard (234, the job a Shift order to man a turret becomes): the building is a turret no one else mans.
-                if (m.Data.Function != Meitou.Data.World.ObjectRanges.TurretFunction || !HasWorkingArm(cold)) return true;
+            case TaskType.ManATurretPlayerJob:
+                if (m.Data.Function != ObjectRanges.TurretFunction || !HasWorkingArm(cold))
+                    return true;
                 return OperatorsOf(world, id) - (cold.OperateSite == id ? 1 : 0) >= m.Data.MaxOperators;
-            case TaskType.USE_TRAINING_DUMMY:
-                // Training (97): a dummy with a place free for a character with an arm that works (the row's state 38; the rest of its conditions, 73, is Unknown). It goes on at the cap, as the original's has no end.
-                if (!m.Data.IsTraining || OperatorsOf(world, id) - (cold.OperateSite == id ? 1 : 0) >= m.Data.MaxOperators) return true;
+            case TaskType.UseTrainingDummy:
+                if (!m.Data.IsTraining || OperatorsOf(world, id) - (cold.OperateSite == id ? 1 : 0) >= m.Data.MaxOperators)
+                    return true;
                 return !HasWorkingArm(cold);
-            case TaskType.OPERATE_AUTOMATIC_MACHINERY:
-                // Done as soon as no input of the machine is empty (the row's done list !62, machineHasEmptyInputs false): the 124 companion goes on from there.
+            case TaskType.OperateAutomaticMachinery:
                 return !m.Data.IsAutomatic || !m.Data.IsProducer || !m.HasEmptyInputs || !AutoWork(world, site, m, cold, fetch: true);
-            case TaskType.OPERATE_STORAGE:
-                // On an automatic machine (152's companion, the original's Task_FillMachine into it): what the character carries for its inputs.
-                if (m.Data.IsAutomatic && m.Data.IsProducer) return !AutoWork(world, site, m, cold, fetch: false);
-                if (!m.Data.IsStorage || m.Storage is null) return true;
-                if (cold.Inventory is { } inv && inv.All().Any(i => Takes(world, m, i))) return false;
-                return HaulSource(world, site, m) is null;
+            case TaskType.OperateStorage:
+                if (m.Data.IsAutomatic && m.Data.IsProducer)
+                    return !AutoWork(world, site, m, cold, fetch: false);
+                if (!m.Data.IsStorage || m.Storage is null)
+                    return true;
+                if (cold.Inventory is { } inv && inv.All().Any(i => Takes(world, m, i)))
+                    return false;
+                return HaulSource(world, site, m)is null;
             default:
                 return true;
         }
     }
 
-    /// <summary>State 38 <c>hasOneWorkingArm</c>, which rows 87, 97, 146 and 234 need and no row provides, so the job cannot run without it.</summary>
-    static bool HasWorkingArm(CharacterCold cold) => cold.Medical is { } m && (m.ArmWorks(left: true) || m.ArmWorks(left: false));
-
     /// <summary>
-    /// A machine an operator can work (the original's start conditions of task 87: output not full, inputs not empty, power; docs/game/ai-tasks.md): it has power, and a bench a queued
-    /// research or craft; a farm a dead crop to clear, a ripe one to harvest or a growing one with water (tended); inputs that hold something or that the operator can fill
-    /// (it carries the item or, with <see cref="ProductionSettings.AutoHaul"/>, <see cref="NearestSource"/> finds it); and room in the output or, with AutoHaul, a storage that takes it.
+    /// State 38 <c>hasOneWorkingArm</c>, which rows 87, 97, 146 and 234 need and no row provides, so the job cannot run without it.
+    /// </summary>
+    static bool HasWorkingArm(CharacterCold cold) => cold.Medical is { } m && (m.ArmWorks(left: true) || m.ArmWorks(left: false));
+    /// <summary>
+    /// A machine an operator can work (the original's start conditions of task 87: output not full, inputs not empty, power; docs/game/ai-tasks.md):
+    /// it has power, and a bench a queued research or craft; a farm a dead crop to clear, a ripe one to harvest or a growing one with water (tended);
+    /// inputs that hold something or that the operator can fill (it carries the item or, with <see cref = "ProductionSettings.AutoHaul"/>,
+    /// <see cref = "NearestSource"/> finds it); and room in the output or, with AutoHaul, a storage that takes it.
     /// </summary>
     bool HasWork(World world, BuildSite site, Machine m, CharacterCold cold)
     {
-        if (WorkFactor(world, m) <= 0) return false;
-        if (m.Data.IsResearch) return ResearchFor(world, m).Queue.Count > 0;
+        if (WorkFactor(world, m) <= 0)
+            return false;
+        if (m.Data.IsResearch)
+            return ResearchFor(world, m).Queue.Count > 0;
         if (m.Farm is { } f)
         {
-            if (f.Death >= m.Data.Farm!.DeathThreshold) return true;
-            if (f.Growth >= 1) return f.Harvested < f.Plants.Length && Room(world, site, m);
+            if (f.Death >= m.Data.Farm!.DeathThreshold)
+                return true;
+            if (f.Growth >= 1)
+                return f.Harvested < f.Plants.Length && Room(world, site, m);
             return Supplied(world, site, m, cold);
         }
-        if (m.Craft is { Queue.Count: 0 }) return false;
+
+        if (m.Craft is { Queue.Count: 0 })
+            return false;
         return Supplied(world, site, m, cold) && (m.Craft is not null || Room(world, site, m));
     }
 
-    /// <summary>Every input holds something or the operator can fill it: it carries the item or, with AutoHaul, <see cref="NearestSource"/> finds it.</summary>
+    /// <summary>
+    /// Every input holds something or the operator can fill it: it carries the item or, with AutoHaul, <see cref="NearestSource"/> finds it.
+    /// </summary>
     bool Supplied(World world, BuildSite site, Machine m, CharacterCold cold)
     {
         foreach (var input in m.Inputs)
@@ -439,12 +619,14 @@ public sealed partial class ProductionSystem
             if (Settings.AutoHaul && NearestSource(world, site, input.Item, cold) is not null) continue;
             return false;
         }
+
         return true;
     }
 
     /// <summary>
-    /// Haul work at an automatic machine (engine reading of 152, whose goal is "no empty inputs", and of 124 on it): the character is on a trip for it, or carries an item an input has room for;
-    /// with <paramref name="fetch"/> also an empty input a storage holds the item of, a full output a storage takes, or the machine's output carried that a storage takes.
+    /// Haul work at an automatic machine (engine reading of 152, whose goal is "no empty inputs", and of 124 on it): the character is on a trip for
+    /// it, or carries an item an input has room for; with <paramref name="fetch"/> also an empty input a storage holds the item of, a full output a
+    /// storage takes, or the machine's output carried that a storage takes.
     /// </summary>
     bool AutoWork(World world, BuildSite site, Machine m, CharacterCold cold, bool fetch)
     {
@@ -456,33 +638,41 @@ public sealed partial class ProductionSystem
             if (input.Count < input.Recipe.Capacity && Carried(inv, input.Item).Any()) return true;
             if (fetch && input.Count == 0 && NearestSource(world, site, input.Item, cold) is not null) return true;
         }
-        if (!fetch || m.Output is not { } output || items.Create(output.Recipe.Item, 1) is not { } one) return false;
+
+        if (!fetch || m.Output is not { } output || _items.Create(output.Recipe.Item, 1) is not { } one) return false;
         if (!output.Full && !Carried(inv, one.Record).Any()) return false;
         return NearestStorage(world, site, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null;
     }
 
-    /// <summary>The output has room, or with AutoHaul a storage takes it.</summary>
+    /// <summary>
+    /// The output has room, or with AutoHaul a storage takes it.
+    /// </summary>
     bool Room(World world, BuildSite site, Machine m) =>
-        m.Output is { } o && (!o.Full || Settings.AutoHaul && items.Create(o.Recipe.Item, 1) is { } one && NearestStorage(world, site, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null);
-
-    /// <summary>A carried item a "Hauling to" job takes to its storage: a loose stack of something a player machine makes (not the character's own kit), that the storage takes and has room for.</summary>
-    static bool Takes(World world, Machine store, Items.ItemInstance item) =>
-        Stores(store, item) && world.Machines.All.Any(s => !s.Data.IsStorage && world.Buildings.Find(s.Site) is not { LevelMachine: true } && s.Output?.Recipe.Item == item.Record);
-
-    /// <summary>A loose stack (not the character's own kit) the storage takes and has room for.</summary>
-    internal static bool Stores(Machine store, Items.ItemInstance item) =>
-        item.Section is "main" or "backpack_content" && !item.LockedOn && item.Contents is null && store.Data.Accepts(item.Record, item.Type) && Fits(store.Storage!, item);
+        m.Output is { } o && (!o.Full || Settings.AutoHaul && _items.Create(o.Recipe.Item, 1) is { } one
+            && NearestStorage(world, site, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null);
+    /// <summary>
+    /// A carried item a "Hauling to" job takes to its storage: a loose stack of something a player machine makes (not the character's own kit), that
+    /// the storage takes and has room for.
+    /// </summary>
+    static bool Takes(World world, Machine store, Items.ItemInstance item) => Stores(store, item) && world.Machines.All.Any(s => !s.Data.IsStorage && world.Buildings.Find(s.Site)is not { LevelMachine: true } && s.Output?.Recipe.Item == item.Record);
 
     /// <summary>
-    /// What 242 Ditch all resources carries off (finder <c>FUN_1405a59a0</c>, its item collection <c>FUN_140749490</c>, <b>Verified</b>): ITEMs with <c>item function</c> 0 or 15, and food
-    /// (function 3) but the first, in inventory order.
+    /// A loose stack (not the character's own kit) the storage takes and has room for.
+    /// </summary>
+    internal static bool Stores(Machine store, Items.ItemInstance item) =>
+        item.Section is "main" or "backpack_content" && !item.LockedOn && item.Contents is null && store.Data.Accepts(item.Record, item.Type)
+            && Fits(store.Storage!, item);
+
+    /// <summary>
+    /// What 242 Ditch all resources carries off (finder <c>FUN_1405a59a0</c>, its item collection <c>FUN_140749490</c>, <b>Verified</b>): ITEMs with
+    /// <c>item function</c> 0 or 15, and food (function 3) but the first, in inventory order.
     /// </summary>
     internal static IEnumerable<Items.ItemInstance> Ditchable(Items.Inventory inv)
     {
         bool fed = false;
         foreach (var item in inv.All())
         {
-            if (item.Type != Meitou.Data.Fcs.FcsRecordType.ITEM) continue;
+            if (item.Type != Meitou.Data.Fcs.FcsRecordType.Item) continue;
             if (item.ItemFunction == Meitou.Simulation.Items.FeedSystem.FoodFunction)
             {
                 if (fed) yield return item;
@@ -492,65 +682,98 @@ public sealed partial class ProductionSystem
         }
     }
 
-    /// <summary>What a hauler puts into the storage: for a ditch run what <see cref="Ditchable"/> lists and the storage takes, else what <see cref="Takes"/> allows.</summary>
+    /// <summary>
+    /// What a hauler puts into the storage: for a ditch run what <see cref="Ditchable"/> lists and the storage takes, else what <see cref="Takes"/>
+    /// allows.
+    /// </summary>
     static IEnumerable<Items.ItemInstance> Delivered(World world, Items.Inventory inv, Machine store, bool ditch) =>
         ditch ? Ditchable(inv).Where(i => Stores(store, i)) : inv.All().Where(i => Takes(world, store, i));
-
-    /// <summary>The player's complete machine (not a storage) nearest a storage within <see cref="ProductionSettings.HaulRange"/> whose output holds items the storage takes (ties: the lower site id).</summary>
+    /// <summary>
+    /// The player's complete machine (not a storage) nearest a storage within <see cref = "ProductionSettings.HaulRange"/> whose output holds items the
+    /// storage takes (ties: the lower site id).
+    /// </summary>
     string? HaulSource(World world, BuildSite storage, Machine store)
     {
         string? best = null;
         float bestGap = float.MaxValue;
         foreach (var s in world.Machines.All)
         {
-            if (s.Data.IsStorage || s.Output is not { Count: > 0 } output || Site(world, s.Site) is not { Complete: true } site || site.Owner != storage.Owner
-                || world.Players.RequiresExplicitControl && !WorkSiteOpen(world, site)) continue;
+            if (s.Data.IsStorage || s.Output is not { Count: > 0 } output || Site(world, s.Site)is not { Complete: true } site || site.Owner != storage.Owner || world.Players.RequiresExplicitControl && !WorkSiteOpen(world, site))
+                continue;
             float gap = Gap(site.Position, storage.Position);
-            if (gap > Settings.HaulRange || gap > bestGap || (gap == bestGap && string.CompareOrdinal(s.Site, best) > 0)) continue;
-            if (items.Create(output.Recipe.Item, 1) is not { } one || !store.Data.Accepts(one.Record, one.Type) || !Fits(store.Storage!, one)) continue;
+            if (gap > Settings.HaulRange || gap > bestGap || (gap == bestGap && string.CompareOrdinal(s.Site, best) > 0))
+                continue;
+            if (_items.Create(output.Recipe.Item, 1)is not { } one || !store.Data.Accepts(one.Record, one.Type) || !Fits(store.Storage!, one))
+                continue;
             best = s.Site;
             bestGap = gap;
         }
+
         return best;
     }
 
+    /// <summary>
+    /// Starts list job <paramref name = "k"/> by its type: building, operating, hauling or a turret.
+    /// </summary>
     void StartJob(World world, int slot, int k)
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
-        if ((uint)k >= (uint)cold.Jobs.Count || !Runnable(world, slot, cold, k)) return;
+        if ((uint)k >= (uint)cold.Jobs.Count || !Runnable(world, slot, cold, k))
+            return;
         var job = cold.Jobs[k];
-        if (job.Type == TaskType.JOB_BUILDER)
+        if (job.Type == TaskType.JobBuilder)
         {
             End(world, slot);
             Construction!.StartBuilding(world, slot, Construction.EngineerSite(world, slot)!, k);
             return;
         }
+
         if (PermaJobs.Follows(job.Type))
         {
-            if (FollowedBy(world, slot, cold, k) is not { } target) return;
+            if (FollowedBy(world, slot, cold, k)is not { } target)
+                return;
             End(world, slot);
             // The Bodyguard job guards (row 45, RetaliationSystem.Guards); the verb always gives the job. The circle was broken when the job was added.
             MovementSystem.Follow(world, new FollowOrder([table.IdOf(slot)], target) { Tick = world.Tick }, TaskSource.Job, k, job.Type);
             return;
         }
+
         var site = Site(world, job.Site!)!;
         var m = Ensure(world, site)!;
-        var request = new TaskRequest(CharacterTask.Haul, job.Type, TaskSource.Job) { Job = k, Site = site.Id };
-        if (job.Type is TaskType.OPERATE_MACHINERY or TaskType.MAN_A_TURRET_PLAYER_JOB or TaskType.USE_TRAINING_DUMMY or TaskType.OPERATE_AUTOMATIC_MACHINERY || !m.Data.IsStorage)
+        var request = new TaskRequest(CharacterTask.Haul, job.Type, TaskSource.Job)
         {
-            if (cold.OperateSite != site.Id) TaskStart.Start(world, slot, request with { Task = CharacterTask.Operate });
-            else if (cold.Running is { } running && running.Runs(CharacterTask.Operate)) cold.Running = running with { Source = TaskSource.Job, Row = job.Type, Job = k, Implicit = false, Resume = CharacterTask.Idle };
+            Job = k,
+            Site = site.Id
+        };
+        if (job.Type is TaskType.OperateMachinery or TaskType.ManATurretPlayerJob or TaskType.UseTrainingDummy or TaskType.OperateAutomaticMachinery || !m.Data.IsStorage)
+        {
+            if (cold.OperateSite != site.Id)
+                TaskStart.Start(world, slot, request with { Task = CharacterTask.Operate });
+            else if (cold.Running is { } running && running.Runs(CharacterTask.Operate))
+                cold.Running = running with
+                {
+                    Source = TaskSource.Job,
+                    Row = job.Type,
+                    Job = k,
+                    Implicit = false,
+                    Resume = CharacterTask.Idle
+                };
         }
-        else TaskStart.Start(world, slot, request);
+        else
+            TaskStart.Start(world, slot, request);
     }
 
-    /// <summary>A <see cref="CharacterTask.Haul"/> trip to a storage: what the character already carries for it goes there first; else it fetches a machine's output.</summary>
+    /// <summary>
+    /// A <see cref = "CharacterTask.Haul"/> trip to a storage: what the character already carries for it goes there first; else it fetches a machine's
+    /// output.
+    /// </summary>
     void StartHaulTrip(World world, int slot, BuildSite storage, Machine store, bool ditch = false)
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
-        if (!MayWork(world, cold, storage)) return;
+        if (!MayWork(world, cold, storage))
+            return;
         cold.OperateSite = null;
         cold.HaulFetch = null;
         cold.Operating = false;
@@ -562,45 +785,56 @@ public sealed partial class ProductionSystem
         bool carries = cold.Inventory is { } inv && Delivered(world, inv, store, ditch).Any();
         cold.HaulSite = carries ? storage.Id : HaulSource(world, storage, store);
         cold.HaulTo = storage.Id;
-        sweep = true;
+        _sweep = true;
     }
 
-    /// <summary>The haul trip is the implicit ditching's (242).</summary>
-    static bool Ditching(CharacterCold cold) => cold.Running is { Implicit: true, Row: TaskType.DITCH_ALL_RESOURCES } run && run.Runs(CharacterTask.Haul);
-
-    /// <summary>A hauler at the end of a leg (serial): at the source it takes the output, then makes for the storage; at the storage it puts in what the storage takes and the job's trip ends.</summary>
+    /// <summary>
+    /// The haul trip is the implicit ditching's (242).
+    /// </summary>
+    static bool Ditching(CharacterCold cold) => cold.Running is { Implicit: true, Row: TaskType.DitchAllResources } run && run.Runs(CharacterTask.Haul);
+    /// <summary>
+    /// A hauler at the end of a leg (serial): at the source it takes the output, then makes for the storage; at the storage it puts in what the
+    /// storage takes and the job's trip ends.
+    /// </summary>
     void HaulStep(World world, int slot)
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
         ref var n = ref table.Next[slot];
-        if (cold.HaulTo is not { } storeId || cold.HaulSite is not { } at
-            || Site(world, storeId) is not { Complete: true } storeSite || !MayWork(world, cold, storeSite) || world.Machines.Find(storeId) is not { Storage: not null } store
-            || Site(world, at) is not { Complete: true } atSite || !MayWork(world, cold, atSite) || world.Machines.Find(at) is not { } there || !Able(cold) || cold.Inventory is not { } inv)
+        if (cold.HaulTo is not { } storeId || cold.HaulSite is not { } at || Site(world, storeId)is not { Complete: true } storeSite || !MayWork(world, cold, storeSite) || world.Machines.Find(storeId)is not { Storage: not null } store || Site(world, at)is not { Complete: true } atSite || !MayWork(world, cold, atSite) || world.Machines.Find(at)is not { } there || !Able(cold) || cold.Inventory is not { } inv)
         {
             End(world, slot);
             return;
         }
-        if (!AtSite(world, n, atSite, there)) return;
+
+        if (!AtSite(world, n, atSite, there))
+            return;
         if (at != storeId)
         {
-            if (there.Output is { Count: > 0 } output && items.Create(output.Recipe.Item, output.Count) is { } made && store.Data.Accepts(made.Record, made.Type))
+            if (there.Output is { Count: > 0 } output && _items.Create(output.Recipe.Item, output.Count)is { } made && store.Data.Accepts(made.Record, made.Type))
             {
                 int moved = Placed(inv, made);
                 output.Count -= moved;
                 world.Machines.Touch();
             }
-            if (Delivered(world, inv, store, Ditching(cold)).Any()) cold.HaulSite = storeId;
-            else End(world, slot);
+
+            if (Delivered(world, inv, store, Ditching(cold)).Any())
+                cold.HaulSite = storeId;
+            else
+                End(world, slot);
             return;
         }
+
         foreach (var item in Delivered(world, inv, store, Ditching(cold)).ToList())
         {
             inv.Remove(item);
-            if (store.Storage!.Add(item)) continue;
-            if (!inv.Add(item)) world.GroundItems.Drop(item, store.Position, 0);
+            if (store.Storage!.Add(item))
+                continue;
+            if (!inv.Add(item))
+                world.GroundItems.Drop(item, store.Position, 0);
             break;
         }
+
         world.Machines.Touch();
         End(world, slot);
     }

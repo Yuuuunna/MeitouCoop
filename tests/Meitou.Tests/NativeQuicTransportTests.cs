@@ -157,12 +157,12 @@ public sealed class NativeQuicTransportTests
     private static ushort FreePort() { using var socket = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0)); return checked((ushort)((IPEndPoint)socket.Client.LocalEndPoint!).Port); }
     private sealed class Credentials : IDisposable
     {
-        private readonly string directory = Path.Combine(Path.GetTempPath(), "Meitou.QuicTransport-" + Guid.NewGuid().ToString("N"));
-        public string Pfx => Path.Combine(directory, "server.pfx");
-        public string Pem => Path.Combine(directory, "ca.pem");
+        private readonly string _directory = Path.Combine(Path.GetTempPath(), "Meitou.QuicTransport-" + Guid.NewGuid().ToString("N"));
+        public string Pfx => Path.Combine(_directory, "server.pfx");
+        public string Pem => Path.Combine(_directory, "ca.pem");
         public Credentials()
         {
-            Directory.CreateDirectory(directory);
+            Directory.CreateDirectory(_directory);
             using var rsa = RSA.Create(2048);
             var request = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             var san = new SubjectAlternativeNameBuilder(); san.AddDnsName("localhost"); request.CertificateExtensions.Add(san.Build());
@@ -172,6 +172,6 @@ public sealed class NativeQuicTransportTests
             File.WriteAllBytes(Pfx, certificate.Export(X509ContentType.Pkcs12, ""));
             File.WriteAllText(Pem, certificate.ExportCertificatePem());
         }
-        public void Dispose() { File.Delete(Pfx); File.Delete(Pem); Directory.Delete(directory); }
+        public void Dispose() { File.Delete(Pfx); File.Delete(Pem); Directory.Delete(_directory); }
     }
 }

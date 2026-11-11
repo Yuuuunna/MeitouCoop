@@ -1,5 +1,6 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using Meitou.Simulation.Player;
 
 namespace Meitou.Simulation.Locks;
 
@@ -18,16 +19,16 @@ public sealed partial class FixtureRegistry
         public string Record = "";
         public Vector3 Position;
     }
-    readonly ConditionalWeakTable<Fixture, Version> fixtureVersions = new();
-    ulong fixtureRevision;
+    readonly ConditionalWeakTable<Fixture, Version> _fixtureVersions = new();
+    ulong _fixtureRevision;
 
     public ulong RevisionOf(Fixture fixture)
     {
-        var version = fixtureVersions.GetValue(fixture, static _ => new Version());
+        var version = _fixtureVersions.GetValue(fixture, static _ => new Version());
         if (version.Revision == 0 || version.Owner != fixture.Owner || version.Record != fixture.RecordId || version.Position != fixture.Position)
         {
-            if (fixtureRevision == ulong.MaxValue) throw new InvalidOperationException("Fixture revisions exhausted.");
-            version.Revision = ++fixtureRevision; version.Owner = fixture.Owner; version.Record = fixture.RecordId; version.Position = fixture.Position;
+            if (_fixtureRevision == ulong.MaxValue) throw new InvalidOperationException("Fixture revisions exhausted.");
+            version.Revision = ++_fixtureRevision; version.Owner = fixture.Owner; version.Record = fixture.RecordId; version.Position = fixture.Position;
         }
         return version.Revision;
     }

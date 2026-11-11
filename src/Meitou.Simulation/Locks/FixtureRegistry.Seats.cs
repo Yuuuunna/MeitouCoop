@@ -4,26 +4,53 @@ using Meitou.Data.World;
 
 namespace Meitou.Simulation.Locks;
 
-/// <summary>A town chair or throne, in world space, for picking and the player's Use order.</summary>
+/// <summary>
+/// A town chair or throne, in world space, for picking and the player's Use order.
+/// </summary>
 public sealed record SeatSpot(string Id, string Building, string Record, Vector3 Position, int Owner, float Yaw)
 {
-    /// <summary>The furniture's physical facing; <see cref="Yaw"/> is the sitter's facing.</summary>
+    /// <summary>
+    /// The furniture's physical facing; <see cref="Yaw"/> is the sitter's facing.
+    /// </summary>
     public ulong SiteRevision { get; init; }
     public float PlacementYaw { get; init; } = Yaw;
-    /// <summary>The sitter's facing as the game has it (<see cref="HomeSpot.FaithfulYaw"/>).</summary>
+    /// <summary>
+    /// The sitter's facing as the game has it (<see cref="HomeSpot.FaithfulYaw"/>).
+    /// </summary>
     public float FaithfulYaw { get; init; } = Yaw;
 }
 
+/// <summary>
+/// The registry's town seats: the chairs and thrones of the town buildings.
+/// </summary>
 public sealed partial class FixtureRegistry
 {
-    readonly Dictionary<string, SeatSpot> seatSpots = new(StringComparer.Ordinal);
-    IReadOnlyList<SeatSpot>? publishedSeats;
-    public IReadOnlyList<SeatSpot> SeatSpots => publishedSeats ??= [.. seatSpots.Values];
-    public SeatSpot? FindSeat(string id) => seatSpots.GetValueOrDefault(id);
+    /// <summary>
+    /// The town seats by id.
+    /// </summary>
+    readonly Dictionary<string, SeatSpot> _seatSpots = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The cache of <see cref="SeatSpots"/> (null: made again).
+    /// </summary>
+    IReadOnlyList<SeatSpot>? _publishedSeats;
+    /// <summary>
+    /// The town seats.
+    /// </summary>
+    public IReadOnlyList<SeatSpot> SeatSpots => _publishedSeats ??= [.. _seatSpots.Values];
+    /// <summary>
+    /// The town seat with id <paramref name="id"/>; null when none has it.
+    /// </summary>
+    public SeatSpot? FindSeat(string id) => _seatSpots.GetValueOrDefault(id);
 
-    /// <summary>The original furniture a player-built seat in this town house can face: none once bought (<see cref="IsEmptied"/>).</summary>
-    public IReadOnlyList<Vector3> TablesOfBuilding(string building) => properties.TryGetValue(building, out var p) && !p.Purchased ? p.Building.Tables : [];
+    /// <summary>
+    /// The original furniture a player-built seat in this town house can face: none once bought (<see cref="IsEmptied"/>).
+    /// </summary>
+    public IReadOnlyList<Vector3> TablesOfBuilding(string building) => _properties.TryGetValue(building, out var p) && !p.Purchased
+            ? p.Building.Tables : [];
 
+    /// <summary>
+    /// Registers a town building's chairs and thrones as seats, numbered in the building's order.
+    /// </summary>
     void RegisterSeats(TownBuilding building, int owner)
     {
         int index = 0;
@@ -31,19 +58,30 @@ public sealed partial class FixtureRegistry
         {
             if (spot.Kind is not (HomeSpotKind.Chair or HomeSpotKind.ThroneSeat) || spot.Record is null) continue;
             string id = $"{building.Key}@seat{(index++).ToString(CultureInfo.InvariantCulture)}";
-            seatSpots[id] = new(id, building.Key, spot.Record, spot.Position, owner, spot.Yaw) { PlacementYaw = spot.PlacementYaw, FaithfulYaw = spot.FaithfulYaw };
+            _seatSpots[id] = new(id, building.Key, spot.Record, spot.Position, owner, spot.Yaw)
+            {
+                PlacementYaw = spot.PlacementYaw,
+                FaithfulYaw = spot.FaithfulYaw
+            };
         }
-        publishedSeats = null;
-    }
-    void TransferSeats(string building, int owner)
-    {
-        foreach (var seat in seatSpots.Values.Where(s => s.Building == building && s.Owner != owner).ToArray()) seatSpots[seat.Id] = seat with { Owner = owner };
-        publishedSeats = null;
+
+        _publishedSeats = null;
     }
 
+    /// <summary>
+    /// Removes a town building's seats.
+    /// </summary>
     void RemoveSeats(string building)
     {
-        foreach (var id in seatSpots.Values.Where(s => s.Building == building).Select(s => s.Id).ToArray()) seatSpots.Remove(id);
-        publishedSeats = null;
+        foreach (var id in _seatSpots.Values.Where(s => s.Building == building).Select(s => s.Id).ToArray())
+            _seatSpots.Remove(id);
+
+        _publishedSeats = null;
+    }
+
+    void TransferSeats(string building, int owner)
+    {
+        foreach (var seat in _seatSpots.Values.Where(s => s.Building == building && s.Owner != owner).ToArray()) _seatSpots[seat.Id] = seat with { Owner = owner };
+        _publishedSeats = null;
     }
 }

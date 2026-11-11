@@ -15,7 +15,9 @@ share<1 uses equal division. Start/end/current season persist in saves; equal-or
 Choose positive-weight weather inside its inclusive whole-hour window; the original reversed
 window test (`hour<=start or hour>=end`) effectively accepts all hours when start>end. Base
 windows are 7-22 and 5-23. Weighted pick uses rand()/32768; no candidate uses last fallback.
-Duration is inclusive integer minutes val1..val2, cut at today's end-time for restricted weather.
+Duration is inclusive integer minutes val1..val2, cut at today's end-time for restricted weather, also when that is already past
+(**Verified**, `FUN_1409dcf60`): one chosen in its window's last hour ends at once and is chosen again until the hour is out, so
+Venge's beams (5-23) never run past midnight. Meitou ends such a pick at the next whole hour (engine choice: one change, not one a frame).
 Strength is clamp(season random min/max * region random mult min/max,0,1). Effect strength reads
 the minimum key twice, hence always minimum. Weather can follow itself.
 
@@ -23,7 +25,8 @@ the minimum key twice, hence always minimum. Weather can follow itself.
 into top-to-bottom rows; cell `(floor(x/4608)+32,floor(z/4608)+32)` reads `(4cx+2,4cz+2)` and
 RGB packed `R<<16|G<<8|B`. All 71 colours match BIOME_GROUP indices; no offset/flip. Match by
 StringId/colour, never name (two NONE records). **Observed:** whether original sampling chooses
-exactly the centre on mixed border blocks. The camera's region lookup (`FUN_1408f56b0`, `FUN_1409e8f70`:64,72; **Observed** (upstream `0d5e98d7` evidence), constants read from the exe) uses cell `(int)((coord + 147465) / 4608)` truncated toward zero and clamped to 0..63 per axis (off-map positions take the edge cell); 147465 = 32 x 4608 + 9, so its boundaries sit 9 units from the `floor(x/4608)+32` cells above. Meitou applies it to the camera lookup only (`WeatherAreas.CameraCellOf`); other lookups keep the town-verified cells. Seasonless regions use Default.
+exactly the centre on mixed border blocks. The camera's region lookup (`FUN_1408f56b0`, `FUN_1409e8f70`:64,72; **Observed** (upstream source evidence), constants read from the exe) uses cell `(int)((coord + 147465) / 4608)` truncated toward zero and clamped to 0..63 per axis (off-map positions take the edge cell); 147465 = 32 x 4608 + 9, so its boundaries sit 9 units from the `floor(x/4608)+32` cells above. Meitou applies it to the camera lookup only (`WeatherAreas.CameraCellOf`); other lookups keep the town-verified cells. Seasonless regions use Default.
+The spawn-spot finder also reads single pixels (a black one refuses the spot; `WeatherAreas.IsPainted`, [spot finder](../game/factions-squads-towns.md#off-screen-world)).
 
 ## Wind and camera transitions
 
@@ -139,7 +142,7 @@ a later unit of the same kind replaces the strength). R = `effect radius`, else 
 Strength (`FUN_140100cb0`): the unit's +0x48 inside R (its falloff to 2R is unreachable, the query radius being R); where +0x48 comes
 from between `effect strength min/max` is **Unknown** (equal for the base burning and gas effects).
 
-**Meitou** (`WeatherSystem`, `MedicalState.Weather.cs`, host `GameHost.Weather.cs`): runs every tick in the slow-world phase;
+**Meitou** (`WeatherSystem`, `MedicalState.Weather.cs`, host `WeatherFeed`): runs every tick in the slow-world phase;
 the host gives the scheduler's region at each place (the schedule, not a viewer-forced weather) and the live affecting units of the
 particle groups. Engine choices: a race with `no shoes` has no boots slot; "down" is incapacitated or carried; units without
 `effect radius` are left out; unit strength is `effect strength min`; dead characters are skipped. Not modelled: the
@@ -153,7 +156,7 @@ Acid Rain, Dust Storm, Burning, Poison Gas, in the Bad colour tag and the Good o
 raining acid, and you aren't wearing anything to protect your skin.  Best to find shelter soon."; dust "...it affects your accuracy in combat."; "You are currently on fire."; "...breathing
 in poison gas."), below 0.99 "...your gear is providing you with {1} protection.", else the total-protection sentence. **Observed**: the short string is the information panel's State
 line and the long one its tooltip (their reader was not traced). The event is refused by `FUN_140684990` while the owner talks ([dialogue](../game/dialogue.md#firing-an-event)).
-Meitou (`WeatherSystem.Hurt`, `PlayerInterface.WeatherText`): the same texts and conditions; the State line shows the notice with the long text as tooltip; the event goes to every hurt
+Meitou (`WeatherSystem.Hurt`, `HudPanels.WeatherText`): the same texts and conditions; the State line shows the notice with the long text as tooltip, except while the ranged line (Aiming / Reloading) shows; the event goes to every hurt
 character at most every 8 s per event (`WeatherSystem.EventPause`, **engine choice**: the original fires every hurt tick and relies on the refusals and the lines' repetition limits).
 
 **Shelter** (`FUN_1405cf790`, **Verified (decompiled)**): a ray 1000 above the character straight down; a hit more than 10 over its feet on a building whose BUILDING record has

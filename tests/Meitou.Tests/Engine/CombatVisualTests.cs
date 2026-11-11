@@ -1,7 +1,8 @@
 using System.Numerics;
-using Meitou.Engine;
+using Meitou.Game.Host;
 using Meitou.Networking;
 using Meitou.Simulation;
+using Meitou.Simulation.Bodies;
 
 namespace Meitou.Tests.Engine;
 

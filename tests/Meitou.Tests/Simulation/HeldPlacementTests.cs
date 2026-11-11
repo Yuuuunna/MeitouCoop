@@ -1,5 +1,7 @@
 using System.Numerics;
 using Meitou.Simulation;
+using Meitou.Simulation.Ai;
+using Meitou.Simulation.Movement;
 using Meitou.Simulation.Locks;
 namespace Meitou.Tests.Simulation;
 

@@ -3,6 +3,7 @@ using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
 using Meitou.Data.Save;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 
 namespace Meitou.Tests.Simulation;
 
@@ -20,21 +21,21 @@ public class MultiplayerWorldStateTests
 
         public Fixture()
         {
-            var npc = SyntheticTown.Rec("story", FcsRecordType.CHARACTER, "Story NPC");
+            var npc = SyntheticTown.Rec("story", FcsRecordType.Character, "Story NPC");
             npc.Bools["unique"] = true;
-            var diplomacy = SyntheticTown.Rec("diplomacy", FcsRecordType.WORLD_EVENT_STATE, "Diplomacy");
+            var diplomacy = SyntheticTown.Rec("diplomacy", FcsRecordType.WorldEventState, "Diplomacy");
             diplomacy.References["player ally"] = [SyntheticTown.Ref("x", 1)];
             diplomacy.References["player enemy"] = [SyntheticTown.Ref("y", 1)];
-            var involved = SyntheticTown.Rec("involved", FcsRecordType.WORLD_EVENT_STATE, "Involved");
+            var involved = SyntheticTown.Rec("involved", FcsRecordType.WorldEventState, "Involved");
             involved.References["player ally"] = [SyntheticTown.Ref("x", 1)];
             involved.References["player enemy"] = [SyntheticTown.Ref("y", 1)];
             involved.References["NPC is"] = [SyntheticTown.Ref("story", 0)];
             involved.Bools["player involvement"] = true;
-            var global = SyntheticTown.Rec("global", FcsRecordType.WORLD_EVENT_STATE, "Global death");
+            var global = SyntheticTown.Rec("global", FcsRecordType.WorldEventState, "Global death");
             global.References["NPC is"] = [SyntheticTown.Ref("story", 0)];
             GameDatabase db = SyntheticTown.Database(extra: [npc, diplomacy, involved, global,
-                SyntheticTown.Rec("a", FcsRecordType.FACTION, "A"), SyntheticTown.Rec("b", FcsRecordType.FACTION, "B"),
-                SyntheticTown.Rec("x", FcsRecordType.FACTION, "X"), SyntheticTown.Rec("y", FcsRecordType.FACTION, "Y")]);
+                SyntheticTown.Rec("a", FcsRecordType.Faction, "A"), SyntheticTown.Rec("b", FcsRecordType.Faction, "B"),
+                SyntheticTown.Rec("x", FcsRecordType.Faction, "X"), SyntheticTown.Rec("y", FcsRecordType.Faction, "Y")]);
             Relations = FactionRelations.Build(db);
             A = Relations.IndexOf("a"); B = Relations.IndexOf("b"); X = Relations.IndexOf("x"); Y = Relations.IndexOf("y");
             States = new WorldStates(db, Relations);

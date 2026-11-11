@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.Json.Nodes;
 using Meitou.Networking;
 using Meitou.Simulation;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
 using Meitou.Simulation.Construction;
 using SimWorld = Meitou.Simulation.World;
 

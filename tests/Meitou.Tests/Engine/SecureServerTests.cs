@@ -1,3 +1,4 @@
+using Meitou.Simulation.Player;
 using System.Net;
 using Meitou.Networking.VNext;
 using Meitou.Networking.VNext.Transport;
@@ -11,6 +12,9 @@ using Meitou.Networking;
 using Meitou.Runtime;
 using Meitou.Server;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Saving;
 using Meitou.Tests.Save;
 using Meitou.Tests.Simulation;
@@ -32,18 +36,18 @@ public partial class SecureServerTests
         public Actor[] Actors { get; }
         public X509Certificate2 Certificate { get; } = GameTlsTests.Certificate();
         public QuicGameServer Server { get; }
-        readonly TcpDiscoveryServer? discovery;
+        readonly TcpDiscoveryServer? _discovery;
         public Scene(Func<AuthorityConnection, EntityId, CancellationToken, Task<bool>>? prepare = null, int maximumConnections = 32, bool creations = false, bool production = false, bool dialogue = false, ServerInformation? information = null, bool movement = false, bool synchronousPaths = true, int catalogDescriptionBytes = 0, Action<GameStatePublication>? publicationObserved = null)
         {
             NativeFixture.Require();
             Data.Relations.PlayerFaction = -1;
             if (dialogue)
             {
-                var npc = SyntheticTown.Rec("hint-npc", FcsRecordType.CHARACTER, "Speaker");
+                var npc = SyntheticTown.Rec("hint-npc", FcsRecordType.Character, "Speaker");
                 npc.References["dialogue"] = [SyntheticTown.Ref("hint-root")];
-                var root = SyntheticTown.Rec("hint-root", FcsRecordType.DIALOGUE, "Greeting");
+                var root = SyntheticTown.Rec("hint-root", FcsRecordType.Dialogue, "Greeting");
                 root.References["lines"] = [SyntheticTown.Ref("hint-line")];
-                var line = SyntheticTown.Rec("hint-line", FcsRecordType.DIALOGUE_LINE, "Hello"); line.Strings["text0"] = "Hello.";
+                var line = SyntheticTown.Rec("hint-line", FcsRecordType.DialogueLine, "Hello"); line.Strings["text0"] = "Hello.";
                 var file = new FcsFile(); file.Records.AddRange([npc, root, line]); Data.Db.Apply(file, "hints.mod");
             }
             ITickSystem[] systems = creations ? [new PlayerSystem(Data), new PopulationSystem(Data, new PopulationSettings { Background = false })] : [new PlayerSystem(Data)];
@@ -64,7 +68,7 @@ public partial class SecureServerTests
                 var role = Runtime.World.Characters.Spawn(new CharacterHot { Position = squad.Position,
                     Health = movement ? 100 : 0, MaxSpeed = movement ? 80 : 0, WalkSpeed = movement ? 15 : 0 }, new CharacterCold
                 {
-                    Name = "Role " + i, RecordId = Data.Db.OfType(FcsRecordType.CHARACTER).First().StringId,
+                    Name = "Role " + i, RecordId = Data.Db.OfType(FcsRecordType.Character).First().StringId,
                     Faction = faction, SquadId = squad.Id, IsPlayer = true, Inventory = new(),
                 }, 0);
                 Runtime.World.Characters.Cold(role.Slot)!.Inventory!.Items.Add(Data.Items.Create("70-t", 2)!);
@@ -80,11 +84,11 @@ public partial class SecureServerTests
             var peer = new SecureServerPeer(Loop, sessions, information?.Hello ?? Hello(), new(Data.Db), prepare ?? ((_, _, _) => Task.FromResult(true)),
                 new ServerPeerOptions { Observation = new(100), PublicationObserved = publicationObserved }, creation, new ServerInvitationEndpoint(Loop, coordinator, creation), information);
             Server = new(new(IPAddress.Loopback, 0), Certificate, peer, maximumConnections);
-            if (information is not null) discovery = new(Server.Endpoint, Certificate, information);
+            if (information is not null) _discovery = new(Server.Endpoint, Certificate, information);
         }
         public async ValueTask DisposeAsync()
         {
-            try { if (discovery is not null) await discovery.DisposeAsync(); await Server.DisposeAsync(); }
+            try { if (_discovery is not null) await _discovery.DisposeAsync(); await Server.DisposeAsync(); }
             finally
             {
                 try { await Loop.DisposeAsync(); }
@@ -99,19 +103,19 @@ public partial class SecureServerTests
         public AdmissionMessage Admission { get; private set; } = admission;
         public TestState State { get; } = new();
         public int StateFrames { get; private set; }
-        public ulong ViewEpoch => view;
+        public ulong ViewEpoch => _view;
         public WireFrame? LastWithheldBulkAck { get; private set; }
-        GameStateReplica? replica;
-        BulkTransferReceiver? bulk;
-        StagedBulkTransfer? staged;
-        ulong session, view, publication;
-        WireMessage? businessKind;
-        Guid businessQuery;
-        bool active;
-        Task? disposal;
+        GameStateReplica? _replica;
+        BulkTransferReceiver? _bulk;
+        StagedBulkTransfer? _staged;
+        ulong _session, _view, _publication;
+        WireMessage? _businessKind;
+        Guid _businessQuery;
+        bool _active;
+        Task? _disposal;
         public Task Send(WireFrame frame, CancellationToken token) { token.ThrowIfCancellationRequested(); connection.SendControl(frame); return Task.CompletedTask; }
         public Task SendStaleControl(WireFrame frame, ulong oldView, CancellationToken token)
-        { token.ThrowIfCancellationRequested(); connection.Send(QuicLane.Control, GameControlCodec.Encode(frame, session, oldView)); return Task.CompletedTask; }
+        { token.ThrowIfCancellationRequested(); connection.Send(QuicLane.Control, GameControlCodec.Encode(frame, _session, oldView)); return Task.CompletedTask; }
         public async Task<CreationReply> Creation(WireFrame request, CancellationToken token)
         {
             await Send(request, token);
@@ -126,13 +130,13 @@ public partial class SecureServerTests
         }
         void Ready()
         {
-            if (publication == 0 || staged is null) return;
-            ulong stagedPublicationWatermark = staged.Identity.LifecycleWatermark;
-            GameViewProtocol.Unpack(staged.Bytes.Span, bytes => replica!.Apply(bytes.Span));
-            staged.Dispose(); staged = null;
-            Assert.True(replica!.View!.Publication >= publication);
-            Assert.Equal(publication, stagedPublicationWatermark);
-            connection.SendControl(GameViewProtocol.Epoch(WireMessage.ViewReady, session, view, publication));
+            if (_publication == 0 || _staged is null) return;
+            ulong stagedPublicationWatermark = _staged.Identity.LifecycleWatermark;
+            GameViewProtocol.Unpack(_staged.Bytes.Span, bytes => _replica!.Apply(bytes.Span));
+            _staged.Dispose(); _staged = null;
+            Assert.True(_replica!.View!.Publication >= _publication);
+            Assert.Equal(_publication, stagedPublicationWatermark);
+            connection.SendControl(GameViewProtocol.Epoch(WireMessage.ViewReady, _session, _view, _publication));
         }
         public async Task<WireFrame> Until(Func<WireFrame, bool> done, CancellationToken token, bool acknowledge = true)
         {
@@ -145,58 +149,58 @@ public partial class SecureServerTests
                     if (message.Lane == QuicLane.Bulk)
                     {
                         var chunk = BulkChunkCodec.Decode(message.Payload.Span);
-                        Assert.Contains(bulk!.AcceptChunk(chunk), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
-                        var acknowledgement = GameViewProtocol.Ack(chunk.Identity, bulk.ContiguousBytes);
+                        Assert.Contains(_bulk!.AcceptChunk(chunk), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
+                        var acknowledgement = GameViewProtocol.Ack(chunk.Identity, _bulk.ContiguousBytes);
                         if (acknowledge) connection.SendControl(acknowledgement); else LastWithheldBulkAck = acknowledgement;
-                        if (bulk.TryComplete(out var complete) == BulkTransferOutcome.Accepted)
+                        if (_bulk.TryComplete(out var complete) == BulkTransferOutcome.Accepted)
                         {
-                            if (businessKind is { } kind)
+                            if (_businessKind is { } kind)
                             {
                                 WireFrame reply;
                                 using (complete) reply = new(kind, complete!.Bytes.ToArray());
-                                Assert.Equal(businessQuery, BusinessBulkProtocol.Query(reply, codec)); businessKind = null;
+                                Assert.Equal(_businessQuery, BusinessBulkProtocol.Query(reply, codec)); _businessKind = null;
                                 if (done(reply)) return reply;
                             }
-                            else { staged?.Dispose(); staged = complete; Ready(); }
+                            else { _staged?.Dispose(); _staged = complete; Ready(); }
                         }
                     }
                     else if (message.Lane == QuicLane.Lifecycle)
                     {
                         if (message.Payload.Span.StartsWith("MTN2"u8))
                         {
-                            var motion = MotionDatagramCodec.Decode(message.Payload.Span); replica!.ApplyMotion(motion);
-                            connection.SendControl(GameViewProtocol.Epoch(WireMessage.MotionCheckpointAck, session, view, motion.Header.PacketSequence));
+                            var motion = MotionDatagramCodec.Decode(message.Payload.Span); _replica!.ApplyMotion(motion);
+                            connection.SendControl(GameViewProtocol.Epoch(WireMessage.MotionCheckpointAck, _session, _view, motion.Header.PacketSequence));
                         }
-                        else replica!.Apply(message.Payload.Span);
+                        else _replica!.Apply(message.Payload.Span);
                     }
-                    else if (active) replica!.ApplyMotion(MotionDatagramCodec.Decode(message.Payload.Span));
-                    if (active) State.Replica.Current = replica!.View;
+                    else if (_active) _replica!.ApplyMotion(MotionDatagramCodec.Decode(message.Payload.Span));
+                    if (_active) State.Replica.Current = _replica!.View;
                     continue;
                 }
                 var frame = connection.DecodeControl(message.Payload.Span);
                 switch (frame.Kind)
                 {
                     case WireMessage.ViewBegin:
-                        var epoch = GameViewProtocol.ReadEpoch(frame); session = epoch.Session; view = epoch.View;
-                        active = false; publication = 0; State.Replica.Current = null; staged?.Dispose(); staged = null;
-                        replica = new(codec, session, view); bulk = new(session, view); break;
+                        var epoch = GameViewProtocol.ReadEpoch(frame); _session = epoch.Session; _view = epoch.View;
+                        _active = false; _publication = 0; State.Replica.Current = null; _staged?.Dispose(); _staged = null;
+                        _replica = new(codec, _session, _view); _bulk = new(_session, _view); break;
                     case WireMessage.BusinessBulkManifest:
-                        var business = BusinessBulkProtocol.ReadManifest(frame); businessKind = business.Kind; businessQuery = business.Query;
-                        bulk ??= new(business.Manifest.Identity.SessionEpoch, business.Manifest.Identity.ViewEpoch);
-                        Assert.Contains(bulk.Begin(business.Manifest), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
+                        var business = BusinessBulkProtocol.ReadManifest(frame); _businessKind = business.Kind; _businessQuery = business.Query;
+                        _bulk ??= new(business.Manifest.Identity.SessionEpoch, business.Manifest.Identity.ViewEpoch);
+                        Assert.Contains(_bulk.Begin(business.Manifest), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
                         connection.SendControl(GameViewProtocol.Epoch(WireMessage.BulkManifestAck, business.Manifest.Identity.SessionEpoch, business.Manifest.Identity.ViewEpoch, business.Manifest.Identity.BaselineId)); break;
                     case WireMessage.BusinessBulkCancelled: throw new IOException("Test business reply was withdrawn.");
                     case WireMessage.BulkManifest:
-                        publication = 0;
+                        _publication = 0;
                         var manifest = GameViewProtocol.ReadManifest(frame);
-                        Assert.Contains(bulk!.Begin(manifest), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
-                        connection.SendControl(GameViewProtocol.Epoch(WireMessage.BulkManifestAck, session, view, manifest.Identity.BaselineId)); break;
-                    case WireMessage.ViewCommit: publication = GameViewProtocol.ReadEpoch(frame).Publication; Ready(); break;
-                    case WireMessage.ViewActive: active = true; State.Replica.Current = replica!.View; break;
+                        Assert.Contains(_bulk!.Begin(manifest), new[] { BulkTransferOutcome.Accepted, BulkTransferOutcome.Duplicate });
+                        connection.SendControl(GameViewProtocol.Epoch(WireMessage.BulkManifestAck, _session, _view, manifest.Identity.BaselineId)); break;
+                    case WireMessage.ViewCommit: _publication = GameViewProtocol.ReadEpoch(frame).Publication; Ready(); break;
+                    case WireMessage.ViewActive: _active = true; State.Replica.Current = _replica!.View; break;
                     case WireMessage.Admission:
                         var status = SessionProtocol.ReadAdmission(frame); Assert.Equal(Admission.Identity, status.Identity);
                         if (status.State.Sequence > Admission.State.Sequence) Admission = status;
-                        if (status.State.Phase == AdmissionPhase.Preparing) { State.Replica.Current = null; active = false; }
+                        if (status.State.Phase == AdmissionPhase.Preparing) { State.Replica.Current = null; _active = false; }
                         break;
                 }
                 if (done(frame)) return frame;
@@ -208,8 +212,8 @@ public partial class SecureServerTests
             await Until(_ => Admission.State.Phase == AdmissionPhase.Active && State.Replica.Current is not null, token);
             Assert.NotNull(State.Replica.Current);
         }
-        public ValueTask DisposeAsync() => new(disposal ??= DisposeCore());
-        async Task DisposeCore() { staged?.Dispose(); await connection.DisposeAsync(); }
+        public ValueTask DisposeAsync() => new(_disposal ??= DisposeCore());
+        async Task DisposeCore() { _staged?.Dispose(); await connection.DisposeAsync(); }
     }
     static Task<Client> Connect(Scene scene, IssuedCredential credential, CancellationToken token)
         => Connect(scene.Server.Endpoint, scene.Certificate, Hello(), credential, new(scene.Data.Db), token);

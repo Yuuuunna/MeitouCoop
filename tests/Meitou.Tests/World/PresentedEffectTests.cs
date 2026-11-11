@@ -2,6 +2,7 @@ using System.Numerics;
 using Meitou.Data.Particles;
 using Meitou.Data.World;
 using Meitou.Simulation;
+using Meitou.Simulation.Factions;
 
 namespace Meitou.Tests.World;
 

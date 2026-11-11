@@ -4,34 +4,60 @@ using System.Text;
 namespace Meitou.Data.Audio;
 
 /// <summary>
-/// The Vorbis codebooks Wwise Vorbis setup headers refer to by a 10-bit index (docs/formats/wwise-bnk.md#codebook-library). The game's
-/// Wwise decoder carries them in <c>kenshi_x64.exe</c>: a table of pointers (in <c>.data</c> in the Steam exe) to the packed codebooks in <c>.rdata</c>, one more
-/// pointer than codebooks (the end). Nothing is shipped: the table is found in the install's exe by its shape and checked by parsing every
-/// codebook, so any build of the exe works.
+/// The Vorbis codebooks Wwise Vorbis setup headers refer to by a 10-bit index (docs/formats/wwise-bnk.md#codebook-library). The game's Wwise decoder
+/// carries them in <c>kenshi_x64.exe</c>: a table of pointers (in <c>.data</c> in the Steam exe) to the packed codebooks in <c>.rdata</c>, one more
+/// pointer than codebooks (the end). Nothing is shipped: the table is found in the install's exe by its shape and checked by parsing every codebook,
+/// so any build of the exe works.
 /// </summary>
 public sealed class WwiseCodebookLibrary
 {
-    readonly byte[][] codebooks;
+    /// <summary>
+    /// The layout of <c>codebooks.bin</c>; a cache of another version is read again from the exe.
+    /// </summary>
+    const int CacheVersion = 1;
 
-    WwiseCodebookLibrary(byte[][] codebooks) => this.codebooks = codebooks;
+    /// <summary>
+    /// The packed codebooks by index.
+    /// </summary>
+    readonly byte[][] _codebooks;
 
-    public int Count => codebooks.Length;
+    /// <summary>
+    /// A library of <paramref name="codebooks"/>, kept as given.
+    /// </summary>
+    WwiseCodebookLibrary(byte[][] codebooks) => this._codebooks = codebooks;
 
-    /// <summary>The packed codebook <paramref name="index"/>.</summary>
+    /// <summary>
+    /// How many codebooks the library holds (598 in Kenshi's exe).
+    /// </summary>
+    public int Count => _codebooks.Length;
+
+    /// <summary>
+    /// The packed codebook <paramref name="index"/>.
+    /// </summary>
     public ReadOnlySpan<byte> Packed(int index) =>
-        (uint)index < (uint)codebooks.Length ? codebooks[index] : throw new InvalidDataException($"Codebook {index} is not in the library ({codebooks.Length})");
+        (uint)index < (uint)_codebooks.Length ? _codebooks[index]
+                : throw new InvalidDataException($"Codebook {index} is not in the library ({_codebooks.Length})");
 
+    /// <summary>
+    /// A library of the given packed codebooks in order (tests and tools).
+    /// </summary>
     public static WwiseCodebookLibrary FromCodebooks(IEnumerable<byte[]> codebooks) => new([.. codebooks]);
 
-    /// <summary>Finds the library in a Wwise-linked 64-bit Windows executable; null when none is found.</summary>
+    /// <summary>
+    /// Finds the library in a Wwise-linked 64-bit Windows executable; null when none is found.
+    /// </summary>
     public static WwiseCodebookLibrary? FromExecutable(string exePath) => FromExecutable(File.ReadAllBytes(exePath));
 
-    /// <summary>The default cache folder: <c>%LOCALAPPDATA%\Meitou\audio</c>.</summary>
+    /// <summary>
+    /// The default cache folder: <c>%LOCALAPPDATA%\Meitou\audio</c>.
+    /// </summary>
     public static string DefaultCacheDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "audio");
 
+    /// <summary>
+    /// The first four bytes of <c>codebooks.bin</c>.
+    /// </summary>
     static ReadOnlySpan<byte> CacheMagic => "MWCB"u8;
-    const int CacheVersion = 1;
 
     /// <summary>
     /// The library of <paramref name="exePath"/>, from <c>codebooks.bin</c> in <paramref name="cacheDirectory"/> when that was made from an exe of
@@ -56,8 +82,8 @@ public sealed class WwiseCodebookLibrary
                 w.Write(CacheVersion);
                 w.Write(exe.Length);
                 w.Write(stamp);
-                w.Write(library.codebooks.Length);
-                foreach (var book in library.codebooks)
+                w.Write(library._codebooks.Length);
+                foreach (var book in library._codebooks)
                 {
                     w.Write((ushort)book.Length);
                     w.Write(book);
@@ -69,13 +95,19 @@ public sealed class WwiseCodebookLibrary
         return library;
     }
 
+    /// <summary>
+    /// The library cached in <paramref name="file"/> when it was made from an exe of <paramref name="exeLength"/> bytes and write time
+    /// <paramref name="stamp"/>; null when missing, stale or unreadable.
+    /// </summary>
     static WwiseCodebookLibrary? TryReadCache(string file, long exeLength, long stamp)
     {
         try
         {
             if (!File.Exists(file)) return null;
             using var r = new BinaryReader(File.OpenRead(file));
-            if (!r.ReadBytes(4).AsSpan().SequenceEqual(CacheMagic) || r.ReadInt32() != CacheVersion || r.ReadInt64() != exeLength || r.ReadInt64() != stamp) return null;
+            if (!r.ReadBytes(4).AsSpan().SequenceEqual(CacheMagic) || r.ReadInt32() != CacheVersion || r.ReadInt64() != exeLength
+                    || r.ReadInt64() != stamp)
+                return null;
             var books = new byte[r.ReadInt32()][];
             for (int i = 0; i < books.Length; i++)
             {
@@ -84,12 +116,16 @@ public sealed class WwiseCodebookLibrary
             }
             return new WwiseCodebookLibrary(books);
         }
-        catch (Exception e) when (e is IOException or EndOfStreamException or InvalidDataException or UnauthorizedAccessException or OverflowException)
+        catch (Exception e)
+            when (e is IOException or EndOfStreamException or InvalidDataException or UnauthorizedAccessException or OverflowException)
         {
             return null;
         }
     }
 
+    /// <summary>
+    /// Finds the library in the bytes of a Wwise-linked 64-bit Windows executable; null when none is found.
+    /// </summary>
     public static WwiseCodebookLibrary? FromExecutable(byte[] exe) => FromExecutable(exe, out _);
 
     /// <summary>
@@ -104,6 +140,10 @@ public sealed class WwiseCodebookLibrary
         return $"{exe.Length:N0} bytes, {why}";
     }
 
+    /// <summary>
+    /// Scans every section that is not code for a run of at least 200 increasing pointers into the image no more than 8000 bytes apart, and takes the
+    /// first whose codebooks all parse; <paramref name="why"/> says why none did.
+    /// </summary>
     static WwiseCodebookLibrary? FromExecutable(byte[] exe, out string why)
     {
         var sections = Sections(exe, out ulong imageBase);
@@ -123,6 +163,7 @@ public sealed class WwiseCodebookLibrary
 
         int longest = 0, failedAt = -1;
         string longestIn = "";
+
         // Kenshi's Steam exe keeps the table in .data; any section that is not code is scanned, as another build may link it elsewhere.
         foreach (var data in sections.Where(s => (s.Flags & 0x20000000) == 0))
         {
@@ -159,6 +200,10 @@ public sealed class WwiseCodebookLibrary
         return null;
     }
 
+    /// <summary>
+    /// The codebooks between the <paramref name="pointers"/> pointers at file offset <paramref name="table"/>, each of which must parse and fill its
+    /// span exactly; null otherwise, with the failing index in <paramref name="failedAt"/>.
+    /// </summary>
     static WwiseCodebookLibrary? TryRead(byte[] exe, long table, int pointers, Func<ulong, long> toFile, out int failedAt)
     {
         var books = new byte[pointers - 1][];
@@ -184,14 +229,21 @@ public sealed class WwiseCodebookLibrary
         return new WwiseCodebookLibrary(books);
     }
 
+    /// <summary>
+    /// A PE section header: name, virtual address (relative to the image base), file offset and size of its raw data, characteristics flags.
+    /// </summary>
     sealed record Section(string Name, ulong Va, long Raw, long RawSize, uint Flags);
 
+    /// <summary>
+    /// The section headers of a PE32+ executable and its image base; null when <paramref name="exe"/> is not one.
+    /// </summary>
     static List<Section>? Sections(byte[] exe, out ulong imageBase)
     {
         imageBase = 0;
         if (exe.Length < 0x40 || exe[0] != 'M' || exe[1] != 'Z') return null;
         int pe = BinaryPrimitives.ReadInt32LittleEndian(exe.AsSpan(0x3C));
-        if (pe < 0 || pe + 24 > exe.Length || BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(pe)) != 0x00004550) return null;
+        if (pe < 0 || pe + 24 > exe.Length || BinaryPrimitives.ReadUInt32LittleEndian(exe.AsSpan(pe)) != 0x00004550)
+            return null;
         int count = BinaryPrimitives.ReadUInt16LittleEndian(exe.AsSpan(pe + 6));
         int optional = BinaryPrimitives.ReadUInt16LittleEndian(exe.AsSpan(pe + 20));
         if (BinaryPrimitives.ReadUInt16LittleEndian(exe.AsSpan(pe + 24)) != 0x20B) return null; // PE32+ only

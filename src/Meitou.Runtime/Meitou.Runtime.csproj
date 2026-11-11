@@ -5,7 +5,6 @@
   <ItemGroup>
     <ProjectReference Include="../Meitou.Modding/Meitou.Modding.csproj" />
     <ProjectReference Include="../Meitou.Simulation/Meitou.Simulation.csproj" />
-    <ProjectReference Include="../Meitou.Navigation/Meitou.Navigation.csproj" />
     <ProjectReference Include="../Meitou.Networking/Meitou.Networking.csproj" />
   </ItemGroup>
 </Project>

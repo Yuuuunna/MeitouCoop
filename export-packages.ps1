@@ -56,8 +56,8 @@ try {
         }
     }
 
-    # Build tools from this checkout with the same runtime/configuration. Verify shared files before merging;
-    # a tools publish must never replace a different engine/runtime binary in the client stage.
+    # Tools reference the game executable and carry dependency runtimeconfig/deps copies. Keep the game's own
+    # publish metadata; shared engine/runtime binaries must still come from the same build.
     $toolsStage = Join-Path $stageRoot 'tools'
     $clientStage = Join-Path $stageRoot 'client'
     Write-Host 'Publishing mod-check tools (Release, win-x64, self-contained)...'
@@ -71,6 +71,7 @@ try {
         $relative = [IO.Path]::GetRelativePath($toolsStage, $toolFile.FullName)
         $clientFile = Join-Path $clientStage $relative
         if (Test-Path -LiteralPath $clientFile) {
+            if ($relative -in @('MeitouClient.deps.json', 'MeitouClient.runtimeconfig.json')) { continue }
             if (-not (Test-Path -LiteralPath $clientFile -PathType Leaf) -or
                 (Get-FileHash -LiteralPath $toolFile.FullName -Algorithm SHA256).Hash -ne
                 (Get-FileHash -LiteralPath $clientFile -Algorithm SHA256).Hash) {

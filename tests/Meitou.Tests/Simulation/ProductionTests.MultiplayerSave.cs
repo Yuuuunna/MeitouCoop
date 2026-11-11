@@ -7,6 +7,8 @@ using Meitou.Data.Save;
 using Meitou.Data.World;
 using Meitou.Runtime;
 using Meitou.Simulation;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 using Meitou.Simulation.Construction;
 using Meitou.Simulation.Saving;
 using Meitou.Tests.Save;
@@ -33,7 +35,7 @@ public partial class ProductionTests
             case "allocation": save.Camera.Record.Strings.Remove(BuildingSave.AllocationKey); break;
             case "owner": state.Strings["owner faction ID"] = "missing-faction"; break;
             case "content": save.Zones[site.Zone].BuildingList!.Instances[0].Target = "missing-building"; break;
-            case "town": new Hand((int)FcsRecordType.TOWN, 999, 1, 0, 0).Write(state, "town"); break;
+            case "town": new Hand((int)FcsRecordType.Town, 999, 1, 0, 0).Write(state, "town"); break;
         }
         using var back = new Rig(db, Constants, []);
         Assert.Throws<InvalidDataException>(() => BuildingSave.ReadMultiplayer(save, back.World, data));
@@ -50,7 +52,7 @@ public partial class ProductionTests
     public void MultiplayerCheckpointRestoresOutpostsBuildingsAndMachineContentsForEveryOwner()
     {
         var db = Database();
-        var well = Rec(Well, FcsRecordType.BUILDING, "Well");
+        var well = Rec(Well, FcsRecordType.Building, "Well");
         well.References["construction"] = [new FcsReference(Water, 20, 0, 0)];
         var patch = new FcsFile(); patch.Records.Add(well); db.Apply(patch, "construction.mod");
         using var rig = new Rig(db, Constants, [Tank, Tank, Well, Well, Workshop, Generator, Battery]);
@@ -94,10 +96,10 @@ public partial class ProductionTests
         // A procedurally generated NPC building of B's faction must not be reclassified as a player construction site.
         string npcId = BuildingRegistry.IdOf(900, zone);
         var file = save.Zones[zone].File;
-        var npcState = new FcsRecord { RecordType = FcsRecordType.GAMESTATE_BUILDING, StringId = npcId + "-S23", Id = SaveBuilder.NextNumber(file) };
+        var npcState = new FcsRecord { RecordType = FcsRecordType.GamestateBuilding, StringId = npcId + "-S23", Id = SaveBuilder.NextNumber(file) };
         npcState.Strings["owner faction ID"] = data.Factions[3].Id;
         npcState.Strings["sentinel"] = "NPC state";
-        new Hand((int)FcsRecordType.BUILDING, save.Zones[zone].ContainerId, 11111, 900, 1).Write(npcState, "handle");
+        new Hand((int)FcsRecordType.Building, save.Zones[zone].ContainerId, 11111, 900, 1).Write(npcState, "handle");
         file.Records.Add(npcState);
         var npcInstance = new FcsInstance { Id = npcId, Target = Well, Position = At, Rotation = Quaternion.Identity };
         npcInstance.States.Add(npcState.StringId);

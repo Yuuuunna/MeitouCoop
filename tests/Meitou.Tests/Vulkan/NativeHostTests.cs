@@ -1,5 +1,5 @@
-using Meitou.Rendering.Gpu;
-using Meitou.Rendering.Gpu.Core;
+using Meitou.Game.Rendering.Gpu;
+using Meitou.Game.Rendering.Gpu.Core;
 using Silk.NET.Vulkan;
 
 namespace Meitou.Tests.Vulkan;
@@ -13,8 +13,12 @@ public class NativeHostTests
 {
     static VulkanDevice? TryCreate(bool sync = true)
     {
-        try { return VulkanDevice.Create(new VulkanDeviceOptions { Validation = true, SyncValidation = sync }); }
-        catch (Exception e) when (e is VulkanException or DllNotFoundException or EntryPointNotFoundException or Silk.NET.Core.Loader.SymbolLoadingException)
+        try
+        {
+            return VulkanDevice.Create(new VulkanDeviceOptions { Validation = true, SyncValidation = sync });
+        }
+        catch (Exception e) when (e is VulkanException or DllNotFoundException or EntryPointNotFoundException
+            or Silk.NET.Core.Loader.SymbolLoadingException)
         {
             return null;
         }
@@ -49,7 +53,8 @@ public class NativeHostTests
         """;
 
     static GpuTexture Target(GpuContext ctx) =>
-        ctx.CreateTexture(new TextureDesc(InternalFormat.Rgba8, W, H, Use: TextureUse.ColourTarget | TextureUse.TransferSrc, Name: "native host test"));
+        ctx.CreateTexture(new TextureDesc(InternalFormat.Rgba8, W, H, Use: TextureUse.ColourTarget | TextureUse.TransferSrc,
+                Name: "native host test"));
 
     static (byte, byte, byte, byte) At(byte[] p, int x, int y)
     {
@@ -81,7 +86,8 @@ public class NativeHostTests
             cmd.BeginRendering(targets.Rendering with { Colour = targets.Colour with { Load = LoadOp.Clear, Clear = new ClearColour(0, 1, 0, 1) } });
             ctx.BeginHostPass((CommandList)cmd, targets, DrawState.For(targets.Formats, d!.DepthClamp));
             Assert.Throws<InvalidOperationException>(() => ctx.BeginNative("nested"));
-            Assert.Throws<InvalidOperationException>(() => ctx.BeginHostPass((CommandList)cmd, targets, DrawState.For(targets.Formats, d.DepthClamp)));
+            Assert.Throws<InvalidOperationException>(() => ctx.BeginHostPass((CommandList)cmd, targets,
+                    DrawState.For(targets.Formats, d.DepthClamp)));
             // A clear of the host's targets in its place: the first quarter blue.
             ctx.Clear(cmd, true, new ClearColour(0, 0, 1, 1), false, 1, Quarter(0));
 
@@ -106,7 +112,8 @@ public class NativeHostTests
             ctx.SetPassViewport(targets.Viewport, Quarter(3));
             var b = ctx.BeginGuest("guest b");
             var tb = ctx.CurrentTargets();
-            b.BindPipeline(ctx.Pipelines.Get(state.Pipeline(yellow.Program, yellow.VertexLayout([]), PrimitiveType.Triangles, tb.Formats, "host yellow")));
+            b.BindPipeline(ctx.Pipelines.Get(state.Pipeline(yellow.Program, yellow.VertexLayout([]), PrimitiveType.Triangles, tb.Formats,
+                    "host yellow")));
             state.Record(b, tb);
             yellow.Flush(b);
             b.Draw(3);

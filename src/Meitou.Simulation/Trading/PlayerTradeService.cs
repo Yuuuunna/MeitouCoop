@@ -1,5 +1,8 @@
 using System.Numerics;
+using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Items;
+using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
 
 namespace Meitou.Simulation.Trading;
 
@@ -25,8 +28,8 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
         public readonly Side First = first, Second = second;
         public ulong Revision = 1;
     }
-    readonly Dictionary<ulong, Session> sessions = [];
-    ulong serial;
+    readonly Dictionary<ulong, Session> _sessions = [];
+    ulong _serial;
     public const float Range = 30;
     public const int MaximumOfferItems = 128;
 
@@ -37,12 +40,12 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
         {
             if (command.Issuer is not { } player || !isActive(player)) continue;
             if (command is OpenPlayerTrade open) { Open(world, player, open); continue; }
-            if (command is not PlayerTradeCommand request || !sessions.TryGetValue(request.SessionId, out var session)
+            if (command is not PlayerTradeCommand request || !_sessions.TryGetValue(request.SessionId, out var session)
                 || request.Revision != session.Revision) continue;
             var own = session.First.Player == player ? session.First : session.Second.Player == player ? session.Second : null;
             if (own is null) continue;
-            if (command is CancelPlayerTrade) { sessions.Remove(session.Id); continue; }
-            if (!Valid(world, session)) { sessions.Remove(session.Id); continue; }
+            if (command is CancelPlayerTrade) { _sessions.Remove(session.Id); continue; }
+            if (!Valid(world, session)) { _sessions.Remove(session.Id); continue; }
             if (command is AcceptPlayerTrade accept)
             {
                 if (own.Accepted || own.Actor != accept.Actor || !world.MayOrder(accept, accept.Actor)
@@ -79,7 +82,7 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
                 own.Confirmed = true;
                 if (session.First.Confirmed && session.Second.Confirmed)
                 {
-                    if (Commit(world, session)) sessions.Remove(session.Id);
+                    if (Commit(world, session)) _sessions.Remove(session.Id);
                     else { Change(session); world.Post(player, "Trade could not complete: check funds and inventory space."); }
                 }
             }
@@ -89,15 +92,15 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
     void Open(World world, PlayerId player, OpenPlayerTrade command)
     {
         if (player == command.Counterparty || command.Counterparty.IsNone || !isActive(command.Counterparty)
-            || sessions.Values.Any(s => s.First.Player == player || s.Second.Player == player || s.First.Player == command.Counterparty || s.Second.Player == command.Counterparty)
+            || _sessions.Values.Any(s => s.First.Player == player || s.Second.Player == player || s.First.Player == command.Counterparty || s.Second.Player == command.Counterparty)
             || !world.MayOrder(command, command.Actor)
             || !MembershipMatches(world, player, command.PaymentFaction, command.FactionGrantRevision)
             || world.Players.ControlOf(command.CounterpartyActor) is not { } target || target.Player != command.Counterparty) return;
         var first = new Side(player, command.Actor);
         if (!Bind(world, first, command.PaymentFaction)) return;
         var second = new Side(command.Counterparty, command.CounterpartyActor) { Grant = target };
-        var session = new Session(checked(++serial), first, second);
-        if (Valid(world, session)) sessions.Add(session.Id, session);
+        var session = new Session(checked(++_serial), first, second);
+        if (Valid(world, session)) _sessions.Add(session.Id, session);
     }
 
     static bool MembershipMatches(World world, PlayerId player, int faction, ulong revision) =>
@@ -155,19 +158,19 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
     }
     public void Prune(World world)
     {
-        foreach (var session in sessions.Values.ToArray())
-            if (!Valid(world, session)) sessions.Remove(session.Id);
+        foreach (var session in _sessions.Values.ToArray())
+            if (!Valid(world, session)) _sessions.Remove(session.Id);
             else if (session.First.Accepted && !InventoryValid(world, session.First) || session.Second.Accepted && !InventoryValid(world, session.Second)) InvalidateOffers(world, session);
     }
     public void Disconnect(PlayerId player)
     {
-        foreach (var session in sessions.Values.Where(s => s.First.Player == player || s.Second.Player == player).ToArray()) sessions.Remove(session.Id);
+        foreach (var session in _sessions.Values.Where(s => s.First.Player == player || s.Second.Player == player).ToArray()) _sessions.Remove(session.Id);
     }
-    public void Clear() => sessions.Clear();
+    public void Clear() => _sessions.Clear();
 
     public PlayerTradeView? Publish(World world, PlayerId player)
     {
-        var session = sessions.Values.FirstOrDefault(s => s.First.Player == player || s.Second.Player == player);
+        var session = _sessions.Values.FirstOrDefault(s => s.First.Player == player || s.Second.Player == player);
         if (session is null || !Valid(world, session)) return null;
         var own = session.First.Player == player ? session.First : session.Second;
         var other = ReferenceEquals(own, session.First) ? session.Second : session.First;

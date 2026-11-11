@@ -1,15 +1,18 @@
 using System.Numerics;
 using Meitou.Simulation.Bodies;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Items;
+using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 
-namespace Meitou.Simulation;
+namespace Meitou.Simulation.Items;
 
-public sealed partial class PlayerSystem
+internal static class InventoryTransfer
 {
     readonly record struct InventoryDestination(Inventory Grid, CharacterCold Owner, string Section, int X, int Y);
 
     /// <summary>Serial preflight followed by one commit. Both roles and both displayed inventories must still match.</summary>
-    void TransferInventory(World world, TransferInventoryItem command)
+    internal static void Transfer(World world, TransferInventoryItem command, CharacterAssembly? assembly, PopulationData? data)
     {
         var table = world.Characters;
         if (!world.MayOrder(command, command.From) || !world.MayOrder(command, command.To)
@@ -19,12 +22,12 @@ public sealed partial class PlayerSystem
             || !world.InventoryMatches(command, from)
             || !(command.Issuer is null && command.TargetRevision == 0 || command.TargetRevision != 0 && world.InventoryRevision(into) == command.TargetRevision)) return;
         float distance = Vector3.DistanceSquared(table.Next[fromSlot].Position, table.Next[toSlot].Position);
-        if (!float.IsFinite(distance) || distance > GiveRange * GiveRange) return;
+        if (!float.IsFinite(distance) || distance > HeldItems.GiveRange * HeldItems.GiveRange) return;
         var item = from.All().ElementAtOrDefault(command.Item.Index);
-        if (!Matches(item, command.Item) || item is null || item.Death || item.LockedOn || command.Count <= 0 || command.Count > item.Quantity
-            || !CanDetach(source, item) || HolderOf(from, item) is not { } sourceGrid) return;
+        if (!HeldItems.Matches(item, command.Item) || item is null || item.Death || item.LockedOn || command.Count <= 0 || command.Count > item.Quantity
+            || !CanDetach(source, item) || HeldItems.HolderOf(from, item) is not { } sourceGrid) return;
         bool whole = command.Count == item.Quantity;
-        if ((!whole && item.Contents is not null) || Destination(into, target, item, command.Count, command.Section, command.X, command.Y) is not { } destination) return;
+        if ((!whole && item.Contents is not null) || Destination(into, target, item, command.Count, command.Section, command.X, command.Y, data) is not { } destination) return;
         if (ReferenceEquals(item.Contents, destination.Grid)) return; // cannot put the worn backpack inside itself
 
         var under = Overlapping(destination, item).Where(other => other != item || !whole).ToArray();
@@ -42,7 +45,7 @@ public sealed partial class PlayerSystem
             else
             {
                 if (!command.Swap || !whole || !CanDetach(target, other)
-                    || Destination(from, source, other, other.Quantity, item.Section, item.X, item.Y) is not { } replacement
+                    || Destination(from, source, other, other.Quantity, item.Section, item.X, item.Y, data) is not { } replacement
                     || ReferenceEquals(other.Contents, replacement.Grid)
                     || Overlapping(replacement, other).Any(i => i != item && i != other)) return;
                 // Two replacement footprints in the same grid must not overlap each other after the swap.
@@ -55,7 +58,7 @@ public sealed partial class PlayerSystem
         if (other?.Contents is not null && ReferenceEquals(other.Contents, sourceGrid)) return;
 
         // Everything that can refuse has been checked. No external callbacks or currency changes occur during commit.
-        var unit = whole ? item : Part(item, command.Count);
+        var unit = whole ? item : HeldItems.Part(item, command.Count);
         if (whole) { sourceGrid.Items.Remove(item); Detach(source, item); }
         if (from != into) unit.Death = false;
         if (merge)
@@ -71,9 +74,9 @@ public sealed partial class PlayerSystem
             {
                 destination.Grid.Items.Remove(other);
                 Detach(target, other);
-                PutInventory(returning, other);
+                PutInventory(returning, other, data);
             }
-            PutInventory(destination, unit);
+            PutInventory(destination, unit, data);
         }
         assembly?.RefreshEquipment(source);
         if (source != target) assembly?.RefreshEquipment(target);
@@ -85,7 +88,7 @@ public sealed partial class PlayerSystem
         || InventoryCommands.LimbSlotOf(item.Section) is >= 0 and var limb
         && owner.Medical?.LimbPart(limb) is { Limb: LimbState.Replaced } part && ReferenceEquals(part.ReplacementItem, item);
 
-    InventoryDestination? Destination(Inventory root, CharacterCold owner, ItemInstance item, int count, string section, int x, int y)
+    static InventoryDestination? Destination(Inventory root, CharacterCold owner, ItemInstance item, int count, string section, int x, int y, PopulationData? data)
     {
         var grid = section == "backpack_content" ? root.Backpack?.Contents : root;
         if (grid is null || item.Width <= 0 || item.Height <= 0 || count <= 0 || count > grid.LimitOf(item)
@@ -112,7 +115,7 @@ public sealed partial class PlayerSystem
         if (InventoryCommands.LimbSlotOf(item.Section) is >= 0 and var limb) owner.Medical?.RemoveReplacement(limb);
     }
 
-    void PutInventory(InventoryDestination destination, ItemInstance item)
+    static void PutInventory(InventoryDestination destination, ItemInstance item, PopulationData? data)
     {
         item.Section = destination.Section; item.X = destination.X; item.Y = destination.Y;
         destination.Grid.Items.Add(item);

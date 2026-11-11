@@ -10,34 +10,34 @@ namespace Meitou.Data;
 /// </summary>
 public class GameAssets
 {
-    readonly GameInstall install;
-    readonly Lazy<OgreScriptResources> everything;
+    readonly GameInstall _install;
+    readonly Lazy<OgreScriptResources> _everything;
 
     public GameAssets(GameInstall install)
     {
-        this.install = install;
+        this._install = install;
         Configured = GameResources.For(install);
-        everything = new(() => OgreScriptResources.FromDirectory(install.DataDirectory));
-        materials = new(() => OgreMaterialLibrary.Load(Configured));
+        _everything = new(() => OgreScriptResources.FromDirectory(install.DataDirectory));
+        _materials = new(() => OgreMaterialLibrary.Load(Configured));
     }
 
     public OgreScriptResources Configured { get; }
 
-    readonly Lazy<OgreMaterialLibrary> materials;
+    readonly Lazy<OgreMaterialLibrary> _materials;
 
     /// <summary>The material scripts the game compiles (<see cref="OgreMaterialLibrary.Load(OgreScriptResources)"/>), parsed once on first use and shared; read only.</summary>
-    public OgreMaterialLibrary Materials => materials.Value;
+    public OgreMaterialLibrary Materials => _materials.Value;
 
     /// <summary>The successful names found so far: a town's characters asked
     /// for the same animation and skeleton files thousands of times while loading. A name not found is looked for again next time.</summary>
-    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Path, string How)> found = new();
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Path, string How)> _found = new();
 
     /// <summary>Full path of <paramref name="name"/>, or null. <paramref name="how"/> says which rule found it.</summary>
     public string? Find(string name, out string how)
     {
-        if (found.TryGetValue(name, out var known)) { how = known.How; return known.Path; }
+        if (_found.TryGetValue(name, out var known)) { how = known.How; return known.Path; }
         var path = Search(name, out how);
-        if (path is not null) found.TryAdd(name, (path, how));
+        if (path is not null) _found.TryAdd(name, (path, how));
         return path;
     }
 
@@ -52,13 +52,13 @@ public class GameAssets
         if (!Path.IsPathRooted(name) && Configured.Find(bare) is { } configured) { how = "resources.cfg"; return configured; }
         if (!Path.IsPathRooted(name))
         {
-            var underInstall = GameFiles.Resolve(Path.GetFullPath(Path.Combine(install.Root, name)));
+            var underInstall = GameFiles.Resolve(Path.GetFullPath(Path.Combine(_install.Root, name)));
             if (File.Exists(underInstall)) { how = "install path"; return underInstall; }
             var local = GameFiles.Resolve(name);
             if (File.Exists(local)) { how = "path"; return Path.GetFullPath(local); }
         }
         if (Configured.Find(bare) is { } named) { how = "resources.cfg"; return named; }
-        if (everything.Value.Find(bare) is { } anywhere) { how = "data/ (outside resources.cfg)"; return anywhere; }
+        if (_everything.Value.Find(bare) is { } anywhere) { how = "data/ (outside resources.cfg)"; return anywhere; }
         return null;
     }
 
@@ -78,5 +78,5 @@ public class GameAssets
 
     public Characters.CharacterRigs CreateRigs(GameDatabase db) => new(db, FindMesh, Find);
 
-    public string Relative(string path) => Path.GetRelativePath(install.Root, path);
+    public string Relative(string path) => Path.GetRelativePath(_install.Root, path);
 }

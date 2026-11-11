@@ -1,4 +1,4 @@
-using Meitou.Engine;
+using Meitou.Game.Host;
 using Meitou.Simulation;
 
 namespace Meitou.Tests.Engine;
