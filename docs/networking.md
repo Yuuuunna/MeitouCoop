@@ -132,8 +132,10 @@ remote clients do not receive historical decal stores on entry.
 `PlayerState.Messages` retains the last 200 private notices/dialogue lines with per-player sequence numbers.
 The independent `messages` component avoids resending unchanged history in ordinary deltas. Explicit-control
 worlds keep unattributed legacy Post/Said diagnostic-only; they do not become the local account's inbox.
-Faction notices go only to explicit members. Attributed conversation logs go only to their participant;
-pending bubble lines revalidate authority before expansion. These UI histories are not saved or hashed.
+Role-status notices route through `PostCharacter` to that role's controller; faction/diplomacy notices go only to
+explicit members. Attributed conversation logs go only to their participant; unattributed ambient bubbles emit
+`SaidPublic` to nearby viewers, and `TutorialFacts` in `CapturePlayerView` are scoped to the recipient's owned
+living roles. Pending bubble lines revalidate authority before expansion. These UI histories are not saved or hashed.
 
 Remote UI restores history without old popup replay, then consumes new IDs once; transient public speech
 joins its log separately. The popup backlog is capped at 32. The local host keeps its TakeMessages/TakeSaid

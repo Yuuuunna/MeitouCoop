@@ -63,9 +63,9 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
                         if (world.Fixtures.GetOut(world, id, Crimes))
                         {
                             c.PickingLock = null;
-                            if (c.IsPlayer) world.Post(Loc.Tr("{1} got out of the cage", c.Name));
+                            if (c.IsPlayer) world.PostCharacter(c, Loc.Tr("{1} got out of the cage", c.Name));
                         }
-                        else if (c.IsPlayer) world.Post("It's locked.");
+                        else if (c.IsPlayer) world.PostCharacter(c, "It's locked.");
                     }
                     break;
                 case ShackleOrder shackles:
@@ -165,5 +165,5 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
     /// Posts a character's own line as "name: line" (a lock worker's "Pick failed", "It's locked."). The line is a game msgid looked up on its own,
     /// so every language with a game catalogue shows it translated; the "{1}: {2}" frame is Meitou's.
     /// </summary>
-    static void Say(World world, CharacterCold c, string line) => world.Post(Loc.Tr("{1}: {2}", c.Name, Loc.Tr(line)));
+    static void Say(World world, CharacterCold c, string line) => world.PostCharacter(c, Loc.Tr("{1}: {2}", c.Name, Loc.Tr(line)));
 }

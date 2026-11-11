@@ -218,7 +218,7 @@ public sealed partial class LockSystem
             if (n.Task == (byte)CharacterTask.GoTo) AtWork(world, s);
             doorWalkers.Remove(actor);
             if (door.Motion is DoorMotion.Open or DoorMotion.Opening) { if (door.Motion == DoorMotion.Open) FixtureRegistry.CloseDoor(door); }
-            else if (door.Lock is { EffectivelyLocked: true }) world.Post($"{c.Name}: It's locked.");
+            else if (door.Lock is { EffectivelyLocked: true }) world.PostCharacter(c, $"{c.Name}: It's locked.");
             else FixtureRegistry.OpenDoor(door);
         }
     }

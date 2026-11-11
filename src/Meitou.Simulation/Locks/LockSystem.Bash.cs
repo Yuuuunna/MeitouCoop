@@ -162,7 +162,7 @@ public sealed partial class LockSystem
     static bool Damage(World world, Fixture door, float damage)
     {
         if (door.Kind != FixtureKind.Door || door.DoorBroken) return false;
-        world.Floaters?.Enqueue(Floater.BuildingHit(door.Position, (int)damage));   // the damage number at the door (FUN_14029d2b0); queued only while the host shows floaters
+        if (world.HasFloaterSink) world.EmitFloater(Floater.BuildingHit(door.Position, (int)damage));   // the damage number at the door (FUN_14029d2b0); queued only while the host shows floaters
         door.DoorProgress -= damage * ProgressPerDamage;
         if (door.DoorProgress > 0) return false;
         door.DoorProgress = 0;

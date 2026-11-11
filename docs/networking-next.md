@@ -220,9 +220,9 @@ rerun after the loading-clock-only correction.
 do not call an application-payload-only measurement the wire budget. Native UDP payload counters plus
 packet/header accounting (or a packet trace) must include both directions and retransmissions.
 Count traffic at one endpoint, not twice across client and server. The global 25 Mbit/s gate measures
-server egress; the per-player gate measures both directions. `WireBudgetAcceptance` requires complete
-120 s counter epochs with 10 s boundaries, actual UDP datagram counts and IP-header byte totals;
-counter resets or missing windows cannot pass. Its verdict covers throughput only, never gameplay quality.
+server egress; the per-player gate measures both directions over complete 120 s counter epochs with
+10 s window boundaries, actual UDP datagram counts and IP-header byte totals; counter resets or missing
+windows cannot pass. Throughput gates never substitute for gameplay quality.
 **Observed** (pinned MsQuic 2.6.3 headers): `SendTotalPackets`/`RecvTotalPackets` count QUIC packets,
 not UDP datagrams; packet coalescing prevents using these as exact UDP/IP overhead measurements.
 The current 50-byte motion-record prototype alone exceeds this budget if all 124 characters are sent
@@ -246,11 +246,9 @@ responsiveness, throughput and animation, blocks production cutover. Remaining g
 | `StateTransportTests` chunk/base-ACK cases | bounded bulk commit, epoch fencing, final-state recovery and slow-peer scheduling tests |
 | `SecureServerTests.*` production scenarios | migrate to the actual v21 client/server adapter; keep creation, ownership, inventory, events, reconnect and persistence assertions |
 
-**Verified** (local `NetworkingNext` deterministic tests): motion codec/MTU validation and the isolated
-`StateFenceReference` reject conflicts atomically, fence withdrawn/re-entered entities and preserve newer
-revisions across late baseline completion. The reference retains a baseline digest rather than rebuilding
-active state from duplicate bulk; entity revocation clears cached state and requires a new interest
-generation to re-enter. These tests are not production transport, rendering or VPS acceptance.
+**Verified** (local `NetworkingNext` deterministic tests): motion codec/MTU validation and
+`GameStateClientReplica` reject conflicts atomically, fence withdrawn/re-entered views and preserve newer
+revisions across baseline transitions. These tests are not production transport, rendering or VPS acceptance.
 
 **Verified** (local `RecipientComponentCaptureTests`): the migration capture boundary exhaustively maps
 18 view, 57 world and 97 character fields. Tick/publication/root-motion changes leave static field deltas

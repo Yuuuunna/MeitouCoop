@@ -307,7 +307,7 @@ public static class PlayerOrders
     static void Show(World world, int slot, in OrderCheck check)
     {
         if (check.Why is not { } why) return;
-        if (check.Posted) world.Post(why);
+        if (check.Posted) world.PostCharacter(slot, why);
         else world.Bark(world.Characters.IdOf(slot), why);
     }
 

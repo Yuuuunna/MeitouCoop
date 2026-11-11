@@ -443,7 +443,9 @@ public sealed partial class AiSystem
     {
         if (board.Destination.PlayerTown <= 0 || world.Buildings.FindTown(board.Destination.PlayerTown) is not { } town) return;
         string faction = squad.Faction >= 0 && squad.Faction < data.Factions.Count ? data.Factions[squad.Faction].Name : "";
-        world.Post(Loc.Tr("{1} squad has been removed from {2}", faction, town.Name));
+        string message = Loc.Tr("{1} squad has been removed from {2}", faction, town.Name);
+        if (world.Players.RequiresExplicitControl && town.Owner >= 0) world.PostFaction(town.Owner, message);
+        else world.Post(message);
     }
 
     // ---- the refugee package (Package_Refugee) ----

@@ -15,14 +15,16 @@ public sealed partial class World
     /// <summary>ITEM_BLUEPRINT (item function 11).</summary>
     const int BlueprintFunction = 11;
 
-    TutorialFacts PublishTutorialFacts(PopulationData? population)
+    TutorialFacts PublishTutorialFacts(PopulationData? population, IReadOnlySet<CharacterId>? owned = null)
     {
         bool town = false, stolen = false, uniform = false, blueprint = false, prison = false, cannibal = false;
         var table = Characters;
+        var current = table.Current;
         for (int i = 0; i < table.HighWater; i++)
         {
-            if (!table.Next[i].Alive || table.Cold(i) is not { IsPlayer: true } c) continue;
-            if (!town && population is not null && TownSiteAt(population, table.Next[i].Position) is { Town.Type: TownType.Outpost or TownType.Town }) town = true;
+            if (!current[i].Alive || table.Cold(i) is not { IsPlayer: true, DiedTick: < 0 } c || c.Medical is { Dead: true }) continue;
+            if (owned is not null && !owned.Contains(new CharacterId(i, current[i].Generation))) continue;
+            if (!town && population is not null && TownSiteAt(population, current[i].Position) is { Town.Type: TownType.Outpost or TownType.Town }) town = true;
             if (c.Inventory is { } inv)
             {
                 if (inv.Backpack is not null) blueprint = true;

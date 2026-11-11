@@ -141,8 +141,15 @@ sealed partial class GameHost
         }
         // A ready character mesh alone is insufficient: finish terrain, scenery and deferred textures too.
         // Content readiness has no pacing timeout that can expose missing NPCs or white stand-ins.
-        bool populationReady = TitleVisible || (session is Meitou.Engine.WorldSession local
-            ? local.World.PreparePopulation(session.Camera.Current.Target) : session.HasWorldView);
+        bool populationReady;
+        if (TitleVisible) populationReady = true;
+        else if (session is Meitou.Engine.WorldSession local)
+        {
+            local.SynchronizeWorld();
+            populationReady = local.World.PreparePopulation(session.Camera.Current.Target);
+            local.SynchronizeWorld();
+        }
+        else populationReady = session.HasWorldView;
         // A game's view waits for the characters round the camera's focus only (CharacterRenderer.LoadingFocus); the rest are prepared once the screen lifts.
         var focus = session.Camera.Current.Target;
         if (!TitleVisible && gpu.Characters is { } near) near.LoadingFocus = new Vector2(focus.X, focus.Z);
@@ -233,7 +240,9 @@ sealed partial class GameHost
         LocalSession.World.Daytime = session.Clock.IsDaytime;
         sentFocus = false;
         SendFocus();
+        LocalSession.SynchronizeWorld();
         LocalSession.World.RunTick();
+        LocalSession.SynchronizeWorld();
         indexedFor = null;
         previousById.Clear();
         player.Reset();

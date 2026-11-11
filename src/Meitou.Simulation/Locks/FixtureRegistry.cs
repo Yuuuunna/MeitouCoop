@@ -1014,7 +1014,7 @@ public sealed partial class FixtureRegistry
         // The release leaves slavery as it is (FUN_1403570a0 never sets the slave state; bail and buy-free clear it themselves, Verified); a releaser that is not the player's
         // takes a slave over (FUN_14032e430: the owner changes, the state stays).
         if (releaserFaction >= 0 && !world.IsPlayerFaction(releaserFaction) && c.SlaveState != 0) c.SlaveOwner = releaserFaction;
-        if (c.IsPlayer) world.Post(Loc.Tr("{1} has been released from prison.", c.Name));
+        if (c.IsPlayer) world.PostCharacter(c, Loc.Tr("{1} has been released from prison.", c.Name));
         return true;
     }
 
@@ -1148,7 +1148,7 @@ public sealed partial class FixtureRegistry
     static void SetSlave(World world, CharacterCold c, byte state, int owner)
     {
         byte before = c.SlaveState;
-        if (c.SlaveState == 0 && state == 1 && (c.IsPlayer || world.Player.Faction >= 0 && c.Faction == world.Player.Faction)) world.Post(Loc.Tr("{1} has been enslaved", c.Name));
+        if (c.SlaveState == 0 && state == 1 && (c.IsPlayer || world.IsPlayerFaction(c.Faction))) world.PostCharacter(c, Loc.Tr("{1} has been enslaved", c.Name));
         if (state == 2) c.RecentlyWanted = Crime.CrimeSystem.RecentlyWantedSeconds;
         if (state > 1 && before != state) c.SlaveSince = world.GameHours;
         c.SlaveState = state;

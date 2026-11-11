@@ -65,7 +65,7 @@ public sealed partial class DialogueSystem
             c.Actor = state.Attributed ? state.Actor : null; c.Faction = state.Faction;
             c.Control = state.Attributed ? state.Control : null; c.MembershipRevision = state.MembershipRevision;
         }
-        else if (world.Players.RequiresExplicitControl && world.Players.ControlOf(c.Player) is { } grant)
+        else if (world.Players.RequiresExplicitControl && (world.Players.ControlOf(c.Player) ?? world.Players.ControlOf(c.Npc)) is { } grant)
         {
             c.Actor = grant.Player; c.Faction = grant.Faction; c.Control = grant;
             c.MembershipRevision = world.Players.Find(grant.Player)!.MembershipRevision(grant.Faction);

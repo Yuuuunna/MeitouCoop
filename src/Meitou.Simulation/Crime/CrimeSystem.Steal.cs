@@ -165,7 +165,7 @@ public sealed partial class CrimeSystem
                 // One staying low or playing dead stands (posture 0, docs/game/ragdolls.md "Staying low").
                 if (watcher.Medical is { } low) low.StandUp();
                 world.Defer(new Dialogue.DialogueEvent(watcherId, thiefId, CaughtEvent) { Tick = world.Tick + 1 });
-                if (c.IsPlayer) world.Post("Got caught stealing.");
+                if (c.IsPlayer) world.PostCharacter(c, "Got caught stealing.");
                 SetPending(world, thief, CrimeCode.Theft, faction, victim, CaughtTimer, viaWrapper: true);
                 if (watcher.SquadId >= 0) world.SystemOf<Dialogue.DialogueSystem>()?.Memory.Remember(world, watcher.SquadId, thiefId, Dialogue.MemoryTag.StoleFromMe);
             }

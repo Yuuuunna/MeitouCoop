@@ -304,7 +304,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         {
             if (t.Fixed || carrying || world.Fixtures.FindBed(world, s, data.Relations, f => Reserved(f, t.Character)) is not { } other)
             {
-                if (c.IsPlayer) world.Post(carrying ? $"{c.Name}: no free bed nearby" : $"{c.Name}: the bed is taken");
+                if (c.IsPlayer) world.PostCharacter(c, carrying ? $"{c.Name}: no free bed nearby" : $"{c.Name}: the bed is taken");
                 if (!carrying) TaskStart.Stand(table, s);
                 return false;
             }
@@ -330,7 +330,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
             {
                 world.Fixtures.MarkUnreachable(world, bed, c.Faction);
                 FixtureRegistry.MarkBadNode(world, bed, n.Position);
-                if (c.IsPlayer) world.Post($"{c.Name} cannot get to the bed");
+                if (c.IsPlayer) world.PostCharacter(c, $"{c.Name} cannot get to the bed");
                 if (!carrying) TaskStart.Stand(table, s);
                 return false;
             }
@@ -350,7 +350,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         var table = world.Characters;
         if (world.Machines.Find(bed.Building) is { Data.IsConsumer: true, HasPower: false })
         {
-            if (c.IsPlayer) world.Post(Loc.Tr("This bed needs power to operate."));
+            if (c.IsPlayer) world.PostCharacter(c, Loc.Tr("This bed needs power to operate."));
             TaskStart.Stand(table, s);
             return false;
         }
@@ -368,7 +368,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         if (!table.TryResolveNext(body, out int b) || table.Cold(b) is not { } bc) return false;
         if (!FixtureRegistry.IsFree(table, bed))
         {
-            if (c.IsPlayer) world.Post($"{c.Name}: no free bed nearby");
+            if (c.IsPlayer) world.PostCharacter(c, $"{c.Name}: no free bed nearby");
             return false;
         }
 
@@ -376,7 +376,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         if (cost != 0 && Cost(world, bed, bc.Faction) is var own and >= 0 && own < cost) cost = own;
         if (!Pay(world, s, bed, cost)) return false;
         Carry!.LetGo(world, s);
-        if (!world.Fixtures.EnterBed(world, body, bed) && c.IsPlayer) world.Post($"{c.Name} could not put {bc.Name} in the bed");
+        if (!world.Fixtures.EnterBed(world, body, bed) && c.IsPlayer) world.PostCharacter(c, $"{c.Name} could not put {bc.Name} in the bed");
         return false;
     }
 
@@ -458,11 +458,11 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         if (world.Players.RequiresExplicitControl && (world.Players.ControlOf(table.IdOf(slot)) is not { } grant || world.Players.Find(grant.Player)?.HasPermission(cold.Faction, FactionPermission.SpendFunds) != true)) return false;
         if (world.Factions.Find(cold.Faction) is not { } funds || !funds.TryDebit(cost))
         {
-            world.Post(Loc.Tr("Can't afford c.{1} for bed rental.", cost));
+            world.PostCharacter(cold, Loc.Tr("Can't afford c.{1} for bed rental.", cost));
             return false;
         }
         paid[key] = world.GameHours;
-        world.Post(Loc.Tr("Paid c.{1} for bed rental.", cost));
+        world.PostCharacter(cold, Loc.Tr("Paid c.{1} for bed rental.", cost));
         return true;
     }
 

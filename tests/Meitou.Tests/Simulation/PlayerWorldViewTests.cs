@@ -255,4 +255,32 @@ public class PlayerWorldViewTests
             Assert.Equal(c.ItemGrid!.Revision, same.ItemGrid!.Revision); Assert.Equal(c.JobsRevision, same.JobsRevision);
         }
     }
+
+    [Fact]
+    public void TutorialFactsAndCharacterNoticesFollowOwnedRolesOnly()
+    {
+        using var s = new Scene();
+        s.World.Characters.Cold(s.First.Slot)!.Inventory!.Items.Add(new ItemInstance { Record = "bp", Name = "Blueprint", ItemFunction = 11 });
+        var secondCold = s.World.Characters.Cold(s.Second.Slot)!;
+        secondCold.InSomething = Meitou.Simulation.Locks.HeldState.Imprisoned;
+        secondCold.InWhat = "cage-1";
+        var viewA = s.View(s.ConnectionA);
+        var viewB = s.View(s.ConnectionB);
+        Assert.True(viewA.Snapshot.TutorialFacts.Blueprint);
+        Assert.False(viewA.Snapshot.TutorialFacts.InPrison);
+        Assert.False(viewB.Snapshot.TutorialFacts.Blueprint);
+        Assert.True(viewB.Snapshot.TutorialFacts.InPrison);
+
+        ulong beforeHash = s.World.StateHash();
+        s.World.PostCharacter(s.First, "Hero got out of the cage");
+        s.World.EmitFloater(Floater.Strike(s.First, Vector3.Zero, "*Thunk*", true));
+        Assert.Equal(beforeHash, s.World.StateHash());
+        Assert.Equal("Hero got out of the cage", Assert.Single(s.A.State.Messages.Capture().Items).Text);
+        Assert.Empty(s.B.State.Messages.Capture().Items);
+        Assert.Equal("*Thunk*", Assert.Single(s.View(s.ConnectionA).Events.Floaters).Value.Part);
+
+        s.Spawn(s.B, new(25, 0, 0));
+        secondCold.DiedTick = 0;
+        Assert.False(s.View(s.ConnectionB).Snapshot.TutorialFacts.InPrison);
+    }
 }

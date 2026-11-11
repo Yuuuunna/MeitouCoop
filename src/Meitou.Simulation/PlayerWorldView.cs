@@ -152,6 +152,7 @@ public sealed partial class World
         var arrival = dialogues?.ArrivalResultFor(connection.Player) ?? default;
         var snapshot = new WorldSnapshot(Tick, characters)
         {
+            TutorialFacts = PublishTutorialFacts(population, owned),
             FoliageOwnedTowns = population?.Sites.Where(s =>
                 (uint)s.Index < (uint)population!.SiteFactions.Count
                 && IsPlayerFaction(population!.SiteFactions[s.Index]) && (Nearby(s.Position) || Manage(population!.SiteFactions[s.Index])))

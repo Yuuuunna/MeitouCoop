@@ -448,7 +448,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         arrest.Time = 0;
         var table = world.Characters;
         if (table.Next[g].Task != (byte)CharacterTask.Attack) Attack(world, g, t);
-        if (table.Cold(t)!.IsPlayer && !FoughtByOther(arrest)) world.Post(Loc.Tr("{1} is arresting {2}!", table.Cold(g)!.Name, table.Cold(t)!.Name));
+        if (table.Cold(t)!.IsPlayer && !FoughtByOther(arrest)) world.PostCharacter(table.Cold(t), Loc.Tr("{1} is arresting {2}!", table.Cold(g)!.Name, table.Cold(t)!.Name));
         Note(world, ArrestEventKind.Arrest, arrest.Guard, arrest.Target, arrest.Faction, table.Cold(t)!.Bounties?.BookedAmount(Crimes.Factions.Relations, arrest.Faction) ?? 0);
     }
 
@@ -510,10 +510,10 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
                         ledger.Remove(entry);
                         if (ledger.Count == 0) tc.Bounties = null;
                         tc.Recognition = 0;
-                        world.Post(Loc.Tr("{1} paid a fine of c.{2} to {3}; the bounty is cleared", tc.Name, a.Fine, entry.FactionName));
+                        world.PostCharacter(tc, Loc.Tr("{1} paid a fine of c.{2} to {3}; the bounty is cleared", tc.Name, a.Fine, entry.FactionName));
                         return End(world, a, ArrestEventKind.Paid);
                     }
-                    world.Post(Loc.Tr("{1} cannot pay the fine of c.{2}", tc.Name, a.Fine));
+                    world.PostCharacter(tc, Loc.Tr("{1} cannot pay the fine of c.{2}", tc.Name, a.Fine));
                     BeginFight(world, a, g, t);
                     return true;
                 }
@@ -613,7 +613,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         Deeds?.Caged(world, g, t);
         tc.Recognition = 0;
         if (a.Enslave) FixtureRegistry.Enslave(world, tc, a.Faction, table.Cold(g)?.SquadId ?? -1);
-        else if (tc.IsPlayer) world.Post(Loc.Tr("{1} has been imprisoned by {2}", tc.Name, Crimes.Factions.NameOf(a.Faction)));
+        else if (tc.IsPlayer) world.PostCharacter(tc, Loc.Tr("{1} has been imprisoned by {2}", tc.Name, Crimes.Factions.NameOf(a.Faction)));
         return End(world, a, ArrestEventKind.Jailed);
     }
 
@@ -694,7 +694,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         TaskStart.Stand(world.Characters, g);
         Carry?.LetGo(world, g);
         if (world.Characters.TryResolveNext(a.Target, out int t) && world.Characters.Cold(t) is { IsPlayer: true } tc)
-            world.Post(Loc.Tr("{1} found no free cage for {2}", world.Characters.Cold(g)!.Name, tc.Name));
+            world.PostCharacter(tc, Loc.Tr("{1} found no free cage for {2}", world.Characters.Cold(g)!.Name, tc.Name));
         return End(world, a, ArrestEventKind.Dropped);
     }
 

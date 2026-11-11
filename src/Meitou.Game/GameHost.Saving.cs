@@ -305,6 +305,7 @@ sealed partial class GameHost
             Stage("navmesh", () => (options & ImportOptions.ResetPositions) != 0 && read!.IsCompletedSuccessfully ? NavmeshAround(SaveImport.ResetPosition) : null),
             Stage("build", () =>
             {
+                LocalSession.SynchronizeWorld();
                 if ((options & ImportOptions.ResetPositions) != 0 && nav is not null && read!.IsCompletedSuccessfully) SaveImport.PlaceOnGround(read.Result, nav.Walkability.GroundHeight);
                 return SwapInSave(read!, interactive: true, out summary, new SaveLoadOptions { Appearances = data.Appearances, ResetRelations = (options & ImportOptions.Relations) == 0 }, prepared);
             }),
@@ -345,6 +346,7 @@ sealed partial class GameHost
         var watch = Stopwatch.StartNew();
         LoadedSave? loaded = null;
         var (built, nextData, nextDifficulty) = prepared ?? PrepareSystems(read, interactive);
+        LocalSession.SynchronizeWorld();
         try
         {
             var data = nextData;

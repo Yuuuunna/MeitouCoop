@@ -129,4 +129,26 @@ public partial class DialogueTests
         Assert.Contains("This character will not talk right now.", v.World.TakeMessages(v.A.Id));
         Assert.Empty(v.World.TakeMessages(v.B.Id));
     }
+
+    [Fact]
+    public void HeadlessGameplayRulesEnableAmbientBubblesAndSelfOwnedNpcContext()
+    {
+        Assert.True(Meitou.Runtime.HeadlessWorld.ConfigureGameplay(null, new GameplayRules()).Dialogue!.AmbientEvents);
+        var disabled = new StandardSystemOptions { Dialogue = new DialogueSettings { AmbientEvents = false } };
+        Assert.False(Meitou.Runtime.HeadlessWorld.ConfigureGameplay(disabled, new GameplayRules()).Dialogue!.AmbientEvents);
+
+        var data = PopulationData.Create(Db([
+            Rec("204-gamedata.base", FcsRecordType.FACTION, r => r.Name = "Nameless"),
+            Rec("f-d", FcsRecordType.FACTION, r => r.Name = "Villagers"),
+            Rec("npc-d", FcsRecordType.CHARACTER, r => r.Name = "Speaker"),
+            Rec("self-d", FcsRecordType.DIALOGUE, r => { r.Bools["monologue"] = true; r.References["lines"] = [Ref("self-l")]; }),
+            Rec("self-l", FcsRecordType.DIALOGUE_LINE, r => r.Strings["text0"] = "Still breathing."),
+        ]), []);
+        using var v = new MultiplayerVillage(data);
+        v.World.Commands.Enqueue(new DialogueEvent(v.First, CharacterId.None, 3, "self-d") { Tick = 0 });
+        v.World.RunTick();
+        Assert.Contains(v.Dialogue.PublishSpeech(), b => b.Speaker == v.First && b.Text == "Still breathing.");
+        Assert.Equal("Still breathing.", Assert.Single(v.A.State.Messages.Capture().Items).Text);
+        Assert.Empty(v.B.State.Messages.Capture().Items);
+    }
 }

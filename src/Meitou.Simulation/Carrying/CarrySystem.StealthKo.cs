@@ -248,7 +248,14 @@ public sealed partial class CarrySystem
         // The swing books an Assault on the target's faction at the roll, hit or miss (the pending-crime setter FUN_140852c80 with code 5, called unconditionally, Verified).
         Crimes?.SetPending(world, i, Crime.CrimeCode.Assault, target.Faction, targetId, Crime.CrimeSystem.MinTimer);
         // The floater over the attacker, shown to anyone (Verified): "*Thunk*" or "Failed!" + " (No XP)".
-        world.Floaters?.Enqueue(Floater.Strike(attackerId, table.Next[i].Position, success ? Loc.Tr("*Thunk*") : Loc.Tr("Failed!") + (noXp ? Loc.Tr(" (No XP)") : ""), success));
+        string floaterText = success ? Loc.Tr("*Thunk*") : Loc.Tr("Failed!") + (noXp ? Loc.Tr(" (No XP)") : "");
+        if (world.HasFloaterSink) world.EmitFloater(Floater.Strike(attackerId, table.Next[i].Position, floaterText, success));
+        if (world.Players.RequiresExplicitControl)
+        {
+            if (cold.IsPlayer)
+                world.PostCharacter(cold, $"{cold.Name}: {floaterText} ({Math.Clamp(chance, 0, 100):0}%)");
+            if (knockouts.Count >= 256) knockouts.RemoveAt(0);
+        }
         knockouts.Add(new StealthKoEntry(world.Tick, attackerId, targetId, chance, success, noXp));
     }
 }

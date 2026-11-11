@@ -1111,7 +1111,7 @@ public sealed partial class CaptiveSystem(PopulationData data, CombatSystem? com
         bool eaten = medical.BeingEaten(rate, dt, ctx, data.BodyOptions.Dismemberment != Dismemberment.Never, events, vampiric);
         ApplyBodyEvents(world, j.Captive, c, medical, events);
         // "{1} has been eaten alive." for the player's own (FUN_140856bc0: of the player's faction, or of a squad that is).
-        if (eaten && (cc.IsPlayer || world.Player.Faction >= 0 && cc.Faction == world.Player.Faction)) world.Post(Loc.Tr("{1} has been eaten alive.", cc.Name));
+        if (eaten && (cc.IsPlayer || world.IsPlayerFaction(cc.Faction))) world.PostCharacter(cc, Loc.Tr("{1} has been eaten alive.", cc.Name));
         return wasDead ? eaten : medical.Dead;
     }
 

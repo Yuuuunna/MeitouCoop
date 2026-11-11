@@ -48,6 +48,7 @@ public sealed class WorldRegionNavigation : IRuntimeWorldService
             .Where(p => world.Players.RequiresExplicitControl || (p.Value.Reasons & (RegionReason.PlayerRole | RegionReason.LoadedEntity | RegionReason.Preparation)) != 0)
             .Select(p => p.Key).ToHashSet();
         if (world.ActiveZones is { } simulation) wanted.UnionWith(simulation);
+        if (world.Systems.OfType<PopulationSystem>().FirstOrDefault() is { } population) wanted.UnionWith(population.ActiveZones);
         wanted.UnionWith(navigation.RouteHints.Where(z => z.IsInsideGrid));
         foreach (var zone in navigation.Tracked) lastWanted.TryAdd(zone, now);
         foreach (var zone in wanted.OrderBy(z => z.X).ThenBy(z => z.Y))

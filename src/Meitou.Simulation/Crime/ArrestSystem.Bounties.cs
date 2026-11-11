@@ -113,7 +113,7 @@ public sealed partial class ArrestSystem : IOrderOwner
         var table = world.Characters;
         if (!table.TryResolveNext(prisoner, out int p) || table.Cold(p) is not { IsImprisoned: true, InWhat: { } where } pc || world.Fixtures.Find(where) is not { } cage) return false;
         if (!table.TryResolveNext(payer, out int s) || table.Cold(s) is not { Faction: >= 0 } paying || BailFor(world, pc, paying.Faction) is not { } price) return false;
-        if (world.Factions.GetOrCreate(paying.Faction).Money < price) { world.Post($"Not enough money: the bail is c.{price}."); return false; }
+        if (world.Factions.GetOrCreate(paying.Faction).Money < price) { world.PostCharacter(paying, $"Not enough money: the bail is c.{price}."); return false; }
         Bail(world, p, pc, cage, price, s);
         return true;
     }
@@ -168,7 +168,7 @@ public sealed partial class ArrestSystem : IOrderOwner
             ledger.Remove(entry);
             if (ledger.Count == 0) pc.Bounties = null;
         }
-        world.Post(Loc.Tr("{1} paid a bail of c.{2} for {3}", table.Cold(payer)!.Name, price, pc.Name));
+        world.PostCharacter(paying, Loc.Tr("{1} paid a bail of c.{2} for {3}", paying.Name, price, pc.Name));
         world.Fixtures.Release(world, prisoner);
         Locks.FixtureRegistry.ClearSlave(world, pc);   // bail frees a slave (FUN_1406ae170)
         pc.Freed = true;
@@ -254,7 +254,7 @@ public sealed partial class ArrestSystem : IOrderOwner
         cagings.RemoveAll(k => k.Carrier == carrier);
         var cage = chosen is not null ? world.Fixtures.Find(chosen) is { Kind: FixtureKind.Cage } picked && FixtureRegistry.IsFree(table, picked) && !Reserved(picked, null) && !cagings.Exists(k => k.Cage == picked.Id) ? picked : null
             : FindCageFor(world, s, c, null);
-        if (cage is null) { world.Post($"{c.Name}: no free cage nearby"); return; }
+        if (cage is null) { world.PostCharacter(c, $"{c.Name}: no free cage nearby"); return; }
         if (request?.Cage is not null && !world.Fixtures.Matches(request, cage)) return;
         if (cage.Owner == c.Faction && request is not null && !world.MayManage(request, cage.Owner, FactionPermission.ManageAssets)) return;
         if (!table.TryResolveNext(c.Carrying, out int body)) return;
@@ -287,7 +287,7 @@ public sealed partial class ArrestSystem : IOrderOwner
         var cage = world.Fixtures.Find(k.Cage);
         if (cage is null || !FixtureRegistry.IsFree(table, cage))
         {
-            if (k.Request?.Cage is not null || FindCageFor(world, s, c, k) is not { } other) { world.Post($"{c.Name}: no free cage nearby"); return false; }
+            if (k.Request?.Cage is not null || FindCageFor(world, s, c, k) is not { } other) { world.PostCharacter(c, $"{c.Name}: no free cage nearby"); return false; }
             k.Cage = other.Id; k.Fixture = other; k.FixtureRevision = world.Fixtures.RevisionOf(other);
             TaskStart.StepTo(table, s, new Vector2(other.Position.X, other.Position.Z), c.RunSpeed);
             return true;
@@ -301,7 +301,7 @@ public sealed partial class ArrestSystem : IOrderOwner
             if (walking) TaskStart.Stand(table, s);
             if (cage.Lock is { EffectivelyLocked: true }) return false;
             Carry!.LetGo(world, s);
-            if (!world.Fixtures.Imprison(world, k.Captive, cage, constants.PrisonTime, k.Carrier)) { world.Post($"{c.Name} could not put the captive in the cage"); return false; }
+            if (!world.Fixtures.Imprison(world, k.Captive, cage, constants.PrisonTime, k.Carrier)) { world.PostCharacter(c, $"{c.Name} could not put the captive in the cage"); return false; }
             Claim(world, s, k.Captive, cage);
             if (table.TryResolveNext(k.Captive, out int captive)) Deeds?.Caged(world, s, captive);   // after the claim, as the put-in task does
             return false;
@@ -331,7 +331,7 @@ public sealed partial class ArrestSystem : IOrderOwner
         int amount = bc.Medical is { Dead: true } ? entry.Amount / 2 : entry.Amount;
         if (!world.Factions.GetOrCreate(cc.Faction).TryCredit(amount)) return 0;
         entry.Claimed = true;
-        world.Post(Loc.Tr("Received c.{1} reward.", amount));
+        world.PostCharacter(cc, Loc.Tr("Received c.{1} reward.", amount));
         world.EmitSound(SoundKind.BountyPaid, carrier, table.Next[carrier].Position);
         Note(world, ArrestEventKind.Claimed, table.IdOf(carrier), captive, owner, amount);
         return amount;
@@ -372,7 +372,7 @@ public sealed partial class ArrestSystem : IOrderOwner
         int amount = bc.Medical is { Dead: true } ? entry.Amount / 2 : entry.Amount;
         if (!world.Factions.GetOrCreate(cc.Faction).TryCredit(amount)) return 0;
         entry.Claimed = true;
-        world.Post(Loc.Tr("Received c.{1} reward.", amount));
+        world.PostCharacter(cc, Loc.Tr("Received c.{1} reward.", amount));
         world.EmitSound(SoundKind.BountyPaid, c, table.Next[c].Position);
         Note(world, ArrestEventKind.Claimed, carrier, cc.Carrying, booking, amount);
         return amount;
@@ -427,7 +427,7 @@ public sealed partial class ArrestSystem : IOrderOwner
         hc.Engaged = true;
         hunts.Add(new Hunt { Hunter = table.IdOf(hunter), Target = table.IdOf(target) });
         Attack(world, hunter, target);
-        world.Post(Loc.Tr("{1} is after the bounty on {2}!", hc.Name, table.Cold(target)!.Name));
+        world.PostCharacter(table.Cold(target), Loc.Tr("{1} is after the bounty on {2}!", hc.Name, table.Cold(target)!.Name));
         Note(world, ArrestEventKind.Hunt, table.IdOf(hunter), table.IdOf(target), hc.Faction, HuntBounty(table.Cold(target)!, hc.Faction));
     }
 

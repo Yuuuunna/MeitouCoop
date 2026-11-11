@@ -132,6 +132,10 @@ public sealed class HeadlessWorld : IDisposable
     }
 
     static StandardSystemOptions ConfigureGameplay(StandardSystemOptions? options, GameplayRules rules, WorldContent content) =>
+        ConfigureGameplay(options, rules, content.SiteEdgeGap);
+
+    internal static StandardSystemOptions ConfigureGameplay(StandardSystemOptions? options, GameplayRules rules,
+        Func<Meitou.Simulation.Construction.BuildSite, System.Numerics.Vector2, float?>? siteEdgeGap = null) =>
         (options ?? new StandardSystemOptions()) with
         {
             Combat = new Meitou.Simulation.Combat.CombatOptions
@@ -148,11 +152,12 @@ public sealed class HeadlessWorld : IDisposable
                 KeepWild = rules.KeepWild, ResidentSchedule = rules.ResidentSchedule,
             },
             Ai = new Meitou.Simulation.Ai.AiSettings { TownAttacks = rules.TownAttacks },
-            Construction = new Meitou.Simulation.Construction.ConstructionSettings { BuildingSpeed = rules.BuildingSpeed, EdgeGap = content.SiteEdgeGap },
+            Dialogue = options?.Dialogue ?? new Meitou.Simulation.Dialogue.DialogueSettings { AmbientEvents = true },
+            Construction = new Meitou.Simulation.Construction.ConstructionSettings { BuildingSpeed = rules.BuildingSpeed, EdgeGap = siteEdgeGap },
             Production = new Meitou.Simulation.Production.ProductionSettings
             {
                 ProductionOption = rules.ProductionSpeed, ResearchOption = rules.ResearchSpeed,
-                UnloadedProduction = rules.UnloadedProduction, EdgeGap = content.SiteEdgeGap,
+                UnloadedProduction = rules.UnloadedProduction, EdgeGap = siteEdgeGap,
             },
             DoorsCloseBehind = rules.DoorsCloseBehind,
         };

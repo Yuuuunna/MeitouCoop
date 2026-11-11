@@ -75,7 +75,8 @@ public sealed partial class LockSystem
             StartWork(world, s, CharacterTask.GoTo, RowOf(ShackleWork.PutOn), null, order.Wearer, ShackleWork.PutOn, order.Queued, order);
             return;
         }
-        world.Post("No one selected carries shackles.");
+        if (order.Issuer is { } issuer) world.Post(issuer, "No one selected carries shackles.");
+        else world.Post("No one selected carries shackles.");
     }
 
     /// <summary>
@@ -146,11 +147,11 @@ public sealed partial class LockSystem
                         // The sound of the original's drop onto the armour slot (the interface's Item_Drop); only the player's order has one.
                         if (c.IsPlayer)
                         {
-                            world.Post(Loc.Tr("{1} put {2} on {3}", c.Name, item.Name, wearer.Name));
+                            world.PostCharacter(c, Loc.Tr("{1} put {2} on {3}", c.Name, item.Name, wearer.Name));
                             world.EmitSound(SoundKind.ShacklesOn, s, next[s].Position, item.Record);
                         }
                     }
-                    else if (c.IsPlayer) world.Post(Loc.Tr("{1} already wears something in that slot", wearer.Name));
+                    else if (c.IsPlayer) world.PostCharacter(c, Loc.Tr("{1} already wears something in that slot", wearer.Name));
                     break;
                 case ShackleWork.Pick:
                     switch (Picking.StepShackles(world, s, job.Wearer, item, world.TickSeconds, Crimes))

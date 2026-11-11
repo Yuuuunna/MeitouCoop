@@ -228,7 +228,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         Note(world, CrimeEventKind.Booked, culprit, p.Code, faction, entry.Amount, witness);
         if (c.IsPlayer)
         {
-            world.Post(Loc.Tr("{1} is wanted by {2} for {3}: bounty c.{4}", c.Name, entry.FactionName, CrimeTable.Name(p.Code), entry.Amount));
+            world.PostCharacter(c, Loc.Tr("{1} is wanted by {2} for {3}: bounty c.{4}", c.Name, entry.FactionName, CrimeTable.Name(p.Code), entry.Amount));
         }
 
         return true;
@@ -356,7 +356,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
                 // The loot already says "was seen looting".
                 if (c.IsPlayer && p.Code != CrimeCode.Looting)
                 {
-                    world.Post(Loc.Tr("{1} has been caught committing {2}!", c.Name, CrimeTable.Name(p.Code)));
+                    world.PostCharacter(c, Loc.Tr("{1} has been caught committing {2}!", c.Name, CrimeTable.Name(p.Code)));
                 }
             }
             // The original fires the event on every reacting run (docs/game/dialogue.md "Witnesses"). Meitou fires it once at the player's characters; at an NPC culprit again on every
@@ -461,7 +461,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         if (t.IsPlayer && world.GameHours - lastAlarmHours >= AlarmPostSeconds / World.SecondsPerGameHour)
         {
             lastAlarmHours = world.GameHours;
-            world.Post(Loc.Tr("Alarm raised"));
+            world.PostCharacter(t, Loc.Tr("Alarm raised"));
         }
         var at = table.Next[target].Position;
         int place = world.Sight.PlaceOf(target), floor = FloorOf(world, target, at);
@@ -622,7 +622,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
             ledger.Remove(e);
             ticks--;
             Note(world, CrimeEventKind.Expired, slot, CrimeCode.None, e.Faction, e.Amount, CharacterId.None);
-            if (c.IsPlayer) world.Post(Loc.Tr("{1} is no longer wanted by {2}", c.Name, e.FactionName));
+            if (c.IsPlayer) world.PostCharacter(c, Loc.Tr("{1} is no longer wanted by {2}", c.Name, e.FactionName));
         }
         if (ledger.Count == 0) c.Bounties = null;
     }

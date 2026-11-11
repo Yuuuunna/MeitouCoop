@@ -106,4 +106,22 @@ public class RegionRetentionTests
         Assert.DoesNotContain(WorldLayout.ZoneOf(foreign.X, foreign.Z), demand.Keys);
         machine.Burning = false; Assert.Empty(world.Regions.Capture());
     }
+
+    [Fact]
+    public void SinglePlayerPopulationZonesRequestNavigationBeforeZoneGateOpens()
+    {
+        var navigation = new Navigation();
+        var data = Meitou.Tests.Simulation.SyntheticTown.Data(Meitou.Tests.Simulation.SyntheticTown.Database());
+        var population = new PopulationSystem(data, new PopulationSettings { CheckEveryTicks = 1 }) { ZoneGate = navigation.Ready };
+        using var runtime = new WorldRuntime(new WorldSettings { PublishSnapshots = false }, new OpenGroundWalkability((_, _) => 300),
+            [population, new WorldRegionNavigation(navigation, idleSeconds: 10, clock: () => 0)]);
+        Assert.False(runtime.World.Players.RequiresExplicitControl);
+        Assert.False(runtime.World.PreparePopulation(Meitou.Tests.Simulation.SyntheticTown.Centre));
+        Assert.Empty(runtime.World.ActiveZones!);
+        Assert.NotEmpty(population.ActiveZones);
+        runtime.Synchronize();
+        Assert.Subset(navigation.Loaded, population.ActiveZones.ToHashSet());
+        Assert.True(runtime.World.PreparePopulation(Meitou.Tests.Simulation.SyntheticTown.Centre));
+        Assert.True(runtime.World.Characters.Count > 0);
+    }
 }

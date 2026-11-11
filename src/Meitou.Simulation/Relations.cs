@@ -43,7 +43,16 @@ public static class PlayerRelations
     public static void DeclareWar(World world, FactionRelations relations, int a, int b)
     {
         var (before, after, started) = relations.DeclareWar(a, b);
-        if (started) world.Post(Loc.Tr("War breaks out between {1} and {2}", relations.Factions[a].Name, relations.Factions[b].Name));
+        if (started)
+        {
+            string war = Loc.Tr("War breaks out between {1} and {2}", relations.Factions[a].Name, relations.Factions[b].Name);
+            if (world.Players.RequiresExplicitControl)
+            {
+                if (world.IsPlayerFaction(a)) world.PostFaction(a, war);
+                if (b != a && world.IsPlayerFaction(b)) world.PostFaction(b, war);
+            }
+            else world.Post(war);
+        }
         if (before != after) Posted(world, relations, a, b, before, after);
     }
 
@@ -56,6 +65,12 @@ public static class PlayerRelations
 
     static void Posted(World world, FactionRelations relations, int a, int b, float before, float after)
     {
+        if (world.Players.RequiresExplicitControl)
+        {
+            if (a != b && world.IsPlayerFaction(a) && relations.Contains(b) && Notice(relations.Factions[b].Name, before, after) is { } textA) world.PostFaction(a, textA);
+            if (a != b && world.IsPlayerFaction(b) && relations.Contains(a) && Notice(relations.Factions[a].Name, before, after) is { } textB) world.PostFaction(b, textB);
+            return;
+        }
         // The player's row is kept in the other faction's table: either way round the other faction names the message.
         int other = a == relations.PlayerFaction ? b : b == relations.PlayerFaction ? a : -1;
         if (other >= 0 && Notice(relations.Factions[other].Name, before, after) is { } text) world.Post(text);

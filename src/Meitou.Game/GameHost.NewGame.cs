@@ -57,6 +57,7 @@ sealed partial class GameHost
             }, duringAscent: true),
             Stage("people", () =>
             {
+                LocalSession.SynchronizeWorld();
                 Squad? spawned = null;
                 try { LocalSession.ReplaceWorld(built!.Systems, world => { world.RestoreSeed(seed); world.Player.BanditsLoot = nextDifficulty.BanditsLoot; spawned =built.Population!.StartPlayer(world, chosen); }); }
                 catch (Exception e) { Console.Error.WriteLine($"new game  {e}"); throw new SceneLoadFailed($"New game failed: {e.Message}"); }

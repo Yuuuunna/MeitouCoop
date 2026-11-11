@@ -239,7 +239,7 @@ public sealed class KidnapSystem(PopulationData data, PopulationSystem populatio
                 if (gc.Carrying == a.Victim)
                 {
                     Note(world, KidnapEventKind.Lifted, a);
-                    if (tc.IsPlayer) world.Post($"{gc.Name} is carrying {tc.Name} away");
+                    if (tc.IsPlayer) world.PostCharacter(tc, $"{gc.Name} is carrying {tc.Name} away");
                     a.Phase = KidnapPhase.Carry;
                     a.Time = 0;
                     a.Tries = 0;
@@ -277,7 +277,7 @@ public sealed class KidnapSystem(PopulationData data, PopulationSystem populatio
                     if (!world.Fixtures.Imprison(world, a.Victim, cage, data.Bodies.Constants.PrisonTime, a.Carrier)) return Retry(world, a, g);
                     if (table.TryResolveNext(a.Victim, out int caged)) Deeds?.Caged(world, g, caged);
                     tc.Kidnapped = true;
-                    if (tc.IsPlayer) world.Post($"{tc.Name} has been kidnapped by {data.Factions[a.Faction].Name}");
+                    if (tc.IsPlayer) world.PostCharacter(tc, $"{tc.Name} has been kidnapped by {data.Factions[a.Faction].Name}");
                     return End(world, a, KidnapEventKind.Caged);
                 }
                 if (!walking)

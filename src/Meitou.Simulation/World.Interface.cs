@@ -118,6 +118,22 @@ public sealed partial class World
             Characters.Cold(slot) is { IsPlayer: true } cold && cold.Faction == Player.Faction ? Player : null;
     }
 
+    internal PlayerId? NoticeOwner(CharacterCold? cold) =>
+        cold is not null && !cold.Entity.IsNone && Players.KnownControl(cold.Entity) is { } grant
+            && grant.Faction == cold.Faction && Players.Find(grant.Player)?.IsMember(grant.Faction) == true
+            ? grant.Player : null;
+
+    internal void PostCharacter(CharacterCold? cold, string message)
+    {
+        if (NoticeOwner(cold) is { } owner) Post(owner, message);
+        else if (!Players.RequiresExplicitControl) Post(message);
+    }
+
+    internal void PostCharacter(int slot, string message) => PostCharacter(Characters.Cold(slot), message);
+
+    internal void PostCharacter(CharacterId character, string message) =>
+        PostCharacter(Characters.TryResolveNext(character, out int slot) ? Characters.Cold(slot) : null, message);
+
     internal PlayerState? PlayerOf(CharacterCold character)
     {
         if (Players.KnownControl(character.Entity) is { } grant && Players.Validate(grant)
