@@ -28,7 +28,9 @@ public partial class SecureServerTests
                 scene.Runtime.Step();
                 return scene.Runtime.World.Tick;
             }, token);
-            await WaitRemote(connection, s => s.View?.Snapshot.Tick >= tick, token);
+            // Domain ticks and motion arrive on independent lanes; wait for this position as well as its tick.
+            await WaitRemote(connection, s => s.View is { } view && view.Snapshot.Tick >= tick
+                && view.Snapshot.Characters.Any(c => c.Id == actor.Role && c.Position.X == x), token);
         }
         await PublishPosition(10); session.Advance(0);
         // Both publications arrive without presentation time advancing: the first endpoint has

@@ -240,6 +240,8 @@ the owner's pure `IOrderOwner.CanRun`: `Run`, `Blocked` with its failure text, o
   player animals' race-goal jobs (`CaptiveJob.PlayerSide`) end once one runs or can start (a blocked order does not end them).
 - A row needing no melee threat (`PlayerOrders.NeedsNoThreat`: `!158` in list B, of the orders only 146 Turret gunner) is blocked while `CombatSystem.ImmediateThreat` holds; at a
   decision its running order ends (`TaskEnd.Stopped`) and waits unstarted, so the gunner falls through to self-defence and mans the turret again once the threat is gone (S3).
+  An owner's `IOrderOwner.StillHolds` does the same for its own start conditions: an operate or gunner order (87, 146) whose machine has no power
+  ([state 93](game/ai-tasks.md)) ends, waits unstarted and says "It needs electricity." again.
   A Loot order (26) walks through a fight; once its window is open the loot ends (`TaskEnd.Done`, closing it) while a threat is within 40 (`Task_Loot_Order`'s update,
   `CarrySystem.HoldWindow`, [carry-loot](game/carry-loot.md)).
 - Group orders keep their pickers (the nearest or first character that can run it: pick up, loot, stealth KO, the turret, item pick-up, containers, lock work); only that character
@@ -724,10 +726,11 @@ Ranged state is hashed when used. Weapon/turret research: [combat.md](game/comba
 
 Turrets (`CombatSystem.Turrets.cs`, the gunners and gun state in `TurretManning`, facts: [combat.md](game/combat.md#turrets)): one serial step after the bolts fly finds the gunners and runs each manned turret in key
 order: target choice, reload, aim point while loaded, turning the parts (`TurretRig`), and the fire decision (in range from the gunner, aimed within 1°, steady 0.4 s, line
-along the barrel clear); harpoons are the gunner's bolts (hits, XP, crimes). A gunner is a player character operating its turret (`CharacterTask.Operate`, below) or an NPC
-standing at the turret its squad claimed (AI turret goals); one per turret (lowest slot). `CharacterCold.Gunning` names it (derived); the aggro system starts no fight with a
+along the barrel clear); harpoons are the gunner's bolts (hits, XP, crimes). A gunner is a player character operating its turret or a town's (`CharacterTask.Operate`, below; a town turret uses its canonical level-machine site,
+resolved on first use by `ProductionSystem.TownTurret`) or an NPC standing at the turret its squad claimed (AI turret goals); one per turret, the player's characters first (engine choice: a
+player gunner takes a town turret from its NPC gunner, who stands by), then the lowest slot. A town turret's state is keyed by its building for either gunner. `CharacterCold.Gunning` names it (derived); the aggro system starts no fight with a
 turret guard, and a gunner's self-defence takes no shooter (`AiSystem.SelfDefencePick`, the engine answer alike). Turret state (angles, aim, loaded harpoons, reload, target) is hashed once a turret was manned; only the loaded harpoons are saved
-(`current shots`, as the exe; [save](formats/save.md#faction-trust-war-flags-bed-rent-and-turrets)), read when the turret is first manned after loading. Engine choices: NPC turrets have efficiency 1 (no NPC power grid); a player turret's efficiency is its machine's power grant
+(`current shots`, as the exe; [save](formats/save.md#faction-trust-war-flags-bed-rent-and-turrets)), read when the turret is first manned after loading. Engine choices: town turrets have efficiency 1 and no research multiplier for any gunner, and are always powered (no NPC power grid); a player turret's efficiency is its machine's power grant
 (0 unpowered) and has no mount bonus; the reload belongs to the gunner (a new gunner restarts it); every candidate within 1.5 × range counts as sensed and seen; "fights the
 gunner" is the × 1.5 (`FUN_1405ca6f0`); a down target is "slot 0x368"; the turret's facing is its yaw; no Shoot first pass (no such option); the muzzle is the last turning
 part's; the turret's own collision is not left out of the line or the flight; the shot sound is a pooled object at the muzzle. The snapshot carries the part angles
@@ -943,7 +946,8 @@ unload, hashed only once non-empty. Facts: [locks](game/locks.md), [economy 11.5
   right click on a bed, or its held menu's "Sleep") sends every awake, non-carrying selected character (as the original; the first there takes it, the rest are refused); `PutInBedOrder` (99: "Put in Bed" on the bed's menu,
   or, engine stand-in, on a carried body's menu with the bed search; a quick click while carrying, engine) sends carriers, the cheaper rent paid, the body let go
   and laid in. In reach (`use range` + 15, on the bed's floor within 20, or a walk ended within 60) it pays the rent (`Cost`/`Pay`, player only; the 24 h memo
-  is engine state, not saved) and enters; 3 short walks give the bed up (`MarkUnreachable`). In a bed the task is `CharacterTask.Sleep` (held still, the
+  is engine state, not saved) and enters, its orders dropped; a bed order that finds it in the bed at once (in reach, or lying there) also drops the
+  replan it asked for, so it lies there as one that walked does; 3 short walks give the bed up (`MarkUnreachable`). In a bed the task is `CharacterTask.Sleep` (held still, the
   bed's clip, `Sleeping` on the HUD); any other task gets it up (`GetUp`; a knock-out or death in bed keeps it there). The player's bed search `FindBed`
   follows the original's weights over beds within `BedSearchRange` 3953 (engine, for the town). Job 106 (in the list with the rescue job; the decision step's, `BedSystem.PutInJob`): a carrier of
   a friendly, non-hostile body with no grudge tag against it, and no bounty owed to a police-like carrier, lays it in the searched bed. Lifting a sleeper takes it out. Engine difference: no power test. The rescue job (148) and the one-shot Rescue start a lift only while the bed search finds the rescuer a bed (`CarrySystem.MayRescue`).
@@ -1064,7 +1068,7 @@ Arrests, the recognition meter and the marker are hashed only while set. What a 
   changes owner. Dialogue conditions 59, 61, 62 and 64 read it. Saved as `slavestate` and `meitou slave owner` (`SlaveSave`). An arrest with `Enslave` makes the slave at the
   caging; the slavers' own processing (182) of caged captives is [Captives](#captives). CHARACTER `slave` ("sets initial slave state"; **Verified**: fcs.def and the editor's `SlaveStateEnum` NOT_SLAVE 0, IS_SLAVE 1, ESCAPING_SLAVE 2, EX_SLAVE 3) is
   applied to every freshly made character (**Verified**, `FUN_14062b210`: gated only on there being no saved state, no record-type or squad test; the setter `FUN_1405a4940` stores it with no owner test), `PopulationSystem.SpawnSquad`; a saved one reads `slavestate`. The Slaves' "start slave" is 1, in locked Prisoner Shackles. Owner: the faction of the town the squad belongs to, the start town's for the start squad, else none (-1) (engine; the original's owner is
-  **Unknown**); 3 (ex-slave) is kept, shown with its owner, its looks-like-slave level floored at 0.01 and not doubled (`FUN_1405a51e0`, **Verified**: floor 0.01, state 2 doubled with a 0.1 floor); the other rules test it as the original does, non-zero tests count it as a slave. The setter's "has been enslaved" message and obedient-slave job are not run for these.
+  **Unknown**); 3 (ex-slave) is kept, shown with its owner, its looks-like-slave level floored at 0.01 and not doubled (`FUN_1405a51e0`, **Verified**: floor 0.01, state 2 doubled with a 0.1 floor); the other rules test it as the original does, non-zero tests count it as a slave. A player character starting in state 1 receives the obedient-slave job; the setter's "has been enslaved" message is not shown.
 - **Slave squads** (`PopulationSystem.MakeSlaves`): a squad's planned `slaves` squads (the factory's role 4) are made at its spot as squads of their template's faction (else the
   owner's), every member a slave of the owner squad's faction, put into random free cages of the home after its prisoners (engine: their "Slave only squad" package's one goal is
   Slave get in Cage, 172; the rest stand by the owner). A slave is police-like by its class like anyone (`FUN_140599600` tests no slave state, **Verified**; every Meitou caller mirrors an original caller of it); an owned slave starts no fights and is no aggro target but for its owner's
@@ -1075,11 +1079,13 @@ Arrests, the recognition meter and the marker are hashed only while set. What a 
   tags it escaping (2) when it wears no locked shackles or stands outside the town; the nearest police-like or slaver one then captures an escaping slave as an arrest with
   `Enslave` (fight down, lift, cage; event 36 ESCAPING_SLAVE_SPOTTED as a bubble), and the caging makes it a slave (1) again and chains it
   (`CharacterAssembly.Chain`; the original cuffs before the carry; unchained, it never looks like a slave and is processed forever, #508). A town here is `InOwnTown`'s extent, else no farther
-  from its centre than its gate nearest the point plus 100 (Rebirth's gates stand about 1500 out, its radius is 184); without gates, the extent only. **Observed** (probe): a start
+  from its centre than its gate nearest the point plus 100 (Rebirth's gates stand about 1500 out, its radius is 184); without gates, the extent only. A caged slave's master is
+  the resident squad of its cage's building when loaded (engine stand-in for `FUN_140330600` assigning the cage's owner handle). **Observed** (probe): a start
   slave walking out of Rebirth is tagged just past the south gate, and once down is carried back and caged as a slave.
 - **Escape far from the owner** (`ArrestSystem.EscapeFarFromOwner`, on the spotting cadence; facts: [carry-loot](game/carry-loot.md#a-slave-far-from-its-owner-escapes)): any
   slave (state 1), player or NPC, outside every town (its status town, `CharacterCold.StatusTown`, [rule](game/carry-loot.md#the-status-town), as for `Freed`) and farther than about 3 536 from its owner becomes an escaped slave. The owner is the
-  master squad's leader (`ObedientSlave.OwnerOf`); a slave without one is left alone, and the platoon and unresolved-handle paths are not modelled.
+  master squad's leader (`ObedientSlave.OwnerOf`); without a master squad or pending saved owner handle, a slave becomes escaped even inside town.
+  A master squad or saved owner still waiting to load is kept; measuring to an unloaded platoon's position is not modelled.
 - **Slave trading** (DA 41 / 42, `CharacterTrading`; facts: [economy 12](game/economy.md#12-slaves-prisoners-animals)): the line ends the conversation and the window
   opens as it closes (a speech-bubble line opens it at once; only for a player-character target). Rows, prices and the confirm's effects as in the original, with these **engine**
   choices: the buying list (the original's per-owner set, whose owner is a character, is not modelled) is every character in slave state 1, not dead, that obeys the
@@ -1211,7 +1217,8 @@ gather jobs while walking home under 43, and a job that waited on that walk reac
   the gatherer's squad, and stays in its own squad: `Task_GetSlave`'s queued message is replayed as `setChainedMode` only (`FUN_1407b65b0` kind 5 ->
   `FUN_14032e590`, **Verified**: no squad change), so it plans with the owner squad's Slave AI Goals (job 187, `AiSystem.ObeyedRoles`), mostly 171
   Follow slavemaster or 189 Worker. The cage is opened and the captive steps to its exit spot ([locks](game/locks.md#cages-and-beds));
-  which of the original's tasks opens it is **Unknown**; NPCs only.
+  which of the original's tasks opens it is **Unknown**. Player captives are gathered too: 173's finder excludes player-owned cages, not player occupants
+  (`FUN_1408db680` -> `FUN_1408db510`, **Observed**, 1.0.68 decompile); 217 still excludes player occupants (engine choice).
   **Observed** (KenshiOracle hold, Rebirth, 2026-11-09): the original's gathered slaves keep their squads all hour (Pao 40, Mu 44).
   **Observed** (probe): the Slave Farm's workmasters take the caged slaves out by day; at night their slaves' 172 puts them back.
 - **Deliver** (192, the squad leader under a shipping package): walks to `Blackboard.MissionTown`; there, with 194 (or 218 in a prison or slave camp) in its hours, it says event 39

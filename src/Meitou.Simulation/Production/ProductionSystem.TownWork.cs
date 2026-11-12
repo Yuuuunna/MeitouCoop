@@ -26,13 +26,39 @@ using Meitou.Simulation.Movement;
 namespace Meitou.Simulation.Production;
 /// <summary>
 /// The machines of NPC towns (docs/game/buildings-production.md "NPC town machines"): a town building an NPC worker (goals 189 / 190, AiSystem Work)
-/// stands at is a machine like a rock or a training dummy is: no registry site, so neither drawn, saved nor built; a complete virtual site of the
-/// town's faction, made when the first worker arrives. The workers are the AI's: the decision step keeps AiMind.WorkOperate (Task_OperateMachine, row
+/// stands at has one canonical level-machine site owned by its registered faction, shared with inventories and saving, made on first use.
+/// The workers are the AI's: the decision step keeps AiMind.WorkOperate (Task_OperateMachine, row
 /// 87) or AiMind.CollectFrom (Task_EmptyMachine, row 92) while they are at the building, and this system applies them.
 /// </summary>
 public sealed partial class ProductionSystem
 {
+    /// <summary>
+    /// The town catalogue used to resolve a turret on its first player order.
+    /// </summary>
+    readonly PopulationData? _towns;
+
+    /// <summary>
+    /// The canonical placement key shared by town work, machine inventories and saves.
+    /// </summary>
     public static string TownWorkId(TownBuilding building) => building.Key;
+
+    /// <summary>
+    /// Resolves a registered town turret to its ordinary level-machine site without creating a second identity.
+    /// </summary>
+    BuildSite? TownTurret(World world, string id)
+    {
+        if (_towns is not { } data) return null;
+
+        for (int s = 0; s < data.Sites.Count; s++)
+        {
+            if (data.Turrets(s).FirstOrDefault(b => b.Key == id) is not { } turret) continue;
+            if (TownWork(world, turret) is null) return null;
+
+            return world.Buildings.Find(id);
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// State 66 <c>haveSomeResourcesFrom</c> (<c>FUN_140597530</c>, <b>Observed</b>): the character carries the machine's output item.

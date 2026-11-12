@@ -9,6 +9,7 @@ using Meitou.Simulation.Aggro;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Items;
+using Meitou.Simulation.Kidnap;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Perception;
 using Meitou.Simulation.Player;
@@ -1076,11 +1077,13 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         return list;
     }
 
+    /// <summary>
+    /// Materializes a planned squad, retaining authoritative creation seeds, cleanup tracking and delayed unique binding.
+    /// </summary>
     Squad SpawnSquad(World world, BuiltSquad built, TownSite? site, float radius, bool player = false, int platoonId = -1, bool idle = false, float yaw = 0, bool pinned = false,
         ulong? creationSeed = null, Action<CharacterId>? spawned = null, bool bindUniques = true, HashSet<int>? gated = null, bool wild = false)
     {
         var table = world.Characters;
-        var walk = world.Walkability;
         var squad = NewSquad(world, built, site, radius, platoonId, pinned, wild);
         squad.PlayerManaged = player;
         if (built.Home is { } residence0)
@@ -1093,37 +1096,68 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         bool hasLeader = leaderPlan is not null;
         foreach (var member in builtMembers)
         {
-            var plan = member.Plan;
-            var (x, z, standY) = StandSpot(world, walk, built, plan, squad.Id);
-            var race = _assembly.RaceOf(plan.RecordId, member.Appearance);
-            var record = _data.Db.Find(plan.RecordId);
-            var hot = new CharacterHot
-            {
-                Position = new Vector3(x, Ground(walk, x, z, standY), z),
-                Yaw = yaw,
-                Health = 100,
-                Task = (byte)(player || idle ? CharacterTask.Idle : plan.Role == SquadRole.Leader || !hasLeader ? CharacterTask.Wander : CharacterTask.Follow),
-                Mode = player ? SpeedMode.Free : SpeedMode.Walk,
-                MaxSpeed = CharacterAssembly.StandInMaxSpeed,
-                WalkSpeed = CharacterAssembly.WalkSpeed(race),
-                TaskTime = 0.5f + Rng.Float(Rng.Hash(world.Seed, (ulong)squad.Id << 8 | (uint)plan.Index, RngPurpose.Think)) * 3,
-            };
-            var cold = AssembleMember(world, member, squad.Faction, squad.Id, player,
-                creationSeed.HasValue ? new CharacterId(plan.Index, 1) : table.PeekNextId(), ref hot, creationSeed);
-            ApplyRecordSlave(cold, record, site);
-            // A new NPC's bounties (economy.md 11.2; engine: not the player's characters, nor the sandbox's idle spawns).
-            if (!player && !idle) cold.Bounties = Crime.SpawnBounties.Roll(_data, record, world.Seed, table.PeekNextId(), world.Tick);
-            var id = table.Spawn(hot, cold, world.Tick);
-            spawned?.Invoke(id);
-            if (cold.Name.Contains('/') && world.SystemOf<Dialogue.DialogueSystem>() is { } talk) cold.Name = talk.ExpandName(world, id, cold.Name);
-            if (bindUniques && UniqueCharacters.IsUnique(record)) world.Uniques.Bind(plan.RecordId, id);
+            var id = SpawnMember(world, built, squad, member, hasLeader, player, idle, yaw, site, creationSeed, spawned, bindUniques);
             squad.Members.Add(id);
-            if (plan.Role == SquadRole.Leader && squad.Leader.IsNone) squad.Leader = id;
+            if (member.Plan.Role == SquadRole.Leader && squad.Leader.IsNone) squad.Leader = id;
         }
         squad.SpawnSize = squad.Members.Count;
         if (squad.Leader.IsNone) squad.Leader = SquadRegistry.Successor(squad.Members, table);
         world.Squads.Add(squad);
         return squad;
+    }
+
+    /// <summary>
+    /// Makes one fresh member at its planned spot, with its body, initial hunger and slave state, bounties and expanded name.
+    /// </summary>
+    CharacterId SpawnMember(World world, BuiltSquad built, Squad squad, BuiltMember member, bool hasLeader, bool player, bool idle, float yaw,
+        TownSite? site, ulong? creationSeed, Action<CharacterId>? spawned, bool bindUniques)
+    {
+        var table = world.Characters;
+        var plan = member.Plan;
+        var race = _assembly.RaceOf(plan.RecordId, member.Appearance);
+        var record = _data.Db.Find(plan.RecordId);
+        var hot = SpawnMotion(world, built, squad, plan, race, hasLeader, player, idle, yaw);
+        var seedId = creationSeed.HasValue ? new CharacterId(plan.Index, 1) : table.PeekNextId();
+        var cold = AssembleMember(world, member, squad.Faction, squad.Id, player, seedId, ref hot, creationSeed);
+
+        ApplyRecordSlave(world, cold, record, site);
+
+        // A new NPC's bounties (economy.md 11.2; engine: not the player's characters, nor the sandbox's idle spawns).
+        if (!player && !idle) cold.Bounties = Crime.SpawnBounties.Roll(_data, record, world.Seed, table.PeekNextId(), world.Tick);
+        var id = table.Spawn(hot, cold, world.Tick);
+        spawned?.Invoke(id);
+
+        // The name's text tokens, once the character exists (FUN_14062b210 end): a mod's "Trader /GENNAME/".
+        if (cold.Name.Contains('/') && world.SystemOf<Dialogue.DialogueSystem>() is { } talk) cold.Name = talk.ExpandName(world, id, cold.Name);
+        if (bindUniques && UniqueCharacters.IsUnique(record)) world.Uniques.Bind(plan.RecordId, id);
+
+        return id;
+    }
+
+    /// <summary>
+    /// A fresh member's position and initial movement, before its body supplies its speed.
+    /// </summary>
+    CharacterHot SpawnMotion(World world, BuiltSquad built, Squad squad, MemberPlan plan, GameRecord? race, bool hasLeader, bool player,
+        bool idle, float yaw)
+    {
+        var walk = world.Walkability;
+        var (x, z, standY) = StandSpot(world, walk, built, plan, squad.Id);
+
+        return new CharacterHot
+        {
+            Position = new Vector3(x, Ground(walk, x, z, standY), z),
+            Yaw = yaw,
+            Health = 100,
+            Task = (byte)(player || idle
+                ? CharacterTask.Idle
+                : plan.Role == SquadRole.Leader || !hasLeader
+                    ? CharacterTask.Wander
+                    : CharacterTask.Follow),
+            Mode = player ? SpeedMode.Free : SpeedMode.Walk,
+            MaxSpeed = CharacterAssembly.StandInMaxSpeed,
+            WalkSpeed = CharacterAssembly.WalkSpeed(race),
+            TaskTime = 0.5f + Rng.Float(Rng.Hash(world.Seed, (ulong)squad.Id << 8 | (uint)plan.Index, RngPurpose.Think)) * 3,
+        };
     }
 
     /// <summary>
@@ -1185,15 +1219,15 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     /// <summary>
     /// CHARACTER <c>slave</c> (SlaveStateEnum 1 slave, 2 escaped, 3 ex-slave) on a freshly made character, whatever squad it is in and with or
     /// without an owner (<c>FUN_14062b210</c>, <b>Verified</b>; a saved character is not touched): 1, 2 and 3 are kept. The owner is the faction of
-    /// the town the squad belongs to, else none (-1). The setter's message and obedient-slave job (<c>FUN_1405a4940</c>) are not run, as for the
-    /// start squad before.
+    /// the town the squad belongs to, else none (-1). The state setter adds the obedient-slave job for a player slave.
     /// </summary>
-    void ApplyRecordSlave(CharacterCold cold, GameRecord? record, TownSite? site)
+    void ApplyRecordSlave(World world, CharacterCold cold, GameRecord? record, TownSite? site)
     {
         int state = record?.GetInt("slave") ?? 0;
         if (state is not (>= 1 and <= 3)) return;
         cold.SlaveState = (byte)state;
         cold.SlaveOwner = site is not null && site.Index < _data.SiteFactions.Count ? _data.SiteFactions[site.Index] : -1;
+        if (state == 1) ObedientSlave.StateChanged(world, cold, 1);
         if (state == 2) cold.RecentlyWanted = Crime.CrimeSystem.RecentlyWantedSeconds;
     }
 
@@ -1380,7 +1414,9 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     /// </summary>
     CharacterCold AssembleMember(World world, BuiltMember member, int faction, int squadId, bool player, CharacterId seedId, ref CharacterHot hot, ulong? creationSeed)
     {
-        var plan = member.Plan; var record = _data.Db.Find(plan.RecordId); var race = _assembly.RaceOf(plan.RecordId, member.Appearance);
+        var plan = member.Plan;
+        var record = _data.Db.Find(plan.RecordId);
+        var race = _assembly.RaceOf(plan.RecordId, member.Appearance);
         var cold = new CharacterCold
         {
             Name = member.CreationName ?? SpawnName(world, record, member.Appearance, squadId, plan.Index, creationSeed) ?? record?.Name ?? plan.RecordId,
@@ -1396,6 +1432,10 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         };
         _assembly.Attach(seedId, cold, ref hot, record, race,
             creationSeed ?? world.Seed, plan.IsAnimal ? plan.Age : 1);
+
+        // FUN_140581770: fresh organic members of a malnourished template start at 170 hunger.
+        if (plan.Malnourished && cold is { Race.IsRobot: false, Medical: { } medical }) medical.Hunger = 1.7f;
+
         return cold;
     }
 

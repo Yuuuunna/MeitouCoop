@@ -185,6 +185,13 @@ public static class CharacterEditing
             ? data.Bodies.Create(proposedRace, data.Db.Find(cold.RecordId), world.Seed, Rng.Key(edit.Character))
             : (Race: cold.Race!, Stats: cold.Stats!, Medical: cold.Medical!);
 
+        // Recreating an organic body keeps the start's hunger and fitted limbs (#515, #360).
+        if (changedRace)
+        {
+            if (!body.Race.IsRobot && cold.Medical is { } previous) body.Medical.Hunger = previous.Hunger;
+            foreach (var (limb, item) in Prosthetics(cold.Medical)) body.Medical.FitReplacement(limb, item);
+        }
+
         // The look: the new record wearing what the character wears now.
         var worn = cold.Inventory is { } inventory ? SavedKit.FromInventory(inventory) : [];
         var kit = SavedKit.LoadoutOf(record, worn, data.Db, look.Loadout?.Seed ?? 0);

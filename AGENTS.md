@@ -3,6 +3,8 @@
 C# / .NET 11 reimplementation of the Kenshi engine (namespace `Meitou`), GPL-3.0-or-later. Goal: a
 drop-in replacement that runs original content and mods unchanged.
 
+`CLAUDE.md` is canonical; keep `AGENTS.md` identical whenever either file changes.
+
 ## Research notes: read and keep them current
 
 - Keep all `.md` files as small as possible: concise facts and instructions, no repetition or filler.
@@ -70,6 +72,11 @@ drop-in replacement that runs original content and mods unchanged.
   becomes a named method (method group) or a statement lambda laid out like a method. Chained `?:` and LINQ calls one per line.
 - Merged code (a PR, another branch, a contributor's patch, a port) follows these rules too: bring it up to them while merging,
   without changing its behaviour.
+
+## Branches
+
+- After merging a branch into master, remove its worktree (`git worktree remove`) and delete the branch
+  (`git branch -d`) without asking, once the worktree has no uncommitted work.
 
 ## Code mods
 

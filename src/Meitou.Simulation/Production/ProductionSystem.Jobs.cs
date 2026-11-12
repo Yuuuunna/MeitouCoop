@@ -589,10 +589,10 @@ public sealed partial class ProductionSystem
     /// </summary>
     bool HasWork(World world, BuildSite site, Machine m, CharacterCold cold)
     {
-        if (WorkFactor(world, m) <= 0)
-            return false;
-        if (m.Data.IsResearch)
-            return ResearchFor(world, m).Queue.Count > 0;
+        // Power is state 93 (the town's supply), not the granted share: a machine nobody works draws nothing and reads full power, so the share
+        // started the job and ended it as the operator arrived, over and over (#546).
+        if (!Powered(world, site, m) || m.Health * m.ProductionMult <= 0) return false;
+        if (m.Data.IsResearch) return ResearchFor(world, m).Queue.Count > 0;
         if (m.Farm is { } f)
         {
             if (f.Death >= m.Data.Farm!.DeathThreshold)

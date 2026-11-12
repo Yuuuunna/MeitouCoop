@@ -2646,7 +2646,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             _statsLines.Add($"{_fpsText}  {dt * 1000:0.00} ms  {size.X}x{size.Y}");
             var session = host.Session;
             var camera = host.Camera;
-            _statsLines.Add($"sim {session.Simulation.TotalTicks} ticks  {session.CurrentSnapshot.Characters.Count} characters  "
+            _statsLines.Add($"sim {session.CurrentSnapshot.Tick} ticks  {session.CurrentSnapshot.Characters.Count} characters  "
                 + $"x{session.TimeScale:0}  {session.Clock.TimeText}");
             _statsLines.Add($"camera {camera.Target.X:0}, {camera.Target.Y:0}, {camera.Target.Z:0}  yaw {camera.Yaw * 180 / MathF.PI:0}  "
                 + $"pitch {camera.Pitch * 180 / MathF.PI:0}  boom {camera.Distance:0}");

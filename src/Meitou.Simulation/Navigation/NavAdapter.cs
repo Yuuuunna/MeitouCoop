@@ -33,6 +33,9 @@ public sealed class NavAdapter(NavmeshWalkability nav) : IAgentWalkability, Lock
     /// <inheritdoc/>
     public bool IsOnSurface(float x, float z, float nearY) => nav.IsOnSurface(x, z, nearY);
     /// <inheritdoc/>
+    public Vector3 SurfacePoint(Vector3 at, float inset) => nav.SurfacePoint(at, inset);
+
+    /// <inheritdoc/>
     public bool TryStand(float x, float z, float nearY, out float y) => nav.TryStand(x, z, nearY, out y);
     /// <inheritdoc/>
     public Vector2 Slide(Vector3 from, Vector2 step, float radius) => nav.Slide(from, step, radius);

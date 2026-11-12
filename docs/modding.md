@@ -44,7 +44,8 @@ runtime settings belong in standard `AddSettings` configuration or sidecars outs
 
 ## Writing a mod
 
-A class library for `net11.0` referencing `Meitou.Modding.dll` (the mod contract and pure `Meitou.Game.Ui` extension types `UiHost`/`UiNode`),
+A class library matching the release runtime (`net11.0` standard, `net10.0` legacy macOS), referencing `Meitou.Modding.dll`
+(the mod contract and pure `Meitou.Game.Ui` extension types `UiHost`/`UiNode`),
 `Meitou.Simulation.dll`, `Meitou.Core.dll`, `Meitou.Data.dll` and `0Harmony.dll`, plus `MeitouClient.dll` when using graphical UI types,
 all with `Private="false"`: the host supplies them. **Observed** (project layout): the multiplayer build retains the independent modding assembly for headless hosting. Most namespaces
 follow folders (`Meitou.Simulation.Population`, `Meitou.Game.Rendering.Terrain`); mods built against the previous assembly layout need rebuilding.

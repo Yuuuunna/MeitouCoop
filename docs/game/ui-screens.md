@@ -161,6 +161,10 @@ Empire Citizen and The Cannibal Hunters). The "Meitou" sentences are engine choi
   template keeping its own layout.
 - **Research**: the start's `research`, or `5359-gamedata.base` when it lists none.
 - **Clock**: day 1 (set by the reset), 10:00.
+- **The Slaves**: **Observed** (1.0.68 factory/status decompilation): its template's `malnourished` flag gives
+  [170 hunger](character-stats.md#hunger-blood-and-parts). CHARACTER `slave` initially sets state 1 and job 187; with no owner assigned, the
+  [status update](carry-loot.md#a-slave-far-from-its-owner-escapes) turns it into state 2 and removes the job. Entering a cage gives it the cage's
+  owner (`FUN_140330600`); a workmaster gathering it uses `setChainedMode`, which assigns the master and restores job 187.
 
 ### Loading screen
 
@@ -813,6 +817,10 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
 | Research | research inventory (`FUN_140155910`) | `Kenshi_InventoryResearchWindow` |
 | Building (houses), Door, Gateway, Wall | none (slot 48 returns 0) | - |
 
+**Observed** (issue #561 screenshot; installed `Kenshi_InventoryGenericWindow.layout` read): the generic storage layout's `TypeText` uses
+`Kenshi_GenericTextBoxFlat`, which draws a panel even with an empty caption. Meitou hides it when there is no restricted-item name, so general
+storage has no blank heading panel over its inventory grid.
+
 `Kenshi_GenericBuildingWindow` (**Verified**, layout read): Window `Kenshi_WindowCX` captioned "BUILDING NAME", layer Window; `CraftingPanel`
 (`CraftingName`, `QueueButton` "QUEUE..."), `TitlesPanel` (layout INPUTS / OUTPUT, but the constructor `FUN_140155f90` **Verified** overwrites them with the translated `Input` / `Inputs` by the input count, hidden at 0, and `Output`), `Input1Panel` / `Input2Panel` (`InputNText`, `InputNStatusText`,
 slot `inN`, `InputNProgressBar`), output (`out` slot, `OutputProgressBar`, `OutputText`, `OutputDataPanel`). The `inN` / `out` inventory
@@ -1069,6 +1077,8 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
   persistent platoon of `5006-squad.mod` ("Wandering Squad") whose AI packages it runs (the factory `FUN_1407f4420`'s third argument 1 is the persistent flag, **Observed**),
   so `saveGame` writes it with every platoon. Meitou saves it as a homeless persistent platoon ([save](../formats/save.md#wild-and-nest-platoons-meitou-mapping)).
 - Meitou: a portrait clicked without dragging selects the character (engine choice); a box is dragged by its frame.
+- **Observed** (installed `Kenshi_OverviewWindow.layout`, `kenshi_templates.xml`): `DismissCharPanel` expands to a transparent `PanelEmpty` ItemBox;
+  its caption has `NeedMouse=false`. Meitou checks the arranged panel's bounds and clip for portrait drops, with the overview as the top hit screen.
 
 ## 6. Inventory, trade, dialogue, build
 

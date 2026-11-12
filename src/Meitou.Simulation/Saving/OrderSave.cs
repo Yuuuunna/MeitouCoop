@@ -182,7 +182,7 @@ public static partial class OrderSave
     }
 
     /// <summary>
-    /// The site an order names: Meitou's id when the world has it (a build site, a fixture, a rock), else the instance a building handle named, as a
+    /// The site an order names: Meitou's id when the world has it (a build site, a fixture, a rock, a town dummy or turret), else the instance a building handle named, as a
     /// build site or a fixture.
     /// </summary>
     static string? SiteOf(World world, SavedOrder o)

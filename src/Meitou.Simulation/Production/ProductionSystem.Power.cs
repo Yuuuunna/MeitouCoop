@@ -131,7 +131,7 @@ public sealed partial class ProductionSystem
             m.Health = site is { Target: > 0 } s ? Math.Clamp(s.Progress / s.Target, 0, 1) : 1;
             m.ProductionMult = ResearchFor(world, m).Upgrade(m.Data.Id).ProductionMult;
             m.Efficiency = built ? Efficiency(world, m) : 0;
-            m.HasPower = built && HasPower(world, m, Site(world, m.Site)!.Town);
+            m.HasPower = built && Powered(world, site!, m);
             m.Rotation = !built ? 0 : m.Data.IsGenerator ? (m.PowerOn ? Output(world, m) * 0.01f : 0) : m.Efficiency;
             if (m.Data.IsBattery)
             {
@@ -198,6 +198,13 @@ public sealed partial class ProductionSystem
 
         return m.Active ? share * m.Health * saturation * m.Yield * m.Data.OutputRate * m.ProductionMult : 0;
     }
+
+    /// <summary>
+    /// State 93 <c>BUILDING_HAS_POWER</c> (<c>FUN_140596ab0</c>, <b>Verified</b>), a start condition of operating (87, 221) and manning a turret (146):
+    /// the target building's <see cref="HasPower"/>, read from the town's supply rather than the machine's granted share. An NPC town's machine
+    /// always has it (engine choice: NPC towns have no power grid here).
+    /// </summary>
+    bool Powered(World world, BuildSite site, Machine m) => site.LevelMachine || HasPower(world, m, site.Town);
 
     /// <summary>
     /// Whether a machine counts as powered for its sound emitter (<c>FUN_140299370</c>, <b>Observed</b>): a generator always (fuel and switch are not

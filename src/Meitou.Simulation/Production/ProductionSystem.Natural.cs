@@ -100,7 +100,7 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// A player site of the registry, else the rock a natural id names, else a town seat or training dummy; null for none.
     /// </summary>
-    BuildSite? Site(World world, string id) => world.Buildings.Find(id) ?? Seat(world, id) ?? Natural(world, id) ?? TownDummy(world, id);
+    BuildSite? Site(World world, string id) => world.Buildings.Find(id) ?? Seat(world, id) ?? Natural(world, id) ?? TownDummy(world, id) ?? TownTurret(world, id);
     /// <summary>
     /// The training dummies' sites by id, made on first use.
     /// </summary>

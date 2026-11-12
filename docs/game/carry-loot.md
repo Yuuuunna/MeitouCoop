@@ -121,12 +121,16 @@ faction+0x40 books bounty. Kind7 is a squad-level suspect tag, not a faction rel
 Friendly/hostile/slave-owner/lawless/bandit faction gates matter. Carrying past witnesses has
 its own victim/captor ownership checks.
 
+Meitou: the open loot body's limbs window uses the looter for drag and right-click transfers. Taking a fitted prosthetic leaves a stump and
+keeps its damage, wear and stun on the item; a refused right-click move leaves it fitted.
+
 ## Stolen ownership
 
 **Observed** item+0x140=from-owner, +0x160=current holder. Backpack uses its owning character's
 faction. Same faction/lawless holder (faction `fundamental type` 8 or `not real`) is not stolen (**Verified**, `FUN_14079e550`; it is tested before the state checks, whatever the strictness); strict1 can use set/nonmatching original-owner
 handle even if unresolved, strict0 also requires resolution. Dropping ownerless items can set
-dropper as owner. The save's `ownedby` is item+0x140 (**Observed**, `Item` vfunc 75/76); preserve handles, not a boolean only.
+dropper as owner. The save's `ownedby` is item+0x140 (**Observed**, `Item` vfunc 75/76); preserve handles, not a boolean only. A mark naming only a faction (goods of a building
+nobody lives in) or a robbed character the save does not hold has no handle; Meitou keeps the faction in `meitou stolen from` ([save.md](../formats/save.md#zone-files)).
 
 A take from the inventory window (right click `RClickAutoTrade` `FUN_140713d20`, drag `FUN_140715560`) books its Theft/Looting, rolls
 `ImStealingDoYouNotice` and marks an ownerless item (`Item::notifyTheftFrom`, vfunc 0x348: owner = the source, unless the source window is the
@@ -305,7 +309,10 @@ The same update (1.0.68 `FUN_1405a4f50`, **Verified** by decompile) makes a slav
 - the status object's current town (`+0x88`, [below](#the-status-town)) is none, i.e. the slave is out of every town;
 - its owner handle (character `+0x328`) names a character that resolves, and the squared distance between them is above 12 500 000 (`DAT_1416f016c`, about 3 536).
 
-When the handle's character does not resolve, its platoon is looked up and the slave is measured to it the same way. A squad handle (0x5b) is resolved to its platoon. With neither found, the slave escapes unless `FUN_1404fe6e0` holds on the handle (meaning **Unknown**). A cage or a carry is not tested.
+When the handle's character does not resolve, its platoon is looked up and the slave is measured to it the same way. A squad handle (0x5b) is resolved to its platoon.
+**Observed** (1.0.68 `FUN_1405a4f50` and `FUN_1404fe6e0`): with neither found, the slave escapes unless the handle still names a registered object.
+A null handle (type 11) fails that check, so an ownerless slave becomes escaped even inside town; only the resolved-owner distance branch checks the town.
+A cage or a carry is not tested. Meitou keeps an unloaded master squad or pending saved `slaver` handle until it can resolve.
 
 Since the setter removes job 187 Obedient Slave, the slave then plans with its own lists. In the Rebirth hold (**Observed**, one slave), a slave sent to a workplace about 4 000 from its owner became an escaped slave and took its own 172 Getting in my cage, whose finder (`FUN_1408caaf0`) has no slave state test.
 

@@ -301,6 +301,9 @@ shows the first failing message in this order (**Verified** unless marked):
   - **Not modelled:** ghosts on a building's floor (Meitou takes the floor as level, the original measures against the terrain
     under them, **Unknown**), the indoor lift reset, parts nested under another part (the node position is the whole chain's, the
     original's the part's own scene node), and a mesh whose bounds file is missing (the part is left out).
+  - **Observed** (base-game `data/buildings/windmill/windmill03.mesh`, fast versus full reader): the fast bounds walk fails for the
+    windmill base although the structural mesh reader returns its bounds. `BuildingFootprints.PartBounds` falls back to that reader;
+    omitting the base leaves only above-ground rotor groups and incorrectly sinks the ghost by roughly 300 units.
 - **Indoors** (`FUN_1404d69c0`, flags read in `FUN_1404debc0`): an `is interior furniture` or `is node` building
   is valid with all node points in one player-owned building; otherwise only if it is `is exterior furniture` or
   `is node` (**Verified** by code). So interior-only furniture must be inside, while interior+exterior items (Campfire,
@@ -580,7 +583,7 @@ Status `+0x468` of a `ProductionBuilding` (production, furnace, generator, wind,
 - **Crafting** (`FUN_1402bcac0`, **Observed**): after a finished item is stored, status 1 when the output has become full (not when it could not be stored).
 
 Meitou: `Machine.Status` (hashed, not saved, a producer starts at 2), `HasEmptyInputs`, `OutputBlocked`, `Jammed`; `ProductionSystem.ClearBlocked` (its serial step) clears 1 / 0 for a producer that takes operators, an operator's or automatic machine's step sets them. The panel reads the word chain
-(`ProductionStatus`). Planner: `Holds` evaluates 62 / 63 / 64 for a `Targets.Machine` target, which no finder gives yet; 65, 105, 106, the farm and bench variants and the 87 to 92 plan are not modelled (the job system's `HasWork` / `Room` is the engine reading of the blocked start).
+(`ProductionStatus`). Planner: `Holds` evaluates 62 / 63 / 64 for a `Targets.Machine` target, which no finder gives yet; 65, 105, 106, the farm and bench variants and the 87 to 92 plan are not modelled (the job system's `HasWork` / `Room` is the engine reading of the blocked start; its power test is [state 93](ai-tasks.md), `ProductionSystem.Powered`, since an unworked machine's demand is 0 and its granted share reads 1).
 
 ### Item furnace
 
@@ -1006,8 +1009,9 @@ it with them. Meitou: `MachineData.Accepts` (AI) and `TakesByHand` (player).
 - **State evaluators** (**Observed**, read from the decompile, meanings of the virtual calls inferred): 66 `FUN_140597530` the character carries the machine's output item; 67 `FUN_1405a45f0` it carries an item the machine (an input) or storage accepts;
   82 `FUN_14059bd80` inventory or worn backpack has room for the target's item (a machine: its output item); 105 `FUN_1405a2c40` machine output empty; 169 `FUN_1405975d0` input invalid
   (production type 6 flag).
-- **Meitou** (`ProductionSystem.TownWork`, `AiSystem.WorkAtMachine`): the town building a worker of goal 189 stands at is a virtual complete site `townwork:<building key>` of the town's
-  faction (like a rock or a training dummy: no registry site, not drawn, saved or built; its machine is kept in memory and in the save), made when the first worker arrives and kept in the save ([town machines](../formats/save.md)). A worker whose plan starts with
+- **Observed** (Meitou source, `ProductionSystem.TownWork`, `FixtureRegistry.GetTownMachineSite`): town work uses one owner-resolved `LevelMachine` site under the canonical building key,
+  shared with inventories and saves; it is made on first use, including a player's turret order ([ui-input](ui-input.md#building-picking-and-selection)). Registration alone starts no producers.
+  [Multiplayer authority](../multiplayer.md) still gates player work by the current controller's asset permissions and site revision. A worker whose plan starts with
   87 operates it every tick (skill factor, operating XP: the player's operator lines), with 92 empties it into its inventory. Only producers run: a research bench counts for the player's
   research alone and a crafting bench with no queue refuses an operator, so both stay pretence. Ditching: rows 113 / 114 / 93 (`TownDutySystem.DitchStore` and the Ditch errand, [ai-tasks](ai-tasks.md#ditching)). Row 94 (`WANT_TO_FILL_MACHINE`, effect 66) and its finder `FUN_14059d9b0` (**Verified**: for each input item of the target machine in list order, `FUN_14059d000` looks for a cached earlier pick, then loose ground items, then the nearest building whose production component's output lists the item (identity for ITEM records, same record type otherwise) with some in it, the buildings split by the owner test of vfunc `0x3b0`, within the sight range of the AI's range mode) give the chain 92 at the source, 94, 93 at the machine, 87: Meitou plans it (`PlanContext.Find` row 94, states 66 / 67 on machine targets), the worker walks to the source (`AiSystem.StepBuilding`), `TownWorkers` empties it (92), fills the inputs (93, `FillInputs`) and operates. Not modelled (**Unknown** or undecoded): the cached pick, ground items, the `0x3b0` split and the building mask `0x4002436` (the town's workplaces stand in). A machine exists only once a worker has been at its building; the original's has its empty output from the start, so a source with no output yet is none in both. Unpowered: town machines draw no player grid (power held true).
   A town machine is no player machine for the hauling jobs (`ProductionSystem.Takes`).
