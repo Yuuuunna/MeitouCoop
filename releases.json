@@ -1,8 +1,31 @@
 {
   "format": 1,
   "repository": "Yuuuunna/MeitouCoop",
-  "generatedAt": "2026-11-13T11:25:41.833Z",
+  "generatedAt": "2026-11-13T11:46:57.4080626+00:00",
   "releases": [
+    {
+      "draft": false,
+      "tag_name": "launcher-v1.11.1",
+      "name": "Meitou Coop Launcher 1.11.1 (Windows portable)",
+      "prerelease": false,
+      "published_at": "2026-11-13T11:46:38Z",
+      "body": "Windows x64 portable Coop launcher. Extract the ZIP and run meitou-launcher.exe.\r\nIncludes an initial release catalog and prefers a public static index, so first start works without GitHub API access.\r\nExisting settings and player identities are retained. No GitHub login or token is required.\r\nThis release contains the portable build; Velopack installers and self-update feeds use the full Launcher release workflow.\r\n",
+      "html_url": "https://github.com/Yuuuunna/MeitouCoop/releases/tag/launcher-v1.11.1",
+      "assets": [
+        {
+          "name": "MeitouCoopLauncher-1.11.1-win-x64-portable.zip",
+          "browser_download_url": "https://github.com/Yuuuunna/MeitouCoop/releases/download/launcher-v1.11.1/MeitouCoopLauncher-1.11.1-win-x64-portable.zip",
+          "size": 80132772,
+          "digest": "sha256:36a9a6e34317247ea9f268d34ff542ccee3a06be683a9e940b0dfe781781ceea"
+        },
+        {
+          "name": "SHA256SUMS.txt",
+          "browser_download_url": "https://github.com/Yuuuunna/MeitouCoop/releases/download/launcher-v1.11.1/SHA256SUMS.txt",
+          "size": 113,
+          "digest": "sha256:1a1e2df520bb1e0f90a2357c90db7cf4ad0fd3b92b68200b7422ed7094cbd4c3"
+        }
+      ]
+    },
     {
       "draft": false,
       "tag_name": "coop-v0.17.5-nightly.20261112",
