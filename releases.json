@@ -1,0 +1,48 @@
+{
+  "format": 1,
+  "repository": "Yuuuunna/MeitouCoop",
+  "generatedAt": "2026-11-13T11:25:41.833Z",
+  "releases": [
+    {
+      "draft": false,
+      "tag_name": "coop-v0.17.5-nightly.20261112",
+      "name": "Meitou Coop 0.17.5-nightly.20261112",
+      "prerelease": true,
+      "published_at": "2026-11-13T10:56:07Z",
+      "body": "Meitou Coop 0.17.5-nightly.20261112 for Windows x64. Client and server must use matching builds.\r\nBased on upstream e43b9ae2bf9f3b694e73e211830571c089bde4d7 (v0.17.5-nightly.20261112).\r\nExperimental multiplayer build; live game validation remains required.\r\nRequires an existing Kenshi installation. No original game assets are included.\r\nUse the Coop launcher to install the client, or extract the client ZIP and run start-client.cmd.\r\nVerify downloads against SHA256SUMS.txt. Preserve server-data and existing player identities when upgrading.\r\nThe portable Coop launcher is included; launcher installers and self-update feeds are published separately.\r\n",
+      "html_url": "https://github.com/Yuuuunna/MeitouCoop/releases/tag/coop-v0.17.5-nightly.20261112",
+      "assets": [
+        {
+          "name": "default.txt",
+          "browser_download_url": "https://github.com/Yuuuunna/MeitouCoop/releases/download/coop-v0.17.5-nightly.20261112/default.txt",
+          "size": 3616,
+          "digest": "sha256:c42f615647a46492aeb123bb11852514f674d199f524eec2695388fea8de4da1"
+        },
+        {
+          "name": "Meitou-0.17.5-nightly.20261112-win-x64.zip",
+          "browser_download_url": "https://github.com/Yuuuunna/MeitouCoop/releases/download/coop-v0.17.5-nightly.20261112/Meitou-0.17.5-nightly.20261112-win-x64.zip",
+          "size": 56448261,
+          "digest": "sha256:3cc841ad3c4ad56c87bc028317e4cfc7d2b9f02c1ea94eb39e017e18ea5080ec"
+        },
+        {
+          "name": "MeitouCoopLauncher-1.11.0-win-x64-portable.zip",
+          "browser_download_url": "https://github.com/Yuuuunna/MeitouCoop/releases/download/coop-v0.17.5-nightly.20261112/MeitouCoopLauncher-1.11.0-win-x64-portable.zip",
+          "size": 80126660,
+          "digest": "sha256:b5ae610b79f9cd22000cf6a2f9c4b3ffdaa7a80ac3fc7081b65b596691cbc3cc"
+        },
+        {
+          "name": "MeitouServer-0.17.5-nightly.20261112-win-x64.zip",
+          "browser_download_url": "https://github.com/Yuuuunna/MeitouCoop/releases/download/coop-v0.17.5-nightly.20261112/MeitouServer-0.17.5-nightly.20261112-win-x64.zip",
+          "size": 47037368,
+          "digest": "sha256:81186d98a34da69c98eaf243b94c7712f5a70a5dc10e4b0df8854450f0de1490"
+        },
+        {
+          "name": "SHA256SUMS.txt",
+          "browser_download_url": "https://github.com/Yuuuunna/MeitouCoop/releases/download/coop-v0.17.5-nightly.20261112/SHA256SUMS.txt",
+          "size": 340,
+          "digest": "sha256:4f8bd1e3c68b71f932b5c70eeef21fb3dc592cb9581e4e9df67f006b747997fc"
+        }
+      ]
+    }
+  ]
+}
