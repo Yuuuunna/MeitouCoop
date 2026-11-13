@@ -816,71 +816,63 @@ public sealed partial class ProductionSystem
         return best;
     }
 
+    /// <summary>
+    /// Saved faction claims awaiting a natural site's first resolution.
+    /// </summary>
     readonly Dictionary<string, int> _naturalClaims = new(StringComparer.Ordinal);
-    internal IEnumerable<(string Id, int Owner)> NaturalClaims => _naturalClaims.Concat(_naturalSites.Where(pair => pair.Value is { Owner: >= 0 }).Select(pair => new KeyValuePair<string, int>(pair.Key, pair.Value!.Owner))).GroupBy(pair => pair.Key, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal).Select(group => (group.Key, group.Last().Value));
 
+    /// <summary>
+    /// Every known rock owner, including saved machines whose foliage zone has not been placed yet.
+    /// </summary>
+    internal IEnumerable<(string Id, int Owner)> NaturalClaims => _naturalClaims
+        .Concat(_restoredRocks.Where(pair => pair.Value.Owner >= 0).Select(pair => new KeyValuePair<string, int>(pair.Key, pair.Value.Owner)))
+        .Concat(_naturalSites.Where(pair => pair.Value is { Owner: >= 0 }).Select(pair => new KeyValuePair<string, int>(pair.Key, pair.Value!.Owner)))
+        .GroupBy(pair => pair.Key, StringComparer.Ordinal)
+        .OrderBy(group => group.Key, StringComparer.Ordinal)
+        .Select(group => (group.Key, group.Last().Value));
+
+    /// <summary>
+    /// Restores the stable faction claim before any saved machine or queued order resolves the rock.
+    /// </summary>
     internal void RestoreNaturalClaim(World world, string id, int owner)
     {
-        if (owner >= 0 && IsNatural(id))
-            _naturalClaims.TryAdd(id, owner);
+        if (owner >= 0 && IsNatural(id)) _naturalClaims.TryAdd(id, owner);
     }
 
+    /// <summary>
+    /// Applies the checkpoint's owner when the resource first becomes available.
+    /// </summary>
     void ApplyNaturalClaim(World world, BuildSite site)
     {
-        if (!_naturalClaims.TryGetValue(site.Id, out int owner) || !world.IsPlayerFaction(owner))
-            return;
-        if (site.Owner < 0)
-            site.Owner = owner;
+        if (!_naturalClaims.TryGetValue(site.Id, out int owner) || !world.IsPlayerFaction(owner)) return;
+
+        site.Owner = owner;
         _naturalClaims.Remove(site.Id);
     }
 
     /// <summary>
-    /// The rock a natural id names: a BUILDING with <c>is foliage</c> whose machine is an operable mine of a <c>world resource mining</c>; with a rock source, one of that BUILDING must
-    /// stand within a unit of the position. Owned by no faction (-1: the original's <c>nofac</c> of its town NO_TOWN) until a player character works it; complete.
+    /// The natural site after its rock source has placed the zone, retaining the saved owner, player town and work state.
     /// </summary>
     BuildSite? Natural(World world, string id)
     {
-        if (!IsNatural(id))
-            return null;
+        if (!IsNatural(id)) return null;
         if (_naturalSites.TryGetValue(id, out var known))
         {
-            if (known is not null)
-                ApplyNaturalClaim(world, known);
+            if (known is not null) ApplyNaturalClaim(world, known);
             return known;
         }
+        if (ParseNatural(id) is not { } site) return _naturalSites[id] = null;
 
-        BuildSite? site = null;
-        int at = id.LastIndexOf('@');
-        var parts = at > 0 ? id[(at + 1)..].Split(',') : [];
-        if (parts.Length == 3 && float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out float x) && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float y) && float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float z))
+        // An unloaded foliage zone is not a missing rock and must not discard its saved machine.
+        if (_nodes is not null)
         {
-            string record = id[NaturalPrefix.Length..at];
-            var position = new Vector3(x, y, z);
-            if (_db.Find(record)is { Type: FcsRecordType.Building } building && building.GetBool("is foliage") && Data(record)is { Operable: true, Resource: not 0 })
-            {
-                // No rock there is not remembered: the host's rock source may not have placed that zone yet.
-                if (_nodes is not null)
-                {
-                    if (_nodes.Near(0, x, z, 1).FirstOrDefault(n => n.Record == record)is not { Record.Length: > 0 } rock)
-                        return null;
-                    _naturalBounds[id] = new RockBounds(rock.Centre ?? rock.Position, rock.Radius, rock.Shape, rock.Transform);
-                }
-
-                site = new BuildSite
-                {
-                    Id = id,
-                    Record = record,
-                    Name = building.Name,
-                    Position = position,
-                    Owner = -1,
-                    Materials = [],
-                    Complete = true
-                };
-            }
+            var at = site.Position;
+            if (_nodes.Near(0, at.X, at.Z, 1).FirstOrDefault(n => n.Record == site.Record) is not { Record.Length: > 0 } rock) return null;
+            _naturalBounds[id] = new RockBounds(rock.Centre ?? rock.Position, rock.Radius, rock.Shape, rock.Transform);
         }
 
-        if (site is not null)
-            ApplyNaturalClaim(world, site);
+        if (_restoredRocks.Remove(id, out var restored)) site = restored;
+        ApplyNaturalClaim(world, site);
         return _naturalSites[id] = site;
     }
 

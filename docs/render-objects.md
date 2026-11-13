@@ -9,6 +9,7 @@ materials: [runtime-materials](formats/runtime-materials.md); geometry: [Ogre me
 Resolve building/part/feature instances from merged records, seeded part choice and placement
 transforms. Preserve interior/exterior, materials, destroyed states, doors, offsets and scale.
 **Part choice** (`FUN_140848950`, **Verified**; `WorldObjectLayout.ChooseParts`): a `parts` entry of group 0 is kept without a draw at chance 0 or 100, else when the int roll `FUN_1409b3b40(0, 100)` (0..100, 101 values; its scale is max - min + 1) is at most its chance. Non-zero groups sit in a std::map keyed by group and are visited in ascending key order after group 0; each draws exactly one float (`FUN_1409b1c80`, scale: the group's total, **Observed**), the total adding every entry's chance with 0 counted as 100, missing targets included; the entries are walked in list order, an entry whose chance is below the roll takes it off and the walk goes on, else it is taken (a missing target yields no part); a roll past the sum takes nothing. The 'Unable to find key in unordered_map' strings in that function belong to other record maps.
+**Part nodes** (**Verified**, decompile): each part's node gets `offset × scale` and `setScale(scale)` (`FUN_14055e150`) as a child scene node, so it inherits its parent's scale. A `parts` child hangs under its parent part's node (`FUN_1405607f0`), but the children of an `interior` part hang under the building's node (`FUN_1405609e0` recurses with no parent). Issue #583: the Swamp House (scale 0.72) has its interior floor `RebelE_INTFLOOR.mesh` under the interior part; scaled twice, it sank under the black backing `RebelE_Black_Lower.mesh`.
 Workers prepare resident mesh/texture content; render thread publishes GPU objects. Shared meshes
 and per-instance state have separate lifetimes. A resident mesh can change finest LOD: refresh
 all draw/ray-geometry references before retiring replaced buffers.
@@ -30,6 +31,13 @@ distant landmarks/towns. Distant town stand-ins fade separately from real parts.
 and generated levels use projected demand with stable transitions. Do not treat a shorter part
 range as an accidental renderer limit: it can be original fidelity. Visibility/depth/shadow/
 reflection and streaming residency need consistent bounds.
+
+Generated object levels (`ObjectLodGen`, `MeshSimplifier.Chain` with the texture guard): a collapse re-points a corner at a vertex
+of the new point, so the texture coordinate jumps unless that vertex is chosen by the triangle's own mapping. A guard that only
+compared the jump with the part's mean UV density let tiled decks (Shield Bridge, tread squares) pick another UV island, showing
+planks and diagonal patches from about 700 units. Now a corner takes the vertex whose UV best matches the triangle's mapping
+extended to the new position, and the collapse is refused when none is within 0.01 UV. **Verified** (Shield Bridge at 34816,-112031,
+offscreen at distance 700: the deck matches a build without generated levels). Cost: such meshes keep about half their triangles at most.
 
 ## Arrival prefetch
 
@@ -99,11 +107,24 @@ zone and come back by one zone test against the current ranges. **Observed** (of
 ## Batching and depth
 
 Batch compatible mesh/material/state instances; sort colour batches near-first when enabled.
-Building parts cull back faces in colour (**Verified**: `objects.material` sets no `cull_hardware`, Ogre's default is clockwise; **Observed** by a mesh probe: Tower of Abuse's level-1 inner wall faces inward, so from outside its near side is not seen), double-sided materials excepted; in shadows only interior parts cull (the game's casters cull clockwise too; engine choice). Other open meshes are double-sided. A cut-out clips on the normal map's alpha whether or not the mesh has tangents (**Verified**: installed `objects.hlsl` runs `clip(normalTex.a - threshold)` under `TRANSPARENCY` alone, and `shadowcaster.hlsl` clips under `ALPHA` with no tangent condition either; the vertex declarations of `Carpet_RustyRug.mesh` and `Carpet_Fancy Rug.mesh` hold no tangents. **Observed** in the decoded normal maps: the mask cuts the Rusty Rug's holes and ends and the Fancy Rug's fringes and black margin), so Meitou loads and samples that map for its alpha, in colour and shadows, and leaves the lighting to check for tangents. Floor view: a part is drawn when its floor (clamped to 3) is at most the building's viewed floor, 4 (all) for a building not in the view (**Observed**, decompile `FUN_14092add0`, the clamp in `FUN_14055f6e0`; Meitou does not clamp, so a floor-4 roof hides at viewed floor 3). Fade uses per-instance dither lo/hi windows; solid,
+Building parts cull back faces ("Back faces" below; **Observed** by a mesh probe too: Tower of Abuse's level-1 inner wall faces inward, so from outside its near side is not seen). Other open meshes are double-sided. A cut-out clips on the normal map's alpha whether or not the mesh has tangents (**Verified**: installed `objects.hlsl` runs `clip(normalTex.a - threshold)` under `TRANSPARENCY` alone, and `shadowcaster.hlsl` clips under `ALPHA` with no tangent condition either; the vertex declarations of `Carpet_RustyRug.mesh` and `Carpet_Fancy Rug.mesh` hold no tangents. **Observed** in the decoded normal maps: the mask cuts the Rusty Rug's holes and ends and the Fancy Rug's fringes and black margin), so Meitou loads and samples that map for its alpha, in colour and shadows, and leaves the lighting to check for tangents. Floor view: a part is drawn when its floor (clamped to 3) is at most the building's viewed floor, 4 (all) for a building not in the view (**Observed**, decompile `FUN_14092add0`, the clamp in `FUN_14055f6e0`; Meitou does not clamp, so a floor-4 roof hides at viewed floor 3). Fade uses per-instance dither lo/hi windows; solid,
 fading and distant-town batches have different coverage needs. `EarlyDepth.Enabled` selects
 opaque, discard-free colour only for no-cutout/non-fading parts. Draw solids first; retain
 cutout/dither shaders for other batches. Cache native state per program so solid/fading variants
 do not evict one another. Depth/caster coverage must remain compatible with colour.
+
+### Back faces
+
+**Verified (decompiled, exe 1.0.68)**: `FUN_140841a50` (the material builder) is the only code that disables culling for these materials: with flag 0x10 it sets the pass to no hardware and no software culling (`Pass::setCullingMode` and `setManualCullingMode`, mode none); without it nothing touches the cull mode. `FUN_14057a920` sets 0x10 only for `material type` 2 (FOLIAGE), nothing else in the building-part path does (no per-mesh, per-record or alpha rule; INTERIOR 0x100 and CLIP_INTERIOR 0x200 do not affect culling). The `StaticObject` script (`data/materials/deferred/objects.material`) has no `cull_hardware` (Ogre default, clockwise) and names `standardShadowCaster` (`common/shadows.material`, `cull_hardware clockwise`); the shadow-variant builder `FUN_140840da0` does not test 0x10, so casters are culled too. So the game culls the back faces of every building part whose material is not FOLIAGE. Meitou culls them for building parts and `interior` parts in colour (`Batch.BackCull`, a double-sided material excepted); its shadow passes cast building parts with both sides by default (`WorldObjectRenderer.CastersBothSides`, docs/render-shadows.md), an engine choice. **Observed** (Ancient Lab with the Forgotten Buildings ceilings, `building floor` 0..2 parts without the `interior` list): drawn double-sided, the ceiling of the viewed floor covered it from above as a black disk; culled, it vanishes seen from above as in the game. Before this, only `interior` list parts were culled.
+
+### Precision
+
+The objects' vertex stage projects each vertex relative to the eye: `mat3(instance) × vertex + (instance origin − eye)`, with a
+view-projection that has no translation (the scene's `RelativeRotation × jittered`, as the characters', [character-renderer.md](character-renderer.md#precision);
+shadow cascades and the reflection take translation(eye) × theirs). The world position at tens of thousands of units steps by 0.004, and in a
+whole-world transform the layers of one mesh a hair apart can fight for depth; the origin less the eye is one exact subtraction per instance.
+Shading still uses the absolute world position. **Observed** (The Hub, offscreen, three views): the picture within 0.15/255 mean of the
+whole-world transform. **Unknown** whether this was the z-fighting the user reported on ruins (not reproduced: no location yet).
 
 ## Building sign highlight
 
@@ -176,8 +197,9 @@ turret's joints; the wind generator's blades ride on its head. A part's state (`
 its meshes is first drawn and dropped 600 frames after the last; the host (`GameHost.UpdateRotors`) calls `RotatingParts.Advance` once a frame with real time x speed (0
 paused), the scheduled wind (`WeatherWorld.WindAt`, a forced weather does not count) and the mult (`MachineSnapshot.Rotation`, level buildings by data); construction sites stand still (`RotatingParts.Unbuilt`). A head
 hears the weather when the wind at it differs from the last frame (the original's notifications come while it interpolates). Joint meshes under a rotor are posed
-every frame: angle less the start roll (functions 1 to 3 stay at the roll until they first move). **Unknown**: not looked at in a rendered frame; shadow caches and
-motion vectors of moving parts not checked.
+every frame: angle less the start roll (functions 1 to 3 stay at the roll until they first move). **Unknown**: not looked at in a rendered frame; shadow caches not checked.
+
+Motion vectors (temporal upscalers): an instance with a door, turret joint or rotor (`PlacedMesh.DoorIndex`, `Joints`) that is drawn in the scene view notes its transform of the last frame it was drawn (`Instance.LastDrawn`); when it differs from this frame's its meshes (the LOD level the colour draw picks, `PlainMesh`) go into `MotionMeshes` with both transforms, relative to the eye, in the post chain's object-motion pass (`WorldObjectRenderer.DrawMotion`, after the characters', with the debris). One not drawn the frame before has no motion from before. Cut-out holes are not tested (the pass writes only where the depth buffer shows the part's own surface). **Observed** in live DLSS captures of a wind generator and a door; no shadow or reflection pass writes motion. Movers left without their own vectors: none known in the objects; the scene's other movers are the characters, grass sway, loose pieces ([birds](game/birds.md)), clouds and water (own paths, [render-post](render-post.md)); the foliage docs describe sway for grass only (**Unknown** for tree meshes).
 
 ## Closed interiors
 
@@ -201,7 +223,7 @@ motion vectors of moving parts not checked.
   - 1 820 objects with the flag (yard tents, torches) stay.
 - A building inside another (`PlacedMesh.Contained`) is hidden while the building whose hull holds it is closed (`ClosedAround`); a player site takes its parent's hull over a neighbour's within the 2-unit margin (`PlacedMesh.ContainerId`). These are player sites with a parent (saved with `flags` 0), and zone states with `is inside building` and no outside flag.
 - Shadow passes keep what the floor view hides above the viewed floor (parts, objects standing above it; `WorldObjectRenderer.DrawReal`), so a lower
-  floor stays shaded under its ceiling (a watchtower's floor 0 was sunlit). Whether the game's hidden floors cast shadows is **Unknown**.
+  floor stays shaded under its ceiling (a watchtower's floor 0 was sunlit). The traced scene keeps them too (`WorldObjectRenderer.LeftOutOfRays`): the rays stand for the sun and the sky, so a roof the view hides still shades the room and blocks the sky. Faithful shadows leave them out (`HiddenFloorsCast`), as the game does: **Verified** (decompile) `Building::setFloorVisibility` (`FUN_1405482e0`) calls the scene node's `setVisible(vis, cascade)` for each physical entity of the floor, and an invisible object is in no camera's queue, the shadow cameras' included.
 - **Not done:** interior lamps still light a closed interior.
 
 ## Validation

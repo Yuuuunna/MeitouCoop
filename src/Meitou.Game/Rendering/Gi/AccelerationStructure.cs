@@ -152,19 +152,22 @@ public sealed unsafe class AccelerationStructure : IDisposable
     BuildAccelerationStructureFlagsKHR _updateFlags;
 
     /// <summary>
-    /// A bottom-level structure over <paramref name="geometries"/>, built into <paramref name="cmd"/> (prefer fast tracing, compaction not
-    /// used).
+    /// A bottom-level structure over <paramref name="geometries"/>, built into <paramref name="cmd"/> (prefer fast tracing, or
+    /// <paramref name="fastBuild"/>; compaction not used).
     /// <paramref name="updatable"/>: it can be refitted (<see cref="RefitBottom"/>), and keeps its scratch buffer for that.
     /// </summary>
     public static AccelerationStructure BuildBottom(VulkanDevice device, CommandList cmd, ReadOnlySpan<TriangleGeometry> geometries, string name,
-        bool updatable = false)
+        bool updatable = false, bool fastBuild = false)
     {
         int n = geometries.Length;
         var geos = stackalloc AccelerationStructureGeometryKHR[Math.Max(n, 1)];
         var ranges = stackalloc AccelerationStructureBuildRangeInfoKHR[Math.Max(n, 1)];
         var counts = stackalloc uint[Math.Max(n, 1)];
         FillBottom(geometries, geos, ranges, counts);
-        var flags = BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr | (updatable ? BuildAccelerationStructureFlagsKHR.AllowUpdateBitKhr : 0);
+        var preference = fastBuild
+            ? BuildAccelerationStructureFlagsKHR.PreferFastBuildBitKhr
+            : BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr;
+        var flags = preference | (updatable ? BuildAccelerationStructureFlagsKHR.AllowUpdateBitKhr : 0);
         var made = Build(device, cmd, AccelerationStructureTypeKHR.BottomLevelKhr, geos, (uint)n, ranges, counts, flags, name, updatable);
         made._updateFlags = flags;
         return made;
@@ -247,16 +250,19 @@ public sealed unsafe class AccelerationStructure : IDisposable
     /// </summary>
     public static AccelerationStructure CreateTop(VulkanDevice device, uint maxInstances, string name)
     {
-        // Room for either build flavour (RebuildTop's fastTrace).
-        var sizes = TopSizes(device, maxInstances, BuildAccelerationStructureFlagsKHR.PreferFastBuildBitKhr);
-        var traceSizes = TopSizes(device, maxInstances, BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr);
+        // Room for either build flavour (RebuildTop's fastTrace), updatable or not.
+        var update = BuildAccelerationStructureFlagsKHR.AllowUpdateBitKhr;
+        var sizes = TopSizes(device, maxInstances, BuildAccelerationStructureFlagsKHR.PreferFastBuildBitKhr | update);
+        var traceSizes = TopSizes(device, maxInstances, BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr | update);
         sizes.AccelerationStructureSize = Math.Max(sizes.AccelerationStructureSize, traceSizes.AccelerationStructureSize);
-        sizes.BuildScratchSize = Math.Max(sizes.BuildScratchSize, traceSizes.BuildScratchSize);
+        var buildScratch = Math.Max(sizes.BuildScratchSize, traceSizes.BuildScratchSize);
+        sizes.BuildScratchSize = Math.Max(buildScratch, Math.Max(sizes.UpdateScratchSize, traceSizes.UpdateScratchSize));
         var top = new AccelerationStructure(device, AccelerationStructureTypeKHR.TopLevelKhr, Math.Max(sizes.AccelerationStructureSize, 256),
             name) { MaxInstances = maxInstances };
-        var scratchSize = sizes.BuildScratchSize + device.ScratchAlignment;
+
         var scratchUse = BufferUsageFlags.StorageBufferBit | BufferUsageFlags.ShaderDeviceAddressBit;
-        top._scratch = device.Allocator.CreateBuffer(scratchSize, scratchUse, MemoryKind.DeviceLocal, name + " scratch");
+        top._scratch = device.Allocator.CreateBuffer(sizes.BuildScratchSize + device.ScratchAlignment, scratchUse, MemoryKind.DeviceLocal,
+            name + " scratch");
         return top;
     }
 
@@ -284,21 +290,28 @@ public sealed unsafe class AccelerationStructure : IDisposable
 
     /// <summary>
     /// Rebuilds a structure of <see cref="CreateTop"/> over <paramref name="count"/> (at most <see cref="MaxInstances"/>)
-    /// <see cref="InstanceRecord"/>s at <paramref name="instancesAddress"/> into <paramref name="cmd"/>.
+    /// <see cref="InstanceRecord"/>s at <paramref name="instancesAddress"/> into <paramref name="cmd"/>. <paramref name="updatable"/>: it can be
+    /// refitted next (<paramref name="refit"/>: the same instances as that build, their bottom levels refitted; the flags must be those of the
+    /// build).
     /// </summary>
-    public void RebuildTop(CommandList cmd, ulong instancesAddress, uint count, bool fastTrace = false)
+    public void RebuildTop(CommandList cmd, ulong instancesAddress, uint count, bool fastTrace = false, bool updatable = false,
+        bool refit = false)
     {
         if (count > MaxInstances)
             throw new ArgumentOutOfRangeException(nameof(count), $"{count} instances, room for {MaxInstances}");
         var geo = TopGeometry(instancesAddress);
+
+        var flags = (fastTrace ? BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr : BuildAccelerationStructureFlagsKHR.PreferFastBuildBitKhr)
+            | (updatable || refit ? BuildAccelerationStructureFlagsKHR.AllowUpdateBitKhr : 0);
         var build = new AccelerationStructureBuildGeometryInfoKHR
         {
             SType = StructureType.AccelerationStructureBuildGeometryInfoKhr,
             Type = AccelerationStructureTypeKHR.TopLevelKhr,
-            Flags = fastTrace ? BuildAccelerationStructureFlagsKHR.PreferFastTraceBitKhr : BuildAccelerationStructureFlagsKHR.PreferFastBuildBitKhr,
-            Mode = BuildAccelerationStructureModeKHR.BuildKhr,
+            Flags = flags,
+            Mode = refit ? BuildAccelerationStructureModeKHR.UpdateKhr : BuildAccelerationStructureModeKHR.BuildKhr,
             GeometryCount = 1,
             PGeometries = &geo,
+            SrcAccelerationStructure = refit ? Handle : default,
             DstAccelerationStructure = Handle,
             ScratchData = new DeviceOrHostAddressKHR { DeviceAddress = ScratchAddress() },
         };

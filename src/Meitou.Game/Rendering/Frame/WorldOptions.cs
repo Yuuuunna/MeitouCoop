@@ -1,3 +1,4 @@
+using System.Numerics;
 using Meitou.Data.World;
 using Meitou.Game.Rendering.Post;
 using Meitou.Game.Rendering.Terrain;
@@ -287,6 +288,16 @@ sealed class WorldOptions
     public bool SkinShading = true;
 
     /// <summary>
+    /// The <c>chars2</c> switch's Meitou side, off by default: hair, cloth, skin and eye shading (<c>CharacterRenderer.Chars2</c>).
+    /// </summary>
+    public bool Chars2;
+
+    /// <summary>
+    /// Which parts of it are on (<c>CharacterRenderer.SurfaceParts</c>): all by default.
+    /// </summary>
+    public int Chars2Parts = Characters.CharacterRenderer.SurfaceAll;
+
+    /// <summary>
     /// The <c>interiorlamps</c> switch's Meitou side: interior lamps shine by day too (<c>WorldLamps.InteriorAllDay</c>).
     /// </summary>
     public bool InteriorLamps = true;
@@ -307,6 +318,12 @@ sealed class WorldOptions
     /// (<c>TerrainDecalRenderer.Surfaces</c>); false: the terrain only, as the game.
     /// </summary>
     public bool MeitouBloodSurfaces = true;
+
+    /// <summary>
+    /// The <c>footprints</c> switch's Meitou side: wet blood a character walks through leaves temporary prints on the terrain
+    /// (<c>BloodFootprints</c>); false: none, as the game.
+    /// </summary>
+    public bool MeitouFootprints = true;
 
     /// <summary>
     /// The <c>tracers</c> switch's Meitou side: a semi-transparent streak behind each bolt in flight (the game's <c>GameHost.AddTracers</c>); false:
@@ -521,6 +538,28 @@ sealed class WorldOptions
     public float OrbitStep;
 
     /// <summary>
+    /// <c>--sequence &lt;n&gt;</c>: with --screenshot, n more frames saved after the picture (<c>name-01.png</c>...), each a step of the motion
+    /// (--orbit-step, --sway-step): a precision or motion check.
+    /// </summary>
+    public int Sequence;
+
+    /// <summary>
+    /// <c>--pan-step &lt;x&gt;,&lt;z&gt;</c>: with --screenshot, the camera's target moves this far (world units) every frame, its height kept
+    /// (checks what follows the camera).
+    /// </summary>
+    public Vector2 PanStep;
+
+    /// <summary>
+    /// <c>--pan-frames &lt;n&gt;</c>: the motion (pan, orbit, zoom) stops after the sequence's frame n (the rest show the same pose settling).
+    /// </summary>
+    public int PanFrames;
+
+    /// <summary>
+    /// <c>--zoom-step &lt;f&gt;</c>: with --screenshot, the camera's distance grows by this fraction every frame (negative: closer).
+    /// </summary>
+    public float ZoomStep;
+
+    /// <summary>
     /// Interactive window: the monitor it opens on (1-based; <c>--monitor</c>).
     /// </summary>
     public int? Monitor;
@@ -600,7 +639,7 @@ sealed class WorldOptions
         (Width, Height) = BenchmarkBaselineSize;
         SizeGiven = Windowed = true;
         Gi = false;
-        Enhancements.Apply(Switches(this), "gi,interiorgi,parallax,displace", meitou: false);
+        Enhancements.Apply(Switches(this), "gi,interiorgi,gihybrid,parallax,displace", meitou: false);
         RockSmoothing.TessellateActive = false;
         GroundRelief.RefinePixels = 0;
         (Post.Upscale.Kind, Post.Upscale.Scale, Post.Upscale.Explicit) = (UpscalerKind.Off, 1, true);
@@ -648,7 +687,9 @@ sealed class WorldOptions
         () => o.MeitouIcons, v => o.MeitouIcons = v,
         () => o.MeitouBlood, v => o.MeitouBlood = v,
         () => o.MeitouBloodSurfaces, v => o.MeitouBloodSurfaces = v,
-        () => o.MeitouTracers, v => o.MeitouTracers = v);
+        () => o.MeitouTracers, v => o.MeitouTracers = v,
+        () => o.Chars2, v => o.Chars2 = v,
+        () => o.MeitouFootprints, v => o.MeitouFootprints = v);
 
     /// <summary>
     /// The world options from the command line (<see cref="WorldCommandLine.Parse"/>); null for <c>--help</c>.

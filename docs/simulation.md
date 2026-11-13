@@ -14,8 +14,7 @@ accumulate `min(realDt, 0.05)*speed` (the original's cap before the speed multip
 `AchievedSpeed` reports it. Control ticks precede simulation ticks; a speed change applies
 to the entire frame. `WorldSession` rejects unequal world/clock tick lengths, owns snapshots,
 clocks, input and camera, and disposes systems/services. Of a frame's ticks only the last two publish
-a snapshot (`RunTick(publish)`), the pair the host interpolates between. Advanced → Pause after loading (`PauseOnLoad`, a plain on/off switch outside the Faithful / Meitou sides, default off as
-the game runs a loaded save at once, [game loop](game/game-loop.md)) pauses the speed after a menu load or import; `--load` runs.
+a snapshot (`RunTick(publish)`), the pair the host interpolates between. Advanced → Pause after loading (`PauseOnLoad`, a Faithful / Meitou switch, Meitou and on by default; Faithful runs a loaded save at once as the game does, [game loop](game/game-loop.md)) pauses the speed after a menu load or import; `--load` runs.
 
 ### Engine choices against the original's frame loop
 
@@ -158,7 +157,7 @@ start through `TaskStart.Start`, the lock orders' worker choice and the player's
 a crawler or one staying low (0x40, posture 1 or 2) can start only rows that register it (move, first aid, loot, talk, attacks, prospect, sleep; not carry, put down 69, stealth KO 228, Splint
 Rigging 250, operate, build, repair, dismantle, put in bed, sit 275, ditch 242, set free 110, unlock door 140, put in cage 108, smash 226); an animal only 0x20 rows (so no bed, no carry,
 no loot 26 / 177 / 42, no first aid, no operate, no medic, no lock, cage or door work but smashing 226; it may pick up items, 3 (Meitou: a player's animal only with the Advanced setting
-"Animals pick up items", off by default, `PlayerSystem.AnimalsPickUp`, and only into its bag, its grid being shut; a limb for its mouth always); job 289 is animal-only, so a human with that job never runs it).
+"Animals pick up items", whose Faithful side is on and Meitou side (the default) off, `PlayerSystem.AnimalsPickUp`, and only into its bag, its grid being shut; a limb for its mouth always); job 289 is animal-only, so a human with that job never runs it).
 Loot is 26 for the orders, 177 for NPC scavenging and 42 for an NPC arming itself. The engine's starts test their rows too ("Task starts"): a refused errand walk counts
 as a walk that ended short (the errand gives up after its tries); a refused standing task (`TaskStart.Become`) gives way to 14 Idleness, which every repertoire registers (a crippled
 character does not wander, 24, after a flight, a trade or at a roaming mill). Rows with no TaskData (shoo 158, ransack 216, liberate 276, approach 126, the arrest cage walk 206, the
@@ -255,7 +254,9 @@ the owner's pure `IOrderOwner.CanRun`: `Run`, `Blocked` with its failure text, o
   started or not, as the original saves its deque as `tjob<i>`. A load reads the orders into `CharacterCold.SavedOrders` and starts nothing; `DecisionSystem.Run` makes them the queue (nothing
   started) the first time it meets the character, once every character and fixture they name is there, and the replan bit every load sets runs the front through source 1 like a new order.
   Left out (the queue pops a `Gone` order the same way): a row no system owns, a target character or site that is not in the world, a handle that names nothing, ground-item pick-ups (a runtime
-  item id) and the Medic / Rescue buttons' one-shot looks. An owner with a detail (`IOrderOwner.SaveKind` / `LoadDetail`) codes it in Meitou's own key. **Engine choice**: the original's loader
+  item id) and the Medic / Rescue buttons' one-shot looks. An owner with a detail (`IOrderOwner.SaveKind` / `LoadDetail`) codes it in Meitou's own key. Before the front is checked, each order's owner
+  readies what its live command would (`IOrderOwner.Restored`): production makes the machine of a rock, town dummy or seat, which no save holds (without it
+  the operate order was `Gone` and a miner stood idle after a load, #598). **Engine choice**: the original's loader
   re-adds each order as a one-shot order of its second list, not into the deque ([precedence](game/ai-tasks.md#precedence)); how that list is consumed is **Unknown**, so the queue is
   restored as it was saved. Hashed as the move-only queue was while it holds only that (nothing, a started order alone, started moves), else under its own mark.
 
@@ -622,18 +623,20 @@ orders find eligible still patients, walk to reach and apply aid serially. The m
 update budget's turns ([character-stats.md](game/character-stats.md#time), which owns the original rules).
 
 Limbs: `HealthPart.Limb` / `Replacement` / `ReplacementItem` per slot; saves round-trip them ([save.md](formats/save.md#limbs-medical_state-limbs)).
-A severed limb queues (character, limb) on `CharacterTable.LimbsChanged`; between ticks the population system rebuilds the look
-(`Loadout.Limbs`: stump or prosthetic mesh, natural limb hidden) and drops the race's severed-limb item (Ground items). Prosthetics are
+A severed limb queues (character, limb, drops) on `CharacterTable.LimbsChanged`; between ticks the population system rebuilds the look
+(`Loadout.Limbs`: stump or prosthetic mesh, natural limb hidden) and drops the race's severed-limb item (Ground items), except for an eaten
+limb: the sever's third argument gates the item, 1 from a blow, the medical tick and the rack, 0 from being eaten (`FUN_14064f300`,
+`FUN_14064f5c0`, `FUN_14029af90`, `FUN_140650370`, **Verified** by decompile). Prosthetics are
 fitted and removed by holding them onto or off the limbs window's slots (a `*_replace` section takes a LIMB_REPLACEMENT of its side on a stump; lifting a fitted one leaves a
 stump; [held item](#items-and-eating), rules in [character-stats.md](game/character-stats.md)) or by a right click (`QuickMoveItem`).
 
 Ground items: `World.GroundItems`, loose items: the save's (zone `1-itemlist`, read and written by `Saving/GroundItemSave`,
 [save.md](formats/save.md#zone-files)) and the severed limbs combat drops; at most `GroundItems.Limit` dropped in play (default 1024, up to 4096 by the Advanced setting "Dropped items kept"; the oldest of those goes; read ones
-and a camp's are not capped); published with a revision. A dropped limb lies 5 units to its side of the character, an item dropped from the inventory 3 units ahead, both at a random
+and a camp's are not capped); published with a revision. A dropped limb lies 5 units to its side of the character, an item dropped from the inventory 3 units ahead (nearer, down to its feet, while the spot is not one the character could stand on within 4 units of its own height: the simulation knows the height of walkable ground only, and off it answered the terrain under a walkway or a wall's top, **Observed** on a town platform: 37 to 40 below and 78 to 90 above within 2 units of the walkable edge; the original casts a ray down 99 from 25 above the point, [carry-loot](game/carry-loot.md#dropped-item-placement)), both at a random
 yaw and on the ground under that spot (`World.Walkability.GroundHeight`, not the character's own height). The original (`FUN_14064edc0`, **Verified** by decompile) makes the RACE `severed limbs`
 item of the cut slot (`SeveredLimbItem`, an `Item` subclass) at the character's `bone name 2` bone of that part: position and orientation from the bone, in-world mode set
 through the item's vfunc +0x228 (`FUN_14075d9b0`; its vfunc +0x2d0 `FUN_14075d660` stores them at `+0x48` / `+0xb0`; then `FUN_14075db20` and `FUN_14075e5d0`, which creates the physics object and toggles it by the item's `persistent` key, 1 to 3 only (limbs: 0),
-**Observed**), and its PhysX object (a dynamic capsule from the item's `physics file`, [collision](formats/collision.md#item-physics)) falls from there. Engine choice: the host draws that fall (`GameHost.UpdateFalls`, display only; the simulation keeps the rest point): from the stump's bone (`bone name 2`, sampled once its character is drawn), free fall at 98.1 from rest, a drift to the rest point, then a 0.25 s tip; the placement comes on landing (none in the animation sandbox, where the piece stays drawn). Where the original's limb comes to rest is **Unknown**. Otherwise the host lays a dropped item as it would rest
+**Observed**), and its PhysX object (a dynamic capsule from the item's `physics file`, [collision](formats/collision.md#item-physics)) falls from there. Engine choice: the host draws that fall (`GameHost.UpdateFalls`, display only; the simulation keeps the rest point): from the stump's bone (`bone name 2`, sampled once its character is drawn), free fall at 98.1 from rest, a drift to the rest point, then a 0.25 s tip; the placement comes on landing (none in the animation sandbox, where the piece stays drawn). Where the original's limb comes to rest is **Unknown**. A dropped item that is not a limb is placed by the original's rule ([planted weapons](game/carry-loot.md#dropped-item-placement), `GameHost.PlacedPose`). A limb the host lays as it would rest
 (`GameHost.LaidFlat`): its mesh bounds' thinnest axis up (the severed limb meshes are plain static meshes lying along +X, bounds read equal to their vertices, **Verified** on every `severed limbs` mesh of the install's
 merged data), its yaw, tilted to the terrain slope under it (the heights round the drop point over the item's own size; not on a building's floor, where the simulation's ground is used flat), and set down so that none of a
 5x5x5 lattice of points of its bounds is below the rendered terrain under it. A weapon, modelled along +Y, lies on the flat of its blade. Read items are drawn by their saved position and whole rotation. The host adds each as a runtime world-object
@@ -868,6 +871,9 @@ sneaking culprit is seen only once the witness's spot meter is full ([perception
 the aggro scan's meters, kept for every NPC looker, not saved).
 NPC culprits: an NPC's non-defensive attack order, and each of its landed blows, sets a pending Assault (not an
 animal's; the victim may be a player character), and an NPC looter its Looting ([NPC looting](#carrying-rescue-and-looting)); both are booked like a player's (**Verified**, the witness function `FUN_140854d10` ends in the booking call with no player test; a Bandit, Diplomat or LawEnforcement class is never booked).
+Every witness that sees the culprit reacts, not only the first after the booking (the witness function runs per looker, `FUN_1408580d0`): with a
+stop there, a police 1480 off in sight range booked a slave hunter's assault at Sho-Battai's gate and the gate guards 40 away never reacted
+(**Observed**, headless, a player quicksave).
 The setter itself refuses no NPC code (**Verified**, `FUN_140852c80`): any other crime a caller sets on an NPC (the cuffing task's Enslaving) is pending too and witnessed the same. A police-like witness not fighting re-fires the witness event (41 for an Assault, 42 for a Looting) at it every
 sweep, since the guards' lines (e.g. "Shek guard witness crime": DA 29, 33, 6) need it within 260 and not running; not a Trespassing
 (an NPC gets one from a DA 33 in a private home), whose event-17 line only restarts a chase forever (#519). So a town's
@@ -906,9 +912,16 @@ unload, hashed only once non-empty. Facts: [locks](game/locks.md), [economy 11.5
   all its doors are effectively locked and none broken (engine: one nav door state per building; closed-unlocked doors stay passable).
   Motion (`LockSystem.Doors.cs`, serial `SlowWorld`): `StepDoors` moves opening/closing leaves by `door move speed` per second and
   locks a closed one that `wants lock`; locking a home's doors closes them (animated, the lock holds at once). Engine stand-in for
-  Task_OpenDoor: every 3 ticks a walker within 40 of a closed door whose current or next path leg crosses the leaf's plane within
-  its half width + 6 (`IDoorGate.DoorSpotOf`: the door collision's box via `NavDoorGeometry`; headless: none, so no walk-through opening) opens it;
-  at an effectively locked one a walker within 15 whose current leg crosses it stops ("It's locked." for the player). Both measure the walker's height from the
+  Task_OpenDoor: every 3 ticks a walker within 40 of a closed door's leaf whose current or next path leg crosses the leaf's plane within its half
+  width + 6 (`IDoorGate.DoorSpotOf`: the door collision's box via `NavDoorGeometry`; headless: none, so no walk-through opening) opens it; at an
+  effectively locked one a walker within 15 of the leaf whose current leg crosses it stops ("It's locked." for the player). Both reaches run from
+  the leaf's nearest point, not its centre (a gate's leaf is 70..80 wide). The box's normal is the thinnest horizontal direction of the door
+  collision's footprint (`NavDoorGeometry.Fit`), not the nearer building axis: **Verified** (that footprint for every BUILDING with `doors`, plain
+  game; each leaf is one box), 9 of 47 leaves are turned in their building (Saloon and Double House 45°, Outpost s-II/s-IV and Outpost Stairs 42°,
+  Ancient Lab Ramp Gate, Outpost Heavy Gate and Outpost Prison Ramp 30°, Swamp Dome 10°). The box is placed by the building's whole placement
+  rotation, tilt included (`Fixture.Rotation`; door picking uses it too), not its yaw alone: **Verified** (level data placements), the Ancient Lab
+  Ramp Gates in zones 41.35 and 62.25 stand 10° and 8° off level with the leaf 231 up, 42 and 33 units off it by the yaw alone. Both reaches measure
+  the walker's height from the
   leaf's foot (`DoorSpot.Foot`, the box's bottom; within 40): measured from its centre, tall gates (Stack's leaf centre is 45 up) were never opened and walked through shut.
   Engine stand-in for the original's door faces, closed until `doa` 0.6 ([locks](game/locks.md#doors) "Navigation"): every tick a door less than 0.6 open is solid
   (`HoldAtLeaves`), so a character that moved into or through its leaf from one side within its width is put back at its footprint radius and waits while the leaf opens
@@ -1121,7 +1134,7 @@ what it wore there going into its inventory (engine choice; `DialogueSystem.Chai
 - **Marching home**: a campaign carrier cages in the first own town on the way with a free cage and drops the victim only in its campaign's home town without one (`Abduction.HomeSite`; engine reading of the original's cage finder, which weighs the home x100 but does not require it, [ai-tasks](game/ai-tasks.md)); a member of an AI squad that lists a cannibal retreat package (signals 1, 25) lifts
   without a cage in range and cages the same way, its home its squad's home town, which the retreat package walks the squad to (130 TRAVEL_TO_TARGET_TOWN_FAST as going home at a run, [Captives](#captives)).
 - What happens to the captive next: [Captives](#captives).
-- **Not built**: kidnapping as a crime for witnesses, a carrier's platoon unloading with an NPC victim (the carry is dropped when the platoon is stored).
+- **Not built**: kidnapping as a crime for witnesses, a carrier's platoon unloading with an NPC victim (the carry is dropped when the platoon is stored). The victim's own platoon splits it off into a squad of its own when it unloads ([split at unload](game/factions-squads-towns.md)), so a bounty carried away from its town stays on the carrier's shoulder.
 - Activation of a player-owned empty platoon (**Verified**, `FUN_1404ffad0`: members are made from the template only when the owner has no player flag): it is removed, not filled (`PopulationRoaming.Activate`).
 - Activation repair (**Verified**): a platoon's squad made in a player town's open ground by a faction that is not the player's has the members that came up inside walls moved to its place, with a red message "Character <name> of <squad> tried to spawn inside walls!" (**Verified**, `FUN_1404ffad0`: the place's gate code 0, a member alive, up, not in a bed or cage and with its own code above 0, once at the build; Meitou `PopulationRoaming.MoveOutOfPlayerWalls`, for every platoon load: roaming, town-pool and never-made town squads (a saved squad's characters keep their saved places), plain colour, nothing where the codes are unknown).
   The original's unload test (`ActivePlatoon::unloadCheck` `FUN_1404febd0`, **Verified** by decompile) holds a platoon loaded while a member carries (Character `+0x348`) a player-faction
@@ -1660,7 +1673,8 @@ crafting benches, generators and batteries. Facts: [production](game/buildings-p
 - **Engine gaps:**
   - A quick right click on the player's furnace walks the selection there and opens its window
     (the original's 26 LOOT_TARGET); on the player's turret the nearest able selected character operates it (146 USE_TURRET, `UseTurretOrder`): it
-    walks to its gunner spot (as for town turrets below), stands there facing it holding `combatstance`, counts as its operator (so it draws power) and the
+    walks to its gunner spot (as for town turrets below) and mans it from within the turret's `use range` of its position (doubled once stopped, at the
+    spot's height; the original's arrival rule, [work distance](game/buildings-production.md), no settle slack), facing it holding `combatstance`, counts as its operator (so it draws power) and the
     combat system fires it ([Ranged](#ranged)); one gunner, engine choice; someone else at it: "is already in use".
   - Plants are not drawn.
 

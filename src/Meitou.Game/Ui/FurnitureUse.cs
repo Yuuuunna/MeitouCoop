@@ -299,6 +299,11 @@ sealed class FurnitureUse(PlayerInterface player)
     /// Whether a place is above the floor shown in a building the player is in, where nothing is drawn (the host sets it; null: never).
     /// </summary>
     public Func<Vector3, bool>? AboveViewedFloor { get; set; }
+    /// <summary>
+    /// Whether a layout object of a building (placement key, floor number, outside flag) is not drawn: above the floor the building shows in the
+    /// interior view, or inside while it shows its outside (the host sets it; null: never).
+    /// </summary>
+    public Func<string, int, bool, bool>? FloorHidden { get; set; }
 
     /// <summary>
     /// The container under <paramref name="pixel"/> (<see cref="PickContainerAt"/>).
@@ -406,7 +411,7 @@ sealed class FurnitureUse(PlayerInterface player)
             if (mesh.Count == 0) continue;
 
             var at = door.Origin + door.Slide * state.Open;
-            var turn = Quaternion.CreateFromAxisAngle(Vector3.UnitY, door.Yaw);
+            var turn = door.Rotation ?? Quaternion.CreateFromAxisAngle(Vector3.UnitY, door.Yaw);
 
             if (player.GroundItemPicks.RayNears(ray, mesh, at, turn) && WorldPicking.RayMesh(ray, mesh, at, turn) is { } t && t < bestT
                 && !player.Hidden(ray, t - DoorPickSlack))

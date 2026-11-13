@@ -97,11 +97,16 @@ static partial class NativeShaders
             uint lightCells;
             uint lightIndex;
             uint lightData;
+            uint lampTiles;
             vec4 atmoNight;
             vec4 atmoCloud;
             vec4 atmoCloudWind;
             uint atmoClouds;
             uint atmoCloudsTile;
+            float grassRayReach;
+            float wetClock;
+            float wetWorld;
+            vec4 wetSplash[8];
         } frame;
 
         """;
@@ -223,22 +228,15 @@ static partial class NativeShaders
         ["uShadowTerrain"] = "textures2D[frame.shadowTerrain]",
         ["uShadowBlocker"] = "textures2DArray[frame.shadowBlocker]",
         ["uShadowLandmark"] = "shadowTextures[frame.shadowLandmark]",
-        ["uWeatherWet"] = "frame.weatherWet",
-        ["uWeatherDust"] = "frame.weatherDust",
-        ["uWeatherGround"] = "textures2D[frame.weatherGround]",
-        ["uWeatherDustNoise"] = "textures2D[frame.weatherDustNoise]",
-        ["uFogVolumeEye"] = "frame.fogVolumeEye",
-        ["uFogVolumeInfo"] = "frame.fogVolumeInfo",
-        ["uFogVolumeData"] = "frame.fogVolumeData",
-        ["uGiParams"] = "frame.giParams",
-        ["uGiGrid"] = "frame.giGrid",
-        ["uGiIrradiance"] = "textures2D[frame.giIrradiance]",
-        ["uGiDistance"] = "textures2D[frame.giDistance]",
-        ["uGiBase"] = "textures2D[frame.giBase]",
-        ["uLightGrid"] = "frame.lightGrid",
-        ["uLightCells"] = "textures2D[frame.lightCells]",
-        ["uLightIndex"] = "textures2D[frame.lightIndex]",
-        ["uLightData"] = "textures2D[frame.lightData]",
+        ["uWeatherWet"] = "frame.weatherWet", ["uWeatherDust"] = "frame.weatherDust",
+        ["uWeatherGround"] = "textures2D[frame.weatherGround]", ["uWeatherDustNoise"] = "textures2D[frame.weatherDustNoise]",
+        ["uFogVolumeEye"] = "frame.fogVolumeEye", ["uFogVolumeInfo"] = "frame.fogVolumeInfo", ["uFogVolumeData"] = "frame.fogVolumeData",
+        ["uGrassRayReach"] = "frame.grassRayReach", ["uWetClock"] = "frame.wetClock", ["uWetWorld"] = "frame.wetWorld",
+        ["uWetSplash"] = "frame.wetSplash",
+        ["uGiParams"] = "frame.giParams", ["uGiGrid"] = "frame.giGrid", ["uGiIrradiance"] = "textures2D[frame.giIrradiance]",
+        ["uGiDistance"] = "textures2D[frame.giDistance]", ["uGiBase"] = "textures2D[frame.giBase]",
+        ["uLightGrid"] = "frame.lightGrid", ["uLightCells"] = "textures2D[frame.lightCells]", ["uLightIndex"] = "textures2D[frame.lightIndex]",
+        ["uLightData"] = "textures2D[frame.lightData]", ["uLampTiles"] = "textures2D[frame.lampTiles]",
     };
 
     /// <summary>
@@ -416,7 +414,7 @@ static partial class NativeShaders
 /// <summary>
 /// The C# side of <see cref="NativeShaders.FrameBlock"/> (std140; offsets checked against the reflection by a test).
 /// </summary>
-[StructLayout(LayoutKind.Explicit, Size = 8704)]
+[StructLayout(LayoutKind.Explicit, Size = 8848)]
 unsafe struct FrameConstants
 {
     /// <summary>
@@ -602,6 +600,12 @@ unsafe struct FrameConstants
     /// The bindless index of <c>uLightData</c>, the lamps' data.
     /// </summary>
     [FieldOffset(8632)] public uint LightData;
+
+    /// <summary>
+    /// The bindless index of <c>uLampTiles</c>, the lamps' visibility cache (<c>Gi.LampTiles</c>).
+    /// </summary>
+    [FieldOffset(8636)] public uint LampTiles;
+
     /// <summary>
     /// Meitou night air (<c>uAtmoNight</c>, docs/formats/sky.md "Night air"): rgb the colour at full night, w its weight.
     /// </summary>
@@ -628,6 +632,27 @@ unsafe struct FrameConstants
     [FieldOffset(8692)] public uint AtmoCloudsTile;
 
     /// <summary>
+    /// How far from the eye the traced sun's rays see grass (<c>uGrassRayReach</c>, <c>GiScene.GrassRayParams</c>): 0 while they see none.
+    /// </summary>
+    [FieldOffset(8696)] public float GrassRayReach;
+
+    /// <summary>
+    /// Game seconds wrapping at 4096 (<c>uWetClock</c>, <c>WeatherSurfaces.Seconds</c>): what the characters' water beads swell and run off by.
+    /// </summary>
+    [FieldOffset(8700)] public float WetClock;
+
+    /// <summary>
+    /// 1 while the world shows its wetness: drops, runs and puddles (<c>uWetWorld</c>, <c>WeatherSurfaces.WetWorld</c>).
+    /// </summary>
+    [FieldOffset(8704)] public float WetWorld;
+
+    /// <summary>
+    /// The last feet in the puddles (<c>uWetSplash[8]</c>, <c>WeatherSurfaces.AddSplash</c>): x, z, the wet clock at the step, the strength (0:
+    /// none).
+    /// </summary>
+    [FieldOffset(8720)] public fixed float WetSplash[32];
+
+    /// <summary>
     /// The frame-global uniform each member holds (<see cref="FrameGlobals"/> names, as <c>SkyRenderer</c> publishes them): offset and size.
     /// </summary>
     public static readonly (string Name, int Offset, int Size)[] Uniforms =
@@ -638,6 +663,7 @@ unsafe struct FrameConstants
         ("uFogVolumeEye", 288, 16), ("uFogVolumeInfo", 304, 16), ("uFogVolumeData", 320, FogVolumeShaders.MaxData * 16),
         ("uGiParams", 8512, 16), ("uGiGrid", 8528, 64),
         ("uLightGrid", 8608, 16), ("uAtmoNight", 8640, 16), ("uAtmoCloud", 8656, 16), ("uAtmoCloudWind", 8672, 16),
+        ("uGrassRayReach", 8696, 4), ("uWetClock", 8700, 4), ("uWetWorld", 8704, 4), ("uWetSplash", 8720, 128),
     ];
 
     /// <summary>
@@ -651,6 +677,7 @@ unsafe struct FrameConstants
         ("uWeatherGround", BindlessKind.Texture2D, 272), ("uWeatherDustNoise", BindlessKind.Texture2D, 276),
         ("uGiIrradiance", BindlessKind.Texture2D, 8592), ("uGiDistance", BindlessKind.Texture2D, 8596), ("uGiBase", BindlessKind.Texture2D, 8600),
         ("uLightCells", BindlessKind.Texture2D, 8624), ("uLightIndex", BindlessKind.Texture2D, 8628), ("uLightData", BindlessKind.Texture2D, 8632),
+        ("uLampTiles", BindlessKind.Texture2D, 8636),
         ("uAtmoClouds", BindlessKind.Texture2D, 8688), ("uAtmoCloudsTile", BindlessKind.Texture2D, 8692),
     ];
 }

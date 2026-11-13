@@ -143,8 +143,10 @@ public static partial class OrderSave
     }
 
     /// <summary>
-    /// Makes the orders a load read the character's queue (serial phases, from the decision step or a queued order, <see cref="PlayerOrders.Give"/>): nothing is started, and the front is tried like any new order. An order whose row no system
-    /// owns, whose target character or site is not in the world, or whose handle named nothing is left out, as the queue pops an order that is <see cref="OrderVerdict.Gone"/>.
+    /// Makes the orders a load read the character's queue (serial phases, from the decision step or a queued order, <see cref="PlayerOrders.Give"/>):
+    /// nothing is started, its owner readies it (<see cref="IOrderOwner.Restored"/>), and the front is tried like any new order. An order whose row no
+    /// system owns, whose target character or site is not in the world, or whose handle named nothing is left out, as the queue pops an order that is
+    /// <see cref="OrderVerdict.Gone"/>.
     /// </summary>
     internal static void Restore(World world, int slot, CharacterCold cold)
     {
@@ -164,8 +166,19 @@ public static partial class OrderSave
             var source = RestoreAuthorization(o.Authorization, world, o.Site);
             // Legacy native rows have no durable controller/grant evidence.
             if (world.Players.RequiresExplicitControl && cold.IsPlayer && source is null) continue;
-            var entry = new OrderEntry(row, owner) { Target = target, Site = site, Point = o.Point, Detail = owner.LoadDetail(world, self, row, o.Kind, target), SourceCommand = source };
-            if (world.ValidOrder(slot, entry)) cold.OrderQueue.Add(entry);
+
+            var entry = new OrderEntry(row, owner)
+            {
+                Target = target,
+                Site = site,
+                Point = o.Point,
+                Detail = owner.LoadDetail(world, self, row, o.Kind, target),
+                SourceCommand = source,
+            };
+            if (!world.ValidOrder(slot, entry)) continue;
+
+            owner.Restored(world, entry);
+            cold.OrderQueue.Add(entry);
         }
         DecisionSystem.Request(cold);
     }

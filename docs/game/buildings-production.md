@@ -164,7 +164,7 @@ hull) or, unknown, its position. A rock's operator has arrived inside its mesh's
 seen from above) as the instance places it, scaled 1.2 about the box's middle (a circle of 1.2 x its radius without the mesh; the bounds box without the movement flag let
 miners work a scattered or long rock from 20 m off, #332), or within the `use range` (doubled once stopped) of the box's centre, which
 stands in for the position marker (engine choice; a rock's origin can lie off its pile); it faces that centre. Taking its ore
-measures 40 to the footprint's edge. Height: Meitou has no floor id, so `SiteReach.AtHeight` requires |dy| below the limit above (130 door, 15 inside a building, else 45; slot 0x428 not read) for every site goal.
+measures 40 to the footprint's edge. Height: Meitou has no floor id, so `SiteReach.AtHeight` requires |dy| below the limit above (130 door, 15 inside a building, else 45; slot 0x428 not read) for every site goal; a builder measures a `ceiling placement` site from the floor under it (`ConstructionSystem.FloorHeight`), as the same-floor test passes it (#592: lamps hang 26 to 48 over a swamp house floor).
 
 Repair (**Verified**, Building slot 0x328 `FUN_1400f6b70`, `Task_Build` `FUN_14034a440`): a building needs repair when
 `progress < target`; building health is construction progress. Orders 2 and 95 are both `Task_Build`, which pushes the
@@ -632,7 +632,8 @@ field prefixes by MiningResource: `iron`, `stone`, `copper`, `carbon`, `water`, 
   Copper, output 5, 72; both `stat used` 3, `stonemine`, special tool Pickaxe, `output per day`) with their own `output rate`
   (1.2, 1, rebirth.mod over the base's 0.45, 0.4), `max operators` (3, 2) and `build materials` (2, 3). So hand mining is `Task_OperateMachine` on the rock (**Observed**); the ore waits in
   the rock's output until the player takes it (**Observed** by the owner in play; no rock-specific transfer in the operate update). No
-  rock has a saved state in two saves (253 zone files, **Observed**). Owner: `nofac` until a player character starts working it, then the player's
+  rock has a saved state in two saves (253 zone files, **Observed**; whether a worked rock keeps its ore over a reload is **Unknown**). Meitou
+  saves a worked rock's machine and claim ([rock machines](../formats/save.md)); a reload emptying it was a bug (#596). Owner: `nofac` until a player character starts working it, then the player's
   faction ([selected building](ui-screens.md#selected-building), Rocks).
 - A building that is not the player's (`FUN_140546dd0`: its owner's `+0x250`, the test also used by research
   upgrades and generator fuel) and is no natural site yields 0.5 where it would get 0; the player's yields 0 (Meitou: `ProductionSystem.Create`).
@@ -1046,8 +1047,7 @@ Rules of `For sale:` and the price: [selected building](ui-screens.md#selected-b
 (`HousePurchaseTests.The_Hub_has_a_ruined_Storm_House_for_4800_in_the_original_data`): The Hub's ruined Storm Houses have
 interior meshes but no functionality record, their level states lack `sell home` while their resident templates
 (`44421-rebirth.mod`, `44426-rebirth.mod`) set it; target 16, owner's `building cost mult` 2: 0.375 × 16 × 2 × 400 = 4,800.
-Meitou reads `sell home` from the saved state, else the level state, else the resident template; **Unknown** whether the
-original falls back to the template.
+`sell home` is the flag of the template the building carries, and a building carrying none is for sale (`FixtureRegistry.SalePrice`).
 
 ## Ruined by residents
 

@@ -629,8 +629,8 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     non-empty, so wind generators and benches get no line) a `Kenshi_Button2` toggle of width 0.3 (Public in Good, Private in BadBright; slot 83 `FUN_140546ef0` flips the byte +0xc8 read by slot
     82, `General_Click`). `For sale:` with a button `c.{1,num}` (both Good) when slot 88 (`FUN_14029c500`) is true: a building of class 0xb with no
     parent whose interior (+0x1f0) has its +0x2c byte clear and type 1, 2 or 3 (**Unknown** which these are), owned by a faction neither the player's nor
-    hostile to it (relation owner to player <= -30, `FUN_1406b26d0`, **Verified**: allied and neutral owners sell), and its state's bool `sell home`
-    set (true without a state). Price (`FUN_1407ad300`): int(f × target × the owner FACTION's float
+    hostile to it (relation owner to player <= -30, `FUN_1406b26d0`, **Verified**: allied and neutral owners sell), and the bool `sell home` of the
+    SQUAD_TEMPLATE the building carries (+0xf0, [whose](factions-squads-towns.md#whose-template-a-home-carries)) set; a building carrying none is for sale (**Verified**, `FUN_14029c500`; no level or saved building state has a `sell home` key). Price (`FUN_1407ad300`): int(f × target × the owner FACTION's float
     `building cost mult` × 400), f = 0.375 when slot 102 (+0x330) answers true, else 1. That slot reads the destroyed byte +0x1a1
     ([construction state](buildings-production.md#construction-state), **Verified** there against `FUN_1405595a0`). The button (slot 80
     `FUN_1407ad410`) asks "Do you want to buy this building for c.{1,num}?".
@@ -701,8 +701,16 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   (`FUN_14030d620`, `FUN_140300090`, `FUN_140307bf0` ...: Working / No power / Out of resource / Output full, power, workers, fuel).
   A town bed (**Observed**, original-game screenshot of a Squin bar): a left click selects the bed itself, not the bar; panel:
   faction, Town, Cost to use `(Pay c.100)`, Healing bonus `x4`, Condition; no door rows. Value colours and the rows of a free bed
-  are **Unknown** (Meitou omits the cost row at 0). A town container or cage is selected the same way, by its own collision before the house
-  around it (`BuildingSelection.PickFurnitureAt`); Meitou's panel for one has only its name and owner, without the Town, lock and Empty rows.
+  are **Unknown** (Meitou omits the cost row at 0). Any other furniture with collision is selected the same way, before the house around it
+  (**Observed** in The Hub's bar and street: stools, benches, sitting pillows, tables, shelves, ceiling lamps, torches); a rug (record `Carpet`,
+  parts but no collision, [collision](../formats/collision.md)) is not (**Observed**, the same bar). A seat's panel (**Observed**): its name and
+  owner faction, `Town:` The Hub, `Workers:` 0/1, `Efficiency:` 0%, `Max efficiency:` 100%, Condition. Meitou (`BuildingSelection.PickFurnitureAt`):
+  beds, containers and cages by their fixtures, seats by their seat spots, everything else of a town building's interior layout but nodes
+  (`TownBuilding.Pieces`: tables, shelves, lamps, locks, dummies, workstations) by its own collision; the panel has the name, owner, the town of the
+  house it stands in and Condition, without the lock, Empty and worker rows. A camp's Campfire and Camp Bed select too (**Observed**, a Dust Bandit
+  camp near The Hub), the Campfire though its part has no `xml collision` (base data); its panel says it is out of fuel while it burns. Meitou: a
+  camp bed by its bed, any other camp building (`WorldSnapshot.NestBuildings`) among the buildings by distance, by its collision, else the hull of
+  its parts' bounds as a site without collision (`BuildingSelection.PickCampBuildingAt`); its panel has its name, owner and Condition.
 - **Richness** (**Observed**, ProductionBuilding slot 40 `FUN_1402ffeb0` section 6 calls slot 186 `getGUIFertility` `FUN_140309a40` first): for function 1 or 27 with a
   functionality, a line by `world resource mining`: 1 `Iron Quality:`, 2 `Stone Richness:`, 3 `Copper Quality:`, 4 `Carbon Quality:`, 5 `Water Available:`, 6
   `Ground Fertility:` (other: no label); value `{1,num}` of int(yield × 100) (slot 92, no `%`), coloured r = clamp(0.8 − y), g = clamp(0.8 y), b 0.1; tooltip "The
@@ -796,7 +804,7 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     player's, its town to that one. So slot 113 reads the player's faction once a player character starts working the rock; before, "No Faction" (**Verified**:
     every class branch of the factory builds the town hand from the town's own handle, `FUN_1407925c0`, and NO_TOWN's is type 0xd, registered in
     `DAT_142133fc8`, the registry `FUN_1400f6c20` → `FUN_1409f9100` asks for a type 0xd hand; NO_TOWN is explored, +0x181 = 1, and not secret).
-    Not saved (the original saves no rock). Meitou: `ProductionSystem` sets the rock's owner on arrival, its town by the outposts' radius
+    No rock state was seen in the original's saves (**Observed**); Meitou saves a worked rock ([rock machines](../formats/save.md)). Meitou: `ProductionSystem` sets the rock's owner on arrival, its town by the outposts' radius
     (`RichnessView.Owner` / `TownName`); `Town:` shows only that town.
   Meitou (`ProductionWindows`, `MachineSnapshot.Efficiency` and `Panel`): the lines per class as above, unmined rocks too (0 workers), the turret's
   section 7 in `ExtendedStatsText` while the panel is expanded; the turret's gun lines from `WorldSnapshot.InspectedTurret` (`CombatSystem.TurretPanelOf`; a
@@ -1442,7 +1450,7 @@ Full info "separate numbers for each damage type". Built at the end of `MedicalS
   `Kenshi_TextboxStandardText`, so no shadow) on the `Dialog` layer, font from a table by the creator's 4th argument (0 `Kenshi_FloaterFont_Small`,
   1 `_Medium`, 2 `_Large`; `FUN_14157ff60`); a hit passes 1 when the option is Simple info, else 0. Its size is the text's plus 20 x the UI scale; its
   top left goes to the screen point of the anchor. The anchor rises in world space at the speed table's entry by the 5th argument (0, 4, 8 units/s;
-  a hit passes 1: 4/s); past 8 units of rise the alpha is 1 - (rise - 8) x 0.25, and at 12 the label goes: 3 s in all. No healing floater exists
+  a hit passes 1: 4/s); past 8 units of rise the alpha is 1 - (rise - 8) x 0.25, and at 12 the label goes: 3 s in all. The rise adds the game's frame time (`DAT_142133798`, the frame time x the world's speed `+0x700`, `FUN_140788a00`), so a label stands still while the game is paused and goes faster at the fast speeds; Meitou the same. No healing floater exists
   among the callers of `FUN_14073faf0` (**Observed**). The stealth KO's "*Thunk*" / "Failed!" is another caller ([combat](combat.md#stealth-knock-out)).
 
 Meitou (`PlayerInterface.AddFloaters`): text, font, motion and fade as above; colour: red when a player's character is hit, green when one lands the

@@ -247,7 +247,8 @@ sealed class AgentWorld(GameHost host)
         Add("select", "select <id...> | select --squad | select --none  [--add]", "select characters through the game's select command (the world "
             + "applies it on its next tick)", ControlSelect);
 
-        Add("order", "order move <x> <z> [--queue] [--wait <s> [--stuck <s>]] | order attack <id>", "give the selected characters a move or attack "
+        Add("order", "order move <x> <z> [--queue] [--wait <s> [--stuck <s>]] [--id <c:slot.gen>] | order attack <id>", "--id: orders that one "
+            + "character (any faction, an NPC or an animal) instead of the selection, without --wait; give the selected characters a move or attack "
             + "order through the game's own order commands (what a right click gives); move --wait <s> replies once, "
             + "when the first ordered character arrives (within 4 m), is stuck (distance fell by less than 1 m for --stuck game seconds, default 10) "
             + "or <s> game seconds pass: {result: arrived|stuck|timeout, pos, dist_to_target, ticks}", ControlOrder);
@@ -264,6 +265,8 @@ sealed class AgentWorld(GameHost host)
         RegisterControlBaseCommands(Add);
         host.AgentPlay.RegisterControlPlayCommands(Add);
         RegisterControlNavCommands(Add);
+        host.RegisterControlGraphicsCommands(Add);
+        host.RegisterControlInteriorCommands(Add);
 
         Add("terrain-height", "terrain-height <x> <z> [radius step]", "terrain height at X Z; with a radius and step, the min, "
             + "max and spread over the square around it (to find flat ground)", ControlTerrainHeight);
@@ -284,7 +287,7 @@ sealed class AgentWorld(GameHost host)
     /// </summary>
     static bool RequiresLocalWorld(string name) => name is "place-building" or "clear-building" or "place-item" or "container-put"
         or "pause" or "resume" or "speed" or "step" or "hurt" or "say" or "ko" or "wake" or "bandits-loot" or "spawn-at"
-        or "unequip" or "strip-inventory";
+        or "unequip" or "strip-inventory" or "ragdoll-dump" or "root-probe" or "root-scan" or "root-log" or "spawn-trace";
 
     /// <summary>
     /// The <c>world</c> command (usage and help at its registration in <see cref="RegisterControlWorldCommands"/>).
@@ -780,52 +783,11 @@ sealed class AgentWorld(GameHost host)
     void ControlOrder(IReadOnlyList<string> args, DevConsole con)
     {
         if (!Loaded(con)) return;
+
         string sub = args.Count > 0 ? args[0].ToLowerInvariant() : "";
         if (sub == "move")
         {
-            bool queue = false;
-            float waitS = 0, stuckS = AgentPlay.MoveWaitStuckSeconds;
-            bool waited = false, stuckGiven = false;
-            var nums = new List<string>();
-            for (int i = 1; i < args.Count; i++)
-            {
-                if (args[i].Equals("--queue", StringComparison.OrdinalIgnoreCase)) queue = true;
-                else if (args[i].Equals("--wait", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (i + 1 >= args.Count || !Num(args[++i], out waitS) || waitS < 0.1f || waitS > 3600)
-                    {
-                        con.Error("order: --wait needs game seconds between 0.1 and 3600");
-                        return;
-                    }
-
-                    waited = true;
-                }
-                else if (args[i].Equals("--stuck", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (i + 1 >= args.Count || !Num(args[++i], out stuckS) || stuckS < 0.5f || stuckS > 3600)
-                    {
-                        con.Error("order: --stuck needs game seconds between 0.5 and 3600");
-                        return;
-                    }
-
-                    stuckGiven = true;
-                }
-                else nums.Add(args[i]);
-            }
-            if (nums.Count != 2 || !Num(nums[0], out float x) || !Num(nums[1], out float z) || (stuckGiven && !waited))
-            {
-                con.Error("usage: order move <x> <z> [--queue] [--wait <s> [--stuck <s>]]");
-                return;
-            }
-
-            if (!host.Player.AgentOrders.ControlMove(x, z, queue, out string message))
-            {
-                con.Error("order: " + message);
-                return;
-            }
-
-            if (waited) host.AgentPlay.ControlMoveWaitStart(con, x, z, waitS, stuckS);
-            else con.Print(message);
+            ControlOrderMove(args, con);
         }
         else if (sub == "attack")
         {
@@ -840,6 +802,94 @@ sealed class AgentWorld(GameHost host)
             else con.Print(message);
         }
         else con.Error("usage: order move <x> <z> [--queue] [--wait <s> [--stuck <s>]] | order attack <id>");
+    }
+
+    /// <summary>
+    /// <c>order move</c>: the selected characters (or the one <c>--id</c> names) move to x z, the reply waiting with <c>--wait</c>.
+    /// </summary>
+    void ControlOrderMove(IReadOnlyList<string> args, DevConsole con)
+    {
+        bool queue = false;
+        float waitS = 0, stuckS = AgentPlay.MoveWaitStuckSeconds;
+        bool waited = false, stuckGiven = false;
+        var nums = new List<string>();
+        CharacterId? only = null;
+        for (int i = 1; i < args.Count; i++)
+        {
+            if (args[i].Equals("--queue", StringComparison.OrdinalIgnoreCase)) queue = true;
+            else if (args[i].Equals("--id", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= args.Count || !AgentOrders.TryParseCharacter(args[++i], out var who))
+                {
+                    con.Error("order: --id needs a character id (c:<slot>.<gen>)");
+                    return;
+                }
+
+                only = who;
+            }
+            else if (args[i].Equals("--wait", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= args.Count || !Num(args[++i], out waitS) || waitS < 0.1f || waitS > 3600)
+                {
+                    con.Error("order: --wait needs game seconds between 0.1 and 3600");
+                    return;
+                }
+
+                waited = true;
+            }
+            else if (args[i].Equals("--stuck", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= args.Count || !Num(args[++i], out stuckS) || stuckS < 0.5f || stuckS > 3600)
+                {
+                    con.Error("order: --stuck needs game seconds between 0.5 and 3600");
+                    return;
+                }
+
+                stuckGiven = true;
+            }
+            else nums.Add(args[i]);
+        }
+
+        if (nums.Count != 2 || !Num(nums[0], out float x) || !Num(nums[1], out float z) || (stuckGiven && !waited))
+        {
+            con.Error("usage: order move <x> <z> [--queue] [--wait <s> [--stuck <s>]]");
+            return;
+        }
+
+        if (only is { } one)
+        {
+            OrderOne(one, x, z, queue, waited, con);
+            return;
+        }
+
+        if (!host.Player.AgentOrders.ControlMove(x, z, queue, out string message))
+        {
+            con.Error("order: " + message);
+            return;
+        }
+
+        if (waited) host.AgentPlay.ControlMoveWaitStart(con, x, z, waitS, stuckS);
+        else con.Print(message);
+    }
+
+    /// <summary>
+    /// <c>order move --id</c>: moves that one character, any faction's; not with <c>--wait</c>.
+    /// </summary>
+    void OrderOne(CharacterId one, float x, float z, bool queue, bool waited, DevConsole con)
+    {
+        if (waited)
+        {
+            con.Error("order: --id does not combine with --wait");
+            return;
+        }
+
+        if (!host.Player.AgentOrders.ControlMoveCharacter(one, x, z, queue, out string oneMessage))
+        {
+            con.Error("order: " + oneMessage);
+            return;
+        }
+
+        con.Print(oneMessage);
     }
 
     /// <summary>
@@ -1634,6 +1684,10 @@ sealed class AgentWorld(GameHost host)
     void ControlPlaceItem(IReadOnlyList<string> args, DevConsole con)
     {
         if (!Loaded(con)) return;
+
+        IReadOnlyList<string> rest = args;
+        var exact = DebugMenu.TakeGrade(ref rest);
+        args = rest;
         float yaw = 0, y = float.NaN, q = 1;
         if (args.Count < 3 || args.Count > 6 || !Num(args[1], out float x) || !Num(args[2], out float z)
             || (args.Count > 3 && !Num(args[3], out yaw)) || (args.Count > 4 && !Num(args[4], out y)) || (args.Count > 5 && !Num(args[5], out q)))
@@ -1646,7 +1700,7 @@ sealed class AgentWorld(GameHost host)
 
         if (float.IsNaN(y)) y = host.Gpu.Terrain.HeightAt(x, z);
         host.LocalSession.World.Commands.Enqueue(new DebugPlaceItem(item.Id, Math.Clamp((int)q, 1, 1000), new Vector3(x, y, z),
-            yaw * MathF.PI / 180f) { Tick = host.LocalSession.World.Tick });
+            yaw * MathF.PI / 180f) { Tick = host.Session.CommandTick, Exact = exact });
         con.Print($"placed {item.Name} ({item.Id}) at {x:F1} {y:F1} {z:F1}");
     }
 

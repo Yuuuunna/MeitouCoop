@@ -255,7 +255,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         foreach (var c in commands)
         {
             if (c is FocusCommand f) _focus = f.Position;
-            else if (c is DebugSpawn spawn) SpawnSandbox(world, spawn.Record, spawn.At, player: false, variant: ++_debugSpawns);
+            else if (c is DebugSpawn spawn) SpawnDebug(world, spawn);
         }
 
         var ready = new List<BuiltTown>();
@@ -279,7 +279,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
             // a severed leg may close the boots (FUN_14064edc0 -> validateInventorySections)
             if (cut.Limb is 2 or 3) InventoryCommands.ValidateSections(world, cut.Character, cold);
             _assembly.RefreshEquipment(cold);
-            DropSeveredLimb(world, cut.Character, cold, cut.Limb);
+            if (cut.Drops) DropSeveredLimb(world, cut.Character, cold, cut.Limb);
         }
     }
 
@@ -772,13 +772,17 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
 
     /// <summary>
     /// The town leaves the world: each squad it made becomes a pinned platoon that keeps its characters (<see cref="StoredSquad"/>), so the town is
-    /// made of them next time and a save writes them (docs/simulation.md "Population"). A squad with no one alive left is dropped.
+    /// made of them next time and a save writes them (docs/simulation.md "Population"). A member carried off or imprisoned is split off first
+    /// (<see cref="SplitCaptives(World, Squad, SplitFrom)"/>). A squad with no one alive left is dropped.
     /// </summary>
     void Unload(World world, int site, SiteState state)
     {
         foreach (int id in state.Squads)
         {
             if (world.Squads.Find(id) is not { } squad) continue;
+
+            // A member carried off or jailed stays in the world as a squad of its own (FUN_14079c1c0), before the squad is placed by the rest.
+            if (squad.Members.Count >= 2) SplitCaptives(world, squad, new SplitFrom(site, squad.TemplateId, squad.Faction, 0, squad.Pinned));
             if (KeepLoaded(world, site, squad)) continue;
             var stored = new StoredSquad
             {
@@ -1103,8 +1107,36 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         squad.SpawnSize = squad.Members.Count;
         if (squad.Leader.IsNone) squad.Leader = SquadRegistry.Successor(squad.Members, table);
         world.Squads.Add(squad);
+        if (SpawnTrace is { } trace && !player && !idle) TraceSpawn(world, trace, squad, built, site, builtMembers, leaderPlan);
+
         return squad;
     }
+
+    /// <summary>
+    /// Appends a made squad to <paramref name="trace"/> (<see cref="SpawnTrace"/>), with its distance to the nearest player character (-1: none).
+    /// </summary>
+    void TraceSpawn(World world, List<SpawnTraceEntry> trace, Squad squad, BuiltSquad built, TownSite? site, List<BuiltMember> builtMembers,
+        MemberPlan? leaderPlan)
+    {
+        float playerDistance = PlayerSpots(world)
+            .Select(a => Vector2.Distance(a, built.Position))
+            .DefaultIfEmpty(-1)
+            .Min();
+        string leader = leaderPlan?.RecordId ?? builtMembers.FirstOrDefault()?.Plan.RecordId ?? "";
+        trace.Add(new SpawnTraceEntry(world.Tick, site is not null ? "town" : "wild", squad.Id, squad.TemplateId, squad.Name, squad.Faction,
+            squad.Members.Count, built.Position.X, built.Position.Y, playerDistance, leader));
+    }
+
+    /// <summary>
+    /// A squad made by the population (debug aid, the control channel's <c>spawn-trace</c>): when, from where, which template and where.
+    /// </summary>
+    public readonly record struct SpawnTraceEntry(long Tick, string Source, int SquadId, string TemplateId, string Name, int Faction, int Members,
+        float X, float Z, float PlayerDistance, string LeaderRecord);
+
+    /// <summary>
+    /// When set, every squad the population makes (not the player's, not the sandbox's) is appended here (debug aid, not part of the state).
+    /// </summary>
+    public List<SpawnTraceEntry>? SpawnTrace { get; set; }
 
     /// <summary>
     /// Makes one fresh member at its planned spot, with its body, initial hunger and slave state, bounties and expanded name.

@@ -90,8 +90,10 @@ their pose tick for correct velocity across publication gaps. Host wiring and re
 remain pending. These tests do not establish
 full multiplayer UI or rendering acceptance.
 GUI executable attaches a caller's console; folder prompt creates its own when necessary.
-Native splash precedes Vulkan; worker loading and render-thread GPU steps keep the window
-responsive. On Wayland the window is shown and its first configure taken before the first loading frame is presented: a buffer attached before the shell role makes the compositor drop the client (**Verified** natively on KDE Wayland, GLFW 3.4). Full screen at start shows the window before going full screen there: GLFW ignores showing a full-screen window, and on Wayland (unlike X11) going full screen while hidden never maps it (**Verified** KDE Plasma, GLFW 3.4, PR #77). Scene transitions draw loading between stages, wait on asynchronous results, and
+Native splash precedes Vulkan (Windows only); worker loading and render-thread GPU steps keep the window
+responsive. Both backends draw the start's loading frames through `ILoadingCanvas` (`GameHost.LoadingFrame`): Vulkan's swapchain, or
+Metal's context frame until its boot ends (docs/metal-backend.md).
+On Wayland the window is shown and its first configure taken before the first loading frame is presented: a buffer attached before the shell role makes the compositor drop the client (**Verified** natively on KDE Wayland, GLFW 3.4). Full screen at start shows the window before going full screen there: GLFW ignores showing a full-screen window, and on Wayland (unlike X11) going full screen while hidden never maps it (**Verified** KDE Plasma, GLFW 3.4, PR #77). Scene transitions draw loading between stages, wait on asynchronous results, and
 preserve world on failure. Gameplay warm-up waits for nearby population, terrain, scenery, character
 assets and used textures (including deferred loads), then <40ms frames for0.5s (max5s for frame pacing).
 After 5s of continuous `VramGuard` pressure, content it holds back is no longer waited for (it cannot load until the use falls).
@@ -101,6 +103,8 @@ cache ([character-renderer](character-renderer.md#content-lod-and-memory)). **Ob
 The warm-up (title and game) waits for grass only within the range of the default grass distance (`FoliageRenderer.LoadingPending`, `DefaultGrassRange`);
 pages a longer setting reaches grow in, nearest first, after the screen lifts. **Observed** (save siwa-test4, the Ultra tier's grass distance x 2): the title waited
 107 s and the game about as long for 16 000 and 27 000 grass pages made at about 400 a second, everything else ready.
+The objects count the same way (`WorldObjectRenderer.LoadingPending`): the remakes that coarsen a resident mesh are housekeeping and not waited for. **Observed** (save gut, 655 mods, RTX 4090, 2026-11-12): with the camera at rest two such remakes at a time kept the warm-up waiting 20+ s after everything else was ready.
+Phase timing of a start or a load: `MEITOU_LOG_TIMES=1` stamps every log line with the seconds since the process started; the warm-up report prints the GC counts, pause total and CPU seconds so far, the "still preparing" line the streaming queue and the VRAM guard, and each scene-load stage prints when it starts. **Observed** (gut, hidden 2560x1440, warm caches): menu interactive at 17-20 s (device 1.2 s, game data 1.6 s, world files 3.5 s, renderer 2.5 s, jit warm-up on 3 threads 5-7 s in parallel, content wait about 8 s); a quickload: read 1.4 s, systems 3.3 s (under the sky ascent), build 1.1 s (the weather replay 0.8 s of it, now only for regions the save lacks), then the warm-up 6-10 s unloaded. Another GPU load (a second game instance) stretches the warm-up to 20-40 s: the render thread then waits in the frame fence.
 Under the cover the streams' frames need not be smooth: the character, foliage and object renderers (`Covered`, set by the host each frame) upload and build for up
 to 16 ms a frame instead of their play budgets, foliage layouts and grass pages are queued four per streaming thread (`BackgroundWork.Threads`; finished ones are
 taken once a frame), and objects take eight times the zones and resolves a frame. Once the warm-up's content is ready the streams are back at their play budgets, so
@@ -246,6 +250,7 @@ Own GLSL compiles through bundled shaderc, explicit native resource/state record
 secondary jobs. [Native API](renderer-native.md).
 
 Single-sample jittered HDR reconstruction, separate near/far depth, unjittered reflection/shadows.
+**Observed** (RTX 4090, shared with other processes): Streamline returns result 39 (`eWarnOutOfVRAM`, with the log line "Exceeded VRAM budget") from `slEvaluateFeature` when the card runs short of memory; the call still records and runs. Meitou took it for a failure, freed DLSS under the recorded frame and the next fence wait said `ErrorDeviceLost` (seen after 30 DLSS/off toggles with other games on the card). Now result 39 counts as success (logged once), and a real failure retires the upscaler at the start of the next frame, not under the frame that holds its commands. 60 toggles with enough memory never failed and did not grow the memory in use (the `vram` control command).
 FSR Vulkan SDK1.1.4 runtime DLL; Streamline2.14.16 manual hook, initialize before Vulkan, request
 features and proxy present; when it reports DLSS unsupported (any non-NVIDIA GPU) it is shut down at
 once. **Observed** (#55, RX 6600): on AMD `slInit` still loads `sl.common`, whose Vulkan hooks warn

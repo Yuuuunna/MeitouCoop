@@ -363,7 +363,7 @@ sealed class WorldObjects : IDisposable
         foreach (var b in Levels.Buildings())
         {
             if (b.Position == Vector3.Zero || Database.Find(b.BuildingId) is not { } record) continue;
-            var state = b.StateId is not null && Levels.Zones.TryGetValue(b.StateZone ?? b.Zone, out var zoneDb) ? zoneDb.Find(b.StateId) : null;
+            var state = b.StateId is not null && Levels.Zones.TryGetValue(b.Zone, out var zoneDb) ? zoneDb.Find(b.StateId) : null;
             if (state is not null && state.GetBool("destroyed")) continue;
             bool incomplete = state is not null && state.Bools.TryGetValue("is complete", out bool complete) && !complete;
             bool sounds = !incomplete && record.GetReferences("sounds").Count > 0;
@@ -400,7 +400,7 @@ sealed class WorldObjects : IDisposable
         foreach (var b in Levels.Buildings())
         {
             if (b.Position == Vector3.Zero || Database.Find(b.BuildingId) is not { } record) continue;
-            var state = b.StateId is not null && Levels.Zones.TryGetValue(b.StateZone ?? b.Zone, out var zoneDb) ? zoneDb.Find(b.StateId) : null;
+            var state = b.StateId is not null && Levels.Zones.TryGetValue(b.Zone, out var zoneDb) ? zoneDb.Find(b.StateId) : null;
             if (state is not null && state.Bools.TryGetValue("is complete", out bool complete) && !complete) continue;
             float y = b.WorldY ?? map.HeightAt(b.Position.X, b.Position.Z) + b.Position.Y;
             var position = new Vector3(b.Position.X, y, b.Position.Z);
@@ -467,10 +467,7 @@ sealed class WorldObjects : IDisposable
 
         if (record.Type != Data.Fcs.FcsRecordType.Building)
         {
-            // A loose item (GroundItemSync): its one mesh, at its absolute height.
-            var at = new Vector3(b.Position.X, b.WorldY ?? map.HeightAt(b.Position.X, b.Position.Z) + b.Position.Y, b.Position.Z);
-            if (WorldObjectLayout.Item(record, b.InstanceId, at, b.Rotation, b.ItemMesh, b.ItemScale) is { } item)
-                result.Items.Add(item);
+            LayLooseItem(result, b, record, map);
             return;
         }
 
@@ -481,12 +478,16 @@ sealed class WorldObjects : IDisposable
         var state = b.StateId is not null && Levels.Zones.TryGetValue(b.StateZone ?? b.Zone, out var zoneDb) ? zoneDb.Find(b.StateId) : null;
         bool isDestroyed = b.DestroyedOverride ?? state?.GetBool("destroyed") ?? false;
         if (isDestroyed) Interlocked.Increment(ref _destroyed);
-        var town = Towns.TownOf(state, b.Position);
+        var town = b.Standalone ? null : Towns.TownOf(state, b.Position);
         GameRecord? townMaterial;
         lock (Towns) townMaterial = Towns.MaterialOf(town);
         var position = new Vector3(b.Position.X, y, b.Position.Z);
+
+        // A standalone placement is laid out at a fixed place (its X and Z seed the choice among part variants) and moved to its own afterwards.
+        var layAt = b.Standalone ? new Vector3(1, y, 0) : position;
+        int firstItem = result.Items.Count;
         var buildingState = new BuildingState(isDestroyed, townMaterial) { WithInterior = !isDestroyed, Identity = b.Key };
-        var parts = WorldObjectLayout.Building(Database, record, b.InstanceId, position, b.Rotation, buildingState);
+        var parts = WorldObjectLayout.Building(Database, record, b.InstanceId, layAt, b.Rotation, buildingState);
 
         // A destroyed building gets no interior view (game: the per-frame interior driver skips it).
         var interior = isDestroyed ? null : InteriorVolume.For(Database, record, b.Key, position, b.Rotation, _interiorCollisions!, gateways: true);
@@ -504,7 +505,12 @@ sealed class WorldObjects : IDisposable
             for (int k = 0; k < parts.Count; k++) parts[k] = parts[k] with { Contained = true, ContainerId = b.ContainerId };
         result.Items.AddRange(parts);
         Interlocked.Increment(ref _buildings);
-        LayLayouts(result, b, record, position, state, townMaterial, isDestroyed);
+        LayLayouts(result, b, record, layAt, state, townMaterial, isDestroyed);
+        if (b.Standalone)
+        {
+            MoveLaidItems(result, firstItem, Matrix4x4.CreateTranslation(position - layAt));
+            return;
+        }
 
         // Towns without a baked distant mesh: the building's own distant mesh stands in for it far away (what the game's
         // "generate distant towns" would batch).
@@ -514,6 +520,28 @@ sealed class WorldObjects : IDisposable
             result.Stand.Add(distant);
             Interlocked.Increment(ref _stand);
         }
+    }
+
+    /// <summary>
+    /// A loose item (GroundItemSync): its one mesh, at its absolute height, in its weapon model's material where it names one.
+    /// </summary>
+    void LayLooseItem(ZoneObjects result, BuildingPlacement b, GameRecord record, TerrainHeightmap map)
+    {
+        var at = new Vector3(b.Position.X, b.WorldY ?? map.HeightAt(b.Position.X, b.Position.Z) + b.Position.Y, b.Position.Z);
+        var model = b.ItemMaterial is { Length: > 0 } modelId && Database.Find(modelId) is { Type: Data.Fcs.FcsRecordType.MaterialSpecsWeapon } spec
+            ? spec
+            : null;
+        if (WorldObjectLayout.Item(record, b.InstanceId, at, b.Rotation, b.ItemMesh, b.ItemScale, model) is { } item)
+            result.Items.Add(item);
+    }
+
+    /// <summary>
+    /// Moves the items laid from <paramref name="firstItem"/> on by <paramref name="moved"/> (a standalone placement to its own place).
+    /// </summary>
+    static void MoveLaidItems(ZoneObjects result, int firstItem, Matrix4x4 moved)
+    {
+        for (int k = firstItem; k < result.Items.Count; k++)
+            result.Items[k] = result.Items[k] with { Transform = result.Items[k].Transform * moved };
     }
 
     /// <summary>

@@ -34,6 +34,10 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     bool _disposed;
     Task? _disposal;
     double _elapsed, _lastGameHours;
+    /// <summary>
+    /// Smoothed drawn-frame duration for the same camera response as a local session.
+    /// </summary>
+    double _frameSeconds;
     bool _clockReady;
     long _receivedVersion = -1;
     CharacterId _pointed = CharacterId.None;
@@ -215,6 +219,9 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!double.IsFinite(realSeconds) || realSeconds < 0)
             throw new ArgumentOutOfRangeException(nameof(realSeconds));
+        _frameSeconds = _frameSeconds == 0 ? realSeconds : _frameSeconds + (realSeconds - _frameSeconds) * 0.1;
+        Camera.Strategy.DrawnFrameSeconds = (float)_frameSeconds;
+
         _elapsed += realSeconds;
         _connection.AdvancePresentation(realSeconds);
         PumpTalkHints();

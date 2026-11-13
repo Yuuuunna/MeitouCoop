@@ -79,12 +79,12 @@ public sealed partial class CombatSystem
                     break;
                 case MedicalEventKind.Decapitated:
                     // the look loses its head (nothing drops)
-                    table.LimbsChanged.Enqueue((d, -1));
+                    table.LimbsChanged.Enqueue((d, -1, false));
                     break;
                 case MedicalEventKind.PartSevered:
                     var template = dc.Medical!.Parts[ev.Part].Template;
                     _xp.ToughnessFromLimbLoss(dc.Stats!, dc.Race!);
-                    table.LimbsChanged.Enqueue((d, template.LimbSlot));
+                    table.LimbsChanged.Enqueue((d, template.LimbSlot, true));
                     world.Defer(new Dialogue.DialogueEvent(table.IdOf(d), CharacterId.None,
                         template.LimbSlot is 2 or 3 ? 70 : 71)
                     { Tick = world.Tick + 1 });
@@ -106,7 +106,7 @@ public sealed partial class CombatSystem
         var toAttacker = new Vector2(prev[a].Position.X - prev[d].Position.X, prev[a].Position.Z - prev[d].Position.Z);
         float total = damage.Cut + damage.Blunt + damage.Pierce;
         Sound(world, SoundKind.Hit, d, a, prev[d].Position, unarmed: ac.Fighter!.Unarmed, robot: ac.Race!.IsRobot);
-        Splash(world, d, dc, -toAttacker, total);
+        Splash(world, d, dc, -toAttacker, total, ac.Fighter!.Unarmed ? -1 : a);
         if (death) Knockdown(world, d, dc, -toAttacker, total, part);
         if (dc.Medical!.Incapacitated) Sound(world, SoundKind.Down, d, a, prev[d].Position, fatal: death);
         if (death && world.Uniques.RecordOf(table.IdOf(d)) is { } unique) world.Uniques.Died(unique, ac.IsPlayer, world.Players.RequiresExplicitControl ? ac.Faction : null);

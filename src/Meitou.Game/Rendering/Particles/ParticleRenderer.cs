@@ -56,6 +56,12 @@ public sealed unsafe partial class ParticleRenderer
             for (int i = 0; i < 8; i++)
             {
                 vec3 w = centre + (vec3(i & 1, (i >> 1) & 1, (i >> 2) & 1) - 0.5) * (0.5 * size);
+                if (uShadowAtlas.w > 0.5 && msVolumeOn())
+                {
+                    lit += msVolumeAt(w);   // the traced sun's volume (no cascades)
+                    continue;
+                }
+
                 int c = shadowCascade(w);
                 if (c < 0)
                 {
@@ -928,8 +934,8 @@ public sealed unsafe partial class ParticleRenderer
 
         // The low-resolution draws' own matrices: unjittered when they are blended after the upscaler (PostProcess.ParticlesAfterUpscale), whose
         // output is.
-        _frameLowVp = lowViewProjection is { } lowVp ? Matrix4x4.CreateTranslation(eye) * lowVp : _frameVp;
-        _frameLowCloseVp = lowCloseViewProjection is { } lowClose ? Matrix4x4.CreateTranslation(eye) * lowClose : _frameCloseVp;
+        _frameLowVp = lowViewProjection ?? _frameVp;
+        _frameLowCloseVp = lowCloseViewProjection ?? _frameCloseVp;
         long ticks = Stopwatch.GetTimestamp() - start;
         _drawTotal += ticks;
         _drawFrames++;
@@ -1040,9 +1046,9 @@ public sealed unsafe partial class ParticleRenderer
             return;
         _draws.Clear();
         var frame = _gpu.Frame;
-        var forward = -new Vector3(view.M13, view.M23, view.M33);
-        CollectUnits(WorldCamera.FrustumPlanes(viewProjectionMatrix));
-        foreach (var(u, rain, placed)in _drawUnits)
+        var forward = -new Vector3(view.M13, view.M23, view.M33);   // the view's -Z axis in the world
+        CollectUnits(WorldCamera.FrustumPlanes(viewProjectionMatrix), eye);   // eye-relative: tested with positions less the eye
+        foreach (var (u, rain, placed) in _drawUnits)
         {
             var offset = u.Anchor - eye;
             if (u.Simulation is not { } sim || u.CatchingUp)
@@ -1101,7 +1107,7 @@ public sealed unsafe partial class ParticleRenderer
     /// <summary>
     /// Lists the units to draw, farthest first: the weather's and the placed ones that are within the draw range and in view.
     /// </summary>
-    void CollectUnits(Vector4[] planes)
+    void CollectUnits(Vector4[] planes, Vector3 eye)
     {
         var units = _drawUnits;
         units.Clear();
@@ -1117,10 +1123,8 @@ public sealed unsafe partial class ParticleRenderer
                     continue;
                 if (u.Radius != float.PositiveInfinity)
                 {
-                    if (u.DistanceToCamera - u.Radius > DrawRange)
-                        continue;
-                    if (!InFrustum(planes, u.Position, u.Radius))
-                        continue;
+                    if (u.DistanceToCamera - u.Radius > DrawRange) continue;
+                    if (!InFrustum(planes, u.Position - eye, u.Radius)) continue;
                 }
 
                 units.Add((u, g.Effect.Type is EffectType.CameraRain or EffectType.CameraAcidRain, g.Entry is null));
@@ -1163,9 +1167,8 @@ public sealed unsafe partial class ParticleRenderer
     /// </summary>
     void StoreFrame(Vector3 eye, Matrix4x4 viewProjectionMatrix, Matrix4x4 closeViewProjection, Matrix4x4 view, Vector3 sunDirection)
     {
-        // Camera-relative positions: the matrix takes the eye back out (view and projection were built for world positions).
-        var vp = Matrix4x4.CreateTranslation(eye) * viewProjectionMatrix;
-        var closeVp = Matrix4x4.CreateTranslation(eye) * closeViewProjection;
+        // Camera-relative positions and matrices (the caller's are eye-relative: RenderOrigin).
+        var (vp, closeVp) = (viewProjectionMatrix, closeViewProjection);
         var right = new Vector3(view.M11, view.M21, view.M31);
         var up = new Vector3(view.M12, view.M22, view.M32);
         float ambient = Math.Clamp(sunDirection.Y * 5 + 0.2f, 0.1f, 1f);

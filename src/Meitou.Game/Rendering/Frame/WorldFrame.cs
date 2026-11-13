@@ -295,202 +295,130 @@ static partial class WorldFrame
     public const string TextureQualitySlider = "Texture quality 0-4 (game)";
 
     /// <summary>
+    /// The rows that were command-line options only (docs/launch-options.md); the water's grid and FFT size are made once with the water
+    /// (<c>Program</c> reads the saved ones before the world loads), the rest apply live. Their labels are the <c>meitou.user.json</c> keys.
+    /// </summary>
+    public const string WaterGridSlider = "Water grid segments", WaterOceanSlider = "Water wave resolution (FFT size)",
+        ReflectionSamplesSlider = "Reflection samples", HazeDistanceSlider = "Full haze distance",
+        MaterialDistanceSlider = "Terrain material distance", ImpostorBudgetSlider = "Impostor memory budget (MB)";
+
+    /// <summary>
+    /// The impostor budget slider's positions below this (MB) are the automatic rule.
+    /// </summary>
+    public const float ImpostorBudgetFloor = 8;
+
+    /// <summary>
+    /// The parts of Advanced materials (<c>chars2</c>), plain on / off rows under it.
+    /// </summary>
+    public const string MaterialHairSwitch = "Hair highlights", MaterialClothSwitch = "Cloth sheen", MaterialSkinSwitch = "Skin sheen and glow",
+        MaterialEyesSwitch = "Eye catchlights", MaterialMetalSwitch = "Metal on characters", MaterialBeadsSwitch = "Water beads";
+
+    /// <summary>
+    /// Grass keeps its cover at a distance (<c>FoliageRenderer.GrassFarCover</c>), a plain on / off row.
+    /// </summary>
+    public const string GrassCoverSwitch = "Far grass cover";
+
+    /// <summary>
+    /// The world's surfaces show their wetness (<c>WeatherSurfaces.WetWorld</c>), a plain on / off row.
+    /// </summary>
+    public const string WetWorldSwitch = "Rain drops and puddles";
+
+    /// <summary>
+    /// The traced sun shadows' grass (<see cref="PostOptions.TracedGrass"/>), a plain on / off row under them.
+    /// </summary>
+    public const string TracedGrassSwitch = "Traced grass shadows";
+
+    /// <summary>
+    /// The hybrid GI's parts as switches (<see cref="PostOptions.GiRelocate"/>, <see cref="PostOptions.GiCloudShadows"/>,
+    /// <see cref="PostOptions.GiCache"/>).
+    /// </summary>
+    public const string GiRelocateSwitch = "GI probes out of walls", GiCloudShadowsSwitch = "GI cloud shadows", GiCacheSwitch = "GI radiance cache";
+
+    /// <summary>
     /// The weather particle sliders' labels: the particles' resolution and their density.
     /// </summary>
     public static readonly string[] ParticleSliders = ["Weather particles: 0 off 1 quarter 2 half 3 auto 4 full", "Particle density x"];
     /// <summary>
     /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
     /// </summary>
-    public const string ObjectDistanceSlider = "Object draw distance";
-    /// <summary>
-    /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
-    /// </summary>
-    public const string GrassDensitySlider = "Grass density x";
-    /// <summary>
-    /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
-    /// </summary>
-    public const string WaterReflectionSlider = "Water reflection 0-4 (game)";
-    /// <summary>
-    /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
-    /// </summary>
-    public const string ShadowDistanceSlider = "Shadow distance (game 1k-9k, 0 off)";
-    /// <summary>
-    /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
-    /// </summary>
-    public const string ShadowMapSlider = "Shadow map size (game quality 0-2)";
-    /// <summary>
-    /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
-    /// </summary>
-    public const string GroundReliefQualitySlider = "Ground relief quality";
-    /// <summary>
-    /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
-    /// </summary>
-    public const string ShaftQualitySlider = "Light shafts quality";
+    public const string ObjectDistanceSlider = "Object draw distance", GrassDensitySlider = "Grass density x",
+        WaterReflectionSlider = "Water reflection 0-4 (game)", ShadowDistanceSlider = "Shadow distance (game 1k-9k, 0 off)",
+        ShadowMapSlider = "Shadow map size (game quality 0-2)", GroundReliefQualitySlider = "Ground relief quality",
+        ShaftQualitySlider = "Light shafts quality", GtaoQualitySlider = "Ambient occlusion quality (GTAO)";
+
     /// <summary>
     /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
     /// </summary>
-    public const string LandmarkDistanceSlider = "Landmark distance (Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string DistantTownsSlider = "Distant towns (zones)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string CharacterDistanceSlider = "Character draw distance";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ObjectLodSlider = "Object LOD distance x";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string FoliageDistanceSlider = "Foliage draw distance x";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string FoliageLodSlider = "Foliage LOD distance x (lod Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string LargeFoliageRangeSlider = "Large foliage range (F6 Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ImpostorDistanceSlider = "Impostor distance (F7 Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string LargeImpostorDistanceSlider = "Large impostor distance (F7 Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string MediumFoliageRangeSlider = "Medium foliage range";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string SmallFoliageRangeSlider = "Small foliage range";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string GrassDistanceSlider = "Grass draw distance x";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ReflectionRangeSlider = "Reflection range x (game 0.6)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string WaterClaritySlider = "Water clarity x (Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string FarWaterClaritySlider = "Far water clarity (Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string WaterClearDistanceSlider = "Water see-through distance (Meitou, game 4000)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string TerrainErrorSlider = "Terrain detail: error px (less = finer)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string GroundReliefDepthSlider = "Ground relief depth (cm, typical ground)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string GroundDisplaceDistanceSlider = "Ground displacement distance (m)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string GroundParallaxDistanceSlider = "Ground parallax distance (m)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ShadowFilterSlider = "Shadow filter 0-2 (Meitou; 0 low-end)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string HazeStrengthSlider = "Haze strength (1 = game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string PlanetshineStrengthSlider = "Planetshine strength (x physical)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string CloudHeightSlider = "Cloud height (Meitou)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string AmbientStrengthSlider = "Ambient light strength (1 = game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string NightAmbientStrengthSlider = "Night ambient light strength (1 = 1.2x game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ToneMapSlider = "Tone map (0 = game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ToneMixSlider = "Hybrid tone map: ACES share";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string GradingSlider = "Grading (0 = game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string HeatHazeStrengthSlider = "Heat haze strength (1 = game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string BloomStrengthSlider = "Bloom strength (0 = game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string NightGradeStrengthSlider = "Night grading strength (0 = game)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ShaftStrengthSlider = "Light shafts strength";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ShaftAirSlider = "Light shafts air (0 = none)";
-    /// <summary>
-    /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
-    /// </summary>
-    public const string ShaftAirDawnSlider = "Light shafts air at dawn and dusk (x)";
+    public const string
+        LandmarkDistanceSlider = "Landmark distance (Meitou)",
+        DistantTownsSlider = "Distant towns (zones)",
+        CharacterDistanceSlider = "Character draw distance",
+        ObjectLodSlider = "Object LOD distance x",
+        FoliageDistanceSlider = "Foliage draw distance x",
+        FoliageLodSlider = "Foliage LOD distance x (lod Meitou)",
+        LargeFoliageRangeSlider = "Large foliage range (F6 Meitou)",
+        ImpostorDistanceSlider = "Impostor distance (F7 Meitou)",
+        LargeImpostorDistanceSlider = "Large impostor distance (F7 Meitou)",
+        MediumFoliageRangeSlider = "Medium foliage range",
+        SmallFoliageRangeSlider = "Small foliage range",
+        GrassDistanceSlider = "Grass draw distance x",
+        ReflectionRangeSlider = "Reflection range x (game 0.6)",
+        WaterClaritySlider = "Water clarity x (Meitou)",
+        FarWaterClaritySlider = "Far water clarity (Meitou)",
+        WaterClearDistanceSlider = "Water see-through distance (Meitou, game 4000)",
+        TerrainErrorSlider = "Terrain detail: error px (less = finer)",
+        GroundReliefDepthSlider = "Ground relief depth (cm, typical ground)",
+        GroundDisplaceDistanceSlider = "Ground displacement distance (m)",
+        GroundParallaxDistanceSlider = "Ground parallax distance (m)",
+        GroundParallaxDepthSlider = "Ground parallax depth (% of relief depth)",
+        BloodDrawsSlider = "Blood decals drawn",
+        ShadowFilterSlider = "Shadow filter 0-2 (Meitou; 0 low-end)",
+        HazeStrengthSlider = "Haze strength (1 = game)",
+        PlanetshineStrengthSlider = "Planetshine strength (x physical)",
+        CloudHeightSlider = "Cloud height (Meitou)",
+        AmbientStrengthSlider = "Ambient light strength (1 = game)",
+        NightAmbientStrengthSlider = "Night ambient light strength (1 = 1.2x game)",
+        ToneMapSlider = "Tone map (0 = game)",
+        ToneMixSlider = "Hybrid tone map: ACES share",
+        GradingSlider = "Grading (0 = game)",
+        HeatHazeStrengthSlider = "Heat haze strength (1 = game)",
+        BloomStrengthSlider = "Bloom strength (0 = game)",
+        DofApertureSlider = "Depth of field aperture (f-number)",
+        NightGradeStrengthSlider = "Night grading strength (0 = game)",
+        ShaftStrengthSlider = "Light shafts strength",
+        ShaftAirSlider = "Light shafts air (0 = none)",
+        ShaftAirDawnSlider = "Light shafts air at dawn and dusk (x)";
+
     /// <summary>
     /// The Tab panel switches that are not Faithful / Meitou ones (saved as <c>Meitou: &lt;label&gt;</c> like those).
     /// </summary>
-    public const string FifthCascadeSwitch = "Shadow cascade 5 (Meitou)";
+    public const string
+        FifthCascadeSwitch = "Shadow cascade 5 (Meitou)",
+        BloomSwitch = "Bloom",
+        DepthOfFieldSwitch = "Depth of field",
+        CameraEffectsSwitch = "Camera effects in the strategy camera",
+        // The ground relief's Faithful / Meitou switches (Enhancements "parallax", "displace"), by name.
+        GroundParallaxSwitch = "Ground parallax",
+        GroundDisplaceSwitch = "Ground displacement (tessellation)",
+        RockSmoothingSwitch = "Rock smoothing (tessellation)",
+        OutlineRefineSwitch = "Terrain outline refinement (tessellation)";
+
     /// <summary>
-    /// The Tab panel switches that are not Faithful / Meitou ones (saved as <c>Meitou: &lt;label&gt;</c> like those).
+    /// The mutually exclusive techniques as one choice each (docs/native-ui.md "Settings"), over the switches they stand for (which stay the saved
+    /// state).
     /// </summary>
-    public const string BloomSwitch = "Bloom";
+    public const string SunShadowsChoice = "Sun shadows", OcclusionChoice = "Ambient occlusion type", GiChoice = "Global illumination";
+
     /// <summary>
-    /// The Tab panel switches that are not Faithful / Meitou ones (saved as <c>Meitou: &lt;label&gt;</c> like those).
+    /// The <see cref="SunShadowsChoice"/>, <see cref="OcclusionChoice"/> and <see cref="GiChoice"/> keys.
     /// </summary>
-    public const string // The ground relief's Faithful / Meitou switches (Enhancements "parallax", "displace"), by name.
- GroundParallaxSwitch = "Ground parallax";
+    public static readonly string[] ChoiceSliders = [SunShadowsChoice, OcclusionChoice, GiChoice];
+
     /// <summary>
-    /// The Tab panel switches that are not Faithful / Meitou ones (saved as <c>Meitou: &lt;label&gt;</c> like those).
+    /// The switches the <see cref="ChoiceSliders"/> replace on screen.
     /// </summary>
-    public const string GroundDisplaceSwitch = "Ground displacement (tessellation)";
-    /// <summary>
-    /// The Tab panel switches that are not Faithful / Meitou ones (saved as <c>Meitou: &lt;label&gt;</c> like those).
-    /// </summary>
-    public const string RockSmoothingSwitch = "Rock smoothing (tessellation)";
-    /// <summary>
-    /// The Tab panel switches that are not Faithful / Meitou ones (saved as <c>Meitou: &lt;label&gt;</c> like those).
-    /// </summary>
-    public const string OutlineRefineSwitch = "Terrain outline refinement (tessellation)";
+    public static readonly string[] ChoiceDrivenSwitches =
+        ["Shadows", "Traced sun shadows", "Ambient occlusion", "Ground-truth occlusion", "Indirect light", "Hybrid GI"];
 
     /// <summary>
     /// The weather particles slider's position for the renderer's state: 0 off, 1 quarter, 2 half, 3 by sprite size (auto), 4 full size.
@@ -508,6 +436,11 @@ static partial class WorldFrame
     /// </summary>
     public static UpscalerKind AntiAliasingKind(float v) =>
         (int)MathF.Round(v) is var i && i >= 3 ? (UpscalerKind)Math.Min(i - 2, (int)UpscalerKind.Dlss) : UpscalerKind.Off;
+
+    /// <summary>
+    /// Whether the device traces rays (the traced sun and lamps, the GI, reflections); set when the settings panel is made.
+    /// </summary>
+    public static bool RayTracingAvailable { get; private set; }
 
     /// <summary>
     /// The Faithful / Meitou switches over the live renderer (the game's Shift+F keys, the viewer's F keys, the Tab checkboxes): they change the
@@ -559,7 +492,9 @@ static partial class WorldFrame
             () => gpu()?.Characters?.EnhancedIcons ?? o.MeitouIcons, v => { o.MeitouIcons = v; if (gpu()?.Characters is { } c) c.EnhancedIcons = v; },
             () => gpu()?.Decals?.Meitou ?? o.MeitouBlood, v => { o.MeitouBlood = v; if (gpu()?.Decals is { } d) d.Meitou = v; },
             () => gpu()?.Decals?.Surfaces ?? o.MeitouBloodSurfaces, v => { o.MeitouBloodSurfaces = v; if (gpu()?.Decals is { } d) d.Surfaces = v; },
-            () => o.MeitouTracers, v => o.MeitouTracers = v);
+            () => o.MeitouTracers, v => o.MeitouTracers = v,
+            () => gpu()?.Characters?.Chars2 ?? o.Chars2, v => { o.Chars2 = v; if (gpu()?.Characters is { } c) c.Chars2 = v; },
+            () => o.MeitouFootprints, v => o.MeitouFootprints = v);
 
     /// <summary>
     /// The Tab settings panel over <paramref name="g"/>'s renderers: the sliders (the viewer's clock, window and the render settings), the Faithful /
@@ -579,7 +514,7 @@ static partial class WorldFrame
         AddWaterSliders(sliders, g);
         AddTerrainSliders(sliders, g, r);
         var fifthCascade = g.Shadow is { } shadow ? AddShadowSliders(sliders, shadow) : null;
-        AddSkySliders(sliders, g.Sky);
+        AddSkySliders(sliders, g.Sky, g.Options);
         if (g.Post is { } post) AddPostSliders(sliders, g, post);
 
         // Anisotropic filtering (docs/render-post.md "Texture filtering"): the most any texture is sampled with; the world's textures ask 8x,
@@ -590,6 +525,8 @@ static partial class WorldFrame
             Text: v => (1 << (int)MathF.Round(v)) + "x" + (MathF.Round(v) >= 3 ? " (as the game)" : "")));
 
         var toggles = SettingsToggles(g, switches, fifthCascade);
+        RayTracingAvailable = g.Sky.Gpu.HasRayQuery;
+        AddChoiceSliders(sliders, toggles, g);
         var actions = SettingsActions(g);
         var side = TextureSliders();
 
@@ -602,11 +539,129 @@ static partial class WorldFrame
     }
 
     /// <summary>
+    /// Sun shadows (Off / Faithful cascades / Meitou cascades / Traced), ambient occlusion (Off / SSAO / GTAO) and global illumination (Off /
+    /// Probes / Probes + hybrid) as choices: each reads and writes the Faithful / Meitou switches and the shadow distance it stands for, so a
+    /// settings file of the switches still loads. Traced needs the indirect light (the rays use its scene), so choosing it turns the GI on, and the
+    /// GI off leaves the cascades.
+    /// </summary>
+    static void AddChoiceSliders(List<Slider> sliders, List<Toggle> toggles, WorldGpu g)
+    {
+        if (sliders.FirstOrDefault(s => s.Label == ShadowDistanceSlider) is { } distance && g.Shadow is { } shadow
+            && ChoiceToggle(toggles, "Shadows") is not null)
+        {
+            sliders.Add(new Slider(SunShadowsChoice, 0, 3, () => SunShadowsMode(toggles, shadow),
+                v => SetSunShadowsMode(toggles, shadow, distance, ChoiceIndex(v)), "0"));
+        }
+
+        if (ChoiceToggle(toggles, "Ambient occlusion") is not null)
+            sliders.Add(new Slider(OcclusionChoice, 0, 2, () => OcclusionMode(toggles), v => SetOcclusionMode(toggles, ChoiceIndex(v)), "0"));
+        if (ChoiceToggle(toggles, "Indirect light") is not null)
+            sliders.Add(new Slider(GiChoice, 0, 2, () => GiMode(toggles), v => SetGiMode(toggles, ChoiceIndex(v)), "0"));
+    }
+
+    /// <summary>
+    /// The switch row labelled <paramref name="label"/>, null when the panel has none.
+    /// </summary>
+    static Toggle? ChoiceToggle(List<Toggle> toggles, string label) => toggles.FirstOrDefault(t => t.Label == label);
+
+    /// <summary>
+    /// Whether the switch row labelled <paramref name="label"/> is on (false when the panel has none).
+    /// </summary>
+    static bool ChoiceOn(List<Toggle> toggles, string label) => ChoiceToggle(toggles, label)?.Get() == true;
+
+    /// <summary>
+    /// Turns the switch row labelled <paramref name="label"/> on or off, if the panel has it and it is not so already.
+    /// </summary>
+    static void ChoiceSet(List<Toggle> toggles, string label, bool on)
+    {
+        if (ChoiceToggle(toggles, label) is { } t && t.Get() != on) t.Set(on);
+    }
+
+    /// <summary>
+    /// A choice slider's value as the index of its choice.
+    /// </summary>
+    static int ChoiceIndex(float v) => (int)MathF.Round(v);
+
+    /// <summary>
+    /// The <see cref="SunShadowsChoice"/> the switches stand for: 0 off, 1 Faithful cascades, 2 Meitou cascades, 3 traced.
+    /// </summary>
+    static float SunShadowsMode(List<Toggle> toggles, ShadowPass shadow)
+    {
+        if (!shadow.Enabled) return 0;
+        if (ChoiceOn(toggles, "Traced sun shadows")) return 3;
+
+        return ChoiceOn(toggles, "Shadows") ? 2 : 1;
+    }
+
+    /// <summary>
+    /// Sets the switches and the shadow distance for the <see cref="SunShadowsChoice"/> <paramref name="mode"/>.
+    /// </summary>
+    static void SetSunShadowsMode(List<Toggle> toggles, ShadowPass shadow, Slider distance, int mode)
+    {
+        ChoiceSet(toggles, "Traced sun shadows", mode == 3);
+        if (mode == 0)
+        {
+            distance.Set(distance.Min);
+            return;
+        }
+
+        // Back on at the range it had (Off keeps it), else the game's or Meitou's default.
+        if (!shadow.Enabled)
+        {
+            float range = shadow.Settings.Range >= KenshiShadows.MinRange ? shadow.Settings.Range
+                : mode == 1 ? 5000
+                : Enhancements.MeitouShadowRange;
+            distance.Set(range);
+        }
+
+        ChoiceSet(toggles, "Shadows", mode >= 2);
+        if (mode == 3) ChoiceSet(toggles, "Indirect light", true);
+    }
+
+    /// <summary>
+    /// The <see cref="OcclusionChoice"/> the switches stand for: 0 off, 1 SSAO, 2 GTAO.
+    /// </summary>
+    static float OcclusionMode(List<Toggle> toggles)
+    {
+        if (!ChoiceOn(toggles, "Ambient occlusion")) return 0;
+
+        return ChoiceOn(toggles, "Ground-truth occlusion") ? 2 : 1;
+    }
+
+    /// <summary>
+    /// Sets the switches for the <see cref="OcclusionChoice"/> <paramref name="mode"/>.
+    /// </summary>
+    static void SetOcclusionMode(List<Toggle> toggles, int mode)
+    {
+        ChoiceSet(toggles, "Ambient occlusion", mode > 0);
+        if (mode > 0) ChoiceSet(toggles, "Ground-truth occlusion", mode == 2);
+    }
+
+    /// <summary>
+    /// The <see cref="GiChoice"/> the switches stand for: 0 off, 1 probes, 2 probes and hybrid.
+    /// </summary>
+    static float GiMode(List<Toggle> toggles)
+    {
+        if (!ChoiceOn(toggles, "Indirect light")) return 0;
+
+        return ChoiceOn(toggles, "Hybrid GI") ? 2 : 1;
+    }
+
+    /// <summary>
+    /// Sets the switches for the <see cref="GiChoice"/> <paramref name="mode"/>: off also leaves the traced sun.
+    /// </summary>
+    static void SetGiMode(List<Toggle> toggles, int mode)
+    {
+        if (mode == 0) ChoiceSet(toggles, "Traced sun shadows", false);
+        ChoiceSet(toggles, "Indirect light", mode > 0);
+        ChoiceSet(toggles, "Hybrid GI", mode == 2);
+    }
+
+    /// <summary>
     /// The viewer's own rows; the game passes none of them (its clock, vsync and window mode are its own settings).
     /// </summary>
     static void AddViewerSliders(List<Slider> sliders, Func<float>? getHour, Action<float>? setHour, Func<float>? getTimeSpeed,
-        Action<float>? setTimeSpeed,
-        Func<bool>? getVSync, Action<bool>? setVSync, Func<bool>? getFullScreen, Action<bool>? setFullScreen)
+        Action<float>? setTimeSpeed, Func<bool>? getVSync, Action<bool>? setVSync, Func<bool>? getFullScreen, Action<bool>? setFullScreen)
     {
         // The time of day (the `--time` option and the , / . keys), to the minute.
         if (getHour is not null && setHour is not null)
@@ -685,6 +740,7 @@ static partial class WorldFrame
         sliders.Add(new Slider(LargeImpostorDistanceSlider, 500, 40000, () => foliage.LargeImpostorDistance,
             v => foliage.LargeImpostorDistance = Round50(v), "0",
             Logarithmic: true));
+        sliders.Add(ImpostorBudget(foliage));
         sliders.Add(new Slider(MediumFoliageRangeSlider, 400, 80000, () => foliage.MediumRange, v => foliage.MediumRange = Round50(v), "0",
             Logarithmic: true));
         sliders.Add(new Slider(SmallFoliageRangeSlider, 200, 40000, () => foliage.SmallRange, v => foliage.SmallRange = Round50(v), "0",
@@ -708,7 +764,9 @@ static partial class WorldFrame
                 Text: v => (int)MathF.Round(v) switch { 0 => "0 off", 1 => "1 landscape", 2 => "2 characters",
                     3 => "3 buildings", _ => "4 everything" }));
             sliders.Add(new Slider(ReflectionRangeSlider, 0.1f, 50, () => reflection.Range, v => reflection.Range = v, "0.00", Logarithmic: true));
+            sliders.Add(ReflectionSamples(reflection, g.Options));
         }
+        if (g.Options is { } options) AddWaterSizeSliders(sliders, options);
 
         // How far the Meitou water lets the floor show through (docs/render-water.md "Clarity"); the Faithful water keeps the game's alpha.
         if (g.Water is { } water)
@@ -722,13 +780,67 @@ static partial class WorldFrame
     }
 
     /// <summary>
-    /// The terrain's pixel error and the ground relief (ours, docs/render-terrain.md "Ground relief": the march's quality, the depth and where each
-    /// ends).
+    /// The haze distance row (<c>--fog</c>): the options' value goes to every frame's draw. Also the Metal panel's.
+    /// </summary>
+    internal static Slider HazeDistance(WorldOptions options) => new(HazeDistanceSlider, 10000, 1000000, () => options.FogDistance,
+        v => options.FogDistance = MathF.Round(v / 1000) * 1000, "0", Logarithmic: true);
+
+    /// <summary>
+    /// The material distance row (<c>--material-distance</c>): beyond it the terrain shows the biomes' ground colour. The draw's value and the
+    /// texture streamer's are read each frame. Also the Metal panel's.
+    /// </summary>
+    internal static Slider MaterialDistance(WorldRenderOptions r, TerrainStreamer? streamer, WorldOptions? options) =>
+        new(MaterialDistanceSlider, 2000, 100000, () => r.MaterialDistance, v =>
+        {
+            r.MaterialDistance = MathF.Round(v / 500) * 500;
+            if (streamer is not null) streamer.MaterialDistance = r.MaterialDistance;
+            if (options is not null) options.MaterialDistance = r.MaterialDistance;
+        }, "0", Logarithmic: true);
+
+    /// <summary>
+    /// The impostor memory budget row (<c>--impostor-budget</c>), read at each scan: the lowest positions are the automatic rule (docs/impostors.md).
+    /// Also the Metal panel's.
+    /// </summary>
+    internal static Slider ImpostorBudget(FoliageRenderer foliage) => new(ImpostorBudgetSlider, 0, 2048,
+        () => (float)(foliage.ImpostorBudgetMb ?? 0),
+        v => foliage.ImpostorBudgetMb = v < ImpostorBudgetFloor ? null : MathF.Round(v / 16) * 16, "0", Step: 16,
+        Text: v => v < ImpostorBudgetFloor ? "Automatic" : string.Create(CultureInfo.InvariantCulture, $"{MathF.Round(v / 16) * 16:0} MB"));
+
+    /// <summary>
+    /// The reflection's samples per texel as a power of two, 1 (off) to 8 (docs/render-water.md "Shading and reflection"): the targets are made
+    /// again at the new count on the next frame.
+    /// </summary>
+    internal static Slider ReflectionSamples(ReflectionPass reflection, WorldOptions? options) => new(ReflectionSamplesSlider, 0, 3,
+        () => Math.Clamp((int)MathF.Round(MathF.Log2(Math.Max(reflection.Samples, 1))), 0, 3), v =>
+        {
+            reflection.Samples = 1 << Math.Clamp((int)MathF.Round(v), 0, 3);
+            if (options is not null) options.ReflectionSamples = reflection.Samples;
+        }, "0", Text: v => (int)MathF.Round(v) is var i and > 0 ? $"{1 << i}x" : "off");
+
+    /// <summary>
+    /// The Meitou water's grid segments and FFT size: made once with the water, so a new value takes effect at the next start (<c>Program</c> reads
+    /// the saved ones before the world loads).
+    /// </summary>
+    internal static void AddWaterSizeSliders(List<Slider> sliders, WorldOptions options)
+    {
+        static int Segments(float v) => Math.Clamp((int)MathF.Round(v / 64) * 64, 64, 1024);
+        static int FftIndex(float v) => Math.Clamp((int)MathF.Round(v), 0, 2);
+
+        sliders.Add(new Slider(WaterGridSlider, 64, 1024, () => options.WaterGrid, v => options.WaterGrid = Segments(v), "0", Logarithmic: true,
+            Step: 64));
+        sliders.Add(new Slider(WaterOceanSlider, 0, 2, () => MathF.Log2(Math.Max(options.WaterOcean, 64) / 64f),
+            v => options.WaterOcean = 64 << FftIndex(v), "0", Text: v => (64 << FftIndex(v)).ToString(CultureInfo.InvariantCulture)));
+    }
+
+    /// <summary>
+    /// The terrain's pixel error, the ground relief (ours, docs/render-terrain.md "Ground relief": the march's quality, the depth and where each
+    /// ends) and the blood decals drawn on it.
     /// </summary>
     static void AddTerrainSliders(List<Slider> sliders, WorldGpu g, WorldRenderOptions r)
     {
         sliders.Add(new Slider(TerrainErrorSlider, 4, 32, () => r.TerrainPixelError, v => r.TerrainPixelError = v, "0.0", Logarithmic: true,
             Faithful: WorldRenderOptions.DefaultTerrainPixelError, Meitou: Enhancements.MeitouTerrainPixelError));
+        sliders.Add(MaterialDistance(r, g.Streamer, g.Options));
 
         // The depth drives parallax and displacement; 0 is off.
         sliders.Add(new Slider(GroundReliefQualitySlider, 0, 2, () => GroundRelief.Quality,
@@ -741,8 +853,15 @@ static partial class WorldFrame
                 v => GroundRelief.DisplaceDistance = MathF.Round(v) * 10, "0"));
         }
 
+        sliders.Add(new Slider(GroundParallaxDepthSlider, 10, 200, () => GroundRelief.ParallaxScale * 100,
+            v => GroundRelief.ParallaxScale = MathF.Round(v / 5) / 20, "0"));
         sliders.Add(new Slider(GroundParallaxDistanceSlider, 10, 150, () => GroundRelief.ParallaxDistance / 10,
             v => GroundRelief.ParallaxDistance = MathF.Round(v) * 10, "0"));
+
+        // Blood on surfaces and footprints share one cap a frame, the nearest drawn (docs/game/blood-decals.md "Bloody footprints").
+        sliders.Add(new Slider(BloodDrawsSlider, TerrainDecalRenderer.MinSurfaceDraws, TerrainDecalRenderer.MaxSurfaceDraws,
+            () => TerrainDecalRenderer.SurfaceDraws, v => TerrainDecalRenderer.SurfaceDraws = (int)MathF.Round(v / 64) * 64, "0", Step: 64,
+            Meitou: TerrainDecalRenderer.DefaultSurfaceDraws));
     }
 
     /// <summary>
@@ -772,11 +891,12 @@ static partial class WorldFrame
     /// <summary>
     /// The sky's haze, planetshine, cloud height and ambient light.
     /// </summary>
-    static void AddSkySliders(List<Slider> sliders, SkyRenderer sky)
+    static void AddSkySliders(List<Slider> sliders, SkyRenderer sky, WorldOptions? options)
     {
         // A viewer option, not the game's: 1 is the game's haze (docs/formats/sky.md).
         sliders.Add(new Slider(HazeStrengthSlider, 0, 3, () => sky.HazeStrength, v => sky.HazeStrength = v, "0.00", Faithful: 1,
             Meitou: Enhancements.MeitouHazeStrength));
+        if (options is not null) sliders.Add(HazeDistance(options));
         // Ours (docs/formats/sky.md "Planetshine"): the planet's light at night, a multiple of the physical value.
         sliders.Add(new Slider(PlanetshineStrengthSlider, 0, 200, () => sky.PlanetshineStrength, v => sky.PlanetshineStrength = MathF.Round(v), "0"));
         sliders.Add(new Slider(CloudHeightSlider, VolumetricClouds.MinBottom, VolumetricClouds.MaxBottom, () => sky.CloudHeight,
@@ -867,6 +987,8 @@ static partial class WorldFrame
             Faithful: 1, Meitou: Enhancements.MeitouHeatHazeStrength));
         sliders.Add(new Slider(BloomStrengthSlider, 0, 0.25f, () => options.BloomStrength, v => options.BloomStrength = MathF.Round(v * 200) / 200,
             "0.000", Faithful: 0));
+        sliders.Add(new Slider(DofApertureSlider, 0.25f, 22, () => options.DofAperture, v => options.DofAperture = MathF.Round(v * 20) / 20, "0.00",
+            Logarithmic: true));
         sliders.Add(new Slider(NightGradeStrengthSlider, 0, 1, () => options.NightGradeStrength, v => options.NightGradeStrength = Round20(v),
             "0.00"));
 
@@ -876,6 +998,8 @@ static partial class WorldFrame
         sliders.Add(new Slider(ShaftQualitySlider, 0, 2, () => options.ShaftQuality, v => options.ShaftQuality = Math.Clamp((int)MathF.Round(v), 0,
             2), "0",
             Text: v => (int)MathF.Round(v) switch { 0 => "Low", 1 => "Medium", _ => "High" }));
+        sliders.Add(new Slider(GtaoQualitySlider, 0, 2, () => options.GtaoQuality, v => options.GtaoQuality = Math.Clamp((int)MathF.Round(v), 0, 2),
+            "0", Text: v => (int)MathF.Round(v) switch { 0 => "Low", 1 => "Medium", _ => "High" }));
     }
 
     /// <summary>
@@ -889,12 +1013,20 @@ static partial class WorldFrame
         var toggles = switches?
             .Where(e => e.Id != "displace" || tessellation)
             .Select(e => new Toggle(e.Name, () => e.IsMeitou, v => e.IsMeitou = v, () => e.IsMeitou ? e.Meitou : e.Faithful, Remaster: true,
-                OnOff: e.Faithful is "off" or "none"))
+                OnOff: e.Faithful is "off" or "none", Optional: e.Optional))
             .ToList() ?? [];
         if (fifthCascade is not null) toggles.Add(fifthCascade);
 
-        if (g.Post is { } post)
-            toggles.Add(new Toggle(BloomSwitch, () => post.Options.Bloom, v => post.Options.Bloom = v, Remaster: true, OnOff: true, Optional: true));
+        if (g.Post is { } post) AddPostToggles(toggles, post);
+        if (g.Foliage is { } farGrass)
+            toggles.Add(new Toggle(GrassCoverSwitch, () => farGrass.GrassFarCover, v => farGrass.GrassFarCover = v, Remaster: true, OnOff: true));
+        if (g.Surfaces is { } wetWorld)
+        {
+            toggles.Add(new Toggle(WetWorldSwitch, () => wetWorld.WetWorld, v => wetWorld.WetWorld = v, Remaster: true, OnOff: true,
+                Optional: true));
+        }
+
+        if (g.Characters is not null && g.Options is { } materials) AddMaterialToggles(toggles, g, materials);
         if (tessellation)
         {
             toggles.Add(new Toggle(RockSmoothingSwitch, () => RockSmoothing.TessellateActive, v => RockSmoothing.TessellateActive = v, Remaster: true,
@@ -904,6 +1036,45 @@ static partial class WorldFrame
                 Remaster: true, OnOff: true));
         }
         return toggles;
+    }
+
+    /// <summary>
+    /// The post chain's switches: bloom, the camera effects, the hybrid GI's parts and the traced sun shadows' grass.
+    /// </summary>
+    static void AddPostToggles(List<Toggle> toggles, PostProcess post)
+    {
+        toggles.Add(new Toggle(BloomSwitch, () => post.Options.Bloom, v => post.Options.Bloom = v, Remaster: true, OnOff: true, Optional: true));
+        toggles.Add(new Toggle(CameraEffectsSwitch, () => post.Options.CameraEffectsEverywhere, v => post.Options.CameraEffectsEverywhere = v,
+            Remaster: true, OnOff: true, Optional: true));
+
+        // The hybrid GI's parts (--gi-hybrid), plain on / off rows; they act while the Hybrid GI choice is on.
+        toggles.Add(new Toggle(GiRelocateSwitch, () => post.Options.GiRelocate, v => post.Options.GiRelocate = v));
+        toggles.Add(new Toggle(GiCloudShadowsSwitch, () => post.Options.GiCloudShadows, v => post.Options.GiCloudShadows = v));
+        toggles.Add(new Toggle(GiCacheSwitch, () => post.Options.GiCache, v => post.Options.GiCache = v));
+
+        // The traced sun shadows' grass, a plain on / off row; it acts while the sun's shadows are traced.
+        toggles.Add(new Toggle(TracedGrassSwitch, () => post.Options.TracedGrass, v => post.Options.TracedGrass = v));
+    }
+
+    /// <summary>
+    /// The Advanced materials' parts (<see cref="WorldOptions.Chars2Parts"/>), plain on / off rows; they act while it is on.
+    /// </summary>
+    static void AddMaterialToggles(List<Toggle> toggles, WorldGpu g, WorldOptions materials)
+    {
+        var parts = new[]
+        {
+            (MaterialHairSwitch, Characters.CharacterRenderer.SurfaceHair), (MaterialClothSwitch, Characters.CharacterRenderer.SurfaceCloth),
+            (MaterialSkinSwitch, Characters.CharacterRenderer.SurfaceSkin), (MaterialEyesSwitch, Characters.CharacterRenderer.SurfaceEyes),
+            (MaterialMetalSwitch, Characters.CharacterRenderer.SurfaceMetal), (MaterialBeadsSwitch, Characters.CharacterRenderer.SurfaceBeads),
+        };
+        foreach (var (label, bit) in parts)
+        {
+            toggles.Add(new Toggle(label, () => (materials.Chars2Parts & bit) != 0, v =>
+            {
+                materials.Chars2Parts = v ? materials.Chars2Parts | bit : materials.Chars2Parts & ~bit;
+                if (g.Characters is { } c) c.SurfaceParts = materials.Chars2Parts;
+            }));
+        }
     }
 
     /// <summary>
@@ -986,6 +1157,7 @@ static partial class WorldFrame
         gpu.Terrain.Activate();
         var post = gpu.PostChain ?? throw new InvalidOperationException("the sky frame needs the post-processing chain");
         post.GiResolve = 0;
+        if (gpu.Post is { } vulkanPost) vulkanPost.SsrSurfaces = false;
         post.Begin(width, height);
         if (post is PostProcess { Unallocated: true }) return;
         float aspect = width / (float)Math.Max(height, 1);
@@ -1013,12 +1185,14 @@ static partial class WorldFrame
         gpu.PostChain?.ObjectMotion = null;
         post.Particles = null;
         post.SetCloudMotion(null);
+        post.Options.CameraEffectsHeld = true;
         try
         {
             post.End();
         }
         finally
         {
+            post.Options.CameraEffectsHeld = false;
             gpu.PostChain?.ObjectMotion = motion;
             post.Particles = particles;
         }
@@ -1142,6 +1316,7 @@ static partial class WorldFrame
                 (_, worldToClip, planes, lodEye) => lo.DrawLandmarksDepth(worldToClip, lodEye, planes, render, gpu.Terrain))
             : (ShadowPass.LandmarkCasters?)null;
         shadow.CameraFlying = gpu.CameraFlying;
+        shadow.TracedWhole = gpu.Traced;   // the rays take the sun at every depth, characters included (Gi.TracedCharacters)
         shadow.Render(view, light.SunDirection, casters.Draw, sunHeight, landmarks, casters.Prepare);
         shadow.CasterStats = casters.Stats();
     }

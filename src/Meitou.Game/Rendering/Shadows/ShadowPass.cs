@@ -109,9 +109,17 @@ public sealed unsafe partial class ShadowPass : IDisposable
         Poll();
         UploadNoise();
         Cascades = null;
+        TracedCascades = 0;
+        TracedDepth = 0;
         if (!Enabled || (sunHeight ?? toSun.Y) < MinSunHeight || toSun.LengthSquared() < 1e-8f)
         {
             Disable();
+            return;
+        }
+
+        if (Meitou && TracedWhole)
+        {
+            RenderTraced(view, Vector3.Normalize(toSun), landmarks);
             return;
         }
 
@@ -293,7 +301,8 @@ public sealed unsafe partial class ShadowPass : IDisposable
 
         // The terrain shadow map with its own sampler (linear, clamped; TerrainShadowMap).
         g.Publish("uShadowTerrain", () => _boundTerrain ?? default);
-        g.Publish("uShadowBlocker", () => _blockers.Published);
+        // Traced, the binding carries the sun's visibility volume instead (ShadowPass.Traced: no cascades, so no blocker map).
+        g.Publish("uShadowBlocker", () => _volumePublished ? _volumeSampled : _blockers.Published);
         // The landmark shadow map (comparison, linear, clamped).
         g.Publish("uShadowLandmark", () => _landmarks.Published);
     }

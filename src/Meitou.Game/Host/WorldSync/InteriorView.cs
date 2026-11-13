@@ -79,6 +79,14 @@ sealed class InteriorView(GameHost host)
     }
 
     /// <summary>
+    /// Puts a building in the view at the current floor (the agent channel's <c>interior-view</c>).
+    /// </summary>
+    internal void AddViewed(InteriorVolume room)
+    {
+        if (InteriorFloors.TryAdd(room.PlacementId, ViewedFloorValue)) _viewed.Add(room);
+    }
+
+    /// <summary>
     /// The game's floor_up / floor_down (PageUp / PageDown): one floor up or down, clamped to 0..3.
     /// </summary>
     internal void StepFloor(int step) => ViewedFloor = ViewedFloorValue + step;
@@ -101,6 +109,7 @@ sealed class InteriorView(GameHost host)
             if (c.IsPlayer && objects.InteriorAt(host.DrawnPosition(c), InsideMargin) is { } building
                     && InteriorFloors.TryAdd(building.PlacementId, ViewedFloorValue))
                 _viewed.Add(building);
+        host.ApplyForcedInteriorView(objects);
         HoldLeftOpen(objects);
         objects.InteriorView = InteriorFloors;
         objects.CutIntoViewed = host.Config.FixPartsInBuildings;
@@ -108,7 +117,7 @@ sealed class InteriorView(GameHost host)
         host.Session.Camera.Floors ??= CameraFloor;
         foreach (var c in characters)
         {
-            var at = host.DrawnPosition(c);
+            var at = host.TrackedPosition(c);
             if (ViewedAt(at) is { } inView)
             {
                 int shown = InteriorFloors[inView.PlacementId];
@@ -136,6 +145,14 @@ sealed class InteriorView(GameHost host)
     /// </summary>
     internal bool AboveViewedFloor(System.Numerics.Vector3 at) => ViewedAt(at) is { } inView && InteriorFloors[inView.PlacementId] is var shown
         && shown < 3 && inView.FloorAt(at) > shown;
+
+    /// <summary>
+    /// Whether a layout object on <paramref name="floor"/> of <paramref name="building"/> (its placement id) is not drawn, as the object renderer
+    /// decides: above the floor the building shows in the interior view, or, while the building shows its outside, not an <paramref name="outside"/>
+    /// one.
+    /// </summary>
+    internal bool FloorHidden(string building, int floor, bool outside) =>
+        InteriorFloors.TryGetValue(building, out int shown) ? shown < 3 && floor > shown : !outside;
 
     /// <summary>
     /// The viewed or held-open building <paramref name="at"/> is in (a loop: a lambda here made a closure and a delegate per character per frame).

@@ -56,6 +56,11 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     /// </summary>
     double _aheadMs;
     readonly WorldRuntime _runtime;
+
+    /// <summary>
+    /// Smoothed drawn-frame duration for strategy-camera turn and tilt averaging.
+    /// </summary>
+    double _frameSeconds;
     /// <summary>
     /// Makes the session: the clocks (the world's tick must be the simulation clock's), the game clock, the bindings, the camera rig over the ground
     /// or the sea, and the world with its systems and walkability.
@@ -213,6 +218,9 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     /// </summary>
     public int Advance(double realSeconds)
     {
+        _frameSeconds = _frameSeconds == 0 ? realSeconds : _frameSeconds + (realSeconds - _frameSeconds) * 0.1;
+        Camera.Strategy.DrawnFrameSeconds = (float)_frameSeconds;
+
         int n = Ticks.Advance(realSeconds);
         for (int i = 0; i < n; i++)
             Tick();
@@ -324,9 +332,10 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     public void BeginTickAhead()
     {
         EnsureNotRunning();
-        if (_aheadTicks > 0 || Simulation.IsPaused)
-            return;
-        int count = (int)Math.Clamp(Math.Floor(_owedPerFrame + 0.1), 1, Simulation.MaxTicksPerFrame * Simulation.Speed);
+        if (_aheadTicks > 0 || Simulation.IsPaused) return;
+        // Rounded down (a tick short runs in the next frame; one too many holds the picture a frame), plus a hair: the average nears a steady count
+        // from below. The limit at least 1: under half speed (photo mode's slow motion) it fell below the least.
+        int count = (int)Math.Clamp(Math.Floor(_owedPerFrame + 0.1), 1, Math.Max(1, Simulation.MaxTicksPerFrame * Simulation.Speed));
         (_heldPrevious, _heldCurrent, _heldTick, _held) = (World.PreviousSnapshot, World.Snapshot, World.Tick, true);
         var starts = new (double Hours, bool Daytime)[count];
         double seconds = Clock.GameSeconds;
