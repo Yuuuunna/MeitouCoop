@@ -1,5 +1,6 @@
 using System.Numerics;
 using Meitou.Data;
+using Meitou.Simulation;
 
 namespace Meitou.Game.Audio;
 
@@ -10,7 +11,7 @@ namespace Meitou.Game.Audio;
 sealed class GameSound(GameHost host)
 {
     /// <summary>
-    /// The audio being made on a worker; null once attached or with <c>--no-audio</c>.
+    /// The audio being made on a worker; null once attached or with <c>--no-audio</c> or <c>--headless</c>.
     /// </summary>
     Task<(AudioSystem? Audio, string? Error)>? _audioStart;
 
@@ -23,6 +24,26 @@ sealed class GameSound(GameHost host)
     /// The characters' sounds.
     /// </summary>
     internal readonly CharacterAudio Characters = new(host);
+
+    /// <summary>
+    /// The ground lookups, once made.
+    /// </summary>
+    internal GroundSurfaces? Ground => Characters.Ground;
+
+    /// <summary>
+    /// The biome and ground lookups the sounds use, shared with the ground effects.
+    /// </summary>
+    internal GroundSurfaces GroundSurfacesOf(GameDatabase db) => Characters.GroundSurfacesOf(db);
+
+    /// <summary>
+    /// The animation sound events, shared with the ground effects.
+    /// </summary>
+    internal AnimationSoundEvents AnimationSoundsOf(GameDatabase db) => Characters.AnimationSoundsOf(db);
+
+    /// <summary>
+    /// How far through its clip a layer is (<see cref="CharacterAudio.ClipFraction"/>).
+    /// </summary>
+    internal static float ClipFraction(AnimationLayer layer, bool loops) => CharacterAudio.ClipFraction(layer, loops);
 
     /// <summary>
     /// The interiors', doors' and emitters' sounds.
@@ -46,11 +67,11 @@ sealed class GameSound(GameHost host)
 
     /// <summary>
     /// Starts making the audio on a worker (the codebook library and the sound device) while the window and the world load; nothing with
-    /// <c>--no-audio</c>.
+    /// <c>--no-audio</c> or <c>--headless</c>.
     /// </summary>
     internal void BeginAudio()
     {
-        if (host.WorldOptions.NoAudio) return;
+        if (host.WorldOptions.NoAudio || host.WorldOptions.Headless) return;
         // The sliders as saved, else the install's settings.cfg (read once, here, so the settings menu shows the same values).
         var settings = host.Config.Audio ??= AudioSettings.FromInstall(host.Install);
         _audioStart = Task.Run(() =>
@@ -76,7 +97,7 @@ sealed class GameSound(GameHost host)
     {
         if (_audioStart is null)
         {
-            Console.WriteLine("audio     off (--no-audio)");
+            Console.WriteLine(host.WorldOptions.Headless ? "audio     off (--headless)" : "audio     off (--no-audio)");
             return;
         }
         var (made, error) = _audioStart.GetAwaiter().GetResult();

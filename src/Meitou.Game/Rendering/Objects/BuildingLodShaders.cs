@@ -37,12 +37,14 @@ static class BuildingLodShaders
             layout(location = 10) in vec4 aInstance3;
             uniform int uFadeMode;
             uniform vec3 uFadeEye;
+            uniform vec3 uEye;
             uniform vec4 uFadeRange;
             out vec2 vRange;
             flat out float vInterior;
             flat out float vScaffold;
             out float vBuildY;
             flat out float vScaffoldTiling;
+            out vec3 vWetPos;
             #define uModel mat4(vec4(aInstance0.xyz, 0.0), vec4(aInstance1.xyz, 0.0), vec4(aInstance2.xyz, 0.0), vec4(aInstance3.xyz, 1.0))
             """);
         v = Replace(v, @"void\s+main\s*\(\s*\)\s*\{", """
@@ -61,19 +63,47 @@ static class BuildingLodShaders
                     vRange = vec2(0.0, smoothstep(uFadeRange.x, uFadeRange.y, fd) * (1.0 - smoothstep(uFadeRange.z, uFadeRange.w, fd)));
                 }
             """);
+        // Projected relative to the eye (uViewProjection has no translation, WorldObjectRenderer.Draw): the instance's origin less the eye is one
+        // subtraction of near values, exact, where the world position at tens of thousands of units steps by 0.004 and a mesh's layers a hair
+        // apart (a ruin's plaster over its wall, plates over planks) fought for depth (docs/render-objects.md "Precision").
+        v = Replace(v, @"gl_Position\s*=\s*uViewProjection\s*\*\s*p\s*;", """
+                vec4 local = skin * vec4(aPosition, 1.0);
+                // The vertex less the instance's origin, in the world's orientation, moved by a few units the origin picks (so two of a mesh do not wear the
+                // same drops): where the wet world's drops and runs sit (AtmosphereShaders wetObject), small numbers at any place in the world.
+                vWetPos = mat3(uModel) * local.xyz + fract(aInstance3.xyz * 0.371) * 7.0;
+                gl_Position = uViewProjection * vec4(mat3(uModel) * local.xyz + (aInstance3.xyz - uEye), 1.0);
+            """);
         return v;
     }
 
+    /// <summary>
+    /// The shared mesh fragment shader with the instances' dither, tint, scaffold, cut, studio, wet world, game lighting and ghost tint.
+    /// </summary>
     /// <param name="solid">The variant for fully visible instances of a material without a cut-out: no <c>discard</c> anywhere, so the GPU
     /// tests depth before the fragment shader runs (a shader that may discard gets its depth test late). The same maths otherwise.</param>
     public static string Fragment(bool solid = false)
     {
         string f = Shaders.MeshFragment;
+        f = WithInstanceInputs(f);
+        f = WithStudio(f);
+        f = WithDitherAndCut(f, solid);
+        f = WithWetWorld(f);
+        f = WithGameLighting(f);
+        f = WithEmissiveAndGhost(f);
+        return f;
+    }
+
+    /// <summary>
+    /// The instances' inputs and helpers, the vertex colour, a farm plant's tint and a site's grid, and the scaffold functions.
+    /// </summary>
+    static string WithInstanceInputs(string f)
+    {
         f = Replace(f, @"#version\s+330\s+core", """
             #version 330 core
             in vec2 vRange;
             flat in float vInterior;
             flat in float vScaffold;
+            in vec3 vWetPos;
             float gridLine(float v) { float f = fract(v); return min(f, 1.0 - f); }
             float ditherValue() { return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))); }
             vec3 instanceTint(float v) { float p = -v - 1.0; return vec3(mod(p, 256.0), mod(floor(p / 256.0), 256.0), floor(p / 65536.0)) * (1.275 / 255.0); }
@@ -90,9 +120,53 @@ static class BuildingLodShaders
             }
             """);
         f = Replace(f, @"void\s+main\s*\(\s*\)\s*\{", ScaffoldFunctions + "\nvoid main()\n{");
-        if (solid) f = Replace(f, @"if\s*\(\s*uAlphaThreshold\s*>\s*0\.0\s*&&\s*alpha\s*<\s*uAlphaThreshold\s*\)\s*discard\s*;", "");
-        else
-            f = Replace(f, @"void\s+main\s*\(\s*\)\s*\{", CutVolumes + """
+
+        return f;
+    }
+
+    /// <summary>
+    /// The editor's studio: its lighting, shadow and sky on the platform, and its depth draw's cut-outs.
+    /// </summary>
+    static string WithStudio(string f)
+    {
+        // The editor's studio (Meitou, previewsun; CharacterRenderer.Studio): the platform lit as the character on it, the character's shadow and its
+        // sky's occlusion on it (the view block's interior-cut fields: the native port leaves view.* and the bindless tables as they are).
+        f = Replace(f, @"void\s+main\s*\(\s*\)\s*\{", Characters.StudioShaders.Functions + "\nvoid main()\n{");
+        // A studio depth draw (a fog distance of -5, the platform casting into the studio's maps): its cut-outs only.
+        f = Literal(f, "vec3 l = normalize(uLightDir);",
+            "if (uFogDistance < -4.5) { fragColour = vec4(0.0); return; }\n            vec3 l = normalize(uLightDir);");
+
+        // MEITOU_STUDIO_DEBUG=1: the studio's shadow and sky shown as colours.
+        string studioDebug = Environment.GetEnvironmentVariable("MEITOU_STUDIO_DEBUG") == "1"
+            ? "    colour = vec3(shade, studioSky(vWorld, n), 0.0);"
+            : "";
+        f = Literal(f, "if (uFogDistance < -1.5) colour = stageLight(albedo, n, v, normalize(uLightDir), glossLit, uFogDistance < -2.5);", """
+            if (uFogDistance < -3.5)
+            {
+                vec3 sl = normalize(uLightDir);
+                float shade = studioShadow(vWorld, n, sl);
+                vec3 sky = studioAmbient(n, studioSky(vWorld, n));
+                vec3 sh = normalize(sl + v);
+                float sd = max(dot(n, sl), 0.0);
+                float sspec = pow(max(dot(n, sh), 0.0), 8.0 + 56.0 * gloss) * gloss * uSpecular * 0.6;
+                colour = albedo * (sky + sd * vec3(1.0, 0.92, 0.80) * 1.9 * shade) + sspec * sd * vec3(1.0, 0.92, 0.80) * 1.9 * shade;
+            """ + studioDebug + """
+            }
+            else if (uFogDistance < -1.5) colour = stageLight(albedo, n, v, normalize(uLightDir), glossLit, uFogDistance < -2.5);
+            """);
+
+        return f;
+    }
+
+    /// <summary>
+    /// The dither range and the cut volumes' test (none of it in the <paramref name="solid"/> variant, which never discards).
+    /// </summary>
+    static string WithDitherAndCut(string f, bool solid)
+    {
+        const string alphaDiscard = @"if\s*\(\s*uAlphaThreshold\s*>\s*0\.0\s*&&\s*alpha\s*<\s*uAlphaThreshold\s*\)\s*discard\s*;";
+        if (solid) return Replace(f, alphaDiscard, "");
+
+        return Replace(f, @"void\s+main\s*\(\s*\)\s*\{", CutVolumes + """
 
             void main()
             {
@@ -103,7 +177,34 @@ static class BuildingLodShaders
                 }
                 if ((uFadeMode & 2) != 0 && inCutVolume(vWorld)) discard;
             """ + ScaffoldTest);
+    }
+
+    /// <summary>
+    /// The wet world's runs, film and drops.
+    /// </summary>
+    static string WithWetWorld(string f)
+    {
+        // The wet world (Meitou): runs, a film and drops on what the rain wets (the world's view only).
+        f = Literal(f, """
+            albedo = wetSurface.rgb;
+            glossLit = wetSurface.a;
+            """, """
+            albedo = wetSurface.rgb;
+            float dryGloss = glossLit;
+            glossLit = wetSurface.a;
+            if (uWetWorld > 0.5 && uFogDistance > 0.0 && (uSurface & 2u) == 0u) wetObject(vWetPos, max(length(dFdx(vWetPos)), length(dFdy(vWetPos))), dryGloss, uWeatherWet.x, uWeatherWet.y, normalize(uLightDir), n, albedo, glossLit);
+            """);
+
+        return f;
+    }
+
+    /// <summary>
+    /// The game sky's lighting in place of the viewer's, with the metalness.
+    /// </summary>
+    static string WithGameLighting(string f)
+    {
         // The viewer's plain lighting is overwritten by the game sky's lighting: compute it only where it is used (the same values).
+        f = Literal(f, "uniform sampler2D uNormal;\n", "uniform sampler2D uNormal;\nuniform sampler2D uMetal;\nuniform uint uMetalMap;\n");
         f = Literal(f, "if (uFogDistance > 0.0 && uAtmoParams.x > 0.5) colour = kenshiLight(albedo, n, v, glossLit, vWorld);\n", "");
         f = Literal(f, """
             vec3 l = normalize(uLightDir);
@@ -119,6 +220,16 @@ static class BuildingLodShaders
             vec3 v = normalize(uEye - vWorld);
             vec3 colour;
             giInterior = mod(vInterior, 2.0) > 0.5;
+            // The game's metalness map (objects.hlsl), then the named metal textures (MetalTextures): what has no colour of its own; rust and paint are saturated.
+            atmoMetalness = uMetalMap != 0u ? texture(uMetal, uv).r : 0.0;
+            if ((uSurface & 32u) != 0u)
+            {
+                float top = max(albedo.r, max(albedo.g, albedo.b));
+                float bare = smoothstep(0.04, 0.16, top) * (1.0 - smoothstep(0.3, 0.6, 1.0 - min(albedo.r, min(albedo.g, albedo.b)) / max(top, 1e-3))) * 0.3;
+                atmoMetalness = max(atmoMetalness, bare);
+                atmoMetalDiffuse = 0.85;
+                glossLit = mix(glossLit, mix(0.3, 0.75, glossLit), bare);
+            }
             if (uFogDistance > 0.0 && uAtmoParams.x > 0.5) colour = kenshiLight(albedo, n, v, glossLit, vWorld);
             else
             {
@@ -132,9 +243,19 @@ static class BuildingLodShaders
                 colour = albedo * (ambient + diff * sunLight) + spec * diff * sunLight;
             }
             """);
+
+        return f;
+    }
+
+    /// <summary>
+    /// The EMISSIVE glow while the lights are on, and the placement ghost's tint.
+    /// </summary>
+    static string WithEmissiveAndGhost(string f)
+    {
         // An EMISSIVE material glows only while its building's lights are on (the instance's spare component carries 2 when they are off,
         // WorldObjectRenderer.Emit).
-        f = Literal(f, "if (uEmissive) colour += albedo * nm.a;", "if (uEmissive && vInterior < 1.5) colour += albedo * nm.a;");
+        f = Literal(f, "if (uEmissive) colour += albedo * (1.0 - nm.a) * 3.2;",
+            "if (uEmissive && vInterior < 1.5) colour += albedo * (1.0 - nm.a) * 3.2;");
 
         // The placement ghost (docs/render-objects.md "Placement ghost") draws with a non-zero flat colour (which an ordinary draw leaves at 0): it
         // tints the lit picture.
@@ -142,6 +263,7 @@ static class BuildingLodShaders
             if (dot(uFlatColour, uFlatColour) > 0.0) colour = mix(colour, colour * uFlatColour * 1.6 + uFlatColour * 0.12, 0.7);
             fragColour = vec4(colour, 1.0);
             """);
+
         return f;
     }
 
@@ -269,7 +391,7 @@ static class BuildingLodShaders
             bool triplanar;
             bool emissive;
             bool useVertexColour;
-            bool wireframe;
+            uint metalMap;
             uint spare;
             vec4 fadeRange;
         """;
@@ -289,6 +411,10 @@ static class BuildingLodShaders
         ["uCutPlanes"] = "view.cutPlanes",
         ["uSkinned"] = "false",
         ["uHasHead"] = "false",
+        // The wireframe is bit 64 of the push spare; its member holds the game's metalness map (its bindless index + 1, 0: none).
+        ["uWireframe"] = "((pc.spare & 64u) != 0u)",
+        ["uMetalMap"] = "pc.metalMap",
+        ["uMetal"] = "textures2D[max(pc.metalMap, 1u) - 1u]",
         // The scaffold grid (construction.dds): the push spare's upper bits hold its bindless index + 1 (WorldObjectRenderer.RecordDraws); read only
         // when not 0.
         ["uScaffold"] = "textures2D[max(pc.spare >> 8u, 1u) - 1u]",
@@ -439,11 +565,12 @@ struct ObjectPush
     /// </summary>
     [System.Runtime.InteropServices.FieldOffset(100)] public uint UseVertexColour;
     /// <summary>
-    /// Draw in the flat colour only (wireframe or LOD debug).
+    /// The game's metalness map: its bindless index + 1 (0: none). Its slot held the wireframe switch, now bit 64 of <see cref="Spare"/>.
     /// </summary>
-    [System.Runtime.InteropServices.FieldOffset(104)] public uint Wireframe;
+    [System.Runtime.InteropServices.FieldOffset(104)] public uint MetalMap;
     /// <summary>
-    /// The low byte: the <see cref="Sky.MeshSurface"/> flags; above it the scaffold grid's bindless index + 1 (0: not loaded).
+    /// The low byte: the <see cref="Sky.MeshSurface"/> flags and 64 the wireframe (or LOD debug: the flat colour only); above it the scaffold grid's
+    /// bindless index + 1 (0: not loaded).
     /// </summary>
     [System.Runtime.InteropServices.FieldOffset(108)] public uint Spare;
     /// <summary>

@@ -97,10 +97,34 @@ journal replays at begin/before submission; freed indices wait for consumers. Up
 changes every submitted draw using it, including already-recorded draws. Use new indices for
 mid-frame binding changes. At a slot's next begin a freed 2D, 2D-array or cube index points at the
 stand-in, so a reader holding a stale index samples (0,0,0,1) instead of a destroyed view (issue #319:
-AMD lost the device on such a read). Tables/views/globals are render-thread state.
+AMD lost the device on such a read). **Observed** in the three #319 fault reports (nightly 20261110): a character texture's
+index freed in frame N (its image destroyed at frame N+2's begin) was read by a draw of frame N+1; the reader is not known yet.
+With `MEITOU_DIAG_FAULT=1` the table keeps each freed index's frame (`FreedIndices`) and the character draws log records that name
+one (`StaleMaterialCheck`). Tables/views/globals are render-thread state.
 `ScalarOf` lists the integer `InternalFormat`s (unsigned or signed samplers); all others sample as
 float. Verified by `BindlessTests.Integer_textures_read_back_exact_values_through_the_bindless_arrays`
 (integer routing and texels).
+
+### Shader overrides
+
+Debug aid (`ShaderOverrides`): with `MEITOU_SHADER_DIR=<dir>` every GLSL source given to the compiler is written once to
+`<dir>/<hash>.<stage>.glsl` (first 16 hex digits of its SHA-256; stages `vertex`, `fragment`, `compute`, `tess-control`, `tess-evaluation`),
+and a file there whose text differs from the source is compiled instead, before the SPIR-V caches are keyed. Grep the folder for a
+function, edit the file, start the game again: no rebuild. A changed C# source gets a new hash (a new file); delete the folder to start clean.
+
+## Render origin
+
+Every scene pass projects eye-relative positions: a vertex program forms `position - uEye` (exact near the eye) and multiplies it by a view-projection without
+the eye's translation, `RelativeRotation * projection` (`WorldFrame.Draw`; the eye formed in double, see [character-renderer.md "Precision"](character-renderer.md)),
+never by `CreateTranslation(eye) * worldViewProjection` or a world view-projection, whose float translation row cancels numbers of 50000 and leaves errors of a
+float step (0.004 units at 50000). `RenderOrigin.Relative` rewrites a legacy program's `uViewProjection * vec4(p, 1.0)` that way (terrain, water, impostors);
+foliage, grass, objects, characters, debris, particles and the overlays form it themselves. A pass without the precise matrix (shadow cascades, reflection,
+bakes, previews) takes `RenderOrigin.ViewProjection(vp, eye)`, the same convention at float precision. Shading keeps world positions. `WorldCamera.View` is
+built from the angles at the origin, then translated: a look-at from the float eye turned the view at each eye step, and one at `eye + forward` rounds that
+point to the eye's float step (a turn of about 2 px at 50000).
+**Verified** with the viewer (`--at -47700,47500 --distance 15 --orbit-step 0.002 --sequence 24`, swamp grass, no AA, frame-to-frame mean difference):
+before, the picture stood still and jumped 0.4-0.7 every 7-9 frames; after, 0.39-0.41 every frame. At 0.02 degrees a frame the per-frame image shift's
+jitter fell from 0.16 to 0.08 px near and from 0.06 to 0.02 px far.
 
 ## Parallel recording and validation
 

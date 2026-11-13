@@ -58,6 +58,16 @@ sealed class EditorOrbit
     }
 
     /// <summary>
+    /// Debug: sets the camera's turn round the character (the console's <c>editor</c>).
+    /// </summary>
+    public void SetYaw(float radians) => Yaw = radians;
+
+    /// <summary>
+    /// Debug: sets the camera's height angle (the console's <c>editor</c>; negative looks up from below the pivot).
+    /// </summary>
+    public void SetElevation(float radians) => Elevation = radians;
+
+    /// <summary>
     /// Dragging by (<paramref name="dx"/>, <paramref name="dy"/>) pixels: right turns the character to the viewer's right, down looks at it from
     /// higher up.
     /// </summary>

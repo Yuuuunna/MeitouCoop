@@ -376,6 +376,28 @@ sealed partial class GameHost(
     internal readonly Stopwatch RealTime = Stopwatch.StartNew();
 
     /// <summary>
+    /// The seconds <see cref="EffectSeconds"/> has held back (paused or slowed), and the clock it last read.
+    /// </summary>
+    double _effectHeld, _effectAt;
+
+    /// <summary>
+    /// The clock of the ambient motion drawn outside the simulation (the foliage's sway, the birds): the frames' clock (real time without one) at the
+    /// simulation's rate, still while that is paused and faster or slower with its speed, as the water and the particles are (the frame's game time).
+    /// The title screen feeds the sway its own clock.
+    /// </summary>
+    internal double EffectSeconds
+    {
+        get
+        {
+            double now = AnimClock ? AnimSeconds : RealTime.Elapsed.TotalSeconds;
+            double rate = Session.IsPaused ? 0 : Session.TimeScale;
+            _effectHeld += (now - _effectAt) * (1 - rate);
+            _effectAt = now;
+            return now - _effectHeld;
+        }
+    }
+
+    /// <summary>
     /// The next frame is saved as a screenshot (the Screenshot action).
     /// </summary>
     internal bool ScreenshotRequested;
@@ -850,6 +872,7 @@ sealed partial class GameHost(
 
         Player.Markers = Gpu.Markers ??= MarkerRenderer.Create(context, Assets.Find);
         BloodDecals.SetUpBlood(context);
+        _trailContext = context;
         Gpu.HoverOutline ??= new HoverOutlineRenderer(context);
         Gpu.NavmeshOverlay ??= new NavmeshOverlayRenderer(context);
         DebugOverlays.NavOverlayRenderer = Gpu.NavmeshOverlay;
@@ -871,6 +894,7 @@ sealed partial class GameHost(
         Player.StealthView.HiddenInWorld = Interiors.HiddenIndoors.Contains;
         Player.StealthView.DrawnHead = id => Gpu.Characters?.BonePosition(DrawKey(id), "Bip01 Head");
         Player.Furniture.AboveViewedFloor = Interiors.AboveViewedFloor;
+        Player.Furniture.FloorHidden = Interiors.FloorHidden;
         Player.Furniture.DoorShape = (record, door) => Nav?.Walkability.DoorGeometry?.Shape(record, door) ?? [];
 
         Player.GroundItemPicks.GroundItemShape = GroundItemSync.GroundShape;
@@ -889,7 +913,10 @@ sealed partial class GameHost(
         Player.Frontend.ConfigureFrontend(Scene.Database,
             () => Data.Save.SaveCatalog.Scan(Simulation.Saving.QuickSave.DefaultRoot, Install.SaveDirectory, localSaves), credits);
 
-        Player.TitleMenu.DataProblems = (Scene.Database?.Issues.Count ?? 0) + (Scene.Objects?.Levels.Problems().Count ?? 0);
+        // A record defined again, or changed with nothing to change, is how mods are built and what the game itself merges
+        // (docs/formats/fcs-mod.md): logged, not a problem.
+        int dataIssues = Scene.Database?.Issues.Count(IsDataProblem) ?? 0;
+        Player.TitleMenu.DataProblems = dataIssues + (Scene.Objects?.Levels.Problems().Count ?? 0);
         if (Scene.Database is { } db)
         {
             Player.TitleMenu.Mods = ModReport.Build(Install, db, Modding.Mods?.Refused);
@@ -901,6 +928,12 @@ sealed partial class GameHost(
         Player.RememberServerAddress = address => { Config.LastServerAddress = address; Config.Save(); };
         if (OpensOnTitle(interactive)) Player.Frontend.ShowTitle();
     }
+
+    /// <summary>
+    /// Whether a data issue counts as a problem on the title screen: any but a record defined again or one changed with nothing to change.
+    /// </summary>
+    static bool IsDataProblem(Data.GameDataIssue i) =>
+        i.Kind is not (Data.GameDataIssueKind.RecordAlreadyDefined or Data.GameDataIssueKind.ModifiedRecordNotFound);
 
     /// <summary>
     /// Logs the mod list the game data was loaded from: enabled (the names the list file gives), loaded (those whose .mod file was found), problems.
@@ -973,10 +1006,14 @@ sealed partial class GameHost(
             Guard = Gpu.Guard,
             GeneratedLod = WorldOptions.CharacterLod,
             SkinShading = WorldOptions.SkinShading,
+            Chars2 = WorldOptions.Chars2,
+            SurfaceParts = WorldOptions.Chars2Parts,
             SkinRaces = Config.SkinRaces,
             EnhancedIcons = WorldOptions.MeitouIcons,
             // The frame clock DrawWorld gives the foliage sway: a recorded flight poses the same every take.
-            PoseClock = () => AnimClock ? AnimSeconds : RealTime.Elapsed.TotalSeconds
+            PoseClock = () => AnimClock ? AnimSeconds : RealTime.Elapsed.TotalSeconds,
+            SoakClock = () => Session.Clock.GameSeconds,
+            RainWetness = () => Gpu.Surfaces?.Wetness ?? 0,
         };
     }
 
@@ -1230,6 +1267,12 @@ sealed partial class GameHost(
         Camera.Yaw = s.Yaw;
         Camera.Pitch = s.Pitch;
         Camera.Distance = s.Distance;
+        // The free camera is placed by its eye, in double precision (after the pose, which clears it).
+        if (s.IsFree)
+            Camera.PreciseEye = (s.Eye.X + (double)s.EyeResidual.X, s.Eye.Y + (double)s.EyeResidual.Y, s.Eye.Z + (double)s.EyeResidual.Z);
+
+        // A cinema key's lens goes with the camera it held; the roll is photo mode's, which sets it again after this.
+        (Camera.FocusDistance, Camera.Aperture, Camera.Roll) = (null, null, 0);
     }
 
     /// <summary>
@@ -1264,6 +1307,11 @@ sealed partial class GameHost(
     #endregion
 
     #region Frame
+
+    /// <summary>
+    /// The frame's aspect ratio, kept by <see cref="UpdateFrameEffects"/> for the splashes' frustum.
+    /// </summary>
+    float _frameAspect = 16f / 9;
 
     /// <summary>
     /// Draws one frame of the world: the title's, the character editor's scene, or the world with its clocks and per-frame effects.
@@ -1309,7 +1357,7 @@ sealed partial class GameHost(
     /// </summary>
     void FeedFrameClocks()
     {
-        double seconds = AnimClock ? AnimSeconds : RealTime.Elapsed.TotalSeconds;
+        double seconds = EffectSeconds;
         if (Gpu.Foliage is { } foliage && WorldOptions.Screenshot is null) foliage.SwaySeconds = seconds;
 
         // The heat haze's gameTime: game hours since the start (it stops while paused, as in the game).
@@ -1335,9 +1383,13 @@ sealed partial class GameHost(
     /// </summary>
     void UpdateFrameEffects(float aspect)
     {
+        _frameAspect = aspect;
         // The profiler: the host's frame so far, then the blood marks apart from the terrain's update.
         Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Host);
         BloodDecals.UpdateBlood();
+        UpdateTrails();
+        UpdateWakes();
+        UpdateSplashes();
         Modding.UpdateModHits();
         Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Blood, "blood marks");
 
@@ -1358,6 +1410,7 @@ sealed partial class GameHost(
         // whole 1/30 s ticks, so it runs on by the alpha the characters are drawn at; at 1x the weather particles otherwise moved at 30 Hz.
         double shownSeconds = Session.PresentationSeconds;
         float gameTime = (float)(shownSeconds / 600 % 1e4);
+        if (Gpu.Surfaces is { } wetSurfaces) wetSurfaces.Seconds = (float)(shownSeconds % 4096);
         float hour = (float)Session.Clock.HourOfDay;
 
         // The next world tick runs on its own thread while the world is drawn from the shown snapshots (docs/simulation.md "Tick ahead"): from here
@@ -1365,7 +1418,8 @@ sealed partial class GameHost(
         if (TickAhead && Session is WorldSession) LocalSession.BeginTickAhead();
         try
         {
-            WorldFrame.Draw(Gpu, Scene, Camera, Render, width, height, PresentationHour ?? hour, gameTime, WorldOptions.FogDistance, weatherHour: hour);
+            WorldFrame.Draw(
+                Gpu, Scene, Camera, Render, width, height, PhotoHour ?? PresentationHour ?? hour, gameTime, WorldOptions.FogDistance, weatherHour: hour);
         }
         finally
         {

@@ -370,8 +370,8 @@ public sealed class CharacterCold
     public float Age => Stats?.Scale ?? 1;
 
     /// <summary>
-    /// The bolts stuck in the character (docs/game/combat.md "Bolt visuals"): shown on their bones until first aid has nothing left to bandage. A
-    /// visual: not hashed, not saved (the original keeps them in its appearance only).
+    /// The bolts stuck in the character (docs/game/combat.md "Bolt visuals"): shown on their bones until a first-aid update finds no open wound
+    /// left to close. A visual: not hashed, not saved (the original keeps them in its appearance only).
     /// </summary>
     public List<StuckBolt>? StuckBolts { get; set; }
     /// <summary>
@@ -1366,10 +1366,10 @@ public sealed class CharacterTable
     TablePhase _phase = TablePhase.Outside;
 
     /// <summary>
-    /// Limbs cut off in the tick (the character's slot, the limb slot 0 to 3): the population system rebuilds the look and drops the severed limb
-    /// between ticks.
+    /// Limbs cut off in the tick (the character's slot, the limb slot 0 to 3, whether the limb's item drops): the population system rebuilds the
+    /// look and drops the severed limb between ticks. An eaten limb leaves no item (<c>FUN_140650370</c> severs with the item flag 0).
     /// </summary>
-    public System.Collections.Concurrent.ConcurrentQueue<(int Character, int Limb)> LimbsChanged { get; } = new();
+    public System.Collections.Concurrent.ConcurrentQueue<(int Character, int Limb, bool Drops)> LimbsChanged { get; } = new();
 
     /// <summary>
     /// A table with room for <paramref name="capacity"/> slots (it grows when they are used up).

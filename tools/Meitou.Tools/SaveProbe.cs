@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using Meitou.Content;
+using Meitou.Data.World;
 using Meitou.Simulation;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Combat;
@@ -61,10 +62,12 @@ static class SaveProbe
             case ("near", >= 1): Near(probe, float.Parse(a[0])); return true;
             case ("crowd", >= 1): Crowd(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 40); return true;
             case ("fight", >= 1): Fight(probe, int.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 40); return true;
+            case ("crime", >= 1): Crime(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 10); return true;
             case ("bait", >= 1): Bait(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("squads", >= 1): Squads(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("watch", >= 1): Watch(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("move", >= 3): Move(probe, a[0], float.Parse(a[1]), float.Parse(a[2]), a.Count > 3 ? int.Parse(a[3]) : 10); return true;
+            case ("premises", _): Premises(probe, a.Count > 0 ? int.Parse(a[0]) : 10, a.Count > 1 ? int.Parse(a[1]) : 40); return true;
             case ("slaves", >= 1): Slaves(probe, float.Parse(a[0])); return true;
             case ("cages", >= 1): Cages(probe, a[0]); return true;
             case ("kit", >= 1): Kit(probe, a[0]); return true;
@@ -76,6 +79,7 @@ static class SaveProbe
             case ("research", _): Research(probe); return true;
             case ("nests", _): Nests(probe); return true;
             case ("heights", >= 2) when probe.Nav is not null: Heights(probe, float.Parse(a[0]), float.Parse(a[1])); return true;
+            case ("layout", >= 1) when probe.Nav is not null: Layout(probe, a[0]); return true;
             default: return false;
         }
     }
@@ -110,6 +114,80 @@ static class SaveProbe
     }
 
     /// <summary>
+    /// The reach of the <c>premises</c> mode's list of homes round the leader: a town.
+    /// </summary>
+    const float HomesRadius = 2500;
+
+    /// <summary>
+    /// The homes round the leader (<see cref="Homes"/>), then the building the player's squad leader stands in (needs <c>--nav</c> for the building
+    /// sight) every <paramref name="interval"/> ticks, <paramref name="rounds"/> times: the hour, the squads living there with their public flags,
+    /// the house lock and doors, everyone inside with goal and pending crime, and the lines said meanwhile.
+    /// </summary>
+    static void Premises(ProbeWorld probe, int rounds, int interval)
+    {
+        var world = probe.World;
+        var locks = world.Systems.OfType<LockSystem>().FirstOrDefault();
+        Homes(probe, HomesRadius);
+        for (int round = 0; round < rounds; round++)
+        {
+            int leader = world.Squads.Find(world.Player.Squad)!.Leader.Slot;
+            string? key = world.Sight.BuildingOf(leader);
+            Console.WriteLine($"tick {world.Tick} hour={world.Hour} leader in building={key ?? "none"}");
+            if (key is not null) PremisesState(probe, locks, key);
+
+            foreach (var line in world.TakeSaid()) Console.WriteLine($"  SAID {line.Owner}: {line.Text}");
+            probe.PrintMessages();
+            probe.Tick(interval);
+        }
+    }
+
+    /// <summary>
+    /// The homes of the squads within <paramref name="radius"/> of the leader: the level state's public flags (what the building panel shows), the
+    /// residents' template flag and the registry's (what the AI reads), and which shoo goals each role holds at this hour.
+    /// </summary>
+    static void Homes(ProbeWorld probe, float radius)
+    {
+        var world = probe.World;
+        var population = world.Systems.OfType<PopulationSystem>().First();
+        foreach (var q in world.Squads.All)
+        {
+            if ((q.Ai?.OwnHome ?? q.HomeBuilding) is not { } home || Vector3.Distance(home.Position, probe.LeaderPosition) > radius) continue;
+
+            var shoo = Enum.GetValues<Meitou.Data.Gameplay.Ai.AiRole>()
+                .Select(r => (Role: r, Always: population.GoalDuty(world, q, r, Meitou.Data.Gameplay.Ai.TaskType.ShooStrangersOutOfMyBuilding),
+                    Private: population.GoalDuty(world, q, r, Meitou.Data.Gameplay.Ai.TaskType.ShooStrangersOutOfMyBuildingIfPrivate)))
+                .Where(x => x.Always || x.Private)
+                .Select(x => $"{x.Role}:{(x.Always ? "158" : "")}{(x.Private ? "+283" : "")}");
+            Console.WriteLine($"home {home.Key} squad {q.Id} '{q.Name}' fac={probe.Faction(q.Faction)} template={q.TemplateId} "
+                + $"panel day/night={home.LevelState?.GetBool("is public day")}/{home.LevelState?.GetBool("is public night")} "
+                + $"homePublic={q.Ai?.HomePublic} registry={world.Fixtures.IsPublic(home.Key)} package={q.Ai?.Current?.Name} "
+                + $"shoo=[{string.Join(" ", shoo)}]");
+        }
+    }
+
+    /// <summary>
+    /// One round of <see cref="Premises"/> for building <paramref name="key"/>: its flags and doors, its resident squads, and who is inside.
+    /// </summary>
+    static void PremisesState(ProbeWorld probe, LockSystem? locks, string key)
+    {
+        var world = probe.World;
+        var doors = world.Fixtures.OfBuilding(key).Where(f => f.Kind == FixtureKind.Door).Select(f => $"{f.Lock?.Locked}/{f.Motion}");
+        Console.WriteLine($"  public: player flag={world.Fixtures.PublicOf(key)} state={world.Fixtures.IsPublic(key)} "
+            + $"houseLocked={locks?.IsHouseLocked(world, key)} doors=[{string.Join(", ", doors)}]");
+        foreach (var q in world.Squads.All.Where(q => (q.Ai?.OwnHome ?? q.HomeBuilding)?.Key == key))
+        {
+            Console.WriteLine($"  resident squad {q.Id} '{q.Name}' fac={probe.Faction(q.Faction)} template={q.TemplateId} homePublic={q.Ai?.HomePublic} "
+                + $"package={q.Ai?.Current?.Name}");
+        }
+
+        for (int i = 0; i < probe.Characters.HighWater; i++)
+        {
+            if (!probe.Characters.Next[i].Alive || probe.Characters.Cold(i) is not { } c || world.Sight.BuildingOf(i) != key) continue;
+            Console.WriteLine($"  inside {probe.Who(i)} goal={c.Ai?.Goal?.Task.Type} pending={c.Pending?.Code} target={Target(probe, i)}");
+        }
+    }
+
+    /// <summary>
     /// The fight round the character in <paramref name="slot"/> every <paramref name="interval"/> ticks, <paramref name="rounds"/> times: its own
     /// combat state and body, then everyone who targets it with the gap to it and the blows thrown and landed.
     /// </summary>
@@ -135,6 +213,90 @@ static class SaveProbe
 
             probe.Tick(interval);
         }
+    }
+
+    /// <summary>
+    /// The characters named like <paramref name="name"/> as the law sees them every <paramref name="interval"/> ticks, <paramref name="rounds"/>
+    /// times: the pending crime, bounties and wanted flags, then everyone who targets one with its goal and its squad's memory tags of it.
+    /// </summary>
+    static void Crime(ProbeWorld probe, string name, int rounds, int interval)
+    {
+        var t = probe.Characters;
+        var combat = probe.World.Systems.OfType<CombatSystem>().First();
+        var memory = probe.World.Systems.OfType<DialogueSystem>().FirstOrDefault()?.Memory;
+        SavedMemory(probe, name);
+
+        for (int round = 0; round < rounds; round++)
+        {
+            foreach (int slot in probe.Named(name))
+            {
+                string law = CrimeLine(probe, memory, slot);
+                Console.WriteLine($"tick {probe.World.Tick} {probe.Who(slot)}{Down(t.Cold(slot)!)} {law} target={Target(probe, slot)}");
+                foreach (int i in probe.Near(t.Next[slot].Position, 400))
+                {
+                    if (i == slot || combat.StateOf(t.IdOf(i)).TargetSlot != slot || t.Cold(i) is not { } c) continue;
+
+                    Console.WriteLine($"  {probe.Who(i)} goal={c.Ai?.Goal?.Task.Type} fight={c.Ai?.FightGoal} source={c.Running?.Source} "
+                        + $"row={c.Running?.Row} tags=[{Tags(probe, memory, c.SquadId, t.IdOf(slot))}]");
+                }
+            }
+
+            probe.PrintMessages();
+            probe.Tick(interval);
+        }
+    }
+
+    /// <summary>
+    /// The saved squad memory of the platoons holding a character named like <paramref name="name"/>: per remembered character the game hour of
+    /// the last note, the long and short tag bits and its platoon. The loader drops the entries whose character is not in the world yet.
+    /// </summary>
+    static void SavedMemory(ProbeWorld probe, string name)
+    {
+        var everyone = probe.Save.Platoons.SelectMany(p => p.Characters).ToList();
+        Console.WriteLine($"saved squad memory at hour {probe.World.GameHours:F2}");
+        foreach (var platoon in probe.Save.Platoons.Where(p => p.Characters.Any(c => c.GameState?.Name.Contains(name) == true)))
+        {
+            for (int n = 0; platoon.Record.Ints.ContainsKey(MemorySave.LongKey + n); n++)
+            {
+                var hand = Meitou.Data.Save.Hand.Read(platoon.Record, MemorySave.HandleKey + n);
+                var who = everyone.FirstOrDefault(c => c.Handle.C == hand.C && c.Handle.I == hand.I);
+                Console.WriteLine($"  {platoon.Name} hour={platoon.Record.Floats.GetValueOrDefault(MemorySave.TimeKey + n):F2} "
+                    + $"long={platoon.Record.Ints[MemorySave.LongKey + n]:x} short={platoon.Record.Ints.GetValueOrDefault(MemorySave.ShortKey + n):x} "
+                    + $"on '{who?.GameState?.Name}' of {who?.Platoon.Name}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A character's pending crime, bounties, the flags the police read and how many characters its own squad holds TEMP_ENEMY on.
+    /// </summary>
+    static string CrimeLine(ProbeWorld probe, SquadMemory? memory, int slot)
+    {
+        var c = probe.Characters.Cold(slot)!;
+        int enemies = memory?.Snapshot(c.SquadId)?.Entries.Count(e => (e.Short >> MemoryTag.TempEnemy & 1) != 0) ?? 0;
+        string pending = c.Pending is { } p
+            ? $"{p.Code} vs {probe.Faction(p.VictimFaction)} victim={p.Victim.Slot} timer={p.Timer:F1} booked={p.Booked} witnessed={p.Witnessed}"
+            : "-";
+        var bounties = c.Bounties?.Entries.Select(e => $"{probe.Faction(e.Faction)}:{e.Amount}{(e.Claimed ? "/claimed" : "")}") ?? [];
+        return $"pending=[{pending}] bounties=[{string.Join(", ", bounties)}] recentlyWanted={c.RecentlyWanted:F0} freed={c.Freed} "
+            + $"ordered={c.Ordered} row={c.Running?.Row} imprisoned={c.IsImprisoned} squadEnemies={enemies}";
+    }
+
+    /// <summary>
+    /// The short-term memory tags squad <paramref name="squad"/> holds on <paramref name="who"/>.
+    /// </summary>
+    static string Tags(ProbeWorld probe, SquadMemory? memory, int squad, CharacterId who)
+    {
+        if (memory is null || squad < 0) return "";
+
+        (int Tag, string Name)[] tags =
+        [
+            (MemoryTag.Aggressor, "AGGRESSOR"),
+            (MemoryTag.TempAlly, "TEMP_ALLY"),
+            (MemoryTag.TempEnemy, "TEMP_ENEMY"),
+            (MemoryTag.Criminal, "CRIMINAL"),
+        ];
+        return string.Join(" ", tags.Where(x => memory.HasShort(probe.World, squad, who, x.Tag)).Select(x => x.Name));
     }
 
     /// <summary>
@@ -484,6 +646,30 @@ static class SaveProbe
     }
 
     /// <summary>
+    /// A town building's layout names now (a town override or the save may have relaid it) and each object of its interior layout as placed: record,
+    /// floor, path mode, world position. Needs <c>--nav</c>, which hands the population its layouts.
+    /// </summary>
+    static void Layout(ProbeWorld probe, string key)
+    {
+        var b = probe.Data.Sites.SelectMany(s => s.Buildings).FirstOrDefault(t => t.Key == key);
+        if (b?.Resolved is not { } resolved || probe.Data.Layouts is not { } layouts)
+        {
+            Console.WriteLine($"no laid-out town building {key}");
+            return;
+        }
+
+        string name = b.LayoutName(exterior: false);
+        Console.WriteLine($"{key} {b.Name}: interior '{name}', exterior '{b.LayoutName(exterior: true)}'");
+        if (layouts.Find(resolved.Record, name, exterior: false) is not { } layout) return;
+
+        foreach (var item in layouts.Items(layout, resolved.Placement))
+        {
+            var (at, _) = BuildingLayouts.Place(resolved.Position, resolved.Placement.Rotation, item);
+            Console.WriteLine($"  {item.InstanceId} '{item.Building.Name}' floor={item.Floor} path={item.Building.GetInt("path mode", 2)} at {at:F0}");
+        }
+    }
+
+    /// <summary>
     /// The modes, on standard error; returns 2.
     /// </summary>
     static int Usage()
@@ -493,11 +679,13 @@ static class SaveProbe
               near <radius>            characters near the player's squad leader
               crowd <radius> [rounds] [interval]  characters near the leader every interval (40) ticks: down, goal, load, fight target
               fight <slot> [rounds] [interval]  a character's combat state and body, and everyone targeting it: gap, blows thrown and landed
+              crime <name> [rounds] [interval]  a character's saved squad memory, then its pending crime, bounties and who targets it with which tags
               nests                    the wild layout's nests whose first candidate spot the original would refuse
               bait <radius> [rounds]   send the player's squad after the nearest other squad each round, listing squads as squads does
               squads <radius> [rounds]  the other squads near the leader: leader state, goal, members' spread every 40 ticks
               watch <name> [rounds]    a character's task, AI and fight target every 40 ticks (default 10 rounds)
               move <name> <x> <z> [rounds]  order a character to walk to a point, then watch it
+              premises [rounds] [interval]  the building the leader stands in (needs --nav): public flags, house lock, doors, residents, who is inside, lines said
               slaves <radius>          slave state, owner faction, master squad and squad town near the leader
               cages <name>             fixtures within 300 of a character, with occupants
               cage [cage id]           the carrying player character puts its load in a cage; 600 ticks of it
@@ -507,6 +695,7 @@ static class SaveProbe
               research                 the research state and each bench's rate factors
               resave                   re-write the buildings into the save and list ids held by two zones
               heights <x> <z>          terrain and navmesh heights at a point (needs --nav)
+              layout <building key>    a town building's layout names now and its interior layout's objects (needs --nav)
             """);
         return 2;
     }

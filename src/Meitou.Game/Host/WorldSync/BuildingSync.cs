@@ -291,6 +291,11 @@ sealed class BuildingSync(GameHost host)
         if (host.Scene.Database is not { } db) return null;
         var footprints = new Simulation.Navigation.BuildingFootprints(host.Install, db,
             host.Sandbox.IsSandbox || host.Duel.IsDuel || host.Battle.IsBattle ? null : host.Scene.Objects?.Levels);
+
+        // The walls and posts standing in the water stop the shore waves and the wakes (docs/render-water.md "Shore waves").
+        if (host.Gpu.Water is { } water)
+            water.Walls = (centre, radius) => footprints.PlaneCut(centre, radius, Data.World.WorldWater.Height);
+
         var parts = new Dictionary<string, IReadOnlyList<PlacedMesh>>(StringComparer.Ordinal);
         var icons = new BuildingIcons(Path.Combine(host.Install.DataDirectory, "icons", "buildings"));
         IReadOnlyList<PlacementTown>? towns = null;
@@ -405,10 +410,11 @@ sealed class BuildingSync(GameHost host)
             var own = building?.Key == placement.Key ? building : null;
             var (name, type) = WorldBuildingName(db, placement, state, saved, own);
             var (town, owner) = info is { } t ? (t.Town, t.Owner) : (null, null);
+            bool destroyed = host.TownChanges.ShownRuins.TryGetValue(placement.Key, out var ruin) ? ruin.Destroyed
+                : placement.DestroyedOverride ?? state?.GetBool("destroyed") ?? false;
+            var pieces = destroyed || host.TownChanges.IsEmptied(placement.Key) ? null : own?.Pieces;
             return new(name, type, town, owner, state?.GetBool("is public day") ?? false, state?.GetBool("is public night") ?? false,
-                host.TownChanges.ShownRuins.TryGetValue(placement.Key, out var ruin) ? ruin.Destroyed
-                    : placement.DestroyedOverride ?? state?.GetBool("destroyed") ?? false,
-                own?.Turret is not null);
+                destroyed, own?.Turret is not null, pieces);
         };
     }
 

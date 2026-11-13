@@ -31,5 +31,8 @@ jobs:
             echo "$other"
           fi
 
+      - name: Fetch engine benchmark history
+        run: git fetch --no-tags https://github.com/VlcekM/MeitouClient.git master:refs/remotes/benchmark-upstream/master
+
       - name: Validate data
-        run: python3 bench/tools/generate.py --check --ref origin/master
+        run: python3 bench/tools/generate.py --check --ref refs/remotes/benchmark-upstream/master

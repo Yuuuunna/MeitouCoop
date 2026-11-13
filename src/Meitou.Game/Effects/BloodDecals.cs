@@ -18,7 +18,7 @@ namespace Meitou.Game.Effects;
 /// become terrain decals in a <see cref="TerrainDecalStore"/> that ages with game time, drawn by the world frame's <see cref="TerrainDecalRenderer"/>
 /// within <c>Decal Range</c> at <c>Decal Resolution</c> (the install's <c>settings.cfg</c>). Display only: the simulation is not affected.
 /// </summary>
-sealed class BloodDecals(GameHost host)
+sealed partial class BloodDecals(GameHost host)
 {
     #region Blood
 
@@ -50,6 +50,10 @@ sealed class BloodDecals(GameHost host)
     /// </summary>
     double _debrisClock;
 
+    /// <summary>
+    /// The blood picked up from terrain pools and carried a few steps.
+    /// </summary>
+    readonly BloodFootprints _footprints = new(host);
     /// <summary>
     /// The random of every blood decal, debris piece and spark (a look only, not the simulation's).
     /// </summary>
@@ -111,6 +115,8 @@ sealed class BloodDecals(GameHost host)
         while (host.Session.TryDequeueBlood(out var visual))
         {
             var m = visual.Mark;
+            if (m.Kind == BloodMarkKind.Splash && m.Attacker is { } attacker && host.Gpu.Characters is { } crowd)
+                crowd.WeaponHit(host.DrawKey(attacker), m.Colour, m.Amount);
             if (m.Kind == BloodMarkKind.Explosion)
             {
                 host.Debris.Burst(visual);
@@ -139,6 +145,8 @@ sealed class BloodDecals(GameHost host)
                     break;
             }
         }
+
+        RetryPendingWeapons();
         long ticks = host.Session.CommandTick - _bloodTick;
         _bloodTick = host.Session.CommandTick;
         if (ticks > 0 && DecalStore is { } aging && host.Gpu.Decals is { } decals)
@@ -146,6 +154,7 @@ sealed class BloodDecals(GameHost host)
             aging.Age(ticks * tick, decals.Drawn);
             decals.AgeSurfaces(ticks * tick);
         }
+        _footprints.Update(DecalStore);
         // The pieces move by the game time between frames, the tick count plus the simulation's alpha, so they fly smoothly at the display rate, not
         // in tick steps.
         double clock = host.Session.PresentationTick;   // the shown tick: one run ahead is not on screen yet
@@ -188,8 +197,13 @@ sealed class BloodDecals(GameHost host)
         _bloodTick = host.Session.CommandTick;
         _debrisClock = host.Session.PresentationTick;
         host.Session.EnableBlood(DecalStore is not null || host.Session.IsRemote || host.Config.LuckyrenMode);
+        _footprints.Clear();
+        _pendingWeapons = [];
+        _writtenHandles = new Dictionary<CharacterId, Hand>();
+        _pendingWait = 0;
         if (DecalStore is not { } store) return;
         store.Clear();
+        host.Gpu?.Decals?.ClearFootprints();
         host.Gpu?.Decals?.ClearSurfaces();
         if (saved is null) return;
         store.Load(SaveDecals.Read(saved));

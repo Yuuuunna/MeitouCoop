@@ -18,8 +18,18 @@ public sealed class WeatherSchedule(WeatherWorld world)
 
     public void Restore(IEnumerable<WeatherRegionSnapshot> regions, WeatherTime now)
     {
-        Advance(now);
-        World.Restore(regions, now);
+        if (!double.IsFinite(now.Minutes)) throw new ArgumentOutOfRangeException(nameof(now));
+
+        var snapshots = regions.ToArray();
+        var saved = snapshots.Select(region => region.RegionId).ToHashSet(StringComparer.Ordinal);
+        var replayed = World.Regions.Where(region => !saved.Contains(region.Def.StringId)).ToArray();
+
+        // Saved regions replace their complete schedules below; only missing regions need their intervening random draws.
+        for (double minute = Math.Floor(Time.Minutes) + 1; replayed.Length > 0 && minute <= now.Minutes; minute++)
+            foreach (var region in replayed) region.Update(WeatherTime.FromHours(minute / 60));
+        foreach (var region in replayed) region.Update(now);
+
+        World.Restore(snapshots, now);
         Time = now;
     }
 

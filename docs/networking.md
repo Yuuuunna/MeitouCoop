@@ -12,6 +12,8 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
+The current identity is `meitou-upstream-7379edb6-authority-1`; ground-item material IDs and optional blood-event attacker IDs
+travel with their existing state/event components. Attacker IDs are removed when that recipient cannot see the attacker.
 The authoritative `AnimalsPickUp` rule is included in gameplay settings and their digest. Older build identities fail admission;
 unknown gameplay rules are not silently accepted. Transport and container framing remain protocol 21.
 

@@ -29,7 +29,7 @@ public readonly record struct RenderTarget(GpuView View, LoadOp Load = LoadOp.Lo
 /// made for it, <see cref="AttachmentFormats.ShadingRate"/>).
 /// </summary>
 public readonly record struct RenderingDesc(RenderTarget Colour, RenderTarget Depth, int Width, int Height, int X = 0, int Y = 0,
-    GpuView ShadingRate = default, int ShadingRateTexel = 0, RenderTarget Extra = default);
+    GpuView ShadingRate = default, int ShadingRateTexel = 0, RenderTarget Extra = default, RenderTarget Extra2 = default);
 
 /// <summary>
 /// A command buffer being recorded (docs/renderer-native.md 2.7). Thin: every method records what it says. It keeps only a redundancy
@@ -214,26 +214,17 @@ public sealed unsafe class CommandList : IGpuCommandList
     public void BeginRendering(in RenderingDesc d, bool secondaries = false)
     {
         // The colour attachments: the main one, then the extra one (location 1) when there is one.
-        var colours = stackalloc RenderingAttachmentInfo[2];
-        colours[0] = new RenderingAttachmentInfo
-        {
-            SType = StructureType.RenderingAttachmentInfo,
-            ImageView = _device.ViewAt(d.Colour.View.Index),
-            ImageLayout = ImageLayout.General,
-            LoadOp = GlConventions.VkLoadOp(d.Colour.Load),
-            StoreOp = AttachmentStoreOp.Store,
-            ClearValue = new ClearValue(new ClearColorValue(d.Colour.Clear.R, d.Colour.Clear.G, d.Colour.Clear.B, d.Colour.Clear.A)),
-        };
-        colours[1] = new RenderingAttachmentInfo
-        {
-            SType = StructureType.RenderingAttachmentInfo,
-            ImageView = _device.ViewAt(d.Extra.View.Index),
-            ImageLayout = ImageLayout.General,
-            LoadOp = GlConventions.VkLoadOp(d.Extra.Load),
-            StoreOp = AttachmentStoreOp.Store,
-            ClearValue = new ClearValue(new ClearColorValue(d.Extra.Clear.R, d.Extra.Clear.G, d.Extra.Clear.B, d.Extra.Clear.A)),
-        };
-        uint colourCount = d.Colour.IsNull ? 0u : d.Extra.IsNull ? 1u : 2u;
+        var colours = stackalloc RenderingAttachmentInfo[3];
+        colours[0] = ColourAttachment(d.Colour);
+        colours[1] = ColourAttachment(d.Extra);
+        colours[2] = ColourAttachment(d.Extra2);
+        uint colourCount = d.Colour.IsNull
+            ? 0u
+            : d.Extra.IsNull
+                ? 1u
+                : d.Extra2.IsNull
+                    ? 2u
+                    : 3u;
         var depth = new RenderingAttachmentInfo
         {
             SType = StructureType.RenderingAttachmentInfo,
@@ -268,6 +259,19 @@ public sealed unsafe class CommandList : IGpuCommandList
         _bound.Forget();
     }
 
+    /// <summary>
+    /// A colour attachment of <see cref="BeginRendering"/>: the target's view in GENERAL layout, its load and clear, stored.
+    /// </summary>
+    RenderingAttachmentInfo ColourAttachment(in RenderTarget t) => new()
+    {
+        SType = StructureType.RenderingAttachmentInfo,
+        ImageView = _device.ViewAt(t.View.Index),
+        ImageLayout = ImageLayout.General,
+        LoadOp = GlConventions.VkLoadOp(t.Load),
+        StoreOp = AttachmentStoreOp.Store,
+        ClearValue = new ClearValue(new ClearColorValue(t.Clear.R, t.Clear.G, t.Clear.B, t.Clear.A)),
+    };
+
     /// <inheritdoc/>
     public void EndRendering()
     {
@@ -292,11 +296,16 @@ public sealed unsafe class CommandList : IGpuCommandList
     /// </summary>
     internal void BeginSecondary(in AttachmentFormats formats)
     {
-        var colours = stackalloc Format[2] { GlConventions.VkFormatOrUndefined(formats.Colour), GlConventions.VkFormatOrUndefined(formats.Extra) };
+        var colours = stackalloc Format[3]
+        {
+            GlConventions.VkFormatOrUndefined(formats.Colour),
+            GlConventions.VkFormatOrUndefined(formats.Extra),
+            GlConventions.VkFormatOrUndefined(formats.Extra2),
+        };
         var rendering = new CommandBufferInheritanceRenderingInfo
         {
             SType = StructureType.CommandBufferInheritanceRenderingInfo,
-            ColorAttachmentCount = formats.Colour == InternalFormat.None ? 0u : formats.Extra == InternalFormat.None ? 1u : 2u,
+            ColorAttachmentCount = formats.ColourCount,
             PColorAttachmentFormats = colours,
             DepthAttachmentFormat = GlConventions.VkFormatOrUndefined(formats.Depth),
             StencilAttachmentFormat = Format.Undefined,

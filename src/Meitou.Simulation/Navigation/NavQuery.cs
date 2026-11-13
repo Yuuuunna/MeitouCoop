@@ -135,7 +135,11 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         /// </summary>
         public bool Exhaustive;
         /// <summary>
-        /// Every node made on this thread, handed out again from the start by each search (<see cref = "Take"/>).
+        /// Whether the current search was turned back by a door closed at run time (<see cref="Doors"/>).
+        /// </summary>
+        public bool MetClosedDoor;
+        /// <summary>
+        /// Every node made on this thread, handed out again from the start by each search (<see cref="Take"/>).
         /// </summary>
         readonly List<Node> _made = [];
         /// <summary>
@@ -151,6 +155,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
             Open.Clear();
             _used = 0;
             Exhaustive = false;
+            MetClosedDoor = false;
         }
 
         /// <summary>
@@ -209,7 +214,10 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     public PathResult FindPath(Vector3 from, Vector3 to, NavAgent agent, Func<NavRef, bool>? skipStart, out NavRef start)
     {
         if (s_searchScratch is { } previous)
+        {
             previous.Exhaustive = false;
+            previous.MetClosedDoor = false;
+        }
         if (!World.TryFindPolygon(from, StartSnap, out start, out var startPoint, skipStart))
         {
             start = new NavRef(-1, -1);
@@ -239,14 +247,45 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     }
 
     /// <summary>
-    /// A path to <paramref name = "to"/>, or, when the goal cannot be reached (or is off the mesh), to the reachable point nearest it: the first part
+    /// Whether the last search on this thread was turned back by a door closed at run time somewhere.
+    /// </summary>
+    public static bool LastSearchMetClosedDoor => s_searchScratch?.MetClosedDoor == true;
+
+    /// <summary>
+    /// The point nearest <paramref name="near"/> of the polygons of doors closed at run time on the way from <paramref name="from"/> to
+    /// <paramref name="to"/> with every door open; null when that way does not exist or crosses no closed door.
+    /// </summary>
+    public Vector3? ClosedDoorOnTheWay(Vector3 from, Vector3 to, Vector3 near, NavAgent agent)
+    {
+        if (!World.TryFindPolygon(from, StartSnap, out var start, out var startPoint)) return null;
+        if (!World.TryFindPolygon(to, GoalSnap, out var goal, out var goalPoint)) return null;
+        if (new NavQuery(World).FindCorridor(start, startPoint, goal, goalPoint, agent) is not { } open) return null;
+
+        Vector3? best = null;
+        foreach (var p in open.Polygons)
+        {
+            var mesh = World.Mesh(p.Zone);
+            if (mesh.Areas[p.Polygon] != NavArea.Door || !IsDoorClosed(mesh, p.Polygon)) continue;
+
+            var point = NavWorld.ClosestPoint(mesh, p.Polygon, near);
+            if (best is not { } b || Vector3.Distance(point, near) < Vector3.Distance(b, near)) best = point;
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// A path to <paramref name="to"/>, or, when the goal cannot be reached (or is off the mesh), to the reachable point nearest it: the first part
     /// of a long route, whose end is then left to the next query (docs/game/pathfinding.md, "Long routes").
     /// </summary>
     public PathResult FindPathToward(Vector3 from, Vector3 to, NavAgent? agent = null)
     {
         agent ??= NavAgent.Human;
         if (s_searchScratch is { } previous)
+        {
             previous.Exhaustive = false;
+            previous.MetClosedDoor = false;
+        }
         if (!World.TryFindPolygon(from, StartSnap, out var start, out var startPoint))
             return PathResult.NotFound;
         if (!World.TryFindPolygon(to, GoalSnap, out var goal, out var goalPoint))
@@ -374,10 +413,14 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         if (!target.Kept[to.Polygon])
             return;
         byte area = target.Areas[to.Polygon];
-        if (area == NavArea.Door && (agent.DoorsClosed || IsDoorClosed(target, to.Polygon)))
+        if (area == NavArea.Door && agent.DoorsClosed) return;
+        if (area == NavArea.Door && IsDoorClosed(target, to.Polygon))
+        {
+            search.Scratch.MetClosedDoor = true;
             return;
-        if (!Portal(from.Ref, edge, to, out var left, out var right, out bool leftWall, out bool rightWall))
-            return;
+        }
+        if (!Portal(from.Ref, edge, to, out var left, out var right, out bool leftWall, out bool rightWall)) return;
+
         // Only an end on a wall takes the radius off the portal (as Pull insets it); a tile-border, seam or area-change end has walkable ground
         // beyond.
         float width = Vector2.Distance(new(left.X, left.Z), new(right.X, right.Z));

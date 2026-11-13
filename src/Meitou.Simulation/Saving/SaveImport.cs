@@ -81,6 +81,7 @@ public static class SaveImport
         string playerId = player.Id;
         var records = game.Quick.Records;
         game.Camera.Record.Strings.Remove(NaturalClaimsSave.Key);
+        RockMachineSave.Clear(game.Camera.Record);
 
         // The player's squads, in the order of their squad index, renumbered from 0 (the original erases the index and the list order gives it).
         var keep = game.Platoons.Where(p => p.FactionId == playerId && p.IsLoaded && p.Name != SquadManagement.DeadSquadName && p.Record.Name != SquadManagement.DeadSquadName)

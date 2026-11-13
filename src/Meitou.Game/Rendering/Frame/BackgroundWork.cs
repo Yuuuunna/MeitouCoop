@@ -20,6 +20,16 @@ public static class BackgroundWork
         readonly BlockingCollection<Task> _queue = [], _urgent = [];
 
         /// <summary>
+        /// The jobs running on a thread now.
+        /// </summary>
+        int _running;
+
+        /// <summary>
+        /// Jobs waiting for a thread (urgent, other) and running on one now.
+        /// </summary>
+        public (int Urgent, int Queued, int Running) Load => (_urgent.Count, _queue.Count, Volatile.Read(ref _running));
+
+        /// <summary>
         /// Starts <paramref name="threads"/> background threads that run the queued jobs until the process ends.
         /// </summary>
         public Scheduler(int threads)
@@ -33,7 +43,15 @@ public static class BackgroundWork
                     while (true)
                     {
                         BlockingCollection<Task>.TakeFromAny(both, out var task);
-                        TryExecuteTask(task!);
+                        Interlocked.Increment(ref _running);
+                        try
+                        {
+                            TryExecuteTask(task!);
+                        }
+                        finally
+                        {
+                            Interlocked.Decrement(ref _running);
+                        }
                     }
                 })
                 { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = $"meitou-stream-{i}" }.Start();
@@ -67,6 +85,12 @@ public static class BackgroundWork
     /// The one scheduler every streaming job runs on, with <see cref="Threads"/> threads.
     /// </summary>
     static readonly Scheduler WorkScheduler = new(Threads);
+
+    /// <summary>
+    /// The queue, for the loading log: jobs waiting (urgent, other) and running.
+    /// </summary>
+    public static string Describe() =>
+        WorkScheduler.Load is var (urgent, queued, running) ? $"{running}/{Threads} running, {urgent} urgent and {queued} queued" : "";
 
     /// <summary>
     /// Queues <paramref name="work"/> on the streaming threads behind the jobs already waiting; the task completes with its result.

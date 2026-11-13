@@ -19,9 +19,37 @@ namespace Meitou.Game.Rendering.Terrain;
 public sealed unsafe partial class TerrainDecalRenderer
 {
     /// <summary>
-    /// The most decals kept, and the most drawn in a frame (the nearest).
+    /// The most decals kept: only a guard against a runaway source (the oldest goes first when it is reached). A decal's own life bounds the number
+    /// in play, and every kept decal within range and in view is drawn (docs/game/blood-decals.md "Blood on surfaces"): a lower cap made live decals
+    /// vanish in a big fight. <see cref="DrawChunk"/> is the rows of one draw.
     /// </summary>
-    const int MaxSurfaces = 1024, MaxSurfaceDraws = 512;
+    const int MaxSurfaces = 32768;
+
+    /// <summary>
+    /// The most instance rows one draw of the surface decals takes.
+    /// </summary>
+    const int DrawChunk = 4096;
+
+    /// <summary>
+    /// The camera's eye as the frame last gave it (<see cref="SurfacesNear"/>): the decals within <see cref="Range"/> of it are the drawn ones, which
+    /// do not run out (<see cref="AgeSurfaces"/>).
+    /// </summary>
+    Vector3 _surfaceEye;
+
+    /// <summary>
+    /// Whether <see cref="_surfaceEye"/> holds a frame's eye (false until the first frame of a world).
+    /// </summary>
+    bool _surfaceEyeKnown;
+
+    /// <summary>
+    /// The range and default of <see cref="SurfaceDraws"/>.
+    /// </summary>
+    public const int MinSurfaceDraws = 64, MaxSurfaceDraws = 2048, DefaultSurfaceDraws = 512;
+
+    /// <summary>
+    /// The most surface decals and footprints drawn in a frame, the nearest (the Tab panel's <c>Blood decals drawn</c> slider).
+    /// </summary>
+    public static int SurfaceDraws { get; set; } = DefaultSurfaceDraws;
 
     /// <summary>
     /// How high above the feet a splash is centred (a blow lands at the body, not the soles).
@@ -40,7 +68,7 @@ public sealed unsafe partial class TerrainDecalRenderer
     const string SurfaceVertex = """
         #version 450
         layout(location = 0) in vec4 aCentre;   // eye-relative centre, radius
-        layout(location = 1) in vec4 aShape;    // half width, half height, angle, 0: floors only / 1: any surface
+        layout(location = 1) in vec4 aShape;    // half width, half height, angle, 0: floors / 1: any object surface / 2: terrain
         layout(location = 2) in vec4 aColour;
         layout(location = 3) in uint aSprite;
         layout(location = 0) flat out vec4 vCentre;
@@ -53,7 +81,7 @@ public sealed unsafe partial class TerrainDecalRenderer
             vec3 up; float tanY;
             vec3 back; uint depth;
             vec2 planes; uint terrainDepth; uint staticDepth;
-            vec2 jitter;
+            vec2 jitter; float rowSign;
         } pc;
         void main()
         {
@@ -76,8 +104,8 @@ public sealed unsafe partial class TerrainDecalRenderer
         """;
 
     /// <summary>
-    /// The surface decal fragment stage: rebuilds the surface point and its normal from the depth, skips terrain and moving pixels, and projects the
-    /// decal's texture along the normal.
+    /// The surface decal fragment stage: rebuilds the surface point from the depth, separates terrain from static objects, and projects the
+    /// decal mask onto the matching surface.
     /// </summary>
     static readonly string SurfaceFragment = "#version 450\n" + BindlessTable.Declarations(NativeShaders.BindlessSet) + """
         layout(location = 0) flat in vec4 vCentre;
@@ -91,19 +119,46 @@ public sealed unsafe partial class TerrainDecalRenderer
             vec3 up; float tanY;
             vec3 back; uint depth;
             vec2 planes; uint terrainDepth; uint staticDepth;
-            vec2 jitter;
+            vec2 jitter; float rowSign;
         } pc;
         """ + DepthConvention.Glsl + """
 
         // The surface point under a depth texel, relative to the eye, and its linear depth. The depth was drawn with the projection moved by the jitter: the texel's ray
-        // is the unjittered one at its centre less that move.
+        // is the unjittered one at its centre less that move. A top-down target (Metal) has NDC +1 at row 0: rowSign -1 turns the row into
+        // the projection's NDC.
         vec3 posAt(ivec2 t, vec2 size, out float z)
         {
             t = clamp(t, ivec2(0), ivec2(size) - 1);
             z = depthViewZ(texelFetch(textures2D[pc.depth], t, 0).r, pc.planes);
-            vec2 uvn = (vec2(t) + 0.5) / size * 2.0 - 1.0 - pc.jitter;
+            vec2 uvn = ((vec2(t) + 0.5) / size * 2.0 - 1.0) * vec2(1.0, pc.rowSign) - pc.jitter;
             vec2 xy = uvn * vec2(pc.tanX, pc.tanY) * z;
             return xy.x * pc.right + xy.y * pc.up - z * pc.back;
+        }
+
+        float inkHash(vec2 p)
+        {
+            vec3 q = fract(p.xyx * 0.1031);
+            q += dot(q, q.yzx + 33.33);
+            return fract((q.x + q.y) * q.z);
+        }
+
+        float inkNoise(vec2 p)
+        {
+            vec2 tile = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(inkHash(tile), inkHash(tile + vec2(1, 0)), f.x),
+                       mix(inkHash(tile + vec2(0, 1)), inkHash(tile + vec2(1, 1)), f.x), f.y);
+        }
+
+        float transfer(vec2 uv, float seed, float wet)
+        {
+            vec2 offset = vec2(seed * 59.0, seed * 31.0);
+            float broad = inkNoise(uv * vec2(5.0, 9.0) + offset);
+            float grain = inkNoise(uv * vec2(14.0, 24.0) - offset);
+            float pressure = (seed - 0.40) * (uv.y - 0.5);
+            float ink = 0.70 * broad + 0.30 * grain + pressure;
+            return mix(0.14, 1.0, smoothstep(0.16 + (1.0 - wet) * 0.39, 0.63, ink));
         }
 
         void main()
@@ -118,39 +173,50 @@ public sealed unsafe partial class TerrainDecalRenderer
             float dist = length(rel);
             float radius = vCentre.w;
             if (dist > radius) discard;
-            // The terrain carries its own blood (the cells' decals): a pixel the static objects did not draw over (its depth the same bits after them as after the
-            // terrain alone) is left out. An exact test: a floor or rock a few centimetres above the ground is an object's pixel, which a depth tolerance took for terrain.
-            if (texelFetch(textures2D[pc.terrainDepth], t, 0).r == texelFetch(textures2D[pc.staticDepth], t, 0).r) discard;
-            // Foliage, debris and anything else drawn after the static objects is nearer than the static depth: no blood on what sways.
-            if (abs(depthViewZ(texelFetch(textures2D[pc.staticDepth], t, 0).r, pc.planes) - z0) > 0.02 + 0.0005 * z0) discard;
-            float zl, zr, zu, zb;
-            vec3 l = posAt(t - ivec2(1, 0), size, zl), r = posAt(t + ivec2(1, 0), size, zr);
-            vec3 u = posAt(t + ivec2(0, 1), size, zu), b = posAt(t - ivec2(0, 1), size, zb);
-            vec3 dx = abs(zr - z0) < abs(z0 - zl) ? r - p : p - l;
-            vec3 dy = abs(zu - z0) < abs(z0 - zb) ? u - p : p - b;
-            vec3 n = normalize(cross(dx, dy));
-            if (dot(n, p) > 0.0) n = -n;   // towards the eye
+            float terrainDepth = texelFetch(textures2D[pc.terrainDepth], t, 0).r;
+            bool footprint = vShape.w > 1.5;
+            vec2 plane = rel.xz;
+            float fade = 1.0;
+            if (footprint)
+            {
+                // Exactly the terrain's pixel. Floors, rocks, foliage and debris cannot take a ground print.
+                if (d0 != terrainDepth) discard;
+            }
+            else
+            {
+                float staticDepth = texelFetch(textures2D[pc.staticDepth], t, 0).r;
+                // The terrain carries its own blood (the cells' decals): a pixel the static objects did not draw over (its depth the same bits after them as after the
+                // terrain alone) is left out. An exact test: a floor or rock a few centimetres above the ground is an object's pixel, which a depth tolerance took for terrain.
+                if (terrainDepth == staticDepth) discard;
+                // Foliage, debris and anything else drawn after the static objects is nearer than the static depth: no blood on what sways.
+                if (abs(depthViewZ(staticDepth, pc.planes) - z0) > 0.02 + 0.0005 * z0) discard;
 
-            float fade;
-            if (vShape.w < 0.5)
-            {
-                // A pool, drip or smear: only on a floor at the mark's height.
-                float height = abs(rel.y);
-                if (n.y < 0.8 || height > 0.4) discard;
-                fade = 1.0 - smoothstep(0.2, 0.4, height);
-            }
-            else
-            {
-                // A splash: any surface that faces the mark, fainter towards the edge of its reach.
-                if (dot(n, -rel) < 0.05 * dist) discard;
-                fade = 1.0 - smoothstep(0.55 * radius, radius, dist);
-            }
-            vec2 plane;
-            if (abs(n.y) > 0.8) plane = rel.xz;
-            else
-            {
-                vec3 tx = normalize(cross(vec3(0.0, 1.0, 0.0), n));
-                plane = vec2(dot(rel, tx), dot(rel, cross(n, tx)));
+                float zl, zr, zu, zb;
+                vec3 l = posAt(t - ivec2(1, 0), size, zl), r = posAt(t + ivec2(1, 0), size, zr);
+                vec3 u = posAt(t + ivec2(0, 1), size, zu), b = posAt(t - ivec2(0, 1), size, zb);
+                vec3 dx = abs(zr - z0) < abs(z0 - zl) ? r - p : p - l;
+                vec3 dy = abs(zu - z0) < abs(z0 - zb) ? u - p : p - b;
+                vec3 n = normalize(cross(dx, dy));
+                if (dot(n, p) > 0.0) n = -n;   // towards the eye
+
+                if (vShape.w < 0.5)
+                {
+                    // A pool, drip or smear: only on a floor at the mark's height.
+                    float height = abs(rel.y);
+                    if (n.y < 0.8 || height > 0.4) discard;
+                    fade = 1.0 - smoothstep(0.2, 0.4, height);
+                }
+                else
+                {
+                    // A splash: any surface that faces the mark, fainter towards the edge of its reach.
+                    if (dot(n, -rel) < 0.05 * dist) discard;
+                    fade = 1.0 - smoothstep(0.55 * radius, radius, dist);
+                }
+                if (abs(n.y) <= 0.8)
+                {
+                    vec3 tx = normalize(cross(vec3(0.0, 1.0, 0.0), n));
+                    plane = vec2(dot(rel, tx), dot(rel, cross(n, tx)));
+                }
             }
             float s = sin(vShape.z), c = cos(vShape.z);
             vec2 uv = vec2(dot(plane, vec2(s, c)) / vShape.x, dot(plane, vec2(c, -s)) / vShape.y) * 0.5 + 0.5;
@@ -160,7 +226,13 @@ public sealed unsafe partial class TerrainDecalRenderer
             vec4 texel = textureLod(textures2D[nonuniformEXT(vSprite)], uv, lod);
             float a = clamp(texel.a * vColour.a * fade, 0.0, 1.0);
             // Multiplied into the lit surface: the blood's colour against a mid-grey albedo.
-            fragColour = vec4(mix(vec3(1.0), texel.rgb * vColour.rgb * 1.6 + 0.03, a), 1.0);
+            vec3 ink = texel.rgb * vColour.rgb * 1.6 + 0.03;
+            if (footprint)
+            {
+                a *= transfer(uv, fract(vShape.w), vColour.a);
+                ink = min(texel.rgb * vColour.rgb * 0.82 + 0.025, vec3(1.0));
+            }
+            fragColour = vec4(mix(vec3(1.0), ink, a), 1.0);
         }
         """;
 
@@ -176,7 +248,7 @@ public sealed unsafe partial class TerrainDecalRenderer
         public const int Size = 64;
 
         /// <summary>
-        /// Centre: eye-relative, w the bounding sphere's radius; Shape: half width, half height, angle, w 0 floors only, 1 any surface; Colour: the
+        /// Centre: eye-relative, w the bounding sphere's radius; Shape: half width, half height, angle, w 0 floors, 1 any object surface, 2 terrain; Colour: the
         /// decal's colour, its alpha at most the life.
         /// </summary>
         public Vector4 Centre, Shape, Colour;
@@ -237,6 +309,12 @@ public sealed unsafe partial class TerrainDecalRenderer
         /// The projection's jitter (NDC).
         /// </summary>
         public Vector2 Jitter;
+
+        /// <summary>
+        /// 1 when the targets' row 0 is the bottom (Vulkan), −1 when it is the top (Metal): the sign from a texel row to the projection's
+        /// NDC Y.
+        /// </summary>
+        public float RowSign;
     }
 
     /// <summary>
@@ -289,6 +367,15 @@ public sealed unsafe partial class TerrainDecalRenderer
         public bool Floor;
 
         /// <summary>
+        /// Boot silhouette and transfer seed for a terrain imprint.
+        /// </summary>
+        public FootprintSoles.Sprite? Sole;
+        /// <summary>
+        /// How pressure and ink break up on this imprint, in [0, 1).
+        /// </summary>
+        public float Transfer;
+
+        /// <summary>
         /// Where the mark was made (X, Z): a pool grows while its bleeder stays within √10 units of it.
         /// </summary>
         public Vector2 At;
@@ -310,6 +397,31 @@ public sealed unsafe partial class TerrainDecalRenderer
     readonly List<SurfaceDecal> _surfaces = [];
 
     /// <summary>
+    /// Ground prints are temporary and have their own cap, independent of blood on objects.
+    /// </summary>
+    const int MaxFootprints = 512;
+
+    /// <summary>
+    /// Bounding radius of a sole including headroom for sloped terrain.
+    /// </summary>
+    const float FootprintRadius = 3.3f;
+
+    /// <summary>
+    /// Ground prints in time order, excluded from the surface decal save.
+    /// </summary>
+    readonly List<SurfaceDecal> _footprints = [];
+
+    /// <summary>
+    /// Cached model-derived sole masks.
+    /// </summary>
+    readonly FootprintSoles _soles;
+
+    /// <summary>
+    /// Serial used to give each stamp a different transfer pattern.
+    /// </summary>
+    uint _footprintSerial;
+
+    /// <summary>
     /// Each bleeder's growing pool by its key.
     /// </summary>
     readonly Dictionary<long, SurfaceDecal> _surfacePools = [];
@@ -325,7 +437,7 @@ public sealed unsafe partial class TerrainDecalRenderer
     float _fullOfBleeding = -1;
 
     /// <summary>
-    /// This frame's near decals with their squared distance to the eye, nearest first (at most <see cref="MaxSurfaceDraws"/>).
+    /// This frame's near decals with their squared distance to the eye, nearest first (at most <see cref="SurfaceDraws"/>).
     /// </summary>
     readonly List<(float Distance, SurfaceDecal Decal)> _surfaceNear = [];
 
@@ -405,9 +517,21 @@ public sealed unsafe partial class TerrainDecalRenderer
     public Func<float, float, float>? GroundHeight { get; set; }
 
     /// <summary>
-    /// The decals kept for the surfaces now.
+    /// Number of decals on static objects.
     /// </summary>
     public int SurfaceCount => _surfaces.Count;
+
+    /// <summary>
+    /// The decal's circle round its square is within <see cref="Range"/> of the eye (the terrain's cells within the range are the ones on a
+    /// texture).
+    /// </summary>
+    bool InRange(SurfaceDecal d)
+    {
+        if (!_surfaceEyeKnown) return true;   // no frame yet (a world just loaded): nothing runs out before the camera is known
+
+        var (hw, hh) = Half(d);
+        return Vector3.Distance(d.Centre, _surfaceEye) - MathF.Sqrt(hw * hw + hh * hh) <= MathF.Max(Range, 0);
+    }
 
     /// <summary>
     /// Whether any decal kept for the surfaces is within <see cref="TerrainDecalRenderer.Range"/> of <paramref name="eye"/>: the frame copies the
@@ -416,6 +540,7 @@ public sealed unsafe partial class TerrainDecalRenderer
     public bool SurfacesNear(Vector3 eye)
     {
         if (!_surfacesOn) return false;
+        (_surfaceEye, _surfaceEyeKnown) = (eye, true);
         float range = MathF.Max(Range, 0);
         foreach (var d in _surfaces)
         {
@@ -427,20 +552,91 @@ public sealed unsafe partial class TerrainDecalRenderer
     }
 
     /// <summary>
+    /// Whether a ground print can be seen at this range, so its depth copy runs only when needed.
+    /// </summary>
+    internal bool FootprintsNear(Vector3 eye, Vector4[] frustum)
+    {
+        foreach (var d in _footprints)
+        {
+            float radius = SoleRadius(d);
+            float reach = MathF.Max(Range, 0) + radius;
+            if (Vector3.DistanceSquared(d.Centre, eye) <= reach * reach && FrustumTests.SphereVisible(frustum, d.Centre, radius))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Drops the temporary ground prints when changing worlds.
+    /// </summary>
+    internal void ClearFootprints() => _footprints.Clear();
+
+    /// <summary>
+    /// Starts preparing the equipped sole mask while the foot is still inside the pool.
+    /// </summary>
+    internal void PrepareFootprint(string mesh) => _soles.Prepare(mesh);
+
+    /// <summary>
+    /// Records a ground imprint at the terrain's height with an individual pressure pattern.
+    /// </summary>
+    internal void AddFootprint(Vector3 at, Vector2 across, uint abgr, float life, byte variant, string? mesh)
+    {
+        if (_footprints.Count >= MaxFootprints) return;
+
+        var sole = mesh is null ? null : _soles.For(mesh, (variant & 1) != 0);
+        if (sole is null) EnsureGenericFootprints();
+
+        uint sample = unchecked(++_footprintSerial * 2654435761u);
+        _footprints.Add(new SurfaceDecal
+        {
+            Type = TerrainDecalType.Footprint,
+            Variant = variant,
+            Centre = at,
+            Angle = MathF.Atan2(across.X, across.Y),
+            Colour = abgr,
+            Expires = _surfaceClock + life,
+            Sole = sole,
+            Transfer = (sample >> 9) * (1f / 8388608),
+        });
+    }
+
+    /// <summary>
+    /// Creates fallback sole textures on the first print that needs one.
+    /// </summary>
+    void EnsureGenericFootprints()
+    {
+        const int type = (int)TerrainDecalType.Footprint;
+        if (_sprites[type].Length != 0) return;
+
+        var masks = FootprintTexture.Create(_gpu);
+        _sprites[type] = masks;
+        _spriteIndex[type] = new uint[masks.Length];
+        Array.Fill(_spriteIndex[type], uint.MaxValue);
+        _spriteBias = float.NaN;
+    }
+
+    /// <summary>
     /// Drops every decal kept for the surfaces (a new world).
     /// </summary>
     public void ClearSurfaces()
     {
         _surfaces.Clear();
         _surfacePools.Clear();
+        _surfaceEyeKnown = false;
     }
 
     /// <summary>
     /// The decals kept for the surfaces as a save holds them (<see cref="SaveSurfaceDecals"/>), oldest first, each with its life left.
     /// </summary>
     public IEnumerable<SurfaceBloodDecal> SavedSurfaces =>
-        _surfaces.Select(d => new SurfaceBloodDecal(d.Type, (byte)d.Variant, d.Centre, d.Angle, d.Size, d.Expires - _surfaceClock,
-            d.Colour, d.Floor));
+        _surfaces.Select(SavedSurface);
+
+    /// <summary>
+    /// A kept decal as a save holds it; a life that ran out in view (see <see cref="AgeSurfaces"/>) is saved as 0: it stays while the camera is near.
+    /// </summary>
+    SurfaceBloodDecal SavedSurface(SurfaceDecal d) =>
+        new(d.Type, (byte)d.Variant, d.Centre, d.Angle, d.Size, MathF.Max(d.Expires - _surfaceClock, 0), d.Colour, d.Floor);
 
     /// <summary>
     /// Puts back the decals a save held (after <see cref="ClearSurfaces"/>, a new world): each with its life left, the newest kept when over <see
@@ -453,7 +649,7 @@ public sealed unsafe partial class TerrainDecalRenderer
         for (int i = Math.Max(0, saved.Count - MaxSurfaces); i < saved.Count; i++)
         {
             var s = saved[i];
-            if ((int)s.Type >= _sprites.Length || s.Variant >= _sprites[(int)s.Type].Length || s.Life <= 0 || s.Size <= 0)
+            if (s.Type > TerrainDecalType.Smear || s.Variant >= _sprites[(int)s.Type].Length || s.Life < 0 || s.Size <= 0)
                 continue;
             Keep(new SurfaceDecal
             {
@@ -471,15 +667,24 @@ public sealed unsafe partial class TerrainDecalRenderer
     }
 
     /// <summary>
-    /// Ages the decals by <paramref name="dt"/> seconds of game time; those whose life ran out go.
+    /// Ages the decals by <paramref name="dt"/> seconds of game time. As the terrain's (<c>TerrainDecalStore.Age</c>, the game's rule: a decal at
+    /// life 0 is removed unless its cell is on a texture now), a decal whose life ran out goes only while it is out of the camera's range: within it,
+    /// it stays as drawn, so blood in view never vanishes by itself (it used to fade out in its last second while the terrain's blood beside it
+    /// stayed).
     /// </summary>
     public void AgeSurfaces(float dt)
     {
-        if (dt <= 0 || _surfaces.Count == 0) return;
+        if (dt <= 0 || (_surfaces.Count == 0 && _footprints.Count == 0)) return;
+
         _surfaceClock += dt;
-        if (_surfaces.RemoveAll(d => d.Expires <= _surfaceClock) > 0)
-            foreach (var key in _surfacePools.Where(p => p.Value.Expires <= _surfaceClock).Select(p => p.Key).ToList())
-                _surfacePools.Remove(key);
+        _footprints.RemoveAll(d => d.Expires <= _surfaceClock);
+        if (_surfaces.RemoveAll(d => d.Expires <= _surfaceClock && !InRange(d)) == 0) return;
+
+        var gone = _surfacePools
+            .Where(p => p.Value.Expires <= _surfaceClock && !InRange(p.Value))
+            .Select(p => p.Key)
+            .ToList();
+        foreach (var key in gone) _surfacePools.Remove(key);
     }
 
     /// <summary>
@@ -489,7 +694,7 @@ public sealed unsafe partial class TerrainDecalRenderer
     /// </summary>
     public void AddSurface(TerrainDecalType type, Vector3 at, Vector2 direction, float size, uint abgr, Random random)
     {
-        if (!_surfacesOn || type == TerrainDecalType.Line) return;
+        if (!_surfacesOn || type is TerrainDecalType.Line or TerrainDecalType.Footprint) return;
         int variants = _sprites[(int)type].Length;
         if (variants == 0) return;
         Keep(Make(type, at, random.Next(variants), MathF.Atan2(direction.X, direction.Y), size, abgr));
@@ -592,6 +797,8 @@ public sealed unsafe partial class TerrainDecalRenderer
     /// </summary>
     (float Width, float Height) Half(SurfaceDecal d)
     {
+        if (d.Type == TerrainDecalType.Footprint)
+            return d.Sole is { } sole ? (sole.Width, sole.Length) : (FootprintTexture.HalfWidth, FootprintTexture.HalfLength);
         var image = _sprites[(int)d.Type][d.Variant];
         if (image is null) return (0, 0);
         float k = d.Size * TerrainDecalCells.Size / 4096;
@@ -614,11 +821,10 @@ public sealed unsafe partial class TerrainDecalRenderer
 
     /// <summary>
     /// Copies <paramref name="sceneDepth"/> into <paramref name="target"/> (made again, with its bindless entry, when its size or format changed) and
-    /// notes the frame; nothing while no surface decal is kept.
+    /// notes the frame.
     /// </summary>
     void Capture(GpuTexture sceneDepth, ref GpuTexture? target, ref uint index, string name, bool first)
     {
-        if (!_surfacesOn || _surfaces.Count == 0) return;
         if (target is null || target.Desc.Width != sceneDepth.Desc.Width || target.Desc.Height != sceneDepth.Desc.Height
             || target.Desc.Format != sceneDepth.Desc.Format)
         {
@@ -649,15 +855,15 @@ public sealed unsafe partial class TerrainDecalRenderer
     /// <see cref="CaptureTerrainDepth"/> ran this frame.
     /// </summary>
     internal void RecordSurfaces(GpuTexture colour, GpuTexture depth, float near, float far, Matrix4x4 rotation, float tanX, float tanY,
-        Vector3 eye, Vector2 jitterNdc)
+        Vector3 eye, Vector2 jitterNdc, Vector4[] frustum)
     {
-        if (!_surfacesOn || _surfaces.Count == 0 || _terrainDepth is null
-            || _terrainDepthFrame != _gpu.Frame.Number || _staticDepthFrame != _gpu.Frame.Number)
-            return;
+        if (_terrainDepthFrame != _gpu.Frame.Number) return;
+
+        bool drawObjects = _surfacesOn && _staticDepthFrame == _gpu.Frame.Number;
         RegisterSprites();
         var back = ViewWindow.Back(rotation, tanX, tanY);
         (tanX, tanY) = (ViewWindow.Tan(tanX, tanY).X, ViewWindow.Tan(tanX, tanY).Y);
-        CollectSurfaceNear(eye, back);
+        CollectSurfaceNear(eye, back, frustum, drawObjects);
         if (_surfaceNear.Count == 0) return;
         int n = FillSurfaceInstances(eye);
         if (n == 0) return;
@@ -669,28 +875,47 @@ public sealed unsafe partial class TerrainDecalRenderer
 
     /// <summary>
     /// The decals within the range of the eye and in front of it (<paramref name="back"/> is the view's back), at most
-    /// <see cref="MaxSurfaceDraws"/> of them, the nearest, into <see cref="_surfaceNear"/>.
+    /// <see cref="SurfaceDraws"/> of them, the nearest, into <see cref="_surfaceNear"/>.
     /// </summary>
-    void CollectSurfaceNear(Vector3 eye, Vector3 back)
+    void CollectSurfaceNear(Vector3 eye, Vector3 back, Vector4[] frustum, bool drawObjects)
     {
         _surfaceNear.Clear();
         float range = MathF.Max(Range, 0);
-        foreach (var d in _surfaces)
+        if (drawObjects)
         {
-            var (hw, hh) = Half(d);
-            float radius = MathF.Sqrt(hw * hw + hh * hh);
-            var rel = d.Centre - eye;
-            // Past the range, or behind the eye.
-            if (radius <= 0 || rel.Length() - radius > range || Vector3.Dot(rel, back) > radius) continue;
-            _surfaceNear.Add((rel.LengthSquared(), d));
+            foreach (var d in _surfaces)
+            {
+                var (hw, hh) = Half(d);
+                float radius = MathF.Sqrt(hw * hw + hh * hh);
+                var rel = d.Centre - eye;
+                // Past the range, or behind the eye.
+                if (radius <= 0 || rel.Length() - radius > range || Vector3.Dot(rel, back) > radius) continue;
+                if (!FrustumTests.SphereVisible(frustum, d.Centre, radius * 1.01f + 0.5f)) continue;
+                _surfaceNear.Add((rel.LengthSquared(), d));
+            }
         }
-        if (_surfaceNear.Count == 0) return;
-        if (_surfaceNear.Count > MaxSurfaceDraws)
+
+        foreach (var d in _footprints)
+        {
+            float radius = SoleRadius(d);
+            float reach = range + radius;
+            float distance = Vector3.DistanceSquared(d.Centre, eye);
+            if (distance > reach * reach || !FrustumTests.SphereVisible(frustum, d.Centre, radius)) continue;
+            _surfaceNear.Add((distance, d));
+        }
+
+        if (_surfaceNear.Count > SurfaceDraws)
         {
             _surfaceNear.Sort((a, b) => a.Distance.CompareTo(b.Distance));
-            _surfaceNear.RemoveRange(MaxSurfaceDraws, _surfaceNear.Count - MaxSurfaceDraws);
+            _surfaceNear.RemoveRange(SurfaceDraws, _surfaceNear.Count - SurfaceDraws);
         }
     }
+
+    /// <summary>
+    /// A sole's bounding sphere includes room for the terrain's slope.
+    /// </summary>
+    static float SoleRadius(SurfaceDecal decal) => decal.Sole is { } sole
+        ? MathF.Sqrt(sole.Width * sole.Width + sole.Length * sole.Length + 4) : FootprintRadius;
 
     /// <summary>
     /// Writes the instance row of each near decal that has a sprite and width into <see cref="_surfaceInstances"/>; returns how many.
@@ -702,16 +927,19 @@ public sealed unsafe partial class TerrainDecalRenderer
         int n = 0;
         foreach (var (_, d) in _surfaceNear)
         {
-            uint index = _spriteIndex[(int)d.Type][d.Variant];
+            uint index = d.Sole is { } sole ? _soles.Index(sole) : _spriteIndex[(int)d.Type][d.Variant];
             var (hw, hh) = Half(d);
             if (index == uint.MaxValue || hw <= 0) continue;
-            float life = d.Expires - _surfaceClock;
             uint abgr = d.Colour;
-            float alpha = MathF.Min((abgr >> 24) / 255f, life);
+            // A decal on a surface is as one drawn on a cell's texture: its alpha at the start, no fade (docs/game/blood-decals.md); a footprint
+            // fades with its life.
+            bool footprint = d.Type == TerrainDecalType.Footprint;
+            float alpha = (abgr >> 24) / 255f;
+            if (footprint) alpha = MathF.Min(alpha, d.Expires - _surfaceClock);
             _surfaceInstances[n++] = new SurfaceInstance
             {
-                Centre = new Vector4(d.Centre - eye, MathF.Sqrt(hw * hw + hh * hh)),   // the sphere round the decal's square
-                Shape = new Vector4(hw, hh, d.Angle, d.Floor ? 0 : 1),
+                Centre = new Vector4(d.Centre - eye, footprint ? SoleRadius(d) : MathF.Sqrt(hw * hw + hh * hh)),   // the sphere round the decal's square
+                Shape = new Vector4(hw, hh, d.Angle, footprint ? 2 + d.Transfer : d.Floor ? 0 : 1),
                 Colour = new Vector4((abgr & 0xFF) / 255f, (abgr >> 8 & 0xFF) / 255f, (abgr >> 16 & 0xFF) / 255f, alpha),
                 Sprite = index,
             };
@@ -740,8 +968,6 @@ public sealed unsafe partial class TerrainDecalRenderer
         cmd.Order();
         var t = PassTargets.Of(colour, null);
         cmd.BeginRendering(t.Rendering);
-        var rows = _gpu.Frame.AllocateConstants((ulong)(n * SurfaceInstance.Size), 16);
-        MemoryMarshal.AsBytes(_surfaceInstances.AsSpan(0, n)).CopyTo(new Span<byte>(rows.Pointer, n * SurfaceInstance.Size));
         var state = DrawState.For(t.Formats, _gpu.DepthClamp, blend: Multiply, mask: DrawState.Rgb);
         state.Record(cmd, t);
         var pipeline = _surfacePipeline ??=
@@ -758,17 +984,27 @@ public sealed unsafe partial class TerrainDecalRenderer
             Depth = _surfaceDepthIndex,
             Planes = new Vector2(near, far),
             TerrainDepth = _terrainDepthIndex,
-            StaticDepth = _staticDepthIndex,
+            StaticDepth = _staticDepthFrame == _gpu.Frame.Number ? _staticDepthIndex : _terrainDepthIndex,
             Jitter = jitterNdc,
+            RowSign = _gpu.RenderTargetsBottomUp ? 1 : -1,
         };
         cmd.PushConstants(program, GpuStage.Vertex | GpuStage.Fragment, in push);
-        Span<GpuBufferBinding> buffers =
-        [
-            new(rows.Handle, rows.Offset), new(rows.Handle, rows.Offset + 16), new(rows.Handle, rows.Offset + 32), new(rows.Handle, rows.Offset + 48),
-        ];
+        for (int first = 0; first < n; first += DrawChunk)
+        {
+            int count = Math.Min(DrawChunk, n - first);
+            var rows = _gpu.Frame.AllocateConstants((ulong)(count * SurfaceInstance.Size), 16);
+            MemoryMarshal.AsBytes(_surfaceInstances.AsSpan(first, count)).CopyTo(new Span<byte>(rows.Pointer, count * SurfaceInstance.Size));
+            Span<GpuBufferBinding> buffers =
+            [
+                new(rows.Handle, rows.Offset),
+                new(rows.Handle, rows.Offset + 16),
+                new(rows.Handle, rows.Offset + 32),
+                new(rows.Handle, rows.Offset + 48),
+            ];
 
-        cmd.BindVertexBuffers(0, buffers);
-        cmd.Draw(4, (uint)n);
+            cmd.BindVertexBuffers(0, buffers);
+            cmd.Draw(4, (uint)count);
+        }
         cmd.EndRendering();
         cmd.Order();
         _gpu.EndNative(cmd);
@@ -779,6 +1015,7 @@ public sealed unsafe partial class TerrainDecalRenderer
     /// </summary>
     void DisposeSurfaces()
     {
+        _soles.Dispose();
         if (_surfaceDepthIndex != uint.MaxValue) _gpu.Bindless.Free(BindlessKind.Texture2D, _surfaceDepthIndex);
         if (_terrainDepthIndex != uint.MaxValue) _gpu.Bindless.Free(BindlessKind.Texture2D, _terrainDepthIndex);
         _terrainDepth?.Dispose();

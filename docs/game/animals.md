@@ -32,6 +32,13 @@ Pose/LOD distances can scale by animal size in engine, not original scheduler pr
   bounty fields, `unique`, `faction importance`, `sounds`; references `race` (every record, value 100), `weapon`,
   `weapon level`, `stats` (only the Leviathan), `faction` (only the Landbat), `animations`, `strafe anim`,
   `turning anim`, `death items`, `backpack`, `AI Goals`, `bird attractor`.
+- **Observed** (merged data of the owner's 662 mods, `meitou-tools characters`): 4 of 200 animal records with a race list give every entry chance 0 (mods'
+  single-race animals: Great Beak Thing, Whistler, Pack Bull, Oddly Friendly Great Beak Thing; one has no chance above 0 and one RACE entry). Meitou took the first entry with a
+  chance above 0, found none and built no look: the animal was invisible (a blue square far off). Now `CharacterAppearance.AnimalRaceId`: first entry with a chance above 0, else the
+  first entry. **Verified** (decompile, `Faction::chooseARace` `FUN_1407ff1a0`, whose `param_2 + 0x50 == 0x4c` test is the ANIMAL_CHARACTER type 76): the weighted map is built by
+  `FUN_1409b9400`, which adds only entries with a value above 0; with the map empty and the list non-empty, `FUN_1400b64b0(record, "race", 0, ...)` returns the list's entry 0
+  (no draw), and only if that does not resolve does it fall back to the faction's races. No race at all: Greenlander by id (the person rule). A character with no look draws as a faction-coloured square (`GameHost.DrawMarkers`),
+  so a failed look is logged once (`warning   no appearance for ...`); an animal without a race now takes the Greenlander RACE instead of a square.
 - The `race` is an ordinary RACE record (Beak Thing, Bonedog, Garru, Bull, Goat, Leviathan, Spider, Crab...), with
   the anatomy, blood, speeds and footprint of [character-stats.md "Races"](character-stats.md#races); the
   animals' forelegs are ARM parts ([character-stats.md](character-stats.md)).
@@ -156,6 +163,10 @@ is `+0x6fc` (the drawn size only; it is not refreshed above 0.95, unlike the ori
 - The main grid is shut while the animal lives (`CharacterAnimal` vtable slot 48 `FUN_1405cc630`, **Observed**): `main` is enabled only when the flag at +0x5bc (taken to be dead) is set,
   or the animal is not of the player's faction (`FUN_1407916d0`) and is down (vfunc 0x30); the animal window (`FUN_14014f570`) leaves a disabled `main` out. When slot 48 runs is
   **Unknown**. Meitou: `InventoryCommands.MainClosed`, drawn disabled; drops, right-click moves and pick-ups skip it; what is in it can still be taken out.
+- The worn bag is drawn on the animal: Garru Backpack's `pack_beast_luggage.mesh` and rebirth.mod's Bull Backpack `bull_bags.mesh` are skinned to skeletons
+  whose bone handles and names match `pack_beast.skeleton` and `bull.skeleton` (**Verified**, 44 and 37 bones compared), so they share the body's skeleton
+  as a person's clothing does; the material is the CONTAINER's `material` (gar backpack). Meitou: `CharacterAppearance.BuildAnimal` with the bag in
+  `backpack_attach`, one shared look per species and bag (`GeneratedAppearances.CreateAnimal`), swapped when the bag changes.
 - Nothing else ties the bag to the squad: it is an ordinary inventory (feeding from squad mates reads it, [simulation](../simulation.md#items-and-eating)).
 
 Meitou: `ItemFactory.AddAnimalBackpacks`.

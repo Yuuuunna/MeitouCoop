@@ -1170,10 +1170,7 @@ public sealed partial class AiSystem(PopulationData data, AiSettings? settings =
         // (docs/game/ai-tasks.md "Precedence", Observed; why its Idleness does not take over is Unknown).
         if (ReferenceEquals(goal, Idle) && table.Cold(slot)!.InSomething == Locks.HeldState.Bed)
         {
-            mind.Plan.Clear();
-            mind.Goal = null;
-            mind.Behaviour = AiBehaviour.None;
-            mind.Version = board.Version;
+            LieOnWithNoGoal(mind, board);
             return;
         }
 
@@ -1182,6 +1179,14 @@ public sealed partial class AiSystem(PopulationData data, AiSettings? settings =
         var profile = TaskProfiles.Of(type);
         bool fresh = TakeUp(world, slot, mind, goal, type, profile);
         behaviour = Adopt(world, slot, mind, goal, board, type, behaviour, fresh);
+
+        // An animal in a bed has no row that gets it out (116, 208, 257 are not registered for its repertoire): every goal that moves or fights fails
+        // to plan, so it lies on with no goal (docs/game/ai-tasks.md "Animals in beds", Verified).
+        if (behaviour != AiBehaviour.Sleep && Repertoire.StuckInBed(world, table.Cold(slot)!))
+        {
+            LieOnWithNoGoal(mind, board);
+            return;
+        }
 
         // Another goal gets it out of its bed (the get-up step's own think, or the goal's act-out where the plan has none); it stands where it lay.
         if (behaviour != AiBehaviour.Sleep && table.Cold(slot)!.InSomething == Locks.HeldState.Bed
@@ -1196,6 +1201,17 @@ public sealed partial class AiSystem(PopulationData data, AiSettings? settings =
         if (mind.Resume && Resume(world, slot, mind)) return;
 
         ActOut(world, slot, mind, goal, board, type, behaviour);
+    }
+
+    /// <summary>
+    /// One lying in a bed lies on with no goal: its plan, goal and behaviour cleared, as of the board's version.
+    /// </summary>
+    static void LieOnWithNoGoal(AiMind mind, Blackboard board)
+    {
+        mind.Plan.Clear();
+        mind.Goal = null;
+        mind.Behaviour = AiBehaviour.None;
+        mind.Version = board.Version;
     }
 
     /// <summary>

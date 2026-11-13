@@ -95,7 +95,14 @@ internal sealed class PresentationEventJournal(TimeProvider? clock = null)
             foreach (var e in _entries)
             {
                 if (e.Blood is { } mark && nearby(mark.Mark.Position))
-                    blood.Add(new(e.Id, mark with { Mark = mark.Mark with { Who = visible.Contains(mark.Mark.Who) ? mark.Mark.Who : CharacterId.None } }));
+                {
+                    var shown = mark.Mark with
+                    {
+                        Who = visible.Contains(mark.Mark.Who) ? mark.Mark.Who : CharacterId.None,
+                        Attacker = mark.Mark.Attacker is { } attacker && visible.Contains(attacker) ? attacker : null,
+                    };
+                    blood.Add(new(e.Id, mark with { Mark = shown }));
+                }
                 if (e.Spark is { } who && visible.Contains(who)) sparks.Add(new(e.Id, who));
                 if (e.Floater is { } floater && (floater.Kind != FloaterKind.Text || e.TargetOwner == player) &&
                     (floater.Target.IsNone ? nearby(floater.Position) : visible.Contains(floater.Target)))

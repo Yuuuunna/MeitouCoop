@@ -49,6 +49,10 @@ sealed class GameOptions
     /// </summary>
     public bool? VSync;
     /// <summary>
+    /// <c>--hdr</c> / <c>--no-hdr</c> for this run; null keeps the saved setting.
+    /// </summary>
+    public bool? Hdr;
+    /// <summary>
     /// <c>--ui</c>: the UI mode for this run; null keeps the saved one.
     /// </summary>
     public Meitou.Data.Ui.UiMode? UiMode;
@@ -115,6 +119,10 @@ sealed class GameOptions
     /// <c>--sandbox-races</c>: one character of every person race (a CHARACTER record listing only that race) in rings round the pair, whatever n is.
     /// </summary>
     public bool SandboxRaces;
+    /// <summary>
+    /// <c>--sandbox-animals</c>: one animal of every race the ANIMAL_CHARACTER records use, in the rings.
+    /// </summary>
+    public bool SandboxAnimals;
     /// <summary>
     /// <c>--terrain-sandbox [x,z]</c>: the empty world round a flat spot whose ground is a field of tiles, one per ground texture
     /// (GroundRelief.FieldCentre).
@@ -222,6 +230,11 @@ sealed class GameOptions
     /// </summary>
     public string Renderer = "vulkan";
     /// <summary>
+    /// <c>--metal-gpu-budget &lt;MB&gt;</c>: the Metal memory guard's ceiling for this run, over <c>MEITOU_METAL_GPU_BUDGET_MB</c> (the launcher's
+    /// setting); null: that, else the default.
+    /// </summary>
+    public ulong? MetalGpuBudgetMb;
+    /// <summary>
     /// With <c>--screenshot</c>: a staged scene to check behaviour offscreen (<c>--scene</c>: fight, turret, bed, acid, menu; ScreenshotScenes).
     /// </summary>
     public string? Scene;
@@ -269,6 +282,7 @@ sealed class GameOptions
           --sandbox [n]              animation sandbox: no world, a flat 1000x1000 wireframe floor (lines every 10, bold every 100) with 1 character (n = 2: two facing each other 30 units apart; more: the rest idle in rings round them, up to 1000); Z/X/C walk/run/free, [ ] fixed speed, P patrol, G fight, Y follow; works with --screenshot --ticks
           --sandbox-character <name> the CHARACTER or ANIMAL_CHARACTER record the sandbox spawns (default: the first member of the default new-game start)
           --sandbox-mode <list>      the sandbox hero's start, comma-separated: walk, run or free, a fixed speed in u/s, patrol (the 400-unit patrol), fight (the G key, with --sandbox 2), e.g. run,patrol (with --move-to or --screenshot)
+          --sandbox-animals          the sandbox adds one animal of every race the ANIMAL_CHARACTER records use (the first record of each), in the rings; the log lists them
           --sandbox-races            the sandbox adds one character of every person race (the first CHARACTER record listing only that race) in rings round the pair, whatever n is; the log lists them
           --terrain-sandbox [cliffs] [x,z]  the empty world round a flat spot (default the flattest found) whose ground is a field of 200-unit tiles, one per ground texture
                                      (cliffs: 100-unit tiles of every cliff texture on a 45-degree face),
@@ -292,7 +306,10 @@ sealed class GameOptions
           --play-bench <dir>         with --load (or a new game): the game driven by a script (idle, camera orbit, zoom, pan, a long travel, time x2 and x5, talk, trade,
                                      a container, doors, a pick-up, path requests, a walk, a fight, loot, the panels, a horizon view, the overview), every frame measured
                                      (frame, update, world tick steps and systems, render stages, GPU stages, collections); writes frames.csv and summary.md there and
-                                     quits; frame limit and vsync off; MEITOU_BENCH_ONLY=a,b keeps those segments
+                                     quits; frame limit and vsync off (a later --vsync turns vsync on); MEITOU_BENCH_ONLY=a,b keeps those segments;
+                                     works with --renderer metal too (GPU time per frame, no GPU stages)
+          --metal-gpu-budget <MB>    Metal: the memory guard's GPU allocation ceiling for this run (over MEITOU_METAL_GPU_BUDGET_MB, the launcher's setting;
+                                     default a third of the Mac's memory, 5120 to 10240)
           --benchmark-baseline       the settings benchmarks for the site use (bench/kit): a 1920x1080 window, the Medium tier, no GI, ground parallax or tessellation, no upscaler, SMAA;
                                      like --low-end, the saved graphics are neither applied nor overwritten
           --control-dir <dir>        agent channel (debug): polls <dir>/cmd (lines "<id> <console command>"), appends results to <dir>/out; also MEITOU_CONTROL_DIR
@@ -467,6 +484,12 @@ sealed class GameOptions
             case "--no-vsync":
                 g.VSync = false;
                 break;
+            case "--hdr":
+                g.Hdr = true;
+                break;
+            case "--no-hdr":
+                g.Hdr = false;
+                break;
             case "--ticks":
                 g.Ticks = int.Parse(Next(), CultureInfo.InvariantCulture);
                 break;
@@ -485,6 +508,10 @@ sealed class GameOptions
                 }
             case "--play-bench":
                 (g.PlayBench, g.FpsLimit, g.VSync) = (Next(), 0, false);
+                break;
+            case "--metal-gpu-budget":
+                g.MetalGpuBudgetMb = ulong.Parse(Next(), CultureInfo.InvariantCulture);
+                if (g.MetalGpuBudgetMb == 0) throw new ArgumentException("--metal-gpu-budget must be a size in MB above 0");
                 break;
             case "--no-precompile":
                 g.NoPrecompile = true;
@@ -547,6 +574,9 @@ sealed class GameOptions
                 break;
             case "--sandbox-races":
                 g.SandboxRaces = true;
+                break;
+            case "--sandbox-animals":
+                g.SandboxAnimals = true;
                 break;
             case "--terrain-sandbox":
                 g.TerrainSandbox = TerrainSandboxSpot;

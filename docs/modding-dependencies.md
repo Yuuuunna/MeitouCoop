@@ -5,6 +5,10 @@ instead of a private copy. Code: `CodeModManifest`, `CodeModVersion`, `CodeModCh
 `ModLoadContext`, `ModHost`, `ModContext.Dependency<T>` (`Meitou.Modding`), the launcher's mod list. Tests: `ModDependencyTests`.
 General loader contract: [modding](modding.md).
 
+**Observed** (source): `ModContext.AddEquipmentSlot` registrations commit in dependency order through the shared
+`Meitou.Modding` assembly on both client and server. A failed initialization commits no pending slots; duplicate
+inventory sections or FCS slot numbers are refused. This adds no manifest keys and retains loader API 2.
+
 ## Manifest
 
 ```json

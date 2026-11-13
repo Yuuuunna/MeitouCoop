@@ -85,6 +85,12 @@ A finished one with doors also gets the door keys of [locks](../game/locks.md#sa
 
 **Town machines**: current native storage and read-only legacy CAMERA migration are described under [zone files](#zone-files).
 
+**Rock machines** (Meitou `Saving/RockMachineSave`, #596): a worked rock (a natural site, [rocks](../game/buildings-production.md#resources)) has no zone state, so its machine is Meitou-only keys on CAMERA: string `meitou rock<i>` (the natural site id), bool `meitou rock<i> own` (claimed by the player's faction), int `meitou rock<i> town` (player town number, absent: none), and the town machines' `st`, `out`, `outn`, `in<k>`, `lv<k>`. Read back before the first tick; the machine waits for the foliage to place its rock again. An id naming no rock BUILDING is dropped.
+
+**Observed** (Coop source): `NaturalClaimsSave` records actual owners by stable faction ID and restores them before rock machines;
+those claims take precedence over the legacy `own` bool. A restored machine retains ore, progress, owner and town while its foliage
+zone is absent, including across another checkpoint. Imported fresh worlds clear both the rock state and the natural claims.
+
 **Platoon mission town** (Meitou key `meitou mission town` on a roaming or stored platoon record: the TOWN id of the town its package was taking it to when it left the world, absent: none; read back as `Platoon.Target`, which a TRAVEL_TARGET stand-in heads for).
 
 **Building record** (Meitou keys on a registered town building's GAMESTATE_BUILDING, [locks](../game/locks.md#building-record)): int `meitou designation`, string `meitou template` (the last assigned SQUAD_TEMPLATE id, absent: none) and the stored public byte as `is public day`; a state without them is a building with no record yet.
@@ -117,6 +123,10 @@ Optional character keys include shaved/psts/TI/dat/sentence/sheath/floor; option
 include mission/owned/campaign/tags/inventory-refresh-time/slave. Optional town/nest and MEDICAL
 limbs keys vary. Test record keys against surveyed saves, retain extension fields, and preserve
 editor-authored files. Original acceptance of a save synthesized from scratch is unverified.
+
+An item worn in a code mod's [equipment slot](../modding.md#registration-surface) is saved with the slot's name as its `section`. Loaded
+without that mod, a character's item in a section it has no slot for is auto-added to its grids (`SavedKit.Fits`); how the original game
+loads such an item is **Unknown**.
 
 ### Where saves live
 
@@ -161,6 +171,10 @@ An import (`SaveImport.Filter`) builds a new save without them, so mods start fr
 ([dependencies](../modding-dependencies.md#saves)).
 **Observed** (2026-11-04, a scratch save written and read back, win-x64). Whether the original game ignores the extra folder is
 **Unknown**.
+
+### Weapon blood
+
+Meitou only (optional "Blood on weapons and gear", [blood-decals.md](../game/blood-decals.md#on-weapons-and-gear-meitou)): `meitou-weapon-blood.json` at the save folder's root, written with the other files (`SaveWeaponBlood`, `SaveGame.WeaponBlood`), kept by a clone, not a field of any original file. UTF-8 JSON `{ "format": 1, "weapons": [ { "hand": [type, C, CS, I, S], "amount", "wet", "colour": [r, g, b], "back" } ] }`: `hand` is the character's save handle (the identity that survives a load), `amount` 0..1, `wet` 0..1, `colour` the victim's blood (0..1). Missing, unreadable or another format reads as no entries. **Observed** (2026-11-12, a scratch save written and read back, win-x64). Whether the original ignores the extra file is **Unknown** (as for [mod data](#mod-data)).
 
 ### Save requests (`FUN_14047c310`)
 
@@ -344,6 +358,16 @@ One PLATOON per player squad, `squad index` its place in the squad order (**Obse
 copies its text into the platoon's record name, `FUN_14048df00`, **Observed**; 962 PLATOON records of two saves all have name = `platoon stringID`, none
 renamed). Meitou keeps each loaded squad on its own file (`Squad.SaveName`) and writes a squad made since as a new platoon, empty squads included; a
 character that changed squads is written anew in its new platoon and leaves the old file; a removed squad's platoon is deleted.
+
+### Missing character records
+
+A platoon file's character instance whose CHARACTER record the game data lacks (its mod removed; the file holds only the id, not the record) is made
+from the Exile `136-gamedata.quack` with its saved states on top, when its id is longer than 2 characters and more than 4 of its state records
+were found; the log says "missing character base data assumed to be deleted <id>". Otherwise it is skipped ("Possible problem- leveldata has
+missing item from gamedata..."). **Verified** by decompile: ActivePlatoon vtable slot 7 `FUN_14036f6b0`, called by `FUN_14036d7e0` with the
+found-states count. The character's record is then the Exile, so the next save writes that id. Meitou does the same (`SavedCharacters.RecordOf`,
+player and NPC platoons; a load note instead of the log). **Observed** on #511's save (UWE removed): Rusty loads with the squad, his 6 items and
+saved look.
 
 ### NPC platoons (Meitou mapping)
 

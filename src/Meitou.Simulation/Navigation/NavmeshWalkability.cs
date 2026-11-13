@@ -90,7 +90,8 @@ public sealed partial class NavmeshWalkability : IWalkability
     const int UnreachableLimit = 4096;
     /// <summary>
     /// Goals found unreachable over the loaded zones, by goal polygon and the agent's radius and door rule: the navmesh they were found on (any other
-    /// mesh, after a zone went live or unloaded, asks again), the doors' version (NavDoors.Version), the nearest reachable point and when. Each was
+    /// mesh, after a zone went live or unloaded, asks again), the doors' version (NavDoors.Version), the nearest reachable point, a closed leaf
+    /// crossed by the tail and when. Each was
     /// 300-600 ms of searching, asked again and again by a town's residents walking to a goal they cannot reach (Observed, zone 14.23: a cabinet in a
     /// building, docs/game/pathfinding.md).
     /// </summary>
@@ -416,8 +417,10 @@ public sealed partial class NavmeshWalkability : IWalkability
             return Authoritative(LongRoute(w, from, to, agent, fromLoaded, incarnation));
         var key = (to, agent);
         bool Current() => ReferenceEquals(w, _world) && doorVersion == Doors.Version && incarnation == (NavigationIncarnation?.Invoke() ?? 0);
-        if (AllowUnloadedFallback && cache is not null && cache.Found.TryGetValue(key, out var hit) && System.Diagnostics.Stopwatch.GetElapsedTime(hit.At).TotalSeconds < UnreachableSeconds && Exact(w, from, hit.Nearest, agent)is { Found: true } near && Current())
-            return Provisional(w, near, to, incarnation);
+        if (AllowUnloadedFallback && cache is not null && cache.Found.TryGetValue(key, out var hit)
+            && System.Diagnostics.Stopwatch.GetElapsedTime(hit.At).TotalSeconds < UnreachableSeconds
+            && Exact(w, from, hit.Nearest, agent) is { Found: true } near && Current())
+            return Provisional(w, near, to, incarnation, hit.Door);
         var exact = Exact(w, from, to, agent);
         if (exact.Found)
             return exact;
@@ -447,14 +450,15 @@ public sealed partial class NavmeshWalkability : IWalkability
             return exact;
         if (Vector2.Distance(new(part.Points[^1].X, part.Points[^1].Z), new(to.X, to.Z)) <= NavQuery.GoalSnap)
             return part;
+        // A provisional tail crosses the closed leaf, so the lock system can stop it at the gate instead of a nearby post.
+        var door = NavQuery.LastSearchMetClosedDoor ? new NavQuery(w, Doors).ClosedDoorOnTheWay(from, to, part.Points[^1], agent) : null;
         if (cache is not null && Current())
         {
-            if (cache.Found.Count >= UnreachableLimit)
-                cache.Found.Clear();
-            cache.Found[key] = (part.Points[^1], System.Diagnostics.Stopwatch.GetTimestamp());
+            if (cache.Found.Count >= UnreachableLimit) cache.Found.Clear();
+            cache.Found[key] = (part.Points[^1], door, System.Diagnostics.Stopwatch.GetTimestamp());
         }
 
-        return Provisional(w, part, to, incarnation);
+        return Provisional(w, part, to, incarnation, door);
     }
 
     /// <summary>
@@ -663,7 +667,7 @@ public sealed partial class NavmeshWalkability : IWalkability
         public readonly long Incarnation = incarnation;
         public readonly int Doors = doors;
         public readonly long At = System.Diagnostics.Stopwatch.GetTimestamp();
-        public readonly System.Collections.Concurrent.ConcurrentDictionary<(Vector3 Goal, NavAgent Agent), (Vector3 Nearest, long At)> Found = new();
+        public readonly System.Collections.Concurrent.ConcurrentDictionary<(Vector3 Goal, NavAgent Agent), (Vector3 Nearest, Vector3? Door, long At)> Found = new();
     }
 
     UnreachableCache? UnreachableFor(NavWorld w, long incarnation, int doors)
@@ -682,9 +686,11 @@ public sealed partial class NavmeshWalkability : IWalkability
         }
     }
 
-    PathResult Provisional(NavWorld w, PathResult part, Vector3 to, long incarnation)
+    PathResult Provisional(NavWorld w, PathResult part, Vector3 to, long incarnation, Vector3? door = null)
     {
-        List<Vector3> points = [..part.Points, to];
+        List<Vector3> points = [.. part.Points];
+        if (door is { } through) points.Add(through);
+        points.Add(to);
         Ahead(w, points, part.Points.Count, incarnation);
         return Authoritative(new PathResult(points) { Exact = part.Points.Count });
     }

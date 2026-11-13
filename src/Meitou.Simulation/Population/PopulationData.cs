@@ -31,6 +31,12 @@ public interface IAppearanceSource
     CharacterAppearance? Create(string recordId, string? factionId, int seed, string? templateId) => Create(recordId, factionId, seed);
 
     /// <summary>
+    /// As the 4-argument <c>Create</c>, the race forced to <paramref name="raceId"/> when given (debug: control channel <c>spawn-at --race</c>).
+    /// </summary>
+    CharacterAppearance? Create(string recordId, string? factionId, int seed, string? templateId, string? raceId) =>
+        Create(recordId, factionId, seed, templateId);
+
+    /// <summary>
     /// The look of a CHARACTER record drawn from a given loadout (a saved character's appearance and worn items); nothing is rolled. Null: no look.
     /// </summary>
     CharacterAppearance? Create(string recordId, Loadout loadout) => null;
@@ -40,6 +46,11 @@ public interface IAppearanceSource
     /// CHARACTER's <c>shaved</c>.
     /// </summary>
     CharacterAppearance? Create(string recordId, Loadout loadout, bool? shaved) => Create(recordId, loadout);
+
+    /// <summary>
+    /// The look of an ANIMAL_CHARACTER record wearing the CONTAINER <paramref name="backpackId"/> (null: no bag). Null: no look.
+    /// </summary>
+    CharacterAppearance? CreateAnimal(string recordId, string? backpackId) => null;
 
     /// <summary>
     /// A random name for a <c>named</c> CHARACTER of the sex (<see cref="NamePool"/>); null: none (no lists).
@@ -66,8 +77,8 @@ public interface IAppearanceSource
 public sealed class GeneratedAppearances(GameDatabase db, string installRoot) : IAppearanceSource
 {
     /// <summary>
-    /// One look per ANIMAL_CHARACTER (nothing of an animal's is rolled): every animal of a record shares it, so the renderer builds one asset
-    /// per species.
+    /// One look per ANIMAL_CHARACTER and worn bag (nothing of an animal's is rolled): every animal of a record wearing the same bag shares it, so the
+    /// renderer builds one asset per species and bag. The record's own look (as it is made) is keyed by the record id alone.
     /// </summary>
     readonly ConcurrentDictionary<string, CharacterAppearance?> _animals = new(StringComparer.Ordinal);
 
@@ -77,39 +88,72 @@ public sealed class GeneratedAppearances(GameDatabase db, string installRoot) : 
     public CharacterAppearance? Create(string recordId, string? factionId, int seed) => Create(recordId, factionId, seed, null);
 
     /// <summary>
+    /// As the 4-argument <c>Create</c>, the race forced to <paramref name="raceId"/> when given (debug: control channel <c>spawn-at --race</c>).
+    /// </summary>
+    public CharacterAppearance? Create(string recordId, string? factionId, int seed, string? templateId, string? raceId) =>
+        raceId is null
+            ? Create(recordId, factionId, seed, templateId)
+            : Create(recordId, factionId, seed, templateId, [new GameReference(raceId, new ReferenceValues(1, 0, 0))]);
+
+    /// <summary>
     /// The look of a CHARACTER record rolled from <paramref name="seed"/> (<paramref name="templateId"/>: the squad template it is made for); an
     /// animal's is its species' one look. Null, with a warning once per record, when the look cannot be built.
     /// </summary>
-    public CharacterAppearance? Create(string recordId, string? factionId, int seed, string? templateId)
+    public CharacterAppearance? Create(string recordId, string? factionId, int seed, string? templateId) =>
+        Create(recordId, factionId, seed, templateId, db.Find(templateId ?? "")?.GetReferences("race override"));
+
+    /// <summary>
+    /// The look with <paramref name="raceOverride"/> (RACE references, the value 0 the weight) winning over the CHARACTER's races when it has any.
+    /// </summary>
+    CharacterAppearance? Create(string recordId, string? factionId, int seed, string? templateId, IReadOnlyList<GameReference>? raceOverride)
     {
         try
         {
             if (db.Find(recordId) is { Type: FcsRecordType.AnimalCharacter } animal)
             {
-                return _animals.GetOrAdd(recordId, static (_, s) =>
-                {
-                    try
-                    {
-                        return CharacterAppearance.BuildAnimal(s.db, s.installRoot, s.animal);
-                    }
-                    catch (KeyNotFoundException)
-                    {
-                        return null;
-                    }
-                }, (db, installRoot, animal));
+                return _animals.GetOrAdd(recordId, static (_, s) => BuildAnimal(() => CharacterAppearance.BuildAnimal(s.db, s.installRoot, s.animal)),
+                    (db, installRoot, animal));
             }
 
             var options = new CharacterOptions
             {
                 Seed = seed,
                 Faction = factionId,
-                RaceOverride = templateId is null ? null : db.Find(templateId)?.GetReferences("race override"),
+                RaceOverride = raceOverride,
             };
             return CharacterAppearance.Build(db, installRoot, recordId, options);
         }
         catch (Exception e) when (e is IOException or FcsFormatException or KeyNotFoundException or InvalidDataException or UnauthorizedAccessException)
         {
             Warn(recordId, e);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The look of an ANIMAL_CHARACTER wearing the CONTAINER <paramref name="backpackId"/> (null: none), shared by every animal of the record wearing
+    /// it; null when the record is no animal or its look cannot be built.
+    /// </summary>
+    public CharacterAppearance? CreateAnimal(string recordId, string? backpackId)
+    {
+        if (db.Find(recordId) is not { Type: FcsRecordType.AnimalCharacter } animal) return null;
+
+        var backpack = backpackId is null ? null : db.Find(backpackId);
+        return _animals.GetOrAdd($"{recordId}|{backpackId}", static (_, s) =>
+            BuildAnimal(() => CharacterAppearance.BuildAnimal(s.db, s.installRoot, s.animal, s.backpack)), (db, installRoot, animal, backpack));
+    }
+
+    /// <summary>
+    /// An animal's look from <paramref name="build"/>; null when its record names no race.
+    /// </summary>
+    static CharacterAppearance? BuildAnimal(Func<CharacterAppearance> build)
+    {
+        try
+        {
+            return build();
+        }
+        catch (KeyNotFoundException)
+        {
             return null;
         }
     }

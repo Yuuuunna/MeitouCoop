@@ -55,6 +55,23 @@ sealed partial class GameHost
     /// The hour the sky arrival shows instead of the clock's; null without one.
     /// </summary>
     internal float? PresentationHour;
+
+    /// <summary>
+    /// Photo mode's hour of day, drawn in place of the game clock's (the sun, sky, stars and lamps follow it; the clock, the weather and the
+    /// simulation do not); null outside photo mode or while it shows the game's own time.
+    /// </summary>
+    internal float? PhotoHour;
+
+    /// <summary>
+    /// Photo mode is on: the right button turns the view like the Orbit action.
+    /// </summary>
+    internal bool PhotoLook;
+
+    /// <summary>
+    /// The photo mode (null before the interactive loop makes it).
+    /// </summary>
+    internal Host.Photo.PhotoMode? Photo;
+
     /// <summary>
     /// The hour of the save being read, set by the reading worker as soon as its CAMERA is read (NaN until then), for the sky arrival.
     /// </summary>
@@ -159,6 +176,8 @@ sealed partial class GameHost
                 return;
             }
             SetLoadingStep(stage.Step);
+            string sky = SkyArrival is { } flight ? $" (sky {(flight.AtStars ? "at the stars" : "ascending")})" : "";
+            Console.WriteLine($"loading   stage {stage.Step} starts at {load.Clock.Elapsed.TotalSeconds:0.0} s{sky}");
             load.Waiting = stage.Run();
             load.Shown = false;
         }
@@ -237,7 +256,7 @@ sealed partial class GameHost
         bool charactersReady = Gpu.Characters is not { } characters || !characters.ContentPending &&
             !Session.CurrentSnapshot.Characters.Any(c => AwaitsLook(c, characters));
         bool sceneReady = TitleScreen.TitleVisible ? TitleScreen.TitleSceneReady : populationReady && charactersReady &&
-            Gpu.Streamer is not { Idle: false } && !(Gpu.Objects?.Pending > 0) && !(Gpu.Foliage?.LoadingPending > 0);
+            Gpu.Streamer is not { Idle: false } && !(Gpu.Objects?.LoadingPending > 0) && !(Gpu.Foliage?.LoadingPending > 0);
         _guardSeconds = Gpu.Guard is { Pressure: true } ? _guardSeconds + seconds : 0;
         if (!sceneReady && _guardSeconds >= GuardWait && (TitleScreen.TitleVisible || populationReady))
         {
@@ -296,10 +315,12 @@ sealed partial class GameHost
         bool charactersDone = TitleScreen.TitleVisible ? TitleScreen.TitleCharactersReady : charactersReady;
         Console.WriteLine($"loading   {(TitleScreen.TitleVisible ? "menu" : "game")} still preparing: "
             + $"terrain {(Gpu.Streamer?.Idle == false ? "pending" : "ready")}, "
-            + $"objects {Gpu.Objects?.Pending ?? 0}{(Gpu.Objects is { Pending: > 0 } po ? $" ({po.PendingDetail})" : "")}, "
+            + $"objects {Gpu.Objects?.LoadingPending ?? 0}{(Gpu.Objects is { LoadingPending: > 0 } po ? $" ({po.PendingDetail})" : "")}, "
             + $"foliage {Gpu.Foliage?.LoadingPending ?? 0}{(Gpu.Foliage is { LoadingPending: > 0 } pf ? $" ({pf.PendingDetail})" : "")}, "
             + $"population {(populationReady ? "ready" : "pending")}, "
-            + $"characters {(charactersDone ? "ready" : $"pending ({pendingLooks} looks; {Gpu.Characters?.PendingLoads ?? 0} assets/textures)")}");
+            + $"characters {(charactersDone ? "ready" : $"pending ({pendingLooks} looks; {Gpu.Characters?.PendingLoads ?? 0} assets/textures)")}, "
+            + $"streaming {Rendering.Frame.BackgroundWork.Describe()}, "
+            + $"guard {(Gpu.Guard is { } gd ? $"{gd.Fraction:0.00} pressure {gd.Pressure}" : "-")}");
     }
 
     /// <summary>
@@ -339,7 +360,8 @@ sealed partial class GameHost
 
     /// <summary>
     /// The host's side of a new world: the camera focus sent again, the first tick (it publishes the snapshot), the draw list and the mouse state
-    /// dropped, the menus closed.
+    /// dropped, the menus closed. The caller has set the game clock: the first tick runs at its hours, not at the world's default, or what that
+    /// tick stamps (an escaped slave's time) lies in the future once the session's ticks set the clock's (#515).
     /// </summary>
     internal void SettleNewWorld()
     {

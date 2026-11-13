@@ -286,6 +286,8 @@ public sealed partial class WorldViewCodec
         if (view.Snapshot.Characters is null || view.Snapshot.Characters.Count > 65536 || view.Snapshot.Characters.Any(c => c is null || c.Id.IsNone || !Finite(c.Position) || !float.IsFinite(c.Yaw) || float.IsInfinity(c.DrawYaw) || c.Path is null || c.PathExact < 0 || c.PathExact != int.MaxValue && c.PathExact > c.Path.Count) || view.Snapshot.Characters.Select(c => c.Id).Distinct().Count() != view.Snapshot.Characters.Count || view.Roles.Any(r => r is null || r.Entity.IsNone) || view.Roles.Select(r => r.Entity).Distinct().Count() != view.Roles.Count || view.Factions.Any(f => f is null || f.Faction < 0 || f.UnlockedBuildings is null || !Enum.IsDefined((SquadFormation)f.Formation)) || view.Factions.Select(f => f.Faction).Distinct().Count() != view.Factions.Count || view.ActiveFaction >= 0 && !view.Factions.Any(f => f.Faction == view.ActiveFaction))
             throw new InvalidDataException("Invalid view records.");
         ValidateContainerOpener(view);
+        if (view.Snapshot.GroundItems is null || view.Snapshot.GroundItems.Any(item => item.Material is null || item.Material.Length > 4096))
+            throw new InvalidDataException("Invalid ground item material identity.");
         if (view.Snapshot.Projectiles is null || view.Snapshot.Projectiles.Any(p => !float.IsFinite(p.Speed) || p.Speed < 0))
             throw new InvalidDataException("Invalid projectile presentation speed.");
         if (view.FactionCatalogue.Count > 65536 || view.FactionCatalogue.Any(f => f is null || f.Faction < 0 || f.Name is null || f.Name.Length > 4096 || f.RecordId is { Length: > 4096 }) || view.FactionCatalogue.Select(f => f.Faction).Distinct().Count() != view.FactionCatalogue.Count || view.FactionCatalogue.Where(f => f.RecordId is not null).Select(f => f.RecordId).Distinct(StringComparer.Ordinal).Count() != view.FactionCatalogue.Count(f => f.RecordId is not null))
@@ -303,7 +305,7 @@ public sealed partial class WorldViewCodec
             throw new InvalidDataException("Invalid presentation event batch.");
         if (view.Events.Sounds.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || !Enum.IsDefined(e.Value.Kind) || !Finite(e.Value.Position) || e.Value.Item?.Length > 4096))
             throw new InvalidDataException("Invalid sound event batch.");
-        if (view.Events.Blood.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Value.Tick < 0 || e.Value.CorpseTicks < 0 || !float.IsFinite(e.Value.TickSeconds) || e.Value.TickSeconds is <= 0 or > 1 || !Enum.IsDefined(e.Value.Mark.Kind) || !Finite(e.Value.Mark.Position) || !float.IsFinite(e.Value.Mark.Direction.X) || !float.IsFinite(e.Value.Mark.Direction.Y) || !float.IsFinite(e.Value.Mark.Amount) || e.Value.Mark.Amount < 0 || e.Value.Mark.Race?.Length > 4096) || view.Events.Sparks.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Who.IsNone))
+        if (view.Events.Blood.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Value.Tick < 0 || e.Value.CorpseTicks < 0 || !float.IsFinite(e.Value.TickSeconds) || e.Value.TickSeconds is <= 0 or > 1 || !Enum.IsDefined(e.Value.Mark.Kind) || !Finite(e.Value.Mark.Position) || !float.IsFinite(e.Value.Mark.Direction.X) || !float.IsFinite(e.Value.Mark.Direction.Y) || !float.IsFinite(e.Value.Mark.Amount) || e.Value.Mark.Amount < 0 || e.Value.Mark.Race?.Length > 4096 || InvalidBloodAttacker(e.Value.Mark)) || view.Events.Sparks.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Who.IsNone))
             throw new InvalidDataException("Invalid combat visual event batch.");
         if (view.Events.Speech.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Speaker.IsNone || e.Line.Owner is null || e.Line.Text is null || e.Line.Owner.Length > 256 || e.Line.Text.Length > 4096) || view.Events.Floaters.Select(e => e.Id).Concat(view.Events.Sounds.Select(e => e.Id)).Concat(view.Events.Speech.Select(e => e.Id)).Concat(view.Events.Blood.Select(e => e.Id)).Concat(view.Events.Sparks.Select(e => e.Id)).Distinct().Count() != view.Events.Floaters.Count + view.Events.Sounds.Count + view.Events.Speech.Count + view.Events.Blood.Count + view.Events.Sparks.Count)
             throw new InvalidDataException("Invalid speech event batch.");
@@ -327,6 +329,12 @@ public sealed partial class WorldViewCodec
         if (opener != CharacterId.None && (opener.Slot < 0 || opener.Generation < 0))
             throw new InvalidDataException("Invalid private container opener identity.");
     }
+
+    /// <summary>
+    /// Weapon blood can name one structurally valid attacker. Visibility is enforced when the server projects the event, independently of lanes.
+    /// </summary>
+    static bool InvalidBloodAttacker(BloodMark mark) => mark.Attacker is { } attacker
+        && (mark.Kind != BloodMarkKind.Splash || attacker.IsNone || attacker.Generation < 0);
 
     static bool Finite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
     sealed class SingleNumber(bool allowNaN = false) : JsonConverter<float>
