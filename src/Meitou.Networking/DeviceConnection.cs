@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Meitou.Connections;
 using Meitou.Content;
 
 namespace Meitou.Networking;
@@ -15,17 +16,10 @@ public static class DeviceConnection
         public override string ToString() => $"Device identity {Account} [redacted]";
     }
 
-    public static (string Host, int Port) ParseAddress(string address)
-    {
-        address = address.Trim();
-        if (address.Length == 0 || !Uri.TryCreate("https://" + address, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host) || uri.UserInfo.Length != 0 || uri.AbsolutePath != "/" || uri.Query.Length != 0 || uri.Fragment.Length != 0)
-            throw new ArgumentException("Enter a server as host:port (IPv6: [address]:port).");
-        bool explicitPort = address.StartsWith('[') ? address.LastIndexOf(']') < address.Length - 1 : address.Contains(':');
-        int port = explicitPort ? uri.Port : 27800;
-        if (port is < 1 or > 65535)
-            throw new ArgumentException("Invalid server port.");
-        return (uri.IdnHost.Trim('[', ']').ToLowerInvariant(), port);
-    }
+    /// <summary>
+    /// Parses the address with the same syntax the launcher accepts.
+    /// </summary>
+    public static (string Host, int Port) ParseAddress(string address) => ServerAddress.Parse(address);
 
     public static async Task<ServerConnectionProfile> PrepareAsync(GameInstall install, string address, CancellationToken token, string? identityDirectory = null)
     {

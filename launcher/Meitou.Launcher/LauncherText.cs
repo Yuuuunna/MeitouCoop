@@ -17,7 +17,7 @@ static class LauncherText
     /// <summary>
     /// Combo boxes whose items the layout writes as labels (the Mac renderer and memory choices), not data like the language list.
     /// </summary>
-    static readonly HashSet<string> LabelCombos = ["RendererBox", "MetalBudgetBox"];
+    static readonly HashSet<string> LabelCombos = ["RendererBox", "MetalBudgetBox", "SourceBox"];
 
     /// <summary>
     /// The active language's catalog; empty for English.
@@ -75,7 +75,8 @@ static class LauncherText
     /// A control whose text or items are data (a list, the release notes, the news, the newest save's name), not a label.
     /// </summary>
     static bool HoldsData(Control control) => control is ComboBox or ListBox
-        or ContentControl { Name: "ReleaseNotes" } or StackPanel { Name: "NewsPanel" } or TextBlock { Name: "ContinueSaveText" };
+        or ContentControl { Name: "ReleaseNotes" } or StackPanel { Name: "NewsPanel" }
+        or TextBlock { Name: "ContinueSaveText" or "TargetText" or "BuildText" or "ProblemText" };
 
     /// <summary>
     /// Translates the label items of <paramref name="combo"/>. The closed box shows the content its selected item had when chosen, so a new

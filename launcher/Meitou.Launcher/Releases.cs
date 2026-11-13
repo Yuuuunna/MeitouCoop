@@ -6,12 +6,12 @@ using System.Text.Json;
 namespace Meitou.Launcher;
 
 /// <summary>
-/// What a GitHub release of this repository is: the game (tags <c>v&lt;version&gt;</c>) or the launcher (<c>launcher-v&lt;version&gt;</c>).
+/// What a GitHub release is: Coop game tags <c>coop-v&lt;version&gt;</c>, inherited <c>v&lt;version&gt;</c> tags or launcher tags.
 /// </summary>
 public enum ReleaseKind
 {
     /// <summary>
-    /// A game release (tag <c>v&lt;version&gt;</c>).
+    /// A game release (tag <c>coop-v&lt;version&gt;</c>, or an inherited <c>v&lt;version&gt;</c> tag).
     /// </summary>
     Game,
 
@@ -54,7 +54,7 @@ public sealed class Releases(HttpClient http)
     /// <summary>
     /// The GitHub repository whose releases, news and launcher updates the launcher reads.
     /// </summary>
-    public const string Repository = "VlcekM/MeitouClient";
+    public const string Repository = LauncherIdentity.Repository;
 
     /// <summary>
     /// GitHub's largest page; the page cap only guards against a runaway loop (5000 releases).
@@ -181,6 +181,11 @@ public sealed class Releases(HttpClient http)
             {
                 kind = ReleaseKind.Launcher;
                 version = tag["launcher-v".Length..];
+            }
+            else if (tag.StartsWith("coop-v", StringComparison.Ordinal))
+            {
+                kind = ReleaseKind.Game;
+                version = tag["coop-v".Length..];
             }
             else if (tag.Length > 1 && tag[0] == 'v' && char.IsAsciiDigit(tag[1]))
             {

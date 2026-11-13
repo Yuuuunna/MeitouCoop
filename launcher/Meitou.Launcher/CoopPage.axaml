@@ -1,0 +1,50 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Meitou.Launcher.CoopPage">
+  <DockPanel>
+    <Border DockPanel.Dock="Top" Classes="header" Margin="0,0,0,10">
+      <TextBlock Text="Meitou Coop" />
+    </Border>
+    <ScrollViewer Classes="page">
+      <StackPanel Spacing="14" Margin="0,0,14,4">
+        <Border Classes="row">
+          <StackPanel Spacing="10">
+            <TextBlock Classes="name" Text="Client source" />
+            <ComboBox x:Name="SourceBox" SelectedIndex="0" SelectionChanged="Source_Changed" HorizontalAlignment="Stretch">
+              <ComboBoxItem Content="Installed release" />
+              <ComboBoxItem Content="Local client" />
+            </ComboBox>
+            <TextBlock Classes="desc" TextWrapping="Wrap" Text="Choose an installed version with the arrow beside Play, or select a local client below." />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox x:Name="LocalPathBox" PlaceholderText="Client folder or executable" />
+              <Button Grid.Column="1" Content="Browse" Click="Browse_Click" />
+            </Grid>
+            <WrapPanel Orientation="Horizontal">
+              <Button Content="Use local client" Click="ApplyLocal_Click" Margin="0,0,8,6" />
+              <Button Content="Find checkout build" Click="FindCheckout_Click" Margin="0,0,8,6" />
+              <Button x:Name="RefreshButton" Content="Refresh client" Click="Refresh_Click" Margin="0,0,8,6" />
+              <Button Content="Open client folder" Click="OpenFolder_Click" Margin="0,0,8,6" />
+              <Button Content="Open log" Click="OpenLog_Click" Margin="0,0,8,6" />
+            </WrapPanel>
+            <TextBlock x:Name="TargetText" Classes="desc" TextWrapping="Wrap" />
+            <TextBlock x:Name="BuildText" Classes="desc" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+        <Border Classes="row">
+          <StackPanel Spacing="10">
+            <TextBlock Classes="name" Text="Join a server" />
+            <TextBlock Classes="desc" TextWrapping="Wrap" Text="Enter host:port. The game remembers your existing player identity and checks server compatibility." />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox x:Name="AddressBox" PlaceholderText="localhost:27800" KeyDown="Address_KeyDown" />
+              <Button x:Name="ConnectButton" Grid.Column="1" Content="Connect" Click="Connect_Click" />
+            </Grid>
+            <ComboBox x:Name="RecentBox" PlaceholderText="Recent servers" SelectionChanged="Recent_Changed"
+                      HorizontalAlignment="Stretch" />
+            <TextBlock Classes="desc" TextWrapping="Wrap" Text="Connect starts the selected client. Admission, character creation and reconnection take place in the game." />
+          </StackPanel>
+        </Border>
+        <TextBlock x:Name="ProblemText" Classes="desc" TextWrapping="Wrap" />
+      </StackPanel>
+    </ScrollViewer>
+  </DockPanel>
+</UserControl>

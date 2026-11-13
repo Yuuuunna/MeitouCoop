@@ -1,7 +1,9 @@
 ﻿param(
     [string] $Stage = 'artifacts/multiplayer-release',
     [string] $Output = 'artifacts/releases/20261031-multiplayer-experimental',
-    [string] $ValidationNote = '本包尚未完成实机验收。'
+    [string] $ValidationNote = '本包尚未完成实机验收。',
+    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$')]
+    [string] $Version = ('0.0.0-local.' + (Get-Date -Format 'yyyyMMddHHmmss'))
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -20,6 +22,39 @@ if ($protocolDeclarations.Count -ne 1) { throw 'Expected one literal Compatibili
 $protocol = [ushort]::Parse($protocolDeclarations[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
 foreach ($entry in @('client/MeitouClient.exe', 'client/meitou-tools.exe', 'server/Meitou.Server.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $stageRoot $entry))) { throw "Missing published executable: $entry" }
+}
+$transportSourceHash = (Get-FileHash -LiteralPath (Join-Path $repo 'tools/Meitou.QuicTransport/transport.cpp') -Algorithm SHA256).Hash
+foreach ($kind in @('client', 'server')) {
+    $runtime = Join-Path $stageRoot "$kind/native/quic"
+    foreach ($required in @('Meitou.QuicTransport.dll', 'msquic.dll', 'manifest.json')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $runtime $required) -PathType Leaf)) { throw "Missing QUIC runtime: $kind/$required" }
+    }
+    $manifest = Get-Content -LiteralPath (Join-Path $runtime 'manifest.json') -Raw | ConvertFrom-Json
+    $shimHash = (Get-FileHash -LiteralPath (Join-Path $runtime 'Meitou.QuicTransport.dll') -Algorithm SHA256).Hash
+    $msquicHash = (Get-FileHash -LiteralPath (Join-Path $runtime 'msquic.dll') -Algorithm SHA256).Hash
+    if ($manifest.sourceSha256 -ne $transportSourceHash -or $manifest.shimSha256 -ne $shimHash -or $manifest.msquicSha256 -ne $msquicHash) {
+        throw "Stale or mismatched $kind QUIC runtime. Run tools/Meitou.QuicTransport/build.ps1 and export again."
+    }
+}
+# The exact staged client supplies the launcher's settings; never derive them from a different checkout build.
+$schema = Join-Path $stageRoot 'client/settings-schema.json'
+$schemaStart = [Diagnostics.ProcessStartInfo]::new((Join-Path $stageRoot 'client/MeitouClient.exe'))
+$schemaStart.UseShellExecute = $false
+$schemaStart.CreateNoWindow = $true
+$schemaStart.ArgumentList.Add('--settings-schema')
+$schemaStart.ArgumentList.Add($schema)
+$schemaProcess = [Diagnostics.Process]::Start($schemaStart)
+try {
+    if (-not $schemaProcess.WaitForExit(30000)) {
+        $schemaProcess.Kill($true)
+        $schemaProcess.WaitForExit()
+        throw 'The staged client settings command timed out.'
+    }
+    if ($schemaProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $schema -PathType Leaf)) {
+        throw 'The staged client could not write settings-schema.json.'
+    }
+} finally {
+    $schemaProcess.Dispose()
 }
 New-Item -ItemType Directory -Path $outputRoot | Out-Null
 $readme = @'
@@ -66,8 +101,9 @@ network 日志记录基线丢失、视图撤回/恢复和状态变化，用于�
 $readme += "`r`n本次构建验证：$ValidationNote`r`n"
 [IO.File]::WriteAllText((Join-Path $outputRoot '实机测试说明.txt'), $readme)
 $head = (git -C $repo rev-parse HEAD).Trim()
+$dirty = [bool](git -C $repo status --porcelain --untracked-files=normal)
 foreach ($kind in @('client', 'server')) {
-    $name = if ($kind -eq 'client') { 'MeitouClient-Multiplayer-win-x64' } else { 'MeitouServer-Multiplayer-win-x64' }
+    $name = if ($kind -eq 'client') { "Meitou-$Version-win-x64" } else { "MeitouServer-$Version-win-x64" }
     $destination = Join-Path $outputRoot $name
     New-Item -ItemType Directory -Path $destination | Out-Null
     Get-ChildItem -LiteralPath (Join-Path $stageRoot $kind) -File | Where-Object {
@@ -98,7 +134,7 @@ foreach ($kind in @('client', 'server')) {
     $assemblyHashes = Get-ChildItem -LiteralPath $destination -File | Where-Object { $_.Name -like 'Meitou*.dll' -or $_.Name -like 'Meitou*.exe' } | ForEach-Object {
         @{ name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
     }
-    @{ configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=$protocol; engine=$engineBuild; sourceHead=$head; includesUncommittedChanges=$true; assemblies=@($assemblyHashes) } |
+    @{ version=$Version; configuration='Release'; runtime='win-x64'; selfContained=$true; protocol=$protocol; engine=$engineBuild; sourceHead=$head; includesUncommittedChanges=$dirty; assemblies=@($assemblyHashes) } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination 'build-info.json') -Encoding utf8
     [IO.Compression.ZipFile]::CreateFromDirectory($destination, (Join-Path $outputRoot "$name.zip"), [IO.Compression.CompressionLevel]::Optimal, $true)
 }

@@ -21,7 +21,7 @@ public sealed class NewsFeed(HttpClient http)
     /// <summary>
     /// The branch the posts are read from.
     /// </summary>
-    public const string Branch = "master";
+    public const string Branch = LauncherIdentity.NewsBranch;
 
     /// <summary>
     /// The repository's news folder.

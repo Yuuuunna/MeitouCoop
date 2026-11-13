@@ -148,11 +148,11 @@ jobs:
           icon=()
           [ "$RID" = win-x64 ] && icon=(--icon assets/branding/meitou.ico)
           [ "$RID" = linux-x64 ] && icon=(--icon assets/branding/meitou-64.png)
-          pack_id=MeitouLauncher
-          pack_title="Meitou Launcher"
+          pack_id=MeitouCoopLauncher
+          pack_title="Meitou Coop Launcher"
           if [ "$LEGACY_MAC" = true ]; then
-            pack_id=MeitouLauncherLegacy
-            pack_title="Meitou Launcher Legacy"
+            pack_id=MeitouCoopLauncherLegacy
+            pack_title="Meitou Coop Launcher Legacy"
           fi
           vpk pack --packId "$pack_id" --packVersion "$VERSION" --packTitle "$pack_title" --packDir pub \
             --mainExe "$EXE" --channel "$CHANNEL" --outputDir "out/$CHANNEL" "${icon[@]}"
@@ -200,10 +200,10 @@ jobs:
           {
             echo "## Launcher v$VERSION"; echo; cat "$RUNNER_TEMP/changes.md"; echo
             echo "## Download"; echo
-            echo "- **Windows**: \`MeitouLauncher-win-x64-Setup.exe\` (or the Portable zip)."
+            echo "- **Windows**: \`MeitouCoopLauncher-win-x64-Setup.exe\` (or the Portable zip)."
             echo "- **Linux**: the \`linux-x64\` AppImage."
             echo "- **macOS**: the \`osx-arm64\` (Apple silicon) or \`osx-x64\` (Intel) package; not notarized yet, so Gatekeeper warns."
-            echo "- **Legacy macOS 13**: \`MeitouLauncherLegacy-osx-arm64-legacy-Setup.pkg\` or \`MeitouLauncherLegacy-osx-x64-legacy-Setup.pkg\`; uses .NET 10."
+            echo "- **Legacy macOS 13**: \`MeitouCoopLauncherLegacy-osx-arm64-legacy-Setup.pkg\` or \`MeitouCoopLauncherLegacy-osx-x64-legacy-Setup.pkg\`; uses .NET 10."
             echo; echo "Verify every download against \`SHA256SUMS\`. Once installed, the launcher updates itself. You need Kenshi installed."
           } > "$RUNNER_TEMP/notes.md"
           flags=(--latest)
@@ -211,4 +211,4 @@ jobs:
           previous=$(git tag -l "launcher-v*" --sort=-v:refname | head -n1)
           [ -n "$previous" ] && flags+=(--generate-notes --notes-start-tag "$previous")
           gh release create "launcher-v$VERSION" $(find out -type f) --target "$GITHUB_SHA" \
-            --title "Meitou Launcher $VERSION" --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+            --title "Meitou Coop Launcher $VERSION" --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"

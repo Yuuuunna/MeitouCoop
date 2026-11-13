@@ -32,6 +32,11 @@ public sealed partial class MainWindow : Window
     readonly LauncherConfig _config;
 
     /// <summary>
+    /// Owns the selected client's running process and temporary Steam integration files.
+    /// </summary>
+    readonly GameProcess _gameProcess = new();
+
+    /// <summary>
     /// The one HTTP client for GitHub: releases, news and downloads.
     /// </summary>
     static readonly HttpClient Http = Releases.CreateClient();
@@ -59,7 +64,7 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// The launcher's own updates.
     /// </summary>
-    readonly LauncherUpdater _updater;
+    LauncherUpdater _updater;
 
     /// <summary>
     /// The mod list's rows, in load order.
@@ -144,6 +149,11 @@ public sealed partial class MainWindow : Window
         this._config = config;
         _updater = new LauncherUpdater(_releases, config.IncludePrereleases);
         InitializeComponent();
+        Title = Releases.LegacyMac ? LauncherIdentity.Title + " Legacy" : LauncherIdentity.Title;
+        CoopControls.Configure(config);
+        CoopControls.TargetChanged += ClientChanged;
+        CoopControls.ConnectRequested = ConnectAsync;
+        _gameProcess.Exited += OnGameExited;
         _modDrag = new ModListDrag(ModListBox, _mods);
         _grips = new WindowResizeGrips(this);
         LauncherText.Use(StartLanguage(found), found);
@@ -463,7 +473,8 @@ public sealed partial class MainWindow : Window
     {
         var pages = new (ToggleButton, Control)[]
         {
-            (NavHome, HomePage), (NavMods, ModsPage), (NavVersions, VersionsPage), (NavGraphics, GraphicsPage), (NavSettings, SettingsPage),
+            (NavCoop, CoopControls), (NavHome, HomePage), (NavMods, ModsPage), (NavVersions, VersionsPage),
+            (NavGraphics, GraphicsPage), (NavSettings, SettingsPage),
         };
         foreach (var (nav, page) in pages)
         {
@@ -471,7 +482,9 @@ public sealed partial class MainWindow : Window
             page.IsVisible = nav == sender;
         }
         if (sender == NavGraphics) ShowGraphics();
-        Control? selectedPage = sender == NavHome ? HomePage
+        if (sender == NavCoop) ShowClient();
+        Control? selectedPage = sender == NavCoop ? CoopControls
+            : sender == NavHome ? HomePage
             : sender == NavMods ? ModsPage
             : sender == NavVersions ? VersionsPage
             : sender == NavGraphics ? GraphicsPage
@@ -729,16 +742,16 @@ public sealed partial class MainWindow : Window
         await this.Launcher.LaunchUriAsync(new Uri("https://github.com/VlcekM/MeitouClient/blob/master/docs/kenshi-on-macos.md"));
 
     /// <summary>
-    /// Nightly builds switched: turning them on asks first (they are untested); the version list is shown again.
+    /// Experimental releases switched: turning them on asks first; game and launcher update lists use the same selection.
     /// </summary>
     async void Nightly_Click(object? sender, RoutedEventArgs e)
     {
         if (NightlyBox.IsChecked == true && !_config.IncludePrereleases)
         {
-            bool sure = await AskAsync("Nightly builds",
-                "Nightly builds are made twice a day from the newest code and are not tested. "
+            bool sure = await AskAsync("Experimental builds",
+                "Experimental builds have not completed live game validation. "
                 + "They may be unstable, crash, and corrupt your save files: back up your saves before playing one.\n\n"
-                + "Continue with nightly builds?", "Yes", "No");
+                + "Continue with experimental builds?", "Yes", "No");
             if (!sure)
             {
                 NightlyBox.IsChecked = false;
@@ -747,13 +760,15 @@ public sealed partial class MainWindow : Window
         }
         _config.IncludePrereleases = NightlyBox.IsChecked == true;
         _config.Save();
+        _updater = new LauncherUpdater(_releases, _config.IncludePrereleases);
         ShowReleases();
+        await ShowLauncherUpdateAsync();
     }
 
     /// <summary>
-    /// "latest nightly" or "latest", as the version menu names the newest one.
+    /// The latest eligible release, respecting the experimental-build filter.
     /// </summary>
-    string Latest => _config.IncludePrereleases ? "latest nightly" : "latest";
+    static string Latest => "latest";
 
     /// <summary>
     /// Opens the launcher's data folder.
@@ -1200,6 +1215,7 @@ public sealed partial class MainWindow : Window
     void RefreshInstalled()
     {
         _installedVersions = Releases.Installed();
+        ShowClient();
         ShowPlay();
         ShowFooter();
         _ = AutoDetectPresetAsync();
@@ -1225,7 +1241,7 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// Playing the latest, with a new release: Play is the button that installs it.
     /// </summary>
-    bool UpdatePending => PickedVersion is null && NewRelease is not null;
+    bool UpdatePending => !_config.UseLocalClient && PickedVersion is null && NewRelease is not null;
 
     /// <summary>
     /// "Play latest" or "Play v0.13.0" (or "Update to v0.14.1" while UpdatePending), and the arrow's menu: Latest, then each
@@ -1233,30 +1249,64 @@ public sealed partial class MainWindow : Window
     /// </summary>
     void ShowPlay()
     {
-        var picked = PickedVersion;
         if (_download is null) ShowPlayText();
+
+        ShowVersionMenu();
+        if (GraphicsPage.IsVisible) ShowGraphics();
+    }
+
+    /// <summary>
+    /// Rebuilds the footer's source menu from installed versions and the explicit local selection.
+    /// </summary>
+    void ShowVersionMenu()
+    {
+        var picked = PickedVersion;
         _versionMenu.Items.Clear();
         _versionMenu.Items.Add(VersionItem(UpdatePending ? Tr("Latest (update to {1})", Releases.Display(LatestRelease!.Version))
             : _installedVersions.FirstOrDefault() is { } newest ? Tr("Latest ({1})", Releases.Display(newest)) : Tr("Latest"), null, picked));
+        AddLocalVersionItem();
         foreach (var version in _installedVersions)
             _versionMenu.Items.Add(VersionItem($"v{Releases.ParseVersion(version).Number}", version, picked));
 
-        // Its settings are the played version's.
-        if (GraphicsPage.IsVisible) ShowGraphics();
+        AddSkippedVersionItem();
+    }
 
-        // A skipped release stays installable from here.
-        if (LatestRelease is { } latest && latest.Version == _config.SkippedVersion && !_installedVersions.Contains(latest.Version))
+    /// <summary>
+    /// Offers the saved local client as a source without treating it as an installed version.
+    /// </summary>
+    void AddLocalVersionItem()
+    {
+        if (string.IsNullOrWhiteSpace(_config.LocalClientPath)) return;
+
+        var local = new MenuItem
         {
-            var item = new MenuItem { Header = Tr("Install v{1} (skipped)", latest.Version) };
-            item.Click += async (_, _) =>
-            {
-                _config.SkippedVersion = null;
-                _config.Save();
-                if (_download is null) await InstallAsync(latest);
-            };
-            _versionMenu.Items.Add(new Separator());
-            _versionMenu.Items.Add(item);
-        }
+            Header = Tr("Local client"), IsChecked = _config.UseLocalClient, ToggleType = MenuItemToggleType.Radio, GroupName = "play",
+        };
+        local.Click += (_, _) =>
+        {
+            _config.UseLocalClient = true;
+            _config.Save();
+            ClientChanged();
+        };
+        _versionMenu.Items.Add(local);
+    }
+
+    /// <summary>
+    /// Keeps a skipped release explicitly installable from the source menu.
+    /// </summary>
+    void AddSkippedVersionItem()
+    {
+        if (LatestRelease is not { } latest || latest.Version != _config.SkippedVersion || _installedVersions.Contains(latest.Version)) return;
+
+        var item = new MenuItem { Header = Tr("Install v{1} (skipped)", latest.Version) };
+        item.Click += async (_, _) =>
+        {
+            _config.SkippedVersion = null;
+            _config.Save();
+            if (_download is null) await InstallAsync(latest);
+        };
+        _versionMenu.Items.Add(new Separator());
+        _versionMenu.Items.Add(item);
     }
 
     /// <summary>
@@ -1266,7 +1316,7 @@ public sealed partial class MainWindow : Window
     {
         var picked = PickedVersion;
         bool pending = UpdatePending, menu = ContinueButton.IsVisible && !pending;
-        string played = picked is null ? Tr(Latest) : Releases.Display(picked);
+        string played = _config.UseLocalClient ? Tr("Local client") : picked is null ? Tr(Latest) : Releases.Display(picked);
         PlayButton.Classes.Set("pending", pending);
         PlayVersionButton.Classes.Set("pending", pending);
         PlayIcon.IsVisible = !pending;
@@ -1324,7 +1374,10 @@ public sealed partial class MainWindow : Window
                 },
             };
         }
-        var item = new MenuItem { Header = content, ToggleType = MenuItemToggleType.Radio, GroupName = "play", IsChecked = version == picked };
+        var item = new MenuItem
+        {
+            Header = content, ToggleType = MenuItemToggleType.Radio, GroupName = "play", IsChecked = !_config.UseLocalClient && version == picked,
+        };
         item.Click += (_, _) => PickVersion(version);
         return item;
     }
@@ -1335,7 +1388,9 @@ public sealed partial class MainWindow : Window
     void PickVersion(string? version)
     {
         _config.SelectedVersion = version;
+        _config.UseLocalClient = false;
         _config.Save();
+        ShowClient();
         ShowPlay();
         ShowReleases();
         Status(version is null ? Tr("Play starts the latest installed version.") : Tr("Play starts Meitou {1}.", version));
@@ -1365,7 +1420,7 @@ public sealed partial class MainWindow : Window
         if (_download is not null) return;
         var installed = _installedVersions;
         var latest = LatestRelease;
-        bool none = installed.Count == 0;
+        bool none = installed.Count == 0 && !_config.UseLocalClient;
         PlayPanel.IsVisible = !none;
         InstallLatestButton.IsVisible = none;
         SetText(InstallLatestText, Tr("Install {1}", Tr(Latest)));
@@ -1376,8 +1431,8 @@ public sealed partial class MainWindow : Window
         ToolTip.SetTip(InstallLatestButton, latestTip);
 
         // Playing the latest, Play itself is the update (ShowPlay); playing a picked version, this button beside it.
-        UpdateButton.IsVisible = PickedVersion is not null && NewRelease is not null;
-        SkipButton.IsVisible = NewRelease is not null;
+        UpdateButton.IsVisible = !_config.UseLocalClient && PickedVersion is not null && NewRelease is not null;
+        SkipButton.IsVisible = !_config.UseLocalClient && NewRelease is not null;
         SkipText.Text = Tr("Skip v{1}", NewRelease?.Version);
         UpdateTitle.Text = Tr("New version {1}", latest?.Version);
         SetText(UpdateHint, "Click to install");
@@ -1433,14 +1488,14 @@ public sealed partial class MainWindow : Window
         var selected = (ReleaseListBox.SelectedItem as ReleaseRow)?.Release.Tag;
         var rows = _allReleases
             .Where(r => r.Kind == ReleaseKind.Game && (_config.IncludePrereleases || !r.Prerelease || installed.Contains(r.Version)))
-            .Select(r => new ReleaseRow(r, installed.Contains(r.Version), r.Version == PlayVersion))
+            .Select(r => new ReleaseRow(r, installed.Contains(r.Version), !_config.UseLocalClient && r.Version == PlayVersion))
             .ToList();
         ReleaseListBox.ItemsSource = rows;
         ReleaseListBox.SelectedItem = rows.FirstOrDefault(r => r.Release.Tag == selected);
         NotesEmpty.IsVisible = ReleaseListBox.SelectedItem is null;
         ReleasesEmpty.IsVisible = rows.Count == 0;
         ReleasesEmpty.Text = Tr(_allReleases.Any(r => r.Kind == ReleaseKind.Game)
-            ? "Only nightly builds so far: tick Nightly builds beside Play to list them."
+            ? "Only experimental builds so far: tick Experimental builds beside Play to list them."
             : "No releases listed yet. Check for releases below.");
         VersionCount.Text = Tr("{1} releases · {2} installed", rows.Count, installed.Count);
         ShowVersionButtons();
@@ -1571,6 +1626,7 @@ public sealed partial class MainWindow : Window
 
             // Play starts what was just installed: as the latest, or picked when older than an installed one.
             _config.SelectedVersion = release.Version == Releases.Installed().FirstOrDefault() ? null : release.Version;
+            _config.UseLocalClient = false;
             _config.Save();
             RefreshInstalled();
             ShowReleases();
@@ -1627,6 +1683,11 @@ public sealed partial class MainWindow : Window
     {
         if (_download is not null || ReleaseListBox.SelectedItem is not ReleaseRow { Release: var release }) return;
         var dir = Releases.VersionDirectory(release.Version);
+        if (_gameProcess.Running is { HasExited: false } running && Path.GetDirectoryName(running.StartInfo.FileName) == dir)
+        {
+            Status("Close this game before removing its installed version.");
+            return;
+        }
         if (!Directory.Exists(dir))
         {
             Status(Tr("{1} is not installed.", release.Title));
@@ -1792,87 +1853,134 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Starts the played version; with continueSave, in the newest save (ContinueSave.cs), not at all when its mods are other ones.
+    /// Re-resolves the source for every action; a missing local target never selects a downloaded version instead.
     /// </summary>
-    async Task StartGame(bool continueSave)
+    GameTarget? ResolveTarget(out string? problem)
+    {
+        try
+        {
+            var target = GameTarget.Resolve(_config, PlayVersion);
+            problem = target is not null ? null : _config.UseLocalClient
+                ? "Choose a valid local client on the Play page."
+                : "Install a version first (Versions), or choose a local client on the Play page.";
+            return target;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            problem = error.Message;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Updates the client page from the authoritative launch target.
+    /// </summary>
+    void ShowClient()
+    {
+        var target = ResolveTarget(out string? problem);
+        CoopControls.ShowTarget(target, problem);
+    }
+
+    /// <summary>
+    /// A source change refreshes the footer, settings and client metadata together.
+    /// </summary>
+    void ClientChanged()
+    {
+        if (_graphicsSave?.IsEnabled == true) SaveGame();
+
+        ShowClient();
+        ShowReleases();
+    }
+
+    /// <summary>
+    /// Connect uses the same process path as Play while leaving admission and credentials to the game.
+    /// </summary>
+    Task<bool> ConnectAsync(string server) => StartGame(continueSave: false, server);
+
+    /// <summary>
+    /// Starts the selected client, optionally continuing a local save or joining a server.
+    /// </summary>
+    async Task<bool> StartGame(bool continueSave, string? server = null)
     {
         if (_install is null)
         {
             Status("Set the Kenshi folder first (Settings).");
-            return;
+            return false;
         }
-        if (FindPlayedGame() is not (string exe, string version)) return;
-
-        // A second game would share meitou.user.json and the mod list with the first; whichever closes last overwrites the other's.
-        if (_running is { HasExited: false })
+        if (_gameProcess.Running is { HasExited: false } || _detecting)
         {
-            Status("Meitou is already running: close it before starting it again.");
-            return;
+            Status("Close the running game or wait for hardware detection before starting another client.");
+            return false;
+        }
+        if (ResolveTarget(out string? problem) is not { } target)
+        {
+            Status(problem!);
+            return false;
         }
 
         SaveModSlot? save = null;
-        if (continueSave && (save = await ContinueTarget(_install)) is null) return;
-        if (!SaveMods()) return;
+        if (continueSave && (save = await ContinueTarget(_install)) is null) return false;
+        if (ResolveTarget(out _) != target || !SaveMods()) return false;
         if (_graphicsSave?.IsEnabled == true) SaveGame();
-        if (_running is { HasExited: false })
-            return;   // a second click while the save was checked started the game already
+        if (_gameProcess.Running is { HasExited: false }) return false;
 
-        var start = GameStartInfo(exe, _install);
-        var steamAppIdFiles = SteamAppIdFiles.SetUp(start, exe, _install, _config.LaunchAsSteamKenshi);
-        if (!SetUpRenderer(start, steamAppIdFiles, out string? renderer, out bool metalFallback)) return;
-        AddArguments(start, renderer, save);
-
-        string started = renderer is null ? Tr("Meitou {1} started.", version)
-            : Tr("Meitou {1} started with {2}{3}.", version, RendererLabel(renderer), metalFallback ? " (Vulkan loader missing)" : "");
-        if (save is not null) started += Tr(" Continuing '{1}'.", save.Name);
-        Launch(start, exe, version, started, steamAppIdFiles);
+        return LaunchTarget(target, save, server);
     }
 
     /// <summary>
-    /// The game Play starts and its version; null, with the reason in the status, when there is none.
+    /// Prepares renderer and direct arguments, then starts exactly the selected executable.
     /// </summary>
-    (string Exe, string Version)? FindPlayedGame()
+    bool LaunchTarget(GameTarget target, SaveModSlot? save, string? server)
     {
-#if DEBUG
-        if (DebugGame.Find() is { } development) return (development, "Debug build");
-#endif
-        if (PlayVersion is not { } version)
+        try
         {
-            Status("Install a version first (Versions).");
-            return null;
+            var start = GameProcess.CreateStartInfo(target, _install!);
+            if (!SetUpRenderer(start, server is not null, out string? renderer, out bool metalFallback)) return false;
+
+            GameArguments.Add(start, _config.LaunchArguments, renderer, save?.Folder, server);
+            _gameProcess.Start(start, target, _install!, _config.LaunchAsSteamKenshi);
+            ShowStarted(target, renderer, metalFallback, save, server);
+            return true;
         }
-        if (Releases.FindGame(Releases.VersionDirectory(version)) is { } exe) return (exe, version);
-        Status(Tr("Meitou {1} is not installed any more.", version));
-        return null;
-    }
-
-    /// <summary>
-    /// The game's start: the executable run from the launcher's data folder (its settings file shared by every version), the install in KENSHI_PATH,
-    /// the Metal GPU cull variables removed.
-    /// </summary>
-    static ProcessStartInfo GameStartInfo(string exe, GameInstall gameInstall)
-    {
-        var start = new ProcessStartInfo(exe)
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException
+            or ArgumentException or InvalidOperationException or System.Text.Json.JsonException)
         {
-            WorkingDirectory = LauncherConfig.DataDirectory,
-            UseShellExecute = false,
-#if DEBUG
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-#endif
-        };
-        start.Environment[GameInstall.EnvironmentVariable] = gameInstall.Root;
-
-        // The Metal GPU cull is experimental and has caused GPU progress timeouts; it is not a user setting.
-        start.Environment.Remove("MEITOU_METAL_GPU_CULL");
-        start.Environment.Remove("MEITOU_METAL_GPU_BUDGET_MB");
-        return start;
+            Status(Tr("Could not start Meitou {1}: {2}", target.Version, error.Message));
+            return false;
+        }
     }
 
     /// <summary>
-    /// macOS: the renderer to pass and its environment; false (the status says why, the app ID files removed) when it cannot start.
+    /// Reports a process start without claiming that server admission has completed.
     /// </summary>
-    bool SetUpRenderer(ProcessStartInfo start, List<string> steamAppIdFiles, out string? renderer, out bool metalFallback)
+    void ShowStarted(GameTarget target, string? renderer, bool metalFallback, SaveModSlot? save, string? server)
+    {
+        string started = renderer is null ? Tr("Meitou {1} started.", target.Version)
+            : Tr("Meitou {1} started with {2}{3}.", target.Version, RendererLabel(renderer), metalFallback ? " (Vulkan loader missing)" : "");
+        if (save is not null) started += Tr(" Continuing '{1}'.", save.Name);
+        if (server is not null) started += Tr(" Connecting to {1}.", server);
+
+        Status(started);
+    }
+
+    /// <summary>
+    /// Reports errors against the actual launched client's log, including when the selection changed meanwhile.
+    /// </summary>
+    void OnGameExited(Process game, int code, string log)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_gameProcess.Running != game) return;
+            if (code != 0) Status(Tr("Meitou stopped with an error (exit code {1}); its log is {2}", code, log));
+
+            _ = RefreshContinueAsync();
+        });
+    }
+
+    /// <summary>
+    /// macOS: the renderer to pass and its environment; false, with the reason in the status, when it cannot start.
+    /// </summary>
+    bool SetUpRenderer(ProcessStartInfo start, bool online, out string? renderer, out bool metalFallback)
     {
         renderer = null;
         metalFallback = false;
@@ -1880,7 +1988,7 @@ public sealed partial class MainWindow : Window
 
         // A release advertises its renderers in settings-schema.json; an old release without the key is Vulkan-only.
         bool metalSupported = PlaySchema().Schema?.Renderers.Contains("metal", StringComparer.OrdinalIgnoreCase) == true;
-        string requested = _config.Renderer;
+        string requested = online ? "vulkan" : _config.Renderer;
         const string noMetal = "This Meitou version does not include Metal; choose Vulkan or install a newer version.";
         string? problem = requested == "metal" && !MacSupport.MetalAvailable ? "Metal needs an Apple-silicon Mac; choose Auto or Vulkan."
             : requested == "metal" && !metalSupported ? noMetal
@@ -1888,7 +1996,7 @@ public sealed partial class MainWindow : Window
         if (problem is null)
         {
             if (requested == "auto" && !metalSupported) requested = "vulkan";
-            renderer = MacSupport.Resolve(requested);
+            renderer = online ? "vulkan" : MacSupport.Resolve(requested);
             metalFallback = requested == "vulkan" && renderer == "metal";
             problem = renderer == "metal" ? (metalSupported ? null : noMetal)
                 : MacSupport.AddVulkanEnvironment(start.Environment) ? null
@@ -1896,7 +2004,6 @@ public sealed partial class MainWindow : Window
         }
         if (problem is not null)
         {
-            SteamAppIdFiles.RemoveAll(steamAppIdFiles);
             Status(problem);
             return false;
         }
@@ -1917,101 +2024,6 @@ public sealed partial class MainWindow : Window
         : MacSupport.MetalAvailable
             ? "The Vulkan loader is not installed: use Auto/Metal, or install MoltenVK from Settings > Setup."
             : "The Vulkan loader is not installed: run 'brew install molten-vk vulkan-loader' in a terminal, then Play again.";
-
-    /// <summary>
-    /// The launch arguments, then the renderer and the save to load.
-    /// </summary>
-    void AddArguments(ProcessStartInfo start, string? renderer, SaveModSlot? save)
-    {
-        foreach (var arg in SplitArguments(_config.LaunchArguments)) start.ArgumentList.Add(arg);
-        if (renderer is not null)
-        {
-            // Appended last so the selector wins over a hand-written --renderer in Launch arguments.
-            start.ArgumentList.Add("--renderer");
-            start.ArgumentList.Add(renderer);
-        }
-        if (save is not null)
-        {
-            start.ArgumentList.Add("--load");
-            start.ArgumentList.Add(save.Folder);
-        }
-    }
-
-    /// <summary>
-    /// Starts the game process, says so and watches its exit; the Steam App ID files are removed when it cannot start.
-    /// </summary>
-    void Launch(ProcessStartInfo start, string exe, string version, string started, List<string> steamAppIdFiles)
-    {
-        try
-        {
-            var game = Process.Start(start);
-            _running = game;
-            Status(started);
-            if (game is null)
-            {
-                SteamAppIdFiles.RemoveAll(steamAppIdFiles);
-                return;
-            }
-#if DEBUG
-            DebugGame.ForwardOutput(game);
-#endif
-            WatchExit(game, version, Path.Combine(Path.GetDirectoryName(exe)!, "log.txt"), steamAppIdFiles);
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException)
-        {
-            SteamAppIdFiles.RemoveAll(steamAppIdFiles);
-            Status(Tr("Could not start Meitou {1}: {2}", version, ex.Message));
-        }
-    }
-
-    /// <summary>
-    /// The game's window is all a player sees of it, so a crash (above all one before the window opens) is reported here.
-    /// </summary>
-    void WatchExit(Process game, string version, string log, List<string> steamAppIdFiles)
-    {
-        game.EnableRaisingEvents = true;
-        game.Exited += (_, _) =>
-        {
-            int code = game.ExitCode;
-            Dispatcher.UIThread.Post(() =>
-            {
-                // On the UI thread, as Play: a game started since then has taken these files over and removes them itself.
-                if (_running == game) SteamAppIdFiles.RemoveAll(steamAppIdFiles);
-                if (code != 0)
-                    Status(Tr("Meitou {1} stopped with an error (exit code {2}); its log is {3}", version, code, log));
-                _ = RefreshContinueAsync();
-            });
-        };
-    }
-
-    /// <summary>
-    /// Space-separated, with double quotes around arguments that contain spaces.
-    /// </summary>
-    static IEnumerable<string> SplitArguments(string text)
-    {
-        var current = new System.Text.StringBuilder();
-        bool quoted = false, any = false;
-        foreach (char c in text)
-        {
-            if (c == '"')
-            {
-                quoted = !quoted;
-                any = true;
-            }
-            else if (char.IsWhiteSpace(c) && !quoted)
-            {
-                if (any) yield return current.ToString();
-                current.Clear();
-                any = false;
-            }
-            else
-            {
-                current.Append(c);
-                any = true;
-            }
-        }
-        if (any) yield return current.ToString();
-    }
 
     #endregion
 }

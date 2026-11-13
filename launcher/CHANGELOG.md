@@ -2,6 +2,13 @@
 
 Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.yml`; each release needs its `## v<version>` section.
 
+## v1.11.0
+
+- Coop releases, news, settings, installed versions and launcher updates use an independent repository and installation identity.
+- The Play page explicitly selects a local client or installed release; graphics, hardware detection and logs follow that same client.
+- Join a server by address with ten recent entries, retaining the game's existing device identities and admission flow.
+- Local clients generate their settings schema in the launcher's cache; multiplayer exports include schema and versioned build metadata.
+
 ## v1.10.0
 
 - Built on .NET 11.

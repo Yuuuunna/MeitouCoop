@@ -32,11 +32,6 @@ public sealed partial class MainWindow
     GameSettings _game = GameSettings.Load();
 
     /// <summary>
-    /// The game process Play started, null before; the page is locked while it has not exited.
-    /// </summary>
-    Process? _running;
-
-    /// <summary>
     /// The schema version of the shown page, written with the settings.
     /// </summary>
     int _schemaVersion;
@@ -71,15 +66,15 @@ public sealed partial class MainWindow
     /// </summary>
     (SettingsSchema? Schema, string? Problem) PlaySchema()
     {
-        if (PlayVersion is not { } version)
-            return (null, "Install a version first (Versions): its settings are shown here.");
-        if (Releases.FindGame(Releases.VersionDirectory(version)) is not { } exe)
-            return (null, $"Meitou {version} is not installed any more.");
-        var path = Path.Combine(Path.GetDirectoryName(exe)!, SettingsSchema.FileName);
-        if (SettingsSchema.Read(path) is { } schema) return (schema, null);
+        var target = ResolveTarget(out string? problem);
+        if (target is null) return (null, problem);
+        if (target.ReadSchema() is { } schema) return (schema, null);
+
+        var path = Path.Combine(target.Folder, SettingsSchema.FileName);
+        if (target.Local) return (null, "Use Refresh client on the Play page to obtain this client's settings.");
         return (null, File.Exists(path)
-            ? $"Meitou {version} describes its settings in a newer way than this launcher reads: update the launcher (Settings)."
-            : $"Meitou {version} is older than the Graphics page: change its settings in the game's Tab panel, or play a newer version.");
+            ? $"Meitou {target.Version} describes its settings in a newer way than this launcher reads: update the launcher (Settings)."
+            : $"Meitou {target.Version} has no settings schema: change its settings in the game.");
     }
 
     /// <summary>
@@ -136,11 +131,11 @@ public sealed partial class MainWindow
     {
         var notes = new List<string>();
         if (locked is not null) notes.Add(locked);
-        if (_running is { HasExited: false })
+        if (_gameProcess.Running is { HasExited: false })
             notes.Add("The game is running: it saves its settings when it closes, over changes made here.");
-        if (SplitArguments(_config.LaunchArguments).Contains("--low-end"))
+        if (GameArguments.Split(_config.LaunchArguments).Contains("--low-end"))
             notes.Add("The launch arguments have --low-end: the game ignores the graphics sliders while it is set.");
-        if (SplitArguments(_config.LaunchArguments).Contains("--benchmark-baseline"))
+        if (GameArguments.Split(_config.LaunchArguments).Contains("--benchmark-baseline"))
             notes.Add("The launch arguments have --benchmark-baseline: the game ignores the graphics sliders while it is set.");
         foreach (var note in notes)
         {
@@ -809,11 +804,11 @@ public sealed partial class MainWindow
         if (_detecting) return false;
         if (_graphicsSave?.IsEnabled == true) SaveGame();
         var (schema, _) = PlaySchema();
-        if (schema?.Presets is not { Detect: { Length: > 0 } flag } p || PlayVersion is not { } version
-                || Releases.FindGame(Releases.VersionDirectory(version)) is not { } exe)
+        if (schema?.Presets is not { Detect: { Length: > 0 } flag } p || ResolveTarget(out _) is not { } target)
             return false;
         _game = GameSettings.Load();
-        string? locked = Locked(schema) ?? (_running is { HasExited: false } ? "The game is running: close it before detecting the preset." : null);
+        bool running = _gameProcess.Running is { HasExited: false };
+        string? locked = Locked(schema) ?? (running ? "The game is running: close it before detecting the preset." : null);
         if (locked is not null)
         {
             Status(locked);
@@ -825,10 +820,11 @@ public sealed partial class MainWindow
         bool done = false;
         try
         {
-            await RunProbeAsync(exe, flag, file);
+            await RunProbeAsync(target, flag, file);
             var (preset, summary) = await ReadReportAsync(file);
             if (preset is null || !p.Names.Contains(preset))
                 throw new InvalidDataException("the game reported no preset");
+            if (ResolveTarget(out _) != target) return false;
             // Read again: the file may have changed while the probe ran.
             _game = GameSettings.Load();
             _schemaVersion = schema.SettingsVersion;
@@ -863,12 +859,11 @@ public sealed partial class MainWindow
     /// <summary>
     /// Runs the game's probe with the detect flag and the report path, and waits up to a minute for it to finish.
     /// </summary>
-    async Task RunProbeAsync(string exe, string flag, string file)
+    async Task RunProbeAsync(GameTarget target, string flag, string file)
     {
-        var start = new ProcessStartInfo(exe)
-        {
-            WorkingDirectory = LauncherConfig.DataDirectory, UseShellExecute = false, CreateNoWindow = true, ArgumentList = { flag, file },
-        };
+        var start = target.CreateStartInfo(hidden: true);
+        start.ArgumentList.Add(flag);
+        start.ArgumentList.Add(file);
         using var probe = Process.Start(start) ?? throw new InvalidOperationException("the game did not start");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try

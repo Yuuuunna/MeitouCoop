@@ -248,9 +248,13 @@ Authority: `tools/Meitou.Tools/Program.cs` (dispatch and usage), with the option
 The launcher takes no command-line options of its own. It passes to the game:
 
 - the user's launch arguments from its settings (`LauncherConfig`), split on spaces; the Graphics page warns that `--low-end` or `--benchmark-baseline` makes the game ignore the graphics sliders;
-- `--renderer <vulkan|metal>`, appended last, so it wins over a hand-written one (`MainWindow.axaml.cs`).
+- `--renderer <vulkan|metal>`, appended after user arguments, so it wins over a hand-written one (`GameArguments.cs`).
 
-Environment it sets for the game: `KENSHI_PATH`; on Windows with `steam_api64.dll` and **Launch as Kenshi on Steam** on, `SteamAppId` and `SteamGameId` (and a temporary `steam_appid.txt`); on macOS `MEITOU_METAL_GPU_BUDGET_MB` (Metal) or the Vulkan loader path. It removes any inherited `MEITOU_METAL_GPU_CULL` and `MEITOU_METAL_GPU_BUDGET_MB` first. It reads `DYLD_LIBRARY_PATH` on macOS (`MacSupport.cs`).
+The Coop Play page selects an installed release or explicit local client in both Debug and Release. **Connect** appends
+`--renderer vulkan --connect <host:port>` after user arguments, rejecting duplicate connection and local-world options.
+See [launcher](launcher.md#coop-client-selection-and-connections).
+
+Environment it sets for the game: `KENSHI_PATH`; on Windows with `steam_api64.dll` and **Launch as Kenshi on Steam** on, `SteamAppId` and `SteamGameId` (and a temporary `steam_appid.txt`); on macOS `MEITOU_METAL_GPU_BUDGET_MB` (Metal) or the Vulkan loader path. It removes any inherited `MEITOU_METAL_GPU_CULL` and `MEITOU_METAL_GPU_BUDGET_MB` first. It reads `DYLD_LIBRARY_PATH` on macOS (`MacSupport.cs`). The game inherits `MEITOU_IDENTITY_DIRECTORY` unchanged.
 
 ## Development executables
 

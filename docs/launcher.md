@@ -1,13 +1,44 @@
 # Launcher
 
-`launcher/Meitou.Launcher` (Avalonia, `meitou-launcher`): installs game releases from GitHub, edits the mod list like Kenshi's own
-launcher, keeps mod presets and starts the game. Styled after the Meitou UI kit ([meitou-ui](meitou-ui.md)) with its own title bar; Exo 2
+`launcher/Meitou.Launcher` (Avalonia, `meitou-launcher`): Meitou Coop client selection, server entry, release installation,
+mod lists, presets and graphics settings. `LauncherIdentity` selects `Yuuuunna/MeitouCoop`, news branch `master` and the Coop data directory.
+Styled after the Meitou UI kit ([meitou-ui](meitou-ui.md)) with its own title bar; Exo 2
 is read from the Kenshi install, nothing is shipped. Mods come only from disk (`mods/` and downloaded workshop
 items); the launcher never downloads or hosts mods.
 
+## Coop client selection and connections
+
+**Observed** (source): Play explicitly selects **Installed release** or **Local client** in Debug and Release. Choose a local folder/executable;
+**Find checkout build** finds an existing Release, then Debug build after an explicit click. Missing local clients never fall back to installed
+versions. `GameTarget` supplies the executable, graphics schema, hardware probe and log path to every action. Local **Refresh client** runs
+`--settings-schema` with a 30-second timeout, caching under `MeitouCoop/schemas/` by executable path/time/size and game assembly time.
+It does not write into the client directory. Missing build metadata is displayed as unavailable.
+
+Framework-dependent local clients use an already installed matching runtime (environment, local SDK, user and system locations).
+Only the child process receives `DOTNET_ROOT`/`DOTNET_ROOT_<architecture>`; no runtime is downloaded and global settings are unchanged.
+Published self-contained clients need no installed runtime.
+
+**Observed** (source): **Connect** passes normalized `--connect host:port` through `ProcessStartInfo.ArgumentList`, remembering up to ten
+addresses after process start. `ServerAddress` (Core) shares parsing with `DeviceConnection`. Local-world and duplicate connection options
+are refused. Admission, character creation, credentials and reconnection remain game-owned. Process start does not establish admission.
+Online entry uses Vulkan; macOS requires its loader rather than falling back to Metal.
+
+Coop configuration, release/news caches, schemas, default installed versions and the game's working directory are independent of upstream.
+Kenshi's `mods.cfg` and language still apply to the original installation. Existing device identities, creation recovery and game caches retain
+their game-owned `Meitou` locations. No identity migration occurs; `MEITOU_IDENTITY_DIRECTORY` is inherited unchanged.
+See [launch options](launch-options.md) and [server](server.md).
+
+Local portable build: `pwsh -File tools/scripts/package-launcher.ps1` (Windows x64, self-contained managed build; `-NativeAot` requires MSVC).
+Output: unpacked launcher, `MeitouCoopLauncher-<version>-win-x64-portable.zip`, licences and `SHA256SUMS.txt`.
+Managed packages retain .NET host/runtime and UI native libraries beside the executable; embedding/removal applies only to AOT publishes.
+`-Dotnet <path>` selects an installed SDK; the script also tries the existing local .NET 11 installation. No SDK is downloaded.
+
+**Unknown**: Coop GitHub installation and self-update between two published launcher releases; Linux/macOS live Coop gameplay.
+
 ## Releases
 
-- One repository, two tag families: the game `v<version>` (`release.yml`, nightlies `nightly.yml`), the launcher `launcher-v<version>`
+- Coop games use `coop-v<version>` (`coop-release.yml`), while inherited cross-platform `release.yml`/`nightly.yml` use `v<version>`;
+  the launcher accepts both game tag families. Launcher updates use `launcher-v<version>`
   (`launcher-release.yml`, changelog `launcher/CHANGELOG.md`). A full launcher release is marked Latest and game releases never
   are, so `/releases/latest` (README's link) is the newest launcher; README's
   setup links are `/releases/latest/download/<name>`, so the Setup/AppImage/pkg names must stay free of the version. Full releases of both pass
@@ -26,11 +57,12 @@ items); the launcher never downloads or hosts mods.
   outside `news/`, `site/`, `launcher/`, `docs/` and `.github/workflows/` changed since the newest game tag (nightly or full). Only the newest 14
   nightlies are kept, so the releases page and the launcher's Versions list stay short. Each nightly's commit list, and each full release's changelog section, is posted to Discord
   as the Tinfist bot (secret `DISCORD_BOT_TOKEN`, repository variable `DISCORD_NIGHTLY_CHANNEL`), else through the `DISCORD_WEBHOOK_URL`
-  channel webhook, when set. The launcher shows them with the Nightly builds checkbox beside Play ticked ("Play latest nightly"; ticking it asks first, with Yes under the pointer, warning of crashes and corrupted saves) (GitHub pre-releases; `IncludePrereleases` in `launcher.json`). Installed versions stay listed either way; an update is offered only for a release newer than the newest installed.
+  channel webhook, when set. **Experimental builds** beside Play lists GitHub pre-releases (`IncludePrereleases` in `launcher.json`);
+  enabling it asks first. Installed versions stay listed either way; updates are offered only for releases newer than the newest installed.
 - Game assets: `Meitou-<version>-<rid>.zip`, `<rid>` as .NET's `RuntimeInformation.RuntimeIdentifier` (`win-x64`, `linux-x64`,
   `osx-x64`, `osx-arm64`). Legacy Mac assets append `-legacy` to the RID. The legacy launcher selects only those assets and uses
   matching Velopack channels (`osx-x64-legacy`, `osx-arm64-legacy`), so self-updates stay on .NET 10. Its pack ID and app title are
-  `MeitouLauncherLegacy` / `Meitou Launcher Legacy`; installed games live in `versions-legacy/`, separately from standard builds.
+  `MeitouCoopLauncherLegacy` / `Meitou Coop Launcher Legacy`; installed games live in `versions-legacy/`, separately from standard builds.
   Settings are shared; changing the install folder moves both build families. A release with no matching zip is listed but not installable.
 - The list comes from the REST API without a token (60 requests an hour per IP). Every page is read (`per_page=100`, until a short page),
   cached together with page 1's ETag in `releases-cache.json`; an unchanged page 1 is a 304 that costs no quota and keeps the cache. Downloads use the asset URLs, which don't count
@@ -38,6 +70,19 @@ items); the launcher never downloads or hosts mods.
 - A download is checked against the asset's `digest` (`sha256:<hex>`) when GitHub lists one. The zip's single top folder becomes
   `versions/<version>/`. The game is `MeitouClient[.exe]` since 0.15 (`meitou[.exe]` before; the launcher takes either); on Unix
   it gets its execute bits. Cancelling a download removes the partial zip and unpacked folder.
+
+**Observed** (source): `export-packages.ps1 -Version <version>` publishes matching Windows client/server/tools and invokes
+`package-multiplayer.ps1`. Client: `Meitou-<version>-win-x64.zip`; server: `MeitouServer-<version>-win-x64.zip`.
+The staged client writes `settings-schema.json` with an explicitly awaited process. Each package includes `build-info.json` (version, commit, uncommitted-change flag, engine,
+protocol and assembly hashes), QUIC runtime and licences. Checksums accompany the ZIPs. Standalone `package-release.ps1` also writes metadata.
+`coop-release.yml` builds the pinned QUIC runtime and exports both packages; `build_only` defaults on and game releases are never Latest.
+Packaging rejects native source/DLL hashes that differ from the QUIC manifest; rebuild the transport and re-export rather than labelling stale binaries.
+
+**Observed** (source): `.github/coop-release.json` pins the incorporated upstream commit and its closest game release version.
+A master push changing this file publishes a prerelease according to its `prerelease` flag, after validating ancestry, building and running
+the existing quick suite. Manual runs may override the version and keep `build_only`. Asset versions retain the upstream number;
+the `coop-v` prefix gives the fork its own tag without moving inherited upstream tags. The same release includes a portable Coop launcher;
+its installer/self-update feed still uses the separate launcher workflow. Clients on prereleases enable **Experimental builds** to see it.
 
 ## One executable (Native AOT)
 
@@ -59,9 +104,10 @@ items); the launcher never downloads or hosts mods.
 ## Self-update (Velopack)
 
 - `launcher-release.yml` packs the launcher with `vpk pack` (Velopack, MIT; `vpk` version = the `Velopack` package version) on each
-  runtime's own OS, one channel per RID (`--channel <rid>`, packId `MeitouLauncher`): Windows `-Setup.exe` + `-Portable.zip`,
+  runtime's own OS, one channel per RID (`--channel <rid>`, packId `MeitouCoopLauncher`): Windows `-Setup.exe` + `-Portable.zip`,
   Linux an AppImage, macOS a bundle and installer (Mac-only tooling, unsigned). Every file name carries its channel
-  (**Verified** for win-x64: `MeitouLauncher-<v>-win-x64-full.nupkg`, `releases.win-x64.json`, `assets.win-x64.json`,
+  (upstream naming **Verified** for win-x64: `MeitouLauncher-<v>-win-x64-full.nupkg`; Coop substitutes its own pack ID;
+  feeds remain `releases.win-x64.json`, `assets.win-x64.json`,
   `RELEASES-win-x64`), so all four go on one `launcher-v<version>` release; the job fails on a name clash.
 - `Program.Main` calls `VelopackApp.Build().Run()` first. `LauncherUpdater` uses `ExplicitChannel = <rid>` and a `GithubSource`
   whose `GetReleases` returns only `launcher-v*` releases from the launcher's own cached list. Velopack's stock listing reads just
@@ -71,7 +117,7 @@ items); the launcher never downloads or hosts mods.
   downloads and applies a newer version and restarts into it (Settings toggle, `AutoUpdateLauncher`, default on); when off or failed, the title bar and Settings offer "Update launcher to
   <v>" / "Update to <v>" to retry. Launchers up to 1.0.4 only offer the buttons. Run from anywhere else (a build, a copied folder):
   the same buttons open the newest `launcher-v*` release page.
-- **Unknown**: the update path end to end (1.0.1 → 1.0.2 is the first real one).
+- **Unknown**: Coop self-update end to end between published launcher versions.
 
 ## Unsigned macOS packages
 
@@ -120,8 +166,8 @@ Native dependencies off Windows:
 
 ## Files
 
-The launcher's data folder (its program, once installed, is Velopack's, e.g. `%LocalAppData%/MeitouLauncher`) is `%LocalAppData%/Meitou`, `~/.local/share/Meitou` or `~/Library/Application Support/Meitou`, the same
-folder as the game's caches (shader cache, LODs, navmesh). Beside them it holds
+The launcher's data folder is `%LocalAppData%/MeitouCoop`, `~/.local/share/MeitouCoop` or `~/Library/Application Support/MeitouCoop`.
+Its installed program uses Velopack's separate `MeitouCoopLauncher` location. The data folder holds
 `launcher.json` (Kenshi folder, install folder, channel, chosen version, launch arguments, renderer, Metal memory budget, presets, language) and is the game's working directory.
 The game runs from that folder, so its `meitou.user.json` (and anything else it writes to the working directory) is shared by all
 versions. The game gets the Kenshi folder through `KENSHI_PATH`. On macOS, **Vulkan** gets `DYLD_LIBRARY_PATH` pointing at the
@@ -142,7 +188,7 @@ hand-written `--renderer`.
 Vulkan is the reference path and stays selectable; its **Setup** button copies `brew install molten-vk vulkan-loader` and opens
 brew.sh, and **Check** re-detects the loader. Metal starts without the Vulkan loader and without Homebrew on
 `DYLD_LIBRARY_PATH`. The launcher reads the release's `settings-schema.json` `renderers` list, so a Vulkan-only release does not
-silently claim Metal support. The launcher runs installed GitHub releases, not local checkouts.
+silently claim Metal support. The target may be an installed release or an explicitly selected local client.
 
 On Apple silicon, Settings also has a **Metal memory budget**: Safe 5120 MB (default), Balanced 6144 MB and, on 16 GB-or-larger
 Macs, High 8120 MB. It is the game's soft `VramGuard` ceiling, not a hard VRAM reservation; Apple silicon uses unified memory
@@ -159,7 +205,7 @@ folder containing `data/gamedata.base`. DepotDownloader is not bundled or automa
 
 ## Steam overlay and play time
 
-- In a Debug launcher run, Play uses `src/Meitou.Game/bin/Debug/net11.0/MeitouClient.exe` when available, so source changes are tested instead of an older downloaded release; Release builds continue using the selected installed version. Debug runs redirect the child's stdout/stderr into the launcher's console and debugger output.
+- Debug and Release both use the explicit source selected on Play. Debug launchers also forward the child's stdout/stderr to the console and debugger.
 - Settings → **Launch as Kenshi on Steam** (Windows, `LaunchAsSteamKenshi`, on by default; also asked in the first-start dialog) gates this. Off, Play sets no app ID, removes inherited `SteamAppId`/`SteamGameId` and a leftover `steam_appid.txt` holding `233860`, so the game skips Steamworks (no overlay or play time).
 - On, on Windows Kenshi installs that include `steam_api64.dll`, Play writes `steam_appid.txt` (`233860`) in the working directory and beside the Meitou executable and sets `SteamAppId`/`SteamGameId` for the game, then removes the files when Meitou exits (or on the next Play, if the launcher closed first). If either place already holds another ID, it writes nothing and sets no variables. The game (not for `--screenshot` or a start listing) loads the install's Steamworks DLL and calls `SteamAPI_InitFlat` when exported, else `SteamAPI_Init`, before creating its graphics device, and `SteamAPI_Shutdown` on exit; Meitou ships no Steamworks binaries. Other platforms and installs without the DLL skip it.
 - **Unknown** (from the [Steamworks API](https://partner.steamgames.com/doc/sdk/api) and [overlay](https://partner.steamgames.com/doc/features/overlay) docs, not yet checked against a Steam run): a direct launch with `steam_appid.txt` counts as Kenshi play time, needs a Kenshi licence and a running Steam client, and gets the overlay on Vulkan, whose FPS counter is under Steam Settings → In Game.
@@ -281,7 +327,7 @@ the same version with `--load <folder>` (game 0.10.0 and later) for the
 newest slot From save lists (newest `quick.save` over the three roots), only when its CAMERA `mods` list holds the enabled mods, order
 ignored, names compared case-insensitively. Otherwise it starts nothing and the status says why: other mods (which are not enabled,
 which are not in the save), no mod list, an unreadable save, or Launch arguments that already pick a start (`--load`, `--continue`, `--new-game`,
-`--no-population`, `--duel`, `--sandbox`, `--battle`, `--terrain-sandbox`; the game refuses `--load` beside the others).
+`--no-population`, `--duel`, `--sandbox`, `--battle`, `--terrain-sandbox`, `--connect`; the game refuses `--load` beside the others).
 
 ## News
 

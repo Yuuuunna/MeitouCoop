@@ -63,6 +63,19 @@ Get-ChildItem $stage -Recurse -Include *.dbg, *.dwarf, *.dSYM | Remove-Item -Rec
 dotnet run --project (Join-Path $root "src/Meitou.Game/Meitou.Game.csproj") -c Release -p:MeitouLegacyMac=$legacy -- --settings-schema (Join-Path (Resolve-Path $stage) "settings-schema.json")
 if ($LASTEXITCODE -ne 0) { throw "writing settings-schema.json failed" }
 
+# Build identity shown by the Coop launcher; protocol and engine are the same source constants used by paired multiplayer exports.
+$networking = Join-Path $root 'src/Meitou.Networking'
+$engineSource = [IO.File]::ReadAllText((Join-Path $networking 'ServerConnectionProfile.cs'))
+$protocolSource = [IO.File]::ReadAllText((Join-Path $networking 'CompatibilityHandshake.cs'))
+$engine = [regex]::Match($engineSource, 'public\s+const\s+string\s+EngineBuild\s*=\s*"([A-Za-z0-9._-]+)";')
+$protocol = [regex]::Match($protocolSource, 'public\s+const\s+ushort\s+Protocol\s*=\s*(\d+);')
+if (-not $engine.Success -or -not $protocol.Success) { throw 'Cannot determine the networking build identity.' }
+$sourceHead = (git -C $root rev-parse HEAD).Trim()
+$dirty = [bool](git -C $root status --porcelain --untracked-files=normal)
+@{ version=$Version; runtime="$Rid$suffix"; configuration='Release'; selfContained=$true; sourceHead=$sourceHead;
+    includesUncommittedChanges=$dirty; engine=$engine.Groups[1].Value; protocol=[int]$protocol.Groups[1].Value } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage 'build-info.json') -Encoding utf8
+
 function Get-Archive([string] $url, [string] $name = [IO.Path]::GetFileName($url)) {
     $file = Join-Path $Cache $name
     if (-not (Test-Path $file)) {

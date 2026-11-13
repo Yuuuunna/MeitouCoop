@@ -2,6 +2,8 @@
 <#
 .SYNOPSIS
 Publishes and packages the Windows x64 multiplayer client (with mod-check tools) and server.
+.DESCRIPTION
+Uses a compatible installed SDK from PATH or a local user installation; no SDK downloads or permanent environment changes.
 .EXAMPLE
 pwsh -File ./export-packages.ps1
 .EXAMPLE
@@ -19,16 +21,49 @@ param(
     [string] $Output = ('artifacts/releases/multiplayer-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')),
     [ValidateNotNullOrEmpty()]
     [string] $ValidationNote = 'Not yet validated in a live game.',
-    [string] $GraphicsRuntimePath = ''
+    [string] $GraphicsRuntimePath = '',
+    [ValidatePattern('^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$')]
+    [string] $Version = ('0.0.0-local.' + (Get-Date -Format 'yyyyMMddHHmmss'))
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-CompatibleDotnet {
+    $dotnetName = if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' }
+    $candidates = @(
+        Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+        if ($env:LOCALAPPDATA) {
+            Join-Path $env:LOCALAPPDATA "MeitouClient-dotnet11/$dotnetName"
+        }
+        if ($env:DOTNET_ROOT) { Join-Path $env:DOTNET_ROOT $dotnetName }
+        if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Microsoft/dotnet/$dotnetName" }
+        Join-Path $HOME ".dotnet/$dotnetName"
+    )
+
+    # Let global.json select the SDK; an installed host alone does not establish compatibility.
+    $PSNativeCommandUseErrorActionPreference = $false
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+
+        try {
+            $version = (& $candidate --version 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0) {
+                return @{ Path = $candidate; Version = $version }
+            }
+        } catch {
+            # An unusable host must not prevent checking the remaining installations.
+            continue
+        }
+    }
+
+    throw 'No installed .NET SDK satisfies global.json. Install the required SDK or set DOTNET_ROOT to a compatible installation.'
+}
+
 $repo = $PSScriptRoot
 $outputRoot = [IO.Path]::GetFullPath($Output, $repo)
 if (Test-Path -LiteralPath $outputRoot) {
     throw "Output already exists; choose a new folder: $outputRoot"
 }
-Get-Command dotnet -ErrorAction Stop | Out-Null
 Get-Command git -ErrorAction Stop | Out-Null
 
 # Match Directory.Build.targets' optional runtime discovery; no downloads during multiplayer exports.
@@ -39,17 +74,21 @@ $graphicsRuntimeRoot = [IO.Path]::GetFullPath($GraphicsRuntimePath, $repo)
 
 # A fresh staging directory prevents stale binaries or local settings entering a package.
 $stageRoot = Join-Path $repo ('artifacts/multiplayer-stage/' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $stageRoot | Out-Null
 Push-Location $repo
 try {
+    $sdk = Resolve-CompatibleDotnet
+    Write-Host "Using .NET SDK $($sdk.Version): $($sdk.Path)"
+    New-Item -ItemType Directory -Path $stageRoot | Out-Null
+
     foreach ($target in @(
         @{ Kind = 'client'; Project = 'src/Meitou.Game/Meitou.Game.csproj' },
         @{ Kind = 'server'; Project = 'src/Meitou.Server/Meitou.Server.csproj' }
     )) {
         Write-Host "Publishing $($target.Kind) (Release, win-x64, self-contained)..."
-        $runtimeArgs = if ($target.Kind -eq 'client') { @("-p:StreamlineRuntimePath=$graphicsRuntimeRoot") } else { @() }
-        dotnet publish (Join-Path $repo $target.Project) -c Release -r win-x64 --self-contained true `
+        $runtimeArgs = @(if ($target.Kind -eq 'client') { "-p:StreamlineRuntimePath=$graphicsRuntimeRoot" })
+        & $sdk.Path publish (Join-Path $repo $target.Project) -c Release -r win-x64 --self-contained true `
             -p:PublishSingleFile=false -p:PublishTrimmed=false -p:PublishAot=false `
+            -p:Version=$Version -p:InformationalVersion=$Version -p:BuildGitTag=v$Version `
             -o (Join-Path $stageRoot $target.Kind) @runtimeArgs
         if ($LASTEXITCODE -ne 0) {
             throw "Publishing $($target.Kind) failed (exit code $LASTEXITCODE). Staging: $stageRoot"
@@ -61,8 +100,9 @@ try {
     $toolsStage = Join-Path $stageRoot 'tools'
     $clientStage = Join-Path $stageRoot 'client'
     Write-Host 'Publishing mod-check tools (Release, win-x64, self-contained)...'
-    dotnet publish (Join-Path $repo 'tools/Meitou.Tools/Meitou.Tools.csproj') -c Release -r win-x64 --self-contained true `
-        -p:PublishSingleFile=false -p:PublishTrimmed=false -p:PublishAot=false -o $toolsStage
+    & $sdk.Path publish (Join-Path $repo 'tools/Meitou.Tools/Meitou.Tools.csproj') -c Release -r win-x64 --self-contained true `
+        -p:PublishSingleFile=false -p:PublishTrimmed=false -p:PublishAot=false `
+        -p:Version=$Version -p:InformationalVersion=$Version -p:BuildGitTag=v$Version -o $toolsStage
     if ($LASTEXITCODE -ne 0) {
         throw "Publishing tools failed (exit code $LASTEXITCODE). Staging: $stageRoot"
     }
@@ -89,7 +129,7 @@ try {
     }
 
     & (Join-Path $repo 'tools/scripts/package-multiplayer.ps1') `
-        -Stage $stageRoot -Output $outputRoot -ValidationNote $ValidationNote
+        -Stage $stageRoot -Output $outputRoot -ValidationNote $ValidationNote -Version $Version
     Write-Host "Packages: $outputRoot"
     Write-Host "Published files: $stageRoot"
 } finally {

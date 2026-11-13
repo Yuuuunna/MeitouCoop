@@ -127,12 +127,12 @@ public sealed class ReleaseRow(Release release, bool installed, bool played)
     public string Title => Release.Title;
 
     /// <summary>
-    /// Its publish date, whether it is a nightly and whether it has no build for this runtime.
+    /// Its publish date, prerelease status and whether it has no build for this runtime.
     /// </summary>
     public string Detail => string.Join(" · ", new[]
     {
         Release.Published.ToString("yyyy-MM-dd"),
-        Release.Prerelease ? LauncherText.Translate("nightly") : null,
+        Release.Prerelease ? LauncherText.Translate("experimental") : null,
         Release.Asset is null ? Loc.Format(LauncherText.Translate("no {1} build"), Releases.Rid) : null,
     }.OfType<string>());
 

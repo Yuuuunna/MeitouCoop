@@ -8,12 +8,13 @@ namespace Meitou.Launcher;
 public sealed class LauncherConfig
 {
     /// <summary>
-    /// The launcher's own folder: <c>%LocalAppData%/Meitou</c> on Windows, <c>~/.local/share/Meitou</c> on Linux,
-    /// <c>~/Library/Application Support/Meitou</c> on macOS. Holds <c>launcher.json</c> and is the game's working directory, so its
+    /// The launcher's own MeitouCoop folder under the platform's local application data directory.
+    /// Holds <c>launcher.json</c> and is the game's working directory, so its
     /// <c>meitou.user.json</c> is shared by every version.
     /// </summary>
     public static string DataDirectory { get; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create), "Meitou");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create),
+            LauncherIdentity.DataFolder);
 
     /// <summary>
     /// The launcher's settings file, <c>launcher.json</c> in the data folder.
@@ -107,6 +108,26 @@ public sealed class LauncherConfig
     public string? SelectedVersion { get; set; }
 
     /// <summary>
+    /// Starts the explicitly selected local client instead of a downloaded version.
+    /// </summary>
+    public bool UseLocalClient { get; set; }
+
+    /// <summary>
+    /// A local client's folder or executable; never inferred from the launcher's build configuration.
+    /// </summary>
+    public string? LocalClientPath { get; set; }
+
+    /// <summary>
+    /// Server addresses recently passed to a successfully started game; contains no credentials.
+    /// </summary>
+    public List<string> RecentServers { get; set; } = [];
+
+    /// <summary>
+    /// The most recently requested server address.
+    /// </summary>
+    public string ServerAddress { get; set; } = "";
+
+    /// <summary>
     /// A game release the user chose not to be offered as an update; a newer one is offered again.
     /// </summary>
     public string? SkippedVersion { get; set; }
@@ -159,7 +180,16 @@ public sealed class LauncherConfig
     public void Save()
     {
         Directory.CreateDirectory(DataDirectory);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, LauncherJson.Default.LauncherConfig));
+        string temporary = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(this, LauncherJson.Default.LauncherConfig));
+            File.Move(temporary, FilePath, true);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
     }
 }
 

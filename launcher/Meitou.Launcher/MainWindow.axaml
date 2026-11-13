@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:l="using:Meitou.Launcher"
         x:Class="Meitou.Launcher.MainWindow"
-        Title="Meitou Launcher" Icon="avares://meitou-launcher/Assets/meitou.ico"
+        Title="Meitou Coop Launcher" Icon="avares://meitou-launcher/Assets/meitou.ico"
         WindowDecorations="None" TransparencyLevelHint="Transparent"
         WindowStartupLocation="CenterScreen" Width="1200" Height="936" MinWidth="800" MinHeight="540">
   <!-- No system frame: the plate floats on a transparent window with its own title bar; the margin holds its shadow and the resize grips. -->
@@ -34,7 +34,7 @@
                VerticalAlignment="Center" RenderOptions.BitmapInterpolationMode="HighQuality" />
         <!-- The site's wordmark: white, a heavy "Meitou" and a lighter "Client" (Exo 2 SemiBold and Medium, the lightest loaded) -->
         <TextBlock Classes="title" Foreground="White" VerticalAlignment="Center">
-          <Run Text="Meitou" FontWeight="SemiBold" /><Run Text="Client" FontWeight="Medium" />
+          <Run Text="Meitou" FontWeight="SemiBold" /><Run Text="Coop" FontWeight="Medium" />
         </TextBlock>
       </DockPanel>
       <Border DockPanel.Dock="Top" Classes="rule" Margin="0,0,0,12" />
@@ -85,7 +85,7 @@
           <!-- The label in the quiet text colour (set on the TextBlock, so the check box's hover state does not brighten it) -->
           <CheckBox x:Name="NightlyBox" DockPanel.Dock="Right" Click="Nightly_Click" VerticalAlignment="Center" Margin="12,0,0,0"
                     ToolTip.Tip="Unstable: daily builds of the newest code, untested. They may crash or corrupt save files; off, only full releases are offered.">
-            <TextBlock Text="Nightly builds" FontSize="13" FontWeight="Medium" Foreground="{StaticResource Quiet}" />
+            <TextBlock Text="Experimental builds" FontSize="13" FontWeight="Medium" Foreground="{StaticResource Quiet}" />
           </CheckBox>
           <Button x:Name="SkipButton" DockPanel.Dock="Right" Classes="link" Click="SkipVersion_Click" VerticalAlignment="Center"
                   Margin="0,0,4,0" IsVisible="False" ToolTip.Tip="Don't offer this version again; a newer one will be">
@@ -101,7 +101,7 @@
             </StackPanel>
           </Button>
           <StackPanel DockPanel.Dock="Left" Spacing="4" Margin="4,0,0,0" VerticalAlignment="Center">
-            <TextBlock Classes="caps" Text="MEITOU LAUNCHER" />
+            <TextBlock Classes="caps" Text="MEITOU COOP" />
             <TextBlock x:Name="LauncherVersionText" Classes="desc" />
           </StackPanel>
           <!-- The status line, and under it the running download's progress (seen from any page, not just Versions) -->
@@ -115,7 +115,13 @@
       <!-- Navigation -->
       <DockPanel DockPanel.Dock="Left" Width="176">
         <StackPanel Spacing="6">
-          <ToggleButton x:Name="NavHome" Classes="nav" Click="Nav_Click" IsChecked="True">
+          <ToggleButton x:Name="NavCoop" Classes="nav" Click="Nav_Click" IsChecked="True">
+            <StackPanel Orientation="Horizontal">
+              <Path Data="F1 M2,1 L16,8 L2,15 Z" />
+              <TextBlock Text="PLAY" />
+            </StackPanel>
+          </ToggleButton>
+          <ToggleButton x:Name="NavHome" Classes="nav" Click="Nav_Click">
             <StackPanel Orientation="Horizontal">
               <Path Data="F1 M8,0 L16,7 H13.5 V16 H9.5 V10.5 H6.5 V16 H2.5 V7 H0 Z" />
               <TextBlock Text="HOME" />
@@ -154,8 +160,9 @@
       <Border DockPanel.Dock="Left" Classes="vrule" Margin="18,0" />
 
       <Panel>
+        <l:CoopPage x:Name="CoopControls" />
         <!-- Home: news posts from the repository's news/ folder -->
-        <DockPanel x:Name="HomePage">
+        <DockPanel x:Name="HomePage" IsVisible="False">
           <Border DockPanel.Dock="Top" Classes="header" Margin="0,0,0,10">
             <Panel>
               <DockPanel>

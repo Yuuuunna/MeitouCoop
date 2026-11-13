@@ -18,23 +18,19 @@ We also have a C# modding API, do check out our [Wiki](https://github.com/VlcekM
 
 ## Download and requirements
 
-The easiest way to get the game is the [Meitou Launcher](https://github.com/VlcekM/MeitouClient/releases/latest): it installs and
-updates the game and manages mods. Download the newest one for
+The **Meitou Coop Launcher** installs this repository's multiplayer client, manages mods and graphics settings, and joins servers
+by address. It also starts an explicitly selected local build or extracted client. Coop configuration and installed versions are separate
+from upstream; existing game-owned player identities are retained. [Launcher contract](docs/launcher.md).
 
-[Windows](https://github.com/VlcekM/MeitouClient/releases/latest/download/MeitouLauncher-win-x64-Setup.exe) (Setup.exe),
+Build a Windows x64 portable launcher with `pwsh -File tools/scripts/package-launcher.ps1`.
+Output under `artifacts/releases/launcher-<timestamp>` includes an unpacked self-contained launcher, portable ZIP and checksums.
+`-NativeAot` requires MSVC; the default managed portable build needs no C++ compiler or installed .NET on the player's machine.
 
-[Linux](https://github.com/VlcekM/MeitouClient/releases/latest/download/MeitouLauncher-linux-x64.AppImage) (AppImage),
-
-[macOS Apple silicon](https://github.com/VlcekM/MeitouClient/releases/latest/download/MeitouLauncher-osx-arm64-Setup.pkg) or
-
-[macOS Intel](https://github.com/VlcekM/MeitouClient/releases/latest/download/MeitouLauncher-osx-x64-Setup.pkg) (unsigned, Gatekeeper warns).
-
-For macOS 13 Ventura, use the .NET 10 legacy launcher:
-[Intel](https://github.com/VlcekM/MeitouClient/releases/latest/download/MeitouLauncherLegacy-osx-x64-legacy-Setup.pkg) or
-[Apple silicon](https://github.com/VlcekM/MeitouClient/releases/latest/download/MeitouLauncherLegacy-osx-arm64-legacy-Setup.pkg).
-It installs the matching legacy game builds; standard builds use .NET 11 and require macOS 14 or later.
-
-By hand: [releases](https://github.com/VlcekM/MeitouClient/releases) for Windows, Linux and macOS, unzip and run
+Distribution destination: [MeitouCoop releases](https://github.com/Yuuuunna/MeitouCoop/releases).
+The **Coop Windows release** workflow builds paired client/server ZIPs; **Launcher release** builds separate installers and updates.
+Both support artifact-only builds. Launcher installers use the independent `MeitouCoopLauncher` identity.
+Updating `.github/coop-release.json` on master publishes a `coop-v<version>` release based on its declared upstream baseline,
+including a portable launcher. The launcher's Versions page accepts this tag family as well as inherited `v<version>` releases.
 
 Steam installs, and GOG installs made by GOG Galaxy, Heroic, Lutris or Bottles, are located automatically; otherwise select the Kenshi folder when prompted,
 set KENSHI_PATH, or create git-ignored meitou.local.json in the repo/working/executable directory (on Linux and macOS also `~/.config/meitou/config.json`, the place the prompt saves to when the executable's folder is read-only):
@@ -53,7 +49,7 @@ dotnet test -c Release --filter "Category!=Slow&Category!=Bench"
 dotnet run -c Release --project src/Meitou.Game
 ```
 
-To export both Windows x64 multiplayer packages, run `pwsh -File ./export-packages.ps1` (PowerShell 7).
+To export both Windows x64 multiplayer packages, run `pwsh -File ./export-packages.ps1 -Version 0.1.0` (PowerShell 7).
 It publishes Release self-contained builds and writes client/server ZIPs, launch scripts, instructions and
 SHA256SUMS into `artifacts/releases/multiplayer-<timestamp>`; use `-Output <folder>` for a new destination
 (relative to the repository). Published staging files remain in `artifacts/multiplayer-stage/`.

@@ -2989,3 +2989,111 @@ msgstr "{1}花{3}开币买下了{2}"
 
 msgid "{1} sold {2} for c.{3}"
 msgstr "{1}以{3}开币卖出了{2}"
+
+msgid "PLAY"
+msgstr "开始游戏"
+
+msgid "Client source"
+msgstr "客户端来源"
+
+msgid "Installed release"
+msgstr "已安装的发布版"
+
+msgid "Local client"
+msgstr "本地客户端"
+
+msgid "Choose an installed version with the arrow beside Play, or select a local client below."
+msgstr "使用开始按钮旁的箭头选择已安装版本，或在下方选择本地客户端。"
+
+msgid "Client folder or executable"
+msgstr "客户端文件夹或可执行文件"
+
+msgid "Use local client"
+msgstr "使用本地客户端"
+
+msgid "Find checkout build"
+msgstr "查找仓库构建"
+
+msgid "Refresh client"
+msgstr "刷新客户端"
+
+msgid "Open client folder"
+msgstr "打开客户端文件夹"
+
+msgid "Open log"
+msgstr "打开日志"
+
+msgid "Join a server"
+msgstr "连接服务器"
+
+msgid "Enter host:port. The game remembers your existing player identity and checks server compatibility."
+msgstr "输入服务器地址和端口。游戏会保留已有玩家身份，并检查与服务器的兼容性。"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Recent servers"
+msgstr "最近连接"
+
+msgid "Connect starts the selected client. Admission, character creation and reconnection take place in the game."
+msgstr "连接会启动当前选择的客户端。入场、角色创建和重连由游戏处理。"
+
+msgid "Choose a valid local client on the Play page."
+msgstr "请在开始游戏页面选择有效的本地客户端。"
+
+msgid "Install a version first (Versions), or choose a local client on the Play page."
+msgstr "请先在版本页面安装客户端，或在开始游戏页面选择本地客户端。"
+
+msgid "Build the game first, or browse to an exported client."
+msgstr "请先构建游戏，或浏览选择已导出的客户端。"
+
+msgid "No Meitou client was found at this path."
+msgstr "此路径下没有找到 Meitou 客户端。"
+
+msgid "Use Refresh client on the Play page to obtain this client's settings."
+msgstr "请在开始游戏页面点击刷新客户端，获取此客户端的设置。"
+
+msgid "Close the running game or wait for hardware detection before starting another client."
+msgstr "请先关闭正在运行的游戏，或等待硬件检测完成，再启动客户端。"
+
+msgid " Connecting to {1}."
+msgstr " 正在连接 {1}。"
+
+msgid "Meitou stopped with an error (exit code {1}); its log is {2}"
+msgstr "Meitou 异常退出（退出码 {1}），日志位于 {2}"
+
+msgid "Could not open the selected client path."
+msgstr "无法打开所选客户端路径。"
+
+msgid "Enter a server as host:port (IPv6: [address]:port)."
+msgstr "请输入服务器地址和端口（IPv6 格式为 [地址]:端口）。"
+
+msgid "Invalid server port."
+msgstr "服务器端口无效。"
+
+msgid "Launch arguments contain an unclosed double quote."
+msgstr "启动参数中有未闭合的双引号。"
+
+msgid "Experimental builds"
+msgstr "实验版本"
+
+msgid "experimental"
+msgstr "实验版本"
+
+msgid "Experimental builds have not completed live game validation. They may be unstable, crash, and corrupt your save files: back up your saves before playing one.\n\nContinue with experimental builds?"
+msgstr "实验版本尚未完成实机验收，可能不稳定、崩溃或损坏存档。游玩前请备份存档。\n\n是否启用实验版本？"
+
+msgid "Only experimental builds so far: tick Experimental builds beside Play to list them."
+msgstr "目前只有实验版本：勾选开始按钮旁的实验版本即可查看。"
+
+msgid "Build information unavailable (build-info.json is missing)."
+msgstr "此客户端未附带构建信息（缺少 build-info.json）。"
+
+msgid " (uncommitted changes)"
+msgstr "（包含未提交修改）"
+
+msgid "Version: {1}\nCommit: {2}{3}\nProtocol: {4}\nEngine: {5}"
+msgstr "版本：{1}\n源码提交：{2}{3}\n联机协议：{4}\n引擎标识：{5}"
+
+msgid "Close this game before removing its installed version."
+msgstr "请先关闭游戏，再移除此安装版本。"

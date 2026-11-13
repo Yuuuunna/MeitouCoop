@@ -12,7 +12,7 @@ public sealed partial class MainWindow
     /// <summary>
     /// Options that pick the game's start themselves; the game refuses --load beside the others.
     /// </summary>
-    static readonly string[] StartOptions = ["--load", "--continue", "--new-game", "--no-population", "--duel", "--sandbox", "--battle",
+    static readonly string[] StartOptions = ["--connect", "--load", "--continue", "--new-game", "--no-population", "--duel", "--sandbox", "--battle",
             "--terrain-sandbox"];
 
     /// <summary>
@@ -59,7 +59,7 @@ public sealed partial class MainWindow
     async Task<SaveModSlot?> ContinueTarget(GameInstall gameInstall)
     {
         if (!ModsReady()) return null;
-        if (SplitArguments(_config.LaunchArguments).FirstOrDefault(StartOptions.Contains) is { } option)
+        if (GameArguments.Split(_config.LaunchArguments).FirstOrDefault(StartOptions.Contains) is { } option)
         {
             Status(Tr("Launch arguments have {1}, which picks the start itself: remove it to continue a save.", option));
             return null;

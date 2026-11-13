@@ -1,0 +1,110 @@
+name: Coop Windows release
+
+on:
+  push:
+    branches: [master]
+    paths: [.github/coop-release.json]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without v (empty: .github/coop-release.json upstream baseline)"
+        required: false
+      build_only:
+        description: "Upload artifacts without publishing a release"
+        type: boolean
+        default: true
+      prerelease:
+        description: "Mark the experimental Coop release as a prerelease"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Validate version
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          BUILD_ONLY: ${{ inputs.build_only }}
+        run: |
+          $baseline = Get-Content .github/coop-release.json -Raw | ConvertFrom-Json
+          $version = if ($env:VERSION) { $env:VERSION } else { $baseline.version }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$') { throw 'Invalid version' }
+          git merge-base --is-ancestor $baseline.upstreamCommit HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'The release does not contain its declared upstream baseline' }
+          $publishing = '${{ github.event_name }}' -eq 'push' -or $env:BUILD_ONLY -ne 'true'
+          if ($publishing -and (git tag -l "coop-v$version")) { throw 'Coop tag already exists' }
+          "COOP_VERSION=$version" >> $env:GITHUB_ENV
+          $prerelease = if ('${{ github.event_name }}' -eq 'push') { $baseline.prerelease } else { '${{ inputs.prerelease }}' -eq 'true' }
+          "COOP_PRERELEASE=$($prerelease.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
+
+      - name: Build pinned QUIC runtime
+        shell: pwsh
+        run: |
+          $folder = 'artifacts/network-vnext-platform'
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.native.quic.msquic.openssl/2.6.3/microsoft.native.quic.msquic.openssl.2.6.3.nupkg' -OutFile "$folder/microsoft.native.quic.msquic.openssl.2.6.3.nupkg"
+          # build.ps1 verifies the pinned package and DLL hashes before compiling.
+          ./tools/Meitou.QuicTransport/build.ps1
+          $native = (Resolve-Path artifacts/network-vnext-transport/win-x64).Path
+          $manifest = Get-Content "$native/manifest.json" -Raw | ConvertFrom-Json
+          "MEITOU_QUIC_NATIVE_DIRECTORY=$native" >> $env:GITHUB_ENV
+          "MEITOU_QUIC_SHIM_SHA256=$($manifest.shimSha256)" >> $env:GITHUB_ENV
+
+      - name: Existing quick tests
+        run: dotnet test -c Release --filter "Category!=Slow&Category!=Bench"
+
+      - name: Export paired client and server
+        shell: pwsh
+        run: ./export-packages.ps1 -Version $env:COOP_VERSION -Output artifacts/coop-release
+
+      - name: Portable Coop launcher
+        shell: pwsh
+        run: ./tools/scripts/package-launcher.ps1 -Output artifacts/coop-launcher
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coop-win-x64
+          path: |
+            artifacts/coop-release/*.zip
+            artifacts/coop-release/*.txt
+            artifacts/coop-launcher/*.zip
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Publish release
+        if: ${{ github.event_name == 'push' || !inputs.build_only }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:COOP_VERSION
+          $baseline = Get-Content .github/coop-release.json -Raw | ConvertFrom-Json
+          $notes = Join-Path $env:RUNNER_TEMP 'coop-notes.md'
+          @(
+            "Meitou Coop $version for Windows x64. Client and server must use matching builds."
+            "Based on upstream $($baseline.upstreamCommit) (v$($baseline.version))."
+            'Experimental multiplayer build; live game validation remains required.'
+            'Requires an existing Kenshi installation. No original game assets are included.'
+            'Use the Coop launcher to install the client, or extract the client ZIP and run start-client.cmd.'
+            'Verify downloads against SHA256SUMS.txt. Preserve server-data and existing player identities when upgrading.'
+            'The portable Coop launcher is included; launcher installers and self-update feeds are published separately.'
+          ) | Set-Content -LiteralPath $notes -Encoding utf8
+          $launcher = Get-ChildItem artifacts/coop-launcher -Filter '*.zip' -File
+          Get-Content artifacts/coop-launcher/SHA256SUMS.txt | Add-Content artifacts/coop-release/SHA256SUMS.txt
+          $assets = @((Get-ChildItem artifacts/coop-release -File | Where-Object { $_.Extension -in '.zip', '.txt' }) + $launcher | ForEach-Object FullName)
+          $flags = @('--latest=false')
+          if ($env:COOP_PRERELEASE -eq 'true') { $flags += '--prerelease' }
+          gh release create "coop-v$version" @assets --target $env:GITHUB_SHA --title "Meitou Coop $version" --notes-file $notes @flags
+          if ($LASTEXITCODE -ne 0) { throw "Release failed: $LASTEXITCODE" }

@@ -4,6 +4,7 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>meitou-launcher</AssemblyName>
     <RootNamespace>Meitou.Launcher</RootNamespace>
+    <Product>Meitou Coop Launcher</Product>
     <!-- The newest launcher/CHANGELOG.md section's version, so local builds match the latest release; the release workflow passes -p:Version. -->
     <Version>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../CHANGELOG.md')), '(?m)^## v(\S+)').Groups[1].Value)</Version>
     <ApplicationIcon>../../assets/branding/meitou.ico</ApplicationIcon>
@@ -48,9 +49,10 @@
   <ItemGroup Condition="'$(RuntimeIdentifier)' == ''">
     <None Include="$(VpxRoot)/bin/vpx*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
-  <!-- On publish, the runtime's native libraries (Skia, HarfBuzz, ANGLE) go into the executable as native/<file> resources instead of next to it.
+  <!-- On AOT publish, the native libraries (Skia, HarfBuzz, ANGLE) go into the executable as native/<file> resources instead of next to it.
        Their names and hashes go in as the NativeLibraries metadata, so the launcher names their folder without hashing them at startup. -->
-  <Target Name="EmbedNativeLibraries" AfterTargets="ResolvePackageAssets" Condition="'$(_IsPublishing)' == 'true' and '$(RuntimeIdentifier)' != ''">
+  <Target Name="EmbedNativeLibraries" AfterTargets="ResolvePackageAssets"
+          Condition="'$(_IsPublishing)' == 'true' and '$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' != ''">
     <ItemGroup>
       <_NativeToEmbed Include="@(NativeCopyLocalItems)" Condition="'%(Extension)' != '.pdb' and '%(Extension)' != '.dbg'" />
       <EmbeddedResource Include="@(_NativeToEmbed)" LogicalName="native/%(Filename)%(Extension)" WithCulture="false" Type="Non-Resx" />
@@ -65,7 +67,8 @@
       </AssemblyAttribute>
     </ItemGroup>
   </Target>
-  <Target Name="UnpublishNativeLibraries" AfterTargets="ComputeResolvedFilesToPublishList" Condition="'$(_IsPublishing)' == 'true' and '$(RuntimeIdentifier)' != ''">
+  <Target Name="UnpublishNativeLibraries" AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(_IsPublishing)' == 'true' and '$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' != ''">
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.AssetType)' == 'native' or '%(Extension)' == '.pdb'" />
     </ItemGroup>
