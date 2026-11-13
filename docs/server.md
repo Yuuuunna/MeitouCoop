@@ -232,6 +232,8 @@ is also saved. CAMERA's versioned `meitou weather effects` payload is Brotli/bas
 and 512 MiB expanded JSON (regional JSON remains 8 Mi characters). Permanently resting particle emitters encode
 their infinite cycle as null. Regional document v2 requires the effect payload; v1/legacy checkpoints recreate effects.
 Restore validates catalogue/pool shapes before candidate activation and does not advance effect schedulers.
+**Observed** (particle checkpoint codec): particle state v2 appends each live particle's mass as channel 22;
+v1's 21 channels remain readable with unit mass. New captures retain gravity-affector state across restart.
 **Verified** by ParticleCheckpointTests, WeatherHazardCheckpointTests, WeatherScheduleTests and
 WorldCheckpointCoordinatorTests.Weather: subsequent movement, wrapping, tail expiry and respawning agree;
 malformed payloads preserve the live world. Installed-content restore/re-entry also exercises checkpoints.

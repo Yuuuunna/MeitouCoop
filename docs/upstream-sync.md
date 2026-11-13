@@ -14,20 +14,22 @@
 
 ## 验证范围
 
-**Verified**（Linux x64，SDK 11.0.100、.NET 11.0.0；Release 构建日志及 xUnit XML）：
+**Verified**（Windows x64，SDK 11.0.100、.NET 11.0.0；真实 Kenshi 数据、Release 构建日志及 xUnit XML）：
 
 | 检查 | 结果 |
 |---|---|
 | Solution 默认 Release 构建 | 0 警告，0 错误 |
 | Release Metal 条件编译（`-p:MeitouMetal=true`） | 0 警告，0 错误 |
-| 完整既有套件 | 1474 总计，1257 通过，0 失败，0 错误，217 跳过，0 未运行 |
+| .NET 10 目标及 Metal 条件编译 | 0 警告，0 错误 |
+| 完整既有套件 | 1474 总计，1445 通过，0 失败，0 错误，29 跳过，0 未运行 |
 
 完整套件运行 `tests/Meitou.Tests/bin/Release/net11.0/Meitou.Tests.dll -parallel none -maxThreads 1`，
-不筛选 Slow/Bench。217 项跳过：140 项需要 Kenshi 安装，46 项需要 Windows x64 原生 QUIC 集成环境，
-23 项需要 Vulkan 设备，5 项缺少可信原生 QUIC 产物，另有 macOS CrossOver、Windows 黄金哈希、
-Debug 配置检查各 1 项。构建和完整套件均未使用真实游戏数据。
+不筛选 Slow/Bench。原生 QUIC 使用与当前 `transport.cpp` 内容一致（仅换行符不同）的既有本机构建，
+核对清单及 DLL 的 SHA-256，MsQuic 为仓库锁定的 2.6.3。29 项跳过：22 项需要 Vulkan 设备，
+2 项限其他平台，3 项需要旧检查点，1 项缺少含排队订单的存档，1 项仅在 Debug 配置运行。
+既有 `HeadlessContentTests.InstalledWorldLoadsAndTicksWithoutAnyRenderingAssembly` 验证真实粒子状态在检查点恢复后继续推进一致；
+粒子检查点版本与旧版读取规则见[服务器契约](server.md)。证据位于仓库外 `pr1-review-results/`，完整报告为 `full-final.xml`。
 
-**Unknown**：真实 Kenshi 存档与模组兼容性、双客户端权威和可见性、Windows QUIC、
-Vulkan/Metal 图形运行及 VPS 验收；本基准未复验 .NET 10 兼容构建。
-条件编译通过不代表对应平台或 GPU 已通过运行验收。合并前在本地游戏环境执行
+**Unknown**：未提供的旧检查点与排队订单存档、完整图形化双客户端权威和可见性、Vulkan/Metal 图形运行及 VPS 验收，
+以及 Linux、macOS 和 .NET 10 兼容包的实机运行。条件编译通过不代表对应平台或 GPU 已通过运行验收。合并前在本地游戏环境执行
 [联机验收](multiplayer.md)与[传输门禁](networking-next.md)，客户端和服务器均使用当前构建身份。

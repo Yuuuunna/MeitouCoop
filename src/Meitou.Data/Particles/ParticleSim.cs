@@ -1191,34 +1191,48 @@ public sealed partial class ParticleSimulation
         return (x >> 8) * (1f / (1 << 24));
     }
 
-    static float[][] Channels(TechniqueState t) => [t.X, t.Y, t.Z, t.Vx, t.Vy, t.Vz, t.Age, t.Life, t.Width, t.Height, t.Depth, t.Rotation, t.RotationSpeed, t.R, t.G, t.B, t.A, t.Er, t.Eg, t.Eb, t.Ea];
+    /// <summary>
+    /// The checkpoint's particle channels, with mass appended in particle checkpoint version 2.
+    /// </summary>
+    static float[][] Channels(TechniqueState t) =>
+        [t.X, t.Y, t.Z, t.Vx, t.Vy, t.Vz, t.Age, t.Life, t.Width, t.Height, t.Depth, t.Rotation, t.RotationSpeed,
+            t.R, t.G, t.B, t.A, t.Er, t.Eg, t.Eb, t.Ea, t.Mass];
+
+    /// <summary>
+    /// Copies the particle pools and generator state without sharing mutable storage.
+    /// </summary>
     public ParticleSimulationState Capture()
     {
         if (_random is not CheckpointRandom stored)
             throw new InvalidOperationException("This particle simulation does not use checkpointable randomness.");
-        return new(1, Definition.Name, stored.Capture(), Origin, WorldOffset, Orientation, Size, LifeScale, EmissionStopped, Time, _techniques.Select(t => new ParticleTechniqueState(Channels(t).Select(c => c.AsSpan(0, t.Count).ToArray()).ToArray(), t.Seed.AsSpan(0, t.Count).ToArray(), t.Emitter.AsSpan(0, t.Count).ToArray(), t.Emitters.Select(e => new ParticleEmitterState(e.Accumulator, e.Clock, float.IsPositiveInfinity(e.Cycle) ? null : e.Cycle, e.Resting, e.Age)).ToArray(), t.ObserverClock, t.RandomiserClock.ToArray(), t.Step)).ToArray());
+
+        return new(2, Definition.Name, stored.Capture(), Origin, WorldOffset, Orientation, Size, LifeScale, EmissionStopped, Time,
+            _techniques.Select(CaptureTechnique).ToArray());
     }
 
+    /// <summary>
+    /// Copies one technique's live particles, emitter clocks and affector clocks.
+    /// </summary>
+    static ParticleTechniqueState CaptureTechnique(TechniqueState t) => new(
+        Channels(t).Select(c => c.AsSpan(0, t.Count).ToArray()).ToArray(), t.Seed.AsSpan(0, t.Count).ToArray(),
+        t.Emitter.AsSpan(0, t.Count).ToArray(), t.Emitters.Select(CaptureEmitter).ToArray(),
+        t.ObserverClock, t.RandomiserClock.ToArray(), t.Step);
+
+    /// <summary>
+    /// Encodes a permanently resting emitter's infinite cycle as null.
+    /// </summary>
+    static ParticleEmitterState CaptureEmitter(EmitterState e) =>
+        new(e.Accumulator, e.Clock, float.IsPositiveInfinity(e.Cycle) ? null : e.Cycle, e.Resting, e.Age);
+
+    /// <summary>
+    /// Validates the complete checkpoint before replacing this simulation's state.
+    /// </summary>
     public void Restore(ParticleSimulationState state)
     {
         if (_random is not CheckpointRandom stored)
             throw new InvalidOperationException("This particle simulation does not use checkpointable randomness.");
-        if (state is null || state.Version != 1 || state.System != Definition.Name || state.Techniques is null || state.Techniques.Length != _techniques.Length || !Finite(state.Origin) || !Finite(state.WorldOffset) || !Finite(state.Orientation) || !float.IsFinite(state.Size) || !float.IsFinite(state.LifeScale) || !float.IsFinite(state.Time) || state.Time < 0)
-            throw new InvalidDataException("Invalid particle simulation checkpoint.");
-        var probe = new CheckpointRandom(0);
-        probe.Restore(state.Random);
-        long particles = 0;
-        for (int i = 0; i < _techniques.Length; i++)
-        {
-            var t = _techniques[i];
-            var s = state.Techniques[i];
-            if (s is null || s.Seeds is null || s.Emitters is null || s.Channels is not { Length: 21 } || s.Sources is null || s.RandomiserClock is null || s.Seeds.Length > t.Capacity || s.Emitters.Length != s.Seeds.Length || s.Sources.Length != t.Emitters.Length || s.RandomiserClock.Length != t.RandomiserClock.Length || s.Channels.Any(c => c is null || c.Length != s.Seeds.Length || c.Any(v => !float.IsFinite(v))) || s.Emitters.Any(e => e >= t.Emitters.Length) || !float.IsFinite(s.ObserverClock) || s.RandomiserClock.Any(v => !float.IsFinite(v)) || s.Sources.Any(e => e is null || !float.IsFinite(e.Accumulator) || !float.IsFinite(e.Clock) || e.Cycle is { } cycle && !float.IsFinite(cycle) || e.Cycle is null && !e.Resting || !float.IsFinite(e.Age)))
-                throw new InvalidDataException("Invalid particle technique checkpoint.");
-            particles += s.Seeds.Length;
-            if (particles > 1000000)
-                throw new InvalidDataException("Particle checkpoint exceeds its pool budget.");
-        }
 
+        ValidateCheckpoint(state);
         stored.Restore(state.Random);
         Origin = state.Origin;
         WorldOffset = state.WorldOffset;
@@ -1227,32 +1241,81 @@ public sealed partial class ParticleSimulation
         LifeScale = state.LifeScale;
         EmissionStopped = state.EmissionStopped;
         Time = state.Time;
+
+        for (int i = 0; i < _techniques.Length; i++) RestoreTechnique(_techniques[i], state.Techniques[i]);
+    }
+
+    /// <summary>
+    /// Checks checkpoint versions, random state, channel shapes and the aggregate particle budget before mutation.
+    /// </summary>
+    void ValidateCheckpoint(ParticleSimulationState state)
+    {
+        if (state is null || state.Version is not (1 or 2) || state.System != Definition.Name || state.Techniques is null
+            || state.Techniques.Length != _techniques.Length || !Finite(state.Origin) || !Finite(state.WorldOffset)
+            || !Finite(state.Orientation) || !float.IsFinite(state.Size) || !float.IsFinite(state.LifeScale)
+            || !float.IsFinite(state.Time) || state.Time < 0)
+            throw new InvalidDataException("Invalid particle simulation checkpoint.");
+
+        var probe = new CheckpointRandom(0);
+        probe.Restore(state.Random);
+        long particles = 0;
+
         for (int i = 0; i < _techniques.Length; i++)
         {
-            var t = _techniques[i];
             var s = state.Techniques[i];
-            t.Resize(Math.Max(s.Seeds.Length, Math.Min(t.Capacity, InitialPool)));
-            t.Count = s.Seeds.Length;
-            var channels = Channels(t);
-            for (int k = 0; k < channels.Length; k++)
-                s.Channels[k].CopyTo(channels[k], 0);
-            s.Seeds.CopyTo(t.Seed, 0);
-            s.Emitters.CopyTo(t.Emitter, 0);
-            for (int k = 0; k < t.Emitters.Length; k++)
-            {
-                var e = t.Emitters[k];
-                var saved = s.Sources[k];
-                e.Accumulator = saved.Accumulator;
-                e.Clock = saved.Clock;
-                e.Cycle = saved.Cycle ?? float.PositiveInfinity;
-                e.Resting = saved.Resting;
-                e.Age = saved.Age;
-            }
-
-            t.ObserverClock = s.ObserverClock;
-            s.RandomiserClock.CopyTo(t.RandomiserClock, 0);
-            t.Step = s.Step;
+            ValidateTechnique(_techniques[i], s, state.Version == 1 ? 21 : 22);
+            particles += s.Seeds.Length;
+            if (particles > 1000000) throw new InvalidDataException("Particle checkpoint exceeds its pool budget.");
         }
+    }
+
+    /// <summary>
+    /// Checks one technique's live channels, particle identities and clocks against its definition.
+    /// </summary>
+    static void ValidateTechnique(TechniqueState t, ParticleTechniqueState s, int channelCount)
+    {
+        if (s is null || s.Seeds is null || s.Emitters is null || s.Channels is null || s.Channels.Length != channelCount
+            || s.Sources is null || s.RandomiserClock is null || s.Seeds.Length > t.Capacity || s.Emitters.Length != s.Seeds.Length
+            || s.Sources.Length != t.Emitters.Length || s.RandomiserClock.Length != t.RandomiserClock.Length
+            || s.Channels.Any(c => c is null || c.Length != s.Seeds.Length || c.Any(v => !float.IsFinite(v)))
+            || s.Emitters.Any(e => e >= t.Emitters.Length) || !float.IsFinite(s.ObserverClock)
+            || s.RandomiserClock.Any(v => !float.IsFinite(v)) || s.Sources.Any(InvalidEmitter))
+            throw new InvalidDataException("Invalid particle technique checkpoint.");
+    }
+
+    /// <summary>
+    /// Whether an emitter checkpoint contains an invalid clock or an infinite cycle outside its resting phase.
+    /// </summary>
+    static bool InvalidEmitter(ParticleEmitterState e) => e is null || !float.IsFinite(e.Accumulator) || !float.IsFinite(e.Clock)
+        || e.Cycle is { } cycle && !float.IsFinite(cycle) || e.Cycle is null && !e.Resting || !float.IsFinite(e.Age);
+
+    /// <summary>
+    /// Restores validated particle storage; version 1's absent mass channel takes the emitter's legacy default of one.
+    /// </summary>
+    static void RestoreTechnique(TechniqueState t, ParticleTechniqueState s)
+    {
+        t.Resize(Math.Max(s.Seeds.Length, Math.Min(t.Capacity, InitialPool)));
+        t.Count = s.Seeds.Length;
+        var channels = Channels(t);
+        for (int k = 0; k < s.Channels.Length; k++) s.Channels[k].CopyTo(channels[k], 0);
+        if (s.Channels.Length == 21) Array.Fill(t.Mass, 1, 0, t.Count);
+        s.Seeds.CopyTo(t.Seed, 0);
+        s.Emitters.CopyTo(t.Emitter, 0);
+
+        for (int k = 0; k < t.Emitters.Length; k++)
+        {
+            var e = t.Emitters[k];
+            var saved = s.Sources[k];
+            e.Accumulator = saved.Accumulator;
+            e.Clock = saved.Clock;
+            e.Cycle = saved.Cycle ?? float.PositiveInfinity;
+            e.Resting = saved.Resting;
+            e.Age = saved.Age;
+        }
+
+        t.ObserverClock = s.ObserverClock;
+        s.RandomiserClock.CopyTo(t.RandomiserClock, 0);
+        t.Step = s.Step;
     }
 
     static bool Finite(Vector3 v) => float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
