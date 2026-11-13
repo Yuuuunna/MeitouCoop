@@ -16,6 +16,11 @@ static class LauncherIdentity
     public const string NewsBranch = "master";
 
     /// <summary>
+    /// A public static catalog updated after game and launcher releases, independent of the REST API's anonymous quota.
+    /// </summary>
+    public static string ReleaseCatalogUrl => $"https://raw.githubusercontent.com/{Repository}/launcher-feed/releases.json";
+
+    /// <summary>
     /// The directory under the user's application data folder.
     /// </summary>
     public const string DataFolder = "MeitouCoop";

@@ -9,6 +9,7 @@ Use the native compiler instead of the default self-contained managed build; req
 param(
     [string] $Output = ('artifacts/releases/launcher-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')),
     [string] $Dotnet = '',
+    [string] $ReleaseSeedPath = '',
     [switch] $NativeAot
 )
 $ErrorActionPreference = 'Stop'
@@ -42,6 +43,11 @@ try {
     $name = "MeitouCoopLauncher-$version-win-x64-portable"
     $stage = Join-Path $outputRoot $name
     $publishOptions = @(if ($NativeAot) { '-p:PublishAot=true' } else { '-p:PublishAot=false'; '-p:PublishTrimmed=false' })
+    if ($ReleaseSeedPath) {
+        $seedPath = [IO.Path]::GetFullPath($ReleaseSeedPath, $repo)
+        if (-not (Test-Path -LiteralPath $seedPath -PathType Leaf)) { throw "Catalog not found: $seedPath" }
+        $publishOptions += "-p:ReleaseSeedPath=$seedPath"
+    }
     & $Dotnet publish (Join-Path $repo 'launcher/Meitou.Launcher') -c Release -r win-x64 --self-contained true `
         -p:Version=$version -o $stage @publishOptions
     if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed: $LASTEXITCODE" }

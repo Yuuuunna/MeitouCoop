@@ -170,6 +170,8 @@ public sealed partial class MainWindow : Window
         LauncherVersionText.Text = $"v{LauncherVersion} · {Releases.Channel}";
         RefreshPresets();
         RefreshInstalled();
+        _allReleases = _releases.Cached();
+        ShowReleases();
         UseKenshi(found);
         if (!config.FoldersConfirmed) ShowSetup();
         WireWindowEvents();
@@ -1469,7 +1471,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     async Task RefreshReleasesAsync(bool updateLauncher = false)
     {
-        Status("Checking GitHub for releases...");
+        Status("Checking for releases...");
         var (list, problem) = await _releases.FetchAsync();
         _allReleases = list;
         ShowReleases();

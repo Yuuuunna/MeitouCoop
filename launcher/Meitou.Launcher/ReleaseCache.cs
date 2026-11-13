@@ -3,29 +3,32 @@ using System.Text.Json;
 namespace Meitou.Launcher;
 
 /// <summary>
-/// The last release list GitHub answered and its ETag, kept in <c>releases-cache.json</c> so an unchanged list costs no rate limit and the
-/// list still shows offline (docs/launcher.md).
+/// The last valid release list, its API-only ETag and its snapshot time, kept for offline startup.
 /// </summary>
 static class ReleaseCache
 {
     /// <summary>
     /// The cached answer: page 1's ETag and every page's releases as one JSON array.
     /// </summary>
-    internal sealed record Cache(string? ETag, string Body);
+    internal sealed record Cache(string? ETag, string Body, DateTimeOffset? SavedAt = null);
 
     /// <summary>
     /// Where the cache is kept, in the launcher's data folder.
     /// </summary>
-    static string CacheFile => Path.Combine(LauncherConfig.DataDirectory, "releases-cache.json");
+    static string CacheFile(string directory) => Path.Combine(directory, "releases-cache.json");
 
     /// <summary>
     /// The cached answer, or null when there is none or it cannot be read.
     /// </summary>
-    internal static Cache? Read()
+    internal static Cache? Read(string directory)
     {
         try
         {
-            return File.Exists(CacheFile) ? JsonSerializer.Deserialize(File.ReadAllText(CacheFile), LauncherJson.Default.Cache) : null;
+            string path = CacheFile(directory);
+            if (!File.Exists(path)) return null;
+
+            var cache = JsonSerializer.Deserialize(File.ReadAllText(path), LauncherJson.Default.Cache);
+            return cache is null ? null : cache with { SavedAt = cache.SavedAt ?? File.GetLastWriteTimeUtc(path) };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -36,9 +39,19 @@ static class ReleaseCache
     /// <summary>
     /// Keeps <paramref name="cache"/> as the last answer.
     /// </summary>
-    internal static void Write(Cache cache)
+    internal static void Write(Cache cache, string directory)
     {
-        Directory.CreateDirectory(LauncherConfig.DataDirectory);
-        File.WriteAllText(CacheFile, JsonSerializer.Serialize(cache, LauncherJson.Default.Cache));
+        Directory.CreateDirectory(directory);
+        string path = CacheFile(directory);
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(cache, LauncherJson.Default.Cache));
+            File.Move(temporary, path, true);
+        }
+        finally
+        {
+            File.Delete(temporary);
+        }
     }
 }

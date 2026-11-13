@@ -5,6 +5,7 @@
     <AssemblyName>meitou-launcher</AssemblyName>
     <RootNamespace>Meitou.Launcher</RootNamespace>
     <Product>Meitou Coop Launcher</Product>
+    <ReleaseSeedPath Condition="'$(ReleaseSeedPath)' == ''">$(MSBuildThisFileDirectory)../releases.json</ReleaseSeedPath>
     <!-- The newest launcher/CHANGELOG.md section's version, so local builds match the latest release; the release workflow passes -p:Version. -->
     <Version>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../CHANGELOG.md')), '(?m)^## v(\S+)').Groups[1].Value)</Version>
     <ApplicationIcon>../../assets/branding/meitou.ico</ApplicationIcon>
@@ -18,6 +19,8 @@
     <AvaloniaResource Include="../../assets/branding/meitou-64.png" Link="Assets/meitou-64.png" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="$(ReleaseSeedPath)" LogicalName="Meitou.Launcher.Releases.json" />
+    <InternalsVisibleTo Include="Meitou.Tests" />
     <ProjectReference Include="..\..\src\Meitou.Core\Meitou.Core.csproj" />
   </ItemGroup>
   <ItemGroup>

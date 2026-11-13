@@ -71,7 +71,11 @@ jobs:
 
       - name: Portable Coop launcher
         shell: pwsh
-        run: ./tools/scripts/package-launcher.ps1 -Output artifacts/coop-launcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./tools/scripts/update-release-catalog.ps1 -Output "$env:RUNNER_TEMP/launcher-seed.json"
+          ./tools/scripts/package-launcher.ps1 -Output artifacts/coop-launcher -ReleaseSeedPath "$env:RUNNER_TEMP/launcher-seed.json"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -108,3 +112,18 @@ jobs:
           if ($env:COOP_PRERELEASE -eq 'true') { $flags += '--prerelease' }
           gh release create "coop-v$version" @assets --target $env:GITHUB_SHA --title "Meitou Coop $version" --notes-file $notes @flags
           if ($LASTEXITCODE -ne 0) { throw "Release failed: $LASTEXITCODE" }
+
+  catalog:
+    needs: package
+    if: ${{ github.event_name == 'push' || !inputs.build_only }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: public-launcher-catalog
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Update public release catalog
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/scripts/update-release-catalog.ps1 -Output "$env:RUNNER_TEMP/releases.json" -Publish

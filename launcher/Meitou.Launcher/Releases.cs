@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -44,8 +43,7 @@ public sealed record Release(ReleaseKind Kind, string Tag, string Version, strin
 }
 
 /// <summary>
-/// The repository's GitHub releases (docs/launcher.md): listed through the REST API without a token, with the last answer and its
-/// ETag cached so an unchanged list costs no rate limit; installed game versions in <c>versions/&lt;version&gt;</c>.
+/// The repository's releases from a public static index, API or offline snapshot; installed game versions in <c>versions/&lt;version&gt;</c>.
 /// </summary>
 public sealed class Releases(HttpClient http)
 {
@@ -57,9 +55,9 @@ public sealed class Releases(HttpClient http)
     public const string Repository = LauncherIdentity.Repository;
 
     /// <summary>
-    /// GitHub's largest page; the page cap only guards against a runaway loop (5000 releases).
+    /// Static, API and offline sources shared by this instance's refresh callers.
     /// </summary>
-    const int PageSize = 100, MaxPages = 50;
+    readonly ReleaseCatalog _catalog = new(http, LauncherConfig.DataDirectory);
 
     /// <summary>
     /// The platform part of asset names, e.g. <c>win-x64</c>, <c>linux-x64</c>, <c>osx-arm64</c>.
@@ -93,81 +91,19 @@ public sealed class Releases(HttpClient http)
     }
 
     /// <summary>
-    /// Every published release, newest first. Falls back to the cached list when GitHub cannot be reached or rate-limits.
+    /// The newest valid saved or bundled release list, available before any network request.
     /// </summary>
-    public async Task<(List<Release> Releases, string? Problem)> FetchAsync(CancellationToken ct = default)
-    {
-        var cached = ReleaseCache.Read();
-        string? problem = null;
-        string? body = cached?.Body;
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(20));
-
-            // Page 1 is asked for with the cached ETag: unchanged (304, free of rate limit) means a new release came or went nowhere, so
-            // the cached list of every page stands. Otherwise every page is read until a short one, and the cache holds them as one array.
-            var pages = new List<string>();
-            string? etag = null;
-            for (int page = 1; page <= MaxPages; page++)
-            {
-                string url = $"https://api.github.com/repos/{Repository}/releases?per_page={PageSize}&page={page}";
-                using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-                if (page == 1 && cached?.ETag is { } cachedTag)
-                    request.Headers.TryAddWithoutValidation("If-None-Match", cachedTag);
-                using var response = await http.SendAsync(request, timeout.Token);
-                if (page == 1 && response.StatusCode == HttpStatusCode.NotModified) break;
-                if (!response.IsSuccessStatusCode)
-                {
-                    problem = LauncherText.Translate("GitHub answered {1} {2}", (int)response.StatusCode, response.ReasonPhrase)
-                        + (body is null ? "" : LauncherText.Translate("; showing the last list"));
-                    pages.Clear();
-                    break;
-                }
-                if (page == 1) etag = response.Headers.ETag?.ToString();
-                var text = await response.Content.ReadAsStringAsync(timeout.Token);
-                pages.Add(text);
-                using var doc = JsonDocument.Parse(text);
-                if (doc.RootElement.GetArrayLength() < PageSize) break;
-            }
-            if (pages.Count > 0)
-            {
-                body = Join(pages);
-                ReleaseCache.Write(new ReleaseCache.Cache(etag, body));
-            }
-        }
-        catch (Exception e) when (e is HttpRequestException or OperationCanceledException or IOException)
-        {
-            problem = LauncherText.Translate("GitHub not reachable ({1})", e.Message)
-                + (body is null ? "" : LauncherText.Translate("; showing the last list"));
-        }
-        return (body is null ? [] : Parse(body), problem);
-    }
+    public List<Release> Cached() => _catalog.Cached();
 
     /// <summary>
-    /// The pages' JSON arrays as one array.
+    /// Refreshes from the public static index or API, retaining an offline snapshot when neither is available.
     /// </summary>
-    static string Join(List<string> pages)
-    {
-        using var stream = new MemoryStream();
-        using (var json = new Utf8JsonWriter(stream))
-        {
-            json.WriteStartArray();
-            foreach (var page in pages)
-            {
-                using var doc = JsonDocument.Parse(page);
-                foreach (var release in doc.RootElement.EnumerateArray()) release.WriteTo(json);
-            }
-            json.WriteEndArray();
-        }
-        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
-    }
+    public Task<(List<Release> Releases, string? Problem)> FetchAsync(CancellationToken ct = default) => _catalog.FetchAsync(ct);
 
     /// <summary>
     /// The listed releases of this repository that are not drafts and are tagged as the game's or the launcher's, newest first.
     /// </summary>
-    static List<Release> Parse(string json)
+    internal static List<Release> Parse(string json)
     {
         var list = new List<Release>();
         using var doc = JsonDocument.Parse(json);

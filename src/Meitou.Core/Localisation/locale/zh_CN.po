@@ -3097,3 +3097,15 @@ msgstr "版本：{1}\n源码提交：{2}{3}\n联机协议：{4}\n引擎标识：
 
 msgid "Close this game before removing its installed version."
 msgstr "请先关闭游戏，再移除此安装版本。"
+
+msgid "Checking for releases..."
+msgstr "正在检查发布版本…"
+
+msgid "Could not load release information. Check your connection and try again."
+msgstr "无法获取版本信息，请检查网络后重试。"
+
+msgid "Cannot check for updates; showing the bundled release list."
+msgstr "暂时无法检查更新，正在显示程序附带的版本清单。"
+
+msgid "Cannot check for updates; showing the saved release list."
+msgstr "暂时无法检查更新，正在显示已保存的版本清单。"

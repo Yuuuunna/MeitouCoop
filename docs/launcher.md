@@ -33,7 +33,7 @@ Output: unpacked launcher, `MeitouCoopLauncher-<version>-win-x64-portable.zip`, 
 Managed packages retain .NET host/runtime and UI native libraries beside the executable; embedding/removal applies only to AOT publishes.
 `-Dotnet <path>` selects an installed SDK; the script also tries the existing local .NET 11 installation. No SDK is downloaded.
 
-**Unknown**: Coop GitHub installation and self-update between two published launcher releases; Linux/macOS live Coop gameplay.
+**Unknown**: Coop self-update between two installed launcher versions; Linux/macOS live Coop gameplay.
 
 ## Releases
 
@@ -64,9 +64,15 @@ Managed packages retain .NET host/runtime and UI native libraries beside the exe
   matching Velopack channels (`osx-x64-legacy`, `osx-arm64-legacy`), so self-updates stay on .NET 10. Its pack ID and app title are
   `MeitouCoopLauncherLegacy` / `Meitou Coop Launcher Legacy`; installed games live in `versions-legacy/`, separately from standard builds.
   Settings are shared; changing the install folder moves both build families. A release with no matching zip is listed but not installable.
-- The list comes from the REST API without a token (60 requests an hour per IP). Every page is read (`per_page=100`, until a short page),
-  cached together with page 1's ETag in `releases-cache.json`; an unchanged page 1 is a 304 that costs no quota and keeps the cache. Downloads use the asset URLs, which don't count
-  against the quota.
+- **Verified** (`ReleaseCatalogTests`): first start displays the newest valid saved or embedded snapshot immediately. Refresh prefers
+  `https://raw.githubusercontent.com/Yuuuunna/MeitouCoop/launcher-feed/releases.json`, then the paginated REST API, then the offline snapshot.
+  Missing/corrupt caches and malformed/foreign static indexes retain the bundled or last valid list. API 403/429 responses honor
+  `Retry-After` / `X-RateLimit-Reset`; repeated refreshes still try the static endpoint but do not retry the API before its deadline.
+  The bounded static envelope is `{format:1, repository, generatedAt, releases:[...]}`; entries use the same published-release/asset fields
+  as the API. Only validated snapshots are atomically cached, with API ETags kept separate from static indexes.
+- The API is anonymous (60 requests an hour per IP). Conditional requests reduce transfer; GitHub only guarantees quota-free 304s
+  for authenticated requests ([GitHub docs](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests)).
+  Static index and asset downloads require no client token. The index can be stale while offline; downloading still requires network access.
 - A download is checked against the asset's `digest` (`sha256:<hex>`) when GitHub lists one. The zip's single top folder becomes
   `versions/<version>/`. The game is `MeitouClient[.exe]` since 0.15 (`meitou[.exe]` before; the launcher takes either); on Unix
   it gets its execute bits. Cancelling a download removes the partial zip and unpacked folder.
@@ -83,6 +89,12 @@ A master push changing this file publishes a prerelease according to its `prerel
 the existing quick suite. Manual runs may override the version and keep `build_only`. Asset versions retain the upstream number;
 the `coop-v` prefix gives the fork its own tag without moving inherited upstream tags. The same release includes a portable Coop launcher;
 its installer/self-update feed still uses the separate launcher workflow. Clients on prereleases enable **Experimental builds** to see it.
+
+**Observed** (source): `update-release-catalog.ps1` uses CI's token to project published release metadata into the static envelope.
+Launcher packaging embeds a fresh snapshot via `ReleaseSeedPath` (local default: `launcher/releases.json`). Game, portable launcher and
+full launcher release workflows publish the updated catalog to the data-only `launcher-feed` branch after uploading assets;
+the publisher jobs share a concurrency group. No token or private profile data is included in the catalog or binaries.
+`launcher-portable.yml` publishes Windows portable patches when `launcher/CHANGELOG.md` changes on master; full Velopack releases remain manual.
 
 ## One executable (Native AOT)
 

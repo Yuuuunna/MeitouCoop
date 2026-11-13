@@ -128,6 +128,12 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET=12.0 VCPKG_KEEP_ENV_VARS=MACOSX_DEPLOYMENT_TARGET "$RUNNER_TEMP/vcpkg/vcpkg" install "libvpx:$triplet"
           mkdir -p vpx-runtime && cp -R "$RUNNER_TEMP/vcpkg/installed/$triplet" "vpx-runtime/$triplet"
 
+      - name: Prepare bundled release catalog
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/scripts/update-release-catalog.ps1 -Output "$env:RUNNER_TEMP/launcher-seed.json"
+
       - name: Package
         shell: bash
         env:
@@ -141,7 +147,7 @@ jobs:
           # Without libvpx the publish still succeeds, with news videos left out: refuse that.
           find vpx-runtime -path "*/lib/*" \( -name vpx.lib -o -name libvpx.a \) 2>/dev/null | grep -q . || { echo "libvpx missing in vpx-runtime/"; exit 1; }
           dotnet tool install -g vpk --version "$VPK_VERSION"
-          dotnet publish launcher/Meitou.Launcher -c Release -r "$RID" --self-contained -p:Version="$VERSION" -p:MeitouLegacyMac="$LEGACY_MAC" -o pub
+          dotnet publish launcher/Meitou.Launcher -c Release -r "$RID" --self-contained -p:Version="$VERSION" -p:MeitouLegacyMac="$LEGACY_MAC" -p:ReleaseSeedPath="$RUNNER_TEMP/launcher-seed.json" -o pub
           if [ "$LEGACY_MAC" = true ]; then cp "macos-runtime/$RID/LICENSE-OpenAL-Soft.txt" pub/; fi
           # No paid Developer ID: ad-hoc sign the macOS executable so its integrity can be checked. Gatekeeper still warns.
           case "$RID" in osx-*) codesign --force --deep --sign - pub/meitou-launcher ;; esac
@@ -212,3 +218,18 @@ jobs:
           [ -n "$previous" ] && flags+=(--generate-notes --notes-start-tag "$previous")
           gh release create "launcher-v$VERSION" $(find out -type f) --target "$GITHUB_SHA" \
             --title "Meitou Coop Launcher $VERSION" --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+
+  catalog:
+    needs: release
+    if: ${{ !inputs.build_only }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: public-launcher-catalog
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Update public release catalog
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/scripts/update-release-catalog.ps1 -Output "$env:RUNNER_TEMP/releases.json" -Publish

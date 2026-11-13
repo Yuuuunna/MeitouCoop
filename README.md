@@ -31,6 +31,8 @@ The **Coop Windows release** workflow builds paired client/server ZIPs; **Launch
 Both support artifact-only builds. Launcher installers use the independent `MeitouCoopLauncher` identity.
 Updating `.github/coop-release.json` on master publishes a `coop-v<version>` release based on its declared upstream baseline,
 including a portable launcher. The launcher's Versions page accepts this tag family as well as inherited `v<version>` releases.
+Launcher patches use **Coop portable launcher**; first start includes a bundled release list and refreshes from a public static catalog,
+so an exhausted anonymous GitHub API quota does not leave the Versions page empty.
 
 Steam installs, and GOG installs made by GOG Galaxy, Heroic, Lutris or Bottles, are located automatically; otherwise select the Kenshi folder when prompted,
 set KENSHI_PATH, or create git-ignored meitou.local.json in the repo/working/executable directory (on Linux and macOS also `~/.config/meitou/config.json`, the place the prompt saves to when the executable's folder is read-only):

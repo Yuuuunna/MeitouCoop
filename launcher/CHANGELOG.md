@@ -2,6 +2,12 @@
 
 Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.yml`; each release needs its `## v<version>` section.
 
+## v1.11.1
+
+- First start immediately lists the bundled releases even without a cache or API access.
+- Release refresh prefers a public static catalog, then the API, then the newest valid saved or bundled snapshot.
+- Corrupt responses keep the last valid list; rate-limited API requests honor the server's retry time.
+
 ## v1.11.0
 
 - Coop releases, news, settings, installed versions and launcher updates use an independent repository and installation identity.

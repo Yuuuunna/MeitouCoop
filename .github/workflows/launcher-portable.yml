@@ -1,0 +1,75 @@
+name: Coop portable launcher
+
+on:
+  push:
+    branches: [master]
+    paths: [launcher/CHANGELOG.md]
+  workflow_dispatch:
+    inputs:
+      build_only:
+        description: "Upload artifacts without publishing a launcher release"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.x
+      - name: Catalog regression checks
+        run: dotnet test tests/Meitou.Tests -c Release --filter FullyQualifiedName~ReleaseCatalogTests
+      - name: Prepare catalog and portable launcher
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./tools/scripts/update-release-catalog.ps1 -Output "$env:RUNNER_TEMP/launcher-seed.json"
+          ./tools/scripts/package-launcher.ps1 -Output artifacts/launcher -ReleaseSeedPath "$env:RUNNER_TEMP/launcher-seed.json"
+          $changelog = Get-Content launcher/CHANGELOG.md -Raw
+          $version = [regex]::Match($changelog, '(?m)^## v(\S+)').Groups[1].Value
+          "LAUNCHER_VERSION=$version" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coop-launcher-win-x64
+          path: |
+            artifacts/launcher/*.zip
+            artifacts/launcher/SHA256SUMS.txt
+          compression-level: 0
+          if-no-files-found: error
+      - name: Publish portable launcher
+        if: ${{ github.event_name == 'push' || !inputs.build_only }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = Join-Path $env:RUNNER_TEMP 'launcher-notes.md'
+          @(
+            'Windows x64 portable Coop launcher. Extract the ZIP and run meitou-launcher.exe.'
+            'Includes an initial release catalog and prefers a public static index, so first start works without GitHub API access.'
+            'Existing settings and player identities are retained. No GitHub login or token is required.'
+            'This release contains the portable build; Velopack installers and self-update feeds use the full Launcher release workflow.'
+          ) | Set-Content -LiteralPath $notes -Encoding utf8
+          $assets = @(Get-ChildItem artifacts/launcher -File | Where-Object { $_.Extension -in '.zip', '.txt' } | ForEach-Object FullName)
+          gh release create "launcher-v$env:LAUNCHER_VERSION" @assets --target $env:GITHUB_SHA --latest --title "Meitou Coop Launcher $env:LAUNCHER_VERSION (Windows portable)" --notes-file $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher publication failed' }
+
+  catalog:
+    needs: package
+    if: ${{ github.event_name == 'push' || !inputs.build_only }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: public-launcher-catalog
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Update public release catalog
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/scripts/update-release-catalog.ps1 -Output "$env:RUNNER_TEMP/releases.json" -Publish
