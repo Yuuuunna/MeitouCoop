@@ -24,6 +24,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - run: python3 ../bench/tools/generate.py --out public/bench/bench.json
+      - name: Fetch engine benchmark history
+        run: git fetch --no-tags https://github.com/VlcekM/MeitouClient.git master:refs/remotes/benchmark-upstream/master
+      - run: python3 ../bench/tools/generate.py --ref refs/remotes/benchmark-upstream/master --out public/bench/bench.json
       - run: npm ci
       - run: npm run build

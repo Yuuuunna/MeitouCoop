@@ -4,6 +4,10 @@ The world viewer's offscreen harness measures frame cost and visual effects of r
 Implementation: `tools/Meitou.ModelViewer/BenchSession.cs`, `src/Meitou.Game/Rendering/Bench/`, `BenchHarnessTests`.
 Options: [viewer.md](viewer.md).
 
+**Observed** (CI workflows): benchmark validation and site PR builds fetch `VlcekM/MeitouClient` master into
+`refs/remotes/benchmark-upstream/master` and pass it as `generate.py --ref`. Benchmark ancestry follows the engine
+repository, including commits a Coop synchronization PR has not yet merged into its base branch.
+
 ## Runs
 
 ```text
