@@ -17,6 +17,8 @@ permissions:
 jobs:
   package:
     runs-on: windows-latest
+    outputs:
+      published: ${{ steps.publication.outputs.published }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
@@ -34,6 +36,9 @@ jobs:
           $changelog = Get-Content launcher/CHANGELOG.md -Raw
           $version = [regex]::Match($changelog, '(?m)^## v(\S+)').Groups[1].Value
           "LAUNCHER_VERSION=$version" >> $env:GITHUB_ENV
+          $selected = (Get-Content .github/launcher-portable.json -Raw | ConvertFrom-Json).version
+          $publish = if ('${{ github.event_name }}' -eq 'push') { $selected -eq $version } else { '${{ inputs.build_only }}' -ne 'true' }
+          "PORTABLE_PUBLISH=$($publish.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
       - uses: actions/upload-artifact@v4
         with:
           name: coop-launcher-win-x64
@@ -43,7 +48,8 @@ jobs:
           compression-level: 0
           if-no-files-found: error
       - name: Publish portable launcher
-        if: ${{ github.event_name == 'push' || !inputs.build_only }}
+        id: publication
+        if: ${{ env.PORTABLE_PUBLISH == 'true' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,10 +64,11 @@ jobs:
           $assets = @(Get-ChildItem artifacts/launcher -File | Where-Object { $_.Extension -in '.zip', '.txt' } | ForEach-Object FullName)
           gh release create "launcher-v$env:LAUNCHER_VERSION" @assets --target $env:GITHUB_SHA --latest --title "Meitou Coop Launcher $env:LAUNCHER_VERSION (Windows portable)" --notes-file $notes
           if ($LASTEXITCODE -ne 0) { throw 'Launcher publication failed' }
+          'published=true' >> $env:GITHUB_OUTPUT
 
   catalog:
     needs: package
-    if: ${{ github.event_name == 'push' || !inputs.build_only }}
+    if: ${{ needs.package.outputs.published == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: public-launcher-catalog

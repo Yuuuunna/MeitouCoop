@@ -94,7 +94,8 @@ its installer/self-update feed still uses the separate launcher workflow. Client
 Launcher packaging embeds a fresh snapshot via `ReleaseSeedPath` (local default: `launcher/releases.json`). Game, portable launcher and
 full launcher release workflows publish the updated catalog to the data-only `launcher-feed` branch after uploading assets;
 the publisher jobs share a concurrency group. No token or private profile data is included in the catalog or binaries.
-`launcher-portable.yml` publishes Windows portable patches when `launcher/CHANGELOG.md` changes on master; full Velopack releases remain manual.
+`launcher-portable.yml` builds Windows portable patches when `launcher/CHANGELOG.md` changes on master. Automatic publication additionally
+requires its version to match `.github/launcher-portable.json`; later full Velopack versions stay manual unless explicitly opted into portable publication.
 
 ## One executable (Native AOT)
 
