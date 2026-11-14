@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Meitou.Networking.VNext.Transport;
 
@@ -54,9 +55,17 @@ public sealed class NativeGameConnection : IAsyncDisposable
 
     public async ValueTask<GameLaneMessage> ReadAsync(CancellationToken cancellationToken = default)
     {
-        var message = await _incoming.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-        Interlocked.Add(ref _incomingBytes, -message.Payload.Length);
-        return message;
+        try
+        {
+            var message = await _incoming.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            Interlocked.Add(ref _incomingBytes, -message.Payload.Length);
+            return message;
+        }
+        catch (ChannelClosedException error) when (error.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(error.InnerException).Throw();
+            throw;
+        }
     }
 
     public bool TrySend(QuicLane lane, ReadOnlySpan<byte> body, Action? submitted = null, Action? released = null)
@@ -262,86 +271,19 @@ public sealed class NativeGameConnection : IAsyncDisposable
             throw new IOException("Connection receive queue capacity exhausted.");
     }
 
+    /// <summary>
+    /// Drives native IO until cancellation or the first terminal event.
+    /// </summary>
     async Task Pump()
     {
         byte[] buffer = new byte[NativeQuicEndpoint.MaximumChunkBytes];
+        Exception? terminalFailure = null;
         try
         {
             while (!_stop.IsCancellationRequested)
             {
-                bool progressed = false;
-                int events = 0;
-                while (events < 128 && _endpoint.TryPoll(buffer, out var item))
-                {
-                    events++;
-                    progressed = true;
-                    switch (item.Kind)
-                    {
-                        case QuicTransportEventKind.Connected:
-                            if (!_endpoint.IsServer)
-                                _endpoint.OpenReliableLanes();
-                            _connected.TrySetResult();
-                            break;
-                        case QuicTransportEventKind.StreamBytes:
-                            _framers[(int)item.Lane].Feed(buffer.AsSpan(0, item.Length), bytes => Receive(item.Lane, bytes));
-                            break;
-                        case QuicTransportEventKind.Datagram:
-                            Receive(QuicLane.State, buffer.AsSpan(0, item.Length).ToArray());
-                            break;
-                        case QuicTransportEventKind.SendBufferReleased:
-                        case QuicTransportEventKind.DatagramTerminal:
-                            lock (_gate)
-                                if (_submitted.Remove(item.SendToken, out var send))
-                                {
-                                    _scheduler.CompleteSend(send);
-                                    if (send.Lane == ScheduledLane.State)
-                                        Observe(() => StateSendObserved?.Invoke(send.Payload, true));
-                                    else if (_sendObservers.Remove(send.Key, out var observed))
-                                        Observe(observed.Released);
-                                    if (send.Lane != ScheduledLane.State)
-                                    {
-                                        _queuedLaneBytes[(int)Map(send.Lane)] -= send.Payload.Length;
-                                        _queuedLaneItems[(int)Map(send.Lane)]--;
-                                    }
-
-                                    if (send.Lane == ScheduledLane.Control && _ownershipCompletions.Remove(send.Key, out var completion))
-                                        completion.TrySetResult();
-                                }
-
-                            break;
-                        case QuicTransportEventKind.StreamReceiveEnded:
-                            _framers[(int)item.Lane].Complete();
-                            throw new EndOfStreamException("Reliable game lane closed.");
-                        case QuicTransportEventKind.Closed:
-                        case QuicTransportEventKind.ShutdownInitiated:
-                            throw new IOException($"QUIC connection closed ({item.NativeStatus:X8}).");
-                    }
-                }
-
-                lock (_gate)
-                {
-                    // Native UDP payload counters are actual traffic, but omit IP overhead; expose that limitation to callers.
-                    _finalStatistics = _endpoint.GetStatistics();
-                    while (_scheduler.TryAdmit(out var next))
-                        _waiting.Add(next!);
-                    for (int index = 0; index < _waiting.Count;)
-                    {
-                        var send = _waiting[index];
-                        if (!_endpoint.TrySend(Map(send.Lane), send.Payload, send.Reservation))
-                        {
-                            index++;
-                            continue;
-                        }
-
-                        progressed = true;
-                        _submitted.Add(send.Reservation, send);
-                        _waiting.RemoveAt(index);
-                        if (send.Lane == ScheduledLane.State)
-                            Observe(() => StateSendObserved?.Invoke(send.Payload, false));
-                        else if (_sendObservers.TryGetValue(send.Key, out var observed))
-                            Observe(observed.Submitted);
-                    }
-                }
+                bool progressed = PollEvents(buffer);
+                progressed |= SubmitSends();
 
                 if (progressed)
                     await Task.Yield();
@@ -351,33 +293,141 @@ public sealed class NativeGameConnection : IAsyncDisposable
         }
         catch (Exception error)
         {
+            terminalFailure = error;
             _connected.TrySetException(error);
             _incoming.Writer.TryComplete(error);
             await _stop.CancelAsync().ConfigureAwait(false);
         }
         finally
         {
-            lock (_gate)
+            CompletePump(terminalFailure);
+        }
+    }
+
+    /// <summary>
+    /// Drains a bounded batch of native events, preserving the first shutdown reason.
+    /// </summary>
+    bool PollEvents(byte[] buffer)
+    {
+        bool progressed = false;
+        int events = 0;
+        while (events < 128 && _endpoint.TryPoll(buffer, out var item))
+        {
+            events++;
+            progressed = true;
+            switch (item.Kind)
             {
-                try
+                case QuicTransportEventKind.Connected:
+                    if (!_endpoint.IsServer)
+                        _endpoint.OpenReliableLanes();
+                    _connected.TrySetResult();
+                    break;
+                case QuicTransportEventKind.StreamBytes:
+                    _framers[(int)item.Lane].Feed(buffer.AsSpan(0, item.Length), bytes => Receive(item.Lane, bytes));
+                    break;
+                case QuicTransportEventKind.Datagram:
+                    Receive(QuicLane.State, buffer.AsSpan(0, item.Length).ToArray());
+                    break;
+                case QuicTransportEventKind.SendBufferReleased:
+                case QuicTransportEventKind.DatagramTerminal:
+                    ReleaseSend(item.SendToken);
+                    break;
+                case QuicTransportEventKind.StreamReceiveEnded:
+                    _framers[(int)item.Lane].Complete();
+                    throw new EndOfStreamException("Reliable game lane closed.");
+                case QuicTransportEventKind.Closed:
+                case QuicTransportEventKind.ShutdownInitiated:
+                    // Shutdown events carry the peer's application error in the native send-token slot.
+                    throw new QuicConnectionClosedException(item.NativeStatus, item.SendToken);
+            }
+        }
+
+        return progressed;
+    }
+
+    /// <summary>
+    /// Releases scheduler credit and notifies observers when native send ownership ends.
+    /// </summary>
+    void ReleaseSend(ulong sendToken)
+    {
+        lock (_gate)
+            if (_submitted.Remove(sendToken, out var send))
+            {
+                _scheduler.CompleteSend(send);
+                if (send.Lane == ScheduledLane.State)
+                    Observe(() => StateSendObserved?.Invoke(send.Payload, true));
+                else if (_sendObservers.Remove(send.Key, out var observed))
+                    Observe(observed.Released);
+                if (send.Lane != ScheduledLane.State)
                 {
-                    _finalStatistics = _endpoint.GetStatistics();
-                }
-                catch (Exception)
-                { /* preserve original terminal failure */
+                    _queuedLaneBytes[(int)Map(send.Lane)] -= send.Payload.Length;
+                    _queuedLaneItems[(int)Map(send.Lane)]--;
                 }
 
-                _terminal = true;
-                _endpoint.Dispose();
+                if (send.Lane == ScheduledLane.Control && _ownershipCompletions.Remove(send.Key, out var completion))
+                    completion.TrySetResult();
             }
+    }
 
-            _incoming.Writer.TryComplete();
-            lock (_gate)
+    /// <summary>
+    /// Submits admitted sends and records native ownership.
+    /// </summary>
+    bool SubmitSends()
+    {
+        bool progressed = false;
+        lock (_gate)
+        {
+            // Native UDP payload counters are actual traffic, but omit IP overhead; expose that limitation to callers.
+            _finalStatistics = _endpoint.GetStatistics();
+            while (_scheduler.TryAdmit(out var next))
+                _waiting.Add(next!);
+            for (int index = 0; index < _waiting.Count;)
             {
-                foreach (var completion in _ownershipCompletions.Values)
-                    completion.TrySetException(new IOException("Native game connection closed before send ownership release."));
-                _ownershipCompletions.Clear();
+                var send = _waiting[index];
+                if (!_endpoint.TrySend(Map(send.Lane), send.Payload, send.Reservation))
+                {
+                    index++;
+                    continue;
+                }
+
+                progressed = true;
+                _submitted.Add(send.Reservation, send);
+                _waiting.RemoveAt(index);
+                if (send.Lane == ScheduledLane.State)
+                    Observe(() => StateSendObserved?.Invoke(send.Payload, false));
+                else if (_sendObservers.TryGetValue(send.Key, out var observed))
+                    Observe(observed.Submitted);
             }
+        }
+
+        return progressed;
+    }
+
+    /// <summary>
+    /// Releases the endpoint and completes pending sends with the same reason as pending reads.
+    /// </summary>
+    void CompletePump(Exception? terminalFailure)
+    {
+        lock (_gate)
+        {
+            try
+            {
+                _finalStatistics = _endpoint.GetStatistics();
+            }
+            catch (Exception)
+            { /* preserve original terminal failure */
+            }
+
+            _terminal = true;
+            _endpoint.Dispose();
+        }
+
+        _incoming.Writer.TryComplete();
+        lock (_gate)
+        {
+            foreach (var completion in _ownershipCompletions.Values)
+                completion.TrySetException(terminalFailure ?? new IOException("Native game connection closed before send ownership release."));
+            _ownershipCompletions.Clear();
         }
     }
 

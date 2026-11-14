@@ -10,7 +10,7 @@ our DotRecast builder (`Meitou.Simulation.Navigation`), not proprietary Havok SD
 Zone4608,64² grid; exterior UID=(Z<<8)|X, interiors>=0x10000 with unknown composition.
 **Observed** face key upper10 bits instance, lower22 face. Floating origin keeps Havok small.
 NavMeshMain owns mutation/messages, sleeps10ms idle; generator sleeps100ms and dispatches queued
-full/partial/interior/stitch jobs. The NavMeshMain thread (`FUN_1403af0f0`, **Verified**) steps `FUN_1403ae490` in a loop with the flush-to-zero bit set and calls Sleep(10) only when a step found nothing to do. Meitou's `NavMeshService` / `PathService` block on a `BlockingCollection` and wake at once: an engine choice (up to ~10 ms less latency), not copied. 3x3 active-zone loads and runtime stitching observed in logs.
+full/partial/interior/stitch jobs. The NavMeshMain thread (`FUN_1403af0f0`, **Verified**) steps `FUN_1403ae490` in a loop with the flush-to-zero bit set and calls Sleep(10) only when a step found nothing to do. Meitou's `NavMeshService` blocks on a `BlockingCollection`; `PathService` uses a signaled coalescing queue ([scheduling](../simulation.md#threading)). Both wake on work rather than sleeping: an engine choice (up to ~10 ms less idle wake latency), not copied. 3x3 active-zone loads and runtime stitching observed in logs.
 
 **Verified** navtiles:3995 Havok tagfiles, magic1E0DB0CA CEFA11D0, SDK hk_2014.2.0-r1,
 hkRootLevelContainer; hkaiNavMesh faces16bytes/edges20, graph/streaming/mediator/static-tree objects.

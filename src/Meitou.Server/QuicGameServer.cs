@@ -110,6 +110,9 @@ public sealed class QuicGameServer : IAsyncDisposable
         catch (OperationCanceledException)when (_stop.IsCancellationRequested)
         {
         }
+        catch (QuicConnectionClosedException error) when (error.IsGraceful)
+        {
+        }
         catch (Exception error)
         {
             LastFailureType = error.GetType().Name;

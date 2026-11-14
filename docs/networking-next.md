@@ -59,6 +59,25 @@ server frame-receipt-to-write-start and client apply-to-pose durations, leaving 
 and decode/scheduling unmeasured. GPU draw-list/installed-content runs, held-input labeling, component-byte accounting and
 tracing overhead still require acceptance; synthetic callback tests do not prove display illumination.
 
+### Held-movement diagnosis
+
+**Observed** (`InstalledMovementTests`, real owned role from a copied checkpoint, native loopback): sustained held steering can
+starve under FIFO append-and-skip path scheduling even when receipts remain fast. One captured click waited 691 ms for a
+0.097 ms query; held-fixed steering produced no authority displacement over eight seconds, with no completed sampled paths.
+This reproduces without a remote link bottleneck: RTT <1 ms and roughly 340 kbit/s bidirectional UDP application payload.
+Current scheduling is specified in [simulation](simulation.md#threading).
+
+**Observed** (same checkpoint scenario, current Release build): single, held-fixed and held-changing phases all move the original
+role roughly 100 units. Their first path queue waits were 0.013/0.010/0.010 ms; 50 ms sampling first observed authority motion at
+62/123/122 ms and replica motion at 122/185/122 ms. These are individual loopback observations, not percentiles, exact
+input-to-render measurements, controlled Debug/Release speedups or VPS/wire-throughput acceptance.
+
+The opt-in test uses `MEITOU_MOVEMENT_SERVER_DATA`, optional `MEITOU_MOVEMENT_SERVER_CONFIG` and a fresh
+`MEITOU_MOVEMENT_OUTPUT`; it requires the existing native QUIC fixture variables. It copies data, rotates only copied credentials,
+uses an ephemeral loopback port, preserves the original role's gameplay state and writes bounded stages plus sampled motion/UDP
+payload counters. It never opens a renderer or substitutes a healthy recruited actor. Arbitrary saves may contain blocked or
+incapacitated roles; a failed diagnostic needs its state report, not an assumed scheduling regression.
+
 ## Protocol and transport boundaries
 
 **Verified** (`BountyCountdownTests`): bounty countdowns preserve positive infinity for permanent bounties through publication,

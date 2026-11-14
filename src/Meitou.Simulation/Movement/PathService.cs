@@ -19,8 +19,9 @@ public readonly record struct PathAnswer(long Id, CharacterId Character, PathRes
 /// Runs path queries off the tick (docs/simulation.md, "Threading": asynchronous services). In <c>synchronous</c> mode a query runs inside
 /// <see cref="Submit"/> and its answer is waiting at once, which is what the determinism tests use; otherwise <see cref="Threads"/> threads of its
 /// own answer, and an answer is taken in at the first tick after it is ready, so timing can differ between runs (as for the original, whose queries
-/// go to a NavMesh thread). A request the same character has replaced by a newer one before a thread took it up is dropped unanswered (the newer
-/// one's answer settles the walker). <see cref="IWalkability.FindPath"/> must be safe to call from several threads at once.
+/// go to a NavMesh thread). Queued requests coalesce per character without losing their original place. Player queries have bounded priority over
+/// NPC work; one worker stays reserved for players, so slow NPC searches cannot occupy every worker. Running searches finish normally.
+/// <see cref="IWalkability.FindPath"/> must be safe to call from several threads at once.
 /// </summary>
 public sealed class PathService : IDisposable
 {
@@ -31,16 +32,16 @@ public sealed class PathService : IDisposable
     /// <summary>
     /// The requests waiting for a path thread; null for a synchronous service.
     /// </summary>
-    readonly BlockingCollection<PathRequest>? _requests;
+    readonly PathRequestQueue? _requests;
     /// <summary>
     /// The answers ready, taken by <see cref="Drain"/>.
     /// </summary>
     readonly ConcurrentQueue<PathAnswer> _answers = new();
-
     /// <summary>
-    /// Each character's newest request: an older one still queued is skipped.
+    /// Bounded path IDs whose queue, execution and terminal stages are being sampled.
     /// </summary>
-    readonly ConcurrentDictionary<CharacterId, long> _newest = new();
+    readonly ConcurrentDictionary<long, byte> _traced = new();
+
     /// <summary>
     /// The path threads (none for a synchronous service).
     /// </summary>
@@ -73,11 +74,12 @@ public sealed class PathService : IDisposable
         IsSynchronous = synchronous;
         if (synchronous) return;
 
-        _requests = new BlockingCollection<PathRequest>();
+        _requests = new PathRequestQueue();
         _threads = new Thread[Threads];
         for (int i = 0; i < _threads.Length; i++)
         {
-            _threads[i] = new Thread(Work) { IsBackground = true, Name = $"Meitou.Sim paths {i + 1}" };
+            bool playerOnly = i == 0;
+            _threads[i] = new Thread(() => Work(playerOnly)) { IsBackground = true, Name = $"Meitou.Sim paths {i + 1}" };
             _threads[i].Start();
         }
     }
@@ -119,31 +121,23 @@ public sealed class PathService : IDisposable
         {
             var path = (r.Radius > 0 || r.Water.IsSet || r.RoadPreference > 0) && _walkability is IAgentWalkability agent
                 ? agent.FindPath(r.From, r.To, r.Radius, r.Water, r.RoadPreference) : _walkability.FindPath(r.From, r.To);
-            Trace(LatencyStage.PathFinished, r.Id, path.WaitingForNavigation ? LatencyOutcome.NavigationWaiting : !path.Found ? LatencyOutcome.NoPath : LatencyOutcome.None);
+            var outcome = path.WaitingForNavigation ? LatencyOutcome.NavigationWaiting
+                : !path.Found ? LatencyOutcome.NoPath
+                : LatencyOutcome.None;
+            Trace(LatencyStage.PathFinished, r.Id, outcome);
             return new(r.Id, r.Character, path);
         }
         finally { _traced.TryRemove(r.Id, out _); }
     }
 
     /// <summary>
-    /// A path thread's loop: answers each queued request unless the same character has asked again since.
+    /// A path thread's loop: answers the latest queued payload, optionally reserving this worker for players only.
     /// </summary>
-    void Work()
+    void Work(bool playerOnly)
     {
-        foreach (var r in _requests!.GetConsumingEnumerable())
+        while (_requests!.Take(playerOnly) is { } request)
         {
-            if (_newest.TryGetValue(r.Character, out long latest) && latest != r.Id)
-            {
-                Interlocked.Increment(ref _skipped);
-                Trace(LatencyStage.Terminal, r.Id, LatencyOutcome.Superseded);
-                _traced.TryRemove(r.Id, out _);
-            }
-            else
-            {
-                _answers.Enqueue(Answer(r));
-                _newest.TryRemove(new KeyValuePair<CharacterId, long>(r.Character, r.Id));
-            }
-
+            _answers.Enqueue(Answer(request));
             Interlocked.Decrement(ref _pending);
         }
     }
@@ -169,27 +163,37 @@ public sealed class PathService : IDisposable
         if (_disposed) return;
 
         _disposed = true;
-        _requests?.CompleteAdding();
+        _requests?.Complete();
         foreach (var thread in _threads)
             thread.Join();
-
-        _requests?.Dispose();
     }
 
+    /// <summary>
+    /// Distinguishes requests from previous path-service lifetimes in diagnostic traces.
+    /// </summary>
     public Guid TraceIncarnation { get; } = Guid.NewGuid();
 
+    /// <summary>
+    /// Optional nonblocking observer; never controls scheduling or search results.
+    /// </summary>
     public ILatencyTraceSink? TraceSink { get; set; }
 
-    readonly ConcurrentDictionary<long, byte> _traced = new();
-
+    /// <summary>
+    /// Emits stages only for explicitly sampled path requests.
+    /// </summary>
     void Trace(LatencyStage stage, long id, LatencyOutcome outcome = LatencyOutcome.None)
     {
         if (TraceSink is { } sink && _traced.ContainsKey(id))
             LatencyTrace.Emit(sink, new(stage, PathService: TraceIncarnation, Path: id, Outcome: outcome));
     }
 
-    internal long SubmitObserved(CharacterId character, Vector3 from, Vector3 to, float radius, WaterCost water, float roadPreference, bool observeLatency)
+    /// <summary>
+    /// Submits a query with optional latency observation and player priority; synchronous queries retain caller-thread ordering.
+    /// </summary>
+    internal long SubmitObserved(CharacterId character, Vector3 from, Vector3 to, float radius, WaterCost water, float roadPreference,
+        bool observeLatency, bool urgent = false)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         long id = Interlocked.Increment(ref _nextId);
         var request = new PathRequest(id, character, from, to, radius, water, roadPreference);
         if (observeLatency && TraceSink is not null)
@@ -199,9 +203,14 @@ public sealed class PathService : IDisposable
         }
         Trace(LatencyStage.PathQueued, id);
         if (IsSynchronous) { _answers.Enqueue(Answer(request)); return id; }
-        _newest[character] = id;
         Interlocked.Increment(ref _pending);
-        _requests!.Add(request);
+        if (_requests!.Enqueue(request, urgent) is { } replaced)
+        {
+            Interlocked.Decrement(ref _pending);
+            Interlocked.Increment(ref _skipped);
+            Trace(LatencyStage.Terminal, replaced.Id, LatencyOutcome.Superseded);
+            _traced.TryRemove(replaced.Id, out _);
+        }
         return id;
     }
 }

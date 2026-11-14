@@ -117,8 +117,12 @@ precede host orders for their due tick. No concurrent host enqueue may alter tha
 Randomness: stateless `Rng.Hash(seed,entityKey,purpose,counter)`; changing purpose/salt changes rolls.
 Worker partitions are `threads*2`, minimum 16 slots (game 32: 128 left a 500-character battle 3 partitions); one worker means caller execution.
 Async paths, navmesh and population results enter at tick boundaries; arrival timing is not
-repeatable in play. Determinism tests use synchronous services. `PathService` runs 2-4 threads (a quarter of the cores) and drops a
-request its character replaced before a thread took it up; F12's sim rows show the requests waiting.
+repeatable in play. Determinism tests use synchronous services.
+**Verified** (`PathRequestQueueTests`, `HeldMovementTests`): `PathService` runs 2-4 threads (a quarter of the cores),
+reserving one for player queries. Shared workers prefer at most four player requests before waiting NPC work.
+Each character has at most one queued request; replacement keeps its queue position and changes only the payload.
+Running searches finish normally. Superseded queued requests retain terminal trace outcomes; pending counts queued/running work, not replaced payloads.
+F12's sim rows show the requests waiting.
 
 `StateHash` is ordered, includes slot/generation/free-list and hashed subsystem state, normalizes
 negative zero, and is a diagnostic rather than gameplay work. Golden scenarios must agree at
@@ -564,7 +568,10 @@ loading, before publishing the initial snapshot; the save reader itself retains 
 
 `MovementSystem`, `PursuitSystem`, `IAgentWalkability`: schedule/query asynchronously, publish at
 boundaries, follow ordered path points, steer/separate using previous state and project to ground.
-New move orders preserve reusable paths; attack pursuit reschedules target paths. Turning can
+New move orders preserve reusable paths; attack pursuit reschedules target paths.
+**Verified** (`HeldMovementTests`, `NavigationWaitingTests`): an active ordered move reissued at the same resolved X/Z, floor height
+and speed mode retains its path request, verified prefix and navigation retry deadline. Changed floors or modes are new destinations.
+Turning can
 hold translation while facing changes. Original speeds/encumbrance and research are in
 [pathfinding.md](game/pathfinding.md); footprint clearance/water costs come from nav queries.
 Heights use the character's (or clicked) Y to pick stacked floors; long paths have a provisional tail.

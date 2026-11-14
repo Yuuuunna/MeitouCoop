@@ -177,8 +177,16 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     {
         var floor = world.Walkability.FloorNear(at.X, at.Z, at.Y, FloorSlack) ?? at;
         var flat = new Vector2(floor.X, floor.Z);
-        GoTo(world.Characters, slot, flat, mode);
         var cold = world.Characters.Cold(slot)!;
+        ref var hot = ref world.Characters.Next[slot];
+
+        // An unchanged held order keeps its in-flight request, verified prefix and navigation retry deadline.
+        bool sameOrder = cold.OrderMove && hot.Task == (byte)CharacterTask.GoTo && hot.Goal == flat && hot.Mode == mode
+            && cold.GoalHeightAt == flat && cold.GoalHeight == floor.Y;
+        bool active = cold.NavigationWaiting || (hot.Flags & (ushort)MoveFlags.AnyPath) != 0;
+        if (sameOrder && active) return flat;
+
+        GoTo(world.Characters, slot, flat, mode);
         (cold.GoalHeight, cold.GoalHeightAt) = (floor.Y, flat);
         return flat;
     }
@@ -609,7 +617,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             var to = splice ?? new Vector3(next[i].Goal.X, world.Walkability.GroundHeight(next[i].Goal.X, next[i].Goal.Y, nearY), next[i].Goal.Y);
             cold.PathRequest = Paths.SubmitObserved(new CharacterId(i, next[i].Generation), next[i].Position, to, cold.FootprintRadius,
                 WaterCost.Of(cold.WaterFactor, next[i].MaxSpeed, cold.Race, cold.SwimSpeed), cold.RoadPreference,
-                observeLatency: world.MovementTrace?.Tracks(i) == true);
+                observeLatency: world.MovementTrace?.Tracks(i) == true, urgent: cold.IsPlayer);
             world.MovementTrace?.PathQueued(i, Paths, cold.PathRequest);
             if (splice is null) ClearSplice(cold);
             else cold.SpliceRequest = cold.LastSplice = cold.PathRequest;
