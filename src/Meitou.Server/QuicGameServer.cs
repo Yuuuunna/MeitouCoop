@@ -114,7 +114,7 @@ public sealed class QuicGameServer : IAsyncDisposable
         {
             LastFailureType = error.GetType().Name;
             Interlocked.Increment(ref _failures);
-            Console.Error.WriteLine($"QUIC peer failure: {error}");
+            Console.Error.WriteLine($"QUIC peer failure: utc={DateTime.UtcNow:O} peer={id} {error}");
         }
         finally
         {

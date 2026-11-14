@@ -63,7 +63,7 @@ tracing overhead still require acceptance; synthetic callback tests do not prove
 
 **Verified** (`BountyCountdownTests`): bounty countdowns preserve positive infinity for permanent bounties through publication,
 decoding and clock projection; NaN and negative infinity remain invalid. The binary field layout is unchanged, but both endpoints
-need the corrected validation; build identity `meitou-upstream-7379edb6-authority-2` rejects older peers during admission.
+need the corrected validation; the [current build identity](networking.md) rejects older peers during admission.
 **Observed** (dedicated console stack at `EncodeBounties`, checkpoint `c41eaa9a`, 2026-11-14):
 a player's 13000 bounty produced the permanent sentinel that the previous finite-only encoder rejected, closing the peer on publication
 and again on reconnect. The rule is [bounty lifetime](game/economy.md); this is not a QUIC transport failure.
@@ -347,6 +347,13 @@ all framed parts; one bounded pending critical batch resumes at its exact public
 critical encoding pauses above a 16 KiB lifecycle ownership window, while latest motion capture and
 recipient event retention continue. Event IDs survive source-ring expiry until their critical batch is
 admitted (4,096 entries/256 KiB maximum); overflow is explicit. Clock-only ordinary UI deltas are omitted.
+
+**Verified** (`PresentationEventValidationTests`, `PendingPresentationEventsTests`; codec and v21 critical-publication round trips):
+wire validation and recipient retention share a 4,096 combined-event limit. The simulation journal's 512-entry bound applies to
+each source capture. Fixed-position `Building` damage and `Label` floaters may omit a character target; all other kinds require one. Validation errors
+identify the family, entry index/ID, failed field or duplicate ID, high-water, family counts and publication context.
+Retention errors distinguish retained-key, projected-key and encoded-byte limits with actual usage and maxima.
+Diagnostics omit names, text, content identities and positions.
 
 Motion capture runs at 20 Hz independently of the 10 Hz animation/critical/UI schedule. Before the
 first actual renderer root submission, receive samples re-anchor the presentation reservoir so initial

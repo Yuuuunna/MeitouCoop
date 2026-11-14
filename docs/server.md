@@ -131,6 +131,9 @@ streams/datagrams with bounded application queues; current limits and framing ar
 VPS capacity, accepted-throughput targets or graphical gameplay acceptance; see
 [networking acceptance](networking-next.md#acceptance-gates-requirements-not-measured-achievements).
 
+**Observed** (source): peer failures include UTC and a process-local peer ID. Presentation-event diagnostics are specified in
+[networking-next](networking-next.md#game-connection-integration).
+
 Admission messages have a monotonic connection-local sequence, private roles/qualifications and command
 high-water. Busy durable transactions expose no speculative roles/qualifications. Entry names an owned
 persistent role; the host loader runs outside the loop, then ownership/liveness are checked again before

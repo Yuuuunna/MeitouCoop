@@ -30,9 +30,11 @@ public sealed record ServerConnectionProfile(string Host, int Port, Guid Account
 /// </summary>
 public static class ServerCompatibility
 {
-    // Rule semantics, ground-item materials and blood-event fields follow this upstream baseline.
-    // Discovery metadata is opaque to older clients, so their own build identity must reject admission.
-    public const string EngineBuild = "meitou-upstream-7379edb6-authority-2";
+    /// <summary>
+    /// Both endpoints must accept building floaters and retained batches beyond the source journal's 512 entries.
+    /// Discovery metadata is opaque to older clients, so their own build identity must reject admission.
+    /// </summary>
+    public const string EngineBuild = "meitou-upstream-7379edb6-authority-3";
     // Hash without loading DLLs: connecting never grants permission to execute installed code.
     public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
     {
