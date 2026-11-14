@@ -80,6 +80,7 @@ sealed class BuildingSync(GameHost host)
         var snapshot = host.Session.CurrentSnapshot;
         host.TownChanges.UpdateRuins(snapshot);
         host.TownChanges.UpdateEmptiedHouses(snapshot);
+        UpdateFoliageTowns(snapshot);
         if (snapshot.BuildingsRevision != _buildingsRevision || snapshot.NestBuildingsRevision != _nestBuildingsRevision)
         {
             DiffBuildings(snapshot);
@@ -104,6 +105,29 @@ sealed class BuildingSync(GameHost host)
         foreach (var site in snapshot.Buildings)
             if (!site.Complete && !site.Destroyed) _constructionLook[site.Id] = ConstructionLook(site);
         objects.Construction = _constructionLook.Count == 0 ? null : _constructionLook;
+    }
+
+    /// <summary>
+    /// The outposts the foliage placer was last given.
+    /// </summary>
+    IReadOnlyList<FoliageTown>? _foliageOutposts;
+
+    /// <summary>
+    /// Gives the navmesh the player's outposts (centre, the template's <c>no-foliage range</c>, owned by the player's faction or not) as towns that
+    /// keep <c>avoid towns</c> foliage away, and the foliage renderer the same list. Before the sites are diffed, so a building added in the same
+    /// snapshot is built with them.
+    /// </summary>
+    void UpdateFoliageTowns(WorldSnapshot snapshot)
+    {
+        if (host.Nav is null) return;
+
+        if (!ReferenceEquals(snapshot.FoliageOutposts, _foliageOutposts))
+        {
+            _foliageOutposts = snapshot.FoliageOutposts;
+            // The local runtime updates navigation at its serialized boundary, including ticks held ahead of this rendered snapshot.
+            if (host.Session.IsRemote) host.Nav.SetPlayerTowns(snapshot.FoliageOutposts);
+        }
+        host.ActiveFoliage?.SetPlayerTowns(host.Nav.Runtime.FoliageTowns);
     }
 
     /// <summary>
@@ -256,6 +280,7 @@ sealed class BuildingSync(GameHost host)
         _effectBuildings.Clear();
         _litBuildings.Clear();
         _levelOwners = null;
+        _foliageOutposts = null;
         host.GroundItemSync.ForgetGroundItems();
         host.TownChanges.ForgetRuins();
         host.TownChanges.ForgetEmptiedHouses();
@@ -297,6 +322,7 @@ sealed class BuildingSync(GameHost host)
             water.Walls = (centre, radius) => footprints.PlaneCut(centre, radius, Data.World.WorldWater.Height);
 
         var parts = new Dictionary<string, IReadOnlyList<PlacedMesh>>(StringComparer.Ordinal);
+        var machines = new Dictionary<string, MachineData?>(StringComparer.Ordinal);
         var icons = new BuildingIcons(Path.Combine(host.Install.DataDirectory, "icons", "buildings"));
         IReadOnlyList<PlacementTown>? towns = null;
         return new Building.BuildServices
@@ -314,6 +340,8 @@ sealed class BuildingSync(GameHost host)
             IconFile = icons.Find,
             Placement = MakePlacementServices(db, footprints),
             WorldInfo = MakeWorldInfo(db),
+            Machine = id => machines.TryGetValue(id, out var machine) ? machine
+                : machines[id] = db.Find(id) is { } record ? MachineData.From(db, record) : null,
             Towns = () => towns ??= host.PopData is { } d ? [.. d.Sites.Select(s => new PlacementTown(s.Town, new(s.Position.X, s.Position.Z)))] : [],
             PlayerFactionId = () => host.Session.DescribeFaction(host.Session.ActiveFaction)?.RecordId ?? "",
             DrawGhosts = draws => host.ActiveObjects?.SetGhosts(draws),
@@ -327,7 +355,7 @@ sealed class BuildingSync(GameHost host)
     PlacementServices MakePlacementServices(Data.GameDatabase db, Simulation.Navigation.BuildingFootprints footprints)
     {
         var pickable = new Dictionary<string, bool>(StringComparer.Ordinal);
-        // Resource and node buildings are not selectable objects (TownBuildings leaves them out too).
+        // Resources are picked through the shared resource-node source, which also includes level-placed foliage buildings.
         bool Pickable(string record) => pickable.TryGetValue(record, out bool known) ? known
             : pickable[record] = db.Find(record) is { } r && !r.GetBool("is node") && !r.GetBool("is foliage");
         // The world's resources for the mine and farm readout, remade when a new game or a load replaces the population data. The check and the popup
@@ -377,6 +405,7 @@ sealed class BuildingSync(GameHost host)
             Ceiling = hit.Room.CeilingAbove(hit.Position),
             Normal = hit.Room.FloorNormal(hit.Position, host.Interiors.ViewedFloorValue, FloorSurfaces.RayStart),
             Structure = hit.Room.StructureCuts,
+            Roof = hit.Room.RoofCuts,
         };
         return (hit.Position, floor);
     }
@@ -390,6 +419,7 @@ sealed class BuildingSync(GameHost host)
         Dictionary<(ZoneCoordinate, string), (string Town, string? Owner, int Site, int Index)>? townOf = null;
         // The towns' building lists change when the level editor places or clears a building (PopulationData.BuildingsRevision).
         int townOfRevision = -1;
+        var machines = new Dictionary<string, bool>(StringComparer.Ordinal);
         return placement =>
         {
             var (zone, instance) = (placement.Zone, placement.InstanceId);
@@ -413,9 +443,22 @@ sealed class BuildingSync(GameHost host)
             bool destroyed = host.TownChanges.ShownRuins.TryGetValue(placement.Key, out var ruin) ? ruin.Destroyed
                 : placement.DestroyedOverride ?? state?.GetBool("destroyed") ?? false;
             var pieces = destroyed || host.TownChanges.IsEmptied(placement.Key) ? null : own?.Pieces;
+            bool machine = own is not null && TownMachine(db, machines, own.BuildingId);
             return new(name, type, town, owner, state?.GetBool("is public day") ?? false, state?.GetBool("is public night") ?? false,
-                destroyed, own?.Turret is not null, pieces);
+                destroyed, own?.Turret is not null, pieces, machine);
         };
+    }
+
+    /// <summary>
+    /// Whether a town building of record <paramref name="record"/> supports production, research or crafting, cached in <paramref name="known"/>.
+    /// </summary>
+    static bool TownMachine(Data.GameDatabase db, Dictionary<string, bool> known, string record)
+    {
+        if (known.TryGetValue(record, out bool machine)) return machine;
+
+        machine = db.Find(record) is { } r && MachineData.From(db, r) is { Operable: true };
+        known[record] = machine;
+        return machine;
     }
 
     /// <summary>

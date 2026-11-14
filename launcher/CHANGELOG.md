@@ -7,6 +7,7 @@ Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.
 - First start immediately lists the bundled releases even without a cache or API access.
 - Release refresh prefers a public static catalog, then the API, then the newest valid saved or bundled snapshot.
 - Corrupt responses keep the last valid list; rate-limited API requests honor the server's retry time.
+- A workshop mod's row on the Mods page has a link icon that opens its Steam workshop page with one click, in place of the double click.
 
 ## v1.11.0
 
@@ -14,6 +15,13 @@ Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.
 - The Play page explicitly selects a local client or installed release; graphics, hardware detection and logs follow that same client.
 - Join a server by address with ten recent entries, retaining the game's existing device identities and admission flow.
 - Local clients generate their settings schema in the launcher's cache; multiplayer exports include schema and versioned build metadata.
+
+- **Legacy macOS 13 packages**: separate `MeitouLauncherLegacy` installers for Intel and Apple silicon, built on .NET 10. The
+  README's legacy download links work from this release on.
+- **Sync workshop** on the Mods page (macOS): asks the running Steam client to download or update your subscribed Kenshi workshop
+  mods and shows the progress.
+- A double click on a workshop mod opens its Steam workshop page.
+- Graphics page (macOS): Metal can run without MetalFX at a chosen render resolution.
 
 ## v1.10.0
 

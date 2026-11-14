@@ -203,7 +203,9 @@ public sealed class AuthorityGateway : IDisposable
             connection.PublishedCharacters = view.Snapshot.Characters.Select(c => c.Id).ToHashSet();
             connection.PublishedSites = view.Snapshot.Buildings.Select(b => b.Id).Concat(view.Snapshot.DoorPicks.Select(d => d.Building))
                 .Concat(view.Snapshot.Beds.Select(b => b.Id)).Concat(view.Snapshot.Cages.Select(c => c.Id))
-                .Concat(view.Snapshot.Containers.Select(c => c.Id)).ToHashSet(StringComparer.Ordinal);
+                .Concat(view.Snapshot.Containers.Select(c => c.Id)).Concat(view.Snapshot.Dummies.Select(d => d.Id))
+                .Concat(view.Snapshot.Seats.Select(s => s.Id)).Concat(view.Snapshot.WorkSites.Select(s => s.Id))
+                .Concat(view.Snapshot.Machines.Select(m => m.Site)).ToHashSet(StringComparer.Ordinal);
             connection.ViewSequence = checked(connection.ViewSequence + 1);
             connection.PublishedGrants.Add(connection.ViewSequence, new(view.Roles.ToArray(),
                 view.Factions.Select(f => new ViewMembership(f.Faction, f.Permissions, f.MembershipRevision)).ToArray()));
@@ -539,6 +541,17 @@ public sealed class AuthorityGateway : IDisposable
         if (request.Command is InspectCommand inspect && !inspect.Target.IsNone && !connection.PublishedCharacters.Contains(inspect.Target)
             || request.Command is InspectBuildingCommand { Instance: { } site } && !connection.PublishedSites.Contains(site))
             return AuthorityStatus.InvalidRequest;
+        string? workSite = request.Command switch
+        {
+            Production.OperateOrder c => c.Site,
+            Production.UseTurretOrder c => c.Site,
+            Production.AddJob c => c.Site,
+            Production.DisposeCorpseOrder c => c.Site,
+            Production.PutInMachine c => c.Site,
+            Production.TakeFromMachine c => c.Site,
+            _ => null,
+        };
+        if (workSite is not null && !connection.PublishedSites.Contains(workSite)) return AuthorityStatus.InvalidRequest;
         var expected = request.Context;
         var characters = PlayerCommandRouting.Characters(request.Command).Distinct().ToArray();
         if (characters.Length != expected.Characters.Count) return AuthorityStatus.StaleAuthority;

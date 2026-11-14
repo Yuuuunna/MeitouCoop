@@ -859,6 +859,7 @@ sealed class FurnitureUse(PlayerInterface player)
         _bedPending = null;
         _dummyPending = null;
         _seatPending = null;
+        _rockPending = null;
     }
 
 }

@@ -286,6 +286,8 @@ public sealed partial class WorldViewCodec
         if (view.Snapshot.Characters is null || view.Snapshot.Characters.Count > 65536 || view.Snapshot.Characters.Any(c => c is null || c.Id.IsNone || !Finite(c.Position) || !float.IsFinite(c.Yaw) || float.IsInfinity(c.DrawYaw) || c.Path is null || c.PathExact < 0 || c.PathExact != int.MaxValue && c.PathExact > c.Path.Count) || view.Snapshot.Characters.Select(c => c.Id).Distinct().Count() != view.Snapshot.Characters.Count || view.Roles.Any(r => r is null || r.Entity.IsNone) || view.Roles.Select(r => r.Entity).Distinct().Count() != view.Roles.Count || view.Factions.Any(f => f is null || f.Faction < 0 || f.UnlockedBuildings is null || !Enum.IsDefined((SquadFormation)f.Formation)) || view.Factions.Select(f => f.Faction).Distinct().Count() != view.Factions.Count || view.ActiveFaction >= 0 && !view.Factions.Any(f => f.Faction == view.ActiveFaction))
             throw new InvalidDataException("Invalid view records.");
         ValidateContainerOpener(view);
+        ValidateSceneMetadata(view.Snapshot);
+        ValidateDrawAnchors(view.Snapshot);
         if (view.Snapshot.GroundItems is null || view.Snapshot.GroundItems.Any(item => item.Material is null || item.Material.Length > 4096))
             throw new InvalidDataException("Invalid ground item material identity.");
         if (view.Snapshot.Projectiles is null || view.Snapshot.Projectiles.Any(p => !float.IsFinite(p.Speed) || p.Speed < 0))
@@ -331,12 +333,51 @@ public sealed partial class WorldViewCodec
     }
 
     /// <summary>
+    /// Public work targets and map markers remain bounded, unique and structurally valid even when their scene components arrive independently.
+    /// </summary>
+    static void ValidateSceneMetadata(WorldSnapshot snapshot)
+    {
+        if (snapshot.WorkSites is null || snapshot.WorkSites.Count > 65536
+            || snapshot.WorkSites.Any(s => string.IsNullOrEmpty(s.Id) || s.Id.Length > 4096 || !Finite(s.Position)
+                || s.Owner < -1 || s.SiteRevision == 0)
+            || snapshot.WorkSites.Select(s => s.Id).Distinct(StringComparer.Ordinal).Count() != snapshot.WorkSites.Count)
+            throw new InvalidDataException("Invalid public work targets.");
+        if (snapshot.MapSquads is null || snapshot.MapSquads.Count > 65536
+            || snapshot.MapSquads.Any(s => !float.IsFinite(s.Position.X) || !float.IsFinite(s.Position.Y) || s.Faction < -1)
+            || snapshot.MapSquads.Select(s => s.Key).Distinct().Count() != snapshot.MapSquads.Count)
+            throw new InvalidDataException("Invalid map squad markers.");
+        if (snapshot.FoliageOutposts is null || snapshot.FoliageOutposts.Count > 65536
+            || snapshot.FoliageOutposts.Any(t => !float.IsFinite(t.At.X) || !float.IsFinite(t.At.Y)
+                || !float.IsFinite(t.Range) || t.Range < 0))
+            throw new InvalidDataException("Invalid outpost foliage geometry.");
+    }
+
+    /// <summary>
+    /// Draw transforms require finite values and canonical carrier IDs; the server separately removes references outside the recipient's view.
+    /// </summary>
+    static void ValidateDrawAnchors(WorldSnapshot snapshot)
+    {
+        foreach (var character in snapshot.Characters)
+        {
+            if (character.Lean is { } lean && !Finite(lean)) throw new InvalidDataException("Invalid bed lean.");
+            if (character.Anchor is { } anchor && (anchor.Carrier.IsNone || anchor.Carrier.Slot < 0 || anchor.Carrier.Generation < 0
+                || anchor.Bone is null || anchor.Bone.Length > 4096 || !Finite(anchor.Offset) || !Finite(anchor.Rotation)))
+                throw new InvalidDataException("Invalid character draw anchor.");
+        }
+    }
+
+    /// <summary>
     /// Weapon blood can name one structurally valid attacker. Visibility is enforced when the server projects the event, independently of lanes.
     /// </summary>
     static bool InvalidBloodAttacker(BloodMark mark) => mark.Attacker is { } attacker
         && (mark.Kind != BloodMarkKind.Splash || attacker.IsNone || attacker.Generation < 0);
 
     static bool Finite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
+
+    /// <summary>
+    /// Whether each component of a display rotation is finite.
+    /// </summary>
+    static bool Finite(Quaternion value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z) && float.IsFinite(value.W);
     sealed class SingleNumber(bool allowNaN = false) : JsonConverter<float>
     {
         public override float Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)

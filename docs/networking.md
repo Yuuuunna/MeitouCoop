@@ -12,10 +12,21 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-7379edb6-authority-1`; ground-item material IDs and optional blood-event attacker IDs
+The current identity is `meitou-upstream-a69c6e9b-authority-2`; ground-item material IDs and optional blood-event attacker IDs
 travel with their existing state/event components. Attacker IDs are removed when that recipient cannot see the attacker.
 The authoritative `AnimalsPickUp` rule is included in gameplay settings and their digest. Older build identities fail admission;
 unknown gameplay rules are not silently accepted. Transport and container framing remain protocol 21.
+
+**Observed** (source): `WorkSites` publishes server-resolved IDs, positions, owners and positive site revisions for observable natural
+and level work targets before a machine exists. It grants no inventory or machine configuration access. Nearby NPC worksite stock
+requires a currently authorized actor within transfer reach; machine controls require asset permission. Item rotations update inventory
+revisions, and held rotations retain the issuing player's holder serial and actor grants. Squad autonomy/home commands require the
+current faction membership and ManageSquads; a remote home assignment additionally requires ManageAssets for that building.
+
+Map markers disclose observed campaigns, campaigns targeting a faction whose event details the recipient may read, and that player's
+contracts or contracts of a faction they may fully manage. Character bone anchors omit hidden carriers. `FoliageOutposts` contains only
+geometry affecting the recipient's observed area, plus managed outposts; influence margins follow navigation, without exposing economic
+outpost data. Nearby foliage ownership is world-wide player ownership, independent of the client's selected faction.
 
 Authentication and admission are separate from compatibility. The server binds identity from the authenticated
 connection; commands cannot supply player identity, issuer, tick or control grants. Client intents expand selected

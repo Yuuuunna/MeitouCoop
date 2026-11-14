@@ -157,7 +157,11 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
     /// <summary>
     /// Its run-time name (<see cref="BuildingKey"/>): what fixtures, doors and the renderer's placements know it by.
     /// </summary>
-    public string Key => BuildingKey.Of(Zone, InstanceId);
+    public string Key => RuntimeKey ?? BuildingKey.Of(Zone, InstanceId);
+    /// <summary>
+    /// The run-time name of a building that is no level placement (a player-built one, known by its instance id alone); null: the zone's key.
+    /// </summary>
+    public string? RuntimeKey { get; init; }
     /// <summary>
     /// The level placement it was resolved from (full rotation, record, state): what its indoor volume and lights are built from.
     /// </summary>
@@ -193,6 +197,14 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
     /// A ruin only by its residents (<see cref="ResidentRuins.Apply"/>): its level file has it standing.
     /// </summary>
     public bool RuinedByResidents { get; init; }
+    /// <summary>
+    /// Standing only by its residents (<see cref="ResidentRuins.Apply"/>): its level file has it destroyed.
+    /// </summary>
+    public bool RestoredByResidents { get; init; }
+    /// <summary>
+    /// The <c>destroyed</c> of its level file, before any residents were housed in it.
+    /// </summary>
+    public bool LevelDestroyed => Destroyed ? !RuinedByResidents : RestoredByResidents;
     /// <summary>
     /// The <c>residents template</c> of its level state (a SQUAD_TEMPLATE id; empty when none): once the boot housed the towns
     /// (<see cref="ResidentRuins.Apply"/>), the template of the residents housed in it. Later changes:
@@ -245,8 +257,8 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
     /// </summary>
     public IReadOnlyList<Vector3> Tables { get; init; } = [];
     /// <summary>
-    /// Its interior layout's other furniture, in layout order: what no bed, seat, cage or container pick takes, nodes left out. A left click selects
-    /// each by its own collision (docs/game/ui-screens.md "Selected building").
+    /// Its interior layout's selectable furniture and operable machines, in layout order: what no bed, seat, cage or container pick takes, plus
+    /// workbenches whose fixture provides an inventory. Nodes are left out; a left click uses each piece's collision.
     /// </summary>
     public IReadOnlyList<TownPiece> Pieces { get; init; } = [];
     /// <summary>
@@ -312,8 +324,8 @@ public sealed record TownFixture(string Id, string RecordId, bool IsCage, Vector
 public sealed record TownItemSlot(string Id, string GroupId, Vector3 Position, Quaternion Rotation, int Floor);
 
 /// <summary>
-/// A piece of a building's interior layout that only gets selected (<see cref="TownBuilding.Pieces"/>): a table, shelf, lamp, torch, dummy,
-/// workstation or lock.
+/// Selectable furniture or an operable machine of a building's interior layout (<see cref="TownBuilding.Pieces"/>): a table, shelf, lamp, torch,
+/// dummy, workstation or lock. A machine with inventory also has a <see cref="TownFixture"/> with the same identity.
 /// <paramref name="Id"/> is the parent's <see cref="BuildingKey"/>, "/", and the item's index in the layout, as a <see cref="TownFixture"/>'s;
 /// <paramref name="Floor"/> is the floor the layout puts it on (<see cref="LayoutItem.Floor"/>), <paramref name="Outside"/> whether it stays drawn
 /// while the building shows its outside (<see cref="LayoutItem.Outside"/>).

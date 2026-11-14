@@ -44,6 +44,14 @@ public sealed class FoliageWorld : IDisposable
     /// The overlay tiles shared between workers, by tile; null keeps a cache of this instance's own.
     /// </summary>
     readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int), Lazy<byte[]>>? _sharedTiles;
+    /// <summary>
+    /// Level resource placements grouped by their actual world zone, refreshed after a level edit.
+    /// </summary>
+    Dictionary<ZoneCoordinate, BuildingPlacement[]>? _resourceBuildings;
+    /// <summary>
+    /// The edit revision used for <see cref="_resourceBuildings"/>.
+    /// </summary>
+    int _resourceRevision = -1;
 
     /// <summary>
     /// The FOLIAGE catalog the zones are placed from.
@@ -51,7 +59,45 @@ public sealed class FoliageWorld : IDisposable
     public FoliageCatalog Catalog { get; }
 
     /// <summary>
-    /// A town's key in <see cref = "Ownership"/>: its X/Z rounded to whole units.
+    /// The level edit revision that invalidates cached resource nodes.
+    /// </summary>
+    internal int LevelRevision => _source.EditRevision;
+
+    /// <summary>
+    /// Resource BUILDING placements of a zone, using the same absolute heights and destruction flags as the rendered level.
+    /// </summary>
+    internal IEnumerable<ResolvedBuilding> ResourceBuildings(ZoneCoordinate zone)
+    {
+        if (_resourceBuildings is null || _resourceRevision != _source.EditRevision)
+        {
+            _resourceBuildings = _source.Buildings()
+                .Where(b => _database.Find(b.BuildingId)?.GetBool("is foliage") == true)
+                .GroupBy(b => WorldLayout.ZoneOf(b.Position.X, b.Position.Z))
+                .ToDictionary(g => g.Key, g => g.ToArray());
+            _resourceRevision = _source.EditRevision;
+        }
+
+        Open();
+        foreach (var building in _resourceBuildings.GetValueOrDefault(zone) ?? [])
+            if (BuildingPlacements.Resolve(building, _database, _source, _map!.HeightAt) is { Destroyed: false } resolved)
+                yield return resolved;
+    }
+
+    /// <summary>
+    /// Towns beside the level's that keep foliage away: the player's outposts at their current centre (set by the caller before a zone is placed;
+    /// the nearest town of both lists decides). Empty for none.
+    /// </summary>
+    public IReadOnlyList<FoliageTown> ExtraTowns { get; set; } = [];
+
+    /// <summary>
+    /// The <c>no-foliage range</c> of an outpost the player founded: its TOWN template's (<c>player_town_template</c>, 1000), 2000 without the
+    /// record (the field's default).
+    /// </summary>
+    public static float OutpostRange(GameDatabase db) =>
+        db.Find("player_town_template") is { } record ? record.GetFloat("no-foliage range", 2000) : 2000;
+
+    /// <summary>
+    /// A town's key in <see cref="Ownership"/>: its X/Z rounded to whole units.
     /// </summary>
     public static (int X, int Z) TownKey(float x, float z) => ((int)MathF.Round(x), (int)MathF.Round(z));
     /// <summary>
@@ -93,14 +139,16 @@ public sealed class FoliageWorld : IDisposable
         var at = new Vector2(x, z);
         FoliageTown? best = null;
         float bestDistance = float.MaxValue;
-        foreach (var t in _towns)
+        foreach (var t in _towns) Consider(t);
+        foreach (var t in ExtraTowns) Consider(t);
+        return best;
+
+        void Consider(FoliageTown t)
         {
             float d = Vector2.DistanceSquared(t.At, at);
             if (d < bestDistance)
                 (bestDistance, best) = (d, t);
         }
-
-        return best;
     }
 
     /// <summary>
@@ -116,8 +164,9 @@ public sealed class FoliageWorld : IDisposable
     public (FoliageZone Zone, FoliageGround? Ground) Load(ZoneCoordinate zone, bool farOnly = false)
     {
         if (!zone.IsInsideGrid) return (new FoliageZone { Zone = zone }, null);
-        if (_cache?.TryLoad(zone, farOnly) is { } hit) return (hit.Zone, hit.Ground);
-        return Place(zone, farOnly);
+        bool cached = !ExtraTownsReach(zone);
+        if (cached && _cache?.TryLoad(zone, farOnly) is { } hit) return (hit.Zone, hit.Ground);
+        return Place(zone, farOnly, cached);
     }
 
     /// <summary>
@@ -127,8 +176,9 @@ public sealed class FoliageWorld : IDisposable
     public GroupedFoliageZone LoadGrouped(ZoneCoordinate zone, bool farOnly = false)
     {
         if (!zone.IsInsideGrid) return FoliageGrouping.Group(new FoliageZone { Zone = zone }, null);
-        if (_cache?.TryLoadGrouped(zone, farOnly) is { } hit) return hit;
-        var (laid, ground) = Place(zone, farOnly);
+        bool cached = !ExtraTownsReach(zone);
+        if (cached && _cache?.TryLoadGrouped(zone, farOnly) is { } hit) return hit;
+        var (laid, ground) = Place(zone, farOnly, cached);
         var grouped = FoliageGrouping.Group(laid, ground);
         laid.Instances.Clear();
         laid.Instances.TrimExcess();
@@ -136,9 +186,32 @@ public sealed class FoliageWorld : IDisposable
     }
 
     /// <summary>
-    /// Places one zone's foliage from the maps (and saves it to the layout cache when there is one).
+    /// Whether an extra town can change the zone's placement: it lies within the larger of its own range and the level towns' largest range of the
+    /// zone's box (a new town can become the nearest one for a point a level town's range covered). Such a layout is neither read from nor saved to
+    /// the layout cache, whose key knows only the level's towns.
     /// </summary>
-    (FoliageZone Zone, FoliageGround? Ground) Place(ZoneCoordinate zone, bool farOnly)
+    bool ExtraTownsReach(ZoneCoordinate zone)
+    {
+        if (ExtraTowns.Count == 0) return false;
+
+        Open();
+        float levelRange = _towns.Select(t => t.Range).DefaultIfEmpty(0).Max();
+        var (x0, z0) = WorldLayout.ZoneOrigin(zone);
+        foreach (var t in ExtraTowns)
+        {
+            float dx = MathF.Max(MathF.Max((float)x0 - t.At.X, t.At.X - (float)(x0 + WorldLayout.ZoneSize)), 0);
+            float dz = MathF.Max(MathF.Max((float)z0 - t.At.Y, t.At.Y - (float)(z0 + WorldLayout.ZoneSize)), 0);
+            float reach = MathF.Max(t.Range, levelRange);
+            if (dx * dx + dz * dz <= reach * reach) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Places one zone's foliage from the maps (and saves it to the layout cache when there is one and <paramref name="save"/> is set).
+    /// </summary>
+    (FoliageZone Zone, FoliageGround? Ground) Place(ZoneCoordinate zone, bool farOnly, bool save = true)
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         Open();
@@ -162,7 +235,7 @@ public sealed class FoliageWorld : IDisposable
             NearestTown = NearestTown,
         };
         var laid = FoliageLayout.Place(input, Catalog, farOnly);
-        _cache?.Save(zone, farOnly, laid, ground, System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+        if (save) _cache?.Save(zone, farOnly, laid, ground, System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);
         return (laid, ground);
     }
 

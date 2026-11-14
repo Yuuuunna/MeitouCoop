@@ -81,7 +81,7 @@ public sealed partial class ProductionSystem
             return;
         var table = world.Characters;
         foreach (var id in world.CommandCharacters(add, add.Characters))
-            if (table.TryResolveNext(id, out int slot) && table.Cold(slot)is { IsPlayer: true } cold && world.MayUseAssets(cold, owner) && PermaJobs.Add(cold, builder ? TaskType.Build : add.Type, builder ? new PermaJob(TaskType.Build, site?.Id ?? add.Site) : new PermaJob(add.Type, add.Site)))
+            if (table.TryResolveNext(id, out int slot) && table.Cold(slot)is { IsPlayer: true } cold && (site is not null && !builder ? MayWork(world, cold, site) : world.MayUseAssets(cold, owner)) && PermaJobs.Add(cold, builder ? TaskType.Build : add.Type, builder ? new PermaJob(TaskType.Build, site?.Id ?? add.Site) : new PermaJob(add.Type, add.Site)))
                 _sweep = true;
     }
 

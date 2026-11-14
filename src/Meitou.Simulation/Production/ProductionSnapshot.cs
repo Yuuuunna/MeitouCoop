@@ -1,42 +1,46 @@
-using Meitou.Data;
-using Meitou.Data.Fcs;
-using Meitou.Data.Gameplay;
-using Meitou.Data.Gameplay.Ai;
-using Meitou.Data.Gameplay.Bodies;
-using Meitou.Data.Save;
-using Meitou.Data.World;
-using Meitou.Simulation.Aggro;
-using Meitou.Simulation.Ai;
-using Meitou.Simulation.Bodies;
-using Meitou.Simulation.Carrying;
-using Meitou.Simulation.Combat;
-using Meitou.Simulation.Construction;
-using Meitou.Simulation.Factions;
-using Meitou.Simulation.Locks;
-using Meitou.Simulation.Movement;
-using Meitou.Simulation.Perception;
-using Meitou.Simulation.Population;
-using System.Globalization;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using Meitou.Data.Gameplay.Construction;
 using Meitou.Simulation.Items;
 using Meitou.Simulation.Player;
 
 namespace Meitou.Simulation.Production;
+
+/// <summary>
+/// An observed work target before it owns a machine. The server resolves its identity and publishes the current ownership revision.
+/// </summary>
+public readonly record struct WorkSiteView(string Id, Vector3 Position, int Owner, ulong SiteRevision);
+
 /// <summary>
 /// A recipe slot as the host shows it: the item, how many are held of how many, and the level (input) or progress (output) 0..1.
 /// </summary>
 public readonly record struct MachineSlotView(string Item, string Name, int Count, int Capacity, float Fill, int Width = 1, int Height = 1);
+
 /// <summary>
 /// A farm as the host shows it (docs/simulation.md "Production").
 /// </summary>
-public readonly record struct FarmView(float Growth, float Death, int Harvested, int Plants, FarmStatus Status, float Fertility, float CropMatch, float Ripeness)
+public readonly record struct FarmView(float Growth, float Death, int Harvested, int Plants, FarmStatus Status, float Fertility, float CropMatch,
+    float Ripeness)
 {
     /// <summary>
     /// Each plant's growth (a copy; -10 harvested): what its crop mesh is drawn at.
     /// </summary>
     public IReadOnlyList<float> PlantGrowth { get; init; } = [];
+    /// <summary>
+    /// The crop's immutable data, for the farm panel's growth time and death threshold.
+    /// </summary>
+    public FarmData? Data { get; init; }
+    /// <summary>
+    /// The lowest growth at planting: the Growing bar measures progress from this value to 1.
+    /// </summary>
+    public float Start { get; init; }
+    /// <summary>
+    /// The operators' average effective Farming level divided by 100; 1 with no operators (the original panel's default).
+    /// </summary>
+    public float FarmerSkill { get; init; } = 1;
+    /// <summary>
+    /// The first water input's level is nonzero: a dry ripe crop keeps its harvest time text but has no time bar.
+    /// </summary>
+    public bool Watered { get; init; } = true;
 }
 
 /// <summary>
@@ -121,25 +125,49 @@ public enum MachinePanel : byte
 /// <summary>
 /// A crafting bench as the host shows it: the queue (the first is being made), the repeat toggle and the finished items waiting in its output.
 /// </summary>
-public sealed record CraftView(IReadOnlyList<(string Key, string Name, float Progress, float Hours)> Queue, bool Repeat, IReadOnlyList<InventoryItemView> Done);
+public sealed record CraftView(IReadOnlyList<(string Key, string Name, float Progress, float Hours)> Queue, bool Repeat,
+    IReadOnlyList<InventoryItemView> Done)
+{
+    /// <summary>
+    /// The output section's width in cells (<c>CraftBench.OutputWidth</c>).
+    /// </summary>
+    public int OutputWidth { get; init; } = 1;
+    /// <summary>
+    /// The output section's height in cells (<c>CraftBench.OutputHeight</c>).
+    /// </summary>
+    public int OutputHeight { get; init; } = 1;
+    /// <summary>
+    /// The footprint width in cells of the item the queue's front makes (1 with an empty queue).
+    /// </summary>
+    public int FrontWidth { get; init; } = 1;
+    /// <summary>
+    /// The footprint height in cells of the item the queue's front makes (1 with an empty queue).
+    /// </summary>
+    public int FrontHeight { get; init; } = 1;
+}
+
 /// <summary>
 /// Something a bench can craft, with its hours and inputs per item, and whether research and the bench level allow it now.
 /// </summary>
-public sealed record CraftOptionView(string Key, string Name, CraftKind Kind, int Level, float Hours, IReadOnlyList<(string Name, float PerItem)> Inputs, bool Unlocked);
+public sealed record CraftOptionView(string Key, string Name, CraftKind Kind, int Level, float Hours,
+    IReadOnlyList<(string Name, float PerItem)> Inputs, bool Unlocked);
+
 /// <summary>
-/// What a bench's current smith would make of one queued craft (<c>FUN_1402bcf60</c>): <paramref name = "Quality"/> the armour or crossbow quality (5
-/// to 95; -1 for the other kinds); for a weapon <paramref name = "Model"/> the predicted model's name (null for the other kinds),
-/// <paramref name = "ModelChanged"/> when it differs from the queued one and <paramref name = "MaterialCost"/> the weapon's <c>material cost</c>;
-/// <paramref name = "Critical"/> the shown critical chance in percent (-1: no row).
+/// What a bench's current smith would make of one queued craft (<c>FUN_1402bcf60</c>): <paramref name="Quality"/> the armour or crossbow quality (5
+/// to 95; -1 for the other kinds); for a weapon <paramref name="Model"/> the predicted model's name (null for the other kinds),
+/// <paramref name="ModelChanged"/> when it differs from the queued one and <paramref name="MaterialCost"/> the weapon's <c>material cost</c>;
+/// <paramref name="Critical"/> the shown critical chance in percent (-1: no row).
 /// </summary>
 public readonly record struct CraftPrediction(int Quality, string? Model, bool ModelChanged, int MaterialCost, int Critical);
+
 /// <summary>
-/// A crafting bench's current smith (<see cref = "Machine.Smith"/>): his name, his effective level of the bench's stat, the stat multiplier's penalty
+/// A crafting bench's current smith (<see cref="Machine.Smith"/>): his name, his effective level of the bench's stat, the stat multiplier's penalty
 /// in percent (0: none) and the prediction per queued craft.
 /// </summary>
 public sealed record CraftSmithView(string Name, int Skill, int Penalty, IReadOnlyList<CraftPrediction> Entries);
+
 /// <summary>
-/// What a <see cref = "PowerView"/> shows: a consumer's demand and grant, a generator's output and load, a battery's flow and store
+/// What a <see cref="PowerView"/> shows: a consumer's demand and grant, a generator's output and load, a battery's flow and store
 /// (docs/game/buildings-production.md "Power").
 /// </summary>
 public enum PowerKind : byte
@@ -162,7 +190,8 @@ public enum PowerKind : byte
 /// A machine's power as the host shows it: its kind, a consumer's demand and grant, a generator's load, a battery's charge and store, whether it has
 /// fuel, and its <c>power on</c> and <c>gets battery</c> switches.
 /// </summary>
-public readonly record struct PowerView(PowerKind Kind, float Demand, float Granted, float Usage, float Charge, float Store, bool Fueled, bool PowerOn = true, bool GetsBattery = true)
+public readonly record struct PowerView(PowerKind Kind, float Demand, float Granted, float Usage, float Charge, float Store, bool Fueled,
+    bool PowerOn = true, bool GetsBattery = true)
 {
     /// <summary>
     /// A battery's town grid: whether it has one and whether its batteries charged or drained this tick (<see cref="Machine.GridCharging"/>).
@@ -183,21 +212,25 @@ public readonly record struct PowerView(PowerKind Kind, float Demand, float Gran
 /// <c>FUN_140258c20</c> takes them.
 /// </summary>
 public readonly record struct MachineSound(float Efficiency, bool Powered);
+
 /// <summary>
 /// A wind generator as its panel shows it (docs/game/buildings-production.md "Wind generators"): its blades' wind share, the wind speed at the
 /// site (units/s), the blades' operating range (null without a ROTATION_WIND_SPEED part), its rated output (data + research) and whether it is
 /// switched on.
 /// </summary>
 public readonly record struct WindView(float Share, float Speed, (float Min, float Max)? Range, float Rated, bool PowerOn);
+
 /// <summary>
-/// An item furnace's panel (<c>FurnaceBuilding::getGUIData</c> section 0xf): whether it burns (<see cref = "Machine.Burning"/>) and its grid's metal
+/// An item furnace's panel (<c>FurnaceBuilding::getGUIData</c> section 0xf): whether it burns (<see cref="Machine.Burning"/>) and its grid's metal
 /// (<c>Total Metals:</c>).
 /// </summary>
 public readonly record struct FurnaceView(bool Burning, float Metal);
+
 /// <summary>
-/// A machine of a complete player building after a tick (docs/simulation.md "Production"); <see cref = "Site"/> is the building's instance id.
+/// A machine of a complete player building after a tick (docs/simulation.md "Production"); <see cref="Site"/> is the building's instance id.
 /// </summary>
-public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<MachineSlotView> Inputs, MachineSlotView? Output, InventoryView? Storage, FarmView? Farm, byte Status, int Operators, int MaxOperators)
+public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<MachineSlotView> Inputs, MachineSlotView? Output,
+    InventoryView? Storage, FarmView? Farm, byte Status, int Operators, int MaxOperators)
 {
     /// <summary>
     /// A container of a building's interior, open (<see cref="PlayerState.OpenContainer"/>): <see cref="Site"/> is its fixture id; no research,
@@ -314,11 +347,15 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
         InventoryView? storage = m.Storage is { } s ? new InventoryView(s.Width, s.Height, 0, 0,
             Array.AsReadOnly(s.Items.Select((item, index) => new InventoryItemView(index, item.Record, item.Name, "main", item.X, item.Y, item.Width,
                 item.Height, item.Quantity, item.Weight, item.Quality)
-            { Material = item.MaterialId, Colour = item.ColourId, Charge = item.ChargeFraction }).ToArray())) : null;
+            { Material = item.MaterialId, Colour = item.ColourId, Charge = item.ChargeFraction, Rotated = item.Rotated }).ToArray())) : null;
         FarmView? farm = m.Farm is { } f && m.Data.Farm is { } fd
             ? new FarmView(f.Growth, f.Death, f.Harvested, f.Plants.Length, f.Status, m.Yield, m.CropMatch, ProductionSystem.Ripeness(f))
             {
-                PlantGrowth = [.. f.Plants]
+                PlantGrowth = [.. f.Plants],
+                Data = fd,
+                Start = f.Start,
+                FarmerSkill = m.Operators > 0 ? m.FarmerSkillTotal / m.Operators : 1,
+                Watered = m.Inputs.Length == 0 || m.Inputs[0].Level != 0,
             }
             : null;
 
@@ -376,7 +413,14 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
         ? new CraftView([.. c.Queue.Select(j => (j.Option.Key, j.Recipe.Name, Math.Clamp(j.Progress, 0, 1), j.Recipe.Hours))], c.Repeat,
             [.. c.Done.Select((item, index) => new InventoryItemView(index, item.Record, item.Name, "out", 0, 0, item.Width, item.Height,
                 item.Quantity, item.Weight, item.Quality) { Material = item.MaterialId, Colour = item.ColourId })])
+        {
+            OutputWidth = m.Data.Craft?.OutputWidth ?? 1,
+            OutputHeight = m.Data.Craft?.OutputHeight ?? 1,
+            FrontWidth = c.Queue is [var front, ..] ? items.Info(front.Option.Item)?.Width ?? 1 : 1,
+            FrontHeight = c.Queue is [var first, ..] ? items.Info(first.Option.Item)?.Height ?? 1 : 1,
+        }
         : null;
+
     /// <summary>The current fixture/site owner's faction for revision-bound remote commands.</summary>
     public int AuthorityFaction { get; init; } = -1;
     public ulong ContainerSessionId { get; init; }
@@ -384,12 +428,14 @@ public sealed record MachineSnapshot(string Site, string Record, IReadOnlyList<M
     public ulong StorageRevision { get; init; }
     public ulong ControlRevision { get; init; }
     public ulong SiteRevision { get; init; }
+
 }
 
 /// <summary>
 /// A research the player may queue, with its cost and whether the benches can pay it and the bench level allows it.
 /// </summary>
-public readonly record struct ResearchOption(string Id, string Name, string Category, int Level, float Hours, bool Affordable, bool BenchTooLow, float Progress)
+public readonly record struct ResearchOption(string Id, string Name, string Category, int Level, float Hours, bool Affordable, bool BenchTooLow,
+    float Progress)
 {
     /// <summary>
     /// The research's description.
@@ -416,7 +462,8 @@ public readonly record struct ResearchOption(string Id, string Name, string Cate
 /// <summary>
 /// The research state as the host shows it (docs/simulation.md "Production", Research).
 /// </summary>
-public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyList<(string Id, string Name, float Progress)> Queue, float Rate, IReadOnlyList<ResearchOption> Available)
+public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyList<(string Id, string Name, float Progress)> Queue, float Rate,
+    IReadOnlyList<ResearchOption> Available)
 {
     /// <summary>
     /// How many researches have been finished (counting repeats): the host plays the notification when it grows.
@@ -443,5 +490,11 @@ public sealed record ResearchSnapshot(int TechLevel, int BenchLevel, IReadOnlyLi
 /// capacity (+0x48c, +0x490).
 /// </summary>
 public readonly record struct TownPower(float Generated, float Demand, float Charging, float Draining, float Charge, float Capacity);
-/// <summary>A player outpost as the town panel shows it (docs/game/ui-screens.md "Town panel").</summary>
-public sealed record OutpostSnapshot(int Number, string Name, System.Numerics.Vector3 Position, float Radius, int Owner, bool Public, TownPower Power) { public ulong Revision { get; init; } }
+
+/// <summary>
+/// A player outpost as the town panel shows it (docs/game/ui-screens.md "Town panel").
+/// </summary>
+public sealed record OutpostSnapshot(int Number, string Name, System.Numerics.Vector3 Position, float Radius, int Owner, bool Public, TownPower Power)
+{
+    public ulong Revision { get; init; }
+}

@@ -2,6 +2,8 @@ using Meitou.Simulation.Population;
 using Meitou.Data.World;
 using Meitou.Simulation;
 using Meitou.Simulation.Navigation;
+using Meitou.Data.Gameplay.Construction;
+using System.Numerics;
 
 namespace Meitou.Runtime;
 
@@ -16,6 +18,12 @@ public sealed class WorldFoliageOwnership(WorldLevelData levels, PopulationData 
         if (_active is not null && !ReferenceEquals(_active, world))
             throw new InvalidOperationException("Suspend the previous foliage owner before replacement.");
         _active = world;
+        float range = FoliageWorld.OutpostRange(population.Db);
+        var outposts = world.Buildings.Towns.Select(t =>
+            new FoliageTown(new Vector2(t.Position.X, t.Position.Z), range, world.IsPlayerFaction(t.Owner))).ToArray();
+        navigation.SetPlayerTowns(outposts);
+        if (population.ResourceNodes is FoliageResourceNodes resources) resources.SetPlayerTowns(outposts);
+
         var owned = new HashSet<(int X, int Z)>();
         foreach (var site in population.Sites)
             if ((uint)site.Index < (uint)population.SiteFactions.Count && world.IsPlayerFaction(population.SiteFactions[site.Index]))

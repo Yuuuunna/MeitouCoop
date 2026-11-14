@@ -16,7 +16,8 @@ public sealed class NavMeshCache
     /// <summary>
     /// Bump when the builder's output changes for the same input (a new rule in the gatherer or the pruner).
     /// </summary>
-    public const int BuilderVersion = 55;
+    public const int BuilderVersion = 58;
+
     /// <summary>
     /// The layout version of the cache file; a file with another is not read.
     /// </summary>

@@ -60,6 +60,7 @@ public sealed partial class FixtureRegistry
     void EmptyInterior(World world, string building, bool spill)
     {
         _emptiedRevision++;
+        ForgetTownInterior(world, building, spill);
         RemoveSeats(building);
         if (!_byBuilding.TryGetValue(building, out var list)) return;
         foreach (var f in list.Where(f => f.Kind != FixtureKind.Door && f.Id != building).ToArray())

@@ -325,6 +325,10 @@ still rechecks authority before submitting additional bytes.
 
 **Observed** (schema): world field 1055, `ContainerOpener`, belongs to the independent Interaction component. Its recipient projection and
 display-time withdrawal rules are described in [networking](networking.md).
+World fields 1056–1058 add `MapSquads` (Knowledge), `WorkSites` and `FoliageOutposts` (Scene); character fields 2093–2096 add
+`FirstSelected` (Details), `KidnapVictim` (Vitals), `Lean` and `Anchor` (Animation). Existing IDs are unchanged. Command IDs 36, 60, 61,
+79 and 166 encode item rotation, squad autonomy, squad home, machine arrangement and held rotation respectively. The engine/build
+compatibility identity fences peers with older component or command schemas; protocol 21 framing is unchanged.
 
 The receiver and renderer share a monotonic authority-clock estimate. Receive-side sampling consumes
 due animation transitions while content/GPU loading has no renderer callbacks; renderer frame deltas do

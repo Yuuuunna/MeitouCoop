@@ -48,6 +48,10 @@ public static class BuildingSave
     /// </summary>
     const string TownStatePrefix = "Town state ";
     /// <summary>
+    /// Meitou's key on the town instance list for the highest outpost handle container ever given (the original has none).
+    /// </summary>
+    const string TownContainerKey = "meitou town container";
+    /// <summary>
     /// The suffix of a player town's GAMESTATE_TOWN state id.
     /// </summary>
     const string TownStateSuffix = "-S5e";   // the hex of GAMESTATE_TOWN (94)
@@ -56,6 +60,10 @@ public static class BuildingSave
     /// A town without a material of its own uses this one (docs/formats/zones.md "Materials"; the template has none).
     /// </summary>
     const string DefaultTownMaterial = "742-gamedata.base";
+    /// <summary>
+    /// The owner faction id of a building with no faction (the original's <c>nofac</c>, the faction of NO_TOWN).
+    /// </summary>
+    const string NoFaction = "nofac";
 
     // ------------------------------------------------------------------ reading
 
@@ -63,8 +71,82 @@ public static class BuildingSave
     /// Reserves the ids of every <c>-zone&lt;X&gt;.&lt;Y&gt;-INGAME</c> building of the save (generated interiors share the pattern) and reads the player faction's into the world's registry, in zone and list
     /// order. Returns how many sites it made.
     /// </summary>
-    public static int Read(SaveGame save, World world, GameDatabase db, string playerFactionId, int playerIndex)
-        => ReadCore(save, world, db, id => id == playerFactionId ? playerIndex : -1, multiplayer: false);
+    public static int Read(SaveGame save, World world, GameDatabase db, string playerFactionId, int playerIndex, PopulationData? population = null)
+    {
+        var reg = world.Buildings;
+        ReserveIds(save, reg);
+        var states = HeldSave.BuildingStates(save);
+        var idOf = ParentIds(save, states, playerFactionId);
+        var handles = save.BuildHandles();
+        var townOf = ReadTowns(save, world, db, playerFactionId, playerIndex, population);
+        var foreign = ForeignTownHands(save, states, playerFactionId, townOf);
+        int made = 0;
+        foreach (var zone in save.Zones.Values)
+        {
+            if (zone.BuildingList is not { } list) continue;
+
+            foreach (var instance in list.Instances)
+            {
+                if (instance.IsRemoved || IsStaleCopy(save, zone, instance)
+                    || !states.TryGetValue(BuildingKey.Of(zone.Coordinate, instance.Id), out var state)
+                    || !IsPlayerBuilt(instance.Id, state, playerFactionId))
+                    continue;
+
+                if (db.Find(instance.Target) is not { Type: FcsRecordType.Building } record) continue;
+
+                var data = BuildingBuildData.From(record);
+                var materials = new MaterialSlot[data.Materials.Count];
+                for (int k = 0; k < materials.Length; k++)
+                {
+                    var material = data.Materials[k];
+                    materials[k] = new MaterialSlot(material.Item, material.Required)
+                    {
+                        Delivered = state.Floats.GetValueOrDefault($"{k}construction mats")
+                    };
+                }
+
+                float target = data.Target;
+                bool complete = state.Bools.GetValueOrDefault("is complete", true);   // absent means complete
+                string? parent = state.Strings.GetValueOrDefault(MeitouParent) is { Length: > 0 } own
+                    ? own
+                    : state.Bools.GetValueOrDefault("is inside building") && handles.Building(Hand.Read(state, "isInsideBuilding")) is { } building
+                        ? idOf.GetValueOrDefault(building)
+                        : null;
+                float y = state.Floats.TryGetValue("world Y pos", out float absolute) ? absolute : instance.Position.Y;
+                var townHand = Hand.Read(state, "town");
+                int town = townHand.IsNull ? 0 : townOf.GetValueOrDefault((townHand.C, CS: townHand.Cs));
+                bool live = town == 0 && !townHand.IsNull && foreign.TryGetValue((townHand.C, townHand.Cs), out _);
+                reg.Add(new BuildSite
+                {
+                    Id = instance.Id,
+                    Record = data.Id,
+                    Name = data.Name,
+                    Position = new Vector3(instance.Position.X, y, instance.Position.Z),
+                    Rotation = instance.Rotation,
+                    Floor = state.Ints.GetValueOrDefault("floornum"),
+                    Parent = parent,
+                    Town = town,
+                    ForeignTown = live ? townHand : null,
+                    InNoTown = live && foreign[(townHand.C, townHand.Cs)],
+                    Owner = playerIndex,
+                    Materials = materials,
+                    Target = target,
+                    Rate = data.Rate,
+                    Progress = complete ? target : MathF.Min(state.Floats.GetValueOrDefault("construction progress"), target),
+                    Complete = complete,
+                    Paused = state.Bools.GetValueOrDefault("pause"),
+                    Public = state.Bools.GetValueOrDefault("is public day", true),
+                    Destroyed = state.Bools.GetValueOrDefault("destroyed"),
+                });
+                made++;
+            }
+        }
+
+        AttachWalls(world, db);
+
+        // The saved centre and radius stay as saved: the original refits a town only on a placement or dismantle (loadGame has no reassessment).
+        return made;
+    }
 
     /// <summary>
     /// Whether <paramref name="instance"/> is listed outside the zone its position lies in while that zone lists it too. The original lists a
@@ -134,10 +216,12 @@ public static class BuildingSave
     /// The player's outposts: the entries of <c>quick.save</c>'s town list whose GAMESTATE_TOWN is not a nest and is the player faction's, in list order. Returns their numbers by the
     /// handle's C and CS parts (how a building's <c>town</c> handle names them).
     /// </summary>
-    static Dictionary<(int C, int CS), int> ReadTowns(SaveGame save, World world, Func<string, int> ownerOf, bool multiplayer)
+    static Dictionary<(int C, int CS), int> ReadMultiplayerTowns(SaveGame save, World world, Func<string, int> ownerOf, bool multiplayer)
     {
         var map = new Dictionary<(int, int), int>();
         if (save.TownInstanceList is not { } list) return map;
+        world.Buildings.TownContainerFloor = list.Ints.GetValueOrDefault(TownContainerKey);
+        world.Buildings.ReserveTownNumber(list.Ints.GetValueOrDefault("meitou town number"));
         var byId = new Dictionary<string, FcsRecord>(StringComparer.Ordinal);
         foreach (var r in save.Quick.Records) byId[r.StringId] = r;
         var entries = multiplayer ? list.Instances.OrderBy(i => i.States.Count > 0 && byId.TryGetValue(i.States[0], out var s) ? s.Ints.GetValueOrDefault(TownNumberKey) : 0)
@@ -148,12 +232,18 @@ public static class BuildingSave
             if (state.RecordType != FcsRecordType.GamestateTown || state.Bools.GetValueOrDefault("is nest")) continue;
             int owner = ownerOf(state.Strings.GetValueOrDefault("faction", ""));
             if (multiplayer ? !state.Bools.GetValueOrDefault(OutpostKey) : owner < 0) continue;
-            if (owner < 0 || multiplayer && state.Ints.GetValueOrDefault(TownNumberKey) != world.Buildings.Towns.Count + 1)
+            int number = state.Ints.GetValueOrDefault(TownNumberKey);
+            if (owner < 0 || multiplayer && (number <= 0 || world.Buildings.FindTown(number) is not null))
                 throw new InvalidDataException("Invalid outpost identity or owner.");
             string name = state.Name.StartsWith(TownStatePrefix, StringComparison.Ordinal) && state.Name.Length > TownStatePrefix.Length ? state.Name[TownStatePrefix.Length..] : PlayerTown.DefaultName;
-            var town = world.Buildings.AddTown(instance.Position, owner, name);
+            var town = multiplayer ? world.Buildings.RestoreTown(number, instance.Position, owner, name)
+                : world.Buildings.AddTown(instance.Position, owner, name);
             town.SaveInstance = instance.Id;
+            world.Buildings.ImportedTownInstances.Add(instance.Id);
+            if (instance.Target != PlayerTown.Template) town.SaveTemplate = instance.Target;
+            if (state.Strings.GetValueOrDefault("name") is { Length: > 0 } savedName) town.Name = savedName;
             town.Public = state.Bools.GetValueOrDefault("public");
+            town.Override = state.Floats.GetValueOrDefault("override", state.Ints.GetValueOrDefault("override"));
             var hand = Hand.Read(state, "hand");
             if (!hand.IsNull)
             {
@@ -164,18 +254,287 @@ public static class BuildingSave
         return map;
     }
 
-    // ------------------------------------------------------------------ writing
-
     /// <summary>
-    /// Writes the registry into the save: every site's instance and state in its zone file (a zone without a file gets one), and removes the player-built entries the world no longer has (a
-    /// dismantled building). Everything else in the zone files is left as it was. Returns the town handle each player town (by number) was written with.
+    /// The player's outposts from town-instance entries and player-faction level-town states.
     /// </summary>
-    public static IReadOnlyDictionary<int, Hand> Write(SaveGame game, World world, string playerFactionId, ulong seed = 0)
-        => WriteCore(game, world, _ => playerFactionId, state => state.Strings.GetValueOrDefault("owner faction ID") == playerFactionId, seed, multiplayer: false);
+    static Dictionary<(int C, int CS), int> ReadTowns(SaveGame save, World world, GameDatabase db, string playerFactionId, int playerIndex,
+        PopulationData? population)
+    {
+        var byId = new Dictionary<string, FcsRecord>(StringComparer.Ordinal);
+        foreach (var record in save.Quick.Records) byId[record.StringId] = record;
+
+        var byInstance = new Dictionary<string, PlayerTown>(StringComparer.Ordinal);
+
+        if (save.TownInstanceList is { } list)
+            world.Buildings.TownContainerFloor = list.Ints.GetValueOrDefault(TownContainerKey);
+
+        // The original instantiates the towns of the level data first, then the save's list entries (FUN_140373f00), and normalises overlaps in that
+        // order; a level town that also has a list entry is read from the entry, at the level town's place in the order.
+        var read = new HashSet<string>(StringComparer.Ordinal);
+        ReadLevelTowns(save, population, world, db, playerFactionId, playerIndex, byInstance, byId, read);
+        if (save.TownInstanceList is { } instances)
+            foreach (var instance in instances.Instances.Where(i => !read.Contains(i.Id)))
+                ReadTownInstance(instance, byId, save, world, db, playerFactionId, playerIndex, byInstance);
+
+        NormalizeTownOverlap(world);
+        return TownHandles(world);
+    }
 
     /// <summary>
-    /// Removes the player-built buildings of the save that the world no longer has, with their state records and their slots, and a live site's
-    /// entry in a zone other than the one it is written in (<paramref name="live"/> maps each site to that zone, null for a level house's).
+    /// Imports one nonremoved player-owned town after collecting all its runtime states.
+    /// </summary>
+    static void ReadTownInstance(FcsInstance instance, Dictionary<string, FcsRecord> byId, SaveGame save, World world,
+        GameDatabase db, string playerFactionId, int playerIndex, Dictionary<string, PlayerTown> byInstance)
+    {
+        if (instance.IsRemoved) return;
+
+        var states = PlayerTownStates(save, instance, instance.Id, instance.Target, byId, db, playerFactionId);
+        if (states is null) return;
+
+        var town = byInstance.GetValueOrDefault(instance.Id) ?? world.Buildings.AddTown(instance.Position, playerIndex);
+        byInstance[instance.Id] = town;
+        world.Buildings.ImportedTownInstances.Add(instance.Id);
+        if (instance.Target != PlayerTown.Template) town.SaveTemplate = instance.Target;
+        ApplyTownStates(town, instance.Id, instance.Position, states);
+    }
+
+    /// <summary>
+    /// Enumerates town states linked by state id or instance id, without repeating the same record.
+    /// </summary>
+    static IEnumerable<FcsRecord> TownStates(FcsInstance instance, Dictionary<string, FcsRecord> byId, SaveGame save)
+    {
+        var seen = new HashSet<FcsRecord>(ReferenceEqualityComparer.Instance);
+        foreach (var id in instance.States)
+            if (byId.GetValueOrDefault(id) is { RecordType: FcsRecordType.GamestateTown } state && seen.Add(state)) yield return state;
+
+        foreach (var state in save.Towns.Select(town => town.Record).Where(state => state.Strings.GetValueOrDefault("instance") == instance.Id))
+            if (seen.Add(state)) yield return state;
+    }
+
+    /// <summary>
+    /// A town state as the original applies it: the state, whether its owner was the player at that point and the TOWN template's
+    /// <c>is public</c> (what a foreign owner's application leaves <c>public</c> as).
+    /// </summary>
+    readonly record struct AppliedState(FcsRecord Record, bool Player, bool TemplatePublic);
+
+    /// <summary>
+    /// Applies the attached state, then the full runtime states in save order, returning them (with the owner at each) only if the final owner is
+    /// the player. Of the attached states only the LAST listed one applies (<b>Verified</b>, <c>FUN_1400f40e0</c>: the instance keeps its states in
+    /// a map by record type).
+    /// </summary>
+    static List<AppliedState>? PlayerTownStates(SaveGame save, FcsInstance? instance, string instanceId, string? template,
+        Dictionary<string, FcsRecord> byId, GameDatabase? db, string playerFactionId)
+    {
+        var applied = new List<AppliedState>();
+        string? owner = TownFaction(null, template, db, playerFactionId);
+        bool templatePublic = template is not null && db?.Find(template) is { Type: FcsRecordType.Town } record && record.GetBool("is public");
+        var attached = instance?.States.Select(id => byId.GetValueOrDefault(id)).LastOrDefault(state => state is { RecordType: FcsRecordType.GamestateTown });
+        if (attached is not null && !attached.Bools.GetValueOrDefault("is nest"))
+        {
+            owner = TownFaction(attached, template, db, playerFactionId);
+            applied.Add(new AppliedState(attached, owner == playerFactionId, templatePublic));
+        }
+
+        foreach (var town in save.Towns)
+        {
+            if (town.Instance != instanceId || town.IsNest || owner == playerFactionId && !town.Discovered) continue;
+
+            owner = TownFaction(town.Record, template, db, playerFactionId);
+            applied.Add(new AppliedState(town.Record, owner == playerFactionId, templatePublic));
+        }
+
+        return owner == playerFactionId ? applied : null;
+    }
+
+    /// <summary>
+    /// Resolves this state's faction, then the TOWN template's faction reference, otherwise no faction.
+    /// </summary>
+    static string? TownFaction(FcsRecord? state, string? template, GameDatabase? db, string playerFactionId)
+    {
+        string? faction = ResolveFaction(state?.Strings.GetValueOrDefault("faction"), db, playerFactionId);
+        if (faction is not null) return faction;
+
+        var record = template is null ? null : db?.Find(template);
+        string? fallback = record is { Type: FcsRecordType.Town }
+            ? record.GetReferences("faction").FirstOrDefault().TargetStringId
+            : null;
+        return ResolveFaction(fallback, db, playerFactionId);
+    }
+
+    /// <summary>
+    /// The caller's player id is already resolved; other ids must resolve to a FACTION in the game database.
+    /// </summary>
+    static string? ResolveFaction(string? id, GameDatabase? db, string playerFactionId) =>
+        id == playerFactionId || id is not null && db?.Find(id) is { Type: FcsRecordType.Faction } ? id : null;
+
+    /// <summary>
+    /// Imports the level towns in the population's order, using the same ordered state rules as dynamic instances: a level town with an entry in the
+    /// save's town list is read from that entry. The instance ids read are added to <paramref name="read"/>.
+    /// </summary>
+    static void ReadLevelTowns(SaveGame save, PopulationData? population, World world, GameDatabase db, string playerFactionId, int playerIndex,
+        Dictionary<string, PlayerTown> byInstance, Dictionary<string, FcsRecord> byId, HashSet<string> read)
+    {
+        if (population is null) return;
+
+        var linked = save.Towns.Select(town => town.Instance).ToHashSet(StringComparer.Ordinal);
+        foreach (var site in population.Sites)
+        {
+            string instanceId = site.InstanceId;
+            if (save.TownInstanceList?.Instances.FirstOrDefault(instance => instance.Id == instanceId) is { } entry)
+            {
+                read.Add(instanceId);
+                ReadTownInstance(entry, byId, save, world, db, playerFactionId, playerIndex, byInstance);
+                continue;
+            }
+
+            if (!linked.Contains(instanceId)) continue;
+
+            var states = PlayerTownStates(save, null, instanceId, site.Town.Id, byId, db, playerFactionId);
+            if (states is null) continue;
+
+            var town = byInstance.GetValueOrDefault(instanceId) ?? world.Buildings.AddTown(site.Position, playerIndex);
+            byInstance[instanceId] = town;
+            world.Buildings.ImportedTownInstances.Add(instanceId);
+            town.SaveTemplate = site.Record.Id;
+            ApplyTownStates(town, instanceId, site.Position, states);
+        }
+    }
+
+    /// <summary>
+    /// Combines linked town properties in save order, restoring runtime names and keeping the first nonnull handle.
+    /// </summary>
+    static void ApplyTownStates(PlayerTown town, string instanceId, Vector3 position, IEnumerable<AppliedState> states)
+    {
+        town.SaveInstance = instanceId;
+        town.Position = position;
+        foreach (var (state, player, templatePublic) in states)
+        {
+            string name = TownName(state);
+            if (name.Length > 0 && (state.Strings.GetValueOrDefault("name", "").Length > 0 || town.Name == PlayerTown.DefaultName))
+                town.Name = name;
+
+            // FUN_1403715c0 (Verified): `public` is assigned by every application (a missing key is false) and for a foreign owner replaced by the
+            // template's `is public`; `override` is read only for the player's own state and only when present.
+            town.Public = player ? state.Bools.GetValueOrDefault("public") : templatePublic;
+            if (player && state.Floats.TryGetValue("override", out float radius)) town.Override = radius;
+            else if (player && state.Ints.TryGetValue("override", out int oldRadius)) town.Override = oldRadius;   // earlier Meitou builds wrote an integer
+
+            var hand = Hand.Read(state, "hand");
+            if (!hand.IsNull && town.SaveHandle is null) town.SaveHandle = hand;
+        }
+    }
+
+    /// <summary>
+    /// Restores the runtime display name, with a record-label fallback for older Meitou saves.
+    /// </summary>
+    static string TownName(FcsRecord state)
+    {
+        if (state.Strings.GetValueOrDefault("name") is { Length: > 0 } name) return name;
+        if (!state.Name.StartsWith(TownStatePrefix, StringComparison.Ordinal)) return "";
+
+        return state.Name[TownStatePrefix.Length..];
+    }
+
+    /// <summary>
+    /// Removes a player town strictly inside its nearest other player town without changing building handles or town numbers.
+    /// </summary>
+    internal static void NormalizeTownOverlap(World world)
+    {
+        foreach (var current in world.Buildings.Towns.ToList())
+        {
+            if (!world.Buildings.Towns.Contains(current)) continue;
+
+            var other = world.Buildings.Towns
+                .Where(town => town != current)
+                .MinBy(town => DistanceSquaredXz(current.Position, town.Position));
+            if (other is not null && DistanceSquaredXz(current.Position, other.Position) < other.Radius * other.Radius)
+                world.Buildings.RemoveTown(current);
+        }
+    }
+
+    /// <summary>
+    /// Maps surviving saved town container identities to their live outpost numbers.
+    /// </summary>
+    static Dictionary<(int C, int CS), int> TownHandles(World world)
+    {
+        var map = new Dictionary<(int, int), int>();
+        foreach (var town in world.Buildings.Towns)
+            if (town.SaveHandle is { } hand) map.TryAdd((hand.C, hand.Cs), town.Number);
+
+        return map;
+    }
+
+    /// <summary>
+    /// The town handles of the save that name a live town which is no player outpost, each with whether it is NO_TOWN: a handle a non-player
+    /// building state carries (a level town's, or NO_TOWN's, which faction-less buildings across the whole world carry; <b>Observed</b>, 3015 and 177
+    /// building states of the original's save) and the handle of a non-player town state. A player-owned building with one of them was kept in that
+    /// town by the original (it resolves), unlike one whose own outpost is gone (the original saves that as the null handle).
+    /// </summary>
+    static Dictionary<(int C, int CS), bool> ForeignTownHands(SaveGame save, IReadOnlyDictionary<string, FcsRecord> states, string playerFactionId,
+        Dictionary<(int C, int CS), int> townOf, bool multiplayer = false)
+    {
+        // NO_TOWN exists independently of the level buildings loaded into this save (GOG TownNull constructor 0x140934720).
+        var found = new Dictionary<(int C, int CS), bool> { [(Hand.NoTown.C, Hand.NoTown.Cs)] = true };
+        foreach (var state in states.Values)
+        {
+            if (!state.Strings.TryGetValue("owner faction ID", out var owner) || owner == playerFactionId
+                || multiplayer && state.Bools.GetValueOrDefault(ManagedKey)) continue;
+
+            var hand = Hand.Read(state, "town");
+            if (hand.IsNull || townOf.ContainsKey((hand.C, hand.Cs))) continue;
+
+            found[(hand.C, hand.Cs)] = found.GetValueOrDefault((hand.C, hand.Cs)) || owner == NoFaction;
+        }
+
+        foreach (var town in save.Towns)
+        {
+            var hand = town.Handle;
+            if (!hand.IsNull && town.FactionId != playerFactionId && !townOf.ContainsKey((hand.C, hand.Cs))
+                && (!multiplayer || !town.Record.Bools.GetValueOrDefault(OutpostKey))) found.TryAdd((hand.C, hand.Cs), false);
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// The squared horizontal distance between two saved town centres.
+    /// </summary>
+    static float DistanceSquaredXz(Vector3 a, Vector3 b)
+    {
+        float x = a.X - b.X, z = a.Z - b.Z;
+        return x * x + z * z;
+    }
+
+    #endregion
+
+    #region Writing
+
+    /// <summary>
+    /// Writes the registry into the save: every site's instance and state in its zone file (a zone without a file gets one), and removes the
+    /// player-built entries the world no longer has (a dismantled building). Everything else in the zone files is left as it was. Returns the town
+    /// handle each player town (by number) was written with. The game database resolves template ownership when pruning obsolete outposts;
+    /// production callers supply it, with the population system as a fallback.
+    /// </summary>
+    public static IReadOnlyDictionary<int, Hand> Write(SaveGame game, World world, string playerFactionId, ulong seed = 0, GameDatabase? db = null)
+    {
+        var reg = world.Buildings;
+        var live = reg.All.ToDictionary(s => s.Id, s => s.LevelPlacement is null ? s.Zone : (ZoneCoordinate?)null, StringComparer.Ordinal);
+        RemoveDismantled(game, playerFactionId, live);
+        var townHands = WriteTowns(game, world, _ => playerFactionId, seed, multiplayer: false);
+        if (reg.Count == 0) return townHands;
+
+        foreach (var site in reg.All.Where(s => s.LevelPlacement is null))
+            WriteSite(game, site, playerFactionId, seed, site.Town == 0 && site.ForeignTown is { } kept ? kept : townHands.GetValueOrDefault(site.Town, Hand.Null),
+                world.Fixtures, multiplayer: false, world.Walkability);
+
+        WriteParents(game, world);
+        return townHands;
+    }
+
+    /// <summary>
+    /// Removes the player-built buildings of the save that the world no longer has, with their state records (the building's and, listed before it,
+    /// the inventory's: <b>Observed</b>, docs/formats/save.md "Zone files") and their slots, and a live site's entry in a zone other than the one it
+    /// is written in (<paramref name="live"/> maps each site to that zone, null for a level house's).
     /// </summary>
     static void RemoveDismantled(SaveGame game, string playerFactionId, Dictionary<string, ZoneCoordinate?> live)
     {
@@ -189,11 +548,17 @@ public static class BuildingSave
             {
                 if (live.TryGetValue(instance.Id, out var home) && (home is null || home == zone.Coordinate)) continue;
 
-                var state = instance.States.Count > 0 ? byId.GetValueOrDefault(instance.States[0]) : null;
+                var state = instance.States
+                    .Select(id => byId.GetValueOrDefault(id))
+                    .FirstOrDefault(r => r?.RecordType == FcsRecordType.GamestateBuilding);
                 if (!IsPlayerBuilt(instance.Id, state, playerFactionId)) continue;
 
                 list.Instances.Remove(instance);
-                zone.File.Records.Remove(state!);
+                foreach (string id in instance.States)
+                {
+                    if (byId.GetValueOrDefault(id) is { } owned) zone.File.Records.Remove(owned);
+                }
+
                 if (Hand.Read(state!, "handle") is { IsNull: false } h && zone.File.SlotLists.Count > 0)
                     zone.File.SlotLists[0] = [.. zone.File.SlotLists[0].Where(slot => slot != h.I)];
             }
@@ -272,45 +637,15 @@ public static class BuildingSave
         instance.States.Clear();
         instance.States.Add(stateId);
 
-        // The slot: kept while the state has one in this zone, else the next free one of the zone's slot list.
-        if (file.SlotLists.Count == 0) file.SlotLists.Add([]);
-        var hand = Hand.Read(state, "handle");
-        if (hand.IsNull || hand.C != zone.ContainerId)
-        {
-            int slot = Math.Max(file.SlotLists[0].DefaultIfEmpty(0).Max(), file.Records.Where(r => r.RecordType == FcsRecordType.GamestateBuilding)
-                .Select(r => Hand.Read(r, "handle")).Where(h => !h.IsNull && h.C == zone.ContainerId).Select(h => h.I).DefaultIfEmpty(0).Max()) + 1;
-            hand = new Hand((int)FcsRecordType.Building, zone.ContainerId, ContainerSerial, slot, (int)Rng.Mix(Rng.StableHash(site.Id) ^ seed));
-        }
-        if (!file.SlotLists[0].Contains(hand.I)) file.SlotLists[0] = [.. file.SlotLists[0].Append(hand.I).Order()];
-
-        state.Floats["world Y pos"] = site.Position.Y;
-        state.Floats["construction progress"] = site.Progress;
-        for (int i = 0; i < site.Materials.Length; i++) state.Floats[$"{i}construction mats"] = site.Materials[i].Delivered;
-        state.Ints["version"] = StateVersion;
-        state.Ints["flags"] = site.Parent is null ? 1 : 0;   // bit 0: is outside
-        state.Ints["floornum"] = site.Floor;
-        state.Ints["serialised interior"] = 1;
-        hand.Write(state, "handle");
-        town.Write(state, "town");
-        Hand.Null.Write(state, "residents");
-        state.Bools["foliage"] = false;
-        state.Bools["pause"] = site.Paused;
-        state.Bools["is public day"] = site.Public;
-        state.Bools["is complete"] = site.Complete;
-        state.Bools["is inside building"] = site.Parent is not null;
-        state.Bools["destroyed"] = site.Destroyed;
-        state.Strings["squad template"] = "";
-        state.Strings["owner faction ID"] = playerFactionId;
-        state.Strings["residents template"] = "";
-        state.Strings["name"] = site.Name;
+        var hand = WriteSlot(file, zone, state, site, seed);
+        WriteSiteKeys(state, site, playerFactionId, hand, town, fixtures);
         if (multiplayer)
         {
             state.Bools[ManagedKey] = true;
             state.Bools["meitou upgrading"] = site.Upgrading;
             state.Bools["meitou ruined"] = site.Ruined;
         }
-        // Its doors (a finished building has them registered): the same keys as a town building's (docs/game/locks.md "Save keys").
-        fixtures.WriteBuilding(site.Id, state);
+
     }
 
     /// <summary>
@@ -351,6 +686,7 @@ public static class BuildingSave
         state.Ints["serialised interior"] = 1;
         hand.Write(state, "handle");
         town.Write(state, "town");
+        state.Bools.Remove("meitou unresolved town");
         Hand.Null.Write(state, "residents");
         state.Bools["foliage"] = false;
         state.Bools["pause"] = site.Paused;
@@ -368,73 +704,145 @@ public static class BuildingSave
     }
 
     /// <summary>
-    /// Writes the player's outposts into <c>quick.save</c> (docs/formats/save.md "Player outposts"; the original's town-list writer
-    /// <c>FUN_14092a6c0</c> and <c>Town::vfunc_17/85</c>, <b>Verified</b> by code, no sample save has one): an entry of the
-    /// GAMESTATE_TOWN_INSTANCE_LIST (made when the save has none) with id <c>&lt;n&gt;-quick.save-INGAME</c>, target
-    /// <see cref="PlayerTown.Template"/>, the absolute position and a zero quaternion, and its GAMESTATE_TOWN <c>&lt;id&gt;-S5e</c> named "Town state
-    /// &lt;name&gt;". An outpost read from a save keeps its entry, state and handle; a new one gets the next town container. Returns each outpost's
-    /// handle by number, for the buildings' <c>town</c>.
+    /// Writes player outpost placements and their states into quick.save (docs/formats/save.md "Player outposts"). The original has sparse
+    /// instance-linked states and separate full runtime states; Meitou synchronizes live properties across existing non-nest states. Saved
+    /// instances and handles are retained; new outposts receive the next town container. Returns handles for the buildings' town references.
     /// </summary>
     static Dictionary<int, Hand> WriteTowns(SaveGame game, World world, Func<int, string> ownerId, ulong seed, bool multiplayer)
     {
         var hands = new Dictionary<int, Hand>();
         var towns = world.Buildings.Towns;
-        if (towns.Count == 0) return hands;
-
         var quick = game.Quick;
         var byId = new Dictionary<string, FcsRecord>(StringComparer.Ordinal);
         foreach (var r in quick.Records) byId[r.StringId] = r;
-        var list = game.TownInstanceList ?? AddTownInstanceList(game, quick);
-        int container = game.Towns.Select(t => t.Handle).Where(h => !h.IsNull).Select(h => h.C).DefaultIfEmpty(0).Max();
+        RemoveObsoleteTowns(game, world, byId);
+        if (towns.Count == 0)
+        {
+            if (multiplayer && world.Buildings.LastTownNumber > 0)
+                (game.TownInstanceList ?? AddTownInstanceList(game, quick)).Ints["meitou town number"] = world.Buildings.LastTownNumber;
+            return hands;
+        }
+
+        FcsRecord? list = null;
+        int container = Math.Max(world.Buildings.TownContainerFloor, game.Towns.Select(t => t.Handle).Where(h => !h.IsNull).Select(h => h.C).DefaultIfEmpty(0).Max());
         foreach (var town in towns)
         {
+            list ??= game.TownInstanceList ?? AddTownInstanceList(game, quick);
             var instance = town.SaveInstance is { } known ? list.Instances.FirstOrDefault(i => i.Id == known) : null;
-            var state = instance is { States.Count: > 0 } ? byId.GetValueOrDefault(instance.States[0]) : null;
-            if (state is { RecordType: not FcsRecordType.GamestateTown }) state = null;
             if (instance is null)
             {
-                instance = new FcsInstance { Id = QuickId(NextQuick(quick)) };
+                instance = new FcsInstance { Id = town.SaveInstance ?? QuickId(NextQuick(quick)) };
                 list.Instances.Add(instance);
             }
 
+            string id = instance.Id;
+            var states = TownStates(instance, byId, game).Where(state => !state.Bools.GetValueOrDefault("is nest")).ToList();
+            var state = states.FirstOrDefault();
             bool fresh = state is null;
             if (state is null)
             {
                 int n = NextQuick(quick);
-                state = new FcsRecord { Type = (int)FcsRecordType.GamestateTown, Id = n, StringId = instance.Id + TownStateSuffix };
+                state = new FcsRecord { Type = (int)FcsRecordType.GamestateTown, Id = n, StringId = id + TownStateSuffix };
 
                 // With the other town states, before the list (the original's order).
                 int at = quick.Records.IndexOf(list);
                 quick.Records.Insert(at < 0 ? quick.Records.Count : at, state);
                 byId[state.StringId] = state;
                 game.Towns.Add(new SaveTown(state));
+                states.Add(state);
             }
 
-            instance.Target = PlayerTown.Template;
+            // Every player town gets an entry, a level town too (the writer walks the player list, FUN_14092a6c0), with the TOWN it is made from.
+            instance.Target = town.SaveTemplate ?? PlayerTown.Template;
             instance.Position = town.Position;
             instance.Rotation = new Quaternion(0, 0, 0, 0);
             instance.States.Clear();
-            instance.States.Add(state.StringId);
+            instance.States.AddRange(states.Select(linked => linked.StringId));
 
             var hand = town.SaveHandle ?? (Hand.Read(state, "hand") is { IsNull: false } h
                 ? h
-                : new Hand((int)FcsRecordType.Town, ++container, (int)Rng.Mix(Rng.StableHash(instance.Id) ^ seed), 0, 0));
+                : new Hand((int)FcsRecordType.Town, ++container, (int)Rng.Mix(Rng.StableHash(id) ^ seed), 0, 0));
             hands[town.Number] = hand;
+            world.Buildings.ImportedTownInstances.Add(id);
 
-            state.Name = TownStatePrefix + town.Name;
             if (fresh) WriteFreshTownKeys(state);
-
-            state.Bools["public"] = town.Public;   // Town +0x380, the panel's Open to public
-            hand.Write(state, "hand");
-            state.Strings["faction"] = ownerId(town.Owner);
-            if (multiplayer) { state.Bools[OutpostKey] = true; state.Ints[TownNumberKey] = town.Number; }
-            state.Strings["instance"] = instance.Id;
-            var zone = WorldLayout.ZoneOf(town.Position.X, town.Position.Z);
-            state.Ints["zzX0"] = zone.X;
-            state.Ints["zzY0"] = zone.Y;
+            foreach (var linked in states)
+            {
+                WriteTownState(world, town, id, linked, hand, ownerId(town.Owner));
+                if (multiplayer)
+                {
+                    linked.Bools[OutpostKey] = true;
+                    linked.Ints[TownNumberKey] = town.Number;
+                }
+            }
         }
 
+        world.Buildings.TownContainerFloor = container;
+        if (list is not null)
+        {
+            list.Ints[TownContainerKey] = container;
+            if (multiplayer) list.Ints["meitou town number"] = world.Buildings.LastTownNumber;
+        }
         return hands;
+    }
+
+    /// <summary>
+    /// Writes the same live town properties to each linked runtime state so neither load pass can restore stale values.
+    /// </summary>
+    static void WriteTownState(World world, PlayerTown town, string instanceId, FcsRecord state, Hand hand, string playerFactionId)
+    {
+        state.Name = TownStatePrefix + town.Name;
+        state.Strings["name"] = town.Name;
+        state.Bools["public"] = town.Public;   // Town +0x380, the panel's Open to public
+        hand.Write(state, "hand");
+        state.Strings["faction"] = playerFactionId;
+        state.Strings["instance"] = instanceId;
+        state.Ints.Remove("override");
+        state.Floats["override"] = town.Override;
+        if (world.SystemOf<PopulationSystem>() is { } population)
+            state.Ints["plevel"] = population.TownLevel(world, town.Number);
+        var zone = WorldLayout.ZoneOf(town.Position.X, town.Position.Z);
+        state.Ints["zzX0"] = zone.X;
+        state.Ints["zzY0"] = zone.Y;
+    }
+
+    /// <summary>
+    /// Reconciles saved player outposts with the live registry: removes only what was imported as a player town and is gone now, preserving
+    /// foreign towns, nests and player-faction states that were never imported.
+    /// </summary>
+    static void RemoveObsoleteTowns(SaveGame game, World world, Dictionary<string, FcsRecord> byId)
+    {
+        var imported = world.Buildings.ImportedTownInstances;
+        var live = world.Buildings.Towns.Select(town => town.SaveInstance).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        if (game.TownInstanceList is { } list)
+        {
+            foreach (var instance in list.Instances.ToList())
+            {
+                if (live.Contains(instance.Id) || !imported.Contains(instance.Id)) continue;
+
+                list.Instances.Remove(instance);
+                RemoveTownStates(game, TownStates(instance, byId, game).Where(state => !state.Bools.GetValueOrDefault("is nest")).ToList());
+            }
+        }
+
+        foreach (var group in game.Towns.GroupBy(town => town.Instance).ToList())
+        {
+            if (live.Contains(group.Key) || !imported.Contains(group.Key)) continue;
+            if (game.TownInstanceList?.Instances.Any(instance => instance.Id == group.Key) == true) continue;
+
+            RemoveTownStates(game, group.Where(town => !town.IsNest).Select(town => town.Record).ToList());
+        }
+
+        imported.ExceptWith(imported.Where(id => !live.Contains(id)).ToList());
+    }
+
+    /// <summary>
+    /// Removes obsolete town states from both the serialized records and their indexed views.
+    /// </summary>
+    static void RemoveTownStates(SaveGame game, List<FcsRecord> states)
+    {
+        foreach (var state in states) game.Quick.Records.Remove(state);
+        game.Towns.RemoveAll(town => states.Contains(town.Record));
     }
 
     /// <summary>
@@ -451,7 +859,7 @@ public static class BuildingSave
 
         state.Ints["artifacts count"] = 0;
         state.Ints["plevel"] = 0;
-        state.Ints["override"] = 0;
+        state.Floats["override"] = 0;
         state.Strings["building material"] = DefaultTownMaterial;
         state.Strings["replacementTown"] = "";
     }
@@ -534,7 +942,9 @@ public static class BuildingSave
         foreach (var site in reg.All.Where(s => s.LevelPlacement is null))
         {
             if (multiplayer && site.Town != 0 && !townHands.ContainsKey(site.Town)) throw new InvalidDataException("Constructed building has an unknown outpost.");
-            WriteSite(game, site, ownerId(site.Owner), seed, townHands.GetValueOrDefault(site.Town, Hand.Null), world.Fixtures, multiplayer, world.Walkability);
+            WriteSite(game, site, ownerId(site.Owner), seed,
+                site.Town == 0 && site.ForeignTown is { } kept ? kept : townHands.GetValueOrDefault(site.Town, Hand.Null),
+                world.Fixtures, multiplayer, world.Walkability);
         }
 
         // Parents last: they may be sites written above.
@@ -587,7 +997,8 @@ public static class BuildingSave
                     if (states.TryGetValue(BuildingKey.Of(zone.Coordinate, i.Id), out var record))
                         idOf[record] = BuildingRegistry.TryParseId(i.Id, out _, out _) && !record.Bools.GetValueOrDefault("meitou town construction") && (multiplayer ? record.Bools.GetValueOrDefault(ManagedKey) : ownerOf(record.Strings.GetValueOrDefault("owner faction ID", "")) >= 0) ? i.Id : BuildingKey.Of(zone.Coordinate, i.Id);
         var handles = save.BuildHandles();
-        var townOf = ReadTowns(save, world, ownerOf, multiplayer);
+        var townOf = ReadMultiplayerTowns(save, world, ownerOf, multiplayer);
+        var foreign = ForeignTownHands(save, states, "", townOf, multiplayer);
         int made = 0;
         foreach (var zone in save.Zones.Values)
         {
@@ -618,7 +1029,9 @@ public static class BuildingSave
                     : state.Bools.GetValueOrDefault("is inside building") && handles.Building(Hand.Read(state, "isInsideBuilding")) is { } building ? idOf.GetValueOrDefault(building) : null;
                 float y = state.Floats.TryGetValue("world Y pos", out float absolute) ? absolute : instance.Position.Y;
                 var townHand = Hand.Read(state, "town");
-                if (multiplayer && !townHand.IsNull && !townOf.ContainsKey((townHand.C, townHand.Cs)))
+                int town = townHand.IsNull ? 0 : townOf.GetValueOrDefault((townHand.C, townHand.Cs));
+                bool live = town == 0 && !townHand.IsNull && foreign.ContainsKey((townHand.C, townHand.Cs));
+                if (multiplayer && !townHand.IsNull && town == 0 && !live)
                     throw new InvalidDataException("Constructed building names an unknown outpost.");
                 reg.Add(new BuildSite
                 {
@@ -629,7 +1042,9 @@ public static class BuildingSave
                     Rotation = instance.Rotation,
                     Floor = state.Ints.GetValueOrDefault("floornum"),
                     Parent = parent,
-                    Town = townHand.IsNull ? 0 : townOf.GetValueOrDefault((townHand.C, townHand.Cs)),
+                    Town = town,
+                    ForeignTown = live ? townHand : null,
+                    InNoTown = live && foreign[(townHand.C, townHand.Cs)],
                     Owner = owner,
                     Materials = materials,
                     Target = target,
@@ -651,8 +1066,7 @@ public static class BuildingSave
         BuildingBuildData? DataOf(string id) =>
             wallData.TryGetValue(id, out var d) ? d : wallData[id] = db.Find(id) is { Type: FcsRecordType.Building } r ? BuildingBuildData.From(r) : null;
         ConstructionSystem.AttachWalls(reg, DataOf, reg.All.ToList());
-        // Engine choice: towns are reassessed on load (a save may hold a centre that was never moved, as Meitou's before it reassessed).
-        ConstructionSystem.ReassessTowns(world);
+        // The saved centre, radius and foreign-town membership survive until a placement or dismantle reassesses them.
         return made;
     }
 

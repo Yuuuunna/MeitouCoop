@@ -25,7 +25,7 @@ public partial class ProductionTests
     public void MultiplayerAssetRestoreRejectsMissingIdentityOwnershipAndContent(string defect)
     {
         var db = Database(); var data = PersistenceData(db);
-        using var rig = new Rig(db, Constants, [Tank]);
+        using var rig = new Rig(db, Constants, [Tank], town: 0);
         rig.World.Players.SetMembership(PlayerId.Local, PlayerFaction, FactionPermission.All);
         var save = SaveCapture.Capture(rig.World, data, new SaveClock(1, 12, 0));
         var site = rig.World.Buildings.Find(rig.Sites[0])!;

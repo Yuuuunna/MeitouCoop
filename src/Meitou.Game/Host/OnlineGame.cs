@@ -66,6 +66,8 @@ sealed class OnlineGame(GameHost host)
         {
             levels.SetFoliageOwnership(host.Session.HasWorldView
                 ? host.Session.CurrentSnapshot.FoliageOwnedTowns.Select(t => (t.X, t.Z)) : []);
+            if (host.PopData?.ResourceNodes is Data.Gameplay.Construction.FoliageResourceNodes resources)
+                resources.SetPlayerTowns(host.Session.HasWorldView ? host.Session.CurrentSnapshot.FoliageOutposts : []);
             return;
         }
         if (host.SimulationContent?.Levels is { } authority && !ReferenceEquals(levels, authority))

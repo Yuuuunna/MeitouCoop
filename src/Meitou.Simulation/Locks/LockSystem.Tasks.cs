@@ -293,7 +293,7 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
     }
 
     /// <summary>
-    /// The walk to a lock to cut (285) or break (286) it, or to a door to smash (226).
+    /// The walk to a lock to cut (285) or break (286) it, or to a door to smash (226); a prisoner works its cage's lock where it stands.
     /// </summary>
     void StartForce(World world, int slot, Fixture fixture, LockForce force)
     {
@@ -310,6 +310,8 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
         _doorWalkers.Remove(table.IdOf(slot));
         if (force == LockForce.Smash) (walker.Bashing, walker.BashOrdered, walker.BashTime) = (fixture.Id, true, 0);
         else (walker.ForcingLock, walker.Force) = (fixture.Id, force);
+
+        if (walker.IsImprisoned) return;
         MovementSystem.GoToFloor(world, slot, new Vector3(at.X, fixture.Position.Y, at.Y), walker.RunSpeed);
     }
 

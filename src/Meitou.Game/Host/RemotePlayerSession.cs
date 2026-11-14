@@ -336,7 +336,11 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
         PreviousSnapshot = FilterContainerWindow(PreviousSnapshot, opener, session);
         CurrentSnapshot = ProjectRevisions(presented)with
         {
-            Characters = presented.Characters.Select(c => c with { Selected = _selection.Contains(c.Id) }).ToArray(),
+            Characters = presented.Characters.Select(c => c with
+            {
+                Selected = _selection.Contains(c.Id),
+                FirstSelected = _selection.Count > 0 && _selection[0] == c.Id,
+            }).ToArray(),
             Research = faction?.Research ?? ResearchSnapshot.Empty,
             UnlockedBuildings = faction?.UnlockedBuildings ?? new HashSet<string>(),
             PlayerSquads = faction?.Squads ?? [],

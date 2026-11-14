@@ -80,7 +80,8 @@ public sealed class BuildMenu(IReadOnlyList<BuildingBuildData> catalog)
 /// <paramref name="Type"/> the record's name when it differs; <paramref name="Town"/> and <paramref name="Owner"/> are null when it is in no town or
 /// the town gives none; <paramref name="PublicDay"/> / <paramref name="PublicNight"/> are the state's flags; <paramref name="Turret"/> marks a town's
 /// turret building (<c>TownBuilding.Turret</c>); <paramref name="Pieces"/> are the furniture standing in it that a click selects
-/// (<c>TownBuilding.Pieces</c>), none once it is bought or ruined.
+/// (<c>TownBuilding.Pieces</c>), none after it is emptied or ruined; <paramref name="Machine"/> marks a town's building whose record supports
+/// production, research or crafting (<c>ProductionSystem.TownWork</c>).
 /// </summary>
 public sealed record WorldBuildingInfo(
     string Name,
@@ -91,7 +92,8 @@ public sealed record WorldBuildingInfo(
     bool PublicNight = false,
     bool Destroyed = false,
     bool Turret = false,
-    IReadOnlyList<Data.World.TownPiece>? Pieces = null);
+    IReadOnlyList<Data.World.TownPiece>? Pieces = null,
+    bool Machine = false);
 
 /// <summary>
 /// What the game interface needs from the host to run build mode: the catalog, names, the parts of a building, the placement services and the ghost
@@ -135,6 +137,10 @@ public sealed class BuildServices
     /// What the panel shows of a level-data building: its name, type, town, owner faction and public flags.
     /// </summary>
     public Func<BuildingPlacement, WorldBuildingInfo> WorldInfo { get; init; } = p => new(p.BuildingId, null, null, null);
+    /// <summary>
+    /// Immutable production data for a level building or an interior piece; null for a record without machine functionality.
+    /// </summary>
+    public Func<string, MachineData?> Machine { get; init; } = _ => null;
     /// <summary>
     /// Hands the renderer the ghosts to draw this frame (empty: none).
     /// </summary>

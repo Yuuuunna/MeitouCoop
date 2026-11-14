@@ -276,6 +276,7 @@ public static class PlayerCommandRouting
         Construction.BuildOrder c => c.Characters,
         Construction.DismantleOrder c => c.Characters,
         Items.ArrangeInventory c => [c.Character],
+        Items.RotateItem c => [c.Character],
         Items.QuickMoveItem c => c.Into.IsNone ? [c.Character] : [c.Character, c.Into],
         Items.ReadMapItem c => [c.Character],
         OrdersCommand c => c.Characters,
@@ -317,6 +318,7 @@ public static class PlayerCommandRouting
             Production.RepeatCrafts q => q.Site,
             Production.SetMachinePower q => q.Site,
             Production.IncinerateFurnace q => q.Site,
+            Production.ArrangeMachine q => q.Site,
             _ => "",
         }),
         Trading.OpenTrade c => new(CommandFactionSource.Character, Character: c.Customer),
@@ -348,12 +350,13 @@ public static class PlayerCommandRouting
     internal static bool Supports(SimCommand command) => command is
         Production.QueueResearch or Production.CancelResearch or MoveOrder or FollowOrder or StopCommand or SelectCommand
         or Combat.AttackOrder or Combat.ShootAtOrder or Trading.OpenTrade or Trading.BuyItem or Trading.SellItem or Trading.CloseTrade or Trading.ArrangeStock
-        or Items.ArrangeInventory or Items.QuickMoveItem or Items.ReadMapItem or Items.TransferInventoryItem or OrdersCommand or RunSpeedCommand or StandUpCommand or ManoeuvreCommand
+        or Items.ArrangeInventory or Items.RotateItem or Items.QuickMoveItem or Items.ReadMapItem or Items.TransferInventoryItem or OrdersCommand or RunSpeedCommand or StandUpCommand or ManoeuvreCommand
         or Dialogue.AreaArrival or Dialogue.TalkOrder or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
         or NewSquadCommand or RenameSquadCommand or RemoveSquadCommand or MoveToSquadCommand or ReorderSquadCommand or ActiveSquadCommand or DismissCommand
+        or Ai.SetSquadAutonomy or Ai.SetSquadHome
         or RenameFactionCommand or SquadFormationCommand or SquadAiCommand or Items.OpenContainerOrder or Items.CloseContainer
         or Production.PutInMachine or Production.TakeFromMachine or Production.QueueCraft or Production.CancelCraft
-        or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace
+        or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace or Production.ArrangeMachine
         or Production.RemoveJob or Production.MoveJob or Production.AddOrderJob or Production.ProspectOrder
         or Production.OperateOrder or Production.UseTurretOrder or Production.AddJob
         or Construction.BuildOrder or Construction.DismantleOrder or Construction.ConfirmDismantle or Construction.CancelSite
@@ -366,7 +369,7 @@ public static class PlayerCommandRouting
         or Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
         or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
         or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
-        or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld
+        or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld or Items.RotateHeld
         or Items.PickUpItemOrder
         or PointedCommand or InspectCommand or InspectBuildingCommand or ShowInventoryCommand
         or Trading.OpenPlayerTrade or Trading.AcceptPlayerTrade or Trading.RevisePlayerTrade or Trading.ConfirmPlayerTrade or Trading.CancelPlayerTrade;

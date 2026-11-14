@@ -49,7 +49,7 @@ internal static class ShopSave
             ? Shop.ForBuilding(home, terms)
             : null;
         var shop = homeShop ?? new Shop { Terms = terms };
-        ContainerSave.Read(text, shop.Stock, data.Items);
+        ContainerSave.Read(text, shop.Stock, data.Items, data);
         shop.Fills = platoon.Ints.GetValueOrDefault(FillsKey);
 
         // At most one refresh away (engine choice): older Meitou saves pushed it out by the save's clock at each load.
@@ -64,7 +64,7 @@ internal static class ShopSave
     static Shop? Unfilled(string text, Squad squad, PopulationData data)
     {
         var shop = TradeSystem.UnfilledShop(squad, TradeSystem.TemplateRecord(data, squad.TemplateId));
-        if (shop is not null) ContainerSave.Read(text, shop.Stock, data.Items);
+        if (shop is not null) ContainerSave.Read(text, shop.Stock, data.Items, data);
         return shop;
     }
 }

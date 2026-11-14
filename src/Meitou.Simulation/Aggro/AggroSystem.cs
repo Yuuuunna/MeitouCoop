@@ -165,6 +165,12 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     public Dialogue.SquadMemory? Memory { get; set; }
 
     /// <summary>
+    /// Whether a character's dialogue has a sight line (the dialogue system's <see cref="Dialogue.DialogueSystem.HasSightLines"/>, the original's
+    /// Dialogue <c>+0x28</c> flag): a looker without one sets no bandit fight tag (<see cref="BanditFightTag"/>). Null: every looker has one.
+    /// </summary>
+    public Func<World, int, bool>? SightLines { get; set; }
+
+    /// <summary>
     /// Brings the slots and the census up to the table before the looks (<see cref="Sync"/>).
     /// </summary>
     public void Schedule(World world) => Sync(world.Characters);
@@ -697,6 +703,14 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         /// </summary>
         public Dialogue.SquadMemory? Memory;
         /// <summary>
+        /// Whether a character's dialogue has a sight line (<see cref="AggroSystem.SightLines"/>; null: every one has).
+        /// </summary>
+        public Func<World, int, bool>? SightLines;
+        /// <summary>
+        /// The looker's <see cref="SightLines"/> answer once asked: 0 not yet, 1 yes, -1 no.
+        /// </summary>
+        public sbyte LookerSees;
+        /// <summary>
         /// The looker's slot, faction and squad.
         /// </summary>
         public int Self, Faction, Squad;
@@ -987,6 +1001,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
             Relations = Relations,
             World = world,
             Memory = Memory,
+            SightLines = SightLines,
             Self = i,
             Faction = cold.Faction,
             Squad = cold.SquadId,
@@ -1095,7 +1110,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     {
         var b = s.Block;
         b.ThreatList.Clear();
-        b.Enemies = b.Neutrals = b.Allies = b.AlliesDown = 0;
+        b.Enemies = b.CagedEnemies = b.Neutrals = b.Allies = b.AlliesDown = 0;
         b.ThreatToMe = b.ThreatToAllies = 0;
         b.Faded = false;
         var table = s.Table;
@@ -1138,7 +1153,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     {
         var b = s.Block;
         b.ThreatList.Clear();
-        b.Enemies = b.Neutrals = b.Allies = b.AlliesDown = 0;
+        b.Enemies = b.CagedEnemies = b.Neutrals = b.Allies = b.AlliesDown = 0;
         b.ThreatToMe = b.ThreatToAllies = 0;
         b.Faded = true;
         var table = s.Table;
@@ -1388,6 +1403,21 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     #region Sensing one character
 
     /// <summary>
+    /// The sight ray of the spot meter (<c>FUN_1408533a0</c>, <b>Verified</b> literals): it starts this far over the looker's feet.
+    /// </summary>
+    const float SightRayFrom = 18;
+
+    /// <summary>
+    /// The sight ray ends this far over the target's feet (half of <see cref="SightRayFrom"/>).
+    /// </summary>
+    const float SightRayTo = 9;
+
+    /// <summary>
+    /// A hit of the sight ray nearer than this to the target does not block it.
+    /// </summary>
+    const float SightRaySlack = 2;
+
+    /// <summary>
     /// Whether the looker senses <paramref name="slot"/> now (<c>FUN_1408593d0</c>: seen by <c>FUN_140857b10</c>, else heard by
     /// <c>FUN_140857500</c>). A sneaking target of another side fills the spot meters of a looker that keeps them (<see cref="Scan.Meters"/>,
     /// exposing the sneaker), and counts as seen in view only once its meter was full before this look, or when it is the looker's own fight target
@@ -1403,6 +1433,8 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         if (sneaking && c.Faction != s.Faction && !(s.Player && c.IsPlayer))
         {
             float v = s.Sight.Sees(s.Self, slot, s.Eye, other.Position, s.Outdoor, stealth);
+            if (v > 0 && !ClearSight(ref s, other.Position)) v = 0;
+
             bool full = SpotOf(s.Spots, slot, other.Generation) > 1;
 
             if (s.Meters)
@@ -1435,6 +1467,21 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         }
 
         return seen || heard;
+    }
+
+    /// <summary>
+    /// Whether nothing solid stands between the looker and a sneaker at <paramref name="target"/> (the spot meter's line of sight,
+    /// <c>FUN_140856cb0</c> calling <c>FUN_1408533a0</c>): the terrain and the buildings' collision (walls, floors, stairs, furniture and roofs;
+    /// not doors or passable parts, <see cref="SolidHits"/>) on the ray from <see cref="SightRayFrom"/> over the looker's feet to
+    /// <see cref="SightRayTo"/> over the target's, a hit within <see cref="SightRaySlack"/> of the target not counting.
+    /// </summary>
+    static bool ClearSight(ref Scan s, Vector3 target)
+    {
+        var from = s.Eye + new Vector3(0, SightRayFrom, 0);
+        var seg = target + new Vector3(0, SightRayTo, 0) - from;
+        float hit = SolidHits.Hit(s.World.Walkability, s.Fights?.Buildings, from, seg, RangedTuning.TerrainStep, out _);
+
+        return hit < 0 || hit * seg.Length() >= Vector3.Distance(s.Eye, target) - SightRaySlack;
     }
 
     /// <summary>
@@ -1514,22 +1561,32 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     /// <summary>
     /// The sight pass's squad-memory tag (<c>FUN_140859680</c> ending in <c>FUN_1406744a0(looker, target, 4)</c>, <b>Verified</b>; "event 4" in the
     /// swarm notes is the memory tag TEMP_ENEMY, not a dialogue event): a sensed character that is no ally and not down or an animal, while the
-    /// looker or it is in combat mode or it has a pending crime, outside every town, with a bandit (NPC class 8) as looker or target, is tagged
-    /// TEMP_ENEMY by the looker's squad (<c>FUN_1406744a0</c> skips an allied faction and one the looker regards as friendly: the ALLY tag). The
-    /// original's gates on the looker's view flag (<c>+0x1a9</c>) and its sleeping are treated as open (engine choice, as the assault hooks above).
+    /// looker or it is in combat mode or it has a pending crime, with no status town (<see cref="CharacterCold.StatusTown"/>, the original's status
+    /// <c>+0x88</c>: a town entered holds out to 1.5 x its radius) and outside every town's radius, with a bandit (NPC class 8) as looker or target,
+    /// is tagged TEMP_ENEMY by the looker's squad (<c>FUN_1406744a0</c> skips an allied faction and one the looker regards as friendly: the ALLY
+    /// tag). The looker must be free (slave state 0), not an escaped prisoner and without a pending crime of its own (<b>Verified</b>). Only a
+    /// looker whose dialogue has a sight line tags (<see cref="SightLines"/>: the original's sight pass does nothing else while its Dialogue
+    /// <c>+0x28</c> flag is clear). The view gate is <see cref="HookRuns"/>'s; the looker's sleeping is treated as open (engine choice).
     /// </summary>
     static bool BanditFightTag(ref Scan s, in SenseEntry e, CharacterCold c, Vector3 at)
     {
-        if (s.Cold is not { } me || (e.Tags & (SenseTag.Ally | SenseTag.Ko)) != 0 || c.Fighter?.IsAnimal == true || me.SlaveState == 1
-            || me.IsImprisoned)
+        if (s.Cold is not { } me || (e.Tags & (SenseTag.Ally | SenseTag.Ko)) != 0 || c.Fighter?.IsAnimal == true || me.SlaveState != 0
+            || me.Escaped || me.Pending is not null || me.IsImprisoned)
         {
             return false;
         }
 
         if (!(me.InCombat || c.InCombat || c.Pending is not null)) return false;
         if (me.NpcClass != FundamentalType.Bandit && c.NpcClass != FundamentalType.Bandit) return false;
+        if (s.SightLines is { } lines)
+        {
+            if (s.LookerSees == 0) s.LookerSees = lines(s.World, s.Self) ? (sbyte)1 : (sbyte)-1;
+            if (s.LookerSees < 0) return false;
+        }
 
-        return s.Towns is { } towns && AiSystem.TownAt(towns, s.World, at).IsNone;
+        // Inside a town's radius the status town is always set; the radius test also covers a status town not yet written (the arrest system's
+        // pass after a load or a spawn) and a world that keeps none (no Crime part).
+        return c.StatusTown.IsNone && s.Towns is { } towns && AiSystem.TownAt(towns, s.World, at).IsNone;
     }
 
     /// <summary>
@@ -1657,12 +1714,17 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
 
     /// <summary>
     /// The counts of the pass (<c>FUN_1408593d0</c>): an entry tagged ENEMY whose character is not down, dead or carried adds to <c>numEnemies</c>,
-    /// one tagged NEUTRAL to <c>numNeutrals</c>.
+    /// one tagged NEUTRAL to <c>numNeutrals</c>. The enemies in a cage are counted apart as well (<see cref="SenseBlock.CagedEnemies"/>).
     /// </summary>
     static void Count(ref Scan s, in SenseEntry e, CharacterCold c)
     {
         if (CharacterFacts.Down(c) || c.Medical is { Dead: true }) return;
-        if ((e.Tags & SenseTag.Enemy) != 0) s.Block.Enemies++;
+
+        if ((e.Tags & SenseTag.Enemy) != 0)
+        {
+            s.Block.Enemies++;
+            if (c.IsImprisoned) s.Block.CagedEnemies++;
+        }
         else if ((e.Tags & SenseTag.Neutral) != 0) s.Block.Neutrals++;
     }
 
