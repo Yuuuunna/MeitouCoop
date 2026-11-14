@@ -110,7 +110,7 @@ internal static class GameHoursCountdownCodec
         writer.Write(baseGameHours);
         foreach (var line in value)
         {
-            if (line.Faction is null || line.Crimes is null || !double.IsFinite(line.HoursLeft))
+            if (line.Faction is null || line.Crimes is null || !ValidBountyHours(line.HoursLeft))
                 throw new InvalidDataException("Invalid bounty line values.");
             WriteBoundedString(writer, line.Faction, 1024);
             writer.Write(line.Amount);
@@ -149,7 +149,7 @@ internal static class GameHoursCountdownCodec
                 string crimes = ReadBoundedString(reader, 4096);
                 double hoursLeft = reader.ReadDouble();
                 byte local = reader.ReadByte();
-                if (local > 1 || !double.IsFinite(hoursLeft))
+                if (local > 1 || !ValidBountyHours(hoursLeft))
                     throw new InvalidDataException("Invalid bounty line values.");
                 lines[i] = new BountyLine(faction, amount, crimes, hoursLeft, local == 1);
             }
@@ -170,6 +170,7 @@ internal static class GameHoursCountdownCodec
 
     public static IReadOnlyList<BountyLine> ProjectBounties((double BaseGameHours, BountyLine[]? Values) terms, double currentGameHours)
     {
+        if (!double.IsFinite(currentGameHours)) throw new InvalidDataException("Invalid bounty clock.");
         if (terms.Values is null)
             return null!;
         if (terms.Values.Length == 0)
@@ -181,8 +182,8 @@ internal static class GameHoursCountdownCodec
         for (int i = 0; i < projected.Length; i++)
         {
             double hoursLeft = terms.Values[i].HoursLeft - elapsed;
-            if (!double.IsFinite(hoursLeft))
-                throw new InvalidDataException("Non-finite projected bounty hours.");
+            if (!ValidBountyHours(hoursLeft))
+                throw new InvalidDataException("Invalid projected bounty hours.");
             projected[i] = terms.Values[i] with
             {
                 HoursLeft = hoursLeft
@@ -191,6 +192,11 @@ internal static class GameHoursCountdownCodec
 
         return projected;
     }
+
+    /// <summary>
+    /// Permanent bounties use positive infinity (CrimeTable.LifetimeHours); NaN and negative infinity are never valid countdowns.
+    /// </summary>
+    static bool ValidBountyHours(double hours) => double.IsFinite(hours) || double.IsPositiveInfinity(hours);
 
     static void WriteBoundedString(BinaryWriter writer, string value, int maxBytes)
     {

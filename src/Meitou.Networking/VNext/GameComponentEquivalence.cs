@@ -59,6 +59,11 @@ internal static class GameComponentEquivalence
             if (a.Faction != b.Faction || a.Amount != b.Amount || a.Crimes != b.Crimes || a.Local != b.Local)
                 return false;
             double projected = elapsed == 0.0 ? a.HoursLeft : a.HoursLeft - elapsed;
+            if (double.IsPositiveInfinity(projected) || double.IsPositiveInfinity(b.HoursLeft))
+            {
+                if (projected != b.HoursLeft) return false;
+                continue;
+            }
             if ((projected > 0.0) != (b.HoursLeft > 0.0) || (int)projected != (int)b.HoursLeft || Math.Abs(projected - b.HoursLeft) > 1e-4)
                 return false;
         }

@@ -5,9 +5,11 @@
 `a69c6e9b07e58c9d078f084459aaca6beb250f5c`（提交时间 2026-11-14 16:56:10 UTC）。
 
 复核纳入关系：`git merge-base --is-ancestor a69c6e9b07e58c9d078f084459aaca6beb250f5c HEAD`。
+Coop 主分支基线为 `d71b61ef466c18a2d1f90783b2223a6af8a1e8f3`；其纳入关系用
+`git merge-base --is-ancestor d71b61ef466c18a2d1f90783b2223a6af8a1e8f3 HEAD` 核对。
 
 **Observed**（当前实现）：客户端与服务端须匹配构建身份
-`meitou-upstream-a69c6e9b-authority-2`；传输 framing 仍为 protocol 21。新增命令与快照字段见
+`meitou-upstream-a69c6e9b-authority-3`；传输 framing 仍为 protocol 21。新增命令与快照字段见
 [网络契约](networking.md)，编码、身份检查和验收门禁见[传输契约](networking-next.md)。
 
 服务端 `WorkSites` 为首次自然矿点、城镇及室内机台提供可信目标和版本；目录查询不启动生产。
@@ -24,15 +26,16 @@
 |---|---|
 | Solution 默认 Release 构建 | 0 警告，0 错误 |
 | Release Metal 条件编译（`MeitouMetal=true`） | 0 警告，0 错误 |
-| 完整既有套件，不筛选 Slow/Bench | 1641 总计，1412 通过，0 失败，0 错误，229 跳过，0 未运行 |
+| 完整既有套件，不筛选 Slow/Bench | 1672 总计，1442 通过，0 失败，0 错误，230 跳过，0 未运行 |
 | 其中 `ProductionTests` | 82 通过，10 跳过 |
 | 其中 `PlayerTownImportTests` | 46 通过 |
 
 完整套件运行 `tests/Meitou.Tests/bin/Release/net11.0/Meitou.Tests.dll -parallel none -maxThreads 1`。
-构建通过 SDK 的 MSBuild 入口执行，`Configuration=Release`、`UseSharedCompilation=false`；Metal 检查另加 `MeitouMetal=true`。
+构建通过 SDK 的 MSBuild 入口执行，`Configuration=Release`、`UseSharedCompilation=false`；Metal 检查另加 `MeitouMetal=true`，
+并设置 `AVALONIA_TELEMETRY_OPTOUT=1` 关闭依赖的构建遥测。
 同步并适配上游及仓库已有测试；未额外新建测试用例。
 
-229 项跳过按实际测试原因归类：149 项需要 Kenshi 安装，51 项需要 Windows 原生 QUIC 或受信原生构建，
+230 项跳过按实际测试原因归类：149 项需要 Kenshi 安装，52 项需要 Windows 原生 QUIC 或受信原生构建，
 23 项需要 Vulkan 设备，3 项需要特定原始存档，另各 1 项需要 Debug 配置、macOS、Windows 固定哈希环境。
 这些条件未被修改为强行通过；测试保持原有断言与跳过条件。
 

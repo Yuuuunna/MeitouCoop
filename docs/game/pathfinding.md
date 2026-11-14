@@ -10,7 +10,7 @@ our DotRecast builder (`Meitou.Simulation.Navigation`), not proprietary Havok SD
 Zone4608,64² grid; exterior UID=(Z<<8)|X, interiors>=0x10000 with unknown composition.
 **Observed** face key upper10 bits instance, lower22 face. Floating origin keeps Havok small.
 NavMeshMain owns mutation/messages, sleeps10ms idle; generator sleeps100ms and dispatches queued
-full/partial/interior/stitch jobs. The NavMeshMain thread (`FUN_1403af0f0`, **Verified**) steps `FUN_1403ae490` in a loop with the flush-to-zero bit set and calls Sleep(10) only when a step found nothing to do. Meitou's `NavMeshService` / `PathService` block on a `BlockingCollection` and wake at once: an engine choice (up to ~10 ms less latency), not copied. 3x3 active-zone loads and runtime stitching observed in logs.
+full/partial/interior/stitch jobs. The NavMeshMain thread (`FUN_1403af0f0`, **Verified**) steps `FUN_1403ae490` in a loop with the flush-to-zero bit set and calls Sleep(10) only when a step found nothing to do. Meitou's `NavMeshService` blocks on a `BlockingCollection`; `PathService` uses a signaled coalescing queue ([scheduling](../simulation.md#threading)). Both wake on work rather than sleeping: an engine choice (up to ~10 ms less idle wake latency), not copied. 3x3 active-zone loads and runtime stitching observed in logs.
 
 **Verified** navtiles:3995 Havok tagfiles, magic1E0DB0CA CEFA11D0, SDK hk_2014.2.0-r1,
 hkRootLevelContainer; hkaiNavMesh faces16bytes/edges20, graph/streaming/mediator/static-tree objects.
@@ -641,12 +641,19 @@ building footprints, 17,085 feature rectangles, sampled in 1.2 s): across Rebirt
 inside a feature fell 25 → 3 of ~360 (length 5,817 → 5,594), north to south past the statue (-47500,-58500 → -47500,-53500) 89 → 0 (5,318 → 6,054); at the
 Hub, past its cliff blocks (-52800,3000 → -51700,4800) 18 → 0 (3,764 → 3,775), (-53200,4500 → -51200,3400) 3 → 0. The navmesh part ends inside loaded zones, the rest is provisional and
 re-asked; its zones within `Lookahead` load early. **Observed** (source review, `MovementSystem.Reroute/Splice`): reaching a non-waiting provisional part (`Move` → `Reroute` → `AskSplice`) replaces the route head through an existing waypoint up to `SpliceReach` (4000) along the route. Authoritative `NavigationWaiting` conservatively re-queries the whole goal and never requests a splice. Walkers retain the old route while the answer is pending; failed or non-joining answers request the whole goal again, as do blocked walkers. Waiting answers replace the route with only their verified prefix, never a saved splice tail. Runtime publication (`WorldNavigation` → `InvalidateNavigation`) hard-invalidates affected paths and fences old answers by default, as does `RepathCommand`. Only a trusted publication explicitly marked `onlyAddedZones: true` may retain an old route for splice; rebuilds, removals and overlay changes remain hard invalidations. Provisional-route `Reroute` still splices locally. Active splice metadata and the submitted-splice rejection high-water mark are hashed; active state clears on replacement, stop, waiting, failure or invalidation, while the high-water mark prevents cancelled seam answers becoming whole-goal routes. Entity generations reject answers after slot reuse. A goal in a loaded zone with no navmesh path is a long route too when its zone is
-in another block of side-by-side loaded zones than the walker's (two groups of walkers far apart); within one block, the navmesh's
-nearest reachable point and a straight provisional tail (the terrain search, under one lock for every path thread, is not run there;
-a way round through an unloaded zone within one block is not found). **Observed**: Hub→(-36000,-6000) and Hub→Squin arrive; "6 dudes"
+in another block of side-by-side loaded zones than the walker's (two groups of walkers far apart). Within one loaded block,
+fallback-enabled navigation appends a straight provisional tail from the navmesh's nearest reachable point without a terrain search.
+Authoritative navigation (`AllowUnloadedFallback = false`) checks the long route for unloaded crossings, otherwise keeping only the mesh approach below.
+**Observed**: Hub→(-36000,-6000) and Hub→Squin arrive; "6 dudes"
 save, scratch harness with the host's zone loading: Fog Islands (-80620,-24171) → the squad at (-31620,11420), 60.5k units, arrives
 (17,506 ticks); before, it walked to the nearest reachable point and stopped on a cliff 10.6k short.
-When a door shut for paths at run time (`NavDoors`: its building's doors all locked) turns the search back and the way with every door open crosses
+
+**Verified** (`WorkApproachTests`): authoritative navigation retains the mesh-only approach to an unreachable goal in a loaded block;
+it appends no straight tail into the obstacle. A route crossing unloaded zones still waits with only its verified prefix usable.
+**Observed** (installed Rebirth, headless query): from `(-47886.637,947.0159,-56908.676)` to the quarry at
+`(-45303.367,1115.6508,-56678.977)`, exact routing fails but 39 mesh points reach its working edge. Rejecting that approach
+left gathered slaves indoors; [population evidence](factions-squads-towns.md#rebirth-slave-population).
+In fallback-enabled navigation, when a door shut for paths at run time (`NavDoors`: its building's doors all locked) turns the search back and the way with every door open crosses
 it, the tail goes first to the point of that door's polygons nearest the reachable end (`NavQuery.ClosedDoorOnTheWay`), so the walker meets the leaf
 and the lock stops it ([doors](../simulation.md#cages-beds-and-locks)); a straight tail can pass beside a gate's post, out of the leaf's reach.
 Engine choice: **Observed** (original 1.0.68, issue #560's save with Universal Wasteland Expansion, a move order to the ramp past the Tower of
@@ -657,9 +664,9 @@ units when no road path is active, with w from the character's faction `road pre
 after over 16 navmesh failures it falls back to the road route ("trying road network"). Nameless has 0.3, so player squads take roads too.
 Ours: the long route asks `RoadNetwork.Route` first (`NavAgent.RoadPreference`, `CharacterCold.RoadPreference`, kept on recruit/dismiss);
 when taken, the legs to and from the road are terrain-grid routes (engine choice) and the navmesh part reaches at most `RoadHandover`
-(1500) along it, so bends are not cut. Not built: the road try for a trip over 1000 within one loaded block (Meitou: navmesh only) and the road fallback after 16 navmesh
-failures (Meitou: the nearest reachable point and a straight tail). Both would send every such walker's request through `RoadNetwork.Route` on the path threads; left out until a
-measurement shows the cost, since most in-town trips exceed 1000 units.
+(1500) along it, so bends are not cut. The original's road try before navmesh for trips over 1000 and its fallback after 16 navmesh
+failures are not implemented as distance/failure-count triggers. Meitou first tries the loaded navmesh and chooses its long-route fallback from
+loaded-zone connectivity and authority settings as described above.
 **Observed** (scratch harness, nothing loaded): Hub→Squin 17657 straight walks 25522 at 0.3 (99 % within 400 of a road; 43 % at 0);
 Hub→Stack 34054; Squin→Admag at 0.8 walks 132184 for 26834 straight (short road `length` values, as off screen).
 Destroyed-part rules (**Verified**, `FUN_14055f6e0` l.144-176): a stairs part with no `destroyed mesh` is dropped. A non-stairs part with `building floor` != 0 and no `destroyed mesh` keeps its

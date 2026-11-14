@@ -85,7 +85,7 @@ A finished one with doors also gets the door keys of [locks](../game/locks.md#sa
 
 **Town machines**: current native storage and read-only legacy CAMERA migration are described under [zone files](#zone-files).
 
-**Rock machines** (Meitou `Saving/RockMachineSave`, #596): a worked rock (a natural site, [rocks](../game/buildings-production.md#resources)) has no zone state, so its machine is Meitou-only keys on CAMERA: string `meitou rock<i>` (the natural site id), bool `meitou rock<i> own` (claimed by the player's faction), int `meitou rock<i> town` (player town number, absent: none), and the town machines' `st`, `out`, `outn`, `in<k>`, `lv<k>`. Read back before the first tick; the machine waits for the foliage to place its rock again. An id naming no rock BUILDING is dropped.
+**Rock machines** (Meitou `Saving/RockMachineSave`, #596): a worked rock (a natural site, [rocks](../game/buildings-production.md#resources)) uses Meitou-only machine keys on CAMERA: string `meitou rock<i>` (the natural site id), bool `meitou rock<i> own` (claimed by the player's faction), int `meitou rock<i> town` (player town number, absent: none), and the town machines' `st`, `out`, `outn`, `in<k>`, `lv<k>`. Read back before the first tick; work waits for the resource source to confirm the generated or level-placed rock again. An id naming no rock BUILDING is dropped.
 
 **Observed** (Coop source): `NaturalClaimsSave` records actual owners by stable faction ID and restores them before rock machines;
 those claims take precedence over the legacy `own` bool. A restored machine retains ore, progress, owner and town while its foliage
@@ -567,6 +567,13 @@ Meitou (`Saving/SlaveSave`) reads and writes `slavestate`, `ssct` and the `shave
 [processing](../game/ai-tasks.md#slave-work-shout-and-capture); all 32 NPC slaves of the Rebirth save have it set), and the owner as `meitou slave owner` (FACTION string id). It reads a CHARACTER `slaver` handle: once that character is
 in the world, its faction is the owner when the save has no owner key, and its squad is the master (`CharacterCold.SlaveMaster`, `CaptiveSystem.RestoreSlavers`, every 20 ticks);
 a squad handle is not mapped. The read keys are written back unchanged until the slave is freed or handed to another master, then as the null handle. `CrimeSave` reads and writes `tn` (`CharacterCold.Freed`, written always).
+
+**Observed** (source: `SlaveSave.Write` / `Read`; dedicated checkpoint `c5da30a1`, 2026-11-14):
+freshly generated Rebirth slaves retain their owner faction but all 36 have null `slaver` handles.
+The writer does not serialize `SlaveMaster`; therefore these records cannot restore the runtime master-squad association.
+`SlaveSave` and `CaptiveSystem.Slavers` are unchanged relative to upstream `a57c4875e` (source comparison, 2026-11-14);
+this limitation is shared with upstream, not specific to the multiplayer fork.
+Whether this caused a particular live slave's failure to work requires evidence of a reload and its current AI state.
 
 Carry links (**Observed**, decompile: `FUN_1406280a0` writes, `FUN_140627b30` reads): the character state record has a bool `carrying` (true on the carrier) and a handle `carrying`
 (the partner, null when none), both always written. The reader links them when the partner resolves, else keeps the handle and links it later from the per-frame `FUN_140797ec0`

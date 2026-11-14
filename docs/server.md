@@ -4,6 +4,34 @@ Engine extension. `Meitou.Server` provides account services, a shared world loop
 handling, creation and invitation endpoints. The executable and configuration/account CLI support experimental
 real-machine sessions; this does not establish complete multiplayer acceptance.
 
+## Content deployment
+
+**Observed** (source review: `GameInstall`, `HeadlessWorld`, `WorldContent`, `GameLanguage`, `OgreScriptResources`):
+the built-in dedicated server reads content directly, without Steam login/client APIs or launching Kenshi.
+A conservative content copy keeps `data/` (base-game DDS omission checked below), `resources.cfg`,
+`settings.cfg`, `locale/` and enabled mod folders, preserving relative paths. Headless simulation reads
+terrain, collision, meshes, skeletons,
+animation and particle definitions; database files alone are insufficient. Language settings and locale files
+preserve the selected translation and resource overlay ([localisation](formats/localisation.md)).
+Workshop mods can retain the `steamapps/common/<install>` / `steamapps/workshop/content/233860/<id>` layout,
+or be copied whole to `mods/<name>/<name>.mod`; keep the enabled order in `data/mods.cfg` (or `ModsCfg`).
+Discovery is filesystem-only; see [mod lookup](formats/overview.md#load-order).
+**Observed** (2026-11-07, local Steam installation; recursive sum of file lengths): `data/`, `locale/`
+and the two root configs total 12,117,459,749 bytes (11.29 GiB), excluding mods; `data/` accounts for
+11,993,191,822 bytes, including 7,968,057,984 bytes (7.42 GiB) of DDS files. These are uncompressed
+file sizes, not archive sizes.
+**Verified** (2026-11-07, existing `HeadlessContentTests.InstalledWorldLoadsAndTicksWithoutAnyRenderingAssembly`
+and `InstalledCreationAndReconnectKeepAuthorizedViewsAcrossTwentyPublications`, Release, 2 passed / 0 skipped):
+an isolated copy with all 1,907 DDS files omitted and no enabled mods loads, prepares navigation, ticks,
+places construction, creates characters, restores checkpoints and reconnects over TLS. The copy has zero DDS,
+13,410 files / 4,149,401,765 bytes (3.86 GiB); core database/mod-list SHA-256 values match the full install.
+The copied heightmap timestamp was changed to invalidate navigation/foliage caches. Keep TIFF height,
+PNG biome/overlay and TGA region maps; these supply gameplay inputs, not just appearance.
+**Observed** (`ServerCompatibility.CodeEvidence` / `CreateHello`): trusted code mods hash every file in their
+folder, and `GameplayAssets` explicitly hashes listed files. DDS exclusion must preserve these contracts;
+this check supports stripping base-game DDS, not arbitrary mod folders or explicitly fingerprinted DDS.
+**Unknown:** the smallest safe subset, whole-world/mod coverage and VPS acceptance.
+
 ## Dedicated executable
 
 **Verified** (2026-10-31, published win-x64 executables: TLS account creation/entry, GPU screenshot and graceful save): `Meitou.Server --config server.json`
@@ -130,6 +158,14 @@ streams/datagrams with bounded application queues; current limits and framing ar
 [networking-next](networking-next.md#protocol-and-transport-boundaries). Source review does not establish
 VPS capacity, accepted-throughput targets or graphical gameplay acceptance; see
 [networking acceptance](networking-next.md#acceptance-gates-requirements-not-measured-achievements).
+
+**Observed** (source): native QUIC shutdown with zero transport status and zero application error
+ends a peer session without logging a failure or incrementing `FailedConnections`. Reads unwrap channel
+completion errors, and pending sends retain the same shutdown reason. Nonzero transport/application errors,
+malformed frames and queue failures still reach failure diagnostics; session cleanup runs on either path.
+
+**Observed** (source): peer failures include UTC and a process-local peer ID. Presentation-event diagnostics are specified in
+[networking-next](networking-next.md#game-connection-integration).
 
 Admission messages have a monotonic connection-local sequence, private roles/qualifications and command
 high-water. Busy durable transactions expose no speculative roles/qualifications. Entry names an owned

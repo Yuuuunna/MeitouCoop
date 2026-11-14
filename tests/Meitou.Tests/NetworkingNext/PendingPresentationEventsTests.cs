@@ -26,6 +26,10 @@ public sealed class PendingPresentationEventsTests
     {
         var pending = new PendingPresentationEvents(new WorldViewCodec(WorldViewCodecTests.Database()));
         pending.Observe(new(1, []) { Sparks = [new(1, new(0, 1))] });
-        Assert.Throws<IOException>(() => pending.Observe(new(2, [new(2, Floater.Text(new(0, 1), Vector3.Zero, new string('x', 256 * 1024)))])));
+        var error = Assert.Throws<IOException>(() => pending.Observe(new(2,
+            [new(2, Floater.Text(new(0, 1), Vector3.Zero, new string('x', 256 * 1024)))])));
+        Assert.Contains("retention byte limit exceeded: bytes=", error.Message);
+        Assert.Contains("maximum=262144 admitted=0 highWater=2", error.Message);
+        Assert.Contains("floaters=1 sounds=0 speech=0 blood=0 sparks=1", error.Message);
     }
 }

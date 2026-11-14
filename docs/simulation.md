@@ -117,8 +117,13 @@ precede host orders for their due tick. No concurrent host enqueue may alter tha
 Randomness: stateless `Rng.Hash(seed,entityKey,purpose,counter)`; changing purpose/salt changes rolls.
 Worker partitions are `threads*2`, minimum 16 slots (game 32: 128 left a 500-character battle 3 partitions); one worker means caller execution.
 Async paths, navmesh and population results enter at tick boundaries; arrival timing is not
-repeatable in play. Determinism tests use synchronous services. `PathService` runs 2-4 threads (a quarter of the cores) and drops a
-request its character replaced before a thread took it up; F12's sim rows show the requests waiting.
+repeatable in play. Determinism tests use synchronous services.
+**Verified** (`PathRequestQueueTests`, `HeldMovementTests`): `PathService` runs 2-4 threads (a quarter of the cores),
+reserving one for player queries. Shared workers prefer at most four player requests before waiting NPC work.
+Each character has at most one queued request; replacement keeps its position within the same priority lane and changes the payload.
+Promoting an ordinary request to player priority moves it to the player lane's tail.
+Running searches finish normally. Superseded queued requests retain terminal trace outcomes; pending counts queued/running work, not replaced payloads.
+F12's sim rows show the outstanding requests.
 
 `StateHash` is ordered, includes slot/generation/free-list and hashed subsystem state, normalizes
 negative zero, and is a diagnostic rather than gameplay work. Golden scenarios must agree at
@@ -565,7 +570,10 @@ loading, before publishing the initial snapshot; the save reader itself retains 
 
 `MovementSystem`, `PursuitSystem`, `IAgentWalkability`: schedule/query asynchronously, publish at
 boundaries, follow ordered path points, steer/separate using previous state and project to ground.
-New move orders preserve reusable paths; attack pursuit reschedules target paths. Turning can
+New move orders preserve reusable paths; attack pursuit reschedules target paths.
+**Verified** (`HeldMovementTests`, `NavigationWaitingTests`): an active ordered move reissued at the same resolved X/Z, floor height
+and speed mode retains its path request, verified prefix and navigation retry deadline. Changed floors or modes are new destinations.
+Turning can
 hold translation while facing changes. Original speeds/encumbrance and research are in
 [pathfinding.md](game/pathfinding.md); footprint clearance/water costs come from nav queries.
 Heights use the character's (or clicked) Y to pick stacked floors; long paths have a provisional tail.
@@ -1261,7 +1269,7 @@ gather jobs while walking home under 43, and a job that waited on that walk reac
   200, which the pick-up takes into its mouth; 278 (a mouthful, not a player squad's adult over 0.95) sprints in random 1000-1400 legs while it holds it; 279 (any NPC animal, a player
   squad's only under 0.95) runs after the first allied animal in sight with something in its mouth. Engine: the play's first leg is random too.
 - **Crop raiding** (232, `CaptiveJobKind.EatCrops`): in a player town whose faction is its enemy (engine reading of the coexist test), a random farm with food; at it, `eat`, crime
-  14 each tick, one plant per game second (`ProductionSystem.EatCrop`). NPC towns' farms are not machines in Meitou, so only the player's are eaten.
+  14 each tick, one plant per game second (`ProductionSystem.EatCrop`). NPC towns' farms are machines too, but `CropsToEat` only selects player towns; NPC-town crop raiding is not modelled.
 - **Escapes** (`LockSystem.OpportunisticEscapes`, `ShackleEscapes`): an AI prisoner whose role list holds 256 or 202 in its hours walks out of a cage that is not locked
   (`FixtureRegistry.GetOut`); every 30 ticks an AI character outside a cage wearing locked shackles with 202 listed works them off, cutting with a tool, else picking (the
   original planner's choice among pick, cut and break is **Unknown**); once they are unlocked it takes the worn shackles off (219) into its inventory (else the ground; engine choice).
@@ -1280,8 +1288,11 @@ gather jobs while walking home under 43, and a job that waited on that walk reac
   queue and adds the job toward the master squad's leader (`CharacterCold.SlaveMaster`; handing a slave to another master resets it, engine choice), and removes it when the state leaves 1 (freed, escaped, bail).
   While it is a slave and not sneaking, the job is urgent (step 3, `IJobSource.Urgent`): the best goal of the master squad's Slave list in its hour by desire x weight (x1.25 the one running) starts through `TaskStart` --
   **171** follows the owner (`MovementSystem.Follow`, row 171; the follower sets its sneaking from the leader's every update, **Verified**, so a following slave cannot sneak away), **189 / 190** walk to a random workplace of the town
-  the slave's squad leader stands in (`AiSystem.WorkAt`, the AI's pick) and stand at it at the work clip (a handler of rows 189 / 190 clears the clip when another task takes the slave), **14** stands. An order beats it (step 1)
-  and it beats Self preservation and the other goals. **Gaps**: 172 (the night cage), 41, 143 and 35 are not acted out for a player character; the work produces nothing and takes no hunger rate; the Jobs switch off
+  the slave's squad leader stands in (`AiSystem.WorkAt`, with the goal type; 189 requires `RealWork`) and stand at it at the work clip (a handler of rows 189 / 190 clears the clip when another task takes the slave), **14** stands.
+  **Observed** (source: `ObedientSlaveJobs.Workplace`, `ProductionSystem.SlaveWorkers`): goal 189 at its current worksite feeds the shared town production pipeline,
+  including operating XP. Production rechecks the running job, arrival, master, slave-owner/site-owner match, machine condition and operator capacity;
+  goal 190, walking, interruption or release supplies no production. An order beats the job (step 1), and the job beats Self preservation and the other goals.
+  **Gaps**: 172 (the night cage), 41, 143 and 35 are not acted out for a player character; the obedient-work task still takes no machine hunger rate (`BodySystem.UseHungerRate`); the Jobs switch off
   stops it (as any job); `SlaveMaster` is runtime only, so after a load the master comes back from the save's `slaver` handle or the job's saved handle (a character), else the slave obeys nobody; the sense/enemy relations of a slave with the job are not modelled.
 - **Eaten**: a meal still awake gains toughness XP (`XpService.Continuous`, amount 10). **Process** (183) re-processes a slave of an allied owner that is not shaven or does not look like one (`CaptiveSystem.LooksLikeASlave`: the watcher's
   faction's slave clothing or garments on torso and legs, locked shackles or a locked torso piece on a shaven head), or an escaped or ex-slave (state 2, 3).
@@ -1516,7 +1527,7 @@ ghost, commands), `Meitou.Runtime/Placement/PlacementCheck.cs`, `Building/BuildM
 
 ## Production
 
-`Production/ProductionSystem` runs the player's complete buildings: mines, wells, refiners (function 4), farms, research and
+`Production/ProductionSystem` runs complete player buildings and canonical natural/town machines: mines, wells, refiners (function 4), farms, research and
 crafting benches, generators and batteries. Facts: [production](game/buildings-production.md#production), [crafting](game/buildings-production.md#crafting),
 [farming](game/buildings-production.md#farming), [research](game/buildings-production.md#research), [power](game/buildings-production.md#power).
 - **Machines** (`Production/Machines.cs`, data `Construction/MachineData.cs`). A machine is made when a player site completes
@@ -1525,7 +1536,7 @@ crafting benches, generators and batteries. Facts: [production](game/buildings-p
   - the storage grid of a `has inventory` building (a bench's books), as a real `Inventory`;
   - the farm's plants.
 - **Yield.** Set at creation from the ground under the building: a resource's value (`ResourceField.Yield`; 0 stays 0 for the player), ore from the
-  nearest foliage rock (`FoliageResourceNodes`, given by the host; none headless), and for a farm its
+  nearest resource rock (`FoliageResourceNodes`, created with level content by `WorldBoot` for graphical and dedicated hosts), and for a farm its
   fertility factor, crop match and water rate.
   - Fertility and the crop match come from the BIOME_GROUP's ENVIRONMENT_RESOURCES at the weather-area cell.
   - The altitude test uses the building's y.
@@ -1539,14 +1550,17 @@ crafting benches, generators and batteries. Facts: [production](game/buildings-p
   - Farms tick whether anyone is there; rain tops up an outdoor farm's water (`FarmTick`, [farming](game/buildings-production.md#farming)). Unloaded zones: the *Production far away* switch (Meitou on: farms, automatic machines and generator fuel
     run everywhere; Faithful off: only in `World.ActiveZones`, and a farm back after over an hour runs `TimeSkip` from its `save time` stamp,
     `FarmState.LiveHours`); facts in [unloaded zones](game/buildings-production.md#unloaded-zones).
-- **Rocks** (`ProductionSystem.Natural.cs`, UI `FurnitureUse`; facts in [resources](game/buildings-production.md#resources)). A foliage
+- **Rocks** (`ProductionSystem.Natural.cs`, UI `FurnitureUse`; facts in [resources](game/buildings-production.md#resources)). A generated or level-placed foliage
   rock is a natural site, operated like a mine: a right click on it with characters selected is an `OperateOrder`, with Shift an Operating machine
-  job. Its site id `natural:<BUILDING>@x,y,z` (the rock's position) is all the sim needs: the site is made from it (an `is foliage` BUILDING
-  with an operable mine; with a rock source, one of it must stand there), owned by no faction, so player-only lookups skip it. Its machine
-  yields `ResourceField.NodeYield` (at least 0.1) and is kept in memory, not saved; a saved job keeps the id (`meitou pjob<i>`). The ore stays in
+  job. Its site id `natural:<BUILDING>@x,y,z` names the stable placement origin. In an explicit-control world, the server requires an exact ID/record/position match
+  in its current resource source; parsing an `is foliage` BUILDING with an operable mine is insufficient. Observable targets publish positive
+  `WorkSites.SiteRevision` before their first machine exists, and remote work orders use that revision. The site starts unowned and is claimed when a player works it.
+  Its machine yields `ResourceField.NodeYield` (at least 0.1) and persists through `RockMachineSave`, with stable-faction ownership in `NaturalClaimsSave`
+  ([save](formats/save.md)); a saved job keeps the id (`meitou pjob<i>`). Missing source data suspends work without discarding saved output or claims. The ore stays in
   the rock's output (5) until taken: a left click selects the rock and opens its machine window once it has been mined (**Observed** by the
-  owner: the base game's ore is picked up by hand), or a storage within `HaulRange` takes it as for any machine. Engine choices: the rock is picked by its mesh's triangles where the instance places them (the original picks its building's collision); its radius, the longest half-extent of the mesh's bounds box scaled by the instance and at least `NodeRadius` 25, sizes its resource richness (the original takes the mesh's bounds the same way); without the mesh file a rock is picked as a sphere of 25 round its origin; the pointer over a rock is `mine` (with characters selected, after sites and doors, as the click order is); level-placed `is foliage`
-  buildings (not drawn, not in `FoliageResourceNodes`) cannot be mined. An NPC town building a worker operates is a machine of its own (`TownWork`, [NPC town machines](game/buildings-production.md#npc-town-machines)).
+  owner: the base game's ore is picked up by hand), or a storage within `HaulRange` takes it as for any machine. Engine choices: the rock is picked by its mesh's triangles where the instance places them (the original picks its building's collision); its radius, the longest half-extent of the mesh's bounds box scaled by the instance and at least `NodeRadius` 25, sizes its resource richness (the original takes the mesh's bounds the same way); without the mesh file a rock is picked as a sphere of 25 round its origin; the pointer over a rock is `mine` (with characters selected, after sites and doors, as the click order is).
+  Level-placed `is foliage` resource buildings join the same resource source, picking and natural-site path; their building-part transforms determine the work footprint.
+  An NPC town building a worker operates is a machine of its own (`TownWork`, [NPC town machines](game/buildings-production.md#npc-town-machines)).
 - **Town training dummies** (`ProductionSystem.TownDummy`, fixtures `FixtureKind.Training`, UI `FurnitureUse`). A town building's BF_TRAINING
   furniture (its interior layout's, or the building itself) is a fixture `<building>@dummy<n>` (n in layout order) of the building's owner; like a rock it is no
   registry site, so it is neither drawn, saved nor built: the production system makes a complete site of it once its town has registered, and its machine is kept in
@@ -1562,8 +1576,8 @@ crafting benches, generators and batteries. Facts: [production](game/buildings-p
   - Partial progress is kept off the queue (in memory only).
   - Blueprints ([rules](game/buildings-production.md#blueprints)): `GameDatabase.AddGearBlueprints` makes the `.TECH.1` research after loading;
     `ItemFactory.Blueprint` makes the item (type `BLUEPRINT`); the own-window right click (`QuickMoves.QuickMove`) calls `ProductionSystem.Learn`.
-- **Hash.** Machines and research join the world hash only once the player has one; golden hashes are unchanged. Yields read the
-  biome map and rock source, so a replay without them (headless) hashes other yields than the host.
+- **Hash.** Machines and research participate in the world hash. Yields read the biome map and rock source, so a reduced fixture
+  without the same content inputs can hash different yields. Graphical and dedicated hosts share these CPU content services.
   RNG: `RngPurpose.Farm` (replanting, harvest rolls), `RngPurpose.Craft` (critical rolls).
 - **Crafting** (`ProductionSystem.Crafting.cs`, data `Construction/CraftingData.cs`). `QueueCraft` (at most 20),
   `CancelCraft`, `RepeatCrafts`. The first craft binds the input sections to its ingredients (other items in a section

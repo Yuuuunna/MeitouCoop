@@ -442,7 +442,11 @@ public sealed partial class NavmeshWalkability : IWalkability
         if (!AllowUnloadedFallback)
         {
             var route = LongRoute(w, from, to, agent, fromLoaded, incarnation);
-            return CrossesUnloaded(w, route.Points) ? Authoritative(route) : exact;
+            if (CrossesUnloaded(w, route.Points)) return Authoritative(route);
+
+            // A loaded goal inside a mine's collision still has a reachable working edge. Keep only the mesh path;
+            // the immediate-mode provisional tail would cross the obstacle and is not authoritative movement.
+            return Toward(w, from, to, agent);
         }
 
         var part = Toward(w, from, to, agent);

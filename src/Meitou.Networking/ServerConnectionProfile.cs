@@ -30,9 +30,12 @@ public sealed record ServerConnectionProfile(string Host, int Port, Guid Account
 /// </summary>
 public static class ServerCompatibility
 {
-    // Work targets, item rotation, squad autonomy and presentation fields follow this upstream baseline.
-    // Discovery metadata is opaque to older clients, so their own build identity must reject admission.
-    public const string EngineBuild = "meitou-upstream-a69c6e9b-authority-2";
+    /// <summary>
+    /// Both endpoints must accept this upstream's work targets, rotations and presentation fields, building floaters, permanent bounties and
+    /// retained event batches beyond the source journal's 512 entries.
+    /// Discovery metadata is opaque to older clients, so their own build identity must reject admission.
+    /// </summary>
+    public const string EngineBuild = "meitou-upstream-a69c6e9b-authority-3";
     // Hash without loading DLLs: connecting never grants permission to execute installed code.
     public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
     {

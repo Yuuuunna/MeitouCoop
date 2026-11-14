@@ -12,7 +12,9 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-a69c6e9b-authority-2`; ground-item material IDs and optional blood-event attacker IDs
+The current identity is `meitou-upstream-a69c6e9b-authority-3`; both endpoints require the corrected presentation-event validation
+and permanent-bounty handling described in [networking-next](networking-next.md#protocol-and-transport-boundaries).
+Ground-item material IDs and optional blood-event attacker IDs
 travel with their existing state/event components. Attacker IDs are removed when that recipient cannot see the attacker.
 The authoritative `AnimalsPickUp` rule is included in gameplay settings and their digest. Older build identities fail admission;
 unknown gameplay rules are not silently accepted. Transport and container framing remain protocol 21.
@@ -66,8 +68,7 @@ presentation serial when its weather occurrence changes. Remote weather selectio
 
 **Verified** by `WeatherReplicationTests`, `WeatherScheduleTests` and installed-content TLS creation/entry:
 baseline/delta/disable, malformed frames, repeated imports, atomic content rejection and renderer ingestion.
-Recipient-scoped weather effects carry Each root carries a
-stable region/generation/group/unit identity (or fixed-placer identity), effect/system IDs, transform,
+Each recipient-scoped weather-effect root carries a stable region/generation/group/unit identity (or fixed-placer identity), effect/system IDs, transform,
 age/lifetime, stop state, wind and wrapping inputs. Particle pools and generator states stay on the server.
 Only roots whose effect bounds intersect authorized observation are published; requested zones can only reduce that scope.
 Withdrawal removes the roots; a new baseline replaces the set. Duplicate IDs/nonfinite values are rejected.
@@ -125,8 +126,9 @@ forbidden. Grid dimensions/resource counts are validated before UI use.
 `World.EmitFloater`, `EmitSound`, `SaidPublic`, `EmitBlood` and `EmitBlockSpark` record multiplayer display events with one monotonic ID
 space. The journal retains at most 512 combined events for three wall-clock seconds, with text capped at
 4096 characters and speaker names at 256. Legacy local queues remain available.
-Text such as consumed item names belongs only to the target's controller at emission; damage needs a visible
-target, and labels need authorized observation of their position. Own/enemy flags are relative to the recipient.
+Text such as consumed item names belongs only to the target's controller at emission. Floaters with a character target
+require that target to be visible; fixed-position building damage and labels without a target require authorized observation
+of their position. Own/enemy flags are relative to the recipient.
 Projectile source ownership is captured at firing, so later controller changes do not reattribute that hit.
 Events never affect simulation hashes or saves. Overflow/expiry may drop cosmetic events.
 

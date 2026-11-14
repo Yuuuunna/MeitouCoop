@@ -912,6 +912,8 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         if (m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction && !_turretSpots.ContainsKey(site.Id)) GoalOf(world, site, m);
         if (AtSite(world, n, site, m))
         {
+            cold.NavigationWaiting = false;
+            cold.NavigationRetryTick = 0;
             if ((n.Flags & path) != 0)
             {
                 n.Flags = (ushort)(n.Flags & ~path);

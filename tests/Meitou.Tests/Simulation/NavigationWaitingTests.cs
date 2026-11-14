@@ -45,6 +45,37 @@ public class NavigationWaitingTests
         Assert.InRange(world.Characters.Previous[actor.Slot].Position.X, 78, 81);
     }
 
+    /// <summary>
+    /// Repeated held orders keep the navigation wait and verified prefix without restarting a query on every tick.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HeldUnchangedTargetKeepsTheNavigationWaitAndItsRetryBudget(bool prefix)
+    {
+        var ground = new WaitingGround(prefix);
+        using var movement = new MovementSystem(new PathService(ground, true));
+        using var world = new SimWorld(new WorldSettings { PublishSnapshots = false }, ground, [new PlayerSystem(), movement]);
+        world.Player.Faction = 2;
+        var actor = Actor(world);
+
+        for (int i = 0; i < 120; i++)
+        {
+            world.Commands.Enqueue(new MoveOrder([actor], new(80, 300, 0)) { Tick = world.Tick });
+            world.RunTick();
+        }
+
+        var cold = world.Characters.Cold(actor.Slot)!;
+        Assert.True(cold.NavigationWaiting);
+        Assert.True(movement.Paths.Submitted < 10);
+        Assert.InRange(world.Characters.Current[actor.Slot].Position.X, 0, prefix ? 20.1f : 0);
+
+        ground.Ready = true;
+        world.InvalidateNavigation(new HashSet<ZoneCoordinate> { WorldLayout.ZoneOf(0, 0) });
+        world.RunTicks(240);
+        Assert.InRange(world.Characters.Current[actor.Slot].Position.X, 78, 81);
+    }
+
     [Fact]
     public void StrictNavigationDoesNotTreatAnUnloadedZoneAsOpenGroundOrDropAnActorsHeight()
     {

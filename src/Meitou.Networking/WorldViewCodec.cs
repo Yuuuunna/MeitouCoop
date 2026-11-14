@@ -277,11 +277,11 @@ public sealed partial class WorldViewCodec
 
     internal static void Validate(PlayerWorldView view)
     {
-        if (view.World == Guid.Empty || view.Player.IsNone || view.ConnectionGeneration == 0 || view.Publication == 0 || !double.IsFinite(view.GameHours) || view.TimeScale is not (0 or 1 or 2 or 5) || view.ActiveFaction < -1 || view.Snapshot is null || view.Snapshot.Tick < 0 || view.Roles is null || view.Factions is null || view.Events is null || view.Events.Floaters is null || view.Events.Sounds is null || view.Events.Speech is null || view.Messages is null || view.Messages.Items is null || view.FactionCatalogue is null)
+        if (view.World == Guid.Empty || view.Player.IsNone || view.ConnectionGeneration == 0 || view.Publication == 0 || !double.IsFinite(view.GameHours) || view.TimeScale is not (0 or 1 or 2 or 5) || view.ActiveFaction < -1 || view.Snapshot is null || view.Snapshot.Tick < 0 || view.Roles is null || view.Factions is null || view.Messages is null || view.Messages.Items is null || view.FactionCatalogue is null)
             throw new InvalidDataException("Invalid view identity.");
         view.Weather?.Validate();
         view.WeatherEffects?.Validate();
-        if (!float.IsFinite(view.SimulationStepSeconds) || view.SimulationStepSeconds is <= 0 or > 1 || view.Events.Blood is null || view.Events.Sparks is null)
+        if (!float.IsFinite(view.SimulationStepSeconds) || view.SimulationStepSeconds is <= 0 or > 1)
             throw new InvalidDataException("Invalid simulation presentation timing.");
         if (view.Snapshot.Characters is null || view.Snapshot.Characters.Count > 65536 || view.Snapshot.Characters.Any(c => c is null || c.Id.IsNone || !Finite(c.Position) || !float.IsFinite(c.Yaw) || float.IsInfinity(c.DrawYaw) || c.Path is null || c.PathExact < 0 || c.PathExact != int.MaxValue && c.PathExact > c.Path.Count) || view.Snapshot.Characters.Select(c => c.Id).Distinct().Count() != view.Snapshot.Characters.Count || view.Roles.Any(r => r is null || r.Entity.IsNone) || view.Roles.Select(r => r.Entity).Distinct().Count() != view.Roles.Count || view.Factions.Any(f => f is null || f.Faction < 0 || f.UnlockedBuildings is null || !Enum.IsDefined((SquadFormation)f.Formation)) || view.Factions.Select(f => f.Faction).Distinct().Count() != view.Factions.Count || view.ActiveFaction >= 0 && !view.Factions.Any(f => f.Faction == view.ActiveFaction))
             throw new InvalidDataException("Invalid view records.");
@@ -303,14 +303,7 @@ public sealed partial class WorldViewCodec
                 throw new InvalidDataException("Invalid faction information panel.");
         }
 
-        if (view.Events.Floaters.Count + view.Events.Sounds.Count + view.Events.Speech.Count + view.Events.Blood.Count + view.Events.Sparks.Count > 512 || view.Events.Floaters.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || !Enum.IsDefined(e.Value.Kind) || !Finite(e.Value.Position) || e.Value.Part is null || e.Value.Part.Length > 4096 || e.Value.Target.IsNone && e.Value.Kind != FloaterKind.Label) || view.Events.Floaters.Select(e => e.Id).Distinct().Count() != view.Events.Floaters.Count)
-            throw new InvalidDataException("Invalid presentation event batch.");
-        if (view.Events.Sounds.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || !Enum.IsDefined(e.Value.Kind) || !Finite(e.Value.Position) || e.Value.Item?.Length > 4096))
-            throw new InvalidDataException("Invalid sound event batch.");
-        if (view.Events.Blood.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Value.Tick < 0 || e.Value.CorpseTicks < 0 || !float.IsFinite(e.Value.TickSeconds) || e.Value.TickSeconds is <= 0 or > 1 || !Enum.IsDefined(e.Value.Mark.Kind) || !Finite(e.Value.Mark.Position) || !float.IsFinite(e.Value.Mark.Direction.X) || !float.IsFinite(e.Value.Mark.Direction.Y) || !float.IsFinite(e.Value.Mark.Amount) || e.Value.Mark.Amount < 0 || e.Value.Mark.Race?.Length > 4096 || InvalidBloodAttacker(e.Value.Mark)) || view.Events.Sparks.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Who.IsNone))
-            throw new InvalidDataException("Invalid combat visual event batch.");
-        if (view.Events.Speech.Any(e => e is null || e.Id == 0 || e.Id > view.Events.HighWater || e.Speaker.IsNone || e.Line.Owner is null || e.Line.Text is null || e.Line.Owner.Length > 256 || e.Line.Text.Length > 4096) || view.Events.Floaters.Select(e => e.Id).Concat(view.Events.Sounds.Select(e => e.Id)).Concat(view.Events.Speech.Select(e => e.Id)).Concat(view.Events.Blood.Select(e => e.Id)).Concat(view.Events.Sparks.Select(e => e.Id)).Distinct().Count() != view.Events.Floaters.Count + view.Events.Sounds.Count + view.Events.Speech.Count + view.Events.Blood.Count + view.Events.Sparks.Count)
-            throw new InvalidDataException("Invalid speech event batch.");
+        ValidatePresentationEvents(view);
         if (view.Messages.Items.Count > 200 || view.Messages.Items.Any(m => m is null || m.Id == 0 || m.Id > view.Messages.HighWater || !Enum.IsDefined(m.Kind) || m.Owner is null || m.Text is null || m.Owner.Length > 256 || m.Text.Length > 4096) || view.Messages.Items.Select(m => m.Id).Distinct().Count() != view.Messages.Items.Count)
             throw new InvalidDataException("Invalid private message history.");
         if (view.Prospected is { } report)
@@ -367,10 +360,20 @@ public sealed partial class WorldViewCodec
     }
 
     /// <summary>
-    /// Weapon blood can name one structurally valid attacker. Visibility is enforced when the server projects the event, independently of lanes.
+    /// Adds publication context to event failures without logging recipient payloads.
     /// </summary>
-    static bool InvalidBloodAttacker(BloodMark mark) => mark.Attacker is { } attacker
-        && (mark.Kind != BloodMarkKind.Splash || attacker.IsNone || attacker.Generation < 0);
+    static void ValidatePresentationEvents(PlayerWorldView view)
+    {
+        try
+        {
+            PresentationEventValidation.Validate(view.Events);
+        }
+        catch (InvalidDataException error)
+        {
+            string context = $"world={view.World} generation={view.ConnectionGeneration} publication={view.Publication} tick={view.Snapshot.Tick}";
+            throw new InvalidDataException($"{error.Message} {context}", error);
+        }
+    }
 
     static bool Finite(Vector3 value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
 

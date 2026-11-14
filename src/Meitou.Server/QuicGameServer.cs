@@ -110,11 +110,14 @@ public sealed class QuicGameServer : IAsyncDisposable
         catch (OperationCanceledException)when (_stop.IsCancellationRequested)
         {
         }
+        catch (QuicConnectionClosedException error) when (error.IsGraceful)
+        {
+        }
         catch (Exception error)
         {
             LastFailureType = error.GetType().Name;
             Interlocked.Increment(ref _failures);
-            Console.Error.WriteLine($"QUIC peer failure: {error}");
+            Console.Error.WriteLine($"QUIC peer failure: utc={DateTime.UtcNow:O} peer={id} {error}");
         }
         finally
         {
