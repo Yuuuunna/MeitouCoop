@@ -554,6 +554,13 @@ Meitou (`Saving/SlaveSave`) reads and writes `slavestate`, `ssct` and the `shave
 in the world, its faction is the owner when the save has no owner key, and its squad is the master (`CharacterCold.SlaveMaster`, `CaptiveSystem.RestoreSlavers`, every 20 ticks);
 a squad handle is not mapped. The read keys are written back unchanged until the slave is freed or handed to another master, then as the null handle. `CrimeSave` reads and writes `tn` (`CharacterCold.Freed`, written always).
 
+**Observed** (source: `SlaveSave.Write` / `Read`; dedicated checkpoint `c5da30a1`, 2026-11-14):
+freshly generated Rebirth slaves retain their owner faction but all 36 have null `slaver` handles.
+The writer does not serialize `SlaveMaster`; therefore these records cannot restore the runtime master-squad association.
+`SlaveSave` and `CaptiveSystem.Slavers` are unchanged relative to upstream `a57c4875e` (source comparison, 2026-11-14);
+this limitation is shared with upstream, not specific to the multiplayer fork.
+Whether this caused a particular live slave's failure to work requires evidence of a reload and its current AI state.
+
 Carry links (**Observed**, decompile: `FUN_1406280a0` writes, `FUN_140627b30` reads): the character state record has a bool `carrying` (true on the carrier) and a handle `carrying`
 (the partner, null when none), both always written. The reader links them when the partner resolves, else keeps the handle and links it later from the per-frame `FUN_140797ec0`
 (deferred until the partner is loaded). Meitou (`SaveCapture`, `CarrySystem.RestoreLinks`): the same keys; the link is made without a lift, checked every 20 ticks; it skips a carrier that is carried or carries and a carried body, tests no incapacitation (the carry step drops an incapacitated carrier's body afterwards, **Verified** `FUN_1405cff90`), and lets the body go from a bed or cage.

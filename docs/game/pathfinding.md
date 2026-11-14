@@ -617,6 +617,12 @@ nearest reachable point and a straight provisional tail (the terrain search, und
 a way round through an unloaded zone within one block is not found). **Observed**: Hub→(-36000,-6000) and Hub→Squin arrive; "6 dudes"
 save, scratch harness with the host's zone loading: Fog Islands (-80620,-24171) → the squad at (-31620,11420), 60.5k units, arrives
 (17,506 ticks); before, it walked to the nearest reachable point and stopped on a cliff 10.6k short.
+
+**Verified** (`WorkApproachTests`): authoritative navigation retains the mesh-only approach to an unreachable goal in a loaded block;
+it appends no straight tail into the obstacle. A route crossing unloaded zones still waits with only its verified prefix usable.
+**Observed** (installed Rebirth, headless query): from `(-47886.637,947.0159,-56908.676)` to the quarry at
+`(-45303.367,1115.6508,-56678.977)`, exact routing fails but 39 mesh points reach its working edge. Rejecting that approach
+left gathered slaves indoors; [population evidence](factions-squads-towns.md#rebirth-slave-population).
 When a door shut for paths at run time (`NavDoors`: its building's doors all locked) turns the search back and the way with every door open crosses
 it, the tail goes first to the point of that door's polygons nearest the reachable end (`NavQuery.ClosedDoorOnTheWay`), so the walker meets the leaf
 and the lock stops it ([doors](../simulation.md#cages-beds-and-locks)); a straight tail can pass beside a gate's post, out of the leaf's reach.

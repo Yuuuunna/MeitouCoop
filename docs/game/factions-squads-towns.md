@@ -39,6 +39,31 @@ first cumulative weight exceeding uniform roll wins; single candidate no roll. S
 instead drops v0<=0 and budgets expected squad sizes using its separate sentinel/range rules.
 Do not reuse one zero-weight convention for both.
 
+### Rebirth slave population
+
+**Observed** (installed merged database, `meitou-tools record`, 2026-11-14): Rebirth `18921-Newwworld.mod`
+houses `Rebirth Cage Guards` (`49391-rebirth.mod`); each links `rebirth slaves` (`49393-rebirth.mod`),
+whose `squad` entry makes 3..4 Rebirth Slaves, and the housemate `rebirth workmaster` (`49396-rebirth.mod`).
+`Cage Warden` gives slaves cage/idle goals; `slave worker day guard` supplies gathering and mining during 05:00..22:00.
+**Observed** (local dedicated build `local.20261114163049`, checkpoints `5535163f` / `c5da30a1`, read with `SaveGame.Load`):
+10 slave squads contain 36 NPCs at population/squad multipliers 1; between day 1 hours 15 and 18,
+29 move less than one world unit and the others less than six. They remain near ten slave houses,
+917..1869 units from the nearest player in the latter checkpoint. Both native and Meitou held-state keys show no caging.
+Client `InteriorView.UpdateInteriorView` hides characters inside unopened buildings and above the viewed floor;
+the default network observation radius is 4608. **Unknown:** their actual client visibility flags.
+**Observed** (real-content headless reproduction, seed `15515071246337833983`, day 1 at 15:00, 2400 ticks):
+masters adopt the slaves and `OwnWork` accepts their mines. The authoritative path query discarded a reachable approach
+when the mine centre could not be reached. Keeping the verified mesh approach gives 16 slaves at work and 20 walking,
+versus 36 stuck on mining walks before the change. Path contract and regression coverage: [pathfinding](pathfinding.md).
+
+**Observed** (source comparison with upstream `a57c4875e`, fetched 2026-11-14): `MakeSlaves` and the gather/transfer
+sequence match upstream: unlock, `LiftOut(stepOut: true)`, retain the slave's squad, assign the gatherer's squad as master.
+Upstream fixes `1d0d23aab` (exit the cage's unwalkable centre), `30f9f7eef` / `09f08308c` (seated workmasters weigh
+slave goals and replace their prior goal), and `394d88aee` (workplace arrival range) are already ancestors of local HEAD.
+Local `AiSystem.PickWork` / `HoldsWork` additionally require `OwnWork`, resolving placement ownership through
+`World.Buildings` or `FixtureRegistry.TownMachineOwner`; upstream only checks town work eligibility and free slots there.
+The real-content reproduction above does not reject the slaves' chosen mines at this ownership gate.
+
 ### Squad leader
 
 `ActivePlatoon` (KenshiLib 1ce4a16, **Observed**) keeps `squadleader` (`+0xa0`, set by `setSquadLeader`, which gives it member type 2) and `backupLeader`

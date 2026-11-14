@@ -61,6 +61,13 @@ tracing overhead still require acceptance; synthetic callback tests do not prove
 
 ## Protocol and transport boundaries
 
+**Verified** (`BountyCountdownTests`): bounty countdowns preserve positive infinity for permanent bounties through publication,
+decoding and clock projection; NaN and negative infinity remain invalid. The binary field layout is unchanged, but both endpoints
+need the corrected validation; build identity `meitou-upstream-7379edb6-authority-2` rejects older peers during admission.
+**Observed** (dedicated console stack at `EncodeBounties`, checkpoint `c41eaa9a`, 2026-11-14):
+a player's 13000 bounty produced the permanent sentinel that the previous finite-only encoder rejected, closing the peer on publication
+and again on reconnect. The rule is [bounty lifetime](game/economy.md); this is not a QUIC transport failure.
+
 Application protocol 21 / ALPN `meitou/21` replaces game TCP; the TCP listener serves public discovery only.
 Transport authentication completes before any state or operation. Keep world, connection generation,
 grant revision and recipient filtering at the authority boundary; transport ordering is not authorization.
