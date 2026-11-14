@@ -34,7 +34,7 @@ sealed class TownBuildingContents
     /// </summary>
     public List<HomeSpot> Furniture = [];
     /// <summary>
-    /// Its interior layout's other furniture (<see cref="TownBuilding.Pieces"/>).
+    /// Its interior layout's selectable furniture and operable machines (<see cref="TownBuilding.Pieces"/>).
     /// </summary>
     public List<TownPiece> Pieces = [];
 
@@ -97,7 +97,8 @@ sealed class TownBuildingContents
 
     /// <summary>
     /// The interior layout's objects in layout order: beds and nodes, chairs, other furniture, tables and fixtures, and as <see cref="Pieces"/>
-    /// whatever no bed, node, seat, cage or container pick takes; returns the chairs' spot indices and functionality flags (null: none).
+    /// whatever no bed, node, seat, cage or container pick takes, plus operable containers sharing the same canonical id. Returns the chairs'
+    /// spot indices and functionality flags (null: none).
     /// </summary>
     List<(int Spot, int Flags)>? LayItems(GameDatabase db, BuildingLayouts layouts, ResolvedBuilding resolved, GameRecord interior,
         Dictionary<string, bool> beds, Dictionary<string, GameRecord?> functions)
@@ -115,7 +116,9 @@ sealed class TownBuildingContents
             if (function?.GetInt("function") is TableFunction or CorpseDisposalFunction or RefineryFunction) Tables.Add(at);
             else picked |= AddFixture(db, functions, item, id, at, rotation);
 
-            if (!picked) Pieces.Add(new TownPiece(id, item.Building.StringId, at, rotation, item.Floor, item.Outside));
+            // A research/crafting bench can also own a fixture inventory. Its work target needs the same placement metadata and identity.
+            bool workInventory = picked && item.Building.GetBool("has inventory") && MachineData.From(db, item.Building) is { Operable: true };
+            if (!picked || workInventory) Pieces.Add(new TownPiece(id, item.Building.StringId, at, rotation, item.Floor, item.Outside));
             index++;
         }
         Furnished = index > 0;

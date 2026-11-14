@@ -404,21 +404,28 @@ public sealed partial class ProductionSystem
     /// A finished item (at most <paramref name="count"/> units, 0: all) taken from a bench's output into a character's inventory (what does not fit
     /// stays).
     /// </summary>
-    void TakeCrafted(World world, Machine m, CraftState state, Inventory root, int index, int count = 0)
+    void TakeCrafted(World world, Machine m, CraftState state, Inventory root, int index, int count, StolenMark mark)
     {
         if (index < 0 || index >= state.Done.Count) return;
         var item = state.Done[index];
         if (count > 0 && count < item.Quantity)
         {
             var unit = item.WithQuantity(count);
+            if (unit.Mark == StolenMark.None) unit.Mark = mark;
             item.Quantity -= count;
             if (!root.Add(unit)) item.Quantity += unit.Quantity;
             world.Machines.Touch();
             return;
         }
 
+        var previous = item.Mark;
+        if (previous == StolenMark.None) item.Mark = mark;
         state.Done.RemoveAt(index);
-        if (!root.Add(item) && item.Quantity > 0) state.Done.Insert(index, item);
+        if (!root.Add(item) && item.Quantity > 0)
+        {
+            item.Mark = previous;
+            state.Done.Insert(index, item);
+        }
         world.Machines.Touch();
     }
 
@@ -625,15 +632,59 @@ public sealed partial class ProductionSystem
     internal int StorageOwner(World world, string site) => world.Fixtures.Find(site)?.Owner ?? Site(world, site)?.Owner ?? -1;
     internal BuildSite? SaveWorkSite(World world, string key) => Site(world, key);
     public ulong WorkSiteRevision(World world, string id) => Site(world, id)is { } site ? world.BuildingRevision(site) : 0;
-    static bool MayWork(World world, CharacterCold worker, BuildSite site) => world.MayUseAssets(worker, site.Owner) && (!world.Players.RequiresExplicitControl || !worker.IsPlayer || WorkSiteOpen(world, site));
-    static bool WorkSiteOpen(World world, BuildSite site) => !site.Destroyed && !site.Upgrading && world.Fixtures.Find(site.Id)?.Lock is not { EffectivelyLocked: true } && world.Machines.Find(site.Id)is not { Closed: true };
+    /// <summary>
+    /// Town work does not confer ownership or machine configuration rights. Other players' assets keep their explicit grants.
+    /// </summary>
+    internal static bool PublicTownWork(World world, BuildSite site) => site.LevelMachine && !world.IsPlayerFaction(site.Owner);
+
+    /// <summary>
+    /// A worker retains its valid character grant and can use its own assets or an ordinary NPC worksite.
+    /// </summary>
+    static bool MayWork(World world, CharacterCold worker, BuildSite site) =>
+        (world.MayUseAssets(worker, site.Owner) || PublicTownWork(world, site) && world.MayUseAssets(worker, -1))
+        && (!world.Players.RequiresExplicitControl || !worker.IsPlayer || WorkSiteOpen(world, site));
+
+    /// <summary>
+    /// Closed, ruined, upgrading or locked machines cannot be used through an inventory or work order.
+    /// </summary>
+    static bool WorkSiteOpen(World world, BuildSite site) => !site.Destroyed && !site.Upgrading
+        && world.Fixtures.CurrentTownMachine(site)
+        && world.Fixtures.Find(site.Id)?.Lock is not { EffectivelyLocked: true }
+        && world.Machines.Find(site.Id) is not { Closed: true };
+
+    /// <summary>
+    /// Validates the displayed work target independently of the permission to configure or dismantle its owner's assets.
+    /// </summary>
     static bool MayStartWork(World world, SiteWorkCommand command, BuildSite site)
     {
-        if (command.SiteRevision != 0 && world.BuildingRevision(site) != command.SiteRevision)
-            return false;
-        if (command.Issuer is not { } issuer)
-            return true;
-        return command.SiteRevision != 0 && WorkSiteOpen(world, site) && (site.Owner < 0 || command.FactionGrantRevision != 0 && world.Players.Find(issuer)is { } player && player.MembershipRevision(site.Owner) == command.FactionGrantRevision && player.HasPermission(site.Owner, FactionPermission.ManageAssets));
+        if (command.SiteRevision != 0 && world.BuildingRevision(site) != command.SiteRevision) return false;
+        if (command.Issuer is not { } issuer) return true;
+        if (command.SiteRevision == 0 || !WorkSiteOpen(world, site)) return false;
+        return site.Owner < 0 || PublicTownWork(world, site)
+            || command.FactionGrantRevision != 0 && world.Players.Find(issuer) is { } player
+                && player.MembershipRevision(site.Owner) == command.FactionGrantRevision
+                && player.HasPermission(site.Owner, FactionPermission.ManageAssets);
+    }
+
+    /// <summary>
+    /// The current site's inventory access rule. NPC machine goods still pass the ordinary theft roll on removal.
+    /// </summary>
+    internal bool MayAccessMachine(World world, PlayerId player, string id) => Site(world, id) is { Complete: true } site
+        && WorkSiteOpen(world, site) && (site.Owner < 0 || PublicTownWork(world, site)
+            || world.Players.Find(player)?.HasPermission(site.Owner, FactionPermission.ManageAssets) == true);
+
+    /// <summary>
+    /// Reveals a non-owned machine's stock only to an authorized character close enough to perform the corresponding transaction.
+    /// </summary>
+    public bool CanInspectStock(World world, PlayerId player, string id)
+    {
+        if (Site(world, id) is not { } site || !MayAccessMachine(world, player, id)) return false;
+        foreach (var grant in world.Players.KnownRoles(player))
+            if (world.Players.Validate(grant) && world.Entities.TryResolve(grant.Entity, out var character)
+                && world.Characters.Cold(character.Slot) is { Inventory: not null, Medical.Incapacitated: false } cold
+                && !cold.IsImprisoned && cold.CarriedBy.IsNone && GapTo(site, world.Characters.Current[character.Slot].Position) <= Settings.TransferReach)
+                return true;
+        return false;
     }
 
     bool MayControlMachine(World world, MachineControlCommand command, string id)
@@ -645,13 +696,36 @@ public sealed partial class ProductionSystem
         return command.Issuer is not { } issuer || command.ControlRevision != 0 && command.FactionGrantRevision != 0 && world.Players.Find(issuer)is { } player && player.MembershipRevision(site.Owner) == command.FactionGrantRevision && player.HasPermission(site.Owner, FactionPermission.ManageAssets);
     }
 
-    static bool MayTransferMachine(World world, StorageTransferCommand command, BuildSite site)
+    bool MayTransferMachine(World world, StorageTransferCommand command, BuildSite site)
     {
         if (command.Issuer is not { } issuer)
-            return command.StorageRevision == 0 || world.Machines.Find(site.Id)is { } local && world.MachineRevision(local) == command.StorageRevision;
-        if (world.Machines.Find(site.Id)is not { Closed: false } machine || world.Fixtures.Find(site.Id)?.Lock is { EffectivelyLocked: true } || command.StorageRevision == 0 || world.MachineRevision(machine) != command.StorageRevision)
-            return false;
-        return site.Owner < 0 || world.Players.Find(issuer)is { } player && player.HasPermission(site.Owner, FactionPermission.ManageAssets) && command.FactionGrantRevision != 0 && player.MembershipRevision(site.Owner) == command.FactionGrantRevision;
+            return command.StorageRevision == 0 || world.Machines.Find(site.Id) is { } local && world.MachineRevision(local) == command.StorageRevision;
+        if (!MayAccessMachine(world, issuer, site.Id) || world.Machines.Find(site.Id) is not { } machine
+            || command.StorageRevision == 0 || world.MachineRevision(machine) != command.StorageRevision) return false;
+        return site.Owner < 0 || PublicTownWork(world, site)
+            || command.FactionGrantRevision != 0 && world.Players.Find(issuer)?.MembershipRevision(site.Owner) == command.FactionGrantRevision;
+    }
+
+    /// <summary>
+    /// Arranges an owned machine's storage after validating its current control revision.
+    /// </summary>
+    void Arrange(World world, ArrangeMachine command)
+    {
+        if (command.ContainerSessionId != 0 || world.Machines.Find(command.Site) is null)
+        {
+            if (world.CommandPlayer(command) is not { } player || player.OpenContainer != command.Site
+                || world.Fixtures.Find(command.Site) is not { Contents: not null } container
+                || ContainerAccess.ShopOf(world, container) is not null) return;
+            var storage = ContainerAccess.GridOf(world, container);
+            if (command.Issuer is not null && (player.ContainerAccess is not { } access
+                || access.Player != command.Issuer || access.Id != command.ContainerSessionId || access.Fixture != container
+                || !access.Valid(world) || !access.InRange(world) || command.ControlRevision == 0)) return;
+            if (command.ControlRevision != 0 && world.InventoryRevision(storage) != command.ControlRevision) return;
+            if (InventoryCommands.Arrange(storage)) world.Machines.Touch();
+            return;
+        }
+        if (MayControlMachine(world, command, command.Site) && world.Machines.Find(command.Site) is { Storage: { } grid, Closed: false }
+            && InventoryCommands.Arrange(grid)) world.Machines.Touch();
     }
 
     void StartDisposal(World world, int slot, OrderEntry order)
@@ -858,134 +932,47 @@ public sealed partial class ProductionSystem
         if (!IsNatural(id)) return null;
         if (_naturalSites.TryGetValue(id, out var known))
         {
-            if (known is not null) ApplyNaturalClaim(world, known);
+            if (known is null) return null;
+            if (!NaturalSourceAvailable(world, known))
+            {
+                if (known.Complete)
+                {
+                    known.Complete = false;
+                    world.BuildingRevision(known);
+                }
+                return null;
+            }
+            known.Complete = true;
+            ApplyNaturalClaim(world, known);
             return known;
         }
         if (ParseNatural(id) is not { } site) return _naturalSites[id] = null;
-
-        // An unloaded foliage zone is not a missing rock and must not discard its saved machine.
-        if (_nodes is not null)
-        {
-            var at = site.Position;
-            if (_nodes.Near(0, at.X, at.Z, 1).FirstOrDefault(n => n.Record == site.Record) is not { Record.Length: > 0 } rock) return null;
-            _naturalBounds[id] = new RockBounds(rock.Centre ?? rock.Position, rock.Radius, rock.Shape, rock.Transform);
-        }
+        if (!NaturalSourceAvailable(world, site)) return null;
 
         if (_restoredRocks.Remove(id, out var restored)) site = restored;
+        site.Complete = true;
         ApplyNaturalClaim(world, site);
         return _naturalSites[id] = site;
     }
 
     /// <summary>
-    /// The store of each battery moves by flow / rate x dt seconds, between 0 and the capacity (<c>FarmBuilding::vfunc_27</c> on batteries); the town's charge totals follow.
+    /// A live resource remains backed by the server's current nodes. Missing or unloaded data suspends work while retaining saved inventory.
     /// </summary>
-    void ChargeBatteries(World world, (int Town, int Owner) town, List<Machine> grid, float dt)
+    bool NaturalSourceAvailable(World world, BuildSite site)
     {
-        float charge = 0, capacity = 0;
-        foreach (var b in grid)
-        {
-            if (!b.Data.IsBattery)
-                continue;
-            float rate = Rated(world, b);
-            b.Store = Capacity(world, b);
-            if (rate > 0)
-                b.Charge = Math.Clamp(b.Charge + b.Granted / rate * dt, 0, b.Store);
-            (charge, capacity) = (charge + b.Charge, capacity + b.Store);
-        }
-
-        if (_townPower.TryGetValue(town, out var power))
-            _townPower[town] = power with
-            {
-                Charge = charge,
-                Capacity = capacity
-            };
+        if (_nodes is null) return !world.Players.RequiresExplicitControl;
+        var at = site.Position;
+        if (_nodes.Near(0, at.X, at.Z, 1).FirstOrDefault(n => NaturalId(n.Record, n.Position) == site.Id) is not { Record.Length: > 0 } rock)
+            return false;
+        _naturalBounds[site.Id] = new RockBounds(rock.Centre ?? rock.Position, rock.Radius, rock.Shape, rock.Transform);
+        return true;
     }
 
     /// <summary>
-    /// One town's frame (<b>Observed</b>, <c>Town::vfunc_87</c>): generator output is shared among the consumers in ascending demand, each taking at most an equal share of what is
-    /// left (<c>FUN_140927350</c> sorts); when batteries were in use last tick, consumers left short that get battery power share the batteries' output. With nothing left over the
-    /// batteries drain by what was drawn; with a surplus they charge from it (each at most its rate) and the grid leaves battery mode.
+    /// Player grids remain faction-isolated; an NPC town supplies its visitors through one shared town grid.
     /// </summary>
-    static (int Town, int Owner) GridKey(World world, int town, int owner) => (town, world.Players.RequiresExplicitControl ? owner : -1);
-    void Share(World world, (int Town, int Owner) town, List<Machine> grid)
-    {
-        bool mode = _batteryMode.GetValueOrDefault(town);
-        float supply = 0, batteries = 0, demandTotal = 0;
-        var consumers = new List<Machine>();
-        foreach (var m in grid)
-        {
-            m.Granted = 0;
-            if (m.Data.IsGenerator)
-                supply += m.Demand = Output(world, m);
-            else if (m.Data.IsBattery)
-            {
-                m.Demand = m.PowerOn && m.Charge > 0 ? m.Health * Rated(world, m) : 0;
-                batteries += m.Demand;
-            }
-            else
-            {
-                // A farm wants its whole draw whoever works it and whether or not it is switched on (FarmBuilding slot 163, FUN_1400df330: |power output + increase|).
-                float share = m.Data.Farm is null && m.Data.PowerOperators > 0 ? (float)m.LastOperators / m.Data.PowerOperators : 1;
-                m.Demand = (m.Data.Farm is not null || m.PowerOn) && m.Active ? MathF.Abs(Rated(world, m)) * share : 0;
-                demandTotal += m.Demand;
-                consumers.Add(m);
-            }
-        }
-
-        float generated = supply;
-        _townSupply[town] = (generated > 0, batteries > 0);
-        consumers.Sort((a, b) => a.Demand != b.Demand ? a.Demand.CompareTo(b.Demand) : string.CompareOrdinal(a.Site, b.Site));
-        int left = consumers.Count, short_ = 0;
-        foreach (var c in consumers)
-        {
-            float share = supply / Math.Max(1, left--);
-            float give = MathF.Min(share, c.Demand);
-            supply -= give;
-            c.Granted = give;
-            if (give < c.Demand && c.GetsBattery)
-                short_++;
-        }
-
-        float batteryLeft = batteries;
-        if (mode && short_ > 0)
-            foreach (var c in consumers)
-            {
-                if (!c.GetsBattery || c.Granted >= c.Demand)
-                    continue;
-                float give = MathF.Min(c.Demand - c.Granted, batteryLeft / Math.Max(1, short_--));
-                batteryLeft -= give;
-                c.Granted += give;
-            }
-
-        float charged = 0, drained = 0;
-        if (supply <= 0)
-        {
-            float used = drained = batteries - batteryLeft;
-            foreach (var b in grid)
-                if (b.Data.IsBattery)
-                    b.Granted = used > 0 && batteries > 0 ? -used * b.Demand / batteries : 0;
-            _batteryMode[town] = true;
-        }
-        else
-        {
-            _batteryMode[town] = false;
-            charged = ChargeFromSurplus(world, grid, supply, batteries: grid.Count(b => b.Data.IsBattery));
-        }
-
-        foreach (var m in grid)
-        {
-            if (m.Data.IsConsumer)
-                m.Power = m.Demand > 0 ? m.Granted / m.Demand : 1;
-            else if (m.Data.IsGenerator)
-            {
-                // The load (GeneratorBuilding::vfunc_167): output / rated x (charging + consumer demand) / all generators' output, at most 1.
-                float rated = Rated(world, m);
-                m.Usage = generated > 0 && rated > 0 ? MathF.Min(1, m.Demand / rated * (charged + demandTotal) / generated) : 0;
-            }
-        }
-
-        _townPower[town] = new(generated, demandTotal, charged, drained, 0, 0);
-    }
+    static (int Town, int Owner) GridKey(World world, int town, int owner) =>
+        (town, world.Players.RequiresExplicitControl && town >= 0 ? owner : -1);
 
     /// <summary>
     /// The window's content for a finished prospecting (<b>Verified</b>/<b>Observed</b> per docs/game/ui-screens.md "Prospecting"), read from the ground at the prospector's feet; the wind is

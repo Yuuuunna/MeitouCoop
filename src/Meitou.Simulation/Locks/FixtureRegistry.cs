@@ -43,6 +43,11 @@ public sealed partial class FixtureRegistry
     public const float CageSearchScale = 4608;
 
     /// <summary>
+    /// BuildingDesignation 7, the police station (the bounty desk squads' and the police's <c>building designation</c>).
+    /// </summary>
+    const int PoliceDesignation = 7;
+
+    /// <summary>
     /// A sentence above this bounty is <see cref="LifeSentence"/> hours (economy.md 11.5).
     /// </summary>
     public const int LifeBounty = 25000;
@@ -373,6 +378,11 @@ public sealed partial class FixtureRegistry
     /// 27.8 away; the 24 saved sleepers of the Rebirth garrison's beds at distance 0, the next bed of the record 33 away).
     /// </summary>
     const float SavedSpotReach = 1;
+
+    /// <summary>
+    /// A bed's up axis this close to +Y (its y) counts as level: no lean (<see cref="LeanOf"/>).
+    /// </summary>
+    const float LevelUp = 0.9999f;
 
     /// <summary>
     /// Registers the fixtures of a town's buildings (<see cref="TownSite.Buildings"/>) once, then binds the held characters whose
@@ -742,12 +752,25 @@ public sealed partial class FixtureRegistry
         Owner = owner,
         Position = at,
         Yaw = TownBuildings.YawOf(rotation),
+        Rotation = rotation.LengthSquared() > 1e-12f ? Quaternion.Normalize(rotation) : null,
         Marker = WorldObjectLayout.PositionMarker(db, record, at, rotation),
         UseRange = 15,
         RecordId = record.StringId,
         HostRecordId = record.StringId,
         Bed = bed,
     };
+
+    /// <summary>
+    /// How a bed standing on a slope leans its sleeper: the turn that, applied after the sleeper's own yaw about +Y, gives the bed's whole
+    /// orientation turned to that yaw (the original writes the direction marker's whole quaternion to a sleeper, tilt included: <c>FUN_1405cf130</c>,
+    /// <c>FUN_140549720</c>, docs/game/locks.md "Lie spot"). Null for a level bed or one whose tilt is not known.
+    /// </summary>
+    public static Quaternion? LeanOf(Fixture bed)
+    {
+        if (bed.Rotation is not { } whole || Vector3.Transform(Vector3.UnitY, whole).Y >= LevelUp) return null;
+
+        return whole * Quaternion.CreateFromAxisAngle(Vector3.UnitY, -bed.Yaw);
+    }
 
     /// <summary>
     /// A nest's buildings leave the world: whoever its cages hold is let out first.
@@ -1541,7 +1564,9 @@ public sealed partial class FixtureRegistry
     /// "designated" buildings of two kinds nearest it, then any BF_BED building near it. The original takes the first in its building list's order (a
     /// set of pointers, or the finder's cell order) and, when the squad's home is not the building the character is in, passes over a bed with a cost
     /// above 1 (<b>Unknown</b> field); Meitou has no designated buildings, takes the nearest free bed of its town for the last two steps, and has no
-    /// cost test (engine choices).
+    /// cost test (engine choices). Those finders pass only an ally's building (<c>FUN_1408ca5d0</c>, <b>Verified</b>): the character's faction's or
+    /// one <see cref="CanUse(World, CharacterCold, Fixture)"/> accepts, so a homeless vagrant takes a bar's bed and never one in a private house,
+    /// where the residents would call it a trespasser (#618).
     /// </summary>
     Fixture? FindBedNpc(World world, int slot, CharacterCold c, Func<Fixture, bool>? skip)
     {
@@ -1561,6 +1586,8 @@ public sealed partial class FixtureRegistry
         foreach (var f in _all)
         {
             if (!Usable(f) || squad is { Town: >= 0 } && f.Site != squad.Town) continue;
+            if (f.Owner >= 0 && !CanUse(world, c, f)) continue;
+
             float d = Vector2.DistanceSquared(new Vector2(at.X, at.Z), new Vector2(f.Position.X, f.Position.Z));
             if (d < bestD) (best, bestD) = (f, d);
         }
@@ -1615,11 +1642,19 @@ public sealed partial class FixtureRegistry
         SetSentence(world, c, cage, prisonTime);
 
         // FUN_140330600 assigns the cage's owner handle as well as slave state 1. The resident squad stands in for that handle here.
-        if (c.SlaveOwner >= 0 && cage.Owner >= 0) Enslave(world, c, cage.Owner, CageMaster(world, cage));
+        if (TakesSlave(c, cage)) Enslave(world, c, cage.Owner, CageMaster(world, cage));
 
         NoteCaging(world, prisoner, cage, carrier);
         return true;
     }
+
+    /// <summary>
+    /// Whether caging <paramref name="c"/> makes it the cage owner's slave (<c>FUN_140330600</c>, <b>Observed</b>): it has an owner already, the
+    /// cage has one, and the cage's building (its parent, <c>+0xc4</c>) is no police station. A slaver's captive or an ex-slave jailed there keeps
+    /// its owner and state.
+    /// </summary>
+    bool TakesSlave(CharacterCold c, Fixture cage) =>
+        c.SlaveOwner >= 0 && cage.Owner >= 0 && RecordOf(cage.Building)?.Designation != PoliceDesignation;
 
     /// <summary>
     /// A caged character's sentence from the captor faction's booked bounty, or no sentence when it has none.
@@ -2050,7 +2085,7 @@ public sealed partial class FixtureRegistry
             f.Restored = !level || f.Kind == FixtureKind.Door && state.Ints.ContainsKey("state" + f.DoorIndex.ToString(CultureInfo.InvariantCulture));
             if (f.Contents is { } grid && Items is { } factory && ContainerSave.KeyOf(f, building) is { } contentsKey
                     && state.Strings.TryGetValue(contentsKey, out var saved))
-                ContainerSave.Read(saved, grid, factory);
+                ContainerSave.Read(saved, grid, factory, _usableData);
 
             if (f.Kind == FixtureKind.Door)
             {

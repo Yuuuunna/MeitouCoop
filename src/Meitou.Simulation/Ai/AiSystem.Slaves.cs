@@ -1,5 +1,6 @@
 using System.Numerics;
 using Meitou.Data.World;
+using Meitou.Data.Gameplay.Ai;
 
 namespace Meitou.Simulation.Ai;
 
@@ -19,8 +20,8 @@ public sealed partial class AiSystem
     /// The building a worker works at in the town at <paramref name="at"/>, the clip it plays there and the building's functionality
     /// (<see cref="PickWork"/>: a random workplace, the roll the character's and its <paramref name="epoch"/> of picks); null when the town has none.
     /// </summary>
-    internal (TownBuilding Building, string Clip, string? Functionality)? WorkAt(World world, CharacterId self, Vector3 at, int epoch) =>
-        TownAt(at) is >= 0 and var site && PickWork(world, self, site, epoch) is { } building
+    internal (TownBuilding Building, string Clip, string? Functionality)? WorkAt(World world, CharacterId self, Vector3 at, int epoch, TaskType type = TaskType.AutoLabouringMinesPretend) =>
+        TownAt(at) is >= 0 and var site && PickWork(world, self, site, epoch, type) is { } building
             ? (building, _work.ClipOf(building), _work.FunctionalityOf(building))
             : null;
 }

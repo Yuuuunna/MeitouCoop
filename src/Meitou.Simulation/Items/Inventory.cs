@@ -190,7 +190,8 @@ public sealed class Inventory(int width, int height)
 
     /// <summary>
     /// Moves units of <paramref name="item"/> into stacks of <paramref name="into"/> with room left (of <paramref name="section"/>, else of its
-    /// grids; <paramref name="dropReceipt"/>: plain stacks too); true when none are left.
+    /// grids; <paramref name="dropReceipt"/>: plain stacks too); true when none are left. Partial charges combine as in
+    /// <see cref="InventoryCommands.Merge"/>.
     /// </summary>
     static bool TopUp(Inventory into, ItemInstance item, bool dropReceipt, string? section = null)
     {
@@ -207,7 +208,11 @@ public sealed class Inventory(int width, int height)
             other.Quantity += move;   // clears other's receipt; the joined one is set after
             if (kept is not null) other.Buyback = kept.Append(coming!.Take(move));
             item.Quantity -= move;
-            if (item.Quantity == 0) return true;
+            if (item.Quantity > 0) continue;
+
+            // The last units bring the stack's partly used one: its charges join the kept stack's instead of being dropped (#620).
+            InventoryCommands.JoinPart(other, item.Charges);
+            return true;
         }
         return false;
     }
@@ -293,7 +298,8 @@ public sealed class Inventory(int width, int height)
     }
 
     /// <summary>
-    /// Adds the items (record, place, quantity, level, quality, charges, the unique flag, buy-back coins, a bag's contents) to the world hash.
+    /// Adds the items (record, place, quantity, level, quality, charges, the unique and rotated flags, buy-back coins, a bag's contents) to the world
+    /// hash.
     /// </summary>
     internal void Hash(ref StateHasher h)
     {
@@ -309,6 +315,7 @@ public sealed class Inventory(int width, int height)
             h.Add(i.Quality);
             h.Add(i.Charges);
             if (i.Unique) h.Add(Rng.StableHash("Unique"));
+            if (i.Rotated) h.Add(Rng.StableHash("Rotated"));
             if (i.Buyback is { } receipt)
             {
                 h.Add(Rng.StableHash("Buyback"));

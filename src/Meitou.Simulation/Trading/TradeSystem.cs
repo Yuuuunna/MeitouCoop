@@ -1,5 +1,6 @@
 using Meitou.Data.Gameplay;
 using Meitou.Data.Gameplay.Bodies;
+using Meitou.Data.Gameplay.Economy;
 using Meitou.Simulation.Aggro;
 using Meitou.Simulation.Ai;
 using Meitou.Simulation.Bodies;
@@ -89,6 +90,10 @@ public sealed record TradeItemView(int Index, string Record, string Name, string
     /// The item's material record ("" none), which picks its icon.
     /// </summary>
     public string Material { get; init; } = "";
+    /// <summary>
+    /// The item lies turned a quarter (<see cref="Items.ItemInstance.Rotated"/>): its size is the turned footprint's, and the icon is drawn turned.
+    /// </summary>
+    public bool Rotated { get; init; }
     /// <summary>
     /// The COLOR_DATA it is dyed with (<see cref="Items.ItemInstance.ColourId"/>), which picks its icon.
     /// </summary>
@@ -307,7 +312,12 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
 
     public void SlowWorld(World world)
     {
-        if (world.Tick % Settings.CheckEveryTicks == 0) { Stock(world); _wages.Pay(world); }
+        if (world.Tick % Settings.CheckEveryTicks == 0)
+        {
+            // Fresh characters receive wages before their shop's first fill replaces its purse.
+            _wages.Pay(world);
+            Stock(world);
+        }
         foreach (var interaction in _interactions.Values) interaction.Advance(world);
     }
 
@@ -387,6 +397,11 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
 
     // ------------------------------------------------------------------ shops
 
+    /// <summary>
+    /// Separates the stock placement stream from the stock selection stream.
+    /// </summary>
+    const ulong SpreadSalt = 0x5EEDB0C5UL;
+
     SquadTemplate? TemplateOf(string id)
     {
         if (!_templates.TryGetValue(id, out var t))
@@ -456,6 +471,25 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         }
         squad.Shop = UnfilledShop(squad, TemplateRecord(_data, squad.TemplateId));
         if (squad.Shop is { Building: not null } lent) TakeContents(world, lent);
+        else if (squad.Shop is { } carried) TakeBags(world, squad, carried);
+    }
+
+    /// <summary>
+    /// A homeless squad's new unfilled shop takes what its living members' worn bags hold: the original's window shows those bags merged
+    /// (<c>FUN_140953850</c>, docs/game/ui-screens.md section 6). <b>Engine choice</b>: the goods stay in the squad's stock from then on, as a
+    /// trader squad's do; what the stock has no room for stays in its bag.
+    /// </summary>
+    static void TakeBags(World world, Squad squad, Shop shop)
+    {
+        var table = world.Characters;
+
+        foreach (var m in squad.Members)
+        {
+            if (!table.TryResolveNext(m, out int slot) || table.Cold(slot) is not { DiedTick: < 0, Inventory.Backpack.Contents: { } bag }) continue;
+
+            foreach (var item in bag.Items.ToList())
+                if (shop.Stock.Add(item)) bag.Items.Remove(item);
+        }
     }
 
     /// <summary>The shop of a squad whose template fills none: a housed squad's over its home's stock containers (null without), else an empty stock.</summary>
@@ -560,20 +594,67 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     void StockHome(World world, Meitou.Data.World.TownBuilding home, SquadTemplate template, Trader terms, ulong key, bool first)
     {
         if (home.Turret is not null) return;
-        var boxes = new List<Locks.Fixture>();
-        foreach (var f in home.Fixtures)
-            if (f.HoldsShopStock && world.Fixtures.Find(f.Id) is { Contents: not null } box) boxes.Add(box);
-        if (boxes.Count == 0 || boxes.Any(b => b.Contents!.Items.Any(i => !i.Unique))) return;
+
+        var boxes = StockBoxes(world, home);
+        if (boxes.Count == 0 || boxes.Any(b => b.Grid.Items.Any(i => !i.Unique))) return;
         if (Shop.ForBuilding(home, terms) is not { } merged) return;
+
+        // The filler unlocks every stock container, then keeps those that can hold what the lists make (FUN_14095b210, FUN_14095a5b0).
+        foreach (var box in boxes)
+            if (box.Fixture.Lock is { } l) l.Locked = false;
+
+        var usable = HomeStock.Usable(boxes, VendorEntries(template, FactionRecord(terms.Faction)));
+        if (usable.Count == 0) return;
+
         merged.Fills = (int)world.Tick;
         ShopFiller.Fill(merged, template, Market(world), _data, world.Seed, key, specials: first);
-        foreach (var item in merged.Stock.Items)
-            foreach (var box in boxes)
-                if (box.Contents!.Add(item)) break;
-        foreach (var box in boxes)
-            if (box.Lock is { } l) l.Locked = false;
+
+        // Engine: the special items are spread with the vendor items (the original gives each to a container of a shuffle of its own first).
+        var rng = new RandomStream(world.Seed, Rng.Mix(key ^ SpreadSalt ^ ((ulong)merged.Fills << 40)), RngPurpose.Trade);
+        HomeStock.Spread(usable, merged.Stock.Items, Market(world).BaseValue, ref rng);
+
+        foreach (var box in usable)
+            if (box.Fixture.Lock is { } l) l.Locked = box.Grid.Items.Count > 0;   // FUN_1409565e0 locks the filled ones
     }
 
+    /// <summary>
+    /// The home's stock containers (<see cref="Meitou.Data.World.TownFixture.HoldsShopStock"/>) with their records' storage rules.
+    /// </summary>
+    List<StockBox> StockBoxes(World world, Meitou.Data.World.TownBuilding home)
+    {
+        var boxes = new List<StockBox>();
+
+        foreach (var f in home.Fixtures)
+        {
+            if (!f.HoldsShopStock || world.Fixtures.Find(f.Id) is not { Contents: not null } box) continue;
+
+            var record = _data.Db.Find(box.RecordId);
+            boxes.Add(new StockBox(box, record is null ? null : Data.Gameplay.Construction.MachineData.From(_data.Db, record)));
+        }
+
+        return boxes;
+    }
+
+    /// <summary>
+    /// Every entry of the vendor lists the template stocks from (<see cref="ShopFiller.VendorLinks"/>).
+    /// </summary>
+    List<VendorEntry> VendorEntries(SquadTemplate template, Data.GameRecord? faction)
+    {
+        var entries = new List<VendorEntry>();
+
+        foreach (var link in ShopFiller.VendorLinks(template, faction))
+        {
+            if (_data.Db.Find(link.Id) is { Type: Data.Fcs.FcsRecordType.VendorList } record)
+                entries.AddRange(VendorList.From(_data.Db, record).Entries);
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// Fills the shop again (the specials on its first fill), sets the squad's purse, relocks a building shop's containers that hold stock and sets
+    /// the next restock tick.
+    /// </summary>
     void Refill(World world, Squad squad, Shop shop, SquadTemplate template)
     {
         squad.Money = ShopFiller.Fill(shop, template, Market(world), _data, world.Seed, (ulong)squad.Id, specials: shop.Fills == 0);

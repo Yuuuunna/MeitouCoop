@@ -21,4 +21,8 @@ public sealed partial class CaptiveSystem : ITaskOwner
         tasks.Register(TaskType.AutoLabouringMines, _obedient);
         tasks.Register(TaskType.AutoLabouringMinesPretend, _obedient);
     }
+    /// <summary>
+    /// The player's real slave-work target, rechecked when production consumes the standing act-out.
+    /// </summary>
+    internal Meitou.Data.World.TownBuilding? ObedientWorkplace(World world, int slot) => _obedient.Workplace(world, slot);
 }

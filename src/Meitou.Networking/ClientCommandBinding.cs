@@ -302,8 +302,8 @@ public static class ClientCommandBinding
                 return dummy.Owner;
             if (view.Snapshot.Seats.FirstOrDefault(s => s.Id == site)is { } seat)
                 return seat.Owner;
-            if (ProductionSystem.IsNatural(site))
-                return -1;
+            foreach (var workSite in view.Snapshot.WorkSites)
+                if (workSite.Id == site) return workSite.Owner;
             throw Missing();
         }
 

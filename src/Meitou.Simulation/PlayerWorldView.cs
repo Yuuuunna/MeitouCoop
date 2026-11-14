@@ -115,6 +115,7 @@ public sealed partial class World
             {
                 CarriedBy = visible.Contains(character.CarriedBy) ? character.CarriedBy : CharacterId.None,
                 Carrying = visible.Contains(character.Carrying) ? character.Carrying : CharacterId.None,
+                Anchor = character.Anchor is { } anchor && visible.Contains(anchor.Carrier) ? anchor : null,
                 WantsToTalk = Characters.Cold(character.Id.Slot) is { IsPlayer: false } && Players.ControlOf(character.Id) is null &&
                     _dialogues?.HasInterrupt(character.Id, connection.Player) == true,
                 Controller = Players.ControlOf(character.Id)?.Player,
@@ -142,15 +143,11 @@ public sealed partial class World
         var buildings = Buildings.Published(BuildingRevision).Where(b => Nearby(b.Position) || Manage(b.Owner))
             .Select(b => (Manage(b.Owner) ? b : b with { Materials = [] }) with
             { AuthorityFaction = Construction.ConstructionSystem.Root(Buildings, Buildings.Find(b.Id))?.Owner ?? -1 }).ToArray();
+        var workSites = _production?.WorkSites(this, anchors, rules.Radius, Nearby) ?? [];
         var managedMachines = _production is null ? [] : Machines.All.Where(m => Manage(_production.StorageOwner(this, m.Site)))
             .Select(m => m.Site).ToHashSet(StringComparer.Ordinal);
         var machines = _production is null ? [] : Machines.All.Where(m => managedMachines.Contains(m.Site) || Nearby(m.Position))
-            .Select(m => managedMachines.Contains(m.Site) ? MachineSnapshot.Of(m, _production.Items) with
-            {
-                StorageRevision = MachineRevision(m),
-                ControlRevision = MachineControlRevision(m),
-                SiteRevision = _production.WorkSiteRevision(this, m.Site),
-            } : PublicMachine(MachineSnapshot.Of(m, _production.Items))).ToArray();
+            .Select(m => PublishMachineFor(connection.Player, m, managedMachines.Contains(m.Site))).ToArray();
         var openContainer = PublishContainer(connection.Player);
         if (openContainer is not null && (!visible.Contains(openContainer.ContainerOpener)
             || !Players.CanControl(connection.Player, openContainer.ContainerOpener))) openContainer = null;
@@ -172,6 +169,7 @@ public sealed partial class World
         var verbs = lead.IsNone ? [] : characters.Select(c => VerbFactsOf(lead, c.Id, state.Faction) is { } facts ? new CharacterVerbView(c.Id, facts) : null)
             .OfType<CharacterVerbView>().ToArray();
         var arrival = _dialogues?.ArrivalResultFor(connection.Player) ?? default;
+        var foliageOutposts = CaptureFoliageOutposts(population, anchors, rules.Radius, zones, Manage);
         var snapshot = new WorldSnapshot(Tick, characters)
         {
             TutorialFacts = PublishTutorialFacts(population, owned),
@@ -179,6 +177,7 @@ public sealed partial class World
                 (uint)s.Index < (uint)population!.SiteFactions.Count
                 && IsPlayerFaction(population!.SiteFactions[s.Index]) && (Nearby(s.Position) || Manage(population!.SiteFactions[s.Index])))
                 .Select(s => FoliageWorld.TownKey(s.Position.X, s.Position.Z)).Distinct().Select(k => new FoliageTownOwnership(k.Item1, k.Item2)).ToArray() ?? [],
+            FoliageOutposts = foliageOutposts,
             VerbLead = lead,
             Verbs = verbs,
             ArrivalSerial = arrival.Serial,
@@ -202,6 +201,7 @@ public sealed partial class World
             Towns = state.Towns.ToArray(),
             Camps = state.Camps.ToArray(),
             KnownFactions = state.KnownFactions.ToHashSet(),
+            MapSquads = _mapSquads.ForPlayer(this, connection.Player, Nearby),
             SquadAi = state.SquadAi,
             PlayerSquads = activeFaction?.Squads ?? [],
             ActiveSquad = activeFaction?.Squads.Any(s => s.Id == state.Squad) == true ? state.Squad : -1,
@@ -227,6 +227,7 @@ public sealed partial class World
                 .Select(c => c with { Occupant = visible.Contains(c.Occupant) ? c.Occupant : CharacterId.None }).ToArray(),
             OwnedTownBuildings = player.Memberships.Where(m => Manage(m.Key)).SelectMany(m => Fixtures.OwnedProperties(m.Key)).ToHashSet(StringComparer.Ordinal),
             Machines = machines,
+            WorkSites = workSites,
             MachinesVersion = Machines.Version,
             Research = activeFaction?.Research ?? ResearchSnapshot.Empty,
             UnlockedBuildings = activeFaction is not null ? Factions.Find(activeFaction.Faction)!.Research.Unlocked.ToHashSet(StringComparer.Ordinal) : new HashSet<string>(),
@@ -237,8 +238,10 @@ public sealed partial class World
                 .Where(p => managedMachines.Contains(p.Key)).ToDictionary(p => p.Key, p => (IReadOnlyList<CraftOptionView>)p.Value.ToArray(), StringComparer.Ordinal),
         };
         if (state.InspectedBuilding is { } inspected && (buildings.Any(b => b.Id == inspected) || doors.Any(d => d.Building == inspected)
+            || workSites.Any(s => s.Id == inspected) || machines.Any(m => m.Site == inspected)
             || snapshot.Beds.Any(b => b.Id == inspected) || snapshot.Cages.Any(c => c.Id == inspected) || snapshot.Containers.Any(c => c.Id == inspected)))
         {
+            snapshot = snapshot with { InspectedRichness = _production?.RichnessOf(this, inspected) };
             var detail = SystemOf<Locks.BedSystem>()?.DetailOf(this, inspected, state.Faction) ?? Fixtures.DetailOf(inspected, state.Faction);
             if (detail is not null) snapshot = snapshot with
             {
@@ -262,6 +265,36 @@ public sealed partial class World
             Weather = Weather is IWeatherPresentationSource source ? source.CaptureWeather() : Weather is null
                     ? new WeatherFrame(WeatherTime.FromHours(GameHours), []) { Enabled = false } : null
         };
+    }
+
+    /// <summary>
+    /// An outpost outside the observed circle can still change its foliage. Disclose its placement only while its influence reaches that circle
+    /// and any requested zones, using the same level-town reach and mesh margin as navigation.
+    /// </summary>
+    IReadOnlyList<FoliageTown> CaptureFoliageOutposts(PopulationData? population, IReadOnlyList<Vector3> anchors,
+        float radius, IReadOnlySet<ZoneCoordinate>? zones, Func<int, bool> manage)
+    {
+        float range = population is null ? 2000 : FoliageWorld.OutpostRange(population.Db);
+        float levelRange = population?.Sites.Where(s => s.Record.Type != Meitou.Data.Gameplay.TownType.NestMarker)
+            .Select(s => population.Db.Find(s.Record.Id)?.GetFloat("no-foliage range", 2000) ?? 2000).DefaultIfEmpty(0).Max() ?? 0;
+        var geometry = new Navigation.PlayerFoliageTowns([], levelRange);
+        double reach = radius + (double)Math.Max(range, levelRange) + Navigation.PlayerFoliageTowns.MeshPad;
+        float radiusSquared = (float)Math.Min(float.MaxValue, reach * reach);
+        return PublishFoliageOutposts(population, Observed);
+
+        bool Observed(Construction.PlayerTown outpost)
+        {
+            if (manage(outpost.Owner)) return true;
+            if (!InsideObservation(outpost.Position, null, anchors, radiusSquared)) return false;
+            var town = new FoliageTown(new(outpost.Position.X, outpost.Position.Z), range);
+            return zones is null || zones.Any(Affects);
+
+            bool Affects(ZoneCoordinate zone)
+            {
+                var (min, max) = Navigation.PlayerFoliageTowns.Box(zone);
+                return geometry.Affects(town, min, max, Navigation.PlayerFoliageTowns.MeshPad);
+            }
+        }
     }
 
     // Public character fields are opt-in. Adding a private field to the local snapshot never exposes it here.
@@ -293,6 +326,7 @@ public sealed partial class World
         Slave = c.Inspected ? c.Slave : null,
         Disguise = c.Inspected ? c.Disguise : null,
         Status = c.Inspected ? c.Status : null,
+        KidnapVictim = c.Inspected && c.KidnapVictim,
         Activity = c.Inspected ? c.Activity : null,
         RangedLine = c.Inspected ? c.RangedLine : null,
         BedRecoveryRate = c.Inspected ? c.BedRecoveryRate : null,
@@ -311,6 +345,8 @@ public sealed partial class World
         CarriedBy = c.CarriedBy,
         Carrying = c.Carrying,
         Carry = c.Carry,
+        Lean = c.Lean,
+        Anchor = c.Anchor,
         HeldTool = c.HeldTool,
         Scale = c.Scale,
         Task = c.Task,
@@ -325,6 +361,25 @@ public sealed partial class World
         PortraitSerial = c.PortraitSerial,
         Ragdoll = c.Ragdoll,
     };
+
+    /// <summary>
+    /// Work revisions identify visible machines; inventory requires nearby interaction or asset permission, and controls require asset permission.
+    /// </summary>
+    MachineSnapshot PublishMachineFor(PlayerId recipient, Machine machine, bool managed)
+    {
+        var view = MachineSnapshot.Of(machine, _production!.Items);
+        if (managed || _production.CanInspectStock(this, recipient, machine.Site))
+        {
+            return view with
+            {
+                StorageRevision = MachineRevision(machine),
+                ControlRevision = managed ? MachineControlRevision(machine) : 0,
+                SiteRevision = _production.WorkSiteRevision(this, machine.Site),
+            };
+        }
+
+        return PublicMachine(view) with { SiteRevision = _production.WorkSiteRevision(this, machine.Site) };
+    }
 
     static MachineSnapshot PublicMachine(MachineSnapshot m) => new(m.Site, m.Record, [], null, null, m.Farm, m.Status, 0, 0)
     {

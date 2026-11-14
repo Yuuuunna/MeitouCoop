@@ -38,6 +38,12 @@ public sealed partial class ProductionSystem
     const string NaturalPrefix = "natural:";
 
     /// <summary>
+    /// How near (X/Z) its rock's footprint an operator works it, twice that once stopped (<see cref="SiteReach.Within"/>). Engine choice (#587): the
+    /// original takes the rock's bounds box scaled 1.2 or its <c>use range</c> (50 iron, 100 copper) of its position marker.
+    /// </summary>
+    const float RockReach = 10;
+
+    /// <summary>
     /// The rocks' sites by id, made on first use (null: the id names no rock).
     /// </summary>
     readonly Dictionary<string, BuildSite?> _naturalSites = new(StringComparer.Ordinal);
@@ -48,7 +54,7 @@ public sealed partial class ProductionSystem
     readonly Dictionary<string, BuildSite> _restoredRocks = new(StringComparer.Ordinal);
     /// <summary>
     /// A rock site's centre and bounds radius from the host's rock source, with its mesh's shape (footprint and bounds box) and the instance's
-    /// transform when the source has the mesh: an operator inside them has reached the rock.
+    /// transform when the source has the mesh: an operator at the footprint has reached the rock (<see cref="RockReach"/>).
     /// </summary>
     readonly record struct RockBounds(Vector3 Centre, float Radius, RockShape? Shape, Matrix4x4 Transform)
     {
@@ -71,20 +77,6 @@ public sealed partial class ProductionSystem
             var nearest = Vector3.Transform(new Vector3(edge.X, local.Y, edge.Y), Transform);
             return Vector2.Distance(at, new Vector2(nearest.X, nearest.Z));
         }
-
-        /// <summary>
-        /// Whether <paramref name="from"/> is inside the footprint scaled 1.2 about the box's middle (taken at the box's height), else inside the
-        /// bounds circle scaled 1.2.
-        /// </summary>
-        public bool Touches(Vector3 from)
-        {
-            if (Shape is not { } shape || !Matrix4x4.Invert(Transform, out var inverse))
-                return Vector2.Distance(new Vector2(from.X, from.Z), Flat) < 1.2f * Radius;
-
-            var local = Vector3.Transform(new Vector3(from.X, Centre.Y, from.Z), inverse);
-            var mid = new Vector2((shape.Min.X + shape.Max.X) / 2, (shape.Min.Z + shape.Max.Z) / 2);
-            return shape.InsideXz(mid + (new Vector2(local.X, local.Z) - mid) / 1.2f);
-        }
     }
 
     /// <summary>
@@ -105,7 +97,37 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// A player site of the registry, else the rock a natural id names, else a town seat or training dummy; null for none.
     /// </summary>
-    BuildSite? Site(World world, string id) => world.Buildings.Find(id) ?? Seat(world, id) ?? Natural(world, id) ?? TownDummy(world, id) ?? TownTurret(world, id);
+    BuildSite? Site(World world, string id) => world.Buildings.Find(id) ?? Seat(world, id) ?? Natural(world, id) ?? TownDummy(world, id) ?? TownMachineSite(world, id);
+    /// <summary>
+    /// Resolves observable natural and level work targets from the world's trusted data, without starting production or claiming resources.
+    /// </summary>
+    public IReadOnlyList<WorkSiteView> WorkSites(World world, IReadOnlyList<Vector3> anchors, float radius, Func<Vector3, bool> visible)
+    {
+        var sites = new Dictionary<string, WorkSiteView>(StringComparer.Ordinal);
+        if (_nodes is not null)
+            foreach (var anchor in anchors)
+                foreach (var node in _nodes.Near(0, anchor.X, anchor.Z, radius))
+                {
+                    if (!visible(node.Position) || node.Record.Length == 0) continue;
+                    string id = NaturalId(node.Record, node.Position);
+                    if (!sites.ContainsKey(id) && Natural(world, id) is { } rock)
+                        sites[id] = new(id, rock.Position, rock.Owner, world.BuildingRevision(rock));
+                }
+
+        if (TownBuildingIndex(world) is { } buildings)
+            foreach (var (building, _) in buildings.Values)
+            {
+                if (world.Fixtures.IsDestroyed(building)) continue;
+                if (visible(building.Position) && Data(building.BuildingId) is not null && TownMachineSite(world, building.Key) is { } site)
+                    sites[site.Id] = new(site.Id, site.Position, site.Owner, world.BuildingRevision(site));
+                foreach (var piece in building.Pieces)
+                    if (visible(piece.Position) && Data(piece.RecordId) is not null
+                        && world.Fixtures.GetTownPieceMachineSite(world, building, piece) is { } part)
+                        sites[part.Id] = new(part.Id, part.Position, part.Owner, world.BuildingRevision(part));
+            }
+        return sites.Values.OrderBy(s => s.Id, StringComparer.Ordinal).ToArray();
+    }
+
     /// <summary>
     /// The training dummies' sites by id, made on first use.
     /// </summary>
@@ -150,6 +172,8 @@ public sealed partial class ProductionSystem
             || !float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float z))
             return null;
 
+        if (!float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(z)) return null;
+
         string record = id[NaturalPrefix.Length..at];
         if (_db.Find(record) is not { Type: FcsRecordType.Building } building || !building.GetBool("is foliage")) return null;
         if (Data(record) is not { Operable: true, Resource: not 0 }) return null;
@@ -184,9 +208,9 @@ public sealed partial class ProductionSystem
         (_naturalSites.GetValueOrDefault(id) ?? _restoredRocks.GetValueOrDefault(id)) is { } site ? (site.Owner, site.Town) : (-1, 0);
 
     /// <summary>
-    /// Whether a rock restored from a save still waits for the rock source to place it: its machine is kept, not dropped as a gone site's.
+    /// Whether a saved or previously available rock waits for its authoritative source: its inventory is kept, without allowing work.
     /// </summary>
-    bool RockAwaited(string id) => _restoredRocks.ContainsKey(id);
+    bool RockAwaited(string id) => _restoredRocks.ContainsKey(id) || _naturalSites.GetValueOrDefault(id) is { Complete: false };
 
     /// <summary>
     /// The rocks' resource yields by building instance, read from the resource map on first use.

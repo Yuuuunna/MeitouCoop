@@ -100,6 +100,17 @@ public sealed record TakeFromMachine(CharacterId Character, string Site, int Slo
     public bool BagFirst { get; init; }
 }
 
+/// <summary>
+/// The ARRANGE button of a machine's storage window, validated against the displayed machine control revision.
+/// </summary>
+public sealed record ArrangeMachine(string Site) : MachineControlCommand
+{
+    /// <summary>
+    /// The open container's session when arranging its grid; zero for a production machine.
+    /// </summary>
+    public ulong ContainerSessionId { get; init; }
+}
+
 /// <summary>Queues a research (paying its cost from the research benches when it was never paid).</summary>
 public sealed record QueueResearch(string Research) : FactionCommand;
 

@@ -53,6 +53,7 @@ public sealed partial class World
             .Concat(snapshot.Buildings.Select(b => b.Owner)).Concat(snapshot.Buildings.Select(b => b.AuthorityFaction))
             .Concat(snapshot.Machines.Select(m => m.AuthorityFaction)).Concat(snapshot.DoorPicks.Select(d => d.Owner))
             .Concat(snapshot.Containers.Select(c => c.Owner)).Concat(snapshot.Beds.Select(b => b.Owner))
-            .Concat(snapshot.Cages.Select(c => c.Owner)).Concat(snapshot.Outposts.Select(o => o.Owner)));
+            .Concat(snapshot.Cages.Select(c => c.Owner)).Concat(snapshot.Outposts.Select(o => o.Owner))
+            .Concat(snapshot.MapSquads.Select(s => s.Faction)).Concat(snapshot.WorkSites.Select(s => s.Owner)));
     }
 }

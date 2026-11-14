@@ -45,13 +45,46 @@ internal sealed class FoliageObstacles : IDisposable
     FoliageCatalog? _foliageCatalog;
     System.Collections.Frozen.FrozenSet<(int X, int Z)>? _ownership;
     /// <summary>
-    /// The placement reads <paramref name = "install"/>, <paramref name = "db"/> and <paramref name = "levels"/>.
+    /// The player's towns the placement shares; null: none are ever added.
     /// </summary>
-    public FoliageObstacles(GameInstall install, GameDatabase db, WorldLevelData levels)
+    readonly NavRuntimeBuildings? _runtime;
+
+    /// <summary>
+    /// The player's towns the kept zones were placed with.
+    /// </summary>
+    PlayerFoliageTowns _placedWith = PlayerFoliageTowns.None;
+
+    /// <summary>
+    /// The placement reads <paramref name="install"/>, <paramref name="db"/> and <paramref name="levels"/>, and keeps the towns of
+    /// <paramref name="runtime"/> (null: none) away.
+    /// </summary>
+    public FoliageObstacles(GameInstall install, GameDatabase db, WorldLevelData levels, NavRuntimeBuildings? runtime = null)
     {
         _install = install;
         _db = db;
         _levels = levels;
+        _runtime = runtime;
+    }
+
+    /// <summary>
+    /// The zones' kept obstacles that a player town founded, moved or gone since they were placed can change are dropped: they are placed again
+    /// with the towns as they are now (the original places a zone's foliage when it pages in, against the live town list; here the next gather of
+    /// the zone is the nearest the host comes to that).
+    /// </summary>
+    void UseTowns(PlayerFoliageTowns towns)
+    {
+        if (ReferenceEquals(towns, _placedWith)) return;
+
+        foreach (var town in PlayerFoliageTowns.Difference(_placedWith.Towns, towns.Towns))
+        {
+            foreach (var zone in _foliageZones.Keys)
+            {
+                var (min, max) = PlayerFoliageTowns.Box(zone);
+                if (towns.Affects(town, min, max, 0)) _foliageZones.TryRemove(zone, out _);
+            }
+        }
+
+        _placedWith = towns;
     }
 
     /// <summary>
@@ -71,6 +104,7 @@ internal sealed class FoliageObstacles : IDisposable
                 previous.Dispose();
         }
 
+        UseTowns(_runtime?.FoliageTowns ?? PlayerFoliageTowns.None);
         var missing = zones.Where(z => !_foliageZones.ContainsKey(z)).ToList();
         if (missing.Count > 0)
         {
@@ -105,6 +139,9 @@ internal sealed class FoliageObstacles : IDisposable
     {
         if (!_foliagePool.TryTake(out var world))
             world = new FoliageWorld(_install, _db, _levels, _foliageCatalog, _overlayTiles, ownedTowns: _ownership);
+
+        world.ExtraTowns = _placedWith.Towns;
+
         try
         {
             var list = new List<FoliageObstacle>();

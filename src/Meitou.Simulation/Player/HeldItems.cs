@@ -56,7 +56,8 @@ sealed class HeldItems(PopulationData? data)
             if (command.Issuer is not null)
             {
                 if (!world.Characters.TryResolveNext(actor, out int slot) || world.Characters.Cold(slot) is not
-                    { Medical.Incapacitated: false, IsImprisoned: false } acting || !acting.CarriedBy.IsNone) return;
+                    { Medical.Dead: false, IsImprisoned: false } acting || !acting.CarriedBy.IsNone
+                    || acting.Medical.Incapacitated && !DownedWindowAction(world, command, actor, state)) return;
                 if (command is LiftItem take && (!HeldOwnerMatches(world, take.From, take.InventoryRevision, take)
                     || take.From.Holder == ItemHolder.Character && world.MayOrder(take, take.From.Character) && take.Actor != take.From.Character)) return;
                 if (state.Held is { } held && command is not ReturnHeld && !HeldSourceValid(world, held)) { ReturnHeldItem(world); return; }
@@ -68,6 +69,24 @@ sealed class HeldItems(PopulationData? data)
             HeldInputCore(world, command);
         }
         finally { _heldPlayerId = previousPlayer; _heldRequest = previousRequest; }
+    }
+
+    /// <summary>
+    /// A living downed character may keep using its own inventory or its already-authorized trade window, without reaching another owner.
+    /// </summary>
+    bool DownedWindowAction(World world, HeldCommand command, CharacterId actor, PlayerState state)
+    {
+        bool Window(ItemOwner owner) => owner == ItemOwner.Of(actor) || owner.Holder == ItemHolder.Stock
+            && world.SystemOf<Trading.TradeSystem>()?.OpenStock(world, out var buyer, _heldPlayerId) is not null && buyer == actor;
+        if (command is LiftItem lift) return Window(lift.From);
+        if (state.Held is not { } held || !Window(held.From)) return false;
+        return command switch
+        {
+            PlaceHeld place => Window(place.Into),
+            ReturnHeld or RotateHeld => true,
+            DropHeld => held.From == ItemOwner.Of(actor),
+            _ => false,
+        };
     }
 
     #region Windows and items
@@ -110,7 +129,6 @@ sealed class HeldItems(PopulationData? data)
         if (units >= item.Quantity) return item;
         var part = item.WithQuantity(units);   // the first units, with their receipt's first coins
         item.Quantity -= units;
-        if (part.MaxCharges > 0) part.Charges = part.MaxCharges;
         return part;
     }
 
@@ -144,6 +162,16 @@ sealed class HeldItems(PopulationData? data)
        HeldPlayer(
        world).Held = NewHeld(world, unit, lift.From, grid, section, x, y, lift.Actor,
            lift.Issuer is null ? null : world.Players.ControlOf(lift.Actor), lift.SessionId, lift.ContainerSessionId);
+
+    /// <summary>
+    /// Turns the held item a quarter (<see cref="RotateHeld"/>); nothing for a square one.
+    /// </summary>
+    void Rotate(World world)
+    {
+        if (HeldPlayer(world).Held is not { Item: var item } || item.Width == item.Height) return;
+
+        item.Rotated = !item.Rotated;
+    }
 
     /// <summary>
     /// Lifts an item out of a character window, the trader's stock or a site; nothing while one is held.
@@ -215,7 +243,8 @@ sealed class HeldItems(PopulationData? data)
     {
         var t = lift.Item;
         string site = lift.From.Site;
-        if (ContainerAccess.ContainerFor(world, site, lift.Actor, out var opener, lift, lift.ContainerSessionId) is { } container)
+        if ((lift.ContainerSessionId != 0 || world.Machines.Find(site) is null)
+            && ContainerAccess.ContainerFor(world, site, lift.Actor, out var opener, lift, lift.ContainerSessionId) is { } container)
         {
             if (opener is null || HeldPlayer(world).OpenContainer != site) return;
             var grid = ContainerAccess.GridOf(world, container, out var region);
@@ -322,6 +351,9 @@ sealed class HeldItems(PopulationData? data)
             return;
         }
 
+        // Outside the grids an item lies as its record has it; a refusal below puts it back as it lay (ReturnHeldItem).
+        if (!InventoryCommands.IsGridSection(target.Section)) item.Rotated = false;
+
         // Money moved out of another's window into the player's own becomes cats.
         if (item.ItemFunction == PlayerSystem.MoneyFunction && target.Owner is { IsPlayer: true } && !HeldItemTheft.FromPlayerWindow(world, held)
                 && !buy)
@@ -408,7 +440,8 @@ sealed class HeldItems(PopulationData? data)
                     ? new(stock, stock, "main", stock.Width, stock.Height, null, null, null) : null;
             default:
                 if (place.Section != "main") return null;
-                if (ContainerAccess.ContainerFor(world, into.Site, held.Actor, out var opener, _heldRequest, _heldRequest?.ContainerSessionId ?? held.ContainerSessionId) is { } container)
+                if (((_heldRequest?.ContainerSessionId ?? 0) != 0 || world.Machines.Find(into.Site) is null)
+                    && ContainerAccess.ContainerFor(world, into.Site, held.Actor, out var opener, _heldRequest, _heldRequest?.ContainerSessionId ?? held.ContainerSessionId) is { } container)
                     return opener is not null && HeldPlayer(world).OpenContainer == into.Site && ContainerAccess.ShopOf(world,
                             container) is null ? new(ContainerAccess.GridOf(world, container), ContainerAccess.GridOf(world, container), "main",
                                     ContainerAccess.GridOf(world, container).Width, ContainerAccess.GridOf(world, container).Height, null, container,
@@ -706,8 +739,8 @@ sealed class HeldItems(PopulationData? data)
     /// <summary>
     /// Gives the held item to a character in the world (<c>FUN_1407136a0</c>): someone other than its window's owner, within <see cref="GiveRange"/>
     /// (<see cref="StealRange"/> for a non-player window's item; "Out of trading range."), added where it fits in its inventory
-    /// (<see cref="Inventory.Add"/>). Nothing fits: "No room for that item." and it goes back; what does not fit stays on the mouse. Stock is not
-    /// given away.
+    /// (<see cref="Inventory.Add"/>; a live animal's worn bag only, <see cref="InventoryCommands.MainClosed"/>), else in a free slot that takes it.
+    /// Nothing fits: "No room for that item." and it goes back; what does not fit stays on the mouse. Stock is not given away.
     /// </summary>
     void Give(World world, GiveHeld give)
     {
@@ -738,8 +771,17 @@ sealed class HeldItems(PopulationData? data)
         var mark = item.Mark;
         int before = item.Quantity;
         (item.Death, item.Mark) = (false, HeldItemTheft.MarkFor(world, held, taker, overwrite: true));
-        // A whole stack that fits goes in as the item itself, its quantity unchanged: only the result tells it apart from nothing fitting.
-        bool all = into.Add(item);
+        // A whole stack that fits goes in as the item itself, its quantity unchanged: only the result tells it apart from nothing fitting. A live
+        // animal's shut grid takes nothing (InventoryCommands.MainClosed), only its worn bag does: food given to a bagless dog is "No room for that
+        // item." in the original.
+        bool all = InventoryCommands.MainClosed(taker)
+            ? into.Backpack?.Contents is { } bag && bag.AddTo("backpack_content", item)
+            : into.Add(item);
+
+        // Engine choice, as a pick-up: what no grid takes goes into a free slot that takes it (a polearm fits no grid, only the back slot).
+        bool worn = !all && item.Quantity == before
+                && (InventoryCommands.TryEquip(into, item, taker) || InventoryCommands.TryWearBag(into, item, taker));
+        all |= worn;
         if (!all && item.Quantity == before)
         {
             (item.Death, item.Mark) = (death, mark);
@@ -750,6 +792,7 @@ sealed class HeldItems(PopulationData? data)
         if (all) player.Held = null;
         else
             (item.Death, item.Mark) = (death, mark);
+        if (worn) _assembly?.RefreshEquipment(taker);
         HeldItemTheft.LeftLoot(world, held, death);
         if (held.From.Holder == ItemHolder.Site) world.Machines.Touch();
     }
@@ -841,6 +884,7 @@ sealed class HeldItems(PopulationData? data)
         if (player.Held is not { } held) return;
         player.Held = null;
         var item = held.Item;
+        item.Rotated = held.Rotated;   // as it lay, so its old cell takes it
         bool missingStock = held.From.Holder == ItemHolder.Stock
             && !world.Squads.All.Any(squad => ReferenceEquals(squad.Shop?.Stock, held.Grid));
         bool replacedCharacter = held.From.Holder == ItemHolder.Character
@@ -906,7 +950,8 @@ sealed class HeldItems(PopulationData? data)
 
     /// <summary>
     /// Each tick: the held item goes back when its window is gone (the loot, trade or container closed, its character gone) or its holder is gone, or
-    /// down while working another's window. A downed player character's own items still move (<b>Observed</b> in the original by a player, #329).
+    /// down while working another's window. A downed player character's own items still move (<b>Observed</b> in the original by a player, #329),
+    /// and so does stock lifted by a knocked-out (not dead) customer while the trade stays open with them (<c>TradeSystem.OpenStock</c>).
     /// </summary>
     internal void KeepHeld(World world)
     {
@@ -940,13 +985,15 @@ sealed class HeldItems(PopulationData? data)
         if (owner.Holder == ItemHolder.Stock)
             return world.SystemOf<Trading.TradeSystem>() is { } trade && trade.HeldSessionMatches(world, _heldPlayerId, command.SessionId)
                 && trade.OpenStock(world, out _, _heldPlayerId) is { } stock && revision != 0 && world.InventoryRevision(stock) == revision;
-        if (world.Fixtures.Find(owner.Site) is { Contents: not null } box)
+        if ((command.ContainerSessionId != 0 || world.Machines.Find(owner.Site) is null)
+            && world.Fixtures.Find(owner.Site) is { Contents: not null } box)
             return ContainerFor(world, owner.Site, command is LiftItem take ? take.Actor : HeldPlayer(world).Held?.Actor ?? CharacterId.None,
                 out var actor, command, command.ContainerSessionId) is not null && actor is not null
                 && revision != 0 && world.InventoryRevision(GridOf(world, box)) == revision;
         if (world.Machines.Find(owner.Site) is not { Closed: false } machine || revision == 0 || world.MachineRevision(machine) != revision
-            || world.Buildings.Find(owner.Site) is not { } site || command.SiteRevision == 0 || world.BuildingRevision(site) != command.SiteRevision) return false;
-        return world.Fixtures.Find(owner.Site)?.Lock is not { EffectivelyLocked: true } && (site.Owner < 0
+            || world.SystemOf<Production.ProductionSystem>()?.SaveWorkSite(world, owner.Site) is not { } site || command.SiteRevision == 0 || world.BuildingRevision(site) != command.SiteRevision) return false;
+        return world.SystemOf<Production.ProductionSystem>()?.MayAccessMachine(world, _heldPlayerId, owner.Site) == true && (site.Owner < 0
+            || Production.ProductionSystem.PublicTownWork(world, site)
             || world.Players.Find(_heldPlayerId) is { } player && player.HasPermission(site.Owner, FactionPermission.ManageAssets)
             && command.FactionGrantRevision != 0 && player.MembershipRevision(site.Owner) == command.FactionGrantRevision);
     }
@@ -954,8 +1001,8 @@ sealed class HeldItems(PopulationData? data)
     bool HeldSourceValid(World world, HeldItem held)
     {
         if (held.SourceControl is { } sourceControl && !world.Players.Validate(sourceControl)) return false;
-        if (held.ControlGrant is not null && held.From.Holder == ItemHolder.Site && world.Fixtures.Find(held.From.Site) is not { Contents: not null }
-            && (world.Buildings.Find(held.From.Site) is not { } original || world.BuildingRevision(original) != held.SourceSiteRevision
+        if (held.ControlGrant is not null && held.From.Holder == ItemHolder.Site && held.ContainerSessionId == 0
+            && (world.SystemOf<Production.ProductionSystem>()?.SaveWorkSite(world, held.From.Site) is not { } original || world.BuildingRevision(original) != held.SourceSiteRevision
                 || original.Owner != held.SourceFaction || world.Players.Find(_heldPlayerId)?.MembershipRevision(original.Owner) != held.SourceMembershipRevision)) return false;
         if (held.From.Holder == ItemHolder.Stock)
             return held.ControlGrant is null ? world.SystemOf<Trading.TradeSystem>()?.OpenStock(world, out _, _heldPlayerId) is not null
@@ -964,11 +1011,12 @@ sealed class HeldItems(PopulationData? data)
             return CharacterWindow(world, held.From.Character, held.Actor, out _) is not null
                 && (held.ControlGrant is null || world.Players.ControlOf(held.From.Character)?.Player == _heldPlayerId
                     || held.SessionId != 0 && held.SessionId == (ulong)Math.Max(0, HeldPlayer(world).LootSessionId));
-        if (world.Fixtures.Find(held.From.Site) is { Contents: not null })
+        if ((held.ContainerSessionId != 0 || world.Machines.Find(held.From.Site) is null)
+            && world.Fixtures.Find(held.From.Site) is { Contents: not null })
             return held.ControlGrant is null ? HeldPlayer(world).OpenContainer == held.From.Site
                 : HeldPlayer(world).ContainerAccess is { } access && access.Id == held.ContainerSessionId && access.Valid(world) && access.InRange(world);
-        return world.Machines.Find(held.From.Site) is { Closed: false } machine && world.Buildings.Find(held.From.Site) is { } site
-            && (site.Owner < 0 || world.Players.Find(_heldPlayerId)?.HasPermission(site.Owner, FactionPermission.ManageAssets) == true)
+        return world.Machines.Find(held.From.Site) is { Closed: false } machine && world.SystemOf<Production.ProductionSystem>()?.SaveWorkSite(world, held.From.Site) is { } site
+            && world.SystemOf<Production.ProductionSystem>()?.MayAccessMachine(world, _heldPlayerId, site.Id) == true
             && world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, machine.Site, out _) is not null;
     }
 
@@ -982,13 +1030,14 @@ sealed class HeldItems(PopulationData? data)
             case GiveHeld give: Give(world, give); break;
             case DropHeld: DropHeldItem(world); break;
             case ReturnHeld: ReturnHeldItem(world); break;
+            case RotateHeld: Rotate(world); break;
         }
     }
 
     HeldItem NewHeld(World world, ItemInstance item, ItemOwner from, Inventory? grid, string section, int x, int y,
             CharacterId actor, CharacterControl? control, ulong session, ulong containerSession)
     {
-        var site = from.Holder == ItemHolder.Site ? world.Buildings.Find(from.Site) : null;
+        var site = from.Holder == ItemHolder.Site ? world.SystemOf<Production.ProductionSystem>()?.SaveWorkSite(world, from.Site) : null;
         return new HeldItem
         {
             Item = item,
@@ -997,6 +1046,7 @@ sealed class HeldItems(PopulationData? data)
             Section = section,
             X = x,
             Y = y,
+            Rotated = item.Rotated,
             Actor = actor,
             ControlGrant = control,
             SourceControl = from.Holder == ItemHolder.Character ? world.Players.ControlOf(from.Character) : null,
@@ -1019,7 +1069,10 @@ sealed class HeldItems(PopulationData? data)
         if (HeldPlayer(world).Held is not { } held) return;
         if (held.ControlGrant is { } grant && !world.Players.Validate(grant)) { ReturnHeldItem(world); return; }
         var table = world.Characters;
-        bool keep = HeldSourceValid(world, held) && table.TryResolveNext(held.Actor, out int a) && table.Cold(a) is { } actor && actor.Medical is not { Incapacitated: true } && held.From.Holder switch
+        bool own = held.From == ItemOwner.Of(held.Actor);
+        bool stock = held.From.Holder == ItemHolder.Stock;
+        bool keep = HeldSourceValid(world, held) && table.TryResolveNext(held.Actor, out int a) && table.Cold(a) is { } actor && (own
+                || actor.Medical is not { Incapacitated: true } || (stock && actor.Medical is not { Dead: true })) && held.From.Holder switch
         {
             ItemHolder.Character => CharacterWindow(world, held.From.Character, held.Actor, out _) is not null,
             ItemHolder.Stock => world.SystemOf<Trading.TradeSystem>()?.OpenStock(world, out _, _heldPlayerId) is not null,
@@ -1051,7 +1104,7 @@ sealed class HeldItems(PopulationData? data)
 
     static void ReturnToMachine(World world, HeldItem held, ItemInstance item)
     {
-        if (world.Buildings.Find(held.From.Site) is not { } site || world.BuildingRevision(site) != held.SourceSiteRevision)
+        if (world.SystemOf<Production.ProductionSystem>()?.SaveWorkSite(world, held.From.Site) is not { } site || world.BuildingRevision(site) != held.SourceSiteRevision)
         {
             Ground(world, item, held.Origin, 0);
             return;

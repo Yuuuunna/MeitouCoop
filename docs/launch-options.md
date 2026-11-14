@@ -215,7 +215,7 @@ An option whose Effect names a settings row sets that row for the run only: the 
 | `--meitou <ids>` | comma list of ids, or `all` | all | Turns the listed Meitou enhancements on. |
 | `--faithful <ids>` | comma list of ids, or `all` | | Turns the listed enhancements off, giving the game's look. |
 
-Ids (`Enhancements.cs`): `ao`, `contact`, `dither`, `haze`, `aa`, `shadows`, `range`, `impostors`, `reach`, `water`, `particles`, `lod`, `gi`, `tonemap`, `shafts`, `heathaze`, `night`, `planetshine`, `stars`, `nightgrade`, `clouds`, `cloudshadows`, `cloudfog`, `interiorgi`, `charlod`, `skin`, `interiorlamps`, `icons`, `blood`, `bloodsurfaces`, `footprints`, `parallax`, `displace`, `weld`, `tracers`, `fog`, `gihybrid`, `chars2` (off by default), `trails`, `contactfoam`, `dof`, `gtao` (off by default, also needs `ao`; `--meitou all` turns it on), `lampshadows` (off by default, in no look), `ssr` (off by default), `traced`. The strength of each is a Tab slider.
+Ids (`Enhancements.cs`): `ao`, `contact`, `dither`, `haze`, `aa`, `shadows`, `range`, `impostors`, `reach`, `water`, `particles`, `lod`, `gi`, `tonemap`, `shafts`, `heathaze`, `night`, `planetshine`, `stars`, `nightgrade`, `clouds`, `cloudshadows`, `cloudfog`, `interiorgi`, `charlod`, `skin`, `interiorlamps`, `icons`, `blood`, `bloodsurfaces`, `footprints`, `parallax`, `displace`, `weld`, `tracers`, `fog`, `gihybrid`, `chars2` (off by default), `trails`, `contactfoam`, `dof`, `gtao` (off by default, also needs `ao`; `--meitou all` turns it on), `lampshadows` (off by default, in no look), `ssr` (off by default), `traced`, `lampwarmth`. The strength of each is a Tab slider.
 
 ### Benchmarks and A/B (`--screenshot`, offscreen)
 
@@ -337,7 +337,7 @@ These have no user-facing docs; options are from their top-level argument loops.
 | `MEITOU_BENCH_ONLY` | `src/Meitou.Game/PlayBench` | Comma list of `--play-bench` segments to run (e.g. `settle,zoom`). |
 | `MEITOU_TERRAIN_NO_NORMAL` | `src/Meitou.Game/Host/MetalGameLoop.cs` | `1`/`true`: terrain shader variant without normal mapping (A/B; fixed before the first draw). |
 | `MEITOU_METAL_GPU_BUDGET_MB` | `src/Meitou.Game/Host/MetalGameLoop.cs` | Metal video-memory budget in MB (default: a third of the Mac's memory in 256 MB steps, 5120 to 10240, never above the device's recommended working set: `MetalMemoryBudget`). The launcher sets it on macOS unless its budget is Auto; `--metal-gpu-budget` wins over it. |
-| `MEITOU_METAL_NO_TAA` | `Host/MetalGameLoop.cs` | `1`/`true`: native size, no jitter, no temporal resolve (diagnostic). |
+| `MEITOU_METAL_NO_TAA` | `Host/MetalGameLoop.cs` | `1`/`true`: the upscaler Disabled (no jitter, no temporal resolve; diagnostic); in full screen the scene keeps the saved render resolution. |
 | `MEITOU_METALFX` | `Host/MetalGameLoop.cs` | `1`/`true`: MetalFX upscaler (same as `--upscaler metalfx`). |
 | `MEITOU_METALFX_SPATIAL` | `Host/MetalGameLoop.cs` | `1`/`true`: MetalFX spatial mode. |
 | `MEITOU_METAL_FOLIAGE` | `Host/MetalGameLoop.cs` | `0`: foliage off on Metal (on by default). |

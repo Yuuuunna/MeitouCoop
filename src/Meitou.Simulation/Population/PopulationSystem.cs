@@ -335,6 +335,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         RefreshStates(world);
         RefreshZones(world);
         StepRoaming(world);
+        RejoinSeparated(world);
         StepCampaigns(world);
         StepWarManager(world);
         world.ItemSlots.Step(world, _data);
@@ -1151,6 +1152,14 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         var hot = SpawnMotion(world, built, squad, plan, race, hasLeader, player, idle, yaw);
         var seedId = creationSeed.HasValue ? new CharacterId(plan.Index, 1) : table.PeekNextId();
         var cold = AssembleMember(world, member, squad.Faction, squad.Id, player, seedId, ref hot, creationSeed);
+
+        // A new pack animal's bag takes its squad's goods (FUN_14062a130, Verified).
+        if (plan.IsAnimal && record is not null && cold.Inventory is { } carried)
+        {
+            ulong key = Rng.Key(seedId);
+            Items.PackLoad.Fill(_data, carried, record, built.Plan.Template, built.Home is null, squad.Faction, creationSeed ?? world.Seed, key);
+        }
+
 
         ApplyRecordSlave(world, cold, record, site);
 

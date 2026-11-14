@@ -726,10 +726,11 @@ public sealed partial class UiPainter : IDisposable
         || texture.StartsWith(IconPrefix, StringComparison.Ordinal) && !_textures.ContainsKey(texture);
 
     /// <summary>
-    /// Whether an ImageBox's texture can be drawn now: a file icon only once loaded, a rendered icon once the host has made it (this asks for it).
+    /// Whether an ImageBox's texture can be drawn now: a file icon only once loaded, a rendered icon once the host has made it (this asks for
+    /// either).
     /// </summary>
     bool IsImageReady(string texture) =>
-        (!texture.StartsWith(IconPrefix, StringComparison.Ordinal) || _textures.ContainsKey(texture))
+        (!texture.StartsWith(IconPrefix, StringComparison.Ordinal) || IconReady(texture[IconPrefix.Length..]))
         && (!texture.StartsWith(RenderedIconPrefix, StringComparison.Ordinal) || RenderedIconReady(texture));
 
     /// <summary>
@@ -1463,7 +1464,7 @@ public sealed partial class UiPainter : IDisposable
     /// <summary>
     /// The start of an <see cref="IconTexture"/> name.
     /// </summary>
-    const string IconPrefix = "file:";
+    const string IconPrefix = Meitou.Game.Ui.UiHost.FileImagePrefix;
 
     /// <summary>
     /// The most decoded icons <see cref="Draw"/> uploads in a frame.

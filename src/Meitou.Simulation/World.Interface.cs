@@ -35,6 +35,8 @@ public sealed partial class World
             or Locks.PickLockOrder or Locks.GetOutOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
             or Locks.DoorOrder or Locks.SetFreeOrder or Locks.GetInCageOrder or Locks.ForceLockOrder or Locks.UseBedOrder or Locks.PutInBedOrder
             or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder or Carrying.StealthKoOrder
+            or Items.RotateItem or Production.ArrangeMachine or Ai.SetSquadAutonomy or Ai.SetSquadHome
+            or DebugGiveItem or DebugPlaceItem
             or Items.PickUpItemOrder or Trading.OpenPlayerTrade or Trading.PlayerTradeCommand or Carrying.CloseLoot
             or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder);
         if (due.Count == 0 && authorityCount == 0) { RuntimeBoundary?.Invoke(this); return; }
@@ -45,7 +47,7 @@ public sealed partial class World
             PlayerTrades.Inputs(this, due);
             foreach (var system in _systems)
                 if (due.Count > 0 && (system is IOrderOwner || system is (PlayerSystem or Carrying.CarrySystem or Production.ProductionSystem or Trading.TradeSystem or Construction.ConstructionSystem or Dialogue.DialogueSystem
-                    or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem)))
+                    or Ai.AiSystem or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem)))
                     system.Inputs(this, due);
             PlayerOrders.ValidateAuthority(this);
             Decisions.Run(this, paused: true);

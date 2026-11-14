@@ -217,6 +217,17 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         return true;
     }
     /// <summary>
+    /// Turns an authorized character's grid item in place after validating the inventory revision.
+    /// </summary>
+    static void RotateItem(World world, Items.RotateItem rotate)
+    {
+        if (!world.MayOrder(rotate, rotate.Character) || !world.Characters.TryResolveNext(rotate.Character, out int slot)) return;
+        if (world.Characters.Cold(slot) is not { Inventory: { } inventory } || !world.InventoryMatches(rotate, inventory)) return;
+
+        Items.InventoryCommands.Rotate(inventory, rotate.Item);
+    }
+
+    /// <summary>
     /// Applies orders and transactions using the current command's grants.
     /// </summary>
     void ApplyActionCommand(World world, PlayerState player, SimCommand command)
@@ -238,6 +249,9 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                 break;
             case Items.TransferInventoryItem transfer:
                 InventoryTransfer.Transfer(world, transfer, _assembly, data);
+                break;
+            case Items.RotateItem rotate:
+                RotateItem(world, rotate);
                 break;
             case RenameFactionCommand rename:
                 RenameFaction(world, rename);
@@ -282,7 +296,11 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         var table = world.Characters;
         var candidates = (select.Issuer is null ? select.Characters : world.CommandCharacters(select, select.Characters)).Where(id =>
             table.TryResolveNext(id, out int slot) && table.Cold(slot)!.IsPlayer).ToArray();
-        if (candidates.Length == 0) return;
+        if (candidates.Length == 0)
+        {
+            if (select.Clear && !select.Additive && select.Characters.Count == 0) player.Selection.Clear();
+            return;
+        }
         // A non-additive select with any candidate clears the selection first; the gate then keeps out the dead (FUN_1407f3b50, FUN_1407f7f20).
         if (!select.Additive && !(select.Toggle && candidates.Length == 1 && player.Selection.Contains(candidates[0]))) player.Selection.Clear();
         var selectable = candidates.Where(id => !(table.TryResolveNext(id, out int living) && table.Cold(living)!.Medical is { Dead: true })).ToArray();

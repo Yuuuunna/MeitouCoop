@@ -67,7 +67,7 @@ starve under FIFO append-and-skip path scheduling even when receipts remain fast
 This reproduces without a remote link bottleneck: RTT <1 ms and roughly 340 kbit/s bidirectional UDP application payload.
 Current scheduling is specified in [simulation](simulation.md#threading).
 
-**Observed** (same checkpoint scenario, current Release build): single, held-fixed and held-changing phases all move the original
+**Observed** (same checkpoint scenario, Release reproduction): single, held-fixed and held-changing phases all move the original
 role roughly 100 units. Their first path queue waits were 0.013/0.010/0.010 ms; 50 ms sampling first observed authority motion at
 62/123/122 ms and replica motion at 122/185/122 ms. These are individual loopback observations, not percentiles, exact
 input-to-render measurements, controlled Debug/Release speedups or VPS/wire-throughput acceptance.
@@ -351,6 +351,10 @@ still rechecks authority before submitting additional bytes.
 
 **Observed** (schema): world field 1055, `ContainerOpener`, belongs to the independent Interaction component. Its recipient projection and
 display-time withdrawal rules are described in [networking](networking.md).
+World fields 1056–1058 add `MapSquads` (Knowledge), `WorkSites` and `FoliageOutposts` (Scene); character fields 2093–2096 add
+`FirstSelected` (Details), `KidnapVictim` (Vitals), `Lean` and `Anchor` (Animation). Existing IDs are unchanged. Command IDs 36, 60, 61,
+79 and 166 encode item rotation, squad autonomy, squad home, machine arrangement and held rotation respectively. The engine/build
+compatibility identity fences peers with older component or command schemas; protocol 21 framing is unchanged.
 
 The receiver and renderer share a monotonic authority-clock estimate. Receive-side sampling consumes
 due animation transitions while content/GPU loading has no renderer callbacks; renderer frame deltas do

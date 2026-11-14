@@ -166,10 +166,12 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         EnsureNotRunning();
         var floaters = World.Floaters;
         bool benchFacing = World.BenchFacingFix;
+        bool takeIntoBackpack = World.TakeIntoBackpack;
         var next = _runtime.ReplaceWorld(systems, candidate =>
         {
             candidate.Floaters = floaters;
             candidate.BenchFacingFix = benchFacing;
+            candidate.TakeIntoBackpack = takeIntoBackpack;
             setup?.Invoke(candidate);
         });
         // A tick the old world ran ahead goes with it.

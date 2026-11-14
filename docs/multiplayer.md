@@ -80,14 +80,27 @@ accept explicit controlled roles and the supported player order types.
 Operation/turret orders and targeted machine/storage/training jobs bind the displayed work-site revision,
 the owner's membership revision and explicit character grants. Site replacement, ownership, record,
 completion, destruction or upgrade changes invalidate displayed targets; progress alone does not.
-Building/machine/resource views publish these revisions. Natural targets still need legitimate region/content
-resolution; their eventual remote discovery/admission path is not implemented.
+Building/machine/resource views publish these revisions. `WorkSites` also publishes canonical ids, positions,
+owners and nonzero site revisions for observable natural nodes and registered level machines before they have
+a running machine. The server resolves this directory from its own resource source and town fixtures; a client
+supplied id cannot create an arbitrary rock or level placement. Both procedural foliage and level-placed
+resource buildings use the natural-node path. First mining claims an unowned rock for the worker's faction;
+workers admitted by the same command continue after that claim changes the site revision.
 
 Player work rechecks the current controller's asset rights during scheduling and before production/hauling
 mutations, including both ends of a hauling trip. Revocation stops work without deleting cargo or job lists;
 an authorized controller transfer preserves work. Offline controllers retain grants. Locked/closed targets
 are excluded from production trips. Delegated mining preserves existing ownership; only unowned natural
-sites are claimed. NPC and legacy work retain their existing paths. Construction-job addition still needs integration.
+sites are claimed. Ordinary NPC level machines allow work without granting their owner's `ManageAssets`:
+the controlled worker and displayed site revision remain required, and locked, destroyed, replaced or closed
+targets cannot be used. Other player factions' machines retain their asset permissions. Research contributes
+to the machine owner's faction; queue, power and furnace configuration still require that owner's grant.
+Construction-job addition still needs integration.
+
+**Observed** (`ObedientSlave.Workplace`, `ProductionSystem.SlaveWorkers`): an obedient player slave at its
+current goal-189 workplace contributes through the town producer's work/XP path. Goal 190 remains pretence.
+Work selection for 189 applies `AiSystem.RealWork`, avoiding input-starved processors. Walking, interruption,
+release, loss of the master, a changed owner and an invalid workplace stop the contribution.
 
 **Verified** by `ProductionTests`: foreign/regranted management permissions, replaced machines, independent
 craft queues, duplicate queue/toggle requests, stale same-option rows, progress-safe cancellation, furnace
@@ -292,9 +305,13 @@ reduce observation and never activates simulation/navigation. Loaded owned roles
 details outside the filter, including corpses; unloaded identity/grant records remain in the role list.
 
 Public characters/machines use explicit field allowlists. Private inventory, jobs and path details require
-ownership or the relevant authorized interaction; same-faction membership is insufficient. Machine stocks, crafting options,
+ownership or the relevant authorized interaction; same-faction membership is insufficient. Crafting options,
 site materials and remote asset management require ManageAssets. Nearby machine/farm presentation remains
-public. Balances require ReadFunds, independently of SpendFunds. Membership permits faction research views;
+public. A visible natural or NPC machine's stock can also be inspected through a valid controlled character
+within transfer range; taking NPC goods still invokes theft and stolen-item ownership. Each transfer checks
+current inventory and machine revisions. Container windows additionally retain their open-session checks,
+including arrangement; a machine window does not borrow a container session. Balances require ReadFunds,
+independently of SpendFunds. Membership permits faction research views;
 ManageSquads permits the faction roster, otherwise squad lists contain only owned members.
 Trade/dialogue/container views revalidate their interaction grants at capture, including membership revisions;
 cached windows cannot survive revocation/regrant merely because the character has the same owner again.
@@ -485,7 +502,9 @@ and off-screen storage retires its member entry. The existing entity is written 
 Explicit constructed-building/outpost markers distinguish player-created assets from generated NPC
 interiors, including those owned by a faction with player members. Global outpost numbers survive record
 reordering; parent links, materials, damage progress, upgrade/ruin flags and per-zone building allocation
-high-water survive restoration. Removing a constructed site removes its saved building/inventory records
+high-water survive restoration. Outpost allocation preserves sparse positive numbers and the last allocated
+number, including after every outpost has been removed; a reload cannot reuse a deleted town's identity.
+Removing a constructed site removes its saved building/inventory records
 without removing another owner's sites or unmarked NPC interiors. The first conversion from an unmarked
 single-player save also removes dismantled assets of that imported player faction.
 `SaveLoadOptions.MultiplayerMetadata` restores faction resources before asset initialization; machine
@@ -508,6 +527,11 @@ and town-replacement protection before/after fixture registration.
 once, including level-house machines created when fixtures register later; ordinary bulk load uses the
 same path. A level placement's canonical runtime key is mapped back to its raw zone-file instance, and
 state records are resolved through the instance's references rather than a guessed record name.
+Layout machines use their canonical piece ids. Their parent building references separate native machine
+state/inventory records through Meitou keys; no duplicate furniture placement is written. A machine that
+uses a fixture's container grid shares that live inventory, whose sole persistence owner is `ContainerSave`;
+production inputs, outputs and queues remain in `MachineSave`. Pending legacy CAMERA machine rows also
+restore farm growth, death, start time and harvested count before migrating to the native path.
 Repeated Ensure/Read calls and destroyed-machine recreation cannot replay checkpoint stock. Town reset
 invalidates pending restoration and removes obsolete level construction/machines. Capture clears retired
 machine records/queues/inventories and old unregistered container state, then writes current live contents;

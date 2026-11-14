@@ -17,9 +17,23 @@ static class HeldItemTheft
     {
         ItemHolder.Character => world.Characters.TryResolveNext(held.From.Character, out int s) && world.Characters.Cold(s) is { } c && (held.ControlGrant is null ? c.IsPlayer
                 : world.Players.ControlOf(held.From.Character)?.Player == (held.ControlGrant?.Player ?? PlayerId.Local)),
-        ItemHolder.Site => world.Fixtures.Find(held.From.Site) is not { Contents: not null } box || world.Characters.TryResolveNext(held.Actor, out int actor) && world.Characters.Cold(actor)?.Faction == box.Owner,
+        ItemHolder.Site => Goods(world, held.From.Site) is not { } box || MayManage(world, held, box.Owner) || world.Characters.TryResolveNext(held.Actor, out int actor) && world.Characters.Cold(actor)?.Faction == box.Owner,
         _ => false,
     };
+
+    /// <summary>
+    /// An explicit asset-management grant permits the same transfer through a drag as through the machine's take command.
+    /// </summary>
+    static bool MayManage(World world, HeldItem held, int owner) => held.ControlGrant is { } grant
+        && world.Players.Validate(grant) && world.Players.Find(grant.Player)?.HasPermission(owner, FactionPermission.ManageAssets) == true;
+
+    /// <summary>
+    /// The goods a site's window shows as their owner's: a container with contents, or a town building's machine
+    /// (<see cref="Production.ProductionSystem.TownGoods"/>); null for any other site.
+    /// </summary>
+    static Crime.StealSource? Goods(World world, string site) =>
+        world.Fixtures.Find(site) is { Contents: not null } box ? Crime.StealSource.Of(box)
+        : world.SystemOf<Production.ProductionSystem>()?.TownGoods(world, site);
 
     /// <summary>
     /// The stolen mark a held item gets when it goes to <paramref name="taker"/>'s faction: from a take that marks
@@ -39,8 +53,8 @@ static class HeldItemTheft
                 && table.Cold(v) is { } victim
             && table.TryResolveNext(held.Actor, out int a) && Crime.CrimeSystem.MarksTheft(world, table.Cold(a)!,
                     victim) && open) return StolenMark.Of(victim, table.IdOf(v));
-        if (held.From.Holder == ItemHolder.Site && world.Fixtures.Find(held.From.Site) is { Owner: >= 0 } box && box.Owner != taker.Faction
-            && Crime.CrimeSystem.IsStealing(world, box) && open)
+        if (held.From.Holder == ItemHolder.Site && Goods(world, held.From.Site) is { Owner: >= 0 } box && box.Owner != taker.Faction
+            && !MayManage(world, held, box.Owner) && Crime.CrimeSystem.IsStealing(world, box) && open)
             return Crime.CrimeSystem.OwnerMark(world, box.Building, box.Owner);
         return item.Mark;
     }
@@ -56,7 +70,7 @@ static class HeldItemTheft
         if (world.SystemOf<Crime.CrimeSystem>() is not { } crimes || !table.TryResolveNext(held.Actor, out int thief))
             return false;
         if (held.From.Holder == ItemHolder.Site)
-            return world.Fixtures.Find(held.From.Site) is { Contents: not null } box && box.Owner >= 0
+            return Goods(world, held.From.Site) is { } box && box.Owner >= 0 && !MayManage(world, held, box.Owner)
                 && box.Owner != table.Cold(thief)!.Faction
                 && crimes.Steal(world, thief, box, kind == Crime.CrimeSystem.TakeKind.Drag ? Crime.CrimeCode.Looting : Crime.CrimeCode.Theft);
         return held.From.Holder == ItemHolder.Character && table.TryResolveNext(held.From.Character,

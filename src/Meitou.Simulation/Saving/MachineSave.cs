@@ -39,6 +39,11 @@ public static partial class MachineSave
     const string PartialVal = "craft partial item val ";
 
     /// <summary>
+    /// Meitou references on a layout's parent and machine state; they never create a second rendered furniture placement.
+    /// </summary>
+    const string InteriorPrefix = "meitou interior machine ", InteriorInventory = "meitou machine inventory";
+
+    /// <summary>
     /// Writes every machine into its building's state (after <see cref="BuildingSave.Write"/>).
     /// </summary>
     public static void Write(SaveGame game, World world)
@@ -49,6 +54,11 @@ public static partial class MachineSave
         foreach (var m in world.Machines.All)
         {
             if (world.Buildings.Find(m.Site) is not { } site) continue;
+            if (IsInteriorMachine(site))
+            {
+                WriteInterior(game, world, site, m);
+                continue;
+            }
             if (!game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list)
             {
                 world.SavedMachines?.RequireNativeCapture(m.Site);
@@ -83,6 +93,71 @@ public static partial class MachineSave
             instance.States.Insert(0, inventoryId);
         }
     }
+
+    /// <summary>
+    /// A layout machine belongs to its parent; its stable runtime id is not a zone placement id.
+    /// </summary>
+    static bool IsInteriorMachine(BuildSite site) => site.LevelMachine && site.Parent is not null;
+
+    /// <summary>
+    /// Finds a machine's existing parent placement and its native building state in the save.
+    /// </summary>
+    static (SaveZone Zone, FcsRecord State)? InteriorParent(SaveGame game, BuildSite site)
+    {
+        if (site.Parent is not { } parent || !game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list) return null;
+        string prefix = $"{site.Zone.X}.{site.Zone.Y}:";
+        string raw = parent.StartsWith(prefix, StringComparison.Ordinal) ? parent[prefix.Length..] : parent;
+        var instance = list.Instances.FirstOrDefault(i => i.Id == raw && !i.IsRemoved);
+        var state = instance?.States.Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id
+            && r.RecordType == FcsRecordType.GamestateBuilding)).FirstOrDefault(r => r is not null);
+        return state is null ? null : (zone, state);
+    }
+
+    /// <summary>
+    /// Saves a layout machine's native building and inventory records, referenced by its parent rather than added to the placement list.
+    /// </summary>
+    static void WriteInterior(SaveGame game, World world, BuildSite site, Machine machine)
+    {
+        if (InteriorParent(game, site) is not { } parent)
+            throw new InvalidOperationException("Capturing an interior machine requires its parent building's native zone state.");
+
+        var file = parent.Zone.File;
+        string reference = InteriorPrefix + site.Id;
+        string stateId = parent.State.Strings.GetValueOrDefault(reference) ?? site.Id + "-machine-S23";
+        var state = file.Records.FirstOrDefault(r => r.StringId == stateId && r.RecordType == FcsRecordType.GamestateBuilding);
+        if (state is null)
+        {
+            state = new FcsRecord { Type = (int)FcsRecordType.GamestateBuilding, Id = SaveBuilder.NextNumber(file), StringId = stateId, Name = site.Name };
+            file.Records.Add(state);
+        }
+        parent.State.Strings[reference] = stateId;
+        state.Strings["meitou machine site"] = site.Id;
+        state.Strings["meitou machine record"] = site.Record;
+        WriteKeys(state, machine, world.GameHours);
+
+        var references = InteriorReferences(state);
+        WriteInventory(file, site, references, Items(machine, !SharedStorage(world, site, machine)));
+        string? inventory = references.States.FirstOrDefault(id => id != state.StringId);
+        if (inventory is null) state.Strings.Remove(InteriorInventory);
+        else state.Strings[InteriorInventory] = inventory;
+    }
+
+    /// <summary>
+    /// The common native reader's record references, without adding a synthetic placement to the world's geometry.
+    /// </summary>
+    static FcsInstance InteriorReferences(FcsRecord state)
+    {
+        var references = new FcsInstance { Id = state.Strings.GetValueOrDefault("meitou machine site", "") };
+        references.States.Add(state.StringId);
+        if (state.Strings.GetValueOrDefault(InteriorInventory) is { Length: > 0 } inventory) references.States.Add(inventory);
+        return references;
+    }
+
+    /// <summary>
+    /// A layout container's grid has one save owner, ContainerSave, even when a machine uses the same inventory.
+    /// </summary>
+    static bool SharedStorage(World world, BuildSite site, Machine machine) => IsInteriorMachine(site)
+        && machine.Storage is { } grid && ReferenceEquals(grid, world.Fixtures.Find(site.Id)?.Contents);
 
     /// <summary>
     /// Replaces the building's inventory record with its items, or removes the record when it holds none.
@@ -165,19 +240,7 @@ public static partial class MachineSave
             state.Floats["current prog" + n] = c.Queue[k].Progress;
             state.Ints["crit" + n] = c.Queue[k].Critical;
         }
-        var partialLevels = new Dictionary<string, float>(c.Partial, StringComparer.Ordinal);
-        foreach (var input in m.Inputs)
-            if (input.Level > 0) partialLevels[input.Item] = input.Level;
-            else partialLevels.Remove(input.Item);
-        int written = 0;
-        foreach (var (item, level) in partialLevels)
-        {
-            if (level <= 0) continue;
-            string n = written++.ToString(CultureInfo.InvariantCulture);
-            state.Strings[PartialSid + n] = item;
-            state.Floats[PartialVal + n] = level;
-        }
-        state.Ints["craft partial item size"] = written;
+        WritePartial(state, m, c);
     }
 
     /// <summary>
@@ -210,7 +273,7 @@ public static partial class MachineSave
     /// <summary>
     /// The machine's items as saved: each input under <c>in&lt;k&gt;</c>, the output under <c>out</c>, then the crafting bench's finished items.
     /// </summary>
-    static List<SaveItem> Items(Machine m)
+    static List<SaveItem> Items(Machine m, bool includeStorage = true)
     {
         var list = new List<SaveItem>();
         for (int k = 0; k < m.Inputs.Length; k++)
@@ -228,7 +291,7 @@ public static partial class MachineSave
 
         if (m.Output is { Count: > 0 } o) list.Add(new SaveItem { BaseId = o.Recipe.Item, Section = "out", Quantity = o.Count });
         if (m.Craft is { } c) list.AddRange(c.Done.Select(SavedKit.FromItem));
-        if (m.Storage is { } s)
+        if (includeStorage && m.Storage is { } s)
         {
             list.AddRange(m.Data.IsFurnace
                 ? s.Items.Select(i => SavedKit.FromItem(i, FurnaceSection))
@@ -248,59 +311,6 @@ public static partial class MachineSave
         {
             if ((!allOwners && site.Owner != world.Player.Faction) || production.Data(site.Record) is null) continue;
             if (production.Ensure(world, site) is { } machine) world.SavedMachines!.Apply(world, production, site, machine);
-        }
-    }
-
-    /// <summary>
-    /// Puts the building's stored items back into its machine: the outputs, the inputs and the storage grid.
-    /// </summary>
-    static void ReadInventory(SaveGame save, BuildSite site, Machine m, ItemFactory factory)
-    {
-        if (!save.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList?.Instances.FirstOrDefault(i => i.Id == site.Id) is not { } instance)
-            return;
-
-        var inventory = instance.States
-            .Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.InventoryState))
-            .FirstOrDefault(r => r is not null);
-        if (inventory is null) return;
-
-        var storage = new List<SaveItem>();
-        foreach (var item in SaveInventory.Read(zone.File, inventory))
-        {
-            if (item.Section == "out" && m.Craft is { } craft)
-            {
-                if (SavedKit.ItemOf(item, factory) is { } done) craft.Done.Add(done);
-            }
-            else if (item.Section == "out" && m.Output is { } o && o.Recipe.Item == item.BaseId)
-            {
-                o.Count = Math.Min(o.Recipe.Capacity, o.Count + item.Quantity);
-            }
-            else if (item.Section.StartsWith("in", StringComparison.Ordinal)
-                && int.TryParse(item.Section.AsSpan(2), CultureInfo.InvariantCulture, out int k)
-                && k < m.Inputs.Length && (m.Inputs[k].Item == item.BaseId || m.Craft is not null && m.Inputs[k].Count == 0))
-            {
-                // A crafting bench's sections hold its last craft's ingredients, also with nothing queued.
-                m.Inputs[k].Item = item.BaseId;
-                m.Inputs[k].Count = Math.Min(m.Inputs[k].Recipe.Capacity, m.Inputs[k].Count + item.Quantity);
-            }
-            else
-            {
-                storage.Add(item);
-            }
-        }
-
-        if (m.Storage is { } grid && storage.Count > 0)
-        {
-            foreach (var item in SavedKit.ToInventory(storage, factory).Items)
-            {
-                if (m.Data.IsFurnace) item.Section = "main";   // its in1 is Meitou's storage grid
-
-                // A grid that is now smaller (a storage sized from its one item) gets an item that no longer fits at the next free cell, as the
-                // original's loader does.
-                bool fits = item.X >= 0 && item.Y >= 0 && item.X + item.Width <= grid.Width && item.Y + item.Height <= grid.Height
-                    && grid.IsFree(item.Section, item.X, item.Y, item.Width, item.Height);
-                if (fits || grid.Add(item) is false && item.Quantity > 0) grid.Items.Add(item);
-            }
         }
     }
 
@@ -375,6 +385,17 @@ public static partial class MachineSave
 
         internal void Apply(World world, ProductionSystem production, BuildSite site, Machine machine)
         {
+            if (IsInteriorMachine(site))
+            {
+                if (!_consumed.TryAdd(site.Id, site.Id) || InteriorParent(Source, site) is not { } parent) return;
+                string? stateId = parent.State.Strings.GetValueOrDefault(InteriorPrefix + site.Id);
+                var state = parent.Zone.File.Records.FirstOrDefault(r => r.StringId == stateId && r.RecordType == FcsRecordType.GamestateBuilding);
+                if (state is null || state.Strings.GetValueOrDefault("meitou machine site") != site.Id
+                    || state.Strings.GetValueOrDefault("meitou machine record") != site.Record) return;
+                RestoreSite(parent.Zone, InteriorReferences(state), machine, production, factory, SharedStorage(world, site, machine));
+                world.Machines.Touch();
+                return;
+            }
             string rawId = site.LevelPlacement?.InstanceId ?? site.Id;
             string key = BuildingKey.Of(site.Zone, rawId);
             if (!_consumed.TryAdd(key, site.Id)) return;
@@ -421,6 +442,7 @@ public static partial class MachineSave
         var reset = world.Fixtures.ResetBuildings.ToHashSet(StringComparer.Ordinal);
         if (world.SavedMachines is { } restored) reset.UnionWith(restored.Retired(world));
         if (reset.Count == 0) return;
+        ClearInteriorMachines(game, reset);
         foreach (var zone in game.Zones.Values)
         {
             if (zone.BuildingList is not { } list) continue;
@@ -452,7 +474,38 @@ public static partial class MachineSave
     }
 
 
-    static void RestoreSite(SaveZone zone, FcsInstance instance, Machine m, ProductionSystem production, ItemFactory factory)
+    /// <summary>
+    /// A replaced parent layout or retired machine discards its saved furniture state and inventory through the same reset as placed machines.
+    /// </summary>
+    static void ClearInteriorMachines(SaveGame game, HashSet<string> reset)
+    {
+        foreach (var zone in game.Zones.Values)
+        {
+            if (zone.BuildingList is not { } list) continue;
+            foreach (var instance in list.Instances)
+            {
+                bool parentReset = reset.Contains(BuildingKey.Of(zone.Coordinate, instance.Id));
+                var parent = instance.States.Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id
+                    && r.RecordType == FcsRecordType.GamestateBuilding)).FirstOrDefault(r => r is not null);
+                if (parent is null) continue;
+                foreach (var reference in parent.Strings.Where(p => p.Key.StartsWith(InteriorPrefix, StringComparison.Ordinal)).ToArray())
+                {
+                    if (!parentReset && !reset.Contains(reference.Key[InteriorPrefix.Length..])) continue;
+                    var state = zone.File.Records.FirstOrDefault(r => r.StringId == reference.Value && r.RecordType == FcsRecordType.GamestateBuilding);
+                    if (state?.Strings.GetValueOrDefault(InteriorInventory) is { } inventoryId
+                        && zone.File.Records.FirstOrDefault(r => r.StringId == inventoryId && r.RecordType == FcsRecordType.InventoryState) is { } inventory)
+                    {
+                        SaveInventory.Replace(zone.File, inventory, [], n => $"{n}-zone{zone.Coordinate.X}.{zone.Coordinate.Y}-INGAME");
+                        zone.File.Records.Remove(inventory);
+                    }
+                    if (state is not null) zone.File.Records.Remove(state);
+                    parent.Strings.Remove(reference.Key);
+                }
+            }
+        }
+    }
+
+    static void RestoreSite(SaveZone zone, FcsInstance instance, Machine m, ProductionSystem production, ItemFactory factory, bool sharedStorage = false)
     {
         var state = instance.States.Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id &&
             r.RecordType == FcsRecordType.GamestateBuilding)).FirstOrDefault(r => r is not null);
@@ -477,7 +530,7 @@ public static partial class MachineSave
             }
             else storage.Add(item);
         }
-        if (m.Storage is { } grid && storage.Count > 0)
+        if (!sharedStorage && m.Storage is { } grid && storage.Count > 0)
             foreach (var item in SavedKit.ToInventory(storage, factory).Items)
             {
                 if (m.Data.IsFurnace) item.Section = "main";   // its in1 is Meitou's storage grid

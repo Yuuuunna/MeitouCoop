@@ -129,21 +129,26 @@ public sealed class RockShape(Vector3[] corners, Vector3 min, Vector3 max)
     /// </summary>
     public static RockShape? Of(OgreMesh mesh)
     {
-        var corners = new List<Vector3>();
-        foreach (var sub in mesh.SubMeshes)
-        {
-            if (sub.Operation != OgreOperationType.TriangleList
-                || (sub.UseSharedVertices ? mesh.SharedVertexData : sub.VertexData)?.ReadPositions() is not { } positions)
-                continue;
-            var indices = sub.Indices.Indices;
-            for (int i = 0; i + 2 < indices.Length; i += 3)
-                if (indices[i] < positions.Length && indices[i + 1] < positions.Length && indices[i + 2] < positions.Length)
-                    corners.AddRange([positions[indices[i]], positions[indices[i + 1]], positions[indices[i + 2]]]);
-        }
-        if (corners.Count == 0) return null;
+        return Of(mesh.TriangleCorners());
+    }
+
+    /// <summary>
+    /// A shape from a triangle list; null for an empty list.
+    /// </summary>
+    internal static RockShape? Of(Vector3[] corners)
+    {
+        if (corners.Length == 0) return null;
         Vector3 min = corners[0], max = corners[0];
         foreach (var c in corners) (min, max) = (Vector3.Min(min, c), Vector3.Max(max, c));
-        return new RockShape([.. corners], min, max);
+        return new RockShape(corners, min, max);
+    }
+
+    /// <summary>
+    /// Appends this mesh's triangles in the frame of a placed level building.
+    /// </summary>
+    internal void AppendCorners(List<Vector3> target, Matrix4x4 transform)
+    {
+        foreach (var corner in corners) target.Add(Vector3.Transform(corner, transform));
     }
 }
 
@@ -159,9 +164,9 @@ public interface IResourceNodes
 }
 
 /// <summary>
-/// The rocks the foliage system places (docs/formats/foliage.md, "building type"): instances whose FOLIAGE_MESH names a BUILDING, the rock's resource
-/// being that building's functionality <c>world resource mining</c>. Zones are placed once and kept (through the foliage world's layout cache when it
-/// has one). Thread-safe.
+/// Generated rocks whose FOLIAGE_MESH names a BUILDING and level-placed resource BUILDINGs flagged <c>is foliage</c>. The building's functionality
+/// supplies <c>world resource mining</c>; both sources share canonical positions, picking and production lookup. Zone results are cached until
+/// level edits or foliage ownership/outpost inputs change. Thread-safe.
 /// </summary>
 public sealed class FoliageResourceNodes(FoliageWorld world, GameDatabase db, Func<string, string?>? findMesh = null) : IResourceNodes, IDisposable
 {
@@ -182,6 +187,11 @@ public sealed class FoliageResourceNodes(FoliageWorld world, GameDatabase db, Fu
     readonly Dictionary<ZoneCoordinate, List<ResourceNode>> _zones = [];
 
     /// <summary>
+    /// The level edit revision used for the cached zones.
+    /// </summary>
+    int _levelRevision = -1;
+
+    /// <summary>
     /// The <c>world resource mining</c> of each rock BUILDING by string id (0: none), cached.
     /// </summary>
     readonly Dictionary<string, int> _resourceOf = new(StringComparer.Ordinal);
@@ -190,6 +200,20 @@ public sealed class FoliageResourceNodes(FoliageWorld world, GameDatabase db, Fu
     /// The lock <see cref="Near"/> takes; the caches are read and filled under it.
     /// </summary>
     readonly Lock _gate = new();
+
+    /// <summary>
+    /// Replaces the authority's outpost placement inputs and invalidates resource zones placed with another town list.
+    /// </summary>
+    public void SetPlayerTowns(IReadOnlyList<FoliageTown> towns)
+    {
+        lock (_gate)
+        {
+            if (world.ExtraTowns.SequenceEqual(towns)) return;
+
+            world.ExtraTowns = towns.ToArray();
+            _zones.Clear();
+        }
+    }
 
     /// <summary>
     /// A rock mesh's shape and its bounds sphere (the triangles' box middle, and its longest half-extent as the radius, before scaling); null without
@@ -223,8 +247,11 @@ public sealed class FoliageResourceNodes(FoliageWorld world, GameDatabase db, Fu
         var found = new List<ResourceNode>();
         lock (_gate)
         {
-            if (world.RefreshOwnership())
+            if (world.RefreshOwnership() || _levelRevision != world.LevelRevision)
+            {
                 _zones.Clear();
+                _levelRevision = world.LevelRevision;
+            }
             var first = WorldLayout.ZoneOf(x - range, z - range);
             var last = WorldLayout.ZoneOf(x + range, z + range);
             for (int zx = first.X; zx <= last.X; zx++)
@@ -238,14 +265,15 @@ public sealed class FoliageResourceNodes(FoliageWorld world, GameDatabase db, Fu
     }
 
     /// <summary>
-    /// The rocks of <paramref name="zone"/>, placing them on the first ask: each foliage instance whose mesh names a rock BUILDING, sized by its
-    /// mesh's bounds (at least <see cref="NodeRadius"/>).
+    /// The rocks of <paramref name="zone"/>, generated or directly placed in the level, sized by their meshes' bounds (at least
+    /// <see cref="NodeRadius"/>).
     /// </summary>
     List<ResourceNode> Zone(ZoneCoordinate zone)
     {
         if (_zones.TryGetValue(zone, out var list)) return list;
         list = [];
         if (zone.IsInsideGrid)
+        {
             foreach (var instance in world.Zone(zone).Instances)
                 if (instance.Mesh.BuildingType is { } building && ResourceOf(building) is > 0 and var resource)
                 {
@@ -258,8 +286,35 @@ public sealed class FoliageResourceNodes(FoliageWorld world, GameDatabase db, Fu
                             Vector3.Transform(c.Centre, instance.Transform), c.Shape, instance.Transform)
                         : new ResourceNode(instance.Position, resource, radius, building.StringId));
                 }
+            foreach (var placed in world.ResourceBuildings(zone))
+                if (ResourceOf(placed.Record) is > 0 and var resource
+                    && !list.Any(n => n.Record == placed.Record.StringId && n.Position == placed.Position))
+                    list.Add(LevelNode(placed, resource));
+        }
         _zones[zone] = list;
         return list;
+    }
+
+    /// <summary>
+    /// A level resource uses its rendered building parts for picking and working distance, with the stable placement origin as its natural-site id.
+    /// </summary>
+    ResourceNode LevelNode(ResolvedBuilding placed, int resource)
+    {
+        var corners = new List<Vector3>();
+        var origin = Matrix4x4.CreateTranslation(-placed.Position);
+        var meshes = WorldObjectLayout.Building(db, placed.Record, placed.Placement.InstanceId, placed.Position, placed.Placement.Rotation,
+            new BuildingState { Identity = placed.Placement.Key });
+        foreach (var mesh in meshes)
+            if (Bounds(mesh.MeshPath) is { } bounds) bounds.Shape.AppendCorners(corners, mesh.Transform * origin);
+
+        if (RockShape.Of(corners.ToArray()) is not { } shape)
+            return new(placed.Position, resource, NodeRadius, placed.Record.StringId);
+
+        var size = shape.Max - shape.Min;
+        float radius = Math.Max(NodeRadius, Math.Max(size.X, Math.Max(size.Y, size.Z)) / 2);
+        var transform = Matrix4x4.CreateTranslation(placed.Position);
+        return new(placed.Position, resource, radius, placed.Record.StringId,
+            Vector3.Transform((shape.Min + shape.Max) / 2, transform), shape, transform);
     }
 
     /// <summary>

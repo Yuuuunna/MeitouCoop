@@ -143,7 +143,9 @@ public sealed partial class TradeSystem
             if (_authorization is { } grant && (!world.Players.Validate(grant) ||
                 world.Players.Find(playerId)?.MembershipRevision(_customerFaction) != _membershipRevision)) return false;
             var tc = table.Cold(t)!;
-            if (!cc.IsPlayer || cc.Medical is { Incapacitated: true } || tc.Medical is { Incapacitated: true } || tc.InCombat || cc.Inventory is null) return false;
+            bool customerDown = cc.Medical is { Dead: true } || (!_open && cc.Medical is { Incapacitated: true });
+            if (!cc.IsPlayer || customerDown || tc.Medical is { Incapacitated: true } || tc.InCombat || tc.IsImprisoned || cc.Inventory is null) return false;
+            if (!_open && Carrying.CarrySystem.Asleep(table, t)) return false;
             if (AggroSystem.IsEnemy(Data.Relations, cc.Faction, tc.Faction)) return false;
             shop = ShopOf(world, tc);
             return shop is not null && (!_open || InReach(world, c, t));
@@ -175,7 +177,7 @@ public sealed partial class TradeSystem
         {
             if (who == _customer) return true;
             if (!_open || !Resolve(world, out _, out int t, out _) || !world.Characters.TryResolveNext(who, out int c)
-                || world.Characters.Cold(c) is not { IsPlayer: true, Inventory: not null, Medical.Incapacitated: false } cold || cold.Faction != _customerFaction) return false;
+                || world.Characters.Cold(c) is not { IsPlayer: true, Inventory: not null, Medical: not { Dead: true } } cold || cold.Faction != _customerFaction) return false;
             if (_attributed && (command is not null ? !world.MayOrder(command, who) : !world.Players.CanControl(playerId, who))) return false;
             if (!InReach(world, c, t)) { world.Post(playerId, "Out of trading range."); return false; }
             _customer = who;
@@ -529,6 +531,7 @@ public sealed partial class TradeSystem
                     Unique = item.Unique,
                     BagItems = item.Contents?.Items.Count ?? -1,
                     Material = item.MaterialId,
+                    Rotated = item.Rotated,
                     Colour = item.ColourId,
                     Charge = item.ChargeFraction,
                     Value = value,
@@ -559,7 +562,7 @@ public sealed partial class TradeSystem
             var goodsOf = new Dictionary<CharacterId, IReadOnlyList<TradeItemView>>();
             for (int candidate = 0; candidate < world.Characters.HighWater; candidate++)
             {
-                if (!world.Characters.Next[candidate].Alive || world.Characters.Cold(candidate) is not { IsPlayer: true, Inventory: { } own, Medical.Incapacitated: false } seller
+                if (!world.Characters.Next[candidate].Alive || world.Characters.Cold(candidate) is not { IsPlayer: true, Inventory: { } own, Medical: not { Dead: true } } seller
                     || seller.Faction != _customerFaction || _attributed && !world.Players.CanControl(playerId, world.Characters.IdOf(candidate)) || !InReach(world, candidate, t)) continue;
                 goodsOf[world.Characters.IdOf(candidate)] = own.All().Select((item, index) => (item, index)).Where(p => InventoryCommands.IsMovableSection(p.item.Section))
                     .Select(p => View(p.item, p.index, true, seller.Faction, seller.Stats?[StatsEnumerated.Thieving] ?? 0, candidate)).ToArray();

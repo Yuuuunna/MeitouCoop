@@ -71,6 +71,11 @@ public sealed partial class World
     SnapshotBuffer? _shownBuffer, _previousBuffer, _olderBuffer;
 
     /// <summary>
+    /// The other factions' squads the world map shows (<see cref="WorldSnapshot.MapSquads"/>).
+    /// </summary>
+    readonly Population.MapSquads _mapSquads = new();
+
+    /// <summary>
     /// The buffer's object to fill for slot <paramref name="i"/>: never one another buffer of the ring still shows (a far character's object is
     /// shared across publishes and the render thread may be reading it). The two the buffer owns alternate; one more is made only when both are shown
     /// elsewhere.
@@ -227,13 +232,26 @@ public sealed partial class World
             InspectedBuilding = beds?.DetailOf(this, Player.InspectedBuilding) ?? Fixtures.DetailOf(Player.InspectedBuilding, Player.Faction),
             InspectedRichness = _production?.RichnessOf(this, Player.InspectedBuilding),
             InspectedTurret = combat?.TurretPanelOf(this, Player.InspectedBuilding),
-            Machines = OpenContainerView() is { } container ? [.. machineViews, container] : machineViews,
+            Machines = OpenContainerView() is { } container ? [.. machineViews.Where(m => m.Site != container.Site), container] : machineViews,
             MachinesVersion = Machines.Version,
             Research = _production?.ResearchView(this) ?? Production.ResearchSnapshot.Empty,
             Outposts = _production?.OutpostView(this) ?? [],
+            FoliageOutposts = PublishFoliageOutposts(population),
+            MapSquads = _mapSquads.Published(this),
             Crafts = _production?.CraftsView(this) ?? Snapshot.Crafts,
             Smiths = _production?.SmithsView(this) ?? Snapshot.Smiths
         };
+    }
+
+    /// <summary>
+    /// The same outpost geometry drives authority navigation and client foliage, without disclosing an outpost's stock, name or power network.
+    /// </summary>
+    IReadOnlyList<Meitou.Data.World.FoliageTown> PublishFoliageOutposts(PopulationData? population,
+        Func<Construction.PlayerTown, bool>? include = null)
+    {
+        float range = population is null ? 2000 : Meitou.Data.World.FoliageWorld.OutpostRange(population.Db);
+        return Buildings.Towns.Where(t => include?.Invoke(t) ?? true)
+            .Select(t => new Meitou.Data.World.FoliageTown(new(t.Position.X, t.Position.Z), range, IsPlayerFaction(t.Owner))).ToArray();
     }
 
     /// <summary>
@@ -335,7 +353,10 @@ public sealed partial class World
 
         s.Id = id;
         s.Appearance = cold?.Appearance;
-        s.Position = DrawnPosition(cold, state[i].Position);
+        s.Lean = cold is { InSomething: Locks.HeldState.Bed, InWhat: { } lainIn } && Fixtures.Find(lainIn) is { } bed
+            ? Locks.FixtureRegistry.LeanOf(bed)
+            : null;
+        s.Position = DrawnPosition(cold, state[i].Position, s.Lean);
         s.Yaw = state[i].Yaw;
         s.Animations = cold?.Animation is { } anim && _animations is not null
             ? _animations.Publish(anim, s.Layers)
@@ -356,6 +377,7 @@ public sealed partial class World
         s.IsTrader = talk?.Trades(this, i) ?? (cold is { IsPlayer: false, SquadId: >= 0 } && Squads.Find(cold.SquadId)?.Shop is not null);
         s.IsDiplomat = cold?.NpcClass == FundamentalType.Diplomat;
         s.Selected = selected;
+        s.FirstSelected = i == f.LeadSlot;
         s.Inspected = inspected;
     }
 
@@ -404,6 +426,7 @@ public sealed partial class World
             ? DisguiseOf(cold, state[i].Position, population)
             : null;
         s.Status = detailed ? StatusOf(id, cold!, state[i].Position, population) : null;
+        s.KidnapVictim = detailed && cold!.KidnapVictim;
         s.NoLootGuilt = cold is { } guilt
             && (guilt.NpcClass is FundamentalType.Bandit or FundamentalType.Slave || population is { Factions: { } fl }
                 && (uint)guilt.Faction < (uint)fl.Count && fl[guilt.Faction].NotReal);
@@ -430,6 +453,7 @@ public sealed partial class World
         s.PathExact = pathed && cold!.PathExact != int.MaxValue ? Math.Max(cold.PathExact - state[i].PathCursor, 0) : int.MaxValue;
         s.CarriedBy = cold?.CarriedBy ?? CharacterId.None;
         s.Carry = cold is { CarriedBy.IsNone: false } ? cold.CarryAttach ?? Carrying.CarryPose.Fallback : null;
+        s.Anchor = cold?.DrawAnchor;
         s.Carrying = cold?.Carrying ?? CharacterId.None;
         s.HeldTool = state[i].Task == (byte)CharacterTask.Operate && cold is { OperateSite: not null, Appearance.Animal: null }
             ? cold.OperateTool
@@ -529,7 +553,7 @@ public sealed partial class World
         s.Stealth = sneaking ? watchers.Length == 0 ? StealthExposure.Unobserved : watchers.Max(w => w.Level) : null;
         s.Light = sneaking ? Sight.PeekLight(i) : 1;
         s.Watchers = watchers;
-        s.Bar = cold is { IsPlayer: true } ? PickBar(cold, state[i].Task) ?? TrainBar(cold) : null;
+        s.Bar = cold is { IsPlayer: true } ? PickBar(cold, state[i].Task) ?? CutBar(cold, state[i].Task) ?? TrainBar(cold) : null;
         s.Prison = cold is { IsImprisoned: true }
             ? new PrisonView(!(cold.InWhat is { } cageId && Fixtures.Find(cageId) is { } cage && cage.Lock is not { EffectivelyLocked: true }),
                 cold.SentenceLength, cold.SentenceStart + cold.SentenceLength - GameHours)
@@ -580,11 +604,12 @@ public sealed partial class World
     /// Where a character is drawn: a character on the water, which the simulation keeps on the navmesh's flat surface, is lowered to what it stands
     /// on (<see cref="IWalkability.WaterBed"/>: a sunken floor, else the seabed) or, swimming, to <see cref="Bodies.Speed.WadingHeight"/> (the same
     /// surface test as <see cref="MovementSystem"/>'s water state: within <see cref="Bodies.Speed.WaterSlack"/> of the water level). Not a carried or
-    /// a downed body. One lying in a bed is raised by <see cref="BedLift"/>.
+    /// a downed body. One lying in a bed is raised by <see cref="BedLift"/>, along the up axis of a bed that leans (<paramref name="lean"/>).
     /// </summary>
-    Vector3 DrawnPosition(CharacterCold? cold, Vector3 at)
+    Vector3 DrawnPosition(CharacterCold? cold, Vector3 at, Quaternion? lean)
     {
-        if (cold?.InSomething == Locks.HeldState.Bed) return at with { Y = at.Y + BedLift };
+        if (cold?.InSomething == Locks.HeldState.Bed)
+            return lean is { } leaning ? at + Vector3.Transform(Vector3.UnitY, leaning) * BedLift : at with { Y = at.Y + BedLift };
 
         if (cold is not { Race: { } race, Medical: not { Incapacitated: true } } || !cold.CarriedBy.IsNone
             || at.Y > Data.World.WorldWater.Height + Speed.WaterSlack)
@@ -649,7 +674,7 @@ public sealed partial class World
                 : StatusKind.Leader);
         }
 
-        if (c.Kidnapped) return new(StatusKind.Kidnapped);
+        if (CharacterFacts.Kidnapped(c)) return new(StatusKind.Kidnapped);
         if (c.NpcClass == FundamentalType.Diplomat) return new(StatusKind.Diplomatic);
         if (c.SlaveState != 0) return null;
 
@@ -727,6 +752,7 @@ public sealed partial class World
             shown.Item.X, shown.Item.Y, shown.Item.Width, shown.Item.Height, shown.Item.Quantity, shown.Item.Weight, shown.Item.Quality)
         {
             Material = shown.Item.MaterialId,
+            Rotated = shown.Item.Rotated,
             Colour = shown.Item.ColourId,
             Charge = shown.Item.ChargeFraction,
             Company = shown.Item.CompanyId,
@@ -756,6 +782,24 @@ public sealed partial class World
         float chance = Locks.Lockpicking.RollChance(c, l.Level);
         string text = Loc.Tr("Lockpicking (Chance {1}%)", MathF.Round(chance * 100));
         return new TaskBar(text, l.NextRoll > 0 ? Math.Clamp(l.PickTime / l.NextRoll, 0, 1) : 0);
+    }
+
+    /// <summary>
+    /// The bar of Task_CutLock and Task_CutShackles (docs/game/locks.md "Cutting and breaking"): "Cutting: {n}", n the lock's hardness x 10 cut to a
+    /// whole number (<c>FUN_140359f80</c>, <b>Verified</b>), while the cutter is at the lock (not walking to it). The original sets the caption only;
+    /// the fill stays empty (engine choice).
+    /// </summary>
+    TaskBar? CutBar(CharacterCold c, byte task)
+    {
+        if (task == (byte)CharacterTask.GoTo) return null;
+
+        var l = c.ForcingLock is { } id && c.Force == Locks.LockForce.Tools ? Fixtures.Find(id)?.Lock
+            : c.Shackles is { Work: Locks.ShackleWork.Cut } job && Characters.TryResolveNext(job.Wearer, out int w)
+                ? Locks.LockSystem.WornShackles(Characters.Cold(w))?.Lock
+                : null;
+        if (l is not { EffectivelyLocked: true }) return null;
+
+        return new TaskBar(Loc.Tr("Cutting: {1,num}", (int)(l.Hardness * 10)), 0);
     }
 
     /// <summary>
@@ -1076,7 +1120,7 @@ public sealed partial class World
         var storage = new InventoryView(region.Width, region.Height, 0, 0,
             Array.AsReadOnly(grid.Items.Select((item, index) => (item, index)).Where(e => region.Holds(e.item)).Select(e => new InventoryItemView(e.index, e.item.Record,
                 e.item.Name, "main", e.item.X - region.X, e.item.Y - region.Y, e.item.Width, e.item.Height, e.item.Quantity, e.item.Weight, e.item.Quality)
-            { Material = e.item.MaterialId, Colour = e.item.ColourId, Charge = e.item.ChargeFraction, Company = e.item.CompanyId, Level = e.item.Level, Charges = e.item.Charges, MaxCharges = e.item.MaxCharges, Unique = e.item.Unique }).ToArray()));
+            { Material = e.item.MaterialId, Rotated = e.item.Rotated, Colour = e.item.ColourId, Charge = e.item.ChargeFraction, Company = e.item.CompanyId, Level = e.item.Level, Charges = e.item.Charges, MaxCharges = e.item.MaxCharges, Unique = e.item.Unique }).ToArray()));
         return new Production.MachineSnapshot(id, f.RecordId, [], null, storage, null, 0, 0, 0)
         { IsContainer = true, ContainerSessionId = player.ContainerSessionId, ContainerOpener = player.ContainerOpener, StorageRevision = InventoryRevision(grid) };
     }

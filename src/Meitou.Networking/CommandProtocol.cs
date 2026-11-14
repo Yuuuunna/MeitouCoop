@@ -1,3 +1,4 @@
+using Meitou.Simulation.Ai;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Player;
 using System.Numerics;
@@ -51,6 +52,7 @@ public static class CommandProtocol
         [33] = typeof(TransferInventoryItem),
         [34] = typeof(OpenContainerOrder),
         [35] = typeof(CloseContainer),
+        [36] = typeof(RotateItem),
         [40] = typeof(TalkOrder),
         [41] = typeof(DialogueChoice),
         [42] = typeof(EndConversation),
@@ -66,6 +68,8 @@ public static class CommandProtocol
         [57] = typeof(RenameFactionCommand),
         [58] = typeof(SquadFormationCommand),
         [59] = typeof(SquadAiCommand),
+        [60] = typeof(SetSquadAutonomy),
+        [61] = typeof(SetSquadHome),
         [70] = typeof(PutInMachine),
         [71] = typeof(TakeFromMachine),
         [72] = typeof(QueueCraft),
@@ -75,6 +79,7 @@ public static class CommandProtocol
         [76] = typeof(IncinerateFurnace),
         [77] = typeof(QueueResearch),
         [78] = typeof(CancelResearch),
+        [79] = typeof(ArrangeMachine),
         [80] = typeof(RemoveJob),
         [81] = typeof(MoveJob),
         [82] = typeof(AddOrderJob),
@@ -130,6 +135,7 @@ public static class CommandProtocol
         [163] = typeof(DropHeld),
         [164] = typeof(ReturnHeld),
         [165] = typeof(PickUpItemOrder),
+        [166] = typeof(RotateHeld),
         [180] = typeof(InspectCommand),
         [181] = typeof(InspectBuildingCommand),
         [182] = typeof(ShowInventoryCommand),

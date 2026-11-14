@@ -249,7 +249,7 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
             // What does not fit stays on the ground (Inventory.Add leaves it in the item); gear or a bag that does not fit is worn when its slot
             // is free.
             bool wear = false;
-            if (Stow(inventory, item.Item, c) || item.Item.Quantity == before
+            if (Stow(world, inventory, item.Item, c) || item.Item.Quantity == before
                 && (wear = Items.InventoryCommands.TryEquip(inventory, item.Item, c)
                         || Items.InventoryCommands.TryWearBag(inventory, item.Item, c)))
             {
@@ -269,18 +269,23 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
                 if (item.Item.Quantity < before) world.EmitSound(SoundKind.PickedUp, s, next[s].Position);
                 if (item.Item.Quantity < before && item.OwnedBy >= 0 && item.OwnedBy != c.Faction && world.Sight.BuildingOf(s) is not null)
                     world.SystemOf<Crime.CrimeSystem>()?.StolePickUp(world, s, item.OwnedBy);
-                world.Post(authority.Grant.Player.IsNone ? PlayerId.Local : authority.Grant.Player, $"{c.Name}: Not enough room in my inventory");
+                if (c.IsPlayer) world.Post(authority.Grant.Player.IsNone ? PlayerId.Local : authority.Grant.Player, $"{c.Name}: Not enough room in my inventory");
             }
         }
     }
 
     /// <summary>
-    /// A picked-up item into the grids (<see cref="Items.Inventory.Add"/>); a live animal's shut grid
-    /// (<see cref="Items.InventoryCommands.MainClosed"/>) leaves only its bag.
+    /// A picked-up item into the grids (<see cref="Items.Inventory.Add"/>), into the backpack first for a player character with
+    /// <see cref="World.TakeIntoBackpack"/>; a live animal's shut grid (<see cref="Items.InventoryCommands.MainClosed"/>) leaves only its bag.
     /// </summary>
-    static bool Stow(Items.Inventory inventory, Items.ItemInstance item, CharacterCold c) =>
-        !Items.InventoryCommands.MainClosed(c) ? inventory.Add(item) : inventory.Backpack?.Contents is { } bag
-                && bag.AddTo("backpack_content", item);
+    static bool Stow(World world, Items.Inventory inventory, Items.ItemInstance item, CharacterCold c)
+    {
+        var bag = inventory.Backpack?.Contents;
+        if (Items.InventoryCommands.MainClosed(c)) return bag is not null && bag.AddTo("backpack_content", item);
+
+        if (bag is not null && c.IsPlayer && world.TakeIntoBackpack && bag.AddTo("backpack_content", item)) return true;
+        return inventory.Add(item);
+    }
 
     /// <summary>
     /// The stolen mark of a loose item of another faction (<see cref="GroundItem.OwnedBy"/>): the mark it carries when that names the owner (a

@@ -72,6 +72,9 @@ public static class SaveLoader
     /// </summary>
     public const string SeedKey = "meitou seed";
 
+    /// <summary>
+    /// Loads native gameplay state and the checkpoint's optional multiplayer identities into an empty world before authority restoration.
+    /// </summary>
     public static LoadedSave Load(World world, SaveGame save, PopulationData data, SaveLoadOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(world);
@@ -81,141 +84,39 @@ public static class SaveLoader
         if (options.GameHoursOverride is { } exactHours && (!double.IsFinite(exactHours) || exactHours < 0))
             throw new ArgumentOutOfRangeException(nameof(options), "The checkpoint clock must be finite and non-negative.");
         var multiplayerFactions = options.MultiplayerMetadata is { } metadata ? PlayerRegistrySave.PlayerFactionIds(data, metadata) : null;
-        if (world.Tick != 0 || world.Characters.Count != 0) throw new InvalidOperationException("A save is loaded into a world that has not started and has no characters.");
-        if (world.Squads.Count != 0 || world.Squads.NextAvailableId != 0) throw new InvalidOperationException("A save requires an empty squad registry.");
+        if (world.Tick != 0 || world.Characters.Count != 0)
+            throw new InvalidOperationException("A save is loaded into a world that has not started and has no characters.");
+        if (world.Squads.Count != 0 || world.Squads.NextAvailableId != 0)
+            throw new InvalidOperationException("A save requires an empty squad registry.");
         int? squadAllocation = PlayerSquadSave.ValidateLoad(save, data, multiplayerFactions);
         EntitySave.Restore(world, save);
         if (squadAllocation is { } nextSquad) world.Squads.RestoreAllocation(nextSquad);
-        // The seed a Meitou save was made with (its seeded layout: the nests it did not write roll again where they were); a base save keeps the world's.
-        if (save.Camera.Record.Strings.GetValueOrDefault(SeedKey) is { } seedText && ulong.TryParse(seedText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out ulong seed)) world.RestoreSeed(seed);
+        RestoreSeed(world, save);
 
         var camera = save.Camera;
         var loaded = new LoadedSave { Source = save, Clock = new SaveClock(camera.Day, camera.Hour, camera.Minute) };
-        // The world's clock is the save's from the start: the first tick (run before the host sets it) makes the zones' saved platoons, whose absolute hours (a shop's
-        // next restock) are read against it.
+        // Saved shops and AI timers resolve their absolute hours against this clock from the first load step.
         world.GameHours = options.GameHoursOverride ?? camera.Day * 24 + loaded.Clock.HourOfDay;
-        // The CAMERA's mods list names the data files the save was made with (without extension; gamedata.base as "base", docs/formats/save.md).
-        var running = new HashSet<string>(data.Db.Files.Select(f => f == "gamedata.base" ? "base" : Path.GetFileNameWithoutExtension(f)), StringComparer.OrdinalIgnoreCase);
-        foreach (var mod in camera.Record.References.GetValueOrDefault("mods") ?? [])
-            if (!running.Contains(mod.TargetStringId)) loaded.MissingMods.Add(mod.TargetStringId);
-        if (loaded.MissingMods.Count > 0) loaded.Notes.Add($"Made with data files this game does not load: {string.Join(", ", loaded.MissingMods)}.");
+        NoteMissingMods(camera, data, loaded);
         if (options.ResetRelations) data.Relations.Reset();
         LoadFactions(save, data, options, loaded);
-        loaded.RelationBaseline = Snapshot(data.Relations);
-        loaded.RankBaseline = [.. Enumerable.Range(0, data.Relations.Count).Select(data.Relations.Rank)];
-        loaded.TrustBaseline = [.. Enumerable.Range(0, data.Relations.Count).Select(data.Relations.GlobalTrust)];
-        loaded.WarBaseline = [.. Enumerable.Range(0, data.Relations.Count * data.Relations.Count).Select(i => data.Relations.AtWar(i / data.Relations.Count, i % data.Relations.Count))];
-
-        // The player.
-        var playerFaction = save.PlayerFaction;
-        int playerIndex = playerFaction is not null && data.FactionIndex(playerFaction.Id) is var pi and >= 0 ? pi : data.PlayerFaction;
-        world.Player.Faction = playerIndex;
-        world.Player.Money = camera.PlayerMoney;
-        // A renamed player faction (the CAMERA's name differs from the data's).
-        world.Player.FactionName = camera.PlayerFactionName is { Length: > 0 } savedName && playerIndex >= 0 && savedName != data.Factions[playerIndex].Name ? savedName : null;
-        world.Player.SquadAi = SquadAiKeys.Read(camera.Record);
-        if (camera.Record.Bools.ContainsKey("ditch") && camera.Record.Ints.TryGetValue(SquadAiKeys.FormationKey, out int formation))
-            SquadAiKeys.SetFormation(world, playerIndex, formation, data.Factions);
-        // The original's loader reads `bl` only from a save holding the advanced options (float `cod`; docs/game/character-stats.md).
-        world.Player.BanditsLoot = !camera.Record.Floats.ContainsKey("cod") || camera.Record.Bools.GetValueOrDefault("bl", true);
-        BedSave.Read(camera.Record, world);
-        LoadTownKnowledge(save, data, world.Player);
-        world.Player.KnownFactions = KnownFactions(playerFaction, data, world.Player, options);
-        LoadUniques(camera.Record, data, world.Uniques);
-
-        // Building locks and doors are taken from the zones when their town registers; held characters name their bed or cage by building instance.
-        var buildingStates = HeldSave.BuildingStates(save);
-        world.Fixtures.Saved = buildingStates;
-        world.Fixtures.SavedSpots = HeldSave.BuildingSpots(save);
-        world.Fixtures.Items = data.Items;
-        var instanceOf = new Dictionary<Meitou.Data.Fcs.FcsRecord, string>(ReferenceEqualityComparer.Instance);
-        foreach (var (instance, record) in buildingStates) instanceOf[record] = instance;
+        TakeBaselines(data, loaded);
+        int playerIndex = LoadPlayer(world, save, data, options);
+        var instanceOf = LoadFixtures(world, save, data);
         var handles = save.BuildHandles();
+        LoadWorks(world, save, data, playerIndex, loaded, options, multiplayerFactions);
 
-        // The research the player has finished, and the buildings the player made (docs/simulation.md "Buildings").
-        ResearchSave.Load(save.Research, world.Research, data.Db);
-        if (options.MultiplayerMetadata is { } resourceMetadata) PlayerRegistrySave.PrepareResources(world, data, resourceMetadata);
-        if (multiplayerFactions is not null) BuildingSave.ReadMultiplayer(save, world, data);
-        else if (playerFaction is not null) BuildingSave.Read(save, world, data.Db, playerFaction.Id, playerIndex);
-        // The machines of the player's complete buildings: recipe slots, storage, farms (docs/simulation.md "Production").
-        MachineSave.Bind(save, world, data.Items);
-        NaturalClaimsSave.Read(camera.Record, world, data);
-        if ((playerFaction is not null || multiplayerFactions is not null) && world.Systems.OfType<Production.ProductionSystem>().FirstOrDefault() is { } production)
-            MachineSave.Read(save, world, production, data.Items, allOwners: multiplayerFactions is not null);
-        if (world.SystemOf<Production.ProductionSystem>() is { } rockProduction)
-            RockMachineSave.Read(camera.Record, world, rockProduction);
-        // The loose items of the zone files (docs/simulation.md "Ground items").
-        world.SavedZones.UnionWith(save.Zones.Keys);
-        if (GroundItemSave.Load(save, world, data.Items, id => data.FactionIndex(id) is var f and >= 0 && !data.Factions[f].NotReal ? f : -1) is > 0 and var lost) loaded.Notes.Add($"{lost} loose items name records this game does not have; they stay in the zone files.");
-
-        var races = new Dictionary<string, RaceData?>(StringComparer.Ordinal);
-        var parts = new Dictionary<string, BodyPartTemplate?>(StringComparer.Ordinal);
+        var races = new Dictionary<string, RaceData?>();
+        var parts = new Dictionary<string, BodyPartTemplate?>();
         var bySource = new Dictionary<SaveCharacter, CharacterId>();
         var assembly = new CharacterAssembly(data);
-        // The NPC platoons are made when their zones load; what that needs stays with the world (docs/simulation.md "Saves").
-        var context = new SavedPopulation
-        {
-            MeitouWritten = save.Camera.Record.Strings.ContainsKey(SeedKey),
-            Handles = handles,
-            InstanceOf = instanceOf,
-            Appearances = options.Appearances,
-            Clock = loaded.Clock,
-            PlayerFaction = playerIndex,
-            MultiplayerFactions = multiplayerFactions,
-        };
-        world.Saved = context;
-        if (multiplayerFactions is not null) world.StoredPlayerRoles = new StoredPlayerRoles(world);
-        context.Memory = world.Systems.OfType<Dialogue.DialogueSystem>().FirstOrDefault()?.Memory;
-        ReadNests(save, data, context);
-        foreach (var town in save.Towns)
-            if (!town.IsNest && town.Instance.Length > 0) context.TownStates.TryAdd(town.Instance, town.Record);
-        // The towns' replacements (replacementTown: the TOWN in their place, "" none).
-        data.ClearReplacements();
-        foreach (var site in data.Sites)
-            if (site.InstanceId.Length > 0 && context.TownStates.TryGetValue(site.InstanceId, out var state)
-                && state.Strings.GetValueOrDefault("replacementTown") is { Length: > 0 } replacement && data.Db.Find(replacement) is { Type: FcsRecordType.Town } record)
-                data.SetReplacement(site.Index, TownData.From(record));
-        world.Fixtures.LayoutsFromSave(world, data);   // the layouts the original furnished the saved buildings with
-        world.Fixtures.RuinsFromSave(world, data);
-        foreach (var site in data.Sites)
-            if (site.Replacement is not null) world.Fixtures.ApplyTownRuins(world, data, site.Index);   // the ruins its residents made
-        // The war states, and the town handles their targets and homes name (docs/formats/save.md WAR_SAVESTATE).
-        var siteOf = data.Sites.Where(s => s.InstanceId.Length > 0).GroupBy(s => s.InstanceId).ToDictionary(g => g.Key, g => g.First().Index, StringComparer.Ordinal);
-        foreach (var town in save.Towns)
-            if (!town.IsNest && siteOf.TryGetValue(town.Instance, out int site) && !town.Handle.IsNull) context.TownSites.TryAdd((town.Handle.C, town.Handle.Cs), site);
-        foreach (var f in save.Factions)
-        {
-            if (f.War is { } war) context.Wars.TryAdd(f.Id, war);
-            context.Prosperity.TryAdd(f.Id, f.Prosperity);
-        }
-        var campaignHomes = WarSave.PlatoonHomes(context.Wars.Values);
-        foreach (var platoon in save.Platoons)
-        {
-            bool mine = multiplayerFactions is null ? playerFaction is not null && platoon.FactionId == playerFaction.Id
-                : platoon.Record.Bools.GetValueOrDefault(PlayerSquadSave.SquadKey);
-            if (mine && platoon.IsLoaded)
-                LoadPlayerPlatoon(world, platoon, data, options, loaded, multiplayerFactions is null ? playerIndex : data.FactionIndex(platoon.FactionId), races, parts, bySource, assembly, context);
-            else if (!mine && options.NpcPlatoons)
-                LoadNpcPlatoon(world, platoon, data, loaded, context, campaignHomes.TryGetValue((platoon.Handle.C, platoon.Handle.Cs), out var home) ? home : null);
-        }
-        if (loaded.PlayerPlatoons.FirstOrDefault(p => p.Squad.Faction == playerIndex) is { } localPlatoon) world.Player.Squad = localPlatoon.Squad.Id;
+        var context = NewContext(world, save, data, options, loaded, handles, instanceOf, playerIndex, multiplayerFactions);
+        LoadTowns(world, save, data, context);
+        LoadPlatoons(world, save, data, options, loaded, playerIndex, races, parts, bySource, assembly, context);
         context.ResolveOwners(world);
-        // What the player's squads remembered (of the characters made so far; an NPC not made yet is not named again).
         if (context.Memory is { } memory)
             foreach (var lp in loaded.PlayerPlatoons) memory.Restore(lp.Squad.Id, MemorySave.Read(lp.Platoon.Record, context.CharacterOf));
-
-        // The selection.
-        var selected = new List<Hand> { camera.SelectedCharacter };
-        for (int k = 0; camera.Record.Ints.ContainsKey($"selected_characters{k}I"); k++) selected.Add(Hand.Read(camera.Record, $"selected_characters{k}"));
-        foreach (var h in selected)
-            if (!h.IsNull && handles.Character(h) is { } c && bySource.TryGetValue(c, out var id) && !world.Player.Selection.Contains(id))
-                world.Player.Selection.Add(id);
-        // The squad bar shows the selected character's squad, else the first in order with members.
-        if (world.Player.Selection.Count > 0 && world.Characters.Cold(world.Player.Selection[0].Slot) is { } first && world.Squads.Find(first.SquadId) is { PlatoonId: < 0 } shown
-            && shown.Faction == playerIndex)
-            world.Player.Squad = shown.Id;
-        else if (SquadManagement.PlayerSquads(world) is { Count: > 0 } squads)
-            world.Player.Squad = (squads.FirstOrDefault(s => s.Members.Count > 0) ?? squads[0]).Id;
+        RestoreSelection(world, camera, handles, bySource, playerIndex);
         return loaded;
     }
 
@@ -306,31 +207,36 @@ public static class SaveLoader
     }
 
     /// <summary>
+    /// An imported zone resets NPC building state even when a player building keeps the zone file (FUN_1409ffad0: "imported" key presence).
+    /// </summary>
+    static bool HasSavedBuildingState(KeyValuePair<Meitou.Data.World.ZoneCoordinate, SaveZone> entry) =>
+        entry.Value.BuildingList?.Bools.ContainsKey("imported") != true;
+
+    /// <summary>
     /// The research, the player's buildings and machines, the NPC town and rock machines and the zones' loose items.
     /// </summary>
-    static void LoadWorks(World world, SaveGame save, PopulationData data, int playerIndex, LoadedSave loaded)
+    static void LoadWorks(World world, SaveGame save, PopulationData data, int playerIndex, LoadedSave loaded,
+        SaveLoadOptions options, IReadOnlySet<string>? multiplayerFactions)
     {
         var camera = save.Camera;
         var playerFaction = save.PlayerFaction;
 
-        // The research the player has finished, and the buildings the player made (docs/simulation.md "Buildings").
+        // Resources are prepared before multi-faction buildings and machines are restored.
         ResearchSave.Load(save.Research, world.Research, data.Db);
-        if (playerFaction is not null) BuildingSave.Read(save, world, data.Db, playerFaction.Id, playerIndex);
+        if (options.MultiplayerMetadata is { } resourceMetadata) PlayerRegistrySave.PrepareResources(world, data, resourceMetadata);
+        if (multiplayerFactions is not null) BuildingSave.ReadMultiplayer(save, world, data);
+        else if (playerFaction is not null) BuildingSave.Read(save, world, data.Db, playerFaction.Id, playerIndex, data);
 
-        // The machines of the player's complete buildings: recipe slots, storage, farms (docs/simulation.md "Production").
-        if (playerFaction is not null && world.Systems.OfType<Production.ProductionSystem>().FirstOrDefault() is { } production)
-            MachineSave.Read(save, world, production, data.Items);
+        // Bind native level state before a machine is first ensured; natural claims retain their stored owner.
+        MachineSave.Bind(save, world, data.Items);
+        NaturalClaimsSave.Read(camera.Record, world, data);
+        if ((playerFaction is not null || multiplayerFactions is not null) && world.SystemOf<Production.ProductionSystem>() is { } production)
+            MachineSave.Read(save, world, production, data.Items, allOwners: multiplayerFactions is not null);
+        if (world.SystemOf<Production.ProductionSystem>() is { } rockProduction)
+            RockMachineSave.Read(camera.Record, world, rockProduction);
 
-        // The machines of NPC town buildings and of worked rocks (docs/formats/save.md "Town machines", "Rock machines").
-        if (world.Systems.OfType<Production.ProductionSystem>().FirstOrDefault() is { } townProduction)
-        {
-            MachineSave.Bind(save, world, data.Items);
-            RockMachineSave.Read(camera.Record, world, townProduction);
-        }
-
-        // The loose items of the zone files (docs/simulation.md "Ground items"); a zone with a file is not loaded fresh (no nest items are laid
-        // there).
-        world.SavedZones.UnionWith(save.Zones.Keys);
+        // The loose items of the zone files (docs/simulation.md "Ground items"); a non-imported saved zone is not loaded fresh (no nest items).
+        world.SavedZones.UnionWith(save.Zones.Where(HasSavedBuildingState).Select(entry => entry.Key));
         if (GroundItemSave.Load(save, world, data.Items,
             id => data.FactionIndex(id) is var f and >= 0 && !data.Factions[f].NotReal ? f : -1) is > 0 and var lost)
             loaded.Notes.Add($"{lost} loose items name records this game does not have; they stay in the zone files.");
@@ -340,7 +246,7 @@ public static class SaveLoader
     /// The saved population the NPC platoons are made from when their zones load, with the nests and the towns' states.
     /// </summary>
     static SavedPopulation NewContext(World world, SaveGame save, PopulationData data, SaveLoadOptions options, LoadedSave loaded,
-        SaveHandles handles, Dictionary<FcsRecord, string> instanceOf, int playerIndex)
+        SaveHandles handles, Dictionary<FcsRecord, string> instanceOf, int playerIndex, IReadOnlySet<string>? multiplayerFactions)
     {
         // The NPC platoons are made when their zones load; what that needs stays with the world (docs/simulation.md "Saves").
         var context = new SavedPopulation
@@ -351,8 +257,10 @@ public static class SaveLoader
             Appearances = options.Appearances,
             Clock = loaded.Clock,
             PlayerFaction = playerIndex,
+            MultiplayerFactions = multiplayerFactions,
         };
         world.Saved = context;
+        if (multiplayerFactions is not null) world.StoredPlayerRoles = new StoredPlayerRoles(world);
         context.Memory = world.Systems.OfType<Dialogue.DialogueSystem>().FirstOrDefault()?.Memory;
         ReadNests(save, data, context);
         foreach (var town in save.Towns)
@@ -418,10 +326,12 @@ public static class SaveLoader
 
         foreach (var platoon in save.Platoons)
         {
-            bool mine = playerFaction is not null && platoon.FactionId == playerFaction.Id;
+            bool mine = context.MultiplayerFactions is null ? playerFaction is not null && platoon.FactionId == playerFaction.Id
+                : platoon.Record.Bools.GetValueOrDefault(PlayerSquadSave.SquadKey);
 
             if (mine && platoon.IsLoaded)
-                LoadPlayerPlatoon(world, platoon, data, options, loaded, playerIndex, races, parts, bySource, assembly, context);
+                LoadPlayerPlatoon(world, platoon, data, options, loaded,
+                    context.MultiplayerFactions is null ? playerIndex : data.FactionIndex(platoon.FactionId), races, parts, bySource, assembly, context);
             else if (!mine && options.NpcPlatoons)
             {
                 LoadNpcPlatoon(world, platoon, data, loaded, context,
@@ -429,7 +339,8 @@ public static class SaveLoader
             }
         }
 
-        if (loaded.PlayerPlatoons.Count > 0) world.Player.Squad = loaded.PlayerPlatoons[0].Squad.Id;
+        if (loaded.PlayerPlatoons.FirstOrDefault(p => p.Squad.Faction == playerIndex) is { } localPlatoon)
+            world.Player.Squad = localPlatoon.Squad.Id;
     }
 
     /// <summary>
@@ -613,6 +524,8 @@ public static class SaveLoader
             HomeCentre = new Vector2(platoon.Position.X, platoon.Position.Z),
             HomeRadius = 100,
         };
+        AutonomySave.Read(platoon.Record, squad);
+
         CharacterId Spawn(SavedParts p)
         {
             var sc = p.Source;
@@ -737,13 +650,19 @@ public static class SaveLoader
     {
         int origin = -1;
 
+        // Several placed towns can be one TOWN (the four Waystations of 44854-rebirth.mod): the platoon's `hometown` handle names its own.
+        var named = Hand.Read(platoon.Record, "hometown");
+        if (named.Type == (int)FcsRecordType.Town && context.TownSites.TryGetValue((named.C, named.Cs), out int namedSite)
+                && IsBaseTown(data.Sites[namedSite], baseTown))
+            return namedSite;
+
         for (int i = 0; i < data.Sites.Count && baseTown.Length > 0; i++)
         {
-            if (data.Sites[i].Record.Id == baseTown || data.Sites[i].Replacement?.Id == baseTown)
+            if (IsBaseTown(data.Sites[i], baseTown))
             {
                 origin = i;
                 break;
-            }   // the town's own TOWN, or the override that took its place (platoons made since)
+            }
         }
 
         if (origin < 0 && campaignHome is { IsNull: false } home && context.TownSites.TryGetValue((home.C, home.Cs), out int homeSite))
@@ -751,6 +670,11 @@ public static class SaveLoader
 
         return origin;
     }
+
+    /// <summary>
+    /// Whether <paramref name="baseTown"/> is the site's own TOWN, or the override that took its place (platoons made since).
+    /// </summary>
+    static bool IsBaseTown(TownSite site, string baseTown) => site.Record.Id == baseTown || site.Replacement?.Id == baseTown;
 
     /// <summary>
     /// The saved characters a platoon carries: none for a town's platoon never made (made from its template), else its saved ones.

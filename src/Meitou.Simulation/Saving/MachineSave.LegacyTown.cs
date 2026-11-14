@@ -103,6 +103,15 @@ public static partial class MachineSave
                     machine.Inputs[i].Count = Math.Clamp(Ints.GetValueOrDefault(" in" + n), 0, machine.Inputs[i].Recipe.Capacity);
                     machine.Inputs[i].Level = Floats.GetValueOrDefault(" lv" + n);
                 }
+                if (machine.Farm is { } farm && Floats.TryGetValue(" pg", out float growth))
+                {
+                    farm.Growth = growth;
+                    farm.Death = Floats.GetValueOrDefault(" pd");
+                    farm.Start = Floats.GetValueOrDefault(" ps");
+                    farm.Harvested = Math.Clamp(Ints.GetValueOrDefault(" ph"), 0, farm.Plants.Length);
+                    if (Floats.TryGetValue(" pt", out float saved)) farm.LiveHours = saved;
+                    for (int i = 0; i < farm.Plants.Length; i++) farm.Plants[i] = i < farm.Harvested ? -10 : growth;
+                }
             }
         }
     }

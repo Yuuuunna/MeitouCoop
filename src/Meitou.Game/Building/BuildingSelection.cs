@@ -58,11 +58,14 @@ sealed class BuildingSelection(PlayerInterface player)
     }
 
     /// <summary>
-    /// The selected building while it still exists (a site that was cancelled or dismantled drops the selection).
+    /// The selected building while it still exists (a site that was cancelled or dismantled drops the selection; a rock's or a town building's
+    /// machine has no site).
     /// </summary>
     internal SelectedBuilding? BuildingFocus()
     {
         if (Selected is { SiteId: { } id } && !Simulation.Production.ProductionSystem.IsNatural(id)
+            && !player.Session.CurrentSnapshot.WorkSites.Any(s => s.Id == id)
+            && player.Production.Machine(id) is null
             && !player.Session.CurrentSnapshot.Buildings.Any(s => s.Id == id))
             SetBuilding(null);
 
@@ -148,7 +151,7 @@ sealed class BuildingSelection(PlayerInterface player)
                 level = candidate;
                 var info = host.WorldInfo(b);
                 var position = new Vector3(b.Position.X, y, b.Position.Z);
-                best = new(info.Name, info.Type, info.Owner, info.Town, null, b.Key, position, hull,
+                best = new(info.Name, info.Type, info.Owner, info.Town, info.Machine ? b.Key : null, b.Key, position, hull,
                     info.PublicDay, info.PublicNight, b.BuildingId, info.Destroyed);
             }
         }
@@ -188,7 +191,8 @@ sealed class BuildingSelection(PlayerInterface player)
         var name = player.Build.Services?.ItemName(hit.Record) ?? hit.Record;
         var owner = player.FactionName?.Invoke(hit.Owner);
         var town = TownOf(hit.House, hit.Position);
-        return (new SelectedBuilding(name, null, owner, town, null, hit.Id, hit.Position, null, Record: hit.Record), hit.T);
+        string? machine = player.Build.Services?.Machine(hit.Record) is { Operable: true } ? hit.Id : null;
+        return (new SelectedBuilding(name, null, owner, town, machine, hit.Id, hit.Position, null, Record: hit.Record), hit.T);
     }
 
     /// <summary>
@@ -226,7 +230,8 @@ sealed class BuildingSelection(PlayerInterface player)
 
         var info = host.WorldInfo(hit.House);
         var (id, record) = (hit.Piece.Id, hit.Piece.RecordId);
-        return (new SelectedBuilding(host.ItemName(record), null, info.Owner, info.Town, null, id, hit.Piece.Position, null, Record: record), hit.T);
+        string? machine = host.Machine(record) is { Operable: true } ? id : null;
+        return (new SelectedBuilding(host.ItemName(record), null, info.Owner, info.Town, machine, id, hit.Piece.Position, null, Record: record), hit.T);
     }
 
     /// <summary>
@@ -276,7 +281,7 @@ sealed class BuildingSelection(PlayerInterface player)
     /// is picked; null when it misses, the piece has no collision (or it is still being read), it is not drawn
     /// (<see cref="FurnitureUse.FloorHidden"/> of its <paramref name="house"/>) or a wall stands before it.
     /// </summary>
-    float? PieceRayT((Vector3 Origin, Vector3 Direction) ray, string house, Data.World.TownPiece piece, float before)
+    internal float? PieceRayT((Vector3 Origin, Vector3 Direction) ray, string house, Data.World.TownPiece piece, float before)
     {
         if (player.Furniture.FloorHidden?.Invoke(house, piece.Floor, piece.Outside) == true) return null;
         if (player.Build.Services?.Placement.Footprint(piece.RecordId) is not { } footprint) return null;
@@ -398,12 +403,13 @@ sealed class BuildingSelection(PlayerInterface player)
         var stats = new List<PlayerInterface.HudLine>();
         var extended = new List<PlayerInterface.HudLine>();
         bool own = focus.SiteId is not null;
-        bool playerSite = focus.SiteId is { } siteId && !Simulation.Production.ProductionSystem.IsNatural(siteId);
         var site = player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == focus.Instance);
+        int? owner = site?.Owner ?? WorkOwnerOf(focus.Instance);
+        bool playerSite = site is not null && site.Owner == player.Session.ActiveFaction;
         // A town building the player owns (bought, or the player's in the save) gets the buttons of a building of the player's
         // (the original's slot 79: the owner is the player's faction).
         var detail = player.Session.CurrentSnapshot.InspectedBuilding is { } d && d.Instance == focus.Instance ? d : null;
-        bool mine = playerSite || detail is { Owned: true };
+        bool mine = owner == player.Session.ActiveFaction || detail is { Owned: true };
         var inspected = AddStateLines(focus, site, detail, own, playerSite, state, stats);
 
         // Slot 114 asks slot 97 (broken, +0x3b6) before completion: a machine being dismantled reads Broken, not Under construction.
@@ -420,7 +426,7 @@ sealed class BuildingSelection(PlayerInterface player)
         }
 
         AddPublicLines(focus, site, detail, mine, playerSite, stats);
-        var header = HeaderLine(focus, detail, own, playerSite, mine, inspected);
+        var header = HeaderLine(focus, detail, mine, owner, inspected);
         return (header, [.. state], [.. stats], status, bad, [.. extended]);
     }
 
@@ -497,13 +503,15 @@ sealed class BuildingSelection(PlayerInterface player)
 
         var rich = player.Session.CurrentSnapshot.InspectedRichness is { } r && r.Instance == focus.Instance
             ? r : (Simulation.Production.RichnessView?)null;
-        if (rich is { } richness) ProductionWindows.AddRichnessLine(richness, stats);
+        if (rich is { } richness && player.Production.Machine(focus.SiteId)?.Farm is null)
+            ProductionWindows.AddRichnessLine(richness, stats);
 
         if (detail?.Bed is null && own && player.Production.Machine(focus.SiteId) is { } machine)
         {
             Simulation.Combat.TurretPanelView? turretPanel =
                 player.Session.CurrentSnapshot.InspectedTurret is { } tp && tp.Instance == focus.Instance ? tp : null;
-            player.Production.AddMachineLines(machine, stats, extended, ref status, ref bad, rich, turretPanel, mine);
+            bool manage = machine.ControlRevision != 0 && (player.Session.IsRemote || mine);
+            player.Production.AddMachineLines(machine, stats, extended, ref status, ref bad, rich, turretPanel, manage);
         }
         else if (rich is { Efficiency: { } e } unmined)
         {
@@ -515,7 +523,7 @@ sealed class BuildingSelection(PlayerInterface player)
     }
 
     /// <summary>
-    /// The Open to public line (a toggle on the player's town building with an interior, a caption on another faction's public one) and the
+    /// The Open to public line (a toggle on the player's town building with an interior, a caption on another faction's public one or house) and the
     /// For sale button.
     /// </summary>
     void AddPublicLines(SelectedBuilding focus, Simulation.Construction.BuildingSnapshot? site, Simulation.Locks.BuildingDetail? detail, bool mine,
@@ -532,9 +540,11 @@ sealed class BuildingSelection(PlayerInterface player)
             stats.Add(new("Open to public:", open ? "Public" : "Private", PlayerInterface.MainColour,
                 open ? PlayerInterface.GoodColour : PlayerInterface.BadBrightColour, Action: "meitou:building-public", ButtonWidth: 0.3f));
         }
-        else if (!mine && (PublicDayOf(focus, detail) || focus.PublicNight))
+        else if (!mine && (PublicDayOf(focus, detail) || HasInterior(focus)))
         {
-            bool open = player.Session.Clock.IsDaytime ? PublicDayOf(focus, detail) : focus.PublicNight;
+            // Another faction's building reads slot 82 at any hour (FUN_140301840; `public night` is never read): a private home says Private.
+            // Meitou keeps the line off a private building without an interior (a bed, a rock, a wall).
+            bool open = PublicDayOf(focus, detail);
             stats.Add(new("Open to public:", open ? "Public" : "Private", PlayerInterface.MainColour,
                 open ? PlayerInterface.GoodColour : PlayerInterface.BadColour));
         }
@@ -549,21 +559,34 @@ sealed class BuildingSelection(PlayerInterface player)
     /// <summary>
     /// The name bar: the building's (or bed's) name and its owner, the player's faction for the player's own building.
     /// </summary>
-    PlayerInterface.HudLine HeaderLine(SelectedBuilding focus, Simulation.Locks.BuildingDetail? detail, bool own, bool playerSite, bool mine,
+    PlayerInterface.HudLine HeaderLine(SelectedBuilding focus, Simulation.Locks.BuildingDetail? detail, bool mine, int? authoritativeOwner,
         Simulation.Production.RichnessView? inspected)
     {
         // A rock (slot 113): the player's faction once a player character has worked it, else its owner nofac's name ("No Faction"; its town
         // NO_TOWN is explored, not secret).
         string? owner = focus.Owner;
-        if (own && !playerSite)
+        if (authoritativeOwner is int faction && faction >= 0) owner = player.FactionName?.Invoke(faction);
+        else if (focus.SiteId is { } id && Simulation.Production.ProductionSystem.IsNatural(id))
         {
             owner = inspected is { Owner: >= 0 and var by } ? player.FactionName?.Invoke(by)
                 : player.RecordName?.Invoke(Simulation.Factions.SquadManagement.DismissFallbackFaction);
         }
 
         var name = detail?.Bed?.Name ?? focus.Name;
-        var value = mine ? player.FactionName?.Invoke(player.Session.ActiveFaction) ?? "" : owner ?? "";
+        var value = authoritativeOwner is not null ? owner ?? ""
+            : mine ? player.FactionName?.Invoke(player.Session.ActiveFaction) ?? "" : owner ?? "";
         return new PlayerInterface.HudLine(name, value, PlayerInterface.TitleColour, PlayerInterface.TitleColour);
+    }
+
+    /// <summary>
+    /// A visible work target's owner comes from the authority, including the first claim before its machine window is inspected.
+    /// </summary>
+    int? WorkOwnerOf(string id)
+    {
+        foreach (var site in player.Session.CurrentSnapshot.WorkSites)
+            if (site.Id == id) return site.Owner;
+
+        return player.Production.Machine(id) is { AuthorityFaction: >= 0 } machine ? machine.AuthorityFaction : null;
     }
 
     /// <summary>
@@ -723,7 +746,7 @@ sealed class BuildingSelection(PlayerInterface player)
     /// The medical panel's rows of a selected building (its section 4, docs/game/ui-screens.md "Selected building"): the first door's <c>Door
     /// Condition</c>, then <c>Building Condition</c> (<c>Condition</c> without doors), each the construction progress as the number and its fraction
     /// of the target as the bar, then while unfinished a row per material, delivered over required. Meitou models no building damage, so a finished
-    /// building's progress is its target (the original's damaged state lowers it).
+    /// building's progress is its target (the original's damaged state lowers it). A complete farm adds its crop bars after Condition.
     /// </summary>
     internal List<PlayerInterface.MedicalRow> BuildingRows(SelectedBuilding focus)
     {
@@ -746,6 +769,8 @@ sealed class BuildingSelection(PlayerInterface player)
             : fraction >= 1 ? Loc.Tr("The building is in good condition.") : Loc.Tr("The building is damaged.");
         var progressValue = ((int)progress).ToString(CultureInfo.InvariantCulture);
         rows.Add(Bar(Loc.Tr(door is null ? "Condition" : "Building Condition"), fraction, progressValue, tip));
+
+        if (complete && player.Production.Machine(focus.SiteId)?.Farm is { } farm) FarmPanel.AddRows(farm, rows);
 
         // A wind generator's rows (WindGeneratorBuilding::getGUIPower section 4): Wind, its share as a whole percent and the bar; Power Output,
         // the output as an int over the rated.
@@ -807,6 +832,11 @@ sealed class BuildingSelection(PlayerInterface player)
     static bool PublicDayOf(SelectedBuilding focus, Simulation.Locks.BuildingDetail? detail) => detail?.ResidentsPublic ?? focus.PublicDay;
 
     /// <summary>
+    /// Whether the selected building's record has an interior (a house, not a piece of furniture, a rock or a wall).
+    /// </summary>
+    bool HasInterior(SelectedBuilding focus) => focus.Record is { } record && DataOf(record) is { HasInterior: true };
+
+    /// <summary>
     /// The panel's own buttons on a selected building of the player's: Dismantle (after the original's "Are you sure?"), pause, upgrade, downgrade,
     /// the doors, their locks and Open to public.
     /// </summary>
@@ -861,6 +891,12 @@ sealed class BuildingSelection(PlayerInterface player)
     /// </summary>
     void SiteAction(string id, string action)
     {
+        if (action is "machine-power" or "machine-battery" or "machine-incinerate")
+        {
+            MachineAction(id, action);
+            return;
+        }
+
         if (player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == id) is not { } site) return;
         if (action == "building-upgrade") player.Say(new Simulation.Construction.UpgradeSite(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
         else if (action == "building-downgrade") player.Say(new Simulation.Construction.DowngradeSite(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
@@ -879,7 +915,19 @@ sealed class BuildingSelection(PlayerInterface player)
             player.Confirm("Dismantle", warning,
                 () => player.Say(new Simulation.Construction.ConfirmDismantle(id) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick }));
         }
-        else if (action is "machine-power" or "machine-battery" && player.Production.Machine(id) is { Power: { } pw } machine)
+        else if (action == "building-pause" && site is { Complete: false })
+            player.Say(new Simulation.Construction.PauseSite(id, !site.Paused) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
+        else if (action == "building-doors") player.Say(new Simulation.Locks.ToggleDoorsOrder(id) { Tick = player.Session.CommandTick });
+        else if (action == "building-locks") player.Say(new Simulation.Locks.ToggleDoorLocksOrder(id) { Tick = player.Session.CommandTick });
+    }
+
+    /// <summary>
+    /// Machine control uses its independent authority revision, including level machines absent from construction snapshots.
+    /// </summary>
+    void MachineAction(string id, string action)
+    {
+        if (action is "machine-power" or "machine-battery"
+            && player.Production.Machine(id) is { Power: { } pw, ControlRevision: > 0 } machine)
         {
             // A click flips the toggle, sets the Generator switch and posts UI_Generator (vfunc 161, FUN_140297a60).
             bool on = action == "machine-power" ? !(machine.Wind?.PowerOn ?? pw.PowerOn) : !pw.GetsBattery;
@@ -888,15 +936,11 @@ sealed class BuildingSelection(PlayerInterface player)
                 ? new Simulation.Production.SetMachinePower(id, PowerOn: on) { ControlRevision = machine.ControlRevision, Tick = player.Session.CommandTick }
                 : new Simulation.Production.SetMachinePower(id, GetsBattery: on) { ControlRevision = machine.ControlRevision, Tick = player.Session.CommandTick });
         }
-        else if (action == "machine-incinerate" && player.Production.Machine(id) is { Furnace: not null } furnace)
+        else if (action == "machine-incinerate" && player.Production.Machine(id) is { Furnace: not null, ControlRevision: > 0 } furnace)
         {
             player.InterfaceSounds.Sound("General_Click");   // engine choice: the button's own sound is not traced
             player.Say(new Simulation.Production.IncinerateFurnace(id) { ControlRevision = furnace.ControlRevision, Tick = player.Session.CommandTick });
         }
-        else if (action == "building-pause" && site is { Complete: false })
-            player.Say(new Simulation.Construction.PauseSite(id, !site.Paused) { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
-        else if (action == "building-doors") player.Say(new Simulation.Locks.ToggleDoorsOrder(id) { Tick = player.Session.CommandTick });
-        else if (action == "building-locks") player.Say(new Simulation.Locks.ToggleDoorLocksOrder(id) { Tick = player.Session.CommandTick });
     }
 
     #endregion

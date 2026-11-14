@@ -264,6 +264,7 @@ sealed class AgentWorld(GameHost host)
             + "<name>", ControlQuickload);
         RegisterControlBaseCommands(Add);
         host.AgentPlay.RegisterControlPlayCommands(Add);
+        host.AgentTowns.RegisterControlTownCommands(Add);
         RegisterControlNavCommands(Add);
         host.RegisterControlGraphicsCommands(Add);
         host.RegisterControlInteriorCommands(Add);
@@ -287,6 +288,7 @@ sealed class AgentWorld(GameHost host)
     /// </summary>
     static bool RequiresLocalWorld(string name) => name is "place-building" or "clear-building" or "place-item" or "container-put"
         or "pause" or "resume" or "speed" or "step" or "hurt" or "say" or "ko" or "wake" or "bandits-loot" or "spawn-at"
+        or "towns" or "town" or "machines-power" or "dismantle-site" or "navnear"
         or "unequip" or "strip-inventory" or "ragdoll-dump" or "root-probe" or "root-scan" or "root-log" or "spawn-trace";
 
     /// <summary>

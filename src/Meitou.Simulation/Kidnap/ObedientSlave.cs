@@ -299,7 +299,7 @@ sealed class ObedientJobs : IJobSource, ITaskHandler
     {
         TaskType.FollowSlavemaster => FollowTarget(world, slot, cold, k) is null ? 0 : 1,
         TaskType.AutoLabouringMines or TaskType.AutoLabouringMinesPretend => world.SystemOf<AiSystem>() is { } ai
-                && ai.HasWorkplaces(TownPoint(world, slot, cold)) ? 1 : 0,
+                && ai.WorkAt(world, world.Characters.IdOf(slot), TownPoint(world, slot, cold), 0, type) is not null ? 1 : 0,
         TaskType.Idle => 1,
         _ => 0,
     };
@@ -352,6 +352,7 @@ sealed class ObedientJobs : IJobSource, ITaskHandler
                 // A walk held off by the building short of it is over once it stands within twice the reach (AiSystem.AtWork): StartWork then sets it
                 // working.
                 return _works.TryGetValue(world.Characters.IdOf(slot), out var spot) && run.Runs(task)
+                    && (type != TaskType.AutoLabouringMines || AiSystem.RealWork(world, spot.Building))
                     && (task == CharacterTask.GoTo ? !AiSystem.AtWork(in world.Characters.Next[slot], spot.Building.Position, spot.Range)
                             : cold.ActionClip == spot.Clip);
         }
@@ -366,7 +367,8 @@ sealed class ObedientJobs : IJobSource, ITaskHandler
         var id = table.IdOf(slot);
         if (world.SystemOf<AiSystem>() is not { } ai) return;
         var at = TownPoint(world, slot, cold);
-        bool again = _works.TryGetValue(id, out var spot) && cold.Running is { Source: TaskSource.Job, Implicit: false } run && run.Job == k
+        bool again = _works.TryGetValue(id, out var spot) && (type != TaskType.AutoLabouringMines || AiSystem.RealWork(world, spot.Building))
+                && cold.Running is { Source: TaskSource.Job, Implicit: false } run && run.Job == k
                 && run.Row == type;
         if (again && AiSystem.AtWork(in table.Next[slot], spot!.Building.Position, spot.Range))
         {
@@ -383,7 +385,7 @@ sealed class ObedientJobs : IJobSource, ITaskHandler
 
         // A new pick: another roll each time it starts working anew.
         int epoch = spot is null ? 0 : spot.Epoch + 1;
-        if (ai.WorkAt(world, id, at, epoch) is not { } found) return;
+        if (ai.WorkAt(world, id, at, epoch, type) is not { } found) return;
         float range = ai.WorkRangeOf(found.Building);
         _works[id] = new WorkSpot { Building = found.Building, Clip = found.Clip, Functionality = found.Functionality, Range = range, Epoch = epoch };
         if (AiSystem.AtWork(in table.Next[slot], found.Building.Position, range)) Work(world, slot, k, type);
@@ -433,6 +435,22 @@ sealed class ObedientJobs : IJobSource, ITaskHandler
     }
 
     /// <summary>
+    /// The real obedient-work act-out consumed by production. A pretend goal, a walk, or an interrupted/released slave supplies no work.
+    /// </summary>
+    internal TownBuilding? Workplace(World world, int slot)
+    {
+        var cold = world.Characters.Cold(slot);
+        if (cold is null || !ObedientSlave.Obeys(cold) || !ObedientSlave.HasJob(cold)
+            || cold.Running is not { Row: TaskType.AutoLabouringMines, Source: TaskSource.Job, Job: >= 0 } run
+            || (uint)run.Job >= (uint)cold.Jobs.Count || cold.Jobs[run.Job].Type != TaskType.SlaveObedience
+            || ObedientSlave.MasterOf(world, slot, cold, run.Job) is null
+            || !_works.TryGetValue(world.Characters.IdOf(slot), out var spot)
+            || world.Characters.Next[slot].Task != (byte)CharacterTask.Idle || cold.ActionClip != spot.Clip
+            || !AiSystem.AtWork(in world.Characters.Next[slot], spot.Building.Position, spot.Range)) return null;
+        return spot.Building;
+    }
+
+    /// <summary>
     /// Another task takes the worker: the work clip goes.
     /// </summary>
     void ITaskHandler.End(World world, int slot, CharacterTask task, TaskEnd reason)
@@ -442,6 +460,7 @@ sealed class ObedientJobs : IJobSource, ITaskHandler
         {
             cold.ActionClip = null;
             cold.ActionWork = null;
+            cold.Operating = false;
         }
     }
 

@@ -1008,6 +1008,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         var table = world.Characters;
         var c = table.Cold(carrier)!;
         var b = table.Cold(body)!;
+        LetKidnapVictimGo(world, carrier, body);
         c.Carrying = CharacterId.None;
         b.CarriedBy = CharacterId.None;
         b.CarriedAwake = false;
@@ -1329,7 +1330,8 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
 
         if (TakeLootMoney(world, i, t, owner, item, mark, death, take.Issuer)) return;
 
-        int moved = InventoryCommands.MoveInto(owner, item, InventoryCommands.ClickCount(item, take.Count), cold.Inventory!, take.BagFirst,
+        int moved = InventoryCommands.MoveInto(owner, item, InventoryCommands.ClickCount(item, take.Count), cold.Inventory!,
+            take.BagFirst || cold.IsPlayer && world.TakeIntoBackpack,
             out bool wear, cold);
         if (owner.Items.Contains(item)) item.Mark = mark;   // what stays keeps its mark
         if (moved == 0)
