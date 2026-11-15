@@ -265,6 +265,9 @@ NPC answers an event's lines like any other; the rule is also in [Arrival banter
 - Plays Wwise `Initiate_Conversation`. Chooses the root and its best child, says it.
 - Opens the DialogueWindow when the said line has passing children; **the window pauses the game** (clock speed 0, the previous speed
   restored on close, `FUN_140787fb0`).
+- **A caged target** (**Observed**: neither the order check `FUN_1405d1940` nor `FUN_140684320` tests the target's imprisonment; the caged-occupant
+  menu offers Talk To, order 12; mods such as Recruitable Prisoners hold their dialogue on DC 14 / 63 and recruit from the cage, #737): a prisoner
+  is talked to, hostile or not.
 - The talking player character is the one given the Talk order; walking there is that task's precondition. AI-to-AI talk range is
   260 units (DC 16).
 - **Talk distance** (**Observed**, task 12's `isAtLocation` → `AI::isWithinChoppingRange` `FUN_14059c6d0`, character branch; constant
@@ -330,6 +333,13 @@ bubble whose speaker is not awake). No test of whether the speaker is drawn: a b
 
 **End** (`FUN_140674830`): bubble and window closed, the per-event counter +1 with its time (read by DC 13), the event's last target
 stored, the squad blackboard notified for player conversations.
+
+**Chain and conversation**: a bubble chain the NPC was saying does not go on after a player conversation with it (**Observed**, 1.0.68
+with Universal Wasteland Expansion: a Shek gate guard's `Bag check (Shek)` chain, whose first line stores the `Bag search (Shek)`
+interrupt, says nothing more once that search ends; inferred: both run on the NPC's one dialogue state, and the end step closes bubble and
+window together). Meitou drops the chain and its shown bubble when the conversation opens, without the end step. Left running, the chain
+went on after the window closed: its later lines walked the guard back to the player (DA 2), each walk ending in an empty event 1, until
+its last line started an attack (#707).
 
 **AI tasks 102/159/161** (`Task_TalktoPlayer`, **Verified** decompile): fire `AITaskSytem+0x264` at the target (0 means 1), which the planner sets from the TaskData event of any
 row on the chosen plan (188: 38, 194 / 218: 39, 158 / 283: 9); event 9 repeats every update (17 at an enemy, or with blackboard `+0xe8` at a non-ally); walks at the target;

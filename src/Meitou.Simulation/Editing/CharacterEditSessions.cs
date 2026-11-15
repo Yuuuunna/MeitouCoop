@@ -11,6 +11,10 @@ public static class CharacterEditSessions
         EditKind Kind, CharacterControl? Control, int Faction, ulong Membership, bool Paid, bool RenameOnly = false)
     {
         public bool Applied;
+        /// <summary>
+        /// The editor-open side effect already ran; retries cannot grow back hair after a later shaving.
+        /// </summary>
+        public bool Opened;
     }
     static readonly ConditionalWeakTable<World, Dictionary<Guid, Session>> Sessions = new();
 
@@ -62,6 +66,21 @@ public static class CharacterEditSessions
             || session.Player != actor || session.RenameOnly && edit.Appearance is not null || session.Id != edit.SessionId || session.Character != edit.Character || session.Surgeon != edit.Surgeon || session.Kind != edit.Kind) return null;
         if (session.Control is { } grant && (!world.Players.Validate(grant)
             || world.Players.Find(actor)?.MembershipRevision(session.Faction) != session.Membership)) return null;
+        return session;
+    }
+
+    /// <summary>
+    /// The live editor permission for its open notification; the character, owner, control and membership must still match.
+    /// </summary>
+    internal static Session? Find(World world, InPlayEditorOpened opened)
+    {
+        var actor = opened.Issuer ?? PlayerId.Local;
+        if (opened.SessionId == Guid.Empty || !Sessions.GetOrCreateValue(world).TryGetValue(opened.SessionId, out var session)
+            || session.Player != actor || session.Character != opened.Character || session.RenameOnly) return null;
+
+        if (session.Control is { } grant && (!world.Players.Validate(grant)
+            || world.Players.Find(actor)?.MembershipRevision(session.Faction) != session.Membership)) return null;
+
         return session;
     }
 }

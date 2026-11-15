@@ -450,11 +450,13 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         {
             if (!Valid(world, state)) { CloseForPlayer(world, state.Actor); continue; }
             if (state.Open is { } c && (!Authorized(world, c) || !world.Characters.TryResolveNext(c.Player, out int player) || !Awake(world.Characters, player)
-                || !world.Characters.TryResolveNext(c.Npc, out int npc) || !Awake(world.Characters, npc)))
+                || !world.Characters.TryResolveNext(c.Npc, out int npc) || !Talkable(world.Characters, npc)))
                 End(world, state, followups: false);
             if (state.Talker.IsNone || state.Open is not null) continue;
             var table = world.Characters;
-            if (!table.TryResolveNext(state.Talker, out int p) || !table.TryResolveNext(state.Target, out int n) || !Awake(table, p) || !Awake(table, n)) CancelApproach(world, state);
+            if (!table.TryResolveNext(state.Talker, out int p) || !table.TryResolveNext(state.Target, out int n)
+                || !Awake(table, p) || !Talkable(table, n))
+                CancelApproach(world, state);
             else if (InTalkRange(table, p, n))
             {
                 TaskStart.Stand(table, p);
@@ -476,16 +478,17 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     {
         var table = world.Characters;
         if (!table.TryResolveNext(order.Talker, out int p) || table.Cold(p) is not { IsPlayer: true } pc
-            || !table.TryResolveNext(order.Target, out int n) || table.Cold(n) is not { IsPlayer: false } nc || !Awake(table, n)) return;
+            || !table.TryResolveNext(order.Target, out int n) || table.Cold(n) is not { IsPlayer: false } nc || !Talkable(table, n)) return;
         if (_data.Db.Find(pc.RecordId)?.GetBool("dumb") == true)
         {
             Post(world, Context(world, new Conversation { Npc = order.Target, Player = order.Talker, Event = DialogueEvents.PlayerTalkToMe }, state), Loc.Tr("{1} can't talk to people", pc.Name));
             return;
         }
-        if (!Awake(table, n) || SleepsThrough(table, n, DialogueEvents.PlayerTalkToMe)) return;
+        if (!Talkable(table, n) || SleepsThrough(table, n, DialogueEvents.PlayerTalkToMe)) return;
         // A campaign member with a pending interrupt (its negotiation) talks even when its faction is hostile (docs/game/factions-squads-towns.md
-        // "Campaigns", announcement).
-        if (_data.Relations.Contains(nc.Faction) && _data.Relations.Contains(pc.Faction) && _data.Relations.IsHostile(nc.Faction, pc.Faction) && !HasInterrupt(order.Target, state.Attributed ? state.Actor : null, state.Faction))
+        // "Campaigns", announcement), and so does a caged one (its menu's Talk To, #737).
+        if (_data.Relations.Contains(nc.Faction) && _data.Relations.Contains(pc.Faction) && _data.Relations.IsHostile(nc.Faction, pc.Faction)
+            && !HasInterrupt(order.Target, state.Attributed ? state.Actor : null, state.Faction) && !nc.IsImprisoned)
         {
             if (state.Attributed) { world.Post(state.Actor, "This character will not talk right now."); return; }
             var context = Context(world, new Conversation { Npc = order.Target, Player = order.Talker, Event = DialogueEvents.PlayerTalkToMe }, state);
@@ -543,6 +546,13 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         table.Current[slot].Alive && table.Cold(slot) is { IsImprisoned: false } c && c.Medical?.Incapacitated != true;
 
     /// <summary>
+    /// Whether a Talk order's target can be talked to: alive and not incapacitated, a caged one too (the order check <c>FUN_1405d1940</c> and the
+    /// conversation start <c>FUN_140684320</c> test no imprisonment; Recruitable Prisoners' cage dialogue, #737).
+    /// </summary>
+    static bool Talkable(CharacterTable table, int slot) =>
+        table.Current[slot].Alive && table.Cold(slot) is { } c && c.Medical?.Incapacitated != true;
+
+    /// <summary>
     /// The events an asleep owner still fires, by bit (the mask <c>DAT_141eeaecc</c> of <c>FUN_140684990</c>, which shifts by the event's low five
     /// bits): 11, 23, 24, 25 and those 32 above them.
     /// </summary>
@@ -557,12 +567,13 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         (AsleepEvents >> (ev & 31) & 1) == 0 && Carrying.CarrySystem.Asleep(table, slot);
 
     /// <summary>
-    /// Keeps the NPC standing while the talker comes and talks (as the trader in a trade); released when it ends.
+    /// Keeps the NPC standing while the talker comes and talks (as the trader in a trade); released when it ends. A caged NPC is left on its task.
     /// </summary>
     static void Hold(World world, int slot)
     {
         var table = world.Characters;
         table.Cold(slot)!.Engaged = true;
+        if (table.Cold(slot)!.IsImprisoned) return;
         if (table.Next[slot].Task is (byte)CharacterTask.Wander or (byte)CharacterTask.Idle) TaskStart.Stand(table, slot);
     }
 
@@ -623,6 +634,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             if (!quiet) Post(world, c, $"{nc.Name} has nothing to say.");
             return;
         }
+        DropBubbles(npc);   // the conversation takes over the NPC's dialogue state: a chain it was saying does not go on after (#707)
         state.Open = c;
         Hold(world, n);
         if (TaskStart.OnAiWalk(table, n)) TaskStart.Stand(table, n);   // a walking NPC stops to talk (engine choice); the approach chased it
@@ -672,7 +684,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     /// <inheritdoc/>
     public bool CanTalk(World world, int slot, CharacterId? talker = null)
     {
-        if (world.Characters.Cold(slot) is not { IsPlayer: false } || !Awake(world.Characters, slot) ||
+        if (world.Characters.Cold(slot) is not { IsPlayer: false } target || !Talkable(world.Characters, slot) ||
             talker is { } speaking && (!world.Characters.TryResolveNext(speaking, out int speakerSlot) || !Awake(world.Characters, speakerSlot))) return false;
         if (SleepsThrough(world.Characters, slot, DialogueEvents.PlayerTalkToMe)) return false;
         var npc = world.Characters.IdOf(slot);
@@ -683,7 +695,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         if (actor is { } owner && (IsServingOther(npc, owner) || world.SystemOf<Trading.TradeSystem>()?.IsServingOther(npc, owner) == true)) return false;
         if (HasInterrupt(npc, actor, grant?.Faction)) return true;
         int npcFaction = world.Characters.Cold(slot)!.Faction;
-        if (grant is { } controlled && _data.Relations.Contains(npcFaction) && _data.Relations.Contains(controlled.Faction) &&
+        if (!target.IsImprisoned && grant is { } controlled && _data.Relations.Contains(npcFaction) && _data.Relations.Contains(controlled.Faction) &&
             _data.Relations.IsHostile(npcFaction, controlled.Faction)) return false;
         var roots = SetOf(world, slot).For(DialogueEvents.PlayerTalkToMe);
         if (roots.Count == 0) return false;

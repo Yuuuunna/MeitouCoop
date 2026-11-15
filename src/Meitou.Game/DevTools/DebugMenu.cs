@@ -20,7 +20,7 @@ namespace Meitou.Game.DevTools;
 /// key. The rows are grouped in labelled sections (<see cref="DebugCheatSections"/>: Character, World / Spawn, Combat; then Mods for code mods' rows
 /// ([modding](docs/modding.md)); then Tools and Overlays, <see cref="DebugTools"/>, whose rows also take Space, Left and Right); Up and Down walk
 /// them in the order shown. Values sit in one column: typed fields, and on / off for switches. Teleport and spawn use the camera's target (the middle
-/// of the screen); heal, max skills and damage the selected characters, else the inspected one. Heal keeps lost limbs; its sub-row Heal fully gives
+/// of the screen); heal, edit character and damage the selected characters, else the inspected one. Heal keeps lost limbs; its sub-row Heal fully gives
 /// them back. Godmode (all player characters; see <see cref="DebugGodmode"/>) is a switch, and so is Guard (<see cref="DebugGuard"/>: kills hostiles
 /// within 30 m of the lead and heals the player's characters; it switches itself off when a game loads). "Teleport on map" is a switch too: while on,
 /// a click on the open map sends the selected characters there. Clear bounties clears the selected characters' (else every player character's), all
@@ -64,9 +64,9 @@ sealed class DebugMenu(GameHost host)
         HealFully,
 
         /// <summary>
-        /// Sets every stat of the targets to 100.
+        /// Opens the Edit character sub-view: quick actions, Appearance and every stat by category.
         /// </summary>
-        MaxSkills,
+        EditCharacter,
 
         /// <summary>
         /// Cuts the targets for the typed damage, on the picked part or at random.
@@ -130,7 +130,7 @@ sealed class DebugMenu(GameHost host)
     internal static readonly string[] DebugLabels =
     [
         "Teleport selected here", "Spawn NPC (hostile)", "Give item (name x5 q80)", "Money (+/- cats)", "Heal", "  Heal fully (restore limbs)",
-        "Max out skills", "Damage (cut)",
+        "Edit character", "Damage (cut)",
         "Force hits to", "Damage multiplier", "Unlock all research", "Clear bounties", "Godmode (all players)", "Guard (kill + heal in radius)",
             "Explosion level", "Explode at target", "Explode on click", "Drop item (at camera target)",
     ];
@@ -140,7 +140,7 @@ sealed class DebugMenu(GameHost host)
     /// </summary>
     static readonly (string Title, DebugRow[] Rows)[] DebugCheatSections =
     [
-        ("Character", [DebugRow.Teleport, DebugRow.Heal, DebugRow.HealFully, DebugRow.MaxSkills, DebugRow.Godmode, DebugRow.ClearBounties]),
+        ("Character", [DebugRow.Teleport, DebugRow.Heal, DebugRow.HealFully, DebugRow.EditCharacter, DebugRow.Godmode, DebugRow.ClearBounties]),
         ("World / Spawn", [DebugRow.SpawnNpc, DebugRow.GiveItem, DebugRow.DropItem, DebugRow.Money, DebugRow.UnlockResearch]),
         ("Combat", [DebugRow.Damage, DebugRow.ForceHits, DebugRow.DamageMultiplier, DebugRow.Guard, DebugRow.ExplodeLevel, DebugRow.Explode,
             DebugRow.ExplodeClick]),
@@ -187,6 +187,11 @@ sealed class DebugMenu(GameHost host)
     /// The Drop item row's sub-view: categories, name filter, quality, and the drops.
     /// </summary>
     readonly DebugItemPicker _itemPicker = new(host);
+
+    /// <summary>
+    /// The Edit character row's sub-view: quick actions, Appearance and every stat by category.
+    /// </summary>
+    readonly DebugCharacterEditor _characterEditor = new(host);
 
     /// <summary>
     /// The menu is open.
@@ -550,7 +555,7 @@ sealed class DebugMenu(GameHost host)
     /// Whether <paramref name="row"/> takes typed text: a mod row with a field, or a cheat row other than the switches and actions without one.
     /// </summary>
     bool DebugHasField(int row) => !DebugIsTool(row) && (row >= DebugLabels.Length ? host.Modding.ModDebugRows[row - DebugLabels.Length].HasField
-        : (DebugRow)row is not (DebugRow.Teleport or DebugRow.Heal or DebugRow.HealFully or DebugRow.MaxSkills or DebugRow.ForceHits
+        : (DebugRow)row is not (DebugRow.Teleport or DebugRow.Heal or DebugRow.HealFully or DebugRow.EditCharacter or DebugRow.ForceHits
             or DebugRow.UnlockResearch or DebugRow.ClearBounties or DebugRow.Godmode or DebugRow.Guard or DebugRow.ExplodeLevel or DebugRow.Explode
             or DebugRow.ExplodeClick or DebugRow.DropItem));
 
@@ -584,6 +589,12 @@ sealed class DebugMenu(GameHost host)
         if (_itemPicker.Open)
         {
             _itemPicker.Key(key);
+            return;
+        }
+
+        if (_characterEditor.Open)
+        {
+            _characterEditor.Key(key);
             return;
         }
 
@@ -622,6 +633,9 @@ sealed class DebugMenu(GameHost host)
                 break;
             case EngineKey.Enter or EngineKey.Right when !DebugIsTool(_debugRow) && _debugRow == (int)DebugRow.DropItem:
                 _itemPicker.Begin();
+                break;
+            case EngineKey.Enter or EngineKey.Right when !DebugIsTool(_debugRow) && _debugRow == (int)DebugRow.EditCharacter:
+                _characterEditor.Begin();
                 break;
             case EngineKey.Enter or EngineKey.Right when DebugPicksPart(_debugRow):
                 DebugParts = (DebugRow)_debugRow == DebugRow.ClearBounties ? DebugBountyList() : DebugPartList();
@@ -662,7 +676,7 @@ sealed class DebugMenu(GameHost host)
     /// </summary>
     (string? Id, string Name)[]? DebugPartList()
     {
-        if (DebugTargets() is not [var first, ..])
+        if (DebugTargets(host) is not [var first, ..])
         {
             _debugStatus = "select or inspect a character first";
             return null;
@@ -703,16 +717,19 @@ sealed class DebugMenu(GameHost host)
     /// </summary>
     internal void DebugMenuText(char c)
     {
+        if (host.Session.IsRemote) return;
         host.Modding.EnsureDebugFields();
         if (_itemPicker.Open) _itemPicker.Type(c);
+        else if (_characterEditor.Open) _characterEditor.Type(c);
         else if (DebugHasField(_debugRow) && !char.IsControl(c)) DebugFields[_debugRow] += c;
     }
 
     /// <summary>
-    /// Heal, max skills and damage: the selected characters, else the inspected one.
+    /// Heal, edit character and damage: the selected characters, else the inspected one.
     /// </summary>
-    CharacterId[] DebugTargets()
+    internal static CharacterId[] DebugTargets(GameHost host)
     {
+        if (host.Session.IsRemote) return [];
         var player = host.LocalSession.World.Player;
         // includes a select issued this tick (--setup / --exec run commands in one frame)
         var selected = host.Player.AgentOrders.ControlOrderers().ToArray();
@@ -881,7 +898,7 @@ sealed class DebugMenu(GameHost host)
         var world = host.LocalSession.World;
         long tick = world.Tick;
         var selected = host.Player.AgentOrders.ControlOrderers().ToArray();
-        var targets = DebugTargets();
+        var targets = DebugTargets(host);
         var here = at ?? host.Session.Camera.Current.Target;
         if ((int)row >= DebugLabels.Length)
             return host.Modding.ModDebugApply((int)row - DebugLabels.Length, field, selected, here, tick);
@@ -909,10 +926,6 @@ sealed class DebugMenu(GameHost host)
                 bool limbs = row == DebugRow.HealFully;
                 world.Commands.Enqueue(new DebugHeal(targets, limbs) { Tick = tick });
                 return $"healed {targets.Length}{(limbs ? ", limbs restored" : "")}";
-            case DebugRow.MaxSkills:
-                if (targets.Length == 0) return DebugFail("select or inspect a character first");
-                world.Commands.Enqueue(new DebugMaxSkills(targets) { Tick = tick });
-                return $"every stat 100 for {targets.Length}";
             case DebugRow.Damage:
                 if (targets.Length == 0) return DebugFail("select or inspect a character first");
                 if (!float.TryParse(field, NumberStyles.Float, CultureInfo.InvariantCulture, out float cut) || !(cut > 0))
@@ -954,6 +967,18 @@ sealed class DebugMenu(GameHost host)
         return "";
     }
 
+    /// <summary>
+    /// Sets every stat of the targets to 100 (the console's <c>maxstats</c>, and the Edit character sub-view's Max out everything).
+    /// </summary>
+    internal string DebugMaxAll()
+    {
+        if (host.Session.IsRemote) return DebugFail("World cheats require a local simulation session.");
+        DebugFailed = false;
+        var targets = DebugTargets(host);
+        if (targets.Length == 0) return DebugFail("select or inspect a character first");
+        host.LocalSession.World.Commands.Enqueue(new DebugMaxSkills(targets) { Tick = host.LocalSession.World.Tick });
+        return $"every stat 100 for {targets.Length}";
+    }
 
     /// <summary>
     /// Takes <c>--maker x</c>, <c>--model x</c> and <c>--level n</c> out of <paramref name="args"/>; null when none is given.
@@ -1053,7 +1078,7 @@ sealed class DebugMenu(GameHost host)
     /// Draws the menu at <paramref name="top"/> (on the left, or at the right with <paramref name="atRight"/>): the title with the switches on, the
     /// rows (scrolled to the highlighted one), the selection, camera target and money, the hint with <paramref name="close"/> and the status.
     /// <paramref name="scale"/> is the framebuffer's pixels per point (2 on a Retina display): the text and every size in the menu grow with it.
-    /// While the item picker is open it is drawn instead of the rows.
+    /// While the item picker or the Edit character sub-view is open it is drawn instead of the rows.
     /// </summary>
     internal void DrawDebugMenu(DebugOverlay o, int width, int height, float top, string close = "F10", bool atRight = false, float scale = 1)
     {
@@ -1068,6 +1093,13 @@ sealed class DebugMenu(GameHost host)
             o.Text("World debug tools require a local simulation session. Esc closes.", 10, top + 16, DebugOverlay.TextColour);
             return;
         }
+
+        if (_characterEditor.Open)
+        {
+            _characterEditor.Draw(o, width, height, top, scale, close, atRight);
+            return;
+        }
+
         var world = host.LocalSession.World;
         var here = host.Session.Camera.Current.Target;
         // Each line: its text, the row it belongs to (-1 for a section title and a part list line), and whether it is the highlighted one.
@@ -1209,6 +1241,9 @@ sealed class DebugMenu(GameHost host)
                     break;
                 case DebugRow.DropItem:
                     value = "Enter: pick an item";
+                    break;
+                case DebugRow.EditCharacter:
+                    value = "Enter: edit the character";
                     break;
                 case DebugRow.ExplodeClick:
                     rowOn = ExplodeClickOn;

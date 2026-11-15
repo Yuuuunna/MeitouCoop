@@ -170,6 +170,18 @@ sealed class CharacterEditorPanel(PlayerInterface player)
         }
         if (listed.Count == 0) return false;
         Editor = new EditorSession(kind, listed, animals, surgeon, paid, editSession, editSessions);
+        if (kind != EditKind.Creation)
+        {
+            foreach (var id in listed)
+            {
+                if (animals.Contains(id)) continue;
+                var session = editSessions?.GetValueOrDefault(id, editSession) ?? editSession;
+                if (player.Session.IsRemote && session == Guid.Empty) continue;
+
+                player.Say(new InPlayEditorOpened(id, session) { Tick = player.Session.CommandTick });
+            }
+        }
+
         Previews.Clear();
         player.FaithfulScreens.Open("editor");
         ShowEditorCharacter();
@@ -542,7 +554,13 @@ sealed class CharacterEditorPanel(PlayerInterface player)
         // An animal's page changes its name only (FUN_1405e9410 renames whichever character is shown).
         foreach (var (id, name) in s.AnimalNames)
             if (name != s.StartNames.GetValueOrDefault(id))
-                player.Say(new EditCharacter(id, null, name, s.Kind) { Tick = tick, Surgeon = id, Paid = s.Paid, SessionId = s.EditSessions.GetValueOrDefault(id, s.EditSession) });
+                player.Say(new EditCharacter(id, null, name, s.Kind)
+                {
+                    Tick = tick,
+                    Surgeon = s.Kind == EditKind.Recruit ? CharacterId.None : s.Surgeon,
+                    Paid = s.Paid,
+                    SessionId = s.EditSessions.GetValueOrDefault(id, s.EditSession)
+                });
         if (s.Kind == EditKind.Creation) player.Say(new FinishCreation { Tick = tick });
         CloseEditor();
         if (player.Session.CanChangeSpeed) player.Session.SetSpeed(1);   // CONFIRM unpauses and sets the speed to Normal for every kind of editor (FUN_1405e9f40)

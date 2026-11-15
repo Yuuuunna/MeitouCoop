@@ -1807,6 +1807,9 @@ sealed class GameLoop(GameHost host)
         StageClock.UiPart(StageClock.UiMarkers);
         if (!host.GameOptions.NoPopulation && !covered && _panel?.Visible != true) host.Player.Steer();
         StageClock.UiPart(StageClock.UiSteer);
+
+        // The world draws the marker, so it fades with the interface hidden (F7) too.
+        host.Player.MoveMarker.FadeMarker();
         if (ui && _overlay is not null && !host.GameOptions.NoPopulation) host.Player.Draw(_overlay, size.X, size.Y);
         else if (host.AgentChannel.InterfaceHidden && !_cinema.Clean && !take && !covered && _overlay is not null && !host.GameOptions.NoPopulation)
             host.Player.DrawSpeechOnly(_overlay, size.X, size.Y);
@@ -1909,8 +1912,14 @@ sealed class GameLoop(GameHost host)
         }
         _systemPointer.Standard(pointerMouse.Cursor, hand ? Silk.NET.Input.StandardCursor.Hand : Silk.NET.Input.StandardCursor.Default);
         if (!host.Config.HardwareMouse && !freeLook) host.Player.PointerPanel.DrawPointer(pointerName, pointer.At, size.X, size.Y);
-        else if (enhanced) host.Player.PointerPanel.DrawPointerBeside(pointerName, pointer.At, size.X, size.Y);
+        else if (enhanced) host.Player.PointerPanel.DrawPointerBeside(pointerName, LivePointer(pointer.At), size.X, size.Y);
     }
+
+    /// <summary>
+    /// The Windows cursor's position now in framebuffer pixels, else <paramref name="sampled"/> (the frame's start): the enhanced Hardware mouse's
+    /// icon follows the cursor the OS draws, and the position taken before the world was drawn left it trailing.
+    /// </summary>
+    Vector2 LivePointer(Vector2 sampled) => _window is not null && WindowPointer.ClientNow(_window) is { } now ? Pixels(now) : sampled;
 
     /// <summary>
     /// World and interface into the top-down picture the window shows (and a screenshot reads), presented. With frame generation on this frame the

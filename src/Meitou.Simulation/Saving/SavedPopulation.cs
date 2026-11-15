@@ -235,6 +235,21 @@ public sealed class SavedPopulation
     /// </summary>
     public SavedMember? MemberOf(SavedCharacterLink link) =>
         Platoons.FirstOrDefault(sp => sp.Name == link.PlatoonName)?.Members.FirstOrDefault(m => m.Slot == link.Slot);
+
+    /// <summary>
+    /// A character made from one of the save's platoons leaves it for another squad (a captive split off, a recruit, a bought slave): it leaves the
+    /// platoon's record, as the original's split moves the character into the new platoon (<c>FUN_14079c1c0</c>), and a save writes it with its new
+    /// squad. Kept in the old record it came back only with its home squad, so a kidnapped town character was gone after a load (#622); a recruit
+    /// was kept by the record's unload and made again with it, a second copy of a unique recruit (#701).
+    /// </summary>
+    public void Leave(CharacterCold cold)
+    {
+        if (cold.Save is not { } link || MemberOf(link) is not { } member) return;
+
+        member.Gone = true;
+        member.Live = CharacterId.None;
+    }
+
     /// <summary>
     /// The save's nests in list order: the wild layout takes them before rolling more (empty: none, e.g. a Meitou save from before nests were
     /// written).
@@ -460,57 +475,13 @@ internal static class SavedCharacters
             : sc.GameState?.Bools.GetValueOrDefault(PlayerSquadSave.RoleKey) == true;
         if (player && context.MultiplayerFactions is { } playerFactions && !playerFactions.Contains(sc.OwnerFactionId))
             throw new InvalidDataException("Player role has an unknown player faction.");
-        var cold = new CharacterCold
-        {
-            Entity = entity.IsNone ? EntitySave.Read(sc) : entity,
-            Name = sc.Name.Length > 0 ? sc.Name : p.Record.Name,
-            Faction = faction,
-            Appearance = p.Look,
-            RecordId = sc.RecordId,
-            SquadId = squad.Id,
-            Role = sc.SquadMemberType,
-            IsPlayer = player,
-            Orders = player ? Orders.PlayerDefaults : CharacterOrders.None,
-            Replan = player,   // a load: every player character is decided again
-            FootprintRadius = race?.PathfindFootprintRadius ?? 0,
-            Save = new SavedCharacterLink
-            {
-                Source = sc,
-                PlatoonName = platoonName,
-                Slot = sc.Handle.I,
-                Rotation = sc.Rotation,
-                Yaw = SaveRotation.YawOf(sc.Rotation),
-                Stats = stats,
-                Medical = medical,
-                Ragdoll = RagdollSave.Read(sc.GameState),
-            },
-        };
-        // Bounties: the ledger keys of the character's state record (docs/simulation.md "Crimes and bounties"), or the one it had when its platoon left the world.
-        cold.Bounties = bounties ?? BountySave.Read(sc.GameState, data.Relations, context.Clock, 0, world.TickSeconds);
-        CrimeSave.Read(sc.GameState, cold);
-        SlaveSave.Read(sc.GameState, cold, data);
-        DialogueSave.Read(sc.GameState, cold);
-        if (cold.IsPlayer && sc.GameState is { } orders) Orders.Read(orders, cold);
-        // The loader turns the saved toggles back on through setStandingOrder, and Hold's sets the hold point to where the character stands.
-        if ((cold.Orders & CharacterOrders.Hold) != 0) cold.HoldPoint = hot.Position;
-        // In a bed or a cage, and the sentence (docs/simulation.md "Cages, beds and locks"); the fixture binds when its town registers.
-        HeldSave.Read(sc.GameState, cold, context.Handles, context.InstanceOf);
-        if (cold.InSomething == Locks.HeldState.Bed) hot.Task = (byte)CharacterTask.Sleep;   // it lies there until an order (Locks.BedSystem)
-        if (cold.IsPlayer && sc.Ai is { } ai) PermaJobSave.Read(ai, sc.GameState, cold, world.Buildings, context.Handles, context.InstanceOf, context.InstanceIds);
-        if (cold.IsPlayer && sc.Ai is { } queueAi) OrderSave.Read(queueAi, cold, context.Handles, context.InstanceOf);
-        // The portrait camera's number: the saved one, else the handle's serial (CharacterAnimal::vfunc_18).
-        cold.PortraitSerial = sc.GameState is { } portrait && portrait.Ints.TryGetValue("portrait_serial", out int serial) ? (uint)serial : (uint)sc.Handle.S;
-        cold.Save.InSomething = cold.InSomething;
-        cold.Save.InWhat = cold.InWhat;
-        // A carry under way (FUN_140627b30): linked once both are in the world (CarrySystem.RestoreLinks).
-        if (sc.GameState is { } carry)
-        {
-            cold.Save.CarryPartner = Hand.Read(carry, "carrying");
-            cold.Save.CarryIsCarrier = carry.Bools.GetValueOrDefault("carrying");
-        }
+        var cold = NewCold(p, platoonName, squad, faction, player);
+        cold.Entity = entity.IsNone ? EntitySave.Read(sc) : entity;
+        ReadState(world, sc, cold, ref hot, data, context, bounties);
         // The body: the saved stats and medical state go to the body systems, the rest of the assembly (inventory, fighter) is made as for a new character.
         if (race is not null && stats is not null && medical is not null)
-            assembly.AttachSaved(cold, race, stats, medical, p.Record, p.Inventory ?? (p.Items.Count > 0 ? SavedKit.ToInventory(p.Items, data.Items, notes, p.Record) : null),
+            assembly.AttachSaved(cold, race, stats, medical, p.Record,
+                p.Inventory ?? (sc.Inventory is not null ? SavedKit.ToInventory(p.Items, data.Items, notes, p.Record, race.StringId) : null),
                 sc.GameState is { } aged && aged.Floats.TryGetValue("age", out float age) ? age : 1);
         else if (race is not null)
             notes?.Add($"{platoonName}: {cold.Name} has no stats or medical state that could be read; it has no body in the world.");

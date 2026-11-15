@@ -236,13 +236,15 @@ rerun after the loading-clock-only correction.
 | Animation | walking, turning, stop, combat, carry and ragdoll remain coherent through burst/duplicate delivery; deterministic pose/event checks plus graphical capture |
 | Nominal profile | RTT 30 ms, jitter +/-10 ms, 25 Mbit/s shared uplink (corrected VPS specification), 0% loss; 1/2 clients, ~124 visible characters each, same installed-content scene |
 | Responsiveness | warmed stationary-start move: submission-to-accepted receipt P95 <=100 ms, to first authority motion (server-local acceptance duration) P95 <=100 ms, to first renderer pose P95 <=250 ms; report cold path separately |
-| Throughput | user target: <=500 kbit/s per player steady-state mean over the 120 s capture, both directions including transport encryption/ACK/retransmission and UDP/IP overhead; also report each 10 s window and peaks; cold baseline bytes/time reported separately, never exempt from the VPS global 25 Mbit/s cap |
+| Throughput | user target: <=500 KiB/s (512,000 bytes/s) per player steady-state mean over the 120 s capture, both directions including transport encryption/ACK/retransmission and UDP/IP overhead; also report each 10 s window and peaks; cold baseline bytes/time reported separately, never exempt from the VPS global 25 Mbit/s cap |
 | Resource budgets | no network IO/encoding on world owner; capture P95 <=5 ms; queues stay within above bounds; 30 min run without growth or missed lifecycle events |
 | Impairment | repeat RTT 100/250 ms, jitter +/-30/50 ms, loss 1/3%, reorder/duplication, 5/1 Mbit/s; bounded queues, no reliability violation/resync storm; report latency and explicit reduced update rate, not nominal-budget claims |
 | Persistence | load a pre-refactor real checkpoint copy; preserve account/role ownership and recover durable operations; save/restart/reload, not just same-version synthetic roundtrip |
 | Deployment | paired client/server version rejection, Server 2016 native probe, clean shutdown/reconnect, no credentials/assets in package |
 
-500 kbit/s is 62,500 bytes/s. Budget admission, pacing and component scheduling before serialization;
+The current user budget is 500 KiB/s = 512,000 bytes/s = 4.096 Mbit/s per player. Earlier captures used a stricter
+500 kbit/s target (62,500 bytes/s); their recorded measurements are historical, not a current-build acceptance result.
+Budget admission, pacing and component scheduling before serialization;
 do not call an application-payload-only measurement the wire budget. Native UDP payload counters plus
 packet/header accounting (or a packet trace) must include both directions and retransmissions.
 Count traffic at one endpoint, not twice across client and server. The global 25 Mbit/s gate measures
@@ -251,11 +253,60 @@ server egress; the per-player gate measures both directions over complete 120 s 
 windows cannot pass. Throughput gates never substitute for gameplay quality.
 **Observed** (pinned MsQuic 2.6.3 headers): `SendTotalPackets`/`RecvTotalPackets` count QUIC packets,
 not UDP datagrams; packet coalescing prevents using these as exact UDP/IP overhead measurements.
-The current 50-byte motion-record prototype alone exceeds this budget if all 124 characters are sent
-at 20 Hz (over 1 Mbit/s before datagram framing); it is a correctness reference, not an accepted bandwidth
-design. Compact representations with verified error bounds, change detection, relevance tiers and
+The 50-byte motion-record prototype costs 124,000 bytes/s if all 124 characters are sent at 20 Hz, before framing;
+that exceeded the earlier 500 kbit/s target. It remains a correctness reference, not a current-build wire measurement. Compact representations with verified error bounds, change detection, relevance tiers and
 local animation playback must meet the budget together. No constant-changing global `view` component
 may embed static scene/UI/faction collections; clocks and publication IDs cannot dirty those components.
+
+## Upstream presentation budget
+
+**Verified** (synthetic serialization, Linux .NET 11; no Kenshi or network): 100 captures over 10 seconds of virtual time at 10 Hz,
+124 visible characters, 2 UI actors, 4 meters and 34 mod skills per active actor, a 32-byte inspected-power ID, and one static attachment per
+visible character. Typical value/arrows/tooltip lengths are 4/1/96 UTF-8 bytes; maximum strings use their 256/64/4096-byte limits.
+All dynamic values change each capture. The authority retains exact values; display equivalence compares against the last transmitted value.
+
+| Scenario | New components + records, bytes/s | Game frames, bytes/s | Reliable bulk with framing, bytes/s |
+|---|---:|---:|---:|
+| No mod display data; unchanged new fields | 0 | 1,750 | 2,350 |
+| Typical values; static tooltip | 6,560 (6.41 KiB/s) | 8,310 | 8,910 |
+| Typical values; tooltip changes each capture | 14,880 (14.53 KiB/s) | 16,630 | 17,230 |
+| Maximum strings; static tooltip | 31,760 (31.02 KiB/s) | 33,510 | 34,110 |
+| Maximum strings; tooltip changes each capture, paced at 2 Hz | 75,024 (73.27 KiB/s) | 77,990 | 79,550 |
+
+The actual `GameStatePublisher`, `GameViewProtocol.Pack`, `BulkChunkCodec` and `ReliableLaneFramer` produce these lengths.
+Bulk accounting includes 4 bytes per packed game frame, 52 bytes per chunk and 4 bytes per reliable frame. It excludes control/ACK messages,
+other changing game state, QUIC/UDP/IP and retransmissions. Unchanged new fields send zero bytes after baseline.
+
+**Observed** (source): dynamic bars/value/arrows (2097) and the complete tooltip table (2100) are independently revisioned absolute components;
+a SHA256 digest joins them without stale text under reordering. Static text is not retransmitted with changing bars. When a changing complete
+tooltip table exceeds 1024 bytes, the whole meter presentation pair coalesces to a 500 ms interval, using monotonic time independent of game
+pause or time scale. Until due it retains the last sent pair; then it publishes only the latest capture. Baselines, new entities, scope/slot
+withdrawal, slot-count changes and explicit tooltip removal bypass that delay. Short changing tooltips and bars with static tooltips retain
+their normal cadence. Before pacing, maximum changing text measured 360,080 component bytes/s and 367,910 game-frame bytes/s.
+
+**Verified** (actual motion producer/scheduler and codecs, synthetic immediately completed sends, 124 moving characters): near 5 Hz costs
+33,800 application datagram bytes/s; 2 interactive at 20 Hz plus 122 near cost 36,140; all interactive at 20 Hz cost 135,200.
+The heaviest UI bulk above plus all-interactive motion totals **214,750 bytes/s (209.72 KiB/s)**, leaving **297,250 bytes/s (290.28 KiB/s)**
+of the 512,000-byte budget for other state/control and transport overhead. This is measured application headroom, not whole-game or VPS
+acceptance. Actual combined directions, retransmissions and cold entry still require the 120-second installed-content capture above.
+`BandwidthScheduler` bounds/coalesces queues and outstanding sends; it is not a hard bytes/s limiter. Frequent attachment changes and
+immediate visibility transitions can add bursts beyond the measured scenarios.
+
+A component record adds 19 bytes. Nonempty bar payload = `33 + sum(1 + present*(16 + valueBytes + arrowBytes))`; an empty list costs 1 byte.
+Tooltip-table payload = `1 + sum(1 + present*(2 + tooltipBytes))`; a null tooltip has a two-byte marker and no text. Skills = `2 + 4N`.
+Power = 1 byte absent or `11 + instanceBytes` present. Empty new fields add `81 * visibleCharacters + 20` baseline bytes (10,064 for 124),
+then zero unchanged. The maximum-string scenario's initial baseline is 55,230 new-component bytes, 354,478 game-frame bytes and
+359,698 reliable-bulk bytes. Cold baselines are reported separately from steady state.
+
+A bone-mesh declaration costs `34 + keyBytes + meshPathBytes + boneNameBytes`, plus one count byte per list. Up to 64 declarations per character
+send once/on change, never per animation frame; they are not a pose stream. Wire and mod setters share bounds: 4 meters, 34 skills, the text caps
+above and attachment key/path/bone caps 128/1024/256 UTF-8 bytes. Malformed lengths, duplicate keys, invalid transforms and nonfinite new values
+are rejected, except the intentional mod-skill NaN sentinel. Whole-view JSON wraps hidden meter slots without relaxing generic null-array
+rejection. Existing content agreement remains mandatory.
+
+**Verified** (scratch diagnostics, no new repository tests): 47 ordering/lifecycle/pacing checks pass, including both component arrival orders,
+late baselines, mandatory field coverage, generation changes, immediate withdrawals, 499/500 ms and 1024/1025-byte boundaries. All five full
+baseline round trips and hidden-meter/NaN-skill JSON and binary round trips pass. These are codec checks, not graphical or transport acceptance.
 
 Timers/performance assertions are Bench; game/GPU/long-run cases are Slow. Normal tests cover deterministic
 packet schedules, correlation and queue invariants without wall-clock performance thresholds.
@@ -301,7 +352,7 @@ artifacts on withdrawal and still enforce the lifecycle watermark/Ready/Active t
 **Observed** (deterministic `MotionReplicationProducerTests`, 120 s/124 synthetic entities): relevance
 scheduling plus admitted reliable checkpoints charged 37,869.27 bytes/s, with active entity delivery gaps
 at most 100 ms. This includes declared scheduler overhead and checkpoint framing, not actual wire traffic
-or the remaining gameplay components; it does not pass the 500 kbit/s gate. Motion captures carry explicit
+or the remaining gameplay components; it does not establish the current full-wire gate. Motion captures carry explicit
 ticks, cancel unsent older batches, and freeze coherent records before deferred encoding. Withdrawal
 retains bounded generation fences; reconnect requires a new producer. Stop/carry/ragdoll/discontinuity
 checkpoints remain retained until peer ACK; bandwidth debt reports reduced cadence. Production relevance

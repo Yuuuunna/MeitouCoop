@@ -13,6 +13,7 @@ using Meitou.Data.Save;
 using Meitou.Simulation;
 using Meitou.Simulation.Locks;
 using Meitou.Simulation.Production;
+using Meitou.Networking.VNext;
 
 namespace Meitou.Networking;
 
@@ -37,9 +38,12 @@ public sealed partial class WorldViewCodec
             for (int i = info.Properties.Count - 1; i >= 0; i--)
                 if (info.Properties[i].Set is null)
                     info.Properties.RemoveAt(i);
+            if (info.Type == typeof(InventoryItemView))
+                info.Properties.Single(p => p.Name == nameof(InventoryItemView.StealChance)).ShouldSerialize = (_, value) => value is not null;
             if (info.Type == typeof(CharacterSnapshot))
             {
                 info.Properties.Single(p => p.Name == nameof(CharacterSnapshot.DrawYaw)).CustomConverter = new SingleNumber(allowNaN: true);
+                info.Properties.Single(p => p.Name == nameof(CharacterSnapshot.ModSkills)).CustomConverter = new ModPresentationJson.Skills();
                 // Entries replace whole characters, so omitted optional fields reset to their
                 // declared defaults. Do not serialize dozens of absent HUD fields for every NPC.
                 var defaults = new CharacterSnapshot(default, null, default, 0, []);
@@ -72,6 +76,7 @@ public sealed partial class WorldViewCodec
         _json.Converters.Add(new Job());
         _json.Converters.Add(new SurveyMap());
         _json.Converters.Add(new CharacterMaps());
+        _json.Converters.Add(new ModPresentationJson.Meters());
     }
 
     // Views contain value projections; appearances and turret angle arrays are the remaining
@@ -80,7 +85,16 @@ public sealed partial class WorldViewCodec
     {
         Snapshot = view.Snapshot with
         {
-            Characters = view.Snapshot.Characters.Select(c => c with { Animations = c.Animations.ToArray(), Ragdoll = c.Ragdoll is { } pose ? CopyPose(pose) : null, Appearance = c.Appearance is { } look ? CharacterAppearance.FromDisplay(CaptureAppearance(look)) : null, Turret = c.Turret is { } turret ? turret with { Angles = turret.Angles?.ToArray() } : null, }).ToArray()
+            Characters = view.Snapshot.Characters.Select(c => c with
+            {
+                Animations = c.Animations.ToArray(),
+                Ragdoll = c.Ragdoll is { } pose ? CopyPose(pose) : null,
+                Appearance = c.Appearance is { } look ? CharacterAppearance.FromDisplay(CaptureAppearance(look)) : null,
+                Turret = c.Turret is { } turret ? turret with { Angles = turret.Angles?.ToArray() } : null,
+                Meters = c.Meters.ToArray(),
+                ModSkills = c.ModSkills.ToArray(),
+                BoneMeshes = c.BoneMeshes.ToArray(),
+            }).ToArray()
         },
     };
     static BonePose CopyPose(BonePose source)
@@ -288,6 +302,7 @@ public sealed partial class WorldViewCodec
         ValidateContainerOpener(view);
         ValidateSceneMetadata(view.Snapshot);
         ValidateDrawAnchors(view.Snapshot);
+        ValidateModPresentation(view.Snapshot);
         if (view.Snapshot.GroundItems is null || view.Snapshot.GroundItems.Any(item => item.Material is null || item.Material.Length > 4096))
             throw new InvalidDataException("Invalid ground item material identity.");
         if (view.Snapshot.Projectiles is null || view.Snapshot.Projectiles.Any(p => !float.IsFinite(p.Speed) || p.Speed < 0))
@@ -357,6 +372,33 @@ public sealed partial class WorldViewCodec
                 || anchor.Bone is null || anchor.Bone.Length > 4096 || !Finite(anchor.Offset) || !Finite(anchor.Rotation)))
                 throw new InvalidDataException("Invalid character draw anchor.");
         }
+    }
+
+    /// <summary>
+    /// New mod display values stay bounded and retain nullable slots; stealing chances follow the upstream unclamped finite roll value.
+    /// </summary>
+    static void ValidateModPresentation(WorldSnapshot snapshot)
+    {
+        foreach (var character in snapshot.Characters)
+        {
+            ModPresentationCodec.ValidateMeters(character.Meters);
+            ModPresentationCodec.ValidateSkills(character.ModSkills);
+            ModPresentationCodec.ValidateBoneMeshes(character.BoneMeshes);
+            ValidateStealChances(character.ItemGrid);
+        }
+
+        if (snapshot.InspectedLevelPower is { } power) ModPresentationCodec.ValidatePower(power);
+        foreach (var machine in snapshot.Machines) ValidateStealChances(machine.Storage);
+    }
+
+    /// <summary>
+    /// A probability can exceed one under the original formula; nonfinite values must never reach tooltip arithmetic.
+    /// </summary>
+    static void ValidateStealChances(InventoryView? inventory)
+    {
+        if (inventory is null) return;
+        if (inventory.Items is null || inventory.Items.Any(item => item is null || item.StealChance is { } chance && !float.IsFinite(chance)))
+            throw new InvalidDataException("Invalid inventory stealing chance.");
     }
 
     /// <summary>

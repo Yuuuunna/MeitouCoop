@@ -382,6 +382,8 @@ original's table (CHARACTER → claimed, live character, state 1/0/2, player fla
 - **Release**: a squad leaving for good without being kept (Faithful despawn, a wild site unloading, a town squad remade by regeneration) frees its
   living uniques so its template makes them again, only when the entry is that character's (Meitou: knocked-out but alive counts as living); the
   dead stay claimed. Town squads stored on unload keep their claims.
+- **Recruits**: a character leaving its squad for another (recruited, bought, split off) leaves the save's platoon record it was made from too
+  (`SavedPopulation.Leave`); kept there, the record's unload kept it and the platoon made it again, a second copy of a recruited unique (#701).
 - **Seed**: at the first population look, the uniques of each template's first `prisoners` template are imprisoned and unclaimed (kept when a
   save already has them).
 - **Save**: CAMERA `usedUniques*` as the original (claimed entries; prisoners derived again). Handles are the written character's for player
@@ -452,7 +454,8 @@ Implemented (`PopulationRoaming.cs`):
   200 random town pairs go by road at preference 0.6; about 10 % of roads have a `length` well under their drawn length (0.17-0.44 ×, median
   1.00), which the original's cost uses as is, so a faction with preference 0.3 still takes the Hub-Stack road (walked 34000 vs 16900 straight).
 - **Hand-off**: a stand-in that travelled comes back on the nearest walkable point (`WalkableSpots.Nearest`: rings of 4 to 128 units, eight
-  directions each); its kept characters keep their offsets round it, each moved to a walkable point within 32 if needed, else onto it. A town's
+  directions each); its kept characters keep their offsets round it, each moved to a walkable point within 32 if needed, else onto it, and each
+  stands on the surface at terrain level there, not a ruin's upper floor over it (`MovedSpot`, #731; engine choice). A town's
   own or wild platoon, or one that did not move, keeps its characters' exact places.
 - **Cost** (**Observed**, headless, save 2 with 2000 extra travelling stand-ins, warm): the step 0.08-0.1 ms per look at 1 or 8 threads (too little
   work for the threads to pay), pools and fights 0.23-0.26 ms per look (fights run every 4th look), about 0.03 ms a tick in all; save 2 alone
@@ -470,7 +473,8 @@ Implemented (`PopulationRoaming.cs`):
     new kept platoon (the old one's characters are dropped; a save's leaves the save). A template whose members are all by chance gets up to
     8 rolls. **Observed** (headless): new game, Hub squatters 1 of 3 left → 2 fresh; save 2, Squin's Town Guard 2 of 5 → 4 fresh; both the
     same after save and load.
-  - **Nests**: the pool starts at 0.7 × `nest resident population` (or the save's `pop2`); a load fills it to `floor(pop2)` members; one nest a tick in turn (tick mod nest count; the tick stands in for the original's frame),
+  - **Nests**: the pool starts at 0.7 × `nest resident population` (or the save's `pop2`); a load fills it to `floor(pop2)` members, unless a player character is within 1250 of the centre it picks (then
+    it only weighs, as a top-up; engine choice, the original has no load fill: #731, a save loaded beside a nest made squads 150 from the player); one nest a tick in turn (tick mod nest count; the tick stands in for the original's frame),
     so each every N ticks, N = all nests: a loaded one with room makes one squad (rolls keyed after the load's), unless a player character is within 1250, then it only weighs.
     An entry must fit the free budget, except while the pool is empty with more than 4 free (the Fog Deathyard's `Fog hive nest`, expected
     size 1 + (12 + 24) / 2 = 19, against a budget of floor(0.7 × 25) = 17). A roll that finds no entry (all weights 0 or none fits the free budget) with no squad of the nest left alive sets `ded` for good, `tod`,
@@ -683,7 +687,7 @@ stacks start from 1 (`Inventory.Limited`). Rules: [holding an item](game/ui-scre
 Held item (`Player/HeldItems.cs`, `HeldItems`, owned by `PlayerSystem`): `PlayerState.Held` is the item on the mouse with its origin (window `ItemOwner`: a character, the open trade's stock
 or a site; its root inventory, section and cell) and the character holding it. `LiftItem` takes it out (the whole stack or one unit; a fitted prosthetic comes off; a machine slot's
 units are made into an item), `PlaceHeld` places, merges or swaps it (the swapped item becomes the held one), `GiveHeld` adds it to a character in range, `DropHeld` puts it on the
-ground (own windows only), `ReturnHeld` puts it back (old cell, else `Inventory.Add`, else after arranging, else the ground). Stock goes only to the customer and is bought when placed
+ground (own windows only), `ReturnHeld` puts it back (old cell, else `Inventory.Add`, else after arranging, else the ground; for a live animal both adds leave its grid out and only its bag is arranged). Stock goes only to the customer and is bought when placed
 (`TradeSystem.AffordHeld` / `PayHeld`, a stolen sale's `CaughtSelling`); out of the open loot it is marked stolen as a loot is and may butcher the body (`CarrySystem.TookHeld`); out of
 another faction's container it is marked stolen. It goes back each tick when its window closed or its holder is down or gone (`KeepHeld`) and before a save (`World.ReturnHeldItem`,
 `SaveCapture.Capture`). Hashed (record and quantity), not saved; the snapshot publishes `Held` and the serial of the last held command applied (`HeldSerial`).
@@ -926,7 +930,7 @@ unload, hashed only once non-empty. Facts: [locks](game/locks.md), [economy 11.5
   locks a closed one that `wants lock`; locking a home's doors closes them (animated, the lock holds at once). Engine stand-in for
   Task_OpenDoor: every 3 ticks a walker within 40 of a closed door's leaf whose current or next path leg crosses the leaf's plane within its half
   width + 6 (`IDoorGate.DoorSpotOf`: the door collision's box via `NavDoorGeometry`; headless: none, so no walk-through opening) opens it; at an
-  effectively locked one a walker within 15 of the leaf whose current leg crosses it stops ("It's locked." for the player). Both reaches run from
+  effectively locked one a walker within 15 of the leaf whose current leg crosses it stops ("It's locked." for the player, once per door while it stays within 40 of where it said it). Both reaches run from
   the leaf's nearest point, not its centre (a gate's leaf is 70..80 wide). The box's normal is the thinnest horizontal direction of the door
   collision's footprint (`NavDoorGeometry.Fit`), not the nearer building axis: **Verified** (that footprint for every BUILDING with `doors`, plain
   game; each leaf is one box), 9 of 47 leaves are turned in their building (Saloon and Double House 45°, Outpost s-II/s-IV and Outpost Stairs 42°,
@@ -964,15 +968,15 @@ unload, hashed only once non-empty. Facts: [locks](game/locks.md), [economy 11.5
   state from its door fixtures: broken/open 1, closed 2, locked 3, none registered (a town not spawned) 1; codes no gate joins count as 3, engine choices), plans row 4 with `GatePlan`: 90 from the
   codes, 122's finder the first gate on the route (nearest of the equally good), 123/290/81 at it (91: within 45 of the leaf, x2 standing; crowdLimit8: under
   8 bashers on it), restricted rows open (the attacker is an NPC). A plan that bashes sets `Bashing` to the gate's main door, and the door basher takes over,
-  standing on the attacker's side of the leaf. Gate state 2 needs no plan (Meitou walks through closed unlocked doors). A locked gate of the attacker's own faction is unlocked, not bashed (`LockSystem.UnlocksOwn`: row 78 Unlocking door, list B 70 `isObjectMine`, then 122; the lock worked 3.3 s at the leaf, then the gate opens and stays open): **Observed** from the TaskData rows, so town guards get out after a target beyond their locked gate (#595). Checked before the house doors. When no gate leads to the target, 270's wall fallback smashes the nearest wall of the attacker's region once it is within the wall's reach (`LockSystem.Smash`, [locks](game/locks.md#doors)).
+  standing on the attacker's side of the leaf. Gate state 2 needs no plan (Meitou walks through closed unlocked doors). A locked gate of the attacker's own faction is unlocked, not bashed (`LockSystem.UnlocksOwn`: row 78 Unlocking door, list B 70 `isObjectMine`, then 122; the lock worked 3.3 s at the leaf, then the gate opens and stays open): **Observed** from the TaskData rows, so town guards get out after a target beyond their locked gate (#595); not for an animal target (engine choice, **Unknown** in the original): the Tech Hunters' Ancient Lab gate in Mourn stays shut on the Great White Gorillo behind it (#645). Checked before the house doors. When no gate leads to the target, 270's wall fallback smashes the nearest wall of the attacker's region once it is within the wall's reach (`LockSystem.Smash`, [locks](game/locks.md#doors)).
   Coverage: `GateRegionTests` (labelling), `DoorTests.A_bandit_outside_a_locked_gate_plans_to_bash_it_and_none_once_it_is_broken` (the plan).
 - **Beds** (`Locks/BedSystem`, serial; facts in [locks](game/locks.md#beds)): bed fixtures are the town interiors' beds and, registered with the player's
   buildings (`<site>@bed0`, site -1), the beds the player built; each keeps its `BedData` (function, clip, construction materials). `UseBedOrder` (258: a quick
   right click on a bed, or its held menu's "Sleep") sends every awake, non-carrying selected character (as the original; the first there takes it, the rest are refused); `PutInBedOrder` (99: "Put in Bed" on the bed's menu;
   a quick click while carrying, engine) sends carriers, the cheaper rent paid, the body let go
   and laid in. In reach (`use range` + 15, on the bed's floor within 20, or a walk ended within 60) it pays the rent (`Cost`/`Pay`, player only; the 24 h memo
-  is engine state, not saved) and enters, its orders dropped; a bed order that finds it in the bed at once (in reach, or lying there) also drops the
-  replan it asked for, so it lies there as one that walked does; 3 short walks give the bed up (`MarkUnreachable`). In a bed the task is `CharacterTask.Sleep` (held still, the
+  is engine state, not saved) and enters, its orders dropped; the Sleep order (258) keeps running while it lies there, until replaced, also for a
+  sleeper loaded lying in that bed (#684: else its follow job got it up); 3 short walks give the bed up (`MarkUnreachable`). In a bed the task is `CharacterTask.Sleep` (held still, the
   bed's clip, `Sleeping` on the HUD); any other task gets it up (`GetUp`; a knock-out or death in bed keeps it there). The player's bed search `FindBed`
   follows the original's weights over beds within `BedSearchRange` 3953 (engine, for the town). Job 106 (in the list with the rescue job; the decision step's, `BedSystem.PutInJob`): a carrier of
   a friendly, non-hostile body with no grudge tag against it, and no bounty owed to a police-like carrier, lays it in the searched bed. Lifting a sleeper takes it out. Engine difference: no power test. The rescue job (148) and the one-shot Rescue start a lift only while the bed search finds the rescuer a bed (`CarrySystem.MayRescue`).
@@ -1566,7 +1570,7 @@ crafting benches, generators and batteries. Facts: [production](game/buildings-p
   registry site, so it is neither drawn, saved nor built: the production system makes a complete site of it once its town has registered, and its machine is kept in
   memory, not saved. A right click with characters selected is an `OperateOrder` (Training, 97), with Shift the Training job, whoever owns the dummy
   ([UseableStuff verbs](game/ui-input.md#context-menu-verbs)); a saved order or job keeps the id. Picked as a bed is (its collision, else its middle within
-  30 px); pointer `use`. Not handled: an NPC idling at a dummy (town goals, `HomeSpotKind.Training`) does not count as its operator, so a player character can share it.
+  30 px); pointer `use`. Selected, its panel shows `Training:`, Workers and Max Skill Level ([Selected building](game/ui-screens.md#selected-building)). Not handled: an NPC idling at a dummy (town goals, `HomeSpotKind.Training`) does not count as its operator, so a player character can share it.
 - **Items.** `PutInMachine` and `TakeFromMachine` move items between a character within 40 of the building's footprint and the machine:
   inputs, output, or storage cells.
 - **Research** (`Construction/ResearchState`). A queue paid at queue time from the benches' storage; a paid id is never
@@ -1734,6 +1738,7 @@ Transfers and money changes must succeed together. Stealing from containers: [cr
 Bags (engine choice; how the original trades bags and their contents is **Unknown**): a bag trades whole, the same instance with its contents grid, and only empty ("That bag
 isn't empty."), since its contents would otherwise go unpriced and unchecked for theft; a bag's contents are not shown as stock. A right click puts a bought bag into a free
 backpack slot, else the main grid; a drag puts it where it is dropped, the backpack slot included, never into another bag. Other items: a right click tries `TryEquip`, then the grids.
+A live animal's shut main grid takes no buy, only its bag slot and worn bag do ([animals](game/animals.md#pack-animals)).
 
 Buyback (the original's: [economy](game/economy.md#buyback-during-an-open-trade)): a purchase or sale leaves a receipt on the moved units (`TradeReceipt`, the coins paid per
 unit, kept through stack splits); moving them back in the same open trade costs or refunds exactly those coins and clears it. Units of the same trade and direction share a stack
@@ -1747,7 +1752,7 @@ talker walks up (60 units, engine choice; 60 s to arrive), the NPC is held, then
 template, leader role; `DialogueDatabase`) is chosen from by score, line checks and a seeded pick. The NPC line is said (text, tokens and
 word swaps, effects at once); passing replies become choices, an NPC-side child a single `[...]`. The host opens `Kenshi_ConversationPanel`
 modal, which pauses the game; `DialogueChoice` and `EndConversation` apply between ticks at speed 0; effects that order fights are deferred
-to the next tick. A hostile target is attacked instead.
+to the next tick. A free hostile target is attacked instead; a caged one, hostile or not, is talked to and kept in its cage (#737).
 
 - **Effects built**: locks, interrupts, `change relations`, trade, relations, the three attacks, take and give money, faction rank (DA 35, read by DC 10), the surgeon's editor
   (paid by the line, `EditCharacter.Paid`), assign and clear bounty, lock this dialogue, DA 37 / 38 (a campaign's phase), `trigger campaign` (`PopulationSystem.TriggerFromDialogue`: the rules in
@@ -1932,8 +1937,9 @@ node, else a guard post, else any node; a home or seat given up
 after three failed walks is tried again when a new goal is taken up, and a member that gave its seat up
 leaves it to the next; a member keeps its seat while it still relaxes or sits (every squad's kept seats are reserved before any claims), so a
 patron coming or going does not move every later sitter to another chair. Headless Hub, Squin and Stack bars (2026-10-21): each patron sits once
-and stays for 12000 ticks, with or without that rule (the reported sit/stand churn is not reproduced). **Observed** (headless Hub, 2026-10-26): the
-Storm House's 5 tables go to `hub squatters` squads (package signal 17, STAY_IN_HOME only), so the visiting bar squads get none and shop at the counter.
+and stays for 12000 ticks, with or without that rule (the reported sit/stand churn is not reproduced). `hub squatters` squads (package `Squatters`,
+signal 17, goals Stay home and Patrol hometown, no Relaxing) reserve Storm House tables as any bar package does (**Observed**, headless Hub, 2026-10-26: visiting bar
+squads found none free), but never sit there: staying home takes the furniture of the squad's own home, not the package's bar ([ai-tasks](game/ai-tasks.md), 43).
 
 Turret goals (149, 222, 234, 146) man a turret of the squad's town: a placed BUILDING with a
 `BUILDING_FUNCTIONALITY` function 12 (`TownBuilding.Turret`: its `use range` and `gun turret`

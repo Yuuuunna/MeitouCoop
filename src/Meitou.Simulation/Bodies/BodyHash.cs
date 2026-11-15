@@ -24,6 +24,20 @@ static class BodyHash
                 h.Add(0x476F6444);
                 foreach (float v in original) h.Add(v);
             }
+
+            // Code mods' stat modifiers, only once one was set, so hashes without them are unchanged.
+            if (stats.ModifiersOrNull is { All.Count: > 0 } modifiers)
+            {
+                h.Add(0x5374614D);
+                modifiers.AddTo(ref h);
+            }
+
+            // Code mods' skill levels, only once one was set, so hashes without them are unchanged.
+            if (stats.ModSkillsOrNull is { Count: > 0 } modSkills)
+            {
+                h.Add(0x536B6C4D);
+                modSkills.AddTo(ref h);
+            }
         }
         if (medical is null)
         {

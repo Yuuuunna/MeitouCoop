@@ -252,6 +252,10 @@ no artifacts, as Meitou adds no state for a town a loaded save lacks. Tests: `Ar
 
 Ledgers are per wanted faction; crimes pending at deed time and witness booking are distinct.
 The per-character crime tick `FUN_1405cbb80` (bounty expiry, skipped while imprisoned; then the pending timer at ledger `+0x90`: at or below 0.0 clears the code and victim, else it is reduced by the tick delta) is jumped over by the character tick `FUN_1405d00b0` for a dead character (`+0x5bc`): **Verified**. A dead body's bounties never expire and its pending crime stays frozen.
+Nothing else clears it on death (decompile: no other writer of Character `+0x148`; the ragdoll path `FUN_1405d0db0` zeroes `+0x58` of
+slot 0x68's object `+0x650 + 0x28`, not the ledger), and neither the HUD's `BountyPanel` test nor the status entry checks for death: a corpse
+killed mid-crime keeps "Committing Crime!" with its frozen timer. **Verified** in the original 1.0.65 with the kh harness (an unprovoked
+attack, KO, Re_Dev Squish to death: "(18)" stayed on the dead character while the game ran; #696).
 CONSTANTS categories define theft/assault/murder/looting values. Expiry is0.04 hours/cat and
 permanent from10000; capture, claiming, bail and prison sentences use separate paths.
 Witness/innocence details remain partly unknown; a killing is no crime (11.6), only relation events.
@@ -714,7 +718,7 @@ Roll convention: a `rand()` draw in [0, 1) against the chance p; the thief gets 
   building's container: the watcher is the nearest conscious member (not dead, `+0x5bc` clear, posture below 3, on the thief's floor first) of the building owner's platoon (`FUN_140792ce0`; none: 1.0);
   t = lerp(min(1, distance / 200), 0.5, 1) with the distance from the watcher to the building, x0.5 and an early 1.0 under a test of the watcher's and the container's building and of the
   building's doors (`FUN_1405499a0`: no doors, or any door open) whose direction is **Unknown**; p = lerp(thievery/100 x t, 0.3, 2.25); a watcher that is dead, down, carried or imprisoned gives 1.0. A character victim: x0.75 for
-  an item whose byte `+0x129` is set and x0.75 again when its slot `0x2e0` answers true; a watcher other than the victim: x2 when in posture 3 (the finder never returns one), x1.5 on another floor.
+  an item whose byte `+0x129` is set and x0.75 again when its slot `0x2e0` answers true; a watcher other than the victim: x2 when in posture 3 (the finder never returns one), x1.5 on another floor. The inventory window prints it as `Stealing chance:` ([ui-screens](ui-screens.md)).
 - **Steal attempt** (`FUN_140794810`, **Observed**): caught when p < the draw, which stops the move ("Got caught stealing.", code 8 of `FUN_14070f7e0`; the item stays). A caught thief wakes a victim lying down (posture 1 or 3), the
   watcher fires event 8 (event 0x2f instead, and no crime, on a coin flip when the watcher's status is 1), a pending Theft (3) against the watcher's faction with timer 30 is set (`FUN_140852e10`) and the squad tags the thief
   (kind 4). Thievery XP: 20 x 2 for a success and 80 x 2 for a catch, only when p < 0.98 and the thief's own pending timer (`+0x180`) is below 10 (so a catch gives none). Meitou: `CrimeSystem.Steal` (waking, event 8 or the in-bed 0x2f, the Theft, the squad memory, the XP).

@@ -324,6 +324,11 @@ public sealed record InventoryItemView(int Index, string Record, string Name, st
     /// How many items a bag holds (-1: not a bag); an empty one's tooltip name ends in " (empty)".
     /// </summary>
     public int BagItems { get; init; } = -1;
+    /// <summary>
+    /// The chance a take of it goes unseen, for an item of the open loot or container that its opener would steal
+    /// (<see cref="Crime.CrimeSystem.StealChanceOf(World, int, int, Items.ItemInstance)"/>): the tooltip's stealing chance. Null otherwise.
+    /// </summary>
+    public float? StealChance { get; init; }
 }
 
 /// <summary>
@@ -555,6 +560,14 @@ public sealed record CharacterSnapshot
     /// </summary>
     public HudView? Hud { get; internal set; }
     /// <summary>
+    /// The code mods' medical-panel readings of a selected or inspected character (<see cref="CharacterCold.Meters"/>, copied); empty otherwise.
+    /// </summary>
+    public IReadOnlyList<Bodies.MeterReading?> Meters { get; internal set; } = [];
+    /// <summary>
+    /// A selected or inspected character's levels in the code mods' skills, by <see cref="Bodies.ModSkills.All"/> order; empty otherwise.
+    /// </summary>
+    public IReadOnlyList<float> ModSkills { get; internal set; } = [];
+    /// <summary>
     /// The inventory of a selected character, of the one whose loot window is open, or of a player character whose inventory is shown (null for
     /// the others).
     /// </summary>
@@ -576,6 +589,10 @@ public sealed record CharacterSnapshot
     /// The bone of another character this one is drawn on (<see cref="CharacterCold.DrawAnchor"/>); null: none.
     /// </summary>
     public DrawAnchor? Anchor { get; internal set; }
+    /// <summary>
+    /// The rigid meshes code mods hang on its bones (<see cref="CharacterCold.BoneMeshes"/>); empty: none.
+    /// </summary>
+    public IReadOnlyList<BoneMesh> BoneMeshes { get; internal set; } = [];
     /// <summary>
     /// The ITEM (string id) held in the <c>hands</c> point while operating: the functionality's <c>special tool</c>
     /// (docs/game/buildings-production.md "Production"); null for none.
@@ -1054,6 +1071,10 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// The resource richness of the building the HUD shows (a mine or rock); null for others.
     /// </summary>
     public Production.RichnessView? InspectedRichness { get; init; }
+    /// <summary>
+    /// The power of the building the HUD shows when it is a level building of a town that draws power; null for others.
+    /// </summary>
+    public Production.LevelPowerView? InspectedLevelPower { get; init; }
     /// <summary>
     /// The gun numbers of the building the HUD shows when it is a turret (its Stats 1 gun lines); null for others.
     /// </summary>

@@ -31,11 +31,10 @@ public sealed record ServerConnectionProfile(string Host, int Port, Guid Account
 public static class ServerCompatibility
 {
     /// <summary>
-    /// Both endpoints must accept this upstream's work targets, rotations and presentation fields, building floaters, permanent bounties and
-    /// retained event batches beyond the source journal's 512 entries.
+    /// Both endpoints must accept the upstream mod meters, skills, bone meshes, power details and editor-session open notifications.
     /// Discovery metadata is opaque to older clients, so their own build identity must reject admission.
     /// </summary>
-    public const string EngineBuild = "meitou-upstream-a69c6e9b-authority-3";
+    public const string EngineBuild = "meitou-upstream-704cc1ec-authority-1";
     // Hash without loading DLLs: connecting never grants permission to execute installed code.
     public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
     {

@@ -282,29 +282,7 @@ public sealed partial class TradeSystem
             var bought = item.WithQuantity(units);
             bought.Buyback = receipt;
             long price = Price(m, item, units, false, shop.Terms, squad.Faction);
-            int placed;
-            if (item.Contents is not null)
-            {
-                // An empty bag moves itself (a copy would have no contents inventory); its receipt is replaced (none: this undid a sale).
-                placed = TransferContainer(shop.Stock, buy.Item, cold.Inventory!, buy.Section, buy.X, buy.Y, buy.Equip, cold);
-                if (placed > 0) item.Buyback = receipt;
-                if (placed > 0 && InventoryCommands.IsEquipmentSection(item.Section)) Assembly.RefreshEquipment(cold);
-            }
-            else if (buy.Section == "backpack_attach") placed = 0;
-            else if (buy.Section is { } section) placed = PlaceAt(cold.Inventory!, bought, units, section, buy.X, buy.Y);
-            else if (buy.Equip && InventoryCommands.TryEquip(cold.Inventory!, bought.WithQuantity(1), cold))
-            {
-                // One unit is worn; the rest of a stack goes where it fits.
-                Assembly.RefreshEquipment(cold);
-                placed = 1;
-                if (units > 1)
-                {
-                    var rest = bought.WithQuantity(units - 1);
-                    rest.Buyback = bought.Buyback?.Skip(1);
-                    placed += Place(cold.Inventory!, rest, units - 1);
-                }
-            }
-            else placed = Place(cold.Inventory!, bought, units);
+            int placed = PutBought(buy, shop.Stock, item, bought, units, receipt, cold);
             if (placed == 0)
             {
                 world.Post(playerId, "No room for that item.");
@@ -315,6 +293,35 @@ public sealed partial class TradeSystem
             Funds(world).Money -= price;
             squad.Money += price;
             world.Post(playerId, Loc.Tr("{1} bought {2} for c.{3}", cold.Name, Units(placed, item.Name), price));
+        }
+
+        /// <summary>
+        /// Places purchased units in the receiving character's permitted grids. A live animal's closed main grid accepts nothing; its worn bag
+        /// and bag slot remain available.
+        /// </summary>
+        int PutBought(BuyItem buy, Inventory stock, ItemInstance item, ItemInstance bought, int units, TradeReceipt? receipt, CharacterCold cold)
+        {
+            var into = cold.Inventory!;
+            bool shut = InventoryCommands.MainClosed(cold);
+            if (item.Contents is not null)
+            {
+                // Move the bag itself so its contents inventory survives the trade.
+                int moved = TransferContainer(stock, buy.Item, into, buy.Section, buy.X, buy.Y, buy.Equip, cold);
+                if (moved > 0) item.Buyback = receipt;
+                if (moved > 0 && InventoryCommands.IsEquipmentSection(item.Section)) Assembly.RefreshEquipment(cold);
+                return moved;
+            }
+
+            if (buy.Section == "backpack_attach") return 0;
+            if (buy.Section is { } section) return PlaceAt(into, bought, units, section, buy.X, buy.Y, shut);
+            if (!buy.Equip || !InventoryCommands.TryEquip(into, bought.WithQuantity(1), cold)) return Place(into, bought, units, shut);
+
+            // One unit is worn; the rest goes where it fits.
+            Assembly.RefreshEquipment(cold);
+            if (units == 1) return 1;
+            var rest = bought.WithQuantity(units - 1);
+            rest.Buyback = bought.Buyback?.Skip(1);
+            return 1 + Place(into, rest, units - 1, shut);
         }
 
         void Sell(World world, SellItem sell)
@@ -444,6 +451,7 @@ public sealed partial class TradeSystem
             if (section is not (null or "main" or "backpack_attach")) return 0;
             if (section == "backpack_attach") return InventoryCommands.Transfer(from, token, into, section, 0, 0, wearer: wearer) ? 1 : 0;
             if (equip && InventoryCommands.Transfer(from, token, into, "backpack_attach", 0, 0, wearer: wearer)) return 1;
+            if (InventoryCommands.MainClosed(wearer)) return 0;
             if (section == "main" && InventoryCommands.Transfer(from, token, into, section, x, y)) return 1;
             var item = Find(from, token);
             return item is not null && into.FindCell("main", item.Width, item.Height, out int cx, out int cy)
@@ -473,9 +481,9 @@ public sealed partial class TradeSystem
         /// Puts the units at the cell they were dropped on (the trade window's <c>placeItemFromMouse</c>): the cell of <paramref name="section"/> in <paramref name="root"/> (the backpack's
         /// contents for <c>backpack_content</c>) when the footprint is inside the grid, free and the stack within the limit; otherwise wherever they fit, as <see cref="Place"/>.
         /// </summary>
-        static int PlaceAt(Inventory root, ItemInstance copy, int units, string section, int x, int y)
+        static int PlaceAt(Inventory root, ItemInstance copy, int units, string section, int x, int y, bool mainShut = false)
         {
-            var grid = section == "main" ? root : section == "backpack_content" ? root.Backpack?.Contents : null;
+            var grid = section == "main" && !mainShut ? root : section == "backpack_content" ? root.Backpack?.Contents : null;
             if (grid is not null && x >= 0 && y >= 0 && x + copy.Width <= grid.Width && y + copy.Height <= grid.Height && units <= grid.LimitOf(copy)
                 && grid.IsFree(section, x, y, copy.Width, copy.Height))
             {
@@ -485,13 +493,13 @@ public sealed partial class TradeSystem
                 grid.Items.Add(copy);
                 return units;
             }
-            return Place(root, copy, units);
+            return Place(root, copy, units, mainShut);
         }
 
-        static int Place(Inventory into, ItemInstance copy, int units)
+        static int Place(Inventory into, ItemInstance copy, int units, bool mainShut = false)
         {
             copy.Section = "main";
-            return into.Add(copy) ? units : units - copy.Quantity;
+            return into.Add(copy, mainShut) ? units : units - copy.Quantity;
         }
 
         /// <summary>Takes <paramref name="units"/> off an item's stack, removing it when none are left.</summary>

@@ -231,6 +231,7 @@ public sealed partial class World
             OwnedTownBuildings = Fixtures.OwnedProperties(Player.Faction),
             InspectedBuilding = beds?.DetailOf(this, Player.InspectedBuilding) ?? Fixtures.DetailOf(Player.InspectedBuilding, Player.Faction),
             InspectedRichness = _production?.RichnessOf(this, Player.InspectedBuilding),
+            InspectedLevelPower = _production?.LevelPowerOf(this, Player.InspectedBuilding),
             InspectedTurret = combat?.TurretPanelOf(this, Player.InspectedBuilding),
             Machines = OpenContainerView() is { } container ? [.. machineViews.Where(m => m.Site != container.Site), container] : machineViews,
             MachinesVersion = Machines.Version,
@@ -401,11 +402,17 @@ public sealed partial class World
                 sk.Strength, sk.Athletics)
             : null;
         s.Inventory = (f.FullDetails && v.Eligible || selected) && cold!.Inventory is { } carried ? Items.InventoryText.Lines(carried) : [];
-        s.AllSkills = detailed && cold!.Stats is { } allStats ? Array.AsReadOnly(allStats.ToArray()) : [];
+        s.AllSkills = detailed && cold!.Stats is { } allStats ? Array.AsReadOnly(allStats.ToEffectiveArray()) : [];
         s.SkillXpMultipliers = detailed && cold!.Race is { } skillRace ? Array.AsReadOnly((float[])skillRace.StatMultipliers.Clone()) : [];
         s.Hud = detailed && cold!.Medical is { } hudMed && cold.Race is { } hudRace && cold.Stats is { } hudStats
             ? HudOf(id, cold, hudMed, hudRace, hudStats, state[i], combat, bodyConstants, !Sight.Outdoors(i), Sight.Inside(i), population?.Db)
             : null;
+        // Remote UI uses the selection's lead and the inspected actor, never every remotely owned squad member.
+        bool modDetails = f.Recipient is null ? detailed : selected && i == f.LeadSlot || v.Inspected;
+        s.Meters = modDetails && cold!.Meters is { } meters ? Array.AsReadOnly((Bodies.MeterReading?[])meters.Clone()) : [];
+        s.ModSkills = modDetails && Bodies.ModSkills.All.Count > 0 && cold!.Stats is { } modStats
+            ? Array.AsReadOnly(Bodies.ModSkills.Levels(modStats))
+            : [];
         s.LimbBits = cold?.Medical?.LimbBits ?? 0;
         s.BloodAmounts = cold?.Medical?.ShownBlood ?? 0UL;
         s.Knockdown = cold?.Knockdown ?? default;
@@ -413,7 +420,8 @@ public sealed partial class World
         s.HealthParts = detailed && cold!.Medical is { } health && cold.Race is { } anatomy ? HealthPartsOf(health, anatomy) : [];
         s.ItemGrid = v.Eligible && (f.FullDetails || selected || id == f.Viewer.OpenLoot || cold is { IsPlayer: true } && f.Viewer.InventoryShown.Contains(id))
             && cold!.Inventory is { } grid
-            ? InventoryViewOf(cold, grid, population, bodyConstants, f.Viewer.Held) with { Revision = f.InventoryRevisions[i] } : null;
+            ? InventoryViewOf(cold, grid, population, bodyConstants, f.Viewer.Held,
+                id == f.Viewer.OpenLoot ? LootStealChance(i, f.Viewer) : null) with { Revision = f.InventoryRevisions[i] } : null;
         s.Bounties = detailed && cold!.Bounties is not null
             ? Crime.CrimeSystem.Lines(cold, Tick, TickSeconds, LocalFaction(cold, state[i].Position, population))
             : [];
@@ -446,7 +454,7 @@ public sealed partial class World
 
         // The original skips robots' appearances (FUN_140531820) and animals have none.
         s.Build = cold is { Stats: { } buildStats, Medical: { } fed, Race.IsRobot: false, Appearance: { Animal: null } look }
-            ? ShapedBuild(cold, Data.Characters.CharacterShape.BuildFromStats(look.Female, buildStats, static (stats, s) => stats[s], fed.Hunger))
+            ? ShapedBuild(cold, Data.Characters.CharacterShape.BuildFromStats(look.Female, buildStats, static (stats, s) => stats.Stored(s), fed.Hunger))
             : null;
         bool pathed = detailed && (state[i].Flags & (ushort)MoveFlags.HasPath) != 0;
         s.Path = pathed ? cold!.Path.Skip(state[i].PathCursor).ToArray() : [];
@@ -454,6 +462,7 @@ public sealed partial class World
         s.CarriedBy = cold?.CarriedBy ?? CharacterId.None;
         s.Carry = cold is { CarriedBy.IsNone: false } ? cold.CarryAttach ?? Carrying.CarryPose.Fallback : null;
         s.Anchor = cold?.DrawAnchor;
+        s.BoneMeshes = cold?.BoneMeshes ?? [];
         s.Carrying = cold?.Carrying ?? CharacterId.None;
         s.HeldTool = state[i].Task == (byte)CharacterTask.Operate && cold is { OperateSite: not null, Appearance.Animal: null }
             ? cold.OperateTool
@@ -729,14 +738,15 @@ public sealed partial class World
     /// and a living holder's death items left out, as the original's panel <c>FUN_1405d4260</c>, docs/game/ui-screens.md), the maximum from the
     /// holder's strength times the stats multiplier (an animal's age) and the burden factor from its strength.
     /// </summary>
-    InventoryView InventoryViewOf(CharacterCold cold, Items.Inventory grid, PopulationData? population, GameConstants? constants, Items.HeldItem? held)
+    InventoryView InventoryViewOf(CharacterCold cold, Items.Inventory grid, PopulationData? population, GameConstants? constants,
+        Items.HeldItem? held, Func<Items.ItemInstance, float?>? steal)
     {
         float items = grid.ContentWeight(held, skipDeath: cold.Medical is not { Dead: true });
         bool carrying = !cold.Carrying.IsNone;
         float strengthMult = cold.Medical?.StatMultiplier(StatsEnumerated.Strength) ?? 1;
         var stats = constants is null ? null : cold.Stats;
         return new InventoryView(grid.Width, grid.Height, grid.Backpack?.Contents?.Width ?? 0, grid.Backpack?.Contents?.Height ?? 0,
-            ItemsOf(grid, cold.Faction, population))
+            ItemsOf(grid, cold.Faction, population, steal))
         {
             TotalWeight = constants is null ? items : Encumbrance.CarriedWeight(constants, items, carrying),
             CarryCapacity = stats is null ? null : Encumbrance.WindowCapacity(constants!, stats.Strength * stats.Scale, strengthMult),
@@ -745,9 +755,21 @@ public sealed partial class World
     }
 
     /// <summary>
-    /// The inventory panel's items shown in a grid.
+    /// The stealing chance of an item of the open loot, slot <paramref name="owner"/>, for its opener
+    /// (<see cref="Crime.CrimeSystem.StealChanceOf(World, int, int, Items.ItemInstance)"/>); null when no one holds the window open.
     /// </summary>
-    static IReadOnlyList<InventoryItemView> ItemsOf(Items.Inventory grid, int faction, PopulationData? population) =>
+    Func<Items.ItemInstance, float?>? LootStealChance(int owner, PlayerState viewer)
+    {
+        if (!Characters.TryResolveNext(viewer.LootOpener, out int thief)) return null;
+
+        return item => Crime.CrimeSystem.StealChanceOf(this, thief, owner, item);
+    }
+
+    /// <summary>
+    /// The inventory panel's items shown in a grid, with <paramref name="steal"/>'s stealing chance of each (null: none).
+    /// </summary>
+    static IReadOnlyList<InventoryItemView> ItemsOf(Items.Inventory grid, int faction, PopulationData? population,
+        Func<Items.ItemInstance, float?>? steal = null) =>
         Array.AsReadOnly(grid.Shown().Select(shown => new InventoryItemView(shown.Index, shown.Item.Record, shown.Item.Name, shown.Item.Section,
             shown.Item.X, shown.Item.Y, shown.Item.Width, shown.Item.Height, shown.Item.Quantity, shown.Item.Weight, shown.Item.Quality)
         {
@@ -762,7 +784,8 @@ public sealed partial class World
             MaxCharges = shown.Item.MaxCharges,
             StolenFrom = shown.Item.IsStolenFor(faction, population) ? shown.Item.StolenFrom : -1,
             Unique = shown.Item.Unique,
-            BagItems = shown.Item.Contents?.Items.Count ?? -1
+            BagItems = shown.Item.Contents?.Items.Count ?? -1,
+            StealChance = steal?.Invoke(shown.Item)
         }).ToArray());
 
     /// <summary>
@@ -1117,10 +1140,13 @@ public sealed partial class World
         if (player.OpenContainer is not { } id || Fixtures.Find(id) is not { Contents: not null } f
             || player.ContainerAccess is { } access && !access.Valid(this)) return null;
         var grid = PlayerSystem.GridOf(this, f, out var region);
+        float? steal = Characters.TryResolveNext(player.ContainerOpener, out int thief)
+            ? Crime.CrimeSystem.StealChanceOf(this, thief, Crime.StealSource.Of(f))
+            : null;
         var storage = new InventoryView(region.Width, region.Height, 0, 0,
             Array.AsReadOnly(grid.Items.Select((item, index) => (item, index)).Where(e => region.Holds(e.item)).Select(e => new InventoryItemView(e.index, e.item.Record,
                 e.item.Name, "main", e.item.X - region.X, e.item.Y - region.Y, e.item.Width, e.item.Height, e.item.Quantity, e.item.Weight, e.item.Quality)
-            { Material = e.item.MaterialId, Rotated = e.item.Rotated, Colour = e.item.ColourId, Charge = e.item.ChargeFraction, Company = e.item.CompanyId, Level = e.item.Level, Charges = e.item.Charges, MaxCharges = e.item.MaxCharges, Unique = e.item.Unique }).ToArray()));
+            { Material = e.item.MaterialId, Rotated = e.item.Rotated, Colour = e.item.ColourId, Charge = e.item.ChargeFraction, Company = e.item.CompanyId, Level = e.item.Level, Charges = e.item.Charges, MaxCharges = e.item.MaxCharges, Unique = e.item.Unique, StealChance = steal }).ToArray()));
         return new Production.MachineSnapshot(id, f.RecordId, [], null, storage, null, 0, 0, 0)
         { IsContainer = true, ContainerSessionId = player.ContainerSessionId, ContainerOpener = player.ContainerOpener, StorageRevision = InventoryRevision(grid) };
     }
