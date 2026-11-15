@@ -203,80 +203,102 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
     internal void PickUpWorkers(World world, CharacterAssembly? assembly)
     {
         var table = world.Characters;
-        var next = table.Next;
         foreach (var actor in _pickupAuthority.Keys.ToArray())
-            if (!table.TryResolveNext(actor, out int current) || table.Cold(current)?.PickingUpItem != _pickupAuthority[actor].Item.Id) _pickupAuthority.Remove(actor);
-        for (int s = 0; s < table.HighWater; s++)
-        {
-            if (!next[s].Alive || table.Cold(s) is not { PickingUpItem: { } id } c) continue;
-            var actor = table.IdOf(s);
-            if (_pickupAuthority.TryGetValue(actor, out var authority)
-                && (!world.Players.Validate(authority.Grant) || !ReferenceEquals(world.GroundItems.Find(id), authority.Item)))
-            {
+            if (!table.TryResolveNext(actor, out int current) || table.Cold(current)?.PickingUpItem != _pickupAuthority[actor].Item.Id)
                 _pickupAuthority.Remove(actor);
-                (c.PickingUpItem, c.FetchingFood) = (null, false);
-                continue;
-            }
-            if (world.GroundItems.Find(id) is not { } item || c.Medical is { Incapacitated: true } || !c.CarriedBy.IsNone
-                    || c.Inventory is not { } inventory)
-            {
-                (c.PickingUpItem, c.FetchingFood) = (null, false);
-                continue;
-            }
-            var at = Flat(item.Position);
-            if (Vector2.Distance(Flat(next[s].Position), at) > PickUpReach)
-            {
-                if (next[s].Task != (byte)CharacterTask.GoTo || Vector2.Distance(next[s].Goal, at) > PickUpReach)
-                    (c.PickingUpItem, c.FetchingFood) = (null, false);
-                continue;
-            }
-            bool fetch = c.FetchingFood;
-            (c.PickingUpItem, c.FetchingFood) = (null, false);
+
+        for (int slot = 0; slot < table.HighWater; slot++) PickUpWorker(world, slot, assembly);
+    }
+
+    /// <summary>
+    /// Revalidates one pending pick-up and collects it on arrival; offline automatic food fetches cannot collect items.
+    /// </summary>
+    void PickUpWorker(World world, int s, CharacterAssembly? assembly)
+    {
+        var table = world.Characters;
+        var next = table.Next;
+        if (!next[s].Alive || table.Cold(s) is not { PickingUpItem: { } id } c) return;
+        if (c.FetchingFood && world.HungerActivity.IsPaused(s, c)) return;
+
+        var actor = table.IdOf(s);
+        if (_pickupAuthority.TryGetValue(actor, out var authority)
+            && (!world.Players.Validate(authority.Grant) || !ReferenceEquals(world.GroundItems.Find(id), authority.Item)))
+        {
             _pickupAuthority.Remove(actor);
-            if (next[s].Task == (byte)CharacterTask.GoTo) TaskStart.Stand(table, s);
+            (c.PickingUpItem, c.FetchingFood) = (null, false);
+            return;
+        }
+        if (world.GroundItems.Find(id) is not { } item || c.Medical is { Incapacitated: true } || !c.CarriedBy.IsNone
+                || c.Inventory is not { } inventory)
+        {
+            (c.PickingUpItem, c.FetchingFood) = (null, false);
+            return;
+        }
+        var at = Flat(item.Position);
+        if (Vector2.Distance(Flat(next[s].Position), at) > PickUpReach)
+        {
+            if (next[s].Task != (byte)CharacterTask.GoTo || Vector2.Distance(next[s].Goal, at) > PickUpReach)
+                (c.PickingUpItem, c.FetchingFood) = (null, false);
+            return;
+        }
+        bool fetch = c.FetchingFood;
+        (c.PickingUpItem, c.FetchingFood) = (null, false);
+        _pickupAuthority.Remove(actor);
+        if (next[s].Task == (byte)CharacterTask.GoTo) TaskStart.Stand(table, s);
 
-            // Fetched food is checked again on arrival: after a load a shop slot claims its loose items only once its building is set up, so the food
-            // can turn out to be the shop's, and the animal leaves it rather than steal it.
-            if (fetch && !Items.FeedSystem.FreeFood(item, c)) continue;
+        // Fetched food is checked again on arrival: after a load a shop slot claims its loose items only once its building is set up, so the food
+        // can turn out to be the shop's, and the animal leaves it rather than steal it.
+        // Adult limb fetches share the offline marker but retain their existing mouth pick-up ownership rules.
+        if (fetch && item.Item.ItemFunction != FeedSystem.LimbFunction && !Items.FeedSystem.FreeFood(item, c)) return;
 
-            // An animal takes a limb in its mouth and eats it later; one with no mouth point leaves it on the ground
-            // (docs/game/character-stats.md "Eating", "Mouth").
-            if (Items.FeedSystem.IsMouthPickUp(c, item.Item))
-            {
-                TakeInMouth(world, s, c, item);
-                continue;
-            }
+        // An animal takes a limb in its mouth and eats it later; one with no mouth point leaves it on the ground
+        // (docs/game/character-stats.md "Eating", "Mouth").
+        if (Items.FeedSystem.IsMouthPickUp(c, item.Item))
+        {
+            TakeInMouth(world, s, c, item);
+            return;
+        }
 
-            // Another faction's item is stolen from its owner (the "Steal" pick-up); what stays on the ground keeps its old mark.
-            int before = item.Item.Quantity;
-            var mark = item.Item.Mark;
-            if (item.OwnedBy >= 0 && item.OwnedBy != c.Faction) item.Item.Mark = OwnerMark(world, item);
+        TakeIntoInventory(world, s, c, item, inventory, fetch, assembly, authority.Grant.Player);
+    }
 
-            // What does not fit stays on the ground (Inventory.Add leaves it in the item); gear or a bag that does not fit is worn when its slot
-            // is free.
-            bool wear = false;
-            if (Stow(world, inventory, item.Item, c, fetch) || item.Item.Quantity == before
-                && (wear = Items.InventoryCommands.TryEquip(inventory, item.Item, c)
-                        || Items.InventoryCommands.TryWearBag(inventory, item.Item, c)))
-            {
-                world.GroundItems.Take(id);
+    /// <summary>
+    /// Takes as much of a ground stack as fits, recording theft, equipment changes, sound and any inventory-space refusal.
+    /// </summary>
+    static void TakeIntoInventory(World world, int s, CharacterCold c, GroundItem item, Inventory inventory, bool fetch,
+        CharacterAssembly? assembly, PlayerId player)
+    {
+        var next = world.Characters.Next;
 
-                // Task_Pickup: another faction's item taken inside a building is a Theft.
-                if (item.OwnedBy >= 0 && item.OwnedBy != c.Faction && world.Sight.BuildingOf(s) is not null)
-                    world.SystemOf<Crime.CrimeSystem>()?.StolePickUp(world, s, item.OwnedBy);
-                if (wear) assembly?.RefreshEquipment(c);
-                world.EmitSound(SoundKind.PickedUp, s, next[s].Position);
-            }
-            else
-            {
-                item.Item.Mark = mark;
+        // Another faction's item is stolen from its owner (the "Steal" pick-up); what stays on the ground keeps its old mark.
+        int before = item.Item.Quantity;
+        var mark = item.Item.Mark;
+        if (item.OwnedBy >= 0 && item.OwnedBy != c.Faction) item.Item.Mark = OwnerMark(world, item);
 
-                // Task_Pickup sounds when any of the stack went in.
-                if (item.Item.Quantity < before) world.EmitSound(SoundKind.PickedUp, s, next[s].Position);
-                if (item.Item.Quantity < before && item.OwnedBy >= 0 && item.OwnedBy != c.Faction && world.Sight.BuildingOf(s) is not null)
-                    world.SystemOf<Crime.CrimeSystem>()?.StolePickUp(world, s, item.OwnedBy);
-                if (c.IsPlayer) world.Post(authority.Grant.Player.IsNone ? PlayerId.Local : authority.Grant.Player, $"{c.Name}: Not enough room in my inventory");
-            }
+        // What does not fit stays on the ground (Inventory.Add leaves it in the item); gear or a bag that does not fit is worn when its slot
+        // is free.
+        bool wear = false;
+        if (Stow(world, inventory, item.Item, c, fetch) || item.Item.Quantity == before
+            && (wear = Items.InventoryCommands.TryEquip(inventory, item.Item, c)
+                    || Items.InventoryCommands.TryWearBag(inventory, item.Item, c)))
+        {
+            world.GroundItems.Take(item.Id);
+
+            // Task_Pickup: another faction's item taken inside a building is a Theft.
+            if (item.OwnedBy >= 0 && item.OwnedBy != c.Faction && world.Sight.BuildingOf(s) is not null)
+                world.SystemOf<Crime.CrimeSystem>()?.StolePickUp(world, s, item.OwnedBy);
+            if (wear) assembly?.RefreshEquipment(c);
+            world.EmitSound(SoundKind.PickedUp, s, next[s].Position);
+        }
+        else
+        {
+            item.Item.Mark = mark;
+
+            // Task_Pickup sounds when any of the stack went in.
+            if (item.Item.Quantity < before) world.EmitSound(SoundKind.PickedUp, s, next[s].Position);
+            if (item.Item.Quantity < before && item.OwnedBy >= 0 && item.OwnedBy != c.Faction && world.Sight.BuildingOf(s) is not null)
+                world.SystemOf<Crime.CrimeSystem>()?.StolePickUp(world, s, item.OwnedBy);
+            if (c.IsPlayer) world.Post(player.IsNone ? PlayerId.Local : player, $"{c.Name}: Not enough room in my inventory");
         }
     }
 

@@ -133,6 +133,21 @@ public sealed class AuthorityGateway : IDisposable
     }
 
     /// <summary>
+    /// Copies current Active connection generations together so a tick never mixes connection states across its characters or phases.
+    /// </summary>
+    internal void CopyActivePlayers(HashSet<PlayerId> players)
+    {
+        lock (_gate)
+        {
+            players.Clear();
+            if (_disposed || _faulted) return;
+
+            foreach (var (player, ledger) in _players)
+                if (ledger.Connection?.Phase == AdmissionPhase.Active) players.Add(player);
+        }
+    }
+
+    /// <summary>
     /// World-owner query for an authenticated preparation session; identity comes only from its current connection.
     /// </summary>
     public PlayerEntryAssessment? AssessEntry(AuthorityConnection connection)

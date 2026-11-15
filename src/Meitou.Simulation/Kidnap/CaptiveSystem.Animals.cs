@@ -128,7 +128,10 @@ public sealed partial class CaptiveSystem
     /// </summary>
     static void Fetch(World world, int slot, CharacterCold cold, Items.GroundItem limb)
     {
+        if (cold.Age > 0.9f && world.HungerActivity.IsPaused(slot, cold)) return;
+
         cold.PickingUpItem = limb.Id;
+        cold.FetchingFood = cold.Age > 0.9f;
         if (Vector3.Distance(world.Characters.Next[slot].Position, limb.Position) > Items.PickUps.PickUpReach)
             TaskStart.Walk(world, slot, limb.Position, SpeedMode.Run, TaskType.AnimalFetchALimb, TaskSource.Goal);
     }
@@ -138,6 +141,8 @@ public sealed partial class CaptiveSystem
     /// </summary>
     static Items.GroundItem? LimbFor(World world, int slot, CharacterCold cold)
     {
+        if (cold.Age > 0.9f && world.HungerActivity.IsPaused(slot, cold)) return null;
+
         if (cold.Mouth is not null || cold.PickingUpItem is not null || cold.Medical is not { } med) return null;
         if (cold.Age > 0.9f && (med.Fed > 0 || med.Hunger > 2.75f)) return null;
         var at = world.Characters.Next[slot].Position;

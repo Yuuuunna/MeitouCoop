@@ -96,6 +96,16 @@ public readonly struct MedicalContext(GameConstants constants, BodyOptions optio
     public float BudgetSeconds { get; init; }
 
     /// <summary>
+    /// Freezes natural hunger, stomach digestion, starvation grace and new starvation knockouts/death while other medical updates continue.
+    /// </summary>
+    public bool PauseHunger { get; init; }
+
+    /// <summary>
+    /// Hunger time after excluding offline ticks from a batched body update; null uses the full medical tick's character time.
+    /// </summary>
+    public float? HungerSeconds { get; init; }
+
+    /// <summary>
     /// Not safe to get up (<c>Character::isItSafeToGetUp</c> failing): a knockout that ends keeps the character down, playing dead
     /// (<see cref="MedicalState.PlayingDead"/>).
     /// </summary>

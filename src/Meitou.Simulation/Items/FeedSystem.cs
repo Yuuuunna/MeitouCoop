@@ -77,49 +77,74 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
     public ItemFactory Items { get; } = items;
 
     /// <summary>
+    /// Cancels hunger-driven ground-food and adult limb fetching before an inactive controller's character can walk or collect it.
+    /// </summary>
+    public void Schedule(World world)
+    {
+        var table = world.Characters;
+        for (int slot = 0; slot < table.HighWater; slot++)
+        {
+            if (!table.Next[slot].Alive || table.Cold(slot) is not { FetchingFood: true } cold
+                || !world.HungerActivity.IsPaused(slot, cold)) continue;
+
+            (cold.PickingUpItem, cold.FetchingFood) = (null, false);
+            if (cold.Running is { Row: Data.Gameplay.Ai.TaskType.EatFoodOnGround or Data.Gameplay.Ai.TaskType.AnimalFetchALimb })
+                TaskStart.End(world, slot, TaskEnd.Done);
+        }
+    }
+
+    /// <summary>
     /// Every <see cref="FeedSettings.CheckEveryTicks"/>: each living character with medical state, a race and an inventory eats from its mouth,
     /// fetches ground food (the player faction's other animals) or eats a hungry bite from its own items, its backpack or a mate's.
     /// </summary>
     public void SlowWorld(World world)
     {
         if (world.Tick % Math.Max(Settings.CheckEveryTicks, 1) != 0) return;
+
+        for (int slot = 0; slot < world.Characters.HighWater; slot++) FeedCharacter(world, slot);
+    }
+
+    /// <summary>
+    /// One active character's automatic mouth bite, food search and inventory or shared-backpack meal.
+    /// </summary>
+    void FeedCharacter(World world, int i)
+    {
         var table = world.Characters;
         var state = table.Next;
-        for (int i = 0; i < table.HighWater; i++)
+        if (!state[i].Alive || table.Cold(i) is not { Medical: { Dead: false } med, Race: { } race, Inventory: { } own } cold)
+            return;
+        if (world.HungerActivity.IsPaused(i, cold)) return;
+
+        var options = world.SquadOptions(cold);
+        bool animal = !med.HasStatsObject;
+        bool playerSide = PlayerSide(world, cold);
+
+        // A limb in the mouth is all it does (FUN_1405dc650): the usual look for food comes only when the mouth is empty, and the Feed Animals
+        // option does not matter to it.
+        if (cold.Mouth is { } held)
         {
-            if (!state[i].Alive || table.Cold(i) is not { Medical: { Dead: false } med, Race: { } race, Inventory: { } own } cold)
-                continue;
-            var options = world.SquadOptions(cold);
-            bool animal = !med.HasStatsObject;
-            bool playerSide = PlayerSide(world, cold);
-
-            // A limb in the mouth is all it does (FUN_1405dc650): the usual look for food comes only when the mouth is empty, and the Feed Animals
-            // option does not matter to it.
-            if (cold.Mouth is { } held)
-            {
-                if (MouthDue(world, cold, med, playerSide)) EatFromMouth(world, i, cold, med, held);
-                continue;
-            }
-
-            // Goal 259 Picking up food (every player animal has it, Character::setupAI): hungry with no food on it, it fetches food from the ground.
-            // A player character's is the decision step's (PickingUpFood); this pass runs it for the other animals of the player's faction, idle or
-            // following.
-            if (animal && playerSide && !cold.IsPlayer && WantsGroundFood(cold, race, med, own, options)
-                    && world.Characters.Next[i].Task is (byte)CharacterTask.Idle or (byte)CharacterTask.Follow
-                && GroundFood(world, i, cold) is { } ground)
-                FetchFood(world, i, cold, ground);
-            if (animal && (options & SquadAi.Feed) == 0) continue;
-            bool wants = playerSide || cold.SlaveState == 1 || med.Hunger < NpcWantsBelow;
-            if (!wants || med.Fed > 0 || !(med.Hunger < HungryBelow)) continue;
-            Inventory? from = own;
-            var food = Best(own.Items, race, animal);
-            if (food is null && own.Backpack?.Contents is { } bag && Best(bag.Items, race, animal) is { } packed)
-                (from, food) = (bag, packed);
-            if (food is null && playerSide && med.Hunger < ShareBelow && (options & SquadAi.Share) != 0)
-                (from, food) = FromMates(world, i, cold, race, animal);
-            if (food is null || from is null) continue;
-            Eat(world, i, med, from, food);
+            if (MouthDue(world, cold, med, playerSide)) EatFromMouth(world, i, cold, med, held);
+            return;
         }
+
+        // Goal 259 Picking up food (every player animal has it, Character::setupAI): hungry with no food on it, it fetches food from the ground.
+        // A player character's is the decision step's (PickingUpFood); this pass runs it for the other animals of the player's faction, idle or
+        // following.
+        if (animal && playerSide && !cold.IsPlayer && WantsGroundFood(cold, race, med, own, options)
+                && world.Characters.Next[i].Task is (byte)CharacterTask.Idle or (byte)CharacterTask.Follow
+            && GroundFood(world, i, cold) is { } ground)
+            FetchFood(world, i, cold, ground);
+        if (animal && (options & SquadAi.Feed) == 0) return;
+        bool wants = playerSide || cold.SlaveState == 1 || med.Hunger < NpcWantsBelow;
+        if (!wants || med.Fed > 0 || !(med.Hunger < HungryBelow)) return;
+        Inventory? from = own;
+        var food = Best(own.Items, race, animal);
+        if (food is null && own.Backpack?.Contents is { } bag && Best(bag.Items, race, animal) is { } packed)
+            (from, food) = (bag, packed);
+        if (food is null && playerSide && med.Hunger < ShareBelow && (options & SquadAi.Share) != 0)
+            (from, food) = FromMates(world, i, cold, race, animal);
+        if (food is null || from is null) return;
+        Eat(world, i, med, from, food);
     }
 
     /// <summary>
@@ -216,6 +241,8 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
         public DecisionCheck CanRun(World world, int slot)
         {
             var cold = world.Characters.Cold(slot)!;
+            if (world.HungerActivity.IsPaused(slot, cold)) return DecisionCheck.No("controller inactive");
+
             if (cold is not { Medical: { Dead: false } med, Race: { } race, Inventory: { } own } || med.HasStatsObject)
                 return DecisionCheck.No("not an animal");
             if (cold.PickingUpItem is not null)
@@ -232,6 +259,8 @@ public sealed class FeedSystem(ItemFactory items, FeedSettings? settings = null)
         public void Start(World world, int slot)
         {
             var cold = world.Characters.Cold(slot)!;
+            if (world.HungerActivity.IsPaused(slot, cold)) return;
+
             if (GroundFood(world, slot, cold) is { } food) FetchFood(world, slot, cold, food);
         }
     }

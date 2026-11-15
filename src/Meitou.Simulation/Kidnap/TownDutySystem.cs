@@ -269,6 +269,26 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     public IReadOnlyList<TownDuty> Duties => _duties;
 
     /// <summary>
+    /// Ends inactive controllers' personal food errands before movement, preserving unrelated errands and replacement orders.
+    /// </summary>
+    public void Schedule(World world)
+    {
+        var table = world.Characters;
+        for (int index = _duties.Count - 1; index >= 0; index--)
+        {
+            var duty = _duties[index];
+            if (duty is not { PlayerSide: true, Kind: TownDutyKind.Food } || !table.TryResolveNext(duty.Member, out int slot)
+                || table.Cold(slot) is not { } cold || !world.HungerActivity.IsPaused(slot, cold)) continue;
+
+            cold.Engaged = false;
+            if (table.Next[slot].Task == (byte)CharacterTask.GoTo && table.Next[slot].Goal == duty.Goal
+                && cold.Running is { Row: TaskType.AquireFoodAtHomebase }) TaskStart.End(world, slot, TaskEnd.Done);
+
+            _duties.RemoveAt(index);
+        }
+    }
+
+    /// <summary>
     /// The serial step: every errand steps on (an ended one is dropped), then the look on each member's turn, the player's food runs and the ditches
     /// asked for.
     /// </summary>
@@ -480,6 +500,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     string? WhyNotFed(World world, int s, CharacterCold c, out bool animal, out bool hungry, out bool occupied)
     {
         animal = hungry = occupied = false;
+        if (world.HungerActivity.IsPaused(s, c)) return "controller inactive";
+
         var table = world.Characters;
         int faction = c.Faction;
         if (faction < 0 || c is not { Medical: { Dead: false, Incapacitated: false } med, Race: { } race } || !(c.IsPlayer || world.IsPlayerFaction(c.Faction)))
@@ -517,6 +539,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     /// </summary>
     void StartFood(World world, int s, CharacterCold c, (CampaignTown Town, string Id, Vector2 Spot) store)
     {
+        if (world.HungerActivity.IsPaused(s, c)) return;
+
         c.Engaged = true;
         _duties.Add(new TownDuty
         {
@@ -563,11 +587,14 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         /// </summary>
         public DecisionCheck CanRun(World world, int slot)
         {
+            var cold = world.Characters.Cold(slot)!;
+            if (world.HungerActivity.IsPaused(slot, cold)) return DecisionCheck.No("controller inactive");
+
             var id = world.Characters.IdOf(slot);
             if (owner.Busy(id))
                 return owner._duties.Exists(d => d.Member == id && d.Kind == TownDutyKind.Food) ? DecisionCheck.Runs : DecisionCheck.No("busy");
 
-            return owner.FoodWant(world, slot, world.Characters.Cold(slot)!, out _, out string? why) > 0 ? DecisionCheck.Run : DecisionCheck.No(why);
+            return owner.FoodWant(world, slot, cold, out _, out string? why) > 0 ? DecisionCheck.Run : DecisionCheck.No(why);
         }
 
         /// <summary>
@@ -1822,6 +1849,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             gc.Engaged = false;
             return false;
         }
+
+        if (d.PlayerSide && world.HungerActivity.IsPaused(g, gc)) return End(world, d);
 
         if (Vector2.Distance(Flat(gn.Position), d.Goal) <= Settings.Arrive || !walking
                 && Vector2.Distance(Flat(gn.Position), d.Goal) <= Settings.CageSlack)

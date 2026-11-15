@@ -1207,8 +1207,8 @@ public sealed class CharacterCold
     public int? PickingUpItem { get; set; }
 
     /// <summary>
-    /// The pick-up in <see cref="PickingUpItem"/> is food fetched to eat (<see cref="Items.FeedSystem"/>, goal 259): a live animal's shut grid takes
-    /// it. Not saved, as the pick-up is not; hashed only while set.
+    /// The pick-up in <see cref="PickingUpItem"/> is food fetched to eat (goal 259 or an adult animal's limb, goal 277): offline hunger protection
+    /// cancels it, and a live animal's shut grid takes ordinary food. Not saved, as the pick-up is not; hashed only while set.
     /// </summary>
     public bool FetchingFood { get; set; }
 

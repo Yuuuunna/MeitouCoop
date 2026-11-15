@@ -170,6 +170,18 @@ controller settings. Offline controllers retain settings; unassigned roles use d
 food sharing requires both players' sharing option and the same faction/squad. Transfers change which
 controller supplies options. Personal AI-option commands accept only defined individual flags.
 
+**Observed** (`HungerActivity`, `BodySystem`, `MedicalState.Tick`, `FeedSystem`, `PickUps`, `TownDutySystem`, `CaptiveSystem.Animals`;
+source review): in explicit-control worlds, each tick captures current Active connections and validated
+entity control grants after inputs. A controlled role whose controller is absent, Preparing or Synchronizing
+pauses natural hunger, stomach digestion and starvation grace, and cannot newly starve to unconsciousness
+or death. Its own automatic eating and hunger-driven ground/store/adult-limb fetching stop; existing
+hunger penalties, ordinary knockout recovery, injuries, blood loss, weather, attacks and being eaten remain
+active. An online role can still share an offline donor's backpack under the existing sharing permissions.
+Active admission resumes normal hunger without charging offline ticks, including batched body steps.
+Control transfers take effect at the next capture; unassigned NPCs and implicit single-player roles are
+unaffected. Connection replacement uses only the current generation. This policy adds no save/protocol fields;
+it has no dedicated repository test coverage.
+
 **Verified** by `SquadAuthorityTests` and `WorldPlayersTests`: operation without a local faction,
 foreign-faction/stale-grant rejection, swap ownership/target changes, capacity, dismissal/recruitment,
 separate death archives, personal food-sharing opt-in/transfer, effective-name conflicts, runtime formation

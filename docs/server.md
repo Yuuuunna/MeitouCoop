@@ -106,6 +106,8 @@ the same active runtime before committing; it does not accept an optional/no-op 
 Repeated login resets transient trade/dialogue/container/loot windows and opens a replacement generation;
 old handles become invalid. Old disconnect cleanup cannot close the replacement's windows. Role ownership,
 position and background orders remain in the world. Authentication awards no faction, role or start entitlement.
+The tick-boundary [offline hunger policy](multiplayer.md#squads-and-automatic-behaviour) protects controlled
+roles until their current connection becomes Active, including after checkpoint restoration.
 
 Bindings are checkpoint metadata schema 9/authority schema 4. Older metadata restores unbound identities;
 downgrading the schema cannot introduce bindings. Credentials remain outside world checkpoints, so restoring

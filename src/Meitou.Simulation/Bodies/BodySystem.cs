@@ -281,7 +281,7 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
         float encumbrance = load <= 0 && !carrying
             ? 1
             : Encumbrance.Factor(Constants, load, carrying, stats.Strength, medical.StatMultiplier(StatsEnumerated.Strength));
-        var ctx = ContextOf(world, i, cold, medical, race, stats, in n, encumbrance);
+        var ctx = ContextOf(world, i, cold, medical, race, stats, in n, encumbrance, dt);
         cold.MedicalBudgetSeconds = 0;
 
         // The combat system's own context (hits) reads the encumbrance from the fighter, so it matches the one used here.
@@ -350,7 +350,8 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
     /// The medical context of one character's step.
     /// </summary>
     MedicalContext ContextOf(
-        World world, int i, CharacterCold cold, MedicalState medical, RaceData race, CharacterStats stats, in CharacterHot n, float encumbrance)
+        World world, int i, CharacterCold cold, MedicalState medical, RaceData race, CharacterStats stats, in CharacterHot n,
+        float encumbrance, float dt)
     {
         var (bed, bedFactor) = BedOf(world, cold, in n);
         return new MedicalContext(Constants, Options, race)
@@ -375,6 +376,8 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
             UseHungerRate = UseHungerRate(cold, in n),
             Idle = AmIdle(world, cold, medical, in n),
             BudgetSeconds = cold.MedicalBudgetSeconds,
+            PauseHunger = world.HungerActivity.IsPaused(i, cold),
+            HungerSeconds = world.HungerActivity.ElapsedSeconds(world, i, cold, dt),
         };
     }
 
@@ -492,6 +495,7 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
         float toughness = XpService.ToughnessFactor(medical);
         bool rest = ctx.Resting || medical.Unconscious || medical.Dead;
         float hunger = race.HungerRate * MedicalState.HungerSituationFactor(Constants, rest, ctx.Still, ctx.Idle, encumbrance, ctx.UseHungerRate);
+        if (ctx.PauseHunger) hunger = 0;
         return new ExtendedStats(XpService.AthleticsRate(encumbrance, speed, runValue), _xp.StrengthCarryRate(encumbrance, carrying), toughness,
             MedicalState.KoPoint(Constants, stats.ScaledToughness), speed, runValue, hunger, rest, WorkHungerRate: ctx.UseHungerRate, Idle: ctx.Idle);
     }

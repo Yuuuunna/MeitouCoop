@@ -224,14 +224,15 @@ public sealed partial class MedicalState
     /// docs/game/character-stats.md "Time"): every part degenerates or heals itself, heals, is repaired and recovers from stun; wounds clot and blood
     /// runs out or recovers; hunger falls or is refilled from the stomach (by the game clock, in hours); the KO timer counts down; blood loss,
     /// starvation and destroyed vital parts kill. The part, blood and KO-timer rates run on dt + <see cref="MedicalContext.BudgetSeconds"/> (the
-    /// medical time), hunger on dt. Events go to <paramref name="events"/> if given. A dead character is not stepped.
+    /// medical time), hunger on dt or its separate online-time budget. PauseHunger freezes only natural hunger and starvation checks.
+    /// Events go to <paramref name="events"/> if given. A dead character is not stepped.
     /// </summary>
     public void Tick(float dt, in MedicalContext ctx, List<MedicalEvent>? events = null)
     {
         if (Dead || dt <= 0) return;
         if (EatenCountdown > 0) EatenCountdown--;
         var c = ctx.Constants;
-        float hours = dt * GameHoursPerSecond;
+        float hours = Math.Clamp(ctx.HungerSeconds ?? dt, 0, dt) * GameHoursPerSecond;
         float medicalTime = dt + MathF.Max(0, ctx.BudgetSeconds);
         LegKoPoint = KoPoint(c, ctx.Toughness);
 
@@ -240,7 +241,7 @@ public sealed partial class MedicalState
         if (Dead) return;
 
         TickBlood(rates.Dtb, ctx);
-        TickHunger(hours, ctx);
+        if (!ctx.PauseHunger) TickHunger(hours, ctx);
         bool freshStump = HasFreshStump;
         if (freshStump) BloodKo = true;
         CheckBlood(ctx, events);
@@ -249,13 +250,13 @@ public sealed partial class MedicalState
 
         // Not while being eaten: a vampiric meal drains the hunger level to -0.5 before it kills (whether the original's own update lets it pass 0 is
         // Unknown).
-        if (Hunger <= 0 && EatenCountdown <= 0)
+        if (!ctx.PauseHunger && Hunger <= 0 && EatenCountdown <= 0)
         {
             Die(DeathCause.Starvation, events);
             return;
         }
 
-        StarvationKo(hours, ctx, events);
+        if (!ctx.PauseHunger) StarvationKo(hours, ctx, events);
 
         // A vital part under the KO point puts the character into a coma at once, without a KO timer.
         bool vitalDown = VitalPartsKeepDown(LegKoPoint);

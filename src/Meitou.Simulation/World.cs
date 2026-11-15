@@ -687,6 +687,7 @@ public sealed partial class World : IDisposable
     void RunSchedule(CharacterTable table, TickProfile? prof)
     {
         table.Phase = TablePhase.Schedule;
+        HungerActivity.Capture(this);
         Grid.Build(table.Previous);
         RefreshCadence();
         prof?.Lap(TickProfile.Grid);
@@ -1134,6 +1135,11 @@ public sealed partial class World : IDisposable
     /// Registered players, explicit memberships and versioned character control grants.
     /// </summary>
     public WorldPlayers Players { get; }
+
+    /// <summary>
+    /// The tick's controller activity and offline time excluded from hunger updates.
+    /// </summary>
+    internal HungerActivity HungerActivity { get; } = new();
 
     /// <summary>
     /// True between complete simulation steps. Hosts must still serialize their world-owner calls.
