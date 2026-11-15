@@ -56,7 +56,7 @@ sealed class HeldItems(PopulationData? data)
             if (command.Issuer is not null)
             {
                 if (!world.Characters.TryResolveNext(actor, out int slot) || world.Characters.Cold(slot) is not
-                    { Medical.Dead: false, IsImprisoned: false } acting || !acting.CarriedBy.IsNone
+                    { Medical.Dead: false } acting || !acting.CarriedBy.IsNone
                     || acting.Medical.Incapacitated && !DownedWindowAction(world, command, actor, state)) return;
                 if (command is LiftItem take && (!HeldOwnerMatches(world, take.From, take.InventoryRevision, take)
                     || take.From.Holder == ItemHolder.Character && world.MayOrder(take, take.From.Character) && take.Actor != take.From.Character)) return;

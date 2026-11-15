@@ -91,6 +91,8 @@ put-down tasks, the FIND_BED desire and the Watching-slaves desire. **Verified**
 
 ## Dropped item placement
 
+**Observed** (player report): the original allows caged characters to drop their own items; imprisonment alone does not block dropping.
+
 **Verified** (decompile, `Item::createItemEntityCallback` `FUN_1407626e0`, run when an item's entity is made; an item put in the world with the pose-kept flag `+0x1d9` false, as every drop: the character's drop calls `FUN_1405ca4a0` / `FUN_1405ca740` pass the identity orientation and flag 0, whatever the caller's pose): the item's position and orientation are **set again there** by its record type (`+0x13c`), the dropper's orientation is not used. The position is raised 25, a ray goes down 99 (`FUN_1409b6a90`) and the hit height is the ground; no hit uses the terrain height (`FUN_1409b1f80`), else the unraised point. The up-to-ground-normal turn `Q` is `Vector3.UnitY.getRotationTo(normal)` (no yaw).
 
 | Record type | Orientation | Height above the ground |
