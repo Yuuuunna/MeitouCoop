@@ -13,6 +13,8 @@ app.UseRateLimiter();
 
 MapPublic(app);
 MapFeedback(app);
+app.MapPut("/diagnostics/{report:guid}/{artifact:guid}", async (Guid report, Guid artifact, HttpRequest request, DiagnosticUploads uploads) =>
+    Results.StatusCode(config.AdminToken is null ? 503 : await uploads.Put(report, artifact, request))).RequireRateLimiting("feedback");
 MapAdmin(app, config);
 app.Run();
 
@@ -33,6 +35,7 @@ static void AddServices(WebApplicationBuilder builder, Config config)
     builder.Services.AddSingleton<Reporters>();
     builder.Services.AddSingleton<GithubAuth>();
     builder.Services.AddSingleton<Feedback>();
+    builder.Services.AddSingleton(new DiagnosticUploads(builder.Configuration["DIAGNOSTICS_DIR"] ?? "/data/diagnostics"));
     builder.Services.AddRateLimiter(o =>
     {
         o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -105,6 +108,21 @@ static void MapAdmin(WebApplication app, Config config)
         feedback.DeleteFiles(token);
         return await store.DeleteFeedback(token) ? Results.NoContent() : Results.NotFound();
     });
+    admin.MapGet("/diagnostics/{report:guid}", (Guid report, DiagnosticUploads uploads, HttpResponse response) =>
+    {
+        response.Headers.CacheControl = "no-store";
+        return Results.Json(uploads.List(report), ReportsJson.Default.StringArray);
+    });
+    admin.MapGet("/diagnostics/{report:guid}/{artifact:guid}", (Guid report, Guid artifact, DiagnosticUploads uploads, HttpResponse response) =>
+    {
+        response.Headers.CacheControl = "no-store";
+        return uploads.Find(report, artifact) is { } path ? Results.File(path, "application/zip", $"{report:N}-{artifact:N}.zip") : Results.NotFound();
+    });
+    admin.MapDelete("/diagnostics/{report:guid}", async (Guid report, DiagnosticUploads uploads) =>
+    {
+        await uploads.Delete(report);
+        return Results.NoContent();
+    });
 }
 
 // Behind Cloudflare and the Cloudovna edge: Cloudflare's header, else the address the edge appended last, else the socket.
@@ -131,4 +149,5 @@ sealed record Refused(string Error);
 [JsonSerializable(typeof(FeedbackBody))]
 [JsonSerializable(typeof(FeedbackCreated))]
 [JsonSerializable(typeof(FeedbackIssue))]
+[JsonSerializable(typeof(string[]))]
 sealed partial class ReportsJson : JsonSerializerContext;

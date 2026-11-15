@@ -1,13 +1,25 @@
 using System.Text.Json;
 using Meitou.Diagnostics;
 
-if (args.Length == 0) { Console.Error.WriteLine("Usage: dotnet run --project tools/Meitou.LatencyTrace -- server.jsonl client.jsonl [...]"); return 2; }
+if (args.Length == 0) { Console.Error.WriteLine("Usage: dotnet run --project tools/Meitou.LatencyTrace -- server.jsonl client.jsonl [or paired diagnostic .zip files]"); return 2; }
 var records = new List<LatencyTraceRecord>();
 var metadata = new Dictionary<Guid, (Guid Case, long Frequency, int Process)>();
+var packages = new Dictionary<Guid, DiagnosticSnapshot>();
 try
 {
     foreach (string file in args)
     {
+        if (file.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            var package = DiagnosticPackage.Read(file);
+            if (!packages.TryAdd(package.Run, package)) throw new InvalidDataException("Choose one incident package per process run.");
+            if (packages.Values.Select(p => p.Report).Distinct().Count() > 1) throw new InvalidDataException("Diagnostic packages name different reports.");
+            if (records.Count + package.Events.Length > 1_000_000) throw new InvalidDataException("Trace analysis bound exceeded.");
+            records.AddRange(DiagnosticPackage.Trace(package));
+            Console.WriteLine($"report={package.Report:N} role={package.Role} run={package.Run:N} server={package.ServerCapture} " +
+                $"enabled={package.Enabled} evicted={package.EvictedEvents} failedEmissions={package.FailedEmissions} healthSamples={package.Samples.Length}");
+            continue;
+        }
         if (new FileInfo(file).Length > 256 * 1024 * 1024) throw new InvalidDataException("Trace file exceeds 256 MiB analysis limit.");
         foreach (string line in File.ReadLines(file))
         {
@@ -38,6 +50,12 @@ try
     bool loss = false;
     foreach (var run in records.GroupBy(r => r.Run))
     {
+        if (packages.TryGetValue(run.Key, out var package))
+        {
+            loss = true;
+            Console.WriteLine($"run={run.Key:N} evidence=bounded-flight-recorder-window events={run.Count()} evicted={package.EvictedEvents}");
+            continue;
+        }
         var footer = run.Where(r => r.Event.Stage == LatencyStage.TraceSummary).ToArray();
         bool complete = footer.Length == 1 && footer[0].Event.Value == 0 && footer[0].Event.Revision == (ulong)(run.Count() - 1)
             && footer[0].Event.Request == footer[0].Event.Revision;

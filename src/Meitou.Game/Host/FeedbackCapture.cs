@@ -11,6 +11,10 @@ namespace Meitou.Game.Host;
 sealed class FeedbackCapture(GameHost host)
 {
     /// <summary>
+    /// Runtime diagnostics reuse the feedback form while keeping private reports separate from public attachments.
+    /// </summary>
+    readonly GameDiagnosticCapture _diagnostics = new(host);
+    /// <summary>
     /// The next frame is the feedback screenshot (drawn without the menus, the settings and the debug overlays).
     /// </summary>
     internal bool FeedbackShotRequested;
@@ -92,8 +96,30 @@ sealed class FeedbackCapture(GameHost host)
     /// </summary>
     internal void FeedbackAction(MyGuiEvent e)
     {
-        if (e.Action == "feedback-open" && _feedbackNavStage == FeedbackNavStage.None) FeedbackShotRequested = true;
+        if (e.Action == "feedback-open" && _feedbackNavStage == FeedbackNavStage.None)
+        {
+            _diagnostics.Open();
+            FeedbackShotRequested = true;
+        }
         else if (e.Action == "feedback-send") _feedbackSendRequested = true;
+        else if (e.Action == "diagnostic-capture") _diagnostics.Start(host.Player.FeedbackPanel.FeedbackValues(), _feedbackPicture);
+        else if (e.Action == "diagnostic-toggle") ToggleDiagnostics();
+    }
+
+    /// <summary>
+    /// Changes the live collector and persists the shared launcher preference without interrupting gameplay.
+    /// </summary>
+    void ToggleDiagnostics()
+    {
+        if (Meitou.Diagnostics.DiagnosticSession.Current is not { } diagnostics) return;
+        try
+        {
+            diagnostics.SetEnabled(!diagnostics.Recorder.Enabled);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            host.Player.FeedbackPanel.DiagnosticStatus = "Could not change diagnostics: preference storage is unavailable.";
+        }
     }
 
     /// <summary>
@@ -203,6 +229,7 @@ sealed class FeedbackCapture(GameHost host)
     /// </summary>
     internal void HandleFeedback()
     {
+        _diagnostics.Tick();
         if (_feedbackSend is { IsCompleted: true } done)
         {
             _feedbackSend = null;
@@ -227,6 +254,7 @@ sealed class FeedbackCapture(GameHost host)
         _feedbackSendRequested = false;
         if (_feedbackSend is not null || _feedbackNavStage != FeedbackNavStage.None) return;
         var form = host.Player.FeedbackPanel.FeedbackValues();
+        _diagnostics.Start(form, _feedbackPicture);
         host.Config.Save();   // the ticks and Discord name, kept for the next report
         if (form.Navmesh && !_feedbackNavTried && StartFeedbackNav())
         {
@@ -259,6 +287,11 @@ sealed class FeedbackCapture(GameHost host)
         }
         string[] mods = [.. Data.LoadOrder.FromInstall(host.Install).Entries.Select(e => e.Name)];
         string? log = form.Log && File.Exists(GameLog.CurrentPath) ? GameLog.CurrentPath : null;
+        if (_diagnostics.Report != Guid.Empty)
+        {
+            string body = form.Body.Length > 4900 ? form.Body[..4900] : form.Body;
+            form = form with { Body = body + $"\n\nDiagnostic report: {_diagnostics.Report:N} (private attachments)." };
+        }
         var package = new FeedbackPackage(form, BuildVersion.Tag, BuildVersion.Commit, FeedbackSender.Platform(), mods,
             form.Screenshot ? _feedbackPicture : null, form.Navmesh ? _feedbackNavPicture : null, _feedbackLocation, saveFolder, saveWritten, log);
         _feedbackStatus = _feedbackStatusShown = form.Save ? "Saving the game..." : "Sending...";

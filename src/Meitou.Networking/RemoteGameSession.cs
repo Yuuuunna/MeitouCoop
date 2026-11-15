@@ -33,6 +33,10 @@ public sealed class RemoteGameSession : IAsyncDisposable
     readonly NativeGameConnection _connection;
     readonly WorldViewCodec _codec;
     readonly ClientPresentationEventJournal _presentationEvents;
+    /// <summary>
+    /// Bounded operator-requested upload worker; independent of replica application and player commands.
+    /// </summary>
+    readonly ClientDiagnosticTransfer _diagnosticTransfer;
     GameStateReplica? _replica;
     BulkTransferReceiver? _bulk;
     StagedBulkTransfer? _staged;
@@ -58,12 +62,15 @@ public sealed class RemoteGameSession : IAsyncDisposable
     RemoteSessionState _state;
     int _queuedBytes;
     const int MaximumQueuedBytes = 256 * 1024;
-    RemoteGameSession(NativeGameConnection connection, AdmissionMessage admission, WorldViewCodec codec)
+    RemoteGameSession(NativeGameConnection connection, AdmissionMessage admission, WorldViewCodec codec,
+        Func<Guid, DiagnosticScope, CancellationToken, Task<string?>>? diagnosticCapture)
     {
         this._connection = connection;
         this._codec = codec;
         _presentationEvents = new(codec);
         _state = new(1, admission, null, null);
+        var identity = admission.Identity;
+        _diagnosticTransfer = new(connection, new(identity.World, identity.Player.Value, identity.Generation), _lifetime.Token, diagnosticCapture);
     }
 
     public ClientLatencyObserver? LatencyObserver { get; } = LatencyTrace.Sink is { } sink ? new(sink) : null;
@@ -105,6 +112,17 @@ public sealed class RemoteGameSession : IAsyncDisposable
     }
 
     public QuicTransportStatistics TransportStatistics => _connection.Statistics;
+
+    /// <summary>
+    /// Records the latest received/presented tick and cached transport counters for the private incident recorder.
+    /// </summary>
+    public void SampleDiagnostics()
+    {
+        var state = State;
+        var identity = state.Admission.Identity;
+        DiagnosticNetworkCapture.Sample(_connection, new(identity.World, identity.Player.Value, identity.Generation),
+            state.View?.Snapshot.Tick ?? 0, PresentationTick);
+    }
 
     public ulong PresentationClockCorrectionCount
     {
@@ -215,7 +233,9 @@ public sealed class RemoteGameSession : IAsyncDisposable
 
     readonly record struct RequestKey(WireMessage Kind, Guid Query = default, ulong Command = 0);
     static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
-    public static async Task<RemoteGameSession> ConnectAsync(string host, int port, CompatibilityHello hello, AuthenticationRequest credential, WorldViewCodec codec, CancellationToken cancellationToken = default, bool deviceIdentity = false, QuicGameTransportOptions? transportOptions = null)
+    public static async Task<RemoteGameSession> ConnectAsync(string host, int port, CompatibilityHello hello, AuthenticationRequest credential,
+        WorldViewCodec codec, CancellationToken cancellationToken = default, bool deviceIdentity = false, QuicGameTransportOptions? transportOptions = null,
+        Func<Guid, DiagnosticScope, CancellationToken, Task<string?>>? diagnosticCapture = null)
     {
         ArgumentNullException.ThrowIfNull(codec);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -254,7 +274,7 @@ public sealed class RemoteGameSession : IAsyncDisposable
                 throw new AuthenticationException("Server rejected account credentials.");
             if (reply.Kind != WireMessage.Authenticated)
                 throw new InvalidDataException("Expected authenticated admission.");
-            var session = new RemoteGameSession(transport, SessionProtocol.ReadAdmission(reply), codec);
+            var session = new RemoteGameSession(transport, SessionProtocol.ReadAdmission(reply), codec, diagnosticCapture);
             session._writer = Task.Run(session.WriteLoop);
             session._reader = Task.Run(session.ReadLoop);
             session._acknowledger = Task.Run(session.AcknowledgeLoop);
@@ -357,6 +377,12 @@ public sealed class RemoteGameSession : IAsyncDisposable
     public Task<CreationReply> LookupAsync(CreationLookupQuery query, CancellationToken cancellationToken = default) => Request<CreationReply>(new(WireMessage.CreationReply, query.Query), CreationProtocol.Lookup(query), cancellationToken);
     public Task<InvitationReply> InvitationAsync(InvitationRequest query, CancellationToken cancellationToken = default) => Request<InvitationReply>(new(WireMessage.InvitationReply, query.Query), InvitationProtocol.Request(query), cancellationToken);
     public Task<TalkHintReply> TalkHintAsync(TalkHintQuery query, CancellationToken cancellationToken = default) => Request<TalkHintReply>(new(WireMessage.TalkHintReply, query.Query), InteractionProtocol.Query(query), cancellationToken);
+    /// <summary>
+    /// Requests matching server evidence without changing server collection settings or transferring server logs to the client.
+    /// </summary>
+    public Task<DiagnosticReply> CaptureDiagnosticsAsync(Guid report, CancellationToken cancellationToken = default) =>
+        Request<DiagnosticReply>(new(WireMessage.DiagnosticReply, report), DiagnosticProtocol.Request(report), cancellationToken);
+
     Task<T> Request<T>(RequestKey key, WireFrame frame, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -505,6 +531,7 @@ public sealed class RemoteGameSession : IAsyncDisposable
                 }
 
                 var frame = _connection.DecodeControl(message.Payload.Span);
+                if (_diagnosticTransfer.Handle(frame)) continue;
                 lock (_gate)
                 {
                     EnsureConnected();
@@ -628,6 +655,13 @@ public sealed class RemoteGameSession : IAsyncDisposable
                                     LatencyObserver?.NotDispatched(notDispatched.Request);
                             }
 
+                            break;
+                        case WireMessage.DiagnosticReply:
+                            var diagnostic = DiagnosticProtocol.ReadReply(frame);
+                            var identity = _state.Admission.Identity;
+                            if (diagnostic.Scope != new DiagnosticScope(identity.World, identity.Player.Value, identity.Generation))
+                                throw new InvalidDataException("Diagnostic reply belongs to another connection.");
+                            Complete(new(frame.Kind, diagnostic.Report), diagnostic);
                             break;
                         case WireMessage.CommandReceipt:
                             var receipt = CommandProtocol.DecodeReceipt(frame);
@@ -806,6 +840,7 @@ public sealed class RemoteGameSession : IAsyncDisposable
     {
         Stop(new ObjectDisposedException(nameof(RemoteGameSession)));
         await Task.WhenAll(_reader, _writer, _acknowledger).ConfigureAwait(false);
+        await _diagnosticTransfer.DisposeAsync().ConfigureAwait(false);
         try
         {
             await _connection.DisposeAsync().ConfigureAwait(false);

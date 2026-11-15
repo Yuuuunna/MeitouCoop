@@ -125,6 +125,8 @@ public sealed class ServerWorldLoop : IAsyncDisposable
 
                 double workMs = Stopwatch.GetElapsedTime(now, tickStarted).TotalMilliseconds;
                 double tickMs = Stopwatch.GetElapsedTime(tickStarted).TotalMilliseconds;
+                Meitou.Diagnostics.DiagnosticSession.Current?.ServerPass(_runtime.World.Tick, workMs, tickMs,
+                    _work.Reader.Count, _runtime.PendingGameSeconds);
                 if (workMs >= 500 || tickMs >= 500)
                     Console.WriteLine($"server    {DateTime.UtcNow:O} slow owner pass: workMs={workMs:F0} tickMs={tickMs:F0} tick={_runtime.World.Tick} debtSeconds={_runtime.PendingGameSeconds:F2}");
             }

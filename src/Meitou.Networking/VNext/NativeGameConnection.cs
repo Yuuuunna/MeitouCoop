@@ -236,7 +236,8 @@ public sealed class NativeGameConnection : IAsyncDisposable
                 if (frame.SessionEpoch != 0 || frame.ViewEpoch != 0)
                     throw new InvalidDataException("Epoch preceded authentication.");
             }
-            else if (frame.SessionEpoch != _controlSession || frame.ViewEpoch == 0 || frame.ViewEpoch > _controlView || (!_endpoint.IsServer && frame.ViewEpoch != _controlView))
+            else if (frame.SessionEpoch != _controlSession || frame.ViewEpoch == 0 ||
+                !DiagnosticTransferProtocol.IsControl(frame.Kind) && (frame.ViewEpoch > _controlView || !_endpoint.IsServer && frame.ViewEpoch != _controlView))
                 throw new InvalidDataException("Control epoch mismatch.");
         }
 

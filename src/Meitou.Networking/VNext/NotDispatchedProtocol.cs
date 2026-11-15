@@ -14,6 +14,7 @@ public sealed record OperationNotDispatched(WireMessage Kind, Guid Query, ulong 
         WireMessage.CreationCatalogQuery or WireMessage.CreationPreview or WireMessage.CreationCommit or WireMessage.CreationLookup => WireMessage.CreationReply,
         WireMessage.InvitationRequest => WireMessage.InvitationReply,
         WireMessage.TalkHintQuery => WireMessage.TalkHintReply,
+        WireMessage.DiagnosticCapture => WireMessage.DiagnosticReply,
         _ => Kind,
     };
 }
@@ -33,6 +34,7 @@ public static class NotDispatchedProtocol
             WireMessage.CreationLookup => new(request.Kind, CreationProtocol.ReadLookup(request).Query, 0, NotDispatchedReason.StaleView),
             WireMessage.InvitationRequest => new(request.Kind, InvitationProtocol.ReadRequest(request).Query, 0, NotDispatchedReason.StaleView),
             WireMessage.TalkHintQuery => new(request.Kind, InteractionProtocol.ReadQuery(request).Query, 0, NotDispatchedReason.StaleView),
+            WireMessage.DiagnosticCapture => new(request.Kind, DiagnosticProtocol.ReadRequest(request), 0, NotDispatchedReason.StaleView),
             _ => throw new InvalidDataException("Unexpected stale request kind."),
         };
         byte[] bytes = new byte[27];
@@ -58,7 +60,7 @@ public static class NotDispatchedProtocol
         {
             WireMessage.Command or WireMessage.EnterWorld => value.Request != 0 && value.Query == Guid.Empty,
             WireMessage.Observe => value.Request == 0 && value.Query == Guid.Empty,
-            WireMessage.CreationCatalogQuery or WireMessage.CreationPreview or WireMessage.CreationCommit or WireMessage.CreationLookup or WireMessage.InvitationRequest or WireMessage.TalkHintQuery => value.Query != Guid.Empty && value.Request == 0,
+            WireMessage.CreationCatalogQuery or WireMessage.CreationPreview or WireMessage.CreationCommit or WireMessage.CreationLookup or WireMessage.InvitationRequest or WireMessage.TalkHintQuery or WireMessage.DiagnosticCapture => value.Query != Guid.Empty && value.Request == 0,
             _ => false,
         };
         if (!valid || value.Reason != NotDispatchedReason.StaleView)

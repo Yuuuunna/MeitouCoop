@@ -32,6 +32,14 @@ public readonly record struct LatencyTraceEvent(
 /// <summary>Implementations must be nonblocking and must not call gameplay code.</summary>
 public interface ILatencyTraceSink
 {
+    /// <summary>
+    /// Dynamic collection gate; existing always-on sinks need no implementation change.
+    /// </summary>
+    bool Enabled => true;
+    /// <summary>
+    /// Changes when a runtime switch invalidates unfinished diagnostic correlations.
+    /// </summary>
+    long Epoch => 0;
     void Emit(in LatencyTraceEvent value);
 }
 
@@ -43,7 +51,7 @@ public static class LatencyTrace
 
     public static void Emit(ILatencyTraceSink? sink, in LatencyTraceEvent value)
     {
-        if (sink is null) return;
+        if (sink is not { Enabled: true }) return;
         // Diagnostics must not fault authority, transport or presentation, even for a broken custom sink.
         try { sink.Emit(value.Timestamp == 0 ? value with { Timestamp = Stopwatch.GetTimestamp() } : value); }
         catch { Interlocked.Increment(ref s_failed); }

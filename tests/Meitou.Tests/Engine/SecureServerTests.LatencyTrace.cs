@@ -1,7 +1,11 @@
 using System.Diagnostics;
 using System.Numerics;
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using Meitou.Diagnostics;
 using Meitou.Game.Host;
+using Meitou.Networking;
 using Meitou.Simulation;
 using Meitou.Simulation.Movement;
 
@@ -13,6 +17,102 @@ public sealed class LatencyTraceCollection;
 [Collection("LatencyTrace")]
 public partial class SecureServerTests
 {
+    /// <summary>
+    /// Operator collection returns multi-chunk client logs over native QUIC, records disabled peers and keeps admission messages usable.
+    /// </summary>
+    [Fact]
+    public async Task OperatorDiagnosticBatchCollectsOnlineClientPackagesAndRuntimeLogs()
+    {
+        await using var scene = new Scene();
+        using var diagnostics = new DiagnosticSession("server", "test", Path.Combine(scene.Root, "diagnostics"));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        byte[] log = Encoding.UTF8.GetBytes("test runtime log\n" + Convert.ToHexString(RandomNumberGenerator.GetBytes(180_000)));
+        Task<string?> Capture(Guid report, DiagnosticScope scope, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var recorder = new DiagnosticRecorder { Enabled = true };
+            var snapshot = recorder.Capture(report, Guid.NewGuid(), "client", "test", scope, "server-requested") with { RuntimeLogStatus = "sanitized" };
+            var store = new DiagnosticStore(Path.Combine(scene.Root, "client-" + scope.Connection));
+            return Task.FromResult<string?>(store.Save(snapshot, runtimeLog: log));
+        }
+
+        Task<RemoteGameSession> Connect(int index, Func<Guid, DiagnosticScope, CancellationToken, Task<string?>> capture)
+        {
+            var credential = scene.Actors[index].Credential;
+            return RemoteGameSession.ConnectAsync("127.0.0.1", scene.Server.Endpoint.Port, Hello(), new(credential.Account, credential.Token),
+                new(scene.Data.Db), timeout.Token, transportOptions: NativeFixture.Options(scene.Certificate), diagnosticCapture: capture);
+        }
+
+        await using var first = await Connect(0, Capture);
+        await using var second = await Connect(1, Capture);
+        await using var disabled = await Connect(2, (_, _, _) => Task.FromResult<string?>(null));
+        first.RequestEntry(scene.Actors[0].Grant.Entity);
+        await WaitRemote(first, state => state.CanControl, timeout.Token);
+        Assert.True(await Meitou.Server.ServerDiagnosticConsole.ExecuteAsync("diagnostics collect-all", diagnostics, scene.Server.Diagnostics, timeout.Token));
+        Assert.False(scene.Server.Diagnostics.Start(diagnostics, timeout.Token));
+        first.RequestBaseline();
+        first.RefreshAdmission();
+        second.RefreshAdmission();
+        var batch = await scene.Server.Diagnostics.Completion!.WaitAsync(timeout.Token);
+        Assert.Equal(3, batch.Players.Length);
+        Assert.Equal(2, batch.Players.Count(p => p.Status == "Saved"));
+        Assert.Equal("Disabled", Assert.Single(batch.Players, p => p.Scope.Connection == disabled.State.Admission.Identity.Player.Value).Status);
+        string folder = Path.Combine(diagnostics.Store.Root, "batches", batch.Report.ToString("N"));
+        Assert.True(File.Exists(Path.Combine(folder, "server.zip")));
+        Assert.True(File.Exists(Path.Combine(folder, "batch.json")));
+        foreach (var peer in batch.Players.Where(p => p.Status == "Saved")) VerifyBatchPackage(folder, peer, batch.Report, log);
+        Assert.Null(first.State.Disconnection);
+        Assert.Null(second.State.Disconnection);
+        await WaitRemote(first, state => state.CanControl, timeout.Token);
+    }
+
+    /// <summary>
+    /// Verifies the stored manifest's authenticated scope and exact runtime-log bytes after a multi-chunk transfer.
+    /// </summary>
+    static void VerifyBatchPackage(string folder, Meitou.Server.DiagnosticPeerCapture peer, Guid report, byte[] log)
+    {
+        string path = Path.Combine(folder, peer.File!);
+        Assert.True(new FileInfo(path).Length > DiagnosticTransferProtocol.ChunkBytes * 2);
+        var package = DiagnosticPackage.Read(path);
+        Assert.Equal(report, package.Report);
+        Assert.Equal(peer.Scope, package.Scope);
+        using var zip = ZipFile.OpenRead(path);
+        using var runtime = zip.GetEntry("runtime.log")!.Open();
+        using var bytes = new MemoryStream();
+        runtime.CopyTo(bytes);
+        Assert.Equal(log, bytes.ToArray());
+    }
+
+    /// <summary>
+    /// Real authenticated QUIC requests retain separate scopes and cannot enable disabled server collection.
+    /// </summary>
+    [Fact]
+    public async Task DiagnosticCapturePairsAuthenticatedConnectionsAndHonorsServerSwitch()
+    {
+        await using var scene = new Scene();
+        using var diagnostics = new DiagnosticSession("server", "test", Path.Combine(scene.Root, "diagnostics"));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        await using var first = await ConnectRemote(scene, scene.Actors[0].Credential, timeout.Token);
+        await using var second = await ConnectRemote(scene, scene.Actors[1].Credential, timeout.Token);
+        Guid report = Guid.NewGuid();
+        var a = await first.CaptureDiagnosticsAsync(report, timeout.Token);
+        var b = await second.CaptureDiagnosticsAsync(report, timeout.Token);
+        Assert.Equal(Meitou.Networking.DiagnosticCaptureStatus.Saved, a.Status);
+        Assert.Equal(Meitou.Networking.DiagnosticCaptureStatus.Saved, b.Status);
+        Assert.NotEqual(a.Scope.Connection, b.Scope.Connection);
+        Assert.Equal(2, diagnostics.Store.Pending().Length);
+        Assert.Equal(a, await first.CaptureDiagnosticsAsync(report, timeout.Token));
+        Assert.Equal(2, diagnostics.Store.Pending().Length);
+
+        diagnostics.SetEnabled(false);
+        var disabled = await first.CaptureDiagnosticsAsync(Guid.NewGuid(), timeout.Token);
+        Assert.Equal(Meitou.Networking.DiagnosticCaptureStatus.Disabled, disabled.Status);
+        Assert.False(diagnostics.Recorder.Enabled);
+        Assert.Equal(2, diagnostics.Store.Pending().Length);
+    }
+
     sealed class LatencySink : ILatencyTraceSink
     {
         readonly Lock _gate = new();

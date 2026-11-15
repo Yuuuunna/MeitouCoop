@@ -11,8 +11,9 @@ Measured baseline and its limits: [networking](networking.md#local-latency-accep
 Every sampled intent has `(world, opaque connection subject, connection generation, request)`; each controlled entity adds its
 stable entity ID. Publications, path-service incarnation/request and rendered frame have separate IDs.
 Trace process/run IDs disambiguate restarts. Emit opaque IDs and numeric outcomes, not credentials,
-names, inventories, position dumps or input text. Tracing is opt-in, bounded, off the owner-thread IO
-path and never changes command ordering, RNG, hashes, persistence, scheduling or admission.
+names, inventories, position dumps or input text. Explicit trace files are opt-in; bounded player-test incident capture uses the
+[runtime diagnostic switches](diagnostics.md) and defaults on. Both keep IO off the owner thread and never change command ordering,
+RNG, hashes, persistence, scheduling or admission.
 
 | Stage | Required evidence |
 |---|---|

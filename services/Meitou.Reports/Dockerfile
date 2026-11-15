@@ -10,7 +10,7 @@ RUN dotnet restore services/Meitou.Reports/Meitou.Reports.csproj -r linux-x64
 COPY services/Meitou.Reports/ services/Meitou.Reports/
 RUN dotnet publish services/Meitou.Reports/Meitou.Reports.csproj -c Release -r linux-x64 -o /out --no-restore
 # The feedback attachments' folder, owned by the app user: a volume mounted on /data starts as a copy of it.
-RUN mkdir -p /data/feedback
+RUN mkdir -p /data/feedback /data/diagnostics
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:11.0-resolute-chiseled
 WORKDIR /app

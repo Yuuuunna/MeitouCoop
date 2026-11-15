@@ -34,7 +34,7 @@ public static class ServerCompatibility
     /// Both endpoints must accept the upstream mod meters, skills, bone meshes, power details and editor-session open notifications.
     /// Discovery metadata is opaque to older clients, so their own build identity must reject admission.
     /// </summary>
-    public const string EngineBuild = "meitou-upstream-704cc1ec-authority-1";
+    public const string EngineBuild = "meitou-upstream-704cc1ec-authority-1-diagnostics-2";
     // Hash without loading DLLs: connecting never grants permission to execute installed code.
     public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
     {

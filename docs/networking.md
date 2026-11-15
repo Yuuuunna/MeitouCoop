@@ -12,7 +12,7 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-704cc1ec-authority-1`; both endpoints require the same mod-presentation components and
+The current identity is `meitou-upstream-704cc1ec-authority-1-diagnostics-2`; both endpoints require the [diagnostic control messages](diagnostics.md), mod-presentation components and
 editor-open command, in addition to the presentation-event and bounty contracts in [networking-next](networking-next.md).
 Ground-item material IDs and optional blood-event attacker IDs
 travel with their existing state/event components. Attacker IDs are removed when that recipient cannot see the attacker.

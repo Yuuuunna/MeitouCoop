@@ -8,6 +8,9 @@ items); the launcher never downloads or hosts mods.
 
 ## Coop client selection and connections
 
+Runtime diagnostic switches, local incident/recovery ZIP export and private submission retries are in the Coop page's Diagnostics panel;
+see [diagnostics](diagnostics.md) for storage, collector configuration and retention.
+
 **Observed** (source): Play explicitly selects **Installed release** or **Local client** in Debug and Release. Choose a local folder/executable;
 **Find checkout build** finds an existing Release, then Debug build after an explicit click. Missing local clients never fall back to installed
 versions. `GameTarget` supplies the executable, graphics schema, hardware probe and log path to every action. Local **Refresh client** runs

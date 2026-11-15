@@ -45,6 +45,8 @@ static class Program
         if (args is [HardwareProbeFlag, var report]) return HardwareProbe.Write(report);
         GameConsole.StartLog();
         using var latency = Meitou.Diagnostics.LatencyTraceSession.FromEnvironment();
+        using var diagnostics = new Meitou.Diagnostics.DiagnosticSession("client", BuildVersion.Tag + "/" + BuildVersion.Commit,
+            Meitou.Diagnostics.DiagnosticStore.ClientRoot) { RuntimeLogPath = GameLog.CurrentPath };
         RenderJobs.RaiseRenderThread();
         GameOptions game;
         string[] rest;

@@ -20,6 +20,7 @@ static class Program
         --run-for-seconds <seconds> Graceful bounded run for manual startup checks.
         --help                     Show this help without loading game content.
         Stop with Ctrl+C or enter stop. Save immediately by entering save.
+        Runtime diagnostics: diagnostics on | off | status | capture | collect-all.
         Set KENSHI_PATH or meitou.local.json to locate licensed original content.
         This is an experimental real-machine package, not a completed multiplayer acceptance release.
         """;
@@ -63,6 +64,9 @@ static class Program
                 throw new ArgumentException("--output requires --create-account.");
             var config = ServerConfiguration.Load(configFile);
             Directory.CreateDirectory(config.DataDirectory);
+            using var diagnostics = new Meitou.Diagnostics.DiagnosticSession("server", ServerCompatibility.EngineBuild,
+                Path.Combine(config.DataDirectory, "diagnostics"));
+            using var diagnosticUploads = new Meitou.Diagnostics.DiagnosticUploadWorker(diagnostics.Store);
             using var certificate = ServerCertificate.Open(config.DataDirectory, config.AdvertisedHost);
             var install = GameInstall.Locate() ?? throw new DirectoryNotFoundException("Kenshi installation was not found. Set KENSHI_PATH or meitou.local.json.");
             Console.WriteLine("Meitou experimental server: computing local compatibility manifest.");
@@ -179,6 +183,7 @@ static class Program
                             break;
                         }
 
+                        if (await ServerDiagnosticConsole.ExecuteAsync(line, diagnostics, handler.Diagnostics, stop.Token).ConfigureAwait(false)) continue;
                         if (line.Trim().Equals("save", StringComparison.OrdinalIgnoreCase))
                             await Save().ConfigureAwait(false);
                     }

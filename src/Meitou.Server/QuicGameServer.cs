@@ -54,6 +54,10 @@ public sealed class QuicGameServer : IAsyncDisposable
     public Task Completion { get; }
     public IPEndPoint Endpoint { get; }
     public int ActiveConnections => _peers.Count;
+    /// <summary>
+    /// Authenticated online diagnostic registry; unauthenticated sockets are excluded.
+    /// </summary>
+    public ServerDiagnosticCollection Diagnostics => _handler.Diagnostics;
     public long RejectedConnections => Interlocked.Read(ref _rejected);
     public long FailedConnections => Interlocked.Read(ref _failures);
     public string? LastFailureType { get; private set; }
@@ -139,6 +143,7 @@ public sealed class QuicGameServer : IAsyncDisposable
         try
         {
             await Completion.ConfigureAwait(false);
+            if (Diagnostics.Completion is { } collection) await collection.ConfigureAwait(false);
         }
         finally
         {

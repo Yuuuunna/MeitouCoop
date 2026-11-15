@@ -39,6 +39,10 @@ public sealed class SecureServerPeer
     readonly ServerCreationEndpoint? _creation;
     readonly ServerInvitationEndpoint? _invitations;
     readonly ServerInformation? _information;
+    /// <summary>
+    /// Authenticated online connections available to the operator's collect-all command.
+    /// </summary>
+    public ServerDiagnosticCollection Diagnostics { get; } = new();
     public SecureServerPeer(ServerWorldLoop loop, ServerAccountSessions sessions, CompatibilityHello hello, WorldViewCodec codec, Func<AuthorityConnection, EntityId, CancellationToken, Task<bool>> prepareEntry, ServerPeerOptions? options = null, ServerCreationEndpoint? creation = null, ServerInvitationEndpoint? invitations = null, ServerInformation? information = null)
     {
         this._loop = loop;
@@ -173,6 +177,10 @@ public sealed class SecureServerPeer
                 transport.SetControlEpoch(sessionEpoch, viewEpoch);
                 PlayerViewRequest observation = new();
                 await Send([await Status(authenticated: true).ConfigureAwait(false)], stop.Token).ConfigureAwait(false);
+                using var diagnosticPeer = Diagnostics.Register(
+                    new(session.Connection.World, session.Connection.Player.Value, session.Connection.Generation), transport);
+                var diagnostics = new ServerDiagnosticCapture(DiagnosticSession.Current,
+                    new(session.Connection.World, session.Connection.Player.Value, session.Connection.Generation));
                 var incoming = Channel.CreateBounded<WireFrame>(new BoundedChannelOptions(64) { SingleReader = true, SingleWriter = true });
                 long queuedBytes = 0;
                 var ackGate = new object ();
@@ -206,6 +214,10 @@ public sealed class SecureServerPeer
 
                     switch (frame.Kind)
                     {
+                        case WireMessage.DiagnosticCapture:
+                            var diagnostic = await diagnostics.CaptureAsync(DiagnosticProtocol.ReadRequest(frame)).ConfigureAwait(false);
+                            transport.SendControl(DiagnosticProtocol.Reply(diagnostic));
+                            break;
                         case WireMessage.TalkHintQuery:
                             var query = InteractionProtocol.ReadQuery(frame);
                             var hint = await _loop.InvokeAsync(() => source.Authority.QueryTalk(session.Connection, query.Speaker, query.Target, new(session.Connection.Player, query.Grant.Entity, query.Grant.Faction, query.Grant.Revision), query.MembershipRevision, observation, _options.Observation), stop.Token).ConfigureAwait(false);
@@ -423,7 +435,21 @@ public sealed class SecureServerPeer
                     {
                         while (!stop.IsCancellationRequested)
                         {
-                            var frame = await transport.ReadControlAsync(stop.Token).ConfigureAwait(false);
+                            var input = await transport.ReadAsync(stop.Token).ConfigureAwait(false);
+                            if (input.Lane == QuicLane.Bulk)
+                            {
+                                SpendInputBudget(input.Payload.Length + 4);
+                                diagnosticPeer.ReceiveChunk(input.Payload);
+                                continue;
+                            }
+                            if (input.Lane != QuicLane.Control) throw new InvalidDataException("Unexpected client upload lane.");
+                            var frame = transport.DecodeControl(input.Payload.Span);
+                            if (frame.Kind == WireMessage.DiagnosticOffer)
+                            {
+                                SpendInputBudget(frame.Payload.Length + 12);
+                                diagnosticPeer.ReceiveOffer(frame);
+                                continue;
+                            }
                             LatencyFrameTrace.Command(frame, new(session.Connection.World, session.Connection.Player, session.Connection.Generation), Meitou.Diagnostics.LatencyStage.ServerFrameReceived);
                             if (frame.Kind is WireMessage.BulkAck or WireMessage.BulkManifestAck or WireMessage.MotionCheckpointAck or WireMessage.ViewReady)
                             {
@@ -450,13 +476,7 @@ public sealed class SecureServerPeer
                                 continue;
                             }
 
-                            long now = Stopwatch.GetTimestamp();
-                            double elapsed = Stopwatch.GetElapsedTime(lastInput, now).TotalSeconds;
-                            lastInput = now;
-                            messages = Math.Min(_options.MessagesPerSecond, messages + elapsed * _options.MessagesPerSecond) - 1;
-                            bytes = Math.Min(_options.BytesPerSecond, bytes + elapsed * _options.BytesPerSecond) - frame.Payload.Length - 12;
-                            if (messages < 0 || bytes < 0)
-                                throw new InvalidDataException("Connection input budget exceeded.");
+                            SpendInputBudget(frame.Payload.Length + 12);
                             if (Interlocked.Add(ref queuedBytes, frame.Payload.Length + 12) > 4 * WireFrame.MaximumPayload || !incoming.Writer.TryWrite(frame))
                                 throw new InvalidDataException("Connection input queue exceeded.");
                         }
@@ -465,6 +485,16 @@ public sealed class SecureServerPeer
                     {
                         incoming.Writer.TryComplete();
                         stop.Cancel();
+                    }
+
+                    void SpendInputBudget(int length)
+                    {
+                        long now = Stopwatch.GetTimestamp();
+                        double elapsed = Stopwatch.GetElapsedTime(lastInput, now).TotalSeconds;
+                        lastInput = now;
+                        messages = Math.Min(_options.MessagesPerSecond, messages + elapsed * _options.MessagesPerSecond) - 1;
+                        bytes = Math.Min(_options.BytesPerSecond, bytes + elapsed * _options.BytesPerSecond) - length;
+                        if (messages < 0 || bytes < 0) throw new InvalidDataException("Connection input budget exceeded.");
                     }
                 }
 
@@ -702,6 +732,8 @@ public sealed class SecureServerPeer
 
                                 var encodingPublisher = publisher ?? throw new InvalidOperationException("Missing component publisher.");
                                 var publicationTrace = new LatencyTraceEvent(LatencyStage.EncodeStarted, capturedView.World, capturedView.Player.Value, capturedView.ConnectionGeneration, Publication: capturedView.Publication, Tick: capturedView.Snapshot.Tick);
+                                DiagnosticNetworkCapture.Sample(transport,
+                                    new(capturedView.World, capturedView.Player.Value, capturedView.ConnectionGeneration), capturedView.Snapshot.Tick, 0);
                                 LatencyTrace.Emit(LatencyTrace.Sink, publicationTrace);
                                 var publications = await Task.Run<IReadOnlyList<(GameStatePublication Publication, bool Critical)>>(() =>
                                 {

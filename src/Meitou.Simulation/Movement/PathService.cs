@@ -196,7 +196,7 @@ public sealed class PathService : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         long id = Interlocked.Increment(ref _nextId);
         var request = new PathRequest(id, character, from, to, radius, water, roadPreference);
-        if (observeLatency && TraceSink is not null)
+        if (observeLatency && TraceSink is { Enabled: true })
         {
             if (_traced.Count < 4096) _traced.TryAdd(id, 0);
             else LatencyTrace.Emit(TraceSink, new(LatencyStage.Terminal, PathService: TraceIncarnation, Path: id, Outcome: LatencyOutcome.Capacity));

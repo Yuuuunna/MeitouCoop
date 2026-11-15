@@ -21,6 +21,7 @@
     <ProjectReference Include="../../src/Meitou.Game/Meitou.Game.csproj" />
     <ProjectReference Include="../../src/Meitou.Server/Meitou.Server.csproj" />
     <ProjectReference Include="../../launcher/Meitou.Launcher/Meitou.Launcher.csproj" />
+    <ProjectReference Include="../../services/Meitou.Reports/Meitou.Reports.csproj" />
   </ItemGroup>
 
   <!-- The Metal tests compile where the game's Metal backend does (MeitouMetal, Directory.Build.props). -->

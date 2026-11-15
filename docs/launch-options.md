@@ -6,6 +6,10 @@ Settings persist in `meitou.user.json`. The install is found in this order: `KEN
 
 An option that belongs to another executable is rejected as unknown (exit 2).
 
+Player-test diagnostics: `MEITOU_DIAGNOSTICS_DIRECTORY` overrides the client/launcher diagnostic root;
+`MEITOU_DIAGNOSTICS_URL` selects an explicit private HTTPS collector for client/launcher/server. Server diagnostic files remain under
+its configured data directory. Runtime switches, collector service variables and retention: [diagnostics](diagnostics.md).
+
 ## Game (`meitou`, MeitouClient.exe)
 
 Authority: `src/Meitou.Game/Host/GameOptions.cs` (`Split`, `Usage`), `src/Meitou.Game/Host/Program.cs`. Options not taken here go to the shared world options. Help: `-h` / `--help`.

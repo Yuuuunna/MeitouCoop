@@ -171,6 +171,11 @@ sealed class FeedbackPanel(PlayerInterface player)
     /// </summary>
     public string? FeedbackNewer { get; set; }
 
+    /// <summary>
+    /// Durable private report status, independent of the public feedback request.
+    /// </summary>
+    public string DiagnosticStatus { get; set; } = "Enabled diagnostics can be collected by your connected server. Manual uploads use a configured private collector.";
+
     #endregion
 
     #region Layouts
@@ -187,7 +192,7 @@ sealed class FeedbackPanel(PlayerInterface player)
     /// </summary>
     internal static MyGuiLayout FeedbackLayout()
     {
-        const double oldHeight = 0.62, height = 0.66, row = 0.055;
+        const double oldHeight = 0.62, height = 0.82, row = 0.055;
         static string F(double old) => (old * oldHeight / height).ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
         static string Tick(string tick, double y) =>
             $"""
@@ -215,6 +220,9 @@ sealed class FeedbackPanel(PlayerInterface player)
                 <Widget type="TextBox" skin="Kenshi_TextboxStandardText" position_real="0.03 {F(0.8 + row)} 0.94 {F(0.085)}" name="StatusText"><Property key="WordWrap" value="true"/><Property key="TextAlign" value="Left Top"/></Widget>
                 <Widget type="Button" skin="Kenshi_Button1" position_real="0.53 {F(0.895 + row)} 0.215 {F(0.08)}" name="SendButton"><Property key="DefaultAction" value="true"/></Widget>
                 <Widget type="Button" skin="Kenshi_Button1" position_real="0.765 {F(0.895 + row)} 0.215 {F(0.08)}" name="CancelButton"/>
+                <Widget type="Button" skin="Kenshi_Button1" position_real="0.03 {F(1.04)} 0.45 {F(0.075)}" name="DiagnosticsToggle"/>
+                <Widget type="Button" skin="Kenshi_Button1" position_real="0.52 {F(1.04)} 0.45 {F(0.075)}" name="DiagnosticsCapture"/>
+                <Widget type="TextBox" skin="Kenshi_TextboxStandardText" position_real="0.03 {F(1.13)} 0.94 {F(0.16)}" name="DiagnosticsStatus"><Property key="WordWrap" value="true"/><Property key="TextAlign" value="Left Top"/></Widget>
               </Widget>
             </MyGUI>
             """);
@@ -359,6 +367,11 @@ sealed class FeedbackPanel(PlayerInterface player)
         if (_feedbackStatusError || old) b.Properties["StatusText"] = new Dictionary<string, string> { ["TextColour"] = PlayerInterface.BadColour };
         b.Text["SendButton"] = FrontendScreens.UpperCaption(FeedbackSending ? "Sending" : "Send");
         b.Text["CancelButton"] = FrontendScreens.UpperCaption("Close");
+        bool diagnosticsOn = Meitou.Diagnostics.DiagnosticSession.Current?.Recorder.Enabled == true;
+        b.Text["DiagnosticsToggle"] = diagnosticsOn ? "DIAGNOSTICS: ON" : "DIAGNOSTICS: OFF";
+        b.Text["DiagnosticsCapture"] = "COLLECT REPORT";
+        b.Text["DiagnosticsStatus"] = DiagnosticStatus;
+        Enable("DiagnosticsToggle", "DiagnosticsCapture");
         Enable("CancelButton", FeedbackLogTick, FeedbackDiscordTick);
         if (!FeedbackSending && player.FaithfulScreens.GetText(FeedbackScreen, FeedbackTitleBox).Trim().Length > 0) Enable("SendButton");
         if (_feedbackHasShot) Enable(FeedbackShotTick);
@@ -379,6 +392,8 @@ sealed class FeedbackPanel(PlayerInterface player)
     {
         if (e.Action != "text") player.InterfaceSounds.Sound("General_Click");
         if (e.Widget == "CancelButton") player.FaithfulScreens.Close(FeedbackScreen);
+        else if (e.Widget == "DiagnosticsToggle") player.RaiseScreenAction(new(FeedbackScreen, e.Widget, "diagnostic-toggle"));
+        else if (e.Widget == "DiagnosticsCapture") player.RaiseScreenAction(new(FeedbackScreen, e.Widget, "diagnostic-capture"));
         else if (e.Widget == FeedbackShotTick) FeedbackPrefs.Screenshot = !FeedbackPrefs.Screenshot;
         else if (e.Widget == FeedbackNavTick) FeedbackPrefs.Navmesh = !FeedbackPrefs.Navmesh;
         else if (e.Widget == FeedbackSaveTick) FeedbackPrefs.Save = !FeedbackPrefs.Save;

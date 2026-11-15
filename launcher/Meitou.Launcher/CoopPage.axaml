@@ -1,5 +1,6 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Meitou.Launcher"
              x:Class="Meitou.Launcher.CoopPage">
   <DockPanel>
     <Border DockPanel.Dock="Top" Classes="header" Margin="0,0,0,10">
@@ -44,6 +45,7 @@
           </StackPanel>
         </Border>
         <TextBlock x:Name="ProblemText" Classes="desc" TextWrapping="Wrap" />
+        <Border Classes="row"><local:DiagnosticsPanel /></Border>
       </StackPanel>
     </ScrollViewer>
   </DockPanel>

@@ -12,6 +12,24 @@ public sealed class ClientLatencyObserver(ILatencyTraceSink sink)
     const int Capacity = 4096;
     readonly Lock _gate = new();
     readonly Dictionary<ulong, Sample> _samples = [];
+    /// <summary>
+    /// Last observed runtime switch generation; unfinished requests do not span disabled intervals.
+    /// </summary>
+    long _epoch;
+
+    /// <summary>
+    /// Clears stale diagnostic state before admitting work after a runtime switch.
+    /// </summary>
+    bool Collecting()
+    {
+        if (_epoch != sink.Epoch)
+        {
+            _samples.Clear();
+            _epoch = sink.Epoch;
+        }
+
+        return sink.Enabled;
+    }
     void Emit(LatencyTraceEvent value) => LatencyTrace.Emit(sink, value with { Endpoint = LatencyEndpoint.Client });
     sealed class Sample(LatencyTraceEvent key, CharacterId character, Vector3 start)
     {
@@ -30,6 +48,7 @@ public sealed class ClientLatencyObserver(ILatencyTraceSink sink)
 
     void IntentCore(ReplicationIdentity identity, ulong request, SimCommand command, ExpectedCommandAuthority expected, PlayerWorldView? view)
     {
+        if (!Collecting()) return;
         var key = new LatencyTraceEvent(LatencyStage.Intent, identity.World, identity.Player.Value, identity.Generation, request, Tick: view?.Snapshot.Tick ?? 0);
         if (command is not MoveOrder)
             return;
@@ -62,6 +81,7 @@ public sealed class ClientLatencyObserver(ILatencyTraceSink sink)
 
     void PublicationAppliedCore(PlayerWorldView view, Func<CharacterId, (ulong Publication, long Tick, ulong PacketSequence)?>? motionSource)
     {
+        if (!Collecting()) return;
         Emit(new(LatencyStage.PublicationApplied, view.World, view.Player.Value, view.ConnectionGeneration, Publication: view.Publication, Tick: view.Snapshot.Tick));
         foreach (var sample in _samples.Values)
         {
@@ -92,6 +112,7 @@ public sealed class ClientLatencyObserver(ILatencyTraceSink sink)
 
     void RendererRootSubmittedCore(PlayerWorldView source, CharacterId character, Vector3 root, long frame, double presentationTick, ulong packetSequence)
     {
+        if (!Collecting()) return;
         var role = source.Roles.FirstOrDefault(r => r.Character == character);
         if (role is null || !_samples.TryGetValue(role.Entity.Value, out var sample) || !sample.Received || root == sample.Start)
             return;
@@ -109,6 +130,7 @@ public sealed class ClientLatencyObserver(ILatencyTraceSink sink)
 
     void ReceiptCore(ReplicationIdentity identity, AuthorityReceipt receipt)
     {
+        if (!Collecting()) return;
         Emit(new(LatencyStage.ReceiptReceived, identity.World, identity.Player.Value, identity.Generation, receipt.Request, Tick: receipt.Tick, Revision: receipt.Revision, Value: (long)receipt.Status));
         if (receipt.Status == AuthorityStatus.Evaluated)
             return;

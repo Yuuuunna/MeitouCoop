@@ -15,6 +15,26 @@ public sealed class MovementTraceObserver : IDisposable
     readonly Dictionary<int, Sample> _active = [];
     readonly Dictionary<ulong, LatencyTraceEvent> _executing = [];
     LatencyTraceEvent _context;
+    /// <summary>
+    /// Switch generation fences diagnostic samples across runtime enable/disable transitions.
+    /// </summary>
+    long _epoch;
+
+    /// <summary>
+    /// Skips optional observation while disabled and clears stale correlations after any switch.
+    /// </summary>
+    bool Collecting()
+    {
+        if (_epoch != _sink.Epoch)
+        {
+            _active.Clear();
+            _executing.Clear();
+            _context = default;
+            _epoch = _sink.Epoch;
+        }
+
+        return _sink.Enabled;
+    }
 
     sealed class Sample(LatencyTraceEvent key, CharacterId character, Vector3 start, bool stationary)
     {
@@ -40,6 +60,7 @@ public sealed class MovementTraceObserver : IDisposable
 
     internal void Begin(AuthorityConnection connection, ulong request, SimCommand command, AuthorityContext authority)
     {
+        if (!Collecting()) return;
         _context = Key(connection, request); Emit(_context);
         _executing.Clear();
         if (command is not MoveOrder) return;
@@ -53,6 +74,7 @@ public sealed class MovementTraceObserver : IDisposable
 
     internal void End()
     {
+        if (!Collecting()) return;
         foreach (var key in _executing.Values)
         {
             Emit(key with { Stage = LatencyStage.MovementDeferred, Outcome = LatencyOutcome.Deferred });
@@ -63,6 +85,7 @@ public sealed class MovementTraceObserver : IDisposable
 
     internal void GoTo(int slot)
     {
+        if (!Collecting()) return;
         if (_active.Remove(slot, out var old) && !old.Moved) Terminal(old, LatencyOutcome.Superseded);
         var table = _world.Characters;
         var cold = table.Cold(slot)!;
@@ -82,12 +105,13 @@ public sealed class MovementTraceObserver : IDisposable
 
     internal void PathQueued(int slot, PathService paths, long path)
     {
+        if (!Collecting()) return;
         if (!_active.TryGetValue(slot, out var sample) || sample.Moved) return;
         sample.Key = sample.Key with { PathService = paths.TraceIncarnation, Path = path };
         Emit(sample.Key with { Stage = LatencyStage.PathBound });
     }
 
-    internal bool Tracks(int slot) => _active.TryGetValue(slot, out var sample) && !sample.Moved;
+    internal bool Tracks(int slot) => Collecting() && _active.TryGetValue(slot, out var sample) && !sample.Moved;
 
     internal void Close(ulong connection, ulong generation)
     {
@@ -100,6 +124,7 @@ public sealed class MovementTraceObserver : IDisposable
 
     internal void PathApplied(int slot, PathService paths, PathAnswer answer)
     {
+        if (!Collecting()) return;
         if (!_active.TryGetValue(slot, out var sample) || sample.Moved) return;
         // A reused old path can move a held-steering actor, but is not evidence for this request.
         if (sample.Key.PathService != paths.TraceIncarnation || sample.Key.Path != answer.Id) return;
@@ -114,6 +139,7 @@ public sealed class MovementTraceObserver : IDisposable
 
     internal void AfterTick()
     {
+        if (!Collecting()) return;
         foreach (var (slot, sample) in _active.ToArray())
         {
             if (sample.Moved) continue;
@@ -140,6 +166,7 @@ public sealed class MovementTraceObserver : IDisposable
 
     internal void Publication(AuthorityConnection connection, PlayerWorldView view)
     {
+        if (!Collecting()) return;
         foreach (var sample in _active.Values)
         {
             if (!sample.Moved || sample.Key.Connection != connection.Player.Value || sample.Key.Generation != connection.Generation) continue;

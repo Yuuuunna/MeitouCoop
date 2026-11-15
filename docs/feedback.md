@@ -1,5 +1,8 @@
 # Roadmap, feedback and issue labels
 
+Private player-test incident packages and runtime collection controls: [diagnostics](diagnostics.md).
+They reuse this form but are separate from the public attachments below.
+
 ## Roadmap
 
 `site/src/data/roadmap.ts`, page `/roadmap`, kept by hand: `versions` (oldest first), each with areas and their features. A feature

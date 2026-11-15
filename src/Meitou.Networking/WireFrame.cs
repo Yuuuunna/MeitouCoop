@@ -42,7 +42,13 @@ public enum WireMessage : ushort
     MotionCheckpointAck = 70,
     BulkManifestAck = 71,
     BusinessBulkManifest = 72,
-    BusinessBulkCancelled = 73
+    BusinessBulkCancelled = 73,
+    DiagnosticCapture = 74,
+    DiagnosticReply = 75,
+    DiagnosticCollect = 76,
+    DiagnosticOffer = 77,
+    DiagnosticPull = 78,
+    DiagnosticFinished = 79
 }
 
 public sealed record WireFrame(WireMessage Kind, ReadOnlyMemory<byte> Payload)
