@@ -459,7 +459,7 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
             var packed = c.Inventory?.Backpack?.Contents is { } bag ? bag.All().ToList() : [];
             if (!system.JoinPlayer(world, t.Context, slot, buyer)) throw new InvalidOperationException("Recruit capacity changed inside an authoritative character trade.");
             c.Ai = null;
-            if (c.Stats is { } stats) foreach (var stat in TamedStats) stats[stat] *= 0.25f;
+            if (c.Stats is { } stats) foreach (var stat in TamedStats) stats[stat] = stats.Stored(stat) * 0.25f;
             foreach (var item in packed) c.Inventory!.Remove(item);
             foreach (var item in packed) GiveBack(world, sellerSquad, item);
             bought.Add(table.IdOf(slot));

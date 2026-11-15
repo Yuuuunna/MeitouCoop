@@ -231,12 +231,12 @@
           <TextBlock x:Name="ModDetails" DockPanel.Dock="Bottom" Classes="desc" Margin="0,8,0,0" MaxLines="2" TextTrimming="CharacterEllipsis" />
           <Panel>
           <TextBlock x:Name="ModsEmpty" Classes="empty" IsVisible="False" />
-          <ListBox x:Name="ModListBox" SelectionChanged="ModListBox_SelectionChanged" KeyDown="ModListBox_KeyDown">
+          <ListBox x:Name="ModListBox" SelectionMode="Multiple" SelectionChanged="ModListBox_SelectionChanged" KeyDown="ModListBox_KeyDown">
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="l:ModRow">
                 <DockPanel>
                   <TextBlock DockPanel.Dock="Left" Classes="handle" Text="≡" VerticalAlignment="Center" Margin="0,0,10,0"
-                             PointerPressed="DragHandle_PointerPressed" ToolTip.Tip="Drag to change the load order" />
+                             PointerPressed="DragHandle_PointerPressed" ToolTip.Tip="Drag to change the load order; Ctrl+click or Shift+click selects several mods to move together" />
                   <CheckBox DockPanel.Dock="Left" IsChecked="{Binding Enabled}" VerticalAlignment="Center" />
                   <!-- A workshop mod's link to its Steam page: a box with an arrow leaving it -->
                   <Button DockPanel.Dock="Right" Classes="icon" VerticalAlignment="Center" Margin="10,0,0,0" Click="ModPage_Click"

@@ -621,6 +621,12 @@ public sealed class CharacterCold
     public WalkEnd WalkEnd { get; set; }
 
     /// <summary>
+    /// The locked door it last said "It's locked." at, and where it stood: a walk that keeps being asked through the same door from the same
+    /// place (a job or goal repathing) says it once, not at every stop. Not saved or hashed.
+    /// </summary>
+    public (Locks.Fixture Door, Vector3 Where)? SaidLocked { get; set; }
+
+    /// <summary>
     /// The target's place (height included) when the <see cref="PursuitSystem"/> last asked a path to <see cref="CharacterHot.Goal"/>: the path's end
     /// is measured against it, as the target may have moved since. Not saved.
     /// </summary>
@@ -786,6 +792,41 @@ public sealed class CharacterCold
     /// saved, not hashed and read by no system. A carried body is drawn on its carrier's shoulder whatever this says.
     /// </summary>
     public DrawAnchor? DrawAnchor { get; set; }
+
+    /// <summary>
+    /// The rigid meshes code mods hang on this character's bones (docs/modding.md "Bone meshes"), in the order first set: replaced as a whole on each
+    /// change, so the snapshot publishes it as it is. Not saved, not hashed and read by no system.
+    /// </summary>
+    public IReadOnlyList<BoneMesh> BoneMeshes { get; private set; } = [];
+
+    /// <summary>
+    /// Hangs <paramref name="mesh"/> on its bone, in place of the one with the same <see cref="BoneMesh.Key"/> (ordinal).
+    /// </summary>
+    public void SetBoneMesh(BoneMesh mesh)
+    {
+        mesh.Validate();
+        var list = BoneMeshes.ToList();
+        int at = list.FindIndex(m => m.Key == mesh.Key);
+        if (at < 0 && list.Count >= BoneMesh.MaxPerCharacter)
+            throw new ArgumentException($"A character takes at most {BoneMesh.MaxPerCharacter} bone meshes.", nameof(mesh));
+        if (at >= 0) list[at] = mesh; else list.Add(mesh);
+        BoneMeshes = [.. list];
+    }
+
+    /// <summary>
+    /// Takes off the bone mesh keyed <paramref name="key"/> (ordinal); nothing without one.
+    /// </summary>
+    public void RemoveBoneMesh(string key)
+    {
+        if (BoneMeshes.All(m => m.Key != key)) return;
+        BoneMeshes = [.. BoneMeshes.Where(m => m.Key != key)];
+    }
+
+    /// <summary>
+    /// The code mods' medical-panel readings by <see cref="Bodies.ModMeter.Index"/> (null: none), set through <see cref="Bodies.ModMeter.Set"/>
+    /// (docs/modding.md "Medical meters"): published for a selected or inspected character, not saved, not hashed and read by no system.
+    /// </summary>
+    public Bodies.MeterReading?[]? Meters { get; internal set; }
 
     /// <summary>
     /// Whom the <see cref="CharacterTask.PickUp"/>, <see cref="CharacterTask.Loot"/> or <see cref="CharacterTask.StealthKo"/> task is for; meaningful
@@ -1082,7 +1123,8 @@ public sealed class CharacterCold
     /// <summary>
     /// Its head is shaven (<c>CharacterHuman::isHeadShaven</c>, Character vslot 124 <c>0x3e0</c>: the appearance's <c>shaved</c>, <b>Verified</b>;
     /// false in every other class). Processing a slave shaves it and an ex-slave's hair grows back once it is free
-    /// (<see cref="Kidnap.CaptiveSystem"/>, <see cref="Locks.FixtureRegistry.LayLow"/>); the watchers leave a shaven slave that looks like one alone.
+    /// (<see cref="Kidnap.CaptiveSystem"/>, <see cref="Locks.FixtureRegistry.LayLow"/>) or the in-play editor opens on it
+    /// (<see cref="Editing.InPlayEditorOpened"/>: a plastic surgeon); the watchers leave a shaven slave that looks like one alone.
     /// From the CHARACTER's or the saved GAMESTATE_CHARACTER's <c>shaved</c> (<see cref="Saving.SlaveSave"/>); hashed while set.
     /// </summary>
     public bool Shaved { get; set; }
@@ -1163,6 +1205,12 @@ public sealed class CharacterCold
     /// while set.
     /// </summary>
     public int? PickingUpItem { get; set; }
+
+    /// <summary>
+    /// The pick-up in <see cref="PickingUpItem"/> is food fetched to eat (<see cref="Items.FeedSystem"/>, goal 259): a live animal's shut grid takes
+    /// it. Not saved, as the pick-up is not; hashed only while set.
+    /// </summary>
+    public bool FetchingFood { get; set; }
 
     /// <summary>
     /// The limb an animal holds in its mouth (<see cref="Items.FeedSystem.HoldInMouth"/>; null: none), eaten later by <see cref="Items.FeedSystem"/>.
@@ -1982,6 +2030,8 @@ public sealed class CharacterTable
             hasher.Add(0x54616B65);
             hasher.Add(taking);
         }
+
+        if (k.FetchingFood) hasher.Add(0x46657463);
 
         if (k.Mouth is { } mouth)
         {

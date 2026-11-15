@@ -543,7 +543,6 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         TutorialWindow.PollTutorials();
         StealthView.UpdateStealthArrows();
         DamageFloaters.DrawFloaters(o);
-        MoveMarker.FadeMarker();
 
         // The box.
         if (Dragging && _dragFrom is { } from)

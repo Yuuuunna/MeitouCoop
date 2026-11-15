@@ -169,9 +169,12 @@ is `+0x6fc` (the drawn size only; it is not refreshed above 0.95, unlike the ori
   (`Fighter.Naked`).
 - The main grid is shut while the animal lives (`CharacterAnimal` vtable slot 48 `FUN_1405cc630`, **Observed**): `main` is enabled only when the flag at +0x5bc (taken to be dead) is set,
   or the animal is not of the player's faction (`FUN_1407916d0`) and is down (vfunc 0x30); the animal window (`FUN_14014f570`) leaves a disabled `main` out. When slot 48 runs is
-  **Unknown**. Nothing given goes in either: food dropped on the player's bonedog with no bag is "No room for that item." and stays with the giver
-  (**Observed**, original; whether a worn bag then takes it is **Unknown**). Meitou: `InventoryCommands.MainClosed`, drawn disabled; drops, gives (into the
-  worn bag only), right-click moves and pick-ups skip it; what is in it can still be taken out.
+  **Unknown**. Nothing given or bought goes in either: food dropped on the player's bonedog with no bag is "No room for that item." and stays with the giver,
+  and stock right-clicked while a trade shows the dog's window is refused the same way and stays in stock, nothing paid (**Observed**, original; whether a
+  worn bag then takes either is **Unknown**). Meitou: `InventoryCommands.MainClosed`, drawn disabled; drops, right-click moves and pick-ups skip it (but for
+  food it fetches to eat: [Eating](character-stats.md#eating)), and gives, trade buys and a held item's return past its old cell put grid items into the
+  worn bag only (`Inventory.Add` with the main grid shut; the return into the bag is **Observed** in the original,
+  [holding an item](ui-screens.md#6-inventory-trade-dialogue-build)); what is in it can still be taken out.
 - The worn bag is drawn on the animal: Garru Backpack's `pack_beast_luggage.mesh` and rebirth.mod's Bull Backpack `bull_bags.mesh` are skinned to skeletons
   whose bone handles and names match `pack_beast.skeleton` and `bull.skeleton` (**Verified**, 44 and 37 bones compared), so they share the body's skeleton
   as a person's clothing does; the material is the CONTAINER's `material` (gar backpack). Meitou: `CharacterAppearance.BuildAnimal` with the bag in
@@ -214,6 +217,10 @@ DA 48 `CHOOSE_ANIMALS_BUYING` (`FUN_140680560`, **Observed**; 12 DIALOG_ACTION r
 speaker, opens the character trading window (`CharacterTrading_AnimalBuying` `FUN_1406a9440`, title "Buying Animals", confirm "Buy") on:
 1. every animal (slot 0x248) within 3000 units of the speaker, of the speaker's faction, whose town (`FUN_1405ce5f0`) is the speaker's, not dead;
 2. then the animals of the speaker's own platoon within 2304 units not dead and not yet listed.
+
+Who sells (**Verified**, rebirth.mod SQUAD_TEMPLATE records under the install's load order, #736): `Merchant Nomads` (63537, `is trader`) is led by
+`Nomad Animal Trader` (63538), whose package reaches DA 48; the goat herders `Nomads` (42336: 1 to 5 `Nomad`, 3 to 7 Goats, a Pack Beast) are led by a plain
+`Nomad` with no talk line of its own, so they sell nothing.
 
 Rows: price = (val0 if 1 or more, else 14000) x (age + 0.1), truncated. Panel 1 "Strength:" (stats vfunc 0x10) and "Melee Attack:"
 (`FUN_140884ee0`; both read the age), "Gender:" Female / Male (appearance `sex female`, `FUN_140295a50`); panel 2 the name and "Age:" with

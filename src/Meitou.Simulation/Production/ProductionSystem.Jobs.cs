@@ -432,7 +432,7 @@ public sealed partial class ProductionSystem
     /// </summary>
     bool GetsUpHealed(World world, int slot, CharacterCold cold) =>
         cold.IsPlayer && cold.InSomething == Locks.HeldState.Bed && world.Characters.Next[slot].Task == (byte)CharacterTask.Sleep
-        && (world.Player.SquadAi & SquadAi.Sleep) != 0 && (cold.Orders & CharacterOrders.Jobs) != 0 && (cold.Orders & CharacterOrders.Sneak) == 0
+        && (world.SquadOptions(cold) & SquadAi.Sleep) != 0 && (cold.Orders & CharacterOrders.Jobs) != 0 && (cold.Orders & CharacterOrders.Sneak) == 0
         && cold.SlaveState == 0 && !Orders.Holding(cold) && !PlayerOrders.Holds(world, slot) && !Injured(cold);
 
     /// <summary>

@@ -232,6 +232,7 @@ public static class PlayerCommandRouting
         FirstAid.RestOrder c => c.Characters,
         FirstAid.MedicJobCommand c => c.Characters,
         Editing.EditCharacter c => [c.Character],
+        Editing.InPlayEditorOpened c => [c.Character],
         Carrying.PickUpOrder c => c.Carriers,
         Carrying.PutDownOrder c => c.Carriers,
         Carrying.LootOrder c => c.Looters,
@@ -362,7 +363,8 @@ public static class PlayerCommandRouting
         or Construction.BuildOrder or Construction.DismantleOrder or Construction.ConfirmDismantle or Construction.CancelSite
         or Construction.PauseSite or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic
         or Construction.RenameTown or Construction.SetTownPublic or Construction.PlaceBuildings or Locks.BuyBuilding
-        or FirstAid.TreatOrder or FirstAid.SplintOrder or FirstAid.RestOrder or FirstAid.MedicJobCommand or Editing.EditCharacter
+        or FirstAid.TreatOrder or FirstAid.SplintOrder or FirstAid.RestOrder or FirstAid.MedicJobCommand
+        or Editing.EditCharacter or Editing.InPlayEditorOpened
         or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder
         or Carrying.StealthKoOrder or Carrying.RescueJobCommand or Carrying.TakeLootItem or Carrying.PutLootItem
         or Carrying.CloseLoot or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder

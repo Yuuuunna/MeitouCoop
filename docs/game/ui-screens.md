@@ -185,6 +185,12 @@ Empire Citizen and The Cannibal Hunters). The "Meitou" sentences are engine choi
 - The bar at the top right is the background loading bar below, not part of this window.
 - Meitou (`LoadingScreen`, Faithful mode): as above. `tips.txt` is read as UTF-8, else Windows-1252, since the French, German and Spanish files are
   Windows-1252 (engine choice: how the original shows those bytes is **Unknown**). The Meitou mode keeps its own panel, spinner, bar and slide-out.
+- Tip box: `MessageText`'s text is inset by its skin's text part (`Kenshi_GenericTextBoxSkin`: `18 14 149 74` of `186 102`), so at 1920 x 1080
+  the original's box is 553 x 172 px (**Verified** against `Kenshi_LoadingScreen.layout` and `kenshi_skins.xml`). At 1680 x 1050 it shows the
+  longest tip (`tips.txt`, 221 characters) whole, in four centered lines (**Observed** 2026-11-14, 1.0.68 full screen, a mod whose `tips.txt`
+  holds only that tip); at smaller resolutions **Unknown**. Meitou mode (engine choice): the tip panel is 480 x 120 at 1080 rows with 16 px
+  text, a box of 427 x 76 px that holds three lines; a tip that wraps to more grows the panel upwards, never past the top of the screen
+  (**Observed** 2026-11-14: at 1080 rows a 172-character tip takes four lines, at 1440 rows the longest takes five, all shown).
 
 ### Background loading bar
 
@@ -697,7 +703,9 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   (1.0 here, 0.3 for the public toggle, 0.4 for For sale) is the button's share of the row, at its right; at 1.0 the key is not shown
   (**Observed**: the owner's screenshots of a Defensive Gate III and a bought town house, `HudLine.ButtonWidth` in Meitou). Meitou engine choices: a moving door reads by where
   it heads (opening: open, closing: closed), and an open door that wants its lock reads `Locked` with "The door will lock when it closes.".
-- **Beds, cages, containers, lamps** (Useable / Storage / Light slot 40 `FUN_140304e90`): 3 `Town:`, `Training:` (function 7), `Cost to use:`
+- **Beds, cages, containers, lamps** (Useable / Storage / Light slot 40 `FUN_140304e90`): 3 `Town:`, `Training:` (function 7, any `stat used`: the
+  label `Training:` with the editor stat name `FUN_140888440` of +0x3f8 appended, no separator, as the label of an empty-valued line; **Verified**
+  decompile; Meitou puts a space between), `Cost to use:`
   `Private` or `Pay c.{1,num}` (beds), `Lock state:` Locked / Unlocked, `Lock complexity:` `Level {1,num}`, `Empty`; 6 `Healing bonus:`
   `x{1,num}` (beds), `Max Skill Level:` (training); 0xf `Money:`. Turrets, machines, generators and batteries have their own lines
   (`FUN_14030d620`, `FUN_140300090`, `FUN_140307bf0` ...: Working / No power / Out of resource / Output full, power, workers, fuel).
@@ -709,7 +717,20 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   owner faction, `Town:` The Hub, `Workers:` 0/1, `Efficiency:` 0%, `Max efficiency:` 100%, Condition. Meitou (`BuildingSelection.PickFurnitureAt`):
   beds, containers and cages by their fixtures, seats by their seat spots, everything else of a town building's interior layout but nodes
   (`TownBuilding.Pieces`: tables, shelves, lamps, locks, dummies, workstations) by its own collision; the panel has the name, owner, the town of the
-  house it stands in and Condition, without the lock, Empty and worker rows. A camp's Campfire and Camp Bed select too (**Observed**, a Dust Bandit
+  house it stands in and Condition, without the lock and Empty rows; a training dummy adds `Training:`. In a town, furniture and level buildings of
+  the original's UseableStuff, StorageBuilding and LightBuilding add section 6 as above (`UseableLines`): Workers, Efficiency / Max efficiency or a
+  dummy's `Max Skill Level:`, and a consumer's `Power:` granted/draw. Inputs without a machine of the player's: condition 1 (0 destroyed, as the
+  Condition row), yield 1, `output rate`, a light's slot 164 (interior furniture of a house, else not daytime), and for a level building that
+  draws power its town frame's grant (`ProductionSystem.LevelPowerOf`: the level generators' output shared out over the town's draws and the
+  player's machines of that frame, ascending). Not covered: Workers counts only the player's characters (whether an NPC sitting or
+  pretend-operating there joins the building's operator list, `+0x3d8`/`+0x3e0` read by slot 155 `FUN_1403075b0`, is **Unknown**), and a
+  consumer inside a house (skeleton repair bed, ceiling fan lamp, barrel table) shows no section 6: its power town is its house's (**Observed**,
+  `FUN_140296940` walks the parent chain to the root building), but whether layout furniture is registered with the frame (slot 99
+  `FUN_1402973f0`, called from the state load slot 18 `FUN_1402a1750` with `power on`) is **Unknown**. Which class a BUILDING gets (**Verified**,
+  factory `FUN_14057cc70`, after the wall-gate, links-together and farm tests): with a functionality, 0 and 0x12 a plain building, 1/4 Production,
+  2 Storage, 3 Research, 5/0x17 Generator (WindGenerator without inputs), 8 Torture or UseableStuff (by a test not read), 10 Crafting, 0xc Turret,
+  0xe Furnace, 0xf Light, 0x1a RainCollector, any other UseableStuff (`FUN_1402a0900`): beds, dummies, chairs (17), thrones (24), general
+  storage (13), tables. A camp's Campfire and Camp Bed select too (**Observed**, a Dust Bandit
   camp near The Hub), the Campfire though its part has no `xml collision` (base data); its panel says it is out of fuel while it burns. Meitou: a
   camp bed by its bed, any other camp building (`WorldSnapshot.NestBuildings`) among the buildings by distance, by its collision, else the hull of
   its parts' bounds as a site without collision (`BuildingSelection.PickCampBuildingAt`); its panel has its name, owner and Condition.
@@ -742,10 +763,10 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     163 `FUN_140299630` asking slot 164 first). The Damage and Power rows read their own values, not slot 109.
   - Who shows it (**Verified**, each class's slot 40): ProductionBuilding's `FUN_1402ffeb0` (also Generator, WindGenerator, RainCollector, Torture), Research
     `FUN_140309680` and Crafting `FUN_1402ff070` in section 6 as 155, 154, 153; Useable / Storage / Light `FUN_140304e90` (only with a town, `FUN_1400f6c20`) in
-    section 6 as 155 then 154, except for function 6 (BF_BED; slot 94 `FUN_1400f6b30` is the function +0x158, 27 for a mine whose `FUN_1405946f0` fails)
-    `Healing bonus:` `x{1,num}` of the float +0x1a4 instead of both, and for function 7 (BF_TRAINING, +0x158) `Max Skill Level:` int(+0x1a4) − 1 with the
+    section 6 as 155, 154, 153 (power), except for function 6 (BF_BED; slot 94 `FUN_1400f6b30` is the function +0x158, 27 for a mine whose `FUN_1405946f0` fails)
+    `Healing bonus:` `x{1,num}` of the float +0x1a4 instead of all three, and for function 7 (BF_TRAINING, +0x158) `Max Skill Level:` int(+0x1a4) − 1 with the
     tooltip "This is the maximum skill a person can train up to using this equipment. For anyone higher it is a waste of time." instead of 154; BF_SKELETON_BED
-    (25) gets both. +0x1a4 = `output rate` × `production mult` ÷ raw `max operators` when above 1 (`FUN_14029e460`; Bed 8, Camp Bed 4, dummies MkI–III 6/11/16
+    (25) gets 155, 154 and 153 and no Healing bonus (**Verified**, the section 6 branch of `FUN_140304e90`). +0x1a4 = `output rate` × `production mult` ÷ raw `max operators` when above 1 (`FUN_14029e460`; Bed 8, Camp Bed 4, dummies MkI–III 6/11/16
     by the probe of the merged data). Turret `FUN_14030c2a0`: section 6 the gun's slot 14 lines then 154, section 7 (`ExtendedStatsText`) 155 then 154; Furnace
     `FUN_14030b750` draws its own section 0xf (`Total Metals:`, the `Active:` toggle) and hands every other section to `FUN_1402ffeb0`, so 155, 154, 153 as a
     production building.
@@ -1178,6 +1199,9 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
     range checked; "No room for that item." or the container message; from a non-player owner "Got caught stealing." may follow); otherwise it is dropped on the ground only from the player's
     own windows or a window of a player-faction owner, else it goes back.
   - Back to origin (`FUN_14070d860`): its old cell if still free, else auto-added to that inventory, else that inventory is arranged and it is tried again, else it is dropped on the ground.
+    For a live animal the auto-add leaves its shut grid out: Raw Meat swapped out of a pack beast's Garru Backpack and sent back with Esc, its cell now taken, goes into a free
+    cell of the bag, though the hidden grid has room (**Observed**, original 1.0.68); the arrange and ground steps there are **Unknown**. Meitou: `HeldItems.ReturnHeldItem` adds with
+    the grid shut and arranges only the bag; a non-empty bag goes to the ground rather than inside the worn bag (engine choice) ([animals](animals.md#pack-animals)).
   - Sounds (**Verified**, decompile; all on the GUI object with `Inventory_Items` set from the item, `FUN_14070d230` / `FUN_14075e360`): a lift `Item_Lift` (`FUN_1407139a0`);
     a placement `Item_Drop` (`FUN_140715560`; equipping included; a swap posts no lift); `Sell_Item` instead for any move between a trade pair, buying too; a right-click move `Item_Lift`
     (`FUN_140713d20`; with Shift once), `Sell_Item` in a trade; a ground drop `Character_Drop_Ground`; nothing for giving to a character, a return to the origin, refusals, money becoming
@@ -1191,7 +1215,7 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
     descending; the first pass where everything fits wins, else the old positions are restored. Each window's button arranges only the inventory that window shows (its
     vtable `+0x70`): the pocket window's ARRANGE leaves the worn bag alone and the bag window's leaves the pockets (**Observed**: decompile, and vanilla per #524).
   - Loading a saved inventory (`FUN_14074c0e0`, **Verified** by decompile; the INVENTORY_STATE's items in file order): each item is looked up by its `section` name; it goes to its saved `inventory x` / `inventory y`
-    only if the section exists and accepts it (`FUN_14074bc30`), the footprint lies inside the section's width and height and `FUN_1407466f0` finds no item of that section overlapping it. Otherwise it is
+    only if the section exists and accepts it (`FUN_14074bc30`: an owned section asks the `RaceLimiter`, so a worn item the wearer's race may not wear is refused and auto-added; **Observed** in 1.0.68, #704: a Small Backpack worn by a bonedog loads into its main grid with its contents), the footprint lies inside the section's width and height and `FUN_1407466f0` finds no item of that section overlapping it. Otherwise it is
     auto-added to the inventory (`FUN_140745c80` to `FUN_14074bd20`: the sections that accept it, the backpack's last, each by `FUN_14074c8b0`), and when nothing has room it is not added (lost). No saved
     cell is ever repaired by sliding. A CONTAINER's contents are a second INVENTORY_STATE read the same way into the bag's own grid, so the contents of a bag carried in `main` and of the worn one are
     separate grids that both name their items' section `backpack_content`: a window lists only the worn backpack's (a count of cells from both would overlap), **Verified** on the siwa-test save
@@ -1287,7 +1311,7 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
     - *Own windows only* (owner of the player's faction): a blueprint (RESEARCH-type item) is learned and used up ("Research already known" / "Failed to learn from blueprint: Technology
       requirements not met"); a MAP_ITEM reveals its places ("{1,num} location(s) added to the map." and used up, else "You already know all these locations, no new information can be
       learned."); money (item function 14) gives "{1,num} cats added." and is removed (money moved across a player / non-player window boundary converts the same way). Otherwise inside its own
-      inventory: a grid item goes to its matching slot (equipped), a worn one to the grid; failing that the own limbs window, then the own bag window. An item in the open bag goes to its matching slot, else to the main grid (**Observed**, `FUN_140714a20` calls the move `FUN_140713d20` with the character itself as target before trying the bag; Meitou `QuickMove`, issue 315).
+      inventory: a grid item goes to its matching slot (equipped), a worn one to the grid; failing that the own limbs window, then the own bag window. An item in the open bag goes to its matching slot, else to the main grid (**Observed**, `FUN_140714a20` calls the move `FUN_140713d20` with the character itself as target before trying the bag; Meitou `QuickMove`, issue 315). The worn bag never goes into its own open window: with no room for it in the grid it stays on, with no message, and with room it goes to the grid; a spare bag in the grid gives "Can't wear that item." and goes into the open worn bag (**Observed**, 1.0.68 plain game, the worn bag holding goods, the spare empty; issue 703).
     - Meitou: `PlayerInterface.InventoryRightClick` buys or sells one unit (Shift all); a bought weapon goes into a free `back` then `hip` cell and armour into its empty slot
       (`InventoryCommands.TryEquip`), the rest of the stack and everything else into the first free cell; a stolen item a non-fence shop may catch asks the prompt above (`TradeItemView.FenceOdds`).
       Window to window (loot, container, storage) the units go by `InventoryCommands.MoveInto` (the open bag window first, then slots, then the main grid). Own windows only: `ReadMapItem`, else
@@ -1346,6 +1370,12 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
   good the shop rolls on (`TradeSystem.Fences`), whoever it was stolen from, with the roll's own odds shown capped at 100% (the original prints `int(odds x 100)`, so 110% for a good nobody looks for); `Stolen goods?` when the shop does not roll. Differences left
   (**Observed**): the original prints a chance for an owner of the trader's faction even when its squad does not roll, and prints nothing for an owner whose faction has `+0x250` set; Meitou follows the roll. Stealing from a stock shows `Stealing chance:`; illegal goods
   checked first, against the culture of the trader's faction: `ILLEGAL GOODS!` / `NO!` (`DAT_141707808`) in Bad, or for a trader with `+0xed` (buys illegal) `Illegal goods?` / `No problem!` in Good (**Verified**, decompiled; whose faction is read is **Observed**). Meitou reads the trader's town's faction, as the sale check.
+- **Stealing chance** (**Observed**, `FUN_140712920` per open inventory window, `FUN_1407138b0`): for the item under the mouse in a window (not its `outside`
+  section) whose partner window (the opener's, `FUN_14070dcd0`) would steal it (`FUN_140711740`: not a CAMPING building, not the player's own; its
+  character branch, vtable `+0x248` and `FUN_1405cb320`, is **Unknown**), `Stealing chance:` and `{1,num}%` of the steal chance `FUN_1407944d0`(opener,
+  owner, item) x 100 in the Bad colour; a trader's window takes the fencing branch instead. The item is passed, so an equipped item shows the x0.75 the
+  drag's roll leaves out. Meitou (`CrimeSystem.StealChanceOf`, `InventoryItemView.StealChance`): a `STEALING CHANCE:` row in the item's tooltip, as the
+  fencing row, capped at 100%, for the open loot (only while the owner watches: a down body shows none) and the open container (#702).
 - **Burden row** under Total Weight (**Verified**, `FUN_1405d4260`): by the carry speed factor, >= 0.95 `-Weightless`, >= 0.75 `-Lightweight`, >= 0.5 `-Moderate` (Main), >= 0.1 `-Heavy`,
   else `-Overloaded` (both Bad). The same function gives a trading character's panel its name, `Money:`, `Merchant Info:`, `Prices:` +/-N % and `Buys Stolen Goods` lines.
 - Colour tags in code (**Verified**, static initialisers `FUN_14158a...`): #afa68b, #140806, #492620, #59231a, #bf4834, #a8b774, #444444, #777777, #14ffdc. The strings `DAT_141f49248` + 0x28 k (k = 0..8; initialisers `FUN_14158a2a0` + 0x40 k, **Verified** 2026-10-23) are #afa68b, #140806, #492620, #59231a, #bf4834, #a8b774, #a8b774 again, #444444, #777777.

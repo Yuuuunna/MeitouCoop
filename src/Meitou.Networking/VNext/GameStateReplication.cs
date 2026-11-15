@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using Meitou.Data.Characters;
 using Meitou.Simulation;
 using Meitou.Simulation.Crime;
+using Meitou.Simulation.Bodies;
 
 namespace Meitou.Networking.VNext;
 public readonly record struct GamePresentationSource(ulong Publication, ulong Tick, ulong PacketSequence = 0, uint Revision = 0, bool Checkpoint = false);
@@ -26,8 +27,24 @@ public sealed record GameStatePublication(ulong Sequence, bool Baseline, IReadOn
 
 /// <summary>Recipient-only, detached per-field publication. Reliable frames must be retained by the transport until delivered.
 /// Field IDs and typed delegates are static; capture never reflects or encodes a whole view/character.</summary>
-public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<CharacterId, ulong> entityOf, ulong sessionEpoch, ulong viewEpoch)
+public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<CharacterId, ulong> entityOf, ulong sessionEpoch, ulong viewEpoch,
+    TimeProvider? timeProvider = null)
 {
+    /// <summary>
+    /// Large changing tooltip tables publish at most twice per second; static explanatory text never slows dynamic bar updates.
+    /// </summary>
+    const int LargeMeterTooltipBytes = 1024;
+
+    /// <summary>
+    /// The maximum coalescing delay for a changing large meter presentation, independent of simulation pause and time scale.
+    /// </summary>
+    static readonly TimeSpan LargeMeterTooltipInterval = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// A monotonic clock, optionally supplied by a host that needs deterministic presentation scheduling.
+    /// </summary>
+    readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
     readonly AnimationDescriptorCatalog _animationDescriptors = new();
     readonly HashSet<ushort> _bulkAnimationDescriptors = [];
     readonly HashSet<ushort> _criticalAnimationDescriptors = [];
@@ -43,6 +60,12 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
     sealed record TrackedHealthParts(HealthPartView[] Parts, float? KoPoint);
     sealed record TrackedBounties(double BaseGameHours, BountyLine[]? Values);
     sealed record TrackedPrison(double BaseGameHours, PrisonView Value);
+
+    /// <summary>
+    /// Last sent tooltip metadata and timestamp. Existing component-cache lifecycle removal also removes this pacing state.
+    /// </summary>
+    sealed record TrackedMeterTooltips(MeterReading?[] Values, long SentAt);
+
     /// <summary>Call on the authority owner before handing the immutable recipient projection to the encoding worker.
     /// PublishCharacters/world publication own their value collections; the mutable appearance, pose and turret buffers are copied here.</summary>
     public static string ComponentName(ushort id) => id switch
@@ -52,6 +75,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         3001 => "DrawYaw",
         3002 => "AnimationPlayback",
         3003 => "AnimationDescriptors",
+        GameComponentSchema.MeterTooltipsField => GameComponentSchema.AuxiliaryCharacterFields[id],
         _ => GameComponentSchema.ViewFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.SnapshotFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.CharacterFields.FirstOrDefault(f => f.Id == id)?.Name ?? throw new ArgumentOutOfRangeException(nameof(id)),
     };
     public PlayerWorldView DetachForEncoding(PlayerWorldView view) => codec.Detach(view);
@@ -127,9 +151,12 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
             // Identity is reliable lifecycle data, emitted only for a new interest generation.
             if (spawn)
                 records.Add((1, entity, generation, 0, codec.EncodeComponent(c.Id)));
+            var meters = CaptureMeterPresentation(entity, c.Meters, out byte[] tooltipBytes, out object tooltipState);
+            Add(entity, generation, GameComponentSchema.MeterTooltipsField, tooltipBytes, tooltipState, true);
+            var presentation = ReferenceEquals(meters, c.Meters) ? c : c with { Meters = meters };
             foreach (var f in GameComponentSchema.CharacterFields)
             {
-                EncodeCharacterField(f, entity, c, view, spawn, out byte[] fieldBytes, out object? tracked, out bool trackObject);
+                EncodeCharacterField(f, entity, presentation, view, spawn, out byte[] fieldBytes, out object? tracked, out bool trackObject);
                 Add(entity, generation, f.Id, fieldBytes, tracked, trackObject);
             }
 
@@ -309,12 +336,82 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
                 data = GameHoursCountdownCodec.EncodePrison(c.Prison, view.GameHours);
                 tracked = c.Prison is { } curPrison ? new TrackedPrison(view.GameHours, curPrison) : null;
                 return;
+            case 2097:
+                trackObject = true;
+                if (hasPrior && priorObj is IReadOnlyList<MeterReading?> oldMeters && GameComponentEquivalence.SameMeters(oldMeters, c.Meters))
+                {
+                    data = priorBytes!;
+                    tracked = priorObj;
+                    return;
+                }
+
+                data = ModPresentationCodec.EncodeMeterBars(c.Meters, _previous[(entity, GameComponentSchema.MeterTooltipsField)]);
+                tracked = c.Meters.ToArray();
+                return;
+            case 2098:
+                trackObject = true;
+                if (hasPrior && priorObj is IReadOnlyList<float> oldSkills && GameComponentEquivalence.SameModSkills(oldSkills, c.ModSkills))
+                {
+                    data = priorBytes!;
+                    tracked = priorObj;
+                    return;
+                }
+
+                data = ModPresentationCodec.EncodeSkills(c.ModSkills);
+                tracked = c.ModSkills.ToArray();
+                return;
             default:
                 trackObject = false;
                 tracked = null;
                 data = f.Encode(codec, c);
                 return;
         }
+    }
+
+    /// <summary>
+    /// Reuses unchanged tooltip metadata. Large changing text coalesces the entire meter presentation so the visible bars and tooltip
+    /// stay from one capture; only the latest capture is sent when due. New slots, hiding slots and withdrawing text publish immediately.
+    /// </summary>
+    IReadOnlyList<MeterReading?> CaptureMeterPresentation(ulong entity, IReadOnlyList<MeterReading?> meters,
+        out byte[] bytes, out object tracked)
+    {
+        var key = (entity, GameComponentSchema.MeterTooltipsField);
+        var prior = _previousObjects.GetValueOrDefault(key) as TrackedMeterTooltips;
+        if (prior is not null && GameComponentEquivalence.SameMeterTooltips(prior.Values, meters))
+        {
+            bytes = _previous[key];
+            tracked = prior;
+            return meters;
+        }
+
+        bytes = ModPresentationCodec.EncodeMeterTooltips(meters);
+        long now = _timeProvider.GetTimestamp();
+        if (prior is not null && bytes.Length > LargeMeterTooltipBytes && CanDeferMeterTooltips(prior.Values, meters)
+            && _timeProvider.GetElapsedTime(prior.SentAt, now) < LargeMeterTooltipInterval
+            && _previousObjects.GetValueOrDefault((entity, (ushort)2097)) is IReadOnlyList<MeterReading?> lastSent)
+        {
+            bytes = _previous[key];
+            tracked = prior;
+            return lastSent;
+        }
+
+        tracked = new TrackedMeterTooltips(meters.ToArray(), now);
+        return meters;
+    }
+
+    /// <summary>
+    /// Visibility changes and explicit tooltip removal bypass coalescing, including authority or scope withdrawal while paused.
+    /// </summary>
+    static bool CanDeferMeterTooltips(IReadOnlyList<MeterReading?> prior, IReadOnlyList<MeterReading?> current)
+    {
+        if (prior.Count != current.Count) return false;
+        for (int i = 0; i < prior.Count; i++)
+        {
+            if (prior[i].HasValue != current[i].HasValue) return false;
+            if (!string.IsNullOrEmpty(prior[i]?.Tooltip) && string.IsNullOrEmpty(current[i]?.Tooltip)) return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -447,6 +544,11 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
     readonly AnimationDescriptorCatalog _animationDescriptors = new();
     sealed class Entity(CharacterSnapshot character, uint generation)
     {
+        /// <summary>
+        /// The complete independently revisioned meter components for this interest generation; withdrawal discards both together.
+        /// </summary>
+        internal readonly MeterPresentationState Meters = new();
+
         internal CharacterSnapshot Character = character;
         internal uint Generation = generation;
         internal ulong DeclarationRevision;
@@ -758,7 +860,8 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                     if (!_revisions.ContainsKey((0, field)))
                         throw new InvalidDataException("Incomplete baseline global schema.");
                 foreach (var entity in _entities)
-                    foreach (ushort field in GameComponentSchema.CharacterFields.Select(f => f.Id).Concat(new ushort[] { 3000, 3001 }))
+                    foreach (ushort field in GameComponentSchema.CharacterFields.Select(f => f.Id)
+                        .Concat(GameComponentSchema.AuxiliaryCharacterFields.Keys).Concat(new ushort[] { 3000, 3001 }))
                         if (!_revisions.ContainsKey((entity.Key, field)))
                             throw new InvalidDataException("Incomplete baseline character schema.");
                 _initialized = true;
@@ -840,6 +943,10 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                 Prison = GameHoursCountdownCodec.ProjectPrison(e.PrisonTerm, _view!.GameHours)
             };
         }
+        else if (field == 2097)
+            e.Character = e.Character with { Meters = e.Meters.AcceptBars(value) };
+        else if (field == GameComponentSchema.MeterTooltipsField)
+            e.Character = e.Character with { Meters = e.Meters.AcceptTooltips(value) };
         else if (GameComponentSchema.CharacterFields.FirstOrDefault(f => f.Id == field)is { } cf)
             e.Character = cf.Apply(codec, e.Character, value);
         else

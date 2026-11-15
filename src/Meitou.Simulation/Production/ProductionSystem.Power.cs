@@ -48,6 +48,11 @@ public sealed partial class ProductionSystem
     /// The construction targets of the level generators, by building record and database version.
     /// </summary>
     readonly Dictionary<string, (int Version, float Target)> _npcTargets = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The town holding each level-building key, rebuilt when buildings are added or removed. Building objects are resolved from each town's
+    /// current list so relaid or restored layouts never leave stale objects in the index.
+    /// </summary>
+    (PopulationData Data, int Revision, Dictionary<string, TownSite> ByKey)? _levelBuildings;
 
     /// <summary>
     /// The research upgrade of the machine's building: the player's only (<c>FUN_14082ec70</c>).
@@ -254,12 +259,88 @@ public sealed partial class ProductionSystem
 
         foreach (var b in site.Buildings)
         {
-            if (b.Destroyed || Data(b.BuildingId) is not { IsConsumer: true, Function: >= 0 } data || data.IsLight && world.Daytime) continue;
+            if (LevelDestroyed(world, b) || Data(b.BuildingId) is not { IsConsumer: true, Function: >= 0 } data || data.IsLight && world.Daytime) continue;
 
             draws.Add(MathF.Abs(data.PowerOutput));
         }
 
         return draws;
+    }
+
+    /// <summary>
+    /// The power of the level building <paramref name="key"/> when it draws power (<see cref="NpcDraws"/>, a light only outside daytime): its draw and
+    /// what its town's frame grants it, the town's generators (<see cref="NpcOutput"/>) shared out over the town's draws and the player's machines
+    /// of that frame this tick as <see cref="ShareOut"/> does, in ascending demand. Null for any other instance; read only.
+    /// </summary>
+    public LevelPowerView? LevelPowerOf(World world, string? key)
+    {
+        if (key is null || LevelBuilding(world, key) is not { } found) return null;
+
+        var (index, b) = found;
+        if (LevelDestroyed(world, b) || Data(b.BuildingId) is not { IsConsumer: true, Function: >= 0 } data) return null;
+
+        float demand = data.IsLight && world.Daytime ? 0 : MathF.Abs(data.PowerOutput);
+        if (demand <= 0) return new LevelPowerView(key, 0, 0);
+
+        var machines = _grids.GetValueOrDefault(GridKey(world, -index - 1, -1))?.Where(m => m.Data.IsConsumer).Select(m => m.Demand) ?? [];
+        float granted = GrantOf(demand, NpcOutput(world, index), NpcDraws(world, index), [.. machines]);
+        return new LevelPowerView(key, demand, granted);
+    }
+
+    /// <summary>
+    /// A standing level building's known position for read-only observation checks, including lights with no machine or fixture entry.
+    /// </summary>
+    internal Vector3? LevelBuildingPosition(World world, string key) =>
+        LevelBuilding(world, key) is { } found && !LevelDestroyed(world, found.Building) ? found.Building.Position : null;
+
+    /// <summary>
+    /// A taken-over level placement uses its live construction state; other level buildings use the current save/override ruin state.
+    /// </summary>
+    static bool LevelDestroyed(World world, TownBuilding building) =>
+        world.Buildings.Find(building.Key) is { LevelPlacement: not null, LevelMachine: false } site
+            ? site.Destroyed : world.Fixtures.IsDestroyed(building);
+
+    /// <summary>
+    /// The level building of <paramref name="key"/> with its town's index; null when no town holds one.
+    /// </summary>
+    (int Town, TownBuilding Building)? LevelBuilding(World world, string key)
+    {
+        if (world.SystemOf<PopulationSystem>()?.Data is not { } data) return null;
+
+        if (_levelBuildings is not { } known || !ReferenceEquals(known.Data, data) || known.Revision != data.BuildingsRevision)
+        {
+            var byKey = new Dictionary<string, TownSite>(StringComparer.Ordinal);
+            foreach (var site in data.Sites)
+                foreach (var b in site.Buildings) byKey.TryAdd(b.Key, site);
+
+            _levelBuildings = known = (data, data.BuildingsRevision, byKey);
+        }
+
+        if (!known.ByKey.TryGetValue(key, out var town) || town.Buildings.FirstOrDefault(b => b.Key == key) is not { } building) return null;
+        return (town.Index, building);
+    }
+
+    /// <summary>
+    /// What a draw of <paramref name="demand"/> among the town's <paramref name="npc"/> draws gets of <paramref name="supply"/>, the player's
+    /// <paramref name="machines"/> of the frame drawing too: in ascending demand each takes at most an equal share of what is left, a town draw
+    /// before a machine of equal demand.
+    /// </summary>
+    static float GrantOf(float demand, float supply, List<float> npc, List<float> machines)
+    {
+        var all = npc.Select(d => (Demand: d, Machine: false)).Concat(machines.Select(d => (Demand: d, Machine: true)))
+            .OrderBy(d => d.Demand)
+            .ThenBy(d => d.Machine)
+            .ToList();
+        int left = all.Count;
+        foreach (var (draw, machine) in all)
+        {
+            float give = MathF.Min(supply / Math.Max(1, left--), draw);
+            if (!machine && draw == demand) return give;
+
+            supply -= give;
+        }
+
+        return 0;
     }
 
     /// <summary>
@@ -272,7 +353,7 @@ public sealed partial class ProductionSystem
         float total = 0;
         foreach (var b in site.Buildings)
         {
-            if (b.Destroyed || Data(b.BuildingId) is not { IsGenerator: true } data) continue;
+            if (LevelDestroyed(world, b) || Data(b.BuildingId) is not { IsGenerator: true } data) continue;
 
             float output = NpcGeneratorHealth(world, site, b) * data.PowerOutput;
             if (data.IsWind) output *= NpcWind(world, b);

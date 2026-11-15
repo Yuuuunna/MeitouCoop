@@ -12,8 +12,8 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-a69c6e9b-authority-3`; both endpoints require the corrected presentation-event validation
-and permanent-bounty handling described in [networking-next](networking-next.md#protocol-and-transport-boundaries).
+The current identity is `meitou-upstream-704cc1ec-authority-1`; both endpoints require the same mod-presentation components and
+editor-open command, in addition to the presentation-event and bounty contracts in [networking-next](networking-next.md).
 Ground-item material IDs and optional blood-event attacker IDs
 travel with their existing state/event components. Attacker IDs are removed when that recipient cannot see the attacker.
 The authoritative `AnimalsPickUp` rule is included in gameplay settings and their digest. Older build identities fail admission;
@@ -57,6 +57,35 @@ admission and a usable view. Creation and invitation replies are private to the 
 recovery uses the original operation identity and lookup/resume, not automatic replay. Graphical gameplay uses
 `IPlayerSession`; [graphical admission](#graphical-admission) performs account and creation flow before handing
 the session to the world host. Source and test coverage do not yet establish final multi-client gameplay acceptance.
+## Mod presentation and new inspection state
+
+**Observed** (source): `Meters` and `ModSkills` use explicit changed-only binary components. A remote view includes at most its selected
+lead and inspected character's new UI details; other players' skill arrays stay private. Nullable meter slots retain registration indices,
+and mod skills preserve the upstream NaN sentinel. Effective vanilla stats already use the existing skill/HUD components; temporary
+modifiers are evaluated by the authority. Registration capacity is shared by the headless mod host and client UI: 4 meters and 34 skills.
+Meter tooltips have a separate absolute component from their dynamic bar/value/arrows. A digest binds the two components; reordered
+updates display a tooltip only when its table matches the readings. Baselines require both components, and withdrawal clears both.
+Changing tooltip tables larger than 1024 bytes coalesce the complete meter presentation to 2 Hz using monotonic time. The last sent pair
+remains coherent until the latest capture is due; new entities and visibility/text withdrawals publish immediately. Static tooltips do not
+slow dynamic readings, and short changing tooltips retain their normal cadence.
+
+`BoneMeshes` is public only for observable characters and sends bounded asset/bone references and local transforms, not mesh data or
+per-frame bone matrices. Baselines, changes and removal use the existing lifecycle/revision ledger. Matching content/code manifests supply
+both endpoints' definitions; clients do not run authoritative mod systems to reconstruct state. Cosmetic meters/attachments remain unsaved,
+while custom skill levels use upstream STATS persistence and temporary modifiers retain their mod-sidecar restoration contract.
+
+`InspectedLevelPower` is one nullable binary component for a known, observable building. Static level lights with no machine/fixture entry
+can be inspected through their known position and the last validated observation filter, rechecked against current controlled roles.
+The level index resolves the current town list and effective ruin state, including layout changes and taken-over player buildings.
+This read-only fallback does not add a worksite or grant inventory/configuration access. `StealChance` is calculated for the actual loot or
+container opener and is absent outside that session; a null value consumes no item JSON property. Its tooltip changes at whole-percent
+precision, without changing the server's theft roll.
+
+Command 121 (`InPlayEditorOpened`) carries one character and its server-issued editor session. Current control/membership, session owner,
+character and surgeon proximity are checked before hair restoration. The session records that opening already ran, so replay does not undo
+later shaving; captivity stays intact. Remote debug stat/editor commands remain unexposed. Source/binary compatibility is enforced at admission.
+Payload estimates, bounds and the 500 KiB/s acceptance target live in [the bandwidth contract](networking-next.md#upstream-presentation-budget).
+
 ## Regional weather
 
 `WeatherFrame` carries public regional schedules and their authoritative clock, or an explicitly disabled

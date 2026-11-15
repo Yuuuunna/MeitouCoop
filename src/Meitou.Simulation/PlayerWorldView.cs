@@ -239,9 +239,15 @@ public sealed partial class World
         };
         if (state.InspectedBuilding is { } inspected && (buildings.Any(b => b.Id == inspected) || doors.Any(d => d.Building == inspected)
             || workSites.Any(s => s.Id == inspected) || machines.Any(m => m.Site == inspected)
-            || snapshot.Beds.Any(b => b.Id == inspected) || snapshot.Cages.Any(c => c.Id == inspected) || snapshot.Containers.Any(c => c.Id == inspected)))
+            || snapshot.Beds.Any(b => b.Id == inspected) || snapshot.Cages.Any(c => c.Id == inspected) || snapshot.Containers.Any(c => c.Id == inspected)
+            || snapshot.Seats.Any(s => s.Id == inspected) || snapshot.Dummies.Any(d => d.Id == inspected)
+            || _production?.LevelBuildingPosition(this, inspected) is { } levelPosition && Nearby(levelPosition)))
         {
-            snapshot = snapshot with { InspectedRichness = _production?.RichnessOf(this, inspected) };
+            snapshot = snapshot with
+            {
+                InspectedRichness = _production?.RichnessOf(this, inspected),
+                InspectedLevelPower = _production?.LevelPowerOf(this, inspected),
+            };
             var detail = SystemOf<Locks.BedSystem>()?.DetailOf(this, inspected, state.Faction) ?? Fixtures.DetailOf(inspected, state.Faction);
             if (detail is not null) snapshot = snapshot with
             {
@@ -321,6 +327,7 @@ public sealed partial class World
         Inspected = c.Inspected,
         Skills = c.Inspected ? c.Skills : null,
         Hud = c.Inspected ? c.Hud : null,
+        Meters = c.Inspected ? c.Meters : [],
         HealthParts = c.Inspected ? c.HealthParts : [],
         Bounties = c.Inspected ? c.Bounties : [],
         Slave = c.Inspected ? c.Slave : null,
@@ -348,6 +355,7 @@ public sealed partial class World
         Lean = c.Lean,
         Anchor = c.Anchor,
         HeldTool = c.HeldTool,
+        BoneMeshes = c.BoneMeshes,
         Scale = c.Scale,
         Task = c.Task,
         Body = c.Body is { } body ? body with { MedicJob = false, RescueJob = false } : null,

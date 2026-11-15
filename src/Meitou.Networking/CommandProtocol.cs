@@ -104,6 +104,7 @@ public static class CommandProtocol
         [112] = typeof(RestOrder),
         [113] = typeof(MedicJobCommand),
         [120] = typeof(EditCharacter),
+        [121] = typeof(InPlayEditorOpened),
         [130] = typeof(PickUpOrder),
         [131] = typeof(PutDownOrder),
         [132] = typeof(LootOrder),
@@ -252,6 +253,8 @@ public static class CommandProtocol
 
         switch (command)
         {
+            case InPlayEditorOpened opened when opened.Character.IsNone || opened.SessionId == Guid.Empty:
+                throw new InvalidDataException("Opening the character editor requires its authorized character and session.");
             case MoveOrder move:
                 Position(move.Target);
                 break;

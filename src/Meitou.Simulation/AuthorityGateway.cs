@@ -45,6 +45,14 @@ public sealed class AuthorityConnection
     internal ViewGrantStamp? PinnedGrant;
     internal HashSet<CharacterId> PublishedCharacters = [];
     internal HashSet<string> PublishedSites = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The last validated, detached observation scope; static-content inspection must recheck it against current authorized role positions.
+    /// </summary>
+    internal PlayerViewRequest? Observation;
+    /// <summary>
+    /// Server-owned observation rules paired with <see cref="Observation"/>.
+    /// </summary>
+    internal PlayerObservationRules? ObservationRules;
 }
 
 /// <summary>
@@ -200,6 +208,8 @@ public sealed class AuthorityGateway : IDisposable
             _world.MovementTrace?.Emit(new(LatencyStage.CaptureStarted, connection.World, connection.Player.Value, connection.Generation,
                 Publication: connection.ViewSequence + 1));
             var view = _world.CapturePlayerView(connection, request, rules);
+            connection.Observation = new(request.Zones?.ToArray());
+            connection.ObservationRules = rules;
             connection.PublishedCharacters = view.Snapshot.Characters.Select(c => c.Id).ToHashSet();
             connection.PublishedSites = view.Snapshot.Buildings.Select(b => b.Id).Concat(view.Snapshot.DoorPicks.Select(d => d.Building))
                 .Concat(view.Snapshot.Beds.Select(b => b.Id)).Concat(view.Snapshot.Cages.Select(c => c.Id))
@@ -539,7 +549,8 @@ public sealed class AuthorityGateway : IDisposable
         if (connection.Phase != AdmissionPhase.Active) return AuthorityStatus.NotActive;
         if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return AuthorityStatus.NoActiveRole; }
         if (request.Command is InspectCommand inspect && !inspect.Target.IsNone && !connection.PublishedCharacters.Contains(inspect.Target)
-            || request.Command is InspectBuildingCommand { Instance: { } site } && !connection.PublishedSites.Contains(site))
+            || request.Command is InspectBuildingCommand { Instance: { } site } && !connection.PublishedSites.Contains(site)
+                && !_world.CanObserveLevelBuilding(connection.Player, site, connection.Observation, connection.ObservationRules))
             return AuthorityStatus.InvalidRequest;
         string? workSite = request.Command switch
         {

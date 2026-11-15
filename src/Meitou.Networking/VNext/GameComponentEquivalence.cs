@@ -109,7 +109,81 @@ internal static class GameComponentEquivalence
         int curBurdenPct = (int)((1f - Math.Clamp(cur.Burden, 0f, 1f)) * 100f);
         if (oldBurdenPct != curBurdenPct || (old.Burden >= 1f) != (cur.Burden >= 1f) || MathF.Abs(old.Burden - cur.Burden) > 0.005f)
             return false;
-        return old.Items.SequenceEqual(cur.Items);
+        if (old.Items.Count != cur.Items.Count) return false;
+        for (int i = 0; i < old.Items.Count; i++)
+        {
+            var a = old.Items[i];
+            var b = cur.Items[i];
+            if (a == b) continue;
+            if (!SameStealChance(a.StealChance, b.StealChance) || a with { StealChance = b.StealChance } != b) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The tooltip truncates the clamped chance to a whole percent; a roll's private exact probability stays on the authority.
+    /// </summary>
+    static bool SameStealChance(float? a, float? b) => a.HasValue == b.HasValue
+        && (a is null || (int)(Math.Min(a.Value, 1) * 100) == (int)(Math.Min(b!.Value, 1) * 100));
+
+    /// <summary>
+    /// Meter text changes immediately; otherwise compare the three bar layers at the same 1024-step precision used by health displays.
+    /// </summary>
+    internal static bool SameMeters(IReadOnlyList<MeterReading?> a, IReadOnlyList<MeterReading?> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i] is not { } x || b[i] is not { } y)
+            {
+                if (a[i].HasValue != b[i].HasValue) return false;
+                continue;
+            }
+
+            if (x.Value != y.Value || x.Arrows != y.Arrows || x.Tooltip != y.Tooltip
+                || BarStep(x.Green) != BarStep(y.Green) || BarStep(x.Yellow) != BarStep(y.Yellow) || BarStep(x.Red) != BarStep(y.Red))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Stable explanatory text is independent of dynamic bar values. Slot count and presence remain part of its absolute identity.
+    /// </summary>
+    internal static bool SameMeterTooltips(IReadOnlyList<MeterReading?> a, IReadOnlyList<MeterReading?> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].HasValue != b[i].HasValue || a[i]?.Tooltip != b[i]?.Tooltip) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The stats panel shows whole levels, whole percent XP and a fractional progress bar. Authority levels and saves keep exact floats.
+    /// </summary>
+    internal static bool SameModSkills(IReadOnlyList<float> a, IReadOnlyList<float> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            float x = a[i], y = b[i];
+            if (float.IsNaN(x) || float.IsNaN(y))
+            {
+                if (float.IsNaN(x) != float.IsNaN(y)) return false;
+                continue;
+            }
+
+            if (MathF.Floor(x) != MathF.Floor(y)) return false;
+            float xPart = x - MathF.Floor(x), yPart = y - MathF.Floor(y);
+            if ((int)(xPart * 100) != (int)(yPart * 100) || BarStep(xPart) != BarStep(yPart)) return false;
+        }
+
+        return true;
     }
 
     public static bool SameHud(HudView? old, HudView? cur)

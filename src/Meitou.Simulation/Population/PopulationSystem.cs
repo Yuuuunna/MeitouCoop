@@ -1207,6 +1207,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     Squad NewSquad(World world, BuiltSquad built, TownSite? site, float radius, int platoonId, bool pinned, bool wild)
     {
         var walk = world.Walkability;
+        float? nearY = built.Grounded ? GroundLevel(walk, built.Position) : built.NearY;
         return new Squad
         {
             Id = world.Squads.NextId(),
@@ -1217,7 +1218,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
             PlatoonId = platoonId,
             Pinned = pinned,
             Wild = wild,
-            Position = new Vector3(built.Position.X, Ground(walk, built.Position.X, built.Position.Y, built.NearY), built.Position.Y),
+            Position = new Vector3(built.Position.X, Ground(walk, built.Position.X, built.Position.Y, nearY), built.Position.Y),
             HomeCentre = site is null ? built.Position : new Vector2(site.Position.X, site.Position.Z),
             HomeRadius = Math.Max(radius * 0.8f, 40),
             HomeBuilding = built.Home,
@@ -1231,6 +1232,8 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     (float X, float Z, float? StandY) StandSpot(World world, IWalkability walk, BuiltSquad built, MemberPlan plan, int squadId)
     {
         float x = built.Position.X + plan.Offset.X, z = built.Position.Y + plan.Offset.Y;
+        if (built.Grounded) return GroundedSpot(walk, built, x, z);
+
         float? memberY = built.NearY;
 
         // A resident is made at a node of its own (FUN_14057f820), not round the platoon point.
@@ -1255,6 +1258,17 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         }
 
         return (x, z, standY);
+    }
+
+    /// <summary>
+    /// Where a member of a <see cref="BuiltSquad.Grounded"/> squad is made: on the ground-level surface at its offset, else at the squad's spot.
+    /// </summary>
+    static (float X, float Z, float? StandY) GroundedSpot(IWalkability walk, BuiltSquad built, float x, float z)
+    {
+        if (GroundLevel(walk, new Vector2(x, z)) is { } y) return (x, z, y);
+
+        var at = built.Position;
+        return (at.X, at.Y, GroundLevel(walk, at));
     }
 
     /// <summary>

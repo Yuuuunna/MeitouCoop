@@ -11,6 +11,7 @@ using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
 using Meitou.Data.Ogre;
 using Meitou.Data.Textures;
+using Meitou.Data.World;
 using Meitou.Game.Rendering.Foliage;
 using Meitou.Game.Rendering.Frame;
 using Meitou.Game.Rendering.Gpu;
@@ -203,6 +204,10 @@ internal sealed class PartMaterial
     /// the colour map is applied with <see cref = "Colour1"/> and <see cref = "Colour2"/>; <c>DoubleSided</c>: drawn without back-face culling.
     /// </summary>
     public bool DoubleSided;
+    /// <summary>
+    /// A see-through item (Meitou; <see cref="OpacityDither"/>): its opacity map is in <see cref="CharacterShaders.SlotOpacity"/>.
+    /// </summary>
+    public bool SeeThrough;
     /// <summary>
     /// Worn on the body's skeleton (the original's Skinned template): matte (its glossMult is 0).
     /// </summary>
@@ -1413,12 +1418,20 @@ internal sealed class CharacterContent : IDisposable
     /// </summary>
     internal const float HairLodScale = 4;
     /// <summary>
-    /// The disk cache of the generated levels, <c>%LOCALAPPDATA%\Meitou\charlods</c> (<c>MEITOU_CHARACTER_LOD_CACHE</c>; neither read nor written
+    /// The disk cache of the generated levels, <see cref="LoadCaches.Root"/>'s <c>charlods</c> (<c>MEITOU_CHARACTER_LOD_CACHE</c>; neither read nor written
     /// with <c>--no-load-cache</c>), as the objects' (<see cref="ObjectLodGen.Root"/>): building the levels is nearly all of a mesh's preparation,
     /// and a town's crowd took about 40 s of worker time at every load.
     /// </summary>
-    public static string LodRoot { get; set; } = Environment.GetEnvironmentVariable("MEITOU_CHARACTER_LOD_CACHE")
-        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "charlods");
+    public static string LodRoot
+    {
+        get => s_lodRoot ?? Environment.GetEnvironmentVariable("MEITOU_CHARACTER_LOD_CACHE") ?? LoadCaches.Folder("charlods");
+        set => s_lodRoot = value;
+    }
+
+    /// <summary>
+    /// The folder <see cref="LodRoot"/> was set to; null for the default.
+    /// </summary>
+    static string? s_lodRoot;
     /// <summary>
     /// Bumped when what the character levels are built from changes (with <see cref="FoliageLodBuilder.Version"/>, the cache's key).
     /// </summary>
@@ -1990,7 +2003,20 @@ internal sealed class CharacterContent : IDisposable
 
         m.ClipOnNormalAlpha = worn && Tex(spec, "normal map") is not null;
         m.DoubleSided = spec.GetInt("material type") == 2;
+        SetOpacityMap(m, spec);
         return m;
+    }
+
+    /// <summary>
+    /// A clothing material's opacity map (Meitou's <c>opacity map</c> field) into <see cref="CharacterShaders.SlotOpacity"/>: the item is
+    /// see-through (<see cref="PartMaterial.SeeThrough"/>; nothing without one).
+    /// </summary>
+    void SetOpacityMap(PartMaterial m, GameRecord spec)
+    {
+        if (spec.Type != FcsRecordType.MaterialSpecsClothing || Tex(spec, OpacityDither.MapField) is not { } map) return;
+
+        m.Tex[CharacterShaders.SlotOpacity] = Texture(map, false);
+        m.SeeThrough = true;
     }
 
     /// <summary>
@@ -2049,6 +2075,7 @@ internal sealed class CharacterContent : IDisposable
             m.Tex[CharacterShaders.SlotNormal] = Texture(Tex(spec, "normal map"), false);
             m.ClipOnNormalAlpha = Tex(spec, "normal map") is not null;
             m.DoubleSided = spec.GetInt("material type") == 2;
+            SetOpacityMap(m, spec);
             if (dye is { Type: FcsRecordType.ColorData } && Tex(spec, "color map") is not null)
             {
                 m.Description += $", dye '{dye.Name}'";

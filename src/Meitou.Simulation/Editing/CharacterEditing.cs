@@ -60,6 +60,11 @@ public sealed record EditCharacter(CharacterId Character, FcsRecord? Appearance,
 public sealed record FinishCreation : SimCommand;
 
 /// <summary>
+/// The in-play editor opened on one character. Remote callers must present the server-issued editor session before hair can grow back.
+/// </summary>
+public sealed record InPlayEditorOpened(CharacterId Character, Guid SessionId) : SimCommand;
+
+/// <summary>
 /// Applies <see cref="EditCharacter"/> (the player system's inputs).
 /// </summary>
 public static class CharacterEditing
@@ -91,7 +96,8 @@ public static class CharacterEditing
         var player = world.CommandPlayer(edit);
         if (player is null) return;
         var session = edit.Kind == EditKind.Creation ? null : CharacterEditSessions.Find(world, edit);
-        if (edit.Kind != EditKind.Creation && session is null) { Post("The character editor session has expired."); return; }
+        bool localDebug = edit.Kind == EditKind.Recruit && edit.Issuer is null && !world.Players.RequiresExplicitControl;
+        if (edit.Kind != EditKind.Creation && session is null && !localDebug) { Post("The character editor session has expired."); return; }
         if (session?.Applied == true) return;
         if (edit.Kind == EditKind.Creation && (edit.Issuer is not null || world.Players.RequiresExplicitControl))
         { Post("Use the server creation request to create characters."); return; }
@@ -118,9 +124,7 @@ public static class CharacterEditing
                     { Post("Surgery payment is no longer authorized."); return; }
                 }
             }
-            string renamed = edit.Name.Trim();
-            if (renamed.Length > MaxNameLength) renamed = renamed[..MaxNameLength];
-            if (renamed.Length > 0) cold.Name = renamed;
+            Rename(cold, edit.Name);
             if (session is not null) session.Applied = true;
             return;
         }
@@ -219,9 +223,7 @@ public static class CharacterEditing
             cold.LookEdited = true;
         }
         else { Post("The edited look could not be made."); return; }
-        string name = edit.Name.Trim();
-        if (name.Length > MaxNameLength) name = name[..MaxNameLength];
-        if (name.Length > 0) cold.Name = name;
+        Rename(cold, edit.Name);
         if (session is not null) session.Applied = true;
     }
 
@@ -244,6 +246,48 @@ public static class CharacterEditing
         }
 
         return list;
+    }
+
+    /// <summary>
+    /// The typed name, trimmed and cut to <see cref="MaxNameLength"/>; an empty one leaves the name.
+    /// </summary>
+    static void Rename(CharacterCold cold, string typed)
+    {
+        string name = typed.Trim();
+        if (name.Length > MaxNameLength) name = name[..MaxNameLength];
+        if (name.Length > 0)
+        {
+            cold.Name = name;
+        }
+    }
+
+    /// <summary>
+    /// The in-play editor opened (<see cref="InPlayEditorOpened"/>; the original's editor constructor in mode 1, <c>FUN_1405f4dd0</c>, reached
+    /// from a surgeon's DA_CHARACTER_EDITOR, DA 3 recruiting and animal buying): every listed human's shaven head grows back at once, before any
+    /// edit and also when the editor is then closed unconfirmed. Only the hair: the slave state stays.
+    /// </summary>
+    internal static void GrowHair(World world, CharacterAssembly? assembly, InPlayEditorOpened opened)
+    {
+        if (!world.MayOrder(opened, opened.Character)) return;
+        var session = CharacterEditSessions.Find(world, opened);
+        if (session is null && (opened.Issuer is not null || world.Players.RequiresExplicitControl)) return;
+        if (session is { Applied: true } or { Opened: true }) return;
+        if (!world.Characters.TryResolveNext(opened.Character, out int slot)
+            || world.Characters.Cold(slot) is not { IsPlayer: true } cold || SquadRegistry.IsAnimal(cold)) return;
+
+        if (session is not null)
+        {
+            if (session.Kind == EditKind.Surgery && (!world.Characters.TryResolveNext(session.Surgeon, out int surgeon)
+                || !world.Characters.IsAlive(session.Surgeon)
+                || System.Numerics.Vector3.Distance(world.Characters.Next[slot].Position,
+                    world.Characters.Next[surgeon].Position) > SurgeonReach)) return;
+
+            session.Opened = true;
+        }
+
+        if (!cold.Shaved) return;
+        cold.Shaved = false;   // CharacterHuman::shaveHead(false); captivity and slave ownership stay intact.
+        assembly?.MatchShave(cold);
     }
 
     /// <summary>

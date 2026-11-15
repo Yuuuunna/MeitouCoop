@@ -28,4 +28,15 @@ public sealed partial class World
         var anchors = Players.KnownRoles(player).Select(ObservationAnchor).OfType<Vector3>();
         return InsideObservation(Characters.Current[slot].Position, request.Zones?.ToHashSet(), anchors, rules.Radius * rules.Radius);
     }
+
+    /// <summary>
+    /// Static level furniture is known from matching content, but inspecting its live power still requires the player's current observation area.
+    /// This read-only check never grants work, inventory or building-management authority.
+    /// </summary>
+    internal bool CanObserveLevelBuilding(PlayerId player, string key, PlayerViewRequest? request, PlayerObservationRules? rules)
+    {
+        if (request is null || rules is null || _production?.LevelBuildingPosition(this, key) is not { } position) return false;
+        var anchors = Players.KnownRoles(player).Select(ObservationAnchor).OfType<Vector3>();
+        return InsideObservation(position, request.Zones?.ToHashSet(), anchors, rules.Radius * rules.Radius);
+    }
 }

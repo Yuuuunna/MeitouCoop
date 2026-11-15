@@ -9,6 +9,10 @@ General loader contract: [modding](modding.md).
 `Meitou.Modding` assembly on both client and server. A failed initialization commits no pending slots; duplicate
 inventory sections or FCS slot numbers are refused. This adds no manifest keys and retains loader API 2.
 
+`AddMedicalMeter` and `AddSkill` use the same shared registration path and dependency order. Meter and skill snapshot indices follow that
+order on the server and every client. Simulation owns the limits (four meters; skill column capacities 11, 8, 10 and 5), so a headless server
+does not load the game's stats window to validate a mod. These additive APIs retain loader API 2 and require matching code mods on peers.
+
 ## Manifest
 
 ```json

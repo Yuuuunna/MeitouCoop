@@ -1099,6 +1099,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         hud.Picking.MeshHit = (id, origin, direction) => _characters?.RayHit(host.DrawKey(id), origin, direction);
         hud.Floor = (() => host.Interiors.ViewedFloorValue, host.Interiors.StepFloor);
         hud.Picking.BuildingMoveHit = (origin, direction, distance) => _objects?.MoveHit(origin, direction, host.Interiors.ViewedFloorValue, distance);
+        hud.Picking.CutGroundReach = (origin, direction, ground) => _objects?.CutGroundReach(origin, direction, ground);
         hud.Picking.SurfaceMoveHit = host.Interiors.SurfaceMoveHit;
         hud.Picking.InteriorFaceHit = (origin, direction, distance) => _objects?.FaceHit(origin, direction, host.Interiors.ViewedFloorValue, distance);
         hud.Picking.HasRooms = key => _objects?.InteriorFor(key) is not null;
@@ -2900,6 +2901,9 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             _hud.ViewProjection = view * host.Camera.Projection(aspect, host.Camera.Near, host.Camera.ViewDistance);
             // The move order under a held right button follows the cursor once a frame, as the Vulkan host's Steer does.
             _hud.Steer();
+
+            // The world draws the marker, so it fades with the interface hidden (F7) too.
+            _hud.MoveMarker.FadeMarker();
             if (_hud.UiVisible)
             {
                 _hud.Draw(overlay, size.X, size.Y, overlayPass);
