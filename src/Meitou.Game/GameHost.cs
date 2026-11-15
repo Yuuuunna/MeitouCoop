@@ -907,7 +907,11 @@ sealed partial class GameHost(
         Player.StealthView.DrawnHead = id => Gpu.Characters?.BonePosition(DrawKey(id), "Bip01 Head");
         Player.Furniture.AboveViewedFloor = Interiors.AboveViewedFloor;
         Player.Furniture.FloorHidden = Interiors.FloorHidden;
-        Player.Furniture.DoorShape = (record, door) => Nav?.Walkability.DoorGeometry?.Shape(record, door) ?? [];
+
+        // Remote presentation has no navigation owner; door collision still comes from compatible local content.
+        var doors = Nav?.Walkability.DoorGeometry;
+        if (doors is null && Scene.Database is { } db) doors = new Simulation.Navigation.NavDoorGeometry(Install, db);
+        Player.Furniture.DoorShape = doors is null ? null : doors.Shape;
 
         Player.GroundItemPicks.GroundItemShape = GroundItemSync.GroundShape;
         Player.GroundItemPicks.GroundItemHidden = GroundItemSync.HiddenGround.Contains;

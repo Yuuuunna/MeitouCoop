@@ -30,6 +30,9 @@ with static presentation content and no local World. Optional `--create-faction`
 start/appearance; `--role` selects a persistent role, and `--connection-check` validates admission without GPU.
 **Verified** by published Release account entry and an offscreen GPU/HUD capture (2026-10-31). Full connection
 menus, creation editing UI and complete interactive gameplay acceptance remain unfinished.
+**Observed** (`OnlineGame.BootOnline`, `GameHost.ConnectPicking`): remote Vulkan door picking reads collision
+from compatible local content without a navigation owner; door identity, placement and motion come from the
+authorized snapshot. Graphical door hover/menu/open-close acceptance remains **Unknown**.
 Remote regional weather uses [authoritative presentation imports](networking.md#regional-weather); it neither
 advances a local schedule nor writes simulation weather. Local imports use the same no-roll presentation path.
 Both session types expose authoritative effect roots to the renderer; the local runtime caches detached roots
