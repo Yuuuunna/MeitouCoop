@@ -500,6 +500,10 @@ Talk menu's dry run is picking.
 
 ## Effects
 
+**Observed** (installed base load order, `GameDatabase` reference traversal): Rebirth dialogues `42180-rebirth.mod`
+(slave escape opportunity) and `46961-rebirth.mod` (slave escape opportunity alone) contain effect 28
+(`DA_SEPARATE_TO_MY_OWN_SQUAD`). This establishes authored effects, not which actor the original engine moves.
+
 `FUN_140680560(dialogue, line)`, run when a line is said or a reply clicked, in this order:
 1. `unlocks` (listed unlocked, **and the current dialogue locked**), `unlock but keep me` (listed unlocked), `locks`: the speaker's own
    lock map (the state `FUN_140680560` runs on: the owner's, or for a chained bubble line its speaker's, [chain](#ambient-conversations)).

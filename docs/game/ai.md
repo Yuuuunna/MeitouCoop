@@ -83,6 +83,12 @@ vtable is the RTTI class named here; the editor's enum names are matched to the 
 
 ### Prisoner and slaver packages
 
+**Observed** (installed base load order, `AiDatabase.Package`): `5260-gamedata.base` (slave worker day guard)
+resolves leader/squad goals including 167, 168, 173 and 188, but not 192, 194 or 218; caging alone does not establish a delivery goal ran.
+
+**Observed** (same reader): `63476-rebirth.mod` (Slaver deliver to nearest depot) includes handover goal 194;
+templates `55016-rebirth.mod` (manhunter patrol (N)) and `55102-rebirth.mod` (slave hunters (N)) reference it.
+
 **Observed** (each class's vtable decompiled: slot 6 activate, 12 can start, 13 finished, 19 the class's own finder; the base `AIPackage` slot 12 is 1, slot 13 is 0).
 Meitou: [simulation, captives](../simulation.md#captives).
 

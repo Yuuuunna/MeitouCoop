@@ -28,9 +28,9 @@ namespace Meitou.Simulation.Kidnap;
 /// cage is opened (<b>engine reading</b>: which task does it in the original is <b>Unknown</b>). A player character is gathered too.</item>
 /// <item><b>Deliver</b> (192 "Delivering slaves", wanted at 0.25 per slave, AI slot 65; then 194 / 218 "Selling slaves", 218 only in a prison or
 /// slave camp, AI slot 66): the leader walks to the shipping package's town (<see cref="Blackboard.MissionTown"/>); there it says event 39
-/// SLAVE_DELIVERY to the nearest member of an allied squad of the town and hands its slaves over: each leaves the squad for a squad of its own, owned
-/// by the town's faction and put into a free cage of the town (<b>engine choice</b>: the original's handover goes through that dialogue, and no
-/// base-game dialogue answers event 39, <b>Unknown</b>).</item>
+/// SLAVE_DELIVERY to the nearest member of an allied squad of the town and hands its slaves over: NPC slaves leave for squads of their own;
+/// player characters retain their squad and control. Both take the town faction's slave ownership and a free cage of the town
+/// (<b>engine choice</b>: the original's handover goes through that dialogue, and no base-game dialogue answers event 39, <b>Unknown</b>).</item>
 /// <item><b>Get in the cage</b> (172 "Getting in my cage", a Slave AI Goal; <c>FUN_1408caaf0</c>, <b>Observed</b>): a slave not held walks to the
 /// nearest free cage of its owner's faction in the 3x3 zone cells round it, in any town, and gets in (<c>Task_UseCage</c>).</item>
 /// </list>
@@ -336,48 +336,87 @@ public sealed partial class CaptiveSystem
         if (CharacterFacts.CrouchingOrLying(wc)) return true;   // row 192's B list needs !26: it does nothing while its leader crouches or lies
         TaskStart.Stand(table, w);
 
+        return HandOverSlaves(world, j, w, wc, squad, board);
+    }
+
+    /// <summary>
+    /// Hands the squad's slaves to an eligible receiver at the destination when its current goals permit delivery.
+    /// </summary>
+    bool HandOverSlaves(World world, CaptiveJob job, int worker, CharacterCold workerCold, Squad squad, Blackboard board)
+    {
+        var site = data.Sites[job.Site];
+
         // 218 only in a prison or a slave camp; 194 anywhere (AI slot 66 FUN_140597c70, 65).
         int hour = world.Hour;
-        var roles = board.Roles[(int)AiSystem.RoleOf(squad, j.Worker, wc)];
+        var roles = board.Roles[(int)AiSystem.RoleOf(squad, job.Worker, workerCold)];
         bool hands = false;
         foreach (var g in roles)
         {
             if (g.InWindow(hour) && (g.Task.Type == TaskType.GiveAllMySlavesTo
                 || g.Task.Type == TaskType.GiveAllMySlavesToIfItsAnImportTown && site.Town.Type is TownType.Prison
-                        or TownType.SlaveCamp)) hands = true;
+                        or TownType.SlaveCamp))
+            {
+                hands = true;
+            }
         }
 
-        if (!hands) return End(world, j, CaptiveEventKind.GaveUp);
-        int owner = j.Site < data.SiteFactions.Count && data.SiteFactions[j.Site] >= 0 ? data.SiteFactions[j.Site] : wc.Faction;
+        if (!hands) return End(world, job, CaptiveEventKind.GaveUp);
+        int owner = job.Site < data.SiteFactions.Count && data.SiteFactions[job.Site] >= 0
+            ? data.SiteFactions[job.Site] : workerCold.Faction;
+        var centre = new Vector2(site.Position.X, site.Position.Z);
+        float radius = MathF.Max(site.Town.Radius, 100);
 
         // The receiver finder (FUN_1408ca950) finding nobody makes the goal unwanted: nothing is handed over, the next sweep retries.
-        if (Receiver(world, w, owner, centre, r) is not { } to) return End(world, j, CaptiveEventKind.GaveUp);
-        world.Defer(new Dialogue.DialogueEvent(j.Worker, to, SlaveDelivery) { Tick = world.Tick + 1 });
-        int master = table.Cold(to.Slot) is { } rc ? rc.SquadId : -1;
-        foreach (int s in SlavesOf(world, squad).ToList())
+        if (Receiver(world, worker, owner, centre, radius) is not { } to)
+            return End(world, job, CaptiveEventKind.GaveUp);
+
+        world.Defer(new Dialogue.DialogueEvent(job.Worker, to, SlaveDelivery) { Tick = world.Tick + 1 });
+
+        int master = world.Characters.Cold(to.Slot) is { } receiver ? receiver.SquadId : -1;
+        foreach (int slot in SlavesOf(world, squad).ToList()) DeliverSlave(world, job, slot, owner, master);
+
+        return End(world, job, null);
+    }
+
+    /// <summary>
+    /// Changes a delivered slave's master and cages it, preserving player squad membership and persistent control grants.
+    /// </summary>
+    void DeliverSlave(World world, CaptiveJob job, int slot, int owner, int master)
+    {
+        var table = world.Characters;
+        var cold = table.Cold(slot)!;
+        var id = table.IdOf(slot);
+
+        // Slave ownership is captivity, independent of player ownership and the squad roster (docs/multiplayer.md).
+        if (!cold.IsPlayer && world.Players.KnownControl(cold.Entity) is null)
+            Join(world, id, cold, NewSquad(world, cold, table.Next[slot].Position), SquadRole.Leader);
+
+        FixtureRegistry.Enslave(world, cold, owner, master);
+        if (DeliveryCage(world, job.Site, owner, table.Next[slot].Position) is { } cage)
+            world.Fixtures.Imprison(world, id, cage);
+
+        if (Settings.RecordLog)
+            _log.Add(new CaptiveEvent(world.Tick, CaptiveEventKind.Delivered, job.Kind, job.Worker, id));
+    }
+
+    /// <summary>
+    /// The nearest available cage of the receiving faction or an ally in the delivery town.
+    /// </summary>
+    Fixture? DeliveryCage(World world, int site, int owner, Vector3 position)
+    {
+        var at = new Vector2(position.X, position.Z);
+        Fixture? best = null;
+        float bestDistance = float.MaxValue;
+        foreach (var cage in CagesOf(world, site))
         {
-            var sc = table.Cold(s)!;
-            var id = table.IdOf(s);
-            Join(world, id, sc, NewSquad(world, sc, table.Next[s].Position), SquadRole.Leader);
-            FixtureRegistry.Enslave(world, sc, owner, master);
-            Fixture? best = null;
-            float bestD = float.MaxValue;
-            foreach (var f in CagesOf(world, j.Site))
-            {
-                if (f.Owner != owner && !Allied(owner, f.Owner) || !FixtureRegistry.IsFree(table, f) || Taken(f.Id))
-                    continue;
+            if (cage.Owner != owner && !Allied(owner, cage.Owner) || !FixtureRegistry.IsFree(world.Characters, cage) || Taken(cage.Id))
+                continue;
 
-                float d = Vector2.DistanceSquared(new Vector2(table.Next[s].Position.X, table.Next[s].Position.Z),
-                        new Vector2(f.Position.X, f.Position.Z));
-                if (d < bestD) (best, bestD) = (f, d);
-            }
-
-            if (best is not null) world.Fixtures.Imprison(world, id, best);
-            if (Settings.RecordLog)
-                _log.Add(new CaptiveEvent(world.Tick, CaptiveEventKind.Delivered, j.Kind, j.Worker, id));
+            float distance = Vector2.DistanceSquared(at, new Vector2(cage.Position.X, cage.Position.Z));
+            if (distance < bestDistance) (best, bestDistance) = (cage, distance);
         }
 
-        return End(world, j, null);
+        return best;
     }
 
     /// <summary>

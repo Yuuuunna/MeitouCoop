@@ -165,6 +165,12 @@ NPC squad. Its faction must retain another living member. Each player faction ha
 death retains ownership records for future admission classification. Selection fallback uses only owned
 living roles. Faction naming requires `ManageFaction` and checks other factions' effective runtime names.
 
+**Observed** (`CaptiveSystem.DeliverSlave`, source and staged checkpoint delivery/save/restore replay): slave
+delivery preserves a player character's squad, member role and control grant, including offline persistent
+grants. It changes the slave owner/master and attempts caging; only NPC slaves without a control grant move
+into a new NPC squad. Captivity does not transfer player ownership or remove the character from the player
+roster and save records.
+
 Automatic healing/help/rescue, food consumption/storage searches and turret shoot-first use the role's
 controller settings. Offline controllers retain settings; unassigned roles use defaults. Cross-controller
 food sharing requires both players' sharing option and the same faction/squad. Transfers change which
