@@ -408,6 +408,13 @@ Stats are `float`s inside `CharStats`. The number is what RACE `heal stat`, `sta
 
 ### Levelling (XP)
 
+**Observed** (local `XpService.Combat` contract): a hit taken while unarmed trains `dodge` instead of `defence`, using the stored Dodge level
+and the race's Dodge XP multiplier; the event coefficient remains 2. Armed hits still train `defence`; successful dodges keep their separate
+`CombatSystem.ApplyBlow` reward. **Unknown**: whether this local rule matches original-game unarmed behaviour; the original-game evidence
+below records the event 4 write to `defence` at CharStats +0x124.
+This is a Coop-local bug patch: when upstream supersedes this logic, remove the local override and adopt the upstream implementation
+and corresponding test expectations.
+
 | Activity | Function | Effect (**Observed**) |
 | --- | --- | --- |
 | Hit landed (events 0 and 1) | `FUN_1408c6980` | **Verified** (decompile): `attack` (or `unarmed` when the stat-set kind at +0x1f0 is 5, still with the race's `map[2]`) gets 0.075 x skill-diff(own attack vs opponent defence) x `map[2]`; the current weapon skill (not for unarmed) gets 0.075 x skill-diff(skill x `map[20]` vs opponent defence), with no race factor in the gain; `dexterity` gets 0.075 x the attack's skill-diff x `map[18]` (unarmed too). Event 1 uses 0.5 (attack, dexterity) and 0.4 (weapon skill). Dexterity is also scaled by a CharStats factor from +0x19c/+0x1a0/+0x1a8 (`(+0x1a8 + +0x19c) / sum` when the sum is above 0, else 1; fields **Unknown**, Meitou uses 1) |

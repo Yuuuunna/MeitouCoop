@@ -19,6 +19,8 @@ Coop 主分支基线为 `ccec4b7516e1595ee7673d2157c161a96bd244e7`。
 静态建筑检查使用当前建筑列表和毁坏状态，且只授予观察，不扩大生产或库存权限。
 服务端 WorkSites、NPC 工作与资产管理分离等既有契约见[联机契约](multiplayer.md)。
 
+联机版自加补丁及回归上游条件：[空手受击经验](game/character-stats.md#levelling-xp)。
+
 ## 验证范围
 
 **Verified**（Linux x64，SDK 11.0.100、.NET 11.0.0；构建日志及 xUnit XML；未配置 Kenshi 安装）：

@@ -100,75 +100,73 @@ public sealed class XpService(GameConstants constants, BodyOptions options)
     /// <see cref="XpEvent.HitTaken"/>. <paramref name="weaponStat"/> is the current weapon's skill (none when unarmed);
     /// <paramref name="strengthFactor"/> is <see cref="WeaponWeightStrengthFactor"/>, or for unarmed (1 - the encumbrance factor).
     /// <paramref name="damageTaken"/> is the incoming packet's cut + blunt + pierce + stun (<see cref="XpEvent.HitTaken"/> only). The gains are
-    /// scaled by the Global damage multiplier option. <b>Verified</b> coefficients (decompile, docs/game/character-stats.md "Levelling"): per event,
-    /// which stats gain and by how much.
+    /// scaled by the Global damage multiplier option. The coefficients follow <c>FUN_1408c6980</c>; Meitou's local unarmed-hit rule trains Dodge
+    /// instead of MeleeDefence (docs/game/character-stats.md "Levelling").
     /// </summary>
     public void Combat(CharacterStats stats, RaceData race, XpEvent ev, bool unarmed, StatsEnumerated weaponStat, float opponentSkill,
         float strengthFactor, float damageTaken = 0)
     {
+        if (CombatCoefficients(ev) is not { } coefficients) return;
+
         var attackStat = unarmed ? StatsEnumerated.MartialArts : StatsEnumerated.MeleeAttack;
         float g = options.GlobalDamageMultiplier;
-        float attackCoef = 0, weaponCoef = 0, defenceCoef = 0, dexterityCoef = 0, strengthScale = 1;
-        switch (ev)
-        {
-            case XpEvent.HitDealt:
-                attackCoef = 1;
-                weaponCoef = 1;
-                dexterityCoef = 1;
-                break;
-            case XpEvent.GlancingHit:
-                attackCoef = 0.5f;
-                weaponCoef = 0.4f;
-                dexterityCoef = 0.5f;
-                break;
-            case XpEvent.Defended:
-                weaponCoef = 0.1f;
-                defenceCoef = 0.25f;
-                strengthScale = 0.4f;
-                break;
-            case XpEvent.HitTaken:
-                defenceCoef = 2;
-                strengthScale = 0.1f;
-                break;
-            case XpEvent.Event6:
-                attackCoef = 0.25f;
-                weaponCoef = 0.1f;
-                break;
-            default: return;
-        }
 
         // Verified (FUN_1408c6980): the attack gain takes the race's melee attack entry (map[2]) even when unarmed; the weapon skill gain takes no
         // race factor (the race's STAT_WEAPONS entry, map[20], scales the skill inside the difference instead); dexterity gets the attack's
         // difference.
-        if (attackCoef > 0)
+        if (coefficients.Attack > 0)
             stats.Gain(attackStat,
-                EventUnit * g * attackCoef * SkillDifferenceFactor(stats.Stored(attackStat), opponentSkill)
+                EventUnit * g * coefficients.Attack * SkillDifferenceFactor(stats.Stored(attackStat), opponentSkill)
                 * race.StatMultiplier(StatsEnumerated.MeleeAttack));
-        if (weaponCoef > 0 && weaponStat != StatsEnumerated.None)
-            stats.Gain(weaponStat, EventUnit * g * weaponCoef
+        if (coefficients.Weapon > 0 && weaponStat != StatsEnumerated.None)
+            stats.Gain(weaponStat, EventUnit * g * coefficients.Weapon
                 * SkillDifferenceFactor(stats.Stored(weaponStat) * race.StatMultiplier(StatsEnumerated.Weapons), opponentSkill));
-        if (dexterityCoef > 0)
-            PerEvent(stats, race, StatsEnumerated.Dexterity, g * dexterityCoef * SkillDifferenceFactor(stats.Stored(attackStat), opponentSkill));
-        if (defenceCoef > 0)
-        {
-            // Event 2 puts the race entry (map[19]) into the difference, event 4 into the gain.
-            if (ev == XpEvent.Defended)
-                stats.Gain(StatsEnumerated.MeleeDefence, EventUnit * g * defenceCoef
-                    * SkillDifferenceFactor(stats.Stored(StatsEnumerated.MeleeDefence) * race.StatMultiplier(StatsEnumerated.MeleeDefence), opponentSkill));
-            else
-                PerEvent(stats, race, StatsEnumerated.MeleeDefence,
-                    g * defenceCoef * SkillDifferenceFactor(stats.Stored(StatsEnumerated.MeleeDefence), opponentSkill));
-        }
+        if (coefficients.Dexterity > 0)
+            PerEvent(stats, race, StatsEnumerated.Dexterity,
+                g * coefficients.Dexterity * SkillDifferenceFactor(stats.Stored(attackStat), opponentSkill));
+        if (coefficients.Defence > 0) CombatDefence(stats, race, ev, unarmed, g * coefficients.Defence, opponentSkill);
 
         // Strength tail of every event: core(0.075 x 0.55 x 2 x xp rate strength x race[1]), scaled per event and by the weight factor.
         stats.Gain(StatsEnumerated.Strength,
-            0.075f * 0.55f * 2 * constants.XpRateStrength * race.StatMultiplier(StatsEnumerated.Strength) * strengthScale * strengthFactor * g);
+            0.075f * 0.55f * 2 * constants.XpRateStrength * race.StatMultiplier(StatsEnumerated.Strength) * coefficients.Strength * strengthFactor * g);
         if (ev == XpEvent.HitTaken)
         {
             // Verified (FUN_1408c6980 event 4): toughness x CharStats +0x34 (the stat scale) against the packet's four terms, x xp rate toughness.
             stats.Gain(StatsEnumerated.Toughness, EventUnit * g * constants.XpRateToughness
                 * SkillDifferenceFactor(stats.Stored(StatsEnumerated.Toughness) * stats.Scale, damageTaken) * race.StatMultiplier(StatsEnumerated.Toughness));
         }
+    }
+
+    /// <summary>
+    /// The per-event combat coefficients; an unknown event pays no XP.
+    /// </summary>
+    static (float Attack, float Weapon, float Defence, float Dexterity, float Strength)? CombatCoefficients(XpEvent ev) => ev switch
+    {
+        XpEvent.HitDealt => (1, 1, 0, 1, 1),
+        XpEvent.GlancingHit => (0.5f, 0.4f, 0, 0.5f, 1),
+        XpEvent.Defended => (0, 0.1f, 0.25f, 0, 0.4f),
+        XpEvent.HitTaken => (0, 0, 2, 0, 0.1f),
+        XpEvent.Event6 => (0.25f, 0.1f, 0, 0, 1),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Defensive XP: a block trains MeleeDefence; a hit taken trains Dodge when unarmed, otherwise MeleeDefence.
+    /// </summary>
+    void CombatDefence(CharacterStats stats, RaceData race, XpEvent ev, bool unarmed, float factor, float opponentSkill)
+    {
+        if (ev == XpEvent.Defended)
+        {
+            // Event 2 puts the race entry (map[19]) into the difference, event 4 into the gain.
+            stats.Gain(StatsEnumerated.MeleeDefence, EventUnit * factor
+                * SkillDifferenceFactor(stats.Stored(StatsEnumerated.MeleeDefence) * race.StatMultiplier(StatsEnumerated.MeleeDefence), opponentSkill));
+            return;
+        }
+
+        // Coop-local bug patch: when upstream supersedes this logic, remove the override and restore the upstream implementation.
+        // Parity with the original's stat-set kind 5 is unconfirmed.
+        var stat = unarmed ? StatsEnumerated.Dodge : StatsEnumerated.MeleeDefence;
+        PerEvent(stats, race, stat, factor * SkillDifferenceFactor(stats.Stored(stat), opponentSkill));
     }
 
     /// <summary>
