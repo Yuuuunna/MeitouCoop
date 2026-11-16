@@ -477,6 +477,10 @@ already carried body. Awake teammate pickup requires control of that teammate in
 downed victims and kidnapping retain normal gameplay/crime checks. Loot money credits the acting
 character's faction; NPC looting preferences come from the victim's controller.
 
+**Observed** (`CarrySystem.OpenLootPair`, `OpenableFor`, `ValidTransfer`): a carried target remains
+openable for inventory transfers, including by its carrier. The opener must be conscious, uncarried
+and in reach; control grants, session identity and both inventory revisions still gate transfers.
+
 **Observed** (implementation inspection): closing loot matches that player's actor, target and session,
 independently of container windows. Corpse disposal binds its selected machine/site, original owner,
 site revision, actor grant and membership revision until arrival. Losing these rights cancels the

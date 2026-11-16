@@ -1365,7 +1365,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         if (player is null || world.Players.RequiresExplicitControl && (!world.Players.CanControl(issuer ?? PlayerId.Local, player.LootOpener)
             || !_lootGrants.TryGetValue(issuer ?? PlayerId.Local, out var grant) || !world.Players.Validate(grant))) return null;
         var table = world.Characters;
-        return table.TryResolveNext(player.OpenLoot, out int t) && table.Cold(t) is { } body && body.CarriedBy.IsNone
+        return table.TryResolveNext(player.OpenLoot, out int t) && table.Cold(t) is { } body
             && table.TryResolveNext(player.LootOpener, out int o)
             && table.Cold(o) is { Medical.Incapacitated: false, Inventory: not null } looter && looter.CarriedBy.IsNone
             && OpenableFor(world, o, t) && InReach(world, table.Next[o], table.Next[t], ReachOf(world, body) * 1.5f) ? (o, t) : null;
