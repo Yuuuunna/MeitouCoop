@@ -89,6 +89,19 @@ exe: squad-level "someone carries" tests (`FUN_140288630`, `FUN_14028fdf0`, a cr
 put-down tasks, the FIND_BED desire and the Watching-slaves desire. **Verified** records: `carrying left arm only` (overlay, `override L arm`, every other bone deleted), `stand carrying left` (overlay, `override L arm`),
 `walk/jog carrying left` (upper, `override L arm`), `sword ready (carry)` (upper idle, carrying left, one weapon in hand).
 
+## Ground items from a cage
+
+**Observed** (2026-11-17, static disassembly of original `kenshi_x64.exe` 1.0.68; no in-game reproduction): ordinary cage imprisonment does not
+itself bar an in-reach ground-item pickup. Row 3 registers repertoire 4 (`0x65`); its conditions are target lootability and arrival
+([task table](ai-tasks.md#taskdata-registry)). Input `FUN_1407fc440` / label `FUN_1401638f0` reaches `FUN_1407fb3a0` and order selection
+`FUN_1407fae70`, which has no cage-state exclusion. State 15 `FUN_14059dcc0` tests the target, not the taker's imprisonment;
+arrival `FUN_1405a2450` / `FUN_14059c6d0`, pickup `FUN_14034f340` and inventory insertion `FUN_1405cb400` add no such exclusion.
+Walking rows 1/29/67 register `0x63`, excluding repertoire 4, so reaching a distant item is a separate restriction.
+
+**Observed** (Coop source): upstream `7c405160de` introduced blanket `IsImprisoned: false` guards in `PickUps.PickUpInput` and `CanRun`,
+retained in baseline `5108032d`. Coop removes them for ground-item orders because they conflict with the original's in-reach cage pickup.
+Task repertoire, pickup reach, confinement movement and authority checks still apply; container orders retain their imprisonment gate.
+
 ## Dropped item placement
 
 **Observed** (player report): the original allows caged characters to drop their own items; imprisonment alone does not block dropping.

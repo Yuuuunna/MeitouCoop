@@ -37,6 +37,9 @@ Coop 的离线饥饿暂停、空手受击经验、被奴役玩家队伍归属、
 **Observed**（Coop 本地实现）：[暗杀感知及显示／执行一致性](game/combat.md#stealth-knock-out)为 Coop 内自行修复。
 后续上游覆盖同等行为时，采用上游实现，移除对应本地补丁及此标记；未覆盖前保留。
 
+**Observed**（原版 1.0.68 静态分析及 Git 源码对照）：上游 `7c405160de` 引入的笼内地面物品拾取禁令不符合原版，
+Coop 已去除；证据及范围见[笼内拾取](game/carry-loot.md#ground-items-from-a-cage)。后续同步保留此修正，直到上游采用同等行为。
+
 ## 验证范围
 
 **Verified**（2026-11-16，Windows x64、.NET SDK 11.0.100，当前工作区）：

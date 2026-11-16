@@ -127,10 +127,12 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
         if (walkOnly) world.Post(order.Issuer ?? PlayerId.Local, "Hold down the ALT key to steal items");
         int best = -1;
         float bestDistance = float.MaxValue;
+
+        // Coop: upstream 7c405160de barred caged takers, unlike the original's row 3 (docs/game/carry-loot.md "Ground items from a cage").
         foreach (var id in world.CommandCharacters(order, order.Characters))
         {
             if (!table.TryResolveNext(id, out int s)
-                    || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, Inventory: not null, IsImprisoned: false } c
+                    || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, Inventory: not null } c
                             || !c.CarriedBy.IsNone
                 || !TaskStart.Eligible(world, c, Meitou.Data.Gameplay.Ai.TaskType.Pickup) || !MayPickUp(c, item.Item)) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(item.Position));
@@ -147,7 +149,7 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
 
     /// <summary>
     /// Collecting an item (row 3) or opening, picking or walking to a container: the item or container is still there (else the order leaves the
-    /// queue), and a player character that is awake, not caged or carried and has an inventory takes it.
+    /// queue), and a player character that is awake, not carried and has an inventory takes it. Container orders remain blocked while caged.
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
@@ -158,7 +160,9 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
                         : world.Fixtures.Find(order.Site!) is not { Contents: not null }))
             return OrderCheck.Gone;
         if (order.SourceCommand is Items.OpenContainerOrder container && !ContainerAccess.MayOpenContainer(world, slot, container)) return OrderCheck.Gone;
-        return c is { Medical.Incapacitated: false, Inventory: not null, IsImprisoned: false } && c.CarriedBy.IsNone ? OrderCheck.Run
+        if (order.Detail is not int && c.IsImprisoned) return OrderCheck.Blocked();
+
+        return c is { Medical.Incapacitated: false, Inventory: not null } && c.CarriedBy.IsNone ? OrderCheck.Run
                 : OrderCheck.Blocked();
     }
 
