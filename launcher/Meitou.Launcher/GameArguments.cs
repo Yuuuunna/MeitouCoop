@@ -12,7 +12,7 @@ static class GameArguments
     /// Options incompatible with the dedicated Connect action, matching the game's Vulkan online entry contract.
     /// </summary>
     static readonly HashSet<string> LocalOptions = ["--connect", "--load", "--continue", "--new-game", "--no-population", "--duel",
-        "--sandbox", "--battle", "--terrain-sandbox", "--ui-showcase", "--title-preview", "--play-bench", "--connection-check"];
+        "--sandbox", "--battle", "--terrain-sandbox", "--ui-showcase", "--title-preview", "--play-bench", "--connection-check", "--mods-cfg"];
 
     /// <summary>
     /// Adds user options followed by explicit renderer, connection and save selections.

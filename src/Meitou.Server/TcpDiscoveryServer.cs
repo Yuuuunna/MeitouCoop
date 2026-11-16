@@ -13,18 +13,24 @@ public sealed class TcpDiscoveryServer : IAsyncDisposable
     readonly TcpListener _listener;
     readonly X509Certificate2 _certificate;
     readonly WireFrame _information;
+    /// <summary>
+    /// Optional immutable mod snapshot; the gameplay protocol remains independent of file downloads.
+    /// </summary>
+    readonly ServerModPackage? _mods;
     readonly CancellationTokenSource _stop = new();
     readonly ConcurrentDictionary<long, TaskCompletionSource> _peers = new();
     readonly int _maximumConnections;
     long _nextPeer;
     Task? _disposal;
-    public TcpDiscoveryServer(IPEndPoint address, X509Certificate2 certificate, ServerInformation information, int maximumConnections = 32)
+    public TcpDiscoveryServer(IPEndPoint address, X509Certificate2 certificate, ServerInformation information, int maximumConnections = 32,
+        ServerModPackage? mods = null)
     {
         if (maximumConnections is < 1 or > 1024)
             throw new ArgumentOutOfRangeException(nameof(maximumConnections));
         this._maximumConnections = maximumConnections;
         this._certificate = certificate;
         this._information = ServerDiscovery.Encode(information);
+        _mods = mods;
         _listener = new(address);
         try
         {
@@ -84,8 +90,14 @@ public sealed class TcpDiscoveryServer : IAsyncDisposable
                 var request = await WireFrame.ReadAsync(tls, deadline.Token).ConfigureAwait(false);
                 if (request is { Kind: WireMessage.ServerInformationQuery, Payload.IsEmpty: true })
                     await WireFrame.WriteAsync(tls, _information, deadline.Token).ConfigureAwait(false);
+                else if (request is { Kind: WireMessage.ModManifestQuery or WireMessage.ModArchiveQuery } && _mods is not null)
+                {
+                    if (request.Kind == WireMessage.ModArchiveQuery) deadline.CancelAfter(TimeSpan.FromMinutes(30));
+                    await _mods.ServeAsync(tls, (ushort)request.Kind, request.Payload, deadline.Token).ConfigureAwait(false);
+                }
             }
-            catch (Exception error)when (error is IOException or OperationCanceledException or System.Security.Authentication.AuthenticationException)
+            catch (Exception error)when (error is IOException or InvalidDataException or OperationCanceledException
+                or System.Security.Authentication.AuthenticationException)
             {
             }
             finally

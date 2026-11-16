@@ -128,6 +128,16 @@ public sealed class LauncherConfig
     public string ServerAddress { get; set; } = "";
 
     /// <summary>
+    /// Synchronizes an isolated server mod profile before starting a client through Connect; off preserves manual/older-server entry.
+    /// </summary>
+    public bool SyncServerMods { get; set; } = true;
+
+    /// <summary>
+    /// Server address plus exact manifest identity consented for code execution; no consent is implied by a mod's display name.
+    /// </summary>
+    public List<string> TrustedServerModSets { get; set; } = [];
+
+    /// <summary>
     /// The explicitly chosen dedicated server folder or executable, independent of the client selection.
     /// </summary>
     public string? HostedServerPath { get; set; }

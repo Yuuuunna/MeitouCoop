@@ -31,6 +31,10 @@ public sealed class SettingsSchema
     /// </summary>
     public List<string> Renderers { get; set; } = ["vulkan"];
     /// <summary>
+    /// Supported isolated server-mod profile format; zero in clients predating launcher synchronization.
+    /// </summary>
+    public int ServerModSyncFormat { get; set; }
+    /// <summary>
     /// The sections, one launcher tab each, in the game's page order.
     /// </summary>
     public List<SettingsSection> Sections { get; set; } = [];

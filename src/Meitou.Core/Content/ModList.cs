@@ -51,6 +51,9 @@ public static class ModList
     /// </summary>
     public static List<ModInfo> Discover(GameInstall install)
     {
+        string? synchronized = Environment.GetEnvironmentVariable("MEITOU_MODS_DIRECTORY");
+        if (!string.IsNullOrWhiteSpace(synchronized)) return DiscoverDirectory(Path.GetFullPath(synchronized));
+
         var mods = new Dictionary<string, ModInfo>(StringComparer.Ordinal);
         if (install.WorkshopDirectory is { } workshop)
             foreach (var item in Directory.EnumerateDirectories(workshop).Order(StringComparer.Ordinal))
@@ -102,6 +105,24 @@ public static class ModList
         var lines = new List<string>();
         while (reader.ReadLine() is { } line) lines.Add(line);
         return lines;
+    }
+
+    /// <summary>
+    /// An explicit synchronized directory completely replaces local/workshop discovery for this process, including an empty server mod set.
+    /// </summary>
+    static List<ModInfo> DiscoverDirectory(string directory)
+    {
+        if (!Directory.Exists(directory)) throw new DirectoryNotFoundException("The synchronized mod directory is missing.");
+
+        var mods = new List<ModInfo>();
+        foreach (string folder in Directory.EnumerateDirectories(directory).Order(StringComparer.Ordinal))
+        {
+            string name = Path.GetFileName(folder);
+            string file = GameFiles.Resolve(Path.Combine(folder, name + ".mod"));
+            if (File.Exists(file)) mods.Add(new(name, file, ModSource.Local));
+        }
+
+        return mods;
     }
 
     /// <summary>

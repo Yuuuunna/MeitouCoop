@@ -3202,3 +3202,57 @@ msgstr "无法打开所选服务端路径。"
 
 msgid "Use Save and stop in Meitou Coop before closing the launcher."
 msgstr "请先在 Meitou Coop 页面点击“保存并停服”，再关闭启动器。"
+
+msgid "Synchronize server mods before connecting"
+msgstr "连接前自动同步服务端模组"
+
+msgid "Downloads the server's exact mod set into an isolated profile. Your local mod list stays unchanged; code mods require approval."
+msgstr "下载并使用与服务端完全一致的独立模组配置，保留本地模组列表。代码模组需要确认后才能运行。"
+
+msgid "Cancel mod sync"
+msgstr "取消模组同步"
+
+msgid "Reading the server mod list…"
+msgstr "正在读取服务端模组列表…"
+
+msgid "Checking {1} server mods…"
+msgstr "正在校验 {1} 个服务端模组…"
+
+msgid "Downloading server mods: {1} / {2} MiB"
+msgstr "正在下载服务端模组：{1} / {2} MiB"
+
+msgid "Server code mods"
+msgstr "服务端代码模组"
+
+msgid "{1} requires executable code mods: {2}.\n\nThey run with your account's permissions. Allow this exact mod set?"
+msgstr "{1} 需要运行以下代码模组：{2}。\n\n它们将以你的账户权限运行。是否允许使用这套模组？"
+
+msgid "Allow and connect"
+msgstr "允许并连接"
+
+msgid "Could not synchronize server mods: {1}"
+msgstr "无法同步服务端模组：{1}"
+
+msgid "Update the selected client to support isolated server mod synchronization."
+msgstr "请更新所选客户端，以支持独立的服务端模组同步。"
+
+msgid "This server has disabled mod downloads (ShareMods)."
+msgstr "此服务端已关闭模组下载（ShareMods）。"
+
+msgid "This server does not offer mod synchronization. Update the server and enable ShareMods."
+msgstr "此服务端不支持模组同步，请更新服务端并启用 ShareMods。"
+
+msgid "Server mod synchronization was cancelled or timed out. The client was not started."
+msgstr "模组同步已取消或超时，未启动客户端。"
+
+msgid "Cancelling mod synchronization; close again when it finishes."
+msgstr "正在取消模组同步，请在完成后再次关闭启动器。"
+
+msgid "Server mod archive failed SHA-256 verification."
+msgstr "服务端模组压缩包未通过 SHA-256 校验。"
+
+msgid "Server mods changed during synchronization. Reconnect to refresh them."
+msgstr "服务端模组在同步期间发生变化，请重新连接以刷新。"
+
+msgid "Server mod download was interrupted. Reconnect to retry."
+msgstr "服务端模组下载中断，请重新连接以重试。"

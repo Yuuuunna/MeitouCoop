@@ -48,7 +48,11 @@ public enum WireMessage : ushort
     DiagnosticCollect = 76,
     DiagnosticOffer = 77,
     DiagnosticPull = 78,
-    DiagnosticFinished = 79
+    DiagnosticFinished = 79,
+    ModManifestQuery = Meitou.Connections.ServerModProtocol.ManifestQuery,
+    ModManifest = Meitou.Connections.ServerModProtocol.ManifestReply,
+    ModArchiveQuery = Meitou.Connections.ServerModProtocol.ArchiveQuery,
+    ModArchive = Meitou.Connections.ServerModProtocol.ArchiveReply,
 }
 
 public sealed record WireFrame(WireMessage Kind, ReadOnlyMemory<byte> Payload)

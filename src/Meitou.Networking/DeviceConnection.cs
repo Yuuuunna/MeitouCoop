@@ -21,7 +21,12 @@ public static class DeviceConnection
     /// </summary>
     public static (string Host, int Port) ParseAddress(string address) => ServerAddress.Parse(address);
 
-    public static async Task<ServerConnectionProfile> PrepareAsync(GameInstall install, string address, CancellationToken token, string? identityDirectory = null)
+    /// <summary>
+    /// Discovers compatible server content with the client's effective code permissions before persisting a new device identity.
+    /// </summary>
+    public static async Task<ServerConnectionProfile> PrepareAsync(GameInstall install, string address, CancellationToken token,
+        string? identityDirectory = null, IReadOnlySet<string>? trustedCodeMods = null,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? modSettings = null)
     {
         var(host, port) = ParseAddress(address);
         string? configuredDirectory = Environment.GetEnvironmentVariable("MEITOU_IDENTITY_DIRECTORY");
@@ -43,7 +48,8 @@ public static class DeviceConnection
         var information = await ServerDiscovery.QueryAsync(host, port, token).ConfigureAwait(false);
         if (!information.DeviceRegistration && identity is null)
             throw new InvalidOperationException("This server has disabled automatic player registration.");
-        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, information.Rules, information.GameplayAssets);
+        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, information.Rules, information.GameplayAssets,
+            trustedCodeMods, modSettings);
         if (new CompatibilityHandshake(hello).Receive(information.Hello)is var mismatch && mismatch != CompatibilityFailure.None)
             throw new InvalidDataException($"Local game content does not match the server: {mismatch}.");
         if (identity is null)

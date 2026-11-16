@@ -140,7 +140,11 @@ static class Program
             var native = QuicDeployment.ResolveNative();
             var address = new IPEndPoint(IPAddress.Parse(config.BindAddress), config.Port);
             await using var listener = new QuicGameServer(address, native.Directory, native.ShimSha256, Path.Combine(config.DataDirectory, "server.pfx"), handler, config.MaximumPlayers);
-            await using var discovery = new TcpDiscoveryServer(address, certificate, new(hello, rules.ToDictionary(), config.GameplayAssets, config.AllowDeviceRegistration));
+            Console.WriteLine("Preparing enabled mod downloads.");
+            using var modPackage = ServerModPackage.Create(install, Path.Combine(config.DataDirectory, "mod-downloads"), config.ShareMods,
+                config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
+            await using var discovery = new TcpDiscoveryServer(address, certificate,
+                new(hello, rules.ToDictionary(), config.GameplayAssets, config.AllowDeviceRegistration), mods: modPackage);
             using var stop = new CancellationTokenSource();
             if (runSeconds is { } seconds)
                 stop.CancelAfter(TimeSpan.FromSeconds(seconds));

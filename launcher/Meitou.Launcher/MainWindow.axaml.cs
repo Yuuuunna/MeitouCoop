@@ -10,6 +10,7 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Meitou.Content;
+using Meitou.Connections;
 using Meitou.Localisation;
 using Meitou.Steam;
 
@@ -36,6 +37,11 @@ public sealed partial class MainWindow : Window
     /// Owns the selected client's running process and temporary Steam integration files.
     /// </summary>
     readonly GameProcess _gameProcess = new();
+
+    /// <summary>
+    /// Owns the cancellable server-mod bootstrap before Connect starts its game process.
+    /// </summary>
+    readonly ServerModSync _serverMods = new();
 
     /// <summary>
     /// The one HTTP client for GitHub: releases, news and downloads.
@@ -154,6 +160,7 @@ public sealed partial class MainWindow : Window
         CoopControls.Configure(config, () => _install);
         CoopControls.TargetChanged += ClientChanged;
         CoopControls.ConnectRequested = ConnectAsync;
+        CoopControls.CancelModSyncRequested = _serverMods.Cancel;
         _gameProcess.Exited += OnGameExited;
         _modDrag = new ModListDrag(ModListBox, _mods);
         _grips = new WindowResizeGrips(this);
@@ -234,6 +241,14 @@ public sealed partial class MainWindow : Window
     {
         Closing += (_, e) =>
         {
+            if (_serverMods.IsBusy)
+            {
+                _serverMods.Cancel();
+                e.Cancel = true;
+                Status("Cancelling mod synchronization; close again when it finishes.");
+                return;
+            }
+
             if (CoopControls.IsServerRunning)
             {
                 e.Cancel = true;
@@ -2018,7 +2033,7 @@ public sealed partial class MainWindow : Window
             Status("Set the Kenshi folder first (Settings).");
             return false;
         }
-        if (_gameProcess.Running is { HasExited: false } || _detecting)
+        if (_gameProcess.Running is { HasExited: false } || _detecting || _serverMods.IsBusy)
         {
             Status("Close the running game or wait for hardware detection before starting another client.");
             return false;
@@ -2031,17 +2046,76 @@ public sealed partial class MainWindow : Window
 
         SaveModSlot? save = null;
         if (continueSave && (save = await ContinueTarget(_install)) is null) return false;
-        if (ResolveTarget(out _) != target || !SaveMods()) return false;
+        bool synchronize = server is not null && _config.SyncServerMods;
+        if (ResolveTarget(out _) != target || !synchronize && !SaveMods()) return false;
         if (_graphicsSave?.IsEnabled == true) SaveGame();
         if (_gameProcess.Running is { HasExited: false }) return false;
 
-        return LaunchTarget(target, save, server);
+        var install = _install;
+        string? modDirectory = synchronize ? await PrepareServerModsAsync(target, server!) : null;
+        if (synchronize && modDirectory is null || _install != install || ResolveTarget(out _) != target) return false;
+
+        return LaunchTarget(target, save, server, modDirectory);
+    }
+
+    /// <summary>
+    /// Keeps synchronization failures on the page and checks the selected executable's declared profile support before downloading.
+    /// </summary>
+    async Task<string?> PrepareServerModsAsync(GameTarget target, string server)
+    {
+        CoopControls.ShowModSync(true);
+        try
+        {
+            return await _serverMods.PrepareAsync(target, server, manifest => ConsentServerModsAsync(server, manifest),
+                new Progress<string>(ShowModSyncStatus));
+        }
+        catch (OperationCanceledException)
+        {
+            Status("Server mod synchronization was cancelled or timed out. The client was not started.");
+            return null;
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or InvalidOperationException
+            or ArgumentException or System.Text.Json.JsonException or System.Net.Sockets.SocketException
+            or System.Security.Authentication.AuthenticationException or System.ComponentModel.Win32Exception or TimeoutException)
+        {
+            Status(Tr("Could not synchronize server mods: {1}", Tr(error.Message)));
+            return null;
+        }
+        finally
+        {
+            CoopControls.ShowModSync(false);
+        }
+    }
+
+    /// <summary>
+    /// Drops queued progress after completion so it cannot replace a launch-success or failure message.
+    /// </summary>
+    void ShowModSyncStatus(string message)
+    {
+        if (_serverMods.IsBusy) Status(message);
+    }
+
+    /// <summary>
+    /// Remembers explicit code execution consent for this server and exact content set, independently of single-player trust settings.
+    /// </summary>
+    async Task<bool> ConsentServerModsAsync(string server, ServerModManifest manifest)
+    {
+        string key = ServerAddress.Normalize(server) + "/" + manifest.Identity;
+        if (_config.TrustedServerModSets.Contains(key, StringComparer.Ordinal)) return true;
+
+        string names = string.Join(", ", manifest.Mods.Where(m => m.ExecuteCode).Select(m => m.Name));
+        if (!await AskAsync("Server code mods", Tr("{1} requires executable code mods: {2}.\n\nThey run with your account's permissions. Allow this exact mod set?",
+            server, names), "Allow and connect", "Cancel")) return false;
+
+        _config.TrustedServerModSets = [.. _config.TrustedServerModSets.Append(key).TakeLast(100)];
+        _config.Save();
+        return true;
     }
 
     /// <summary>
     /// Prepares renderer and direct arguments, then starts exactly the selected executable.
     /// </summary>
-    bool LaunchTarget(GameTarget target, SaveModSlot? save, string? server)
+    bool LaunchTarget(GameTarget target, SaveModSlot? save, string? server, string? modDirectory = null)
     {
         try
         {
@@ -2049,6 +2123,7 @@ public sealed partial class MainWindow : Window
             if (!SetUpRenderer(start, server is not null, out string? renderer, out bool metalFallback)) return false;
 
             GameArguments.Add(start, _config.LaunchArguments, renderer, save?.Folder, server);
+            if (modDirectory is not null) ServerModSync.Configure(start, modDirectory);
             _gameProcess.Start(start, target, _install!, _config.LaunchAsSteamKenshi);
             ShowStarted(target, renderer, metalFallback, save, server);
             return true;

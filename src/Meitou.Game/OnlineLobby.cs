@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Meitou.Content;
-using Meitou.Game.Host;
 using Meitou.Data;
 using Meitou.Networking;
 using Meitou.Simulation;
@@ -30,18 +29,13 @@ internal sealed class OnlineLobby(GameInstall install, GameDatabase database) : 
     public async Task ConnectAsync(string address)
     {
         var watch = Stopwatch.StartNew();
-        var profile = await DeviceConnection.PrepareAsync(install, address, Token).ConfigureAwait(false);
+        var (profile, hello) = await OnlineBootstrap.PrepareConnectionAsync(install, address, device: true, Token).ConfigureAwait(false);
         LogStep("discovery and content check", watch);
         string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}")));
         string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "connections");
         Directory.CreateDirectory(folder);
         _journal = Path.Combine(folder, key + ".creation.json");
         _journalLock = new FileStream(_journal + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        var userConfig = UserConfig.Load();
-        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets,
-            userConfig.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), userConfig.ModSettings);
-        if (new CompatibilityHandshake(hello).Receive(profile.Hello) is var mismatch && mismatch != CompatibilityFailure.None)
-            throw new InvalidDataException($"Local content does not match the connection profile: {mismatch}.");
         LogStep("client compatibility check", watch);
 
         _connection = await RemoteGameSession.ConnectAsync(profile.Host, profile.Port, hello,

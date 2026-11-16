@@ -1,6 +1,7 @@
 # Server identity and transport contracts
 
 Runtime diagnostic console controls and paired private incident collection: [diagnostics](diagnostics.md).
+Launcher mod downloads, `ShareMods`, startup snapshots and client profiles: [mod-sync](mod-sync.md).
 
 Engine extension. `Meitou.Server` provides account services, a shared world loop and TLS listener/session
 handling, creation and invitation endpoints. The executable and configuration/account CLI support experimental

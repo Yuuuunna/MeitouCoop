@@ -422,6 +422,7 @@ static class LauncherSchema
         return new SettingsSchema
         {
             SettingsVersion = UserConfig.CurrentVersion,
+            ServerModSyncFormat = 1,
             Renderers = OperatingSystem.IsMacOS() ? ["vulkan", "metal"] : ["vulkan"],
             // The game's Graphics sub-pages (the look tabs, then the quality tabs), each with its switches first, as in the settings menu.
             Sections =

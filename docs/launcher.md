@@ -3,13 +3,17 @@
 `launcher/Meitou.Launcher` (Avalonia, `meitou-launcher`): Meitou Coop client selection, server connection/hosting, release installation,
 mod lists, presets and graphics settings. `LauncherIdentity` selects `Yuuuunna/MeitouCoop`, news branch `master` and the Coop data directory.
 Styled after the Meitou UI kit ([meitou-ui](meitou-ui.md)) with its own title bar; Exo 2
-is read from the Kenshi install, nothing is shipped. Mods come only from disk (`mods/` and downloaded workshop
-items); the launcher never downloads or hosts mods.
+is read from the Kenshi install, nothing is shipped. The local mod list reads `mods/` and downloaded Workshop items.
+Connect can download the server's exact mod snapshot into an [isolated profile](mod-sync.md), without changing the local list or Steam subscriptions.
 
 ## Coop client selection and connections
 
 Runtime diagnostic switches, local incident/recovery ZIP export and private submission retries are in the Coop page's Diagnostics panel;
 see [diagnostics](diagnostics.md) for storage, collector configuration and retention.
+
+**Observed** (source): **Synchronize server mods before connecting** defaults on. Connect queries the enabled order, downloads and verifies
+the server snapshot, then starts a client advertising profile support. Data mods apply automatically; executable code requires consent per
+server/content set. Progress and cancellation are on the Coop page. Turn it off for manually configured or older servers. See [mod-sync](mod-sync.md).
 
 **Observed** (source): Play explicitly selects **Installed release** or **Local client** in Debug and Release. Choose a local folder/executable;
 **Find checkout build** finds an existing Release, then Debug build after an explicit click. Missing local clients never fall back to installed

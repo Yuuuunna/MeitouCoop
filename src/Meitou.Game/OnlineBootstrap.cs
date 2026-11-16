@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Meitou.Content;
+using Meitou.Connections;
 using Meitou.Game.Host;
 using Meitou.Data;
 using Meitou.Networking;
@@ -13,29 +14,22 @@ internal static class OnlineBootstrap
     sealed record SavedCreation(string Host, int Port, Guid Account, PlayerCreationRequest Request);
     static readonly TimeSpan PreparationTimeout = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Resolves compatible content, authenticates and prepares one role without starting a local world.
+    /// </summary>
     public static async Task<RemoteGameSession> ConnectAsync(GameInstall install, string profileFile,
         string? createFaction, ulong? role, CancellationToken token)
     {
         if (role == 0) throw new ArgumentException("--role requires a nonzero persistent EntityId.");
         if (createFaction is not null && (string.IsNullOrWhiteSpace(createFaction) || createFaction.Trim().Length > 30))
             throw new ArgumentException("--create-faction requires a name of 1–30 characters.");
+
         bool device = !profileFile.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
-        var profile = device ? await DeviceConnection.PrepareAsync(install, profileFile, token).ConfigureAwait(false) : ServerConnectionProfile.Read(profileFile);
-        if (device)
-        {
-            string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}")));
-            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "connections");
-            Directory.CreateDirectory(folder);
-            profileFile = Path.Combine(folder, key);
-        }
+        var (profile, hello) = await PrepareConnectionAsync(install, profileFile, device, token).ConfigureAwait(false);
+        if (device) profileFile = DeviceJournalPath(profile);
+
         Console.WriteLine("Online: checking local content and loading the compatible database...");
         token.ThrowIfCancellationRequested();
-        var userConfig = UserConfig.Load();
-        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets,
-            userConfig.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), userConfig.ModSettings);
-        var compatibility = new CompatibilityHandshake(hello).Receive(profile.Hello);
-        if (compatibility != CompatibilityFailure.None)
-            throw new InvalidDataException($"Connection profile does not match this client's local {compatibility}; check the install, mod order and server profile.");
         var database = GameDatabase.Load(LoadOrder.FromInstall(install));
         token.ThrowIfCancellationRequested();
         Console.WriteLine("Online: connecting and authenticating...");
@@ -43,26 +37,7 @@ internal static class OnlineBootstrap
             new AuthenticationRequest(profile.Account, profile.Token), new WorldViewCodec(database), token, deviceIdentity: device).ConfigureAwait(false);
         try
         {
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-            deadline.CancelAfter(PreparationTimeout);
-            await WaitAdmissionAsync(session, deadline.Token).ConfigureAwait(false);
-            var roles = session.State.Admission.State.Roles;
-            var selected = SelectRole(roles, role);
-            if (selected is null && role is not null)
-                throw new InvalidOperationException("The requested role is dead, unavailable, or is not controlled by this account.");
-            if (selected is null)
-            {
-                if (createFaction is null)
-                    throw new InvalidOperationException("This account has no available role. For an eligible new account, use --create-faction <name>; otherwise request a role assignment from the server administrator.");
-                var entry = session.State.Admission.State.Entry;
-                if (entry?.History != PlayerRoleHistory.NeverAssigned)
-                    throw new InvalidOperationException("This account previously held characters. Reconnection cannot grant a free new start; request an approved successor or role assignment.");
-                var created = await CreateAsync(session, profile, profileFile, createFaction.Trim(), deadline.Token).ConfigureAwait(false);
-                selected = created;
-            }
-            Console.WriteLine($"Online: preparing role {selected.Value.Value} and receiving the world baseline...");
-            session.RequestEntry(selected.Value);
-            await WaitReadyAsync(session, selected.Value, deadline.Token).ConfigureAwait(false);
+            await PrepareRoleAsync(session, profile, profileFile, createFaction, role, token).ConfigureAwait(false);
             Console.WriteLine("Online: admitted; authoritative world view is ready.");
             return session;
         }
@@ -76,6 +51,67 @@ internal static class OnlineBootstrap
             await session.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Uses the same effective code permissions for public discovery and final compatibility, including isolated launcher profiles.
+    /// </summary>
+    internal static async Task<(ServerConnectionProfile Profile, CompatibilityHello Hello)> PrepareConnectionAsync(GameInstall install,
+        string profileFile, bool device, CancellationToken token)
+    {
+        var userConfig = UserConfig.Load();
+        var modProfile = ServerModProfile.FromEnvironment();
+        var trusted = (modProfile?.TrustedCodeMods ?? [.. userConfig.TrustedCodeMods]).ToHashSet(StringComparer.Ordinal);
+        var modSettings = modProfile?.ModSettings ?? userConfig.ModSettings;
+        var profile = device
+            ? await DeviceConnection.PrepareAsync(install, profileFile, token, trustedCodeMods: trusted, modSettings: modSettings).ConfigureAwait(false)
+            : ServerConnectionProfile.Read(profileFile);
+        token.ThrowIfCancellationRequested();
+        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets, trusted, modSettings);
+        var compatibility = new CompatibilityHandshake(hello).Receive(profile.Hello);
+        if (compatibility != CompatibilityFailure.None)
+            throw new InvalidDataException($"Connection profile does not match this client's local {compatibility}; check the install, mod order and server profile.");
+
+        return (profile, hello);
+    }
+
+    /// <summary>
+    /// Returns the durable device creation-journal prefix without writing a connection credential profile.
+    /// </summary>
+    static string DeviceJournalPath(ServerConnectionProfile profile)
+    {
+        string identity = $"{profile.Host.ToLowerInvariant()}:{profile.Port}/{profile.Account}";
+        string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)));
+        string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Meitou", "connections");
+        Directory.CreateDirectory(folder);
+        return Path.Combine(folder, key);
+    }
+
+    /// <summary>
+    /// Selects an existing controlled role or completes approved first-time creation, then waits for its authoritative view.
+    /// </summary>
+    static async Task PrepareRoleAsync(RemoteGameSession session, ServerConnectionProfile profile, string profileFile,
+        string? createFaction, ulong? role, CancellationToken token)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(PreparationTimeout);
+        await WaitAdmissionAsync(session, deadline.Token).ConfigureAwait(false);
+        var selected = SelectRole(session.State.Admission.State.Roles, role);
+        if (selected is null && role is not null)
+            throw new InvalidOperationException("The requested role is dead, unavailable, or is not controlled by this account.");
+        if (selected is null)
+        {
+            if (createFaction is null)
+                throw new InvalidOperationException("This account has no available role. For an eligible new account, use --create-faction <name>; otherwise request a role assignment from the server administrator.");
+            if (session.State.Admission.State.Entry?.History != PlayerRoleHistory.NeverAssigned)
+                throw new InvalidOperationException("This account previously held characters. Reconnection cannot grant a free new start; request an approved successor or role assignment.");
+
+            selected = await CreateAsync(session, profile, profileFile, createFaction.Trim(), deadline.Token).ConfigureAwait(false);
+        }
+
+        Console.WriteLine($"Online: preparing role {selected.Value.Value} and receiving the world baseline...");
+        session.RequestEntry(selected.Value);
+        await WaitReadyAsync(session, selected.Value, deadline.Token).ConfigureAwait(false);
     }
 
     internal static EntityId? SelectRole(IEnumerable<PlayerRoleView> roles, ulong? requested) => roles

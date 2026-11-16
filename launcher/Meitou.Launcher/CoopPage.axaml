@@ -41,6 +41,11 @@
             </Grid>
             <ComboBox x:Name="RecentBox" PlaceholderText="Recent servers" SelectionChanged="Recent_Changed"
                       HorizontalAlignment="Stretch" />
+            <CheckBox x:Name="SyncModsBox" Content="Synchronize server mods before connecting" IsCheckedChanged="SyncMods_Changed" />
+            <TextBlock Classes="desc" TextWrapping="Wrap"
+                       Text="Downloads the server's exact mod set into an isolated profile. Your local mod list stays unchanged; code mods require approval." />
+            <Button x:Name="CancelModSyncButton" Content="Cancel mod sync" Click="CancelModSync_Click" IsVisible="False"
+                    HorizontalAlignment="Left" />
             <TextBlock Classes="desc" TextWrapping="Wrap" Text="Connect starts the selected client. Admission, character creation and reconnection take place in the game." />
           </StackPanel>
         </Border>

@@ -13,6 +13,9 @@ RE_Kenshi plugin DLLs are never loaded: wishlist plugins get built in or ported 
 system-factory failure aborts server startup. Client approval, enabled order, complete mod-folder hashes and code settings must match
 compatibility rules before connection; native and private dependencies are included.
 
+Launcher [server synchronization](mod-sync.md) supplies per-session client trust/settings after code consent. It does not change saved
+single-player trust; address-only discovery uses the same approved code evidence as subsequent admission.
+
 Game UI and debug commands use `IPlayerSession.Submit` / `CommandTick`. A remote client has no mutable server `World`;
 custom `SimCommand` types need an authorized typed binding. Commands submitted before a session exists are dropped and logged.
 Remote mod settings are read-only. `ModHostOptions.Enqueue` / `Tick` let a host supply this session boundary.

@@ -15,6 +15,8 @@ its configured data directory. Runtime switches, collector service variables and
 **Observed** (`launcher/Meitou.Launcher/Program.cs`): `--software-rendering` or `MEITOU_LAUNCHER_SOFTWARE_RENDERING=1`
 forces CPU UI rendering and skips automatic client GPU preset detection. Requires a desktop session; it does not make the game headless.
 Dedicated server selection and controls: [launcher](launcher.md#hosting-and-cpu-rendering).
+Automatic Connect mod profiles and the child-only `MEITOU_MODS_DIRECTORY`, `MEITOU_MODS_CFG`, `MEITOU_SERVER_MOD_PROFILE` variables:
+[mod-sync](mod-sync.md). `MEITOU_MODS_DIRECTORY` replaces discovery completely; a missing explicit directory is an error.
 
 ## Game (`meitou`, MeitouClient.exe)
 

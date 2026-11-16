@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Numerics;
 using Meitou.Game;
+using Meitou.Connections;
 using Meitou.Game.DevTools;
 using Meitou.Game.Host;
 using Meitou.Simulation;
@@ -88,9 +89,11 @@ sealed class GameMods(GameHost host)
         BuiltInMods.SkipCovered(enabled, disabled);
         if (enabled.Count == 0) return;
         Console.WriteLine($"mods      {enabled.Count} code mod(s) enabled; Harmony {ModHost.HarmonyVersion}, code-mod API {ModApi.Version}");
-        var allowed = host.Config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal);
+        var profile = ServerModProfile.FromEnvironment();
+        var allowed = (profile?.TrustedCodeMods ?? [.. host.Config.TrustedCodeMods]).ToHashSet(StringComparer.Ordinal);
+        var settings = profile?.ModSettings ?? host.Config.ModSettings;
         Mods = ModHost.Load(new ModHostOptions(enabled, allowed, db, data, () => (host.Session as WorldSession)?.World,
-            id => host.Config.ModSettings.TryGetValue(id, out var saved) ? saved : null, RunningVersion(), disabled,
+            id => settings.TryGetValue(id, out var saved) ? saved : null, RunningVersion(), disabled,
             Enqueue: SubmitModCommand, Tick: () => host.Session?.CommandTick ?? 0));
         if (host.OnlineConnection is not null && Mods.Refused.Keys.Any(allowed.Contains))
             throw new InvalidDataException("A trusted client code mod could not initialize; reconnect after correcting its failure.");

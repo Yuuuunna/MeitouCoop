@@ -33,6 +33,10 @@ public sealed record ServerConfiguration
     public int? SaveIntervalSeconds { get; init; }
     public string[] GameplayAssets { get; init; } = [];
     public string? ModsCfg { get; init; }
+    /// <summary>
+    /// Offers a startup snapshot of enabled mod folders to launchers over the existing encrypted TCP bootstrap port.
+    /// </summary>
+    public bool ShareMods { get; init; } = true;
     public string[] TrustedCodeMods { get; init; } = [];
     public Dictionary<string, Dictionary<string, string>> ModSettings { get; init; } = new(StringComparer.Ordinal);
     /// <summary>

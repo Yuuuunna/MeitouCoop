@@ -38,6 +38,11 @@ public sealed partial class CoopPage : UserControl
     internal Func<string, Task<bool>>? ConnectRequested { get; set; }
 
     /// <summary>
+    /// Cancels only the pre-launch synchronization, leaving existing client and server processes alone.
+    /// </summary>
+    internal Action? CancelModSyncRequested { get; set; }
+
+    /// <summary>
     /// Builds the standalone Coop page.
     /// </summary>
     public CoopPage() => InitializeComponent();
@@ -57,10 +62,42 @@ public sealed partial class CoopPage : UserControl
         SourceBox.SelectedIndex = config.UseLocalClient ? 1 : 0;
         LocalPathBox.Text = config.LocalClientPath ?? "";
         AddressBox.Text = config.ServerAddress;
+        SyncModsBox.IsChecked = config.SyncServerMods;
         HostedServer.Configure(config, install);
         ShowHistory();
         _updating = false;
     }
+
+    /// <summary>
+    /// Shows cancellation only during an active synchronization.
+    /// </summary>
+    internal void ShowModSync(bool active)
+    {
+        CancelModSyncButton.IsVisible = active;
+        SyncModsBox.IsEnabled = !active;
+    }
+
+    /// <summary>
+    /// Persists the choice to use automatic synchronization or a manually managed mod list.
+    /// </summary>
+    void SyncMods_Changed(object? sender, RoutedEventArgs e)
+    {
+        if (_updating || _config is null) return;
+        try
+        {
+            _config.SyncServerMods = SyncModsBox.IsChecked == true;
+            _config.Save();
+        }
+        catch (Exception error) when (IsClientError(error))
+        {
+            ShowProblem(error.Message);
+        }
+    }
+
+    /// <summary>
+    /// Requests cancellation of the window's current mod operation.
+    /// </summary>
+    void CancelModSync_Click(object? sender, RoutedEventArgs e) => CancelModSyncRequested?.Invoke();
 
     /// <summary>
     /// Shows the same target that Play, graphics settings and hardware detection use.
@@ -306,7 +343,7 @@ public sealed partial class CoopPage : UserControl
     /// <summary>
     /// Failures that can be corrected by choosing another client, address or writable directory.
     /// </summary>
-    static bool IsClientError(Exception error) => error is IOException or UnauthorizedAccessException or ArgumentException
+    static bool IsClientError(Exception error) => error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException
         or InvalidOperationException or TimeoutException or System.ComponentModel.Win32Exception or NotSupportedException
         or System.Text.Json.JsonException;
 }
