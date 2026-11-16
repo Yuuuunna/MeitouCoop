@@ -219,6 +219,11 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
 | Storage Guard, Slaver Storage Guard | 197 Lock all the doors - stay outside | 23-7 |
 | Cage Warden (and copy) | 195 Lock all my cages | 22-24 (leader), 19-21 (squad) |
 
+- **Lock-cage finder** (**Observed**, installed `kenshi_x64.exe` disassembly, SHA-256
+  `a596ab4e407c67b58599c54ffb32dc1bf2b64510cdebd3fa9359ef05a576aeb1`): goal 195's registration at `0x14031cd69`
+  installs `FUN_1408cc2a0` through thunk `0x140035c01`. It requires the worker's location hand (vfunc `0x1d8`) to resolve to a building,
+  then queries that building's function-8 cages and their occupancy/lock state; no sensed-list, sight or distance gate.
+  Meitou `LockSystem.LockCages` likewise has no perception gate, but gathers its faction's cages across the squad's town instead of that building.
 - **Lock up from outside** (197; **Verified** rows, `FUN_140596e90`): list B is `!strangers in house` and `!107` (107 I_AM_INSIDE_TARGET_BUILDING), and the lock row 198 needs state 126 AT_LOCATION_BUILDING_DOOR_OUTSIDE
   (**Verified**, `FUN_140596e90`: true when the character's X/Z distance to the door's outer point is below its reach range, 45 for a door; the outer point is the door record's point `+0x3bc` pushed out
   by 1.1 times (`DAT_14169bb44`) its distance to the other point `+0x3c8`; the two points lie 15 either side of the leaf, so about 48 from the leaf), so a 197 worker inside first
