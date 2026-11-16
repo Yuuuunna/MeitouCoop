@@ -74,7 +74,7 @@ public sealed record PutLootItem(CharacterId Character, Items.InventoryItemToken
 
 /// <summary>
 /// Orders one of the attackers (the selection when the list is empty) to knock <see cref="Target"/> out from behind (the original's order 228, verb
-/// "Stealth KO", <c>Task_StealthKO</c>): the nearest sneaking one that can act creeps up behind it and swings; the roll
+/// "Stealth KO", <c>Task_StealthKO</c>): the first eligible sneaker in selection order creeps up behind it and swings; the roll
 /// (<see cref="CarrySystem.StealthKoChance"/>) decides between a knock-out and a fight.
 /// </summary>
 public sealed record StealthKoOrder(IReadOnlyList<CharacterId> Attackers, CharacterId Target) : OrderCommand;

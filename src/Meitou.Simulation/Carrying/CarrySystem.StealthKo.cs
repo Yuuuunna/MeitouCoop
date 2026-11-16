@@ -6,7 +6,6 @@ using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Combat;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Player;
-using Meitou.Simulation.Weather;
 
 namespace Meitou.Simulation.Carrying;
 
@@ -15,7 +14,7 @@ namespace Meitou.Simulation.Carrying;
 /// sneaking character creeps to a point behind its target, swings the <c>knockout</c> clip at x1.2 and at half of it rolls 0-100 against
 /// <see cref="StealthKoChance"/>. A hit knocks the target out for <see cref="MedicalState.PutDownKoSeconds"/> with the attacker's assassination /
 /// 100; a miss turns the target on the attacker. Either trains assassination (a miss three times as much). The walk breaks off when the target has
-/// spotted the attacker (its <see cref="AggroSystem"/> spot meter is full). A miss also has the target say event 56, alarm its hearing and go for the
+/// seen the attacker (its current sense entry's seen flag). A miss also has the target say event 56, alarm its hearing and go for the
 /// attacker.
 /// </summary>
 public sealed partial class CarrySystem
@@ -70,7 +69,7 @@ public sealed partial class CarrySystem
     public float KnockoutSeconds { get; set; } = 1;
 
     /// <summary>
-    /// The senses the walk checks (a target that spotted the attacker turns round); null: never spotted.
+    /// The senses alarmed when a stealth KO misses; the current sense-entry checks read the world's aggro system directly.
     /// </summary>
     public AggroSystem? Aggro { get; set; }
 
@@ -136,6 +135,23 @@ public sealed partial class CarrySystem
     }
 
     /// <summary>
+    /// The current KO chance for this pair, including the victim's seen/heard flags, remembered entry and the attacker's combat exposure.
+    /// </summary>
+    public static float StealthKoChance(World world, int attacker, int target) =>
+        StealthKoAwareness.Read(world, attacker, target).Chance(world.Characters.Cold(attacker)!, world.Characters.Cold(target)!);
+
+    /// <summary>
+    /// The selection's first eligible sneaker, used by both the preview and order dispatch; -1 when none can be offered the KO.
+    /// </summary>
+    internal static int KnockOutAttacker(CharacterTable table, IReadOnlyList<CharacterId> selection)
+    {
+        foreach (var id in selection)
+            if (table.TryResolveNext(id, out int slot) && table.Cold(slot) is { } cold && CanKnockOut(cold)) return slot;
+
+        return -1;
+    }
+
+    /// <summary>
     /// Gives the stealth knock-out order to the first of the order's attackers (the selection's order) that can run it, so the chance the interface
     /// showed is the one rolled; nothing when the target cannot be knocked out.
     /// </summary>
@@ -144,9 +160,18 @@ public sealed partial class CarrySystem
         var table = world.Characters;
         if (!table.TryResolveNext(order.Target, out int target) || !CanBeKnockedOut(table.Cold(target)!)) return;
 
-        // The first that can go, in the order given (the selection's order), so the chance the interface showed is the one rolled.
+        var attackers = Who(world, order, order.Attackers);
+        int offered = KnockOutAttacker(table, attackers);
         var entry = world.BindOrder(order, new OrderEntry(Meitou.Data.Gameplay.Ai.TaskType.StealthKnockout, this) { Target = order.Target });
-        foreach (var id in Who(world, order, order.Attackers))
+
+        if (offered >= 0)
+        {
+            if (PlayerOrders.CanRun(world, offered, entry).CanRun) PlayerOrders.Give(world, offered, entry, order.Queued);
+            return;
+        }
+
+        // An order queued after sneaking stopped still starts stealth mode (FUN_140345eb0).
+        foreach (var id in attackers)
             if (table.TryResolveNext(id, out int attacker) && PlayerOrders.CanRun(world, attacker, entry).CanRun)
             {
                 PlayerOrders.Give(world, attacker, entry, order.Queued);
@@ -197,71 +222,73 @@ public sealed partial class CarrySystem
     void ScheduleKnockOuts(World world)
     {
         var table = world.Characters;
-        var next = table.Next;
-        float dt = world.TickSeconds;
         for (int i = 0; i < table.HighWater; i++)
         {
-            ref var n = ref next[i];
+            ref readonly var n = ref table.Next[i];
             if (!n.Alive || n.Task != (byte)CharacterTask.StealthKo) continue;
-            var cold = table.Cold(i)!;
 
-            // Only the target's sensing the attacker cancels the walk (FUN_14034cd80, no combat-state test of either side: orders beat goals); the
-            // roll's fight zero is in Strike.
-            if (cold.Medical is not { Incapacitated: false } || !table.TryResolveNext(cold.CarryTarget, out int t) || table.Cold(t) is not { } target
-                || !CanBeSwungAt(target) || Senses(world, table, t, i))
-            {
-                End(world, i);
-                continue;
-            }
-            var aim = KnockoutGoal(world, target, next[t], n);
-            var goal = new Vector2(aim.X, aim.Z);
-            bool sameFloor = MathF.Abs(n.Position.Y - aim.Y) <= MovementSystem.FloorSlack;   // not swung at through a floor (#292)
-            if (cold.LiftTime < 0 && sameFloor && Vector2.Distance(new Vector2(n.Position.X, n.Position.Z), goal) < KnockoutStartRange)
-            {
-                // The target's sense entry: heard on this last step (the sneaking hearing roll at the step's speed; the original's pass cadence is
-                // not traced).
-                float stealth = Orders.Stealth(cold), step = new Vector2(n.Velocity.X, n.Velocity.Z).Length();
-                float hear = step > 0.01f
-                    ? Orders.SneakHearChance(Vector3.Distance(n.Position, next[t].Position),
-                        Orders.SneakNoise(stealth, WeatherSystem.NoiseFactor(cold)), stealth, !Asleep(table, t))
-                    : 0;
-                cold.KnockoutHeard = hear > 0
-                    && Rng.Float(Rng.Hash(world.Seed, Rng.Key(table.IdOf(i)), RngPurpose.KnockoutHear, (ulong)world.Tick)) < hear;
-                cold.LiftTime = 0;
-                Face(ref n, next[t]);
-            }
-            n.TaskTime -= dt;
-            bool asking = (n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0;
-            if (cold.LiftTime < 0 && !asking && Unreachable(cold, n))
-            {
-                cold.PathFailed = false;
-                End(world, i);
-                continue;
-            }
-
-            bool stale = (n.Flags & (ushort)MoveFlags.HasPath) == 0
-                || Vector2.DistanceSquared(goal, n.Goal) > PursuitSystem.RepathDistance * PursuitSystem.RepathDistance;
-            if (asking || !stale || n.TaskTime > 0) continue;
-            n.Goal = goal;
-            (cold.GoalHeight, cold.GoalHeightAt) = (aim.Y, goal);   // the target's floor, not the attacker's (#292)
-            n.Mode = SpeedMode.Free;
-            n.Flags |= (ushort)MoveFlags.NeedPath;
-            n.TaskTime = PursuitSystem.RepathSeconds;
+            ScheduleKnockOut(world, table, i);
         }
     }
 
     /// <summary>
-    /// <c>FUN_140855830</c>: the target's sense entry for the attacker has its seen flag. Stand-in: its spot meter on the attacker is full
-    /// (<see cref="AggroSystem.Spotted"/>), or it fights the attacker (a fighter has the enemy in sight). Checked every tick, in every state, by the
-    /// original's update; a hit cancels the task silently.
+    /// Updates one KO's approach and swing start, cancelling only on the original's seen/down gates or an unreachable approach.
     /// </summary>
-    bool Senses(World world, CharacterTable table, int target, int attacker)
+    void ScheduleKnockOut(World world, CharacterTable table, int i)
     {
-        var attackerId = table.IdOf(attacker);
-        return Aggro?.Spotted(target, attackerId) == true
-            || world.SystemOf<CombatSystem>()?.StateOf(table.IdOf(target)) is { } fight
-                && fight.TargetSlot == attacker && fight.TargetGeneration == attackerId.Generation;
+        var cold = table.Cold(i)!;
+        ref var n = ref table.Next[i];
+
+        // FUN_14034cd80 has no combat-state gate of either side; the roll's fight zero is in Strike.
+        if (cold.Medical is not { Incapacitated: false } || !table.TryResolveNext(cold.CarryTarget, out int t) || table.Cold(t) is not { } target
+            || !CanBeSwungAt(target) || Senses(world, t, i))
+        {
+            End(world, i);
+            return;
+        }
+
+        var aim = KnockoutGoal(world, target, table.Next[t], n);
+        var goal = new Vector2(aim.X, aim.Z);
+        bool sameFloor = MathF.Abs(n.Position.Y - aim.Y) <= MovementSystem.FloorSlack;   // not swung at through a floor (#292)
+        if (cold.LiftTime < 0 && sameFloor && Vector2.Distance(new Vector2(n.Position.X, n.Position.Z), goal) < KnockoutStartRange)
+        {
+            cold.LiftTime = 0;
+            Face(ref n, table.Next[t]);
+        }
+
+        n.TaskTime -= world.TickSeconds;
+        bool asking = (n.Flags & (ushort)(MoveFlags.NeedPath | MoveFlags.Pending)) != 0;
+        if (cold.LiftTime < 0 && !asking && Unreachable(cold, n))
+        {
+            cold.PathFailed = false;
+            End(world, i);
+            return;
+        }
+
+        AimKnockOut(cold, ref n, aim, goal, asking);
     }
+
+    /// <summary>
+    /// Reissues the approach on the target's floor while it moves, including through the swing.
+    /// </summary>
+    static void AimKnockOut(CharacterCold cold, ref CharacterHot n, Vector3 aim, Vector2 goal, bool asking)
+    {
+        bool stale = (n.Flags & (ushort)MoveFlags.HasPath) == 0
+            || Vector2.DistanceSquared(goal, n.Goal) > PursuitSystem.RepathDistance * PursuitSystem.RepathDistance;
+        if (asking || !stale || n.TaskTime > 0) return;
+
+        n.Goal = goal;
+        (cold.GoalHeight, cold.GoalHeightAt) = (aim.Y, goal);   // the target's floor, not the attacker's (#292)
+        n.Mode = SpeedMode.Free;
+        n.Flags |= (ushort)MoveFlags.NeedPath;
+        n.TaskTime = PursuitSystem.RepathSeconds;
+    }
+
+    /// <summary>
+    /// <c>FUN_140855830</c>: the target's current sense entry for the attacker has its seen flag. Checked every tick, in every state, by the
+    /// original's update; a hit cancels the task silently. A remembered full spot meter or a combat target alone does not satisfy it.
+    /// </summary>
+    static bool Senses(World world, int target, int attacker) => StealthKoAwareness.Read(world, attacker, target).Seen;
 
     /// <summary>
     /// Turns <paramref name="n"/> to face <paramref name="target"/> (unchanged when they stand on one spot).
@@ -289,7 +316,7 @@ public sealed partial class CarrySystem
         }
 
         // A target that senses the attacker cancels the swing too, every tick before the roll: silently, no "Failed!", event or XP (FUN_14034cd80).
-        if (Senses(world, table, t, i))
+        if (Senses(world, t, i))
         {
             End(world, i);
             return;
@@ -318,27 +345,13 @@ public sealed partial class CarrySystem
         var target = table.Cold(t)!;
         var attackerId = table.IdOf(i);
         var targetId = table.IdOf(t);
-        bool spotted = Aggro?.Spotted(t, attackerId) == true;
-
-        // Fighting and aware of the attacker (having an entry for it: it saw or heard it, or is fighting it) while the attacker is not unseen: no
-        // chance (FUN_1408852f0, FUN_1408593d0 makes an entry on a sight or a hearing).
-        bool aware = spotted || cold.KnockoutHeard
-            || world.SystemOf<CombatSystem>()?.StateOf(targetId) is { } fight
-                && fight.TargetSlot == i && fight.TargetGeneration == attackerId.Generation;
-        bool noticed = target.InCombat && aware && Aggro?.Unseen(table, attackerId) == false;
-        float chance = StealthKoChance(cold, target, spotted, cold.KnockoutHeard, noticed);
+        var awareness = StealthKoAwareness.Read(world, i, t);
+        float chance = awareness.Chance(cold, target);
         float roll = Rng.Float(Rng.Hash(world.Seed, Rng.Key(attackerId), RngPurpose.StealthKo, (ulong)world.Tick)) * 100;
         bool success = chance > roll;
 
-        // XP: assassination through the generic entry with dt 1, 100 on a hit and 300 on a miss (Verified literals); x0.07 on a target in prison,
-        // x0.5 on a sleeping one (Observed, +0x2f8). A miss on a target that is fighting and aware of the attacker gives none: "Failed! (No XP)"
-        // (Observed).
-        bool noXp = !success && target.InCombat && aware;
-        if (!noXp && cold.Stats is { } stats && cold.Race is { } race)
-        {
-            float f = target.IsImprisoned ? 0.07f : Asleep(table, t) ? 0.5f : 1;
-            (_xp ??= new XpService(Constants, _bodyOptions)).Continuous(stats, race, StatsEnumerated.Assassination, 1, f * (success ? 100 : 300));
-        }
+        bool noXp = !success && target.InCombat && awareness.Known;
+        TrainKnockOut(table, cold, target, t, success, noXp);
 
         if (success) KnockOutTarget(table, t, cold, target);
         else if (!target.Medical!.Incapacitated) Missed(world, i, t, target, attackerId, targetId);
@@ -346,6 +359,28 @@ public sealed partial class CarrySystem
         // The swing books an Assault on the target's faction at the roll, hit or miss (the pending-crime setter FUN_140852c80 with code 5, called
         // unconditionally, Verified).
         Crimes?.SetPending(world, i, Crime.CrimeCode.Assault, target.Faction, targetId, Crime.CrimeSystem.MinTimer);
+
+        ReportKnockOut(world, table, i, targetId, chance, success, noXp);
+    }
+
+    /// <summary>
+    /// Trains assassination before applying the hit: 100 on a hit, 300 on a miss, x0.07 in prison, x0.5 asleep; no XP on an aware fighter's miss.
+    /// </summary>
+    void TrainKnockOut(CharacterTable table, CharacterCold attacker, CharacterCold target, int t, bool success, bool noXp)
+    {
+        if (noXp || attacker.Stats is not { } stats || attacker.Race is not { } race) return;
+
+        float f = target.IsImprisoned ? 0.07f : Asleep(table, t) ? 0.5f : 1;
+        (_xp ??= new XpService(Constants, _bodyOptions)).Continuous(stats, race, StatsEnumerated.Assassination, 1, f * (success ? 100 : 300));
+    }
+
+    /// <summary>
+    /// Emits the original's result floater, the player's notice and the pre-XP chance used by the roll.
+    /// </summary>
+    void ReportKnockOut(World world, CharacterTable table, int i, CharacterId targetId, float chance, bool success, bool noXp)
+    {
+        var cold = table.Cold(i)!;
+        var attackerId = table.IdOf(i);
 
         // The floater over the attacker, shown to anyone (Verified): "*Thunk*" or "Failed!" + " (No XP)".
         string floaterText =

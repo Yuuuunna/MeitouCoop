@@ -587,6 +587,10 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         /// The meter: above 1 the target counts as seen.
         /// </summary>
         public float Value;
+        /// <summary>
+        /// The sneaker was in view at the last scan; a remembered meter alone does not expose it (FUN_140863520 clears this on lost sight).
+        /// </summary>
+        public bool InView;
     }
 
     /// <summary>
@@ -611,13 +615,14 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     /// </summary>
     static List<Spot>? AdvanceSpots(List<Spot>? spots, List<Sighting> seen, float dt, CharacterTable table)
     {
+        if (spots is null && seen.Count == 0) return null;
         spots ??= [];
 
         foreach (var x in seen)
         {
             int k = spots.FindIndex(p => p.Target == x.Target && p.Generation == x.Generation);
-            if (k < 0) spots.Add(new Spot { Target = x.Target, Generation = x.Generation, Value = dt / x.Seconds });
-            else spots[k] = spots[k] with { Value = spots[k].Value + dt / x.Seconds };
+            if (k < 0) spots.Add(new Spot { Target = x.Target, Generation = x.Generation, Value = dt / x.Seconds, InView = true });
+            else spots[k] = spots[k] with { Value = spots[k].Value + dt / x.Seconds, InView = true };
         }
 
         for (int k = spots.Count - 1; k >= 0; k--)
@@ -632,6 +637,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
 
             if (seen.Exists(x => x.Target == p.Target)) continue;
 
+            p.InView = false;
             p.Value -= dt / Orders.SpotForgetSeconds;
             if (p.Value <= 0) spots.RemoveAt(k);
             else spots[k] = p;
@@ -650,13 +656,22 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
 
     /// <summary>
     /// Whether the sneaker <paramref name="target"/> is unseen (Character +0xe8 = 1, docs/game/perception.md "Spotting a sneaker"): not fighting, and
-    /// no looker's spot meter on it is filling or full (red or yellow); serial phases.
+    /// no current NPC sighting or in-view spot meter on it (red or yellow); remembered meters do not expose it. Serial phases.
     /// </summary>
     public bool Unseen(CharacterTable table, CharacterId target)
     {
         if (table.Cold(target.Slot) is { InCombat: true }) return false;
+
         for (int k = 0; k < _size && k < _slots.Length; k++)
-            if (SpotOf(_slots[k].Spots, target.Slot, target.Generation) > 0) return false;
+        {
+            if (!table.Next[k].Alive || table.Cold(k) is not { IsPlayer: false }) continue;
+            var slot = _slots[k];
+            if (slot.Senses is { } senses && senses.TryGet(target, out var entry) && entry.Seen) return false;
+            if (slot.Spots is not { } spots) continue;
+
+            foreach (var spot in spots)
+                if (spot.Target == target.Slot && spot.Generation == target.Generation && spot.InView) return false;
+        }
 
         return true;
     }
@@ -921,19 +936,13 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         byte task = next[i].Task;
         var war = cold.SquadId >= 0 && world.Squads.Find(cold.SquadId) is { War.IsSet: true } assaulting ? assaulting.War : WarTargets.None;
 
-        // One that could pick a fight now: free, able, of a faction with an enemy about (or at war, or with a TEMP_ENEMY tag of its squad).
-        bool looks = Settings.AttackOnSight && !Busy(cold, task)
-            && cold is
-            {
-                InCombat: false, Fleeing: false, IsImprisoned: false, SlaveState: not 1, Fighter.CanAttack: true,
-                Medical.Incapacitated: false
-            }
-            && Relations.Contains(cold.Faction) && (_census.HasEnemy(cold.Faction) || war.IsSet || (Memory?.AnyTempEnemy(cold.SquadId) ?? false));
+        bool looks = LooksForFight(cold, task, war);
 
         // The player's characters attack on sight with the job or Hold's goal (offered to the decision step); an NPC decides by its own goals in
         // the chooser.
         bool targets = looks && cold.IsPlayer && (HuntsEnemies(cold) || HoldsGround(cold));
         var scan = NewScan(world, i, cold, war, MathF.Max(0, RangeOf(cold, Settings.SightRange)), effects);
+        scan.Sightings!.Clear();
 
         // A carried or knocked-out character only lets its senses fade (FUN_1405d00b0 runs FUN_14050c7c0 instead of the AI update when the get-up
         // test FUN_140598c20 fails): no gather, no sighting. One medically awake but lying (playing dead, or its knockout about to end) looks, so
@@ -941,6 +950,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         if (!cold.CarriedBy.IsNone || cold.Medical!.Incapacitated && !AwakeLying(world, i, cold, every))
         {
             Fade(ref scan);
+            _slots[i].Spots = AdvanceSpots(scan.Spots, scan.Sightings!, every * world.TickSeconds, table);
             return;
         }
 
@@ -948,11 +958,11 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         // they feed the crime witnesses, the stealth knock-out and the sneaker's arrows.
         bool picks = targets || looks && cold.Ai is not null;
         scan.Meters = _census.AnySneakers && (picks || Watches(cold, task) && _census.SneakerWithin(prev[i].Position, scan.Range));
-        scan.Sightings!.Clear();
         scan.FullTags = (world.Tick / every + i) % FarLooks == 0;
         scan.Far = picks || cold.InCombat || scan.FullTags;
         Look(ref scan);
         _slots[i].Heard = scan.Heard;
+        _slots[i].Spots = AdvanceSpots(scan.Spots, scan.Sightings!, every * world.TickSeconds, table);
         if (cold.Medical.Incapacitated) return;   // lying: senses only, no fight to pick
 
         if (targets)
@@ -965,10 +975,19 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         // stand-in), whatever its goals; a fighter only in its own fight (in another, the AI weighs nothing but the run).
         else if (scan.NewEnemy >= 0 && cold.Ai is not null && (cold.InCombat ? AiSystem.Holds(next[i], cold) : looks))
             effects.Emit(i, scan.NewEnemy, SightEffect, Vector3.Distance(prev[i].Position, prev[scan.NewEnemy].Position));
-
-        if (scan.Meters && (scan.Spots is not null || scan.Sightings!.Count > 0))
-            _slots[i].Spots = AdvanceSpots(scan.Spots, scan.Sightings!, every * world.TickSeconds, table);
     }
+
+    /// <summary>
+    /// One that could pick a fight now: free, able, of a faction with an enemy about, at war or with a squad TEMP_ENEMY tag.
+    /// </summary>
+    bool LooksForFight(CharacterCold cold, byte task, WarTargets war) =>
+        Settings.AttackOnSight && !Busy(cold, task)
+        && cold is
+        {
+            InCombat: false, Fleeing: false, IsImprisoned: false, SlaveState: not 1, Fighter.CanAttack: true,
+            Medical.Incapacitated: false
+        }
+        && Relations.Contains(cold.Faction) && (_census.HasEnemy(cold.Faction) || war.IsSet || (Memory?.AnyTempEnemy(cold.SquadId) ?? false));
 
     /// <summary>
     /// An NPC that keeps spot meters without picking fights: awake, not fighting, not held (carried, caged, in bed or asleep), not attacking or
@@ -3055,6 +3074,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
                 hasher.Add(p.Target);
                 hasher.Add(p.Generation);
                 hasher.Add(p.Value);
+                hasher.Add(p.InView);
             }
         }
 

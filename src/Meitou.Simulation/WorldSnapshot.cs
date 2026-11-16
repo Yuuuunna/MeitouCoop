@@ -742,7 +742,7 @@ public sealed record CharacterSnapshot
     /// <summary>
     /// The chance in per cent that the selection's first sneaking member knocks this character out from behind
     /// (<see cref="Carrying.CarrySystem.StealthKoChance"/>); null when no selected character is sneaking or this one cannot be knocked out (a player
-    /// character, or already down), and for anyone not selected, inspected or pointed (<see cref="PlayerState.Pointed"/>): <see cref="CanStealthKo"/>
+    /// character, dead, carried or an animal), and for anyone not selected, inspected or pointed (<see cref="PlayerState.Pointed"/>): <see cref="CanStealthKo"/>
     /// tells the rest.
     /// </summary>
     public float? StealthKoChance { get; internal set; }

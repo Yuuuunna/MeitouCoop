@@ -118,13 +118,12 @@ public sealed partial class World
     /// <param name="KoSlot">The selection's first member that could knock someone out from behind (-1: none).</param>
     /// <param name="LeadSlot">The selection's lead (-1: none).</param>
     /// <param name="Pointed">The character under the pointer.</param>
-    /// <param name="Aggro">The senses, for the stealth KO's spotted test (only with a knock-out candidate).</param>
     /// <param name="Talk">The dialogue system, for the trader flag.</param>
     /// <param name="Combat">The fights.</param>
     /// <param name="BodyConstants">The body system's constants.</param>
     /// <param name="Population">The population data.</param>
     /// <param name="ExtraBloodLoss">The body parts' extra blood loss factor (1 without a body system).</param>
-    readonly record struct PublishFacts(int KoSlot, int LeadSlot, CharacterId Pointed, AggroSystem? Aggro, Dialogue.DialogueSystem? Talk,
+    readonly record struct PublishFacts(int KoSlot, int LeadSlot, CharacterId Pointed, Dialogue.DialogueSystem? Talk,
         Combat.CombatSystem? Combat, GameConstants? BodyConstants, PopulationData? Population, float ExtraBloodLoss, PlayerState Viewer, bool FullDetails, bool[] Eligible, ulong[] InventoryRevisions, ulong[] JobRevisions, PlayerId? Recipient);
     /// <summary>
     /// Publishes the baseline after the complete serial world boundary.
@@ -147,16 +146,7 @@ public sealed partial class World
         var table = Characters;
 
         // The selection's first member that could knock someone out from behind: the stealth KO chances are against it.
-        int koSlot = -1;
-
-        foreach (var s in Player.Selection)
-        {
-            if (table.TryResolveNext(s, out int k) && table.Cold(k) is { } c && Carrying.CarrySystem.CanKnockOut(c))
-            {
-                koSlot = k;
-                break;
-            }
-        }
+        int koSlot = Carrying.CarrySystem.KnockOutAttacker(table, Player.Selection);
 
         // The selection's lead: the kidnap chances are against it.
         int leadSlot = -1;
@@ -530,7 +520,6 @@ public sealed partial class World
         bool shown = v.Shown;
         bool sneaking = v.Sneaking;
         var watchers = v.Watchers;
-        var aggro = f.Aggro;
         var combat = f.Combat;
         int koSlot = f.KoSlot;
         int leadSlot = f.LeadSlot;
@@ -573,7 +562,7 @@ public sealed partial class World
         s.Ragdoll = _ragdolls?.Publish(id);
         s.CanStealthKo = koSlot >= 0 && i != koSlot && cold is { IsPlayer: false } && Carrying.CarrySystem.CanBeKnockedOut(cold);
         s.StealthKoChance = s.CanStealthKo && shown
-            ? Carrying.CarrySystem.StealthKoChance(table.Cold(koSlot)!, cold!, aggro?.Spotted(i, table.IdOf(koSlot)) == true)
+            ? Carrying.CarrySystem.StealthKoChance(this, koSlot, i)
             : null;
         s.Asleep = Carrying.CarrySystem.Asleep(table, i);
         s.Down = cold is not null && CharacterFacts.Down(cold);
@@ -1079,16 +1068,13 @@ public sealed partial class World
         var table = Characters;
         var state = table.Previous;
         // The selection's first member that could knock someone out from behind: the stealth KO chances are against it.
-        int koSlot = -1;
-        foreach (var s in viewer.Selection)
-            if (table.TryResolveNext(s, out int k) && table.Cold(k) is { } c && Carrying.CarrySystem.CanKnockOut(c)) { koSlot = k; break; }
+        int koSlot = Carrying.CarrySystem.KnockOutAttacker(table, viewer.Selection);
         // The selection's lead: the kidnap chances are against it.
         int leadSlot = -1;
         foreach (var s in viewer.Selection)
             if (table.TryResolveNext(s, out int l)) { leadSlot = l; break; }
         // The character under the pointer: with the selected and inspected ones it gets the context menu's figures, the crowd does not (docs/simulation.md, tick order).
         var pointed = viewer.Pointed;
-        var aggro = koSlot >= 0 ? _systems.OfType<AggroSystem>().FirstOrDefault() : null;
         var talk = _systems.OfType<Dialogue.DialogueSystem>().FirstOrDefault();
         var combat = _systems.OfType<Combat.CombatSystem>().FirstOrDefault();
         var beds = _systems.OfType<Locks.BedSystem>().FirstOrDefault();
@@ -1108,7 +1094,7 @@ public sealed partial class World
             jobRevisions[i] = JobsRevision(table.IdOf(i));
             if (table.Cold(i)?.Inventory is { } inventory) inventoryRevisions[i] = InventoryRevision(inventory);
         }
-        var facts = new PublishFacts(koSlot, leadSlot, pointed, aggro, talk, combat, bodyConstants, population, extraBloodLoss,
+        var facts = new PublishFacts(koSlot, leadSlot, pointed, talk, combat, bodyConstants, population, extraBloodLoss,
             viewer, fullDetails, eligible, inventoryRevisions, jobRevisions, recipient);
         bool ring = include is null && detailEligible is null && !fullDetails;
         var buffer = ring ? Array.Find(_snapshotRing, b => b != _shownBuffer && b != _previousBuffer && b != _olderBuffer)! : new SnapshotBuffer();

@@ -853,12 +853,6 @@ public sealed class CharacterCold
     public float LiftTime { get; set; } = -1;
 
     /// <summary>
-    /// The stealth KO target heard the attacker on its last step before the swing (the sense entry's heard flag,
-    /// <see cref="CharacterTask.StealthKo"/>).
-    /// </summary>
-    public bool KnockoutHeard { get; set; }
-
-    /// <summary>
     /// The <see cref="CharacterTask.PickUp"/> is a kidnap (<see cref="Carrying.PickUpOrder.Kidnap"/>): the lift rolls
     /// <see cref="Carrying.CarrySystem.KidnapChance"/> first.
     /// </summary>
@@ -1882,7 +1876,6 @@ public sealed class CharacterTable
             hasher.Add(k.CarryTarget);
             hasher.Add(k.LiftTime);
             hasher.Add((int)resume);
-            if (c.Task == (byte)CharacterTask.StealthKo) hasher.Add(k.KnockoutHeard);
             if (k.Kidnapping) hasher.Add(0x4B69646E);
             if (k.Snatching) hasher.Add(0x536E6174);
             if (k.Foraging) hasher.Add(0x466F7267);

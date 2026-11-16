@@ -592,7 +592,7 @@ static class SaveProbe
         {
             probe.Tick(20);
             bool spotted = aggro?.Spotted(slot, leader) == true;
-            float chance = Meitou.Simulation.Carrying.CarrySystem.StealthKoChance(t.Cold(leader.Slot)!, t.Cold(slot)!, spotted);
+            float chance = Meitou.Simulation.Carrying.CarrySystem.StealthKoChance(probe.World, leader.Slot, slot);
             float gap = Vector3.Distance(t.Next[leader.Slot].Position, t.Next[slot].Position);
             var task = (CharacterTask)t.Next[leader.Slot].Task;
             var targetTask = (CharacterTask)t.Next[slot].Task;

@@ -1039,6 +1039,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     /// or without a talk, attack (with a gunner on a turret, Shoot At); a prisoner, loot. Neutral ones: down, loot (<c>search</c> pointer for a
     /// bandit, slave or not-real faction, else <c>scavenge</c>); standing and the lead sneaking, pick the shackles of a prisoner, loot a slave, else
     /// stealth KO; else talk when it has something to say (a trader trades), otherwise nothing (<c>green</c> pointer when allied to the lead).
+    /// A stealth KO submits selection order, matching the server's first eligible sneaker used by its preview and the context-menu order.
     /// </summary>
     internal (string Pointer, CharacterId Target, Action? Do)? QuickOrderFor(CharacterSnapshot c, IReadOnlyList<CharacterId> selection)
     {
@@ -1080,7 +1081,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
             if (down) return ("search", id, loot);
             if (sneaking)
                 return c.Slave is { State: 1 } ? ("scavenge", id, loot)
-                    : ("knockout", id, Do(() => Say(new Simulation.Carrying.StealthKoOrder([lead.Id], id) { Tick = tick })));
+                    : ("knockout", id, Do(() => Say(new Simulation.Carrying.StealthKoOrder(selection, id) { Tick = tick })));
             if (c.Prison is not null) return ("search", id, loot);
             bool talkCandidate = !c.InCombat && (c.IsDiplomat || c.Slave is { State: 1 } || Session.WantsToTalk(id));
             bool canTalk = talkCandidate && Session.CanTalk(id, lead.Id);
@@ -1110,7 +1111,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
                     Say(new Simulation.Locks.ShackleOrder([lead.Id], id, Simulation.Locks.ShackleWork.Pick) { Tick = tick });
                 }));
             return c.Slave is { State: 1 } ? ("scavenge", id, loot)
-                : ("knockout", id, Do(() => Say(new Simulation.Carrying.StealthKoOrder([lead.Id], id) { Tick = tick })));
+                : ("knockout", id, Do(() => Say(new Simulation.Carrying.StealthKoOrder(selection, id) { Tick = tick })));
         }
 
         // Order 12 (Task_PlayerTalkto) walks over and starts the conversation, a trader's included: its trade window is a reply of that conversation

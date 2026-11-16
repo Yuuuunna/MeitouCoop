@@ -69,6 +69,33 @@ public class PlayerSessionUiTests
         Assert.Same(WorldSnapshot.Empty, session.CurrentSnapshot);
     }
 
+    /// <summary>
+    /// A quick KO keeps selection order, like the context menu and server preview, instead of substituting the nearest selected character.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Quick_stealth_ko_submits_the_selection_used_for_the_displayed_chance(bool hostile)
+    {
+        var first = new CharacterSnapshot(new(1, 1), null, Vector3.Zero, 0, []) { IsPlayer = true, Faction = 17 };
+        var nearer = new CharacterSnapshot(new(2, 1), null, new(9, 0, 0), 0, []) { IsPlayer = true, Faction = 17 };
+        var target = new CharacterSnapshot(new(3, 1), null, new(10, 0, 0), 0, [])
+        {
+            Faction = 18, HostileToPlayer = hostile, CanStealthKo = true, StealthKoChance = 75,
+        };
+        var session = new RemotePresentation { CurrentSnapshot = new(1, [first, nearer, target]) };
+        var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position);
+        CharacterId[] selection = [first.Id, nearer.Id];
+
+        var quick = ui.QuickOrderFor(target, selection)!.Value;
+        quick.Do!();
+
+        Assert.Equal("knockout", quick.Pointer);
+        var order = Assert.IsType<Meitou.Simulation.Carrying.StealthKoOrder>(Assert.Single(session.Commands));
+        Assert.Equal(selection, order.Attackers);
+        Assert.Equal(target.Id, order.Target);
+    }
+
     [Fact]
     public void RemoteHistoryRestoresWithoutPopupReplayAndNewNoticesAreDeliveredOnce()
     {
