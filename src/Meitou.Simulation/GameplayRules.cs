@@ -11,6 +11,14 @@ public sealed record GameplayRules
     public float GlobalDamageMultiplier { get; init; } = 1;
     public float HungerTime { get; init; } = 1;
     public float ChanceOfDeath { get; init; } = 1;
+    /// <summary>
+    /// The authority's experience multiplier for all player factions, shared by every connected player.
+    /// </summary>
+    public float SquadXp { get; init; } = 1;
+    /// <summary>
+    /// The authority's experience multiplier for NPC factions and animals.
+    /// </summary>
+    public float OthersXp { get; init; } = 1;
     public float ProductionSpeed { get; init; } = 1;
     public float ResearchSpeed { get; init; } = 1;
     public float BuildingSpeed { get; init; } = 1;
@@ -24,6 +32,10 @@ public sealed record GameplayRules
     public bool GunnerFacesBarrel { get; init; } = true;
     public bool PunchReachFix { get; init; } = true;
     public bool BenchFacingFix { get; init; } = true;
+    /// <summary>
+    /// Searches carried bags and the worn backpack during confiscation and scavenging.
+    /// </summary>
+    public bool BagSearchFix { get; init; } = true;
     public bool DoorsCloseBehind { get; init; } = true;
     /// <summary>
     /// Whether player animals may collect loose items into their bags.
@@ -60,6 +72,8 @@ public sealed record GameplayRules
             GlobalDamageMultiplier = bodies?.GlobalDamageMultiplier ?? 1,
             HungerTime = bodies?.HungerTime ?? 1,
             ChanceOfDeath = bodies?.ChanceOfDeath ?? 1,
+            SquadXp = bodies?.SquadXp ?? 1,
+            OthersXp = bodies?.OthersXp ?? 1,
             ProductionSpeed = production?.Settings.ProductionOption ?? 1,
             ResearchSpeed = production?.Settings.ResearchOption ?? 1,
             BuildingSpeed = world.Systems.OfType<Construction.ConstructionSystem>().FirstOrDefault()?.Settings.BuildingSpeed ?? 1,
@@ -73,6 +87,7 @@ public sealed record GameplayRules
             GunnerFacesBarrel = combat?.GunnerFacesBarrel ?? true,
             PunchReachFix = combat?.PunchReachFix ?? true,
             BenchFacingFix = world.BenchFacingFix,
+            BagSearchFix = world.BagSearchFix,
             DoorsCloseBehind = locks?.DoorsCloseBehind ?? true,
             AnimalsPickUp = world.SystemOf<PlayerSystem>()?.AnimalsPickUp ?? false,
             SquadSize = population?.Settings.SquadSizeMultiplier ?? 1,

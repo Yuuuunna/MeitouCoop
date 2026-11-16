@@ -62,6 +62,10 @@ public sealed class MusicDirector
     /// </summary>
     string? _pendingBank;
     /// <summary>
+    /// The load of <see cref="_pendingBank"/>; a failed one ends the wait with nothing remembered.
+    /// </summary>
+    Task? _pendingLoad;
+    /// <summary>
     /// Whether no biome step has run yet (the first drops the main theme's bank).
     /// </summary>
     bool _firstChange = true;
@@ -85,6 +89,11 @@ public sealed class MusicDirector
     /// The event the timer would post now (<c>Music_Dunes_Play</c>), null when no biome music is remembered.
     /// </summary>
     public string? Remembered => _remembered;
+
+    /// <summary>
+    /// Whether a biome music bank is loading for the current biome (it holds back every bank unload, the ambience's too).
+    /// </summary>
+    public bool LoadPending => _pendingBank is not null;
 
     /// <summary>
     /// Real seconds until the timer next fires (negative once due, e.g. during the title screen).
@@ -157,9 +166,10 @@ public sealed class MusicDirector
 
     /// <summary>
     /// Each frame: <paramref name="music"/> is the <c>music</c> of the region under the camera's pivot, null when no region was found (the game
-    /// then skips the biome step, not the timer). The timer is skipped while <see cref="TitleScreen"/>.
+    /// then skips the biome step, not the timer). The timer is skipped while <see cref="TitleScreen"/>. <paramref name="otherLoadPending"/>: an
+    /// ambience bank is loading, which holds back the unloads as the music's own pending load does (the exe's one pending-load word).
     /// </summary>
-    public void Update(BiomeMusic? music)
+    public void Update(BiomeMusic? music, bool otherLoadPending = false)
     {
         double now = _clock();
         if (music is { } m) ChangeBiome((int)m, now);
@@ -171,7 +181,7 @@ public sealed class MusicDirector
             if (_remembered is not null && Volume > 0) _player.Post(_remembered, AudioSystem.MusicObject);
         }
         if (_remembered is not null) _lastCurrent[BankOf(Biome!)] = now;
-        UnloadStale(now);
+        if (!otherLoadPending) UnloadStale(now);
     }
 
     /// <summary>
@@ -198,6 +208,7 @@ public sealed class MusicDirector
             Biome = null;
             _remembered = null;
             _pendingBank = null;
+            _pendingLoad = null;
             return;
         }
         string bank = BankOf(Names[next]);
@@ -209,18 +220,30 @@ public sealed class MusicDirector
             Biome = null;
             _remembered = null;
             _pendingBank = bank;
-            _player.LoadBank(bank);
+            _pendingLoad = _player.LoadBank(bank);
         }
     }
 
     /// <summary>
-    /// Remembers the current biome's music once its pending bank has loaded, and clears the pending bank.
+    /// Remembers the current biome's music once its pending bank has loaded, and clears the pending bank. A load that failed clears it too, with
+    /// nothing remembered and no switch set (the exe's bank pass <c>FUN_140259130</c> clears the pending bit whatever <c>LoadBank</c> returned); the
+    /// bank is asked for again at the next change into that biome.
     /// </summary>
     void CompleteLoad()
     {
-        if (_pendingBank is null || !_player.IsBankLoaded(_pendingBank)) return;
+        if (_pendingBank is null) return;
+
+        if (_pendingLoad is { IsFaulted: true } or { IsCanceled: true })
+        {
+            _pendingBank = null;
+            _pendingLoad = null;
+            return;
+        }
+
+        if (!_player.IsBankLoaded(_pendingBank)) return;
         if (_index is >= 0 and <= 3 && BankOf(Names[_index]) == _pendingBank) Remember(Names[_index]);
         _pendingBank = null;
+        _pendingLoad = null;
     }
 
     /// <summary>

@@ -13,7 +13,7 @@ save layout: [save.md](../formats/save.md#folder-and-state-mapping).
 A type's variants are every texture in its folders (install: line 3 at 1024×512, splash 7 at 512² +
 1 at 1024², pool 5 at 512², smear 1 at 512×256). Each variant keeps its full-size texel dimensions
 (the loader shifts them back up by the texture-quality level for names ending `.dds`). Type 0 has
-no caller found (**Unknown** whether anything makes `line` decals).
+no caller found.
 
 ## Cells
 
@@ -27,7 +27,7 @@ their cells and local places).
 
 **Verified** (`FUN_1408dce50`, `FUN_1408dc6b0`): random variant; angle = atan2(dir.x, dir.z), the
 texture's width axis along (sin, cos) and its height axis along (cos, −sin); half extents in world
-units = size × texels × 288 / 4096 (**Verified**: `FUN_1408dfaf0` sets the factor at `+0x1c0` to cell 288 × 0.5 × 1/2048 = 288/4096; the draw agrees, below). Life starts at 99 (seconds; the medical and hit callers pass 99.0; the bleed pool's value is lost in the decompile, **Unknown**, we use 99).
+units = size × texels × 288 / 4096 (**Verified**: `FUN_1408dfaf0` sets the factor at `+0x1c0` to cell 288 × 0.5 × 1/2048 = 288/4096; the draw agrees, below). Life starts at 99 (seconds; the medical and hit callers pass 99.0; the bleed pool's value is lost in the decompile, we use 99).
 
 Sources (`FUN_140652000` medical update, `FUN_140793b20` hit), all only with `Blood` on and the
 character out of the water (`FUN_1405c7fd0` = water state 0); colour = race `blood colour` (FCS
@@ -40,11 +40,7 @@ default #800000), alpha 1 unless stated:
 | bleeding > 0.01, otherwise (carried) | pool, size min(0.5, bleeding × 0.1) | build-up += rand × bleeding × dt × 10; past 1: a drop if more than 1 unit from the last place, then build-up 0 |
 | a hit (`FUN_1406508d0`), a severed limb (`FUN_14064edc0`) | splash, size clamp(min(1, (cut + blunt + pierce) / 100), 0.05, 0.5) | a direction (a character vector at `+0x640`, `+0xd0`), flipped or turned ±90° by a hit-side flag (2, 4, 8), turned by a random ±50°; placed up to 20 units along it |
 
-**Unknown**: the second condition of the first two rows (`FUN_14028ddc0`, a flag or count on the
-character; taken as true), the medical dt's unit in the drip row (taken as game seconds), the
-splash's direction vector and side flag (we use attacker → victim, bolt flight), whether the 20 is
-a random distance (we roll 0..20), and the race check of the hit row's `vfunc 0x330` (we skip
-bloodless races, `bleed rate` 0). We emit no limb-sever splash.
+We emit no limb-sever splash.
 
 **Pool growth** (**Verified**, `FUN_1408dcfa0`): per character a token (place, size). Increment =
 bleeding × scaled frame dt × 0.2. No token: size = increment. Within √10 units (X/Z) of the token:
@@ -103,7 +99,6 @@ characters carry blood on their skin, not only on the ground.
   normal.z < 0) × `blood horizontal` (human: 0.15 and 1). `amount` is per body part, `bloodAmount[8]` (the first 8 parts), written by
   `FUN_140530b30` as 1 − clamp((flesh − stun + bandage) / (base × mult × scale − wear), 0, 1) (the +0x48 field is the bandage, not the rig): a damaged part is bloodier, a part far below zero is
   fully covered. Only `Character_VP` (bodies) defines `BLOOD` among the people's programs; worn clothing (`skin.program`) has none, animals have their own (`creature.hlsl`).
-  **Unknown**: the part index a stump mesh's vertices carry, the exact `bloodColour` alpha, the animals' mapping.
 - A severed limb item draws with the `SeveredLimb` material (`FUN_1400cf490`, cloned as `Limb_<name>`): textures from the item's MATERIAL record
   (`texture map`, `normal map`, `color map` = skin-tone mask; the human's are the female body's), shader `severed_limb_fs`: skin-tone mask tint
   (a vec4 stored on the item), then blood with the same texture, `bloodColour` (a vec4 on the item) and an extra alpha of
@@ -111,10 +106,8 @@ characters carry blood on their skin, not only on the ground.
   **Verified** (`FUN_1400ced10`, the item's setup from the cut character, called by `FUN_14064edc0`; `FUN_1400cf490` hands the values to the entity): the item keeps a vec4 skin tone at
   `+0x1f4` (shader `skinTone`, custom parameter 2) = 1 − the character's appearance `Skin Tone` colour per channel, i.e. the body shader's `skintone` (our `SkinToneParameter`); a vec4
   blood colour at `+0x204` (custom 3) = the race's `blood colour` as ARGB, alpha 1.0; and at `+0x1e8` the size of the character's forearm (arm slots) or calf (leg slots) bone, which
-  `FUN_1400cf490` sets as the item node's scale (**Unknown** whether that follows the body shape in play; we draw the limb at scale 1). The fragment is `albedo × (1 − skinTone × colourMap.r)`,
-  then the blood, × 0.7, with the normal map on the frame (tangent, cross(tangent, normal) × tangent.w, normal) (DXT5, x in alpha, z rebuilt). The `1-itemlist` save keeps no state for an
-  item (save.md), so the tint is not saved: **Unknown** what a limb loaded from a save shows (we apply none).
-
+  `FUN_1400cf490` sets as the item node's scale (we draw the limb at scale 1). The fragment is `albedo × (1 − skinTone × colourMap.r)`,
+  then the blood, × 0.7, with the normal map on the frame (tangent, cross(tangent, normal) × tangent.w, normal) (DXT5, x in alpha, z rebuilt).
 
 **Meitou**
 - Body: `CharacterContent.BodyBlood` gives a person's body material the race's blood colour (`blood colour`), scales (`blood horizontal`, `blood vertical`) and `bloody.png`
@@ -147,7 +140,7 @@ The `bloodsurfaces` switch (Meitou, default; Faithful: terrain only, as the game
 - Debug command `bloodmark <splash|pool|smear|drip> <x> <y> <z> [size] [RRGGBB] [dirx dirz] [--count n]` puts a mark (n spread over 60 x 60 units) for controlled repros.
 - Cost, **Observed** (Hub battle with about 100 surface decals in view, 2560x1440, Vulkan, wall-clock per frame): +0.35 ms (6.88 to 7.24 ms), two extra depth copies and pass splits plus the pass, made only while a kept mark is within `Decal Range` (`SurfacesNear`). Low impact.
 - **Observed** (owner, in play): works inside buildings and on their floors.
-- Depth convention: each scene texel's view depth comes from `depthViewZ` (`DepthConvention.Glsl`): Vulkan's scene depth is reversed, `z = n f / (n + d (f - n))`. **Unknown** for this pass on real data: the earlier **Verified** probe (flat sandbox floor, stored depth 0.9377 at three camera distances) checked the former 0.5..1 storage and has not been rerun. The camera's near plane is a quarter of its distance, so a wrong mapping rebuilt positions far off at play distance and showed blood only in close-ups. The texel's ray is rebuilt from the jittered projection (the upscaler's jitter moved out of the texel centre).
+- Depth convention: each scene texel's view depth comes from `depthViewZ` (`DepthConvention.Glsl`): Vulkan's scene depth is reversed, `z = n f / (n + d (f - n))`. The camera's near plane is a quarter of its distance, so a wrong mapping rebuilt positions far off at play distance and showed blood only in close-ups. The texel's ray is rebuilt from the jittered projection (the upscaler's jitter moved out of the texel centre).
 
 ## On weapons and gear (Meitou)
 
@@ -166,6 +159,6 @@ Live two-client appearance and reconnect behaviour still require graphical accep
 
 The `footprints` switch (Meitou, default; Faithful: none, as the game; `BloodFootprints`), not a game behaviour. A walking character's feet pick up the colour of a wet terrain pool or splash (its opaque inner ellipse) and each foot leaves up to four progressively lighter prints on dry terrain. The prints expire in game time and stay out of both save formats; switching it off clears the prints and the blood on the soles. It needs the `Blood` setting.
 
-- Masks: an equipped boot's sole outline (the convex hull of its mesh's lowest band of vertices, `FootprintSoles`), else generic boot and barefoot masks (`FootprintTexture`). The foot and toe bones place and turn a grounded print; a distance-based stride when the pose is not available.
+- Masks: an equipped boot's sole outline (the convex hull of its mesh's lowest band of vertices, `FootprintSoles`), a bare foot the body mesh's own sole: the union of its triangles within 0.45 units of the lowest point on that side, toes included; a band too squat (under 1.6 long per wide, the skeleton and robot races) prints its lowest vertices' outline as footwear does (**Observed**: `robot`, `Skeleton_MkII`, `Robot_Variant01/02` plates about 1.25–1.57 x 2.4–3 units), one covering under 0.75 of its convex hull (a robot foot frame) prints the hull flat (`FootprintSoles`, **Observed** baking `human_male`, `human_female` and `bone_male` to images: a foot outline with five toes, about 1.26 x 3.23 units); a fitted leg (LIMB_REPLACEMENT `slot` 52 left, 53 right) prints its own mesh the same way (skin sole, else outline); the Human and Hive legs' meshes are only the cap above the knee (lowest point 7.4 units up), so their wearer prints the body's sole; Hive feet are pointed tips about 0.43 x 0.91 units, which bare soles down to 0.2 x 0.5 allow (**Observed** baking the human, Athletic and Economy robotic legs: the first two a plate about 1.25 x 2.5–3 units, the Economy peg none, so the generic boot mask); generic boot and barefoot masks (`FootprintTexture`) when a mesh gives none. When a step happens: the ground trails' footfall detection ([render-terrain.md](../render-terrain.md#ground-trails), `GameHost.Trails.Body`), one event per human limb once its sole has settled, side from the limb bone's `L`/`R` name; it runs whenever the prints want it (blood on the terrain), with `trails` off and on the Metal host too, and pressing marks stays behind `trails`. The event wets the foot or places the print at the sole's contact, turned heel to toe. A character with no pose leaves no print (every drawn one is within the trails' 240-unit reach, past the prints' 160). **Observed** in the sandbox: one print per step, under the foot bone. No boot print where no boot is worn: a race with `no shoes` (Hive, Skeletons, Fishmen, Deadhive, Soldierbot, P4, Screamer) or a wearer with neither leg original has its boots section closed (`InventoryCommands.SectionClosed`); **Observed** in the sandbox: Samurai Boots given to a Skeleton Drifter stay in `main`, to a Greenlander go to `boots`.
 - Drawn by the surface-blood pass on terrain pixels only (scene depth equal to the terrain's), so the print's detail does not depend on `Decal Resolution`. The terrain depth copy runs while a print is within `Decal Range` and in view.
 - `Blood decals drawn` (Tab panel, 64 to 2048, default 512): the most surface decals and prints drawn in a frame, the nearest kept.

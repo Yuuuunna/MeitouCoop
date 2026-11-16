@@ -273,6 +273,10 @@ sealed class UserConfig
     /// </summary>
     public bool FeedbackButton { get; set; } = true;
     /// <summary>
+    /// The Meitou load window's Hide Kenshi saves tick: the base game's saves are left out of the list (off by default).
+    /// </summary>
+    public bool HideKenshiSaves { get; set; }
+    /// <summary>
     /// The original's splash at startup in the Faithful UI (Advanced settings: the switch's Faithful side), off by default; off, the menu shows as
     /// soon as the game has loaded.
     /// </summary>
@@ -281,6 +285,11 @@ sealed class UserConfig
     /// The sky arrival's flight over a load from the title (Meitou main menu only; <see cref="Title.SkyArrival"/>), on by default.
     /// </summary>
     public bool MainMenuTransitions { get; set; } = true;
+    /// <summary>
+    /// The game's camera leash (Advanced settings, in neither side of the gameplay switch), on by default: the strategy and free cameras stay
+    /// within <see cref="Data.World.KenshiCamera.LeashRadius"/> of the nearest of the player's characters.
+    /// </summary>
+    public bool CameraLeash { get; set; } = true;
     /// <summary>
     /// The title screen (Interface settings), independent of <see cref="UiMode"/>: on, Meitou's menu over the staged world scene; off, the original's picture.
     /// </summary>
@@ -393,6 +402,23 @@ sealed class UserConfig
     /// </summary>
     public bool AdvancedRagdolls { get; set; } = true;
     /// <summary>
+    /// What the XP gains of the player's characters and faction are multiplied by (Advanced settings "Squad XP"; 1, as in the game;
+    /// docs/game/character-stats.md "Levelling (XP)").
+    /// </summary>
+    public float SquadXp { get; set; } = 1;
+    /// <summary>
+    /// What every other character's XP gains are multiplied by (Advanced settings "Others' XP"; 1, as in the game).
+    /// </summary>
+    public float OthersXp { get; set; } = 1;
+    /// <summary>
+    /// The XP sliders' range (<see cref="SquadXp"/>, <see cref="OthersXp"/>): none to a thousand times the game's, as the XP mods allow.
+    /// </summary>
+    public const float MinXpRate = 0, MaxXpRate = 1000;
+    /// <summary>
+    /// The mods (by <c>mods.cfg</c> name) whose settings Meitou has taken into its own built-in feature, once each (<c>BuiltInMods</c>).
+    /// </summary>
+    public List<string> AdoptedMods { get; set; } = [];
+    /// <summary>
     /// A loaded or imported save starts paused (Advanced settings, a Faithful / Meitou switch; on by default, Meitou: in the game it runs at once).
     /// <c>--load</c> is not paused.
     /// </summary>
@@ -438,6 +464,11 @@ sealed class UserConfig
     /// docs/game/ai-tasks.md "Town goals").
     /// </summary>
     public bool FixBenchFacing { get; set; } = true;
+    /// <summary>
+    /// Guards' smuggling search and starving looters' food take reach into bags carried in the inventory grid (Fixes settings; off: only the grid
+    /// and the worn backpack, as the game does; docs/game/dialogue.md "Conditions").
+    /// </summary>
+    public bool FixBagSearch { get; set; } = true;
     /// <summary>
     /// Other buildings' parts (the Hub's wall in the Shinobi Thieves tower) are cut inside a building in the interior view (Fixes settings; off:
     /// drawn, as the game does; docs/render-interior-cut.md).
@@ -620,6 +651,11 @@ sealed class UserConfig
     public List<string> TrustedCodeMods { get; set; } = [];
 
     /// <summary>
+    /// The save folder the title's Continue loads: the last save written (the original's <c>settings.cfg</c> <c>continue</c>, docs/formats/save.md
+    /// "Where saves live"); null until Meitou writes one (<see cref="ContinueFolder"/> then picks one).
+    /// </summary>
+    public string? ContinueSave { get; set; }
+    /// <summary>
     /// The code mods' settings the player changed (docs/modding.md "Settings"): mod id to setting key to the value as text; a default is not kept.
     /// </summary>
     public Dictionary<string, Dictionary<string, string>> ModSettings { get; set; } = [];
@@ -673,6 +709,24 @@ sealed class UserConfig
             MinCameraMoveSpeed, MaxCameraMoveSpeed);
         CameraZoomSpeed ??= Meitou.Game.Audio.AudioSystem.Setting(install, "camera zoom", Data.World.KenshiCamera.DefaultZoomSpeed,
             MinCameraZoomSpeed, MaxCameraZoomSpeed);
+    }
+
+    /// <summary>
+    /// The folder Continue loads: <see cref="ContinueSave"/>; for a config from before it was kept, the newest save in Meitou's own save folder (the
+    /// last one Meitou wrote); else the save the install's <c>settings.cfg</c> <c>continue</c> names in the original's save folders (the per-user
+    /// ones first, then the install's); null for none.
+    /// </summary>
+    public string? ContinueFolder(Content.GameInstall install)
+    {
+        if (ContinueSave is { Length: > 0 } saved) return saved;
+        if (Data.Save.SaveCatalog.Scan(Simulation.Saving.QuickSave.DefaultRoot).FirstOrDefault() is { } own) return own.Folder;
+
+        var settings = Meitou.Localisation.GameLanguage.ReadSettings(System.IO.Path.Combine(install.Root, "settings.cfg"));
+        if (!settings.TryGetValue("continue", out var name) || name.Length == 0) return null;
+
+        return install.UserSaveDirectories.Append(install.SaveDirectory)
+            .Select(root => System.IO.Path.Combine(root, name))
+            .FirstOrDefault(folder => File.Exists(System.IO.Path.Combine(folder, Data.Save.SaveFolder.QuickSaveName)));
     }
 
     /// <summary>
@@ -907,6 +961,9 @@ sealed class UserConfig
         if (MetalUpscaler is MetalUpscalerMode.Temporal or MetalUpscalerMode.Spatial) MetalRenderScale = Math.Clamp(MetalRenderScale, 0.4f, 1f);
         MetalRenderDivisor = Math.Clamp(MetalRenderDivisor, 1, MetalRenderDivisorMax);
         ModSettings ??= [];
+        AdoptedMods ??= [];
+        SquadXp = float.IsFinite(SquadXp) ? Math.Clamp(SquadXp, MinXpRate, MaxXpRate) : 1;
+        OthersXp = float.IsFinite(OthersXp) ? Math.Clamp(OthersXp, MinXpRate, MaxXpRate) : 1;
         foreach (var (mod, saved) in ModSettings.ToList())
             if (saved is null) ModSettings.Remove(mod);
     }

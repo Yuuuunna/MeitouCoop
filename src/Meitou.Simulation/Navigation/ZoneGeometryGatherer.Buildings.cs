@@ -53,7 +53,7 @@ internal sealed partial class ZoneGeometryGatherer
     }
 
     /// <summary>
-    /// Hash of the buildings that shape the zone's mesh (id, position, rotation, destroyed) in the style of the original's zone hash
+    /// Hash of the buildings that shape the zone's mesh (id, position with height, full rotation, destroyed) in the style of the original's zone hash
     /// (docs/game/pathfinding.md, "Hash"): the cache key of a built mesh. Changes when a mod adds, moves or removes a building.
     /// </summary>
     public uint BuildingHash(ZoneCoordinate zone, float margin = DefaultMargin)
@@ -68,11 +68,14 @@ internal sealed partial class ZoneGeometryGatherer
             hash = Combine(hash, (uint)Stable(b.BuildingId));
             hash = Combine(hash, (uint)BitConverter.SingleToInt32Bits(b.Rotation.W));
             hash = Combine(hash, (uint)BitConverter.SingleToInt32Bits(b.Rotation.Y));
+            hash = Combine(hash, (uint)BitConverter.SingleToInt32Bits(b.Position.Y));
+            hash = Combine(hash, (uint)BitConverter.SingleToInt32Bits(b.Rotation.X));
+            hash = Combine(hash, (uint)BitConverter.SingleToInt32Bits(b.Rotation.Z));
             hash = Combine(hash, destroyed ? 1u : 0u);
             if (StateOf(b)is { } state)
                 hash = Combine(hash, (uint)Stable(b.LayoutName(state, exterior: true) + "|" + b.LayoutName(state, exterior: false)));
-            if (b.WithoutInterior)
-                hash = Combine(hash, 0x1e7e1u); // only then, so the other zones' keys stay as they were
+            if (b.WithoutInterior) hash = Combine(hash, 0x1e7e1u);   // only then, so the other zones' keys stay as they were
+            if (b.PlayerOwned) hash = Combine(hash, 0x9a7e2u);   // its wall top is seeded (AddLinkedWallSeeds)
         }
 
         foreach (var(x, z)in (_ownershipSnapshot ?? _levels.FoliageOwnership).OrderBy(p => p.X).ThenBy(p => p.Z))
@@ -116,8 +119,10 @@ internal sealed partial class ZoneGeometryGatherer
             bool open = kind != InteriorKind.Real;
             bool upper = kind == InteriorKind.Blank && !record.GetBool("is wall gate") && !record.GetBool("links together");
             AddBuilding(g, record, b.Key, position, b.Rotation, destroyed, open: open, upper: upper);
-            foreach (var(item, at, rotation)in LayoutObjects(b, record, position, destroyed))
-                AddBuilding(g, item.Building, $"{b.Key}/{item.InstanceId}", at, rotation, destroyed: false, floor: item.Floor, open: open, upper: upper);
+            if (InZone(g, b.Position)) QueueDoor(g, record, kind, b.Key, position, b.Rotation, destroyed);
+            foreach (var (item, at, rotation) in LayoutObjects(b, record, position, destroyed))
+                AddBuilding(g, item.Building, $"{b.Key}/{item.InstanceId}", at, rotation, destroyed: false, floor: item.Floor, open: open,
+                        upper: upper);
         }
 
         g.BuildingLastTriangle = g.TriangleCount;
@@ -125,7 +130,48 @@ internal sealed partial class ZoneGeometryGatherer
     }
 
     /// <summary>
-    /// Mixes <paramref name = "v"/> into <paramref name = "h"/> (the boost hash_combine step).
+    /// Whether <paramref name="at"/> lies in the zone's own box (each building is in one zone's gate list).
+    /// </summary>
+    static bool InZone(ZoneGeometry g, Vector3 at) => at.X >= g.ZoneMin.X && at.X < g.ZoneMax.X && at.Z >= g.ZoneMin.Y && at.Z < g.ZoneMax.Y;
+
+    /// <summary>
+    /// Queues a building's first door: a gate's for <see cref="ZoneGeometry.GateSides"/> (a GatewayBuilding, made for <c>is wall gate</c>,
+    /// <c>FUN_14057cc70</c>), another building with a real interior's for <see cref="ZoneGeometry.CodePoints"/>. A destroyed building has no doors;
+    /// an interior building without a door reads its code at its position (<c>FUN_140555fd0</c>).
+    /// </summary>
+    void QueueDoor(ZoneGeometry g, GameRecord building, InteriorKind kind, string key, Vector3 position, Quaternion rotation, bool destroyed)
+    {
+        bool gate = building.GetBool("is wall gate");
+        if (!gate && kind != InteriorKind.Real) return;
+
+        if (!destroyed && FirstDoor(building, key, position, rotation) is var (door, frame, node))
+        {
+            (gate ? g.GateDoors : g.CodeDoors).Add((key, door, frame, node));
+            return;
+        }
+
+        if (!gate) g.CodePoints.Add(new BuildingCodePoint(key, position));
+    }
+
+    /// <summary>
+    /// The building's door 0 with a collision box (its record, box and the building's node), null when it has none.
+    /// </summary>
+    (GameRecord Door, DoorFrame Frame, Matrix4x4 Node)? FirstDoor(GameRecord building, string key, Vector3 position, Quaternion rotation)
+    {
+        var node = NodeMatrix(building, position, rotation);
+        foreach (var mesh in WorldObjectLayout.Building(_db, building, key, position, rotation, new BuildingState(false)))
+        {
+            if (mesh.DoorIndex != 0 || mesh.CollisionPath(false) is not { Length: > 0 } path || _collision.Get(path) is not { } prepared) continue;
+            if (prepared.Door.HalfExtents == Vector3.Zero) continue;
+
+            return (mesh.Owner, prepared.Door, node);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Mixes <paramref name="v"/> into <paramref name="h"/> (the boost hash_combine step).
     /// </summary>
     static uint Combine(uint h, uint v) => h ^ (v + 0x9e3779b9 + (h << 6) + (h >> 2));
     /// <summary>
@@ -309,8 +355,8 @@ internal sealed partial class ZoneGeometryGatherer
             bool walkable = mode == PathMode.Walkable && group != 27 && (open || group == 9 || group == 19);
             int shapeFirst = g.TriangleCount;
             AddShape(g, shape, node, walkable ? BuildingSlopeDegrees : 0, carve: CarveConvexObstacles && !walkable);
-            if (group is 9 or 10 && g.TriangleCount > shapeFirst)
-                g.FloorRanges.Add((shapeFirst, g.TriangleCount));
+            if (group is 9 or 10 && g.TriangleCount > shapeFirst) g.FloorRanges.Add((shapeFirst, g.TriangleCount));
+            if (group == 9 && interior is null && g.TriangleCount > shapeFirst) g.Floor0Ranges.Add((shapeFirst, g.TriangleCount));
         }
 
         if (g.TrackParts && g.TriangleCount > firstTriangle)

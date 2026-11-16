@@ -1,5 +1,6 @@
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Items;
+using Meitou.Modding;
 using System.Globalization;
 using Meitou.Content;
 using Meitou.Simulation;
@@ -34,6 +35,11 @@ public sealed record ServerConfiguration
     public string? ModsCfg { get; init; }
     public string[] TrustedCodeMods { get; init; } = [];
     public Dictionary<string, Dictionary<string, string>> ModSettings { get; init; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Mods whose former XP multiplier has already been adopted into the server's public gameplay rules.
+    /// </summary>
+    public string[] AdoptedMods { get; init; } = [];
+
     public int SimulationThreads { get; init; } = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
 
     public IReadOnlyDictionary<string, string> Rules(GameplayRules? effective = null)
@@ -54,7 +60,33 @@ public sealed record ServerConfiguration
     static bool ValidGameplay(GameplayRules? rules)
     {
         static bool Range(float value, float min, float max) => float.IsFinite(value) && value >= min && value <= max;
-        return rules is not null && Enum.IsDefined(rules.Dismemberment) && (rules.AttackSlots is null or >= 1 and <= 5) && rules.HarpoonLimit is >= 10 and <= 10000 && rules.TownAttacks is >= 0 and <= 5 && rules.GroundItemLimit is >= 1 and <= Meitou.Simulation.Items.GroundItems.MaxLimit && (rules.AutoSaveSeconds == 0 || rules.AutoSaveSeconds is >= 10 and <= 86400) && Range(rules.SquadSize, .5f, 3) && Range(rules.Population, .5f, 4) && Range(rules.RaidSize, .25f, 4) && Range(rules.RaidFrequency, .25f, 3) && Range(rules.GlobalDamageMultiplier, .5f, 4) && Range(rules.HungerTime, .25f, 8) && Range(rules.ChanceOfDeath, .5f, 4) && Range(rules.ProductionSpeed, .5f, 2) && Range(rules.ResearchSpeed, .5f, 2) && Range(rules.BuildingSpeed, .5f, 2) && Range(rules.NestsMultiplier, .5f, 4);
+        return rules is not null && Enum.IsDefined(rules.Dismemberment) && (rules.AttackSlots is null or >= 1 and <= 5) && rules.HarpoonLimit is >= 10 and <= 10000 && rules.TownAttacks is >= 0 and <= 5 && rules.GroundItemLimit is >= 1 and <= Meitou.Simulation.Items.GroundItems.MaxLimit && (rules.AutoSaveSeconds == 0 || rules.AutoSaveSeconds is >= 10 and <= 86400) && Range(rules.SquadSize, .5f, 3) && Range(rules.Population, .5f, 4) && Range(rules.RaidSize, .25f, 4) && Range(rules.RaidFrequency, .25f, 3) && Range(rules.GlobalDamageMultiplier, .5f, 4) && Range(rules.HungerTime, .25f, 8) && Range(rules.ChanceOfDeath, .5f, 4) && Range(rules.ProductionSpeed, .5f, 2) && Range(rules.ResearchSpeed, .5f, 2) && Range(rules.BuildingSpeed, .5f, 2) && Range(rules.NestsMultiplier, .5f, 4)
+            && Range(rules.SquadXp, BuiltInModSettings.MinXpRate, BuiltInModSettings.MaxXpRate)
+            && Range(rules.OthersXp, BuiltInModSettings.MinXpRate, BuiltInModSettings.MaxXpRate);
+    }
+
+    /// <summary>
+    /// Adopts enabled legacy XP mods once before publishing compatibility rules, without executing a mod DLL.
+    /// Subsequent starts keep the administrator's configured rates.
+    /// </summary>
+    public ServerConfiguration AdoptBuiltIns(GameInstall install, string path)
+    {
+        var settings = new BuiltInModSettings { SquadXp = Gameplay.SquadXp, AdoptedMods = [.. AdoptedMods], ModSettings = ModSettings };
+        if (BuiltInMods.Adopt(settings, install).Count == 0) return this;
+
+        var updated = this with { Gameplay = Gameplay with { SquadXp = settings.SquadXp }, AdoptedMods = [.. settings.AdoptedMods] };
+        string target = Path.GetFullPath(path);
+        string temporary = target + ".adopt-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(updated, new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temporary, target, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+        return updated;
     }
 
     public static ServerConfiguration Load(string path)
@@ -72,7 +104,7 @@ public sealed record ServerConfiguration
         }
 
         var config = JsonSerializer.Deserialize<ServerConfiguration>(File.ReadAllBytes(path), json) ?? throw new InvalidDataException("Missing server configuration.");
-        if (config.Version != 1 || !IPAddress.TryParse(config.BindAddress, out _) || string.IsNullOrWhiteSpace(config.AdvertisedHost) || config.Port is < 1 or > 65535 || config.MaximumPlayers is < 1 or > 1024 || string.IsNullOrWhiteSpace(config.DataDirectory) || string.IsNullOrWhiteSpace(config.DefaultStart) || config.CharacterLimit is < 1 or > 1024 || !ValidGameplay(config.Gameplay) || config.SaveIntervalSeconds is < 0 or > 86400 || config.SaveIntervalSeconds is> 0 and < 10 || config.SimulationThreads is < 1 or > 64 || config.GameplayAssets is null || config.TrustedCodeMods is null || config.ModSettings is null || config.ModsCfg is not null && string.IsNullOrWhiteSpace(config.ModsCfg) || config.TrustedCodeMods.Any(name => string.IsNullOrWhiteSpace(name) || name.Length > 255 || name is "." or ".." || name.Any(c => char.IsControl(c) || c is '/' or '\\' or ':')) || config.TrustedCodeMods.Distinct(StringComparer.Ordinal).Count() != config.TrustedCodeMods.Length || config.ModSettings.Any(p => !CodeModManifest.IsValidId(p.Key) || p.Value is null || p.Value.Any(setting => string.IsNullOrWhiteSpace(setting.Key) || setting.Key.Length > 256 || setting.Key.Any(char.IsControl) || setting.Value is null)) || config.GameplayAssets.Any(asset => string.IsNullOrWhiteSpace(asset) || asset.Length > 1024 || Path.IsPathRooted(asset) || asset.Any(c => char.IsControl(c) || c == ':') || asset.Replace('\\', '/').Split('/').Any(part => part is "" or "." or "..")))
+        if (config.Version != 1 || !IPAddress.TryParse(config.BindAddress, out _) || string.IsNullOrWhiteSpace(config.AdvertisedHost) || config.Port is < 1 or > 65535 || config.MaximumPlayers is < 1 or > 1024 || string.IsNullOrWhiteSpace(config.DataDirectory) || string.IsNullOrWhiteSpace(config.DefaultStart) || config.CharacterLimit is < 1 or > 1024 || !ValidGameplay(config.Gameplay) || config.SaveIntervalSeconds is < 0 or > 86400 || config.SaveIntervalSeconds is> 0 and < 10 || config.SimulationThreads is < 1 or > 64 || config.GameplayAssets is null || config.TrustedCodeMods is null || config.ModSettings is null || config.AdoptedMods is null || config.AdoptedMods.Any(string.IsNullOrWhiteSpace) || config.ModsCfg is not null && string.IsNullOrWhiteSpace(config.ModsCfg) || config.TrustedCodeMods.Any(name => string.IsNullOrWhiteSpace(name) || name.Length > 255 || name is "." or ".." || name.Any(c => char.IsControl(c) || c is '/' or '\\' or ':')) || config.TrustedCodeMods.Distinct(StringComparer.Ordinal).Count() != config.TrustedCodeMods.Length || config.ModSettings.Any(p => !CodeModManifest.IsValidId(p.Key) || p.Value is null || p.Value.Any(setting => string.IsNullOrWhiteSpace(setting.Key) || setting.Key.Length > 256 || setting.Key.Any(char.IsControl) || setting.Value is null)) || config.GameplayAssets.Any(asset => string.IsNullOrWhiteSpace(asset) || asset.Length > 1024 || Path.IsPathRooted(asset) || asset.Any(c => char.IsControl(c) || c == ':') || asset.Replace('\\', '/').Split('/').Any(part => part is "" or "." or "..")))
             throw new InvalidDataException("Invalid server configuration.");
         return config with
         {

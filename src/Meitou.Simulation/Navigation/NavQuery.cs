@@ -304,7 +304,8 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     /// A* from the start polygon to the goal polygon; null when there is none (or the iteration limit ran out). <paramref name = "partial"/>: then the
     /// corridor to the searched polygon nearest the goal point instead.
     /// </summary>
-    public Corridor? FindCorridor(NavRef start, Vector3 startPoint, NavRef goal, Vector3 goalPoint, NavAgent agent, bool partial = false)
+    public Corridor? FindCorridor(NavRef start, Vector3 startPoint, NavRef goal, Vector3 goalPoint, NavAgent agent, bool partial = false,
+        CancellationToken cancellation = default)
     {
         // The search's table, queue and nodes are the thread's, kept between searches: a fresh set per search was a tenth of the game's garbage
         // (docs/bench.md "Play benchmark").
@@ -315,8 +316,9 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         var first = scratch.Take(start, startPoint, 0, Vector3.Distance(startPoint, goalPoint));
         nodes[start.Key] = first;
         open.Enqueue(first, first.F);
+        cancellation.ThrowIfCancellationRequested();
         var search = new CorridorSearch(scratch, agent, first, goalPoint);
-        var(last, nearest, iterations) = Search(ref search, goal, partial);
+        var(last, nearest, iterations) = Search(ref search, goal, partial, cancellation);
         Interlocked.Increment(ref s_searches);
         Interlocked.Add(ref s_expanded, iterations);
         if (iterations > MaxIterations)
@@ -348,7 +350,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     /// The A* loop of <see cref = "FindCorridor"/>: the goal's node when reached, the searched node nearest the goal point (<paramref name = "partial"/>
     /// only) and the iterations used.
     /// </summary>
-    (Node? Last, Node Nearest, int Iterations) Search(ref CorridorSearch search, NavRef goal, bool partial)
+    (Node? Last, Node Nearest, int Iterations) Search(ref CorridorSearch search, NavRef goal, bool partial, CancellationToken cancellation)
     {
         var open = search.Scratch.Open;
         var first = search.First;
@@ -359,6 +361,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         while (open.Count > 0 && iterations++ < MaxIterations)
         {
             SafePoint.Every(iterations);
+            if ((iterations & 255) == 0) cancellation.ThrowIfCancellationRequested();
             var node = open.Dequeue();
             if (node.Closed)
                 continue;
@@ -501,6 +504,18 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     /// dry ground.
     /// </summary>
     static float Factor(byte area, NavAgent agent) => NavArea.WetState(area)is var state and > 0 ? agent.Water[state] : 1;
+    /// <summary>
+    /// Whether an agent of <paramref name="radius"/> passes from <paramref name="from"/> through its edge <paramref name="edge"/> into
+    /// <paramref name="to"/>: the search's clearance rule (a portal end on a wall takes the radius off it).
+    /// </summary>
+    internal bool Fits(NavRef from, int edge, NavRef to, float radius)
+    {
+        if (!Portal(from, edge, to, out var left, out var right, out bool leftWall, out bool rightWall)) return false;
+
+        float width = Vector2.Distance(new(left.X, left.Z), new(right.X, right.Z));
+        return width >= ((leftWall ? 1 : 0) + (rightWall ? 1 : 0)) * radius;
+    }
+
     /// <summary>
     /// The shared segment between a polygon's edge and the polygon behind it: the overlap of the two collinear edges. Left and right are as seen when
     /// walking from <paramref name = "from"/> into <paramref name = "to"/> (polygons are counter-clockwise on the X/Z plane, so the edge's end is on the

@@ -12,12 +12,16 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-704cc1ec-authority-1-diagnostics-2`; both endpoints require the [diagnostic control messages](diagnostics.md), mod-presentation components and
+The current identity is `meitou-upstream-5108032d-authority-1`; both endpoints require the [diagnostic control messages](diagnostics.md), mod-presentation components and
 editor-open command, in addition to the presentation-event and bounty contracts in [networking-next](networking-next.md).
 Ground-item material IDs and optional blood-event attacker IDs
 travel with their existing state/event components. Attacker IDs are removed when that recipient cannot see the attacker.
 The authoritative `AnimalsPickUp` rule is included in gameplay settings and their digest. Older build identities fail admission;
 unknown gameplay rules are not silently accepted. Transport and container framing remain protocol 21.
+
+**Observed** (source): `SquadXp`, `OthersXp` and `BagSearchFix` are authoritative gameplay rules, included in compatibility and the
+recipient projection. XP classification covers every player faction. Headless and graphical hosts share the built-in XP-mod adoption
+rules; remote settings cannot change them. Field 2074 (`WarParty`) is retired and is not reused.
 
 **Observed** (source): `WorkSites` publishes server-resolved IDs, positions, owners and positive site revisions for observable natural
 and level work targets before a machine exists. It grants no inventory or machine configuration access. Nearby NPC worksite stock
@@ -85,6 +89,25 @@ Command 121 (`InPlayEditorOpened`) carries one character and its server-issued e
 character and surgeon proximity are checked before hair restoration. The session records that opening already ran, so replay does not undo
 later shaving; captivity stays intact. Remote debug stat/editor commands remain unexposed. Source/binary compatibility is enforced at admission.
 Payload estimates, bounds and the 500 KiB/s acceptance target live in [the bandwidth contract](networking-next.md#upstream-presentation-budget).
+
+### Item actions and shared stock
+
+**Observed** (source): mod item-use handlers run only on the authority, with the issuing player's current character grant, inventory
+revision and item identity. Each inventory or trade item carries an optional 32-character `ModTagDigest` instead of its raw mod
+tag; empty tags send no property. It is the first 128 bits of SHA-256 over exact UTF-16 code units, used alongside inventory revisions
+and actor grants. The authority and saves retain the complete tag, and retagging
+advances inventory revisions. Tokens created by local windows retain raw tags; remote tokens echo the digest and cannot combine it with
+a different raw tag. Nullable stolen-owner labels are omitted when absent.
+
+Building-shop stock stays in physical containers. Trading uses one shared projection, settles each mutation before the next command,
+and rebuilds after external container changes. A held stock item remembers its original shop, so rollback uses the current projection
+even after a window closes or another player changes stock. Per-player trade/container sessions, revisions and actor grants remain
+required; a stale window cannot buy an item already removed from its container.
+
+**Observed** (source): NPC purchase price floaters and new world sounds use the recipient event journal. Prison-release audio is private
+to the released character's controller. Corpse-machine audio carries the captured armour material and uses observable position when
+the body has already been removed; hidden character references are stripped. Local inspection audio remains a UI action.
+The new `animalage` and faction-relation debug actions remain local-only and are absent from the remote command whitelist.
 
 ## Regional weather
 

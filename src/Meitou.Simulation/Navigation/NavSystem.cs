@@ -1,5 +1,6 @@
 using Meitou.Content;
 using Meitou.Data;
+using Meitou.Data.Characters;
 using Meitou.Data.World;
 
 namespace Meitou.Simulation.Navigation;
@@ -40,15 +41,6 @@ public sealed class NavSystem : IDisposable
     /// One gate labelling at a time.
     /// </summary>
     readonly object _labelGate = new();
-    /// <summary>
-    /// The <c>functionality</c> records looked up by the gate test, cached by id across labellings.
-    /// </summary>
-    readonly Dictionary<string, GameRecord?> _functions = [];
-    /// <summary>
-    /// The level data's buildings by placement key (what the door polygons are named by), their BUILDING record ids. Made on first use and again when
-    /// the level data was edited (WorldLevelData.EditRevision).
-    /// </summary>
-    (int Revision, Dictionary<string, string> Map)? _levelRecords;
     NavWorld? _gateInputWorld;
     long _gateInputRevision = -1;
     int _gateInputEditRevision = -1;
@@ -224,34 +216,15 @@ public sealed class NavSystem : IDisposable
     }
 
     /// <summary>
-    /// The gate codes of the meshes loaded now (<see cref = "NavGateRegions"/>). Slow (a flood over the walled regions): call it off the simulation
-    /// thread. One labelling at a time; each reads the world and the player's buildings as they are then.
+    /// The footprint radius the gate-code pass keeps clear, read from the default race.
     /// </summary>
-    public NavGateRegions LabelGates() => (NavGateRegions)CaptureGateRegions().Build(CancellationToken.None);
-    /// <summary>
-    /// Whether a door owner (a runtime or level building instance id) is a gate: its BUILDING record is one.
-    /// </summary>
-    bool IsGateId(Dictionary<string, string> runtime, string id)
-    {
-        if (!runtime.TryGetValue(id, out var record) && !LevelRecords().TryGetValue(id, out record))
-            return false;
-        return _db.Find(record)is { } building && TownBuildings.IsGate(_db, building, _functions);
-    }
+    float GateFootprint => _db.Find(CharacterGenerator.DefaultRaceId)?.GetFloat("pathfind footprint radius", GateCodeFlood.DefaultFootprint)
+        ?? GateCodeFlood.DefaultFootprint;
 
     /// <summary>
-    /// The level data's buildings' record ids by placement key, made again when <see cref = "WorldLevelData.EditRevision"/> moved on.
+    /// Labels the captured meshes without publishing outside the serialized world boundary.
     /// </summary>
-    Dictionary<string, string> LevelRecords()
-    {
-        int revision = _levels.EditRevision;
-        if (_levelRecords is { } known && known.Revision == revision)
-            return known.Map;
-        var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var b in _levels.Buildings())
-            map.TryAdd(b.Key, b.BuildingId);
-        _levelRecords = (revision, map);
-        return map;
-    }
+    public NavGateRegions LabelGates() => (NavGateRegions)CaptureGateRegions().Build(CancellationToken.None);
 
     /// <summary>
     /// Stops the zone builder.
@@ -355,8 +328,7 @@ public sealed class NavSystem : IDisposable
         long revision = Runtime.Revision;
         if (_gateInput is not null && ReferenceEquals(_gateInputWorld, mesh) && _gateInputRevision == revision && _gateInputEditRevision == _levels.EditRevision)
             return _gateInput;
-        var runtime = Runtime.All().ToDictionary(p => p.Key, p => p.BuildingId, StringComparer.Ordinal);
-        var records = LevelRecords();
+        float footprint = GateFootprint;
         _gateInputEditRevision = _levels.EditRevision;
         _gateInputWorld = mesh;
         _gateInputRevision = revision;
@@ -365,7 +337,7 @@ public sealed class NavSystem : IDisposable
             lock (_labelGate)
             {
                 cancellation.ThrowIfCancellationRequested();
-                return NavGateRegions.Label(mesh, id => (runtime.TryGetValue(id, out var record) || records.TryGetValue(id, out record)) && _db.Find(record)is { } building && TownBuildings.IsGate(_db, building, _functions), cancellation);
+                return NavGateRegions.Label(mesh, footprint, cancellation);
             }
         });
     }

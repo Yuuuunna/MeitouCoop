@@ -438,8 +438,6 @@ public sealed partial class World
         s.NoLootGuilt = cold is { } guilt
             && (guilt.NpcClass is FundamentalType.Bandit or FundamentalType.Slave || population is { Factions: { } fl }
                 && (uint)guilt.Faction < (uint)fl.Count && fl[guilt.Faction].NotReal);
-        s.WarParty = cold is { SquadId: >= 0 } warCold && Squads.Find(warCold.SquadId) is { PlatoonId: >= 0 } warSquad
-            && Platoons.Find(warSquad.PlatoonId)?.Campaign is not null;
         s.Body = cold?.Medical is { } med && cold.Race is { } race ? BodyOf(cold, med, race, state[i].Task, extraBloodLoss) : null;
     }
 
@@ -768,25 +766,38 @@ public sealed partial class World
     /// <summary>
     /// The inventory panel's items shown in a grid, with <paramref name="steal"/>'s stealing chance of each (null: none).
     /// </summary>
-    static IReadOnlyList<InventoryItemView> ItemsOf(Items.Inventory grid, int faction, PopulationData? population,
+    IReadOnlyList<InventoryItemView> ItemsOf(Items.Inventory grid, int faction, PopulationData? population,
         Func<Items.ItemInstance, float?>? steal = null) =>
-        Array.AsReadOnly(grid.Shown().Select(shown => new InventoryItemView(shown.Index, shown.Item.Record, shown.Item.Name, shown.Item.Section,
-            shown.Item.X, shown.Item.Y, shown.Item.Width, shown.Item.Height, shown.Item.Quantity, shown.Item.Weight, shown.Item.Quality)
+        Array.AsReadOnly(grid.Shown().Select(shown => ItemViewOf(shown.Index, shown.Item, faction, population, steal)).ToArray());
+
+    /// <summary>
+    /// One item of <see cref="ItemsOf"/>: the stolen faction and the robbed character's name only when it counts as stolen for its holder's
+    /// <paramref name="faction"/>.
+    /// </summary>
+    InventoryItemView ItemViewOf(int index, Items.ItemInstance item, int faction, PopulationData? population, Func<Items.ItemInstance, float?>? steal)
+    {
+        bool stolen = item.IsStolenFor(faction, population);
+
+        return new InventoryItemView(index, item.Record, item.Name, item.Section, item.X, item.Y, item.Width, item.Height, item.Quantity, item.Weight,
+            item.Quality)
         {
-            Material = shown.Item.MaterialId,
-            Rotated = shown.Item.Rotated,
-            Colour = shown.Item.ColourId,
-            Charge = shown.Item.ChargeFraction,
-            Company = shown.Item.CompanyId,
-            Crafter = shown.Item.Crafter,
-            Level = shown.Item.Level,
-            Charges = shown.Item.Charges,
-            MaxCharges = shown.Item.MaxCharges,
-            StolenFrom = shown.Item.IsStolenFor(faction, population) ? shown.Item.StolenFrom : -1,
-            Unique = shown.Item.Unique,
-            BagItems = shown.Item.Contents?.Items.Count ?? -1,
-            StealChance = steal?.Invoke(shown.Item)
-        }).ToArray());
+            Material = item.MaterialId,
+            Rotated = item.Rotated,
+            Colour = item.ColourId,
+            Charge = item.ChargeFraction,
+            Company = item.CompanyId,
+            Crafter = item.Crafter,
+            ModTag = item.ModTag,
+            Level = item.Level,
+            Charges = item.Charges,
+            MaxCharges = item.MaxCharges,
+            StolenFrom = stolen ? item.StolenFrom : -1,
+            StolenOwner = stolen ? Characters.OwnerNameOf(item.Owner) : null,
+            Unique = item.Unique,
+            BagItems = item.Contents?.Items.Count ?? -1,
+            StealChance = steal?.Invoke(item)
+        };
+    }
 
     /// <summary>
     /// The bar of Task_PickLock and Task_PickLock_Shackles (docs/game/locks.md "Lockpicking"): "Lockpicking (Chance {p}%)" with the cage penalty,
@@ -1139,14 +1150,14 @@ public sealed partial class World
     {
         if (player.OpenContainer is not { } id || Fixtures.Find(id) is not { Contents: not null } f
             || player.ContainerAccess is { } access && !access.Valid(this)) return null;
-        var grid = PlayerSystem.GridOf(this, f, out var region);
+        var grid = f.Contents;
         float? steal = Characters.TryResolveNext(player.ContainerOpener, out int thief)
             ? Crime.CrimeSystem.StealChanceOf(this, thief, Crime.StealSource.Of(f))
             : null;
-        var storage = new InventoryView(region.Width, region.Height, 0, 0,
-            Array.AsReadOnly(grid.Items.Select((item, index) => (item, index)).Where(e => region.Holds(e.item)).Select(e => new InventoryItemView(e.index, e.item.Record,
-                e.item.Name, "main", e.item.X - region.X, e.item.Y - region.Y, e.item.Width, e.item.Height, e.item.Quantity, e.item.Weight, e.item.Quality)
-            { Material = e.item.MaterialId, Rotated = e.item.Rotated, Colour = e.item.ColourId, Charge = e.item.ChargeFraction, Company = e.item.CompanyId, Level = e.item.Level, Charges = e.item.Charges, MaxCharges = e.item.MaxCharges, Unique = e.item.Unique, StealChance = steal }).ToArray()));
+        var storage = new InventoryView(grid.Width, grid.Height, 0, 0,
+            Array.AsReadOnly(grid.Items.Select((item, index) => (item, index)).Select(e => new InventoryItemView(e.index, e.item.Record,
+                e.item.Name, "main", e.item.X, e.item.Y, e.item.Width, e.item.Height, e.item.Quantity, e.item.Weight, e.item.Quality)
+            { Material = e.item.MaterialId, Rotated = e.item.Rotated, Colour = e.item.ColourId, Charge = e.item.ChargeFraction, Company = e.item.CompanyId, Level = e.item.Level, Charges = e.item.Charges, MaxCharges = e.item.MaxCharges, Unique = e.item.Unique, ModTag = e.item.ModTag, StealChance = steal }).ToArray()));
         return new Production.MachineSnapshot(id, f.RecordId, [], null, storage, null, 0, 0, 0)
         { IsContainer = true, ContainerSessionId = player.ContainerSessionId, ContainerOpener = player.ContainerOpener, StorageRevision = InventoryRevision(grid) };
     }

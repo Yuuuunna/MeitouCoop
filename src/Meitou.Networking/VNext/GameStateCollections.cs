@@ -39,7 +39,7 @@ internal static class GameCollectionSchema
             var values = get(view);
             if (values.Count > 65536)
                 throw new InvalidDataException("Collection exceeds record bound.");
-            var result = values.Select(value => (Key: key(value), Value: codec.EncodeComponent(value))).ToArray();
+            var result = values.Select(value => (Key: key(value), Value: JsonComponentCompression.Encode(codec, value))).ToArray();
             if (result.Select(p => p.Key).Distinct(StringComparer.Ordinal).Count() != result.Length)
                 throw new InvalidDataException("Duplicate keyed collection identity.");
             foreach (var item in result)
@@ -49,8 +49,7 @@ internal static class GameCollectionSchema
 
         public object Decode(WorldViewCodec codec, string expectedKey, byte[] value)
         {
-            WorldViewCodec.ValidateJson(value);
-            var item = codec.DecodeComponent<T>(value);
+            var item = JsonComponentCompression.Decode<T>(codec, value);
             if (key(item) != expectedKey)
                 throw new InvalidDataException("Keyed value identity does not match its envelope.");
             return item!;
@@ -85,6 +84,20 @@ internal static class GameCollectionSchema
         string key = StrictUtf8.GetString(bytes, 2, length);
         ValidateKey(key);
         return (key, bytes.AsSpan(2 + length).ToArray());
+    }
+
+    /// <summary>
+    /// The wire or expanded byte budget of one JSON upsert, including its key. Manifests and removal entries are not compressed JSON values.
+    /// </summary>
+    internal static int ExpandedEntrySize(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length < 3) throw new InvalidDataException("Truncated keyed entry.");
+
+        int length = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(bytes);
+        if (length > 1024 || length >= bytes.Length - 2)
+            throw new InvalidDataException("Invalid keyed entry bounds.");
+
+        return Math.Max(bytes.Length, 2 + length + JsonComponentCompression.DecodedLength(bytes[(2 + length)..]));
     }
 
     internal static byte[] EncodeManifest(CollectionManifest manifest)
@@ -246,7 +259,8 @@ public sealed partial class GameStatePublisher
             }
 
             total += (encodedManifest?.Length ?? 16) + 19;
-            total += current.Sum(p => (long)p.Value.Length + Encoding.UTF8.GetByteCount(p.Key) + 21);
+            total += current.Sum(p => (long)Math.Max(p.Value.Length, JsonComponentCompression.DecodedLength(p.Value))
+                + Encoding.UTF8.GetByteCount(p.Key) + 21);
             if (total > GameStateWire.MaximumBytes)
                 throw new InvalidDataException("Keyed collection capture exceeds bulk bound.");
             foreach (var item in captured.Items)
@@ -254,7 +268,12 @@ public sealed partial class GameStatePublisher
                     add(7, schema.Id, GameCollectionSchema.Entry(item.Key, item.Value));
             if (previousCollection is not null)
                 foreach (var key in previousCollection.Items.Keys.Where(k => !current.ContainsKey(k)))
+                {
+                    total += Encoding.UTF8.GetByteCount(key) + 21L;
+                    if (total > GameStateWire.MaximumBytes)
+                        throw new InvalidDataException("Keyed collection capture exceeds bulk bound.");
                     add(8, schema.Id, GameCollectionSchema.Entry(key, []));
+                }
             _collections[schema.Id] = new(captured.Manifest, current);
         }
 

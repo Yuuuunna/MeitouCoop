@@ -34,6 +34,17 @@ sealed class FrontendScreens(PlayerInterface player)
     internal IReadOnlyList<SaveSlot> Slots = [];
 
     /// <summary>
+    /// The folder of the save Continue loads (the last one written, <see cref="ConfigureFrontend"/>); null for none.
+    /// </summary>
+    Func<string?> _continueFolder = () => null;
+
+    /// <summary>
+    /// The listed save Continue loads; null when its <c>quick.save</c> is missing, which hides the button (<c>FUN_14047af50</c>,
+    /// docs/formats/save.md).
+    /// </summary>
+    internal SaveSlot? ContinueSlot;
+
+    /// <summary>
     /// The save selected in the save, load or import window; null for none.
     /// </summary>
     internal SaveSlot? SelectedSlot;
@@ -85,15 +96,10 @@ sealed class FrontendScreens(PlayerInterface player)
     const string HideKenshiTick = "HideKenshiTickBox";
 
     /// <summary>
-    /// The load window's tick that leaves the base game's saves out is set.
-    /// </summary>
-    bool _hideKenshiSaves;
-
-    /// <summary>
     /// The saves the window lists: the save window only Meitou's, the load window without Kenshi's when its tick is set.
     /// </summary>
     SaveSlot[] VisibleSlots(string id) =>
-        [.. Slots.Where(s => s.Writable || id != "save" && !(id == "load" && _hideKenshiSaves && player.UiMode == UiMode.Meitou))];
+        [.. Slots.Where(s => s.Writable || id != "save" && !(id == "load" && HideKenshiSaves && player.UiMode == UiMode.Meitou))];
 
     /// <summary>
     /// The import window's ticks as the flag bits of <c>importGame</c> (ticks in the order of <see cref="TickBoxes"/>: 0x1, 0x4, 0x8, 0x10, 0x20).
@@ -122,19 +128,27 @@ sealed class FrontendScreens(PlayerInterface player)
     internal Confirmation? PendingConfirmation;
 
     /// <summary>
+    /// Whether the boxes for data files that failed to load were shown (once per run, as the game shows them after loading its data).
+    /// </summary>
+    bool _loadErrorsShown;
+
+    /// <summary>
     /// The game data (<see cref="ConfigureFrontend"/>; null without it).
     /// </summary>
     internal GameDatabase? GameData;
 
     /// <summary>
-    /// Takes the game data (and its new-game starts, the default one chosen), the save lister and the credits text as the title shows it.
+    /// Takes the game data (and its new-game starts, the default one chosen), the save lister, the credits text as the title shows it and the
+    /// Continue save's folder (none without it).
     /// </summary>
-    public void ConfigureFrontend(GameDatabase? database, Func<IReadOnlyList<SaveSlot>> enumerate, string creditsText)
+    public void ConfigureFrontend(GameDatabase? database, Func<IReadOnlyList<SaveSlot>> enumerate, string creditsText,
+        Func<string?>? continueFolder = null)
     {
         GameData = database;
         Starts = player.Session.IsRemote || database is null ? [] : NewGameStart.LoadAll(database);
         StartIndex = Math.Max(0, Starts.ToList().FindIndex(s => s.Name == NewGameStart.DefaultName));
         _saveSlots = enumerate;
+        _continueFolder = continueFolder ?? (() => null);
 
         // As the title reads data/credits.txt (FUN_14013d680, docs/game/ui-screens.md "Credits"): empty lines dropped, a "-" line a blank one, each
         // line ended.
@@ -152,6 +166,18 @@ sealed class FrontendScreens(PlayerInterface player)
         player.FaithfulScreens.Open("title");
         RefreshSlots();
         player.UpdateMenuPause();
+        ShowLoadErrors();
+    }
+
+    /// <summary>
+    /// The first time the title opens: the error boxes of the data files that failed to load (<see cref="DataLoadErrors.Show"/>).
+    /// </summary>
+    void ShowLoadErrors()
+    {
+        if (_loadErrorsShown || GameData is null) return;
+
+        _loadErrorsShown = true;
+        DataLoadErrors.Show(player, GameData);
     }
 
     /// <summary>
@@ -196,6 +222,19 @@ sealed class FrontendScreens(PlayerInterface player)
             SelectedSlot = null;
             _slotDetails = e.Message;
         }
+
+        ContinueSlot = FindContinueSlot();
+    }
+
+    /// <summary>
+    /// The listed save in the Continue folder (a listed save has its <c>quick.save</c>); null for none.
+    /// </summary>
+    SaveSlot? FindContinueSlot()
+    {
+        if (_continueFolder() is not { Length: > 0 } folder) return null;
+
+        string full = Path.GetFullPath(folder);
+        return Slots.FirstOrDefault(s => string.Equals(s.Folder, full, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -263,6 +302,16 @@ sealed class FrontendScreens(PlayerInterface player)
     /// Deletes a save folder (the host's); returns an error to show, or null.
     /// </summary>
     public Func<string, string?>? DeleteSave { get; set; }
+
+    /// <summary>
+    /// The load window's tick that leaves the base game's saves out is set (restored by the host from <c>meitou.user.json</c>).
+    /// </summary>
+    public bool HideKenshiSaves { get; set; }
+
+    /// <summary>
+    /// Keeps the Hide Kenshi saves tick when the player changes it (the host's: writes it to meitou.user.json).
+    /// </summary>
+    public Action<bool>? HideKenshiSavesChanged { get; set; }
 
     /// <summary>
     /// The load window's Delete / Backspace (<b>Verified</b>, <c>LoadSaveWindow::keyPressed</c>): the save in use cannot be deleted; any other asks
@@ -397,8 +446,7 @@ sealed class FrontendScreens(PlayerInterface player)
                 _creditsStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 break;
             case "ContinueButton":
-                if (Slots.FirstOrDefault() is { } last)
-                    player.RaiseScreenAction(new("load", "LoadButton", "load", last.Folder));
+                if (ContinueSlot is { } last) player.RaiseScreenAction(new("load", "LoadButton", "load", last.Folder));
                 break;
             case "ExitButton":
                 player.Confirm("EXIT", "Are you sure you want to exit?", () => player.RaiseScreenAction(new("menu", "ExitGameButton", "exit")));
@@ -493,7 +541,8 @@ sealed class FrontendScreens(PlayerInterface player)
     /// </summary>
     void ToggleHideKenshiSaves(string screen)
     {
-        _hideKenshiSaves = !_hideKenshiSaves;
+        HideKenshiSaves = !HideKenshiSaves;
+        HideKenshiSavesChanged?.Invoke(HideKenshiSaves);
 
         if (SelectedSlot is not null && !VisibleSlots(screen).Contains(SelectedSlot))
         {
@@ -638,7 +687,7 @@ sealed class FrontendScreens(PlayerInterface player)
     }
 
     /// <summary>
-    /// The title's buttons (with Continue only when a readable save exists) and its credits, or the Esc menu's.
+    /// The title's buttons (with Continue only while its save exists) and its credits, or the Esc menu's.
     /// </summary>
     void BindTitle(string id, UiBindings b)
     {
@@ -669,11 +718,11 @@ sealed class FrontendScreens(PlayerInterface player)
 
         if (player.MeitouMainMenu)
         {
-            foreach (var (widget, at) in player.TitleMenu.MenuLayout(card: Slots.Count > 0 && _slotReadable)) b.Positions[widget] = at;
+            foreach (var (widget, at) in player.TitleMenu.MenuLayout(card: ContinueSlot is not null)) b.Positions[widget] = at;
         }
 
-        // Continue is shown only when a save exists (docs/game/ui-screens.md section 3), not greyed out.
-        if (Slots.Count > 0 && _slotReadable) Enable(b, "ContinueButton");
+        // Continue is shown only while the last save written still exists (docs/game/ui-screens.md section 3), not greyed out.
+        if (ContinueSlot is not null) Enable(b, "ContinueButton");
         else b.Hidden.Add("ContinueButton");
 
         b.Properties["CreditsPanel"] = new Dictionary<string, string> { ["Visible"] = ShowCredits ? "true" : "false" };
@@ -798,8 +847,8 @@ sealed class FrontendScreens(PlayerInterface player)
             Enable(b, HideKenshiTick);
             b.Properties[HideKenshiTick] = new Dictionary<string, string>
             {
-                ["StateSelected"] = _hideKenshiSaves ? "true" : "false",
-                ["Checked"] = _hideKenshiSaves ? "true" : "false",
+                ["StateSelected"] = HideKenshiSaves ? "true" : "false",
+                ["Checked"] = HideKenshiSaves ? "true" : "false",
             };
         }
         else if (id == "load")
@@ -821,7 +870,7 @@ sealed class FrontendScreens(PlayerInterface player)
         // the second, newest first. Meitou adds the save's origin to the name. addColumn takes screen pixels, not the template's (the date is cut
         // off at 1440 lines in the base game).
         // Meitou: the columns are 170 and 180 pixels at 1080 lines and grow with the UI scale, so the date fits on a 4K screen (#495).
-        b.Columns["GamesList"] = [new("Name", 170, Fill: true), new("Date", 180)];
+        b.Columns["GamesList"] = [new("Name", 170, MyGuiResizingPolicy.Fill), new("Date", 180)];
         b.Sorts["GamesList"] = (1, false);
 
         // Faithful: the folder name as the original shows it; Meitou adds where the save comes from.

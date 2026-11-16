@@ -16,7 +16,7 @@ public sealed record RenameFactionCommand(string Name) : FactionCommand;
 
 /// <summary>
 /// Applies the player's selection and stop commands (step 1 of the tick). Move orders are the movement system's. The item on the mouse is
-/// <see cref="HeldItems"/>, a right click in an own window <see cref="QuickMoves"/>.
+/// <see cref="HeldItems"/>, a right click in an own window <see cref="ItemUses"/> (a mod's item) or <see cref="QuickMoves"/>.
 /// </summary>
 public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSystem, ITaskOwner
 {
@@ -36,6 +36,11 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     readonly QuickMoves _quickMoves = new(data);
 
     /// <summary>
+    /// The right clicks on items a code mod handles, tried before <see cref="_quickMoves"/>.
+    /// </summary>
+    readonly ItemUses _itemUses = new();
+
+    /// <summary>
     /// The pick-ups of loose items and the walks to containers (row 3 "Collecting item").
     /// </summary>
     readonly PickUps _pickUps = new();
@@ -49,6 +54,15 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     /// The owner of the pick-up and container orders (row 3) and their act-outs.
     /// </summary>
     internal PickUps PickUps => _pickUps;
+
+    /// <summary>
+    /// The code mods' additions, for their item uses (null: no mods).
+    /// </summary>
+    public SimulationExtensions? Extensions
+    {
+        get => _itemUses.Extensions;
+        set => _itemUses.Extensions = value;
+    }
 
     /// <summary>
     /// The player's animals take a pick-up order on a loose item into their bags (<see cref="PickUps.AnimalsPickUp"/>).
@@ -245,7 +259,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
                 _held.Input(world, held);
                 break;
             case Items.QuickMoveItem quick:
-                _quickMoves.QuickMove(world, quick);
+                if (!_itemUses.Use(world, quick)) _quickMoves.QuickMove(world, quick);
                 break;
             case Items.TransferInventoryItem transfer:
                 InventoryTransfer.Transfer(world, transfer, _assembly, data);
@@ -358,7 +372,8 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     /// </summary>
     public void SlowWorld(World world)
     {
-        DebugCheats.GodTick(world, data, _assembly);
+        DebugCheats.StatsTick(world);
+        DebugCheats.HealTick(world, data, _assembly);
         DebugCheats.GuardTick(world, data, _assembly);
         SquadManagement.BuryDead(world, data?.Db);
         world.Players.Prune();
@@ -455,13 +470,4 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     /// Closes one player's container window and its access session.
     /// </summary>
     internal static void CloseContainer(PlayerState player) => ContainerAccess.CloseContainer(player);
-    /// <summary>
-    /// The inventory region behind a container window.
-    /// </summary>
-    internal static Items.Inventory GridOf(World world, Locks.Fixture fixture, out Items.GridRegion region) =>
-        ContainerAccess.GridOf(world, fixture, out region);
-    /// <summary>
-    /// The inventory behind a container window.
-    /// </summary>
-    internal static Items.Inventory GridOf(World world, Locks.Fixture fixture) => ContainerAccess.GridOf(world, fixture);
 }

@@ -8,6 +8,7 @@ using Meitou.Simulation.Combat;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Locks;
 using Meitou.Simulation.Movement;
+using Meitou.Simulation.Perception;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Population;
 
@@ -510,8 +511,9 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// slave (state 1) while the status object's current town (<c>+0x88</c>) is null and its squared distance to the owner is above
     /// <see cref="EscapeDistanceSquared"/> (<b>Verified</b>; the town is <see cref="CharacterCold.StatusTown"/>). The owner is the master squad's
     /// leader (<see cref="Kidnap.ObedientSlave.OwnerOf"/>, Meitou's stand-in for the owner handle). With no owner handle the slave escapes in town
-    /// too (<c>FUN_1404fe6e0</c> rejects a null handle); a master squad or saved owner still waiting to load is kept, and so is a slave held in
-    /// an owned cage (<see cref="CagedByOwner"/>).
+    /// too (<c>FUN_1404fe6e0</c> rejects a null handle); a master squad or saved owner (the save's <c>slaver</c> handle, or the Obedient Slave job's,
+    /// <see cref="Kidnap.ObedientSlave.PendingOwnerJob"/>) still waiting to load is kept, and so is a slave held in an owned cage
+    /// (<see cref="CagedByOwner"/>).
     /// </summary>
     void EscapeFarFromOwner(World world)
     {
@@ -522,7 +524,8 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
             if (!table.Next[s].Alive || table.Cold(s) is not { SlaveState: 1 } c) continue;
             if (Kidnap.ObedientSlave.OwnerOf(world, c) is not { } owner)
             {
-                if (c.SlaveMaster < 0 && c.Save is not { Slaver.IsNull: false } && !CagedByOwner(world, c)) FixtureRegistry.TagEscaped(world, c);
+                bool pending = c.Save is { Slaver.IsNull: false } || Kidnap.ObedientSlave.PendingOwnerJob(c) >= 0;
+                if (c.SlaveMaster < 0 && !pending && !CagedByOwner(world, c)) FixtureRegistry.TagEscaped(world, c);
 
                 continue;
             }
@@ -677,14 +680,14 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
 
     /// <summary>
     /// Whether the looker in slot <paramref name="w"/> sees the suspect <paramref name="c"/> in slot <paramref name="s"/> now: the shared sight
-    /// test within <paramref name="range"/>, and for a sneaking suspect only once the looker has spotted it (its spot meter is full,
+    /// test within <paramref name="range"/> with the sight ray (<see cref="SightRay.Sees"/>), and for a sneaking suspect only once the looker has spotted it (its spot meter is full,
     /// <see cref="CrimeSystem.Spotted"/>; docs/game/perception.md "Spotting a sneaker"), not at first sight (#649).
     /// </summary>
     bool SeesSuspect(World world, int w, int s, CharacterCold c, float range)
     {
         var next = world.Characters.Next;
         bool sneaking = (c.Orders & CharacterOrders.Sneak) != 0;
-        float v = world.Sight.Sees(w, s, next[w].Position, next[s].Position, range, sneaking ? Orders.Stealth(c) : -1);
+        float v = SightRay.Sees(world, w, s, next[w].Position, next[s].Position, range, sneaking ? Orders.Stealth(c) : -1);
 
         return v > 0 && (!sneaking || Crimes.Spotted(world, w, world.Characters.IdOf(s)));
     }

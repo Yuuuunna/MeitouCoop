@@ -5,11 +5,11 @@ using Meitou.Data.Fcs;
 
 namespace Meitou.Data.World;
 /// <summary>
-/// The placed contents of the world from <c>data/newland/leveldata/</c> (docs/formats/zones.md): zone files
-/// (buildings), <c>leveldata.level</c> (towns, roads) and optionally <c>interiors.level</c>. Files come in
-/// layers: the folder itself, then one sub-folder per game-data file of the load order that has one (base
-/// game: <c>Newwworld</c>, <c>Dialogue</c>, <c>rebirth</c>). Layers are merged per file with the FCS rules of
-/// <see cref = "GameDatabase"/>; that the game merges them this way is an assumption.
+/// The placed contents of the world from <c>data/newland/leveldata/</c> (docs/formats/zones.md, "Mods"): zone files (buildings),
+/// <c>leveldata.level</c> (towns, roads) and optionally <c>interiors.level</c>. Files come in layers, one per game-data file in load order:
+/// the folder itself for <c>gamedata.base</c>, a core file's sub-folder named after it (<c>Newwworld</c>, <c>Dialogue</c>, <c>rebirth</c>),
+/// a mod's <c>leveldata</c> folder beside its <c>.mod</c> file. Each file is merged over the earlier layers' with the FCS rules of
+/// <see cref="GameDatabase"/>, as the game reads level files with its game-data loader.
 /// </summary>
 public sealed class WorldLevelData
 {
@@ -201,7 +201,8 @@ public sealed class WorldLevelData
 
     /// <summary>
     /// Loads from <paramref name="directory"/>, then one layer per <paramref name="loadOrder"/> file that has one, in load order: a core file's
-    /// sub-folder named after it (extension dropped), a mod's <c>leveldata</c> folder beside its <c>.mod</c> file (Workshop or <c>mods/</c>).
+    /// sub-folder named after it (extension dropped), a mod's <c>leveldata</c> folder beside its <c>.mod</c> file (Workshop or <c>mods/</c>). A file
+    /// that would not load (<see cref="FcsGameLoader.Opens"/>) adds none.
     /// </summary>
     public static WorldLevelData Load(string directory, IEnumerable<LoadOrderEntry> loadOrder, bool includeInteriors = false)
     {
@@ -209,6 +210,9 @@ public sealed class WorldLevelData
         world.Layers.Add(new WorldLevelLayer("", directory));
         foreach (var entry in loadOrder)
         {
+            // A core .mod or a mod the game failed to load has no layer; gamedata.base keeps the base folder's (docs/formats/zones.md "Mods").
+            if (entry.Path.Length > 0 && !FcsGameLoader.Opens(entry.Path)) continue;
+
             string name = Path.GetFileNameWithoutExtension(entry.Name);
             bool core = entry.Path.Length == 0 || LoadOrder.BaseFiles.Contains(entry.Name, StringComparer.OrdinalIgnoreCase);
             var sub = core
@@ -231,7 +235,7 @@ public sealed class WorldLevelData
     /// </summary>
     void ApplyLayer(WorldLevelLayer layer)
     {
-        foreach (var path in Directory.EnumerateFiles(layer.Directory, "zone.*.zone").Order(StringComparer.Ordinal))
+        foreach (var path in layer.ZoneFiles())
         {
             if (!ZoneCoordinate.TryParseFileName(path, out var zone)) continue;
             if (!Zones.TryGetValue(zone, out var db))
@@ -416,6 +420,21 @@ public sealed class WorldLevelLayer(string name, string directory)
     /// </summary>
     public int FileCount { get; internal set; }
 
+    /// <summary>
+    /// The folder's zone files (<c>zone.X.Y.zone</c>), in ordinal order.
+    /// </summary>
+    public IEnumerable<string> ZoneFiles() => System.IO.Directory.EnumerateFiles(Directory, "zone.*.zone").Order(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Every file of the folder the loader reads: <see cref="ZoneFiles"/>, then the level and interiors files (named whether or not they exist).
+    /// </summary>
+    public IEnumerable<string> Files() =>
+    [
+        .. ZoneFiles(),
+        GameFiles.Resolve(Path.Combine(Directory, WorldLevelData.LevelFileName)),
+        GameFiles.Resolve(Path.Combine(Directory, WorldLevelData.InteriorsFileName)),
+    ];
+
     public override string ToString() => Name.Length == 0 ? "(base)" : Name;
 }
 
@@ -443,6 +462,12 @@ public sealed record BuildingPlacement(ZoneCoordinate Zone, string InstanceId, s
     /// house purchases").
     /// </summary>
     public bool WithoutInterior { get; init; }
+
+    /// <summary>
+    /// The player's own building (a site the player built or repairs): only such a WALKABLE linked wall gets seeds on its top
+    /// (docs/game/pathfinding.md "Generator", seeds).
+    /// </summary>
+    public bool PlayerOwned { get; init; }
 
     /// <summary>
     /// Its interior and exterior layout names when not its state's: a town override's or a loaded save's residents named them

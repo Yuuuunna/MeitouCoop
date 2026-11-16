@@ -49,6 +49,36 @@ public static class CharacterFacts
         && cold.NpcClass != FundamentalType.Bandit;
 
     /// <summary>
+    /// <c>Character::isDiplomaticStatus(factorInBiome)</c> (<c>FUN_140796240</c>, <b>Verified</b> by disassembly): NPC class 5 Diplomat and, with
+    /// <paramref name="factorInBiome"/>, standing in a biome group of its own faction's <c>biomes</c>
+    /// (<see cref="Population.PopulationData.InHomeBiome"/>). The war manager lookup of its platoon it also makes is discarded.
+    /// </summary>
+    public static bool DiplomaticStatus(CharacterCold cold, System.Numerics.Vector3 at, Population.PopulationData? data, bool factorInBiome) =>
+        cold.NpcClass == FundamentalType.Diplomat && (!factorInBiome || data?.InHomeBiome(cold.Faction, at) == true);
+
+    /// <summary>
+    /// The campaign its faction's war manager holds the character's platoon in (<c>FUN_1409c4b90</c>, <b>Verified</b> by disassembly: none without a
+    /// platoon) is still in phase 0, marching to its target (the record's <c>+0xc0</c>). Read by the attack-on-sight finder and the leave-alone test.
+    /// </summary>
+    public static bool MarchingToCampaign(World world, CharacterCold cold) =>
+        cold.SquadId >= 0 && world.Squads.Find(cold.SquadId) is { PlatoonId: >= 0 } squad
+        && world.Platoons.Find(squad.PlatoonId)?.Campaign is { Phase: 0 };
+
+    /// <summary>
+    /// The character's platoon is a <c>UniquePlatoon</c> (<c>Platoon</c> vfunc <c>0xb0</c> returns the platoon itself only for that class,
+    /// <c>FUN_1409b0680</c>, the base <c>FUN_1407f22f0</c> 0; <b>Verified</b>): one made from an UNIQUE_SQUAD_TEMPLATE, or a saved PLATOON with
+    /// <c>special</c> (<c>FUN_14057c6f0</c>). Engine reading: a character with no squad is in no such platoon (the original asks its faction's
+    /// default platoon, <c>FUN_1406b9c60</c>).
+    /// </summary>
+    public static bool UniquePlatoon(World world, Meitou.Data.GameDatabase? db, CharacterCold cold)
+    {
+        if (cold.SquadId < 0 || world.Squads.Find(cold.SquadId) is not { } squad) return false;
+        if (db?.Find(squad.TemplateId) is { Type: Meitou.Data.Fcs.FcsRecordType.UniqueSquadTemplate }) return true;
+
+        return world.Platoons.Find(squad.PlatoonId)?.Saved?.Source.Record.Bools.GetValueOrDefault("special") == true;
+    }
+
+    /// <summary>
     /// <c>Character</c> slot 6 <c>isDown</c> (vfunc 0x30, <c>FUN_1405c9e10</c>, <b>Verified</b>): dead or out cold, playing dead (which is
     /// unconscious to everyone), ragdolled or carried. A crawler is not down. A ragdoll is only ever whole for an incapacitated character, so
     /// <see cref="Ragdolls.RagdollSystem.IsRagdoll"/> adds nothing the first test lacks, and is kept for the original's reading.
@@ -161,17 +191,20 @@ public static class CharacterFacts
     /// Whether <paramref name="target"/> is on the looker's sensed list, as the original's finders that walk it (<c>FUN_140853960</c>) take their
     /// candidates: an entry of its senses, with <paramref name="now"/> only one seen or heard at the last look. The capped block
     /// (<see cref="SenseBlock.Cap"/>) may lack a character the original's unbounded map holds, so one it lacks is judged by the shared sight test
-    /// (<see cref="SightMap.Sees"/>: same building or outdoors, unless either stands on top; engine choice). True without senses.
+    /// (<see cref="SightRay.Sees"/>: same building or outdoors, unless either stands on top, and the sight ray; engine choice), except a sneaker on its feet, which only
+    /// the look senses (its spot meter, #649). True in a world without the look; false for a looker that has not looked yet (#759: a guard's first
+    /// think after load took a sneaking escaped slave 480 away).
     /// </summary>
     public static bool Perceives(World world, int looker, int target, bool now = false)
     {
         var table = world.Characters;
-        if (Senses(world, looker) is not { } block) return true;
+        if (Senses(world, looker) is not { } block) return world.SystemOf<AggroSystem>() is null;
         if (block.TryGet(table.IdOf(target), out var entry)) return !now || entry.Now;
-        if (table.Cold(looker) is not { } cold) return false;
+        if (table.Cold(looker) is not { } cold || table.Cold(target) is not { } seen) return false;
+        if ((seen.Orders & Player.CharacterOrders.Sneak) != 0 && seen.Medical is not { Incapacitated: true }) return false;
 
         float outdoor = AggroSystem.RangeOf(cold, AggroSystem.OutdoorSight);
-        return world.Sight.Sees(looker, target, table.Next[looker].Position, table.Next[target].Position, outdoor) > 0;
+        return SightRay.Sees(world, looker, target, table.Next[looker].Position, table.Next[target].Position, outdoor) > 0;
     }
 
     /// <summary>

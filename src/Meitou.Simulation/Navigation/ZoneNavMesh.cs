@@ -77,7 +77,24 @@ public sealed class ZoneNavMesh
     /// </summary>
     public int[]? DoorOf { get; internal set; }
     /// <summary>
-    /// The walkable collision triangles the polygons stand for, for exact heights (<see cref = "NavSurfaces"/>); null when none were kept.
+    /// The side points of the gates placed in this zone (<see cref="GateSide"/>, the gate-code pass's gate list); null when there are none.
+    /// </summary>
+    public GateSide[]? GateSides { get; internal set; }
+    /// <summary>
+    /// The placement keys of the buildings whose interiors this mesh holds; null when it has none.
+    /// </summary>
+    public string[]? BuildingIds { get; internal set; }
+    /// <summary>
+    /// Per polygon: the index into <see cref="BuildingIds"/> of the building whose interior it is, −1 for an exterior polygon; null when there are no
+    /// interiors.
+    /// </summary>
+    public int[]? BuildingOf { get; internal set; }
+    /// <summary>
+    /// Where the zone's buildings with an interior read their own gate code (<see cref="BuildingCodePoint"/>); null when there are none.
+    /// </summary>
+    public BuildingCodePoint[]? CodePoints { get; internal set; }
+    /// <summary>
+    /// The walkable collision triangles the polygons stand for, for exact heights (<see cref="NavSurfaces"/>); null when none were kept.
     /// </summary>
     public NavSurfaces? Surfaces { get; internal set; }
     /// <summary>
@@ -163,6 +180,10 @@ public sealed class ZoneNavMesh
         BoundsMax = BoundsMax,
         DoorIds = DoorIds,
         DoorOf = DoorOf,
+        GateSides = GateSides,
+        BuildingIds = BuildingIds,
+        BuildingOf = BuildingOf,
+        CodePoints = CodePoints,
         Surfaces = Surfaces,
         Terrain = Terrain,
         Heights = Heights,
@@ -187,7 +208,8 @@ public sealed class ZoneNavMesh
         var neighbours = new int[count][];
         var areas = new byte[count];
         var doorOf = DoorOf is null ? null : new int[count];
-        var links = new int[]? [count];
+        var buildingOf = BuildingOf is null ? null : new int[count];
+        var links = new int[]?[count];
         for (int p = 0; p < PolygonCount; p++)
         {
             if (!Kept[p])
@@ -197,8 +219,8 @@ public sealed class ZoneNavMesh
             polygons[n] = KeptVertices(Polygons[p], vertexMap, vertices);
             neighbours[n] = Renumbered(Neighbours[p], map);
             areas[n] = Areas[p];
-            if (doorOf is not null)
-                doorOf[n] = DoorOf![p];
+            if (doorOf is not null) doorOf[n] = DoorOf![p];
+            if (buildingOf is not null) buildingOf[n] = BuildingOf![p];
             links[n] = KeptLinks(LinksOf(p), map);
         }
 
@@ -218,6 +240,10 @@ public sealed class ZoneNavMesh
             BoundsMax = BoundsMax,
             DoorIds = DoorIds,
             DoorOf = doorOf,
+            GateSides = GateSides,
+            BuildingIds = BuildingIds,
+            BuildingOf = buildingOf,
+            CodePoints = CodePoints,
             Surfaces = Surfaces,
             Terrain = Terrain,
             Heights = HeightsOf(heights),

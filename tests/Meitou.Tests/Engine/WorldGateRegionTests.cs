@@ -69,7 +69,18 @@ public class WorldGateRegionTests
         var first = new Work(); var second = new Work(); var input = first.Input; var locks = Locks();
         using var runtime = new WorldRuntime(new WorldSettings(), Ground(), [locks, new WorldGateRegions(() => input)]);
         await first.Complete(new Regions(false)); input = second.Input;
-        runtime.Synchronize(); Assert.Null(locks.Regions); Assert.False(Passes(locks, runtime.World));
+
+        // Exited is signalled inside Build's finally, before its owning Task necessarily completes. Keep advancing owner boundaries until the
+        // coalesced replacement starts; throughout that handoff the obsolete result must stay unpublished and routes must remain blocked.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        do
+        {
+            runtime.Synchronize();
+            Assert.Null(locks.Regions); Assert.True(locks.GateRegionsPending); Assert.False(Passes(locks, runtime.World));
+            if (!second.Started.Task.IsCompleted) await Task.Delay(1, timeout.Token);
+        } while (!second.Started.Task.IsCompleted);
+
         var closed = new Regions(true); await second.Complete(closed); await Publish(runtime, locks);
         Assert.Same(closed, locks.Regions); Assert.False(runtime.Faulted);
     }

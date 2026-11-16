@@ -14,11 +14,11 @@ internal sealed class InventoryVersions
 
     readonly record struct ItemState(ItemInstance Instance, string Section, int X, int Y, int Quantity, float Quality,
         string Material, string Company, int Level, string Colour, string Crafter, string Uniform, float Charges, float MaxCharges,
-        float LimbDamage, float LimbWear, float LimbStun, int StolenFrom, bool Locked, bool Death, bool Unique, int Function, TradeReceipt? Receipt, bool Rotated)
+        float LimbDamage, float LimbWear, float LimbStun, int StolenFrom, bool Locked, bool Death, bool Unique, int Function, TradeReceipt? Receipt, bool Rotated, string ModTag)
     {
         public static ItemState Of(ItemInstance item) => new(item, item.Section, item.X, item.Y, item.Quantity, item.Quality,
             item.MaterialId, item.CompanyId, item.Level, item.ColourId, item.Crafter, item.Uniform, item.Charges, item.MaxCharges,
-            item.LimbDamage, item.LimbWear, item.LimbStun, item.StolenFrom, item.LockedOn, item.Death, item.Unique, item.ItemFunction, item.Buyback, item.Rotated);
+            item.LimbDamage, item.LimbWear, item.LimbStun, item.StolenFrom, item.LockedOn, item.Death, item.Unique, item.ItemFunction, item.Buyback, item.Rotated, item.ModTag);
     }
 
     readonly ConditionalWeakTable<Inventory, Stamp> _stamps = new();

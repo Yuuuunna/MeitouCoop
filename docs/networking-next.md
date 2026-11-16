@@ -243,10 +243,11 @@ rerun after the loading-clock-only correction.
 | Persistence | load a pre-refactor real checkpoint copy; preserve account/role ownership and recover durable operations; save/restart/reload, not just same-version synthetic roundtrip |
 | Deployment | paired client/server version rejection, Server 2016 native probe, clean shutdown/reconnect, no credentials/assets in package |
 
-The current user budget is 500 KiB/s = 512,000 bytes/s = 4.096 Mbit/s per player. Earlier captures used a stricter
+The current user target is 500 KiB/s = 512,000 bytes/s = 4.096 Mbit/s per player, not a hard traffic cap.
+The inventory/trade adaptation below reduces encoded size without adding rate limiting or changing publication cadence; report any excess traffic.
+Earlier captures used a stricter
 500 kbit/s target (62,500 bytes/s); their recorded measurements are historical, not a current-build acceptance result.
-Budget admission, pacing and component scheduling before serialization;
-do not call an application-payload-only measurement the wire budget. Native UDP payload counters plus
+Do not call an application-payload-only measurement the wire budget. Native UDP payload counters plus
 packet/header accounting (or a packet trace) must include both directions and retransmissions.
 Count traffic at one endpoint, not twice across client and server. The global 25 Mbit/s gate measures
 server egress; the per-player gate measures both directions over complete 120 s counter epochs with
@@ -259,7 +260,58 @@ that exceeded the earlier 500 kbit/s target. It remains a correctness reference,
 local animation playback must meet the budget together. No constant-changing global `view` component
 may embed static scene/UI/faction collections; clocks and publication IDs cannot dirty those components.
 
+## Inventory and trade budget
+
+**Verified** (2026-11-16, Linux .NET 11 scratch diagnostics using production `WorldViewCodec`, `GameStatePublisher`/`CaptureCritical`,
+`GameStateReplica`, publication packing, bulk/control codecs and `ReliableLaneFramer`; no Kenshi or network): 20 scenarios cover
+inventory/trade grids of 100 or 256 items and combined 256-item views. Each scenario applies ten quantity changes over one virtual second
+at 10 Hz; only item 0 changes from 5 to 6 or back in each grid, while its inventory revision advances. Distinct item tags have
+0, 32 or 4096 characters; the largest case also repeats a 128-character stolen-owner label. Record IDs and names are constant.
+Every baseline and changed publication round-trips through the replica.
+
+Inventory-only has two character grids; trade-only has stock and customer goods. Combined includes both character grids, trade stock and
+customer goods, plus `GoodsOf` for both controlled characters, with matching item/tag identities and goods revisions. Each listed grid
+contains 256 items. Tag identity and command validation follow [item actions and shared stock](networking.md#item-actions-and-shared-stock).
+
+| Workload | Raw tag / owner characters | Downstream bytes/s | Upstream ACK bytes/s | Combined bytes/s | Combined KiB/s |
+|---|---:|---:|---:|---:|---:|
+| Inventory only | 0 / 0 | 43,780 | 1,700 | 45,480 | 44.41 |
+| Inventory only | 4096 / 128 | 152,555 | 3,800 | 156,355 | 152.69 |
+| Trade only | 0 / 0 | 38,119 | 1,700 | 39,819 | 38.89 |
+| Trade only | 4096 / 128 | 149,151 | 3,800 | 152,951 | 149.37 |
+| Combined | 0 / 0 | 77,954 | 2,400 | 80,354 | 78.47 |
+| Combined | 32 / 0 | 354,960 | 7,300 | 362,260 | 353.77 |
+| Combined | 4096 / 0 | 355,581 | 7,300 | 362,881 | 354.38 |
+| Combined | 4096 / 128 | 358,593 | 7,300 | 365,893 | 357.32 |
+
+Bytes include publication and reliable-lane framing, bulk chunks/manifest, `ViewCommit`, `ViewActive`, a representative active admission
+for two controlled roles, and critical clock frames. Reverse traffic assumes one cumulative ACK per chunk, a manifest ACK and `ViewReady`;
+ACK coalescing can reduce it. Admission size varies with authorized roles and qualifications. The largest combined baseline costs
+43,348 downstream + 870 reverse bytes; the steady-state table excludes that one-time baseline. Unchanged inventory/trade fields add
+zero component bytes in all 20 scenarios; clock-only traffic is 1,790 bytes/s.
+
+The largest measured combined workload uses 71.46% of the target, leaving 146,107 bytes/s (142.68 KiB/s) for other traffic.
+This is offered application traffic, not a sustainable-rate or whole-game acceptance result: it excludes QUIC/TLS/UDP/IP/link overhead,
+retransmission, motion, animation, unrelated components/events, authentication and other control traffic. It must not be added to an
+unrelated historical benchmark and presented as an installed-scene total. Real two-way traffic still needs the 120-second capture above.
+The same synthetic workload with a 64-hex-character tag digest and plain JSON measured 10,448,260 bytes/s; that is a representation
+comparison of this adaptation, not a measurement of a prior released binary.
+
+**Verified** (same scratch diagnostics): an inventory command costs 402 framed control bytes without a tag and 434 with a tag, for both
+32- and 4096-character source tags. Full tags stay at the authority; inventory tokens match the current authoritative tag, reject a different
+tag and reject simultaneous raw-tag/digest input. Trade and player-trade tokens also preserve the authoritative digest without exposing the
+raw tag. The three new authority rules add 45 baseline component bytes, zero when unchanged; changing all three costs 1,872 framed downstream
+application bytes. `SoundEvent.Armour` adds 11 bytes to one ordinary JSON event;
+one `FedToMachine` critical publication costs 519 bytes including framing.
+
+Plain and compressed JSON round-trips pass. Diagnostics reject ten malformed envelopes/streams, including wrong magic/version/size,
+truncation, trailing data and concatenated streams. Two approximately 18 MB expanded fields reject the aggregate 32 MiB limit despite only
+8,715 wire bytes; a 300 KB deferred field rejects the 256 KiB bound despite 302 wire bytes. Oversized capture also rejects, and replica failure clears
+its visible view. These are codec/authority checks, not transport, graphical or real-save acceptance.
+
 ## Upstream presentation budget
+
+The following measurements describe the prior `704cc1ec` presentation integration. They do not include the current inventory/trade workload.
 
 **Verified** (synthetic serialization, Linux .NET 11; no Kenshi or network): 100 captures over 10 seconds of virtual time at 10 Hz,
 124 visible characters, 2 UI actors, 4 meters and 34 mod skills per active actor, a 32-byte inspected-power ID, and one static attachment per
@@ -407,6 +459,17 @@ World fields 1056–1058 add `MapSquads` (Knowledge), `WorkSites` and `FoliageOu
 `FirstSelected` (Details), `KidnapVictim` (Vitals), `Lean` and `Anchor` (Animation). Existing IDs are unchanged. Command IDs 36, 60, 61,
 79 and 166 encode item rotation, squad autonomy, squad home, machine arrangement and held rotation respectively. The engine/build
 compatibility identity fences peers with older component or command schemas; protocol 21 framing is unchanged.
+
+**Observed** (`JsonComponentCompression`, schema encode/decode): JSON fields other than Events and keyed collection entries of at least 1 KiB use independent
+Brotli streams (quality 1, window 22) only when the complete envelope saves at least 128 bytes and 12.5%. The envelope is `00 4D 4A 43`,
+version byte `01`, exact uncompressed length (little-endian int32), then the stream; a field's existing presence byte remains outside it.
+Plain JSON and one-byte null withdrawals stay valid. No prior value or dictionary is needed, so inventory revisions, click tokens,
+out-of-order publication fences and authorization withdrawals retain their existing atomic semantics. Decode rejects an invalid header,
+an output beyond 32 MiB, incomplete consumption, trailing data or a mismatched output length, then applies ordinary JSON and typed validation.
+Compression uses one bounded pooled scratch buffer; decompression allocates the exact declared output. The complete capture and each decoded
+publication retain the 32 MiB expanded-byte limit, including framing within the publication; deferred fields reserve their expanded size against
+the existing 256 KiB bound and against the publication that applies them. Schema metadata distinguishes compressed JSON from binary fields.
+Raw `WorldViewCodec.EncodeComponent`, Events encoding and event-retention/critical-fragment byte accounting remain unchanged.
 
 The receiver and renderer share a monotonic authority-clock estimate. Receive-side sampling consumes
 due animation transitions while content/GPU loading has no renderer callbacks; renderer frame deltas do

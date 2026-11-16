@@ -20,6 +20,7 @@ sealed class UiAudio(GameHost host)
         Sounds = audio is null ? null : new UiSounds(audio.Player, () => host.Scene.Database);
         var sounds = Sounds;
         host.Player.InterfaceSounds.UiSound = sounds is null ? null : e => sounds.Play(e);
+        host.Player.InterfaceSounds.CharacterInspected = sounds is null ? null : host.Sound.Characters.Inspect;
     }
 
     /// <summary>

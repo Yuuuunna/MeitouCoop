@@ -11,6 +11,7 @@ using Meitou.Simulation.Locks;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Population;
+using Meitou.Simulation.Production;
 
 namespace Meitou.Simulation.Kidnap;
 
@@ -103,7 +104,15 @@ public enum TownDutyKind : byte
     /// <summary>
     /// 224: carrying it past the home's first door.
     /// </summary>
-    HomeOut
+    HomeOut,
+    /// <summary>
+    /// 138 Find corpses: lifting a dead body.
+    /// </summary>
+    CorpseLift,
+    /// <summary>
+    /// 137 Corpse disposal: carrying a dead body to a disposal and feeding it in (136).
+    /// </summary>
+    Corpse
 }
 
 /// <summary>
@@ -157,6 +166,10 @@ public sealed class TownDuty
     /// A food run of a character of the player's side (243 from <c>Character::setupAI</c>): a player order ends it without being undone.
     /// </summary>
     public bool PlayerSide { get; init; }
+    /// <summary>
+    /// A corpse disposal errand's machine (its id is <see cref="Target"/>).
+    /// </summary>
+    public CorpseMachine? Machine { get; set; }
 
     /// <summary>
     /// Adds the errand to the world's state hash.
@@ -179,7 +192,7 @@ public sealed class TownDuty
         }
 
         if (PlayerSide) h.Add(0x50534964);
-        if (Kind is TownDutyKind.Confiscate or TownDutyKind.Lift or TownDutyKind.HomeLift) h.Add(Next);
+        if (Kind is TownDutyKind.Confiscate or TownDutyKind.Lift or TownDutyKind.HomeLift or TownDutyKind.CorpseLift) h.Add(Next);
     }
 }
 
@@ -190,7 +203,7 @@ public sealed class TownDuty
 /// <list type="bullet">
 /// <item><b>273 Remove Intruder</b> (finder <c>FUN_14099c250</c>, <b>Verified</b> by decompile): only while the member stands in a town that is its
 /// home town, the town its occupation holds, or a town of its faction (<c>Ownerships::isMyTown</c>, KenshiLib names); the intruder is knocked out, in
-/// that town, not carried or caged, and (an engine reading of the sensed-list classes) not of the member's faction or an ally. The original's last
+/// that town, not carried or caged (Meitou: nor in a bed), and (an engine reading of the sensed-list classes) not of the member's faction or an ally. The original's last
 /// test, <c>amInsideTownWalls</c>, is read as the town's built-up area (<see cref="BuiltUp"/>). The member lifts it, then</item>
 /// <item><b>112 Find and put in cage</b> (a living body) or <b>281</b> (any body), while the package lists it: the best free cage in the town (the
 /// original's finder; an occupier may use the occupied town's, its use test passing for that town, <c>FUN_140621230</c>), where the intruder is
@@ -201,6 +214,9 @@ public sealed class TownDuty
 /// <item><b>223 Remove Home Intruder</b> (finder <c>FUN_14099c110</c>): a knocked-out character in the squad's home building
 /// (<see cref="HomeIntruder"/>) is lifted, then with <b>224</b> (<c>Task_TakeIntruderOutside</c>) carried past the home's first door
 /// (<see cref="AiSystem.LeavePoint"/>) and put down; without 224 it goes on as 273's body does.</item>
+/// <item><b>138 Find corpses</b> and <b>137 Corpse disposal</b> (<see cref="LiftsCorpse"/>): a member listing 138, or 137 with a disposal found
+/// (<see cref="CorpseDisposal.Find"/>), lifts the corpse 138's finder gives; then 137, ranked with the cage and throw-out goals
+/// (<see cref="RankDisposals"/>), carries it to the disposal, which takes it in; without a disposal goal it keeps the body.</item>
 /// <item><b>243 Getting food</b> (finder <c>FUN_1408cb650</c>, <c>BuildingFinder_LootFoodAndStuff</c>; then 244 <c>Task_grabOneFood</c>): a member
 /// holding no food walks to the nearest store with food in the town and takes one item of it (the goal holds while it has food, list A
 /// <c>gotAFoodItem</c>). The finder searches the blackboard's target town (<c>Blackboard.Destination</c>), else the town the member stands in, else
@@ -637,6 +653,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             Ransack = stackalloc int[5],
             Stash = stackalloc int[5],
             Home = stackalloc int[5],
+            Corpse = stackalloc int[5],
+            FindCorpse = stackalloc int[5],
         };
 
         foreach (var squad in world.Squads.All)
@@ -694,6 +712,16 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         public Span<int> Home;
 
         /// <summary>
+        /// 137 Corpse disposal.
+        /// </summary>
+        public Span<int> Corpse;
+
+        /// <summary>
+        /// 138 Find corpses.
+        /// </summary>
+        public Span<int> FindCorpse;
+
+        /// <summary>
         /// Forgets every answer (a new squad).
         /// </summary>
         public readonly void Clear()
@@ -706,6 +734,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             Ransack.Fill(-1);
             Stash.Fill(-1);
             Home.Fill(-1);
+            Corpse.Fill(-1);
+            FindCorpse.Fill(-1);
         }
     }
 
@@ -784,7 +814,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         }
 
         if (intruders[role] == 0 && food[role] == 0 && confiscate[role] == 0 && loot[role] == 0 && shoo[role] == 0 && stash[role] == 0
-            && home[role] == 0)
+            && home[role] == 0 && duties.Corpse[role] == 0 && duties.FindCorpse[role] == 0)
         {
             return;
         }
@@ -849,6 +879,12 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
 
         if (home[role] < 0)
             home[role] = squad.HomeBuilding is not null && population.GoalDuty(world, squad, (AiRole)role, TaskType.PickupIntruders) ? 1 : 0;
+
+        if (duties.Corpse[role] < 0)
+            duties.Corpse[role] = population.GoalDuty(world, squad, (AiRole)role, TaskType.DeadGuysGoInThePot) ? 1 : 0;
+
+        if (duties.FindCorpse[role] < 0)
+            duties.FindCorpse[role] = population.GoalDuty(world, squad, (AiRole)role, TaskType.FindADeadGuy) ? 1 : 0;
     }
 
     /// <summary>
@@ -918,6 +954,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             return;
         }
 
+        if (LiftsCorpse(world, slot, cold, duties.Corpse[role] == 1, duties.FindCorpse[role] == 1, town)) return;
+
         if (mine && confiscate[role] == 1 && Contraband(world, town) is var (cage, prisoner) && cage is not null)
         {
             cold.Engaged = true;
@@ -971,11 +1009,9 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     }
 
     /// <summary>
-    /// 112 FIND_CAGE_AND_PUT_IN and 281 FIND_CAGE_AND_PUT_DEADGUY_IN for a body already on the shoulder, whoever lifted it (a victim who died on the
-    /// way, an arrest's target, a carry a save restored): the desire <c>FUN_1405a1140</c> reads only the carry flag and the carried handle, never
-    /// whether it is dead, and neither goal has a list B (<b>Verified</b>). A free member whose package lists 281 (any body) or 112 (a living one,
-    /// its list A <c>!99</c>) takes it to the best free cage of its town; with none it keeps the body (the goal has no finder result and does not
-    /// plan).
+    /// The goals for a body already on the shoulder, whoever lifted it (a victim who died on the way, an arrest's target, a carry a save restored,
+    /// which no errand is saved with): a free member takes up the first of its disposal goals that starts (<see cref="DisposeCarried"/>); with none
+    /// it keeps the body.
     /// </summary>
     void LookCarriers(World world, int every)
     {
@@ -986,27 +1022,124 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             var id = table.IdOf(slot);
             if (!FreeCarrier(table, slot) || Busy(id)) continue;
             var cold = table.Cold(slot)!;
-            if (!table.TryResolveNext(cold.Carrying, out int b) || table.Cold(b) is not { Medical: { } medical } body || body.CarriedBy != id)
-                continue;
-
-            if (!(ListsDeadCage(world, cold, id) || !medical.Dead && ListsCage(world, cold, id)) || CageDesire(world, slot, b) <= 0)
+            if (!table.TryResolveNext(cold.Carrying, out int b) || table.Cold(b) is not { Medical: not null } body || body.CarriedBy != id)
                 continue;
 
             var at = table.Next[slot].Position;
-            var duty = new TownDuty
-            {
-                Member = id,
-                Body = cold.Carrying,
-                Faction = cold.Faction,
-                Town = AiSystem.TownAt(data, world, at),
-                Kind = TownDutyKind.Cage
-            };
-            if (Cage(world, at, duty) is not { } cage) continue;
-            (duty.Target, duty.Goal) = (cage.Id, Flat(cage.Position));
+            var duty = new TownDuty { Member = id, Body = cold.Carrying, Faction = cold.Faction, Town = AiSystem.TownAt(data, world, at),
+                    Kind = TownDutyKind.Cage };
+            if (!DisposeCarried(world, duty, slot, b)) continue;
+
             cold.Engaged = true;
             _duties.Add(duty);
-            WalkToCage(world, slot, cage);
         }
+    }
+
+    /// <summary>
+    /// The goal chooser over a carried body's disposal goals (<c>FUN_140510ef0</c> with the scorer <c>FUN_14050df10</c>, <b>Verified</b>): the
+    /// candidates ranked by <see cref="RankDisposals"/>, the first that starts wins (the cage goals need a free cage). Without
+    /// <paramref name="cageable"/> the cage goals are left out. False when none starts.
+    /// </summary>
+    bool DisposeCarried(World world, TownDuty d, int g, int b, bool cageable = true)
+    {
+        var gc = world.Characters.Cold(g)!;
+        if (world.Squads.Find(gc.SquadId) is not { } squad || population.GoalsOf(world, squad, AiSystem.RoleOf(squad, d.Member, gc)) is not { } goals)
+            return false;
+
+        foreach (var goal in RankDisposals(world, g, b, goals, cageable))
+        {
+            bool started = goal.Task.Type switch
+            {
+                TaskType.TakeIntruderOutsideTown => ThrowOutCarried(world, g, d),
+                TaskType.DeadGuysGoInThePot => DisposeOfCarried(world, g, d),
+                _ => CageCarried(world, g, d),
+            };
+            if (started) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The role's disposal goals for the body in slot <paramref name="b"/> in the chooser's order, each in its hours with a score above 0: 137 Corpse
+    /// disposal for a dead body (list B 99) at <see cref="DisposalDesire"/>, 112 FIND_CAGE_AND_PUT_IN (a living body, its list B <c>!99</c>) and 281
+    /// FIND_CAGE_AND_PUT_DEADGUY_IN (any body) at <see cref="CageDesire"/> times the cage finder's factor (<c>FUN_1408d0d30</c>: 1.0,
+    /// <c>DAT_14167c308</c>, with a free cage, else 0; tested when the goal starts), 274 at <see cref="ThrowOutDesire"/> (no effect, so no finder
+    /// factor, <c>FUN_14060fd80</c>), each times its package weight. A higher tier first (an urgent cage before 274), then the higher score; of equal
+    /// scores the goal listed later (<see cref="AiSystem"/>'s rank).
+    /// </summary>
+    List<AiGoal> RankDisposals(World world, int g, int b, IReadOnlyList<AiGoal> goals, bool cageable)
+    {
+        bool dead = world.Characters.Cold(b)!.Medical!.Dead;
+        float cage = cageable ? CageDesire(world, g, b) : 0;
+        float throwOut = ThrowOutDesire(world, g, b);
+        float? disposal = null;
+        int hour = world.Hour;
+        var ranked = new List<(AiGoal Goal, float Score)>();
+        for (int k = 0; k < goals.Count; k++)
+        {
+            var goal = goals[k];
+            float desire = goal.Task.Type switch
+            {
+                TaskType.FindCageAndPutDeadguyIn => cage,
+                TaskType.FindCageAndPutIn when !dead => cage,
+                TaskType.TakeIntruderOutsideTown => throwOut,
+                TaskType.DeadGuysGoInThePot when dead => disposal ??= DisposalDesire(world, g),
+                _ => 0,
+            };
+            float score = desire * goal.Weight;
+            if (score <= 0 || !goal.InWindow(hour)) continue;
+
+            int at = ranked.Count;
+            while (at > 0 && RanksBefore(goal, score, ranked[at - 1])) at--;
+            ranked.Insert(at, (goal, score));
+        }
+
+        return ranked.ConvertAll(r => r.Goal);
+    }
+
+    /// <summary>
+    /// Whether a goal listed later ranks before an earlier candidate: a higher tier, or the same tier and a score at least as high.
+    /// </summary>
+    static bool RanksBefore(AiGoal goal, float score, (AiGoal Goal, float Score) earlier) =>
+        goal.Task.Priority > earlier.Goal.Task.Priority || goal.Task.Priority == earlier.Goal.Task.Priority && score >= earlier.Score;
+
+    /// <summary>
+    /// 112 / 281 for the carried body of errand <paramref name="d"/>: the member walks it to the best free cage of its town; false with none free.
+    /// </summary>
+    bool CageCarried(World world, int g, TownDuty d)
+    {
+        if (Cage(world, world.Characters.Next[g].Position, d) is not { } cage) return false;
+
+        (d.Kind, d.Target, d.Goal, d.Tries) = (TownDutyKind.Cage, cage.Id, Flat(cage.Position), 0);
+        WalkToCage(world, g, cage);
+        return true;
+    }
+
+    /// <summary>
+    /// 274 Throwing out for the carried body of errand <paramref name="d"/> (list B 47 IS_CARRYING_SOMETHING): the member walks it to its town's
+    /// exit point (<see cref="Outside"/>) and puts it down there. False when the carrier stands in no town (Meitou: the exit point is a town's).
+    /// </summary>
+    bool ThrowOutCarried(World world, int g, TownDuty d)
+    {
+        if (d.Town.IsNone) return false;
+
+        (d.Kind, d.Goal, d.Tries) = (TownDutyKind.Out, Outside(world, d.Town), 0);
+        TaskStart.Walk(world, g, d.Goal, SpeedMode.Free, RowOf(d.Kind), TaskSource.Goal);
+        return true;
+    }
+
+    /// <summary>
+    /// The desire of 224 and 274 (both rows' desire stub jumps to <c>FUN_1405a13a0</c>, <b>Verified</b> by decompile and disassembly): 0 unless the
+    /// carrier carries a resolvable character, 0 when it regards that one as friendly (vfunc <c>0x3f0</c>, <see cref="CarrySystem.Friendly"/>),
+    /// else <see cref="AliveDesire"/> (<c>DAT_141682ad0</c>, 2). No town, animal or death test.
+    /// </summary>
+    public float ThrowOutDesire(World world, int carrier, int body)
+    {
+        var table = world.Characters;
+        if (table.Cold(carrier) is not { } c || table.Cold(body) is not { } b || c.Carrying != table.IdOf(body)) return 0;
+
+        return carry.Friendly(c, b) ? 0 : AliveDesire;
     }
 
     /// <summary>
@@ -1113,7 +1246,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     }
 
     /// <summary>
-    /// The nearest downed intruder within the member's sight in its town's built-up area (-1: none).
+    /// The nearest downed intruder within the member's sight in its town's built-up area (-1: none). Meitou: one in a bed is left alone (the
+    /// original skips only the caged, so guards threw patients out of rented beds, issue 751).
     /// </summary>
     int Intruder(World world, int slot, CharacterCold cold, CampaignTown town)
     {
@@ -1123,7 +1257,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         int best = -1;
         foreach (int v in _downed)
         {
-            if (v == slot || _reserved.Contains(world.Characters.IdOf(v)) || carry.Friendly(cold, world.Characters.Cold(v)!))
+            var body = world.Characters.Cold(v)!;
+            if (v == slot || body.InSomething == HeldState.Bed || _reserved.Contains(world.Characters.IdOf(v)) || carry.Friendly(cold, body))
                 continue;
 
             var p = next[v].Position;
@@ -1262,7 +1397,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
 
     /// <summary>
     /// The nearest store of the town with food in it (<c>BuildingFinder_LootFoodAndStuff</c>, its filter only partly read: buildings with an
-    /// inventory holding food): a complete player storage of the player town, or a container that is not locked inside the town. Its id and where the
+    /// inventory holding food): a complete player storage of the town (for a player-side run also one in a placed town's bought house), or a
+    /// container that is not locked inside the town. Its id and where the
     /// member walks. With <paramref name="owner"/> (a player-side run) only stores of that faction; for an <paramref name="animal"/> raw food counts
     /// too and a store inside another building is skipped (the finder's animal tests).
     /// </summary>
@@ -1272,13 +1408,14 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         var here = Flat(at);
         (string, Vector2)? best = null;
         float bestD = float.MaxValue;
-        if (town.PlayerTown > 0 || town.IsNone)
+        // A player-side run also takes the player's storages in a placed town, standing in a house the player owns there (#762).
+        if (town.PlayerTown > 0 || town.IsNone || owner >= 0)
         {
             foreach (var m in world.Machines.All)
             {
                 if (m.Storage is not { } s || !s.Items.Any(i => Edible(i, animal, race))
                         || world.Buildings.Find(m.Site) is not { Complete: true } site
-                                || !InScope(world, town, at, CampaignTown.OfPlayer(site.Town), site.Position))
+                                || !InScope(world, town, at, SiteTown(world, site), site.Position))
                     continue;
 
                 if (owner >= 0 && site.Owner != owner || animal && site.Parent is not null || asker?.IsUnreachable(m.Site, world.Tick) == true)
@@ -1315,6 +1452,12 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (!town.IsNone) return storeTown == town;
         return Data.World.WorldLayout.WithinOneZone(at.X, at.Z, storePosition.X, storePosition.Z);
     }
+
+    /// <summary>
+    /// The town of a player site: its player town, else (furniture in a bought house) the placed town it stands in.
+    /// </summary>
+    CampaignTown SiteTown(World world, Construction.BuildSite site) =>
+        site.Town > 0 ? CampaignTown.OfPlayer(site.Town) : AiSystem.TownAt(data, world, site.Position);
 
     /// <summary>
     /// Food the finder looks for (<c>FUN_14042ee50</c>): <c>item function</c> 3, and raw food (15) for an animal or when the race's special food
@@ -1374,17 +1517,29 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     }
 
     /// <summary>
+    /// Whether a container's record takes <paramref name="item"/> at all: it is a store, the item lies loose in a carrier's grid, and its type and
+    /// the store's list allow it.
+    /// </summary>
+    bool Accepts(Fixture f, ItemInstance item)
+    {
+        var (storage, type, limit) = StorageOf(f);
+        if (!storage || f.Contents is null || item.Section is not ("main" or "backpack_content") || item.LockedOn || item.Contents is not null)
+            return false;
+
+        return item.Type == type && (limit.Length == 0 || Array.IndexOf(limit, item.Record) >= 0);
+    }
+
+    /// <summary>
     /// A container takes a loose stack (<c>StorageBuilding</c> slot 0x4a0, <c>FUN_1402988c0</c>, <b>Observed</b>): the item's type is the container's
     /// <c>itemtype limit</c> and, when it has a <c>limit inventory</c> list, the item is in it, and there is room (a stack of it with space, or a
-    /// free cell). Same test as <see cref="Production.ProductionSystem.Stores"/> for a machine.
+    /// free cell). Same test as <see cref="Production.ProductionSystem.Stores"/> for a machine; a building shop's stock containers hold its goods, so
+    /// what goes into one is for sale.
     /// </summary>
     bool Takes(Fixture f, ItemInstance item)
     {
-        var (storage, type, limit) = StorageOf(f);
-        if (!storage || f.Contents is not { } box || item.Section is not ("main" or "backpack_content") || item.LockedOn || item.Contents is not null)
-            return false;
+        if (!Accepts(f, item)) return false;
 
-        if (item.Type != type || limit.Length > 0 && Array.IndexOf(limit, item.Record) < 0) return false;
+        var box = f.Contents!;
         int room = box.LimitOf(item);
         foreach (var other in box.Items)
         {
@@ -1441,9 +1596,9 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         {
             if (f.Contents is null || !Usable(f.Owner)) continue;
             float d = Vector3.DistanceSquared(at, f.Position);
-            if (d <= Production.ProductionSystem.JobRangeSq && d < bestD && AiSystem.TownAt(data, world, f.Position) == search
-                    && loot.Any(i => Takes(f, i)))
-                (best, bestD) = ((f.Id, Flat(f.Position)), d);
+            if (d > Production.ProductionSystem.JobRangeSq || d >= bestD || AiSystem.TownAt(data, world, f.Position) != search) continue;
+
+            if (loot.Any(i => Takes(f, i))) (best, bestD) = ((f.Id, Flat(f.Position)), d);
         }
 
         return best;
@@ -1481,6 +1636,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         TownDutyKind.Ditch => TaskType.GetRidOfResourcesInMyInventory,
         TownDutyKind.HomeLift => TaskType.PickupIntruders,
         TownDutyKind.HomeOut => TaskType.TakeIntruderOutside,
+        TownDutyKind.CorpseLift => TaskType.FindADeadGuy,
+        TownDutyKind.Corpse => TaskType.DeadGuysGoInThePot,
         _ => TaskType.PutLootInStorage,
     };
 
@@ -1502,28 +1659,33 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (d.Kind == TownDutyKind.Shoo) return StepShoo(world, d, g, gc);
         if (d.Kind == TownDutyKind.Ransack) return StepRansack(world, d, g);
 
-        // A body that died on the way goes on into the cage only with 281 listed (112 needs !99 isCarriedDudeDead); 224 carries out whatever it
-        // holds.
-        bool home = d.Kind is TownDutyKind.HomeLift or TownDutyKind.HomeOut;
+        // A body that died on the way goes on into the cage only with 281 listed (112 needs !99 isCarriedDudeDead); a lifted one goes on to the
+        // disposal ranking; 224 and 274 carry out whatever they hold (their update, slot 7 FUN_1403356e0, has no death test).
         if (!table.TryResolveNext(d.Body, out int b) || table.Cold(b) is not { Medical: { } bodyMedical } body || body.IsImprisoned
-            || bodyMedical.Dead && !home
-                    && !(d.Kind is TownDutyKind.Lift or TownDutyKind.Cage && gc.Carrying == d.Body && ListsDeadCage(world, gc, d.Member)))
+            || bodyMedical.Dead && !KeepsDead(world, d, gc))
         {
             carry.LetGo(world, g);
             return End(world, d);
         }
 
-        if (d.Kind is TownDutyKind.Lift or TownDutyKind.HomeLift)
+        if (d.Kind is TownDutyKind.Lift or TownDutyKind.HomeLift or TownDutyKind.CorpseLift)
         {
             if (gn.Task == (byte)CharacterTask.PickUp)
                 return gc.LiftTime >= 0 || (d.Next += world.TickSeconds) <= Settings.LiftSeconds || PutDown(world, d, g);
 
             if (gc.Carrying != d.Body) return End(world, d);   // fought off or pushed away: the body lies there for the next look
-            return home ? CarryOut(world, d, g, b) : Dispose(world, d, g, b);
+            return d.Kind switch
+            {
+                TownDutyKind.HomeLift => CarryOut(world, d, g, b),
+                // 138's lift needs no disposal: with no goal to take the body on, the carrier keeps it (docs/game/ai-tasks.md "Perma-jobs").
+                TownDutyKind.CorpseLift => DisposeCarried(world, d, g, b) || End(world, d),
+                _ => Dispose(world, d, g, b),
+            };
         }
 
         if (gc.Carrying != d.Body) return End(world, d);
         if (d.Kind == TownDutyKind.Cage) return StepCage(world, d, g, b);
+        if (d.Kind == TownDutyKind.Corpse) return StepCorpse(world, d, g);
 
         bool walking = gn.Task == (byte)CharacterTask.GoTo;
         if (Vector2.Distance(Flat(gn.Position), d.Goal) <= Settings.Arrive)
@@ -1536,6 +1698,18 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (++d.Tries > Settings.Walks) return PutDown(world, d, g);
         TaskStart.Walk(world, g, d.Goal, SpeedMode.Free, RowOf(d.Kind), TaskSource.Goal);
         return true;
+    }
+
+    /// <summary>
+    /// Whether errand <paramref name="d"/> goes on with a body that has died: one carried out (224, 274), one lifted (the disposal goals are ranked
+    /// again, <see cref="Dispose"/>), or one on its way to a cage with 281 listed.
+    /// </summary>
+    bool KeepsDead(World world, TownDuty d, CharacterCold gc)
+    {
+        if (d.Kind is TownDutyKind.HomeLift or TownDutyKind.HomeOut or TownDutyKind.Out or TownDutyKind.CorpseLift or TownDutyKind.Corpse)
+            return true;
+
+        return gc.Carrying == d.Body && (d.Kind == TownDutyKind.Lift || d.Kind == TownDutyKind.Cage && ListsDeadCage(world, gc, d.Member));
     }
 
     /// <summary>
@@ -1557,16 +1731,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (gap <= Settings.Arrive || !walking && gap <= Settings.CageSlack)
         {
             TaskStart.Stand(table, g);
-            foreach (var item in (d.Kind == TownDutyKind.Ditch ? Production.ProductionSystem.Ditchable(inv) : LootOf(world, gc)).Where(i
-                    => machine is not null ? Production.ProductionSystem.Stores(machine, i) : Takes(box!, i)).ToList())
-            {
-                inv.Remove(item);
-                if (store.Add(item)) continue;
-                if (!inv.Add(item)) world.GroundItems.Drop(item, gn.Position, 0);
-                break;
-            }
-
-            if (machine is not null) world.Machines.Touch();
+            StashHere(world, d.Kind == TownDutyKind.Ditch, gc, inv, machine, box, store, gn.Position);
             return End(world, d);
         }
 
@@ -1583,6 +1748,46 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
 
         TaskStart.Walk(world, g, d.Goal, SpeedMode.Walk, RowOf(d.Kind), TaskSource.Goal);
         return true;
+    }
+
+    /// <summary>
+    /// Row 93 at a storage for an obedient player slave's errand (<see cref="StashHere"/>, the ditch's collection): the carried items the storage
+    /// <paramref name="storeId"/> takes go in. Serial phases only.
+    /// </summary>
+    internal void PutAway(World world, CharacterCold cold, string storeId, Vector3 at)
+    {
+        var machine = world.Machines.Find(storeId);
+        var box = machine is null ? world.Fixtures.Find(storeId) : null;
+        if ((machine?.Storage ?? box?.Contents) is { } store && cold.Inventory is { } inv) StashHere(world, true, cold, inv, machine, box, store, at);
+    }
+
+    /// <summary>
+    /// The storage the ditch finder (<see cref="DitchStore"/>'s search, <see cref="StoreFor"/>) finds for <paramref name="items"/> in the town at
+    /// <paramref name="at"/>: the nearest that takes one of them; null outside a town or with none. A read-only look.
+    /// </summary>
+    internal (string Id, Vector2 Spot)? StoreTaking(World world, Squad squad, CharacterCold cold, Vector3 at, IEnumerable<ItemInstance> items)
+    {
+        var town = AiSystem.TownAt(data, world, at);
+        return town.IsNone ? null : StoreFor(world, squad, cold, at, town, [.. items], register: false);
+    }
+
+    /// <summary>
+    /// The errand's member at its store puts the items in, whole stacks while there is room: for a ditch (<paramref name="ditch"/>) what the
+    /// ditch's collection lists, else its loot. What goes into a building shop's stock container is for sale: the shop's stock is what the home's
+    /// containers hold (docs/game/economy.md "Building shops"), and the ditch finder takes a shop's storages as any other.
+    /// </summary>
+    void StashHere(World world, bool ditch, CharacterCold gc, Inventory inv, Production.Machine? machine, Fixture? box, Inventory store, Vector3 at)
+    {
+        var carried = ditch ? Production.ProductionSystem.Ditchable(inv) : LootOf(world, gc);
+        foreach (var item in carried.Where(i => machine is not null ? Production.ProductionSystem.Stores(machine, i) : Takes(box!, i)).ToList())
+        {
+            inv.Remove(item);
+            if (store.Add(item)) continue;
+            if (!inv.Add(item)) world.GroundItems.Drop(item, at, 0);
+            break;
+        }
+
+        if (machine is not null) world.Machines.Touch();
     }
 
     /// <summary>
@@ -1640,38 +1845,10 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         TaskStart.Walk(world, g, cage.Position, SpeedMode.Free, RowOf(TownDutyKind.Cage), TaskSource.Goal);
 
     /// <summary>
-    /// What a member does with the body it has lifted: cages it (112 for a living body, 281 for any, while the carried-body desire
-    /// <see cref="CageDesire"/> is above 0 and a cage is free), else throws it out (274), else puts it down. Meitou tries the cage first whatever the
-    /// desires of 112/281 and 274 are (the desire of 274 is <b>Unknown</b>).
+    /// What a member does with the body it has lifted: the first of its disposal goals that starts (<see cref="DisposeCarried"/>: a cage, 112 / 281,
+    /// or the town's exit point, 274), else it puts the body down.
     /// </summary>
-    bool Dispose(World world, TownDuty d, int g, int b, bool cageable = true)
-    {
-        var table = world.Characters;
-        var gc = table.Cold(g)!;
-        ref var gn = ref table.Next[g];
-        var squad = world.Squads.Find(gc.SquadId);
-        int role = squad is null ? 0 : (int)AiSystem.RoleOf(squad, d.Member, gc);
-
-        // 112 needs !99 isCarriedDudeDead (a living body only); 281 has no such list, so it cages the living and the dead.
-        if (cageable && squad is not null
-                && (ListsDeadCage(world, gc, d.Member) || table.Cold(b)!.Medical is { Dead: false }
-                        && population.GoalDuty(world, squad, (AiRole)role, TaskType.FindCageAndPutIn))
-            && CageDesire(world, g, b) > 0 && Cage(world, gn.Position, d) is { } cage)
-        {
-            (d.Kind, d.Target, d.Goal, d.Tries) = (TownDutyKind.Cage, cage.Id, Flat(cage.Position), 0);
-            WalkToCage(world, g, cage);
-            return true;
-        }
-
-        if (squad is not null && population.GoalDuty(world, squad, (AiRole)role, TaskType.TakeIntruderOutsideTown))
-        {
-            (d.Kind, d.Goal, d.Tries) = (TownDutyKind.Out, Outside(world, d.Town), 0);
-            TaskStart.Walk(world, g, d.Goal, SpeedMode.Free, RowOf(d.Kind), TaskSource.Goal);
-            return true;
-        }
-
-        return PutDown(world, d, g);
-    }
+    bool Dispose(World world, TownDuty d, int g, int b, bool cageable = true) => DisposeCarried(world, d, g, b, cageable) || PutDown(world, d, g);
 
     /// <summary>
     /// After a 223 lift: with 224 listed (<c>Task_TakeIntruderOutside</c>) the body goes to the point past the home's first door
@@ -1718,6 +1895,142 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         }
 
         return false;
+    }
+
+    #endregion
+
+    #region Corpse disposal
+
+    /// <summary>
+    /// The disposals the finder offers, gathered once per look period.
+    /// </summary>
+    CorpseMachineCache? _disposals;
+
+    /// <summary>
+    /// The desire of 137 Corpse disposal (AI slot 43 <c>FUN_1406415a0</c>: 1.0, <c>DAT_14167c308</c>) times its finder's (<c>FUN_1408d1090</c>: 1.0
+    /// when <see cref="CorpseDisposal.Find"/> finds a disposal, else 0; <b>Verified</b>, the registration in <c>FUN_140319a60</c> disassembled).
+    /// </summary>
+    float DisposalDesire(World world, int g) => DisposalFor(world, g) is null ? 0 : 1;
+
+    /// <summary>
+    /// 138 Find corpses as a goal or as 137's provider (its list A 99 <c>isCarriedDudeDead</c>): a member whose role lists 138 (desire
+    /// <c>FUN_140599480</c>: 1.0, 0 on Hold or while carrying, <b>Verified</b>), or 137 with a disposal found, lifts the corpse
+    /// <see cref="CorpseDisposal.FindCorpse"/> finds. False when it lifts none.
+    /// </summary>
+    bool LiftsCorpse(World world, int slot, CharacterCold cold, bool dispose, bool find, CampaignTown town)
+    {
+        if (!dispose && !find || (cold.Orders & CharacterOrders.Hold) != 0) return false;
+        if (!find && DisposalFor(world, slot) is null) return false;
+
+        var at = world.Characters.Next[slot].Position;
+        var inReach = world.Fixtures.TownCandidates(world, data, cold, at);
+        float sight = AggroSystem.RangeOf(cold, Settings.Sight);
+        var body = CorpseDisposal.FindCorpse(world, slot, f => inReach(f.Position), sight, id => _reserved.Contains(id) || Refused(id));
+        return !body.IsNone && StartLift(world, slot, cold, body.Slot, town, TownDutyKind.CorpseLift);
+    }
+
+    /// <summary>
+    /// Whether a body was put down short of its goal and is left alone for now.
+    /// </summary>
+    bool Refused(CharacterId body)
+    {
+        foreach (var r in _refused)
+            if (r.Body == body) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The disposal the carrier in slot <paramref name="g"/> takes a body to (<see cref="CorpseDisposal.Find"/>), leaving out one it cannot get to
+    /// (its path-failure list, 20 s) and one whose operator places other errands hold (the squad blackboard's claims, <c>FUN_1402690e0</c>).
+    /// </summary>
+    CorpseMachine? DisposalFor(World world, int g, TownDuty? self = null)
+    {
+        var cold = world.Characters.Cold(g)!;
+        var at = world.Characters.Next[g].Position;
+        return CorpseDisposal.Find(world, data, Disposals(world), g, at,
+            m => cold.IsUnreachable(m.Id, world.Tick) || Operators(world, m, self) >= MaxOperators(world, m));
+    }
+
+    /// <summary>
+    /// The disposals there are (<see cref="CorpseMachineCache"/>).
+    /// </summary>
+    IReadOnlyList<CorpseMachine> Disposals(World world) => (_disposals ??= new CorpseMachineCache(Settings.LookEveryTicks)).Get(world, data);
+
+    /// <summary>
+    /// The errands other than <paramref name="self"/> taking a body to the disposal.
+    /// </summary>
+    int Operators(World world, CorpseMachine m, TownDuty? self)
+    {
+        int n = 0;
+        foreach (var d in _duties)
+            if (!ReferenceEquals(d, self) && d.Kind == TownDutyKind.Corpse && d.Target == m.Id) n++;
+        return n;
+    }
+
+    /// <summary>
+    /// The disposal's operator places (its BUILDING's <c>max operators</c>, 1 when unknown).
+    /// </summary>
+    static int MaxOperators(World world, CorpseMachine m) =>
+        world.SystemOf<Production.ProductionSystem>()?.Data(m.RecordId)?.MaxOperators ?? 1;
+
+    /// <summary>
+    /// 137 for the carried corpse of errand <paramref name="d"/>: the member walks it onto the disposal's floor; false with none found.
+    /// </summary>
+    bool DisposeOfCarried(World world, int g, TownDuty d)
+    {
+        if (DisposalFor(world, g, d) is not { } machine) return false;
+
+        (d.Kind, d.Target, d.Machine, d.Goal, d.Tries) = (TownDutyKind.Corpse, machine.Id, machine, Flat(machine.Position), 0);
+        WalkToDisposal(world, g, machine);
+        return true;
+    }
+
+    /// <summary>
+    /// The walk to a disposal, onto its floor (one in a lab's upper storey).
+    /// </summary>
+    static void WalkToDisposal(World world, int g, CorpseMachine machine) =>
+        TaskStart.Walk(world, g, machine.Position, SpeedMode.Free, RowOf(TownDutyKind.Corpse), TaskSource.Goal);
+
+    /// <summary>
+    /// One tick of 137's walk (136 at the machine, its list B <c>isAtLocation</c>): at the disposal the body is fed in
+    /// (<see cref="CorpseDisposal.Feed"/>); walks that keep ending short put the machine on the carrier's path-failure list for 20 s (the original's
+    /// ignore map, <c>FUN_1405b0290</c>) and the carrier keeps the body for the next look.
+    /// </summary>
+    bool StepCorpse(World world, TownDuty d, int g)
+    {
+        var table = world.Characters;
+        ref var gn = ref table.Next[g];
+        if (d.Machine is not { } machine) return End(world, d);
+
+        bool walking = gn.Task == (byte)CharacterTask.GoTo;
+        if (AtDisposal(gn.Position, machine.Position, walking))
+        {
+            TaskStart.Stand(table, g);
+            string label = world.SystemOf<Production.ProductionSystem>()?.Data(machine.RecordId)?.Label ?? "";
+            CorpseDisposal.Feed(world, carry, g, machine.Position, label);
+            return End(world, d);
+        }
+
+        if (walking) return true;
+        if (++d.Tries > Settings.Walks)
+        {
+            long until = world.Tick + (long)MathF.Ceiling(Construction.ConstructionSystem.UnreachableSeconds / world.TickSeconds);
+            table.Cold(g)!.NoteUnreachable(machine.Id, until);
+            return End(world, d);
+        }
+
+        WalkToDisposal(world, g, machine);
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a carrier at <paramref name="at"/> is at the disposal: within <see cref="TownDutySettings.Arrive"/> on the ground, or within
+    /// <see cref="TownDutySettings.CageSlack"/> once its walk has ended, on the machine's storey (<see cref="FixtureRegistry.WorkHeight"/>).
+    /// </summary>
+    bool AtDisposal(Vector3 at, Vector3 machine, bool walking)
+    {
+        float gap = Vector2.Distance(Flat(at), Flat(machine));
+        return (gap <= Settings.Arrive || !walking && gap <= Settings.CageSlack) && MathF.Abs(at.Y - machine.Y) < FixtureRegistry.WorkHeight;
     }
 
     #endregion
@@ -1769,12 +2082,6 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     bool ListsDeadCage(World world, CharacterCold carrier, CharacterId id) =>
         world.Squads.Find(carrier.SquadId) is { } s
                 && population.GoalDuty(world, s, AiSystem.RoleOf(s, id, carrier), TaskType.FindCageAndPutDeadguyIn);
-
-    /// <summary>
-    /// Whether the carrier's package lists 112 FIND_CAGE_AND_PUT_IN for its role (a living carried body).
-    /// </summary>
-    bool ListsCage(World world, CharacterCold carrier, CharacterId id) =>
-        world.Squads.Find(carrier.SquadId) is { } s && population.GoalDuty(world, s, AiSystem.RoleOf(s, id, carrier), TaskType.FindCageAndPutIn);
 
     /// <summary>
     /// The best free cage among the carrier's town candidates (<see cref="FixtureRegistry.CageCandidates"/>) by
@@ -1935,7 +2242,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         {
             TaskStart.Stand(table, g);
             if ((d.Next += world.TickSeconds) <= CarrySystem.ConfiscateSeconds) return true;
-            carry.Confiscate(gc, table.Cold(p)!);
+            carry.Confiscate(gc, table.Cold(p)!, world.BagSearchFix);
             return End(world, d);
         }
 

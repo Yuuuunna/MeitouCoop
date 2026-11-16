@@ -381,7 +381,8 @@ public sealed partial class PopulationSystem
             State = PlatoonState.Loaded,
         };
 
-        // The old squad's building shop (kept when it left the world, else a save's) leaves its artifacts in its containers for the fresh one's.
+        // The old squad's building shop (kept when it left the world, else a save's): its containers keep its goods for the fresh one, and an
+        // older save's stock read into its window goes to them.
         var oldShop = p.Stored?.Shop ?? (p.Saved is { } saved
             ? saved.Shop ?? Saving.ShopSave.Read(world,
                 new Squad { Id = -1, TemplateId = p.TemplateId, Faction = p.Faction, Town = p.Origin, HomeBuilding = home }, saved.Source.Record,
@@ -390,7 +391,7 @@ public sealed partial class PopulationSystem
         if (oldShop is not null)
         {
             world.Fixtures.RegisterSite(world, _data, p.Origin);   // the containers, if the town has not loaded them yet (once)
-            Trading.TradeSystem.GiveBack(world, oldShop);
+            Trading.TradeSystem.Settle(world, oldShop);
         }
 
         var squad = SpawnSquad(world, built with { Home = home }, site, radius, platoonId: fresh.Id, pinned: true);
@@ -460,10 +461,11 @@ public sealed partial class PopulationSystem
     {
         if (p.Saved is not { } sp || RollTemplate(world, p).Built is not { } built) return null;
 
-        var (centre, homeRadius) = WildHome(sp, p.Position);
+        var (centre, homeRadius, nest) = WildHome(sp, p.Position);
         var squad = SpawnSquad(world, built, null, 0, platoonId: p.Id, wild: true);
         squad.HomeCentre = centre;
         squad.HomeRadius = homeRadius;
+        BindNest(squad, nest);
         squad.Money = p.Money;
 
         p.Stored = new StoredSquad { Name = squad.Name, Pinned = false };

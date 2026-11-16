@@ -44,6 +44,11 @@ sealed class DialogueWindow(PlayerInterface player)
     string? _dialogueText;
 
     /// <summary>
+    /// The choices' rows and the player panel grown to hold them.
+    /// </summary>
+    readonly DialogueChoiceLayout _choices = new();
+
+    /// <summary>
     /// Opens the panel when a conversation opens, closes it when it ends, ends the conversation when the player closed the panel; runs a finished
     /// conversation's request.
     /// </summary>
@@ -110,7 +115,9 @@ sealed class DialogueWindow(PlayerInterface player)
         }
 
         // The choices are drawn as buttons, so the player box's template scroll bar would only be an empty track.
-        var playerBox = player.FaithfulScreens.Layout("dialogue").Find("PlayerDialog");
+        var layout = player.FaithfulScreens.Layout("dialogue");
+        _choices.Bind(b, layout, talk.Choices, player.UiPainter, player.Width, player.Height, player.StandardPixels);
+        var playerBox = layout.Find("PlayerDialog");
         foreach (var bar in playerBox?.Children.Where(w => w.Type == "ScrollBar") ?? [])
             b.HiddenWidgets.Add(bar);
         b.NativeScroll.Add("PlayerDialog");   // the choices are drawn against the box, not scrolled by its canvas
@@ -119,7 +126,7 @@ sealed class DialogueWindow(PlayerInterface player)
     }
 
     /// <summary>
-    /// The choices, one line each down the player panel's dialog area.
+    /// The choices, wrapped, down the player panel's dialog area.
     /// </summary>
     internal void AddDialogueChoices(List<UiControl> controls)
     {
@@ -128,14 +135,7 @@ sealed class DialogueWindow(PlayerInterface player)
             return;
         _displayedConversation = talk;
 
-        float line = MathF.Max(16, area.Bounds.Height / 7);
-        for (int i = 0; i < talk.Choices.Count; i++)
-        {
-            var bounds = new UiRect(area.Bounds.X, area.Bounds.Y + i * line, area.Bounds.Width, line);
-            controls.Add(new($"dialogue-choice-{i}", "Button", bounds, $"{i + 1}. {talk.Choices[i]}", $"dialogue-choice:{i}:{talk.SessionId}:{talk.ChoiceRevision}", "", true,
-                new Dictionary<string, string> { ["FontName"] = "Kenshi_StandardFont_Medium", ["TextAlign"] = "Left VCenter" }, Vector4.Zero,
-                TextColour: ChoiceColour, HoverColour: ChoiceHover, Pickable: true, Clip: area.Clip ?? area.Bounds));
-        }
+        _choices.AddChoices(controls, area, talk.Choices, ChoiceColour, ChoiceHover, talk.SessionId, talk.ChoiceRevision);
     }
 
     /// <summary>

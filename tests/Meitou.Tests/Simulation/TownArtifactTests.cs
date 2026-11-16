@@ -29,9 +29,10 @@ public class TownArtifactTests
     /// <summary>
     /// Testville (items worth up to 5000) with three books (100) and a core (1000), and two homes held by their level-data template: a vault, the
     /// shop of a trader squad of three whose template takes items up to 500, with two lockable chests; and a hut, whose template takes items up to
-    /// 5000 and whose interior the level data does not name. <paramref name="takes"/> false: neither template takes any.
+    /// 5000 and whose interior the level data does not name. <paramref name="takes"/> false: neither template takes any. <paramref name="squadless"/>:
+    /// the vault's template makes no squad and is no trader, so its vendor lists stock the chests when the town is made (the Lost Armoury's, #758).
     /// </summary>
-    static PopulationData Data(bool takes = true)
+    static PopulationData Data(bool takes = true, bool squadless = false)
     {
         var chest = SyntheticTown.Rec("chest-t", FcsRecordType.Building, "Chest");
         chest.Bools["has lock"] = true;
@@ -49,9 +50,13 @@ public class TownArtifactTests
         var vendor = SyntheticTown.Rec("vl-t", FcsRecordType.VendorList, "Junk vendor");
         vendor.References["items"] = [SyntheticTown.Ref("junk-t", 100)];
         var vault = SyntheticTown.Rec("vault-t", FcsRecordType.SquadTemplate, "Vault keeper");
-        vault.References["leader"] = [SyntheticTown.Ref("2-t", 1)];
-        vault.References["squad"] = [SyntheticTown.Ref("2-t", 2)];
-        vault.Bools["is trader"] = true;
+        if (!squadless)
+        {
+            vault.References["leader"] = [SyntheticTown.Ref("2-t", 1)];
+            vault.References["squad"] = [SyntheticTown.Ref("2-t", 2)];
+        }
+
+        vault.Bools["is trader"] = !squadless;
         vault.References["vendors"] = [SyntheticTown.Ref("vl-t", 100)];
         vault.Ints["vendors fill total amount"] = 2;
         vault.Ints["item artifacts base value"] = takes ? 500 : 0;
@@ -118,6 +123,17 @@ public class TownArtifactTests
     }
 
     [Fact]
+    public void A_home_whose_template_makes_no_squad_keeps_its_vendor_stock_beside_its_artifacts()
+    {
+        using var world = World(Data(squadless: true), StandardParts.Trade);
+        Visit(world, 2);
+
+        var items = Chests(world).SelectMany(c => c.Contents!.Items).ToList();
+        Assert.Equal(3, items.Where(i => i.Record == "book-t" && i.Unique).Sum(i => i.Quantity));
+        Assert.Contains(items, i => i.Record == "junk-t" && !i.Unique);
+    }
+
+    [Fact]
     public void A_town_with_no_home_that_takes_artifacts_keeps_its_list()
     {
         var data = Data(takes: false);
@@ -129,28 +145,28 @@ public class TownArtifactTests
     }
 
     [Fact]
-    public void A_building_shop_takes_the_artifacts_of_its_chests_into_its_stock_and_keeps_them_out_of_its_purse_when_it_restocks()
+    public void A_building_shop_keeps_the_artifacts_in_its_chests_and_out_of_its_purse_when_it_restocks()
     {
         var data = Data();
         using var world = World(data, StandardParts.Trade);
         Visit(world, 30);
         var squad = world.Squads.All.Single(s => s.TemplateId == "vault-t");
         var shop = squad.Shop!;
+        var items = Chests(world).SelectMany(c => c.Contents!.Items).ToList();
         Assert.Equal(VaultKey, shop.Building);
-        Assert.All(Chests(world), c => Assert.Empty(c.Contents!.Items));
-        Assert.Equal(3, shop.Stock.Items.Where(i => i.Unique).Sum(i => i.Quantity));
-        Assert.Contains(shop.Stock.Items, i => i.Record == "junk-t");
+        Assert.Equal(3, items.Where(i => i.Unique).Sum(i => i.Quantity));
+        Assert.Contains(items, i => i.Record == "junk-t");
 
         // An idol (100000), unique as an artifact is, would raise the purse to 25000 if a fill counted it.
         var idol = data.Items.Create("idol-t")!;
         idol.Unique = true;
-        Assert.True(shop.Stock.Add(idol));
-        var artifacts = shop.Stock.Items.Where(i => i.Unique).ToList();
+        Assert.True(Chests(world)[0].Contents!.Add(idol));
+        var artifacts = Chests(world).SelectMany(c => c.Contents!.Items).Where(i => i.Unique).ToList();
         int fills = shop.Fills;
         shop.NextRestockTick = world.Tick;
         world.RunTicks(30);
         Assert.True(shop.Fills > fills);
-        Assert.Equal(artifacts, shop.Stock.Items.Where(i => i.Unique));
+        Assert.Equal(artifacts, Chests(world).SelectMany(c => c.Contents!.Items).Where(i => i.Unique));
         Assert.Equal(3000, squad.Money);   // 0.25 x two junk units, at least 3000
     }
 
@@ -193,13 +209,13 @@ public class TownArtifactTests
     }
 
     [Fact]
-    public void A_shop_squad_made_afresh_takes_the_artifacts_its_old_one_held()
+    public void A_shop_squad_made_afresh_finds_the_artifacts_its_old_one_left_in_the_chests()
     {
         var data = Data();
         using var world = World(data, StandardParts.Trade);
         Visit(world, 30);
         var old = world.Squads.All.Single(s => s.TemplateId == "vault-t");
-        Assert.Equal(3, old.Shop!.Stock.Items.Where(i => i.Unique).Sum(i => i.Quantity));
+        Assert.NotNull(old.Shop);
         // Two of its three die (at least 60 %), the leader keeps the shop open; the town unloads with the shop stored and is made afresh at the next
         // visit.
         foreach (var m in old.Members.Where(m => m != old.Leader)) world.Characters.Cold(m.Slot)!.DiedTick = world.Tick;
@@ -209,8 +225,8 @@ public class TownArtifactTests
 
         var fresh = world.Squads.All.Single(s => s.TemplateId == "vault-t");
         Assert.NotEqual(old.Id, fresh.Id);
-        Assert.Equal(3, fresh.Shop!.Stock.Items.Where(i => i.Unique && i.Record == "book-t").Sum(i => i.Quantity));
-        Assert.All(Chests(world), c => Assert.Empty(c.Contents!.Items));
+        Assert.NotNull(fresh.Shop);
+        Assert.Equal(3, Chests(world).SelectMany(c => c.Contents!.Items).Where(i => i.Unique && i.Record == "book-t").Sum(i => i.Quantity));
     }
 
     [Fact]

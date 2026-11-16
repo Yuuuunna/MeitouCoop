@@ -257,10 +257,20 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
     /// </summary>
     public IReadOnlyList<Vector3> Tables { get; init; } = [];
     /// <summary>
+    /// Its interior layout's corpse disposals (function 11: a cannibal lab's cooking pits, a lab's skeleton shredders), in layout order: the machines
+    /// of goal 137's finder (docs/game/ai-tasks.md "Perma-jobs").
+    /// </summary>
+    public IReadOnlyList<TownDisposal> Disposals { get; init; } = [];
+    /// <summary>
     /// Its interior layout's selectable furniture and operable machines, in layout order: what no bed, seat, cage or container pick takes, plus
     /// workbenches whose fixture provides an inventory. Nodes are left out; a left click uses each piece's collision.
     /// </summary>
     public IReadOnlyList<TownPiece> Pieces { get; init; } = [];
+    /// <summary>
+    /// Every object its interior and exterior layouts place, picked or not: each is a building of its own that completes with it and joins the power
+    /// frame of the town it stands in (docs/game/buildings-production.md "Power"). None for a ruin's interior.
+    /// </summary>
+    public IReadOnlyList<TownLayoutBuilding> LayoutBuildings { get; init; } = [];
     /// <summary>
     /// Its own record's BUILDING_FUNCTIONALITY <c>function</c> (-1: none); a placed table is an outdoor table to sit at.
     /// </summary>
@@ -331,6 +341,25 @@ public sealed record TownItemSlot(string Id, string GroupId, Vector3 Position, Q
 /// while the building shows its outside (<see cref="LayoutItem.Outside"/>).
 /// </summary>
 public sealed record TownPiece(string Id, string RecordId, Vector3 Position, Quaternion Rotation, int Floor, bool Outside);
+
+/// <summary>
+/// A corpse disposal of a building's interior layout (<see cref="TownBuilding.Disposals"/>): <paramref name="Id"/> is the parent's
+/// <see cref="BuildingKey"/>, "/" and the item's index in the layout (as a <see cref="TownPiece"/>'s), <paramref name="RecordId"/> its BUILDING.
+/// </summary>
+public sealed record TownDisposal(string Id, string RecordId, Vector3 Position);
+
+/// <summary>
+/// An object a building's interior or exterior layout places (<see cref="TownBuilding.LayoutBuildings"/>): an interior's <paramref name="Id"/> is a
+/// <see cref="TownPiece"/>'s, an exterior's the parent's <see cref="BuildingKey"/>, "/exterior/" and its index; <paramref name="Outdoors"/> for an
+/// exterior's.
+/// </summary>
+public sealed record TownLayoutBuilding(string Id, string RecordId, bool Outdoors);
+
+/// <summary>
+/// A level building no town takes that draws power (<see cref="TownBuildings.Townless"/>): its <see cref="BuildingPlacement.Key"/>, BUILDING, position,
+/// whether the level data has it destroyed, its zone and its level-data state (null: none).
+/// </summary>
+public sealed record TownlessBuilding(string Key, string RecordId, Vector3 Position, bool Destroyed, ZoneCoordinate Zone, GameRecord? LevelState);
 
 /// <summary>
 /// The buildings of each placed town, for the AI's homes, beds and nodes (docs/simulation.md "AI", Homes). A placed building belongs to a town as the
@@ -417,6 +446,20 @@ public static class TownBuildings
     }
 
     /// <summary>
+    /// The level buildings that draw power and that no town takes (docs/formats/zones.md "Town membership"), in placement order: each draws on the
+    /// power frame of the nearest town (docs/game/buildings-production.md "Power").
+    /// </summary>
+    public static List<TownlessBuilding> Townless(GameDatabase db, WorldLevelData levels, Func<double, double, float> terrainHeight)
+    {
+        var builder = new TownBuildingBuilder(db, levels, null, terrainHeight, contents: false);
+        var result = new List<TownlessBuilding>();
+        foreach (var b in levels.Buildings())
+            if (builder.Townless(b) is { } townless) result.Add(townless);
+
+        return result;
+    }
+
+    /// <summary>
     /// <paramref name="b"/> laid out with other layout names (docs/game/factions-squads-towns.md "Town residents", Layouts): a town override's or a
     /// loaded save's residents name them as the level data's do not. Its contents come from them, and the names ride on its placement
     /// (<see cref="BuildingPlacement.InteriorLayout"/>) so every reader lays it out alike. A building without a level state or placement stays as
@@ -439,7 +482,9 @@ public static class TownBuildings
             Fixtures = c.Fixtures,
             ItemSlots = c.ItemSlots,
             Tables = c.Tables,
+            Disposals = c.Disposals,
             Pieces = c.Pieces,
+            LayoutBuildings = c.LayoutBuildings,
             Furniture = c.Furniture,
             Furnished = c.Furnished,
             InteriorLayout = interior,

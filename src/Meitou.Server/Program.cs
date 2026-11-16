@@ -72,6 +72,7 @@ static class Program
             Console.WriteLine("Meitou experimental server: computing local compatibility manifest.");
             if (config.ModsCfg is not null)
                 ModList.UseModsCfg(config.ModsCfg);
+            config = config.AdoptBuiltIns(install, configFile);
             var rules = ServerCompatibility.WithCodeSettings(config.Rules(), install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
             var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
             var accounts = new TokenAccountStore(Path.Combine(config.DataDirectory, "accounts.json"));

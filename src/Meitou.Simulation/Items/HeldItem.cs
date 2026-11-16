@@ -64,6 +64,10 @@ public sealed class HeldItem
     /// </summary>
     public Inventory? Grid { get; init; }
     /// <summary>
+    /// The authority's original shop survives a stock projection rebuild, so closing the window can return the item to current physical stock.
+    /// </summary>
+    public Trading.Shop? SourceShop { get; init; }
+    /// <summary>
     /// The section it was in.
     /// </summary>
     public required string Section { get; init; }

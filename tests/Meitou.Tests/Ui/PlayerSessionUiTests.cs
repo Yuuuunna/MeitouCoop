@@ -104,7 +104,7 @@ public class PlayerSessionUiTests
     public void UnknownHostileDialogueDoesNotBecomeAnAttackAndANewerOrderCancelsTheDeferredClick()
     {
         var own = new CharacterSnapshot(new(1, 1), null, Vector3.Zero, 0, []) { IsPlayer = true, Faction = 17 };
-        var target = new CharacterSnapshot(new(2, 1), null, new(10, 0, 0), 0, []) { Faction = 18, WarParty = true, HostileToPlayer = true };
+        var target = new CharacterSnapshot(new(2, 1), null, new(10, 0, 0), 0, []) { Faction = 18, IsDiplomat = true, HostileToPlayer = true };
         var session = new RemotePresentation { CurrentSnapshot = new(1, [own, target]), TalkPending = true };
         var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position);
         ui.QuickOrderFor(target, [own.Id])!.Value.Do!();

@@ -129,12 +129,25 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
     /// original reads slot 0x390 each time). The drawn size follows only in steps: once the age has moved more than 0.05 past
     /// <see cref="CharacterCold.ShownAge"/> it is noted, and below 0.95 the look is refreshed to it.
     /// </summary>
-    static void Age(CharacterCold cold, AnimalData animal, CharacterStats stats, MedicalState medical, float dt)
+    static void Age(CharacterCold cold, AnimalData animal, CharacterStats stats, float dt)
     {
         if (stats.Scale >= AnimalData.GrowUntil || animal.AgePerSecond <= 0) return;
-        stats.Scale += dt * animal.AgePerSecond;
-        medical.SetAnimalBody(animal.Scale(stats.Scale), animal.HpMult);
-        if (stats.Scale - cold.ShownAge > AnimalData.ResizeStep && stats.Scale < AnimalData.ResizeBelow) cold.ShownAge = stats.Scale;
+        SetAnimalAge(cold, stats.Scale + dt * animal.AgePerSecond);
+    }
+
+    /// <summary>
+    /// Updates an animal's live age, stat multiplier and medical size through the growth path. An explicit debug edit also refreshes the drawn
+    /// size immediately, in either direction; natural growth keeps its stepped refresh below 0.95. No wounds, blood or base skills are changed.
+    /// Returns false for an incomplete animal body or an invalid age.
+    /// </summary>
+    public static bool SetAnimalAge(CharacterCold cold, float age, bool refreshLook = false)
+    {
+        if (!float.IsFinite(age) || age < 0 || cold is not { Animal: { } animal, Stats: { } stats, Medical: { } medical }) return false;
+
+        stats.Scale = age;
+        medical.SetAnimalBody(animal.Scale(age), animal.HpMult);
+        if (refreshLook || age - cold.ShownAge > AnimalData.ResizeStep && age < AnimalData.ResizeBelow) cold.ShownAge = age;
+        return true;
     }
 
     /// <summary>
@@ -267,9 +280,11 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
         ref var n = ref table.Next[i];
         if (medical.Dead && cold.DiedTick < 0) cold.DiedTick = world.Tick;   // also when something outside the tick killed it (a hit)
         StopIncapacitated(table, i, cold, medical, ref n);
+        SheatheRagdolled(cold);
         if (medical.Dead) return;
+        stats.XpRate = AggroSystem.PlayerSide(world, cold) ? Options.SquadXp : Options.OthersXp;
         if (!TryStartStep(world, i, cold, medical, out float dt)) return;
-        if (cold.Animal is { } animal) Age(cold, animal, stats, medical, dt);
+        if (cold.Animal is { } animal) Age(cold, animal, stats, dt);
 
         // The light level the stat multiplier's light term reads (the original's Character +0xd8, kept by the senses).
         medical.Light = world.Sight.Light(i);
@@ -306,6 +321,15 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
                 n.Velocity = Vector3.Zero;
             }
         }
+    }
+
+    /// <summary>
+    /// A character that goes limp or is carried (the whole-body or carry ragdoll) puts its weapon away, as the original's ragdoll setter does
+    /// (docs/game/ragdolls.md "Triggers", slot 90).
+    /// </summary>
+    static void SheatheRagdolled(CharacterCold cold)
+    {
+        if (cold.DrawnWeapon != WeaponKinds.None && Ragdolls.RagdollSystem.IsRagdoll(cold)) cold.DrawnWeapon = WeaponKinds.None;
     }
 
     /// <summary>
@@ -461,6 +485,9 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
 
         // An NPC worker at its town building (AiBehaviour.Work, at its work clip), which the original works through Task_OperateMachine.
         if (cold.Ai is { WorkActive: true, WorkClip: { } clip } worker && cold.ActionClip == clip) return worker.WorkHungerRate;
+
+        // An obedient player slave at its workplace (its job's 189 / 190, Task_OperateMachine in the original).
+        if (cold.SlaveWork is { } slave && cold.ActionClip == slave.Place.Clip) return slave.Place.HungerRate;
         return null;
     }
 
@@ -644,11 +671,13 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
     /// an escaped slave); the player's faction none (-10); anyone else its squad's level, 3, or 1 + 1.2 x a random number once per squad for a
     /// SQUAD_TEMPLATE with <c>malnourished</c> (the platoon constructor <c>FUN_1407ee2d0</c>). Without a database (tests) only slaves and prisoners
     /// are fed. The original's first case, an animal 3, applies only with the gameplay option <c>animalsEat</c> off; it is on in every game (default
-    /// 1, no UI binding, never saved), so animals take the cases above like anyone else: the player's animals get hungry.
+    /// 1, no UI binding, never saved), so animals take the cases above like anyone else: the player's animals get hungry. A code mod's level
+    /// (<see cref="CharacterCold.FedTo"/>, engine API) comes before them all.
     /// </summary>
     internal float HungerFloor(World world, CharacterCold cold, MedicalState medical)
     {
         const float none = MedicalContext.NoHungerFloor;
+        if (cold.FedTo is { } fed && float.IsFinite(fed)) return Math.Min(fed, MedicalState.MaxHunger);   // a code mod's floor (engine API)
         if (cold.SlaveState == 1) return 1;
         if (cold.IsImprisoned)
         {

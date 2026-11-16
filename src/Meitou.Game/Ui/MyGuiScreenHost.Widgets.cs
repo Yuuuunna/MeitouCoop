@@ -94,6 +94,11 @@ public sealed partial class MyGuiScreenHost
         /// Whether the player dragged the window (it may then leave the screen, <see cref="KeepVisible"/>); a placement by the host clears it.
         /// </summary>
         public bool Dragged;
+
+        /// <summary>
+        /// The host's fixed top-left for the window before the offset (<see cref="UiBindings.WindowPosition"/>); null: centred.
+        /// </summary>
+        public Vector2? FixedOrigin;
     }
 
     /// <summary>
@@ -140,9 +145,14 @@ public sealed partial class MyGuiScreenHost
     WindowGrab? _windowGrab;
 
     /// <summary>
-    /// The combo box whose list is open; null for none.
+    /// The combo box whose list is open; null for none. Set through <see cref="OpenCombo"/> and <see cref="CloseOpenCombo"/>.
     /// </summary>
     (string Screen, string Combo)? _openCombo;
+
+    /// <summary>
+    /// The fades of the <c>SmoothShow</c> combo boxes' lists.
+    /// </summary>
+    readonly ComboListFade _comboFades = new();
 
     /// <summary>
     /// The list or combo box that has the keyboard (the last one clicked): its screen and selection key.
@@ -206,7 +216,7 @@ public sealed partial class MyGuiScreenHost
     void PushWidgetState(string id, Screen s, UiBindings b)
     {
         foreach (var t in s.Sorts) b.Sorts[t.Key] = t.Value;
-        if (_openCombo is { } popup && popup.Screen == id) b.OpenCombo = popup.Combo;
+        foreach (var (combo, alpha, enabled) in _comboFades.Shown(id, _openCombo)) b.OpenCombos[combo] = (alpha, enabled);
         if (_grab is { } g && g.Screen == id) b.States[g.Control] = "pushed";
 
         _lastBindings[id] = b;
@@ -221,6 +231,7 @@ public sealed partial class MyGuiScreenHost
         if (_legacy?.Screen == id) _legacy = null;
         if (_windowGrab?.Screen == id) _windowGrab = null;
         if (_openCombo?.Screen == id) _openCombo = null;
+        _comboFades.Forget(id);
         if (_keyFocus?.Screen == id) _keyFocus = null;
 
         _lastBindings.Remove(id);
@@ -268,7 +279,7 @@ public sealed partial class MyGuiScreenHost
         {
             Blur();
             _legacy = new(id, c.Name, c.Action, c.Argument, c.Bounds);
-            Slide(p);
+            Slide(p, press: true);
             return true;
         }
 
@@ -284,21 +295,21 @@ public sealed partial class MyGuiScreenHost
             && (c is null || !(c.Name.StartsWith(popup.Combo + "@List#", StringComparison.Ordinal)
                 || c.Action.StartsWith($"mygui:combo:{popup.Combo}:", StringComparison.Ordinal))))
         {
-            _openCombo = null;
+            CloseOpenCombo();
         }
 
         if (c is null) _keyFocus = null;
     }
 
     /// <summary>
-    /// Raises the legacy slider's action with the pointer's share of its track.
+    /// Raises the legacy slider's action with the pointer's share of its track; <paramref name="press"/> for the button going down on it.
     /// </summary>
-    void Slide(Vector2 p)
+    void Slide(Vector2 p, bool press = false)
     {
         if (_legacy is not { } s) return;
 
         float t = s.Track.Width > 0 ? Math.Clamp((p.X - s.Track.X) / s.Track.Width, 0, 1) : 0;
-        Activated?.Invoke(new(s.Screen, s.Widget, s.Action, s.Argument, t));
+        Activated?.Invoke(new(s.Screen, s.Widget, s.Action, s.Argument, t, press));
     }
 
     /// <summary>
@@ -526,11 +537,13 @@ public sealed partial class MyGuiScreenHost
 
         if (what == "toggle")
         {
-            _openCombo = _openCombo == (id, combo) ? null : (id, combo);
+            if (_openCombo == (id, combo)) CloseOpenCombo();
+            else OpenCombo(id, combo);
+
             return;
         }
 
-        _openCombo = null;
+        CloseOpenCombo();
         SelectItem(id, combo, int.Parse(what, CultureInfo.InvariantCulture));
     }
 
@@ -541,9 +554,41 @@ public sealed partial class MyGuiScreenHost
     {
         if (_openCombo is null) return false;
 
-        _openCombo = null;
+        CloseOpenCombo();
         return true;
     }
+
+    /// <summary>
+    /// Opens the list of combo box <paramref name="combo"/> (MyGUI <c>showList</c>; another open list closes), fading it in when the combo box has
+    /// <c>SmoothShow</c>; an empty list is not shown.
+    /// </summary>
+    void OpenCombo(string id, string combo)
+    {
+        CloseOpenCombo();
+        if (_lastBindings.TryGetValue(id, out var b) && b.Lists.GetValueOrDefault(combo) is not { Count: > 0 }) return;
+
+        _openCombo = (id, combo);
+        if (SmoothShow(id, combo)) _comboFades.Show((id, combo));
+    }
+
+    /// <summary>
+    /// Closes the open combo box list (MyGUI <c>hideList</c>), fading it out when the combo box has <c>SmoothShow</c>.
+    /// </summary>
+    void CloseOpenCombo()
+    {
+        if (_openCombo is not { } open) return;
+
+        _openCombo = null;
+        if (SmoothShow(open.Screen, open.Combo)) _comboFades.Hide(open);
+    }
+
+    /// <summary>
+    /// Whether combo box <paramref name="combo"/> of screen <paramref name="id"/> has <c>SmoothShow</c> (<c>Kenshi_ComboBox</c> sets it; MyGUI
+    /// reads the bool as <c>true</c> or <c>1</c>).
+    /// </summary>
+    bool SmoothShow(string id, string combo) =>
+        Controls(id)?.LastOrDefault(c => c.Properties.GetValueOrDefault("ListKey") == combo && c.Properties.ContainsKey("ComboCount")) is { } owner
+        && owner.Properties.GetValueOrDefault("SmoothShow") is "true" or "1";
 
     /// <summary>
     /// A key for the focused list or combo box (the keyboard routing calls this before its own handling; true: used). Verified against MyGUI 3.2.2
@@ -571,7 +616,7 @@ public sealed partial class MyGuiScreenHost
         {
             if (key == UiListKey.Down)
             {
-                _openCombo = f;
+                OpenCombo(f.Screen, f.Key);
                 return true;
             }
 
@@ -595,7 +640,7 @@ public sealed partial class MyGuiScreenHost
                 if (old < 0) return false;
 
                 Activated?.Invoke(new(f.Screen, f.Key, "accept", items[source].Id, source));
-                if (combo) _openCombo = null;
+                if (combo) CloseOpenCombo();
 
                 return true;
             case UiListKey.Up: if (sel != 0) sel = sel < 0 ? 0 : sel - 1; break;
@@ -648,6 +693,7 @@ public sealed partial class MyGuiScreenHost
         }
 
         if (s.FirstViewport == default) s.FirstViewport = viewport;
+        s.FixedOrigin = b.WindowPosition;
 
         bool first = true;
 
@@ -657,21 +703,17 @@ public sealed partial class MyGuiScreenHost
             var initial = b.Positions.GetValueOrDefault(root.Name, root.Position.RelativeTo(new(0, 0, width, height), root.RealPosition));
             float w = initial.Width * (bound ? 1 : WindowScale), h = initial.Height * (bound ? 1 : WindowScale);
 
-            if (!bound && s.Size is { } size) (w, h) = (size.X, size.Y);
-            else if (!bound && !root.RealPosition)
+            if (!bound && !root.RealPosition)
             {
                 if (root.Align.Contains("Stretch") && !root.Align.Contains("VStretch")) w += width - s.FirstViewport.X;
                 if (root.Align.Contains("Stretch") && !root.Align.Contains("HStretch")) h += height - s.FirstViewport.Y;
             }
 
-            var (min, max) = SizeLimits(root);
-            w = Math.Max(min.X, Math.Min(w, max.X));
-            h = Math.Max(min.Y, Math.Min(h, max.Y));
-            if (b.FitWindowToViewport)
-            {
-                w = Math.Clamp(w, 0, Math.Max(0, width - 24));
-                h = Math.Clamp(h, 0, Math.Max(0, height - 24));
-            }
+            var made = WindowLimits(root, b, new(w, h), width, height);
+            var sized = !bound && s.Size is { } size ? WindowLimits(root, b, size, width, height) : made;
+            (w, h) = (sized.X, sized.Y);
+            // A resize grip sizes the window after it was made (MyGUI's setCoord): its children align from the size it was made at.
+            if (sized != made) b.MadeSizes[root.Name] = (made.X, made.Y);
             var position = (b.WindowPosition ?? new Vector2((width - w) / 2, (height - h) / 2)) + s.Offset;
             var (x, y) = b.FitWindowToViewport || s.Dragged
                 ? OnScreen(s, viewport, new(w, h), position.X, position.Y)
@@ -688,6 +730,19 @@ public sealed partial class MyGuiScreenHost
         }
 
         s.Viewport = viewport;
+    }
+
+    /// <summary>
+    /// A window size within the root's <c>MinSize</c> / <c>MaxSize</c> and, when the bindings fit windows to the viewport, within the viewport less
+    /// 24 pixels.
+    /// </summary>
+    static Vector2 WindowLimits(MyGuiWidget root, UiBindings b, Vector2 size, int width, int height)
+    {
+        var (min, max) = SizeLimits(root);
+        float w = Math.Max(min.X, Math.Min(size.X, max.X)), h = Math.Max(min.Y, Math.Min(size.Y, max.Y));
+        if (!b.FitWindowToViewport) return new(w, h);
+
+        return new(Math.Clamp(w, 0, Math.Max(0, width - 24)), Math.Clamp(h, 0, Math.Max(0, height - 24)));
     }
 
     /// <summary>
@@ -753,7 +808,8 @@ public sealed partial class MyGuiScreenHost
 
         var vp = s.Viewport;
         var size = s.PlacedSize;
-        float x = (vp.X - size.X) / 2 + want.X, y = (vp.Y - size.Y) / 2 + want.Y;
+        var origin = Origin(s, vp, size);
+        float x = origin.X + want.X, y = origin.Y + want.Y;
 
         if (s.Snap)
         {
@@ -765,8 +821,13 @@ public sealed partial class MyGuiScreenHost
 
         s.Dragged = true;
         (x, y) = OnScreen(s, vp, size, x, y);
-        s.Offset = new(x - (vp.X - size.X) / 2, y - (vp.Y - size.Y) / 2);
+        s.Offset = new Vector2(x, y) - origin;
     }
+
+    /// <summary>
+    /// The window's top-left before the screen's offset: the host's fixed position, else centred in the viewport.
+    /// </summary>
+    static Vector2 Origin(Screen s, Vector2 vp, Vector2 size) => s.FixedOrigin ?? (vp - size) / 2;
 
     /// <summary>
     /// A press on a grip: a widget with the user string <c>Scale</c> (four multipliers of the pointer's travel for left, top, width, height) or
@@ -827,6 +888,6 @@ public sealed partial class MyGuiScreenHost
 
         var vp = s.Viewport;
         s.Size = new(w, h);
-        s.Offset = new(x - (vp.X - w) / 2, y - (vp.Y - h) / 2);
+        s.Offset = new Vector2(x, y) - Origin(s, vp, new(w, h));
     }
 }

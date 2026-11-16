@@ -15,11 +15,13 @@ public sealed partial class PopulationSystem
     /// <summary>
     /// Takes the squad's characters out of the world into <paramref name="stored"/> (serial phase): each living member's cold state, cleared of what
     /// referred to the world, with its place; the dead are kept too, apart (<see cref="StoredSquad.Dead"/>), and their bodies leave the world with
-    /// the others. Returns where the leader (else the first member) stood.
+    /// the others. A carry a member is in is let go, its link kept for when both are back (<see cref="Carrying.CarrySystem.DropForUnload"/>).
+    /// Returns where the leader (else the first member) stood.
     /// </summary>
     static Vector2 Store(World world, Squad squad, StoredSquad stored)
     {
         var table = world.Characters;
+        var carry = world.SystemOf<Carrying.CarrySystem>();
         var at = new Vector2(squad.Position.X, squad.Position.Z);
         bool placed = false;
         stored.Members.Clear();
@@ -30,6 +32,9 @@ public sealed partial class PopulationSystem
 
             var hot = table.Previous[slot];
             bool dead = cold.DiedTick >= 0 || cold.Medical is { Dead: true };
+
+            // Its carry is let go and the link kept (FUN_1404ff410 writes it, then FUN_1404feed0's destroy unlinks).
+            if (hot.Alive) carry?.DropForUnload(world, slot);
             if (!dead && hot.Alive)
             {
                 Detach(cold);
@@ -137,11 +142,13 @@ public sealed partial class PopulationSystem
     /// </summary>
     Squad? SpawnStoredWithoutTown(World world, Platoon platoon, StoredSquad stored)
     {
-        var (centre, radius) = platoon.Saved is { Wild: not null } saved
+        var (centre, radius, nest) = platoon.Saved is { Wild: not null } saved
             ? WildHome(saved, platoon.Position)
-            : (platoon.Position, _settings.HomelessHomeRadius);
-        return SpawnKept(world, stored, platoon.TemplateId, platoon.Faction, -1, platoon.Id, platoon.Position, centre, radius, platoon.Size,
+            : (platoon.Position, _settings.HomelessHomeRadius, null);
+        var squad = SpawnKept(world, stored, platoon.TemplateId, platoon.Faction, -1, platoon.Id, platoon.Position, centre, radius, platoon.Size,
             wild: platoon.Wild);
+        BindNest(squad, nest);
+        return squad;
     }
 
     /// <summary>

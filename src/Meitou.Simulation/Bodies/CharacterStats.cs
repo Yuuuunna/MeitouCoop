@@ -15,6 +15,11 @@ public sealed class CharacterStats
     public const float XpCap = 101;
 
     /// <summary>
+    /// The largest amount the core gain adds (<see cref="CoreGain"/>).
+    /// </summary>
+    const float MaxCoreGain = 20;
+
+    /// <summary>
     /// The stored values by stat number. Indexed by stat number; numbers 14, 15 (shared with Medic), 20 and 33 (no storage) stay unused.
     /// </summary>
     readonly float[] _values = new float[StatsInfo.Count];
@@ -28,6 +33,12 @@ public sealed class CharacterStats
     /// The levels in code mods' skills, made on first use (<see cref="ModSkills"/>).
     /// </summary>
     ModSkillLevels? _modSkills;
+
+    /// <summary>
+    /// What this character's XP gains are multiplied by (Advanced settings "Squad XP" and "Others' XP", <see cref="BodyOptions.SquadXp"/>; Meitou
+    /// only, the game has 1). <see cref="BodySystem"/> sets it on every body step from the character's side; not saved.
+    /// </summary>
+    public float XpRate { get; set; } = 1;
 
     /// <summary>
     /// Stats that read as 1 for a character built without data (the editor's default of a STATS field).
@@ -109,30 +120,30 @@ public sealed class CharacterStats
     public float Athletics => Value(StatsEnumerated.Athletics);
 
     /// <summary>
-    /// The values a character had before the debug god mode raised them (null while not boosted); the save writes these, so boosted stats never reach
-    /// a save.
+    /// The values a character had before the debug "Set stats to 1000" raised them (null while not boosted); the save writes these, so boosted stats
+    /// never reach a save.
     /// </summary>
-    float[]? _godOriginal;
+    float[]? _boostOriginal;
 
     /// <summary>
-    /// Whether the debug god mode (<see cref="Boost"/>) holds this character's stats raised.
+    /// Whether the debug stat boost (<see cref="Boost"/>) holds this character's stats raised.
     /// </summary>
-    public bool Boosted => _godOriginal is not null;
+    public bool Boosted => _boostOriginal is not null;
 
     /// <summary>
     /// The values <see cref="Unboost"/> restores, or null while not boosted (state hash only).
     /// </summary>
-    internal float[]? GodOriginal => _godOriginal;
+    internal float[]? BoostOriginal => _boostOriginal;
 
     /// <summary>
-    /// Debug god mode (Meitou only): keeps the current values for <see cref="Unboost"/> and sets every stat that has storage to
+    /// The debug stat boost (Meitou only): keeps the current values for <see cref="Unboost"/> and sets every stat that has storage to
     /// <paramref name="value"/>. Does nothing while already boosted, so the first values stay the ones that come back. Training while boosted changes
     /// nothing visible (the XP curve gives a stat this high no gain) and anything it adds is dropped by <see cref="Unboost"/>.
     /// </summary>
     public void Boost(float value)
     {
-        if (_godOriginal is not null) return;
-        _godOriginal = (float[])_values.Clone();
+        if (_boostOriginal is not null) return;
+        _boostOriginal = (float[])_values.Clone();
         for (int i = 1; i < StatsInfo.Count; i++)
             if (StatsInfo.StorageOf((StatsEnumerated)i) == (StatsEnumerated)i) _values[i] = value;
     }
@@ -142,9 +153,9 @@ public sealed class CharacterStats
     /// </summary>
     public void Unboost()
     {
-        if (_godOriginal is null) return;
-        Array.Copy(_godOriginal, _values, _values.Length);
-        _godOriginal = null;
+        if (_boostOriginal is null) return;
+        Array.Copy(_boostOriginal, _values, _values.Length);
+        _boostOriginal = null;
     }
 
     /// <summary>
@@ -174,7 +185,7 @@ public sealed class CharacterStats
         if (float.IsNaN(stat)) return 20;
         float f = (cap - stat) / cap;
         f *= f;
-        if (!(amount > 0 && amount <= 20 && f > 0 && f <= 20)) return stat;
+        if (!(amount > 0 && amount <= MaxCoreGain && f > 0 && f <= 20)) return stat;
         float result = stat + amount * f;
         return float.IsNaN(result) ? stat : result;
     }
@@ -189,7 +200,20 @@ public sealed class CharacterStats
         var s = StatsInfo.StorageOf(stat);
         if (s == StatsEnumerated.None) return 0;
         if (float.IsNaN(_values[(int)s])) return _values[(int)s];
-        return _values[(int)s] = CoreGain(_values[(int)s], amount, cap);
+        return _values[(int)s] = CoreGain(_values[(int)s], Rated(_values[(int)s], amount, cap), cap);
+    }
+
+    /// <summary>
+    /// A gain times <see cref="XpRate"/>, held to the core's limit of 20 so a multiplied gain is never dropped. An amount the core ignores stays as it
+    /// is, and a stat at or past the gain's cap (a training dummy's level) takes no raise, so a dummy's limit stands.
+    /// </summary>
+    internal float Rated(float stat, float amount, float cap)
+    {
+        float rate = XpRate;
+        if (rate == 1 || !(amount > 0 && amount <= MaxCoreGain)) return amount;
+        if (rate > 1 && stat >= cap) return amount;
+
+        return MathF.Min(amount * rate, MaxCoreGain);
     }
 
     /// <summary>
@@ -273,7 +297,7 @@ public sealed class CharacterStats
     /// </summary>
     public void WriteSave(IDictionary<string, float> floats)
     {
-        var written = _godOriginal ?? _values;   // a boosted character is saved with the values it had before
+        var written = _boostOriginal ?? _values;   // a boosted character is saved with the values it had before
         for (int i = 1; i < StatsInfo.Count; i++)
             if (StatsInfo.FieldName((StatsEnumerated)i) is { } name) floats[name] = written[i];
         _modSkills?.WriteSave(floats);

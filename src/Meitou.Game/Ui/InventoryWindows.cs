@@ -456,7 +456,7 @@ sealed class InventoryWindows(PlayerInterface player)
         if (grid.Items.FirstOrDefault(i => i.Index == code) is not { } item) return false;
         if (!InventoryCommands.IsGridSection(item.Section) || item.Width == item.Height) return false;
 
-        var token = new InventoryItemToken(item.Index, item.Record, item.Section, item.X, item.Y, item.Quantity, item.Quality);
+        var token = InventoryItemToken.Of(item);
         player.Say(new RotateItem(owner.Id, token)
         {
             Tick = player.Session.CommandTick, InventoryRevision = grid.Revision,
@@ -541,14 +541,15 @@ sealed class InventoryWindows(PlayerInterface player)
 
         if (code >= 1000 && m.Storage?.Items.FirstOrDefault(i => i.Index == code - 1000) is { } stored)
         {
-            (token, whole) = (new(stored.Index, stored.Record, "main", stored.X, stored.Y, stored.Quantity, stored.Quality), PressShift
+            (token, whole) = (InventoryItemToken.Of(stored) with { Section = "main" }, PressShift
                 || PressCtrl || stored.Quantity <= 1);
             view = View(stored.Record, stored.Name, stored.Material, stored.Quantity, stored.Width, stored.Height, stored.Charge, window, whole,
                 stored.Rotated);
         }
         else if (code == 8 && m.Craft is { Done: [var made, ..] })
         {
-            (token, whole) = (new(0, made.Record, "out", 0, 0, made.Quantity, made.Quality), PressShift || PressCtrl || made.Quantity <= 1);
+            (token, whole) = (InventoryItemToken.Of(made) with { Index = 0, Section = "out", X = 0, Y = 0 },
+                PressShift || PressCtrl || made.Quantity <= 1);
             view = View(made.Record, made.Name, made.Material, made.Quantity, made.Width, made.Height, made.Charge, window, whole);
         }
         else if ((code == 8 ? m.Output : k >= 0 && k < m.Inputs.Count ? m.Inputs[k] : null) is { Count: > 0 } slot)
@@ -577,7 +578,7 @@ sealed class InventoryWindows(PlayerInterface player)
         }
 
         var (window, actor) = (ItemOwner.Of(owner.Id), loot ? snapshot.LootOpener : owner.Id);
-        var (token, whole) = (new InventoryItemToken(item.Index, item.Record, item.Section, item.X, item.Y, item.Quantity, item.Quality),
+        var (token, whole) = (InventoryItemToken.Of(item),
             PressShift || PressCtrl || item.Quantity <= 1);
         var view = View(item.Record, item.Name, item.Material, item.Quantity, item.Width, item.Height, item.Charge, window, whole, item.Rotated);
         return new(code, window, actor, token, whole, view);

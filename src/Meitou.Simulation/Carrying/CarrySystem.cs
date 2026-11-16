@@ -851,9 +851,21 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     /// The carries a save held (<see cref="Saving.SavedCharacterLink.CarryPartner"/>; docs/formats/save.md "Carry links"): a carrier whose partner is
     /// now in the world takes it up again at once, without the lift (the link needs a carrier that is not carried and carries nothing, and a body not
     /// carried; a body in a bed or cage is let go of). One waits while its partner is not loaded (the original's deferred link,
-    /// <c>FUN_140797ec0</c>); either one dead or gone drops the link.
+    /// <c>FUN_140797ec0</c>); either one dead or gone drops the link. Then the links of squads that left the world in a carry
+    /// (<see cref="DropForUnload"/>).
     /// </summary>
     internal void RestoreLinks(World world)
+    {
+        RestoreSavedLinks(world);
+        RestoreUnloadLinks(world);
+    }
+
+    /// <summary>
+    /// The carries a save held (see <see cref="RestoreLinks"/>), linked from either side with the roles the side's <c>carrying</c> bool names (the
+    /// reader <c>FUN_140627b30</c>, <b>Verified</b>): a body whose carrier's record no longer holds the link (its squad was destroyed or unloaded
+    /// first) is taken up again by it.
+    /// </summary>
+    void RestoreSavedLinks(World world)
     {
         var table = world.Characters;
         var next = table.Next;
@@ -867,12 +879,14 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
                 (savedPartner.GameState?.Bools.GetValueOrDefault(Saving.PlayerSquadSave.DeadKey) == true || savedPartner.Medical?.Bools.GetValueOrDefault("dead") == true);
             if (!link.CarryIsCarrier && savedPartner?.Medical?.Bools.GetValueOrDefault("dead") == true || link.CarryIsCarrier && archivedPartner)
             { link.CarryPartner = Meitou.Data.Save.Hand.Null; continue; }
-            // the carrier's side links it
-            if (!link.CarryIsCarrier)
+
+            // A body already carried again (its carrier's side linked it) is done.
+            if (!link.CarryIsCarrier && !cold.CarriedBy.IsNone)
             {
-                if (!cold.CarriedBy.IsNone) link.CarryPartner = Meitou.Data.Save.Hand.Null;
+                link.CarryPartner = Meitou.Data.Save.Hand.Null;
                 continue;
             }
+
             if (bySave is null)
             {
                 bySave = [];
@@ -883,15 +897,77 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
             if (!bySave.TryGetValue((hand.C, hand.I), out int b) &&
                 !(world.Saved?.CharacterOf(hand) is { } restored && table.TryResolveNext(restored, out b)) || b == i) continue;
             link.CarryPartner = Meitou.Data.Save.Hand.Null;
-            var body = table.Cold(b)!;
-            if (body.Save is { } savedBody) savedBody.CarryPartner = Meitou.Data.Save.Hand.Null;
+            table.Cold(b)!.Save?.CarryPartner = Meitou.Data.Save.Hand.Null;
+            if (link.CarryIsCarrier) Relink(world, i, b);
+            else Relink(world, b, i);
+        }
+    }
 
-            // FUN_1405cff90 / FUN_1405ced90 (Verified): the carrier is not itself carried, carries nothing and the body is not carried; no medical
-            // test; a held body is let go.
-            if (!cold.Carrying.IsNone || !cold.CarriedBy.IsNone || !body.CarriedBy.IsNone) continue;
-            world.Fixtures.ReleaseHeld(world, table.IdOf(b));
-            if (body.Medical is { Incapacitated: false } && Friendly(cold, body)) body.CarriedAwake = true;
-            Link(table, i, b);
+    /// <summary>
+    /// The links a squad kept when it left the world carrying or carried (<see cref="CharacterCold.CarryRelink"/>): once the partner is in the
+    /// world again the carrier takes it up, from either side (the reader <c>FUN_140627b30</c> links with the roles its <c>carrying</c> bool names,
+    /// <b>Verified</b>); a partner not in the world is waited for (<c>FUN_140797ec0</c> has no give-up).
+    /// </summary>
+    void RestoreUnloadLinks(World world)
+    {
+        var table = world.Characters;
+        var next = table.Next;
+        Dictionary<CharacterCold, int>? byCold = null;
+        for (int i = 0; i < table.HighWater; i++)
+        {
+            if (!next[i].Alive || table.Cold(i) is not { CarryRelink: { } partner } cold) continue;
+
+            if (byCold is null)
+            {
+                byCold = new(ReferenceEqualityComparer.Instance);
+                for (int s = 0; s < table.HighWater; s++)
+                    if (next[s].Alive && table.Cold(s) is { } other) byCold[other] = s;
+            }
+
+            if (!byCold.TryGetValue(partner, out int p) || p == i) continue;
+
+            cold.CarryRelink = null;
+            if (ReferenceEquals(partner.CarryRelink, cold)) partner.CarryRelink = null;
+            if (cold.CarryRelinkIsCarrier) Relink(world, i, p);
+            else Relink(world, p, i);
+        }
+    }
+
+    /// <summary>
+    /// A kept link made again (<c>FUN_1405cff90</c> / <c>FUN_1405ced90</c>, <b>Verified</b>): only for a carrier that is not itself carried and
+    /// carries nothing, and a body not carried; no medical test; a held body is let go.
+    /// </summary>
+    void Relink(World world, int carrier, int body)
+    {
+        var table = world.Characters;
+        var cold = table.Cold(carrier)!;
+        var bc = table.Cold(body)!;
+        if (!cold.Carrying.IsNone || !cold.CarriedBy.IsNone || !bc.CarriedBy.IsNone) return;
+
+        world.Fixtures.ReleaseHeld(world, table.IdOf(body));
+        if (bc.Medical is { Incapacitated: false } && Friendly(cold, bc)) bc.CarriedAwake = true;
+        Link(table, carrier, body);
+    }
+
+    /// <summary>
+    /// A member of a squad that leaves the world lets its carry go (<c>FUN_1404feed0</c> destroys every member of the unloading platoon, and the
+    /// destroy <c>FUN_140799af0</c> runs the put-down unlink <c>FUN_1405ce1e0</c> on it, <b>Verified</b>): the partner is dropped where it is, a
+    /// kidnap victim's carrier taken for its kidnapper as a put-down does (<see cref="LetKidnapVictimGo"/>). The platoon's record, written just
+    /// before, keeps the link (<c>FUN_1404ff410</c>), so it is noted on the leaving one (<see cref="CharacterCold.CarryRelink"/>). Serial phase.
+    /// </summary>
+    internal void DropForUnload(World world, int slot)
+    {
+        var table = world.Characters;
+        var cold = table.Cold(slot)!;
+        if (table.TryResolveNext(cold.Carrying, out int body))
+        {
+            (cold.CarryRelink, cold.CarryRelinkIsCarrier) = (table.Cold(body), true);
+            Unlink(world, slot, body, drop: true);
+        }
+        else if (table.TryResolveNext(cold.CarriedBy, out int carrier))
+        {
+            (cold.CarryRelink, cold.CarryRelinkIsCarrier) = (table.Cold(carrier), false);
+            Unlink(world, carrier, slot, drop: true);
         }
     }
 
@@ -1320,8 +1396,11 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
             return;
         }
 
-        // The right click's crime and the steal roll (the owner watching unless down); caught, the item stays.
-        if (cold.Faction != victim.Faction && Crimes?.Pickpocket(world, i, t, item, Crime.CrimeSystem.TakeKind.RightClick) == true) return;
+        bool bagFirst = take.BagFirst || cold.IsPlayer && world.TakeIntoBackpack;
+        var arriving = Crime.CrimeSystem.MarksTheft(world, cold, victim) && item.Mark == StolenMark.None
+            ? StolenMark.Of(victim, table.IdOf(t))
+            : item.Mark;
+        if (RefusedTake(world, i, t, item, LootRoom(world, cold, item, arriving, bagFirst))) return;
         int fitted = InventoryCommands.LimbSlotOf(item.Section);
         if (fitted >= 0 && (victim.Medical?.LimbPart(fitted) is not { Limb: LimbState.Replaced } limb || limb.ReplacementItem != item))
             return;
@@ -1329,13 +1408,12 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         bool worn = InventoryCommands.IsEquipmentSection(item.Section) || fitted >= 0;
         var mark = item.Mark;
         int death = DeathUnits(from);
-        if (Crime.CrimeSystem.MarksTheft(world, cold, victim) && item.Mark == StolenMark.None) item.Mark = StolenMark.Of(victim, table.IdOf(t));
+        item.Mark = arriving;
         var owner = from.Items.Contains(item) ? from : from.Backpack?.Contents ?? from;
 
         if (TakeLootMoney(world, i, t, owner, item, mark, death, take.Issuer)) return;
 
-        int moved = InventoryCommands.MoveInto(owner, item, InventoryCommands.ClickCount(item, take.Count), cold.Inventory!,
-            take.BagFirst || cold.IsPlayer && world.TakeIntoBackpack,
+        int moved = InventoryCommands.MoveInto(owner, item, InventoryCommands.ClickCount(item, take.Count), cold.Inventory!, bagFirst,
             out bool wear, cold);
         if (owner.Items.Contains(item)) item.Mark = mark;   // what stays keeps its mark
         if (moved == 0)
@@ -1352,7 +1430,40 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     }
 
     /// <summary>
-    /// Converts loot money to the acting character's faction funds; false for an ordinary inventory transfer.
+    /// The crime side of a right-click take out of the open loot: the right click's crime and the steal roll (the owner watching unless down), or,
+    /// when the looter has no <paramref name="room"/>, the crime alone and "no room" (no roll, no thievery XP: the original asks for room first,
+    /// <see cref="InventoryCommands.HasRoomFor(Inventory, ItemInstance, bool, CharacterCold?)"/>, #796). True: caught or no room, the item stays.
+    /// </summary>
+    bool RefusedTake(World world, int looter, int body, ItemInstance item, bool room)
+    {
+        var table = world.Characters;
+        var cold = table.Cold(looter)!;
+        bool npcOwner = table.Cold(body)!.Faction != cold.Faction;
+        const Crime.CrimeSystem.TakeKind kind = Crime.CrimeSystem.TakeKind.RightClick;
+        if (room) return npcOwner && Crimes?.Pickpocket(world, looter, body, item, kind) == true;
+
+        if (npcOwner) Crimes?.PendPickpocket(world, looter, body, kind);
+        if (cold.IsPlayer) world.PostCharacter(cold, $"{cold.Name} has no room for {item.Name}.");
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the looter has room for a unit of <paramref name="item"/> as it arrives (with the stolen mark <paramref name="arriving"/>, which
+    /// decides the stacks it joins); money the player's faction takes always (it becomes cats, <see cref="TakeLootMoney"/>).
+    /// </summary>
+    bool LootRoom(World world, CharacterCold cold, ItemInstance item, StolenMark arriving, bool bagFirst)
+    {
+        if (item.ItemFunction == PlayerSystem.MoneyFunction && world.IsPlayerFaction(cold.Faction) && Data is not null) return true;
+
+        var mark = item.Mark;
+        item.Mark = arriving;
+        bool room = InventoryCommands.HasRoomFor(cold.Inventory!, item, bagFirst, cold);
+        item.Mark = mark;
+        return room;
+    }
+
+    /// <summary>
+    /// Converts money taken by the player's faction to cats; false for an ordinary inventory transfer.
     /// </summary>
     bool TakeLootMoney(World world, int looter, int body, Inventory owner, ItemInstance item, StolenMark mark, int death, PlayerId? issuer)
     {
@@ -1521,8 +1632,8 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
     }
 
     /// <summary>
-    /// Whether a member of the victim's faction sees the looter: awake, not carried, and the looter within its sight (<see cref="SightMap.Sees"/>,
-    /// outdoor range <see cref="CarrySettings.Sight"/> x its race's <c>vision range mult</c>). The original's witness rules are richer
+    /// Whether a member of the victim's faction sees the looter: awake, not carried, and the looter within its sight (<see cref="SightRay.Sees"/>,
+    /// with the sight ray; outdoor range <see cref="CarrySettings.Sight"/> x its race's <c>vision range mult</c>). The original's witness rules are richer
     /// (docs/game/carry-loot.md "Witnesses"); this is the part the engine has.
     /// </summary>
     bool Witnessed(World world, CharacterTable table, int looter, int victim)
@@ -1534,7 +1645,7 @@ public sealed partial class CarrySystem(GameConstants constants, BodyOptions opt
         {
             if (w == looter || w == victim || !next[w].Alive) continue;
             if (table.Cold(w) is not { Medical.Incapacitated: false } c || c.Faction != faction || !c.CarriedBy.IsNone) continue;
-            if (world.Sight.Sees(w, looter, next[w].Position, at, AggroSystem.RangeOf(c, Settings.Sight)) > 0) return true;
+            if (SightRay.Sees(world, w, looter, next[w].Position, at, AggroSystem.RangeOf(c, Settings.Sight)) > 0) return true;
         }
         return false;
     }

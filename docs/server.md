@@ -51,6 +51,11 @@ changes them. Compatibility hashes `gameplay/*` values captured from the active 
 `SaveIntervalSeconds`, when present, wins during loading, is normalized into `Gameplay.AutoSaveSeconds`, and is omitted from new
 configuration output. Gameplay values use the same bounded finite ranges as their game settings; invalid values reject configuration.
 
+**Observed** (source): `Gameplay.SquadXp` and `Gameplay.OthersXp` default to 1 and accept finite values from 0 through 1000;
+`Gameplay.BagSearchFix` defaults to true. Squad XP applies to all player factions. Before compatibility is published, enabled legacy
+Player-Only XP mods are adopted once into Squad XP and their names persist in `AdoptedMods`; later starts preserve administrator changes.
+Covered code mods are disabled to prevent double multiplication. Both hosts use the same adoption logic without executing those DLLs.
+
 `--create-account NAME [--output FILE]` issues a random credential and writes a private connection JSON,
 then exits without loading a world; tokens never enter logs. Do not include these files in release archives.
 Set `BindAddress` and `AdvertisedHost` for LAN/remote access before issuing profiles. `--help` needs no assets.
@@ -67,7 +72,7 @@ Profiles contain endpoint, account/token, expected Hello, rules and explicit rel
 `GameplayAssets`. Both executables call `ServerCompatibility.CreateHello` against their own installation.
 The default hashes database load order and all database bytes; optional paths add selected gameplay assets.
 This intentionally avoids a whole-install scan and does not prove mesh/navigation/animation asset parity.
-Build identity `meitou-experimental-1` is experimental, not a reproducible release fingerprint.
+The required shared build identity is recorded in [networking](networking.md); it is a compatibility boundary, not a reproducible release fingerprint.
 
 **Observed** (implementation): `AllowDeviceRegistration` defaults to true. Compatible TLS clients may
 register a random device credential; an existing GUID must authenticate its unchanged digest, including

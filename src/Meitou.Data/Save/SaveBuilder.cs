@@ -385,6 +385,7 @@ public sealed class SaveBuilder
         g.Floats["age"] = age;
         g.Floats["decay"] = 0;
         g.Ints["TI day"] = 0;
+        g.Ints["floor"] = 0;
         g.Ints["slavestate"] = 0;
         g.Ints["in something"] = 0;
         g.Ints["portrait_serial"] = Serial();
@@ -450,6 +451,27 @@ public sealed class SaveBuilder
         }
         platoon.Characters.Remove(character);
         platoon.CharCount = platoon.Characters.Count;
+    }
+
+    /// <summary>
+    /// Puts <paramref name="first"/> (characters of the platoon) at the front of its collection and character list in that order, the others after
+    /// them as they were. A squad's member order is its collection's order (docs/formats/save.md "Player platoons"); handles and slots stay.
+    /// </summary>
+    public static void OrderCharacters(SavePlatoon platoon, IReadOnlyList<SaveCharacter> first)
+    {
+        var front = new HashSet<SaveCharacter>(first);
+        var rest = platoon.Characters.Where(c => !front.Contains(c)).ToList();
+        var order = first.Where(platoon.Characters.Contains).Concat(rest).ToList();
+        platoon.Characters.Clear();
+        platoon.Characters.AddRange(order);
+
+        if (platoon.Collection is not { } collection) return;
+
+        var instances = new HashSet<FcsInstance>(order.Select(c => c.Instance));
+        var others = collection.Instances.Where(i => !instances.Contains(i)).ToList();
+        collection.Instances.Clear();
+        collection.Instances.AddRange(order.Select(c => c.Instance));
+        collection.Instances.AddRange(others);
     }
 
     /// <summary>

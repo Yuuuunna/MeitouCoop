@@ -90,9 +90,10 @@ public sealed record BuildingFootprint(Vector2[] Hull, float YMin, float YMax)
 }
 
 /// <summary>
-/// A placed building's footprint in the world, and its BUILDING record.
+/// A placed building's footprint in the world, its BUILDING record and its placement (what a wall piece's snapped joint tests, PlacementCheck).
 /// </summary>
-public readonly record struct PlacedFootprint(string Id, Vector2[] Hull, string Record = "");
+public readonly record struct PlacedFootprint(string Id, Vector2[] Hull, string Record = "", Vector3 Position = default, Quaternion Rotation = default);
+
 /// <summary>
 /// A level-data building with the footprint of its record (in its own space), for picking; <paramref name = "Plot"/> when it is the
 /// <see cref = "BuildingFootprints.Plot"/> stand-in.
@@ -319,11 +320,23 @@ public sealed class BuildingFootprints
     /// The triangles of a building record's collision shapes in its own space (scale applied, as the hull is): what a click on a building is tested
     /// against after its hull. Read from the cache on demand, not kept; empty without a database record or collision files.
     /// </summary>
-    public IReadOnlyList<(Vector3[] Vertices, int[] Indices)> Mesh(string buildingId)
+    public IReadOnlyList<(Vector3[] Vertices, int[] Indices)> Mesh(string buildingId) =>
+        [.. MeshShapes(buildingId).Select(s => (s.Vertices, s.Indices))];
+
+    /// <summary>
+    /// Each shape of <see cref="Mesh"/>, in the same order, with the index of the door whose part it belongs to in the building's <c>doors</c>
+    /// list (closed placement); -1 for a shape of any other part.
+    /// </summary>
+    public IReadOnlyList<int> MeshDoors(string buildingId) => [.. MeshShapes(buildingId).Select(s => s.Door)];
+
+    /// <summary>
+    /// The shapes behind <see cref="Mesh"/> and <see cref="MeshDoors"/>.
+    /// </summary>
+    List<(Vector3[] Vertices, int[] Indices, int Door)> MeshShapes(string buildingId)
     {
-        var result = new List<(Vector3[], int[])>();
-        if (_db.Find(buildingId)is not { } building)
-            return result;
+        var result = new List<(Vector3[], int[], int)>();
+        if (_db.Find(buildingId) is not { } building) return result;
+
         float scale = building.GetFloat("scale", 1);
         if (scale <= 0)
             scale = 1;
@@ -333,7 +346,7 @@ public sealed class BuildingFootprints
             if (path.Length == 0 || _collision.Get(path)is not { } prepared)
                 continue;
             foreach (var shape in prepared.Shapes)
-                result.Add(([..shape.Vertices.Select(v => v * scale)], shape.Indices));
+                result.Add(([.. shape.Vertices.Select(v => v * scale)], shape.Indices, mesh.DoorIndex));
         }
 
         return result;
@@ -633,8 +646,8 @@ public sealed class BuildingFootprints
                 {
                     if (b.Position == Vector3.Zero || Vector2.DistanceSquared(new Vector2(b.Position.X, b.Position.Z), centre) > (radius + reach) * (radius + reach))
                         continue;
-                    if (Of(b.BuildingId)is { } footprint)
-                        yield return new PlacedFootprint(b.Key, footprint.Place(b.Position, b.Rotation), b.BuildingId);
+                    if (Of(b.BuildingId) is { } footprint)
+                        yield return new PlacedFootprint(b.Key, footprint.Place(b.Position, b.Rotation), b.BuildingId, b.Position, b.Rotation);
                 }
             }
     }

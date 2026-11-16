@@ -546,17 +546,28 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         List<ZoneCoordinate>? gone = null;
         foreach (var (zone, t) in _loadedUntil) if (t < now) (gone ??= []).Add(zone);
         if (gone is not null) foreach (var zone in gone) _loadedUntil.Remove(zone);
-        world.LoadedZones = Ready(_loadedUntil.Keys);
+        world.LoadedZones = Ready(world, _loadedUntil.Keys);
+        Buildings?.HoldZones(world.LoadedZones);
     }
 
     /// <summary>
-    /// The requested zones that are also ready (<see cref="ZoneGate"/>: the host's navmesh for it exists; none set: all): the zones the original
-    /// flags loaded (<c>FUN_140a0f820</c>:66-96 sets the loaded flags only once every zone of the load list is accepted, state 4 to 5,
-    /// <b>Verified</b>). Characters, corpses and zone content follow this set; the squads' own relevance and the host's navmesh loading follow the
-    /// requested one.
+    /// The requested zones that are also ready (<see cref="Accepted"/>): the zones the original flags loaded (<c>FUN_140a0f820</c>:66-96 sets the
+    /// loaded flags only once every zone of the load list is accepted, state 4 to 5, <b>Verified</b>). Characters, corpses and zone content follow
+    /// this set; the squads' own relevance and the host's navmesh loading follow the requested one.
     /// </summary>
-    HashSet<ZoneCoordinate> Ready(IEnumerable<ZoneCoordinate> requested) =>
-        ZoneGate is { } gate ? [.. requested.Where(z => gate(z))] : [.. requested];
+    HashSet<ZoneCoordinate> Ready(World world, IEnumerable<ZoneCoordinate> requested) => [.. requested.Where(z => Accepted(world, z))];
+
+    /// <summary>
+    /// Whether a requested zone is ready: the host's navmesh for it exists (<see cref="ZoneGate"/>; none set: yes) and its buildings' collision is
+    /// read (<see cref="Buildings"/>), as the original builds a zone's building collision before it flags the zone loaded (docs/game/game-loop.md
+    /// "Zone loading and collision"); a zone loaded already stays so whatever its collision does.
+    /// </summary>
+    bool Accepted(World world, ZoneCoordinate zone)
+    {
+        // The collision first, so its reading starts while the navmesh is still building.
+        bool collision = Buildings is not { } env || world.LoadedZones?.Contains(zone) == true || env.ZoneRead(zone);
+        return collision && (ZoneGate is not { } gate || gate(zone));
+    }
 
     /// <summary>
     /// A loaded town asks for every zone of its list, its own and its coverage, with no ring and the largest timer among those already loaded
@@ -676,6 +687,12 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     /// open-ground stand-in (null: always).
     /// </summary>
     public Func<ZoneCoordinate, bool>? ZoneGate { get; set; }
+
+    /// <summary>
+    /// The buildings' collision a requested zone must have read before it loads (<see cref="Accepted"/>), told which zones are loaded so it keeps
+    /// theirs; null: none to wait for.
+    /// </summary>
+    public Ragdolls.IRagdollEnvironment? Buildings { get; set; }
 
     /// <summary>
     /// Starts loading a town: its replacement or held squads settled, its residents built (on the build thread when there is one, else made at once);
@@ -803,7 +820,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
             bool refresh = stored.Members.Count == 0 && Regenerates(squad.TemplateId, site);
             if (stored.Members.Count == 0 && !refresh)
             {
-                if (squad.Shop is { } shop) Trading.TradeSystem.GiveBack(world, shop);
+                if (squad.Shop is { } shop) Trading.TradeSystem.Settle(world, shop);
                 continue;
             }
 
@@ -942,6 +959,10 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         world.ItemSlots.RegisterSite(world, _data, town.Site);
         StandTownCamp(world, site);
 
+        // The artifacts go out before any home is stocked, as the original's distribution ends the resident chooser (FUN_1409370d0) and the home
+        // fill comes when a squad is built (FUN_140583a10): the distribution empties the containers, the fill spares unique items.
+        GiveArtifacts(world, town);
+
         // Each home is set up for its template before its residents are made (FUN_14057f1f0). The platoon is made for every home, members or not
         // (FUN_14057f4c0 stamps its template's designation on the building, FUN_140583a10 then stocks a home whose template made nothing).
         var trade = world.SystemOf<Trading.TradeSystem>();
@@ -973,7 +994,6 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         }
 
         if (town.Squads.Count > 0) MadeTown(world, town.Site, town.Squads.Where(s => s.Home is not null).Select(s => s.Members.Count));
-        GiveArtifacts(world, town);
         int housed = town.Squads.Count(s => s.Home is not null);
         if (_townLog.Count >= 256) _townLog.RemoveAt(0);   // nobody reads it in a headless world
         _townLog.Add($"{site.Town.Name}: {town.Squads.Count} squad(s), {town.Squads.Sum(s => s.Members.Count)} characters; {housed} at home in " +
@@ -986,37 +1006,88 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     /// <summary>
     /// A housed squad's <c>prisoners</c> (the squad factory <c>FUN_140583a10</c>, <b>Observed</b>; docs/simulation.md "Cages, beds and locks"): only
     /// with a home building, each entry a squad of its template's <c>faction</c> (else the owner squad's), each member imprisoned in a random free
-    /// cage of the home, its lock set. <b>Engine choices</b>: members beyond the free cages are not made (the original drops one and stops placing);
-    /// the prisoners are held without a sentence (<see cref="CharacterCold.Kidnapped"/>), so no release round frees them and no bail is offered (the
-    /// original's served test for them is <b>Unknown</b>).
+    /// cage of the home, its lock set, with a sentence of <see cref="SpawnSentence"/> hours (<b>Verified</b>: the factory writes the sentence length,
+    /// Character <c>+0x190</c>, which the served test <c>FUN_1405c9f00</c> reads), so it is never served and getting out is an escape. Every entry's
+    /// squad is made whole at the owner squad's spot; the first member left without a cage is destroyed and the rest of that squad stay free
+    /// (<b>Verified</b>, <c>FUN_140583a10</c>).
     /// </summary>
     void MakePrisoners(World world, BuiltSquad owner, Squad squad, TownSite site, float radius, SiteState state)
     {
         var links = owner.Plan.Template.Prisoners;
         if (links.Count == 0 || owner.Home is not { } home) return;
-        var table = world.Characters;
-        var cages = world.Fixtures.OfBuilding(home.Key).Where(f => f.Kind == Locks.FixtureKind.Cage && Locks.FixtureRegistry.IsFree(table, f)).ToList();
+
+        var cages = world.Fixtures.OfBuilding(home.Key)
+            .Where(f => f.Kind == Locks.FixtureKind.Cage && Locks.FixtureRegistry.IsFree(world.Characters, f))
+            .ToList();
         ulong homeKey = Rng.StableHash(home.Key);
         int picks = 0;
-        for (int e = 0; e < links.Count && cages.Count > 0; e++)
+        for (int e = 0; e < links.Count; e++)
         {
-            if (_data.Db.Find(links[e].Id) is not { } record || !SquadFactory.IsTemplate(record)) continue;
-            var faction = (uint)squad.Faction < (uint)_data.Factions.Count ? _data.Factions[squad.Faction] : null;
-            ulong key = Rng.Mix(SeedSalts.PrisonerSquad ^ homeKey ^ (ulong)e << 48);
-            var at = new Vector2(cages[0].Position.X, cages[0].Position.Z);
-            if (BuildOne(SquadTemplate.From(record), squad.Faction, faction, key, world.Seed, at) is not { } built) continue;
-            if (built.Members.Count > cages.Count) built = built with { Members = built.Members.Take(cages.Count).ToList() };
-            var prisoners = SpawnSquad(world, built with { NearY = cages[0].Position.Y + SpotLift }, site, radius);
-            state.Squads.Add(prisoners.Id);
-            foreach (var id in prisoners.Members)
-            {
-                int pick = Rng.Int(Rng.Hash(world.Seed, homeKey, RngPurpose.Spawn, SeedSalts.PrisonerCage + (ulong)picks++), cages.Count);
-                var cage = cages[pick];
-                cages.RemoveAt(pick);
-                if (world.Fixtures.Imprison(world, id, cage)) table.Cold(id.Slot)!.Kidnapped = true;
-            }
+            if (BuildPrisoners(world, owner, squad, links[e].Id, homeKey, e) is not { } built) continue;
+            var prisoners = SpawnSquad(world, built, site, radius);
+            CagePrisoners(world, prisoners, cages, homeKey, ref picks);
+
+            if (prisoners.Members.Count > 0) state.Squads.Add(prisoners.Id);
+            else world.Squads.Remove(prisoners.Id);
         }
     }
+
+    /// <summary>
+    /// One <c>prisoners</c> entry built as a squad of its template's <c>faction</c> (else the owner squad's) at the owner squad's spot, where the
+    /// factory makes it; null for a missing or non-template record or an empty squad.
+    /// </summary>
+    BuiltSquad? BuildPrisoners(World world, BuiltSquad owner, Squad squad, string templateId, ulong homeKey, int entry)
+    {
+        if (_data.Db.Find(templateId) is not { } record || !SquadFactory.IsTemplate(record)) return null;
+
+        var faction = (uint)squad.Faction < (uint)_data.Factions.Count ? _data.Factions[squad.Faction] : null;
+        ulong key = Rng.Mix(SeedSalts.PrisonerSquad ^ homeKey ^ (ulong)entry << 48);
+        var built = BuildOne(SquadTemplate.From(record), squad.Faction, faction, key, world.Seed, owner.Position);
+        return built is null ? null : built with { NearY = owner.NearY };
+    }
+
+    /// <summary>
+    /// Cages a made prisoner squad's members in order, each in a random one of <paramref name="cages"/> (taken from the list); the first member
+    /// reached with none left is destroyed and the rest stay free (<c>FUN_140583a10</c>).
+    /// </summary>
+    void CagePrisoners(World world, Squad prisoners, List<Locks.Fixture> cages, ulong homeKey, ref int picks)
+    {
+        var table = world.Characters;
+        foreach (var id in prisoners.Members.ToList())
+        {
+            if (cages.Count == 0)
+            {
+                DestroyPrisoner(world, prisoners, id);
+                return;
+            }
+
+            int pick = Rng.Int(Rng.Hash(world.Seed, homeKey, RngPurpose.Spawn, SeedSalts.PrisonerCage + (ulong)picks++), cages.Count);
+            var cage = cages[pick];
+            cages.RemoveAt(pick);
+            if (world.Fixtures.Imprison(world, id, cage)) table.Cold(id.Slot)!.SentenceLength = SpawnSentence;
+        }
+    }
+
+    /// <summary>
+    /// A prisoner the factory had no cage for leaves the world and its squad, which counts it neither made nor lost. A unique stays claimed: no
+    /// destroy erases its entry (<c>FUN_1405067e0</c>'s only callers are the unload and spawn-mode-3 releases).
+    /// </summary>
+    void DestroyPrisoner(World world, Squad prisoners, CharacterId id)
+    {
+        var table = world.Characters;
+        world.Uniques.Left(id);
+        RemoveMember(world, id);
+
+        prisoners.Members.Remove(id);
+        prisoners.SpawnSize = prisoners.Members.Count;
+        if (prisoners.Leader == id) prisoners.Leader = SquadRegistry.Successor(prisoners.Members, table);
+    }
+
+    /// <summary>
+    /// The sentence length in game hours of a prisoner the squad factory cages (<c>FUN_140583a10</c> writes 9999999.0 to Character <c>+0x190</c>,
+    /// <b>Verified</b>); the start is left as it was. Shown as FOREVER.
+    /// </summary>
+    public const float SpawnSentence = 9999999f;
 
     /// <summary>
     /// A squad's <c>slaves</c> (the squad factory's recursive slave squads, role 4; docs/game/factions-squads-towns.md "Squad factory"): each planned

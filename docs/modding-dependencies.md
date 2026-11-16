@@ -13,6 +13,10 @@ inventory sections or FCS slot numbers are refused. This adds no manifest keys a
 order on the server and every client. Simulation owns the limits (four meters; skill column capacities 11, 8, 10 and 5), so a headless server
 does not load the game's stats window to validate a mod. These additive APIs retain loader API 2 and require matching code mods on peers.
 
+`AddItemUse` registrations use the same shared assembly and dependency transaction on the headless authority. World hooks and settings subgroups
+add no manifest keys and retain loader API 2. Covered legacy XP code mods are classified as disabled on both hosts; their built-in replacement
+runs from the authority's public gameplay rules. See [item use and XP adoption](modding.md).
+
 ## Manifest
 
 ```json

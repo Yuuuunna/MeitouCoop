@@ -283,7 +283,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// so the cage's own verbs come here (engine stand-ins for the original's cage menu beside the occupant's): Unlock or Lock the player's own cage
     /// (78, 77), Pick Lock another faction's locked one (the prisoner its own, a mate from outside), Use Tools and Use Strength on it (285, 286, the
     /// same), and once it is open Escape (207, the selected prisoner), Set Free (110), or Pick Up (225, a mate lifts it out; out of another
-    /// faction's cage a crime, locks.md "Cages and beds").
+    /// faction's cage a crime, locks.md "Cages and beds"); Stealth KO (228) out of any cage but the player's.
     /// </summary>
     void PrisonerVerbs(List<(string, Action)> verbs, CharacterSnapshot target, PrisonView prison, IReadOnlyList<CharacterId> selection, bool down)
     {
@@ -337,6 +337,21 @@ sealed class ContextMenuWindow(PlayerInterface player)
 
             verbs.Add(PickUpVerb(target));
         }
+
+        // 228 when neither the prisoner nor its cage is the player's (FUN_1407a6bc0's imprisoned row), so a Rebirth pole's slave too (#757).
+        if (!ownCage) AddStealthKoVerb(verbs, target, selection);
+    }
+
+    /// <summary>
+    /// Stealth KO (228) with its chance, when the selection can knock the target out from behind (<see cref="CharacterSnapshot.StealthKoChance"/>:
+    /// a sneaking member, a target that is no animal and not the player's).
+    /// </summary>
+    void AddStealthKoVerb(List<(string, Action)> verbs, CharacterSnapshot target, IReadOnlyList<CharacterId> selection)
+    {
+        if (target.StealthKoChance is not { } chance) return;
+
+        var id = target.Id;
+        verbs.Add((WithChance("Stealth KO", chance), () => player.Say(new StealthKoOrder(selection, id) { Tick = player.Session.CommandTick })));
     }
 
     /// <summary>
@@ -449,11 +464,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
 
         verbs.Add(PickUpVerb(target));
         // 228 on a down character too (FUN_1407a6bc0:583-594).
-        if (target.StealthKoChance is { } downChance)
-        {
-            verbs.Add((WithChance("Stealth KO", downChance),
-                () => player.Say(new StealthKoOrder(selection, id) { Tick = player.Session.CommandTick })));
-        }
+        AddStealthKoVerb(verbs, target, selection);
 
         ThrowOutVerb(verbs, target, selection);
     }
@@ -469,11 +480,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
 
         verbs.Add(PickUpVerb(target));
         ThrowOutVerb(verbs, target, selection);
-        if (target.StealthKoChance is { } koChance)
-        {
-            verbs.Add((WithChance("Stealth KO", koChance),
-                () => player.Say(new StealthKoOrder(selection, id) { Tick = player.Session.CommandTick })));
-        }
+        AddStealthKoVerb(verbs, target, selection);
 
         if (player.PointerPanel.Hostile(target)) return;
 
@@ -508,8 +515,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
             return;
         }
 
-        if (target.StealthKoChance is { } chance)
-            verbs.Add((WithChance("Stealth KO", chance), () => player.Say(new StealthKoOrder(selection, id) { Tick = player.Session.CommandTick })));
+        AddStealthKoVerb(verbs, target, selection);
 
         if (hostile)
         {
@@ -580,7 +586,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// <summary>
     /// The pick-up verb (<c>FUN_140796f80</c>, docs/game/ui-input.md "Context menu verbs"): Pick Up (225) unless every gate passes for Kidnap (246):
     /// the target is of another faction than the lead, stands in a town of a faction that is not the player's, is of a real faction, does not regard
-    /// the lead as friendly (or is a trader squad's member or in a campaign force), has no bounty with its town's law and is no Bandit, and is not
+    /// the lead as friendly (or is a trader squad's member or a Diplomat), has no bounty with its town's law and is no Bandit, and is not
     /// caged. Kidnap shows the chance column (<c>Character::getKidnappingChance</c>) and gives the kidnap order (a sleeper too; the roll on arrival,
     /// docs/game/carry-loot.md "Kidnapping").
     /// </summary>
@@ -604,16 +610,16 @@ sealed class ContextMenuWindow(PlayerInterface player)
         if (target.Faction == lead.Faction || player.Session.VerbFactsOf(lead.Id, target.Id) is not { } facts)
             return false;
         if (facts.Town != TownOwnership.Other || facts.NotReal) return false;
-        if (facts.RegardsLead && !facts.SquadTrader && !target.WarParty) return false;
+        if (facts.RegardsLead && !facts.SquadTrader && !target.IsDiplomat) return false;
 
         return facts.Bounty < 1 && !facts.Bandit;
     }
 
     /// <summary>
-    /// A container (the original's building branch for a storage with an inventory): unlocked, Inventory (the player's) or Loot (26); another
-    /// faction's locked one, Pick Lock (76). The menu's orders skip the quick click's Alt test (<c>FUN_1407fa650</c>), so Loot on another faction's
-    /// container takes from it at once (a shop container's stock is stolen from); a locked one also has Use Tools and Use Strength (285, 286). Not
-    /// built: Auto-Haul (124) on an interior container.
+    /// A container (the original's building branch for a storage with an inventory): unlocked, Inventory (the player's) or Loot (26); one not the
+    /// player's (an unowned one too) locked, Pick Lock (76). The menu's orders skip the quick click's Alt test (<c>FUN_1407fa650</c>), so Loot on
+    /// another faction's container takes from it at once (a shop container's stock is stolen from); a locked one also has Use Tools and Use
+    /// Strength (285, 286). Not built: Auto-Haul (124) on an interior container.
     /// </summary>
     internal List<(string Caption, Action Give)> ContainerVerbs(ContainerSpot container)
     {
@@ -625,8 +631,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
         if (!container.Locked) verbs.Add((own ? "Inventory" : "Loot", () => OpenContainer(container.Id, true)));
         else
         {
-            if (!own && container.Owner >= 0)
-                verbs.Add((PickLockCaption(container.Position, container.Level, true), () => OpenContainer(container.Id, true)));
+            if (!own) verbs.Add((PickLockCaption(container.Position, container.Level, true), () => OpenContainer(container.Id, true)));
 
             verbs.Add(("Use Tools",
                 () => player.Say(new ForceLockOrder([], container.Id, LockForce.Tools) { Tick = player.Session.CommandTick })));

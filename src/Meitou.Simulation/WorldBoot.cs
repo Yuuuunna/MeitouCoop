@@ -206,6 +206,8 @@ public sealed class WorldBoot
             data.Layouts = layouts;
             data.Sight = new BuildingSight(o.Install, o.Database, levels, layouts!);
             data.ResourceNodes = ResourceNodes(o, levels);
+            data.LevelBuildingIds = new Construction.LevelBuildingIds(levels);
+            data.Townless = TownBuildings.Townless(o.Database, levels, (x, z) => o.HeightAt((float)x, (float)z));
         }
 
         return data;

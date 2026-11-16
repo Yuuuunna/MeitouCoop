@@ -9,8 +9,8 @@ namespace Meitou.Data.Fcs;
 public static class FcsReader
 {
     /// <summary>
-    /// Text encoding of FCS strings: UTF-8 (every non-ASCII string in the base game is valid UTF-8). Strict, so
-    /// invalid bytes fail loudly instead of decoding to U+FFFD and silently changing on write.
+    /// Strict UTF-8, for the binary readers and writers of the FCS containers' own numbers. FCS strings themselves are any bytes (the game copies
+    /// them as they are, docs/formats/fcs-mod.md "Strings") and go through <see cref="LosslessUtf8"/>.
     /// </summary>
     public static readonly Encoding Encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -20,7 +20,7 @@ public static class FcsReader
     const int MaxCount = 64 * 1024 * 1024;
 
     /// <summary>
-    /// Reads the file at <paramref name="path"/> strictly (a string that is not UTF-8 throws).
+    /// Reads the file at <paramref name="path"/>.
     /// </summary>
     public static FcsFile ReadFile(string path)
     {
@@ -30,21 +30,16 @@ public static class FcsReader
     }
 
     /// <summary>
-    /// Reads a whole file from <paramref name="stream"/> strictly (a string that is not UTF-8 throws).
+    /// Reads a whole file from <paramref name="stream"/>, which is left open. Strings are decoded with <see cref="LosslessUtf8"/>: bytes that are
+    /// not UTF-8 are kept and written back unchanged. A file that does not parse throws an <see cref="FcsFormatException"/> whose
+    /// <see cref="FcsFormatException.Partial"/> holds what was read before the problem once the file type was known.
     /// </summary>
-    public static FcsFile Read(Stream stream) => Read(stream, lossless: false);
-
-    /// <summary>
-    /// Reads a whole file from <paramref name="stream"/>, which is left open.
-    /// </summary>
-    /// <param name="lossless">Decode strings with <see cref="LosslessUtf8"/> (bytes that are not UTF-8 are kept) instead of failing on them; save
-    /// files need it.</param>
-    public static FcsFile Read(Stream stream, bool lossless)
+    public static FcsFile Read(Stream stream)
     {
-        using var r = new FcsBinaryReader(stream, lossless);
+        using var r = new BinaryReader(stream, Encoding, leaveOpen: true);
+        var file = new FcsFile();
         try
         {
-            var file = new FcsFile();
             ReadHeader(r, file);
             file.NextId = r.ReadInt32();
             int count = ReadCount(r);
@@ -55,9 +50,44 @@ public static class FcsReader
         }
         catch (EndOfStreamException e)
         {
-            throw new FcsFormatException("Unexpected end of file.", stream.Position, e);
+            throw new FcsFormatException("Unexpected end of file.", stream.Position, e) { Partial = Typed(file) };
+        }
+        catch (FcsFormatException e) when (e.Partial is null)
+        {
+            e.Partial = Typed(file);
+            throw;
         }
     }
+
+    /// <summary>
+    /// The header of the file at <paramref name="path"/> (type 16 or 17: version, author, description, dependencies, references); null when the file
+    /// does not open, has another type or its header does not parse.
+    /// </summary>
+    public static FcsFile? TryReadHeader(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            using var r = new BinaryReader(stream, Encoding, leaveOpen: true);
+            var file = new FcsFile();
+            ReadHeader(r, file);
+            return file.FileType == FcsFileType.V15 ? null : file;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or FcsFormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="file"/> when its type was read and known, else null.
+    /// </summary>
+    static FcsFile? Typed(FcsFile file) => IsKnownType((int)file.FileType) ? file : null;
+
+    /// <summary>
+    /// Whether <paramref name="type"/> is a file type this reader reads (V15, V16, V17).
+    /// </summary>
+    static bool IsKnownType(int type) => type is (int)FcsFileType.V15 or (int)FcsFileType.V16 or (int)FcsFileType.V17;
 
     /// <summary>
     /// Reads the file type and, unless V15, the header into <paramref name="file"/>; a V17 header's editor bookkeeping sections are read only as far
@@ -66,7 +96,7 @@ public static class FcsReader
     static void ReadHeader(BinaryReader r, FcsFile file)
     {
         int type = r.ReadInt32();
-        if (type is not ((int)FcsFileType.V15 or (int)FcsFileType.V16 or (int)FcsFileType.V17))
+        if (!IsKnownType(type))
             throw new FcsFormatException($"Unknown file type {type}.", r.BaseStream.Position - 4);
         file.FileType = (FcsFileType)type;
         if (file.FileType == FcsFileType.V15) return;
@@ -193,7 +223,7 @@ public static class FcsReader
     }
 
     /// <summary>
-    /// Reads a length-prefixed string: strict UTF-8, or <see cref="LosslessUtf8"/> when the reader is lossless.
+    /// Reads a length-prefixed string of any bytes (<see cref="LosslessUtf8"/>).
     /// </summary>
     static string ReadString(BinaryReader r)
     {
@@ -204,15 +234,7 @@ public static class FcsReader
         // where it left off).
         Span<byte> bytes = length <= 1024 ? stackalloc byte[length] : new byte[length];
         r.BaseStream.ReadExactly(bytes);
-        if (r is FcsBinaryReader { Lossless: true }) return LosslessUtf8.GetString(bytes);
-        try
-        {
-            return Encoding.GetString(bytes);
-        }
-        catch (DecoderFallbackException e)
-        {
-            throw new FcsFormatException("String is not valid UTF-8.", r.BaseStream.Position - length, e);
-        }
+        return LosslessUtf8.GetString(bytes);
     }
 
     /// <summary>
@@ -233,17 +255,6 @@ public static class FcsReader
 }
 
 /// <summary>
-/// A binary reader that also tells <see cref="FcsReader"/> how to decode strings.
-/// </summary>
-sealed class FcsBinaryReader(Stream stream, bool lossless) : BinaryReader(stream, FcsReader.Encoding, leaveOpen: true)
-{
-    /// <summary>
-    /// True when strings are decoded with <see cref="LosslessUtf8"/> (save files) rather than strict UTF-8.
-    /// </summary>
-    public bool Lossless { get; } = lossless;
-}
-
-/// <summary>
 /// An FCS file that does not parse: the message names the problem and the byte offset it was found at.
 /// </summary>
 public sealed class FcsFormatException(string message, long offset, Exception? inner = null)
@@ -253,4 +264,10 @@ public sealed class FcsFormatException(string message, long offset, Exception? i
     /// The byte offset in the stream where the problem was found.
     /// </summary>
     public long Offset { get; } = offset;
+
+    /// <summary>
+    /// What was read before the problem when the file's type was a known one (the header as far as it got, the records read whole); null when the
+    /// type itself was not, or the problem was not met by <see cref="FcsReader.Read(Stream)"/>.
+    /// </summary>
+    public FcsFile? Partial { get; internal set; }
 }

@@ -134,7 +134,7 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
     }
 
     static bool Matches(ItemInstance item, InventoryItemToken token) => item.Record == token.Record && item.Section == token.Section
-        && item.X == token.X && item.Y == token.Y && item.Quantity == token.Quantity && item.Quality == token.Quality;
+        && item.X == token.X && item.Y == token.Y && item.Quantity == token.Quantity && item.Quality == token.Quality && token.MatchesTag(item.ModTag);
     static bool Movable(Inventory root, ItemInstance item, out Inventory? holder)
     {
         holder = root.Items.Contains(item) && item.Section == "main" ? root
@@ -179,7 +179,9 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
         var inventory = own.Inventory;
         if (inventory is null && world.Characters.TryResolveNext(own.Actor, out int slot)) inventory = world.Characters.Cold(slot)?.Inventory;
         PlayerTradeGoods[] available = inventory is null ? [] : inventory.All().Select((item, index) => (item, index)).Where(p => Movable(inventory, p.item, out _))
-            .Select(p => new PlayerTradeGoods(new(p.index, p.item.Record, p.item.Section, p.item.X, p.item.Y, p.item.Quantity, p.item.Quality), p.item.Name, p.item.Quantity)).ToArray();
+            .Select(p => new PlayerTradeGoods(
+                new(p.index, p.item.Record, p.item.Section, p.item.X, p.item.Y, p.item.Quantity, p.item.Quality) { ModTag = p.item.ModTag },
+                p.item.Name, p.item.Quantity)).ToArray();
         var factions = world.Players.Find(player)?.Memberships.Where(p => (p.Value & FactionPermission.SpendFunds) != 0).Select(p => p.Key).ToArray() ?? [];
         return new(session.Id, session.Revision, View(own), View(other), Array.AsReadOnly(available), Array.AsReadOnly(factions));
     }
@@ -228,8 +230,7 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
                     bool found = false;
                     for (int cy = 0; cy <= grid.Height - offered.Item.Height && !found; cy++)
                         for (int cx = 0; cx <= grid.Width - offered.Item.Width && !found; cx++)
-                            if (grid.InRegion(cx, cy, offered.Item.Width, offered.Item.Height)
-                                && !grid.Items.Any(i => i.Section == section && plan.Quantities.GetValueOrDefault(i, i.Quantity) > 0 && Overlap(cx, cy, offered.Item, i.X, i.Y, i))
+                            if (!grid.Items.Any(i => i.Section == section && plan.Quantities.GetValueOrDefault(i, i.Quantity) > 0 && Overlap(cx, cy, offered.Item, i.X, i.Y, i))
                                 && !plan.Places.Any(p => ReferenceEquals(p.Grid, grid) && Overlap(cx, cy, offered.Item, p.X, p.Y, p.Item)))
                             { x = cx; y = cy; found = true; }
                     if (!found) break;

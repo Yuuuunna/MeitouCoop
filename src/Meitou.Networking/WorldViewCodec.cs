@@ -38,8 +38,25 @@ public sealed partial class WorldViewCodec
             for (int i = info.Properties.Count - 1; i >= 0; i--)
                 if (info.Properties[i].Set is null)
                     info.Properties.RemoveAt(i);
-            if (info.Type == typeof(InventoryItemView))
-                info.Properties.Single(p => p.Name == nameof(InventoryItemView.StealChance)).ShouldSerialize = (_, value) => value is not null;
+            if (info.Type == typeof(InventoryItemView) || info.Type == typeof(Meitou.Simulation.Trading.TradeItemView)
+                || info.Type == typeof(Meitou.Simulation.Items.InventoryItemToken))
+            {
+                if (info.Type == typeof(InventoryItemView))
+                    info.Properties.Single(p => p.Name == nameof(InventoryItemView.StealChance)).ShouldSerialize = (_, value) => value is not null;
+                if (info.Type != typeof(Meitou.Simulation.Items.InventoryItemToken))
+                    info.Properties.Single(p => p.Name == nameof(InventoryItemView.StolenOwner)).ShouldSerialize = (_, value) => value is not null;
+                info.Properties.Single(p => p.Name == nameof(InventoryItemView.ModTag)).ShouldSerialize = (_, _) => false;
+                var tag = info.Properties.Single(p => p.Name == nameof(InventoryItemView.ModTagDigest));
+                tag.Get = value => value switch
+                {
+                    InventoryItemView item => item.ModTag.Length > 0 ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest,
+                    Meitou.Simulation.Trading.TradeItemView item => item.ModTag.Length > 0 ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest,
+                    Meitou.Simulation.Items.InventoryItemToken item => item.ModTag.Length > 0 ? Meitou.Simulation.Items.ItemTagIdentity.Digest(item.ModTag) : item.ModTagDigest,
+                    _ => "",
+                };
+                tag.ShouldSerialize = (_, value) => value is string { Length: > 0 };
+                tag.CustomConverter = new ItemTagDigest();
+            }
             if (info.Type == typeof(CharacterSnapshot))
             {
                 info.Properties.Single(p => p.Name == nameof(CharacterSnapshot.DrawYaw)).CustomConverter = new SingleNumber(allowNaN: true);
@@ -423,6 +440,29 @@ public sealed partial class WorldViewCodec
     /// Whether each component of a display rotation is finite.
     /// </summary>
     static bool Finite(Quaternion value) => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z) && float.IsFinite(value.W);
+    /// <summary>
+    /// The wire tag identity has a fixed bound even when a code mod stores an arbitrarily long tag on the authority.
+    /// </summary>
+    sealed class ItemTagDigest : JsonConverter<string>
+    {
+        /// <summary>
+        /// Validates the 128-bit SHA-256 prefix before it becomes a UI click token.
+        /// </summary>
+        public override string Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
+        {
+            string value = reader.GetString() ?? throw new JsonException("Missing item tag identity.");
+            if (value.Length != 0 && (value.Length != Meitou.Simulation.Items.ItemTagIdentity.DigestCharacters
+                || value.Any(c => c is not (>= '0' and <= '9' or >= 'A' and <= 'F'))))
+                throw new JsonException("Invalid item tag identity.");
+            return value;
+        }
+
+        /// <summary>
+        /// The encoder supplies the bounded digest computed from the authoritative tag.
+        /// </summary>
+        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) => writer.WriteStringValue(value);
+    }
+
     sealed class SingleNumber(bool allowNaN = false) : JsonConverter<float>
     {
         public override float Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)

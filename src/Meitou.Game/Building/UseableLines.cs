@@ -9,7 +9,7 @@ namespace Meitou.Game.Building;
 /// <summary>
 /// The lines of the original's UseableStuff / StorageBuilding / LightBuilding panel (slot 40 <c>FUN_140304e90</c>, docs/game/ui-screens.md "Selected building") for a
 /// selected building with no machine of the player's (a town's furniture or level building): <c>Training:</c> among the state lines of a training
-/// dummy, and in a town Workers then Efficiency and Max efficiency, or a dummy's Max Skill Level.
+/// dummy, and Workers then Efficiency and Max efficiency, or a dummy's Max Skill Level.
 /// </summary>
 sealed class UseableLines(PlayerInterface player)
 {
@@ -41,6 +41,19 @@ sealed class UseableLines(PlayerInterface player)
     public Func<string, MachineData?>? MachineData { get; set; }
 
     /// <summary>
+    /// Adds <c>[EMPTY]</c> in Title (the uppercased translation of "Empty" in brackets, no value) when the selected UseableStuff, StorageBuilding
+    /// or LightBuilding has an inventory with no items (slot 40 section 3, after <c>Town:</c>).
+    /// </summary>
+    internal void AddEmptyLine(BuildingSelection.SelectedBuilding focus, string? record, List<PlayerInterface.HudLine> state)
+    {
+        if (DataOf(record) is not { } data || !Useable(data)) return;
+        if ((player.Production.Machine(focus.SiteId) ?? MachineOf(focus))?.Storage is not { Items.Count: 0 }) return;
+
+        string caption = $"[{Loc.Tr("Empty").ToUpper(System.Globalization.CultureInfo.CurrentCulture)}]";
+        state.Add(new(caption, "", PlayerInterface.TitleColour));
+    }
+
+    /// <summary>
     /// Adds <c>Training:</c> with the dummy's stat (the editor's stat name, <c>FUN_140888440</c>) when <paramref name="record"/> is a training dummy
     /// (function 7, whatever its stat).
     /// </summary>
@@ -58,13 +71,13 @@ sealed class UseableLines(PlayerInterface player)
     internal bool IsSkeletonBed(string? record) => DataOf(record) is { Function: SkeletonBedFunction };
 
     /// <summary>
-    /// Adds the section 6 lines of a UseableStuff, StorageBuilding or LightBuilding standing in a town: Workers (slot 155), then Max Skill Level for
-    /// a training dummy, else Efficiency and Max efficiency (slot 154), then a consumer's Power (slot 153). Left out: a bed's, and a consumer's that
-    /// stands inside a building, whose registration with the town's frame is Unknown.
+    /// Adds the section 6 lines of a UseableStuff, StorageBuilding or LightBuilding, in a town or not (the panel's town guard passes for any placed
+    /// building): Workers (slot 155), then Max Skill Level for a training dummy, else Efficiency and Max efficiency (slot 154), then a consumer's
+    /// Power (slot 153). Left out: a bed's, and a consumer's with no power view (<c>ProductionSystem.LevelPowerOf</c>).
     /// </summary>
     internal void AddStatsLines(BuildingSelection.SelectedBuilding focus, List<PlayerInterface.HudLine> stats)
     {
-        if (focus.Town is not { Length: > 0 } || DataOf(focus.Record) is not { } data || !Useable(data)) return;
+        if (DataOf(focus.Record) is not { } data || !Useable(data)) return;
 
         var machine = MachineOf(focus);
         var power = player.Session.CurrentSnapshot.InspectedLevelPower is { } p && p.Instance == focus.Instance ? p : (LevelPowerView?)null;

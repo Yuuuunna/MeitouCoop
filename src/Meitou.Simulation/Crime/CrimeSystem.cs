@@ -107,7 +107,8 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     /// <summary>
     /// Sets a pending crime on the culprit (the game's setter <c>FUN_140852c80</c>, <b>Verified</b>): refused for a police-like culprit, an
     /// imprisoned one (<c>+0x2f8</c> = 2), a victim of the culprit's own faction, for a free culprit (slave state 0) a victim of the faction it is
-    /// seen as (<see cref="ArrestSystem.SeenFaction"/>: a working uniform's; <c>FUN_140852c20</c>) and a lawless victim faction; an Assault does not
+    /// seen as (<see cref="ArrestSystem.SeenFaction"/>: a working uniform's; <c>FUN_140852c20</c>) and a lawless victim faction; an Assault on a
+    /// diplomat becomes code 9 (<see cref="DiplomatVictim"/>); an Assault does not
     /// replace another pending crime (it raises that one's timer to 20); the same code again keeps the booked flag; a new code clears it. The timer
     /// is at least <see cref="MinTimer"/>. True when the crime is now pending. <paramref name="viaWrapper"/>: the original's callers that go through
     /// its wrapper <c>FUN_140852e10</c> (police hit, caught stealing, fencing, kidnapping seen) also drop the culprit's
@@ -120,6 +121,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         if (c is null || IsPoliceLike(world, c) || c.IsImprisoned || victimFaction == c.Faction
             || !viaWrapper && c.SlaveState == 0 && victimFaction == ArrestSystem.SeenFaction(c) || Factions.Lawless(victimFaction)) return false;
         timer = MathF.Max(timer, MinTimer);
+        if (code == CrimeCode.Assault && DiplomatVictim(world, victim)) code = CrimeCode.Terrorism2;
         if (c.Pending is { } p && p.Code != code && code == CrimeCode.Assault)
         {
             p.Timer = MathF.Max(p.Timer, WitnessTimer);
@@ -137,6 +139,20 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         if (viaWrapper) c.Freed = false;
         Note(world, CrimeEventKind.Pending, culprit, code, victimFaction, 0, CharacterId.None);
         return true;
+    }
+
+    /// <summary>
+    /// The setter's Assault on a diplomat (<c>FUN_140852c80</c>, <b>Verified</b>): an Assault whose victim is a character with diplomatic status
+    /// in its faction's own biomes (<c>isDiplomaticStatus(victim, 1)</c>, <see cref="Bodies.CharacterFacts.DiplomaticStatus"/>) is booked as code
+    /// 9, the second Terrorism, which no other pending crime holds off.
+    /// </summary>
+    static bool DiplomatVictim(World world, CharacterId victim)
+    {
+        var table = world.Characters;
+        if (!table.TryResolveNext(victim, out int v) || table.Cold(v) is not { } vc) return false;
+
+        var data = world.SystemOf<Population.PopulationSystem>()?.Data;
+        return Bodies.CharacterFacts.DiplomaticStatus(vc, table.Next[v].Position, data, true);
     }
 
     /// <summary>
@@ -364,8 +380,8 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     /// that regards the culprit as friendly costs it <see cref="BetrayalDelta"/>. A witness then sets the timer to 20 and, police-like of a faction
     /// that books bounties, books the crime. With <paramref name="kidnapping"/>, a witness that cares about the carried body first sets a pending
     /// Kidnapping (timer 20) on the carrier (the carrying check that runs before the crime check); with <paramref name="premises"/>, a witness that
-    /// <see cref="Trespasses"/> sets a pending Trespassing against its own faction. A sneaking culprit is seen only through a full spot meter
-    /// (<see cref="Spotted"/>).
+    /// <see cref="Trespasses"/> sets a pending Trespassing against its own faction. A culprit is seen by the sight test with the sight ray
+    /// (<see cref="SightRay.Sees"/>), a sneaking one only through a full spot meter (<see cref="Spotted"/>).
     /// </summary>
     void Witnesses(World world, int culprit, CharacterCold c, bool kidnapping, Premises? premises, float seconds)
     {
@@ -386,10 +402,10 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
             float range = AggroSystem.RangeOf(wc, Settings.Sight);
             if (sneaking)
             {
-                float v = world.Sight.Sees(w, culprit, next[w].Position, at, range, stealth);
+                float v = SightRay.Sees(world, w, culprit, next[w].Position, at, range, stealth);
                 if (v <= 0 || !Spotted(world, w, culpritId)) continue;
             }
-            else if (world.Sight.Sees(w, culprit, next[w].Position, at, range) <= 0) continue;
+            else if (SightRay.Sees(world, w, culprit, next[w].Position, at, range) <= 0) continue;
             if (body is not null && !Friendly(wf, c.Faction) && MindsKidnapping(wf, c, body))
                 SetPending(world, culprit, CrimeCode.Kidnapping, body.Faction, c.Carrying, KidnapTimer, viaWrapper: true);
             if (premises is { } house && Trespasses(world, wc, c, house))
@@ -565,7 +581,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
             world.PostCharacter(t, Loc.Tr("Alarm raised"));
         }
         var at = table.Next[target].Position;
-        int place = world.Sight.PlaceOf(target), floor = FloorOf(world, target, at);
+        int place = world.Sight.LocationOf(target), floor = FloorOf(world, target, at);
         foreach (var a in _alarms)
             if (a.Town == town && a.Code == code && a.Faction == faction)
             {
@@ -642,11 +658,11 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     }
 
     /// <summary>
-    /// The floor of the building the character stands in at <paramref name="at"/> (<c>Character</c> vfunc <c>+0x60</c>, an alarm's <c>+0x60</c>); 0
-    /// outdoors.
+    /// The floor of the building the character stands in, or on top of, at <paramref name="at"/> (<c>Character</c> vfunc <c>+0x60</c>, an alarm's
+    /// <c>+0x60</c>; <see cref="SightMap.FloorOf"/>, #796); 0 outdoors.
     /// </summary>
     public static int FloorOf(World world, int slot, Vector3 at) =>
-        world.Sight.BuildingOf(slot) is { } building ? world.Sight.FloorAt(building, at) : 0;
+        world.Sight.LocationOf(slot) is >= 0 and var place ? world.Sight.FloorAt(world.Sight.PlaceKey(place), at) : 0;
 
     /// <summary>
     /// The investigators' serial step (<c>Task_InvestigateAlarms</c> update, <b>Observed</b>), for each NPC whose AI acts out goal 209 or 210
@@ -669,7 +685,7 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
             }
             var alarm = AlarmFor(board.Town, next[i].Position,
                 goal.Task.Type == Data.Gameplay.Ai.TaskType.InvestigateAlarmsAlliesOnly ? cold.Faction : -1, FloorOf(world, i, next[i].Position),
-                world.Sight.PlaceOf(i), world);
+                world.Sight.LocationOf(i), world);
             if (alarm is null) continue;
             if (Vector3.DistanceSquared(alarm.Position, next[i].Position) <= AlarmLookRange * AlarmLookRange)
             {

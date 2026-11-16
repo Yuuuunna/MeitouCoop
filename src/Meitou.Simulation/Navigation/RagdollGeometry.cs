@@ -1,243 +1,416 @@
-using System.Collections.Concurrent;
 using System.Numerics;
 using Meitou.Content;
 using Meitou.Data;
 using Meitou.Data.World;
 using Meitou.Simulation.Ragdolls;
+using CellMap = System.Collections.Generic.Dictionary<(int, int), System.Collections.Generic.List<System.Numerics.Vector3>>;
 
 namespace Meitou.Simulation.Navigation;
 
 /// <summary>
-/// What ragdolls fall onto in the world: the terrain heightmap, and the collision of the buildings and map features
-/// (<see cref = "ZoneGeometryGatherer.RagdollTriangles"/>), gathered per zone on a worker the first time a ragdoll moves near it and kept in 32-unit
-/// cells (<see cref = "RagdollPhysics"/>' tiles). Until a zone is gathered its buildings are reported not ready, and the tile asks again.
+/// Terrain and per-zone building collision for ragdolls and sight. Workers read immutable runtime snapshots; a loaded zone keeps its previous
+/// triangles until a current replacement is ready. Zone loading waits for the first gather, and held zones are not evicted.
 /// </summary>
 public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
 {
+    #region State
+
     /// <summary>
-    /// Zones kept at most; the least recently asked for goes first (engine choice).
+    /// Entries kept besides held zones; least recently used entries go first.
     /// </summary>
     const int MaxZones = 24;
     /// <summary>
-    /// How far a building's collision may reach from its placement (the navmesh gatherer's reach).
+    /// How far a building's collision may reach from its placement.
     /// </summary>
     const float Reach = 600;
     /// <summary>
-    /// Gathers the zones' building and feature collision (foliage left out); used under <see cref = "_gatherLock"/>.
+    /// The gatherer, used only under the gather lock.
     /// </summary>
     readonly ZoneGeometryGatherer _gatherer;
     /// <summary>
-    /// Each zone's gathered triangles by 32-unit cell, buildings and roofs apart, as the task of a worker's gather; dropped by a run-time building
-    /// change and by <see cref = "Evict"/>.
-    /// </summary>
-    readonly ConcurrentDictionary<(ZoneCoordinate Zone, bool Roofs), Task<Dictionary<(int, int), List<Vector3>>>> _zones = new();
-    /// <summary>
-    /// One gather at a time: the gatherer is not thread-safe.
+    /// Serializes gathers because their heightmap reader is not thread-safe.
     /// </summary>
     readonly object _gatherLock = new();
     /// <summary>
-    /// When each gathered zone was last asked for (a tick of <see cref = "_clock"/>), for <see cref = "Evict"/>.
+    /// Serializes snapshot capture, cache publication and disposal.
     /// </summary>
-    readonly ConcurrentDictionary<(ZoneCoordinate Zone, bool Roofs), long> _used = new();
+    readonly object _cacheLock = new();
     /// <summary>
-    /// Counts the asks; the newest has the highest number.
+    /// Published or initially pending collision, plus at most one replacement per entry.
     /// </summary>
-    long _clock;
+    readonly Dictionary<(ZoneCoordinate Zone, bool Roofs), ZoneEntry> _zones = [];
     /// <summary>
-    /// The buildings placed at run time, whose changes drop the zones they touch; null: none.
+    /// Last use of each entry, for eviction.
+    /// </summary>
+    readonly Dictionary<(ZoneCoordinate Zone, bool Roofs), long> _used = [];
+    /// <summary>
+    /// All unfinished jobs, including entries evicted while a replacement was running.
+    /// </summary>
+    readonly List<Task> _pending = [];
+    /// <summary>
+    /// The runtime placements whose snapshots each gather reads.
     /// </summary>
     readonly NavRuntimeBuildings? _runtime;
     /// <summary>
-    /// The terrain bodies land on.
+    /// The full-resolution terrain used by ragdolls.
     /// </summary>
     readonly RagdollGround _ground;
-    readonly object _cacheLock = new();
-    readonly List<Task> _pending = [];
+    /// <summary>
+    /// Loaded zones retained regardless of cache pressure.
+    /// </summary>
+    HashSet<ZoneCoordinate> _held = [];
+    /// <summary>
+    /// The latest runtime snapshot captured at a reader boundary.
+    /// </summary>
     NavRuntimeBuildings? _runtimeSnapshot;
+    /// <summary>
+    /// Revision of the captured runtime snapshot.
+    /// </summary>
     long _cachedRevision = long.MinValue;
+    /// <summary>
+    /// Increments when replacement geometry is published, invalidating cached collision tiles.
+    /// </summary>
+    long _generation;
+    /// <summary>
+    /// Completion notifications make unchanged collision queries skip scanning the zone cache.
+    /// </summary>
+    long _completionRevision;
+    /// <summary>
+    /// The completion counter last observed at a reader boundary.
+    /// </summary>
+    long _observedCompletionRevision = -1;
+    /// <summary>
+    /// Monotonic use counter for eviction.
+    /// </summary>
+    long _clock;
+    /// <summary>
+    /// No new work can start once disposal begins.
+    /// </summary>
     bool _disposed;
-    /// <param name = "terrainHeight">
-    /// The simulation's ground height, used only where the full heightmap cannot be opened: it is the coarse world grid away from the loaded area.
-    /// </param>
-    /// <param name = "runtime">
-    /// The buildings placed at run time (built, bought or ruined houses), which the zones' collision includes as the navmesh does; a change drops the
-    /// zone's gathered collision and bumps <see cref = "Generation"/>.
-    /// </param>
-    public RagdollGeometry(GameInstall install, GameDatabase db, WorldLevelData levels, Func<float, float, float> terrainHeight, NavRuntimeBuildings? runtime = null)
+
+    /// <summary>
+    /// One entry's published gather and the revision last attempted. Failed replacements retain the previous usable collision.
+    /// </summary>
+    sealed class ZoneEntry(Task<CellMap> current, long revision)
     {
-        _gatherer = new ZoneGeometryGatherer(install, db, levels, new CollisionCache(install))
-        {
-            IncludeFoliage = false
-        };
+        /// <summary>
+        /// Current triangles, or the first gather still pending.
+        /// </summary>
+        public Task<CellMap> Current = current;
+        /// <summary>
+        /// The latest completed attempt's revision.
+        /// </summary>
+        public long Revision = revision;
+        /// <summary>
+        /// One pending replacement, coalescing further changes until it finishes.
+        /// </summary>
+        public Refresh? Replacement;
+    }
+
+    /// <summary>
+    /// A gather's captured revision and result.
+    /// </summary>
+    sealed record Refresh(long Revision, Task<CellMap> Result);
+
+    /// <summary>
+    /// Gathers collision from the install and captured runtime placements; the supplied terrain height is the missing-heightmap fallback.
+    /// </summary>
+    public RagdollGeometry(GameInstall install, GameDatabase db, WorldLevelData levels, Func<float, float, float> terrainHeight,
+        NavRuntimeBuildings? runtime = null)
+    {
+        _gatherer = new ZoneGeometryGatherer(install, db, levels, new CollisionCache(install)) { IncludeFoliage = false };
         _runtime = runtime;
         _ground = new RagdollGround(install, terrainHeight);
     }
 
+    #endregion
+
+    #region Queries
+
     /// <inheritdoc/>
-    public long Generation => _runtime?.Revision ?? 0;
+    public long Generation
+    {
+        get
+        {
+            lock (_cacheLock)
+            {
+                if (!_disposed) RefreshRuntime();
+                return _generation;
+            }
+        }
+    }
 
     /// <summary>
-    /// The terrain at full resolution (<see cref = "RagdollGround.HeightAt"/>). Called from the simulation thread only.
+    /// The terrain at full resolution, called from the simulation thread.
     /// </summary>
     public float GroundHeight(float x, float z, float nearY) => _ground.HeightAt(x, z);
     /// <inheritdoc/>
     public bool Buildings(Vector3 min, Vector3 max, List<Vector3> triangles) => Collect(min, max, triangles, roofs: false);
     /// <summary>
-    /// The groups 23..26 triangles (<see cref = "ZoneGeometryGatherer.RoofTriangles"/>), gathered and kept per zone like <see cref = "Buildings"/>.
+    /// Collision groups 23..26, kept independently of building collision.
     /// </summary>
     public bool Roofs(Vector3 min, Vector3 max, List<Vector3> triangles) => Collect(min, max, triangles, roofs: true);
+
     /// <summary>
-    /// Adds the gathered triangles of the cells between the corners, from every zone within <see cref = "Reach"/> of them, starting a gather for a zone
-    /// not asked for yet; false while one of those zones is still being gathered.
+    /// Whether a zone's first building gather finished. A failed gather counts as loaded without collision, as in the upstream loader.
+    /// </summary>
+    public bool ZoneRead(ZoneCoordinate zone)
+    {
+        lock (_cacheLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            RefreshRuntime();
+            return Ask(zone, roofs: false).IsCompleted;
+        }
+    }
+
+    /// <summary>
+    /// Keeps loaded zones' entries from eviction.
+    /// </summary>
+    public void HoldZones(IReadOnlyCollection<ZoneCoordinate> zones)
+    {
+        lock (_cacheLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _held = [.. zones];
+            Evict();
+        }
+    }
+
+    /// <summary>
+    /// Collects cells from every zone whose buildings can reach the box; missing first gathers report not ready.
     /// </summary>
     bool Collect(Vector3 min, Vector3 max, List<Vector3> triangles, bool roofs)
     {
         lock (_cacheLock)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _pending.RemoveAll(t => t.IsCompleted);
-            if (_cachedRevision != Generation)
-            {
-                _runtimeSnapshot = _runtime?.Snapshot();
-                _cachedRevision = _runtimeSnapshot?.Revision ?? 0;
-                _zones.Clear();
-                _used.Clear();
-            }
-
-            return CollectZones(min, max, triangles, roofs) && _cachedRevision == Generation;
+            RefreshRuntime();
+            return CollectZones(min, max, triangles, roofs);
         }
     }
 
     /// <summary>
-    /// Adds the triangles of the cells in the box (cell columns <paramref name = "cx0"/> to <paramref name = "cx1"/>, rows <paramref name = "cz0"/> to
-    /// <paramref name = "cz1"/>) from one gathered zone.
+    /// Adds the requested cells from the current entries, starting first gathers as needed.
     /// </summary>
-    static void AddCells(Dictionary<(int, int), List<Vector3>> cells, int cx0, int cx1, int cz0, int cz1, List<Vector3> triangles)
-    {
-        for (int x = cx0; x <= cx1; x++)
-        {
-            for (int z = cz0; z <= cz1; z++)
-            {
-                if (cells.TryGetValue((x, z), out var cell))
-                    triangles.AddRange(cell);
-            }
-        }
-    }
-
-    /// <summary>
-    /// The 32-unit cell (<see cref = "RagdollSystem.TileSize"/>) of a world X or Z.
-    /// </summary>
-    static int Cell(float v) => (int)MathF.Floor(v / RagdollSystem.TileSize);
-    /// <summary>
-    /// Drops the least recently asked for gathered zones past <see cref = "MaxZones"/> (only finished ones).
-    /// </summary>
-    void Evict()
-    {
-        if (_zones.Count <= MaxZones)
-            return;
-        foreach (var(zone, _)in _used.OrderBy(u => u.Value).Take(_zones.Count - MaxZones).ToList())
-        {
-            if (_zones.TryGetValue(zone, out var task) && task.IsCompleted && _zones.TryRemove(zone, out _))
-                _used.TryRemove(zone, out _);
-        }
-    }
-
-    /// <summary>
-    /// Unhooks from the run-time buildings and waits for the gathers still running.
-    /// </summary>
-    public void Dispose()
-    {
-        Task[] tasks;
-        lock (_cacheLock)
-        {
-            if (_disposed)
-                return;
-            _disposed = true;
-            tasks = _pending.ToArray();
-        }
-
-        // Invalidated jobs can still be queued behind gatherLock; wait before disposing their reader too.
-        foreach (var task in tasks)
-            try
-            {
-                task.Wait();
-            }
-            catch (AggregateException)
-            {
-            }
-
-        _ground.Dispose();
-        lock (_gatherLock)
-            _gatherer.Dispose();
-    }
-
     bool CollectZones(Vector3 min, Vector3 max, List<Vector3> triangles, bool roofs)
     {
         bool ready = true;
         int cx0 = Cell(min.X), cx1 = Cell(max.X - 1e-3f), cz0 = Cell(min.Z), cz1 = Cell(max.Z - 1e-3f);
-        // A building's triangles are kept with the zone it is placed in and may reach into the next one: the zones within a building's reach of the box.
         var first = WorldLayout.ZoneOf(min.X - Reach, min.Z - Reach);
         var last = WorldLayout.ZoneOf(max.X + Reach, max.Z + Reach);
         for (int zy = first.Y; zy <= last.Y; zy++)
+        {
             for (int zx = first.X; zx <= last.X; zx++)
             {
                 var zone = new ZoneCoordinate(zx, zy);
-                if (!zone.IsInsideGrid)
-                    continue;
-                _used[(zone, roofs)] = Interlocked.Increment(ref _clock);
-                if (!_zones.TryGetValue((zone, roofs), out var task))
-                {
-                    var snapshot = _runtimeSnapshot;
-                    task = Task.Run(() => Gather(zone, roofs, snapshot));
-                    _zones[(zone, roofs)] = task;
-                    _pending.Add(task);
-                }
+                if (!zone.IsInsideGrid) continue;
 
+                var task = Ask(zone, roofs);
                 if (!task.IsCompletedSuccessfully)
                 {
                     ready &= !task.IsFaulted && task.IsCompleted;
                     continue;
                 }
 
-                for (int x = cx0; x <= cx1; x++)
-                    for (int z = cz0; z <= cz1; z++)
-                        if (task.Result.TryGetValue((x, z), out var cell))
-                            triangles.AddRange(cell);
+                AddCells(task.Result, cx0, cx1, cz0, cz1, triangles);
             }
+        }
 
         Evict();
         return ready;
     }
 
-    Dictionary<(int, int), List<Vector3>> Gather(ZoneCoordinate zone, bool roofs, NavRuntimeBuildings? snapshot)
+    /// <summary>
+    /// Adds cells in the requested rectangle from one gathered zone.
+    /// </summary>
+    static void AddCells(CellMap cells, int cx0, int cx1, int cz0, int cz1, List<Vector3> triangles)
+    {
+        for (int x = cx0; x <= cx1; x++)
+            for (int z = cz0; z <= cz1; z++)
+                if (cells.TryGetValue((x, z), out var cell)) triangles.AddRange(cell);
+    }
+
+    /// <summary>
+    /// The 32-unit cell containing a coordinate.
+    /// </summary>
+    static int Cell(float v) => (int)MathF.Floor(v / RagdollSystem.TileSize);
+
+    #endregion
+
+    #region Cache lifecycle
+
+    /// <summary>
+    /// Captures new placements and publishes only replacements for that snapshot. One job per entry coalesces intervening revisions.
+    /// </summary>
+    void RefreshRuntime()
+    {
+        long completed = Volatile.Read(ref _completionRevision);
+        if (_cachedRevision == (_runtime?.Revision ?? 0) && _observedCompletionRevision == completed) return;
+
+        _observedCompletionRevision = completed;
+        _pending.RemoveAll(ObserveFinished);
+        if (_cachedRevision != (_runtime?.Revision ?? 0))
+        {
+            _runtimeSnapshot = _runtime?.Snapshot();
+            _cachedRevision = _runtimeSnapshot?.Revision ?? 0;
+        }
+
+        foreach (var (key, entry) in _zones)
+            RefreshEntry(key, entry);
+    }
+
+    /// <summary>
+    /// Completes one replacement and starts the newest one when its old snapshot became obsolete.
+    /// </summary>
+    void RefreshEntry((ZoneCoordinate Zone, bool Roofs) key, ZoneEntry entry)
+    {
+        if (entry.Replacement is { } replacement)
+        {
+            if (!replacement.Result.IsCompleted) return;
+
+            entry.Replacement = null;
+            if (replacement.Revision == _cachedRevision)
+            {
+                entry.Revision = replacement.Revision;
+                if (replacement.Result.IsCompletedSuccessfully)
+                {
+                    entry.Current = replacement.Result;
+                    _generation++;
+                }
+            }
+        }
+
+        if (entry.Revision != _cachedRevision)
+            entry.Replacement = new Refresh(_cachedRevision, StartGather(key.Zone, key.Roofs));
+    }
+
+    /// <summary>
+    /// Observes failures before a finished task leaves the disposal list.
+    /// </summary>
+    static bool ObserveFinished(Task task)
+    {
+        if (!task.IsCompleted) return false;
+
+        _ = task.Exception;
+        return true;
+    }
+
+    /// <summary>
+    /// The current gather for one entry, starting it once when absent.
+    /// </summary>
+    Task<CellMap> Ask(ZoneCoordinate zone, bool roofs)
+    {
+        var key = (zone, roofs);
+        _used[key] = ++_clock;
+        if (!_zones.TryGetValue(key, out var entry))
+        {
+            entry = new ZoneEntry(StartGather(zone, roofs), _cachedRevision);
+            _zones.Add(key, entry);
+        }
+
+        return entry.Current;
+    }
+
+    /// <summary>
+    /// Starts a gather with the immutable captured placements and tracks it until completion or disposal.
+    /// </summary>
+    Task<CellMap> StartGather(ZoneCoordinate zone, bool roofs)
+    {
+        var snapshot = _runtimeSnapshot;
+        var task = Task.Run(() => Gather(zone, roofs, snapshot));
+        _pending.Add(task);
+        _ = task.ContinueWith(_ => Interlocked.Increment(ref _completionRevision), CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return task;
+    }
+
+    /// <summary>
+    /// Drops the least recently used completed entries beyond the spare budget, leaving every held zone.
+    /// </summary>
+    void Evict()
+    {
+        int spare = _zones.Keys.Count(k => !_held.Contains(k.Zone)) - MaxZones;
+        if (spare <= 0) return;
+
+        foreach (var (key, _) in _used.Where(u => !_held.Contains(u.Key.Zone)).OrderBy(u => u.Value).Take(spare).ToArray())
+        {
+            if (!_zones.TryGetValue(key, out var entry) || !entry.Current.IsCompleted) continue;
+
+            _zones.Remove(key);
+            _used.Remove(key);
+        }
+    }
+
+    /// <summary>
+    /// Waits for all workers before disposing the shared readers, including obsolete or evicted jobs.
+    /// </summary>
+    public void Dispose()
+    {
+        Task[] tasks;
+        lock (_cacheLock)
+        {
+            if (_disposed) return;
+
+            _disposed = true;
+            tasks = _pending.ToArray();
+        }
+
+        foreach (var task in tasks)
+        {
+            try
+            {
+                task.GetAwaiter().GetResult();
+            }
+            catch (Exception)
+            {
+                // Disposal cannot publish failed or obsolete geometry.
+            }
+        }
+
+        _ground.Dispose();
+        lock (_gatherLock)
+            _gatherer.Dispose();
+    }
+
+    #endregion
+
+    #region Gathering
+
+    /// <summary>
+    /// Gathers one snapshot's triangles and files each under the cells its plan bounds cover.
+    /// </summary>
+    CellMap Gather(ZoneCoordinate zone, bool roofs, NavRuntimeBuildings? snapshot)
     {
         var all = new List<Vector3>();
         lock (_gatherLock)
         {
             _gatherer.UseRuntimeSnapshot(snapshot);
-            if (roofs)
-                _gatherer.RoofTriangles(zone, all);
-            else
-                _gatherer.RagdollTriangles(zone, all);
+            if (roofs) _gatherer.RoofTriangles(zone, all);
+            else _gatherer.RagdollTriangles(zone, all);
         }
 
-        var cells = new Dictionary<(int, int), List<Vector3>>();
+        var cells = new CellMap();
         for (int t = 0; t + 2 < all.Count; t += 3)
         {
             Vector3 a = all[t], b = all[t + 1], c = all[t + 2];
             var lo = Vector3.Min(a, Vector3.Min(b, c));
             var hi = Vector3.Max(a, Vector3.Max(b, c));
             for (int x = Cell(lo.X); x <= Cell(hi.X); x++)
+            {
                 for (int z = Cell(lo.Z); z <= Cell(hi.Z); z++)
                 {
-                    if (!cells.TryGetValue((x, z), out var list))
-                        cells[(x, z)] = list = [];
+                    if (!cells.TryGetValue((x, z), out var list)) cells[(x, z)] = list = [];
+
                     list.Add(a);
                     list.Add(b);
                     list.Add(c);
                 }
+            }
         }
 
         return cells;
     }
+
+    #endregion
 }

@@ -490,6 +490,16 @@ public sealed class PopulationData
     public Meitou.Data.Gameplay.Construction.IResourceNodes? ResourceNodes { get; set; }
 
     /// <summary>
+    /// The level data's building ids a new player site's id skips; null: no level data.
+    /// </summary>
+    public Construction.LevelBuildingIds? LevelBuildingIds { get; set; }
+
+    /// <summary>
+    /// The level buildings that draw power and that no town takes (<see cref="TownBuildings.Townless"/>); empty without level data.
+    /// </summary>
+    public IReadOnlyList<TownlessBuilding> Townless { get; set; } = [];
+
+    /// <summary>
     /// The town buildings' rooms and lamps for the sight tests (<see cref="SightMap"/>); null: everyone outdoors and unlit.
     /// </summary>
     public ISightSource? Sight { get; set; }
@@ -563,6 +573,21 @@ public sealed class PopulationData
         var (cx, cz) = WeatherAreas.CellOf(at.X, at.Y);
         int g = biomes.GroupOf(cx, cz);
         return g >= 0 ? biomes.Groups[g].Id : null;
+    }
+
+    /// <summary>
+    /// Whether the BIOME_GROUP at <paramref name="at"/> is one of <paramref name="faction"/>'s FACTION <c>biomes</c>
+    /// (<c>FactionWarMgr::isBiomeHomeTerritory</c> <c>FUN_1409c3b30</c> over the list the war manager reads from <c>biomes</c> at <c>+0x88</c>,
+    /// <c>FUN_1409cabd0</c>, <b>Verified</b>). False without a biome map, outside every group or for no faction.
+    /// </summary>
+    public bool InHomeBiome(int faction, Vector3 at)
+    {
+        if ((uint)faction >= (uint)Factions.Count || BiomeGroupAt(new Vector2(at.X, at.Z)) is not { } group) return false;
+
+        foreach (var link in Factions[faction].Biomes)
+            if (link.Id == group) return true;
+
+        return false;
     }
 
     /// <summary>

@@ -13,9 +13,10 @@ namespace Meitou.Simulation.Saving;
 /// GAMESTATE_BUILDING (docs/game/buildings-production.md "Production", "Farming" and "Power": <c>production amount</c>, <c>resource mult</c>,
 /// <c>power on</c>, <c>gets battery</c>, <c>batterycharge</c>, <c>consumption amount-&lt;k&gt;</c>, <c>plant growth</c>, <c>plant death</c>, <c>plant
 /// start</c>, <c>plants harvested</c>, <c>save time</c>), and its items in an INVENTORY_STATE named first by the building's instance states
-/// (docs/formats/save.md "Zone files"). The items' sections are <c>in&lt;k&gt;</c>, <c>out</c> and, for the storage grid, <c>main</c> (the original's
-/// storage section name is <b>Unknown</b>; no sample save holds a player building with items, so the original reading these is unverified). A loaded
-/// farm's plants all take the farm's growth (the harvested ones -10): the stagger between plants is not saved.
+/// (docs/formats/save.md "Machine inventory sections"). The items' sections are the original's: <c>in1</c>, <c>in2</c>, ... for the inputs,
+/// <c>out</c> for the output and <c>backpack_content</c> for a storage grid (a furnace's grid <c>in1</c>); an inventory older Meitou wrote numbers its
+/// inputs from <c>in0</c> and names its grid <c>main</c>, and is read as such. A loaded farm's plants all take the farm's growth (the harvested ones
+/// -10): the stagger between plants is not saved.
 /// </summary>
 public static partial class MachineSave
 {
@@ -28,6 +29,16 @@ public static partial class MachineSave
     /// The item furnace's input section (<b>Verified</b>, <c>FurnaceBuilding::setupFromData</c>), Meitou's storage grid of a furnace.
     /// </summary>
     const string FurnaceSection = "in1";
+    /// <summary>
+    /// The section of a building's storage grid (<b>Verified</b>, <c>FUN_140554530</c>: every building with <c>has inventory</c>), Meitou's
+    /// <c>main</c>.
+    /// </summary>
+    const string StorageSection = "backpack_content";
+    /// <summary>
+    /// The Meitou bool on a player building's INVENTORY_STATE (<c>&lt;id&gt;-inventory</c>) that says its sections are the original's: one Meitou
+    /// wrote without it numbers the inputs from <c>in0</c> (the original ignores it: keys are read by name).
+    /// </summary>
+    public const string OriginalSectionsKey = "meitou original sections";
 
     /// <summary>
     /// The key prefix of a remembered ingredient's string id (followed by its number).
@@ -74,23 +85,8 @@ public static partial class MachineSave
                 continue;
             }
             WriteKeys(state, m, world.GameHours);
-            var saveItems = Items(m);
-            string inventoryId = rawId + InventorySuffix;
-            var inventory = file.Records.FirstOrDefault(r => r.StringId == inventoryId && r.RecordType == FcsRecordType.InventoryState);
-            instance.States.Remove(inventoryId);
-            if (saveItems.Count == 0)
-            {
-                if (inventory is not null) SaveInventory.Replace(file, inventory, [], n => $"{n}-zone{site.Zone.X}.{site.Zone.Y}-INGAME");
-                if (inventory is not null) file.Records.Remove(inventory);
-                continue;
-            }
-            if (inventory is null)
-            {
-                inventory = new FcsRecord { Type = (int)FcsRecordType.InventoryState, Id = SaveBuilder.NextNumber(file), Name = "0", StringId = inventoryId };
-                file.Records.Add(inventory);
-            }
-            SaveInventory.Replace(file, inventory, saveItems, n => string.Create(CultureInfo.InvariantCulture, $"{n}-zone{site.Zone.X}.{site.Zone.Y}-INGAME"));
-            instance.States.Insert(0, inventoryId);
+            if (WriteInventory(file, site.Zone, instance, null, Items(m)) is { } inventory)
+                inventory.Bools[OriginalSectionsKey] = true;
         }
     }
 
@@ -164,32 +160,60 @@ public static partial class MachineSave
     /// </summary>
     static void WriteInventory(SaveFile file, BuildSite site, FcsInstance instance, List<SaveItem> saveItems)
     {
-        string inventoryId = site.Id + InventorySuffix;
-        var inventory = file.Records.FirstOrDefault(r => r.StringId == inventoryId && r.RecordType == FcsRecordType.InventoryState);
-        instance.States.Remove(inventoryId);
+        if (WriteInventory(file, site.Zone, instance, site.Id + InventorySuffix, saveItems) is { } inventory)
+            inventory.Bools[OriginalSectionsKey] = true;
+    }
+
+    /// <summary>
+    /// Replaces a building instance's inventory record with its items, or removes the record when it holds none: the record
+    /// <paramref name="inventoryId"/>, or with null the INVENTORY_STATE the instance lists (a level building's,
+    /// <c>&lt;n&gt;-zone&lt;X&gt;.&lt;Y&gt;-INGAME</c> when it has none yet, as the original names it). Returns the record written, null when removed.
+    /// </summary>
+    internal static FcsRecord? WriteInventory(SaveFile file, ZoneCoordinate zone, FcsInstance instance, string? inventoryId, List<SaveItem> saveItems)
+    {
+        string IdOf(int n) => string.Create(CultureInfo.InvariantCulture, $"{n}-zone{zone.X}.{zone.Y}-INGAME");
+
+        var inventory = inventoryId is null
+            ? ListedInventory(file, instance)
+            : file.Records.FirstOrDefault(r => r.StringId == inventoryId && r.RecordType == FcsRecordType.InventoryState);
+        instance.States.Remove(inventory?.StringId ?? inventoryId ?? "");
+
+        foreach (var id in instance.States.ToArray())
+        {
+            var duplicate = file.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.InventoryState);
+            if (duplicate is null) continue;
+            SaveInventory.Replace(file, duplicate, [], IdOf);
+            file.Records.Remove(duplicate);
+            instance.States.Remove(id);
+        }
+
         if (saveItems.Count == 0)
         {
-            if (inventory is not null) SaveInventory.Replace(file, inventory, [], n => $"{n}-zone{site.Zone.X}.{site.Zone.Y}-INGAME");
-            if (inventory is not null) file.Records.Remove(inventory);
-            return;
+            if (inventory is null) return null;
+            SaveInventory.Replace(file, inventory, [], IdOf);
+            file.Records.Remove(inventory);
+            return null;
         }
 
         if (inventory is null)
         {
-            inventory = new FcsRecord
-            {
-                Type = (int)FcsRecordType.InventoryState,
-                Id = SaveBuilder.NextNumber(file),
-                Name = "0",
-                StringId = inventoryId
-            };
+            int n = SaveBuilder.NextNumber(file);
+            inventory = new FcsRecord { Type = (int)FcsRecordType.InventoryState, Id = n, Name = "0", StringId = inventoryId ?? IdOf(n) };
             file.Records.Add(inventory);
         }
 
-        SaveInventory.Replace(file, inventory, saveItems,
-            n => string.Create(CultureInfo.InvariantCulture, $"{n}-zone{site.Zone.X}.{site.Zone.Y}-INGAME"));
-        instance.States.Insert(0, inventoryId);
+        SaveInventory.Replace(file, inventory, saveItems, IdOf);
+        instance.States.Insert(0, inventory.StringId);
+        return inventory;
     }
+
+    /// <summary>
+    /// The INVENTORY_STATE a building instance lists among its states (the first), null for none.
+    /// </summary>
+    internal static FcsRecord? ListedInventory(SaveFile file, FcsInstance instance) =>
+        instance.States
+            .Select(id => file.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.InventoryState))
+            .FirstOrDefault(r => r is not null);
 
     /// <summary>
     /// Writes a machine's production, power, battery, input and farm keys into its building state.
@@ -205,6 +229,17 @@ public static partial class MachineSave
         state.Bools["gets battery"] = m.GetsBattery;
         state.Bools["broken"] = m.Broken;
         if (m.Data.IsBattery) state.Floats["batterycharge"] = m.Charge;
+
+        WriteProduction(state, m, gameHours);
+    }
+
+    /// <summary>
+    /// Writes a machine's production keys into its building state: <c>resource mult</c>, <c>production amount</c>,
+    /// <c>consumption amount-&lt;k&gt;</c>, a bench's crafting keys and a farm's keys (<c>FUN_1402a1fa0</c>, the farm's and the bench's writers after it).
+    /// </summary>
+    internal static void WriteProduction(FcsRecord state, Machine m, double gameHours)
+    {
+        state.Floats["resource mult"] = m.Yield;
         if (m.Output is { } o) state.Floats["production amount"] = o.Progress;
         for (int k = 0; k < m.Inputs.Length; k++)
             state.Floats["consumption amount-" + k.ToString(CultureInfo.InvariantCulture)] = m.Inputs[k].Level;
@@ -271,35 +306,42 @@ public static partial class MachineSave
     }
 
     /// <summary>
-    /// The machine's items as saved: each input under <c>in&lt;k&gt;</c>, the output under <c>out</c>, then the crafting bench's finished items.
+    /// The machine's items as saved, in the original's sections (docs/formats/save.md "Machine inventory sections"): each input k under
+    /// <c>in&lt;k + 1&gt;</c>, the output under <c>out</c>, then the crafting bench's finished items and the storage grid's items (a furnace's under
+    /// <c>in1</c>, any other's <c>main</c> under <c>backpack_content</c>).
     /// </summary>
-    static List<SaveItem> Items(Machine m, bool includeStorage = true)
+    internal static List<SaveItem> Items(Machine m, bool includeStorage = true)
     {
         var list = new List<SaveItem>();
         for (int k = 0; k < m.Inputs.Length; k++)
         {
             if (m.Inputs[k].Count > 0)
             {
-                list.Add(new SaveItem
-                {
-                    BaseId = m.Inputs[k].Item,
-                    Section = "in" + k.ToString(CultureInfo.InvariantCulture),
-                    Quantity = m.Inputs[k].Count
-                });
+                string section = "in" + (k + 1).ToString(CultureInfo.InvariantCulture);
+                list.Add(new SaveItem { BaseId = m.Inputs[k].Item, Section = section, Quantity = m.Inputs[k].Count });
             }
         }
 
         if (m.Output is { Count: > 0 } o) list.Add(new SaveItem { BaseId = o.Recipe.Item, Section = "out", Quantity = o.Count });
         if (m.Craft is { } c) list.AddRange(c.Done.Select(SavedKit.FromItem));
         if (includeStorage && m.Storage is { } s)
-        {
-            list.AddRange(m.Data.IsFurnace
-                ? s.Items.Select(i => SavedKit.FromItem(i, FurnaceSection))
-                : SavedKit.FromInventory(s));
-        }
+            list.AddRange(m.Data.IsFurnace ? s.Items.Select(i => SavedKit.FromItem(i, FurnaceSection)) : StorageItems(s));
 
         return list;
     }
+
+    /// <summary>
+    /// A storage grid's saved items with Meitou's <c>main</c> named as the original's grid section (<see cref="SavedKit.FromInventory"/>).
+    /// </summary>
+    static IEnumerable<SaveItem> StorageItems(Inventory s) =>
+        s.Items
+            .Where(i => !InventoryCommands.IsLimbSection(i.Section))
+            .Select(StorageItem);
+
+    /// <summary>
+    /// A storage grid's saved item, <c>main</c> as <c>backpack_content</c>.
+    /// </summary>
+    static SaveItem StorageItem(ItemInstance item) => SavedKit.FromItem(item, item.Section == "main" ? StorageSection : item.Section);
 
     /// <summary>
     /// Read existing machines after buildings; the binding also handles subsequently created town and level-house machines.
@@ -313,6 +355,60 @@ public static partial class MachineSave
             if (production.Ensure(world, site) is { } machine) world.SavedMachines!.Apply(world, production, site, machine);
         }
     }
+
+    /// <summary>
+    /// Puts a building's saved items into its machine: the outputs, the inputs and the storage grid (<see cref="Items"/>). The inputs are numbered
+    /// from <c>in1</c>, or from <c>in0</c> as older Meitou wrote them when <paramref name="fromZero"/> is set or an item lies in <c>in0</c> (the
+    /// original never names one, docs/formats/save.md "Machine inventory sections").
+    /// </summary>
+    internal static void PutItems(Machine m, List<SaveItem> items, ItemFactory factory, bool fromZero = false, bool includeStorage = true)
+    {
+        int firstInput = fromZero || items.Any(i => i.Section == "in0") ? 0 : 1;
+        var storage = new List<SaveItem>();
+        foreach (var item in items)
+        {
+            int k = InputOf(item.Section) - firstInput;
+            if (item.Section == "out" && m.Craft is { } craft)
+            {
+                if (SavedKit.ItemOf(item, factory) is { } done) craft.Done.Add(done);
+            }
+            else if (item.Section == "out" && m.Output is { } o && o.Recipe.Item == item.BaseId)
+            {
+                o.Count = Math.Min(o.Recipe.Capacity, o.Count + item.Quantity);
+            }
+            else if (k >= 0 && k < m.Inputs.Length && (m.Inputs[k].Item == item.BaseId || m.Craft is not null && m.Inputs[k].Count == 0))
+            {
+                // A crafting bench's sections hold its last craft's ingredients, also with nothing queued.
+                m.Inputs[k].Item = item.BaseId;
+                m.Inputs[k].Count = Math.Min(m.Inputs[k].Recipe.Capacity, m.Inputs[k].Count + item.Quantity);
+            }
+            else
+            {
+                storage.Add(item);
+            }
+        }
+
+        if (includeStorage && m.Storage is { } grid && storage.Count > 0)
+        {
+            foreach (var item in SavedKit.ToGrid(storage, factory, grid.Width, grid.Height).Items)
+            {
+                // A furnace's in1 and any other building's backpack_content are Meitou's storage grid main.
+                if (m.Data.IsFurnace || item.Section == StorageSection) item.Section = "main";
+
+                // A grid that is now smaller (a storage sized from its one item) gets an item that no longer fits at the next free cell, as the
+                // original's loader does.
+                bool fits = item.X >= 0 && item.Y >= 0 && item.X + item.Width <= grid.Width && item.Y + item.Height <= grid.Height
+                    && grid.IsFree(item.Section, item.X, item.Y, item.Width, item.Height);
+                if (fits || grid.Add(item) is false && item.Quantity > 0) grid.Items.Add(item);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The number of an input section <c>in&lt;n&gt;</c>, -1 for any other section.
+    /// </summary>
+    static int InputOf(string section) =>
+        section.StartsWith("in", StringComparison.Ordinal) && int.TryParse(section.AsSpan(2), CultureInfo.InvariantCulture, out int n) ? n : -1;
 
     /// <summary>
     /// Reads a crafting bench's repeat flag, remembered ingredient levels and finished crafts.
@@ -353,6 +449,17 @@ public static partial class MachineSave
         m.GetsBattery = state.Bools.GetValueOrDefault("gets battery", true);
         m.Broken = state.Bools.GetValueOrDefault("broken");
         if (m.Data.IsBattery) m.Charge = Math.Max(0, state.Floats.GetValueOrDefault("batterycharge"));
+
+        ReadProduction(state, m);
+    }
+
+    /// <summary>
+    /// Reads a machine's production keys from its building state (<see cref="WriteProduction"/>; a missing key leaves the default, a farm without
+    /// <c>plant growth</c> keeps its plants).
+    /// </summary>
+    internal static void ReadProduction(FcsRecord state, Machine m)
+    {
+        if (state.Floats.TryGetValue("resource mult", out float y)) m.Yield = y;
         if (m.Output is { } o) o.Progress = state.Floats.GetValueOrDefault("production amount");
         for (int k = 0; k < m.Inputs.Length; k++)
             m.Inputs[k].Level = state.Floats.GetValueOrDefault("consumption amount-" + k.ToString(CultureInfo.InvariantCulture));
@@ -516,28 +623,9 @@ public static partial class MachineSave
         }
         var inventory = instance.States.Select(id => zone.File.Records.FirstOrDefault(r => r.StringId == id && r.RecordType == FcsRecordType.InventoryState)).FirstOrDefault(r => r is not null);
         if (inventory is null) return;
-        var storage = new List<SaveItem>();
-        foreach (var item in SaveInventory.Read(zone.File, inventory))
-        {
-            if (item.Section == "out" && m.Craft is { } craft) { if (SavedKit.ItemOf(item, factory) is { } done) craft.Done.Add(done); }
-            else if (item.Section == "out" && m.Output is { } o && o.Recipe.Item == item.BaseId) o.Count = Math.Min(o.Recipe.Capacity, o.Count + item.Quantity);
-            else if (item.Section.StartsWith("in", StringComparison.Ordinal) && int.TryParse(item.Section.AsSpan(2), CultureInfo.InvariantCulture, out int k) && k >= 0 && k < m.Inputs.Length
-                && (m.Inputs[k].Item == item.BaseId || m.Craft is not null && m.Inputs[k].Count == 0))
-            {
-                // A crafting bench's sections hold its last craft's ingredients, also with nothing queued.
-                m.Inputs[k].Item = item.BaseId;
-                m.Inputs[k].Count = Math.Min(m.Inputs[k].Recipe.Capacity, m.Inputs[k].Count + item.Quantity);
-            }
-            else storage.Add(item);
-        }
-        if (!sharedStorage && m.Storage is { } grid && storage.Count > 0)
-            foreach (var item in SavedKit.ToInventory(storage, factory).Items)
-            {
-                if (m.Data.IsFurnace) item.Section = "main";   // its in1 is Meitou's storage grid
-                // A grid that is now smaller (a storage sized from its one item) gets an item that no longer fits at the next free cell, as the original's loader does.
-                bool fits = item.X >= 0 && item.Y >= 0 && item.X + item.Width <= grid.Width && item.Y + item.Height <= grid.Height && grid.IsFree(item.Section, item.X, item.Y, item.Width, item.Height);
-                if (fits || grid.Add(item) is false && item.Quantity > 0) grid.Items.Add(item);
-            }
+        bool fromZero = !inventory.Bools.GetValueOrDefault(OriginalSectionsKey)
+            && (inventory.StringId == instance.Id + InventorySuffix || state?.Bools.GetValueOrDefault("meitou machine state") == true);
+        PutItems(m, SaveInventory.Read(zone.File, inventory), factory, fromZero, includeStorage: !sharedStorage);
     }
 
 }

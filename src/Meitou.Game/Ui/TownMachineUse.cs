@@ -36,7 +36,7 @@ sealed class TownMachineUse(PlayerInterface player)
 
             foreach (var piece in info.Pieces ?? [])
             {
-                if (host.Machine(piece.RecordId) is not { Operable: true } data) continue;
+                if (host.Machine(piece.RecordId) is not { } data || !data.Operable && !data.IsAutomatic) continue;
                 if (player.BuildingSelection.PieceRayT(ray, b.Key, piece, best?.T ?? limit) is not { } t) continue;
 
                 var selection = new BuildingSelection.SelectedBuilding(host.ItemName(piece.RecordId), null, info.Owner, info.Town,
@@ -44,7 +44,7 @@ sealed class TownMachineUse(PlayerInterface player)
                 best = new(selection, data, t);
             }
 
-            if (!info.Machine || host.Machine(b.BuildingId) is not { Operable: true } machine) continue;
+            if (!info.Machine || host.Machine(b.BuildingId) is not { } machine || !machine.Operable && !machine.IsAutomatic) continue;
             float y = b.WorldY ?? player.Ground(b.Position.X, b.Position.Z) + b.Position.Y;
             var hull = candidate.Footprint.Place(b.Position, b.Rotation);
             float? hit = candidate.Plot
@@ -68,7 +68,8 @@ sealed class TownMachineUse(PlayerInterface player)
         if (player.SelectedIds().Count == 0 || PickAt(pixel) is not { } hit) return false;
 
         ContextMenuWindow.ContextMenu? Menu(Vector2 at) => player.ContextMenuWindow.Menu(hit.Selection.Name, at, Verbs(hit));
-        if (!player.ContextMenuWindow.ContextPressOn(pixel, Menu, () => Use(hit))) Use(hit);
+        Action quick = hit.Data.IsAutomatic ? () => Loot(hit) : () => Use(hit);
+        if (!player.ContextMenuWindow.ContextPressOn(pixel, Menu, quick)) quick();
         return true;
     }
 
@@ -82,11 +83,18 @@ sealed class TownMachineUse(PlayerInterface player)
     /// <summary>
     /// Use or auto-haul, followed by the machine's inventory window.
     /// </summary>
-    List<(string Caption, Action Give)> Verbs(MachineHit hit) =>
-    [
-        (hit.Data.IsAutomatic ? "Auto-Haul" : "Use", () => Use(hit)),
-        ("Loot", () => player.Build.OpenMachineWindow(hit.Selection.SiteId!, hit.Selection.Position, hit.Selection)),
-    ];
+    List<(string Caption, Action Give)> Verbs(MachineHit hit)
+    {
+        var verbs = new List<(string, Action)>();
+        if (!hit.Data.IsAutomatic) verbs.Add(("Use", () => Use(hit)));
+        verbs.Add(("Loot", () => Loot(hit)));
+        return verbs;
+    }
+
+    /// <summary>
+    /// Opens the canonical machine through the authority's normal approach and inventory path.
+    /// </summary>
+    void Loot(MachineHit hit) => player.Build.OpenMachineWindow(hit.Selection.SiteId!, hit.Selection.Position, hit.Selection);
 
     /// <summary>
     /// Submits only the revision supplied by the authority; no client-provided record or position creates a work target.
@@ -95,7 +103,8 @@ sealed class TownMachineUse(PlayerInterface player)
     {
         string site = hit.Selection.SiteId!;
         ulong revision = player.Production.WorkRevisionOf(site);
-        var task = hit.Data.IsAutomatic ? TaskType.OperateAutomaticMachinery : TaskType.OperateMachinery;
+        if (hit.Data.IsAutomatic) return;
+        var task = TaskType.OperateMachinery;
         player.Say(player.SlowModifier
             ? new AddJob(player.SelectedIds(), task, site) { SiteRevision = revision, Tick = player.Session.CommandTick }
             : new OperateOrder(player.SelectedIds(), site) { SiteRevision = revision, Tick = player.Session.CommandTick });

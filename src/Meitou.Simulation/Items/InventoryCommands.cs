@@ -9,7 +9,34 @@ namespace Meitou.Simulation.Items;
 /// <summary>
 /// Snapshot identity prevents a drag started before eating/looting from moving a different item.
 /// </summary>
-public sealed record InventoryItemToken(int Index, string Record, string Section, int X, int Y, int Quantity, float Quality);
+public sealed record InventoryItemToken(int Index, string Record, string Section, int X, int Y, int Quantity, float Quality)
+{
+    /// <summary>
+    /// The item's code-mod tag as the window showed it (<see cref="ItemInstance.ModTag"/>; "" none): a right click (a mod's item use or a quick
+    /// move) acts only on an item that still carries it, so a stale click never reaches a differently tagged item in the same cell. Two items with
+    /// the same tag and token fields are not told apart.
+    /// </summary>
+    public string ModTag { get; init; } = "";
+
+    /// <summary>
+    /// Remote windows echo a bounded tag digest; local windows retain the full tag.
+    /// </summary>
+    public string ModTagDigest { get; init; } = "";
+
+    /// <summary>
+    /// Matches the authority's current tag without receiving an arbitrarily large mod payload from a client.
+    /// </summary>
+    public bool MatchesTag(string actual) => ModTagDigest.Length > 0
+        ? ModTag.Length == 0 && string.Equals(ModTagDigest, ItemTagIdentity.Digest(actual), StringComparison.Ordinal)
+        : string.Equals(ModTag, actual, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The token of an item a window shows.
+    /// </summary>
+    public static InventoryItemToken Of(InventoryItemView item) =>
+        new(item.Index, item.Record, item.Section, item.X, item.Y, item.Quantity, item.Quality)
+        { ModTag = item.ModTag, ModTagDigest = item.ModTagDigest };
+}
 /// <summary>
 /// The inventory window's ARRANGE (<c>FUN_14070f740</c>): <see cref="InventoryCommands.Arrange(Inventory, bool)"/> on the grid of the window
 /// pressed: the character's main grid, or the worn bag's when <paramref name="Bag"/>.
@@ -29,7 +56,7 @@ public static class InventoryCommands
 
     /// <summary>
     /// An equipment section disabled for <paramref name="wearer"/> (<c>CharacterHuman::validateInventorySections</c> <c>FUN_1406218f0</c>,
-    /// <b>Observed</b>; drawn red, it takes nothing): <c>head</c> for a race with <c>no hats</c>, <c>shirt</c> with <c>no shirts</c>, <c>boots</c>
+    /// <b>Verified</b>; drawn red, it takes nothing): <c>head</c> for a race with <c>no hats</c>, <c>shirt</c> with <c>no shirts</c>, <c>boots</c>
     /// with <c>no shoes</c> or while neither leg is the original (both lost or replaced).
     /// </summary>
     public static bool SectionClosed(CharacterCold? wearer, string section) => wearer?.Race is { } race && section switch
@@ -162,31 +189,63 @@ public static class InventoryCommands
     /// </summary>
     static bool EquipUpright(Inventory root, ItemInstance item, CharacterCold? wearer)
     {
-        if (!WearableBy(item, wearer) || item.Quantity != 1 || item.Width <= 0 || item.Height <= 0) return false;
+        if (item.Quantity != 1 || EquipCell(root, item, item.Width, item.Height, wearer) is not var (section, x, y)) return false;
+
+        item.Section = section;
+        item.X = x;
+        item.Y = y;
+        root.Items.Add(item);
+        return true;
+    }
+
+    /// <summary>
+    /// The equipment slot and cell <see cref="TryEquip"/> puts one unit of <paramref name="item"/> in, lying upright as
+    /// <paramref name="w"/> x <paramref name="h"/> (a dry run, nothing changes); null: none takes it.
+    /// </summary>
+    static (string Section, int X, int Y)? EquipCell(Inventory root, ItemInstance item, int w, int h, CharacterCold? wearer)
+    {
+        if (!WearableBy(item, wearer) || w <= 0 || h <= 0) return null;
+
         string[] sections = item.Type is FcsRecordType.Weapon or FcsRecordType.Crossbow ? ["back", "hip"]
             : item.Type is FcsRecordType.Armour or FcsRecordType.Item && IsEquipmentSection(item.EquipmentSection)
                     && item.EquipmentSection is not ("back" or "hip" or "backpack_attach") ? [item.EquipmentSection] : [];
         foreach (string section in sections)
         {
             if (SectionClosed(wearer, section)) continue;
-            int x = 0, y = 0;
-            if (section is "back" or "hip")
+            if (section is not ("back" or "hip"))
             {
-                var size = SectionSize(section);
-                var cell = Enumerable.Range(0, Math.Max(0, size.Height - item.Height + 1))
-                    .SelectMany(cy => Enumerable.Range(0, Math.Max(0, size.Width - item.Width + 1)).Select(cx => (X: cx, Y: cy)))
-                    .Cast<(int X, int Y)?>().FirstOrDefault(c => root.IsFree(section, c!.Value.X, c.Value.Y, item.Width, item.Height));
-                if (cell is not { } free) continue;
-                (x, y) = free;
+                if (root.Items.Any(i => i.Section == section)) continue;
+                return (section, 0, 0);
             }
-            else if (root.Items.Any(i => i.Section == section)) continue;
-            item.Section = section;
-            item.X = x;
-            item.Y = y;
-            root.Items.Add(item);
-            return true;
+
+            var size = SectionSize(section);
+            var cell = Enumerable.Range(0, Math.Max(0, size.Height - h + 1))
+                .SelectMany(cy => Enumerable.Range(0, Math.Max(0, size.Width - w + 1)).Select(cx => (X: cx, Y: cy)))
+                .Cast<(int X, int Y)?>()
+                .FirstOrDefault(c => root.IsFree(section, c!.Value.X, c.Value.Y, w, h));
+            if (cell is { } free) return (section, free.X, free.Y);
         }
-        return false;
+        return null;
+    }
+
+    /// <summary>
+    /// Whether <see cref="MoveInto"/> would place one unit of <paramref name="item"/> in <paramref name="into"/> (a dry run, nothing changes): the
+    /// worn bag first when <paramref name="bagFirst"/>, then a free equipment slot, then the main grid, the unit no death item (as it arrives, so it
+    /// joins the stacks it tops up). The trade window's right click asks the
+    /// taker's inventory, else its backpack, before the steal roll and refuses the take without room (<c>FUN_140713d20</c>: <c>Inventory</c> slot 4
+    /// <c>FUN_14074afa0</c> before <c>Character</c> slot 83 <c>FUN_140794810</c>, <b>Verified</b> decompile), so a full thief gets no roll.
+    /// </summary>
+    public static bool HasRoomFor(Inventory into, ItemInstance item, bool bagFirst, CharacterCold? wearer = null)
+    {
+        int w = item.Rotated ? item.Height : item.Width;
+        int h = item.Rotated ? item.Width : item.Height;
+        bool death = item.Death;
+        item.Death = false;
+        bool room = bagFirst && into.Backpack?.Contents is { } bag && bag.HasRoomIn("backpack_content", item)
+            || EquipCell(into, item, w, h, wearer) is not null
+            || !MainClosed(wearer) && into.HasRoomIn("main", item);
+        item.Death = death;
+        return room;
     }
 
     /// <summary>
@@ -259,7 +318,7 @@ public static class InventoryCommands
         var item = from.All().ElementAtOrDefault(token.Index);
         bool Movable(string s) => IsMovableSection(s) || limbs && IsLimbSection(s);
         if (item is null || item.Record != token.Record || item.Section != token.Section || item.X != token.X || item.Y != token.Y
-                || item.Quantity != token.Quantity || item.Quality != token.Quality ||
+                || item.Quantity != token.Quantity || item.Quality != token.Quality || !token.MatchesTag(item.ModTag) ||
             !Movable(item.Section) || !Movable(section)) return false;
         if (item.LockedOn && (section != item.Section || into != from)) return false;   // worn locked shackles stay on
         var owner = from.Items.Contains(item) ? from : from.Backpack?.Contents;
@@ -419,11 +478,11 @@ public static class InventoryCommands
 
     /// <summary>
     /// Whether a held item joins the stack it is dropped on (<c>FUN_140715560</c>): same record (so type), material and quality, of a type that
-    /// stacks; Meitou also keeps stolen, death and unique items apart, as <see cref="Inventory.Add"/> does.
+    /// stacks; Meitou also keeps stolen, death, unique and differently mod-tagged items apart, as <see cref="Inventory.Add"/> does.
     /// </summary>
     public static bool Stackable(ItemInstance a, ItemInstance b) => !NeverStacks(a.Type) && a.Record == b.Record && a.MaterialId == b.MaterialId
             && a.Quality == b.Quality
-        && a.Mark == b.Mark && a.Death == b.Death && a.Unique == b.Unique && a.Contents is null && b.Contents is null;
+        && a.ModTag == b.ModTag && a.Mark == b.Mark && a.Death == b.Death && a.Unique == b.Unique && a.Contents is null && b.Contents is null;
 
     /// <summary>
     /// Moves <paramref name="units"/> of <paramref name="from"/> onto the stack <paramref name="into"/>. Partial charges combine: a stack is full

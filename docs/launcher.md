@@ -291,8 +291,7 @@ setting reaches the launcher with its release; the launcher knows none of them. 
 - Detect (when `presets.detect` names the game's option, `--recommend-preset <file>`) runs the played version's game, which makes a
   headless Vulkan device (the GPU it would pick), reads the memory and the cores, and writes `{ preset, summary, gpu, integrated,
   videoMemoryMb, memoryMb, cores, problem }`; the launcher saves `preset` as above and shows `summary`. Without Vulkan (a Metal-only Mac)
-  the memory and cores decide alone. The rule (`HardwareProbe.Recommend`) is a judgement, **Unknown** whether it suits: integrated
-  GPU (Apple's: under 16 GB memory), under 3 GB video memory, 8 GB memory or 4 threads is Low; a GeForce by its model against the
+  the memory and cores decide alone. a GeForce by its model against the
   classes the tiers are meant for (`GeForceTier`: RTX 3060 Medium, 3070 to 4070 High, 4070 Ti to 4080 Ultra, 4080 Super and 4090
   Extreme, other series by their place among these, a laptop GPU a class lower); any other card by video memory (under 6 GB Medium,
   under 12 GB High, under 24 GB Ultra, else Extreme); under 12 GB memory or 6 threads Medium at most. Observed: Intel Iris Xe (integrated) is Low, in 2.5 s.
@@ -324,7 +323,8 @@ The Settings page's Language picks the game's and the launcher's language: Engli
 languages Meitou has texts for, marked when Meitou's own texts are not translated. Choosing one writes only the `language` line of the Kenshi
 folder's `settings.cfg` (encoding and line endings kept) and remembers the code in `launcher.json` (`Language`, used without a Kenshi folder); at
 start the `settings.cfg` value wins. The launcher's labels come from the same `.po` catalogs as the game's Meitou texts
-([localisation](formats/localisation.md)); a string without a translation stays English. Mod names, news and release notes are data, not translated.
+([localisation](formats/localisation.md)), without the mods' `meitou.po`; a string without a translation stays
+English. Mod names, news and release notes are data, not translated.
 Labels the layout holds are translated by one walk of the visual and logical trees (texts, button captions, placeholders, tooltips; a control
 never shown has only logical children). Combo box items are data and not walked, except the label items of the Mac renderer and memory
 boxes (`LabelCombos`); the closed box keeps the content its selected item had when chosen, so a selection-box template redraws it in the
@@ -406,9 +406,6 @@ folders; `SubscribeItem` alone downloads an item within a second (11 KB), `Unsub
 20 s; with Steam closed `SteamAPI_InitFlat` fails ("Could not determine Steam client install directory") and does not start it.
 **Observed**: Steam's `content_log.txt` shows the subscriptions' download starting when the first process that queried them ran as app 233860, and
 `DownloadItem` only raising its priority ("Priority First"); `GetItemDownloadInfo` reported 0 bytes throughout, so progress is the installed count.
-**Unknown**: whether the dylib path survives Steam updates; whether pre-UGC (legacy `ISteamRemoteStorage`) items download this way (Valve's
-[Workshop guide](https://partner.steamgames.com/doc/features/workshop/implementation) says `DownloadItem` covers ISteamUGC items only); how a sync
-behaves offline or without a Kenshi licence beyond Steam's init message.
 
 ## Continue
 

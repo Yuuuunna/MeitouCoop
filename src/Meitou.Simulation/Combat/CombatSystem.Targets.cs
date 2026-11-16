@@ -280,6 +280,8 @@ public sealed partial class CombatSystem
 
         // The current target is whoever the order named, of any faction.
         if (c != q.Current && (tc.Faction == q.Cold.Faction || q.Cold.SquadId >= 0 && tc.SquadId == q.Cold.SquadId)) return;
+        if (TargetScore.SparesSlave(q.Cold, tc)) return;
+        if (LeaveAlone.Spares(world, new LeaveAlone.Kit(Relations, Memory, this), i, q.Cold, c, tc)) return;
 
         ref readonly var o = ref _read[c];
         bool downed = tc.Medical is { Crawling: true } || o.AttackTech >= 0;
@@ -390,7 +392,8 @@ public sealed partial class CombatSystem
         var seg = prev[t].Position + new Vector3(0, EyeHeight, 0) - from;
         if (world.Sight.Inside(t) && MathF.Abs(seg.Y) > SameFloorHeight) return false;
 
-        return SolidHits.Hit(world.Walkability, Buildings, from, seg, RangedTuning.TerrainStep, out _) < 0;
+        // collision still being read counts as a wall
+        return SolidHits.Hit(world.Walkability, Buildings, from, seg, RangedTuning.TerrainStep, out _, out bool ready) < 0 && ready;
     }
 
     /// <summary>

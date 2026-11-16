@@ -7,8 +7,8 @@ namespace Meitou.Simulation.Items;
 
 /// <summary>
 /// Open a container (<see cref="Locks.Fixture.Id"/>): the nearest of the characters (the selection when empty) who may walks to it and its window
-/// opens. Another faction's locked one: with <paramref name="Alt"/> its lock is picked (76 PICK_LOCK), else the hint and a walk to it; a shop's
-/// without Alt: the steal hint and a walk.
+/// opens. A locked one not the player's: with <paramref name="Alt"/> its lock is picked (76 PICK_LOCK), else the hint and a walk to it; another
+/// faction's BF_SHOP one without Alt: the steal hint and a walk.
 /// </summary>
 public sealed record OpenContainerOrder(IReadOnlyList<CharacterId> Characters, string Fixture, bool Alt = false) : OrderCommand;
 
@@ -23,8 +23,8 @@ public sealed record CloseContainer : SimCommand
 /// <summary>
 /// Opening a container of a building's interior (docs/game/locks.md "Containers"): a character walks up to it, its inventory shows in a window
 /// beside the character's, and items are moved with <see cref="Production.PutInMachine"/> / <see cref="Production.TakeFromMachine"/> addressed by
-/// the fixture id. <b>Engine choices</b>: the reach, a locked one refusing, a shop's containers staying the shop's (each its own rectangle of the
-/// shop's stock, <see cref="Trading.Shop.ForBuilding"/>). Taking from another faction's is stealing (<see cref="Crime.CrimeSystem.Steal"/>).
+/// the fixture id. <b>Engine choices</b>: the reach, a locked one refusing, a shop's stock containers taking nothing put in
+/// (<see cref="ShopOf"/>). Taking from another faction's is stealing (<see cref="Crime.CrimeSystem.Steal"/>).
 /// </summary>
 public static class ContainerAccess
 {
@@ -61,11 +61,13 @@ public static class ContainerAccess
         var table = world.Characters;
         int best = -1;
         float bestDistance = float.MaxValue;
-        bool theirs = fixture.Owner >= 0 && fixture.Owner != player.Faction && member?.HasPermission(fixture.Owner, FactionPermission.ManageAssets) != true;
+        bool own = fixture.Owner == player.Faction || member?.HasPermission(fixture.Owner, FactionPermission.ManageAssets) == true;
+        bool theirs = fixture.Owner >= 0 && !own;
         bool locked = fixture.Lock is { EffectivelyLocked: true };
 
-        // Another faction's locked container is picked (76) with Alt (the original's FUN_1407fc6e0); the rest is row 3, a walk to it.
-        var row = locked && theirs && order.Alt ? Meitou.Data.Gameplay.Ai.TaskType.PickLock : Meitou.Data.Gameplay.Ai.TaskType.Pickup;
+        // A locked container not the player's, an unowned one too, is picked (76) with Alt (the original's FUN_1407fc6e0 tests only the player's
+        // ownership, FUN_140546dd0); the rest is row 3, a walk to it.
+        var row = locked && !own && order.Alt ? Meitou.Data.Gameplay.Ai.TaskType.PickLock : Meitou.Data.Gameplay.Ai.TaskType.Pickup;
         foreach (var id in world.CommandCharacters(order, order.Characters))
         {
             if (!table.TryResolveNext(id, out int s)
@@ -80,7 +82,7 @@ public static class ContainerAccess
         void Notice(string text) => world.Post(order.Issuer ?? PlayerId.Local, text);
         if (locked)
         {
-            if (!theirs)
+            if (own)
             {
                 Notice($"{walker.Name}: It's locked.");
                 return;
@@ -91,10 +93,10 @@ public static class ContainerAccess
             PlayerOrders.Give(world, best, world.BindOrder(order, ContainerOrder(owner, row, fixture, walkOnly: !order.Alt)), order.Queued);
             return;
         }
-        if (ShopOf(world, fixture) is not null && !order.Alt && theirs)
+        if (fixture.Function == Meitou.Data.World.TownBuildings.ShopFunction && !order.Alt && theirs)
         {
-            // A shop's stock without Alt: the original's hint and a move; with Alt (the menu's Loot) the walker steals from it (the window shows
-            // that container's part of the shop's stock).
+            // Another faction's BF_SHOP container (9) without Alt: the original's hint and a move (FUN_1407fc6e0); with Alt (the menu's Loot) the
+            // walker steals from it. Its other containers, a shop's stock ones too, open without Alt (#784).
             Notice("Hold down the ALT key to steal items");
             PlayerOrders.Give(world, best, world.BindOrder(order, ContainerOrder(owner, row, fixture, walkOnly: true)), order.Queued);
             return;
@@ -124,6 +126,11 @@ public static class ContainerAccess
         bool walk = order.Row != Meitou.Data.Gameplay.Ai.TaskType.Pickup || order.Detail == ContainerWalk
             || Vector2.Distance(Flat(at), Flat(order.Point)) > ContainerReach || !SameFloor(at, order.Point);
         TaskStart.Start(world, slot, walk ? request : request with { Task = CharacterTask.Idle });
+
+        // In reach the window opens at once, so also while paused (the order applies between ticks), as the original's loot task start opens it.
+        var player = order.SourceCommand is { } source ? world.CommandPlayer(source) : world.PlayerOf(world.Characters.IdOf(slot));
+        if (!walk && player is not null && player.OpeningContainer is { } wanted && wanted == order.Site && player.ContainerWalker == world.Characters.IdOf(slot))
+            Open(world, player, slot, wanted);
     }
 
     /// <summary>
@@ -132,33 +139,23 @@ public static class ContainerAccess
     /// </summary>
     internal static void ContainerWorkers(World world)
     {
-        foreach (
-    var owner in world.Players.All)
-            ContainerWorker(world, owner.State);
+        foreach (var owner in world.Players.All) ContainerWorker(world, owner.State);
+    }
+
+    /// <summary>
+    /// The window of container <paramref name="id"/> opens for the walker in <paramref name="slot"/>.
+    /// </summary>
+    static void Open(World world, PlayerState player, int slot, string id)
+    {
+        (player.OpenContainer, player.ContainerOpener, player.OpeningContainer) = (id, player.ContainerWalker, null);
+        world.EmitSound(SoundKind.Inspected, slot, world.Characters.Next[slot].Position);
     }
 
     /// <summary>
     /// The building shop <paramref name="container"/> is a stock container of, if any.
     /// </summary>
     internal static Trading.Shop? ShopOf(World world, Locks.Fixture container) =>
-        world.Squads.All.Select(s => s.Shop).FirstOrDefault(s => s?.Building == container.Building && s.RegionOf(container.Id, out _));
-
-    /// <summary>
-    /// The grid a container window works on: the container's own, but for a building shop's stock container the shop's stock
-    /// (<see cref="Trading.Shop.ForBuilding"/>), of which the container's grid is <paramref name="region"/>: the window shows and takes only the
-    /// items there (at cells relative to its corner), taking them is theft.
-    /// </summary>
-    internal static Items.Inventory GridOf(World world, Locks.Fixture container, out Items.GridRegion region)
-    {
-        if (ShopOf(world, container) is { } shop && shop.RegionOf(container.Id, out region)) return shop.Stock;
-        region = new(0, 0, container.Contents!.Width, container.Contents.Height);
-        return container.Contents;
-    }
-
-    /// <summary>
-    /// The grid a container window works on (<see cref="GridOf(World, Locks.Fixture, out Items.GridRegion)"/>), without its region.
-    /// </summary>
-    internal static Items.Inventory GridOf(World world, Locks.Fixture container) => GridOf(world, container, out _);
+        world.Squads.All.Select(s => s.Shop).FirstOrDefault(s => s?.Building == container.Building && s.Holds(container.Id));
 
     /// <summary>
     /// Whether two points are within <see cref="ContainerFloorSlack"/> of each other in height.
@@ -218,7 +215,7 @@ public static class ContainerAccess
                 if (Vector2.Distance(Flat(table.Next[s].Position), at) <= ContainerReach && SameFloor(table.Next[s].Position, fixture.Position))
                 {
                     if (table.Next[s].Task == (byte)CharacterTask.GoTo) TaskStart.Stand(table, s);
-                    (player.OpenContainer, player.ContainerOpener, player.OpeningContainer) = (wanted, player.ContainerWalker, null);
+                    Open(world, player, s, wanted);
                 }
                 else if (table.Next[s].Task != (byte)CharacterTask.GoTo || Vector2.Distance(table.Next[s].Goal, at) > ContainerReach) player.OpeningContainer = null;
             }

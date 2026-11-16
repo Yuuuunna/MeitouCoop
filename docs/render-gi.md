@@ -48,7 +48,8 @@ changes. Invalidate relocated tiles before sampling; reset history for changed p
 Irradiance:8² octahedral texels plus border RGBA16F (alpha valid); distance moments:16² plus
 border RG16F. Seam borders copy opposite edges.
 
-32 spherical-Fibonacci rays/probe with rotated directions (64 for comparison). Misses sample
+32 spherical-Fibonacci rays/probe with rotated directions; 64 with the "GI 64 probe rays" row (Graphics > Lighting > Indirect light,
+off at start). Misses sample
 sky ambient; hits combine albedo, shadowed sun, lamp light and previous probe irradiance.
 Interior lamps with loaded owner masks cast visibility rays at bounce hits; furniture/walls
 between a hit and the lamp block that source, while openings can let light outside. [Lamps](render-lights.md).
@@ -56,7 +57,7 @@ Negative backface distances mark solid occupancy; >=25% backface rays lowers pro
 Blend validity with the irradiance's hysteresis: noisy occupancy cannot toggle a probe's full
 contribution each update. A moved/new probe starts without history; persistently invalid probes
 fade to zero (snap below0.001). Cosine-weight irradiance, cosine^50 distance moments; hysteresis
-adjusts with ray count/cadence.
+adjusts with cadence and is the 32-ray memory at either count, so 64 rays halve the noise variance at the same response.
 Four-phase round robin; far probes every second round, fog-hidden probes slower. Preserve the
 same effective history when updates slow; a newly invalid tile cannot contribute stale light.
 
@@ -96,7 +97,7 @@ interior). Upsampling rejects the other class so the gain cannot bleed onto outd
 ## Hybrid GI
 
 `gihybrid` (Meitou switch, **off by default**, Graphics > Lighting > Hybrid GI). `--gi-hybrid <relocate,clouds,cache>` turns it on with
-the listed parts only. Each part is also a plain on / off row under Graphics > Lighting > Indirect light ("GI probes out of walls", "GI cloud shadows", "GI radiance cache"), read each frame. Vulkan only. Relocation and clouds: look and cost **Unknown**; the radiance cache: below.
+the listed parts only. Each part is also a plain on / off row under Graphics > Lighting > Indirect light ("GI probes out of walls", "GI cloud shadows", "GI radiance cache"), read each frame. Vulkan only. the radiance cache: below.
 
 **Probe relocation** (`relocate`; RTXGI's rule, `GiShaders.ProbeRelocate`, needs the resolve). Offsets stay in world units per atlas
 tile, in `offsets`; relocation reads the frame's rays before the blend. Over a quarter back faces: through the closest back face, half the
@@ -171,11 +172,11 @@ Rays and march per block use one surface; `sky` is that pixel's, so a noisy norm
 the stochastic lobe 0.214 with the reflections, 0.155 without (noise on the crate's metal and the machine); the fixed direction 0.181, 0.174 without. Night town
 (`gi-fireflies`): 0.052 against 0.044. No pixel brighter than both the frames around it and its 5x5 median by 24 levels, still or orbiting, in either save, with
 any switch off (no fireflies on dry ground found; the bright points on that save's water are there with the GI off and with the game's water). Cost at 2560x1440
-DLSS: `ssr` 0.11-0.12 ms either way. Thresholds and look: **Unknown**.
+DLSS: `ssr` 0.11-0.12 ms either way.
 
 ## Performance and verification
 
-`gi-top-reuse`, `gi-rays`, `gi-far`, `gi-top-trace`, `gi-terrain-refit`, `gi-lazy-scene`,
+`gi-top-reuse`, `gi-far`, `gi-top-trace`, `gi-terrain-refit`, `gi-lazy-scene`,
 `gi-top-shared`, `gi-resolve` are A/B probes. Different schedules/ray counts may converge
 differently; compare both settled and cold lighting. GPU GI cost includes scene builds,
 trace/blend and barriers; resolve/apply may be accounted in post. Fixed camera results do not

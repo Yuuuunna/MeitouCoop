@@ -31,6 +31,7 @@ taskbar entry, the launcher dialog included) and muted; a hidden game still rend
 | `shot <file.png>` | Screenshot of the frame, GUI included |
 | `ui [filter] [--all]` | The GUI as text: class, `"caption"`, `name=`, `@x,y` (where a click lands), size |
 | `state [--near=<radius>] [--brief] [--json]` | Clock, speed, camera, squad (position, `screen` point, health parts, stats); `--near` adds everyone else around the camera's centre; text, or JSON with `--json` |
+| `containers [radius] [--all]` | The buildings and furniture with an inventory within `radius` (default 300) of the camera's centre, each with its items and stack sizes; `--all` also the empty ones |
 | `click <x> <y> [left\|right\|middle]` | A click; `--double`, `--hold=<ms>`, `--shift`, `--ctrl`, `--alt` |
 | `click <caption or name> [button]` | A click on a widget; `--nth=<n>` when several match |
 | `mouse <point>`, `mouse down\|up [button]` | Moves the cursor; presses or releases a button where it is |
@@ -49,7 +50,7 @@ taskbar entry, the launcher dialog included) and muted; a hidden game still rend
 `--stall=<seconds>` (any command): how long the game may render no frame before the command fails (default 30).
 
 `state --json` units: `hours` is the game clock (day = hours / 24, as the GUI shows it), positions are world units,
-`hunger` is the GUI's figure / 100 (the text shows the GUI's), `parts` are `[health, stun damage, full health]`, `stats`
+`floor` is the object's `getFloor` (also on each `containers` line), `onRoof` (text: `on-roof`) its `_isOnARoof`, `hunger` is the GUI's figure / 100 (the text shows the GUI's), `parts` are `[health, stun damage, full health]`, `stats`
 are the raw skill levels.
 
 ### Playing

@@ -173,7 +173,8 @@ public sealed partial class LockSystem
     /// <summary>
     /// 256 Get out of cage and 207 Escape cage (opportunistic; <c>Task_GetOutOfCage</c> with the escape flag, docs/game/ai-tasks.md "Arrest and
     /// prison rows"): an AI prisoner, awake, whose role list holds the goal in its hours, walks out as soon as its cage is not effectively locked
-    /// (<see cref="FixtureRegistry.GetOut"/> refuses a locked one; it is an escape unless it is a kidnap victim, whatever the sentence).
+    /// (<see cref="FixtureRegistry.GetOut"/> refuses a locked one; whether it is an escape is the task's flag,
+    /// <see cref="FixtureRegistry.LeaveCage"/>).
     /// </summary>
     void OpportunisticEscapes(World world)
     {
@@ -279,7 +280,11 @@ public sealed partial class LockSystem
     bool FreeBy(World world, CharacterId releaser, int faction, CharacterId prisoner)
     {
         if (world.Characters.TryResolveNext(prisoner, out int p) && world.Characters.Cold(p) is { } pc) pc.Freed = true;
-        if (!world.Fixtures.Release(world, prisoner, faction, Crimes)) return false;
+        if (!world.Fixtures.Release(world, prisoner, faction, Crimes, jailer: true)) return false;
+
+        // The release message goes with Create_Character on the interface, for a player-faction prisoner with no slave state.
+        if (world.Characters.Cold(p) is { IsPlayer: true, SlaveState: 0 })
+            world.EmitSound(SoundKind.ReleasedFromPrison, p, world.Characters.Next[p].Position);
         var talk = world.SystemOf<Dialogue.DialogueSystem>();
         if (world.Characters.TryResolveNext(releaser, out int r) && talk is not null)
         {
@@ -289,7 +294,7 @@ public sealed partial class LockSystem
 
         if (Crimes?.Factions.Books(faction) == true)
             world.Defer(new Dialogue.DialogueEvent(releaser, prisoner, PrisonerFreeToGo) { Tick = world.Tick + 1 });
-        else if (faction == world.Player.Faction)
+        else if (world.IsPlayerFaction(faction))
             world.Defer(new Dialogue.DialogueEvent(prisoner, releaser, UnlockMyCageOrShackles) { Tick = world.Tick + 1 });
 
         return true;

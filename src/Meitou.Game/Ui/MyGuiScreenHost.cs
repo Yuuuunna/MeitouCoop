@@ -4,9 +4,10 @@ using Meitou.Data.Ui;
 namespace Meitou.Game.Ui;
 
 /// <summary>
-/// A widget event of a screen: the widget, the action (its own, or select, accept, text), the text and the value.
+/// A widget event of a screen: the widget, the action (its own, or select, accept, text), the text and the value; <paramref name="Press"/> marks a
+/// legacy slider's event raised by the mouse button going down on it, not by a drag.
 /// </summary>
-public sealed record MyGuiEvent(string Screen, string Widget, string Action, string Text = "", float Value = 0);
+public sealed record MyGuiEvent(string Screen, string Widget, string Action, string Text = "", float Value = 0, bool Press = false);
 
 /// <summary>
 /// A screen's controls as one arrange laid them out.
@@ -69,6 +70,16 @@ public sealed partial class MyGuiScreenHost(MyGuiResources resources)
     /// The double-click time, seconds.
     /// </summary>
     const double DoubleClickSeconds = 0.5;
+
+    /// <summary>
+    /// The last press in an edit box and when, for the double click that selects a word.
+    /// </summary>
+    (string Screen, string Widget, long At)? _lastEditPress;
+
+    /// <summary>
+    /// An edit box's double-click time, seconds (MyGUI <c>INPUT_TIME_DOUBLE_CLICK</c>, from one click to the next on the same widget).
+    /// </summary>
+    const double EditDoubleClickSeconds = 0.25;
 
     /// <summary>
     /// A button pressed, a list line selected or accepted, or an edit box's text changed.
@@ -489,13 +500,7 @@ public sealed partial class MyGuiScreenHost(MyGuiResources resources)
 
         if (c.Type == "EditBox" && c.Properties.GetValueOrDefault("Static") != "true")
         {
-            FocusEdit(id, c);
-            if (CaretAt?.Invoke(p) is { } at)
-            {
-                _edit!.Place(at);
-                _selecting = true;
-            }
-
+            PressEdit(id, c, p);
             return true;
         }
 
@@ -509,6 +514,28 @@ public sealed partial class MyGuiScreenHost(MyGuiResources resources)
 
         BeginWindowDrag(id, s, p);
         return true;
+    }
+
+    /// <summary>
+    /// A press in an editable box: focuses it and places the caret for a drag selection, or on a second press soon after selects the word there.
+    /// </summary>
+    void PressEdit(string id, UiControl c, Vector2 p)
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool twice = _lastEditPress is { } last && last.Screen == id && last.Widget == c.Name
+            && System.Diagnostics.Stopwatch.GetElapsedTime(last.At, now).TotalSeconds < EditDoubleClickSeconds;
+        _lastEditPress = twice ? null : (id, c.Name, now);
+        if (!twice || _focus != (id, c.Name)) FocusEdit(id, c);
+        if (CaretAt?.Invoke(p) is not { } at) return;
+
+        if (twice)
+        {
+            _edit!.SelectWord(at);
+            return;
+        }
+
+        _edit!.Place(at);
+        _selecting = true;
     }
 
     /// <summary>

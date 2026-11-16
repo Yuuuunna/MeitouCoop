@@ -33,10 +33,16 @@ public static class SelfPreservation
     /// Row 35's desire (AI slot 55, <c>FUN_1405a34e0</c>, <b>Verified</b>): 1 for a crippled character (Character <c>isCrippled</c>, the medical
     /// tick's flag: a leg down, so it crawls), else 0.001. 0 for a character shut in behind a locked gate of town walls (<paramref name="walled"/>,
     /// <b>Verified</b>: <c>FUN_1402eb070</c> to code 0 is 3); the building half of the location test <c>FUN_1405a2710</c> (no open door) is not
-    /// modelled. The player-faction branch is not needed: a player's character has 0.
+    /// modelled. A player's character has 0 here: its Self preservation is the player's; its player-faction branch serves the Obedient Slave job
+    /// (<see cref="AiSystem.ObedientRunDesire"/>), which adds its vetoes to <see cref="BodyRunDesire"/>.
     /// </summary>
-    public static float RunDesire(CharacterCold cold, bool walled = false) =>
-        cold.IsPlayer || cold.Medical is not { } medical ? 0 : medical.Crawling ? 1 : walled ? 0 : RunFallback;
+    public static float RunDesire(CharacterCold cold, bool walled = false) => cold.IsPlayer ? 0 : BodyRunDesire(cold, walled);
+
+    /// <summary>
+    /// Row 35's desire after the player-faction vetoes (<see cref="RunDesire"/>): 1 crippled, else 0.001, 0 when walled in or without a body.
+    /// </summary>
+    public static float BodyRunDesire(CharacterCold cold, bool walled = false) =>
+        cold.Medical is not { } medical ? 0 : medical.Crawling ? 1 : walled ? 0 : RunFallback;
 
     /// <summary>
     /// Whether the character is shut in behind a locked gate of town walls (<see cref="Locks.LockSystem.WallsLocked"/>): row 35's fallback desire is
@@ -67,13 +73,15 @@ public static class SelfPreservation
     /// The planner's choice under goal 32 at threat level <paramref name="level"/> (docs/game/ai-tasks.md "Planner": best first by g + h, g the least
     /// desire on the way down from the goal's own, h the node's): true when 35 runs, false when the chain through 13 fights. A character that cannot
     /// fight (no arm, or crippled with nothing close) runs; a crippled one runs even when it can fight, for 35 is worth 1 against 4's 0.1; any other
-    /// fights, 35 being worth 0.001.
+    /// fights, 35 being worth 0.001. One in deep water runs too: the chain through 13 is a dead end there, its providers of state 7 (4 and 262)
+    /// needing <c>!me swim</c>, which no row provides (<see cref="Combat.CombatSystem.SwimBarred"/>); an animal's 227 has no such test.
     /// </summary>
     public static bool Runs(CharacterCold cold, float level, bool walled = false)
     {
         float run = RunDesire(cold, walled);
         if (run <= 0 || !CanRun(cold)) return false;
-        float fight = AttackDesire(cold, level >= 1);
+        bool swimming = cold is { WaterState: 3, InSomething: Locks.HeldState.None } && cold.Fighter?.IsAnimal != true;
+        float fight = swimming ? 0 : AttackDesire(cold, level >= 1);
         return fight <= 0 || Value(level, run) > Value(level, fight);
     }
 

@@ -260,13 +260,22 @@ sealed class BuildingSync(GameHost host)
     /// <summary>
     /// The render and navigation overlay type of a site (<c>StateId</c> null, <c>WorldY</c> the absolute height, the zone of its position). Its key
     /// is its own id: a player building's id is unique in the world (the simulation's registry reserves every saved id), and the overlays remove it
-    /// by that id.
+    /// by that id. <c>PlayerOwned</c>: the site's owner is the player's faction (a nest's pieces are their camp's).
     /// </summary>
-    static BuildingPlacement Placement(BuildingSnapshot site) =>
-        site.LevelPlacement is { } level
-            ? level with { Key = site.Id, WorldY = site.Position.Y, DestroyedOverride = site.Destroyed }
-            : new(WorldLayout.ZoneOf(site.Position.X, site.Position.Z), site.Id, site.Record, site.Position, site.Rotation, null,
-                site.Position.Y) { Key = site.Id, Contained = site.Parent is not null, ContainerId = site.Parent };
+    BuildingPlacement Placement(BuildingSnapshot site)
+    {
+        bool mine = site.Owner == host.Session.ActiveFaction;
+        if (site.LevelPlacement is { } level)
+            return level with { Key = site.Id, WorldY = site.Position.Y, DestroyedOverride = site.Destroyed, PlayerOwned = mine };
+
+        return new(WorldLayout.ZoneOf(site.Position.X, site.Position.Z), site.Id, site.Record, site.Position, site.Rotation, null, site.Position.Y)
+        {
+            Key = site.Id,
+            Contained = site.Parent is not null,
+            ContainerId = site.Parent,
+            PlayerOwned = mine,
+        };
+    }
 
     /// <summary>
     /// Drops the overlays of the old world: the runtime placements, lamps, effects, navmesh buildings, ruins, emptied houses, farms and ground items,
@@ -379,6 +388,7 @@ sealed class BuildingSync(GameHost host)
             Ground = host.ActiveGround,
             Footprint = footprints.Of,
             CollisionMesh = footprints.Mesh,
+            CollisionMeshDoors = footprints.MeshDoors,
             CollisionFile = footprints.File,
             Plot = footprints.Plot,
             PartBounds = footprints.PartBounds,
@@ -450,7 +460,7 @@ sealed class BuildingSync(GameHost host)
     }
 
     /// <summary>
-    /// Whether a town building of record <paramref name="record"/> supports production, research or crafting, cached in <paramref name="known"/>.
+    /// Whether a town building of record <paramref name="record"/> supports work or automatic production, cached in <paramref name="known"/>.
     /// </summary>
     static bool TownMachine(Data.GameDatabase db, Dictionary<string, bool> known, string record)
     {

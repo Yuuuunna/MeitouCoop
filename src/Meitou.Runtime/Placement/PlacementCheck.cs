@@ -86,6 +86,10 @@ public sealed class PlacementServices
     /// </summary>
     public Func<string, IReadOnlyList<(Vector3[] Vertices, int[] Indices)>> CollisionMesh { get; init; } = _ => [];
     /// <summary>
+    /// For each shape of <see cref="CollisionMesh"/>, in order: the index of the door it is a part of, -1 for none.
+    /// </summary>
+    public Func<string, IReadOnlyList<int>> CollisionMeshDoors { get; init; } = _ => [];
+    /// <summary>
     /// The triangles of a collision file by its record path (an item's <c>physics file</c>), in its own space; empty when it is not in the install.
     /// </summary>
     public Func<string, IReadOnlyList<(Vector3[] Vertices, int[] Indices)>> CollisionFile { get; init; } = _ => [];
@@ -167,8 +171,8 @@ public sealed record PlacementQuery(BuildingBuildData Building, Vector3 Position
     /// </summary>
     public float GroundAt(float x, float z) => Surface ?? Services.Ground(x, z);
     /// <summary>
-    /// Whether a building of <paramref name = "record"/> at <paramref name = "position"/> / <paramref name = "rotation"/> (a site or queued ghost) never
-    /// blocks this ghost.
+    /// Whether a building of <paramref name="record"/> at <paramref name="position"/> / <paramref name="rotation"/> (a site, queued ghost or level
+    /// building) never blocks this ghost.
     /// </summary>
     public bool Passes(string record, Vector3 position, Quaternion rotation) => PassThrough?.Invoke(record) == true || Ignore?.Invoke(record, position, rotation) == true;
 }
@@ -268,9 +272,12 @@ public static class PlacementCheck
     }
 
     /// <summary>
-    /// Whether a level building may block the ghost: not the one it stands in (<paramref name = "parent"/>), nor one of a record it passes through.
+    /// Whether a level building may block the ghost: not the one it stands in (<paramref name="parent"/>), nor one it passes (a record it passes
+    /// through, or a town wall at a wall piece's snapped joint, as the original's joint test takes any wall).
     /// </summary>
-    static bool Blocks(PlacementQuery q, PlacedFootprint other, string? parent) => other.Id != parent && q.PassThrough?.Invoke(other.Record) != true;
+    static bool Blocks(PlacementQuery q, PlacedFootprint other, string? parent) =>
+        other.Id != parent && !q.Passes(other.Record, other.Position, other.Rotation);
+
     /// <summary>
     /// What the ghost's footprint <paramref name = "hull"/> overlaps: the floor's edge, a building, a site, a queued ghost or a character;
     /// None when nothing.

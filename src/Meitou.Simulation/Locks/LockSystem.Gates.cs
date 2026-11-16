@@ -1,4 +1,5 @@
 using System.Numerics;
+using Meitou.Data;
 using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Locks;
@@ -22,10 +23,32 @@ public sealed partial class LockSystem
     Dictionary<int, List<(int To, int State, GateLink Gate)>>? _gateGraph;
 
     /// <summary>
-    /// Takes the host's gate regions; the gate graph is built again.
+    /// The codes the last passes gave each gate, by building: its first door's (<c>+0x378</c>) and the building's own (Building slot 35 / RootObject
+    /// <c>+0xA0</c>). Kept here as well as on the door fixture, so a gate whose site registers after the labelling still holds them.
     /// </summary>
-    void GateInputs(GateRegionsCommand command)
-    => SetGateRegions(command.Regions);
+    readonly Dictionary<string, (int Door, int Building)> _gateCodes = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Takes the host's gate regions and applies them as <c>FUN_1402f03e0</c> does: each listed gate's first door gets the first code, the building
+    /// the second; the gate graph is built again.
+    /// </summary>
+    void GateInputs(World world, GateRegionsCommand command) => SetGateRegions(world, command.Regions);
+
+    /// <summary>
+    /// Gives a gate building's first door the first code the last labelling gave it, for a site registered after that labelling (its restore sets
+    /// -1 first); a building no labelling listed keeps what it has.
+    /// </summary>
+    internal void ApplyGateCode(World world, string building)
+    {
+        if (_gateCodes.TryGetValue(building, out var codes) && FirstDoor(world, building) is { } door) door.GateCode = codes.Door;
+    }
+
+    /// <summary>
+    /// The codes Town slot 96 compares for a gate: its first door's and the building's own, from the last pass that listed it; else the door
+    /// fixture's own code (0 new, -1 restored) and the building's -1.
+    /// </summary>
+    public (int Door, int Building) GateCodes(string building, Fixture door) =>
+        _gateCodes.TryGetValue(building, out var codes) ? codes : (door.GateCode, -1);
 
     /// <summary>
     /// A gate's state as the gate-code pass records it (docs/game/pathfinding.md "Gate codes", <b>Observed</b>): 1 when a door is broken, open or
@@ -64,23 +87,29 @@ public sealed partial class LockSystem
             if (Regions is not null)
             {
                 foreach (var gate in Regions.Gates)
-                {
-                    if (gate.Codes.Length < 2) continue;
-                    int state = GateState(world.Fixtures, gate.Building);
-                    for (int i = 0; i < gate.Codes.Length; i++)
-                    {
-                        for (int j = 0; j < gate.Codes.Length; j++)
-                        {
-                            if (i == j) continue;
-                            if (!graph.TryGetValue(gate.Codes[i], out var list)) graph[gate.Codes[i]] = list = [];
-                            list.Add((gate.Codes[j], state, gate));
-                        }
-                    }
-                }
+                    AddGateEdges(graph, gate, GateState(world.Fixtures, gate.Building));
             }
 
             Volatile.Write(ref _gateGraph, graph);
             return graph;
+        }
+    }
+
+    /// <summary>
+    /// Adds a gate to the graph between its two codes (<c>FUN_1402eebb0</c> keys a gate by the pair of its codes); a gate whose codes are equal
+    /// joins nothing.
+    /// </summary>
+    static void AddGateEdges(Dictionary<int, List<(int To, int State, GateLink Gate)>> graph, GateLink gate, int state)
+    {
+        foreach (int from in gate.Codes)
+        {
+            foreach (int to in gate.Codes)
+            {
+                if (from == to) continue;
+                if (!graph.TryGetValue(from, out var list)) graph[from] = list = [];
+
+                list.Add((to, state, gate));
+            }
         }
     }
 
@@ -174,27 +203,58 @@ public sealed partial class LockSystem
     }
 
     /// <summary>
-    /// Whether the town's walls are locked up (<c>Town</c> vfunc <c>0x300</c> = <c>FUN_140929820</c>, <b>Verified</b>): the town has at least one
-    /// gate (a gateway building with a door) and no gate door is open (door state 1; a broken one counts as open); closed, opening and closing doors
-    /// all count as locked.
+    /// Whether a building of the record joins its town's gate set and stays in Town slots 96 / 97's scans: <c>is gateway</c> adds it when it is
+    /// made (Building slot 138 <c>FUN_140551b20</c>, run from the constructor) and <c>is wall gate</c> makes it a GatewayBuilding (the factory
+    /// <c>FUN_14057cc70</c>), the class the scans keep (Building slot 123), <b>Verified</b> (docs/game/dialogue.md, DC 49 / 58).
     /// </summary>
-    public static bool TownLockedUp(World world, TownSite site) =>
-        GatesLockedUp(site.Buildings.Where(b => !b.Destroyed).SelectMany(b => world.Fixtures.OfBuilding(b.Key)));
+    public static bool InGateSet(GameRecord record) => record.GetBool("is gateway") && record.GetBool("is wall gate");
 
     /// <summary>
-    /// The rule of <see cref="TownLockedUp"/> over a town's door fixtures: shared with the campaign assault's breach test.
+    /// Whether the placed town's walls are locked up (Town slot 96, <see cref="GatesLockedUp"/>) over its buildings.
     /// </summary>
-    public static bool GatesLockedUp(IEnumerable<Fixture> doors)
+    public static bool TownLockedUp(World world, TownSite site) => GatesLockedUp(world, site.Buildings.Select(b => b.Key));
+
+    /// <summary>
+    /// Town slot 96 (<c>FUN_140929820</c>, <b>Verified</b>), shared by DC 58 and the campaign assault's breach test: over the town's buildings in
+    /// the gate set (<see cref="InGateSet"/>) that have a first door (Building slot 124; a ruin has none) whose gate splits two gate codes
+    /// (<see cref="SplitsCodes"/>), true when there is at least one and none of those first doors is open (state 1); closed, opening and closing
+    /// count as locked, and nothing else (a broken door, the lock) is read.
+    /// </summary>
+    public static bool GatesLockedUp(World world, IEnumerable<string> buildings)
     {
+        var locks = world.SystemOf<LockSystem>();
         bool any = false;
-        foreach (var gate in doors)
+        foreach (string building in buildings)
         {
-            if (gate.Kind != FixtureKind.Door || !gate.IsGate) continue;
-            if (gate.DoorBroken || gate.Motion == DoorMotion.Open) return false;
+            if (FirstDoor(world, building) is not { InGateSet: true } door || !SplitsCodes(locks, building, door)) continue;
+            if (door.Motion == DoorMotion.Open) return false;
+
             any = true;
         }
 
         return any;
+    }
+
+    /// <summary>
+    /// A building's first door (door index 0, Building slot 124), or null.
+    /// </summary>
+    static Fixture? FirstDoor(World world, string building)
+    {
+        foreach (var f in world.Fixtures.OfBuilding(building))
+            if (f.Kind == FixtureKind.Door && f.DoorIndex == 0) return f;
+
+        return null;
+    }
+
+    /// <summary>
+    /// <c>FUN_140547930</c>: the first door's gate code (<c>+0x378</c>, read as a word) differs from the gate building's own code (slot 35). After a
+    /// pass these are the gate's first and second codes; before one the door holds 0 (new) or 0xffff (restored from a state, -1 as a word) and the
+    /// building -1 (Meitou's lock system knows no navmesh face before the first labelling, so the building's door point finds none).
+    /// </summary>
+    static bool SplitsCodes(LockSystem? locks, string building, Fixture door)
+    {
+        var (doorCode, buildingCode) = locks?.GateCodes(building, door) ?? (door.GateCode, -1);
+        return (uint)(doorCode & 0xffff) != (uint)buildingCode;
     }
 
     /// <summary>
@@ -285,9 +345,18 @@ public sealed partial class LockSystem
 
     public bool GateRegionsPending { get; private set; }
 
-    public void SetGateRegions(IGateRegions? regions, bool pending = false)
+    public void SetGateRegions(World world, IGateRegions? regions, bool pending = false)
     {
-        Regions = regions; GateRegionsPending = pending;
+        Regions = regions;
+        GateRegionsPending = pending;
         _gateGraph = null;
+        _gateCodes.Clear();
+        if (regions is null) return;
+        foreach (var gate in regions.Gates)
+        {
+            if (gate.Codes.Length == 0) continue;
+            if (FirstDoor(world, gate.Building) is { } door) door.GateCode = gate.Codes[0];
+            _gateCodes[gate.Building] = (gate.Codes[0], gate.Codes[^1]);
+        }
     }
 }

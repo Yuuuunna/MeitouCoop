@@ -98,6 +98,7 @@ internal static class PresentationEventValidation
         if (!Enum.IsDefined(value.Kind)) return $"unknown-kind kind={(int)value.Kind}";
         if (!Finite(value.Position)) return "non-finite-position";
         if (value.Item?.Length > 4096) return $"item-length length={value.Item.Length} maximum=4096";
+        if (value.Armour is < 0 or > 3) return "invalid-armour-material";
 
         return null;
     }

@@ -54,6 +54,7 @@ static class SavedLimbs
                 Level = item.Level,
                 ItemFunction = item.ItemFunction,
                 Quality = item.Quality,
+                ModTag = item.ModTag,
                 Charges = item.Charges,
                 Unique = item.Unique,
                 Source = item.Source,

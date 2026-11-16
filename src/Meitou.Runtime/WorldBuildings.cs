@@ -65,7 +65,7 @@ public sealed class WorldBuildings(GameDatabase db, IRuntimeBuildingSink sink) :
                 _data[site.Record] = build = db.Find(site.Record)is { Type: Meitou.Data.Fcs.FcsRecordType.Building } r ? BuildingBuildData.From(r) : null;
             if (build is null || build.PathMode == 0 || site.LevelPlacement is null && !site.Complete && !site.Destroyed && build.BuildThreshold != 0)
                 continue;
-            current[site.Id] = Placement(site);
+            current[site.Id] = Placement(site, world.IsPlayerFaction(site.Owner));
         }
 
         foreach (string id in _published.Keys.Where(id => !current.ContainsKey(id)).ToArray())
@@ -120,11 +120,12 @@ public sealed class WorldBuildings(GameDatabase db, IRuntimeBuildingSink sink) :
         _active = null;
     }
 
-    static BuildingPlacement Placement(BuildSite site) => site.LevelPlacement is { } level ? level with
+    static BuildingPlacement Placement(BuildSite site, bool playerOwned) => site.LevelPlacement is { } level ? level with
     {
         Key = site.Id,
         WorldY = site.Position.Y,
-        DestroyedOverride = site.Destroyed
+        DestroyedOverride = site.Destroyed,
+        PlayerOwned = playerOwned
     }
 
     : new(WorldLayout.ZoneOf(site.Position.X, site.Position.Z), site.Id, site.Record, site.Position, site.Rotation, null, site.Position.Y)
@@ -132,6 +133,7 @@ public sealed class WorldBuildings(GameDatabase db, IRuntimeBuildingSink sink) :
         Key = site.Id,
         Contained = site.Parent is not null,
         ContainerId = site.Parent,
-        DestroyedOverride = site.Destroyed
+        DestroyedOverride = site.Destroyed,
+        PlayerOwned = playerOwned
     };
 }

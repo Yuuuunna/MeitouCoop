@@ -47,7 +47,7 @@ internal sealed class FoliageObstacles : IDisposable
     /// <summary>
     /// The player's towns the placement shares; null: none are ever added.
     /// </summary>
-    readonly NavRuntimeBuildings? _runtime;
+    NavRuntimeBuildings? _runtime;
 
     /// <summary>
     /// The player's towns the kept zones were placed with.
@@ -65,6 +65,11 @@ internal sealed class FoliageObstacles : IDisposable
         _levels = levels;
         _runtime = runtime;
     }
+
+    /// <summary>
+    /// Uses the same immutable runtime snapshot as the geometry gatherer for the next placement.
+    /// </summary>
+    internal void UseRuntimeSnapshot(NavRuntimeBuildings? snapshot) => _runtime = snapshot;
 
     /// <summary>
     /// The zones' kept obstacles that a player town founded, moved or gone since they were placed can change are dropped: they are placed again

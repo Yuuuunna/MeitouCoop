@@ -229,7 +229,7 @@ internal sealed class NavMeshService : IDisposable
         try
         {
             using var gatherer = _build is null ? new ZoneGeometryGatherer(_install!, _db!, _levels!, _collisions!) : null;
-            uint settingsHash = _build is null ? NavMeshCache.SettingsHash(Settings) * 16777619 ^ NavMeshCache.ContentHash(_install!, _db!) : 0;
+            uint settingsHash = _build is null ? NavMeshCache.SettingsHash(Settings) * 16777619 ^ NavMeshCache.ContentHash(_install!, _db!, _levels!) : 0;
             foreach (var attempt in _queue.GetConsumingEnumerable())
             {
                 NavRuntimeBuildings? snapshot;

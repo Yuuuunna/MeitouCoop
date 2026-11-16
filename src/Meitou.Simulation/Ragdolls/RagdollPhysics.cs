@@ -6,6 +6,7 @@ using BepuPhysics.CollisionDetection;
 using BepuPhysics.Constraints;
 using BepuUtilities;
 using BepuUtilities.Memory;
+using Meitou.Data.World;
 
 namespace Meitou.Simulation.Ragdolls;
 
@@ -703,6 +704,17 @@ public interface IRagdollEnvironment
     /// tests; the same meaning of the result. Environments without them answer with the ordinary buildings.
     /// </summary>
     bool Roofs(Vector3 min, Vector3 max, List<Vector3> triangles) => Buildings(min, max, triangles);
+    /// <summary>
+    /// Whether the collision of the buildings placed in <paramref name="zone"/> has been read (a failed reading counts as read, with none), starting
+    /// the reading when it was not asked for yet. A zone loads only once this holds. Environments that always know theirs answer true.
+    /// </summary>
+    bool ZoneRead(ZoneCoordinate zone) => true;
+    /// <summary>
+    /// The loaded zones, whose building collision must stay read while they are loaded (never dropped to make room).
+    /// </summary>
+    void HoldZones(IReadOnlyCollection<ZoneCoordinate> zones)
+    {
+    }
 }
 
 /// <summary>

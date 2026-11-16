@@ -43,6 +43,26 @@ sealed class ProbeWorld : IDisposable
     public NavSystem? Nav { get; init; }
 
     /// <summary>
+    /// The zone streaming of <c>--stream</c>; null when the zones were all built before the load.
+    /// </summary>
+    public ProbeZoneStreamer? Streamer { get; init; }
+
+    /// <summary>
+    /// The buildings' collision (sight rays, bolts, ragdolls), with the navmesh only.
+    /// </summary>
+    public RagdollGeometry? Buildings { get; init; }
+
+    /// <summary>
+    /// How far round the player's start the buildings' collision is gathered before the first tick (X and Z).
+    /// </summary>
+    const float CollisionReach = 800;
+
+    /// <summary>
+    /// How long the load waits for that gather (seconds).
+    /// </summary>
+    const double CollisionWaitSeconds = 120;
+
+    /// <summary>
     /// The characters of the world.
     /// </summary>
     public CharacterTable Characters => World.Characters;
@@ -55,9 +75,13 @@ sealed class ProbeWorld : IDisposable
 
     /// <summary>
     /// Loads <paramref name="saveFolder"/> under <paramref name="order"/>; <paramref name="navmesh"/> builds the zones round the player's squad (slow) instead of walking the terrain.
-    /// <paramref name="at"/> moves the player's characters there (X, Z) before the load, to look at another place with the same save.
+    /// <paramref name="at"/> moves the player's characters there (X, Z) before the load, to look at another place with the same save; <paramref name="seed"/>
+    /// is the world seed (the game's default is 0). <paramref name="stream"/> (with <paramref name="navmesh"/>) builds only the zones of the player's
+    /// box first and streams the rest in while the world runs (<see cref="ProbeZoneStreamer"/>). Null, with the reason on stderr, when the save has no
+    /// character of the player's faction.
     /// </summary>
-    public static ProbeWorld Load(GameInstall install, LoadOrder order, string saveFolder, bool navmesh, Vector2? at = null)
+    public static ProbeWorld? Load(GameInstall install, LoadOrder order, string saveFolder, bool navmesh, Vector2? at = null, ulong seed = 1,
+        bool stream = false)
     {
         var db = GameDatabase.Load(order);
         var levels = WorldLevelData.Load(install, order, includeInteriors: true);
@@ -71,13 +95,47 @@ sealed class ProbeWorld : IDisposable
         ResidentRuins.Apply(db, levels, layouts);   // the homes' ruins and layouts before anything reads the levels, as the game's boot
         var data = PopulationData(install, db, levels, layouts, height);
         var save = SaveGame.Load(SaveFolder.Open(saveFolder));
+        if (!HasPlayerCharacter(save))
+        {
+            WarnNoPlayerCharacter(save);
+            return null;
+        }
         if (at is { } spot) MovePlayer(save, spot, height);
 
-        NavSystem? nav = navmesh ? LoadNavmesh(install, db, levels, layouts, data, save, height) : null;
+        var zones = ZoneActivation.ZonesAround(SavedStart(save), stream ? 0 : 1);
+        NavSystem? nav = navmesh ? LoadNavmesh(install, db, levels, layouts, data, zones, height) : null;
         IWalkability walk = nav is null ? new OpenGroundWalkability(height) : new NavAdapter(nav.Walkability);
-        var world = MakeWorld(data, walk, save);
+        var streamer = stream && nav is not null ? new ProbeZoneStreamer(nav, zones) : null;
+        var buildings = nav is null ? null : Collision(install, db, levels, height, nav, SavedStart(save));
+        var world = MakeWorld(data, walk, save, seed, streamer, buildings);
         if (nav is not null) GiveGateCodes(world, nav);
-        return new ProbeWorld { Db = db, Data = data, Save = save, World = world, Nav = nav };
+        return new ProbeWorld { Db = db, Data = data, Save = save, World = world, Nav = nav, Streamer = streamer, Buildings = buildings };
+    }
+
+    /// <summary>
+    /// The buildings' collision the game's boot gives with a navmesh, gathered round <paramref name="start"/> before the first tick: the game
+    /// gathers a zone on a worker when first asked, and a probe's first ticks would otherwise see through walls for as long as that takes.
+    /// </summary>
+    static RagdollGeometry Collision(GameInstall install, GameDatabase db, WorldLevelData levels, Func<float, float, float> height, NavSystem nav,
+        Vector3 start)
+    {
+        var geometry = new RagdollGeometry(install, db, levels, height, nav.Runtime);
+        var reach = new Vector3(CollisionReach, 0, CollisionReach);
+        var triangles = new List<Vector3>();
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (!geometry.Buildings(start - reach, start + reach, triangles))
+        {
+            // a zone whose gather failed never answers ready
+            if (waited.Elapsed.TotalSeconds > CollisionWaitSeconds)
+            {
+                Console.Error.WriteLine("The buildings' collision round the player is not all gathered: sight may pass through some walls.");
+                break;
+            }
+            triangles.Clear();
+            Thread.Sleep(50);
+        }
+
+        return geometry;
     }
 
     /// <summary>
@@ -113,14 +171,14 @@ sealed class ProbeWorld : IDisposable
     }
 
     /// <summary>
-    /// The navmesh with the 3 x 3 zones round the player's first character built, and the building sight and layouts it needs in the data.
+    /// The navmesh with <paramref name="zones"/> built, and the building sight and layouts it needs in the data.
     /// </summary>
     static NavSystem LoadNavmesh(GameInstall install, GameDatabase db, WorldLevelData levels, BuildingLayouts layouts, PopulationData data,
-        SaveGame save, Func<float, float, float> height)
+        IEnumerable<ZoneCoordinate> zones, Func<float, float, float> height)
     {
         var nav = new NavSystem(install, db, levels, height);
         nav.Walkability.Roads = data.Roads;
-        foreach (var zone in ZoneActivation.ZonesAround(SavedStart(save), 1)) nav.LoadZone(zone).Wait();
+        foreach (var zone in zones) nav.LoadZone(zone).Wait();
 
         data.Layouts = layouts;
         data.Sight = new Meitou.Simulation.Perception.BuildingSight(install, db, levels, layouts);
@@ -128,18 +186,22 @@ sealed class ProbeWorld : IDisposable
     }
 
     /// <summary>
-    /// The world on one thread with paths found at once, the save loaded into it and the camera focus on the player's squad leader.
+    /// The world on one thread with paths found at once, the save loaded into it and the camera focus on the player's squad leader;
+    /// <paramref name="streamer"/> gates its population's zones before the load; <paramref name="buildings"/> is the buildings' collision (null: none).
     /// </summary>
-    static World MakeWorld(PopulationData data, IWalkability walk, SaveGame save)
+    static World MakeWorld(PopulationData data, IWalkability walk, SaveGame save, ulong seed, ProbeZoneStreamer? streamer,
+        Meitou.Simulation.Ragdolls.IRagdollEnvironment? buildings)
     {
         var options = new StandardSystemOptions
         {
             SynchronousPaths = true,
             Dialogue = new Meitou.Simulation.Dialogue.DialogueSettings { AmbientEvents = true },
             Population = new PopulationSettings { Background = false },
+            RagdollEnvironment = buildings,
         };
-        var world = new World(new WorldSettings { Seed = 1, Threads = 1, PublishSnapshots = false }, walk, StandardSystems.Build(data, walk, options).Systems);
+        var world = new World(new WorldSettings { Seed = seed, Threads = 1, PublishSnapshots = false }, walk, StandardSystems.Build(data, walk, options).Systems);
         if (walk is Meitou.Simulation.Locks.IDoorGate doors) world.Fixtures.Doors = doors;
+        streamer?.Attach(world);
 
         var loaded = SaveLoader.Load(world, save, data, new SaveLoadOptions { Appearances = data.Appearances });
         if (LeaderSlot(world) is null) WarnNoLeader(loaded);
@@ -160,6 +222,23 @@ sealed class ProbeWorld : IDisposable
     static Vector3 SavedStart(SaveGame save) => save.Characters.First(c => c.Platoon.FactionId == save.PlayerFaction!.Id).Position;
 
     /// <summary>
+    /// Whether the save has a character of the player's faction (<see cref="SavedStart"/> needs one).
+    /// </summary>
+    static bool HasPlayerCharacter(SaveGame save) =>
+        save.PlayerFaction is { } player && save.Characters.Any(c => c.Platoon.FactionId == player.Id);
+
+    /// <summary>
+    /// Says the save has no player character. A zip unpacked without its UTF-8 names (Git Bash's unzip mangles a Cyrillic platoon file name)
+    /// reads every platoon without its characters (#761's save).
+    /// </summary>
+    static void WarnNoPlayerCharacter(SaveGame save)
+    {
+        Console.Error.WriteLine($"probe     the save has no character of the player's faction ({save.Characters.Count()} characters in "
+            + $"{save.Platoons.Count} platoons read)");
+        Console.Error.WriteLine("  A zip unpacked without its UTF-8 names loses the platoons' characters: unpack it with .NET's ZipFile or Explorer.");
+    }
+
+    /// <summary>
     /// Says the player's squad has no characters and why: the load's notes name the ones it left out.
     /// </summary>
     static void WarnNoLeader(LoadedSave loaded)
@@ -169,11 +248,15 @@ sealed class ProbeWorld : IDisposable
     }
 
     /// <summary>
-    /// Runs <paramref name="ticks"/> ticks.
+    /// Runs <paramref name="ticks"/> ticks, streaming zones before each with <c>--stream</c>.
     /// </summary>
     public void Tick(int ticks)
     {
-        for (int k = 0; k < ticks; k++) World.RunTick();
+        for (int k = 0; k < ticks; k++)
+        {
+            Streamer?.BeforeTick(World);
+            World.RunTick();
+        }
     }
 
     /// <summary>
@@ -218,7 +301,11 @@ sealed class ProbeWorld : IDisposable
     }
 
     /// <summary>
-    /// Disposes the world.
+    /// Disposes the world and the buildings' collision.
     /// </summary>
-    public void Dispose() => World.Dispose();
+    public void Dispose()
+    {
+        World.Dispose();
+        Buildings?.Dispose();
+    }
 }

@@ -212,6 +212,7 @@ internal sealed partial class ZoneGeometryGatherer : IDisposable
     internal void UseRuntimeSnapshot(NavRuntimeBuildings? snapshot)
     {
         _runtime = snapshot;
+        _foliage.UseRuntimeSnapshot(snapshot);
         _ownershipSnapshot = _levels.FoliageOwnership;
     }
 }

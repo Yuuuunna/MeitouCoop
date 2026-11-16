@@ -160,6 +160,7 @@ public sealed class NavRuntimeBuildings
             foreach (var pair in _all)
                 copy._all.Add(pair.Key, pair.Value);
             copy._byZone = _byZone;
+            copy._foliageTowns = _foliageTowns;
             return copy;
         }
     }

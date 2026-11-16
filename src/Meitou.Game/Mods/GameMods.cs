@@ -21,6 +21,10 @@ sealed class GameMods(GameHost host)
     /// </summary>
     internal ModHost? Mods;
     /// <summary>
+    /// The notices of the mods whose settings Meitou took into its own features at this start (<see cref="BuiltInMods.Adopt"/>).
+    /// </summary>
+    List<string> _builtInNotices = [];
+    /// <summary>
     /// Whether the JIT warm-up waits for the code mods (<see cref="StartDeferredWarmup"/>). With code mods enabled the JIT warm-up starts only once
     /// they are initialized: a method compiled before a Harmony patch keeps any inlined copy of the target.
     /// </summary>
@@ -62,7 +66,26 @@ sealed class GameMods(GameHost host)
     /// </summary>
     internal void StartMods(Data.GameDatabase db, PopulationData data)
     {
+        // The world's body options were made from the config before this, so settings taken in from a mod reach them here.
+        if (host.OnlineConnection is null)
+        {
+            var adopted = new BuiltInModSettings
+            {
+                SquadXp = host.Config.SquadXp,
+                AdoptedMods = host.Config.AdoptedMods,
+                ModSettings = host.Config.ModSettings,
+            };
+            _builtInNotices = BuiltInMods.Adopt(adopted, host.Install);
+            if (_builtInNotices.Count > 0)
+            {
+                host.Config.SquadXp = adopted.SquadXp;
+                host.Config.Save();
+            }
+        }
+        (data.BodyOptions.SquadXp, data.BodyOptions.OthersXp) = (host.Config.SquadXp, host.Config.OthersXp);
+
         var (enabled, disabled) = ModHost.CodeMods(host.Install);
+        BuiltInMods.SkipCovered(enabled, disabled);
         if (enabled.Count == 0) return;
         Console.WriteLine($"mods      {enabled.Count} code mod(s) enabled; Harmony {ModHost.HarmonyVersion}, code-mod API {ModApi.Version}");
         var allowed = host.Config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal);
@@ -87,6 +110,7 @@ sealed class GameMods(GameHost host)
     /// </summary>
     internal void ConnectModUi(PlayerInterface ui)
     {
+        foreach (var notice in _builtInNotices) ui.Notice(notice);
         if (Mods is null) return;
         Mods.RegisterUi(ui.RegisterUiExtension);
         foreach (var notice in Mods.Notices) ui.Notice(notice, true);
@@ -163,7 +187,7 @@ sealed class GameMods(GameHost host)
             Console.Error.WriteLine("mods      the save's code-mod record could not be read; not compared");
             return;
         }
-        foreach (var line in saved.ChangesTo(CurrentModEnvironment()))
+        foreach (var line in BuiltInMods.WithoutCovered(saved).ChangesTo(CurrentModEnvironment()))
         {
             Console.WriteLine($"mods      save: {line}");
             host.Player.Notice(line, true);

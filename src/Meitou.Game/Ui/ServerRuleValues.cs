@@ -47,6 +47,9 @@ static class ServerRuleValues
             "Raids as written" => rules.CampaignAncestorsOnce,
             "Weak punch reach" => rules.PunchReachFix,
             "Bench facing" => rules.BenchFacingFix,
+            "Bags in the inventory" => rules.BagSearchFix,
+            "Squad XP" => rules.SquadXp,
+            "Others' XP" => rules.OthersXp,
             "Turret gunners turn" => rules.GunnerFacesBarrel,
             _ => null,
         };

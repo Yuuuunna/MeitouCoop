@@ -543,10 +543,10 @@ public static class StandardSystems
         void AddCore()
         {
             if (Has(StandardParts.Population))
-                _systems.Add(StandardParts.Population, _population = new PopulationSystem(_data, _o.Population));
+                _systems.Add(StandardParts.Population, _population = new PopulationSystem(_data, _o.Population) { Buildings = _o.RagdollEnvironment });
 
             if (Has(StandardParts.Player))
-                _systems.Add(StandardParts.Player, new PlayerSystem(_data) { AnimalsPickUp = _o.AnimalsPickUp });
+                _systems.Add(StandardParts.Player, new PlayerSystem(_data) { AnimalsPickUp = _o.AnimalsPickUp, Extensions = _o.Extensions });
 
             if (Has(StandardParts.Ai)) _systems.Add(StandardParts.Ai, _ai = new Ai.AiSystem(_data, _o.Ai));
 

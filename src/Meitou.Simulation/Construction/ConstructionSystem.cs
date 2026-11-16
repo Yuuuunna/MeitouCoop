@@ -149,6 +149,11 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
     readonly string _playerFactionId;
 
     /// <summary>
+    /// The level buildings' ids a new site's id skips (null: no level data).
+    /// </summary>
+    readonly LevelBuildingIds? _levelIds;
+
+    /// <summary>
     /// The build data of each record, by record id (null: not a BUILDING); derived from the data.
     /// </summary>
     readonly Dictionary<string, BuildingBuildData?> _buildData = new(StringComparer.Ordinal);
@@ -194,6 +199,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
     public ConstructionSystem(PopulationData data, ConstructionSettings? settings = null) : this(data.Db, data.Bodies.Constants, data.BodyOptions, data.Items, TownsOf(data), data.PlayerFaction >= 0 ? data.Factions[data.PlayerFaction].Id : "", settings)
     {
         _population = data;
+        _levelIds = data.LevelBuildingIds;
     }
 
     /// <summary>
@@ -1990,7 +1996,7 @@ public sealed class ConstructionSystem : ITickSystem, ITaskOwner, ITaskHandler, 
             materials[i] = new MaterialSlot(data.Materials[i].Item, data.Materials[i].Required);
         var site = new BuildSite
         {
-            Id = reg.NewId(WorldLayout.ZoneOf(plan.Position.X, plan.Position.Z)),
+            Id = reg.NewId(WorldLayout.ZoneOf(plan.Position.X, plan.Position.Z), _levelIds),
             Record = data.Id,
             Name = data.Name,
             Position = plan.Position,

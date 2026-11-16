@@ -723,6 +723,7 @@ public sealed class CharacterSounds
         Jobs++;
     }
 
+
     #endregion
 
     #region Combat

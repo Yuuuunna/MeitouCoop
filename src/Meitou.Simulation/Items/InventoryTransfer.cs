@@ -100,7 +100,7 @@ internal static class InventoryTransfer
             && (data?.Items.Limb(item.Record)?.LimbSlot != limb || owner.Medical?.LimbPart(limb) is not { Limb: LimbState.Stump or LimbState.Replaced })) return null;
         var size = section is "back" or "hip" ? InventoryCommands.SectionSize(section)
             : equipment ? (item.Width, item.Height) : (grid.Width, grid.Height);
-        if (x < 0 || y < 0 || x > size.Item1 - item.Width || y > size.Item2 - item.Height || !grid.InRegion(x, y, item.Width, item.Height)) return null;
+        if (x < 0 || y < 0 || x > size.Item1 - item.Width || y > size.Item2 - item.Height) return null;
         return new(grid, owner, section, x, y);
     }
 

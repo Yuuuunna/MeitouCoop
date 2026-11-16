@@ -166,11 +166,13 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         EnsureNotRunning();
         var floaters = World.Floaters;
         bool benchFacing = World.BenchFacingFix;
+        bool bagSearch = World.BagSearchFix;
         bool takeIntoBackpack = World.TakeIntoBackpack;
         var next = _runtime.ReplaceWorld(systems, candidate =>
         {
             candidate.Floaters = floaters;
             candidate.BenchFacingFix = benchFacing;
+            candidate.BagSearchFix = bagSearch;
             candidate.TakeIntoBackpack = takeIntoBackpack;
             setup?.Invoke(candidate);
         });

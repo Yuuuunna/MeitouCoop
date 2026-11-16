@@ -398,11 +398,12 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// Registers a town building and adds it to the sight's occluders.
+    /// Registers a town building and adds it to the sight's occluders. A gate the last labelling listed gets its first code back on its first door.
     /// </summary>
     void RegisterWithSight(World world, PopulationData data, int site, TownBuilding b, int townFaction)
     {
         RegisterBuilding(world, data, site, b, townFaction);
+        world.SystemOf<LockSystem>()?.ApplyGateCode(world, b.Key);
         if (data.Sight is { } sight) world.Sight.Add(sight, SightBuilding(b, IsDestroyed(b)));
     }
 
@@ -628,6 +629,7 @@ public sealed partial class FixtureRegistry
     {
         var doorRefs = record.GetReferences("doors");
         bool gate = TownBuildings.IsGate(db, record, _functions);
+        bool inGateSet = LockSystem.InGateSet(record);
         for (int i = 0; i < doorRefs.Count; i++)
         {
             var door = db.Find(doorRefs[i].TargetStringId);
@@ -647,6 +649,7 @@ public sealed partial class FixtureRegistry
                 WantsLock = door?.GetBool("always locks") ?? false,
                 HostRecordId = record.StringId,
                 IsGate = gate,
+                InGateSet = inGateSet,
                 Leaf = door is null ? new DoorLeaf(0, 30, 1, 0) : DoorLeaf.Of(door),
                 Lock = new LockState
                 {
@@ -1010,6 +1013,7 @@ public sealed partial class FixtureRegistry
             Restrains = functionality?.GetBool("restrains movement") ?? false,
             OccupantSelection = kind == FixtureKind.Cage && (functionality?.GetBool("occupant selection") ?? false),
             UseRange = functionality is null ? 25 : FloatOf(functionality, "use range", 25),
+            Function = functionality?.GetInt("function") ?? -1,
             Contents = kind == FixtureKind.Container && storageWidth > 0 && storageHeight > 0
                     ? new Items.Inventory(storageWidth, storageHeight) { StackBonusMult = record.GetFloat("stackable bonus mult", 1) } : null,
             Lock = !locked ? null
@@ -1841,10 +1845,12 @@ public sealed partial class FixtureRegistry
     /// <summary>
     /// Frees a prisoner (Task_ReleasePrisoner, economy.md 11.5, <b>Observed</b>): the cage is unlocked and emptied, the state and sentence cleared
     /// (not the slave state: a slave released by a faction other than the player's becomes that faction's slave); when the releaser's faction books
-    /// bounties its entry and the jail's (the cage owner's) are erased. A player-faction prisoner gets "{1} has been released from prison.". The
-    /// prisoner is put in front of the cage (<see cref="ExitSpot"/>). False when the character is not imprisoned.
+    /// bounties its entry and the jail's (the cage owner's) are erased. A <paramref name="jailer"/> release (Task_ReleasePrisoner and the engine's
+    /// stand-ins for it) of a player-faction prisoner that is no slave posts "{1} has been released from prison." (<c>FUN_1403570a0</c>, slave test
+    /// <c>FUN_1405c8aa0</c>, <b>Verified</b>); bail, trade, recruiting and liberators post nothing. The prisoner is put in front of the cage
+    /// (<see cref="ExitSpot"/>). False when the character is not imprisoned.
     /// </summary>
-    public bool Release(World world, CharacterId prisoner, int releaserFaction = -1, CrimeSystem? crimes = null)
+    public bool Release(World world, CharacterId prisoner, int releaserFaction = -1, CrimeSystem? crimes = null, bool jailer = false)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(prisoner, out int s) || table.Cold(s) is not { IsImprisoned: true } c) return false;
@@ -1865,38 +1871,68 @@ public sealed partial class FixtureRegistry
 
         Clear(c);
 
-        // Task_ReleasePrisoner adds the leave task 133 (flag 0, which clears the escaped flag for a real cage owner, FUN_1403554b0) only for a
-        // releaser whose faction books bounties or is the player's (FUN_1403570a0); another NPC's release leaves the flag as it was. Releases that
-        // are no task of the jailer's (bail, trade, recruit, liberators) clear it as before.
-        bool leaves = releaserFaction < 0 || world.IsPlayerFaction(releaserFaction) || crimes is null || crimes.Factions.Books(releaserFaction);
-        if (leaves && !(cage is not null && crimes?.Factions.NotReal(cage.Owner) == true)) c.Escaped = false;
+        // Task_ReleasePrisoner writes no escaped flag: the task 133 it gives (to a releaser whose faction books bounties or is the player's) runs
+        // after the release has cleared the hold, so its leave finds no cage (FUN_1403570a0, FUN_1403554b0, Verified; GetOutLegit). Releases that
+        // are no task of the jailer's (trade, recruit, liberators) clear it as before; a caged prisoner's flag is clear anyway (Imprison).
+        if (releaserFaction < 0 && !(cage is not null && crimes?.Factions.NotReal(cage.Owner) == true)) c.Escaped = false;
 
         // The release leaves slavery as it is (FUN_1403570a0 never sets the slave state; bail and buy-free clear it themselves, Verified); a releaser
         // that is not the player's takes a slave over (FUN_14032e430: the owner changes, the state stays).
         if (releaserFaction >= 0 && !world.IsPlayerFaction(releaserFaction) && c.SlaveState != 0)
             c.SlaveOwner = releaserFaction;
 
-        if (c.IsPlayer) world.PostCharacter(c, Loc.Tr("{1} has been released from prison.", c.Name));
+        if (jailer && c.IsPlayer && c.SlaveState == 0) world.PostCharacter(c, Loc.Tr("{1} has been released from prison.", c.Name));
         return true;
     }
 
     /// <summary>
-    /// The prisoner leaves its cage by itself (Task_GetOutOfCage <c>FUN_1403554b0</c>, locks.md "Cages and beds", <b>Verified</b>): refused while the
-    /// cage is effectively locked. The task flag is 1 for the player's Get out (207) and the opportunistic walk (256), so it is an escape whatever
-    /// the sentence (a pending Escaping Prison against the cage owner, which the crime setter refuses for a lawless owner, and a slave in state 1
-    /// becomes an escaped slave); the escaped flag <see cref="CharacterCold.Escaped"/> is written only for a cage owner that is real, a not-real
-    /// owner leaves it as it was. A kidnap victim getting out is no escape (engine choice). True when it got out.
+    /// The prisoner leaves its cage by itself with the escape flag (Task_GetOutOfCage 207 and 256, the player's Get out and the opportunistic walk;
+    /// <see cref="LeaveCage"/>): refused while the cage is effectively locked. True when it got out.
     /// </summary>
     public bool GetOut(World world, CharacterId prisoner, CrimeSystem? crimes = null)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(prisoner, out int s) || table.Cold(s) is not { IsImprisoned: true } c) return false;
+        if (c.InWhat is { } id && Find(id)?.Lock is { EffectivelyLocked: true }) return false;
+
+        LeaveCage(world, s, c, true, crimes);
+        return true;
+    }
+
+    /// <summary>
+    /// Task 133 Get out of cage (legit, flag 0; <see cref="LeaveCage"/>), given with the queue cleared to a prisoner bailed out
+    /// (<c>FUN_1406ae170</c>), bought free (<c>FUN_1406add20</c>) or released by a jailer (<c>FUN_1403570a0</c>). The bought and the released are out
+    /// of their cage before the task runs (both clear the hold themselves, <c>FUN_140330600</c>, right after the give), so its leave finds no cage and
+    /// does nothing (<b>Verified</b>: the leave tests the held building's handle, which the clear set to none); only a bailed prisoner, whose cage
+    /// the bail merely unlocks, leaves through it. False when the character is in no cage (nothing to do).
+    /// </summary>
+    public bool GetOutLegit(World world, CharacterId prisoner, CrimeSystem? crimes = null)
+    {
+        var table = world.Characters;
+        if (!table.TryResolveNext(prisoner, out int s) || table.Cold(s) is not { IsImprisoned: true } c) return false;
+
+        LeaveCage(world, s, c, false, crimes);
+        return true;
+    }
+
+    /// <summary>
+    /// The leave of Task_GetOutOfCage (<c>FUN_1403554b0</c>, locks.md "Cages and beds", <b>Verified</b>): out of the cage at its exit spot, the hold
+    /// cleared. The task's flag (1 for 207 and 256, 0 for 133) is set again at the task's start (slot 1, <c>FUN_140335250</c>, <b>Verified</b>): 0
+    /// when the sentence is served (<c>FUN_1405c9f00</c>, <see cref="SentenceServed"/>), then 1 when the cage owner's faction is <c>not real</c> or of
+    /// <c>fundamental type</c> 8 (bandit). A set flag is an escape: a pending Escaping Prison against the cage owner (which the crime setter refuses
+    /// for a lawless owner) and a slave in state 1 becomes an escaped slave. The escaped flag <see cref="CharacterCold.Escaped"/> takes the flag only
+    /// for a real cage owner; a not-real owner leaves it as it was. A kidnap victim getting out is no escape (engine choice).
+    /// </summary>
+    void LeaveCage(World world, int s, CharacterCold c, bool escapeFlag, CrimeSystem? crimes)
+    {
+        var table = world.Characters;
+        var prisoner = table.IdOf(s);
         var cage = c.InWhat is { } id ? Find(id) : null;
-        if (cage?.Lock is { EffectivelyLocked: true }) return false;
-        bool escape = cage is not null && !c.Kidnapped;
+        bool escape = cage is not null && !c.Kidnapped && EscapeFlag(world, c, cage, escapeFlag, crimes);
         if (cage is not null && cage.Occupant == prisoner) cage.Occupant = CharacterId.None;
         if (cage is not null) StepOut(table, s, cage);
         Clear(c);
+
         if (!(cage is not null && crimes?.Factions.NotReal(cage.Owner) == true)) c.Escaped = escape;
         if (escape && c.SlaveState == 1) SetSlave(world, c, 2, c.SlaveOwner);   // a slave getting out is an escaped slave (Task_GetOutOfCage)
 
@@ -1904,8 +1940,17 @@ public sealed partial class FixtureRegistry
         // FUN_140852c80).
         if (escape)
             crimes?.SetPending(world, s, CrimeCode.EscapingPrison, cage!.Owner, CharacterId.None, CrimeSystem.MinTimer);
+    }
 
-        return true;
+    /// <summary>
+    /// The task's flag at its start (<c>FUN_140335250</c>): cleared for a served sentence, set for a cage of a not-real or bandit faction.
+    /// </summary>
+    static bool EscapeFlag(World world, CharacterCold c, Fixture cage, bool flag, CrimeSystem? crimes)
+    {
+        if (SentenceServed(c, world.GameHours)) flag = false;
+        if (crimes is { } k && (k.Factions.NotReal(cage.Owner) || k.Factions.Bandit(cage.Owner))) flag = true;
+
+        return flag;
     }
 
     /// <summary>
@@ -2108,7 +2153,7 @@ public sealed partial class FixtureRegistry
     /// <summary>
     /// Takes a building's lock and door state from its saved GAMESTATE_BUILDING (docs/game/locks.md "Save keys"): <c>hardness</c> and <c>broken</c>
     /// always, level and <c>locked</c> only when the saved <c>lock lvl</c> is above 0; doors by suffix i: <c>state</c>, <c>doa</c>, <c>broken</c>,
-    /// <c>gatecode</c>, <c>wants lock</c>, <c>lock lvl</c>, <c>locked</c>, <c>hardness</c>. Interior fixtures (whose save ids are not mapped) keep
+    /// <c>wants lock</c>, <c>lock lvl</c>, <c>locked</c>, <c>hardness</c>, and the gate code set to -1 (<c>gatecode</c> is written, not read). Interior fixtures (whose save ids are not mapped) keep
     /// their rolls but count as restored, apart from Meitou's own <c>meitou lock</c> key (see <see cref="InteriorKey"/>). A <paramref name="level"/>
     /// state (the level data's, for a building no save has) marks restored only the doors it has a <c>state</c> for, so the squad's <c>initial door
     /// state</c> still applies to the rest.
@@ -2131,7 +2176,7 @@ public sealed partial class FixtureRegistry
 
                 if (state.Floats.TryGetValue("doa" + i, out float doa)) f.OpenAmount = doa;
                 if (state.Bools.TryGetValue("broken" + i, out bool b)) f.DoorBroken = b;
-                if (state.Ints.TryGetValue("gatecode" + i, out int g)) f.GateCode = g;
+                f.GateCode = -1;   // DoorStuff::_loadFromSerialise sets -1 and never reads the saved gatecode (FUN_1402a06a0)
                 if (state.Bools.TryGetValue("wants lock" + i, out bool w)) f.WantsLock = w;
             }
             else if (f.Id == building && f.Lock is { } l) ReadLock(state, l, "", broken: true);

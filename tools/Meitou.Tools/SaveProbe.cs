@@ -29,19 +29,22 @@ static class SaveProbe
     const int SettleTicks = 300;
 
     /// <summary>
-    /// The command line: <c>&lt;save folder&gt; &lt;mode&gt; [mode arguments] [--ticks n] [--nav] [--at x,z] [--load-order file] [--mod-dir folder]...</c>. Returns 0, or 2 for a bad command line.
+    /// The command line: <c>&lt;save folder&gt; &lt;mode&gt; [mode arguments] [--ticks n] [--nav] [--stream] [--at x,z] [--seed n] [--load-order file] [--mod-dir folder]...</c>. Returns 0, 1 for a save without a player character, or 2 for a bad command line.
     /// </summary>
     public static int Run(GameInstall install, string[] args)
     {
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
         var rest = new List<string>(args);
-        bool nav = rest.Remove("--nav");
+        bool stream = rest.Remove("--stream");
+        bool nav = rest.Remove("--nav") || stream;
         int ticks = ProbeLoadOrder.TakeOption(rest, "--ticks") is { } t ? int.Parse(t) : SettleTicks;
         Vector2? at = ProbeLoadOrder.TakeOption(rest, "--at") is { } spot ? Spot(spot) : null;
+        ulong seed = ProbeLoadOrder.TakeOption(rest, "--seed") is { } s ? ulong.Parse(s) : 1;
         var order = ProbeLoadOrder.Take(install, rest);
         if (rest.Count < 2) return Usage();
 
-        using var probe = ProbeWorld.Load(install, order, rest[0], nav, at);
+        if (ProbeWorld.Load(install, order, rest[0], nav, at, seed, stream) is not { } loaded) return 1;
+        using var probe = loaded;
         probe.Tick(ticks);
         return Mode(probe, rest[1], rest[2..]) ? 0 : Usage();
     }
@@ -69,12 +72,17 @@ static class SaveProbe
             case ("bait", >= 1): Bait(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("squads", >= 1): Squads(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("watch", >= 1): Watch(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 10); return true;
+            case ("turrets", >= 4):
+                TurretProbe.Run(probe, a[0], int.Parse(a[1]), new Vector2(float.Parse(a[2]), float.Parse(a[3])),
+                    a.Count > 4 ? int.Parse(a[4]) : 10, a.Count > 5 ? int.Parse(a[5]) : 40);
+                return true;
             case ("anim", >= 1): AnimationProbe.Run(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 30, a.Count > 2 ? a[2] : null); return true;
             case ("assault", >= 1): Assault(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 40); return true;
             case ("pace", >= 3): Pace(probe, a[0], float.Parse(a[1]), float.Parse(a[2]), a.Count > 3 ? int.Parse(a[3]) : 10); return true;
             case ("move", >= 3): Move(probe, a[0], float.Parse(a[1]), float.Parse(a[2]), a.Count > 3 ? int.Parse(a[3]) : 10); return true;
             case ("premises", _): Premises(probe, a.Count > 0 ? int.Parse(a[0]) : 10, a.Count > 1 ? int.Parse(a[1]) : 40); return true;
             case ("slaves", >= 1): Slaves(probe, float.Parse(a[0])); return true;
+            case ("captors", _): Captors(probe, a.Count > 0 ? int.Parse(a[0]) : 15, a.Count > 1 && a[1] == "walk"); return true;
             case ("ko", >= 1): Knockout(probe, int.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 15); return true;
             case ("cages", >= 1): Cages(probe, a[0]); return true;
             case ("sleeper", >= 1): Sleeper(probe, a[0]); return true;
@@ -85,15 +93,25 @@ static class SaveProbe
             case ("uniques", _): Uniques(probe, a.Count > 0 ? a[0] : null); return true;
             case ("recruit", >= 1): Recruit(probe, a[0]); return true;
             case ("cage", _): PutInCage(probe, a.Count > 0 ? a[0] : null); return true;
+            case ("escape", >= 1):
+                Vector3? walk = a.Count > 4 ? new(float.Parse(a[3]), 0, float.Parse(a[4])) : null;
+                Escape(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 20, a.Count > 2 ? int.Parse(a[2]) : 20, walk);
+                return true;
             case ("talk", >= 1): Talk(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : null); return true;
             case ("converse", >= 1): Converse(probe, a[0], a.Skip(1).Select(int.Parse).ToList()); return true;
             case ("storage", >= 2): Storage(probe, a[0], float.Parse(a[1])); return true;
+            case ("containers", >= 1): Containers(probe, float.Parse(a[0])); return true;
             case ("resave", _): Resave(probe); return true;
             case ("sites", >= 1): Sites(probe, float.Parse(a[0])); return true;
             case ("machines", >= 1): Machines(probe, float.Parse(a[0])); return true;
             case ("research", _): Research(probe); return true;
             case ("nests", _): Nests(probe); return true;
             case ("heights", >= 2) when probe.Nav is not null: Heights(probe, float.Parse(a[0]), float.Parse(a[1])); return true;
+            case ("ray", >= 6) when probe.Nav is not null: Ray(probe, Point(a, 0), Point(a, 3)); return true;
+            case ("sees", >= 1) when probe.Nav is not null: SeesLeader(probe, float.Parse(a[0])); return true;
+            case ("sightlines", >= 4) when probe.Nav is not null:
+                Sightlines(probe, Point(a, 0), float.Parse(a[3]), a.Count > 4 ? float.Parse(a[4]) : 4, a.Count > 5 ? float.Parse(a[5]) : 0);
+                return true;
             case ("places", >= 1) when probe.Nav is not null: Places(probe, float.Parse(a[0]), a.Count > 1 ? float.Parse(a[1]) : 4); return true;
             case ("layout", >= 1) when probe.Nav is not null: Layout(probe, a[0]); return true;
             default: return false;
@@ -110,7 +128,7 @@ static class SaveProbe
 
     /// <summary>
     /// Every character within <paramref name="radius"/> of the player's squad leader every <paramref name="interval"/> ticks,
-    /// <paramref name="rounds"/> times: whether it is down, its goal, what it carries and whom it fights.
+    /// <paramref name="rounds"/> times: whether it is down, its water state, its goal, what it carries and whom it fights.
     /// </summary>
     static void Crowd(ProbeWorld probe, float radius, int rounds, int interval)
     {
@@ -120,8 +138,8 @@ static class SaveProbe
             foreach (int i in probe.Near(probe.LeaderPosition, radius))
             {
                 var c = probe.Characters.Cold(i)!;
-                Console.WriteLine($"  {probe.Who(i)}{Down(c)} in={c.InSomething} carrying={c.Carrying} lifting={c.CarryTarget} behaviour={c.Ai?.Behaviour} "
-                    + $"goal={c.Ai?.Goal?.Task.Type} fight={c.Ai?.FightGoal} target={Target(probe, i)}");
+                Console.WriteLine($"  {probe.Who(i)}{Down(c)} in={c.InSomething} water={c.WaterState} carrying={c.Carrying} lifting={c.CarryTarget} "
+                    + $"behaviour={c.Ai?.Behaviour} goal={c.Ai?.Goal?.Task.Type} fight={c.Ai?.FightGoal} target={Target(probe, i)}");
             }
 
             probe.PrintMessages();
@@ -342,6 +360,8 @@ static class SaveProbe
                 Console.WriteLine($"  part flesh={p.Flesh:F2} stun={p.Stun:F2} rig={p.Rig:F2} max={p.MaxHp:F2} wear={p.Wear:F2} fraction={p.Fraction:F3}");
         }
 
+        // A player character's decision trace: which source won and why each one before it could not run.
+        probe.World.Decisions.Tracing = true;
         for (int round = 0; round < rounds; round++)
         {
             foreach (int i in slots)
@@ -349,7 +369,9 @@ static class SaveProbe
                 var c = probe.Characters.Cold(i)!;
                 Console.WriteLine($"tick {probe.World.Tick} {probe.Who(i)} in={c.InSomething} carrying={c.Carrying} behaviour={c.Ai?.Behaviour} "
                     + $"package={c.Ai?.Squad.Ai?.Current?.Name} goal={c.Ai?.Goal?.Task} fight={c.Ai?.FightGoal} "
-                    + $"orders=[{string.Join(", ", c.OrderQueue.Select(o => o.Row))}] saved={c.SavedOrders?.Count} target={Target(probe, i)}");
+                    + $"orders=[{string.Join(", ", c.OrderQueue.Select(o => o.Row))}] saved={c.SavedOrders?.Count} target={Target(probe, i)} "
+                    + $"hunger={c.Medical?.Hunger:F2} fed={c.Medical?.Fed:F2}");
+                if (c.Decision is { } d) Console.WriteLine($"  decision {d.Tick} {d.Winner}: {string.Join("; ", d.Lines)}");
             }
 
             probe.PrintMessages();
@@ -579,6 +601,43 @@ static class SaveProbe
             foreach (var k in carry.TakeKnockouts()) Console.WriteLine($"  swing chance={k.Chance:F0} hit={k.Success}");
             probe.PrintMessages();
         }
+    }
+
+    /// <summary>
+    /// Every 20 ticks <paramref name="rounds"/> times: the captive jobs on the player's leader (a slave watcher walking over to process it, #759)
+    /// with each worker's phase, gap and how it senses the leader; <paramref name="walk"/> clears the leader's sneak first (the control run).
+    /// </summary>
+    static void Captors(ProbeWorld probe, int rounds, bool walk)
+    {
+        var t = probe.Characters;
+        var leader = probe.World.Squads.Find(probe.World.Player.Squad)!.Leader;
+        var captives = probe.World.SystemOf<Meitou.Simulation.Kidnap.CaptiveSystem>()!;
+        if (walk) t.Cold(leader.Slot)!.Orders &= ~Meitou.Simulation.Player.CharacterOrders.Sneak;
+
+        for (int round = 0; round < rounds; round++)
+        {
+            bool sneaking = (t.Cold(leader.Slot)!.Orders & Meitou.Simulation.Player.CharacterOrders.Sneak) != 0;
+            Console.WriteLine($"tick {probe.World.Tick} leader {probe.Who(leader.Slot)} sneak={sneaking} jobs={captives.Jobs.Count}");
+            foreach (var j in captives.Jobs)
+                if (j.Captive == leader && t.TryResolveNext(j.Worker, out int w)) Console.WriteLine(CaptorLine(probe, j, w, leader.Slot));
+
+            probe.PrintMessages();
+            probe.Tick(20);
+        }
+    }
+
+    /// <summary>
+    /// One captive job on the leader: its kind and phase, the worker, their gap, the worker's sense entry of the leader and entry count, and
+    /// whether it perceives the leader.
+    /// </summary>
+    static string CaptorLine(ProbeWorld probe, Meitou.Simulation.Kidnap.CaptiveJob j, int w, int leader)
+    {
+        var t = probe.Characters;
+        float gap = Vector3.Distance(t.Next[w].Position, t.Next[leader].Position);
+        int? entries = Meitou.Simulation.Bodies.CharacterFacts.Senses(probe.World, w)?.Entries.Count;
+        bool perceives = Meitou.Simulation.Bodies.CharacterFacts.Perceives(probe.World, w, leader);
+
+        return $"  {j.Kind} {j.Phase} by {probe.Who(w)} gap={gap:F0} senses={SensesOfLeader(probe, w)}/{entries} perceives={perceives}";
     }
 
     /// <summary>
@@ -815,6 +874,88 @@ static class SaveProbe
     }
 
     /// <summary>
+    /// The player's squad leader is put in the cage <paramref name="cage"/>, sneaks and gets out, then walks to <paramref name="walk"/> (X, Z on
+    /// its floor) when given (#776: police at an unseen escapee); then every <paramref name="interval"/> ticks, <paramref name="rounds"/> times,
+    /// its crime line and each NPC within 600 that sees it, has spotted it or fights it (<see cref="EscapeWatcher"/>).
+    /// </summary>
+    static void Escape(ProbeWorld probe, string cage, int rounds, int interval, Vector3? walk)
+    {
+        var t = probe.Characters;
+        int leader = probe.World.Squads.Find(probe.World.Player.Squad)!.Leader.Slot;
+        var id = t.IdOf(leader);
+        var fixture = probe.World.Fixtures.Find(cage)!;
+        bool caged = probe.World.Fixtures.Imprison(probe.World, id, fixture);
+        Console.WriteLine($"imprison={caged} {fixture.Id} owner={probe.Faction(fixture.Owner)} at {fixture.Position:F1}");
+        probe.Tick(100);
+
+        if (fixture.Lock is { } lockState) lockState.Locked = false;
+        t.Cold(leader)!.Orders |= Meitou.Simulation.Player.CharacterOrders.Sneak;
+        probe.World.Commands.Enqueue(new GetOutOrder([id]) { Tick = probe.World.Tick });
+        if (walk is { } to)
+        {
+            probe.Tick(20);
+            var onFloor = new Vector3(to.X, t.Next[leader].Position.Y, to.Z);
+            probe.World.Commands.Enqueue(new MoveOrder([id], onFloor) { Tick = probe.World.Tick });
+        }
+
+        for (int round = 0; round < rounds; round++)
+        {
+            probe.Tick(interval);
+            EscapeRound(probe, leader);
+        }
+    }
+
+    /// <summary>
+    /// One round of <see cref="Escape"/>: the escapee's line, then its watchers'.
+    /// </summary>
+    static void EscapeRound(ProbeWorld probe, int leader)
+    {
+        var t = probe.Characters;
+        var sight = probe.World.Sight;
+        var memory = probe.World.Systems.OfType<DialogueSystem>().FirstOrDefault()?.Memory;
+        var at = t.Next[leader].Position;
+        var c = t.Cold(leader)!;
+        Console.WriteLine($"tick {probe.World.Tick} {probe.Who(leader)} {Held(c)} escaped={c.Escaped} place={sight.PlaceOf(leader)} "
+            + $"floor={sight.FloorOf(leader, at)} {CrimeLine(probe, memory, leader)}");
+
+        foreach (int i in probe.Near(at, 600))
+        {
+            if (i != leader && EscapeWatcher(probe, i, leader) is { } line) Console.WriteLine("  " + line);
+        }
+        probe.PrintMessages();
+    }
+
+    /// <summary>
+    /// An NPC in slot <paramref name="i"/> as it watches the escapee: its place, floor, plain sight factor, spot meter and goal, and when it fights
+    /// the escapee what may hold it in place and its fight state; null when it neither sees, has spotted nor fights it.
+    /// </summary>
+    static string? EscapeWatcher(ProbeWorld probe, int i, int leader)
+    {
+        var t = probe.Characters;
+        if (t.Cold(i) is not { IsPlayer: false } w) return null;
+        var sight = probe.World.Sight;
+        var aggro = probe.World.Systems.OfType<Meitou.Simulation.Aggro.AggroSystem>().First();
+        var state = probe.World.Systems.OfType<CombatSystem>().First().StateOf(t.IdOf(i));
+        float plain = sight.Sees(i, leader, t.Next[i].Position, t.Next[leader].Position, 600);
+        bool spotted = aggro.Spotted(i, t.IdOf(leader));
+        bool fights = state.Fighting && state.TargetSlot == leader;
+        if (plain <= 0 && !spotted && !fights) return null;
+
+        string fight = fights ? $" {Held(w)} {FightLine(state)}" : "";
+        return $"{probe.Who(i)} place={sight.PlaceOf(i)} floor={sight.FloorOf(i, t.Next[i].Position)} sees={plain:F2} spotted={spotted} "
+            + $"goal={w.Ai?.Goal?.Task.Type} row={w.Running?.Row}{fight}";
+    }
+
+    /// <summary>
+    /// What may hold a character in place: its held state, behaviour, seat clip and path (length and end).
+    /// </summary>
+    static string Held(CharacterCold c)
+    {
+        string end = c.Path.Length > 0 ? c.Path[^1].ToString("F0") : "-";
+        return $"held={c.InSomething} behaviour={c.Ai?.Behaviour} sit={c.Ai?.SitClip} path={c.Path.Length}->{end}";
+    }
+
+    /// <summary>
     /// Whether the characters named like <paramref name="name"/> can be talked to (by anyone, and by the nearest player character) and the roots
     /// of their talk event; with an event <paramref name="ev"/> (the talk event too), its roots with every line's conditions and effects.
     /// </summary>
@@ -907,6 +1048,36 @@ static class SaveProbe
     }
 
     /// <summary>
+    /// The containers within <paramref name="radius"/> of the leader: building, record, lock, own items, and the building shop whose stock
+    /// container each is, with the size its trader window starts at.
+    /// </summary>
+    static void Containers(ProbeWorld probe, float radius)
+    {
+        var world = probe.World;
+
+        foreach (var f in world.Fixtures.All.Where(f => f.Contents is not null && Vector3.Distance(f.Position, probe.LeaderPosition) < radius))
+        {
+            Console.WriteLine($"container {f.Id} building={f.Building} '{probe.Db.Find(f.RecordId)?.Name}' at {f.Position:F0} "
+                + $"locked={f.Lock?.Locked} own={f.Contents!.Items.Count}");
+
+            foreach (var q in world.Squads.All)
+            {
+                if (q.Shop is not { } shop || shop.Building != f.Building || !shop.Holds(f.Id)) continue;
+
+                var (columns, rows) = shop.ViewSize;
+                Console.WriteLine($"  stock container of squad {q.Id} '{q.Name}' template={q.TemplateId} window={columns}x{rows}");
+            }
+        }
+
+        foreach (var q in world.Squads.All.Where(q => q.HomeBuilding is { } h && Vector3.Distance(h.Position, probe.LeaderPosition) < radius))
+        {
+            string shop = q.Shop is { } s ? $"{s.Stock.Items.Count} items, fills={s.Fills} restock={s.NextRestockTick}" : "none";
+            Console.WriteLine($"home {q.HomeBuilding!.Key} squad {q.Id} '{q.Name}' template={q.TemplateId} members={q.Members.Count} "
+                + $"shop={shop} tick={world.Tick}");
+        }
+    }
+
+    /// <summary>
     /// The player's buildings within <paramref name="radius"/> of the leader: id, record, position, floor, the building they stand in and whether
     /// they are complete.
     /// </summary>
@@ -916,7 +1087,22 @@ static class SaveProbe
         {
             Console.WriteLine($"site {site.Id} '{site.Name}' at {site.Position:F1} floor={site.Floor} parent={site.Parent} complete={site.Complete} "
                 + $"level={site.LevelPlacement is not null} town={site.Town}");
+            if (probe.World.Machines.Find(site.Id) is { } m) Console.WriteLine($"  {MachineLine(m)}");
         }
+    }
+
+    /// <summary>
+    /// A machine's status, output, inputs and, for a crafting bench, its queue, repeat flag and finished items.
+    /// </summary>
+    static string MachineLine(Meitou.Simulation.Production.Machine m)
+    {
+        var inputs = string.Join(" ", m.Inputs.Select(i => $"{i.Item}:{i.Count}/{i.Level:F2}"));
+        var output = m.Output is { } o ? $"{o.Recipe.Item}:{o.Count} ({o.Progress:F2})" : "none";
+        var craft = m.Craft is { } c
+            ? $" queue=[{string.Join(", ", c.Queue.Select(j => $"{j.Option.Item}:{j.Progress:F2}"))}] repeat={c.Repeat} "
+                + $"done=[{string.Join(", ", c.Done.Select(d => $"{d.Name}x{d.Quantity}"))}]"
+            : "";
+        return $"machine '{m.Data.Id}' st={m.Status} out={output} in=[{inputs}]{craft} operators={m.LastOperators}";
     }
 
     /// <summary>
@@ -1023,6 +1209,116 @@ static class SaveProbe
     }
 
     /// <summary>
+    /// The point given as three numbers from <paramref name="first"/> on.
+    /// </summary>
+    static Vector3 Point(List<string> a, int first) => new(float.Parse(a[first]), float.Parse(a[first + 1]), float.Parse(a[first + 2]));
+
+    /// <summary>
+    /// The solid parts (<see cref="SolidHits"/>: terrain and the buildings' collision) on the segment between two points, as the spot meter's sight
+    /// ray and bolts test them: where it first hits, terrain or building. Needs <c>--nav</c>, which gathers the buildings' collision.
+    /// </summary>
+    static void Ray(ProbeWorld probe, Vector3 from, Vector3 to)
+    {
+        var combat = probe.World.SystemOf<CombatSystem>();
+        var seg = to - from;
+        float hit = SolidHits.Hit(probe.World.Walkability, combat?.Buildings, from, seg, RangedTuning.TerrainStep, out bool building);
+        string what = hit < 0 ? "clear" : $"{(building ? "building" : "terrain")} at {from + seg * hit:F1}, {hit * seg.Length():F1} from the start";
+        Console.WriteLine($"{from:F1} -> {to:F1} ({seg.Length():F1}): {what}; buildings {(combat?.Buildings is null ? "not loaded" : "loaded")}");
+    }
+
+    /// <summary>
+    /// How each NPC within <paramref name="radius"/> of the player's squad leader sees it after a tick: its place, the sight range between them, the
+    /// plain sight test (<see cref="SightMap.Sees"/>), the sight ray and the test with the ray (<see cref="SightRay.Sees"/>). Needs <c>--nav</c>.
+    /// </summary>
+    static void SeesLeader(ProbeWorld probe, float radius)
+    {
+        probe.Tick(1);
+        var table = probe.Characters;
+        var combat = probe.World.SystemOf<CombatSystem>();
+        var sight = probe.World.Sight;
+        int leader = probe.Near(probe.LeaderPosition, 0.5f).First(i => table.Cold(i)!.IsPlayer);
+        var at = table.Next[leader].Position;
+        Console.WriteLine($"leader {at:F1} place {Place(sight, sight.LocationOf(leader))}");
+        foreach (int i in probe.Near(at, radius))
+        {
+            if (table.Cold(i) is not { IsPlayer: false } c) continue;
+
+            var eye = table.Next[i].Position;
+            float outdoor = Meitou.Simulation.Aggro.AggroSystem.RangeOf(c, Meitou.Simulation.Aggro.AggroSystem.OutdoorSight);
+            float plain = sight.Sees(i, leader, eye, at, outdoor);
+            bool clear = SightRay.Clear(probe.World.Walkability, combat?.Buildings, eye, at);
+            float rayed = SightRay.Sees(probe.World, i, leader, eye, at, outdoor);
+            Console.WriteLine($"  {probe.Who(i)} at {eye:F1} place {Place(sight, sight.LocationOf(i))} range {sight.Range(i, leader, outdoor):F0} "
+                + $"sees {plain:F2} ray {(clear ? "clear" : "blocked")} with ray {rayed:F2}");
+        }
+    }
+
+    /// <summary>
+    /// Every walkable point within <paramref name="radius"/> (every <paramref name="step"/>) from which a looker's spot-meter ray reaches a sneaker
+    /// standing at <paramref name="centre"/> (<see cref="SightRay.Clear"/>), or one within <paramref name="spread"/> of it (every 16), with the place each
+    /// point gets and whether it is the target's. Needs <c>--nav</c>.
+    /// </summary>
+    static void Sightlines(ProbeWorld probe, Vector3 centre, float radius, float step, float spread)
+    {
+        if (spread <= 0)
+        {
+            Sightlines(probe, centre, radius, step);
+            return;
+        }
+
+        var heights = new List<float>();
+        for (float x = centre.X - spread; x <= centre.X + spread; x += 16)
+        {
+            for (float z = centre.Z - spread; z <= centre.Z + spread; z += 16)
+            {
+                heights.Clear();
+                probe.Nav!.Walkability.World.HeightsAt(x, z, heights);
+                foreach (float h in heights) Sightlines(probe, new Vector3(x, h, z), radius, step);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <see cref="Sightlines(ProbeWorld, Vector3, float, float, float)"/> for one target.
+    /// </summary>
+    static void Sightlines(ProbeWorld probe, Vector3 target, float radius, float step)
+    {
+        var world = probe.Nav!.Walkability.World;
+        var combat = probe.World.SystemOf<CombatSystem>();
+        var sight = probe.World.Sight;
+        int targetPlace = sight.PlaceAtPoint(target);
+        var heights = new List<float>();
+        Console.WriteLine($"target {target:F1} place {Place(sight, targetPlace)}");
+        for (float x = target.X - radius; x <= target.X + radius; x += step)
+        {
+            for (float z = target.Z - radius; z <= target.Z + radius; z += step)
+            {
+                heights.Clear();
+                world.HeightsAt(x, z, heights);
+                foreach (float h in heights) Sightline(probe, combat, new Vector3(x, h, z), target, targetPlace);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Prints one looker point of <see cref="Sightlines(ProbeWorld, Vector3, float, float)"/> when its ray to the target is clear.
+    /// </summary>
+    static void Sightline(ProbeWorld probe, CombatSystem? combat, Vector3 eye, Vector3 target, int targetPlace)
+    {
+        if (!SightRay.Clear(probe.World.Walkability, combat?.Buildings, eye, target)) return;
+
+        float d = Vector3.Distance(eye, target);
+        int place = probe.World.Sight.PlaceAtPoint(eye);
+        string nav = probe.World.Walkability.LineOfSight(eye, target) ? "" : " (navmesh line blocked)";
+        Console.WriteLine($"  clear from {eye:F1} d={d:F0} place {Place(probe.World.Sight, place)}{(place == targetPlace ? " same" : "")}{nav}");
+    }
+
+    /// <summary>
+    /// A place's building key, or "outdoors / on top".
+    /// </summary>
+    static string Place(SightMap sight, int place) => place >= 0 ? sight.PlaceKey(place) : "outdoors/on top";
+
+    /// <summary>
     /// The place test (<see cref="SightMap.PlaceAtPoint"/>, what <c>SteersAt</c> compares) over the walkable surface round the leader, every
     /// <paramref name="step"/> within <paramref name="radius"/>: the points each building's place takes, the outdoor-mesh points it counts as
     /// indoors and the indoor-mesh points it counts as outdoors, with a sample of each. Needs <c>--nav</c>.
@@ -1121,37 +1417,45 @@ static class SaveProbe
     static int Usage()
     {
         Console.Error.WriteLine("""
-            meitou-tools probe <save folder> <mode> [args] [--ticks n (default 300)] [--nav] [--at x,z] [--load-order <file>] [--mod-dir <folder>]...
+            meitou-tools probe <save folder> <mode> [args] [--ticks n (default 300)] [--nav] [--stream] [--at x,z] [--seed n (default 1)] [--load-order <file>] [--mod-dir <folder>]...
               near <radius>            characters near the player's squad leader
-              crowd <radius> [rounds] [interval]  characters near the leader every interval (40) ticks: down, goal, load, fight target
+              crowd <radius> [rounds] [interval]  characters near the leader every interval (40) ticks: down, water state, goal, load, fight target
               fight <slot> [rounds] [interval]  a character's combat state and body, and everyone targeting it: gap, blows thrown and landed
               crime <name> [rounds] [interval]  a character's saved squad memory, then its pending crime, bounties and who targets it with which tags
               nests                    the wild layout's nests whose first candidate spot the original would refuse
               bait <radius> [rounds]   send the player's squad after the nearest other squad each round, listing squads as squads does
               squads <radius> [rounds]  the other squads near the leader: leader state, goal, members' spread every 40 ticks
-              watch <name> [rounds]    a character's task, AI and fight target every 40 ticks (default 10 rounds)
+              watch <name> [rounds]    a character's task, AI, fight target, hunger and decision trace every 40 ticks (default 10 rounds)
               anim <radius> [ticks] [name]  the animation layers of the seated characters near the leader (or those named) each tick, then each clip's rate
+              turrets <character> <count> <x> <z> [rounds] [interval]  spawn hostiles there; the turret squads near: goals, claims, enemies, gunners
               assault <name> [rounds] [interval]  the player's squad attacks a named character; who is near, indoors or out, and how each senses the leader
               move <name> <x> <z> [rounds]  order a character to walk to a point, then watch it
               premises [rounds] [interval]  the building the leader stands in (needs --nav): public flags, house lock, doors, residents, who is inside, lines said
               ko <slot> [rounds]       the sneaking leader's stealth KO order on a slot: the chance, the target's spot meter and the task every 20 ticks
               slaves <radius>          slave state, owner faction, master squad and squad town near the leader
+              captors [rounds] [walk]  captive jobs on the leader: worker, phase, gap, its senses of the leader; walk clears sneak (#759)
               cages <name>             fixtures within 300 of a character, with occupants and building designation; a container's lock, grid and items
               sleeper <name>           the bed a character lies in: record, yaw, use node yaws, lie spot and the sleeper's own yaw
               force <name> <tools|strength> [fixture id]  a character cuts or breaks a fixture's lock (a prisoner its own cage's); 120 ticks of it
               cage [cage id]           the carrying player character puts its load in a cage; 600 ticks of it
+              escape <cage id> [rounds] [interval] [x z]  the leader is caged, sneaks out and walks to x z: who sees, has spotted or fights it (#776)
               uniques [name]           the unique-character table (claimed, state, handle) and every character made from each record
               recruit <name>           a character joins the player, its save platoon unloads: the members it would make again
               places <radius> [step]   the place test over the walkable surface round the leader (needs --nav): outdoor-mesh points it puts indoors, and the reverse
+              ray <x y z> <x y z>      the sight ray between two points (needs --nav): where it first hits the terrain or a building
+              sightlines <x y z> <radius> [step] [spread]  walkable points whose spot-meter ray reaches the spot (or each spot within spread), with places
+              sees <radius>            NPCs near the leader: place, sight range, the plain sight test and with the sight ray (needs --nav)
               talk <name> [event]      whether a character can be talked to, and its roots for the talk event; with an event, their lines' effects
               converse <name> [choice...]  the nearest player character talks to a character: each line said and its choices, clicking the given ones
               storage <name> <radius>  storages near a character: type limit, grid, items and whether each is accepted
-              sites <radius>           the player's buildings near the leader with floor and parent
+              containers <radius>      containers near the leader: own items, building shop stock in each, homes
+              sites <radius>           the player's buildings near the leader with floor and parent, and each machine's state and craft queue
               machines <radius>        town buildings' machines near the leader: status, output, inputs, farm growth and operators
               research                 the research state and each bench's rate factors
               resave                   re-write the buildings into the save and list ids held by two zones
               heights <x> <z>          terrain and navmesh heights at a point (needs --nav)
               layout <building key>    a town building (zone:instance id): layout names now, ruin state and its interior layout's objects (needs --nav)
+            --stream: build only the player's box first and stream the other zones in as the game does, ticks at game speed (implies --nav)
             """);
         return 2;
     }

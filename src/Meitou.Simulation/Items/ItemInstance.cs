@@ -148,6 +148,11 @@ public sealed class ItemInstance
     /// </summary>
     public string Uniform { get; set; } = "";
     /// <summary>
+    /// A code mod's mark on this item (docs/modding.md "Item use"), such as the character a note names; empty: none. Saved, copied with the item,
+    /// and items with different marks never stack.
+    /// </summary>
+    public string ModTag { get; set; } = "";
+    /// <summary>
     /// The COLOR_DATA it is dyed with (the save key <c>color sid</c>; empty: none): its record's <c>color</c> when made, else the scheme of the first
     /// wearer (<see cref="Meitou.Data.Gameplay.ItemColours"/>).
     /// </summary>
@@ -306,8 +311,20 @@ public sealed class ItemInstance
     /// A copy of this item with another quantity (a stack split off; never used for a backpack, whose contents are not copied). Fewer units than
     /// the stack's are full ones: the stack keeps its partly used unit (<see cref="Charges"/>), which only a copy of the whole stack carries.
     /// </summary>
-    public ItemInstance WithQuantity(int quantity) => new()
+    public ItemInstance WithQuantity(int quantity) => Copied(quantity, null);
+
+    /// <summary>
+    /// A copy of the whole stack, a bag with a copy of what it holds (the trader window's copy of a building shop's goods,
+    /// <see cref="Trading.ShopView"/>).
+    /// </summary>
+    public ItemInstance Copy() => Copied(Quantity, Contents?.Copy());
+
+    /// <summary>
+    /// A copy of this item with <paramref name="quantity"/> units holding <paramref name="contents"/>.
+    /// </summary>
+    ItemInstance Copied(int quantity, Inventory? contents) => new()
     {
+        Contents = contents,
         Record = Record,
         Name = Name,
         Type = Type,
@@ -324,6 +341,7 @@ public sealed class ItemInstance
         Level = Level,
         Crafter = Crafter,
         Uniform = Uniform,
+        ModTag = ModTag,
         ColourId = ColourId,
         ItemFunction = ItemFunction,
         Quality = Quality,

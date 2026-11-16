@@ -100,8 +100,22 @@ public sealed class HeadlessWorld : IDisposable
         WorldRuntime? runtime = null;
         try
         {
-            content = WorldContent.Load(install, db, new GameAssets(install), terrain.HeightAt, levels, gameplay is null ? null : new Meitou.Simulation.Bodies.BodyOptions { Dismemberment = gameplay.Dismemberment, Decapitation = gameplay.Decapitation, AdvancedRagdolls = gameplay.AdvancedRagdolls, GlobalDamageMultiplier = gameplay.GlobalDamageMultiplier, HungerTime = gameplay.HungerTime, ChanceOfDeath = gameplay.ChanceOfDeath, });
-            var mods = ModHost.Load(new ModHostOptions(ModHost.EnabledCodeMods(install), trustedCodeMods ?? new HashSet<string>(StringComparer.Ordinal), db, content.Population, () => runtime?.World, id => modSettings?.GetValueOrDefault(id), StrictSystems: true));
+            content = WorldContent.Load(install, db, new GameAssets(install), terrain.HeightAt, levels,
+                gameplay is null ? null : new Meitou.Simulation.Bodies.BodyOptions
+                {
+                    Dismemberment = gameplay.Dismemberment,
+                    Decapitation = gameplay.Decapitation,
+                    AdvancedRagdolls = gameplay.AdvancedRagdolls,
+                    GlobalDamageMultiplier = gameplay.GlobalDamageMultiplier,
+                    HungerTime = gameplay.HungerTime,
+                    ChanceOfDeath = gameplay.ChanceOfDeath,
+                    SquadXp = gameplay.SquadXp,
+                    OthersXp = gameplay.OthersXp,
+                });
+            var (enabled, disabled) = ModHost.CodeMods(install);
+            BuiltInMods.SkipCovered(enabled, disabled);
+            var mods = ModHost.Load(new ModHostOptions(enabled, trustedCodeMods ?? new HashSet<string>(StringComparer.Ordinal),
+                db, content.Population, () => runtime?.World, id => modSettings?.GetValueOrDefault(id), Disabled: disabled, StrictSystems: true));
             if (mods.Refused.Keys.Any(name => trustedCodeMods?.Contains(name) == true))
                 throw new InvalidDataException("A trusted authoritative code mod failed to initialize.");
             var weather = SimulationWeather.Load(install, db, terrain.HeightAt);
@@ -208,6 +222,7 @@ public sealed class HeadlessWorld : IDisposable
     static void ApplyWorldRules(World world, GameplayRules rules)
     {
         world.BenchFacingFix = rules.BenchFacingFix;
+        world.BagSearchFix = rules.BagSearchFix;
         world.Luckyren = rules.Luckyren;
         world.GroundItems.Limit = rules.GroundItemLimit;
         world.Sight.InteriorLampsAllDay = rules.InteriorLampsAllDay;
@@ -228,6 +243,8 @@ public sealed class HeadlessWorld : IDisposable
             result.DialogueConditions.Add(code, handler);
         foreach (var(code, handler)in configured.DialogueEffects.Concat(mods.DialogueEffects))
             result.DialogueEffects.Add(code, handler);
+        foreach (var (record, handler) in configured.ItemUses.Concat(mods.ItemUses))
+            result.ItemUses.Add(record, handler);
         return result;
     }
 

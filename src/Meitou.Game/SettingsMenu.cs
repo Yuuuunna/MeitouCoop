@@ -429,6 +429,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     public Action<bool>? BenchFacingChanged { get; init; }
 
     /// <summary>
+    /// Applies the bag search fix (<see cref="UserConfig.FixBagSearch"/>).
+    /// </summary>
+    public Action<bool>? BagSearchChanged { get; init; }
+
+    /// <summary>
     /// Called when an off-screen switch changes (the config holds the new values).
     /// </summary>
     public Action? OffscreenChanged { get; init; }
@@ -616,7 +621,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             "Shadows" or "Traced sun shadows" or "Contact shadows" or "Lamp shadows" or "Soft grazing sun" or WorldFrame.FifthCascadeSwitch
                 or WorldFrame.TracedGrassSwitch => "Lighting",
             "Indirect light" or "Indoor GI" or "Hybrid GI" or "Ambient occlusion" or "Ground-truth occlusion" or "Light shafts" or "Planetshine"
-                or WorldFrame.GiRelocateSwitch or WorldFrame.GiCloudShadowsSwitch or WorldFrame.GiCacheSwitch => "Lighting",
+                or WorldFrame.GiRelocateSwitch or WorldFrame.GiCloudShadowsSwitch or WorldFrame.GiCacheSwitch
+                or WorldFrame.GiRaysSwitch => "Lighting",
             "Water" or "Water contact foam, wakes and ripples" or "Reflections" => "Water & reflections",
             "Ground parallax" or "Ground displacement (tessellation)" or "Ground trails" or WorldFrame.RockSmoothingSwitch
                 or WorldFrame.OutlineRefineSwitch => "Terrain",
@@ -813,7 +819,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             WorldFrame.FifthCascadeSwitch => sun is -1 or 2,
             "Contact shadows" => sun is not (3 or 4),
             WorldFrame.TracedGrassSwitch => sun is -1 or 3 or 4,
-            "Indoor GI" => gi != 0,
+            "Indoor GI" or WorldFrame.GiRaysSwitch => gi != 0,
             WorldFrame.GiRelocateSwitch or WorldFrame.GiCloudShadowsSwitch or WorldFrame.GiCacheSwitch => gi is -1 or 2,
             WorldFrame.GtaoQualitySlider => occlusion is -1 or 2,
             WorldFrame.ShaftStrengthSlider or WorldFrame.ShaftAirSlider or WorldFrame.ShaftAirDawnSlider
@@ -1529,6 +1535,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             PunchReachChanged?.Invoke(true);
             Config.FixBenchFacing = true;
             BenchFacingChanged?.Invoke(true);
+            Config.FixBagSearch = true;
+            BagSearchChanged?.Invoke(true);
             OffscreenChanged?.Invoke();
         }
         Config.Audio = new();
@@ -1555,6 +1563,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         Config.HoverOutline = true;
         Config.BuildingOutline = true;
         Player.BuildingSelection.DeselectBuildings = Config.DeselectBuildings = true;
+        Config.CameraLeash = true;
         GamePages.ResetOptional();
         if (!Player.IsRemoteSession)
         {
@@ -1825,7 +1834,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         "Interior lamps" or "Attackers per target" or "Harpoon limit" or "Late dodges and blocks" or
         "Squads keep their people" or "Fights far away" or "Healing far away" or "Wild squads stay" or
         "Towns keep their schedule" or "Production far away" or "Doors close behind" or "Decapitation" or
-        "Advanced ragdolls" or "luckyren Mode" or "Dropped items kept" or "Raids as written" or "Weak punch reach" or "Bench facing";
+        "Advanced ragdolls" or "luckyren Mode" or "Dropped items kept" or "Raids as written" or "Weak punch reach" or "Bench facing"
+        or "Bags in the inventory" or "Squad XP" or "Others' XP";
 
     /// <summary>
     /// Presents a server-owned row without mutation controls.

@@ -68,7 +68,12 @@ sealed class HeldItems(PopulationData? data)
             }
             HeldInputCore(world, command);
         }
-        finally { _heldPlayerId = previousPlayer; _heldRequest = previousRequest; }
+        finally
+        {
+            world.SystemOf<Trading.TradeSystem>()?.SettleOpenStock(world, _heldPlayerId);
+            _heldPlayerId = previousPlayer;
+            _heldRequest = previousRequest;
+        }
     }
 
     /// <summary>
@@ -118,7 +123,7 @@ sealed class HeldItems(PopulationData? data)
     /// </summary>
     internal static bool Matches(ItemInstance? item, InventoryItemToken t, bool section = true) => item is not null && item.Record == t.Record
         && (!section || item.Section == t.Section)
-        && item.X == t.X && item.Y == t.Y && item.Quantity == t.Quantity && item.Quality == t.Quality;
+        && item.X == t.X && item.Y == t.Y && item.Quantity == t.Quantity && item.Quality == t.Quality && t.MatchesTag(item.ModTag);
 
     /// <summary>
     /// <paramref name="units"/> of <paramref name="item"/>: the item itself when that is all of it, else a split-off copy of full units (the stack
@@ -247,10 +252,9 @@ sealed class HeldItems(PopulationData? data)
             && ContainerAccess.ContainerFor(world, site, lift.Actor, out var opener, lift, lift.ContainerSessionId) is { } container)
         {
             if (opener is null || HeldPlayer(world).OpenContainer != site) return;
-            var grid = ContainerAccess.GridOf(world, container, out var region);
+            var grid = container.Contents!;
             var item = grid.Items.ElementAtOrDefault(t.Index);
-            if (!Matches(item, t with { X = t.X + region.X, Y = t.Y + region.Y }, section: false)
-                    || !region.Holds(item!)) return;   // the window shows cells from the container's corner
+            if (!Matches(item, t, section: false)) return;
             Hold(world, lift, Split(grid, item!, lift.Whole), grid, "main", item!.X, item.Y);
             world.Machines.Touch();
             return;
@@ -364,7 +368,7 @@ sealed class HeldItems(PopulationData? data)
             return;
         }
 
-        if (Under(world, target, item, place, out int x, out int y) is not { Count: < 2 } under)
+        if (Under(target, item, place, out int x, out int y) is not { Count: < 2 } under)
         {
             ReturnHeldItem(world);
             return;
@@ -441,16 +445,16 @@ sealed class HeldItems(PopulationData? data)
             default:
                 if (place.Section != "main") return null;
                 if (((_heldRequest?.ContainerSessionId ?? 0) != 0 || world.Machines.Find(into.Site) is null)
-                    && ContainerAccess.ContainerFor(world, into.Site, held.Actor, out var opener, _heldRequest, _heldRequest?.ContainerSessionId ?? held.ContainerSessionId) is { } container)
-                    return opener is not null && HeldPlayer(world).OpenContainer == into.Site && ContainerAccess.ShopOf(world,
-                            container) is null ? new(ContainerAccess.GridOf(world, container), ContainerAccess.GridOf(world, container), "main",
-                                    ContainerAccess.GridOf(world, container).Width, ContainerAccess.GridOf(world, container).Height, null, container,
-                                    null) : null;
-                return world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, into.Site, out _) is
+                    && ContainerAccess.ContainerFor(world, into.Site, held.Actor, out var opener, _heldRequest,
+                        _heldRequest?.ContainerSessionId ?? held.ContainerSessionId) is { } container)
                 {
-                    Storage: { } storage,
-                    Closed: false
-                } m
+                    var grid = container.Contents!;
+                    bool open = opener is not null && HeldPlayer(world).OpenContainer == into.Site && ContainerAccess.ShopOf(world, container) is null;
+                    return open ? new(grid, grid, "main", grid.Width, grid.Height, null, container, null) : null;
+                }
+
+                return world.SystemOf<Production.ProductionSystem>()?.Reach(world, held.Actor, into.Site, out _) is { Storage: { } storage,
+                        Closed: false } m
                     ? new(storage, storage, "main", storage.Width, storage.Height, null, null, m) : null;
         }
     }
@@ -491,9 +495,9 @@ sealed class HeldItems(PopulationData? data)
 
     /// <summary>
     /// The items under the held item in the target's section (a slot: whatever is in it) at the cell it lands at; null (the item goes back) when
-    /// its footprint is larger than the section or no shop container has room ("No room for that item.").
+    /// its footprint is larger than the section.
     /// </summary>
-    List<ItemInstance>? Under(World world, Target target, ItemInstance item, PlaceHeld place, out int x, out int y)
+    static List<ItemInstance>? Under(Target target, ItemInstance item, PlaceHeld place, out int x, out int y)
     {
         x = 0;
         y = 0;
@@ -501,44 +505,9 @@ sealed class HeldItems(PopulationData? data)
         if (item.Width > target.Columns || item.Height > target.Rows) return null;
         x = Math.Clamp(place.X, 0, target.Columns - item.Width);
         y = Math.Clamp(place.Y, 0, target.Rows - item.Height);
-        // On a shop's greyed cells, or across two of its containers: the nearest free cell of a container instead (engine choice, #349).
-        if (!target.Grid.InRegion(x, y, item.Width, item.Height))
-        {
-            if (NearestFreeInRegion(target, item, x, y) is not var (fx, fy))
-            {
-                world.Post(_heldPlayerId, "No room for that item.");
-                return null;
-            }
-            (x, y) = (fx, fy);
-        }
         int cx = x, cy = y;
         return target.Grid.Items.Where(i => i.Section == target.Section && cx < i.X + i.Width && i.X < cx + item.Width && cy < i.Y + i.Height
                 && i.Y < cy + item.Height).ToList();
-    }
-
-    /// <summary>
-    /// The free cell nearest (<paramref name="x"/>, <paramref name="y"/>) where <paramref name="item"/> lies inside one of the grid's regions; null
-    /// when none has room.
-    /// </summary>
-    static (int X, int Y)? NearestFreeInRegion(Target target, ItemInstance item, int x, int y)
-    {
-        (int X, int Y)? best = null;
-        int bestDistance = int.MaxValue;
-        for (int cy = 0; cy + item.Height <= target.Rows; cy++)
-        {
-            for (int cx = 0; cx + item.Width <= target.Columns; cx++)
-            {
-                int distance = (cx - x) * (cx - x) + (cy - y) * (cy - y);
-                if (distance >= bestDistance || !target.Grid.InRegion(cx, cy, item.Width, item.Height)) continue;
-
-                bool taken = target.Grid.Items.Any(i => i.Section == target.Section && cx < i.X + i.Width && i.X < cx + item.Width
-                        && cy < i.Y + i.Height && i.Y < cy + item.Height);
-                if (taken) continue;
-
-                (best, bestDistance) = ((cx, cy), distance);
-            }
-        }
-        return best;
     }
 
     /// <summary>
@@ -880,24 +849,45 @@ sealed class HeldItems(PopulationData? data)
     {
         var player = HeldPlayer(world);
         if (player.Held is not { } held) return;
+        Trading.Shop? stock = null;
+        if (held.From.Holder == ItemHolder.Stock)
+        {
+            stock = world.Squads.All.Select(squad => squad.Shop).FirstOrDefault(shop => shop is not null
+                && (held.SourceShop is not null ? ReferenceEquals(shop, held.SourceShop) : ReferenceEquals(shop.Stock, held.Grid)));
+            if (stock is not null) world.SystemOf<Trading.TradeSystem>()?.SettleView(world, stock);
+        }
         player.Held = null;
+        try
+        {
+            ReturnHeldCore(world, held, held.From.Holder == ItemHolder.Stock ? stock?.Stock : held.Grid);
+        }
+        finally
+        {
+            if (stock is not null) world.SystemOf<Trading.TradeSystem>()?.SettleView(world, stock);
+        }
+    }
+
+    /// <summary>
+    /// Returns the held item to its still-current source; shop projections may have changed while another player used a physical container.
+    /// </summary>
+    void ReturnHeldCore(World world, HeldItem held, Inventory? source)
+    {
         var item = held.Item;
         item.Rotated = held.Rotated;   // as it lay, so its old cell takes it
-        bool missingStock = held.From.Holder == ItemHolder.Stock
-            && !world.Squads.All.Any(squad => ReferenceEquals(squad.Shop?.Stock, held.Grid));
+        bool missingStock = held.From.Holder == ItemHolder.Stock && source is null;
         bool replacedCharacter = held.From.Holder == ItemHolder.Character
             && (!world.Characters.TryResolveNext(held.From.Character, out int originalSlot)
                 || !ReferenceEquals(world.Characters.Cold(originalSlot)?.Inventory, held.Grid));
         bool replacedSite = held.From.Holder == ItemHolder.Site && held.Grid is not null
             && !(world.Fixtures.Find(held.From.Site) is { Contents: not null } sourceBox
-                ? ReferenceEquals(GridOf(world, sourceBox), held.Grid)
+                ? ReferenceEquals(sourceBox.Contents!, held.Grid)
                 : ReferenceEquals(world.Machines.Find(held.From.Site)?.Storage, held.Grid));
         if (missingStock || replacedCharacter || replacedSite)
         {
             Ground(world, item, held.Origin, 0);
             return;
         }
-        if (held.Grid is not { } root)
+        if (source is not { } root)
         {
             ReturnToMachine(world, held, item);
             return;
@@ -993,7 +983,7 @@ sealed class HeldItems(PopulationData? data)
             && world.Fixtures.Find(owner.Site) is { Contents: not null } box)
             return ContainerFor(world, owner.Site, command is LiftItem take ? take.Actor : HeldPlayer(world).Held?.Actor ?? CharacterId.None,
                 out var actor, command, command.ContainerSessionId) is not null && actor is not null
-                && revision != 0 && world.InventoryRevision(GridOf(world, box)) == revision;
+                && revision != 0 && world.InventoryRevision(box.Contents!) == revision;
         if (world.Machines.Find(owner.Site) is not { Closed: false } machine || revision == 0 || world.MachineRevision(machine) != revision
             || world.SystemOf<Production.ProductionSystem>()?.SaveWorkSite(world, owner.Site) is not { } site || command.SiteRevision == 0 || world.BuildingRevision(site) != command.SiteRevision) return false;
         return world.SystemOf<Production.ProductionSystem>()?.MayAccessMachine(world, _heldPlayerId, owner.Site) == true && (site.Owner < 0
@@ -1047,6 +1037,8 @@ sealed class HeldItems(PopulationData? data)
             Item = item,
             From = from,
             Grid = grid,
+            SourceShop = from.Holder == ItemHolder.Stock
+                ? world.Squads.All.Select(squad => squad.Shop).FirstOrDefault(shop => shop is not null && ReferenceEquals(shop.Stock, grid)) : null,
             Section = section,
             X = x,
             Y = y,

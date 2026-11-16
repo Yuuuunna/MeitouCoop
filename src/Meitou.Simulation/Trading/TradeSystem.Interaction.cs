@@ -36,6 +36,8 @@ public sealed partial class TradeSystem
         {
             if (command is TradeCommand scoped && (command.Issuer.HasValue != _attributed ||
                 command.Issuer is not null && scoped.SessionId == 0 || scoped.SessionId != 0 && scoped.SessionId != SessionId)) return;
+            if (_open && command is TradeCommand and not CloseTrade && Resolve(world, out _, out _, out var prepared))
+                owner.PrepareView(world, prepared!);
             switch (command)
             {
                 case OpenTrade o:
@@ -90,11 +92,27 @@ public sealed partial class TradeSystem
             if (!_customer.IsNone)
             {
                 if (!Resolve(world, out int c, out int t, out _)) Close(world);
-                else if (InReach(world, c, t)) { _open = true; owner.Hold(world, _trader, this); }
+                else if (InReach(world, c, t))
+                {
+                    if (!_open)
+                    {
+                        TaskStart.Stand(world.Characters, c);
+                        if (Resolve(world, out _, out _, out var shop)) owner.PrepareView(world, shop!);
+                    }
+                    _open = true;
+                    owner.Hold(world, _trader, this);
+                }
                 else if (_open || _approach is null || !_approach.Follow(world, _customer, c, t)) Close(world);
                 else owner.Hold(world, _trader, this);
             }
             RefreshView(world);
+        }
+
+        internal bool Shows(World world, Shop shop) => _open && Resolve(world, out _, out _, out var open) && ReferenceEquals(open, shop);
+
+        internal void SettleStock(World world)
+        {
+            if (Resolve(world, out _, out _, out var shop) && shop!.Building is not null) owner.SettleView(world, shop);
         }
 
         public void RefreshView(World world) => View = _open && Resolve(world, out int c, out int t, out var shop) ? Publish(world, c, t, shop!) : null;
@@ -104,6 +122,7 @@ public sealed partial class TradeSystem
 
         public void Close(World world)
         {
+            Shop? closing = world.Characters.TryResolveNext(_trader, out int trader) ? ShopOf(world, world.Characters.Cold(trader)!) : null;
             _session.Active = false;
             _session = new();
             owner.Release(world, _trader, this);
@@ -116,6 +135,7 @@ public sealed partial class TradeSystem
             _membershipRevision = 0;
             SessionId = 0;
             _approach = null;
+            if (closing?.Building is not null) owner.SettleView(world, closing);
         }
 
         void Defer(World world, SimCommand command) => world.Defer(_authorization is { } grant
@@ -189,7 +209,7 @@ public sealed partial class TradeSystem
         {
             var item = inventory.All().ElementAtOrDefault(token.Index);
             return item is not null && item.Record == token.Record && item.Section == token.Section && item.X == token.X && item.Y == token.Y && item.Quantity == token.Quantity
-                && item.Quality == token.Quality && (item.Contents is null || item.Quantity == 1) ? item : null;
+                && item.Quality == token.Quality && token.MatchesTag(item.ModTag) && (item.Contents is null || item.Quantity == 1) ? item : null;
         }
 
         // ------------------------------------------------------------------ the held item (PlayerSystem, Items/HeldItems.cs)
@@ -199,6 +219,7 @@ public sealed partial class TradeSystem
         {
             buyer = CharacterId.None;
             if (!_open || !Resolve(world, out _, out _, out var shop)) return null;
+            owner.PrepareView(world, shop!);
             buyer = _customer;
             return shop!.Stock;
         }
@@ -552,6 +573,8 @@ public sealed partial class TradeSystem
                     Charges = item.Charges,
                     MaxCharges = item.MaxCharges,
                     StolenFrom = stolen ? item.StolenFrom : -1,
+                    StolenOwner = stolen ? world.Characters.OwnerNameOf(item.Owner) : null,
+                    ModTag = item.ModTag,
                     FenceChance = odds is { } shown ? Math.Clamp(shown, 0, 1) : null,
                     FenceOdds = odds is < 1 ? Math.Max(odds.Value, 0) : null,
                     Illegal = sell && (uint)shop.Terms.Site < (uint)Data.SiteFactions.Count && m.FactionCulture(Data.SiteFactions[shop.Terms.Site]) is { } culture && culture.Illegal.Contains(item.Record),
@@ -585,7 +608,6 @@ public sealed partial class TradeSystem
             {
                 Held = held,
                 GoodsOf = goodsOf,
-                Unused = shop.UnusedCells,
                 SessionId = SessionId,
                 FundsVisible = CanReadFunds(world),
                 CanSpendFunds = CanSpend(world),

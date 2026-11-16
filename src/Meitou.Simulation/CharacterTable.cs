@@ -776,6 +776,18 @@ public sealed class CharacterCold
     public CharacterId CarriedBy { get; set; } = CharacterId.None;
 
     /// <summary>
+    /// The partner of a carry this character was in when its squad left the world (null: none): the original writes the link into the unloading
+    /// platoon's record before its members are destroyed, and the destroy lets the partner go (docs/formats/save.md "Carry links"). Linked again once
+    /// both are in the world (<see cref="Carrying.CarrySystem"/>); saved as the <c>carrying</c> link. Runtime only otherwise; not hashed.
+    /// </summary>
+    public CharacterCold? CarryRelink { get; set; }
+
+    /// <summary>
+    /// Whether this character was the carrier of <see cref="CarryRelink"/> (else the carried one).
+    /// </summary>
+    public bool CarryRelinkIsCarrier { get; set; }
+
+    /// <summary>
     /// While carried: lifted awake by a friendly carrier (the player's Pick Up on a standing squad mate), so it stays on the shoulder until put down
     /// rather than being set down as one that came round.
     /// </summary>
@@ -983,6 +995,12 @@ public sealed class CharacterCold
     /// Held still by an interaction (a trader in an open trade, <see cref="Trading.TradeSystem"/>): the AI leaves it alone. Serial phases only.
     /// </summary>
     public bool Engaged { get; set; }
+
+    /// <summary>
+    /// A hunger level a code mod keeps the character at for free (engine API; null: the game's rule alone, <c>BodySystem.HungerFloor</c>), so one
+    /// a mod's squad carries off does not starve on the way. Not saved: the mod sets it again after a load. Serial phases only.
+    /// </summary>
+    public float? FedTo { get; set; }
 
     /// <summary>
     /// The personality tag dialogue tests (DC_PERSONALITY_TAG, docs/game/dialogue.md "Line check"): the save's <c>personality</c> when it has one,
@@ -1350,6 +1368,13 @@ public sealed class CharacterCold
     public WorkEvents? ActionWork { get; set; }
 
     /// <summary>
+    /// The workplace an obedient player slave stands at, at its work clip, for goal 189 or 190 of its Obedient Slave job (Kidnap/ObedientSlave.cs; the
+    /// original runs <c>Task_OperateMachine</c> for both): the production system works its machine for 189, the body takes its <c>hunger rate</c>
+    /// for both. Null: none. Runtime only, not saved, not hashed.
+    /// </summary>
+    public ObedientWork? SlaveWork { get; set; }
+
+    /// <summary>
     /// The replan bit (<see cref="DecisionSystem.Request(CharacterCold)"/>): set by a replan trigger, consumed by the decision step. Player
     /// characters only; not saved (a load sets it); hashed while set.
     /// </summary>
@@ -1483,6 +1508,17 @@ public sealed class CharacterTable
     /// The id of the character in <paramref name="slot"/> as of the last tick.
     /// </summary>
     public CharacterId IdOf(int slot) => new(slot, _previous[slot].Generation);
+
+    /// <summary>
+    /// The name of the character <paramref name="id"/> names, "" when it names none in the world (<see cref="TryResolveNext"/>).
+    /// </summary>
+    public string NameOf(CharacterId id) => TryResolveNext(id, out int slot) && Cold(slot) is { } cold ? cold.Name : "";
+
+    /// <summary>
+    /// The tooltip's robbed owner of a stolen item whose mark names <paramref name="owner"/>: its name, "" when it has left the world, null when the
+    /// mark names no character (a building's owning faction; the tooltip then names the faction).
+    /// </summary>
+    public string? OwnerNameOf(CharacterId owner) => owner.IsNone ? null : NameOf(owner);
 
     /// <summary>
     /// Whether <paramref name="id"/> names a character alive as of the last tick.
@@ -1884,6 +1920,7 @@ public sealed class CharacterTable
         }
 
         if (k.Engaged) hasher.Add(0x456E6761);
+        if (k.FedTo is { } fed) hasher.Add(fed);
         if (!k.FollowOrder.IsNone)
         {
             hasher.Add(0x466F6C77);

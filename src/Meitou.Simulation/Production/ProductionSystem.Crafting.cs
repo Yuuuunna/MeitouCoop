@@ -608,7 +608,7 @@ public sealed partial class ProductionSystem
     static bool PutAt(Inventory owner, ItemInstance item, int count, Inventory storage, int x, int y)
     {
         int n = count == 0 ? item.Quantity : Math.Min(count, item.Quantity);
-        if (n <= 0 || item.Width <= 0 || item.Height <= 0 || x < 0 || y < 0 || x > storage.Width - item.Width || y > storage.Height - item.Height || n > storage.LimitOf(item) || !storage.InRegion(x, y, item.Width, item.Height) || !storage.IsFree("main", x, y, item.Width, item.Height) || !owner.Items.Contains(item) || n < item.Quantity && item.Contents is not null)
+        if (n <= 0 || item.Width <= 0 || item.Height <= 0 || x < 0 || y < 0 || x > storage.Width - item.Width || y > storage.Height - item.Height || n > storage.LimitOf(item) || !storage.IsFree("main", x, y, item.Width, item.Height) || !owner.Items.Contains(item) || n < item.Quantity && item.Contents is not null)
             return false;
         var unit = n == item.Quantity ? item : item.WithQuantity(n);
         if (ReferenceEquals(unit, item))
@@ -628,7 +628,7 @@ public sealed partial class ProductionSystem
         return true;
     }
 
-    static bool ContainerRevisionsMatch(World world, StorageTransferCommand command, CharacterCold actor, Locks.Fixture container) => world.InventoryMatches(command, actor.Inventory!) && (command.Issuer is null && command.StorageRevision == 0 || command.StorageRevision != 0 && world.InventoryRevision(PlayerSystem.GridOf(world, container)) == command.StorageRevision);
+    static bool ContainerRevisionsMatch(World world, StorageTransferCommand command, CharacterCold actor, Locks.Fixture container) => world.InventoryMatches(command, actor.Inventory!) && (command.Issuer is null && command.StorageRevision == 0 || command.StorageRevision != 0 && world.InventoryRevision(container.Contents!) == command.StorageRevision);
     internal int StorageOwner(World world, string site) => world.Fixtures.Find(site)?.Owner ?? Site(world, site)?.Owner ?? -1;
     internal BuildSite? SaveWorkSite(World world, string key) => Site(world, key);
     public ulong WorkSiteRevision(World world, string id) => Site(world, id)is { } site ? world.BuildingRevision(site) : 0;
@@ -716,7 +716,7 @@ public sealed partial class ProductionSystem
             if (world.CommandPlayer(command) is not { } player || player.OpenContainer != command.Site
                 || world.Fixtures.Find(command.Site) is not { Contents: not null } container
                 || ContainerAccess.ShopOf(world, container) is not null) return;
-            var storage = ContainerAccess.GridOf(world, container);
+            var storage = container.Contents!;
             if (command.Issuer is not null && (player.ContainerAccess is not { } access
                 || access.Player != command.Issuer || access.Id != command.ContainerSessionId || access.Fixture != container
                 || !access.Valid(world) || !access.InRange(world) || command.ControlRevision == 0)) return;
@@ -803,7 +803,7 @@ public sealed partial class ProductionSystem
             if (valid && errand.Site is { } site)
             {
                 valid = ReferenceEquals(Site(world, site.Id), site) && ReferenceEquals(world.Machines.Find(site.Id), errand.Machine) && site.Owner == errand.Owner && site.Complete && MayWork(world, cold, site) && world.BuildingRevision(site) == errand.SiteRevision;
-                if (valid && errand.Control is { } control)
+                if (valid && errand.Control is { } control && site.Owner >= 0 && !PublicTownWork(world, site))
                     valid = world.Players.Find(control.Player)is { } player && player.HasPermission(site.Owner, FactionPermission.ManageAssets) && player.MembershipRevision(site.Owner) == errand.MembershipRevision;
             }
 

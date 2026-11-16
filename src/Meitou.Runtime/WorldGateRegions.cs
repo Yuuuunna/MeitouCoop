@@ -36,7 +36,7 @@ public sealed class WorldGateRegions(Func<GateRegionBuild> capture) : IRuntimeWo
             return;
         _applied = null;
         foreach (var system in locks)
-            system.SetGateRegions(null, pending: true);
+            system.SetGateRegions(world, null, pending: true);
         if (_job is { } previous)
         {
             bool current = ReferenceEquals(previous.Owner, world) && ReferenceEquals(previous.Input.Identity, input.Identity);
@@ -51,7 +51,7 @@ public sealed class WorldGateRegions(Func<GateRegionBuild> capture) : IRuntimeWo
                 {
                     var regions = previous.Result.GetAwaiter().GetResult() ?? throw new InvalidDataException("Missing gate regions.");
                     foreach (var system in locks)
-                        system.SetGateRegions(regions);
+                        system.SetGateRegions(world, regions);
                     _applied = input.Identity;
                     return;
                 }
@@ -76,7 +76,7 @@ public sealed class WorldGateRegions(Func<GateRegionBuild> capture) : IRuntimeWo
         _applied = null;
         _active = null;
         foreach (var system in world.Systems.OfType<LockSystem>())
-            system.SetGateRegions(null, pending: true);
+            system.SetGateRegions(world, null, pending: true);
     }
 
     public void Dispose()

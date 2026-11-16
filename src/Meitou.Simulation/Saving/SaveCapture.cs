@@ -111,6 +111,7 @@ public static partial class SaveCapture
         if (loaded?.Source.Camera.Record.Ints.ContainsKey(PlayerSquadSave.WorldKey) == true && !world.Players.RequiresExplicitControl)
             throw new InvalidOperationException("Restore multiplayer authority before capturing the world.");
 
+        world.SystemOf<Trading.TradeSystem>()?.SettleAll(world);
         var builder = prepared ?? PrepareBase(data, loaded, options);
         var game = builder.Game;
         var camera = game.Camera;
@@ -234,7 +235,20 @@ public static partial class SaveCapture
     {
         if (loaded is not null) WriteRoaming(builder.Game, world, loaded);
         WriteSavedNpcs(builder, world, data, options, clock, buildings, races);
-        return WriteFreshNpcs(builder, world, data, options, clock, buildings, races, loaded);
+        var fresh = WriteFreshNpcs(builder, world, data, options, clock, buildings, races, loaded);
+        WriteModMarks(builder.Game, world, loaded, fresh);
+        return fresh;
+    }
+
+    /// <summary>
+    /// A code mod's marks on every platoon the save holds (<see cref="ModPlatoonSave"/>).
+    /// </summary>
+    static void WriteModMarks(SaveGame game, World world, LoadedSave? loaded, Dictionary<int, SavePlatoon> fresh)
+    {
+        foreach (var (id, platoon) in WrittenPlatoons(game, world, loaded, fresh))
+        {
+            if (world.Platoons.Find(id) is { } p) ModPlatoonSave.Write(platoon.Record, p);
+        }
     }
 
     /// <summary>
@@ -288,6 +302,15 @@ public static partial class SaveCapture
         /// </summary>
         public readonly List<(FcsRecord State, CharacterId Partner)> Carries = [];
         /// <summary>
+        /// The handle each character written got, by its cold state (a stored member has no id).
+        /// </summary>
+        public readonly Dictionary<CharacterCold, Hand> ColdHandles = new(ReferenceEqualityComparer.Instance);
+        /// <summary>
+        /// The kept carry links of characters whose squad left the world carrying (<see cref="CharacterCold.CarryRelink"/>): a state record and the
+        /// partner's cold state.
+        /// </summary>
+        public readonly List<(FcsRecord State, CharacterCold Partner)> KeptCarries = [];
+        /// <summary>
         /// The orders whose target character's handle is written once every character has one: the AI record, the key prefix and the target.
         /// </summary>
         public readonly List<(FcsRecord Record, string Prefix, CharacterId Target)> OrderTargets = [];
@@ -333,6 +356,8 @@ public static partial class SaveCapture
         // The carry links (FUN_1406280a0 writes the partner's handle under `carrying`, the null one when it is not saved).
         foreach (var (state, partner) in pass.Carries)
             (pass.Handles.TryGetValue(partner, out var hand) ? hand : Hand.Null).Write(state, "carrying");
+        foreach (var (state, partner) in pass.KeptCarries)
+            (pass.ColdHandles.TryGetValue(partner, out var kept) ? kept : Hand.Null).Write(state, "carrying");
 
         // The queued orders name their target character the same way (`tjobT<i>`); one not saved leaves the null handle.
         foreach (var (record, prefix, who) in pass.OrderTargets)
@@ -612,6 +637,7 @@ public static partial class SaveCapture
                 platoon.Record.Ints[PlayerSquadSave.SquadIdKey] = squad.Id;
             }
 
+            var inOrder = new List<SaveCharacter>(alive.Count);
             foreach (var id in alive)
             {
                 members++;
@@ -624,10 +650,13 @@ public static partial class SaveCapture
                 }
                 string characterOwner = multiplayer && cold.Faction >= 0 && cold.Faction < data.Factions.Count ? data.Factions[cold.Faction].Id : playerFactionId;
                 written[id] = WriteCharacter(builder, world, data, options, clock, buildings, races, platoon, sc, id, characterOwner, squad.Leader == id, orders: true);
+                inOrder.Add(written[id]);
             }
-            // The platoon's `imprisoned` (meaning Observed): set while a member is in a cage, cleared when the save had it and none is.
-            bool caged = alive.Any(m => table.Cold(m.Slot)!.IsImprisoned);
-            if (caged || (world.StoredPlayerRoles?.PendingCount(squad.Id) ?? 0) == 0 && platoon.Record.Bools.ContainsKey("imprisoned")) platoon.Record.Bools["imprisoned"] = caged;
+
+            // Reorder active members while preserving saved offline characters after them.
+            SaveBuilder.OrderCharacters(platoon, inOrder);
+
+            // Loaded player platoons keep their original imprisoned flag until they unload.
             SetCharCount(platoon);
         }
 
@@ -781,6 +810,7 @@ public static partial class SaveCapture
         // What it carries and wears, as it is now; items read from a save keep their records' other keys.
         if (cold.Inventory is { } inventory) builder.SetInventory(platoon, sc, SavedKit.FromInventory(inventory));
         if (!id.IsNone) s_memoryPass?.Handles[id] = sc.Handle;
+        s_memoryPass?.ColdHandles[cold] = sc.Handle;
         return sc;
     }
 
@@ -826,11 +856,14 @@ public static partial class SaveCapture
         // A new record has no held keys of the save to leave as read: a captive of a save's platoon split into one of its own (#677).
         HeldSave.Write(g, cold, isNew ? null : link, world.Fixtures, buildings);
 
-        // Carrying or carried: the bool says which, the partner's handle is written once every character has one.
-        g.Bools["carrying"] = !cold.Carrying.IsNone;
+        // Carrying or carried: the bool says which, the partner's handle is written once every character has one. A squad that left the world in a
+        // carry keeps its link (FUN_1404ff410 wrote the record before the destroy unlinked it).
         var partner = cold.Carrying.IsNone ? cold.CarriedBy : cold.Carrying;
-        if (partner.IsNone) Hand.Null.Write(g, "carrying");
-        else s_memoryPass?.Carries.Add((g, partner));
+        bool keptCarrier = partner.IsNone && cold.CarryRelink is not null && cold.CarryRelinkIsCarrier;
+        g.Bools["carrying"] = !cold.Carrying.IsNone || keptCarrier;
+        if (!partner.IsNone) s_memoryPass?.Carries.Add((g, partner));
+        else if (cold.CarryRelink is { } kept && s_memoryPass is { } keptPass) keptPass.KeptCarries.Add((g, kept));
+        else Hand.Null.Write(g, "carrying");
 
         // A world without ragdolls (headless) keeps what was read; a stale pose is not used where the character no longer lies.
         if (id.IsNone) RagdollSave.Write(g, null);
@@ -838,8 +871,29 @@ public static partial class SaveCapture
 
         if (cold.PortraitSerial is { } portraitSerial) g.Ints["portrait_serial"] = (int)portraitSerial;
 
+        // Its floor (getFloor) and the building it is in, on top of it too (isIndoors), which the original reads back on load (FUN_140626f50).
+        g.Ints["floor"] = SavedFloor(world, id);
+        SavedBuilding(world, id, buildings).Write(g, "isindoors");
+
         // The character's slot 0x398 (FUN_1406280a0): an animal's age, 1 for people (docs/game/animals.md "Ageing"; Verified in vanilla saves).
         if ((cold.Stats ?? link?.Stats) is { } aged) g.Floats["age"] = aged.Scale;
+    }
+
+    /// <summary>
+    /// The floor the character stands on (<see cref="Perception.SightMap.FloorOf"/> at its last-tick position); 0 for one not in the world.
+    /// </summary>
+    static int SavedFloor(World world, CharacterId id) =>
+        world.Characters.TryResolveNext(id, out int slot) ? world.Sight.FloorOf(slot, world.Characters.Previous[slot].Position) : 0;
+
+    /// <summary>
+    /// The handle of the building the character is in or on top of (<see cref="Perception.SightMap.LocationOf"/>); the null handle outdoors, out of
+    /// the world, or for a building the save has no complete handle of.
+    /// </summary>
+    static Hand SavedBuilding(World world, CharacterId id, IReadOnlyDictionary<string, FcsRecord> buildings)
+    {
+        if (!world.Characters.TryResolveNext(id, out int slot) || world.Sight.LocationOf(slot) is not (>= 0 and var place)) return Hand.Null;
+
+        return buildings.TryGetValue(world.Sight.PlaceKey(place), out var b) && Hand.IsComplete(b, "handle") ? Hand.Read(b, "handle") : Hand.Null;
     }
 
     /// <summary>
@@ -1229,7 +1283,8 @@ public static partial class SaveCapture
         }
 
         /// <summary>
-        /// Writes the squads in the world, the stored ones and the campaign's stand-ins; returns the platoons written by world platoon id.
+        /// Writes the squads in the world, the stored ones and the campaign's and code mods' stand-ins; returns the platoons written by world
+        /// platoon id.
         /// </summary>
         public Dictionary<int, SavePlatoon> Write(LoadedSave? loaded)
         {
@@ -1376,17 +1431,14 @@ public static partial class SaveCapture
         }
 
         /// <summary>
-        /// A campaign's stand-ins that never had their characters (not a save's: those are in it already).
+        /// A campaign's or a code mod's stand-ins that never had their characters (not a save's: those are in it already).
         /// </summary>
         void WriteStandIns(LoadedSave? loaded)
         {
             foreach (var p in _world.Platoons.All)
             {
-                if (p is not { Campaign: not null, State: PlatoonState.Unloaded, Saved: null } || p.Stored is { Members.Count: > 0 }
-                    || !Writable(p.Origin, p.Faction))
-                {
-                    continue;
-                }
+                bool standIn = p is { State: PlatoonState.Unloaded, Saved: null } && (p.Campaign is not null || p.ModSpawned);
+                if (!standIn || p.Stored is { Members.Count: > 0 } || !Writable(p.Origin, p.Faction)) continue;
 
                 if (loaded?.RoamingPlatoons.ContainsKey(p.Id) == true) continue;
 

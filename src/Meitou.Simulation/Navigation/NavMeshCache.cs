@@ -1,4 +1,3 @@
-using Meitou.Data.Gameplay;
 using System.Numerics;
 using System.Text;
 using Meitou.Content;
@@ -16,16 +15,17 @@ public sealed class NavMeshCache
     /// <summary>
     /// Bump when the builder's output changes for the same input (a new rule in the gatherer or the pruner).
     /// </summary>
-    public const int BuilderVersion = 58;
+    public const int BuilderVersion = 62;
 
     /// <summary>
     /// The layout version of the cache file; a file with another is not read.
     /// </summary>
-    const int FormatVersion = 6;
+    const int FormatVersion = 8;
     /// <summary>
     /// The first four bytes of a cache file.
     /// </summary>
     static readonly byte[] Magic = "MNAV"u8.ToArray();
+
     /// <summary>
     /// A cache in <paramref name="directory"/>; null: <see cref="LoadCaches.Root"/>'s <c>navmesh</c>.
     /// </summary>
@@ -35,96 +35,36 @@ public sealed class NavMeshCache
     }
 
     /// <summary>
-    /// The folder the zone files are written to (made by the first <see cref = "Save"/>).
+    /// The folder the zone files are written to (made by the first <see cref="Save"/>).
     /// </summary>
     public string Directory { get; }
 
     /// <summary>
-    /// The cache file of zone (<paramref name = "zoneX"/>, <paramref name = "zoneZ"/>): <c>zone.X.Z.nav</c> in <see cref = "Directory"/>.
+    /// The cache file of zone (<paramref name="zoneX"/>, <paramref name="zoneZ"/>): <c>zone.X.Z.nav</c> in <see cref="Directory"/>.
     /// </summary>
     public string PathOf(int zoneX, int zoneZ) => Path.Combine(Directory, $"zone.{zoneX}.{zoneZ}.nav");
+
     /// <summary>
     /// Hash of the settings that change the mesh (not the thread count).
     /// </summary>
     public static uint SettingsHash(NavBuildSettings s)
     {
         uint h = BuilderVersion;
-        foreach (var v in new[]
-        {
-            s.CellSize,
-            s.CellHeight,
-            s.DoorInflateCells,
-            s.AgentHeight,
-            s.MaxClimb,
-            s.MaxSimplificationError,
-            s.SeedDistance,
-            s.SeedHeightSlack
-        }
-
-        )
+        foreach (var v in new[] { s.CellSize, s.CellHeight, s.DoorInflateCells, s.AgentHeight, s.MaxClimb, s.MaxSimplificationError,
+            s.SeedDistance, s.SeedHeightSlack })
             h = (h * 16777619) ^ (uint)BitConverter.SingleToInt32Bits(v);
-        foreach (var v in new[]
-        {
-            s.TileCells,
-            s.MaxEdgeLength,
-            s.MinRegionArea,
-            s.MergeRegionArea,
-            s.Watershed ? 1 : 0
-        }
 
-        )
+        foreach (var v in new[] { s.TileCells, s.MaxEdgeLength, s.MinRegionArea, s.MergeRegionArea, s.Watershed ? 1 : 0 })
             h = (h * 16777619) ^ (uint)v;
+
         return h;
     }
 
     /// <summary>
-    /// Hash of the inputs every zone shares, by size and write time (not contents): the data files in load order (record contents: buildings,
-    /// layouts, foliage), the seed, height, biome, map feature and overlay files the gather and the foliage placer read, and the DotRecast version.
-    /// Collision files are not in it.
+    /// Hash of the inputs every zone shares, by size and write time (not contents): the data files, map files, level files of every layer,
+    /// collision files the records name and the DotRecast version (<see cref="NavContentHash"/>).
     /// </summary>
-    public static uint ContentHash(GameInstall install, GameDatabase db)
-    {
-        uint h = 2166136261;
-        void Add(string text)
-        {
-            foreach (char c in text)
-                h = (h ^ c) * 16777619;
-            h = (h ^ 0xff) * 16777619;
-        }
-
-        void Stamp(string path)
-        {
-            var file = new FileInfo(GameFiles.Resolve(path));
-            Add(file.Name);
-            Add(file.Exists ? $"{file.Length}:{file.LastWriteTimeUtc.Ticks}" : "-");
-        }
-
-        var mods = ModList.FindMods(install);
-        foreach (var name in db.Files)
-        {
-            Stamp(LoadOrder.BaseFiles.Contains(name) ? Path.Combine(install.DataDirectory, name) : mods.TryGetValue(Path.GetFileNameWithoutExtension(name), out var mod) ? mod : name);
-        }
-
-        foreach (var rel in new[]
-        {
-            NavSeeds.RelativePath,
-            TerrainHeightmap.RelativePath,
-            BlendInfoFile.RelativePath,
-            TerrainMaps.BiomeMap,
-            MapFeatureFile.RelativePath
-        }
-
-        )
-            Stamp(Path.Combine(install.DataDirectory, rel));
-        if (Path.GetDirectoryName(TerrainMaps.OverlayTile(install, "new_overlay", 0, 0))is { } overlays && System.IO.Directory.Exists(overlays))
-        {
-            foreach (var tile in System.IO.Directory.GetFiles(overlays, "new_overlay.*").Order(StringComparer.OrdinalIgnoreCase))
-                Stamp(tile);
-        }
-
-        Add(typeof(DotRecast.Recast.RcBuilder).Assembly.GetName().Version?.ToString() ?? "");
-        return h;
-    }
+    public static uint ContentHash(GameInstall install, GameDatabase db, WorldLevelData levels) => NavContentHash.Of(install, db, levels);
 
     /// <summary>
     /// The cached mesh when the file exists and matches the hashes; null otherwise (missing, stale or damaged).
@@ -132,18 +72,19 @@ public sealed class NavMeshCache
     public ZoneNavMesh? TryLoad(int zoneX, int zoneZ, uint buildingHash, uint settingsHash)
     {
         var path = PathOf(zoneX, zoneZ);
-        if (!File.Exists(path))
-            return null;
+        if (!File.Exists(path)) return null;
+
         try
         {
             using var r = new BinaryReader(File.OpenRead(path), Encoding.UTF8);
-            if (!r.ReadBytes(4).AsSpan().SequenceEqual(Magic) || r.ReadInt32() != FormatVersion)
-                return null;
+            if (!r.ReadBytes(4).AsSpan().SequenceEqual(Magic) || r.ReadInt32() != FormatVersion) return null;
+
             if (r.ReadInt32() != zoneX || r.ReadInt32() != zoneZ || r.ReadUInt32() != buildingHash || r.ReadUInt32() != settingsHash)
                 return null;
+
             return ReadBody(r, zoneX, zoneZ);
         }
-        catch (Exception e)when (e is IOException or EndOfStreamException or InvalidDataException or OverflowException or OutOfMemoryException)
+        catch (Exception e) when (e is IOException or EndOfStreamException or InvalidDataException or OverflowException or OutOfMemoryException)
         {
             return null;
         }
@@ -160,16 +101,23 @@ public sealed class NavMeshCache
         var vertices = new Vector3[r.ReadInt32()];
         for (int i = 0; i < vertices.Length; i++)
             vertices[i] = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+
         var doorIds = new string[r.ReadInt32()];
         for (int i = 0; i < doorIds.Length; i++)
             doorIds[i] = r.ReadString();
+
+        var buildingIds = new string[r.ReadInt32()];
+        for (int i = 0; i < buildingIds.Length; i++)
+            buildingIds[i] = r.ReadString();
+
         int count = r.ReadInt32();
         var doorOf = doorIds.Length > 0 ? new int[count] : null;
+        var buildingOf = buildingIds.Length > 0 ? new int[count] : null;
         var polygons = new int[count][];
         var neighbours = new int[count][];
         var areas = new byte[count];
         var kept = new bool[count];
-        var links = new int[]? [count];
+        var links = new int[]?[count];
         for (int p = 0; p < count; p++)
         {
             int n = r.ReadByte();
@@ -179,8 +127,10 @@ public sealed class NavMeshCache
             neighbours[p] = new int[n];
             for (int k = 0; k < n; k++)
                 polygons[p][k] = r.ReadInt32();
+
             for (int k = 0; k < n; k++)
                 neighbours[p][k] = r.ReadInt32();
+
             int linkCount = r.ReadUInt16();
             if (linkCount > 0)
             {
@@ -189,16 +139,20 @@ public sealed class NavMeshCache
                     links[p]![i] = r.ReadInt32();
             }
 
-            if (doorOf is not null)
-                doorOf[p] = r.ReadInt16();
+            if (doorOf is not null) doorOf[p] = r.ReadInt16();
+            if (buildingOf is not null) buildingOf[p] = r.ReadInt16();
         }
 
         var corners = new Vector3[r.ReadInt32() * 3];
         for (int i = 0; i < corners.Length; i++)
             corners[i] = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+
         var heights = ReadHeights(r, count);
+        var gateSides = ReadGateSides(r);
+        var codePoints = ReadCodePoints(r);
         if (r.ReadInt32() != count)
             return null; // trailer: truncated writes fail here
+
         return new ZoneNavMesh
         {
             ZoneX = zoneX,
@@ -213,6 +167,10 @@ public sealed class NavMeshCache
             BoundsMax = boundsMax,
             DoorIds = doorIds.Length > 0 ? doorIds : null,
             DoorOf = doorOf,
+            GateSides = gateSides,
+            BuildingIds = buildingIds.Length > 0 ? buildingIds : null,
+            BuildingOf = buildingOf,
+            CodePoints = codePoints,
             Surfaces = corners.Length > 0 ? new NavSurfaces(corners) : null,
             Heights = heights,
             InteriorStart = interiorStart,
@@ -222,15 +180,15 @@ public sealed class NavMeshCache
     /// <summary>
     /// The per-polygon height grids (null when the mesh has none).
     /// </summary>
-    static HeightGrid? []? ReadHeights(BinaryReader r, int count)
+    static HeightGrid?[]? ReadHeights(BinaryReader r, int count)
     {
-        if (!r.ReadBoolean())
-            return null;
-        var heights = new HeightGrid? [count];
+        if (!r.ReadBoolean()) return null;
+
+        var heights = new HeightGrid?[count];
         for (int p = 0; p < count; p++)
         {
-            if (!r.ReadBoolean())
-                continue;
+            if (!r.ReadBoolean()) continue;
+
             float x0 = r.ReadSingle();
             float z0 = r.ReadSingle();
             float step = r.ReadSingle();
@@ -239,6 +197,7 @@ public sealed class NavMeshCache
             var values = new float[columns * rows];
             for (int i = 0; i < values.Length; i++)
                 values[i] = r.ReadSingle();
+
             heights[p] = columns == 0 ? HeightGrid.OnTerrain : new HeightGrid(x0, z0, step, columns, rows, values);
         }
 
@@ -246,7 +205,36 @@ public sealed class NavMeshCache
     }
 
     /// <summary>
-    /// Writes a zone's mesh with the hashes <see cref = "TryLoad"/> checks: to a temporary file first, then moved over the zone's file.
+    /// The gates' side points (null when the zone has none).
+    /// </summary>
+    static GateSide[]? ReadGateSides(BinaryReader r)
+    {
+        var sides = new GateSide[r.ReadInt32()];
+        for (int i = 0; i < sides.Length; i++)
+            sides[i] = new GateSide(r.ReadString(), ReadVector(r), ReadVector(r));
+
+        return sides.Length > 0 ? sides : null;
+    }
+
+    /// <summary>
+    /// Where the zone's interior buildings read their own code (null when the zone has none).
+    /// </summary>
+    static BuildingCodePoint[]? ReadCodePoints(BinaryReader r)
+    {
+        var points = new BuildingCodePoint[r.ReadInt32()];
+        for (int i = 0; i < points.Length; i++)
+            points[i] = new BuildingCodePoint(r.ReadString(), ReadVector(r));
+
+        return points.Length > 0 ? points : null;
+    }
+
+    /// <summary>
+    /// Reads three floats.
+    /// </summary>
+    static Vector3 ReadVector(BinaryReader r) => new(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+
+    /// <summary>
+    /// Writes a zone's mesh with the hashes <see cref="TryLoad"/> checks: to a temporary file first, then moved over the zone's file.
     /// </summary>
     public void Save(ZoneNavMesh m, uint buildingHash, uint settingsHash)
     {
@@ -278,9 +266,16 @@ public sealed class NavMeshCache
             w.Write(ids.Length);
             foreach (var id in ids)
                 w.Write(id);
+
+            var buildings = m.BuildingIds ?? [];
+            w.Write(buildings.Length);
+            foreach (var id in buildings)
+                w.Write(id);
+
             w.Write(m.PolygonCount);
             for (int p = 0; p < m.PolygonCount; p++)
-                WritePolygon(w, m, p, ids.Length > 0);
+                WritePolygon(w, m, p, ids.Length > 0, buildings.Length > 0);
+
             var corners = m.Surfaces?.Corners ?? [];
             w.Write(corners.Length / 3);
             foreach (var c in corners)
@@ -291,6 +286,8 @@ public sealed class NavMeshCache
             }
 
             WriteHeights(w, m.Heights);
+            WriteGateSides(w, m.GateSides);
+            WriteCodePoints(w, m.CodePoints);
             w.Write(m.PolygonCount);
         }
 
@@ -298,38 +295,78 @@ public sealed class NavMeshCache
     }
 
     /// <summary>
-    /// Writes one polygon: its corners, neighbours, links, area, kept flag and (with doors) its door.
+    /// Writes one polygon: its corners, neighbours, links, area, kept flag, (with doors) its door and (with interiors) its building.
     /// </summary>
-    static void WritePolygon(BinaryWriter w, ZoneNavMesh m, int p, bool withDoors)
+    static void WritePolygon(BinaryWriter w, ZoneNavMesh m, int p, bool withDoors, bool withBuildings)
     {
         w.Write((byte)m.Polygons[p].Length);
         w.Write(m.Areas[p]);
         w.Write(m.Kept[p]);
         foreach (int i in m.Polygons[p])
             w.Write(i);
+
         foreach (int n in m.Neighbours[p])
             w.Write(n);
+
         var l = m.LinksOf(p);
         w.Write((ushort)(l.Length / 2));
         foreach (int i in l)
             w.Write(i);
-        if (withDoors)
-            w.Write((short)(m.DoorOf?[p] ?? -1));
+
+        if (withDoors) w.Write((short)(m.DoorOf?[p] ?? -1));
+        if (withBuildings) w.Write((short)(m.BuildingOf?[p] ?? -1));
+    }
+
+    /// <summary>
+    /// Writes the gates' side points (a count first).
+    /// </summary>
+    static void WriteGateSides(BinaryWriter w, GateSide[]? sides)
+    {
+        w.Write(sides?.Length ?? 0);
+        foreach (var side in sides ?? [])
+        {
+            w.Write(side.Building);
+            WriteVector(w, side.First);
+            WriteVector(w, side.Second);
+        }
+    }
+
+    /// <summary>
+    /// Writes the interior buildings' code points (a count first).
+    /// </summary>
+    static void WriteCodePoints(BinaryWriter w, BuildingCodePoint[]? points)
+    {
+        w.Write(points?.Length ?? 0);
+        foreach (var point in points ?? [])
+        {
+            w.Write(point.Building);
+            WriteVector(w, point.At);
+        }
+    }
+
+    /// <summary>
+    /// Writes three floats.
+    /// </summary>
+    static void WriteVector(BinaryWriter w, Vector3 v)
+    {
+        w.Write(v.X);
+        w.Write(v.Y);
+        w.Write(v.Z);
     }
 
     /// <summary>
     /// Writes the per-polygon height grids (a presence flag first).
     /// </summary>
-    static void WriteHeights(BinaryWriter w, HeightGrid? []? heights)
+    static void WriteHeights(BinaryWriter w, HeightGrid?[]? heights)
     {
         w.Write(heights is not null);
-        if (heights is null)
-            return;
+        if (heights is null) return;
+
         foreach (var grid in heights)
         {
             w.Write(grid is not null);
-            if (grid is null)
-                continue;
+            if (grid is null) continue;
+
             w.Write(grid.X0);
             w.Write(grid.Z0);
             w.Write(grid.Step);

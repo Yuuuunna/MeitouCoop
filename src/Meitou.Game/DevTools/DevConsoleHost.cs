@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Numerics;
 using Meitou.Data.Fcs;
 using Meitou.Data.Gameplay;
+using Meitou.Game.DevTools.Agents;
 using Meitou.Game.Host;
 using Meitou.Game.Rendering.Overlays;
 using Meitou.Simulation;
@@ -273,13 +274,14 @@ sealed class DevConsoleHost(GameHost host)
             c.SetComplete(name, (i, typed) => i == 0 ? Characters(typed) : []);
         c.SetComplete("select", (_, typed) => Characters(typed));
         c.SetComplete("version", (i, typed) => i == 0 ? Starting(["--say"], typed) : []);
+        c.SetComplete("animalage", (i, typed) => i == 0 ? Starting(["pup", "teen", "adult", "elder"], typed) : []);
         c.SetComplete("order", (i, typed) => i == 0 ? Starting(["move", "attack"],
             typed) : i == 1 && c.CompletionArgs is ["attack"] ? Characters(typed) : []);
         c.SetComplete("spawn-at", (i, typed) => i == 2 ? ConsoleMatch(ConsoleRecordNames(character: true), typed) : []);
         c.SetComplete("equip", (i, typed) => i == 0 ? ConsoleMatch(host.Player.AgentOrders.ControlCarriedItemNames(), typed) : []);
         c.SetComplete("pickup", (i, typed) => i == 0 ? Starting(host.Player.AgentOrders.ControlGroundItemKeys(), typed) : []);
         c.SetComplete("door", (i, typed) => i == 0 ? Starting(["nearest"], typed) : []);
-        foreach (var name in new[] { "godmode", "guard", "tpmap" })
+        foreach (var name in new[] { "gigachadmode", "guard", "tpmap" })
             c.SetComplete(name, (i, typed) => i == 0 ? Starting(["on", "off"], typed) : []);
         IEnumerable<string> Levels(string typed) => Starting(["1", "2", "3", "4", "5", "underkill", "light", "normal",
             "overkill", "ridiculous"], typed);
@@ -356,7 +358,7 @@ sealed class DevConsoleHost(GameHost host)
     }
 
     /// <summary>
-    /// The cheat and debug commands (money, heal, godmode, tp, kill, research, ...).
+    /// The cheat and debug commands (money, heal, gigachadmode, tp, kill, research, ...).
     /// </summary>
     void RegisterConsoleDebugCommands()
     {
@@ -366,16 +368,16 @@ sealed class DevConsoleHost(GameHost host)
 
         Add("heal", "heal", "heal the selected characters fully (else the inspected one)", ConsoleHeal);
 
-        Add("godmode", "godmode [on|off]", "god mode for every player character (also later recruits): all stats 1000 (10 x the game's maximum), "
-            + "healed 5 times a second (parts, limbs, blood, bleeding, hunger); off restores each character's own stats; no argument toggles; "
-            + "reports the state", ConsoleGodmode);
+        Add("gigachadmode", "gigachadmode [on|off]", "the menu's Set stats to 1000 and Auto heal together, "
+            + "for every player character (also later recruits): all stats 1000 (10 x the game's maximum), healed 5 times a second (parts, limbs, blood, bleeding, hunger); off restores each "
+            + "character's own stats; no argument toggles; reports the state", ConsoleGigachadmode);
 
         Add("tpmap", "tpmap [on|off]", "the F10 switch Teleport on map: while on, every left click on the open map tab teleports the selected "
             + "characters (else the lead) there and puts the camera on the spot; no argument toggles; reports the state", ConsoleTpmap);
 
-        Add("guard", "guard [on|off] [--radius <m>] [--animals]", "god-mode style safety: 4 times a second kills the hostile characters within the "
+        Add("guard", "guard [on|off] [--radius <m>] [--animals]", "auto-heal style safety: 4 times a second kills the hostile characters within the "
             + "radius (default 30 m) of the selected (else first) squad member, as kill --radius does (never the squad or its faction; "
-            + "animals only with --animals or while one attacks a player character), and heals the player's characters as godmode does; "
+            + "animals only with --animals or while one attacks a player character), and heals the player's characters as Auto heal does; "
             + "stays on until turned off, switches itself off when a game loads; no argument toggles. Not for combat, "
             + "survival or loot-source tests", ConsoleGuard);
 
@@ -395,6 +397,10 @@ sealed class DevConsoleHost(GameHost host)
             + "game loads. Runs in the simulation, so not while the game is paused", ConsoleExplodeClick);
 
         Add("maxstats", "maxstats", "every stat to 100 for the selected characters (else the inspected one)", ConsoleMaxstats);
+        Add("animalage", "animalage [<age>|pup|teen|adult|elder] [--id <c:slot.gen>]",
+            "show or set animal age: a fraction from 0 to 1.5 (1 = adult; not 0-150); pup=0.2, teen=0.5, adult=1, elder=1.2. "
+            + "Targets --id, else the inspected creature, else the selected characters; skips non-animals. "
+            + "Sets age-scaled stats, body factors and visible size without healing; growth continues normally. Works while paused", ConsoleAnimalage);
 
         Add("give", "give \"<item record>\" [qty] [quality] [--equip]", "put items on the first selected character; quality 0-100 (armour, weapons, "
             + "crossbows, limbs); one unit is worn when its slot is free; --equip also wears it when the slot is taken (the worn item goes to the "
@@ -571,12 +577,12 @@ sealed class DevConsoleHost(GameHost host)
     }
 
     /// <summary>
-    /// The <c>godmode</c> command (usage and help at its registration in <see cref="RegisterConsoleCommands"/>).
+    /// The <c>gigachadmode</c> command (usage and help at its registration in <see cref="RegisterConsoleCommands"/>).
     /// </summary>
-    void ConsoleGodmode(IReadOnlyList<string> args, DevConsole con)
+    void ConsoleGigachadmode(IReadOnlyList<string> args, DevConsole con)
     {
-        if (!Need(args, 0, 1, Self("godmode"))) return;
-        Report(con, host.DebugMenu.DebugApply(DebugMenu.DebugRow.Godmode, args.Count > 0 ? args[0] : ""));
+        if (!Need(args, 0, 1, Self("gigachadmode"))) return;
+        Report(con, host.DebugMenu.DebugGigachadmodeApply(args.Count > 0 ? args[0] : ""));
     }
 
     /// <summary>
@@ -643,6 +649,90 @@ sealed class DevConsoleHost(GameHost host)
     {
         if (!Need(args, 0, 0, Self("maxstats"))) return;
         Report(con, host.DebugMenu.DebugMaxAll());
+    }
+
+    /// <summary>
+    /// The <c>animalage</c> command: targets the creature in the info panel before falling back to the selection, including wild animals.
+    /// </summary>
+    void ConsoleAnimalage(IReadOnlyList<string> args, DevConsole con)
+    {
+        if (host.Session.IsRemote)
+        {
+            con.Error("animalage requires a local simulation session.");
+            return;
+        }
+        if (!AnimalAgeArgs(args, con, out var byId, out float? age)) return;
+        var snap = host.Session.CurrentSnapshot;
+        CharacterId[] targets;
+        if (byId is { } id)
+        {
+            if (!snap.Characters.Any(c => c.Id == id))
+            {
+                con.Error($"animalage: no character c:{id.Slot}.{id.Generation}");
+                return;
+            }
+
+            targets = [id];
+        }
+        else targets = snap.Characters.FirstOrDefault(c => c.Inspected) is { } inspected
+            ? [inspected.Id] : [.. snap.Characters.Where(c => c.Selected).Select(c => c.Id)];
+        if (targets.Length == 0)
+        {
+            con.Error($"animalage: click a creature, select characters, or pass --id; usage: {Self("animalage").Usage}");
+            return;
+        }
+
+        Send(t => new DebugAnimalAge(targets, age) { Tick = t });
+        if (host.LocalSession.ApplyPausedCommandsNow()) host.WorldNews();
+        else con.Print("animalage: queued for the next simulation tick");
+    }
+
+    /// <summary>
+    /// Parses one optional age fraction or word and one optional explicit character id, in either order.
+    /// </summary>
+    static bool AnimalAgeArgs(IReadOnlyList<string> args, DevConsole con, out CharacterId? byId, out float? age)
+    {
+        byId = null;
+        age = null;
+        for (int i = 0; i < args.Count; i++)
+        {
+            if (args[i].Equals("--id", StringComparison.OrdinalIgnoreCase))
+            {
+                if (byId is not null || i + 1 >= args.Count || !AgentOrders.TryParseCharacter(args[++i], out var id))
+                {
+                    con.Error("animalage: --id needs one character id (c:<slot>.<gen>)");
+                    return false;
+                }
+
+                byId = id;
+                continue;
+            }
+            if (age is not null || !AnimalAgeValue(args[i], out float value))
+            {
+                con.Error("animalage: use one age fraction from 0 to 1.5 (adult = 1), or pup, teen, adult, elder");
+                return false;
+            }
+
+            age = value;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Parses a dev age preset or invariant fraction, rejecting non-finite and out-of-range numbers.
+    /// </summary>
+    static bool AnimalAgeValue(string text, out float age)
+    {
+        age = text.ToLowerInvariant() switch
+        {
+            "pup" => 0.2f,
+            "teen" => 0.5f,
+            "adult" => 1,
+            "elder" => 1.2f,
+            _ => float.NaN,
+        };
+        if (float.IsNaN(age) && !float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out age)) return false;
+        return float.IsFinite(age) && age >= 0 && age <= 1.5f;
     }
 
     /// <summary>

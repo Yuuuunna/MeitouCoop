@@ -462,13 +462,12 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     public void Notice(string text, bool error = false, string? logText = null) => MessageRoller.QueueNotice(text, error, logText);
 
     /// <summary>
-    /// A message box with only an Ok button.
+    /// A message box with only an Ok button; <paramref name="ok"/> runs after it closes.
     /// </summary>
-    internal void MessageBox(string title, string text)
+    internal void MessageBox(string title, string text, Action? ok = null)
     {
-        Frontend.PendingConfirmation = new(TitleMenu.UpperTr(title), Loc.Tr(text), () => { },
-            TitleMenu.UpperTr("Ok"))
-        { OkOnly = true };
+        Frontend.PendingConfirmation = new(TitleMenu.UpperTr(title), Loc.Tr(text), ok ?? (() => { }),
+            TitleMenu.UpperTr("Ok")) { OkOnly = true };
         FaithfulScreens.Open("message");
     }
 
@@ -870,10 +869,19 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     }
 
     /// <summary>
-    /// Orders the selected characters to walk to <paramref name="target"/>; <paramref name="queued"/> adds it after their orders.
+    /// Orders the selected characters to walk to <paramref name="target"/>; <paramref name="queued"/> adds it after their orders. With the debug
+    /// "Move instantly" on, the selected characters are teleported there instead (a player-issued move only: jobs and fights keep walking).
     /// </summary>
-    public void Move(Vector3 target, bool queued) =>
+    public void Move(Vector3 target, bool queued)
+    {
+        if (Session is WorldSession local && local.World.Player.InstantMove)
+        {
+            Say(new DebugTeleport([], target) { Tick = Session.CommandTick });
+            return;
+        }
+
         Say(new MoveOrder([], target) { Tick = Session.CommandTick, Queued = queued });
+    }
 
     /// <summary>
     /// Returns true when the click belonged to the HUD or the interface (the camera input should not see it).
@@ -1074,7 +1082,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
                 return c.Slave is { State: 1 } ? ("scavenge", id, loot)
                     : ("knockout", id, Do(() => Say(new Simulation.Carrying.StealthKoOrder([lead.Id], id) { Tick = tick })));
             if (c.Prison is not null) return ("search", id, loot);
-            bool talkCandidate = !c.InCombat && (c.WarParty || c.Slave is { State: 1 } || Session.WantsToTalk(id));
+            bool talkCandidate = !c.InCombat && (c.IsDiplomat || c.Slave is { State: 1 } || Session.WantsToTalk(id));
             bool canTalk = talkCandidate && Session.CanTalk(id, lead.Id);
             if (talkCandidate && Session.TalkHintPending(id, lead.Id))
                 return ("talk", id, Do(() => WaitForTalkHint(c, lead.Id, selection, quick: true)));
@@ -1257,7 +1265,8 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         Furniture.UpdateSeat();
         WorldMap.UpdateMap();
         if (!final) Build.UpdateBuild();
-        if (!Steering || OverHud(Mouse)) return;
+        // Instant movement is applied once on the press, not on every frame while the button stays held.
+        if (!Steering || Session is WorldSession local && local.World.Player.InstantMove || OverHud(Mouse)) return;
         if (Ray(Mouse) is not { } ray || Picking.MoveHit(ray.Origin, ray.Direction) is not { } hit) return;
         MoveMarker.PlaceMarker(hit);   // the marker follows the cursor every frame; the order only once a tick
         if (!final && Session.CommandTick == _steerTick) return;

@@ -70,7 +70,9 @@ public partial class ProductionTests
         Assert.True(machine.Storage!.Add(data.Items.Create(Water, 7)!));
         machine.PowerOn = false;
         var save = SaveCapture.Capture(world, data, new SaveClock(1, 12, 0), prepared: builder);
-        Assert.Equal(house.InstanceId + "-inventory", save.Zones[house.Zone].BuildingList!.Instances.Single().States[0]);
+        var written = save.Zones[house.Zone];
+        string inventoryId = written.BuildingList!.Instances.Single().States[0];
+        Assert.Equal(FcsRecordType.InventoryState, written.File.Records.Single(r => r.StringId == inventoryId).RecordType);
         return (save, PlayerRegistrySave.Capture(world, data));
     }
 
@@ -104,8 +106,9 @@ public partial class ProductionTests
             Assert.True(replacement.PowerOn);
             world.Machines.Remove(site.Id);
             var after = SaveCapture.Capture(world, data, new SaveClock(1, 12, 0), loaded);
-            Assert.DoesNotContain(after.Zones[house.Zone].BuildingList!.Instances.Single().States,
-                id => id.EndsWith("-inventory", StringComparison.Ordinal));
+            var written = after.Zones[house.Zone];
+            Assert.DoesNotContain(written.File.Records, r => r.RecordType == FcsRecordType.InventoryState
+                && written.BuildingList!.Instances.Single().States.Contains(r.StringId));
             using var restarted = LateMachineWorld(data);
             SaveLoader.Load(restarted, after.Clone(), data, new SaveLoadOptions { MultiplayerMetadata = checkpoint.Metadata });
             PlayerRegistrySave.Restore(restarted, data, checkpoint.Metadata);
@@ -131,8 +134,9 @@ public partial class ProductionTests
         Assert.Equal(0, world.Machines.Count);
         world.Fixtures.TownReplaced(world, data, 0);
         var after = SaveCapture.Capture(world, data, new SaveClock(1, 12, 0), loaded);
-        var instance = after.Zones[house.Zone].BuildingList!.Instances.Single();
-        Assert.DoesNotContain(instance.States, id => id.EndsWith("-inventory", StringComparison.Ordinal));
+        var written = after.Zones[house.Zone];
+        var instance = written.BuildingList!.Instances.Single();
+        Assert.DoesNotContain(written.File.Records, r => r.RecordType == FcsRecordType.InventoryState && instance.States.Contains(r.StringId));
         Assert.False(HeldSave.BuildingStates(after)[house.Key].Bools.ContainsKey("power on"));
         Assert.False(HeldSave.BuildingStates(after)[house.Key].Strings.ContainsKey("meitou container 0"));
         using var restarted = LateMachineWorld(data);

@@ -9,8 +9,7 @@ version. Layout data: [zones](../formats/zones.md) (`interiors.level`, `serialis
 - **Part of the level editor.** **Observed** (disassembly, 2026-10-22): the `InteriorModeButtonWindow`
   (`FUN_14077a1f0`, layout `Kenshi_InteriorMode.layout`) is built by the level editor's setup
   (`FUN_14077be90`, which also reads the `editor` mod from [settings.cfg](../formats/settings.md)). The
-  level editor toggles with `editor_toggle`, Shift+F12 ([keys](ui-input.md)). How a release build
-  enables it is **Unknown**.
+  level editor toggles with `editor_toggle`, Shift+F12 ([keys](ui-input.md)).
 - **Window** (`Kenshi_InteriorMode.layout`, window caption "Layout"; **Verified** by reading the file):
   - `intlistwin`, "[INTERIOR] (furniture)": `intlistbox` (layouts), `intnamebox` (name), `intsave`,
     `intdel`, `titlelabel` (the building; the code sets "None selected"), `centerbutton` "->".
@@ -31,9 +30,9 @@ version. Layout data: [zones](../formats/zones.md) (`interiors.level`, `serialis
   interiors in this town", when the town record's `buildings replacements` is not empty (`FUN_1407779c0`).
   **Observed**.
 - **Where it saves**: the level editor's Save Mod writes into the mod named by `editor`
-  ([settings](../formats/settings.md); [level editor](level-editor.md)). Mods ship layouts as `mods/<mod>/leveldata/interiors.level`
-  (Unofficial Patches, CATO V4). The base game has `data/newland/leveldata/interiors.level`. **Observed**.
-  Whether Save Mod writes `interiors.level` itself is **Unknown**.
+  ([settings](../formats/settings.md); [level editor](level-editor.md)). Mods ship layouts as `<mod folder>/leveldata/interiors.level`
+  (**Observed**: Unofficial Patches, CATO V4), read after the base game's `data/newland/leveldata/interiors.level` and the core files'
+  (**Verified**, [zones](../formats/zones.md#mods)).
 
 ## Meitou
 
@@ -48,11 +47,5 @@ F10 → Tools → "Interior editor..." (`InteriorEditorHost`). Read only.
 - Not done: interior edit mode, placing/moving/deleting parts, save, delete, clear, clear nodes.
   Saving, when added, must write to Meitou's own folder or a separate mod, never into `data/` or
   an installed mod.
-
-## Unknowns
-
-- How the level editor is enabled in a release build.
-- What CLEAR and Clear Nodes remove; what `showhide` switches.
-- The save path and format details of a layout save.
-- Meitou does not read `mods/<mod>/leveldata/` (only `data/newland/leveldata/<mod>/`), so mod layouts
-  such as the ones above are not shown.
+- The layouts listed are the merged `interiors.level` of every level layer, the loaded mods' among them
+  ([zones](../formats/zones.md#mods)).

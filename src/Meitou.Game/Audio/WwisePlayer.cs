@@ -75,9 +75,21 @@ public sealed partial class WwisePlayer : IDisposable
 
     /// <summary>
     /// Reads a bank and converts its WEMs on a worker thread, then hands the objects and clips to the audio thread. Loading a bank that is
-    /// loaded or loading returns the same task.
+    /// loaded or loading returns the same task; one whose load failed is read again, as the game's <c>LoadBank</c> call is made again on its next
+    /// request (docs/audio.md "Music").
     /// </summary>
-    public Task LoadBank(string name) => _loading.GetOrAdd(Normalize(name), n => Task.Run(() =>
+    public Task LoadBank(string name)
+    {
+        var n = Normalize(name);
+        if (_loading.TryGetValue(n, out var asked) && (asked.IsFaulted || asked.IsCanceled)) _loading.TryRemove(new(n, asked));
+
+        return _loading.GetOrAdd(n, ReadBank);
+    }
+
+    /// <summary>
+    /// The worker task of <see cref="LoadBank"/>: reads the bank <paramref name="n"/>, converts its WEMs and queues the hand-over.
+    /// </summary>
+    Task ReadBank(string n) => Task.Run(() =>
     {
         var bank = WwiseBank.ReadFile(Path.Combine(_bankDirectory, n + ".bnk"));
         var clips = new ConcurrentBag<MediaClip>();
@@ -94,12 +106,12 @@ public sealed partial class WwisePlayer : IDisposable
             _loadedBanks[n] = true;
             RetryPending();
         });
-    }));
+    });
 
     /// <summary>
     /// Unloads a loaded bank (nothing for one that is not loaded or still loading): what is playing from it is cut, its recordings are
-    /// dropped and a later <see cref="LoadBank"/> reads it again. Objects of the same id in another loaded bank (the music banks' shared
-    /// upper switches) stay in use.
+    /// dropped and a later <see cref="LoadBank"/> reads it again. Objects and recordings of the same id in another loaded bank (the music banks'
+    /// shared upper switches, the ambience banks' shared actor-mixers and recordings) stay in use.
     /// </summary>
     public void UnloadBank(string name)
     {
@@ -117,7 +129,9 @@ public sealed partial class WwisePlayer : IDisposable
                 if (_objects.TryGetValue(o.Id, out var held) && own.Contains(held)) _objects.Remove(o.Id);
             foreach (var other in _bankContents.Values)
                 foreach (var o in other.Objects) _objects.TryAdd(o.Id, o);
-            foreach (var id in contents.Media) _media.Remove(id);
+            // A recording another loaded bank also lists stays (the Canyons, Forest and Plains ambience banks share some).
+            foreach (var id in contents.Media)
+                if (!_bankContents.Values.Any(other => other.Media.Contains(id))) _media.Remove(id);
         });
     }
 

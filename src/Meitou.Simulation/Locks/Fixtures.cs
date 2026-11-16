@@ -283,7 +283,7 @@ public sealed class Fixture
 
     /// <summary>
     /// Doors: the index in the building's <c>doors</c> list (the save's suffix), the motion state, the open amount 0..1, the door's own broken flag,
-    /// <c>gatecode</c> (kept as read) and <c>wants lock</c>.
+    /// <c>gatecode</c> and <c>wants lock</c>.
     /// </summary>
     public int DoorIndex { get; init; } = -1;
     /// <summary>
@@ -299,9 +299,11 @@ public sealed class Fixture
     /// </summary>
     public bool DoorBroken { get; set; }
     /// <summary>
-    /// Doors: the <c>gatecode</c>, kept as read (-1: none).
+    /// Doors: the door's gate code (DoorStuff <c>+0x378</c>, saved as <c>gatecode</c>; docs/game/pathfinding.md "Gate codes"): 0 for a new door, -1
+    /// once restored from a building state (the loader sets it and does not read the key, <c>FUN_1402a06a0</c>), a gate's first code once a gate-code
+    /// pass applied. Derived like a path: not hashed.
     /// </summary>
-    public int GateCode { get; set; } = -1;
+    public int GateCode { get; set; }
     /// <summary>
     /// Doors: <c>wants lock</c>.
     /// </summary>
@@ -325,6 +327,11 @@ public sealed class Fixture
     /// hashed or saved.
     /// </summary>
     public bool IsGate { get; init; }
+    /// <summary>
+    /// Doors: its building is in its town's gate set and a GatewayBuilding (<see cref="LockSystem.InGateSet"/>), the gates Town slot 96 reads;
+    /// derived from the data, not hashed or saved.
+    /// </summary>
+    public bool InGateSet { get; init; }
     /// <summary>
     /// Doors and beds standing on their own: the building's whole placement turn, tilt included, where it is known (null: a turn of
     /// <see cref="Yaw"/> about +Y); it places the leaf (<see cref="FixtureRegistry.DoorSpotOf"/>) and leans the sleeper
@@ -364,6 +371,11 @@ public sealed class Fixture
     /// Cages and beds: the <c>use range</c> (see <see cref="Restrains"/>).
     /// </summary>
     public float UseRange { get; init; }
+    /// <summary>
+    /// Its BUILDING_FUNCTIONALITY <c>function</c> (BuildingFunction; -1 without one): a container of 9 BF_SHOP asks for Alt before it is stolen
+    /// from (<see cref="Items.ContainerAccess"/>). Derived from the data, not hashed or saved.
+    /// </summary>
+    public int Function { get; init; } = -1;
     /// <summary>
     /// Cages and beds: who is in it (none: free).
     /// </summary>

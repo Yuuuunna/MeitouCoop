@@ -17,6 +17,11 @@
 #define PART_STUN 0x44
 #define PART_MAX 0x54
 
+// RootObject::floorNum (KenshiLib RootObject.h): what getFloor (vtable +0x60) returns, for characters and buildings alike.
+#define OBJECT_FLOOR 0xA4
+// Character::_isOnARoof (KenshiLib Character.h): on top of a building (a roof or roofless part over its floor).
+#define CHARACTER_ON_ROOF 0xD5
+
 // How far above a character's position (its feet) its `screen` point is taken: about the chest of a human, so a click
 // there lands on the body.
 #define BODY_HEIGHT 10
@@ -108,6 +113,9 @@ static void add_character(Text* out, void* character, int detailed)
     add_text(out, "name", name);
     add_text(out, "faction", faction);
     add_vector(out, "pos", position);
+    text_key(out, "floor");
+    text_add(out, "%d", *(int*)((char*)character + OBJECT_FLOOR));
+    add_flag(out, "onRoof", ((char*)character)[CHARACTER_ON_ROOF]);
 
     V3 body = {position.x, position.y + BODY_HEIGHT, position.z};
     if (game_project(body, &x, &y))
@@ -196,10 +204,11 @@ static void say_character(Text* out, void* character, int detailed)
 
     text_add(out, "  %s [%s]", name, faction);
     if (character_is_selected(character)) text_add(out, " selected");
+    if (((char*)character)[CHARACTER_ON_ROOF]) text_add(out, " on-roof");
     if (medical[MEDICAL_DEAD]) text_add(out, " DEAD");
     else if (medical[MEDICAL_UNCONSCIOUS]) text_add(out, " unconscious");
 
-    text_add(out, "  at %.0f, %.0f, %.0f", position.x, position.y, position.z);
+    text_add(out, "  at %.0f, %.0f, %.0f  floor %d", position.x, position.y, position.z, *(int*)((char*)character + OBJECT_FLOOR));
     if (game_project(body, &x, &y)) text_add(out, "  screen %d,%d", x, y);
     text_add(out, "  blood %.0f  hunger %.0f\n", *(float*)(medical + MEDICAL_BLOOD), *(float*)(medical + MEDICAL_HUNGER) * 100);
 
@@ -300,5 +309,38 @@ int cmd_state(Command* c)
     add_characters(out, "squad", squad, detailed, 1);
     if (radius > 0) add_characters(out, "near", game_characters_near(game_camera_centre(), radius, 256), detailed, 0);
     text_add(out, "}");
+    return 1;
+}
+
+// containers [radius] [--all]: every building within `radius` (default 300) of the camera's centre that has an inventory,
+// with its position and items (name x quantity); --all also lists the empty ones.
+int cmd_containers(Command* c)
+{
+    const Lektor* squad = game_squad();
+    if (!squad || squad->count == 0) return fail(c, "not in a game");
+
+    float radius = (float)atof(arg(c, 0, "300"));
+    int all = option(c, "--all");
+    const Lektor* nearby = game_buildings_near(game_camera_centre(), radius, 4096);
+    char name[128];
+
+    for (uint32_t i = 0; nearby && i < nearby->count; i++)
+    {
+        void* building = nearby->items[i];
+        const Lektor* items = object_items(building);
+        if (!items || (items->count == 0 && !all)) continue;
+
+        V3 at = character_position(building);
+        character_name(building, name, sizeof name);
+        int floor = *(int*)((char*)building + OBJECT_FLOOR);
+        text_add(&c->reply, "%s at %.0f, %.0f, %.0f floor %d: %u item(s)\n", name, at.x, at.y, at.z, floor, items->count);
+
+        for (uint32_t k = 0; k < items->count; k++)
+        {
+            character_name(items->items[k], name, sizeof name);
+            text_add(&c->reply, "  %s x%d\n", name, item_quantity(items->items[k]));
+        }
+    }
+
     return 1;
 }

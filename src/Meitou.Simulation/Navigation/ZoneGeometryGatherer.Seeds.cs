@@ -74,6 +74,52 @@ internal sealed partial class ZoneGeometryGatherer
     }
 
     /// <summary>
+    /// The side points of the queued gate doors (<see cref="GateDoorMarkers"/>): the inner marker drops onto floor-0 building parts (group 9), the
+    /// outer onto those or the terrain (groups 2 and 9), the nearest surface at or below each.
+    /// </summary>
+    void AddGateSides(ZoneGeometry g)
+    {
+        bool Floor0(Vector3 from, out float y) => HighestBelow(g, g.Floor0Ranges, from, out y);
+        bool Ground(Vector3 from, out float y)
+        {
+            bool floor = HighestBelow(g, g.Floor0Ranges, from, out y);
+            float terrain = _map.HeightAt(from.X, from.Z);
+            if (terrain > from.Y || floor && y >= terrain) return floor;
+
+            y = terrain;
+            return true;
+        }
+
+        foreach (var (building, door, frame, node) in g.GateDoors)
+        {
+            var (first, second) = GateDoorMarkers.Sides(door, frame, node, Floor0, Ground);
+            g.GateSides.Add(new GateSide(building, first, second));
+        }
+
+        foreach (var (building, door, frame, node) in g.CodeDoors)
+            g.CodePoints.Add(new BuildingCodePoint(building, GateDoorMarkers.Outer(door, frame, node, Floor0, Ground)));
+    }
+
+    /// <summary>
+    /// The highest triangle of <paramref name="ranges"/> at or below <paramref name="from"/>, any area.
+    /// </summary>
+    static bool HighestBelow(ZoneGeometry g, List<(int First, int Last)> ranges, Vector3 from, out float y)
+    {
+        y = float.MinValue;
+        bool hit = false;
+        foreach (var (first, last) in ranges)
+        {
+            bool found = RayDown(g, from.X, from.Z, highest: true, float.MinValue, first, last, out float h, anyArea: true, maxY: from.Y);
+            if (!found || h <= y) continue;
+
+            y = h;
+            hit = true;
+        }
+
+        return hit;
+    }
+
+    /// <summary>
     /// The two marker points either side of a box door, in the order the callers try them (the side of the negative axis direction first, which
     /// decides ties): the shape's centre moved perpendicular to its width (<c>door navmesh axis</c>) past its faces. False for a shape that is not a
     /// box or is degenerate.
@@ -112,6 +158,7 @@ internal sealed partial class ZoneGeometryGatherer
     void AddSeeds(ZoneGeometry g)
     {
         AddDoorMarkerSeeds(g);
+        AddGateSides(g);
         float water = WorldWater.Height;
         // The original's ray rule (FUN_1403d4dd0): a seed.def point without a height (Y -99) that a ray from above hits on a floor-0/1 building part
         // (groups 9 and 10) is moved onto it, one with a height that hits one is dropped. A roof, an unwalkable roof (27), stairs or furniture does
@@ -171,9 +218,9 @@ internal sealed partial class ZoneGeometryGatherer
     }
 
     /// <summary>
-    /// Linked wall sections (BUILDING with <c>link length</c> above 0): three seeds on top of a WALKABLE wall where the ray down hits it, and for
-    /// walls that leave the zone three ground seeds clamped into the zone box. The three positions along the wall are our choice (0.15, 0.5 and 0.85
-    /// of its length, the length taken from the collision footprint); the original's are Unknown.
+    /// Linked wall sections (BUILDING with <c>link length</c> above 0): three seeds on top of a WALKABLE wall the player owns where the ray down hits
+    /// it (a town's walls get none, so their tops are no island of their own), and for walls that leave the zone three ground seeds clamped into the
+    /// zone box. The three positions along the wall are our choice (0.15, 0.5 and 0.85 of its length, the length taken from the collision footprint).
     /// </summary>
     void AddLinkedWallSeeds(ZoneGeometry g, BuildingRay hits)
     {
@@ -189,8 +236,8 @@ internal sealed partial class ZoneGeometryGatherer
                 continue;
             // The two farthest footprint points are the wall's ends.
             var hull = NavGeometry.Footprint(points, 0, 0, 0).Polygon;
-            var(a, c) = FarthestPair(hull);
-            bool walkable = (PathMode)record.GetInt("path mode", (int)PathMode.Obstacle) == PathMode.Walkable;
+            var (a, c) = FarthestPair(hull);
+            bool walkable = b.PlayerOwned && (PathMode)record.GetInt("path mode", (int)PathMode.Obstacle) == PathMode.Walkable;
             bool leaves = !(InsideBox(g, a) && InsideBox(g, c));
             foreach (float t in new[]
             {

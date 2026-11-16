@@ -98,13 +98,17 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         var current = new HashSet<ulong>();
         var captures = new List<GameMotionCapture>();
         var withdrawals = new List<(ulong Entity, uint Generation)>();
-        long capturedBytes = 0;
+        long capturedBytes = stream.Length + sizeof(int);
         var records = new List<(byte Kind, ulong Entity, uint Generation, ushort Field, byte[] Data)>();
-        void Add(ulong entity, uint generation, ushort field, byte[] data, object? tracked = null, bool trackObject = false)
+        void ReserveCaptured(long bytes)
         {
-            capturedBytes += data.Length + 19;
+            capturedBytes += bytes;
             if (capturedBytes > GameStateWire.MaximumBytes)
                 throw new InvalidDataException("Captured recipient components exceed bulk bound.");
+        }
+        void Add(ulong entity, uint generation, ushort field, byte[] data, object? tracked = null, bool trackObject = false)
+        {
+            ReserveCaptured(GameComponentSchema.ExpandedSize(field, data) + 19L);
             var key = (entity, field);
             if (!_previous.TryGetValue(key, out var prior) || (!ReferenceEquals(prior, data) && !prior.AsSpan().SequenceEqual(data)))
             {
@@ -123,9 +127,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
             Add(0, 0, f.Id, f.Encode(codec, view));
         foreach (var f in GameComponentSchema.SnapshotFields.Where(f => !GameCollectionSchema.Ids.Contains(f.Id)))
             Add(0, 0, f.Id, f.Encode(codec, view.Snapshot));
-        capturedBytes += CaptureCollections(view, (kind, field, value) => records.Add((kind, 0, 0, field, value)));
-        if (capturedBytes > GameStateWire.MaximumBytes)
-            throw new InvalidDataException("Captured components exceed bulk bound.");
+        ReserveCaptured(CaptureCollections(view, (kind, field, value) => records.Add((kind, 0, 0, field, value))));
         foreach (var c in view.Snapshot.Characters)
         {
             ulong entity = entityOf(c.Id);
@@ -150,7 +152,11 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
             captures.Add(CaptureRoot(view, c, entity, generation, spawn));
             // Identity is reliable lifecycle data, emitted only for a new interest generation.
             if (spawn)
-                records.Add((1, entity, generation, 0, codec.EncodeComponent(c.Id)));
+            {
+                byte[] identity = codec.EncodeComponent(c.Id);
+                ReserveCaptured(identity.Length + 19L);
+                records.Add((1, entity, generation, 0, identity));
+            }
             var meters = CaptureMeterPresentation(entity, c.Meters, out byte[] tooltipBytes, out object tooltipState);
             Add(entity, generation, GameComponentSchema.MeterTooltipsField, tooltipBytes, tooltipState, true);
             var presentation = ReferenceEquals(meters, c.Meters) ? c : c with { Meters = meters };
@@ -193,7 +199,11 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
 
                 foreach (ushort descriptor in distinctUsed)
                     if (_bulkAnimationDescriptors.Add(descriptor))
-                        records.Add((9, 0, 0, 3003, _animationDescriptors.EncodeDefinition(descriptor)));
+                    {
+                        byte[] definition = _animationDescriptors.EncodeDefinition(descriptor);
+                        ReserveCaptured(definition.Length + 19L);
+                        records.Add((9, 0, 0, 3003, definition));
+                    }
                 Add(entity, generation, 3002, dynamicState);
             }
             else if (c.Animations.Count != 0)
@@ -202,6 +212,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
 
         foreach (var gone in _entities.Keys.Where(e => !current.Contains(e)).ToArray())
         {
+            ReserveCaptured(19);
             records.Add(((byte)(destroyedEntities?.Contains(gone) == true ? 4 : 3), gone, _entities[gone].Generation, 0, []));
             withdrawals.Add((gone, _entities[gone].Generation));
             _motion.Remove(gone);
@@ -528,7 +539,10 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
     readonly Dictionary<ulong, (uint Generation, ulong Revision)> _withdrawn = new();
     readonly Dictionary<(ulong Entity, ushort Field), ulong> _revisions = new();
     readonly Dictionary<(ulong Entity, ushort Field), byte[]> _valueDigests = new();
-    readonly Dictionary<(ulong Entity, uint Generation, ushort Field), (ulong Revision, long Tick, byte[] Value)> _deferred = new();
+    readonly Dictionary<(ulong Entity, uint Generation, ushort Field), (ulong Revision, long Tick, byte[] Value, int ExpandedBytes)> _deferred = new();
+    /// <summary>
+    /// Deferred values reserve both their encoded storage and their potential decoded output before any entity declaration arrives.
+    /// </summary>
     int _deferredBytes;
     readonly Dictionary<CharacterId, GamePresentationSource> _presentationSources = new();
     PlayerWorldView? _view;
@@ -652,6 +666,13 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
     {
         using var stream = new MemoryStream(bytes, false);
         using var r = new BinaryReader(stream);
+        long expandedBytes = bytes.Length;
+        void ReserveExpanded(long extra)
+        {
+            expandedBytes += extra;
+            if (expandedBytes > GameStateWire.MaximumBytes)
+                throw new InvalidDataException("Expanded game publication exceeds bulk bound.");
+        }
         try
         {
             var world = new Guid(r.ReadBytes(16));
@@ -701,6 +722,10 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                 uint generation = r.ReadUInt32();
                 ushort field = r.ReadUInt16();
                 byte[] value = ReadValue(r);
+                int valueBytes = kind == 2 ? GameComponentSchema.ExpandedSize(field, value)
+                    : kind == 7 && GameCollectionSchema.Ids.Contains(field) ? GameCollectionSchema.ExpandedEntrySize(value)
+                    : value.Length;
+                ReserveExpanded(valueBytes - (long)value.Length);
                 if (kind == 9)
                 {
                     if (entity != 0 || generation != 0 || field != 3003)
@@ -798,10 +823,10 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                             var pendingKey = (entity, generation, field);
                             if (!_deferred.TryGetValue(pendingKey, out var prior) || revision > prior.Revision)
                             {
-                                int retained = _deferredBytes - (prior.Value?.Length ?? 0) + value.Length;
+                                int retained = _deferredBytes - prior.ExpandedBytes + valueBytes;
                                 if (retained > 256 * 1024 || _deferred.Count >= 4096 && !_deferred.ContainsKey(pendingKey))
                                     throw new InvalidDataException("Prebaseline lifecycle history overflow.");
-                                _deferred[pendingKey] = (revision, tick, value);
+                                _deferred[pendingKey] = (revision, tick, value, valueBytes);
                                 _deferredBytes = retained;
                             }
 
@@ -829,13 +854,14 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                     continue;
                 if (!fenced && pending.Value.Revision > _revisions.GetValueOrDefault(key))
                 {
+                    if (pending.Value.Revision != revision) ReserveExpanded(pending.Value.ExpandedBytes + 19L);
                     ApplyEntityField(entity!, pending.Key.Entity, pending.Key.Generation, pending.Key.Field, pending.Value.Value, pending.Value.Tick, publication);
                     _revisions[key] = pending.Value.Revision;
                     _valueDigests[key] = SHA256.HashData(pending.Value.Value);
                 }
 
                 _deferred.Remove(pending.Key);
-                _deferredBytes -= pending.Value.Value.Length;
+                _deferredBytes -= pending.Value.ExpandedBytes;
             }
 
             if (revision >= _departuresRevision)

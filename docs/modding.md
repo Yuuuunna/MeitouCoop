@@ -74,6 +74,8 @@ Folder: `mods/MyMod/MyMod.mod` (the data mod, may be empty of records), `meitou.
 - `ModInfo.HasCode` reports it beside `HasNativePlugin`; the launcher marks such mods.
 - Load set: the enabled mods of `mods.cfg` in order, filtered to those with a manifest. A disabled mod's DLL is never opened. Changes take
   effect at the next launch, like data mods.
+- A code mod whose feature Meitou has built in (`BuiltInMods`, [rekenshi](formats/rekenshi.md): the `player-only-xp` port) is left out
+  of the load set and counted as disabled.
 
 ## Trust
 
@@ -151,7 +153,6 @@ holds refuses the second mod.
   for interface previews). An effect gets `DialogueAct` (world, speaker, target, effect) in a serial step. An unregistered code
   computes "no" / does nothing, as an unknown vanilla code.
 - **Record types:** `AddRecordType(type, name)` claims a number (not a vanilla `itemType`); `Records(type)` lists the merged records.
-  Survival of such records through the FCS merge and saves is **Unknown** until tested.
 - **Equipment slots:** `AddEquipmentSlot(new ModSlot(section, fcsSlot, width, height, x, y))` (`ModSlots`, `src/Meitou.Simulation/Items`) adds
   an inventory section that takes the ARMOUR and ITEM records whose FCS `slot` is `fcsSlot`, so the items stay a data mod. `fcsSlot` is 4, 10
   (ATTACH_GLOVES), 11 (ATTACH_NECK) or 15 and up; the others map to vanilla sections. A vanilla section name, a name or `slot` another slot
@@ -170,7 +171,7 @@ holds refuses the second mod.
   to 0..1; UTF-8 text is limited to 256 bytes for `Value`, 64 for `Arrows` and 4096 for `Tooltip`, with the same limits on the wire.
   Stable tooltips send separately from changing readings. A changing tooltip table over 1024 encoded bytes coalesces the entire meter
   presentation to 2 Hz; keep frequently changing explanations short. New entities and visibility or text withdrawals publish immediately.
-  Drawing **Unknown** (not yet run in game).
+
 - **Skills:** `AddSkill(new ModSkill(id, label, column) { Description, Affects, Training, Start })` (`ModSkills`, `src/Meitou.Simulation/Bodies`)
   lists the skill at the foot of a stats-window column (`SkillColumn`: Weapons, Combat, Thievery, Sciences, under that column's last heading)
   with its whole level, and a click shows the description pane with the mod's lines and the next-level bar. The mod's systems read
@@ -183,7 +184,7 @@ holds refuses the second mod.
   full column refuses the mod. The shared simulation registry enforces these limits on the headless server and client (34 mod skills total).
   Coop publishes levels only for an owned lead selected or inspected character, in registration order; peers must load the same mods. `Set`
   accepts finite levels and NaN, but refuses infinity. A legacy infinite level remains in the save and is displayed as NaN in the snapshot.
-  Not shown in the HUD's stat lines or the debug character editor. Drawing **Unknown** (not yet run in game).
+  Not shown in the HUD's stat lines or the debug character editor.
 - **Bone anchors:** `CharacterCold.DrawAnchor = new DrawAnchor(carrier, bone, offset, rotation)` draws a character on another's named bone
   as the renderer poses the carrier in the drawn frame (a rider on a mount; the rule and its limits:
   [character-renderer](character-renderer.md#bone-anchors-meitou-engine-choice)); null removes it. Set it in the tick from the mod's own
@@ -199,7 +200,21 @@ holds refuses the second mod.
   ([character-renderer](character-renderer.md#bone-anchors-meitou-engine-choice)). Set it in the tick from the mod's system, as `DrawAnchor`;
   display only: not saved, not hashed, read by no system, so set it again after a load. Coop publishes attachments for every visible character;
   unchanged lists produce no delta. A character takes at most 64 attachments, with finite transforms and nonempty key/mesh/bone names limited to
-  128/1024/256 UTF-8 bytes. `SetBoneMesh` enforces the same limits as snapshot decoding. Drawing **Unknown** (not yet run in game).
+  128/1024/256 UTF-8 bytes. `SetBoneMesh` enforces the same limits as snapshot decoding.
+- **Item use:** `AddItemUse(record, handler)`, one mod per item record string id. A right click on such an item in a player character's own
+  inventory window (or its bag), with no other character's window open and no trade, runs `handler(ItemUse)` (world, user, item, that
+  character's inventory) in the player system's serial step, before the click would equip or move it (`ItemUses`, `src/Meitou.Simulation/Player`),
+  for an item a quick move could act on (movable or limb section, not locked on). The click's token holds the tag the window showed, and
+  neither the handler nor the quick move acts on an item that no longer carries it: a stale click never reaches a differently tagged item in
+  the same cell (two items alike in record, cell, quantity, quality and tag are not told apart).
+  True: the click is used (the handler removes a used-up item, `Inventory.RemoveOne`); false: the click equips or moves as usual. A throw is
+  logged and counts as used. `ItemInstance.ModTag` is a free string a mod sets on an item (the character a note names); it is copied with the
+  item, keeps differently tagged items out of one stack, is hashed when set, and is saved as `meitou mod tag`
+  ([save](formats/save.md#zone-files); a retagged ground item rewrites its zone). A tooltip hint is the item's own description.
+  Coop runs the handler only after the issuer's role grant, per-player trade/window state and inventory revision are validated. Network item
+  views carry a 32-character tag identity (`ModTagDigest`, the first 128 bits of SHA-256), not the raw tag; the click echoes that identity
+  and the authority compares it with the current item. The mod handler and saves retain the full tag. A retag advances the inventory revision.
+  **Verified** by `ModHookTests` (synthetic world): the click and its guards (stale tag, locked on), fall-through, tag stacking, hash and save key.
 - **Persistence:** a mod system implementing `IModSaveData` (`Write`/`Read(Stream)`) is saved under its name in the mod's sidecar file
   ([save](formats/save.md#mod-data)), captured between ticks with the save and restored right after `SaveLoader.Load`, before the first
   tick. `Read` runs only when the save has data for the system. Vanilla save files stay byte-exact.
@@ -210,18 +225,22 @@ holds refuses the second mod.
 - **Debug rows:** `AddDebugCommand(label, run, hasField)` adds a row to the F10 menu after the vanilla ones. `run` gets
   `DebugCommandContext` (field, selection, camera target, tick, `Enqueue`) on the host thread while a tick may be in flight, so it must
   not touch the world; it returns the status line, and a throw shows as the status.
-- **Settings:** `AddSettings(object)`, once per mod: the object's public get/set properties marked `[Setting(label, Hint, Min, Max, Step, Options)]`
-  (`ModSettings.cs`) become one group, in declaration order, under the mod's row on the Settings screen's Mods page ([native UI](native-ui.md#settings)): `bool`
-  an Off | On switch, `int`/`float`/`double` a slider (Min and Max required; Step 0 = 1 for `int`, a hundredth of the range otherwise), an enum or a
-  `string` with Options a list. Another type, a number without a range, a list whose value is not one of its options, a struct (the page would
-  change a copy) or no marked property refuses the mod. The player's values are kept in `meitou.user.json` (`modSettings`: mod id, key, invariant
-  text; a default is not kept) and set on the object before `AddSettings` returns, a number clamped to its range, a value that is not one of the
-  setting's (or not finite) ignored with a log line; the values the object had are the defaults Reset and Restore defaults put back as they were,
-  not snapped to the step (Restore defaults also drops every kept mod value). The page sets a changed property at once on the interface's thread,
-  outside the tick, and raises the returned group's `Changed`; a throw from the setter or a handler is logged and shown as the page's notice. A
-  slider's arrow keys move one Step. A mod copies what its simulation needs in a serial step (its system's `Inputs`). **Verified** by
-  `ModdingTests`; the page **Observed** drawn (2026-11-04, Windows, Vulkan, `--settings-showcase` changed locally to open it with a scratch group);
-  using it in play **Unknown**.
+- **Settings:** `AddSettings(object)`, once per mod: the object's public get/set properties marked
+  `[Setting(label, Hint, Min, Max, Step, Options, SubGroup, VisibleWhen)]` (`ModSettings.cs`) become one group, in declaration order (a
+  sub-group's settings together at its first one's place), under the mod's row on the Settings screen's Mods page
+  ([native UI](native-ui.md#settings)): `bool` an Off | On switch, `int`/`float`/`double` a slider (Min and Max required; Step 0 = 1 for `int`, a
+  hundredth of the range otherwise), an enum or a `string` with Options a list. `SubGroup` puts a setting under a sub-group header of that name (its
+  own fold, at its first setting's place); `VisibleWhen` names a public `bool` property of the same object and hides the setting while it is false,
+  so a switch can hide its dependents (the page reads it every frame; a throw from it is logged and the setting stays shown). Both are optional; a
+  `VisibleWhen` that is not such a property refuses the mod; a game older than both fails reading the attribute, so
+  a mod using them sets `gameVersion`. Another type, a number without a range, a list whose value is not one of its options, a
+  struct (the page would change a copy) or no marked property refuses the mod. The player's values are kept in `meitou.user.json` (`modSettings`: mod
+  id, key, invariant text; a default is not kept) and set on the object before `AddSettings` returns, a number clamped to its range, a value that is
+  not one of the setting's (or not finite) ignored with a log line; the values the object had are the defaults Reset and Restore defaults put back as
+  they were, not snapped to the step (Restore defaults also drops every kept mod value). The page sets a changed property at once on the interface's
+  thread, outside the tick, and raises the returned group's `Changed`; a throw from the setter or a handler is logged and shown as the page's
+  notice. A slider's arrow keys move one Step. A mod copies what its simulation needs in a serial step (its system's `Inputs`). **Verified** by
+  `ModdingTests`; the page **Observed** drawn (2026-11-04, Windows, Vulkan, `--settings-showcase` changed locally to open it with a scratch group).
 - **Weather kinds:** a WEATHER or EFFECT `affect type` outside 1-5 is kept as its number, with ARMOUR `weather protection<N>` and RACE `weather
   immunity<N>` naming it the same way, so a mod defines a hazard in data and acts on it from its own system
   ([weather](formats/weather.md#effects-on-characters), "Undefined kinds": what the vanilla systems still do with such a kind). Nothing
@@ -229,12 +248,11 @@ holds refuses the second mod.
 - **Stat modifiers:** `cold.Stats.Modifiers.Set(key, stat, amount)` / `Remove(key, stat)` / `RemoveAll(key)` (`StatModifiers`) add a temporary
   amount to a character's stat (a drug's +10 strength, a sickness's -5 dexterity) under the mod's own key. Every gameplay read of the stat
   (`CharacterStats` indexer, `Strength`...) adds it before the injury, hunger, gear and animal-age multipliers, and the stats window shows it;
-  training (`Gain`, the XP difference terms), saves, god mode, taming and the debug editor use `Stored(stat)`, so it is never trained in or
+  training (`Gain`, the XP difference terms), saves, the debug stat boost, taming and the debug editor use `Stored(stat)`, so it is never trained in or
   saved. It enters the state hash once one is set, and is not persisted: keep it in the mod's `IModSaveData` and set it again after a load.
   Medic, HiveMedic and Vet share one storage. Change it from the mod's system outside the parallel phases. The body's look reads the stored value;
   a new body (a race change at character creation) starts without modifiers. Coop runs these changes on the server and publishes the resulting
-  effective stats through the existing character fields; clients do not replay modifier sources. **Verified** by `StatsTests` (reads, save, gain, hash); in play
-  **Unknown**.
+  effective stats through the existing character fields; clients do not replay modifier sources. **Verified** by `StatsTests` (reads, save, gain, hash).
 - **Commands:** trusted server/local mod systems may enqueue their own `SimCommand` types for `Inputs`; remote UI/debug submissions require a supported typed binding and current authorization.
 - **Player squads on AI packages** (`Meitou.Simulation.Ai`, [rules](simulation.md#autonomous-player-squads)): `SetSquadAutonomy(squadId, on)` lets
   the AI run a player's squad; then `ChangeAi(squadId, packageId)` and `StartContract(squadId, packageId, hours)` give it packages as dialogue's
@@ -244,6 +262,31 @@ holds refuses the second mod.
   package and the members' minds. Ids: `SquadManagement.PlayerSquads(world)`, `world.Buildings.All`, `PopulationData.Sites[i].Buildings`.
   **Observed** (2026-11-13, headless, two saves, 'Guard building, residents'): members without a job patrol, go home and lie in the home's beds, a
   move order takes them at once and they resume after it, and a re-saved game loads autonomous.
+- **World hooks** (engine API, not in the original; serial phases): `PopulationSystem.RequestCampaign` queues a
+  FACTION_CAMPAIGN against a town as a dialogue trigger does (the request pass then applies the game's gates); `PopulationSystem.SpawnPlatoon`
+  adds an unloaded platoon of a SQUAD_TEMPLATE at a walkable point in a ring round a point, with a purse, that loads like a roaming one, is
+  kept off screen whatever the keep switches say, is saved also before it first loads and loads back as the same roaming squad (-1 and nothing
+  added when no walkable point is found); `Platoon.ModTag` is a free string, saved when set, that finds a mod's platoon again after a load,
+  when platoon ids are given anew; the `VisitTown` command sends a squad running a wandering trader package to a
+  player town for a stay of N hours, counted from its first step there after the command (it leaves a town that is not public at once, as any
+  trader); `BedSystem.PlayerBedRent` prices the player's indoor beds for other factions: set, an NPC must afford it from its squad purse and
+  pays the player once it lies in the bed, and a visitor in a player town picks the nearest bed it can afford before the NPC bed search (null
+  keeps the original: NPCs never pay). Non-finite delays, hours, points and radii are refused. **Verified** by `ModHookTests` (synthetic
+  world): the spawn ring, purse and refusals, a never-loaded spawn kept and reloaded with its tag, and the campaign queue.
+- **Driving NPCs** (engine API; serial phases): `PopulationSystem.HoldPlatoon` stops a roaming platoon's trips and its
+  stand-in's travel (not saved: find it by its tag and hold again after a load; it still unloads, and despawns as any platoon but a mod's
+  spawn). `PopulationSystem.SendPlatoon` sends a held platoon's stand-in off screen toward a point or a living character (by the roads, at the
+  stand-in travel speed, stopping within the roam arrival radius; null stops it; not saved, cleared when the hold ends); once loaded the mod
+  walks its members. The `EndContract(squadId)` command ends a running contract as its hours running out would (a `StartContract` of the
+  same package after it starts it afresh; the game ignores a start of the contract already running), and `StartContract { AnyRange = true }`
+  lets the contract's assault take its target wherever it is, not only within the manoeuvre mode's reach (about 6517 units for ROAM_FAR;
+  saved with the contract). **Verified** by `ModHookTests` (synthetic world): a held stand-in, travel to a point, the contract's end and restart,
+  and an any-range target taken past the reach. `CharacterCold.Engaged` keeps the AI
+  off one member (self-preservation still answers an attack); the mod then drives it with what the engine's own duties use: `TaskStart.Walk`,
+  `CharacterOrders.Sneak` on `Orders` (speed, sight and spot meters follow it for any faction), `LockSystem.Picking.Step` (books the Burglary
+  a witness answers), `CrimeSystem.Pickpocket`, `CarrySystem.BeginPickUp` / `BeginPutDown`, `ArrestSystem.TakeOver(enslave: true)` (a guard
+  takes the carried body to a cage as its faction's slave), `AggroSystem.Spotted` / `Unseen`. `CharacterCold.FedTo` is a free hunger level
+  that comes before the game's rule (not saved), for a captive the mod's squad carries.
 
 ## Harmony
 
@@ -291,11 +334,9 @@ difference it runs the game without mods: if that differs too, the fault is the 
 
 ## Platforms
 
-- Managed DLLs run unchanged on the Windows, Linux and macOS builds. Harmony's detours come from MonoMod.Core, whose support for .NET Core
-  on Linux and macOS is **Observed** only as a fix note in [MonoMod's releases](https://github.com/MonoMod/MonoMod/releases) and for arm64
-  only in a third-party write-up, so patches off `win-x64` are **Unknown** until tested on each build.
+- Managed DLLs run unchanged on the Windows, Linux and macOS builds.
 - **Observed** (Harmony 3.0 RC notes): native async methods cannot be patched. The game runs on .NET 11, so this applies to any
-  method compiled as runtime-async; which of the game's async methods are is **Unknown**.
+  method compiled as runtime-async.
 
 ## Evidence
 
@@ -306,3 +347,11 @@ own `0Harmony.dll`; a prefix applies, and a throwing `Initialize` loses its patc
 capture and restore; sidecars survive `SaveGame.Write`/`Load` and `Clone`; spliced systems land at their anchors and the standard list is
 unchanged. The dialogue hooks are built but not exercised. **Verified** by `ModdingTests`: game assemblies resolve from the game, anchors,
 sidecar round trip, and a hashed mod system agreeing at 1 and 4 threads.
+
+
+## Built-in XP settings in Coop
+
+**Observed** (implementation): `SquadXp` applies to every player faction and `OthersXp` to NPC factions. Both rates and `BagSearchFix` are
+server-owned `GameplayRules`, included in compatibility and shown read-only remotely. Rates are finite, 0..1000.
+The server adopts enabled legacy Player-Only XP settings once into `server.json` (`AdoptedMods`); later starts preserve administrator edits.
+Client preferences are adopted only for a local game. The shared loader skips the covered code mod on both hosts so XP is not multiplied twice.

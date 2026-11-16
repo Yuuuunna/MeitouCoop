@@ -26,7 +26,7 @@ using Meitou.Simulation.Movement;
 namespace Meitou.Simulation.Production;
 /// <summary>
 /// The machines of NPC towns (docs/game/buildings-production.md "NPC town machines"): a town building an NPC worker (goals 189 / 190, AiSystem Work)
-/// stands at has one canonical level-machine site owned by its registered faction, shared with inventories and saving, made on first use.
+/// stands at has one canonical level-machine site owned by its registered faction, shared with inventories and saving, made when the town registers or on first use.
 /// The workers are the AI's: the decision step keeps AiMind.WorkOperate (Task_OperateMachine, row
 /// 87) or AiMind.CollectFrom (Task_EmptyMachine, row 92) while they are at the building, and this system applies them.
 /// </summary>
@@ -48,14 +48,25 @@ public sealed partial class ProductionSystem
     int _townBuildingsRevision = -1;
 
     /// <summary>
-    /// The towns' buildings whose record is a farm, with the faction owning their town (<see cref="TownFarms"/>); null until looked for.
+    /// The registered towns (site indices) whose buildings have been given their machines (<see cref="TownMachines"/>); cleared when the towns'
+    /// lists change.
     /// </summary>
-    List<(TownBuilding Building, int Owner)>? _townFarms;
+    readonly HashSet<int> _townSitesMade = [];
+
+    /// <summary>
+    /// The machine buildings of registered towns whose machine is not made yet (a ruin until it stands), with the faction owning their town.
+    /// </summary>
+    readonly List<(TownBuilding Building, int Owner)> _townWaiting = [];
 
     /// <summary>
     /// The counter of a town farm's random start among its farm draws (above the plantings' and the harvest rolls').
     /// </summary>
     const ulong RandomStart = 1UL << 41;
+
+    /// <summary>
+    /// How far a loaded farm's plants grow above its growth at most.
+    /// </summary>
+    const float PlantSpread = 0.2f;
 
     /// <summary>
     /// The canonical placement key shared by town work, machine inventories and saves.
@@ -108,7 +119,8 @@ public sealed partial class ProductionSystem
 
     /// <summary>
     /// The towns' buildings by run-time key with the faction owning their town, made again when the lists change
-    /// (<see cref="PopulationData.BuildingsRevision"/>, which also drops <see cref="_townFarms"/>); null without towns.
+    /// (<see cref="PopulationData.BuildingsRevision"/>, which also has <see cref="TownMachines"/> look at every registered town again); null
+    /// without towns.
     /// </summary>
     Dictionary<string, (TownBuilding Building, int Owner)>? TownBuildingIndex(World world)
     {
@@ -117,7 +129,8 @@ public sealed partial class ProductionSystem
 
         _townBuildingsRevision = data.BuildingsRevision;
         _townBuildings = new(StringComparer.Ordinal);
-        _townFarms = null;
+        _townSitesMade.Clear();
+        _townWaiting.Clear();
         foreach (var site in data.Sites)
         {
             int owner = site.Index < data.SiteFactions.Count ? data.SiteFactions[site.Index] : -1;
@@ -135,21 +148,61 @@ public sealed partial class ProductionSystem
     public Machine? TownWork(World world, TownBuilding building, int owner) => TownWork(world, building);
 
     /// <summary>
-    /// The towns' farms in the active zones have their machines (serial): a farm grows whether anyone works it, so its crop is there to harvest or
-    /// loot when the player comes (the original makes every building of a loaded zone, FarmBuilding among them); a ruin has none.
+    /// A town farm's plants after its load (<b>Verified</b>, decompile: the building factory <c>FUN_140581770</c> runs the farm's load before its
+    /// setup, which gives each plant the farm's growth + 0.2 x U[0, 1), the constant at <c>14168a4a8</c>, then marks the first harvested ones -10).
     /// </summary>
-    void TownFarms(World world)
+    static void SpreadPlants(World world, string id, FarmState farm)
     {
-        if (world.ActiveZones is not { } active || TownBuildingIndex(world) is not { } buildings) return;
-
-        _townFarms ??= [.. buildings.Values.Where(b => Data(b.Building.BuildingId) is { Farm: not null })];
-        foreach (var (building, owner) in _townFarms)
+        ulong key = Rng.StableHash(id);
+        for (int i = 0; i < farm.Plants.Length; i++)
         {
-            var zone = WorldLayout.ZoneOf(building.Position.X, building.Position.Z);
-            if (!active.Contains(zone) || world.Machines.Find(TownWorkId(building)) is not null) continue;
-            if (!world.Fixtures.IsDestroyed(building)) TownWork(world, building, owner);
+            float spread = PlantSpread * Rng.Float(Rng.Hash(world.Seed, key, RngPurpose.Farm, RandomStart + 1 + (ulong)i));
+            farm.Plants[i] = i < farm.Harvested ? -10 : farm.Growth + spread;
         }
     }
+
+    /// <summary>
+    /// Every registered town's buildings that are machines get them (serial): the original makes every building of a loaded zone as its class,
+    /// ProductionBuilding and FarmBuilding among them, with its production state from the saved GAMESTATE_BUILDING, so a mine's output and a farm's
+    /// crop are there from the start for its workers, the player's loot and the AI's input finder; a farm grows and an unattended producer (an
+    /// automatic well, max operators 0) works whether anyone is there (ProductionBuilding::vfunc_28 runs it each frame, #763). A ruin waits until it
+    /// stands.
+    /// </summary>
+    void TownMachines(World world)
+    {
+        if ((_towns ?? world.SystemOf<PopulationSystem>()?.Data) is not { } data || TownBuildingIndex(world) is null) return;
+
+        foreach (var site in data.Sites)
+        {
+            if (!world.Fixtures.IsRegistered(site.Index) || !_townSitesMade.Add(site.Index)) continue;
+
+            int owner = site.Index < data.SiteFactions.Count ? data.SiteFactions[site.Index] : -1;
+            foreach (var b in site.Buildings)
+                if (IsTownMachine(Data(b.BuildingId))) _townWaiting.Add((b, owner));
+        }
+
+        if (_townWaiting.Count > 0) _townWaiting.RemoveAll(w => MadeTownMachine(world, w.Building, w.Owner));
+    }
+
+    /// <summary>
+    /// Whether a waiting town building has its machine now: it had one, or it stands and gets it (a ruin keeps waiting).
+    /// </summary>
+    bool MadeTownMachine(World world, TownBuilding building, int owner)
+    {
+        if (world.Machines.Find(TownWorkId(building)) is not null) return true;
+        if (world.Fixtures.IsDestroyed(building)) return false;
+
+        return TownWork(world, building, owner) is not null;
+    }
+
+    /// <summary>
+    /// Whether a town building of <paramref name="data"/> gets its machine when its town registers: a farm or a producer (a mine, well, refinery
+    /// or rain collector), whose state its workers and the hours change. The other functionalities hold nothing an NPC changes: a research bench
+    /// counts for the player's research alone, a crafting bench has no queue, a town's generators are the power frame's
+    /// (<see cref="NpcGeneration"/>), and its storages are container fixtures; those get a machine only when a worker or the player's order
+    /// comes (<see cref="TownWork"/>).
+    /// </summary>
+    static bool IsTownMachine(MachineData? data) => data is { Farm: not null } or { IsProducer: true };
 
     /// <summary>
     /// A town building's machine as the holder of its faction's goods (<see cref="Crime.StealSource"/>: the building is its own container, its
@@ -161,21 +214,25 @@ public sealed partial class ProductionSystem
             : null;
 
     /// <summary>
-    /// A take out of another faction's town machine (<see cref="Take"/>): the Theft and the steal roll (<see cref="Crime.CrimeSystem.Steal"/>; true:
-    /// caught, nothing moves), else the stolen mark the taken items get (<see cref="Crime.CrimeSystem.OwnerMark"/>; none for any other take).
+    /// A take out of another faction's town machine (<see cref="Take"/>): the stolen mark the taken items get
+    /// (<see cref="Crime.CrimeSystem.OwnerMark"/>; none for any other take), then, when the taker has <paramref name="room"/> for them with it, the
+    /// Theft and the steal roll (<see cref="Crime.CrimeSystem.Steal"/>), else the Theft alone (no roll, no thievery XP, #796). True: caught or no
+    /// room, nothing moves.
     /// </summary>
-    static bool CaughtTaking(World world, Crime.StealSource? goods, CharacterId taker, CharacterCold cold, out StolenMark mark, PlayerId? actor = null)
+    static bool CaughtTaking(World world, Crime.StealSource? goods, CharacterId taker, CharacterCold cold, Func<StolenMark, bool> room,
+        out StolenMark mark, PlayerId? actor = null)
     {
         mark = StolenMark.None;
         if (goods is { } owned && actor is { } player
             && world.Players.Find(player)?.HasPermission(owned.Owner, FactionPermission.ManageAssets) == true) return false;
         if (goods is not { Owner: >= 0 } g || g.Owner == cold.Faction || !Crime.CrimeSystem.IsStealing(world, g)) return false;
-        if (world.SystemOf<Crime.CrimeSystem>() is { } crimes && world.Characters.TryResolveNext(taker, out int thief)
-            && crimes.Steal(world, thief, g, Crime.CrimeCode.Theft))
-            return true;
 
         mark = Crime.CrimeSystem.OwnerMark(world, g.Building, g.Owner);
-        return false;
+        bool fits = room(mark);
+        if (world.SystemOf<Crime.CrimeSystem>() is not { } crimes || !world.Characters.TryResolveNext(taker, out int thief)) return !fits;
+
+        if (!fits) crimes.PendSteal(world, thief, g, Crime.CrimeCode.Theft);
+        return !fits || crimes.Steal(world, thief, g, Crime.CrimeCode.Theft);
     }
 
     /// <summary>
@@ -246,7 +303,11 @@ public sealed partial class ProductionSystem
         if (moved) world.Machines.Touch();
     }
 
-    public static Machine? TownWorkOf(World world, TownBuilding building) => world.Machines.Find(building.Key);
+    /// <summary>
+    /// The machine a town building has made, null before its town registered or a worker came.
+    /// </summary>
+    public static Machine? TownWorkOf(World world, TownBuilding building) => world.Machines.Find(TownWorkId(building));
+
     /// <summary>
     /// The workers of town machines at their building this tick (serial, before the players' operators): the AI's workers that stand at their
     /// building doing row 87 operate it (a producer only: a research bench counts for the player's research alone, and a crafting bench with no queue
@@ -278,23 +339,48 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// Player slaves run a job handler rather than an AI mind. Only its current real-work target contributes to the same town machine.
+    /// The obedient player slaves at their workplace on goal 189 (<see cref="CharacterCold.SlaveWork"/>; serial, after the AI's workers): as the
+    /// AI's plan for 189 (87's list B in order: <c>!63</c>, whose provider is 92; <c>!62</c>, whose provider is 93), a full output is emptied into
+    /// the inventory (row 92), else an empty input is filled from what it carries (row 93, <see cref="FillInputs"/>), else the machine is operated
+    /// (row 87, <see cref="TownOperate"/>). Fetching an input from another machine and putting output away are walks of the job
+    /// (Kidnap/ObedientSlave.cs). The machine is the AI's workers' (<see cref="TownWork"/>); 190 only pretends.
     /// </summary>
-    void SlaveWorkers(World world, float dt)
+    void ObedientWorkers(World world, float dt)
     {
-        if (world.SystemOf<Kidnap.CaptiveSystem>() is not { } captives) return;
         var table = world.Characters;
-        for (int slot = 0; slot < table.HighWater; slot++)
+        for (int i = 0; i < table.HighWater; i++)
         {
-            if (!table.Next[slot].Alive || table.Cold(slot) is not { IsPlayer: true } cold || !Able(cold)
-                || captives.ObedientWorkplace(world, slot) is not { } building) continue;
-            cold.Operating = false;
-            if (TownWork(world, building) is not { } machine || !Live(world, machine)
-                || Site(world, machine.Site) is not { Complete: true, Destroyed: false } site
-                || cold.SlaveOwner != site.Owner || world.Fixtures.IsDestroyed(building)) continue;
-            TownOperate(world, slot, cold, machine, dt);
+            if (!table.Next[i].Alive || table.Cold(i) is not { SlaveWork: { Operates: true, Place: var place } } cold) continue;
+            if (!Kidnap.ObedientSlave.Obeys(cold) || cold.SlaveOwner != place.Owner || !Able(cold) || cold.ActionClip != place.Clip || !AtTownWork(table.Next[i], place.Building, place.Range)) continue;
+
+            var m = world.Machines.Find(TownWorkId(place.Building)) ?? TownWork(world, place.Building, place.Owner);
+            if (m is null || !Live(world, m) || Site(world, m.Site) is not { Complete: true, Destroyed: false } site
+                || site.Owner != cold.SlaveOwner || !world.Fixtures.CurrentTownMachine(site)) continue;
+
+            if (m.OutputBlocked) TakeOutput(world, cold, m);
+            else if (m.HasEmptyInputs) FillInputs(world, cold, m);
+            else TownOperate(world, i, cold, m, dt);
         }
     }
+
+    /// <summary>
+    /// Row 92 at another town machine for an obedient player slave's errand (the source row 94 found): its output goes into the inventory while
+    /// there is room (<see cref="TakeOutput"/>). Serial phases only.
+    /// </summary>
+    internal void TakeTownOutput(World world, CharacterCold cold, TownBuilding building, int owner)
+    {
+        if ((world.Machines.Find(TownWorkId(building)) ?? TownWork(world, building, owner)) is { } m && Live(world, m)
+            && Kidnap.ObedientSlave.Obeys(cold) && cold.SlaveOwner == owner
+            && Site(world, m.Site) is { Complete: true, Destroyed: false } site && site.Owner == owner
+            && world.Fixtures.CurrentTownMachine(site)) TakeOutput(world, cold, m);
+    }
+
+    /// <summary>
+    /// State 82 <c>gotInventoryRoomForResources</c> of a machine (<c>FUN_14059bd80</c>, <b>Verified</b>): the inventory or the worn backpack has room
+    /// for a unit of its output item.
+    /// </summary>
+    internal bool RoomForOutput(CharacterCold cold, Machine m) =>
+        m.Output is { } o && cold.Inventory is { } inv && _items.Create(o.Recipe.Item, 1) is { } unit && inv.HasRoomFor(unit);
 
     /// <summary>
     /// Whether a worker stands at the town building within <paramref name="reach"/>, idle or resting.

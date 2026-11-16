@@ -36,7 +36,7 @@ public sealed partial class World
             or Locks.DoorOrder or Locks.SetFreeOrder or Locks.GetInCageOrder or Locks.ForceLockOrder or Locks.UseBedOrder or Locks.PutInBedOrder
             or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder or Carrying.StealthKoOrder
             or Items.RotateItem or Production.ArrangeMachine or Ai.SetSquadAutonomy or Ai.SetSquadHome
-            or DebugGiveItem or DebugPlaceItem
+            or DebugGiveItem or DebugPlaceItem or DebugAnimalAge
             or Items.PickUpItemOrder or Trading.OpenPlayerTrade or Trading.PlayerTradeCommand or Carrying.CloseLoot
             or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder);
         if (due.Count == 0 && authorityCount == 0) { RuntimeBoundary?.Invoke(this); return; }

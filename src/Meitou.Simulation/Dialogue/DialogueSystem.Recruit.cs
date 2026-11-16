@@ -1,9 +1,11 @@
 using System.Numerics;
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Dialogue;
 using Meitou.Simulation.Ai;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Dialogue;
 
@@ -78,20 +80,63 @@ public sealed partial class DialogueSystem
     /// extra, empty squad of the active squad's template at its position before the recruit is added (the recruit does not join it, so it stays
     /// empty, docs/game/dialogue.md "Recruiting").
     /// </summary>
-    void ExtraSquadAtTheCap(World world, Squad active, GameConstants limits)
+    static void ExtraSquadAtTheCap(World world, PopulationData data, Squad active, GameConstants limits)
     {
         if (PlayerHeads(world, active.Faction) >= limits.MaxFactionSize || active.Members.Count + 1 <= limits.MaxSquadSize
             || SquadManagement.PlayerSquads(world, active.Faction).Count < limits.MaxSquads)
         {
             return;
         }
-        SquadManagement.NewSquad(world, _data.Db, active.Position,
-            _data.Factions[active.Faction].Name is { Length: > 0 } f ? f : "Nameless", active.Faction, active.TemplateId);
+        SquadManagement.NewSquad(world, data.Db, active.Position,
+            data.Factions[active.Faction].Name is { Length: > 0 } f ? f : "Nameless", active.Faction, active.TemplateId);
+    }
+
+    /// <summary>
+    /// Why the debug menu's Recruit row cannot recruit the character (null when it can): it is already a player character, has no dialogue line
+    /// that makes it join (DA 3 / 18), or the active squad is full.
+    /// </summary>
+    public static string? RecruitRefusal(World world, PopulationData data, CharacterId id)
+    {
+        var table = world.Characters;
+        if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { } cold) return "that character cannot be recruited";
+        if (cold.IsPlayer) return $"{cold.Name} is already in your squad";
+        if (!table.IsAlive(id)) return $"{cold.Name} is dead";
+        if (!Recruitable(world, data, slot)) return $"{cold.Name} has no dialogue that makes them join";
+        if (ActiveSquad(world) is not { } squad) return "you have no squad";
+        if (squad.Members.Count >= data.Bodies.Constants.MaxSquadSize) return "your squad is full";
+        return null;
+    }
+
+    /// <summary>
+    /// Whether the character's dialogue set (its own dialogue, its packages, and the leader dialogue of the squad it leads) has a line that makes it
+    /// join the player's squad (DA 3 / 18).
+    /// </summary>
+    static bool Recruitable(World world, PopulationData data, int slot)
+    {
+        var table = world.Characters;
+        if (table.Cold(slot) is not { } cold) return false;
+        var squad = cold.SquadId >= 0 ? world.Squads.Find(cold.SquadId) : null;
+        bool leader = squad is not null && squad.Leader == table.IdOf(slot);
+        var set = data.Dialogue.SetFor(cold.RecordId, squad?.TemplateId, leader, player: false, animal: SquadRegistry.IsAnimal(cold));
+        return set.HasEffect(DialogueActions.JoinSquadWithEdit) || set.HasEffect(DialogueActions.JoinSquadFast);
     }
 
     /// <summary>
     /// The character at <paramref name="slot"/> leaves its squad and joins the player's active squad (or a new blank squad when it is full) as a
     /// player character.
+    /// </summary>
+    internal static bool JoinPlayer(World world, PopulationData data, int slot)
+    {
+        if (world.Players.RequiresExplicitControl || ActiveSquad(world) is not { } squad
+            || world.SystemOf<DialogueSystem>() is not { } dialogue) return false;
+        var player = squad.Members.FirstOrDefault(id => world.Characters.TryResolveNext(id, out _), CharacterId.None);
+        if (player.IsNone || world.Characters.Cold(player.Slot) is not { } talker) return false;
+        var context = dialogue.Context(world, new Conversation { Npc = world.Characters.IdOf(slot), Player = player, Event = 0 });
+        return dialogue.JoinPlayer(world, context, slot, talker);
+    }
+
+    /// <summary>
+    /// Joins through the caller's authorized conversation and player session.
     /// </summary>
     internal bool JoinPlayer(World world, Conversation context, int slot, CharacterCold talker)
     {
@@ -104,7 +149,7 @@ public sealed partial class DialogueSystem
         var owner = Player(world, context);
         if (JoiningSquad(world, context, talker) is not { } squad) return false;
 
-        if (!world.Players.RequiresExplicitControl) ExtraSquadAtTheCap(world, squad, limits);
+        if (!world.Players.RequiresExplicitControl) ExtraSquadAtTheCap(world, _data, squad, limits);
         if (squad.Members.Count >= limits.MaxSquadSize)
         {
             squad = SquadManagement.NewSquad(world, _data.Db, table.Next[slot].Position, _data.Factions[context.Faction].Name is { Length: > 0 } f ? f : "Nameless", context.Faction);
@@ -124,7 +169,11 @@ public sealed partial class DialogueSystem
         mc.Fleeing = false;
         mc.Pending = null;
         mc.Jobs.Clear();   // an NPC's list, if any, does not carry over
-        if (mc.Inventory is { } kit) foreach (var piece in kit.All()) piece.Uniform = "";   // a recruit's clothes are no longer a faction's uniform (economy.md "Unknowns", Observed)
+        // a recruit's clothes are no longer a faction's uniform (dialogue.md "Recruiting")
+        if (mc.Inventory is { } kit)
+        {
+            foreach (var piece in kit.All()) piece.Uniform = "";
+        }
         mc.Save = null;   // written as a new member of the player's platoon; the save's old slot of it is removed
         table.Next[slot].Mode = SpeedMode.Free;   // the original's speed mode 2
         TaskStart.Stand(table, slot);

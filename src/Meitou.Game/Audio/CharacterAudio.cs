@@ -35,6 +35,11 @@ sealed class CharacterAudio(GameHost host)
     internal CharacterSounds? Sounds;
 
     /// <summary>
+    /// The bodies fed into machines, each sounding on an object of its own until the exe's deletion would end it; made with <see cref="Sounds"/>.
+    /// </summary>
+    FedBodySounds? _fedBodies;
+
+    /// <summary>
     /// The ground types of the terrain under the characters' feet.
     /// </summary>
     GroundSurfaces? _groundSurfaces;
@@ -96,7 +101,7 @@ sealed class CharacterAudio(GameHost host)
     int _soundFrame;
 
     /// <summary>
-    /// The world whose combat feeds <see cref="_soundQueue"/>.
+    /// The world whose combat feeds <see cref="_soundSource"/>.
     /// </summary>
     object? _soundsFor;
 
@@ -183,7 +188,8 @@ sealed class CharacterAudio(GameHost host)
         UpdateCharacters(sounds, db);
         sounds.EndFrame();
         ForgetStaleMemos();
-        while (source.TryDequeueSound(out var happened)) PlayCombatSound(sounds, happened);
+        _fedBodies!.Update(source.TimeScale);
+        while (source.TryDequeueSound(out var happened)) PlayCombatSound(sounds, happened, eye);
     }
 
     /// <summary>
@@ -192,6 +198,7 @@ sealed class CharacterAudio(GameHost host)
     internal void Reset()
     {
         Sounds?.Clear();
+        _fedBodies?.Clear();
         _soundSource?.EnableSounds(false);
         _soundSource = null;
         _soundsFor = null;
@@ -227,6 +234,7 @@ sealed class CharacterAudio(GameHost host)
         _definitionLoops = [.. library.Definitions.Select(d => d.Loop)];
         _workEvents.Clear();
         Sounds = new CharacterSounds(sound.Player, _groundSurfaces) { Floor = FloorSurface, Puddle = host.InPuddle };
+        _fedBodies = new FedBodySounds(sound.Player);
     }
 
     /// <summary>
@@ -235,6 +243,7 @@ sealed class CharacterAudio(GameHost host)
     void FollowWorld(CharacterSounds sounds, IPlayerSession source)
     {
         sounds.Clear();
+        _fedBodies?.Clear();
         _workLayers.Clear();
         _soundSource?.EnableSounds(false);
         source.EnableSounds(true);
@@ -446,6 +455,11 @@ sealed class CharacterAudio(GameHost host)
     #region Happenings
 
     /// <summary>
+    /// Plays a local storage-window inspection on its character object; opening a client window never writes to the authoritative sound queue.
+    /// </summary>
+    internal void Inspect(CharacterId who) => Sounds?.Job(SoundKey(who), "Character_Inspect");
+
+    /// <summary>
     /// The job sounds that are edges: a loot that started (<c>Character_Loot</c>), a bed got into or out of (<c>Character_Bed</c>, <c>Bed</c> =
     /// <c>Get_In</c> / <c>Get_Out</c>), a person lifted or set down by a put-down order.
     /// </summary>
@@ -478,7 +492,7 @@ sealed class CharacterAudio(GameHost host)
     /// <summary>
     /// Plays one of the combat's happenings: on the characters' objects, or as an interface sound.
     /// </summary>
-    void PlayCombatSound(CharacterSounds sounds, in SoundEvent e)
+    void PlayCombatSound(CharacterSounds sounds, in SoundEvent e, Vector3 eye)
     {
         ulong subject = SoundKey(e.Subject), other = e.Other.IsNone ? 0 : SoundKey(e.Other);
         switch (e.Kind)
@@ -531,8 +545,22 @@ sealed class CharacterAudio(GameHost host)
             case SoundKind.DismantleDone:
                 host.Sound.Ui.Sounds?.Play(new UiSoundEvent("Notifications", "Notifications", "Thing_Complete"));
                 break;
+            case SoundKind.Inspected:
+                sounds.Job(subject, "Character_Inspect");
+                break;
+            // Posted, with the price floater, only while the interface is shown (FUN_1409a14b0 tests the GUI's shown flag first).
+            case SoundKind.NpcBought:
+                if (host.Player.UiVisible) sounds.Job(subject, "Sell_Item", CharacterSounds.FootstepLimit);
+                break;
+            case SoundKind.ReleasedFromPrison:
+                host.Sound.Ui.Sounds?.Play(new UiSoundEvent("Create_Character"));
+                break;
+            case SoundKind.FedToMachine:
+                _fedBodies!.Post(e.Position, e.Armour, eye);
+                break;
         }
     }
+
 
     #endregion
 }

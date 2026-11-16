@@ -11,7 +11,7 @@ namespace Meitou.Simulation.Locks;
 /// A container's contents in a save (docs/game/locks.md "Containers"): Meitou's own GAMESTATE_BUILDING string <c>meitou container &lt;layout
 /// index&gt;</c> (the index of <see cref="Fixture.Id"/>, whose interior ids the original's keys cannot name), a JSON list of the items with their
 /// cell, quality, level, material, maker, charge, colour, turn and nested bag contents. Optional fields keep crafted and uniform labels, item
-/// function, stolen faction, death and unique flags, shackle locks and prosthetic condition. Present only while the container holds something;
+/// function, stolen faction, death and unique flags, shackle locks, prosthetic condition and code-mod tags. Present only while the container holds something;
 /// older lists without the optional fields retain their original defaults. A shared interior machine grid is saved here only once.
 /// </summary>
 static class ContainerSave
@@ -36,7 +36,8 @@ static class ContainerSave
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] float Damage = 0,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] float Wear = 0,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] float Stun = 0,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Death = false);
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Death = false,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] string? ModTag = null);
 
     /// <summary>
     /// The key of the container <paramref name="f"/> of <paramref name="building"/>, or null when it is not an interior item of it.
@@ -60,7 +61,7 @@ static class ContainerSave
         i.Crafter.Length > 0 ? i.Crafter : null, i.Uniform.Length > 0 ? i.Uniform : null, i.ItemFunction,
         (uint)i.StolenFrom < (uint)(SavedKit.Factions?.Count ?? 0) ? SavedKit.Factions![i.StolenFrom].Id : null,
         i.Lock is { } l ? new SaveItemLock(l.Level, l.EffectivelyLocked, l.Broken, l.Hardness) : null,
-        i.LimbDamage, i.LimbWear, i.LimbStun, i.Death))];
+        i.LimbDamage, i.LimbWear, i.LimbStun, i.Death, i.ModTag.Length > 0 ? i.ModTag : null))];
 
     /// <summary>
     /// Puts the saved items into <paramref name="grid"/>; one whose cell is no longer free (a changed grid) goes to the first that is, dropped when
@@ -112,7 +113,8 @@ static class ContainerSave
                 Damage = e.Damage,
                 Wear = e.Wear,
                 Stun = e.Stun,
-                Death = e.Death
+                Death = e.Death,
+                ModTag = e.ModTag ?? ""
             };
             if (SavedKit.ItemOf(saved, factory) is not { } item) continue;
             if (e.ItemFunction is { } function) item.ItemFunction = function;
