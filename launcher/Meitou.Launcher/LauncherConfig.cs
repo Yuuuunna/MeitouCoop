@@ -128,6 +128,16 @@ public sealed class LauncherConfig
     public string ServerAddress { get; set; } = "";
 
     /// <summary>
+    /// The explicitly chosen dedicated server folder or executable, independent of the client selection.
+    /// </summary>
+    public string? HostedServerPath { get; set; }
+
+    /// <summary>
+    /// The dedicated server's configuration; relative state paths resolve beside this file, outside release installations.
+    /// </summary>
+    public string HostedServerConfig { get; set; } = Path.Combine(DataDirectory, "server", "server.json");
+
+    /// <summary>
     /// A game release the user chose not to be offered as an update; a newer one is offered again.
     /// </summary>
     public string? SkippedVersion { get; set; }

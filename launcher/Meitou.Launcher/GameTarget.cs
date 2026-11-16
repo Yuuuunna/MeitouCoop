@@ -169,7 +169,12 @@ sealed record GameTarget(string Exe, string Version, bool Local)
     /// <summary>
     /// Finds an existing checkout build after an explicit Find action; never changes the launch source itself.
     /// </summary>
-    public static string? FindCheckout()
+    public static string? FindCheckout() => FindCheckout("Meitou.Game", Releases.FindGame);
+
+    /// <summary>
+    /// Finds an existing executable for a checkout project, preferring Release over Debug.
+    /// </summary>
+    internal static string? FindCheckout(string project, Func<string, string?> findExecutable)
     {
         foreach (string start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
         {
@@ -179,11 +184,11 @@ sealed record GameTarget(string Exe, string Version, bool Local)
 
                 foreach (string configuration in new[] { "Release", "Debug" })
                 {
-                    string bin = Path.Combine(directory.FullName, "src", "Meitou.Game", "bin", configuration);
+                    string bin = Path.Combine(directory.FullName, "src", project, "bin", configuration);
                     if (!Directory.Exists(bin)) continue;
 
                     foreach (string folder in Directory.EnumerateDirectories(bin).OrderDescending())
-                        if (Releases.FindGame(folder) is not null) return folder;
+                        if (findExecutable(folder) is not null) return folder;
                 }
             }
         }

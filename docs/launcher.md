@@ -1,6 +1,6 @@
 # Launcher
 
-`launcher/Meitou.Launcher` (Avalonia, `meitou-launcher`): Meitou Coop client selection, server entry, release installation,
+`launcher/Meitou.Launcher` (Avalonia, `meitou-launcher`): Meitou Coop client selection, server connection/hosting, release installation,
 mod lists, presets and graphics settings. `LauncherIdentity` selects `Yuuuunna/MeitouCoop`, news branch `master` and the Coop data directory.
 Styled after the Meitou UI kit ([meitou-ui](meitou-ui.md)) with its own title bar; Exo 2
 is read from the Kenshi install, nothing is shipped. Mods come only from disk (`mods/` and downloaded workshop
@@ -30,6 +30,34 @@ Coop configuration, release/news caches, schemas, default installed versions and
 Kenshi's `mods.cfg` and language still apply to the original installation. Existing device identities, creation recovery and game caches retain
 their game-owned `Meitou` locations. No identity migration occurs; `MEITOU_IDENTITY_DIRECTORY` is inherited unchanged.
 See [launch options](launch-options.md) and [server](server.md).
+
+## Hosting and CPU rendering
+
+**Observed** (source: `ServerPanel`, `ServerTarget`, `ServerProcess`): Coop's **Host a headless server** selects an extracted
+`MeitouServer-<version>-<rid>` folder, `Meitou.Server[.exe]`, or an existing checkout build (Release before Debug).
+Server packages are selected locally; Versions installs clients. Client and server selections/processes are independent.
+The current Kenshi folder is passed through `KENSHI_PATH`; no client renderer arguments, graphics probe or Steam setup run on server launch.
+Framework-dependent servers use the same installed-runtime lookup as local clients.
+
+`HostedServerPath` and `HostedServerConfig` persist in `launcher.json`. The default config is `server/server.json` in the launcher data folder;
+the server creates its defaults. Its working directory is the config's directory; relative state/mod paths follow the
+[server configuration contract](server.md#dedicated-executable). Existing package configurations can be selected to retain their world.
+Output/error streams are drained to `<config>.launcher.log` (appended per launch), with a bounded console tail in the page.
+Startup is distinct from the server's `Listening on` report; the process exit code remains visible. **Save world** sends `save`;
+**Save and stop** sends `stop`, including during startup. Closing the launcher is refused until its server exits, preserving console control.
+**Observed** (source: `ServerPanel`, `ServerProcess`): after listening, the command field accepts one console line with Enter or **Send command**.
+Replies appear in the console tail and log. Game-speed syntax and empty-server pause behavior: [server console](server.md#dedicated-executable).
+The launcher never forcibly kills the server. Stop before editing configuration; LAN binding and port configuration remain server-owned.
+
+**Observed** (2026-11-16, Windows manual UI smoke with `--software-rendering`, local .NET 11 server, temporary config path containing spaces):
+server reaches QUIC/TCP listening, Save writes a checkpoint, closing is refused while running, Stop saves and exits with code 0.
+
+**Observed** (Avalonia 12.1.4 package API docs and [official platform docs](https://docs.avaloniaui.net/troubleshooting/platform-specific-issues/windows)):
+desktop rendering supports a CPU software fallback. `meitou-launcher --software-rendering` or
+`MEITOU_LAUNCHER_SOFTWARE_RENDERING=1` explicitly selects software rendering on Windows, X11 and macOS; Windows also selects a redirection surface.
+This skips automatic client GPU preset detection without changing client graphics settings. The launcher still needs a desktop/window server
+(X11/XWayland on Linux); for SSH-only machines run `Meitou.Server --config <file>` directly. The dedicated server references Runtime, not Game,
+and does not initialize a renderer.
 
 Local portable build: `pwsh -File tools/scripts/package-launcher.ps1` (Windows x64, self-contained managed build; `-NativeAot` requires MSVC).
 Output: unpacked launcher, `MeitouCoopLauncher-<version>-win-x64-portable.zip`, licences and `SHA256SUMS.txt`.

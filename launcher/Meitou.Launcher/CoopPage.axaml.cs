@@ -3,6 +3,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Meitou.Connections;
+using Meitou.Content;
 
 namespace Meitou.Launcher;
 
@@ -42,15 +43,21 @@ public sealed partial class CoopPage : UserControl
     public CoopPage() => InitializeComponent();
 
     /// <summary>
+    /// Whether the launcher still owns a dedicated server that must save before the window closes.
+    /// </summary>
+    internal bool IsServerRunning => HostedServer.IsRunning;
+
+    /// <summary>
     /// Connects the page to the window's settings.
     /// </summary>
-    internal void Configure(LauncherConfig config)
+    internal void Configure(LauncherConfig config, Func<GameInstall?> install)
     {
         _config = config;
         _updating = true;
         SourceBox.SelectedIndex = config.UseLocalClient ? 1 : 0;
         LocalPathBox.Text = config.LocalClientPath ?? "";
         AddressBox.Text = config.ServerAddress;
+        HostedServer.Configure(config, install);
         ShowHistory();
         _updating = false;
     }

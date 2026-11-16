@@ -76,7 +76,7 @@ static class LauncherText
     /// </summary>
     static bool HoldsData(Control control) => control is ComboBox or ListBox
         or ContentControl { Name: "ReleaseNotes" } or StackPanel { Name: "NewsPanel" }
-        or TextBlock { Name: "ContinueSaveText" or "TargetText" or "BuildText" or "ProblemText" };
+        or TextBlock { Name: "ContinueSaveText" or "TargetText" or "BuildText" or "ProblemText" or "ServerStatusText" or "ServerProblemText" };
 
     /// <summary>
     /// Translates the label items of <paramref name="combo"/>. The closed box shows the content its selected item had when chosen, so a new

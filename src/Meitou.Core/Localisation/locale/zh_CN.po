@@ -3112,3 +3112,93 @@ msgstr "暂时无法检查更新，正在显示程序附带的版本清单。"
 
 msgid "Cannot check for updates; showing the saved release list."
 msgstr "暂时无法检查更新，正在显示已保存的版本清单。"
+
+msgid "Host a headless server"
+msgstr "启动无头服务端"
+
+msgid "Console command (e.g. speed 2)"
+msgstr "控制台命令（例如 speed 2）"
+
+msgid "Send command"
+msgstr "发送命令"
+
+msgid "Game speed: speed 0 pauses; speed 1, speed 2 or speed 5. Enter speed to check, or help for all commands."
+msgstr "游戏倍速：speed 0 暂停；speed 1、speed 2、speed 5 切换倍速。输入 speed 查询，help 查看全部命令。"
+
+msgid "Enter one console command."
+msgstr "请输入一行控制台命令。"
+
+msgid "The hosted server is not running."
+msgstr "服务端未在运行。"
+
+msgid "Choose an extracted dedicated server package or checkout build. The server needs Kenshi content, but no GPU or Steam client."
+msgstr "请选择已解压的独立服务端或本地编译目录。服务端需要 Kenshi 资源，无需 GPU 或 Steam 客户端。"
+
+msgid "Dedicated server folder or executable"
+msgstr "独立服务端目录或可执行文件"
+
+msgid "Find server checkout build"
+msgstr "查找本地服务端构建"
+
+msgid "Server configuration"
+msgstr "服务端配置"
+
+msgid "A missing configuration is created on first start. World saves stay beside it in server-data by default. Stop the server before editing; set BindAddress and AdvertisedHost for LAN access (TCP and UDP 27800 by default)."
+msgstr "首次启动会创建缺失的配置，世界存档默认位于配置旁的 server-data 目录。编辑前请停服；局域网访问需设置 BindAddress 和 AdvertisedHost（默认使用 TCP 和 UDP 27800 端口）。"
+
+msgid "Start server"
+msgstr "启动服务端"
+
+msgid "Save world"
+msgstr "保存世界"
+
+msgid "Save and stop"
+msgstr "保存并停服"
+
+msgid "Open configuration"
+msgstr "打开配置"
+
+msgid "Open server log"
+msgstr "打开服务端日志"
+
+msgid "Choose a dedicated server folder or executable."
+msgstr "请选择独立服务端目录或可执行文件。"
+
+msgid "Choose a server configuration file."
+msgstr "请选择服务端配置文件。"
+
+msgid "No Meitou.Server executable was found at this path."
+msgstr "所选路径中没有 Meitou.Server 可执行文件。"
+
+msgid "Build Meitou.Server first, or browse to an extracted server package."
+msgstr "请先编译 Meitou.Server，或选择已解压的服务端目录。"
+
+msgid "The hosted server is already running."
+msgstr "服务端已在运行。"
+
+msgid "The dedicated server did not start."
+msgstr "独立服务端未能启动。"
+
+msgid "Starting headless server; loading content…"
+msgstr "正在启动无头服务端并加载资源…"
+
+msgid "Server is listening. See console for endpoints."
+msgstr "服务端已开始监听，连接地址见下方控制台。"
+
+msgid "Stopping server; waiting for world save…"
+msgstr "正在停服，等待世界保存完成…"
+
+msgid "Server exited with code {1}."
+msgstr "服务端已退出，退出码为 {1}。"
+
+msgid "Start the server first to create its configuration."
+msgstr "请先启动服务端以生成配置文件。"
+
+msgid "Start the server first to create its console log."
+msgstr "请先启动服务端以生成控制台日志。"
+
+msgid "Could not open the selected server path."
+msgstr "无法打开所选服务端路径。"
+
+msgid "Use Save and stop in Meitou Coop before closing the launcher."
+msgstr "请先在 Meitou Coop 页面点击“保存并停服”，再关闭启动器。"

@@ -45,6 +45,7 @@
           </StackPanel>
         </Border>
         <TextBlock x:Name="ProblemText" Classes="desc" TextWrapping="Wrap" />
+        <Border Classes="row"><local:ServerPanel x:Name="HostedServer" /></Border>
         <Border Classes="row"><local:DiagnosticsPanel /></Border>
       </StackPanel>
     </ScrollViewer>

@@ -915,7 +915,7 @@ public sealed partial class MainWindow
     /// </summary>
     async Task AutoDetectPresetAsync()
     {
-        if (_config.PresetDetected || _detecting || PlaySchema().Schema?.Presets is not { Detect.Length: > 0 } p)
+        if (Program.SoftwareRendering || _config.PresetDetected || _detecting || PlaySchema().Schema?.Presets is not { Detect.Length: > 0 } p)
             return;
         var saved = GameSettings.Load();
         if (saved.Problem is null && !saved.HasGraphics && saved.GetString(p.Key) is null && !await DetectPresetAsync())

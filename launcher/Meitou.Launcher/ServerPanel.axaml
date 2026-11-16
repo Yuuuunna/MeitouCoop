@@ -1,0 +1,40 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Meitou.Launcher.ServerPanel">
+  <StackPanel Spacing="10">
+    <TextBlock Classes="name" Text="Host a headless server" />
+    <TextBlock Classes="desc" TextWrapping="Wrap"
+               Text="Choose an extracted dedicated server package or checkout build. The server needs Kenshi content, but no GPU or Steam client." />
+    <StackPanel x:Name="ServerSettings" Spacing="10">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+        <TextBox x:Name="ServerPathBox" PlaceholderText="Dedicated server folder or executable" />
+        <Button Grid.Column="1" Content="Browse" Click="BrowseServer_Click" />
+      </Grid>
+      <Button Content="Find server checkout build" Click="FindCheckout_Click" HorizontalAlignment="Left" />
+      <TextBlock Classes="name" Text="Server configuration" />
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+        <TextBox x:Name="ConfigPathBox" PlaceholderText="server.json" />
+        <Button Grid.Column="1" Content="Browse" Click="BrowseConfig_Click" />
+      </Grid>
+    </StackPanel>
+    <TextBlock Classes="desc" TextWrapping="Wrap"
+               Text="A missing configuration is created on first start. World saves stay beside it in server-data by default. Stop the server before editing; set BindAddress and AdvertisedHost for LAN access (TCP and UDP 27800 by default)." />
+    <WrapPanel>
+      <Button x:Name="StartServerButton" Content="Start server" Click="Start_Click" Margin="0,0,8,6" />
+      <Button x:Name="SaveServerButton" Content="Save world" Click="Save_Click" IsEnabled="False" Margin="0,0,8,6" />
+      <Button x:Name="StopServerButton" Content="Save and stop" Click="Stop_Click" IsEnabled="False" Margin="0,0,8,6" />
+      <Button x:Name="OpenConfigButton" Content="Open configuration" Click="OpenConfig_Click" Margin="0,0,8,6" />
+      <Button Content="Open server log" Click="OpenLog_Click" Margin="0,0,8,6" />
+    </WrapPanel>
+    <TextBlock x:Name="ServerStatusText" Classes="desc" TextWrapping="Wrap" />
+    <TextBlock x:Name="ServerProblemText" Classes="warn" TextWrapping="Wrap" />
+    <TextBox x:Name="ServerOutputBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+             Height="220" FontSize="12" FontFamily="Cascadia Mono,Consolas,DejaVu Sans Mono,monospace" />
+    <Grid x:Name="ServerCommandControls" ColumnDefinitions="*,Auto" ColumnSpacing="8" IsEnabled="False">
+      <TextBox x:Name="ServerCommandBox" PlaceholderText="Console command (e.g. speed 2)" KeyDown="Command_KeyDown" />
+      <Button Grid.Column="1" Content="Send command" Click="Command_Click" />
+    </Grid>
+    <TextBlock Classes="desc" TextWrapping="Wrap"
+               Text="Game speed: speed 0 pauses; speed 1, speed 2 or speed 5. Enter speed to check, or help for all commands." />
+  </StackPanel>
+</UserControl>

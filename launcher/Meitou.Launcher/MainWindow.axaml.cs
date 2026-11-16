@@ -151,7 +151,7 @@ public sealed partial class MainWindow : Window
         _updater = new LauncherUpdater(_releases, config.IncludePrereleases);
         InitializeComponent();
         Title = Releases.LegacyMac ? LauncherIdentity.Title + " Legacy" : LauncherIdentity.Title;
-        CoopControls.Configure(config);
+        CoopControls.Configure(config, () => _install);
         CoopControls.TargetChanged += ClientChanged;
         CoopControls.ConnectRequested = ConnectAsync;
         _gameProcess.Exited += OnGameExited;
@@ -232,8 +232,15 @@ public sealed partial class MainWindow : Window
     /// </summary>
     void WireWindowEvents()
     {
-        Closing += (_, _) =>
+        Closing += (_, e) =>
         {
+            if (CoopControls.IsServerRunning)
+            {
+                e.Cancel = true;
+                Status("Use Save and stop in Meitou Coop before closing the launcher.");
+                return;
+            }
+
             _workshopSync.Stop();
             if (_graphicsSave?.IsEnabled == true) SaveGame();
         };
