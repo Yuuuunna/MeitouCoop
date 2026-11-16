@@ -87,6 +87,11 @@ sealed partial class GameHost(
     /// </summary>
     public IDisposable? Splash { get; init; }
 
+    /// <summary>
+    /// Process-owned Steamworks integration, shared when admission or returning to the title replaces this host.
+    /// </summary>
+    internal SteamSession? Steam { get; init; }
+
     #endregion
 
     #region Features
@@ -576,7 +581,7 @@ sealed partial class GameHost(
                 }
             }
             host = new GameHost(Install, null!, Assets, WorldOptions, GameOptions, Config, null)
-            { OnlineConnection = next, LoadScene = () => WorldFrame.Load(Install, WorldOptions) };
+            { OnlineConnection = next, Steam = Steam, LoadScene = () => WorldFrame.Load(Install, WorldOptions) };
         }
     }
 
@@ -601,6 +606,7 @@ sealed partial class GameHost(
         }
         finally
         {
+            Steam?.LeaveWorld();
             Birds.Dispose();
             Sound.DisposeAudio();
             TitleScreen.DisposeTitleScene();

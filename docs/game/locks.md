@@ -235,6 +235,11 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
 - **Initial door state** (`FUN_140553210`, when the home building is assigned to a squad; **Verified**): CLOSED -> unlocked, not
   broken, closed; OPEN -> unlocked, open; LOCKED -> locked, closed; BROKEN -> unlocked, lock broken, door broken, pose 0 (closed). Saved buildings keep
   their saved values. The gate on building +0xa8 that allows it is **Unknown** (presumably "not restored from a save").
+- **Rebirth slave shops** (**Observed**, installed merged `49391-rebirth.mod` via `meitou-tools record`, 2026-11-16): `Rebirth Cage Guards`
+  names its Storm House home Slave Shop, with `initial door state = 0` (closed, unlocked), `public day = true`, `public night = false`.
+  **Observed** (Meitou code inspection, `DoorVerbs`, `DoorOrderInput`, `StartDoor`, `DoorWalkers`): an awake, uncarried player character outside a cage
+  can approach and open/close its unlocked door; slave state, public hours and foreign ownership are not rejection gates. Lock/unlock and the
+  building-panel toggle require ownership permissions. Existing level/save states can override the initial lock; no specific shop save was checked.
 - **Level-data door state**: the level data's GAMESTATE_BUILDING of a placed building carries the [save keys](#save-keys), so a
   building no save has starts from them (**Verified** data, census of the merged `newland/leveldata` zones: 996 doored building
   states have `state0`: 547 closed, 442 open, 7 opening, `doa0` matching, `lock lvl0` 20..49; 265 have no door keys). Town gates
@@ -368,6 +373,14 @@ Meitou registers them as outdoor fixtures using their level placement and bed ma
 - **Payment** (`FUN_1403576c0`, player faction only): -1 → the character says "This isn't mine", refused; > 0 → free when this bed was paid less than
   24 (game hours, **Observed**) ago (a global map keyed by the name string at `+0x58` of the third argument, the empty string when null, storing the game time as a float; never saved, **Verified** by references, [save](../formats/save.md#faction-trust-war-flags-bed-rent-and-turrets)), else "Can't afford c.{1} for bed rental." and refused, or paid with
   "Paid c.{1} for bed rental.".
+- **Rebirth slave start** (**Observed**, installed merged records via `meitou-tools record`, 2026-11-15): start `1532934-rebirth.mod` has 0 cats,
+  two `start slave` characters (`1532936-rebirth.mod`, `slave = 1`) and town `18921-Newwworld.mod` (type 5, Holy Nation).
+  Its six resident templates all have `public beds = false` and none has designation 3 (bar); the garrison also has `public day/night = false`.
+  Meitou retains the player's faction and sets `SlaveOwner` to the town faction (`PopulationSystem.SetStartSlaves`); ownership grants no bed access.
+  Thus their ordinary indoor beds are refused by `BedSystem.Cost`/`Pay` for a non-allied player. Standalone outdoor beds follow the separate free-bed rule.
+  **Observed** (source comparison, upstream `704cc1ec2` and fetched `8d92723b2`, 2026-11-15): `Cost`/`MayUse` match Coop; upstream `LieIn` also
+  calls `Pay` before `EnterBed`, and `Pay` rejects negative cost with "This isn't mine". This restriction is inherited from upstream C#.
+  **Unknown:** an original-game runtime check of this start's bed access; these records and our refusal do not establish original parity.
 - **Bed search** (`FUN_1408cfe00`, target finder of 153 Going to bed (**Verified**: its registration in `FUN_140319a60` stores the thunk at row +0x160)
   and desire of 148): a character in a bed keeps it. For a player-faction character: the complete buildings of function mask 0x40 (BF_BED only; skeleton
   beds are not searched) in its town, else the nearest town within √1.5625e7 ≈ 3953, plus its home building's town (`FUN_1408cbea0`, the same gatherer as the cage finder and the kill/eat finder: [economy 11.7](economy.md#117-arrest)); each free one not in

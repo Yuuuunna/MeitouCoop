@@ -982,6 +982,9 @@ unload, hashed only once non-empty. Facts: [locks](game/locks.md), [economy 11.5
   a friendly, non-hostile body with no grudge tag against it, and no bounty owed to a police-like carrier, lays it in the searched bed. Lifting a sleeper takes it out. Engine difference: no power test. The rescue job (148) and the one-shot Rescue start a lift only while the bed search finds the rescuer a bed (`CarrySystem.MayRescue`).
   Saves: `HeldSave` (a player-built bed also writes the original's `in what` = its building's handle; read back through `Bind`); a loaded sleeper's task is Sleep,
   and `Bind` puts it at its lie spot still sleeping (a standing task would get it up).
+  **Observed gap** (code inspection, `BedSystem.StartSleep`/`Step`): a new sleep trip bypasses `Trip`, leaving its control grant and membership unset.
+  With `RequiresExplicitControl`, `Step` therefore drops the player's trip before arrival/payment/entry, even for a usable bed. `StartPutIn` uses `Trip`.
+  **Observed** (source comparison, upstream `8d92723b2`): upstream has no control-grant checks here; this gap belongs to Coop's authority adaptation.
 
 - **AI sleepers** (going to bed, 153/239, which plan into 98 Sleeping, `Task_UseBed`): arrived at their home's bed spot, the serial step (`AiSystem.LieDown`) lies
   them in that bed, else in the nearest free bed of the building within 30 (engine choice); with none free they rest on the floor there. Without a bed spot at

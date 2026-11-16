@@ -3112,3 +3112,21 @@ msgstr "暂时无法检查更新，正在显示程序附带的版本清单。"
 
 msgid "Cannot check for updates; showing the saved release list."
 msgstr "暂时无法检查更新，正在显示已保存的版本清单。"
+
+msgid "Kenshi Coop | Main menu"
+msgstr "Kenshi 多人游戏 | 主菜单"
+
+msgid "Kenshi Coop | Loading"
+msgstr "Kenshi 多人游戏 | 加载中"
+
+msgid "Kenshi Coop | Single player"
+msgstr "Kenshi 多人游戏 | 单人游玩"
+
+msgid "Kenshi Coop | Multiplayer"
+msgstr "Kenshi 多人游戏 | 联机游玩"
+
+msgid "Kenshi Coop | Disconnected"
+msgstr "Kenshi 多人游戏 | 连接已断开"
+
+msgid "Kenshi Coop | Synchronizing"
+msgstr "Kenshi 多人游戏 | 同步中"

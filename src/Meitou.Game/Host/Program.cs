@@ -84,19 +84,19 @@ static class Program
         var config = UserConfig.Load();
         Loc.Use(install);   // the language of settings.cfg: texts from locale/<code>/LC_MESSAGES/main.mo (docs/formats/localisation.md)
         RestoreTextureQuality(args, game, world, config);
-        if (game.Connect is not null) return RunOnline(install, world, game, config, splash);
+        if (game.Connect is not null) return RunOnline(install, world, game, config, splash, steam);
         if (game.ConnectionCheck || game.CreateFaction is not null || game.OnlineRole is not null)
         {
             Console.Error.WriteLine("--connection-check, --create-faction and --role require --connect <host:port>.");
             return 2;
         }
-        return RunGame(install, game, rest, world, config, splash);
+        return RunGame(install, game, rest, world, config, splash, steam);
     }
 
     /// <summary>
     /// Joins from the command line, optionally verifying admission without opening a renderer.
     /// </summary>
-    static int RunOnline(GameInstall install, WorldOptions world, GameOptions game, UserConfig config, IDisposable? splash)
+    static int RunOnline(GameInstall install, WorldOptions world, GameOptions game, UserConfig config, IDisposable? splash, SteamSession? steam)
     {
         bool localMode = game.NewGame || game.Load is not null || game.NoPopulation || game.Duel || game.Sandbox != 0
             || game.Battle is not null || game.TerrainSandbox is not null || game.UiShowcase || game.TitlePreview
@@ -116,7 +116,7 @@ static class Program
             Console.WriteLine($"online    joined player {view.Player}, {view.Roles.Count} role(s), server tick {view.Snapshot.Tick}");
             if (game.ConnectionCheck) return 0;
             PlaceOnlineView(connection, world, game.OnlineRole);
-            return RunRemoteHost(connection, install, world, game, config, splash);
+            return RunRemoteHost(connection, install, world, game, config, splash, steam);
         }
         catch (Exception e)
         {
@@ -150,18 +150,18 @@ static class Program
     /// Loads compatible content for a remote host, with the interactive loading cover or the screenshot path.
     /// </summary>
     static int RunRemoteHost(Meitou.Networking.RemoteGameSession connection, GameInstall install, WorldOptions world,
-        GameOptions game, UserConfig config, IDisposable? splash)
+        GameOptions game, UserConfig config, IDisposable? splash, SteamSession? steam)
     {
         var db = Data.GameDatabase.Load(Data.LoadOrder.FromInstall(install));
         if (world.Screenshot is null)
             return new GameHost(install, null!, new AssetLocator(install), world, game, config, null)
             {
-                OnlineConnection = connection, Splash = splash, LoadScene = () => WorldFrame.Load(install, world, db),
+                OnlineConnection = connection, Steam = steam, Splash = splash, LoadScene = () => WorldFrame.Load(install, world, db),
             }.Run();
         using var scene = WorldFrame.Load(install, world, db);
         return scene is null ? 1 : new GameHost(install, scene, new AssetLocator(install), world, game, config, null)
         {
-            OnlineConnection = connection,
+            OnlineConnection = connection, Steam = steam,
         }.Run();
     }
 
@@ -262,7 +262,8 @@ static class Program
     /// <summary>
     /// Sets the world up for the scene the options ask for (a sandbox, the duel, a battle, a new game, a save) and runs the game; the exit code.
     /// </summary>
-    static int RunGame(GameInstall install, GameOptions game, string[] rest, WorldOptions world, UserConfig config, SplashWindow? splash)
+    static int RunGame(GameInstall install, GameOptions game, string[] rest, WorldOptions world, UserConfig config,
+        SplashWindow? splash, SteamSession? steam)
     {
         if (game.Battle is not null && (game.NewGame || game.NoPopulation || game.Load is not null || game.Duel || game.Sandbox > 0))
         {
@@ -270,7 +271,7 @@ static class Program
                 + "(--battle-map sandbox is its flat floor).");
             return 2;
         }
-        if (game.Sandbox > 0 || game.Battle is not null && game.BattleFlat) return RunFlatSandbox(install, game, world, config, splash);
+        if (game.Sandbox > 0 || game.Battle is not null && game.BattleFlat) return RunFlatSandbox(install, game, world, config, splash, steam);
         if (game.TerrainSandbox is { } field && PlaceTerrainSandbox(game, field, rest, world) is { } terrainExit) return terrainExit;
         if (game.Duel && PlaceDuel(game, rest, world) is { } duelExit) return duelExit;
         if (game.Battle is not null) PlaceBattle(game, rest, world);
@@ -285,19 +286,19 @@ static class Program
         {
             var sceneHost = new GameHost(install, null!, new AssetLocator(install), world, game, config, start)
             {
-                StartSave = save, Splash = splash, LoadScene = () => WorldFrame.Load(install, world, db),
+                StartSave = save, Steam = steam, Splash = splash, LoadScene = () => WorldFrame.Load(install, world, db),
             };
             return sceneHost.Run();
         }
         using var scene = WorldFrame.Load(install, world, db);
         if (scene is null) return 1;
-        return new GameHost(install, scene, new AssetLocator(install), world, game, config, start) { StartSave = save }.Run();
+        return new GameHost(install, scene, new AssetLocator(install), world, game, config, start) { StartSave = save, Steam = steam }.Run();
     }
 
     /// <summary>
     /// The animation sandbox (and a <c>--battle-map sandbox</c> battle): no world, a flat floor; runs the game and returns its exit code.
     /// </summary>
-    static int RunFlatSandbox(GameInstall install, GameOptions game, WorldOptions world, UserConfig config, SplashWindow? splash)
+    static int RunFlatSandbox(GameInstall install, GameOptions game, WorldOptions world, UserConfig config, SplashWindow? splash, SteamSession? steam)
     {
         // The animation sandbox: no world, a flat floor (docs/simulation.md "Sandbox"). The real game data is still loaded for the characters and
         // animations.
@@ -312,7 +313,7 @@ static class Program
         world.Pitch ??= 22;
         world.Yaw ??= 35;
         using var flat = WorldFrame.LoadFlat(world, db);
-        return new GameHost(install, flat, new AssetLocator(install), world, game, config, null) { Splash = splash }.Run();
+        return new GameHost(install, flat, new AssetLocator(install), world, game, config, null) { Splash = splash, Steam = steam }.Run();
     }
 
     /// <summary>
