@@ -25,22 +25,12 @@ sealed unsafe class SteamSession : IDisposable
     readonly delegate* unmanaged[Cdecl]<void> _shutdown;
 
     /// <summary>
-    /// Optional gameplay presence, released before the library is unloaded.
-    /// </summary>
-    readonly SteamPresence? _presence;
-
-    /// <summary>
-    /// Takes an initialized library and binds optional rich presence.
+    /// Takes an initialized Steamworks library.
     /// </summary>
     SteamSession(nint library, delegate* unmanaged[Cdecl]<void> shutdown)
     {
         _library = library;
         _shutdown = shutdown;
-        if (SteamFriends.TryOpen(library) is { } friends)
-        {
-            _presence = new(friends);
-            _presence.Reset();
-        }
     }
 
     /// <summary>
@@ -147,22 +137,6 @@ sealed unsafe class SteamSession : IDisposable
     }
 
     /// <summary>
-    /// Updates optional Steam presence on the game thread while the session is alive.
-    /// </summary>
-    internal void Update(GameHost host)
-    {
-        if (_library != 0) _presence?.Update(host);
-    }
-
-    /// <summary>
-    /// Removes the outgoing world's presence before replacing or disposing it.
-    /// </summary>
-    internal void LeaveWorld()
-    {
-        if (_library != 0) _presence?.Reset();
-    }
-
-    /// <summary>
     /// The language the Steam client runs Kenshi in (<c>ISteamApps::GetCurrentGameLanguage</c>, which the original asks at start to override its
     /// setting, docs/formats/localisation.md); null when the library lacks the exports.
     /// </summary>
@@ -201,13 +175,12 @@ sealed unsafe class SteamSession : IDisposable
     }
 
     /// <summary>
-    /// Clears presence, shuts Steamworks down and frees the library; once only.
+    /// Shuts Steamworks down and frees the library; once only.
     /// </summary>
     public void Dispose()
     {
         if (_library == 0) return;
 
-        LeaveWorld();
         _shutdown();
         NativeLibrary.Free(_library);
         _library = 0;

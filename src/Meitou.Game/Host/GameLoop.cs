@@ -1411,8 +1411,6 @@ sealed class GameLoop(GameHost host)
     /// </summary>
     double BeginFrameTime(double dt)
     {
-        host.Steam?.Update(host);
-
         // The last frame was drawn under the loading screen: a scene load's next stage may run, the warm-up counts it.
         if (host.Covered) host.CoveredFrame(dt);
         host.AdvanceSkyArrival(dt);

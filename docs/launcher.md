@@ -228,23 +228,6 @@ folder containing `data/gamedata.base`. DepotDownloader is not bundled or automa
 - On, on Windows Kenshi installs that include `steam_api64.dll`, Play writes `steam_appid.txt` (`233860`) in the working directory and beside the Meitou executable and sets `SteamAppId`/`SteamGameId` for the game, then removes the files when Meitou exits (or on the next Play, if the launcher closed first). If either place already holds another ID, it writes nothing and sets no variables. The game (not for `--screenshot` or a start listing) loads the install's Steamworks DLL and calls `SteamAPI_InitFlat` when exported, else `SteamAPI_Init`, before creating its graphics device, and `SteamAPI_Shutdown` on exit; Meitou ships no Steamworks binaries. Other platforms and installs without the DLL skip it.
 - **Unknown** (from the [Steamworks API](https://partner.steamgames.com/doc/sdk/api) and [overlay](https://partner.steamgames.com/doc/features/overlay) docs, not yet checked against a Steam run): a direct launch with `steam_appid.txt` counts as Kenshi play time, needs a Kenshi licence and a running Steam client, and gets the overlay on Vulkan, whose FPS counter is under Steam Settings → In Game.
 
-**Observed** (source: `SteamSession`, `SteamFriends`, `SteamPresence`): the game pumps Steam callbacks each frame and checks changed
-presence once per real-time second. Admitted online clients set `steam_player_group` to the shared server world incarnation, clearing it
-on disconnection, view withdrawal, host replacement or exit. No `steam_player_group_size` is sent: the protocol has no online player count.
-`status` describes menu/loading/synchronization/disconnection or single/multiplayer, with the enclosing town and region at the selected
-character (camera fallback). Text follows the local game language and is bounded to 255 UTF-8 bytes without splitting characters.
-Presence failure is logged/retried; unsupported friends APIs leave overlay/play-time integration available. No join command is advertised.
-According to [Valve's API contract](https://partner.steamgames.com/doc/api/ISteamFriends#SetRichPresence), `status` accepts text for
-View Game Info; the friends-list subtitle uses `steam_display`, a localization token configured in the app's Steamworks backend.
-`steam_player_group`/`steam_player_group_size` support grouping players in the same session, independently of custom subtitle text.
-**Verified** (2026-11-16, live [Steam localization API](https://api.steampowered.com/ICommunityService/GetAppRichPresenceLocalization/v1/?appid=233860&language=english)):
-Kenshi (233860) returns no token lists for English, Simplified Chinese, Japanese, Korean, French, German, Russian, Spanish or Brazilian
-Portuguese (HTTP 200, `x-eresult: 1`). The same request for TF2 (440) returns 15 English tokens and 15 Simplified Chinese tokens plus English
-fallback. No published Kenshi subtitle template is available to reuse; plain `status` alone does not satisfy Valve's friends-list subtitle contract.
-**Verified** (2026-11-16, export lookup against the Steam-installed Kenshi `steam_api64.dll`, 235600 bytes): the flat friends methods,
-`SteamClient`, user/pipe getters and callback pump exist; versioned friends accessors do not. Binding uses `SteamFriends015` through the
-legacy flat client accessor, or a versioned accessor on newer DLLs. **Unknown**: live binding and Steam status/grouping presentation.
-
 The version folders and `downloads/` live in the install folder, by default the data folder. On first start (until `FoldersConfirmed`
 is saved) an overlay asks for the install folder, the Kenshi folder and the renderer, prefilled with the current and the
 detected ones. Changing the install folder there or in Settings moves the installed versions (copied, then deleted,
