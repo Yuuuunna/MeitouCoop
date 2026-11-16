@@ -28,6 +28,12 @@ Coop 主分支基线为 `f38e53d678dce0265950254bb74965f06f6bc50f`。
 Coop 的离线饥饿暂停、空手受击经验、被奴役玩家队伍归属、笼内物品丢弃、门锁协作、诊断收集和 Steam 显示逻辑保留。
 自加补丁及回归上游条件：[空手受击经验](game/character-stats.md#levelling-xp)。
 
+## Coop 自行修复
+
+**Observed**（Git 源码对照）：上游基准 `5108032d` 的 AI Think 并行调用 `TownDutySystem.StorageOf`，
+会写入普通存储字典及共用功能字典。Coop 自行修复这两处缓存竞态，线程契约见[模拟线程](simulation.md#threading)。
+后续同步时，若上游已修复这两处并发访问，改用上游实现并移除本地补丁及此标记；未覆盖前保留。
+
 ## 验证范围
 
 **Verified**（2026-11-16，Windows x64、.NET SDK 11.0.100，当前工作区）：

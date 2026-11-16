@@ -96,6 +96,8 @@ slow world's 1.5-4.9 (its physics step 0.4-0.5 ms with one moving ragdoll, its s
 Tick order: Inputs → Schedule → Think → Move → Act → ordered Apply → SlowWorld → Publish.
 Inputs/Schedule/Apply/SlowWorld are serial; each implemented parallel phase has a system barrier. Publish makes the character snapshots on the
 workers in 256-slot chunks (each reads only the tick's state), listed in slot order.
+TownDuty's storage finder also runs on AI Think workers: record facts use a concurrent cache, and cache misses resolve functionality with a local
+cache rather than the serial gate cache. Errands and fixture registration remain serial.
 Engine choice, to keep the publish small with ~1,400 characters: the context menu's figures (kidnap and stealth KO chances, shackles) and the AI goal text
 go only to the selected, inspected and pointed character (`PlayerState.Pointed`, set by the host as the mouse moves) and the player's (goal text);
 `CanStealthKo` tells the quick order and highlight for everyone. A body's part figures (aggregates, worst part, blood shown) are kept until a part's

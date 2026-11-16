@@ -198,8 +198,8 @@ public sealed class TownDuty
 
 /// <summary>
 /// Goals of a squad's town the AI's act-outs do not cover (docs/game/carry-loot.md 3.2, ai-tasks.md "Finders of the jobs"), for the members of the
-/// squads the AI runs whose running package lists them for the member's role in the hour (<see cref="PopulationSystem.GoalDuty"/>). All serial, in
-/// <c>SlowWorld</c> after the carry system.
+/// squads the AI runs whose running package lists them for the member's role in the hour (<see cref="PopulationSystem.GoalDuty"/>). Errands run
+/// serially in <c>SlowWorld</c> after the carry system; the planner also queries storage from parallel <c>Think</c> workers.
 /// <list type="bullet">
 /// <item><b>273 Remove Intruder</b> (finder <c>FUN_14099c250</c>, <b>Verified</b> by decompile): only while the member stands in a town that is its
 /// home town, the town its occupation holds, or a town of its faction (<c>Ownerships::isMyTown</c>, KenshiLib names); the intruder is knocked out, in
@@ -1385,9 +1385,11 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
 
     /// <summary>
     /// The storage facts of a container's record, by record id: function 2 or 13 (BF_RESOURCE_STORAGE, BF_GENERAL_STORAGE), its itemtype limit and
-    /// its limit inventory list. Derived from the data.
+    /// its limit inventory list. Derived from the data; shared by parallel planner queries and serial errands.
+    /// Coop-local concurrency fix; upstream replacement policy: docs/upstream-sync.md.
     /// </summary>
-    readonly Dictionary<string, (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit)> _storageRecords = new(StringComparer.Ordinal);
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit)> _storageRecords
+        = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Whether the character carries something edible.
@@ -1499,21 +1501,24 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     /// <summary>
     /// Whether a fixture is a store, with the item type and the items it is limited to (cached by record).
     /// </summary>
-    (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit) StorageOf(Fixture f)
-    {
-        if (_storageRecords.TryGetValue(f.RecordId, out var known)) return known;
+    (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit) StorageOf(Fixture f) => _storageRecords.GetOrAdd(f.RecordId, ReadStorage);
 
-        var record = data.Db.Find(f.RecordId);
+    /// <summary>
+    /// Reads storage facts on a cache miss. Function resolution uses a local cache, keeping concurrent factories off the serial gate cache.
+    /// </summary>
+    (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit) ReadStorage(string recordId)
+    {
+        var record = data.Db.Find(recordId);
         (bool, Data.Fcs.FcsRecordType, string[]) made = (false, Data.Fcs.FcsRecordType.Item, []);
         if (record is not null
-                && Data.World.TownBuildings.FunctionOf(data.Db, record, _gateFunctions)?.GetInt("function")
+                && Data.World.TownBuildings.FunctionOf(data.Db, record, [])?.GetInt("function")
                     is Data.World.TownBuildings.ResourceStorageFunction or Data.World.TownBuildings.GeneralStorageFunction)
         {
             made = (true, (Data.Fcs.FcsRecordType)record.GetInt("itemtype limit", (int)Data.Fcs.FcsRecordType.Item),
                     [.. Data.Gameplay.Construction.MachineData.Limits(data.Db, record).Select(r => r.TargetStringId)]);
         }
 
-        return _storageRecords[f.RecordId] = made;
+        return made;
     }
 
     /// <summary>
