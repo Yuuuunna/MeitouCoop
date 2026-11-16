@@ -94,7 +94,11 @@ public sealed class ServerWorldLoop : IAsyncDisposable
             {
                 // Queued owner work wakes immediately; it need not wait another scheduler interval
                 // for each phase of capture/encode/commit or command/ACK dispatch.
-                await Task.WhenAny(timerReady, workReady).ConfigureAwait(false);
+                // Drain owed ticks without another timer wait, so 5x can exceed the timer's 100 wakes per second.
+                // Every pass still services owner jobs before its single simulation tick.
+                bool owedTick = _runtime.Speed > 0 && _runtime.PendingGameSeconds + 1e-10 >= WorldRuntime.TickSeconds
+                    && !_runtime.World.HasPendingDurableMutation;
+                if (!owedTick) await Task.WhenAny(timerReady, workReady).ConfigureAwait(false);
                 if (timerReady.IsCompleted)
                 {
                     if (!await timerReady.ConfigureAwait(false))

@@ -59,8 +59,15 @@ Covered code mods are disabled to prevent double multiplication. Both hosts use 
 `--create-account NAME [--output FILE]` issues a random credential and writes a private connection JSON,
 then exits without loading a world; tokens never enter logs. Do not include these files in release archives.
 Set `BindAddress` and `AdvertisedHost` for LAN/remote access before issuing profiles. `--help` needs no assets.
-The process rejects a second world owner using the same data directory. Enter `save`/`stop` or use Ctrl+C;
+The process rejects a second world owner using the same data directory. Enter `help` for console commands, `save`/`stop` or use Ctrl+C;
 `--run-for-seconds N` provides a bounded graceful manual run after loading.
+
+**Observed** (source: `ServerConsole`, `ServerGameSpeed`): standard input accepts operator commands.
+`speed` queries the selected and effective game speed; `speed 0|1|2|5` selects pause, normal, faster or fastest,
+matching the original [time buttons](game/game-loop.md#speed-and-pause). `倍速` and `游戏倍速` are aliases.
+Changes run on the serialized world owner and apply globally to connected players. `PauseWhenEmpty` temporarily overrides the
+selection to zero without an Active player; returning players resume the selected speed, while explicit `speed 0` stays paused.
+The selection starts at 1 on process startup and is not persisted in configuration or checkpoints. Invalid speeds leave it unchanged.
 
 Startup restores the latest complete checkpoint; corruption fails startup rather than resetting the world.
 New accounts use private initial-start qualifications and durable creation, never `StartPlayer`. Periodic
@@ -135,6 +142,9 @@ suspends stepping while queued recovery work remains possible. Request failure d
 simulation failure stops it and cancels peers. Cancellation prevents queued work starting; running synchronous
 mutations finish before returning. Network IO and arrival geometry preparation run outside the owner.
 Stop resolves pending callers; concurrent disposal awaits the same task. Caller owns final save/runtime disposal.
+
+**Observed** (source: `ServerWorldLoop`): owed ticks skip the next 10 ms timer wait while retaining the one-tick-per-pass budget,
+so the timer does not cap 5x simulation at 100 ticks per real second.
 
 **Observed** (installed-content CPU profiling and weather-only comparison): global weather ground queries
 thrash a 256-tile terrain cache, repeatedly reading full TIFF rows. `TerrainSource` defaults to 4096 tiles

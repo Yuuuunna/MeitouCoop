@@ -20,6 +20,7 @@ static class Program
         --run-for-seconds <seconds> Graceful bounded run for manual startup checks.
         --help                     Show this help without loading game content.
         Stop with Ctrl+C or enter stop. Save immediately by entering save.
+        Game speed: speed [0|1|2|5] (0 pauses; no value shows the current speed). Enter help for console commands.
         Runtime diagnostics: diagnostics on | off | status | capture | collect-all.
         Set KENSHI_PATH or meitou.local.json to locate licensed original content.
         This is an experimental real-machine package, not a completed multiplayer acceptance release.
@@ -123,6 +124,7 @@ static class Program
                 throw new InvalidDataException("The installed content has no player faction template.");
             host.Runtime.Speed = 0;
             await using var loop = new ServerWorldLoop(host.Runtime);
+            var speed = new ServerGameSpeed(loop, config.PauseWhenEmpty);
             var preparation = new HeadlessCreationPreparation(host, loop);
             var entry = new HeadlessEntryPreparation(host, loop);
             const string policy = "server-default";
@@ -148,7 +150,7 @@ static class Program
                 stop.Cancel();
             };
             Console.CancelKeyPress += cancel;
-            Console.WriteLine($"Listening on {listener.Endpoint} (QUIC/UDP game, TCP public discovery); maximum {config.MaximumPlayers} connections. Enter stop or save.");
+            Console.WriteLine($"Listening on {listener.Endpoint} (QUIC/UDP game, TCP public discovery); maximum {config.MaximumPlayers} connections. Enter help for console commands.");
             Console.WriteLine("Compatibility covers database merge order and " + config.GameplayAssets.Length + " configured gameplay assets.");
             using var saves = new SemaphoreSlim(1, 1);
             async Task Save()
@@ -167,37 +169,9 @@ static class Program
                 }
             }
 
-            var input = Task.Run(async () =>
-            {
-                try
-                {
-                    while (!stop.IsCancellationRequested)
-                    {
-                        // Console readers can ignore cancellation while blocked in native input.
-                        // Cancel the wait too, so shutdown can join this task and any active save.
-                        var line = await Task.Run(Console.ReadLine).WaitAsync(stop.Token).ConfigureAwait(false);
-                        if (line is null)
-                            break;
-                        if (line.Trim().Equals("stop", StringComparison.OrdinalIgnoreCase))
-                        {
-                            stop.Cancel();
-                            break;
-                        }
-
-                        if (await ServerDiagnosticConsole.ExecuteAsync(line, diagnostics, handler.Diagnostics, stop.Token).ConfigureAwait(false)) continue;
-                        if (line.Trim().Equals("save", StringComparison.OrdinalIgnoreCase))
-                            await Save().ConfigureAwait(false);
-                    }
-                }
-                catch (OperationCanceledException)when (stop.IsCancellationRequested)
-                {
-                }
-                catch (Exception error)
-                {
-                    Console.Error.WriteLine("Console command failed: " + error);
-                }
-            });
-            _ = input;
+            Console.WriteLine(ServerConsole.Help);
+            var console = new ServerConsole(speed, diagnostics, handler.Diagnostics, Save, stop);
+            var input = Task.Run(console.RunAsync);
             try
             {
                 var nextSave = DateTime.UtcNow.AddSeconds(config.Gameplay.AutoSaveSeconds);
@@ -224,7 +198,7 @@ static class Program
                     }
 
                     await delay.ConfigureAwait(false);
-                    await loop.InvokeAsync(() => host.Runtime.Speed = config.PauseWhenEmpty && !host.World.Players.All.Any(p => host.World.Authority.IsActive(p.Id)) ? 0 : 1, stop.Token).ConfigureAwait(false);
+                    await speed.UpdateAsync(stop.Token).ConfigureAwait(false);
                     if (config.Gameplay.AutoSaveSeconds > 0 && DateTime.UtcNow >= nextSave)
                     {
                         try
