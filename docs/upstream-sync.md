@@ -8,7 +8,7 @@ Coop 主分支基线为 `f38e53d678dce0265950254bb74965f06f6bc50f`。
 用 `git merge-base --is-ancestor <上述提交> HEAD` 核对纳入关系。
 
 **Observed**（当前实现）：客户端与服务端须匹配构建身份
-`meitou-upstream-5108032d-authority-1`，传输 framing 仍为 protocol 21。
+`meitou-upstream-5108032d-authority-1-combat-sync-1`，传输 framing 仍为 protocol 21。
 物品与交易同步见[网络契约](networking.md#item-actions-and-shared-stock)，
 本次带宽计量见[库存与交易预算](networking-next.md#inventory-and-trade-budget)。
 
@@ -30,26 +30,26 @@ Coop 的离线饥饿暂停、空手受击经验、被奴役玩家队伍归属、
 
 ## 验证范围
 
-**Verified**（2026-11-16，Linux x64、.NET SDK 11.0.100）：
+**Verified**（2026-11-16，Windows x64、.NET SDK 11.0.100，当前工作区）：
 
 | 检查 | 结果与范围 |
 |---|---|
-| Release 全解决方案构建 | 14 个项目成功，包含当前物品标签、压缩和权威同步实现 |
-| Metal 条件编译 | Release、`MeitouMetal=true` 的 14 个项目全部成功，无警告、错误；未执行 macOS/Metal 运行验收 |
-| 完整既有测试套件 | 1,725 项：1,490 通过、235 跳过、0 失败、0 错误；67.885 秒 |
-| 带宽与编码诊断 | 20 组合成场景的基线/变化量往返通过；标签身份、畸形压缩输入、展开后容量和失败清理检查通过，见[计量方法与边界](networking-next.md#inventory-and-trade-budget) |
-| 基准元数据 | `bench/tools/generate.py --check --ref refs/remotes/upstream/master` 通过：5 台机器、340 行、41 个提交；历史稳定标签缺失及历史非目标提交为提示 |
+| Release 全解决方案构建 | 14 个项目成功，0 警告、0 错误 |
+| Metal 条件编译 | Release、`MeitouMetal=true` 的 14 个项目成功，0 警告、0 错误；未执行 macOS/Metal 运行验收 |
+| 完整既有测试套件 | 1,745 项：1,659 通过、86 跳过、0 失败、0 错误；包括本地现有的 20 项 `ServerModSyncTests` |
 
-完整既有套件不筛选 Slow/Bench：
+完整套件包含 `GameFilesTests`、`WorldGateRegionTests`、motion、协议 ACK、Crime、Aggro、Arrest、Determinism 和 GoldenHash；
+不筛选 Slow/Bench，不新增测试或削弱断言。命令：
 `tests/Meitou.Tests/bin/Release/net11.0/Meitou.Tests.dll -parallel none -maxThreads 1`。
-构建通过 SDK 的 MSBuild 入口执行，`Configuration=Release`、`UseSharedCompilation=false`；
+构建串行执行，`Configuration=Release`、`UseSharedCompilation=false`；
 Metal 条件编译另加 `MeitouMetal=true`，并设置 `AVALONIA_TELEMETRY_OPTOUT=1`。
-纳入上游测试并适配既有用例，没有额外新建测试用例。
+跳过项包括不可用的 Vulkan 设备、未配置受信任的原生 QUIC 构建、缺少参考存档及平台/Debug 条件。
 
-235 项跳过包括未配置 Kenshi 安装或参考存档、不可用的 Vulkan 设备、Windows 原生 QUIC、缺少原生构建产物及平台/Debug 条件。
-500 KiB/s 是每玩家平均带宽目标，本次通过固定长度标签身份和无状态压缩减小数据量，没有新增限速或降低发布频率；
+**Verified**（Linux .NET 11 合成诊断）：库存/交易 20 组场景的往返、标签身份、畸形压缩输入、展开后容量和失败清理检查通过，
+见[计量方法与边界](networking-next.md#inventory-and-trade-budget)。
+500 KiB/s 是每玩家平均带宽目标；固定长度标签、压缩、稀疏姿态和 motion/checkpoint 合批减少冗余，未增加限速、包配额或降低更新频率。
 合成库存/交易组合最大计量为双向应用层 357.32 KiB/s，不代表整场游戏或实际链路已达标。
 
-真实 Kenshi 数据与存档、图形化双客户端、原生 QUIC/VPS 双向总流量与平台运行验收，按
-[联机验收](multiplayer.md)及[传输门禁](networking-next.md)在安装环境完成。
-条件编译和应用层编码计量不替代这些验收；客户端与服务端使用相同构建身份。
+真实存档、图形化双客户端、原生 QUIC/VPS 双向总流量及警报/群战 CPU 延迟，按
+[联机验收](multiplayer.md)及[传输门禁](networking-next.md)在对应环境验收。
+构建和应用层编码计量不替代这些验收；客户端与服务端使用相同构建身份。

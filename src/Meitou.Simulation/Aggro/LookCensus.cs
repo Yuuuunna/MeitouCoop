@@ -38,9 +38,14 @@ sealed class LookCensus
     public List<int> PlayerSlots { get; } = [];
 
     /// <summary>
-    /// The characters in a fight this tick: sensed within reach whatever the caps (<c>VisitFighters</c>).
+    /// The characters in a fight this tick, in slot order, while their position index is built.
     /// </summary>
-    public List<int> FighterSlots { get; } = [];
+    readonly List<int> _fighterSlots = [];
+
+    /// <summary>
+    /// The tick's fighters indexed by their previous positions, as read by the parallel sense pass; immutable until the next census.
+    /// </summary>
+    public SpatialGrid Fighters { get; } = new(250);
 
     /// <summary>
     /// Whether any awake sneaking character stands about this tick.
@@ -71,7 +76,7 @@ sealed class LookCensus
         Array.Clear(_present);
         _sneakers.Clear();
         PlayerSlots.Clear();
-        FighterSlots.Clear();
+        _fighterSlots.Clear();
     }
 
     /// <summary>
@@ -82,7 +87,7 @@ sealed class LookCensus
         if (table.Cold(i) is { } pc)
         {
             if (pc.IsPlayer) PlayerSlots.Add(i);
-            if (pc.InCombat) FighterSlots.Add(i);
+            if (pc.InCombat) _fighterSlots.Add(i);
         }
 
         if (table.Cold(i) is { Medical: not null } c && relations.Contains(c.Faction))
@@ -94,10 +99,11 @@ sealed class LookCensus
     }
 
     /// <summary>
-    /// Works out which factions have an enemy among the factions present, again only when the set or the relations changed.
+    /// Seals the fighters' position index and updates faction hostility only when the present factions or their relations changed.
     /// </summary>
-    public void Settle(FactionRelations relations)
+    public void Settle(FactionRelations relations, CharacterTable table)
     {
+        Fighters.Build(table.Previous, _fighterSlots);
         if (_present.AsSpan().SequenceEqual(_presentBefore) && relations.Changes == _changesBefore) return;
 
         _presentBefore = (bool[])_present.Clone();

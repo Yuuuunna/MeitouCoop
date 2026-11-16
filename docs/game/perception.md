@@ -191,6 +191,10 @@ before the gather, outside the quota, and take the place of a neutral stranger's
 the relation part of its tags out only every 4th look (`FarLooks`); slot 125 also counts whoever fights the looker or is fought by it, of any faction (Meitou's scripted fights); the
 threat sums count 1 per threat (no aggression value). Without the Aggro part (sandbox, duel, battle) the look keeps the senses only (`AggroSettings.AttackOnSight` false).
 
+**Observed (engine indexing)**: `LookCensus` indexes fighters from the same `Previous` positions read by `VisitFighters`. A look queries nearby cells,
+sorts those candidates by slot, then applies the existing exact distance, faction, sensing and full-block early-exit rules. The spatial
+query changes neither fighter priority nor hearing RNG order; its reusable per-thread scratch list is not simulation state.
+
 ## Retreat and memory
 
 Tag map and update rates come from binary, not renderer visibility. Runaway/forced-runaway, home-town retreat, retreat-refresh package and

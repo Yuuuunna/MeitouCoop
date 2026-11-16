@@ -131,8 +131,8 @@ public sealed class SecureServerPeer
                 BulkTransferSender? bulkSender = null;
                 BulkChunk? pendingBulkChunk = null;
                 MotionReplicationProducer? motion = null;
+                MotionCheckpointSender? checkpoints = null;
                 var animations = new AuthorityAnimationExporter(_options.AnimationObserved is not null, phaseTolerance: .02, weightTolerance: .015, rateTolerance: .015, targetWeightTolerance: .01);
-                var sentCheckpoints = new HashSet<ulong>();
                 bool viewActive = false;
                 bool viewInitialized = false;
                 bool manifestAcknowledged = false;
@@ -146,12 +146,9 @@ public sealed class SecureServerPeer
                 int bulkTotalBytes = 0;
                 transport.StateSendObserved = (payload, released) =>
                 {
-                    if (LatencyTrace.Sink is null)
-                        return;
-                    var packet = MotionDatagramCodec.Decode(payload.Span);
-                    var trace = new LatencyTraceEvent(released ? LatencyStage.MotionWriteComplete : LatencyStage.MotionWriteStarted, session.Connection.World, session.Connection.Player.Value, session.Connection.Generation, Publication: packet.Header.AuthorityPublication, Tick: checked((long)packet.Header.ServerTick), Value: unchecked((long)packet.Header.PacketSequence));
-                    foreach (var record in packet.Records)
-                        LatencyTrace.Emit(LatencyTrace.Sink, trace with { Entity = record.EntityId });
+                    if (LatencyTrace.Sink is not null)
+                        TraceMotionPacket(MotionDatagramCodec.Decode(payload.Span),
+                            released ? LatencyStage.MotionWriteComplete : LatencyStage.MotionWriteStarted);
                 };
                 var replicationGate = new SemaphoreSlim(1);
                 var bulkQueue = new Queue<(byte[] Bytes, WireMessage? Business, Guid Query, ulong Publication, ulong Tick, LatencyTraceEvent Trace)>();
@@ -159,6 +156,18 @@ public sealed class SecureServerPeer
                 Guid activeBusinessQuery = default;
                 int queuedBulkBytes = 0;
                 ulong transferSequence = 0;
+
+                // Correlate every record with its original authority capture and shared packet identity.
+                void TraceMotionPacket(MotionDatagram packet, LatencyStage stage)
+                {
+                    if (LatencyTrace.Sink is null) return;
+
+                    var trace = new LatencyTraceEvent(stage, session.Connection.World, session.Connection.Player.Value,
+                        session.Connection.Generation, Publication: packet.Header.AuthorityPublication,
+                        Tick: checked((long)packet.Header.ServerTick), Value: unchecked((long)packet.Header.PacketSequence));
+                    foreach (var record in packet.Records) LatencyTrace.Emit(LatencyTrace.Sink, trace with { Entity = record.EntityId });
+                }
+
                 sendLarge = async (frame, token) =>
                 {
                     var query = BusinessBulkProtocol.Query(frame, _codec);
@@ -391,10 +400,7 @@ public sealed class SecureServerPeer
                             var ack = GameViewProtocol.ReadEpoch(frame);
                             ulong id = ack.Publication & ~(1UL << 63);
                             if (motion is not null && ack.Session == sessionEpoch && ack.View == viewEpoch)
-                            {
-                                transport.WithScheduler(_ => motion.AcknowledgeCheckpointsThrough(ack.Session, ack.View, id, sentCheckpoints));
-                                sentCheckpoints.RemoveWhere(submitted => submitted <= id);
-                            }
+                                checkpoints?.Acknowledge(motion, ack.Session, ack.View, id);
                         }
                     }
                     finally
@@ -575,6 +581,15 @@ public sealed class SecureServerPeer
                 {
                     if (begunView == viewEpoch)
                         return;
+
+                    if (motion is not null)
+                        transport.WithScheduler(_ =>
+                        {
+                            motion.CancelPending();
+                            return true;
+                        });
+                    checkpoints = null;
+
                     if (activeBusiness is { } activeKind)
                         transport.SendControl(BusinessBulkProtocol.Cancel(activeKind, activeBusinessQuery));
                     foreach (var pending in bulkQueue)
@@ -847,13 +862,13 @@ public sealed class SecureServerPeer
                                                     publication.Motion.Select(item => (item.Record, item.Relevance)).ToArray());
                                                 return producer;
                                             });
-                                            motion.PacketQueued = packet =>
+                                            motion.PacketQueued = packet => TraceMotionPacket(packet, LatencyStage.MotionSendQueued);
+                                            checkpoints = new(transport, sessionEpoch, viewEpoch)
                                             {
-                                                var queued = new LatencyTraceEvent(LatencyStage.MotionSendQueued, session.Connection.World, session.Connection.Player.Value, session.Connection.Generation, Publication: packet.Header.AuthorityPublication, Tick: checked((long)packet.Header.ServerTick), Value: unchecked((long)packet.Header.PacketSequence));
-                                                foreach (var record in packet.Records)
-                                                    LatencyTrace.Emit(LatencyTrace.Sink, queued with { Entity = record.EntityId });
+                                                PacketQueued = packet => TraceMotionPacket(packet, LatencyStage.MotionSendQueued),
+                                                SendObserved = (packet, released) => TraceMotionPacket(packet,
+                                                    released ? LatencyStage.MotionWriteComplete : LatencyStage.MotionWriteStarted)
                                             };
-                                            sentCheckpoints.Clear();
                                         }
                                     }
 
@@ -875,21 +890,9 @@ public sealed class SecureServerPeer
                                                 motion.Pump(checked((ulong)capturedView.Snapshot.Tick), capturedView.Publication);
                                             return true;
                                         });
-                                        foreach (var checkpoint in transport.WithScheduler(_ => motion.PendingCheckpoints))
-                                        {
-                                            if (!sentCheckpoints.Add(checkpoint.Id))
-                                                continue;
-                                            byte[] bytes = MotionDatagramCodec.Encode(new(new(sessionEpoch, viewEpoch, checkpoint.Id | (1UL << 63), checkpoint.CaptureTick, checkpoint.AuthorityPublication), [checkpoint.Record]));
-                                            var checkpointTrace = publicationTrace with
-                                            {
-                                                Tick = checked((long)checkpoint.CaptureTick),
-                                                Publication = checkpoint.AuthorityPublication
-                                            };
-                                            var correlation = checkpointTrace;
-                                            LatencyTrace.Emit(LatencyTrace.Sink, correlation with { Stage = LatencyStage.MotionSendQueued, Entity = checkpoint.Record.EntityId, Value = unchecked((long)(checkpoint.Id | (1UL << 63))) });
-                                            transport.Send(QuicLane.Lifecycle, bytes, submitted: () => LatencyTrace.Emit(LatencyTrace.Sink, correlation with { Stage = LatencyStage.MotionWriteStarted, Entity = checkpoint.Record.EntityId, Value = unchecked((long)(checkpoint.Id | (1UL << 63))) }), released: () => LatencyTrace.Emit(LatencyTrace.Sink, correlation with { Stage = LatencyStage.MotionWriteComplete, Entity = checkpoint.Record.EntityId, Value = unchecked((long)(checkpoint.Id | (1UL << 63))) }));
-                                        }
                                     }
+
+                                    if (viewInitialized && motion is not null) checkpoints?.Flush(motion);
                                 }
                             }
                             finally

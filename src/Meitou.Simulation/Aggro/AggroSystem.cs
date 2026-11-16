@@ -196,7 +196,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         }
 
         // Which factions have an enemy among the factions present: a peaceful crowd skips its looks. Worked out again only when the set changes.
-        _census.Settle(Relations);
+        _census.Settle(Relations, table);
     }
 
     /// <summary>
@@ -600,6 +600,11 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     [ThreadStatic] static List<Sighting>? s_sightings;
 
     /// <summary>
+    /// The worker thread's nearby fighter slots, sorted before sensing so the original selection and saturation order is retained.
+    /// </summary>
+    [ThreadStatic] static List<int>? s_fighters;
+
+    /// <summary>
     /// Moves a looker's spot meters on by one scan of <paramref name="dt"/> seconds: a seen sneaker's meter fills by dt / its spot time (a new one
     /// starts at 0), the others empty by dt / <see cref="Orders.SpotForgetSeconds"/>; empty meters and gone targets are dropped. Returns the list in
     /// target slot order (null when empty).
@@ -831,9 +836,9 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         /// </summary>
         public List<int>? PlayerSlots;
         /// <summary>
-        /// The characters in a fight this tick (<see cref="VisitFighters"/>); null for a forced sense.
+        /// The previous-position index of the characters in a fight this tick (<see cref="VisitFighters"/>).
         /// </summary>
-        public List<int>? FighterSlots;
+        public SpatialGrid? Fighters;
         /// <summary>
         /// This look also gathers beyond <see cref="GatherNear"/> (<see cref="FarLooks"/>), and the gather is in that far pass.
         /// </summary>
@@ -1029,7 +1034,7 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
             War = war,
             Towns = Towns,
             PlayerSlots = _census.PlayerSlots,
-            FighterSlots = _census.FighterSlots,
+            Fighters = _census.Fighters,
             Employer = EmployerOf(world, cold, out bool allies, out bool defending),
             EmployerAllies = allies,
             EmployerTags = allies || defending,
@@ -1324,10 +1329,12 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     /// </summary>
     static void VisitFighters(ref Scan s)
     {
-        if (s.FighterSlots is not { Count: > 0 } fighters) return;
+        if (s.Fighters is not { Count: > 0 } grid) return;
 
         var prev = s.Table.Previous;
         float reach = MathF.Max(s.Range, NoiseFar), r2 = reach * reach;
+        var fighters = s_fighters ??= [];
+        grid.QueryInSlotOrder(s.Eye.X, s.Eye.Z, reach, fighters);
         bool onlyEnemies = false;
 
         foreach (int slot in fighters)

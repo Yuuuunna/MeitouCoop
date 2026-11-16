@@ -109,7 +109,7 @@ Application queues are bounded before native submission. Pending state is keyed 
 coalesced before encoding; expired state is dropped (100 ms send deadline), never replayed as a backlog.
 Reliable operations are rejected as Busy before acceptance when capacity is exhausted, never silently lost.
 Bulk work cannot hold a lock needed by control dispatch, ACK processing or simulation. Independent streams
-still share congestion capacity: pacing, outstanding-byte bounds and reserved control scheduling are required.
+still share congestion capacity: native QUIC congestion control, outstanding-byte bounds and reserved control scheduling are required.
 State queues have at most 4096 entity/component keys and 256 KiB; exceeding either drops obsolete unsent
 state and reduces subscription/cadence explicitly. Receive caps mirror frame/transfer limits before allocation.
 Lifecycle overflow withdraws the view and closes the slow connection; despawn/revocation cannot be dropped.
@@ -237,16 +237,16 @@ rerun after the loading-clock-only correction.
 | Animation | walking, turning, stop, combat, carry and ragdoll remain coherent through burst/duplicate delivery; deterministic pose/event checks plus graphical capture |
 | Nominal profile | RTT 30 ms, jitter +/-10 ms, 25 Mbit/s shared uplink (corrected VPS specification), 0% loss; 1/2 clients, ~124 visible characters each, same installed-content scene |
 | Responsiveness | warmed stationary-start move: submission-to-accepted receipt P95 <=100 ms, to first authority motion (server-local acceptance duration) P95 <=100 ms, to first renderer pose P95 <=250 ms; report cold path separately |
-| Throughput | user target: <=500 KiB/s (512,000 bytes/s) per player steady-state mean over the 120 s capture, both directions including transport encryption/ACK/retransmission and UDP/IP overhead; also report each 10 s window and peaks; cold baseline bytes/time reported separately, never exempt from the VPS global 25 Mbit/s cap |
+| Throughput | optimization target: <=500 KiB/s (512,000 bytes/s) per player steady-state mean over the 120 s capture, both directions including transport encryption/ACK/retransmission and UDP/IP overhead; report each 10 s window and peaks, including overruns; no application bytes/s limiter or gameplay delay to enforce this target; cold baseline bytes/time reported separately from the VPS global 25 Mbit/s link capacity |
 | Resource budgets | no network IO/encoding on world owner; capture P95 <=5 ms; queues stay within above bounds; 30 min run without growth or missed lifecycle events |
 | Impairment | repeat RTT 100/250 ms, jitter +/-30/50 ms, loss 1/3%, reorder/duplication, 5/1 Mbit/s; bounded queues, no reliability violation/resync storm; report latency and explicit reduced update rate, not nominal-budget claims |
 | Persistence | load a pre-refactor real checkpoint copy; preserve account/role ownership and recover durable operations; save/restart/reload, not just same-version synthetic roundtrip |
 | Deployment | paired client/server version rejection, Server 2016 native probe, clean shutdown/reconnect, no credentials/assets in package |
 
-The current user target is 500 KiB/s = 512,000 bytes/s = 4.096 Mbit/s per player, not a hard traffic cap.
-The inventory/trade adaptation below reduces encoded size without adding rate limiting or changing publication cadence; report any excess traffic.
-Earlier captures used a stricter
+The current throughput target is 500 KiB/s = 512,000 bytes/s = 4.096 Mbit/s per player. Earlier captures used a stricter
 500 kbit/s target (62,500 bytes/s); their recorded measurements are historical, not a current-build acceptance result.
+The target is observational, not a hard cap: exceeding it never enables application rate limiting. Remove redundant representation and
+coalesce obsolete state; bounded memory/native-send admission remains necessary independently of throughput.
 Do not call an application-payload-only measurement the wire budget. Native UDP payload counters plus
 packet/header accounting (or a packet trace) must include both directions and retransmissions.
 Count traffic at one endpoint, not twice across client and server. The global 25 Mbit/s gate measures
@@ -257,7 +257,7 @@ windows cannot pass. Throughput gates never substitute for gameplay quality.
 not UDP datagrams; packet coalescing prevents using these as exact UDP/IP overhead measurements.
 The 50-byte motion-record prototype costs 124,000 bytes/s if all 124 characters are sent at 20 Hz, before framing;
 that exceeded the earlier 500 kbit/s target. It remains a correctness reference, not a current-build wire measurement. Compact representations with verified error bounds, change detection, relevance tiers and
-local animation playback must meet the budget together. No constant-changing global `view` component
+local animation playback optimize toward the target; overruns are measured and reported. No constant-changing global `view` component
 may embed static scene/UI/faction collections; clocks and publication IDs cannot dirty those components.
 
 ## Inventory and trade budget
@@ -402,14 +402,12 @@ conflicts reject, and empty payloads reject. Completion verifies SHA256 and retu
 not permission to activate a replica. Epoch withdrawal zeroes retained data; consumers must dispose detached
 artifacts on withdrawal and still enforce the lifecycle watermark/Ready/Active transaction above.
 
-**Observed** (deterministic `MotionReplicationProducerTests`, 120 s/124 synthetic entities): relevance
-scheduling plus admitted reliable checkpoints charged 37,869.27 bytes/s, with active entity delivery gaps
-at most 100 ms. This includes declared scheduler overhead and checkpoint framing, not actual wire traffic
-or the remaining gameplay components; it does not establish the current full-wire gate. Motion captures carry explicit
-ticks, cancel unsent older batches, and freeze coherent records before deferred encoding. Withdrawal
-retains bounded generation fences; reconnect requires a new producer. Stop/carry/ragdoll/discontinuity
-checkpoints remain retained until peer ACK; bandwidth debt reports reduced cadence. Production relevance
-selection and authority/replica integration are implemented; the synthetic rate is not release acceptance.
+**Observed** (existing `MotionReplicationProducerTests`, Release/Linux, 120 s/124 synthetic entities): admitted payload totals 3,970,464 bytes
+(33,087.20 bytes/s), with active entity delivery gaps at most 50 ms. This fixture pumps up to eight times per 50 ms and uses the isolated
+single-record checkpoint codec; it does not exercise `MotionCheckpointSender`, remaining gameplay components or the production transport.
+These are application payloads, not wire-throughput or real-game latency acceptance. Motion captures carry explicit ticks, cancel unsent older
+batches, and freeze coherent records before deferred encoding. Withdrawal retains bounded generation fences; reconnect requires a new producer.
+Stop/carry/ragdoll/discontinuity checkpoints remain retained until peer ACK; overdue state or failed queue admission is reported explicitly.
 
 ## Game connection integration
 
@@ -431,6 +429,22 @@ Reliable motion checkpoints share component revisions with datagrams and receive
 publication's exact motion roots, interest generations and capture tick (`SeedReliableBaseline`). Seeding creates no redundant checkpoint
 or synthetic ACK and retains the `ViewReady` gate. Later captures compare revisions/flags normally; an unseeded producer's first capture
 still generates reliable checkpoints.
+
+**Observed** (source): each motion `Pump` queues all due records in independent batches of at most 21, ordered by controlled/interactive/near/far
+relevance, then last send and stable capture order. A producer reserves 196 consecutive scheduler keys. New captures, withdrawals and view
+changes cancel every unsent older batch; cadence advances only on admission. There is no per-publication packet allowance or bytes/s cap.
+`MotionCheckpointSender` batches consecutive reliable transitions only when their capture tick and authority publication match. Each batch's
+highest ID carries the existing cumulative ACK; only successfully admitted IDs enter the ACK ledger. A full native/lifecycle queue retains
+the next batch for retry and prevents later IDs overtaking it. Existing retained-memory and outstanding-send bounds remain in force.
+
+**Observed** (source): ragdoll component 2038 is exact sparse little-endian binary: null is one zero byte; a present pose has a 9-byte header
+(presence, u16 skeleton length, u16 active count, float blend weight), followed by 30 bytes per active bone (u16 index, quaternion and position).
+Field 2038 declares `CompressedJson = false`; its binary bytes bypass JSON compression-envelope validation and expanded-size interpretation.
+Skeletons are bounded to 1024 bones; malformed lengths, unordered/duplicate indices and non-finite transmitted values reject. Inactive transforms
+have no posing effect and decode to zero. With the 19-byte component record, 16 active bones cost 508 bytes and two cost 88 bytes; these are
+application component sizes, not wire measurements. The authority's per-recipient cache reuses unchanged owned poses and drops departed/null
+entries; the encoder compares active values before allocating bytes and keeps an independent value baseline. No quantization or pose cadence
+reduction is used. Both endpoints require the matching [engine build identity](networking.md).
 
 Component encoding runs on a worker after owner-thread detachment and is followed by an
 authority-stamp recheck. Motion carries its capture publication directly, so a component/bulk delay cannot

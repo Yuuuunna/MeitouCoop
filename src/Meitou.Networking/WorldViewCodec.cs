@@ -96,16 +96,16 @@ public sealed partial class WorldViewCodec
         _json.Converters.Add(new ModPresentationJson.Meters());
     }
 
-    // Views contain value projections; appearances and turret angle arrays are the remaining
-    // mutable presentation objects. Detach them on the owner before a worker serializes the view.
-    internal PlayerWorldView Detach(PlayerWorldView view) => view with
+    // Mutable presentation objects are detached on the owner before worker encoding. The recipient's
+    // ragdoll cache supplies owned poses and reuses them only while their transmitted values are unchanged.
+    internal PlayerWorldView Detach(PlayerWorldView view, Func<CharacterSnapshot, BonePose?> detachRagdoll) => view with
     {
         Snapshot = view.Snapshot with
         {
             Characters = view.Snapshot.Characters.Select(c => c with
             {
                 Animations = c.Animations.ToArray(),
-                Ragdoll = c.Ragdoll is { } pose ? CopyPose(pose) : null,
+                Ragdoll = detachRagdoll(c),
                 Appearance = c.Appearance is { } look ? CharacterAppearance.FromDisplay(CaptureAppearance(look)) : null,
                 Turret = c.Turret is { } turret ? turret with { Angles = turret.Angles?.ToArray() } : null,
                 Meters = c.Meters.ToArray(),
@@ -114,17 +114,6 @@ public sealed partial class WorldViewCodec
             }).ToArray()
         },
     };
-    static BonePose CopyPose(BonePose source)
-    {
-        var target = new BonePose(source.Set.Length)
-        {
-            Weight = source.Weight
-        };
-        source.Set.CopyTo(target.Set, 0);
-        source.Position.CopyTo(target.Position, 0);
-        source.Rotation.CopyTo(target.Rotation, 0);
-        return target;
-    }
 
     sealed record TownDisplay(string Instance, string Record, string Name, Meitou.Data.World.BuildingPlacement Placement, bool Destroyed, string? Owner, string Interior, string Exterior, Meitou.Data.World.BuildingNaming? Naming);
     sealed class TownBuildingDisplay(GameDatabase database) : JsonConverter<Meitou.Data.World.TownBuilding>
