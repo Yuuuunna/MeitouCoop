@@ -45,6 +45,11 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
     /// </summary>
     readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
+    /// <summary>
+    /// Authority-owner copies of this recipient's observed ragdolls, independent of the worker's publication baseline.
+    /// </summary>
+    readonly RagdollPoseCapture _ragdollCapture = new();
+
     readonly AnimationDescriptorCatalog _animationDescriptors = new();
     readonly HashSet<ushort> _bulkAnimationDescriptors = [];
     readonly HashSet<ushort> _criticalAnimationDescriptors = [];
@@ -78,7 +83,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         GameComponentSchema.MeterTooltipsField => GameComponentSchema.AuxiliaryCharacterFields[id],
         _ => GameComponentSchema.ViewFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.SnapshotFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.CharacterFields.FirstOrDefault(f => f.Id == id)?.Name ?? throw new ArgumentOutOfRangeException(nameof(id)),
     };
-    public PlayerWorldView DetachForEncoding(PlayerWorldView view) => codec.Detach(view);
+    public PlayerWorldView DetachForEncoding(PlayerWorldView view) => _ragdollCapture.Detach(codec, view);
     public GameStatePublication Capture(PlayerWorldView view, IReadOnlyDictionary<ulong, AnimationPlaybackState>? animations = null, IReadOnlySet<ulong>? destroyedEntities = null)
     {
         WorldViewCodec.Validate(view);
@@ -254,6 +259,19 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
 
                 data = BodyBuildCodec.Encode(c.Build);
                 tracked = c.Build;
+                return;
+            case 2038:
+                trackObject = true;
+                if (hasPrior && RagdollPoseCodec.Same(priorObj as BonePose, c.Ragdoll))
+                {
+                    data = priorBytes!;
+                    tracked = priorObj;
+                    return;
+                }
+
+                var pose = RagdollPoseCodec.Copy(c.Ragdoll);
+                data = RagdollPoseCodec.Encode(pose);
+                tracked = pose;
                 return;
             case 2039:
                 trackObject = true;

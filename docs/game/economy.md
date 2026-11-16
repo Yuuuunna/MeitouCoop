@@ -516,6 +516,13 @@ money, mark the entry claimed (it never pays twice) and show "Received c.{1} rew
 Meitou (`CrimeSystem.TownAlarm` / `AlarmFor` / `Investigate`, `AiBehaviour.Investigate`): as above (reach by `TownAlarm.Place`, the culprit's `SightMap.PlaceOf`, and the more-than-one-floor skip by `Floor`); alarms are not saved; the closed-building
 halving and the `+0xc2` floor skip (meaning **Unknown**) are not modelled; "sensed" is the witnesses' sight test.
 
+**Observed (engine scheduling)**: investigators run on `slot % World.Every(SweepEveryTicks)` rather than sharing one tick. Each visit
+deducts the full interval from look-about; the alarm's 8-second life keeps its shared expiry beat and repeated raises still do not extend it.
+The per-NPC phase changes by at most one original interval (default 0.5 s); response and which investigator first removes an alarm can change.
+After the crime sweep, the first searching investigator collects awake pending suspects once; investigators query their current (`Next`)
+positions through a shared lazy spatial index, then retain ascending slot order, the exact distance/sight/faction gates, all enemy tags and
+the last qualifying target. DA56's faction-wide scope is unchanged.
+
 ### 11.7 Arrest
 
 Arrests are started by **dialogue**, not by a crime test in code (**Verified** by probe of the merged data; enum numbers from the FCS

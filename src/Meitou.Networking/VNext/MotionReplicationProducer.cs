@@ -31,16 +31,29 @@ public sealed class MotionReplicationProducer
     public const int MaximumKeys = 4096;
     public const int MaximumRetainedBytes = 256 * 1024;
     const int Capacity = (MotionDatagramCodec.MaximumDatagramBytes - MotionDatagramCodec.HeaderBytes - 2) / (MotionDatagramCodec.RecordBytes + 2);
+    /// <summary>
+    /// The consecutive scheduler keys reserved by one producer for a complete retained motion capture.
+    /// </summary>
+    public const int MaximumBatches = (MaximumKeys + Capacity - 1) / Capacity;
     readonly BandwidthScheduler _scheduler;
     readonly ulong _peer, _schedulerKey;
     readonly Func<TimeSpan> _now;
     readonly Dictionary<ulong, Entry> _entries = new();
     readonly Dictionary<ulong, uint> _retired = new();
     readonly Dictionary<ulong, MotionCheckpoint> _checkpoints = new();
+    /// <summary>
+    /// Unsubmitted batches owned by this producer; each capture cancels them before replacing any referenced entry.
+    /// </summary>
+    readonly HashSet<ulong> _pendingBatches = [];
     ulong _session, _view, _sequence = 1, _nextCheckpoint = 1, _order, _latestCaptureTick;
     bool _baselineSeeded;
+    /// <summary>
+    /// Reserves MaximumBatches consecutive state keys beginning at schedulerKey; other producers must use a disjoint key range.
+    /// </summary>
     public MotionReplicationProducer(BandwidthScheduler scheduler, ulong peer, ulong schedulerKey, ulong sessionEpoch, ulong viewEpoch, Func<TimeSpan> monotonicNow)
     {
+        if (schedulerKey > ulong.MaxValue - (MaximumBatches - 1))
+            throw new ArgumentOutOfRangeException(nameof(schedulerKey));
         this._scheduler = scheduler;
         this._peer = peer;
         this._schedulerKey = schedulerKey;
@@ -59,6 +72,10 @@ public sealed class MotionReplicationProducer
     }
 
     public int RetainedKeys => _entries.Count + _retired.Count;
+    /// <summary>
+    /// Cancels unsubmitted motion immediately when the connection withdraws its view, before a replacement baseline exists.
+    /// </summary>
+    public void CancelPending() => CancelPendingBatches();
     /// <summary>
     /// Diagnostic notification of the exact immutable batch queued; coalescing may discard it later.
     /// </summary>
@@ -85,7 +102,7 @@ public sealed class MotionReplicationProducer
         if (sessionEpoch == 0 || viewEpoch == 0 || (_session != 0 && (sessionEpoch != _session || viewEpoch <= _view)))
             throw new ArgumentOutOfRangeException(nameof(viewEpoch));
         if (_session != 0)
-            _scheduler.CancelState(_peer, _schedulerKey);
+            CancelPendingBatches();
         _session = sessionEpoch;
         _view = viewEpoch;
         _sequence = 1;
@@ -127,7 +144,7 @@ public sealed class MotionReplicationProducer
 
     public void Withdraw(ulong entityId, uint generation)
     {
-        _scheduler.CancelState(_peer, _schedulerKey);
+        CancelPendingBatches();
         if (_entries.TryGetValue(entityId, out var entry) && entry.Record.InterestGeneration == generation)
         {
             _entries.Remove(entityId);
@@ -159,7 +176,7 @@ public sealed class MotionReplicationProducer
             if (record.Revision == previous.Record.Revision)
             {
                 MotionDatagramCodec.ValidateDuplicate(previous.Record, record);
-                _scheduler.CancelState(_peer, _schedulerKey);
+                CancelPendingBatches();
                 _latestCaptureTick = captureTick;
                 previous.Relevance = relevance;
                 return MotionCaptureOutcome.Unchanged;
@@ -173,7 +190,7 @@ public sealed class MotionReplicationProducer
         if (_checkpoints.Count >= MaximumKeys || RetainedBytes + additional * MotionDatagramCodec.RecordBytes > MaximumRetainedBytes)
             return MotionCaptureOutcome.CheckpointBackpressure;
         _latestCaptureTick = captureTick;
-        _scheduler.CancelState(_peer, _schedulerKey);
+        CancelPendingBatches();
         _retired.Remove(record.EntityId);
         if (checkpoint)
         {
@@ -187,8 +204,6 @@ public sealed class MotionReplicationProducer
         else
         {
             previous.Record = record;
-            _scheduler.CancelState(_peer, _schedulerKey);
-            _latestCaptureTick = captureTick;
             previous.Relevance = relevance;
         }
 
@@ -202,44 +217,92 @@ public sealed class MotionReplicationProducer
     {
         if (serverTick != _latestCaptureTick)
             throw new InvalidOperationException("Packet tick must match the latest capture boundary.");
+
+        CancelPendingBatches();
         var time = _now();
-        var due = _entries.Values.Where(e => Due(e, time)).OrderBy(e => e.LastSent).ThenBy(e => e.Order).ToArray();
+        var due = _entries.Values.Where(e => Due(e, time))
+            .OrderBy(e => e.Relevance)
+            .ThenBy(e => e.LastSent)
+            .ThenBy(e => e.Order)
+            .ToArray();
         if (due.Length == 0)
             return MotionPumpOutcome.Idle;
-        var selected = due.Take(Capacity).ToArray();
-        ulong capturedSession = _session, capturedView = _view;
-        var records = selected.Select(e => e.Record).ToArray();
+
+        for (int offset = 0; offset < due.Length; offset += Capacity)
+        {
+            var selected = due.AsSpan(offset, Math.Min(Capacity, due.Length - offset)).ToArray();
+            ulong key = _schedulerKey + (ulong)(offset / Capacity);
+            if (!QueueBatch(key, selected, serverTick, authorityPublication)) return MotionPumpOutcome.ReducedCadence;
+        }
+
+        bool overdue = due.Any(e => time - (e.LastSent == TimeSpan.MinValue ? e.CapturedAt : e.LastSent)
+            > Cadence(e) + TimeSpan.FromMilliseconds(100));
+        return overdue ? MotionPumpOutcome.ReducedCadence : MotionPumpOutcome.Queued;
+    }
+
+    /// <summary>
+    /// Queues one immutable packet; native queue capacity, rather than a per-tick packet allowance, governs admission.
+    /// </summary>
+    bool QueueBatch(ulong key, Entry[] selected, ulong serverTick, ulong authorityPublication)
+    {
         if (_sequence >= long.MaxValue)
             throw new InvalidOperationException("Motion sequence exhausted; start a new session.");
+
+        var records = selected.Select(e => e.Record).ToArray();
         var packet = new MotionDatagram(new(_session, _view, _sequence++, serverTick, authorityPublication), records);
-        var outcome = _scheduler.Enqueue(_peer, ScheduledLane.State, _schedulerKey, MotionDatagramCodec.HeaderBytes + 2 + selected.Length * (MotionDatagramCodec.RecordBytes + 2), () =>
+        int length = MotionDatagramCodec.HeaderBytes + 2 + selected.Length * (MotionDatagramCodec.RecordBytes + 2);
+        var outcome = _scheduler.Enqueue(_peer, ScheduledLane.State, key, length, () => SerializeBatch(key, packet, selected));
+        if (outcome is not (ScheduleOutcome.Queued or ScheduleOutcome.Coalesced)) return false;
+
+        _pendingBatches.Add(key);
+        try
         {
-            if (capturedSession != _session || capturedView != _view)
-                throw new InvalidOperationException("Canceled epoch closure invoked.");
-            var live = selected.Where(e => _entries.TryGetValue(e.Record.EntityId, out var current) && ReferenceEquals(current, e)).ToArray();
-            if (live.Length != selected.Length || live.Where((e, i) => e.Record != records[i]).Any())
+            PacketQueued?.Invoke(packet);
+        }
+        catch
+        { /* Diagnostics never change scheduling. */
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Validates an uncanceled batch and advances cadence only when the scheduler actually admits it.
+    /// </summary>
+    byte[] SerializeBatch(ulong key, MotionDatagram packet, Entry[] selected)
+    {
+        if (packet.Header.SessionEpoch != _session || packet.Header.ViewEpoch != _view)
+            throw new InvalidOperationException("Canceled epoch closure invoked.");
+
+        for (int index = 0; index < selected.Length; index++)
+        {
+            var entry = selected[index];
+            if (!_entries.TryGetValue(entry.Record.EntityId, out var current) || !ReferenceEquals(current, entry)
+                || entry.Record != packet.Records[index])
                 throw new InvalidOperationException("Canceled motion capture closure invoked.");
-            byte[] bytes = MotionDatagramCodec.Encode(packet);
-            foreach (var entry in live)
-            {
-                entry.LastSent = _now();
-                entry.LastSentRecord = entry.Record;
-                entry.Order = _order++;
-            }
+        }
 
-            return bytes;
-        });
-        if (outcome is ScheduleOutcome.Queued or ScheduleOutcome.Coalesced)
-            try
-            {
-                PacketQueued?.Invoke(packet);
-            }
-            catch
-            { /* Diagnostics never change scheduling. */
-            }
+        byte[] bytes = MotionDatagramCodec.Encode(packet);
+        _pendingBatches.Remove(key);
+        var now = _now();
+        foreach (var entry in selected)
+        {
+            entry.LastSent = now;
+            entry.LastSentRecord = entry.Record;
+            entry.Order = _order++;
+        }
 
-        bool overdue = due.Any(e => time - (e.LastSent == TimeSpan.MinValue ? e.CapturedAt : e.LastSent) > Cadence(e) + TimeSpan.FromMilliseconds(100));
-        return outcome == ScheduleOutcome.ReduceSubscription || overdue ? MotionPumpOutcome.ReducedCadence : MotionPumpOutcome.Queued;
+        return bytes;
+    }
+
+    /// <summary>
+    /// Removes every unsent packet before a new capture, withdrawal, or epoch changes its referenced entries.
+    /// Already admitted immutable packets keep their original epoch and per-entity revisions.
+    /// </summary>
+    void CancelPendingBatches()
+    {
+        foreach (ulong key in _pendingBatches) _scheduler.CancelState(_peer, key);
+        _pendingBatches.Clear();
     }
 
     static bool Due(Entry entry, TimeSpan time) => entry.LastSent == TimeSpan.MinValue || time - entry.LastSent >= Cadence(entry);

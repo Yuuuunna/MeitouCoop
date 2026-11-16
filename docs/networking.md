@@ -12,8 +12,9 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-704cc1ec-authority-1-diagnostics-2`; both endpoints require the [diagnostic control messages](diagnostics.md), mod-presentation components and
-editor-open command, in addition to the presentation-event and bounty contracts in [networking-next](networking-next.md).
+The current identity is `meitou-upstream-704cc1ec-authority-1-diagnostics-2-combat-sync-1`; both endpoints require sparse binary ragdoll poses,
+the [diagnostic control messages](diagnostics.md), mod-presentation components and editor-open command, in addition to the presentation-event
+and bounty contracts in [networking-next](networking-next.md).
 Ground-item material IDs and optional blood-event attacker IDs
 travel with their existing state/event components. Attacker IDs are removed when that recipient cannot see the attacker.
 The authoritative `AnimalsPickUp` rule is included in gameplay settings and their digest. Older build identities fail admission;
@@ -84,7 +85,7 @@ precision, without changing the server's theft roll.
 Command 121 (`InPlayEditorOpened`) carries one character and its server-issued editor session. Current control/membership, session owner,
 character and surgeon proximity are checked before hair restoration. The session records that opening already ran, so replay does not undo
 later shaving; captivity stays intact. Remote debug stat/editor commands remain unexposed. Source/binary compatibility is enforced at admission.
-Payload estimates, bounds and the 500 KiB/s acceptance target live in [the bandwidth contract](networking-next.md#upstream-presentation-budget).
+Payload estimates, bounds and the 500 KiB/s optimization target live in [the bandwidth contract](networking-next.md#upstream-presentation-budget).
 
 ## Regional weather
 

@@ -47,6 +47,11 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     readonly BountyBook _bounties = new();
 
     /// <summary>
+    /// The post-sweep pending suspects, indexed lazily for the alarm investigators whose turn is due.
+    /// </summary>
+    readonly InvestigationCandidates _investigationCandidates = new();
+
+    /// <summary>
     /// The bookings of this tick by a witness (the police-like NPC that booked, the culprit, the faction): the arrest system's witnessed-crime
     /// trigger. Not world state (<see cref="BountyBook.BookingsOf"/>).
     /// </summary>
@@ -262,19 +267,21 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     #region The sweep
 
     /// <summary>
-    /// The slow-world step: the witness sweep for the characters whose turn it is; on the shared beat the investigators and the alarms' countdown.
+    /// The slow-world step: witnesses and investigators on their slot's turn; the alarms retain their shared countdown beat.
     /// </summary>
     public void SlowWorld(World world)
     {
         int every = world.Every(Settings.SweepEveryTicks);
         // Each character every SweepEveryTicks on its slot's turn (slot mod the period), so the witness looks spread over the ticks (the original's
-        // AI updates run 8 characters a frame in turn, FUN_140786e30); a character's timers still lose the whole period each visit. The alarms keep
-        // the shared beat.
+        // AI updates run 8 characters a frame in turn, FUN_140786e30); a character's timers still lose the whole period each visit. Investigators
+        // use the same period on their own slot's phase; the alarms keep their original shared expiry beat.
         int phase = (int)(world.Tick % every);
         Sweep(world, every * world.TickSeconds, every);
+        _investigationCandidates.Clear();
+        if (_alarms.Count > 0) Investigate(world, every * world.TickSeconds, every, phase);
         if (phase != 0) return;
-        if (_alarms.Count > 0) Investigate(world, every * world.TickSeconds);
-        // Alarms die 8 game seconds after their last raise, whether answered or not (AlarmManager update FUN_14092bfe0, Verified).
+
+        // Alarms die 8 game seconds after creation; raising an existing one does not refresh its life (FUN_1409335e0, Verified).
         for (int k = _alarms.Count - 1; k >= 0; k--)
             if ((_alarms[k].Life -= every * world.TickSeconds) < 0) _alarms.RemoveAt(k);
     }
@@ -650,55 +657,68 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
 
     /// <summary>
     /// The investigators' serial step (<c>Task_InvestigateAlarms</c> update, <b>Observed</b>), for each NPC whose AI acts out goal 209 or 210
-    /// (<see cref="Ai.AiBehaviour.Investigate"/>): within <see cref="AlarmLookRange"/> of its alarm it counts <see cref="Ai.AiMind.LookAbout"/> down
+    /// (<see cref="Ai.AiBehaviour.Investigate"/>) on its slot's phase: within <see cref="AlarmLookRange"/> of its alarm it counts
+    /// <see cref="Ai.AiMind.LookAbout"/> down by the full sweep interval
     /// and clears the alarm when it runs out; on the way there it keeps the count at <see cref="LookAboutSeconds"/>, and every character it sees that
     /// is not down, not of its faction or an ally, and has a pending crime against its faction or an ally, its squad tags TEMP_ENEMY (all of them)
     /// and it goes for the last (<c>Character::attackTarget</c>, which only stores the target: the last in slot order is attacked, <b>Verified</b>;
     /// the task tests no capability to fight). Engine: "sees" is the witnesses' sight test, the original's sense list (seen or heard) is not.
     /// </summary>
-    void Investigate(World world, float seconds)
+    void Investigate(World world, float seconds, int every, int phase)
+    {
+        for (int slot = phase; slot < world.Characters.HighWater; slot += every) InvestigateCharacter(world, slot, seconds);
+    }
+
+    /// <summary>
+    /// One due investigator's alarm and look-about timer, followed by its nearby pending-crime search while approaching.
+    /// </summary>
+    void InvestigateCharacter(World world, int slot, float seconds)
     {
         var table = world.Characters;
         var next = table.Next;
-        for (int i = 0; i < table.HighWater; i++)
+        if (!next[slot].Alive || table.Cold(slot) is not { Ai: { Behaviour: AiBehaviour.Investigate, Goal: { } goal, Squad.Ai: { } board } mind } cold
+            || !AiSystem.Holds(next[slot], cold)) return;
+
+        var alarm = AlarmFor(board.Town, next[slot].Position,
+            goal.Task.Type == Data.Gameplay.Ai.TaskType.InvestigateAlarmsAlliesOnly ? cold.Faction : -1, FloorOf(world, slot, next[slot].Position),
+            world.Sight.PlaceOf(slot), world);
+        if (alarm is null) return;
+        if (Vector3.DistanceSquared(alarm.Position, next[slot].Position) <= AlarmLookRange * AlarmLookRange)
         {
-            if (!next[i].Alive || table.Cold(i) is not { Ai: { Behaviour: AiBehaviour.Investigate, Goal: { } goal, Squad.Ai: { } board } mind } cold
-                || !AiSystem.Holds(next[i], cold))
-            {
-                continue;
-            }
-            var alarm = AlarmFor(board.Town, next[i].Position,
-                goal.Task.Type == Data.Gameplay.Ai.TaskType.InvestigateAlarmsAlliesOnly ? cold.Faction : -1, FloorOf(world, i, next[i].Position),
-                world.Sight.PlaceOf(i), world);
-            if (alarm is null) continue;
-            if (Vector3.DistanceSquared(alarm.Position, next[i].Position) <= AlarmLookRange * AlarmLookRange)
-            {
-                mind.LookAbout -= seconds;
-                if (mind.LookAbout < 0) _alarms.Remove(alarm);
-                continue;
-            }
-            mind.LookAbout = LookAboutSeconds;
-            // Every qualifying witness in sight is tagged and the last one scanned is the attack target (the original overwrites the AI's attack
-            // hand: FUN_140354260, Verified, no can-attack test on this path); the order is sent only for that last one.
-            float range = AggroSystem.RangeOf(cold, Settings.Sight);
-            int last = -1;
-            for (int c = 0; c < table.HighWater; c++)
-            {
-                if (c == i || !next[c].Alive || table.Cold(c) is not { Pending: { } p, Medical.Incapacitated: false } cc
-                    || Friendly(cold.Faction, cc.Faction) || !Friendly(cold.Faction, p.VictimFaction))
-                {
-                    continue;
-                }
-                if (Vector3.DistanceSquared(next[c].Position, next[i].Position) > range * range
-                    || world.Sight.Sees(i, c, next[i].Position, next[c].Position, range) <= 0)
-                {
-                    continue;
-                }
-                world.SystemOf<Dialogue.DialogueSystem>()?.TagEnemy(world, i, c);
-                last = c;
-            }
-            if (last >= 0) world.Defer(new Combat.AttackOrder([table.IdOf(i)], table.IdOf(last)) { Tick = world.Tick + 1, Source = TaskSource.Npc });
+            mind.LookAbout -= seconds;
+            if (mind.LookAbout < 0) _alarms.Remove(alarm);
+            return;
         }
+
+        mind.LookAbout = LookAboutSeconds;
+        InvestigateSuspects(world, slot, cold);
+    }
+
+    /// <summary>
+    /// Tags every qualifying suspect in slot order and attacks the last one; spatial pruning changes no eligibility or target priority.
+    /// </summary>
+    void InvestigateSuspects(World world, int slot, CharacterCold cold)
+    {
+        var table = world.Characters;
+        var next = table.Next;
+        float range = AggroSystem.RangeOf(cold, Settings.Sight);
+        int last = -1;
+
+        // Every qualifying witness in sight is tagged and the last one scanned is the attack target (the original overwrites the AI's attack
+        // hand: FUN_140354260, Verified, no can-attack test on this path); the order is sent only for that last one.
+        foreach (int suspect in _investigationCandidates.Near(world, next[slot].Position, range))
+        {
+            if (suspect == slot || !next[suspect].Alive || table.Cold(suspect) is not { Pending: { } pending, Medical.Incapacitated: false } candidate
+                || Friendly(cold.Faction, candidate.Faction) || !Friendly(cold.Faction, pending.VictimFaction)) continue;
+
+            if (Vector3.DistanceSquared(next[suspect].Position, next[slot].Position) > range * range
+                || world.Sight.Sees(slot, suspect, next[slot].Position, next[suspect].Position, range) <= 0) continue;
+
+            world.SystemOf<Dialogue.DialogueSystem>()?.TagEnemy(world, slot, suspect);
+            last = suspect;
+        }
+
+        if (last >= 0) world.Defer(new Combat.AttackOrder([table.IdOf(slot)], table.IdOf(last)) { Tick = world.Tick + 1, Source = TaskSource.Npc });
     }
 
     /// <summary>

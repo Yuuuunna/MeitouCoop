@@ -3,9 +3,9 @@ using System.Numerics;
 namespace Meitou.Simulation;
 
 /// <summary>
-/// The characters of the last tick sorted into square cells on the ground plane, for neighbour queries (separation, targets in
-/// reach). Built once per tick in the serial Schedule step from <see cref="CharacterTable.Previous"/>, then only read, so phases
-/// can query it from any thread. Within a cell the slots are ascending; <see cref="Query"/> visits cells in a fixed order, so the
+/// Characters sorted into square cells on the ground plane, for neighbour queries (separation, targets in reach). The world's grid is built in
+/// Schedule from <see cref="CharacterTable.Previous"/>; a feature's subset index may use its own phase snapshot. A built grid is read-only until
+/// its next build, so phases can query it from any thread. Within a cell the slots are ascending; <see cref="Query"/> visits cells in a fixed order, so the
 /// order neighbours are seen in depends on the state alone, never on the thread count (float sums over neighbours rely on that).
 /// </summary>
 public sealed class SpatialGrid
@@ -39,6 +39,11 @@ public sealed class SpatialGrid
     public float CellSize => _cellSize;
 
     /// <summary>
+    /// The living characters indexed by the latest build.
+    /// </summary>
+    internal int Count => _count;
+
+    /// <summary>
     /// Sorts the living characters of <paramref name="state"/> into their cells.
     /// </summary>
     internal void Build(ReadOnlySpan<CharacterHot> state)
@@ -56,6 +61,37 @@ public sealed class SpatialGrid
 
         // (cell, slot) pairs are unique, so the sort is total and its result does not depend on the algorithm.
         Array.Sort(_entries, 0, _count);
+    }
+
+    /// <summary>
+    /// Indexes the living characters in <paramref name="slots"/> from the caller's phase snapshot. The slots must be unique.
+    /// </summary>
+    internal void Build(ReadOnlySpan<CharacterHot> state, IReadOnlyList<int> slots)
+    {
+        if (_entries.Length < slots.Count) _entries = new (long, int)[Math.Max(slots.Count, _entries.Length * 2)];
+
+        _count = 0;
+        for (int i = 0; i < slots.Count; i++)
+        {
+            int slot = slots[i];
+            if (!state[slot].Alive) continue;
+
+            _entries[_count++] = (CellOf(state[slot].Position.X, state[slot].Position.Z), slot);
+        }
+
+        Array.Sort(_entries, 0, _count);
+    }
+
+    /// <summary>
+    /// Replaces <paramref name="slots"/> with the query's candidates in ascending slot order; callers retain their distance and eligibility tests.
+    /// </summary>
+    internal void QueryInSlotOrder(float x, float z, float radius, List<int> slots)
+    {
+        slots.Clear();
+        if (_count == 0) return;
+
+        Query(x, z, radius, ref slots, static (int slot, ref List<int> found) => found.Add(slot));
+        slots.Sort();
     }
 
     /// <summary>
