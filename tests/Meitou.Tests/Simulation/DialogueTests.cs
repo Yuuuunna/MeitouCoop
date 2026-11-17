@@ -782,6 +782,9 @@ public partial class DialogueTests
 [Slow]
 public class DialogueInstallTests
 {
+    /// <summary>
+    /// Talks to the Hub's barman with two reply choices, then observes a resident's ambient line through the sight pass.
+    /// </summary>
     [Fact]
     public void The_hub_barman_talks_and_offers_two_replies_and_a_resident_says_a_speech_bubble()
     {
@@ -792,15 +795,20 @@ public class DialogueInstallTests
         var levels = WorldLevelData.LoadBaseGame(install, includeInteriors: true);
         using var map = TerrainHeightmap.Open(install);
         var buildings = TownBuildings.Build(db, levels, new BuildingLayouts(db, levels.Interiors), (x, z) => map.HeightAt((float)x, (float)z));
-        var data = PopulationData.Create(db, levels.Towns(), buildings: buildings);
+        var data = PopulationData.Create(db, levels.Towns(), new GeneratedAppearances(db, install.Root), buildings: buildings);
         var hub = data.Sites.Single(s => s.Town.Name == "The Hub");
         var dialogue = new DialogueSystem(data, new DialogueSettings { AmbientEvents = true });
         var walk = new OpenGroundWalkability((_, _) => 300);
+        var bodies = new Meitou.Simulation.Bodies.BodySystem(data.Bodies.Constants, data.BodyOptions, db: db);
+        var senses = new Meitou.Simulation.Aggro.AggroSystem(data.Relations);
         using var world = new SimWorld(new WorldSettings { Seed = 1, PublishSnapshots = false }, walk,
-            [new PopulationSystem(data, new PopulationSettings { CheckEveryTicks = 1 }), new MovementSystem(new PathService(walk, true)), dialogue]);
+            [new PopulationSystem(data, new PopulationSettings { CheckEveryTicks = 1 }),
+                new MovementSystem(new PathService(walk, true)), bodies, senses, dialogue]);
         world.Player.Faction = data.PlayerFaction;
         world.Commands.Enqueue(new FocusCommand(hub.Position) { Tick = 0 });
-        world.RunTicks(5);
+
+        // Finish the first sight round before the player arrives: characters already sensed then stay quiet until lost from sight.
+        world.RunTicks(world.Every(senses.Settings.ScanEveryTicks) + 1);
 
         var table = world.Characters;
         int barman = Enumerable.Range(0, table.HighWater).First(i => table.Next[i].Alive && table.Cold(i) is { Name: "Barman" });
@@ -827,9 +835,17 @@ public class DialogueInstallTests
         Assert.NotEmpty(talk.Text);
         Assert.Equal(2, talk.Choices.Count);   // trade or decline; their texts are picked at random
 
-        // A resident next to the player character says a speech bubble within a few game hours.
-        // The Hub is allied with the player: its residents have event 67 lines (most event 3 lines are disabled or conditional in the data); each is
-        // said at a chance of 30 % once per squad per half game hour, so the loop spans a few of those.
+        AssertResidentSpeech(world, data, dialogue);
+    }
+
+    /// <summary>
+    /// Allies the residents to the player's faction and waits for one to say an ambient line.
+    /// </summary>
+    static void AssertResidentSpeech(SimWorld world, PopulationData data, DialogueSystem dialogue)
+    {
+        var table = world.Characters;
+
+        // The Hub is allied with the player: its residents have event 67 lines (most event 3 lines are disabled or conditional in the data).
         for (int i = 0; i < table.HighWater; i++)
             if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: false } resident)
                 data.Relations.Set(resident.Faction, data.PlayerFaction, 100);
