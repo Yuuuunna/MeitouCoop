@@ -69,12 +69,15 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
     /// <summary>
     /// Gives the character a lock order's work (<see cref="PlayerOrders.Give"/>), which starts through <see cref="TaskStart.Start"/> as the act-out
     /// <paramref name="task"/>; false (and nothing given) when it cannot run (the row is not the character's): the order's picker then tries the next
-    /// character.
+    /// character. <paramref name="point"/> is the order's <see cref="OrderEntry.TaskPoint"/>.
     /// </summary>
     bool StartWork(World world, int slot, CharacterTask task, TaskType row, string? site, CharacterId? target = null, object? detail = null,
-            bool queued = false, SimCommand? command = null)
+            bool queued = false, SimCommand? command = null, Vector3 point = default)
     {
-        var order = new OrderEntry(row, this) { Site = site, Target = target ?? CharacterId.None, Detail = new LockWork(task, detail) };
+        var order = new OrderEntry(row, this)
+        {
+            Site = site, Target = target ?? CharacterId.None, Detail = new LockWork(task, detail), TaskPoint = point,
+        };
         if (command is not null) world.BindOrder(command, order);
         if (!PlayerOrders.CanRun(world, slot, order).CanRun) return false;
         PlayerOrders.Give(world, slot, order, queued);
@@ -285,6 +288,7 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
         var walker = table.Cold(slot)!;
         var (at, _) = WorkSpot(world, door, Flat(table.Next[slot].Position));
         ClearWork(walker);
+        DropDoorWay(walker);
         walker.Bashing = null;
         walker.BashOrdered = false;
         _doorWalkers.Remove(table.IdOf(slot));
@@ -305,6 +309,7 @@ public sealed partial class LockSystem : ITaskOwner, ITaskHandler, IOrderOwner
         walker.Shackles = null;
         walker.ForcingLock = null;
         walker.DoorJob = null;
+        DropDoorWay(walker);
         walker.Bashing = null;
         walker.BashOrdered = false;
         _doorWalkers.Remove(table.IdOf(slot));

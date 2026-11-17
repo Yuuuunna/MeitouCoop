@@ -34,7 +34,7 @@ public static class ServerCompatibility
     /// Both endpoints must accept item tags, experience rules, corpse-machine sound metadata and sparse binary ragdoll poses.
     /// Discovery metadata is opaque to older clients, so their own build identity must reject admission.
     /// </summary>
-    public const string EngineBuild = "meitou-upstream-5108032d-authority-1-combat-sync-1";
+    public const string EngineBuild = "meitou-upstream-3072d79c-authority-1";
     // Hash without loading DLLs: connecting never grants permission to execute installed code.
     public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
     {

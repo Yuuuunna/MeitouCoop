@@ -81,7 +81,8 @@ public sealed partial class PopulationSystem
             foreach (var member in members)
                 if (!member.Plan.IsAnimal && _assembly.RaceOf(member.Plan.RecordId, member.Appearance) is { } race && !start.ForceRace.Any(r => r.Id == race.StringId))
                     throw new InvalidDataException("The selected race is not allowed by this start.");
-        var result = new PreparedPlayerSquad(this, world, prepared.Built with { Members = members.ToList() }, prepared.Town, prepared.Seed, prepared.FactionIdentity)
+        var result = new PreparedPlayerSquad(this, world, prepared.Built with { Members = members.ToList() }, prepared.Groups,
+            prepared.Town, prepared.Seed, prepared.FactionIdentity, prepared.CharacterLimit)
         { NewFaction = prepared.NewFaction };
         ValidatePrepared(world, result); prepared.Used = true;
         return result;

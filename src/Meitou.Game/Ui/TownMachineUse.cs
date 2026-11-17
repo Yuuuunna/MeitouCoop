@@ -68,7 +68,7 @@ sealed class TownMachineUse(PlayerInterface player)
         if (player.SelectedIds().Count == 0 || PickAt(pixel) is not { } hit) return false;
 
         ContextMenuWindow.ContextMenu? Menu(Vector2 at) => player.ContextMenuWindow.Menu(hit.Selection.Name, at, Verbs(hit));
-        Action quick = hit.Data.IsAutomatic ? () => Loot(hit) : () => Use(hit);
+        Action quick = hit.Data.IsAutomatic ? () => Loot(hit) : () => Use(hit, clicked: true);
         if (!player.ContextMenuWindow.ContextPressOn(pixel, Menu, quick)) quick();
         return true;
     }
@@ -81,7 +81,7 @@ sealed class TownMachineUse(PlayerInterface player)
         : null;
 
     /// <summary>
-    /// Use or auto-haul, followed by the machine's inventory window.
+    /// Use for an operated machine, followed by its inventory window.
     /// </summary>
     List<(string Caption, Action Give)> Verbs(MachineHit hit)
     {
@@ -99,7 +99,7 @@ sealed class TownMachineUse(PlayerInterface player)
     /// <summary>
     /// Submits only the revision supplied by the authority; no client-provided record or position creates a work target.
     /// </summary>
-    void Use(MachineHit hit)
+    void Use(MachineHit hit, bool clicked = false)
     {
         string site = hit.Selection.SiteId!;
         ulong revision = player.Production.WorkRevisionOf(site);
@@ -107,6 +107,6 @@ sealed class TownMachineUse(PlayerInterface player)
         var task = TaskType.OperateMachinery;
         player.Say(player.SlowModifier
             ? new AddJob(player.SelectedIds(), task, site) { SiteRevision = revision, Tick = player.Session.CommandTick }
-            : new OperateOrder(player.SelectedIds(), site) { SiteRevision = revision, Tick = player.Session.CommandTick });
+            : new OperateOrder(player.SelectedIds(), site) { SiteRevision = revision, Tick = player.Session.CommandTick, Clicked = clicked });
     }
 }

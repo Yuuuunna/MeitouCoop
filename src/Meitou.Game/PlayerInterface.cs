@@ -226,6 +226,14 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     internal PickInspector Inspector => field ??= new(this);
 
     /// <summary>
+    /// The debug menu's Edit characters window (docs/game/ui-input.md "Edit characters window", Meitou only).
+    /// </summary>
+    internal DebugCharactersWindow CharactersWindow => field ??= new(this);
+    /// <summary>
+    /// The debug menu's Items window (docs/game/ui-input.md "Items window", Meitou only).
+    /// </summary>
+    internal DebugItemsWindow ItemsWindow => field ??= new(this);
+    /// <summary>
     /// Meitou's feedback button, always at the top right in both UI modes, and the form it opens.
     /// </summary>
     internal FeedbackPanel FeedbackPanel => field ??= new(this);
@@ -897,6 +905,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         if (CharacterEditor.EditorPointerDown(button, p)) return true;
         if (Session.Bindings.Get(InputAction.RotateItem).Contains(Binding.Of(button)) && InventoryWindows.RotateAt(p)) return true;
         if (button == MouseButton.Right && InventoryWindows.CancelInventoryDrag()) return true;
+        if (button == MouseButton.Right && ItemsWindow.CancelDrag()) return true;
         if (button == MouseButton.Right && !OverHud(p) && Build.WallCancel()) return true;
         if (button == MouseButton.Right && !OverHud(p) && LevelEditorPanel.LevelClearAt(p)) return true;
         if (button == MouseButton.Right && !OverHud(p) && Build.BuildDiscard()) return true;
@@ -1156,9 +1165,11 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         if (button == MouseButton.Left)
         {
             WorldMap.MapPickUp(p);
+            ItemsWindow.PointerUp(p, shift);
             InventoryWindows.InventoryPointerUp(p);
             OrdersPanel.JobDragEnd(p);
             SquadWindows.SquadPointerUp(p, shift);
+            CharactersWindow.PointerUp();
             FaithfulScreens.PointerUp();
             WorldMap.MapDrag = null;
         }
@@ -1234,9 +1245,14 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     bool DeadOwn(CharacterId id) => Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { Body.Dead: true };
 
     /// <summary>
-    /// Whether the character is one of the player's.
+    /// Whether the character is one of the player's that the player leads (a member of an independent squad is clicked as another faction's).
     /// </summary>
-    bool Own(CharacterId id) => Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { IsPlayer: true };
+    bool Own(CharacterId id) => !Independent(id) && Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { IsPlayer: true };
+
+    /// <summary>
+    /// Whether the character is in one of the player's squads the player does not lead (<see cref="WorldSnapshot.IndependentSquads"/>).
+    /// </summary>
+    internal bool Independent(CharacterId id) => Session.CurrentSnapshot.IndependentSquads.Any(s => s.Members.Contains(id));
 
     /// <summary>
     /// Shows <paramref name="target"/> (another faction's character or your own dead one; <see cref="CharacterId.None"/> for nobody) in the HUD
@@ -1450,6 +1466,12 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     public Func<int, string?>? FactionName { get; set; }
 
     /// <summary>
+    /// The owner a building's name bar shows for an owner faction and the building's town (Building slot 113, docs/game/ui-screens.md "Selected
+    /// building"): the player's faction always, another only in an explored town that is not secret; the host sets it.
+    /// </summary>
+    public Func<int, Simulation.Locks.FixtureTown, string?>? OwnerName { get; set; }
+
+    /// <summary>
     /// The ARMOUR record of an item, null for anything else (the host sets it).
     /// </summary>
     public Func<string, ArmourData?>? ArmourOf { get; set; }
@@ -1469,6 +1491,11 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     /// The name of a record by string id (a body part of an armour's coverage); the host sets it.
     /// </summary>
     public Func<string, string?>? RecordName { get; set; }
+    /// <summary>
+    /// The game data's population: the records and the item factory (the Items window makes its stock from them); the host sets it. Null before a
+    /// world is loaded.
+    /// </summary>
+    internal Func<Simulation.Population.PopulationData?>? PopulationOf { get; set; }
 
     #endregion
     #region Session presentation

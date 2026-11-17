@@ -32,6 +32,10 @@ public sealed record PlayerRoleView(EntityId Entity, CharacterId Character, int 
 public sealed record PlayerFactionView(int Faction, string Name, FactionPermission Permissions, ulong MembershipRevision,
     long? Money, ResearchSnapshot Research, IReadOnlyList<SquadView> Squads)
 {
+    /// <summary>
+    /// Observable autonomous squads that retain this faction but accept no player orders.
+    /// </summary>
+    public IReadOnlyList<SquadView> IndependentSquads { get; init; } = [];
     public int Formation { get; init; } = (int)SquadFormation.Random;
     public IReadOnlySet<string> UnlockedBuildings { get; init; } = new HashSet<string>();
     public IReadOnlyList<FactionStandingView> Standings { get; init; } = [];
@@ -78,7 +82,7 @@ public sealed partial class World
         {
             bool loaded = Entities.TryResolve(grant.Entity, out var id);
             var cold = loaded ? Characters.Cold(id.Slot) : null;
-            bool available = Players.Validate(grant);
+            bool available = Players.Validate(grant) && Players.CanControl(connection.Player, id);
             var location = Players.LocateRole(connection.Player, grant.Entity);
             roles.Add(new(grant.Entity, id, grant.Faction, grant.Revision, available, location?.Availability == PlayerRoleAvailability.Dead)
             { Availability = location?.Availability ?? PlayerRoleAvailability.Unavailable });
@@ -127,16 +131,19 @@ public sealed partial class World
             bool allContracts = player.HasPermission(member.Key, FactionPermission.ManageFaction | FactionPermission.ManageSquads);
             bool events = player.HasPermission(member.Key, FactionPermission.ManageFaction) || Manage(member.Key);
             string? FactionName(int index) => DescribeFaction(index)?.Name;
-            var squads = SquadManagement.PlayerSquads(this, member.Key)
+            var squads = SquadManagement.LedSquads(this, member.Key)
                 .Where(s => player.HasPermission(member.Key, FactionPermission.ManageSquads) || s.Members.Any(owned.Contains))
                 .Select(s => new SquadView(s.Id, s.Name, s.Members.Where(id => owned.Contains(id) || player.HasPermission(member.Key, FactionPermission.ManageSquads)).ToArray())).ToArray();
             return new PlayerFactionView(member.Key, DescribeFaction(member.Key)?.Name ?? "", member.Value, player.MembershipRevision(member.Key),
                 player.HasPermission(member.Key, FactionPermission.ReadFunds) ? resource?.Money ?? 0 : null,
                 _production?.ResearchView(this, member.Key, connection.Player) ?? ResearchSnapshot.Empty, squads)
             {
+                IndependentSquads = SquadManagement.PlayerSquads(this, member.Key).Where(s => s.Independent)
+                    .Select(s => new SquadView(s.Id, s.Name, s.Members.Where(visible.Contains).ToArray()))
+                    .Where(s => s.Members.Count > 0).ToArray(),
                 Formation = SquadAiKeys.FormationOf(this, member.Key, null),
                 UnlockedBuildings = resource?.Research.Unlocked.ToHashSet(StringComparer.Ordinal) ?? [],
-                Contracts = ActiveContracts(FactionName, member.Key, id => allContracts || owned.Contains(id)).Select(FactionInfoView.From).ToArray(),
+                Contracts = ActiveContracts(FactionName, member.Key, id => allContracts || owned.Contains(id), _ => allContracts).Select(FactionInfoView.From).ToArray(),
                 UpcomingEvents = events ? (SystemOf<PopulationSystem>()?.UpcomingEvents(this, FactionName, member.Key) ?? []).Select(FactionInfoView.From).ToArray() : []
             };
         }).ToArray();
@@ -204,6 +211,9 @@ public sealed partial class World
             MapSquads = _mapSquads.ForPlayer(this, connection.Player, Nearby),
             SquadAi = state.SquadAi,
             PlayerSquads = activeFaction?.Squads ?? [],
+            IndependentSquads = activeFaction?.IndependentSquads ?? [],
+            InventoriesClosed = state.InventoriesClosed,
+            ModJobNames = PublishModJobNames(),
             ActiveSquad = activeFaction?.Squads.Any(s => s.Id == state.Squad) == true ? state.Squad : -1,
             Buildings = buildings,
             BuildingsRevision = Buildings.Revision,

@@ -119,6 +119,22 @@ public sealed class CommandQueue
     }
 
     /// <summary>
+    /// The last of the <typeparamref name="T"/> commands due at or before <paramref name="tick"/> in <see cref="TakeDue"/>'s order (latest tick, then
+    /// latest queued), left in the queue; null when none.
+    /// </summary>
+    public T? LastDue<T>(long tick) where T : SimCommand
+    {
+        // The pending list is in queue order, so a later one of the same tick replaces the one before.
+        lock (_gate)
+        {
+            T? last = null;
+            foreach (var (command, _) in _pending)
+                if (command is T due && due.Tick <= tick && (last is null || due.Tick >= last.Tick)) last = due;
+            return last;
+        }
+    }
+
+    /// <summary>
     /// Trusted host dispatch after authentication. Gameplay systems still check permissions at execution.
     /// </summary>
     public void Enqueue(PlayerId issuer, SimCommand command)

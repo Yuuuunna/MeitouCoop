@@ -191,7 +191,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// <summary>
     /// The verbs the selection has for a character (<c>FUN_1407a6bc0</c>, docs/game/ui-input.md "Context menu verbs"), in the original's labels.
     /// Prisoners, carried bodies, the player's own, hostile and other characters each get their branch's verbs; then the medic verbs and the shackle
-    /// verbs.
+    /// verbs; then the rows the mods' interface extensions add (<see cref="PlayerInterface.ModMenuVerbs"/>, which read Shift themselves).
     /// </summary>
     internal List<(string Caption, Action Give)> Verbs(CharacterSnapshot target)
     {
@@ -275,7 +275,9 @@ sealed class ContextMenuWindow(PlayerInterface player)
         }
 
         // Shift turns an order into a job (SquadPanel).
-        return [.. verbs.Select(v => (v.Item1, player.SquadWindows.JobOrOrder(v.Item1, id, v.Item2)))];
+        List<(string, Action)> rows = [.. verbs.Select(v => (v.Item1, player.SquadWindows.JobOrOrder(v.Item1, id, v.Item2)))];
+        rows.AddRange(player.ModMenuVerbs(target));
+        return rows;
     }
 
     /// <summary>
@@ -358,11 +360,13 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// One of the player's own characters: another one than the selection is followed (31) or, unless down, guarded (45,
     /// <see cref="FollowOrder.Guard"/>), its inventory opened beside the selection's (26, labelled Trade for the player's own), and picked up (225),
     /// standing too when it carries no one (<c>FUN_1407a6bc0</c>, <b>Observed</b>). A selected one crawling by choice gets Stand Up (28, the
-    /// selection's order).
+    /// selection's order). A member of a squad the player does not lead (<see cref="PlayerInterface.Independent"/>, Meitou only) keeps its own
+    /// inventory and carries on standing: it is picked up only while down and gets no Trade.
     /// </summary>
     void OwnCharacterVerbs(List<(string, Action)> verbs, CharacterSnapshot target, IReadOnlyList<CharacterId> selection, bool down)
     {
         var id = target.Id;
+        bool independent = player.Independent(id);
 
         if (selection.Contains(id))
         {
@@ -378,9 +382,9 @@ sealed class ContextMenuWindow(PlayerInterface player)
             verbs.Add(("Bodyguard", () => player.Say(new FollowOrder(selection, id) { Guard = true, Tick = player.Session.CommandTick })));
 
         verbs.Add(("Follow", () => player.Say(new FollowOrder(selection, id) { Tick = player.Session.CommandTick })));
-        if (target.CarriedBy.IsNone && (down || target.Carrying.IsNone))
+        if (target.CarriedBy.IsNone && (down || (target.Carrying.IsNone && !independent)))
             verbs.Add(("Pick Up", () => player.Say(new PickUpOrder([], id) { Tick = player.Session.CommandTick })));
-        if (target.CanOpenInventory) verbs.Add(InventoryVerb(target));
+        if (target.CanOpenInventory && !independent) verbs.Add(InventoryVerb(target));
     }
 
     /// <summary>

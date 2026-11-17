@@ -92,7 +92,7 @@ internal static class InventoryTransfer
     {
         var grid = section == "backpack_content" ? root.Backpack?.Contents : root;
         if (grid is null || item.Width <= 0 || item.Height <= 0 || count <= 0 || count > grid.LimitOf(item)
-            || InventoryCommands.SlotRefusal(section, item.Type, item.EquipmentSection, item.Contents,
+            || InventoryCommands.SlotRefusal(section, item,
                 item.WearableBy(owner.Race?.StringId, SquadRegistry.IsAnimal(owner))) is not null || InventoryCommands.SectionClosed(owner, section)) return null;
         bool equipment = InventoryCommands.IsEquipmentSection(section) || InventoryCommands.IsLimbSection(section);
         if (equipment && count != 1) return null;

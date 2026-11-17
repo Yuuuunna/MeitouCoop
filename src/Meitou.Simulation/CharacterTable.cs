@@ -513,6 +513,24 @@ public sealed class CharacterCold
     public float MedicalBudgetSeconds { get; set; }
 
     /// <summary>
+    /// The top speed S a recompute would give now (<see cref="Bodies.TopSpeedDelay"/>), from the last body step (null: none yet). Derived, not hashed
+    /// or saved.
+    /// </summary>
+    public float? TopSpeedNow { get; set; }
+
+    /// <summary>
+    /// The stats' top speed S (CharStats <c>+0x17c</c>, the information panel's run speed) as last recomputed (<see cref="Bodies.TopSpeedDelay"/>;
+    /// null: not yet). Derived, not hashed or saved.
+    /// </summary>
+    public float? StatsTopSpeed { get; set; }
+
+    /// <summary>
+    /// The mover's top speed (CharMovement <c>+0xb4</c>, <see cref="CharacterHot.MaxSpeed"/>), one periodic update behind <see cref="StatsTopSpeed"/>
+    /// (<see cref="Bodies.TopSpeedDelay"/>; null: not yet). Derived, not hashed or saved.
+    /// </summary>
+    public float? MoverTopSpeed { get; set; }
+
+    /// <summary>
     /// The original's <c>CharBody::amIdle</c> (<see cref="BodySystem"/>): standing still out of combat with no task, refreshed only while the
     /// character is not down, so a knock-out keeps the value it had before. Derived, not hashed or saved.
     /// </summary>
@@ -1187,6 +1205,13 @@ public sealed class CharacterCold
     public bool BashErrand { get; set; }
 
     /// <summary>
+    /// A walker's way through the locked door <see cref="Bashing"/> names (rows 80 / 78 unlock it when it is the walker's, 287 / 81 bash it;
+    /// docs/game/locks.md "Locked doors on the way"): the walk's goal and speed, taken up again once the door is open. Null for any other bash.
+    /// Hashed with <see cref="Bashing"/>.
+    /// </summary>
+    public (System.Numerics.Vector2 Goal, byte Mode)? DoorWay { get; set; }
+
+    /// <summary>
     /// The fixture whose lock this character cuts or breaks by order (Use Tools 285, Use Strength 286; <see cref="Locks.LockSystem"/>; null: none).
     /// Hashed only while set.
     /// </summary>
@@ -1409,6 +1434,16 @@ public sealed class CharacterCold
 
     public long NavigationRetryTick { get; set; }
 
+
+    /// <summary>
+    /// The table boundary (<see cref="CharacterTable.Ticks"/>, a paused step counting) of the last end through <see cref="TaskStart.End"/>, and its
+    /// reason (<see cref="Ended"/>): the action log's (<see cref="ActionLog"/>). Not saved or hashed.
+    /// </summary>
+    internal long EndedTick = -1;
+    /// <summary>
+    /// Why the task ended at <see cref="EndedTick"/>.
+    /// </summary>
+    internal TaskEnd Ended;
 }
 
 /// <summary>
@@ -2031,6 +2066,12 @@ public sealed class CharacterTable
             if (k.BashOrdered) hasher.Add(0x4F726473);
             if (k.BashWall) hasher.Add(0x57616C6C);
             if (k.BashErrand) hasher.Add(0x45727264);
+            if (k.DoorWay is { } way)
+            {
+                hasher.Add(way.Goal.X);
+                hasher.Add(way.Goal.Y);
+                hasher.Add((int)way.Mode);
+            }
         }
 
         if (k.ForcingLock is { } force)

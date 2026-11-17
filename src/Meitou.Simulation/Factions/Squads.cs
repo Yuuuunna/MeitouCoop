@@ -146,6 +146,13 @@ public sealed class Squad
     /// </summary>
     public long NextHomeFillTick { get; set; }
     /// <summary>
+    /// Whether one of the player's characters has stood in or on the squad's home building since the squad was made (its town loaded): the
+    /// original builds that building's interior parts (BuildingInterior <c>+0x10</c>) then and keeps them until the building unloads, and no restock
+    /// fills the home meanwhile (<see cref="Trading.TradeSystem"/>, docs/game/economy.md "Building shops"). Not saved, as the original's parts are
+    /// not; hashed while set.
+    /// </summary>
+    public bool HomeInteriorShown { get; set; }
+    /// <summary>
     /// The squad's AI packages and the one running (<see cref="Ai.AiSystem"/>); null for a squad the AI does not run.
     /// </summary>
     public Ai.Blackboard? Ai { get; set; }
@@ -163,6 +170,18 @@ public sealed class Squad
     /// or a player-built building's id; null: none. The AI resolves it (<see cref="Ai.SquadAutonomy"/>). Saved, hashed while set.
     /// </summary>
     public string? AssignedHome { get; set; }
+    /// <summary>
+    /// An autonomous squad the player does not lead (<see cref="Ai.SetSquadAutonomy"/>): its members stay the player's faction but cannot be
+    /// selected, so take no orders, a click on one inspects it, and it has no squad tab, takes no squad commands and does not count against
+    /// <c>max squads</c> (<see cref="SquadManagement.LedSquads"/>). Only while <see cref="Autonomous"/>, never the last led squad. Meitou only;
+    /// saved, hashed while set.
+    /// </summary>
+    public bool Independent { get; set; }
+    /// <summary>
+    /// The code mod that made the squad autonomous (its manifest id, <see cref="Ai.SetSquadAutonomy"/>); null: none named, or not autonomous. A load
+    /// without that mod running gives the squad back to the player (<see cref="Ai.SquadAutonomy.DropUnowned"/>). Saved, hashed while set.
+    /// </summary>
+    public string? AutonomyOwner { get; set; }
     /// <summary>
     /// The package it ran when it left the world (a kept or saved squad's), until the AI attaches a blackboard: an occupation goes on
     /// (<see cref="Ai.AiSystem"/>).
@@ -251,6 +270,11 @@ public sealed class SquadRegistry
     /// The squad with id <paramref name="id"/>; null when there is none.
     /// </summary>
     public Squad? Find(int id) => _byId.GetValueOrDefault(id);
+
+    /// <summary>
+    /// Whether squad <paramref name="id"/> is one the player does not lead (<see cref="Squad.Independent"/>).
+    /// </summary>
+    public bool IsIndependent(int id) => Find(id) is { Independent: true };
 
     /// <summary>
     /// Takes the next id.
@@ -350,7 +374,14 @@ public sealed class SquadRegistry
             if (s.Dead) hasher.Add(0x44656164);
             if (explicitControl) hasher.Add(s.PlayerManaged);
             if (s.Autonomous) hasher.Add(0x4175746F);
+            if (s.Independent) hasher.Add(0x496E6470);
+            if (s.HomeInteriorShown) hasher.Add(0x496E7472);
             if (s.AssignedHome is { } assigned) hasher.Add(Rng.StableHash(assigned));
+            if (s.AutonomyOwner is { } owner)
+            {
+                hasher.Add(0x4F776E72);
+                hasher.Add(Rng.StableHash(owner));
+            }
             hasher.Add(s.Members.Count);
             foreach (var m in s.Members)
             {

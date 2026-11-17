@@ -163,6 +163,9 @@ public sealed class Round
 /// it.</item>
 /// <item><b>Wardens</b> (195): a free member with the goal in its hours locks the occupied, unlocked cages of its faction in its town (not one whose
 /// prisoner is being freed).</item>
+/// <item><b>Gates</b> (180): a free member whose current goal is Man the gate unlocks and opens its shut gate (<see cref="OpenGate"/>).</item>
+/// <item><b>Leaving</b> (state 60, rows 84, 74, 80, 287): a character standing in a shut building whose walk leads out unlocks its own door or
+/// bashes another's when it wants to, then walks on (<see cref="LeaveSweep"/>); one without a way stays in.</item>
 /// <item><b>Keys</b> (<b>engine choice</b>): a worker whose target is in a building shut by its own faction's (or its home's) locked doors unlocks
 /// them before it walks, standing, as the simulation does not know where a door is. An arrest's guard carrying a captive to a cage behind its own
 /// faction's shut doors has them opened at once.</item>
@@ -363,7 +366,71 @@ public sealed partial class LockSystem : IStateHashed
         int started = 0;
         ReleaseSweep(world, ref started);
         LockUpSweep(world, ref started);
+        LeaveSweep(world, ref started);
     }
+
+    /// <summary>
+    /// The way out of a shut building (docs/game/locks.md "Locked doors on the way", <b>Verified</b> rows and evaluators): every walk lists state 60
+    /// LOCATION_IS_ACCESSIBLE (<c>FUN_1405a2710</c>: false in a building with no open door when the destination is elsewhere), whose provider 84
+    /// walks to the door here (83) and opens it through 74, which needs it unlocked (!55); only 80 Unlocking door here (list B 70
+    /// <c>isObjectMine</c>) or 287 Bashing door gives that. A walker inside whose walk leads out (the paths stop at the shut doors) takes the
+    /// building's door its way (<see cref="StartDoorWay"/>); one without a way is not walked out (<see cref="CanLeave"/>).
+    /// </summary>
+    void LeaveSweep(World world, ref int started)
+    {
+        var table = world.Characters;
+        for (int s = 0; s < table.HighWater; s++)
+        {
+            if (started >= MaxNewRounds) return;
+            if (ShutIn(world, s) is not { } door) continue;
+
+            ref var n = ref table.Next[s];
+            StartDoorWay(world, s, door, n.Goal, n.Mode);
+            started++;
+        }
+    }
+
+    /// <summary>
+    /// The door of the shut building a walker wants out of (<c>Building::getDoor</c>, the one of lowest index with a known leaf): it stands in it,
+    /// no round works its doors, it has a way through them (<see cref="WayThrough"/>), and its walk (under way or just failed) goes to a point the
+    /// building does not cover. Null for anyone else.
+    /// </summary>
+    Fixture? ShutIn(World world, int s)
+    {
+        var table = world.Characters;
+        ref var n = ref table.Next[s];
+        if (!n.Alive || table.Cold(s) is not { IsImprisoned: false, Engaged: false, Bashing: null, Medical.Incapacitated: false } c) return null;
+        if (!c.CarriedBy.IsNone || Busy(table.IdOf(s)) || world.Sight.BuildingOf(s) is not { } building) return null;
+        if (!world.Fixtures.IsShut(building) || Targeted(building)) return null;
+
+        bool walking = (n.Flags & (ushort)MoveFlags.AnyPath) != 0 || c.WalkEnd == WalkEnd.Failed;
+        if (!walking || world.Sight.Covers(building, n.Goal.X, n.Goal.Y)) return null;
+
+        return WayThrough(world, c, building, n.Position) != DoorWayKind.None ? MainDoor(world, building) : null;
+    }
+
+    /// <summary>
+    /// A building's door of lowest index with a known leaf (null: none).
+    /// </summary>
+    static Fixture? MainDoor(World world, string building)
+    {
+        Fixture? main = null;
+        foreach (var f in world.Fixtures.OfBuilding(building))
+        {
+            if (f.Kind == FixtureKind.Door && world.Fixtures.DoorSpotOf(f) is not null && (main is null || f.DoorIndex < main.DoorIndex))
+                main = f;
+        }
+
+        return main;
+    }
+
+    /// <summary>
+    /// <c>isObjectMine</c> for a building's door (<c>FUN_1405a3c10</c>, <b>Verified</b>): the character's squad lives in the building, or its faction
+    /// owns it, or the door is of its faction.
+    /// </summary>
+    static bool IsMine(World world, CharacterCold c, string building) =>
+        world.Fixtures.DoorOwner(building) == c.Faction || world.Fixtures.OwnsBuilding(building, c.Faction)
+        || world.Squads.Find(c.SquadId)?.HomeBuilding?.Key == building;
 
     /// <summary>
     /// The release rounds are driven by each goal-211 jailer (the finder <c>FUN_1408cf3c0</c>, <b>Verified</b>): the cages of its town and faction
@@ -440,78 +507,134 @@ public sealed partial class LockSystem : IStateHashed
     }
 
     /// <summary>
-    /// Starts the squads' lock-up rounds: locking a home's doors at night, unlocking them when that is over, and the wardens' cages.
+    /// The members of a squad that may start a round (slots, -1: none) and the lock goals its members hold in their hours (<see cref="CrewOf"/>).
+    /// </summary>
+    struct Crew
+    {
+        /// <summary>
+        /// A free member with goal 155, one with 197 (preferably outside the home), a free warden (195), a free opener (86), and a free member whose
+        /// current goal is 180 Man the gate.
+        /// </summary>
+        public int LockUp, Outside, Warden, Opener, GateMan;
+        /// <summary>
+        /// Whether any member holds goal 155, 197 or 195 in its hours.
+        /// </summary>
+        public bool Inside155, From197, Cages;
+    }
+
+    /// <summary>
+    /// Starts the squads' lock-up rounds: locking a home's doors at night, unlocking them when that is over, the wardens' cages and the gate guards'
+    /// gates.
     /// </summary>
     void LockUpSweep(World world, ref int started)
     {
-        var table = world.Characters;
         int hour = world.Hour;
         foreach (var squad in world.Squads.All)
         {
             if (_rounds.Count >= MaxRounds || started >= MaxNewRounds) return;
             if (squad.Ai is not { } board) continue;
-            int lockUp = -1, outside = -1, warden = -1, opener = -1;
-            bool inside155 = false, from197 = false, cages = false;
             var home = board.OwnHome;
             float homeExtent = home is null ? 0 : Extent(home);
-            foreach (var m in squad.Members)
-            {
-                if (!table.TryResolveNext(m, out int s) || table.Cold(s) is not { } c) continue;
-                bool free = Free(world, s);
-                if (HasGoal(world, s, c, TaskType.LockAllMyDoors, hour))
-                {
-                    inside155 = true;
-                    if (free && lockUp < 0) lockUp = s;
-                }
+            var crew = CrewOf(world, squad, home, homeExtent, hour);
 
-                if (HasGoal(world, s, c, TaskType.LockAllMyDoorsFromOutside, hour))
-                {
-                    from197 = true;
-
-                    // A member that is already outside is preferred: the others would have to leave the home first.
-                    if (free
-                            && (outside < 0 || home is not null && Within(table.Next[outside], home, homeExtent)
-                                    && !Within(table.Next[s], home, homeExtent)))
-                        outside = s;
-                }
-
-                if (HasGoal(world, s, c, TaskType.LockAllTheCages, hour))
-                {
-                    cages = true;
-                    if (free && warden < 0) warden = s;
-                }
-
-                if (free && opener < 0 && HasGoal(world, s, c, TaskType.OpenUpShopDoors, hour)) opener = s;
-            }
-
-            if (cages && warden >= 0 && board.Town >= 0) LockCages(world, squad, board, warden, ref started);
+            if (crew.Cages && crew.Warden >= 0 && board.Town >= 0) LockCages(world, squad, board, crew.Warden, ref started);
+            if (crew.GateMan >= 0) OpenGate(world, board, crew.GateMan, ref started);
             if (home is null || world.Fixtures.DoorOwner(home.Key) < 0 || world.Fixtures.DoorOwner(home.Key) != squad.Faction
                     || Targeted(home.Key))
                 continue;
 
-            string building = home.Key;
-            if (inside155 || from197)
+            HomeDoors(world, squad, home, homeExtent, crew, ref started);
+        }
+    }
+
+    /// <summary>
+    /// Who of the squad may work which round (see <see cref="Crew"/>).
+    /// </summary>
+    Crew CrewOf(World world, Squad squad, TownBuilding? home, float homeExtent, int hour)
+    {
+        var table = world.Characters;
+        var crew = new Crew { LockUp = -1, Outside = -1, Warden = -1, Opener = -1, GateMan = -1 };
+        foreach (var m in squad.Members)
+        {
+            if (!table.TryResolveNext(m, out int s) || table.Cold(s) is not { } c) continue;
+            bool free = Free(world, s);
+            if (HasGoal(world, s, c, TaskType.LockAllMyDoors, hour))
             {
-                if (world.Fixtures.AllDoorsLocked(building)) continue;
-                int worker = inside155 ? lockUp : outside;
-                if (worker < 0 && from197) worker = outside;
-                if (worker < 0 || Busy(table.IdOf(worker))) continue;   // the warden of this sweep may be it
-                float extent = homeExtent;
-                if (inside155 && !AllInside(world, squad, home, extent)) continue;
-                if (StrangerInside(world, squad, home, extent)) continue;
-                if (StartDoors(world, worker, RoundKind.LockDoors, building, extent, fromOutside: worker == outside && worker != lockUp))
-                    started++;
+                crew.Inside155 = true;
+                if (free && crew.LockUp < 0) crew.LockUp = s;
             }
 
-            // 86 Opening up (finder FUN_1408cb360): only a member whose package lists it, in its hours, while the home counts as locked (87
-            // allDoorsLocked, FUN_1408cb1c0): a round
-            // locked it, or no door is open, broken or unlocked (a home locked from its level state or its template's initial door state).
-            else if (_houseLocked.Contains(building) || world.Fixtures.AllDoorsLocked(building))
+            if (HasGoal(world, s, c, TaskType.LockAllMyDoorsFromOutside, hour))
             {
-                if (opener < 0 || Busy(table.IdOf(opener))) continue;
-                if (StartDoors(world, opener, RoundKind.UnlockDoors, building, Extent(home))) started++;
+                crew.From197 = true;
+
+                // A member that is already outside is preferred: the others would have to leave the home first.
+                if (free
+                        && (crew.Outside < 0 || home is not null && Within(table.Next[crew.Outside], home, homeExtent)
+                                && !Within(table.Next[s], home, homeExtent)))
+                    crew.Outside = s;
             }
+
+            if (HasGoal(world, s, c, TaskType.LockAllTheCages, hour))
+            {
+                crew.Cages = true;
+                if (free && crew.Warden < 0) crew.Warden = s;
+            }
+
+            if (free && crew.Opener < 0 && HasGoal(world, s, c, TaskType.OpenUpShopDoors, hour)) crew.Opener = s;
+            if (free && crew.GateMan < 0 && c.Ai?.Goal?.Task.Type == TaskType.ManTheGate) crew.GateMan = s;
         }
+
+        return crew;
+    }
+
+    /// <summary>
+    /// The home's door rounds: the lock-up (155, 197) while a member holds it, else the opening up (86) of a locked home.
+    /// </summary>
+    void HomeDoors(World world, Squad squad, TownBuilding home, float homeExtent, in Crew crew, ref int started)
+    {
+        var table = world.Characters;
+        string building = home.Key;
+        if (crew.Inside155 || crew.From197)
+        {
+            if (world.Fixtures.AllDoorsLocked(building)) return;
+            int worker = crew.Inside155 ? crew.LockUp : crew.Outside;
+            if (worker < 0 && crew.From197) worker = crew.Outside;
+            if (worker < 0 || Busy(table.IdOf(worker))) return;   // the warden of this sweep may be it
+            if (crew.Inside155 && !AllInside(world, squad, home, homeExtent)) return;
+            if (StrangerInside(world, squad, home, homeExtent)) return;
+
+            bool fromOutside = worker == crew.Outside && worker != crew.LockUp;
+            if (StartDoors(world, worker, RoundKind.LockDoors, building, homeExtent, fromOutside)) started++;
+        }
+
+        // 86 Opening up (finder FUN_1408cb360): only a member whose package lists it, in its hours, while the home counts as locked (87
+        // allDoorsLocked, FUN_1408cb1c0): a round
+        // locked it, or no door is open, broken or unlocked (a home locked from its level state or its template's initial door state).
+        else if (_houseLocked.Contains(building) || world.Fixtures.AllDoorsLocked(building))
+        {
+            if (crew.Opener < 0 || Busy(table.IdOf(crew.Opener))) return;
+            if (StartDoors(world, crew.Opener, RoundKind.UnlockDoors, building, Extent(home))) started++;
+        }
+    }
+
+    /// <summary>
+    /// Row 180 Man the gate needs its gate's door open (list B 52 DOOR_IS_OPEN on its HOME_GATE target, <b>Verified</b>), which the planner gets
+    /// from 72 Opening door, after 78 Unlocking door when it is locked (78 needs 70 isObjectMine: the gate's faction is the guard's). So the gate
+    /// guard on that goal unlocks and opens its shut gate, through an unlock round (docs/game/locks.md "Doors").
+    /// </summary>
+    void OpenGate(World world, Blackboard board, int worker, ref int started)
+    {
+        var gate = board.Gate?.Building ?? (board.GateHome is { IsGate: true } home ? home : null);
+        if (gate is null || Targeted(gate.Key) || Busy(world.Characters.IdOf(worker))) return;
+        if (world.IsPlayerFaction(world.Fixtures.DoorOwner(gate.Key))) return;
+
+        // DOOR_IS_OPEN (FUN_1405a3ad0) holds for an open door or one opening past 0.8; an opening one gets there by itself.
+        var door = FirstDoor(world, gate.Key);
+        if (door is null || door.DoorBroken || door.Motion is not (DoorMotion.Closed or DoorMotion.Closing)) return;
+        if (door.Lock is { EffectivelyLocked: true } && door.Owner != world.Characters.Cold(worker)!.Faction) return;
+
+        if (StartDoors(world, worker, RoundKind.UnlockDoors, gate.Key, Extent(gate))) started++;
     }
 
     /// <summary>

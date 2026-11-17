@@ -131,7 +131,15 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         foreach (var f in GameComponentSchema.ViewFields.Where(f => !GameCollectionSchema.Ids.Contains(f.Id) && (baseline || f.Id != 7)))
             Add(0, 0, f.Id, f.Encode(codec, view));
         foreach (var f in GameComponentSchema.SnapshotFields.Where(f => !GameCollectionSchema.Ids.Contains(f.Id)))
-            Add(0, 0, f.Id, f.Encode(codec, view.Snapshot));
+        {
+            // Registered labels are immutable for the session; reuse their encoded bytes without altering publication cadence.
+            bool staticLabels = f.Id == 1062;
+            byte[] bytes = staticLabels && view.Snapshot.ModJobNames is System.Collections.Frozen.FrozenDictionary<int, string>
+                && _previousObjects.TryGetValue((0, f.Id), out var prior)
+                && ReferenceEquals(prior, view.Snapshot.ModJobNames) && _previous.TryGetValue((0, f.Id), out var cached)
+                ? cached : f.Encode(codec, view.Snapshot);
+            Add(0, 0, f.Id, bytes, staticLabels ? view.Snapshot.ModJobNames : null, staticLabels);
+        }
         ReserveCaptured(CaptureCollections(view, (kind, field, value) => records.Add((kind, 0, 0, field, value))));
         foreach (var c in view.Snapshot.Characters)
         {

@@ -12,7 +12,7 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-5108032d-authority-1-combat-sync-1`; both endpoints require item-tag digests, compressed JSON component envelopes,
+The current identity is `meitou-upstream-3072d79c-authority-1`; both endpoints require item-tag digests, compressed JSON component envelopes,
 experience rules, corpse-machine sound metadata and sparse binary ragdoll poses,
 the [diagnostic control messages](diagnostics.md), mod-presentation components and editor-open command, in addition to the presentation-event
 and bounty contracts in [networking-next](networking-next.md).
@@ -91,6 +91,61 @@ Command 121 (`InPlayEditorOpened`) carries one character and its server-issued e
 character and surgeon proximity are checked before hair restoration. The session records that opening already ran, so replay does not undo
 later shaving; captivity stays intact. Remote debug stat/editor commands remain unexposed. Source/binary compatibility is enforced at admission.
 Payload estimates, bounds and the 500 KiB/s optimization target live in [the bandwidth contract](networking-next.md#upstream-presentation-budget).
+
+### Squads, mod jobs and interaction closure
+
+**Observed** (source): fields 1060/1061/1062 carry `IndependentSquads`, `InventoriesClosed` and `ModJobNames` respectively.
+Independent rosters are scoped to member factions and observable members; the active faction is projected by `RemotePlayerSession`.
+An independence change advances existing role revisions and removes selection/control availability without deleting persistent ownership.
+Orders recheck current controllability, so a command captured before the switch cannot direct an independent member.
+Squad-management commands still require current faction permission; remote callers cannot assign a mod's `Owner` identity.
+A player-issued independence switch keeps at least one other controllable role for every affected controller, including mixed-owner
+squads. Trusted mod commands retain their own independence/recovery semantics and the upstream last-led-squad rule.
+
+Inventory closure routes by the affected actor's controller (or each affected faction member), closes only that player's open trade,
+loot/container windows and barter, and advances their closure counter. Pending walk-up open orders remain intact. Other players keep
+their own interaction sessions. Fixture town identities and held-item attach slots use their existing typed fixture/held components.
+`OrderCommand.Clicked` travels in the typed command body; the authority derives the task point from the resolved building and terrain.
+`CagesSpareOwn` is an authoritative rule included in compatibility and remote read-only settings.
+
+Mod job names are registered once, copied into an immutable table and encoded once per recipient baseline; unchanged tables add no delta.
+Registration and decoding share the 4096-type/256-UTF-16-unit name bounds, with explicit rejection rather than dropped entries.
+Global components share the 32 MiB expanded-publication bound; the 256 KiB deferred-character bound does not apply to this table.
+Mod map markers derive from the authorized client snapshot; the callback adds no marker traffic and cannot replicate private mod state.
+See [mod registration and multiplayer authority](modding.md).
+
+### Incremental component bandwidth
+
+**Observed** (2026-11-17, .NET 11 Release, synthetic detached snapshots): a temporary diagnostic used the production
+`GameStatePublisher`/`GameStateReplica`, checked complete encode/decode equality, and counted actual component, bulk, control and lane
+frames. Ten seconds at the existing 10 Hz component cadence; the maximum-label baseline used ten subsequent unchanged captures.
+These isolate the listed data, with no character motion, inventories or other scene traffic.
+
+| Changed data | Additional server-to-client KiB/s | Client ACK KiB/s |
+| --- | ---: | ---: |
+| 10 independent squads, 100 members, 32 static job labels: unchanged after baseline | 0 | 0 |
+| Same roster: one member revision and one inventory closure per second | 1.688 | 0.166 |
+| 100 squads, 2000 members: one member per squad and one closure change on every 10 Hz publication | 74.572 | 2.344 |
+| 100 batteries: every charge plus town power totals change at 10 Hz | 25.457 | 1.660 |
+| 300 batteries: every charge plus town power totals change at 10 Hz | 44.712 | 1.660 |
+| 300 worksites: one owner/site-revision change per second | 3.871 | 0.166 |
+| Held item's attach slot changes at 10 Hz | 10.938 | 1.660 |
+
+The table subtracts the identical 1.748 KiB/s clock-only lifecycle shell. It includes component records, 76-byte state-frame headers,
+4-byte packing/lane lengths, 52-byte bulk headers per 4096-byte chunk, manifest/commit/active control messages and a 321-byte minimal
+admission status. ACK accounting charges every chunk separately; production may coalesce them. Actual role lists enlarge admission
+status. QUIC/TLS/UDP/IP headers, retransmission, motion and all omitted gameplay traffic are excluded, so this is not a measurement of
+total gameplay throughput or acceptance of the 500 KiB/s/player average target.
+
+Static worksites did not retransmit while batteries charged. Three hundred town-tagged fixtures also produced zero steady-state deltas;
+their complete synthetic baseline was 70,243 bytes down and 1,290 ACK bytes. In uncompressed item JSON, a town `{Site:100, Wild:-1}`
+adds 30 bytes per fixture and a one-digit held attach slot adds 15 bytes. Ordinary inventory closure alone is a 21–22-byte component
+record for counters 1–99, before publication framing and any other interaction state that the closure changes.
+
+The complete 4096-name boundary with 256 random CJK code units per name encoded and decoded without truncation: 6,332,417 bytes of
+label JSON, a 2,951,210-byte complete baseline down, and 49,870 conservative ACK bytes. Subsequent unchanged captures sent zero label
+bytes. A 10-squad/100-member baseline with 32 forty-unit labels was 3,932 bytes down, versus 3,097 for its empty control snapshot.
+Names are immutable and their encoded component is cached; the new fields add no rate limit, publishing delay or skipped updates.
 
 ### Item actions and shared stock
 

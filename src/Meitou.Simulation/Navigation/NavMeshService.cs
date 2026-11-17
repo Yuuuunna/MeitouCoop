@@ -48,9 +48,9 @@ internal sealed class NavMeshService : IDisposable
     /// </summary>
     readonly NavRuntimeBuildings? _runtime;
     /// <summary>
-    /// The zones waiting for the worker, in request order; a zone is added once while it is pending.
+    /// The zones waiting for the worker; a zone is added once while it is pending.
     /// </summary>
-    readonly BlockingCollection<Attempt> _queue = [];
+    readonly NavBuildQueue<Attempt> _queue = new(attempt => attempt.Request.Zone);
     /// <summary>
     /// The task of each requested zone until it is published, unloaded or fails; a zone not in it is not wanted any more.
     /// </summary>
@@ -155,7 +155,12 @@ internal sealed class NavMeshService : IDisposable
     /// </summary>
     public Task<NavZoneReady> Request(ZoneCoordinate zone) => Request(zone, prepared: false);
     /// <summary>
-    /// Builds a zone again although its mesh is loaded (the buildings round it changed, <see cref = "NavRuntimeBuildings"/>): the new mesh replaces the
+    /// Ranks the queued zones by where <paramref name="world"/>'s player characters stand and walk (<c>NavBuildQueue.Favour</c>).
+    /// </summary>
+    public void Favour(World world) => _queue.Favour(world);
+
+    /// <summary>
+    /// Builds a zone again although its mesh is loaded (the buildings round it changed, <see cref="NavRuntimeBuildings"/>): the new mesh replaces the
     /// old one when it is published, which is when the task completes. A zone not loaded is not built (it is built with the overlay when it is asked
     /// for).
     /// </summary>
@@ -230,7 +235,7 @@ internal sealed class NavMeshService : IDisposable
         {
             using var gatherer = _build is null ? new ZoneGeometryGatherer(_install!, _db!, _levels!, _collisions!) : null;
             uint settingsHash = _build is null ? NavMeshCache.SettingsHash(Settings) * 16777619 ^ NavMeshCache.ContentHash(_install!, _db!, _levels!) : 0;
-            foreach (var attempt in _queue.GetConsumingEnumerable())
+            while (_queue.Take() is { } attempt)
             {
                 NavRuntimeBuildings? snapshot;
                 lock (_gate)
@@ -325,7 +330,7 @@ internal sealed class NavMeshService : IDisposable
             foreach (var request in _pending.Values)
                 Cancel(request);
             _pending.Clear();
-            _queue.CompleteAdding();
+            _queue.Close();
         }
 
         if (Thread.CurrentThread != _worker)

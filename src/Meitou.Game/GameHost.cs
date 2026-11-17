@@ -314,6 +314,10 @@ sealed partial class GameHost(
     internal Meitou.Runtime.WorldContent? SimulationContent;
 
     /// <summary>
+    /// The action log the session's worlds follow characters with (log_actions.txt; <c>--action-log</c>, F10 "Action log").
+    /// </summary>
+    internal readonly Host.ActionLogHost ActionLogs = new();
+    /// <summary>
     /// The world's population system; null without population.
     /// </summary>
     internal Simulation.Population.PopulationSystem? Population;
@@ -586,6 +590,7 @@ sealed partial class GameHost(
     int RunOnce()
     {
         CreateFeatures();
+        ActionLogs.Scope = WorldOptions.ActionLog;
         try
         {
 #if MEITOU_METAL
@@ -607,6 +612,7 @@ sealed partial class GameHost(
             Player?.DisposeOnline();
             if (Session is IAsyncDisposable asynchronous) asynchronous.DisposeAsync().AsTask().GetAwaiter().GetResult();
             else if (Session is IDisposable disposable) disposable.Dispose();
+            ActionLogs.Dispose();
             SimulationContent?.Dispose();
             if (SimulationContent is null)
             {
@@ -716,6 +722,7 @@ sealed partial class GameHost(
         LocalSession.World.BenchFacingFix = Config.FixBenchFacing;
         LocalSession.World.BagSearchFix = Config.FixBagSearch;
         LocalSession.World.TakeIntoBackpack = Config.TakeIntoBackpack;
+        LocalSession.World.ActionLog = ActionLogs.Log;
         LocalSession.Simulation.SetFastSpeeds(Config.FastSpeed, Config.FastestSpeed);
         if (Gpu.Characters is { } nearChars)
             LocalSession.World.NearRadius = nearChars.NearReach;   // every drawn character steps every tick (docs/simulation.md "Far cadence")
@@ -1157,6 +1164,7 @@ sealed partial class GameHost(
     void ConnectFactions(PlayerInterface ui)
     {
         ui.FactionName = faction => Session.DescribeFaction(faction)?.Name is { Length: > 0 } name ? name : null;
+        ui.OwnerName = (faction, town) => BuildingSync.OwnerName(faction, town);
         ui.PlayerFactionName = () => ui.FactionName?.Invoke(Session.ActiveFaction) ?? "";
         ui.FactionWindow.FactionNameTaken = name => Session.FactionCatalogue.Any(f => f.Faction != Session.ActiveFaction && f.Name == name);
         ui.FactionWindow.FactionInfo = () => Session.FactionInformation;
@@ -1165,7 +1173,7 @@ sealed partial class GameHost(
                 && !f.NotReal && f.RecordId != "GENERATION_TEMPLATE_FACTION")
             .Select(f => (Faction: f, Standing: Session.StandingTowards(f.Faction)))
             .Where(p => p.Standing is not null)
-            .Select(p => (p.Faction.Name, p.Standing!.Relation)).ToArray();
+            .Select(p => new FactionListRow(p.Faction.Faction, p.Faction.Name, p.Standing!.Relation)).ToArray();
     }
 
     /// <summary>
@@ -1233,6 +1241,7 @@ sealed partial class GameHost(
     {
         ui.ArmourOf = record => PopData?.Combat.Armour(record);
         ui.RecordName = id => PopData?.Db.Find(id)?.Name;
+        ui.PopulationOf = () => PopData;
         ui.PricesOf = PriceLookup();
         ui.GroundItemPicks.ArtifactOf = id => PopData?.Db.Find(id)?.GetBool("artifact") == true;
 

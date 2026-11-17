@@ -193,12 +193,15 @@ public sealed partial class World
             KnownFactions = Player.KnownFactions,
             SquadAi = Player.SquadAi,
             PlayerSquads = PublishSquads(),
+            IndependentSquads = PublishIndependentSquads(),
+            ModJobNames = PublishModJobNames(),
             ActiveSquad = Player.Squad,
             OpenLoot = Player.OpenLoot,
             LootOpener = Player.LootOpener,
             ContainerOpener = Player.OpenContainer is null ? CharacterId.None : Player.ContainerOpener,
             Held = Player.Held is { } held ? Items.HeldItemView.Of(held) : null,
             HeldSerial = Player.HeldSerial,
+            InventoriesClosed = Player.InventoriesClosed,
             Buildings = Buildings.Published(BuildingRevision),
             BuildingsRevision = Buildings.Revision,
             NestBuildings = NestBuildings.Published(),
@@ -274,7 +277,19 @@ public sealed partial class World
     /// <summary>
     /// The sneaker's watchers of the last <see cref="AggroSystem.WatcherSeconds"/> that are still about, where they stand now.
     /// </summary>
-    SquadView[] PublishSquads() => [.. SquadManagement.PlayerSquads(this).Select(s => new SquadView(s.Id, s.Name, [.. s.Members]))];
+    SquadView[] PublishSquads() => [.. SquadManagement.LedSquads(this).Select(s => new SquadView(s.Id, s.Name, [.. s.Members]))];
+
+    /// <summary>
+    /// The player's squads the player does not lead, for <see cref="WorldSnapshot.IndependentSquads"/>.
+    /// </summary>
+    SquadView[] PublishIndependentSquads() =>
+        [.. SquadManagement.PlayerSquads(this).Where(s => s.Independent).Select(s => new SquadView(s.Id, s.Name, [.. s.Members]))];
+
+    /// <summary>
+    /// The registered job labels from the authoritative player system, detached before network encoding.
+    /// </summary>
+    IReadOnlyDictionary<int, string> PublishModJobNames() =>
+        SystemOf<PlayerSystem>()?.Extensions?.PublishedJobNames ?? System.Collections.Frozen.FrozenDictionary<int, string>.Empty;
 
     #endregion
 
@@ -767,23 +782,10 @@ public sealed partial class World
     {
         bool stolen = item.IsStolenFor(faction, population);
 
-        return new InventoryItemView(index, item.Record, item.Name, item.Section, item.X, item.Y, item.Width, item.Height, item.Quantity, item.Weight,
-            item.Quality)
+        return InventoryItemView.Of(index, item) with
         {
-            Material = item.MaterialId,
-            Rotated = item.Rotated,
-            Colour = item.ColourId,
-            Charge = item.ChargeFraction,
-            Company = item.CompanyId,
-            Crafter = item.Crafter,
-            ModTag = item.ModTag,
-            Level = item.Level,
-            Charges = item.Charges,
-            MaxCharges = item.MaxCharges,
             StolenFrom = stolen ? item.StolenFrom : -1,
             StolenOwner = stolen ? Characters.OwnerNameOf(item.Owner) : null,
-            Unique = item.Unique,
-            BagItems = item.Contents?.Items.Count ?? -1,
             StealChance = steal?.Invoke(item)
         };
     }
@@ -912,16 +914,18 @@ public sealed partial class World
         int mode = combat?.StatsDisplayMode(id, cold, moving) ?? (cold.Fighter is { Unarmed: false } ? 0 : 1);
         var hc = combat?.HudNumbers(this, id.Slot, cold);
         var lines = HudTips.Lines(cold, med, stats, hc, constants, inBuilding, inside, mode);
+        bool combatMode = combat is not null && CharacterFacts.InCombatMode(combat, Characters, id, cold, true, true);
         var extended = cold.Extended is { } x0 && _systems.OfType<BodySystem>().FirstOrDefault() is { } bodies
-            ? bodies.WithCombatMode(x0, cold, combat is not null && CharacterFacts.InCombatMode(combat, Characters, id, cold, true, true))
+            ? bodies.WithCombatMode(x0, cold, combatMode)
             : cold.Extended;
+        bool stealthMode = (cold.Orders & CharacterOrders.Sneak) != 0 && !combatMode;
         return new HudView(med.Blood, MedicalState.BloodCapacity(race, stats.Strength, med.HasStatsObject, med.ScaleK, med.ScaleZ), med.Bleeding,
             cold.Fighter?.EncumbranceFactor ?? 1, lines.AsReadOnly(), extended)
         {
             BleedRate = race.BleedRate,
             Fed = med.Fed,
             Robot = race.IsRobot,
-            ExtendedTips = extended is { } x ? HudTips.Extended(cold, med, race, stats, x, constants) : null,
+            ExtendedTips = extended is { } x ? HudTips.Extended(cold, med, race, stats, x, constants, stealthMode) : null,
             Skill = SkillLine(id, cold, med, race, stats, hot, combat, mode),
             KoPoint = constants is null ? null : MedicalState.KoPoint(constants, stats.ScaledToughness),
             StatReadouts = HudTips.StatsWindow(cold, med, race, stats, hc, constants, db)
@@ -988,7 +992,8 @@ public sealed partial class World
         {
             float s = Orders.Stealth(cold);
             int total = (int)(s * 100), trained = (int)stats[StatsEnumerated.Stealth];
-            float t = MathF.Max(0, (s - 0.1f) / 0.8f), top = hot.MaxSpeed;
+            // FUN_14088f9a0's "Max speed:" lerps once more from the stats' S (the panel's run speed), which already carries the sneaking cap.
+            float t = MathF.Max(0, (s - 0.1f) / 0.8f), top = cold.StatsTopSpeed ?? hot.MaxSpeed;
             return new(StatsEnumerated.Stealth, "Stealth:", total)
             {
                 Base = trained,
@@ -1005,7 +1010,7 @@ public sealed partial class World
         {
             Athletics = new((int)stats.Athletics, Speed.RunValue(race, stats.Athletics), (int)((1 - Speed.LegFactor(med)) * 100),
                 (int)((1 - encumbrance) * 100), cold.Fighter?.AthleticsFactor ?? 1, (int)((med.LegItemFactor(StatsEnumerated.Athletics) - 1) * 100),
-                hot.MaxSpeed)
+                cold.StatsTopSpeed ?? hot.MaxSpeed)   // FUN_14088e780's "Total speed:", the stats' S
         };
     }
 
@@ -1141,9 +1146,8 @@ public sealed partial class World
             ? Crime.CrimeSystem.StealChanceOf(this, thief, Crime.StealSource.Of(f))
             : null;
         var storage = new InventoryView(grid.Width, grid.Height, 0, 0,
-            Array.AsReadOnly(grid.Items.Select((item, index) => (item, index)).Select(e => new InventoryItemView(e.index, e.item.Record,
-                e.item.Name, "main", e.item.X, e.item.Y, e.item.Width, e.item.Height, e.item.Quantity, e.item.Weight, e.item.Quality)
-            { Material = e.item.MaterialId, Rotated = e.item.Rotated, Colour = e.item.ColourId, Charge = e.item.ChargeFraction, Company = e.item.CompanyId, Level = e.item.Level, Charges = e.item.Charges, MaxCharges = e.item.MaxCharges, Unique = e.item.Unique, ModTag = e.item.ModTag, StealChance = steal }).ToArray()));
+            Array.AsReadOnly(grid.Items.Select((item, index) => InventoryItemView.Of(index, item) with
+            { Section = "main", StealChance = steal }).ToArray()));
         return new Production.MachineSnapshot(id, f.RecordId, [], null, storage, null, 0, 0, 0)
         { IsContainer = true, ContainerSessionId = player.ContainerSessionId, ContainerOpener = player.ContainerOpener, StorageRevision = InventoryRevision(grid) };
     }

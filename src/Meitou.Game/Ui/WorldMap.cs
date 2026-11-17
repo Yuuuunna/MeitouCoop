@@ -324,6 +324,16 @@ sealed class WorldMap(PlayerInterface player)
     readonly Dictionary<string, Vector2> _markerSizes = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Marker group to whether Kenshi_MapMarkers has its image (<see cref="KnownGroup"/>'s cache).
+    /// </summary>
+    readonly Dictionary<string, bool> _knownGroups = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Mod to how many of its map markers this frame has named so far (<see cref="AddModMarkers"/>).
+    /// </summary>
+    readonly Dictionary<string, int> _modMarkerCounts = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// The placed towns (the population's sites, in the order of <see cref="WorldSnapshot.Towns"/>); the host sets it.
     /// </summary>
     public Func<IReadOnlyList<TownSite>>? MapTowns { get; set; }
@@ -419,6 +429,7 @@ sealed class WorldMap(PlayerInterface player)
         var players = snapshot.Characters.Where(c => c.IsPlayer).ToList();
         var frame = new MapFrame { Controls = controls, At = imageIndex, Bounds = bounds, Ui = ui, Level = level, Players = players };
         AddPlaces(ref frame, snapshot);
+        AddModMarkers(ref frame, snapshot);
 
         // The tracked squads and, over them, the player's characters; all hidden at the least zoom level.
         if (level > 0)
@@ -456,6 +467,17 @@ sealed class WorldMap(PlayerInterface player)
 
         var props = new Dictionary<string, string> { ["ImageResource"] = "Kenshi_MapMarkers", ["ImageGroup"] = group, ["ImageName"] = group };
         return _markerSizes[group] = MyGuiImages.Resolve(player.UiResources, props) is { } i ? new(i.Source.Width, i.Source.Height) : new(32);
+    }
+
+    /// <summary>
+    /// Whether Kenshi_MapMarkers has an image for <paramref name="group"/>, cached (a code mod's marker must name one).
+    /// </summary>
+    bool KnownGroup(string group)
+    {
+        if (_knownGroups.TryGetValue(group, out bool known)) return known;
+
+        var props = new Dictionary<string, string> { ["ImageResource"] = "Kenshi_MapMarkers", ["ImageGroup"] = group, ["ImageName"] = group };
+        return _knownGroups[group] = MyGuiImages.Resolve(player.UiResources, props) is not null;
     }
 
     /// <summary>
@@ -594,6 +616,36 @@ sealed class WorldMap(PlayerInterface player)
     {
         string relation = faction is { } f ? MathF.Round(f.Relation).ToString(CultureInfo.InvariantCulture) : "-";
         return $"{shownName}\nFaction:\t{faction?.Name ?? "-"}\nRelations:\t{relation}";
+    }
+
+    /// <summary>
+    /// The code mods' markers (<see cref="UiRegistration.AddMapMarkers"/>), from the zoom level each asks, centred on its point, sized by its group's
+    /// image and the zoom as a place's is, with its label from zoom level 1. A marker's control is named by its mod and its place in that mod's
+    /// list.
+    /// </summary>
+    void AddModMarkers(ref MapFrame frame, WorldSnapshot snapshot)
+    {
+        if (!player.HasModMapMarkers) return;
+
+        var markers = player.ModMapMarkers(new UiMapContext(snapshot, frame.Level), KnownGroup);
+
+        // Counted per mod, not per run of a mod's markers: a mod's sources need not sit together in registration order.
+        _modMarkerCounts.Clear();
+        for (int i = 0; i < markers.Count; i++)
+        {
+            var (owner, m) = markers[i];
+            _modMarkerCounts.TryGetValue(owner, out int k);
+            _modMarkerCounts[owner] = k + 1;
+            if (frame.Level < m.FromLevel) continue;
+
+            string name = $"map-mod-{owner}-{k}";
+            var size = GroupSize(m.Group) * frame.Ui * (frame.Level == 0 ? 0.5f : 0.85f) * m.Scale;
+            var centre = MapScreen(ref frame, new(m.At.X, 0, m.At.Y));
+            var box = new UiRect(centre.X - size.X / 2, centre.Y - size.Y / 2, size.X, size.Y);
+            AddMarker(ref frame, name, m.Group, box, m.Colour, tooltip: m.Tooltip);
+            if (frame.Level > 0 && !string.IsNullOrEmpty(m.Label))
+                AddLabel(ref frame, name + "-label", m.Label, new(centre.X, box.Y + box.Height + MathF.Round(3.2f * frame.Ui)), m.Colour);
+        }
     }
 
     /// <summary>
@@ -773,8 +825,11 @@ sealed class WorldMap(PlayerInterface player)
         if (!player.FaithfulScreens.IsOpen("inventory") || player.InventoryWindows.InventoryOwner() is not { ItemGrid: { } grid } lead)
             return false;
 
-        var shown = player.Production.Machine(player.Production.ShownMachine);
-        var machine = shown is not null && player.FaithfulScreens.IsOpen(ProductionWindows.MachineScreen(shown)) ? shown : null;
+        // An item of a machine window comes out of that window's machine; the inventory's go to the shown (target) window.
+        string machineScreen = ProductionWindows.IsMachineScreen(screen) ? screen : "storage";
+        var shown = player.Production.Machine(player.Production.SiteOf(machineScreen));
+        bool own = machineScreen.EndsWith(ProductionWindows.OwnSuffix, StringComparison.Ordinal);
+        var machine = shown is not null && player.FaithfulScreens.IsOpen(ProductionWindows.ScreenFor(shown, own)) ? shown : null;
         bool loot = player.FaithfulScreens.IsOpen("loot") && lead.Id == player.Session.CurrentSnapshot.LootOpener;
 
         if (machine is not null && control.Properties.TryGetValue("MachineItem", out var raw))

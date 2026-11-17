@@ -195,7 +195,8 @@ public sealed class AuthorityGateway : IDisposable
     {
         bool loaded = _world.Entities.TryResolve(grant.Entity, out var character);
         var location = _world.Players.LocateRole(player, grant.Entity);
-        return new PlayerRoleView(grant.Entity, character, grant.Faction, grant.Revision, _world.Players.Validate(grant), location?.Availability == PlayerRoleAvailability.Dead)
+        return new PlayerRoleView(grant.Entity, character, grant.Faction, grant.Revision,
+            loaded && _world.Players.CanControl(player, character), location?.Availability == PlayerRoleAvailability.Dead)
         { Availability = location?.Availability ?? PlayerRoleAvailability.Unavailable };
     }).ToArray();
 

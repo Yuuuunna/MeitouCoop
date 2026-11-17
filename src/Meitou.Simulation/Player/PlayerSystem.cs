@@ -312,7 +312,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     {
         var table = world.Characters;
         var candidates = (select.Issuer is null ? select.Characters : world.CommandCharacters(select, select.Characters)).Where(id =>
-            table.TryResolveNext(id, out int slot) && table.Cold(slot)!.IsPlayer).ToArray();
+            table.TryResolveNext(id, out int slot) && table.Cold(slot) is { IsPlayer: true } c && !world.Squads.IsIndependent(c.SquadId)).ToArray();
         if (candidates.Length == 0)
         {
             if (select.Clear && !select.Additive && select.Characters.Count == 0) player.Selection.Clear();
@@ -433,6 +433,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         }
         foreach (int site in sites) player.Know(site, TownKnowledge.Discovered | TownKnowledge.Recent);
         inventory.RemoveOne(item);
+        ItemUseObservers.Report(world, ItemUseKind.Map, item.Record, table.IdOf(owner), null, 1, true);
         world.Post(read.Issuer ?? PlayerId.Local, $"{sites.Count} location(s) added to the map.");
     }
 

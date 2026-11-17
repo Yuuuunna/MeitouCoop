@@ -315,8 +315,7 @@ public sealed partial class ArrestSystem : IOrderOwner
     #region Putting a captive in a cage, and the claim
 
     /// <summary>
-    /// Queues or gives the put-in-cage order (row 108) to a player character carrying a body; <paramref name="chosen"/> names the cage, null:
-    /// the nearest.
+    /// Queues or gives the put-in-cage order (row 108) to a player character carrying a body; the order's cage names it, null: the nearest.
     /// </summary>
     void StartCaging(World world, CharacterId carrier, string? chosen = null, PutInCageOrder? request = null)
     {
@@ -386,7 +385,6 @@ public sealed partial class ArrestSystem : IOrderOwner
     /// </summary>
     void IOrderOwner.Start(World world, int slot, OrderEntry order)
     {
-        if (!world.ValidOrder(slot, order)) return;
         if (!world.ValidOrder(slot, order) || !((IOrderOwner)this).CanRun(world, slot, order).CanRun) return;
         var c = world.Characters.Cold(slot)!;
         if (CageFor(world, slot, c, order.Site) is not { } cage) return;
@@ -759,6 +757,9 @@ public sealed partial class ArrestSystem : IOrderOwner
     void QueueCaging(World world, CharacterId carrier, PutInCageOrder command)
     {
         if (!world.MayOrder(command, carrier) || !world.Characters.TryResolveNext(carrier, out int slot)) return;
-        PlayerOrders.Give(world, slot, world.BindOrder(command, new OrderEntry(TaskType.PutInCage, this) { Site = command.Cage }), command.Queued);
+        var point = command.Cage is { } id && world.Fixtures.Find(id) is { } cage
+            ? OrderEntry.AtBuilding(world, command, cage.Position) : default;
+        var entry = new OrderEntry(TaskType.PutInCage, this) { Site = command.Cage, TaskPoint = point };
+        PlayerOrders.Give(world, slot, world.BindOrder(command, entry), command.Queued);
     }
 }

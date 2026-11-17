@@ -30,8 +30,8 @@ namespace Meitou.Simulation.Movement;
 /// <item>Paths: a character that wants one is flagged in Think; the Schedule step of the next tick asks the <see cref="PathService"/>;
 /// an answer is applied in a serial step, so a path is never read while it is replaced.</item>
 /// </list>
-/// Water states cap or replace the top speed (<see cref="WaterStateAt"/>, <see cref="Speed.InWater"/>). In water a fighter's footwork is scaled too
-/// (x0.75 / 0.5 / 0.4). Not modelled yet (Unknown or later): slopes (the original has no slope penalty), the RACE <c>combat move speed mult</c>. Far
+/// Water states cap or replace the top speed, inside S (<see cref="WaterStateAt"/>, <see cref="Bodies.TopSpeedDelay"/>). In water a fighter's
+/// footwork is scaled too (x0.75 / 0.5 / 0.4). Not modelled yet (Unknown or later): slopes (the original has no slope penalty), the RACE <c>combat move speed mult</c>. Far
 /// trips take the roads in the path layer (<see cref="CharacterCold.RoadPreference"/>).
 /// <item>Followers (the original's <c>Task_Follow</c>, docs/game/pathfinding.md "Squads travelling together"): a squad mate aims at its
 /// <see cref="Formation.Layout"/> slot turned onto a heading that eases toward the leader's, one second ahead of the leader; anyone else keeps a
@@ -52,6 +52,12 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// How far above or below the given height the floor <see cref="GoToFloor"/> walks onto may be (engine choice: a storey is about 66).
     /// </summary>
     public const float FloorSlack = 20;
+
+    /// <summary>
+    /// How near a move order's point a building's navmesh lies to be the building the order is on (engine reading: the order carries the point
+    /// under the cursor, not the clicked object the original passes).
+    /// </summary>
+    const float OrderBuildingReach = 10;
 
     /// <summary>
     /// Takes the path answers in, then this tick's movement commands (repaths, sandbox settings, follow and move orders), and rebuilds the squads'
@@ -92,14 +98,22 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// A move order (29) needs an awake character (one out cold keeps it queued until it wakes); a follow order (31, 45) a target that is there, and
-    /// an awake, free character (not caged or carried).
+    /// A move order (29) needs an awake character (one out cold keeps it queued until it wakes) and, out of a building shut by locked doors, a way
+    /// through them (state 60, <see cref="Locks.LockSystem.CanLeave"/>: "I can't get out of here.", the state's failure text in the condition table
+    /// <c>FUN_140610250</c>); a follow order (31, 45) a target that is there, and an awake, free character (not caged or carried).
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
         var table = world.Characters;
         if (order.IsMove)
-            return table.Cold(slot)!.Medical?.Incapacitated == true ? OrderCheck.Blocked() : OrderCheck.Run;
+        {
+            if (table.Cold(slot)!.Medical?.Incapacitated == true) return OrderCheck.Blocked();
+
+            var to = new Vector2(order.Point.X, order.Point.Z);
+            return world.SystemOf<Locks.LockSystem>() is { } locks && !locks.CanLeave(world, slot, to)
+                ? OrderCheck.Blocked(Loc.Tr("I can't get out of here."))
+                : OrderCheck.Run;
+        }
         if (!table.TryResolveNext(order.Target, out int led) || led == slot) return OrderCheck.Gone;
 
         bool free = table.Cold(slot) is { IsImprisoned: false, Medical.Incapacitated: false, CarriedBy.IsNone: true };
@@ -380,8 +394,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// <see cref="MoveOrder"/>: each of the characters (the selection when empty) gets a move to its scattered point; a prisoner keeps it queued,
-    /// a sleeper gets up.
+    /// <see cref="MoveOrder"/>: each of the characters (the selection when empty) gets a move to its point (<see cref="MovePoints"/>); a prisoner
+    /// keeps it queued, a sleeper gets up.
     /// </summary>
     void GiveMove(World world, MoveOrder order)
     {
@@ -399,7 +413,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             if (!TaskStart.Eligible(world, table.Cold(found)!, TaskType.MoveCusOrdered))
             {
                 // A prisoner stays in its cage (row 29 is not registered for the imprisoned or chained): the order waits in its queue.
-                PlayerOrders.Give(world, found, world.BindOrder(order, new OrderEntry(TaskType.MoveCusOrdered, this) { Point = order.Target }), order.Queued);
+                var waiting = new OrderEntry(TaskType.MoveCusOrdered, this) { Point = order.Target, TaskPoint = order.Target };
+                PlayerOrders.Give(world, found, world.BindOrder(order, waiting), order.Queued);
                 continue;
             }
 
@@ -409,18 +424,52 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             slots.Add(found);
         }
 
-        var targets = Formation.Scatter(slots.Count, new Vector2(order.Target.X, order.Target.Z));
+        var points = MovePoints(world, slots, order.Target);
 
         for (int k = 0; k < slots.Count; k++)
         {
             int slot = slots[k];
-            var target = targets[k];
             table.Cold(slot)!.FollowOrder = CharacterId.None;
 
             // Shift + right click: after the order in hand.
-            var entry = new OrderEntry(TaskType.MoveCusOrdered, this) { Point = new Vector3(target.X, order.Target.Y, target.Y) };
+            var entry = new OrderEntry(TaskType.MoveCusOrdered, this) { Point = points[k], TaskPoint = points[k] };
             PlayerOrders.Give(world, slot, world.BindOrder(order, entry), order.Queued);
         }
+    }
+
+    /// <summary>
+    /// The characters' points of a move order (order 0x1d in <c>FUN_1407f9e20</c>, <b>Verified</b>): an animal that the building the order is on
+    /// keeps out and that is not inside it goes past the building's first door, or to the point itself for a building without a door, and draws
+    /// no scatter; the others take <see cref="Formation.Scatter"/> in order.
+    /// </summary>
+    static Vector3[] MovePoints(World world, List<int> slots, Vector3 target)
+    {
+        string? building = world.Walkability.InteriorNear(target, OrderBuildingReach);
+        var points = new Vector3[slots.Count];
+        var kept = new bool[slots.Count];
+        for (int k = 0; k < slots.Count; k++)
+            if (building is not null && KeptOutPoint(world, slots[k], building, target) is { } past) (points[k], kept[k]) = (past, true);
+
+        var spread = Formation.Scatter(slots.Count, new Vector2(target.X, target.Z), kept);
+        for (int k = 0; k < slots.Count; k++)
+            if (!kept[k]) points[k] = new Vector3(spread[k].X, target.Y, spread[k].Y);
+
+        return points;
+    }
+
+    /// <summary>
+    /// Where a move order on <paramref name="building"/> sends a character the building keeps out (<see cref="Locks.AnimalEntry.KeptOut(
+    /// CharacterCold, bool, bool)"/>) from outside it: past its first door (<see cref="Locks.DoorPoints.PastFirstDoor"/>), else the order's
+    /// point; null for any other character.
+    /// </summary>
+    static Vector3? KeptOutPoint(World world, int slot, string building, Vector3 target)
+    {
+        if (world.Characters.Cold(slot) is not { } c || !SquadRegistry.IsAnimal(c) || world.Sight.BuildingOf(slot) == building) return null;
+        if (Locks.LockSystem.FirstDoor(world, building) is { } door)
+            return Locks.AnimalEntry.KeptOut(c, door) ? Locks.DoorPoints.PastFirstDoor(world, door) ?? target : null;
+
+        var record = world.SystemOf<Ai.AiSystem>()?.BuildingRecordOf(world, building, target);
+        return record is not null && Locks.AnimalEntry.KeptOut(c, Locks.AnimalEntry.Allows(record), record.GetBool("cavernous")) ? target : null;
     }
 
     /// <summary>
@@ -624,7 +673,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             var splice = SpliceTarget(next[i], cold);
             var to = splice ?? new Vector3(next[i].Goal.X, world.Walkability.GroundHeight(next[i].Goal.X, next[i].Goal.Y, nearY), next[i].Goal.Y);
             cold.PathRequest = Paths.SubmitObserved(new CharacterId(i, next[i].Generation), next[i].Position, to, cold.FootprintRadius,
-                WaterCost.Of(cold.WaterFactor, next[i].MaxSpeed, cold.Race, cold.SwimSpeed), cold.RoadPreference,
+                WaterCost.Of(cold.WaterFactor), cold.RoadPreference,
                 observeLatency: world.MovementTrace?.Tracks(i) == true, urgent: cold.IsPlayer);
             world.MovementTrace?.PathQueued(i, Paths, cold.PathRequest);
             if (splice is null) ClearSplice(cold);
@@ -1034,8 +1083,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             return;
         }
 
-        if (table.Cold(leader.Slot)?.CarriedBy == table.IdOf(i))
-            return;   // it carries its leader: the squad follows it, it does not follow itself
+        // It carries its leader: the squad follows it, it does not follow itself. Nor does the original's: a carried character is down (isDown), the
+        // follow rows need it standing (state 7), so no Task_Follow runs and no hold point is written.
+        if (table.Cold(leader.Slot)?.CarriedBy == table.IdOf(i)) return;
 
         var lead = prev[leader.Slot];
         var self = table.IdOf(i);
@@ -1045,11 +1095,13 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         bool moving = leadSpeed > StandingSpeed;
         var here = new Vector2(n.Position.X, n.Position.Z);
         Vector2 slotPos;
-        bool shutOut = false;
+        Vector2? door = null;
+        float aimHeight = lead.Position.Y;
 
         if (squad is not null && squad.FormationSlots.TryGetValue(self, out var slot) && squad.Members.Contains(leader))
         {
-            (slotPos, shutOut) = FormationAim(world, i, dt, n.Position, cold, slot, leader.Slot, lead.Position, leadAt, leadDir, leadSpeed, moving);
+            (slotPos, door, aimHeight) = FormationAim(world, i, dt, n.Position, cold, slot, leader.Slot, lead.Position, leadAt, leadDir, leadSpeed,
+                moving);
         }
         else
         {
@@ -1058,6 +1110,12 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             off = off.LengthSquared() > 1e-6f ? Vector2.Normalize(off) : -leadDir;
             slotPos = leadAt + off * PlainDistance(world.Seed, self, leader);
         }
+
+        // The hold point takes the formation aim, an animal's door aim included, not the wait outside a locked building: that wait is Meitou's (see
+        // ShutOutAim).
+        CarryHoldPoint(cold, slotPos, aimHeight);
+        bool shutOut = door is not null;
+        if (door is { } outside) slotPos = outside;
 
         // A leader on another storey (the Hub Storm House's roof above it): the follower's own floor under its slot would be "there", so it
         // takes a path to the leader itself, on the leader's floor, and the climb counts in its distance (engine choice; the original's
@@ -1084,10 +1142,26 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// A squad mate's aim: its slot turned onto its eased heading, one second of the leader's travel ahead of the leader; outside the door when the
-    /// leader is shut in from it (<see cref="ShutOutAim"/>, the second value true).
+    /// A follower's aim becomes its hold point on every step (<c>Task_Follow</c>'s update <c>FUN_14033b350</c> writes it whether holding or not,
+    /// sneaking too, <b>Verified</b>): a bodyguard on Hold takes its post along. A person's aim is the followed character's position plus a flat
+    /// offset (the formation slot, <c>FUN_1403335c0</c>, or the drawn distance, <c>FUN_140333500</c>), so at its height; the door aim of that
+    /// formation branch is an animal's only (the follower's slot 101 is 1 for every person, <see cref="AnimalDoorAim"/>), at the door point's
+    /// height. Turning Hold on resets the point to where the character stands, so it is written only while the Hold toggle is on. The update's early returns write nothing; none reaches a holder here:
+    /// Meitou follows only characters, a removed one ends the follow first as the unresolved handle does, and the lost-target end needs a follower
+    /// outside the player's faction (<c>FUN_14033a700</c>), while Hold is the player's.
     /// </summary>
-    static (Vector2 Aim, bool ShutOut) FormationAim(World world, int i, float dt, Vector3 at, CharacterCold cold, Vector2 slot, int leader,
+    static void CarryHoldPoint(CharacterCold cold, Vector2 aim, float y)
+    {
+        if ((cold.Orders & CharacterOrders.Hold) != 0) cold.HoldPoint = new Vector3(aim.X, y, aim.Y);
+    }
+
+    /// <summary>
+    /// A squad mate's aim: its slot turned onto its eased heading, one second of the leader's travel ahead of the leader; for an animal kept out of
+    /// the building the leader is in, the door aim instead (<see cref="AnimalDoorAim"/>, the original's own aim, so the hold point takes it too);
+    /// and, when the leader is shut in from it, where it waits outside the door instead (<see cref="ShutOutAim"/>), else null; with the aim's
+    /// height (the leader's, or the door point's).
+    /// </summary>
+    static (Vector2 Aim, Vector2? ShutOut, float Height) FormationAim(World world, int i, float dt, Vector3 at, CharacterCold cold, Vector2 slot, int leader,
         Vector3 leaderAt, Vector2 leadAt, Vector2 leadDir, float leadSpeed, bool moving)
     {
         var heading = cold.FollowHeading;
@@ -1103,11 +1177,31 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         }
 
         cold.FollowHeading = heading;
-        var slotPos = leadAt + heading * leadSpeed + Formation.ToWorld(slot, heading);
-        if (ShutOutAim(world, leader, i, leaderAt, at) is { } outside)
-            return (outside + Formation.ToWorld(slot, heading) * DoorSlotScale, true);
+        var turned = Formation.ToWorld(slot, heading);
+        if (AnimalDoorAim(world, leader, cold) is { } door)
+        {
+            var aim = new Vector2(door.X, door.Z) + turned * DoorSlotScale;
+            return (aim, aim, door.Y);
+        }
 
-        return (slotPos, false);
+        var slotPos = leadAt + heading * leadSpeed + turned;
+        if (ShutOutAim(world, leader, i, leaderAt, at) is { } outside) return (slotPos, outside + turned * DoorSlotScale, leaderAt.Y);
+
+        return (slotPos, null, leaderAt.Y);
+    }
+
+    /// <summary>
+    /// The door aim of the formation (<c>FUN_1403335c0</c>, <b>Verified</b>): when the building the leader is in keeps the follower out
+    /// (<see cref="Locks.AnimalEntry.KeptOut(CharacterCold, Locks.Fixture)"/>: an animal whose slot 101 fails, in a building without
+    /// <c>allow animals</c>), the point past its first door (<see cref="Locks.DoorPoints.PastFirstDoor"/>); null when the branch does not run (no
+    /// such building, no door).
+    /// </summary>
+    static Vector3? AnimalDoorAim(World world, int leader, CharacterCold cold)
+    {
+        if (!SquadRegistry.IsAnimal(cold) || world.Sight.BuildingOf(leader) is not { } inside) return null;
+        if (Locks.LockSystem.FirstDoor(world, inside) is not { } first || !Locks.AnimalEntry.KeptOut(cold, first)) return null;
+
+        return Locks.DoorPoints.PastFirstDoor(world, first);
     }
 
     /// <summary>
@@ -1233,9 +1327,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         20 + 20 * Rng.Float(Rng.Hash(seed, Rng.Key(self), RngPurpose.Formation, Rng.Key(target)));
 
     /// <summary>
-    /// Where a squad mate waits while its leader is inside a building it cannot enter (<c>1403335c0</c>; engine reading of "cannot enter": every door
-    /// of the building locked and whole): outside the door nearest to it, A + (A − B) × 1.1 with A the door's outer point and B its inner. Null when
-    /// the leader is not shut in from it.
+    /// Where a squad mate waits while its leader is inside a building it cannot enter (engine choice: every door of the building locked and whole;
+    /// the original's door aim in <c>1403335c0</c> is an animal's that may not enter, <see cref="AnimalDoorAim"/>): outside the door
+    /// nearest to it, A + (A − B) × 1.1 with A the door's outer point and B its inner. Null when the leader is not shut in from it.
     /// </summary>
     static Vector2? ShutOutAim(World world, int leader, int self, Vector3 leaderAt, Vector3 at)
     {
@@ -1755,7 +1849,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         if (!reached)
         {
             s.Dir = to / dist;
-            s.Desired = PathSpeed(world, i, p, n, cold, s.Water);
+            s.Desired = PathSpeed(world, i, p, n, cold);
 
             // Braking into the last point, never past it.
             if (last) s.Desired = MathF.Min(s.Desired, StopSpeed(dist, PathAcceleration(cold), s.Dt));
@@ -1784,9 +1878,10 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
 
     /// <summary>
     /// The speed a path walker wants: its mode's cap (a carrier's walk raised to a run, a squad's force speed raising it) or a follower's own speed,
-    /// within its top speed in water, then capped in its footwork, by its group, by sneaking, by a campaign's pace, and a crawler's.
+    /// within its top speed (the mover's S, which carries the sneaking cap and the water state, <see cref="Bodies.TopSpeedDelay"/>), then capped in
+    /// its footwork, by its group and by a campaign's pace; a crawler's speed is part of S.
     /// </summary>
-    float PathSpeed(World world, int i, in CharacterHot p, in CharacterHot n, CharacterCold cold, int water)
+    float PathSpeed(World world, int i, in CharacterHot p, in CharacterHot n, CharacterCold cold)
     {
         byte mode = cold.ModeOverride ?? n.Mode;
 
@@ -1799,7 +1894,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         if (!cold.IsPlayer && cold.Ai?.Squad is { ForceSpeed: < Squad.NoForceSpeed } forcing && mode < forcing.ForceSpeed)
             mode = forcing.ForceSpeed;
 
-        float top = water > 0 && cold.Race is { } race ? Speed.InWater(water, n.MaxSpeed, race, cold.SwimSpeed) : n.MaxSpeed;
+        float top = n.MaxSpeed;
         float desired = cold.SpeedOverride > 0
             ? cold.SpeedOverride
             : n.Task == (byte)CharacterTask.Follow
@@ -1813,14 +1908,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         if (mode == SpeedMode.Group && cold.SpeedOverride <= 0 && n.Task != (byte)CharacterTask.Follow)
             desired = MathF.Min(desired, _groupSpeeds.Of(world, i, cold, p.Position));
 
-        if ((cold.Orders & CharacterOrders.Sneak) != 0 && cold.SpeedOverride <= 0)
-            desired = MathF.Min(desired, Orders.SneakSpeed(desired, Orders.Stealth(cold)));
-
         if (cold.PaceCap is { } pace && n.Task == (byte)CharacterTask.GoTo && !cold.InCombat)
             desired = MathF.Min(desired, pace);   // a campaign follower near its trail point
-
-        if (cold.Medical is { Crawling: true } && cold.CarriedBy.IsNone)
-            desired = Speed.Crippled;   // the final override, after water and sneaking
 
         return desired;
     }
@@ -1835,13 +1924,8 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
 
         if (dist > 1e-3f)
         {
-            float top = s.Water > 0 && cold.Race is { } race ? Speed.InWater(s.Water, n.MaxSpeed, race, cold.SwimSpeed) : n.MaxSpeed;
             s.Dir = gap / dist;
-            s.Desired = MathF.Min(MathF.Min(cold.FollowSpeed, top), dist / s.Dt);
-            if ((cold.Orders & CharacterOrders.Sneak) != 0 && cold.SpeedOverride <= 0)
-                s.Desired = MathF.Min(s.Desired, Orders.SneakSpeed(s.Desired, Orders.Stealth(cold)));
-
-            if (cold.Medical is { Crawling: true }) s.Desired = MathF.Min(s.Desired, Speed.Crippled);
+            s.Desired = MathF.Min(MathF.Min(cold.FollowSpeed, n.MaxSpeed), dist / s.Dt);
         }
     }
 

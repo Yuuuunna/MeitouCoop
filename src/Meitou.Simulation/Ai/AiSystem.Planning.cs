@@ -118,7 +118,7 @@ public sealed partial class AiSystem
 
         /// <summary>
         /// Plans a goal; true (and the plan in <see cref="AiMind.Plan"/>) when it has one whose first step the engine carries out. A goal without a
-        /// TaskData row is its own plan; one whose list A already holds is left out (the scorer's done test).
+        /// TaskData row is its own plan; one whose list A already holds is left out when its class's finished test agrees (the scorer's done test).
         /// </summary>
         public bool TryPlan(AiGoal goal, float desire)
         {
@@ -173,7 +173,9 @@ public sealed partial class AiSystem
 
             var target = row.Is(TaskDataFlags.NeedsTarget) && !row.Is(TaskDataFlags.Finder) ? Find(row, default) : default;
             if (row.Is(TaskDataFlags.NeedsTarget) && !row.Is(TaskDataFlags.Finder) && target.IsNone) return false;
-            if (row.Done.Length > 0 && Array.TrueForAll(row.Done, c => Holds(c, target))) return false;
+            // A goal whose list A holds is done (FUN_14060f570) when a fresh task of its class says it is finished (slot 4, FUN_14050df10).
+            if (row.Done.Length > 0 && TaskFinished.Fresh(_world, _slot, type, CharacterId.None) && Array.TrueForAll(row.Done, c => Holds(c, target)))
+                return false;
             if (TaskPlanner.Local.Plan(row, desire, target, this, _mind.Plan, _scratch) <= 0) return false;
             if (_scratch[0].Type != type && !Carried(_scratch[0].Type)) return false;
             _mind.Plan.Clear();
@@ -217,16 +219,15 @@ public sealed partial class AiSystem
         }
 
         /// <summary>
-        /// A level machine addressed by its canonical building identity; the production tick is its only writer.
+        /// A town or outpost machine addressed by its canonical building identity; the production tick is its only writer.
         /// </summary>
         Production.Machine? MachineAt(in PlanTarget target) =>
-            target.Kind is Targets.Work or Targets.Machine && target.Building is { } key
-            && _world.Buildings.Find(key) is { LevelMachine: true } ? _world.Machines.Find(key) : null;
+            target.Kind is Targets.Work or Targets.Machine && target.Building is { } key ? _world.Machines.Find(key) : null;
 
         /// <summary>
-        /// The workplaces of the board's town (none outside a town).
+        /// The workplaces of the board's town, a site's or an outpost's (none outside a town).
         /// </summary>
-        IEnumerable<Meitou.Data.World.TownBuilding> Workplaces() => _board.Town >= 0 ? _system.Places(_board.Town).Workplaces : [];
+        IEnumerable<Meitou.Data.World.TownBuilding> Workplaces() => _system.WorkplacesOf(_board.HomeTown);
 
         /// <summary>
         /// The flat distance to a target (0 for none).
@@ -256,6 +257,11 @@ public sealed partial class AiSystem
                 StateType.MachineHasEmptyInputs => MachineAt(target)?.HasEmptyInputs == true,
                 StateType.IsMachineOutputFull => MachineAt(target)?.OutputBlocked == true,
                 StateType.IsMachineJammed => MachineAt(target)?.Jammed == true,
+                // A seat target is the claimed piece: a workstation of the home's layout as the claim found it (TownPlaceClaims.Claim).
+                StateType.BuildingHasPower => target.Kind == Targets.Seat
+                    ? !_board.UnpoweredSeats.Contains(_slot)
+                    : MachineAt(target) is not { } machine
+                        || _world.SystemOf<Production.ProductionSystem>()?.MachinePowered(_world, machine) != false,
                 // 82 of a machine target (FUN_14059bd80): room in the inventory or the worn backpack for a unit of its output item.
                 StateType.GotInventoryRoomForResources => MachineAt(target) is { Output: { } room } && cold.Inventory is { } bag
                     && _system.Data.Items.Create(room.Recipe.Item, 1) is { } unit && bag.HasRoomFor(unit),
@@ -305,12 +311,12 @@ public sealed partial class AiSystem
             StateType.IsAtHome => _board.Home is not { } home || _mind.HomeUnreachable
                 || Vector2.DistanceSquared(Flat(Me.Position), Flat(home.Position)) <= HomeRadius * HomeRadius,
             // Without a town it is never at its home town; its destination town (patrolling in town) is wherever it is.
-            StateType.IsAtHomeTown => _board.Town >= 0 && _system.AtHomeTown(_world, _mind.Squad, _board, _world.Characters.IdOf(_slot)),
+            StateType.IsAtHomeTown => !_board.HomeTown.IsNone && _system.AtHomeTown(_world, _mind.Squad, _board, _world.Characters.IdOf(_slot)),
             // The running package's mission town when it has one (the trader's next town), else the home town.
             StateType.AtDestinationTown or StateType.AtDestinationTown94 => _board.Destination.IsNone
                 ? _system.AtHomeTown(_world, _mind.Squad, _board, _world.Characters.IdOf(_slot))
                 : _system.CurrentTown(_world, Me.Position) == _board.Destination,
-            StateType.HasDestinationTown => _board.Town >= 0 || !_board.Destination.IsNone,
+            StateType.HasDestinationTown => !_board.HomeTown.IsNone || !_board.Destination.IsNone,
             StateType.AtATown => _system.TownAt(Me.Position) >= 0,
             // Any alarm of its town in reach (goal 210's own-faction filter is its desire's).
             StateType.AlarmsInTheVicinity => _system.AlarmOf(_world, _slot, TaskType.InvestigateAlarms, _board) is not null,
@@ -348,7 +354,7 @@ public sealed partial class AiSystem
             // Held true: moving, standing up, power and buildings; doors are the movement's and the lock-up round's (docs/simulation.md
             // "Planner").
             StateType.IsMovementAllowed or StateType.CanGetUp or StateType.IsBuildingComplete
-                or StateType.BuildingHasPower or StateType.MachineHasFreeOperatorSlot or StateType.IsReadyForAction
+                or StateType.MachineHasFreeOperatorSlot or StateType.IsReadyForAction
                 or StateType.DoorIsOpen or StateType.DoorIsOpenHere or StateType.AtLocationBuildingDoor or StateType.AtCurrentLocationBuildingDoor
                 or StateType.AtLocationBuildingDoorInside or StateType.AtLocationBuildingDoorOutside or StateType.DestinationIsAccessible
                 or StateType.LocationIsAccessible or StateType.DestinationNotBlockedByFortifications or StateType.AtLocationFortificationGate
@@ -380,7 +386,7 @@ public sealed partial class AiSystem
                         return new PlanTarget(Targets.Seat, chair.Position);
 
                     if (_system.NodeGoalFindsNothing(_mind, _board, type)) return default;
-                    return Spot(Targets.Spot, _system.SpotFor(_mind, _board, AiBehaviour.Post, type));
+                    return Spot(Targets.Spot, _system.SpotFor(_world, _mind, _board, AiBehaviour.Post, type));
                 case TaskType.GoHomeAndGoToBed or TaskType.GoHomeAndGoToBedSecure:
                     // A character in a bed keeps it (the bed search FUN_1408cfe00, docs/game/locks.md "Bed search"): the target is where it lies.
                     if (_world.Characters.Cold(_slot) is { InSomething: Locks.HeldState.Bed })
@@ -390,9 +396,9 @@ public sealed partial class AiSystem
                         return Spot(Targets.Bed, (Flat(spare.Position), true, spare.Position.Y, null));
 
                     if (!_system.HasBed(_world, _board, _mind, _slot)) return default;
-                    return Spot(Targets.Bed, _system.SpotFor(_mind, _board, AiBehaviour.Sleep, type));
+                    return Spot(Targets.Bed, _system.SpotFor(_world, _mind, _board, AiBehaviour.Sleep, type));
                 case TaskType.GoHomebuilding:
-                    return Spot(Targets.Spot, _system.SpotFor(_mind, _board, AiBehaviour.GoHome, type));
+                    return Spot(Targets.Spot, _system.SpotFor(_world, _mind, _board, AiBehaviour.GoHome, type));
                 case TaskType.WanderTown or TaskType.Shopping or TaskType.Wanderer:
                     {
                         var behaviour = TaskBehaviours.Of(type);
@@ -412,14 +418,14 @@ public sealed partial class AiSystem
                 case TaskType.AutoLabouringMines or TaskType.AutoLabouringMinesPretend:
                     // The building it works at: the one it walks to now, else the pick it will make (the same roll, AiMind.WorkEpoch).
                     if (_mind.Behaviour == AiBehaviour.Work && _mind.Goal?.Task.Type == type && _mind.Target is { } current)
-                        return new PlanTarget(Targets.Work, current) { Building = _mind.WorkBuilding?.Key };
+                        return new PlanTarget(Targets.Work, current) { Building = _mind.WorkBuilding?.RuntimeKey ?? _mind.WorkBuilding?.Key };
 
                     if (_mind.Goal?.Task.Type == type && _mind.WorkPost is { } held)
-                        return new PlanTarget(Targets.Work, new Vector3(held.Position.X, float.NaN, held.Position.Z)) { Building = held.Key };
+                        return new PlanTarget(Targets.Work, new Vector3(held.Position.X, float.NaN, held.Position.Z)) { Building = held.RuntimeKey ?? held.Key };
 
-                    return _system.PickWork(_world, _world.Characters.IdOf(_slot), _board.Town,
+                    return _system.PickWork(_world, _world.Characters.IdOf(_slot), _board.HomeTown,
                             _mind.WorkEpoch + (_mind.WorkActive ? 1 : 0), type) is { } work
-                        ? new PlanTarget(Targets.Work, new Vector3(work.Position.X, float.NaN, work.Position.Z)) { Building = work.Key } : default;
+                        ? new PlanTarget(Targets.Work, new Vector3(work.Position.X, float.NaN, work.Position.Z)) { Building = work.RuntimeKey ?? work.Key } : default;
                 case TaskType.GetRidOfResourcesInMyInventory or TaskType.EmptyMachineOutputs or TaskType.DitchAllResources:
                     // Rows 114, 113 and 242 share the finder FUN_1405a59a0: the nearest storage taking a carried item (TownDutySystem.DitchStore, a
                     // read-only look here).
@@ -430,7 +436,7 @@ public sealed partial class AiSystem
                     // Row 94 (FUN_14059d9b0): the machine whose output holds what the target machine's inputs need (the town's workplaces here).
                     return MachineAt(from) is { } wanting
                         && Production.ProductionSystem.InputSource(_world, wanting, Workplaces(), Me.Position) is { } source
-                        ? new PlanTarget(Targets.Work, new Vector3(source.Position.X, float.NaN, source.Position.Z)) { Building = source.Key } : default;
+                        ? new PlanTarget(Targets.Work, new Vector3(source.Position.X, float.NaN, source.Position.Z)) { Building = source.RuntimeKey ?? source.Key } : default;
                 case TaskType.ManATurret or TaskType.ManATurretOnBuilding or TaskType.ManATurretPlayerJob or TaskType.UseTurret:
                     return _board.TurretClaims.TryGetValue(_slot, out int t) && (uint)t < (uint)_board.Turrets.Count
                         && _board.Turrets[t].Turret is { } turret

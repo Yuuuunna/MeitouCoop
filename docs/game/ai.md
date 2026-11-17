@@ -15,8 +15,8 @@ Do not assume every factory Task_Blank goal has no behaviour outside that factor
 **Observed** scoring FUN_14050df10: filter hour (start<end half-open, overnight otherwise), missing
 dialogue event and already-satisfied A. score=desire*weight*crowdFactor^n*m, n same type/target
 mates, m1.25 for current type/target/second hand. Effect-state evaluation can scale positive
-desire. Sticky current task floors0.4 before commitment expiry, caps0.05 after; another owner
-condition can add1.25 when score<1 (unknown). Drop nonpositive candidates; B-satisfied/no-effect
+desire. Sticky current task floors0.4 before commitment expiry, caps0.05 after; while the
+running task's own finished test (slot 4) fails, x1.25 again when score<1 ([finished tests](ai-tasks.md#finished-tests)). Drop nonpositive candidates; B-satisfied/no-effect
 branch also drops. Candidates are keyed by score in an ordered map; while a key is taken the score gets +0.0001 (**Verified**, `FUN_14050df10`), so of equal scores the later-listed goal ranks first (tried highest first, `FUN_140510650`). The default task (IDLE, desire key 0.1, hours 0-100; set by `FUN_14050c030`) is no candidate: `FUN_140510ef0` tries it, at key 1.0, only after priorities 3, 2 and 1 all failed (**Observed**). Desire, commitment and crowd factor per
 type: [ai-tasks](ai-tasks.md#desire-and-commitment); exact A/B meanings remain unresolved.
 
@@ -144,7 +144,23 @@ A slave's Slave role list runs through the Obedient Slave job (187): [role lists
   hirer's faction for the town's; an Everyone war target follows the rules above and each one the looker sees or hears this look is tagged TEMP ENEMY in its squad's memory (`FUN_140674300` tag 4, the time refreshed each look; same-faction refused;
   `AggroSystem.TagEffect`, applied serially), which makes it an enemy of every member until the tag fades (6 h, `SquadMemory.Age`). `Contract_HiredAlly`'s hook (`FUN_140289570`, **Verified**: the employer handle, a character or platoon, resolves and its faction equals the sensed
   character's) tags TEMP ALLY (3) the same way, setting the squad's player TEMP ALLY flag for a player-faction character; Meitou writes it for each such character the looker sees or hears (a look that picks no fights
-  does not run the scan, so tags the hook would write there are missed); the base hook's tag (CampaignInstance slot 7 `FUN_1402857d0`, **Verified**: a hostile campaign in phase 1 and the target faction) is written with `Squad.War`'s target faction (`AggroSystem.SenseHooks`); the other hooks write none. `Contract_DefendPlayerBase` (hook `FUN_14028a290`, ctor `FUN_14028a0c0`, start `FUN_14028a170`; **Verified**): the exempt faction is the owner of the player town nearest the platoon leader (the mission town, set at the start; none when there is no player town), not a stored hirer, and seeing it tags the character TEMP ALLY (`FUN_140674300` kind 3). Meitou: `AggroSystem.EmployerOf` (signal 15), `Scan.EmployerTags`; signal 12 keeps the hirer's faction. The package **update** (vtable +0x48; `Contract_HiredAlly` `FUN_1402910e0`, `Contract_UntilOutOfDanger` `FUN_140290f90`, both defend classes `FUN_140291410`, **Verified**) also tags the mission target itself (+0x28, a character or squad) TEMP ALLY in the platoon's memory every update; the defend classes only with a mission town set, else they run the start. Meitou `AiSystem.TagMissionTarget` (characters; signals 12, 14, 15 with a player town; the campaign's defend package is run by the campaign).
+  does not run the scan, so tags the hook would write there are missed); the base hook's tag (CampaignInstance slot 7 `FUN_1402857d0`, **Verified**: a hostile campaign in phase 1 and the target faction) is written with `Squad.War`'s target faction (`AggroSystem.SenseHooks`); the other hooks write none. `Contract_DefendPlayerBase` (hook `FUN_14028a290`, ctor `FUN_14028a0c0`, start `FUN_14028a170`; **Verified**): the exempt faction is the owner of the player town nearest the platoon leader (the mission town, set at the start; none when there is no player town), not a stored hirer, and seeing it tags the character TEMP ALLY (`FUN_140674300` kind 3). Meitou: `AggroSystem.EmployerOf` (signal 15), `Scan.EmployerTags`; signal 12 keeps the hirer's faction. The package **update** (vtable +0x48; `Contract_HiredAlly` `FUN_1402910e0`, `Contract_UntilOutOfDanger` `FUN_140290f90`, both defend classes `FUN_140291410`, **Verified**) also tags the mission target itself (+0x28, a character or squad) TEMP ALLY in the platoon's memory every update; the defend classes only with a mission town set, else they run the start. Meitou `AiSystem.TagMissionTarget` (characters; signals 12 and 14; 15 tags nobody, its mission target being its town, and without a mission town runs `ContractStart` again; the campaign's defend package is run by the campaign).
+- **Contract_DefendPlayerBase** (15) start (`FUN_14028a170`, **Verified**): the mission town is the town of the player's faction nearest the platoon (X/Z, any
+  type but a nest, `FUN_140927f10`), not one the dialogue names; none while the player has none (the update retries); the start also makes it the
+  blackboard's target town (+0xf0, which `Contract_HiredAlly`'s start `FUN_140289490` clears instead). The base data's
+  package `contract Mercenary outpost guard` (dialogue `AI contract` on the mercenaries' "2 / 4 / 6 / 8 days" lines) lists the leader goals 44 follow
+  mission target, 130 travel to target town fast and 36 Patrol hometown, so the squad runs to that outpost and patrols it (36 strolls round the mission
+  town: while a contract runs, `FUN_140269cd0` gives the contract's mission town as the squad's town); **Verified** by record dump (base data,
+  rebirth.mod loaded). **Verified** by decompile: the contract's factory
+  (`FUN_140285ba0`) writes the dialogue target into both the mission target (+0x28) and the mission employer (+0x48); this start then copies the
+  town hand over the mission target, so the update's TEMP ALLY tag skips it (kinds 1 and 0x5b only), goal 44 has no one to follow (`Task_Follow`'s
+  target, `FUN_14034b9a0`, also takes kinds 1 and 0x5b only), the Faction tab's "-Protecting:" names the town (`FUN_1402953f0` reads +0x8), and the
+  end talk still goes to the employer (`FUN_14026a110` aims event 30 at +0x48). The package registers with the Faction tab and the map when any of
+  its three hands is of the player's faction (`FUN_140285ac0`). A load starts the saved contract (its start runs) and then reads the saved hands
+  over it (`FUN_140272c20` → package +0x28 `FUN_140269790`). **Observed** in the `bench-bases-2026-10-27` save: town-mission contracts carry the same
+  town handle under `mission target` and `mission town`; contracts on a character carry it under `mission target` and `mission employer`. Meitou:
+  `AiSystem.ContractStart` (both contracts' starts: `Blackboard.ContractTown` the mission town, `Destination` the target town),
+  `Blackboard.AimMissionAtTown` and `MissionEmployer`, `MapSquads.InvolvesPlayer`, `AiSave` (the three hands and `target town`).
 - **Package_OccupyTown** (30): never starts on its own (only by `Leads to`). Start: the leader's town as mission town, its faction the enemy (+0xb8, memory 4 on sight),
   each member fires TAKEN_OVER_PLAYER_TOWN (73), the platoon made persistent if it was not (undone at the end). Update: the platoon joins the town's occupier set
   (Town +0x118; its count +0x128 is "Hostile Occupiers:" in the town panel, `FUN_140922e60`). End: removed from the set, "{1} squad has been removed from {2}"
@@ -211,7 +227,7 @@ Scope: of the 143 task types with a real `Task_*` class (147 of 290 fall to `Tas
 - Which of the six category registries (flag bits 1, 2, 4, 0x10, 0x20, 0x40; [planner](ai-tasks.md#planner)) a character plans with; the meaning of the `*` marker on some
   condition entries (the entry's second flag byte) and of the TaskData flag +0x14.
 - Which AI packages use which `unloaded func` value, beyond the shipping ones (signals 11 and 28: all four have 5 TRAVEL_TARGET, **Verified**
-  by a base-data dump of the AI_PACKAGE records). The unloaded update itself, the keep test `FUN_1407ec570`
+  by a base-data dump of the AI_PACKAGE records) and the contracts ([off-screen world](factions-squads-towns.md#off-screen-world)). The unloaded update itself, the keep test `FUN_1407ec570`
   and the 60 s orphan timer are in [off-screen world](factions-squads-towns.md#off-screen-world).
 - The meaning of `squad mem type` value 3, and Blackboard role list 3. Tiers 0 (JUST_ACTION) and 4 (OBEDIENCE) are never scored by the
   chooser: the normal passes sync role lists with the mask `1 << tier` for tiers 3, 2, 1, and the slave special case in `FUN_14050e5b0`

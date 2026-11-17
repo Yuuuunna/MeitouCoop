@@ -166,6 +166,8 @@ public sealed class WorldCheckpointCoordinator
                     WeatherCheckpoint.Restore(world, save, point.GameHours);
                     configureWorld?.Invoke(world);
                     _mods?.RestoreSaveData(world, save.ModData, strict: true);
+                    var running = _mods?.Mods.Select(m => m.Manifest.Id).ToHashSet(StringComparer.Ordinal) ?? [];
+                    Meitou.Simulation.Ai.SquadAutonomy.DropUnowned(world, running.Contains);
                 });
             }
             catch (Exception e)when (prepared is not null && ReferenceEquals(_runtime.World, prepared))

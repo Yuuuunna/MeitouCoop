@@ -179,6 +179,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         // A tick the old world ran ahead goes with it.
         _presentationIdentity = new();
         (_aheadTicks, _held, _heldPrevious, _heldCurrent) = (0, false, null, null);
+        (Simulation.LoadingHold, ZonesLoading) = (false, false);
         return next;
     }
 
@@ -238,6 +239,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     public int AdvanceSimulation(double realSeconds)
     {
         EnsureNotRunning();
+        StepLoadingPause();
         int n = Simulation.Advance(realSeconds);
         if (!Simulation.IsPaused)
         {
@@ -535,6 +537,31 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     {
         EndTickAhead();
         _runtime.Synchronize();
+    }
+
+    /// <summary>
+    /// Holds only this local world's game clock while the camera's population zones load.
+    /// </summary>
+    public bool LoadingPause { get; set; }
+
+    /// <summary>
+    /// The local loading indicator; remote sessions never stop the shared authority's clock.
+    /// </summary>
+    public bool ZonesLoading { get; private set; }
+
+    /// <summary>
+    /// Advances zone preparation at a tick boundary, preserving the player's selected speed while held.
+    /// </summary>
+    void StepLoadingPause()
+    {
+        if (!LoadingPause)
+        {
+            (Simulation.LoadingHold, ZonesLoading) = (false, false);
+            return;
+        }
+
+        bool held = Simulation.LoadingHold;
+        (Simulation.LoadingHold, ZonesLoading) = World.StepLoadingPause(held, !held && Simulation.IsPaused);
     }
 
     public double PresentationTick => ShownTick + SimulationAlpha;

@@ -161,6 +161,7 @@ An option whose Effect names a settings row sets that row for the run only: the 
 | `--sway-step <s>` | seconds | | Grass sway advanced per frame (motion check, with screenshot or bench). |
 | `--orbit-step <deg>` | degrees | | With `--screenshot`: the camera orbits this much per frame (upscaler motion vectors). |
 | `--wireframe` | | off | Wireframe view. |
+| `--action-log <who>` | `off`, `squad` or `everyone` | everyone | Which characters' task changes, and why, go to `log_actions.txt` beside log.txt (simulation.md "Action log"); F10 "Action log" switches it while playing. |
 | `--debug <n>` | 1 or 2 | off | 1: blend-map slot weights; 2: layer weights. |
 | `--debug-shadows <n>` | 1 to 4 | off | 1: the four cascade maps; 2: shadow term by cascade; 3: term multiplied over the picture; 4: the traced sun (blue cascades, green lit, red shadowed) and a log line on why a frame traces. |
 | `--help` / `-h` | | | Print the usage. |
@@ -219,7 +220,7 @@ An option whose Effect names a settings row sets that row for the run only: the 
 | `--no-heat-haze` | | on | No heat haze. |
 | `--bloom <x>` | 0 to 0.25 | preset | Bloom strength; 0 turns bloom off. |
 | `--particle-divisor <0\|1\|2\|4>` | | 0 | Weather particles drawn at 1/n of render size; 0 sizes by sprite. Rain and fire stay full size. |
-| `--gtao-quality <0\|1\|2>` | | 1 | The `gtao` switch's budget: 0 half size 2 x 4, 1 half size 3 x 6, 2 render size 3 x 6 ([post](render-post.md) "GTAO"). |
+| `--gtao-quality <0\|1\|2>` | | 1 | The ambient occlusion's budget. `gtao`: 0 half size 2 x 4, 1 half size 3 x 6, 2 render size 3 x 6 ([post](render-post.md) "GTAO"); SSAO: 8, 12, 20 taps. |
 
 ### Meitou and Faithful switches
 

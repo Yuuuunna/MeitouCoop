@@ -173,6 +173,11 @@ public sealed partial class FixtureRegistry
     public IReadOnlyDictionary<string, SavedSpot>? SavedSpots { get; set; }
 
     /// <summary>
+    /// The loaded save's entries of the towns' layout objects (<see cref="Saving.SavedPieces"/>); null without a save.
+    /// </summary>
+    public Saving.SavedPieces? SavedPieces { get; set; }
+
+    /// <summary>
     /// The item factory a loaded save's container contents are made with (<see cref="ContainerSave"/>); set by the loader.
     /// </summary>
     public Items.ItemFactory? Items { get; set; }
@@ -187,9 +192,19 @@ public sealed partial class FixtureRegistry
     #region Published spots
 
     /// <summary>
-    /// The container spots last built (null: build them again).
+    /// The container spots last built (null: gather the containers and build them again).
     /// </summary>
     IReadOnlyList<ContainerSpot>? _containerSpots;
+
+    /// <summary>
+    /// Every container with an inventory, gathered when <see cref="_containerSpots"/> is built from nothing.
+    /// </summary>
+    List<Fixture> _containerList = [];
+
+    /// <summary>
+    /// The key of the containers' lock state <see cref="_containerSpots"/> was built for.
+    /// </summary>
+    ulong _containerSpotsKey;
 
     /// <summary>
     /// Every cage (null: build it again).
@@ -242,11 +257,42 @@ public sealed partial class FixtureRegistry
     List<Fixture>? _doorList;
 
     /// <summary>
-    /// Where the containers with an inventory stand, for the host's picking; rebuilt (serial phases) only when a building registers or goes.
+    /// Where the containers with an inventory stand, for the host's picking; the list is gathered again (serial phases) when a building registers
+    /// or goes, the spots whenever a container's lock, level or owner changed, whoever changed it (a pick, a cut, a shop's restock relocking, #833).
     /// </summary>
-    public IReadOnlyList<ContainerSpot> ContainerSpots => _containerSpots
-            ??= [.. _all.Where(f => f.Contents is not null).Select(f
-                    => new ContainerSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Lock is { EffectivelyLocked: true }, f.Lock?.Level ?? 0, f.Yaw) { Revision = RevisionOf(f) })];
+    public IReadOnlyList<ContainerSpot> ContainerSpots
+    {
+        get
+        {
+            if (_containerSpots is null) _containerList = [.. _all.Where(f => f.Contents is not null)];
+
+            ulong key = ContainerLockKey(_containerList);
+            if (_containerSpots is not null && key == _containerSpotsKey) return _containerSpots;
+
+            _containerSpotsKey = key;
+            return _containerSpots = [.. _containerList.Select(f
+                    => new ContainerSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Lock is { EffectivelyLocked: true }, f.Lock?.Level ?? 0, f.Yaw)
+                    {
+                        Revision = RevisionOf(f), Town = FixtureTown.Of(f),
+                    })];
+        }
+    }
+
+    /// <summary>
+    /// A key over what a container spot publishes that can change in place: each container's effective lock, lock level and owner.
+    /// </summary>
+    static ulong ContainerLockKey(List<Fixture> containers)
+    {
+        ulong key = 0x426f78 ^ (ulong)containers.Count;
+        for (int i = 0; i < containers.Count; i++)
+        {
+            var f = containers[i];
+            key = Rng.Mix(key ^ (ulong)i) ^ ((ulong)(uint)(f.Lock?.Level ?? 0) << 16) ^ ((ulong)(uint)f.Owner << 40)
+                ^ (f.Lock is { EffectivelyLocked: true } ? 1UL << 62 : 0);
+        }
+
+        return key;
+    }
 
     /// <summary>
     /// Every cage, for the host's picking; the list is rebuilt (serial phases) when a building registers or goes, the spots only when a cage's lock,
@@ -257,13 +303,19 @@ public sealed partial class FixtureRegistry
         [.. (
         _cageList ??= [.. _all.Where(f => f.Kind == FixtureKind.Cage)]).Select(f
                 => new CageSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Lock is { EffectivelyLocked: true }, IsFree(table, f) ? CharacterId.None
-                        : f.Occupant, f.Lock?.Level ?? 0, f.Yaw, f.OccupantSelection) { Revision = RevisionOf(f) })];
+                        : f.Occupant, f.Lock?.Level ?? 0, f.Yaw, f.OccupantSelection)
+                {
+                    Revision = RevisionOf(f), Town = FixtureTown.Of(f),
+                })];
 
     /// <summary>
     /// Every bed, for the host's picking; rebuilt (serial phases) only when a building registers or goes.
     /// </summary>
     public IReadOnlyList<BedSpot> BedSpots => _bedSpots
-            ??= [.. _all.Where(f => f.Kind == FixtureKind.Bed).Select(f => new BedSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Yaw) { Revision = RevisionOf(f) })];
+            ??= [.. _all.Where(f => f.Kind == FixtureKind.Bed).Select(f => new BedSpot(f.Id, f.RecordId, f.Position, f.Owner, f.Yaw)
+            {
+                Revision = RevisionOf(f), Town = FixtureTown.Of(f),
+            })];
 
     /// <summary>
     /// Every town training dummy, for the host's picking; rebuilt (serial phases) only when a building registers or goes.
@@ -502,7 +554,7 @@ public sealed partial class FixtureRegistry
             }
         }
 
-        RegisterSeats(b, owner);
+        RegisterSeats(b, site, owner);
         AddBeds(db, site, b, owner, list);
         AddDummies(site, b, owner, list);
         return list;
@@ -630,6 +682,8 @@ public sealed partial class FixtureRegistry
         var doorRefs = record.GetReferences("doors");
         bool gate = TownBuildings.IsGate(db, record, _functions);
         bool inGateSet = LockSystem.InGateSet(record);
+        bool admitsAnimals = AnimalEntry.Allows(record);
+        bool cavernous = record.GetBool("cavernous");
         for (int i = 0; i < doorRefs.Count; i++)
         {
             var door = db.Find(doorRefs[i].TargetStringId);
@@ -650,6 +704,8 @@ public sealed partial class FixtureRegistry
                 HostRecordId = record.StringId,
                 IsGate = gate,
                 InGateSet = inGateSet,
+                AdmitsAnimals = admitsAnimals,
+                Cavernous = cavernous,
                 Leaf = door is null ? new DoorLeaf(0, 30, 1, 0) : DoorLeaf.Of(door),
                 Lock = new LockState
                 {
@@ -710,10 +766,10 @@ public sealed partial class FixtureRegistry
 
     /// <summary>
     /// Registers a camp building's cage, lock or bed (<see cref="NestBuildings"/>: a Prisoner Pole of a fog nest, a bandit camp's bedroll, #362),
-    /// owned by the camp's faction: a nest's is marked (<see cref="Fixture.Nest"/>), a town's has the town's <paramref name="site"/>. Then binds the
-    /// held characters whose <see cref="CharacterCold.InWhat"/> names it. A piece with none is left out.
+    /// owned by the camp's faction: a nest's is marked (<see cref="Fixture.Nest"/>) and has its <paramref name="wild"/> site, a town's has the town's
+    /// <paramref name="site"/>. Then binds the held characters whose <see cref="CharacterCold.InWhat"/> names it. A piece with none is left out.
     /// </summary>
-    public void RegisterNestBuilding(World world, PopulationData data, NestPiece piece, int owner, int site = -1)
+    public void RegisterNestBuilding(World world, PopulationData data, NestPiece piece, int owner, int site = -1, int wild = -1)
     {
         if (_byBuilding.ContainsKey(piece.Id) || data.Db.Find(piece.Record) is not { } record) return;
         var kind = Lockable(data.Db, record);
@@ -730,6 +786,7 @@ public sealed partial class FixtureRegistry
         }
 
         if (bed is { } b) list.Add(BedOf(data.Db, piece.Id, record, site, owner, piece.Position, piece.Rotation, b));
+        foreach (var f in list) f.Wild = wild;
         _byBuilding[piece.Id] = list;
         _buildings.Add(piece.Id);
         foreach (var f in list)
@@ -1215,7 +1272,6 @@ public sealed partial class FixtureRegistry
     {
         if (door.Kind != FixtureKind.Door || door.DoorBroken || door.Motion != DoorMotion.Open) return false;
         door.Motion = DoorMotion.Closing;
-        door.AutoOpened = false;
         return true;
     }
 
@@ -1395,11 +1451,7 @@ public sealed partial class FixtureRegistry
         {
             if (d.Kind != FixtureKind.Door || d.Lock is not { } l) continue;
             any = true;
-            if (locked && d.Motion is DoorMotion.Open or DoorMotion.Opening)
-            {
-                d.Motion = DoorMotion.Closing;
-                d.AutoOpened = false;
-            }   // the leaf slides shut; the lock holds at once
+            if (locked && d.Motion is DoorMotion.Open or DoorMotion.Opening) d.Motion = DoorMotion.Closing;   // the leaf slides shut; the lock holds at once
             l.Locked = locked;
             l.PickTime = 0;
             l.NextRoll = LockState.FirstRoll;

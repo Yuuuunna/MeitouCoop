@@ -156,9 +156,11 @@ Empire Citizen and The Cannibal Hunters). The "Meitou" sentences are engine choi
   game start town list.", then, as an empty list does, a draw among the TOWN and VILLAGE placements whose faction is real, not BANDIT and not hostile
   to the player (-30 or below); with none, (-43500, -6625). Meitou stands the squad on a walkable spot near that place.
 - **Discovered**: every town of type TOWN in the biome group of the start place.
-- **Squad**: a SQUAD_TEMPLATE entry makes a squad of its own; a CHARACTER entry makes v0 characters (0 counts as 1), each at the place plus up to 50
-  on x and z, joining the player's current squad. Nobody made: the Wanderer squad `45550-gamedata.base`. Meitou makes one squad of them all, each
-  template keeping its own layout.
+- **Squad**: a SQUAD_TEMPLATE entry makes a squad; a CHARACTER entry makes v0 characters (0 counts as 1), each at the place plus up to 50 on x
+  and z, joining the player's current squad. Nobody made: the Wanderer squad `45550-gamedata.base`. **Observed** (1.0.68, data-only starts): the
+  first template's squad is Nameless_0 and every CHARACTER entry's characters join it after the template's members, whatever the list order; each
+  further template is a squad of its own, Nameless_1 and on (templates of 3 and 5 then a CHARACTER of 2 gave 3 + 2 and 5; a CHARACTER of 2
+  then a template of 3 gave one squad of 3 + 2; templates of 5 and 25 gave 5 and 25). The character editor lists every start character.
 - **Research**: the start's `research`, or `5359-gamedata.base` when it lists none.
 - **Clock**: day 1 (set by the reset), 10:00.
 - **The Slaves**: **Observed** (1.0.68 factory/status decompilation): its template's `malnourished` flag gives
@@ -212,6 +214,13 @@ Empire Citizen and The Cannibal Hunters). The "Meitou" sentences are engine choi
 ## 4. HUD (MainBarGUI)
 
 Layer Middle, per-frame update FUN_140728d50 (**Observed**):
+
+### Paused and loading panels
+
+**Verified** (`FUN_14072d3b0`, `FUN_140787d40`, `FUN_1406e9fa0`): `PausedPanel` (`lbPaused`, "PAUSED") shows while the paused byte is set, whether by the
+player, a menu or the [loading pause](game-loop.md#loading-pause). `LoadingPanel` (a TextBox; the exe sets the catalog's "Loading..." over the
+layout's "Loading ...") shows while a load started by the camera's block runs, held or not. Both are hidden at start. Meitou: `PausedPanel` at
+speed 0 and under the loading pause; `LoadingPanel` only with the loading pause switch on.
 
 ### Squad bar
 
@@ -367,7 +376,7 @@ to Jobs; the saved `chase mode` flag is that switch (**Verified**, [perma-jobs](
     adds an "Imprisoned:" tooltip. Meitou (`World.SkillLine`, `CharacterCold.UseSkill`): the operating, training-dummy, turret manning (any gunner, `TickTurrets`), shooting
     (`TickRanged`), building, first-aid and lockpicking jobs set the skill; the terms are `StatMultiplier.Compute` with one `StatUse` each (Limbs, Hunger, Stun, Light, DamageState, LimbItems with the fighter's gear factors).
     Fallback tooltips (**Verified**, decompile 2026-10-26): weapon class `Damage:` (int) of the blow's four terms (`FUN_1408868b0`). `Stealth:` value `FUN_140889710`(stored,
-    s × 100): `v`, `v (d)` Bad, `v (+d)` Good; tooltip `FUN_14088f9a0`: `Stealth skill:`, `Max speed:` lerp(max(0, (s - 0.1) / 0.8), 12, top speed) mph, `XP rate:` CharStats
+    s × 100): `v`, `v (d)` Bad, `v (+d)` Good; tooltip `FUN_14088f9a0`: `Stealth skill:`, `Max speed:` lerp(max(0, (s - 0.1) / 0.8), 12, S) mph (S already sneak-capped, so the cap is applied twice; **Verified**, decompile), `XP rate:` CharStats
     `+0x170` (the last sneaking XP amount, `FUN_1408c65a0`) %, `Carrying something:` Bad `-25%` (`DAT_1416f4450`, **Verified** bytes), `Crawling:` Good `+100%` (ends the
     list), else `Encumbrance:` -n %, `Injuries:` (medical `+0xb4` - 1) %, `Armour/equipment:` (CharStats `+0x3c` - 1) %, `Robotics:` the legs' stealth items, signed; `Total:` s × 100.
     `Athletics:` tooltip `FUN_14088e780`: `Athletics Skill:`, `Max possible speed:` the run value, `Leg injury:` (leg factor `FUN_140884970`), `Encumbrance:`, `Armour/equipment:`
@@ -379,7 +388,7 @@ to Jobs; the saved `chase mode` flag is that switch (**Verified**, [perma-jobs](
     Athletics XP `{n}%` = (int)(100 × `FUN_1408c5ec0`): the encumbrance factor, ×1.5 when the current speed is over 80 % of the run value V (the `xp rate athletics` constant is applied elsewhere).
     Strength XP `{n}%` = (int)(100 × `FUN_1408c60c0`), the carrying rate (includes `xp rate strength from walking`); in combat mode (`FUN_140436610(c, 1, 1)`, above) CharStats `+0x184 weaponWeightXPMult` (`calculateWeaponWeightXPMult` `FUN_1408838e0`) instead, or with fists (`+0x1f0 currentWeaponType` 5) 1 − the encumbrance factor (**Verified**, decompile). `+0x184` is computed by `FUN_1408839a0` from the weight of the weapon in hand: `CharStats::setWeapon` `FUN_140897f30` (called by `drawWeapon`, sheathing and dropping) passes Item slot 74 (`+0x120`, for WEAPON and CROSSBOW alike `weight kg` × `weapon inventory weight mult` from the Weapon constructor `FUN_140898830`, which the crossbow's does not change), 0 with none, and `_recalculateStats` its copy `+0x228`; so a drawn crossbow trains by its own weight (`+0x1f0` is then 6) (**Verified**, disassembly). Meitou: `BodySystem.WithCombatMode`, `CombatSystem.HandWeight`.
     Toughness XP `{n}x` (the suffix is the `x` at `0x1416bc008`) = `FUN_1408c5f40` (**Verified**: decompile, and in game on vanilla 1.0.65 in issue #82, 2026-10-25): 1, but 2 with medical `+0x166 leftArmOk` clear, +2 with `+0x165 rightArmOk` clear, +2 while `+0x163 bloodlossTrauma` is set, +2 when `+0xa4 worstDamage` is under 15 (field names KenshiLib 1ce4a16). `worstDamage` is a fraction of at most 1 ([character-stats.md](character-stats.md#hunger-blood-and-parts)), so the last term is always on: a whole character reads `3x`, both arms crippled `6x`, a leg below zero adds nothing. Meitou: the same four terms (`BodySystem.ExtendedOf`).
-    KO point = (int)`FUN_140643ae0` (negative HP, [character-stats.md](character-stats.md#hunger-blood-and-parts)). Run speed = the current top speed S × 0.22369362 (units per second to mph) rounded, `{S} (+{d}) mph` or `(-{d})` where d is S minus V in mph (Bad either way); plain when equal. Meitou adds an Interface setting "Speed units" (`UserConfig.SpeedUnit`, default mph): km/h multiplies by 0.36 instead. Hunger Rate `{n}%` = (int)(100 × `FUN_1408837a0`), the race's hunger rate × its situation factor.
+    KO point = (int)`FUN_140643ae0` (negative HP, [character-stats.md](character-stats.md#hunger-blood-and-parts)). Run speed = the current top speed S (CharStats `+0x17c`, which `FUN_140886460` writes with the sneaking cap inside, [speed](pathfinding.md#speed-and-orders); **Verified**, decompile: `FUN_140888fb0` reads it, as do `Total speed:`, `Full speed bonus:` and the Athletics XP rate, #841) × 0.22369362 (units per second to mph) rounded, `{S} (+{d}) mph` or `(-{d})` where d is S minus V in mph (Bad either way); plain when equal. Meitou adds an Interface setting "Speed units" (`UserConfig.SpeedUnit`, default mph): km/h multiplies by 0.36 instead. Hunger Rate `{n}%` = (int)(100 × `FUN_1408837a0`), the race's hunger rate × its situation factor.
   - Stats lines (by `getGUIStatsDisplayMode`, Combat mode above): Martial Arts (1); Crossbows, Precision, Perception (2); else Attack and Defense; then Strength,
     Dexterity, Toughness and (not in mode 2) Dodge. A value is the effective number, then its change in brackets: `{1} ({2})` all Bad when lower,
     `{1} (+{2})` all Good when higher, plain when equal. The code passes the labels in mixed case ("Martial Arts:").
@@ -613,7 +622,13 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   ("Name") 5, `StateText` ("Info") 3, `StatsText` ("Stats 1") 6, `ExtendedStatsText` ("Stats 2") 7, `MedicalPanel` 0x10. A panel
   asks the object's slot 40 for its section (`FUN_1406fa7f0`). Building slot 40 (`FUN_140301840`) answers:
   - 5: slot 113 (`FUN_1402fdea0`): the building's name left; right the owner faction's name, the player's faction always, another
-    faction only when the building is in a town that passes slot 0x340 and town+0x111 is clear, else empty.
+    faction only when the building's town (`FUN_1400f6c20`) is explored (slot 0x340) and not `is secret` (+0x111, set from the TOWN record by
+    `FUN_140931090`, the TownBase constructor that Town, Nest and TownNull run), else empty (**Verified** decompile). Town and Nest share the
+    explored slot (`FUN_140951220`). A camp piece's town is the nest (or the town) that stood it up: the camp placer `FUN_140930120` passes it as
+    the building factory's town (`FUN_14057cc70` argument 4, **Verified**). Meitou (`BuildingSync.OwnerName`, `PlayerInterface.OwnerName`): level
+    buildings (owner `PopulationData.LevelOwnerOf`) and their pieces, furniture fixtures, beds and seats (their town site), camp pieces (their
+    nest's knowledge in `PlayerState.Camps`, or their town's); a town machine opened by Loot (a `townwork:` site) shows the same name bar as a left
+    click on it, not the player's.
   - 3: `Type:` the record's name when it differs from the building's name, `Town:` the town's name, then the upgrade lines (slot 116, generic
     `FUN_140303030`, **Verified**): with an upgrade target ([upgrades](buildings-production.md#upgrades)) a full-row button `[UPGRADE]` (Good:
     colour tag + "[" + the uppercased translation of "Upgrade" + "]"), whose tooltip is a list of pairs `Upgrades To:` target name, a row per
@@ -649,8 +664,10 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     null; each door (+0x1c0) goes to the player's faction and `FUN_140297040` runs on its lock; each furniture piece of the interior
     holding an occupant (slot 0x300) lets it out (`FUN_14032e2f0`, `FUN_140330600`); the interior's furniture and item groups are destroyed
     (every `BuildingItemGroup` of +0x128 goes, and a group going destroys the item
-    it still holds, `FUN_14054a600`); the interior's list +0x88 goes to the player's faction; the building's town (one made for it when it has
-    none) is flagged (+0x3d0) and takes it (`FUN_140928ee0`); a call on interior +0x30 with 0; each evicted platoon gets a new home (`FUN_14099e6e0`): a random
+    it still holds, `FUN_14054a600`; the residents' nest pieces standing on it are interior objects too, [nest debris](../formats/zones.md#nest-debris-and-loot)); the interior's list +0x88 goes to the player's faction; the building's town (one made for it when it has
+    none) is flagged (+0x3d0) and drops the nest spots that name the building (`FUN_140928ee0`, list +0x500, added by `FUN_140929340`); when one went,
+    the town's instanced debris meshes whose X/Z lies within the building's bounding-box radius (`Ogre::Aabb::getRadius`) of its position are removed
+    (`FUN_1408146f0`); a call on interior +0x30 with 0; each evicted platoon gets a new home (`FUN_14099e6e0`): a random
     building of its town that passes slot 88 (for sale, above) and a test of the platoon against it (`FUN_140621230`), found
     through `FUN_1409fc2e0` with BuildingFunction bit mask 0x13 (BF_ANY, MINE, REFINERY: read as the worker finder's 0x41a, so the house
     function 19 is not among them); its members are ordered GO_HOMEBUILDING (19), or with no home found PATROL (22) and a write to the platoon's
@@ -915,10 +932,36 @@ Meitou (`ProductionWindows`): these texts and ghosts for crafting benches; a sec
 Inventory opening geometry (**Verified**, `FUN_1406e4960`; constants `DAT_141696c74` = 0.05 and `DAT_14167e8d8` = 0.5): independent character
 windows start at the integer margin `0.05 × min(screen width, screen height)`, after other inventory windows on that row. A full row advances by
 twice the margin, trying up to five rows. A linked target starts immediately at its partner's right edge and top; each character's bag precedes
-that character, with no six-pixel gap. Meitou no longer centres or deliberately overlaps the loot row. A dragged main window retains its top when
-linked loot opens. Pinned characters use the same independent placement search. A selected machine's standalone left-centred position remains
-**Observed**, from the screenshots below; the order-opened container goes right of the looter and returns to standalone placement when the
-inventory closes. Meitou retains fractional coordinates.
+that character, with no six-pixel gap; nothing keeps the row on the screen, so a row wider than it runs off the right edge. Pinned characters use
+the same independent placement search. A selected building's own window (`FUN_1406e6640`) puts its bottom-left corner on a point the HUD
+stores when it is built (`FUN_14072d3b0`): the collapsed information panel's `ExtendingPanel` left edge, and its top less 1 % of the screen
+height (`DAT_141682ad8` = 0.01), so it sits just above the panel and scales with the HUD. **Observed** with the harness (1.0.65): the collapsed
+`ExtendingPanel` is 333 x 363 with its top at 717 at 1920 x 1080, 277 x 302 with its top at 598 at 1600 x 900, its left at 0 in both, so the
+point is (0, 706) and (0, 589).
+Meitou retains fractional coordinates.
+
+The inventory windows' manager (`DAT_1421337b0`, **Verified**, decompile) keeps one main window (the first living character of the player's
+opened), one target (a container, building, body, trader or a second own character) and the selected building's own window. Closing the main
+window closes the target and closing the target closes the main one (`FUN_1406e53d0`), whatever closes it: the inventory key (`FUN_140724980` →
+`FUN_1406e6f10` closes the lead's open window), a window's close button, or the target going away. An order that opens a looter with a target
+(`FUN_1407918a0`: loot, container, storage, trade) first closes every inventory window (`FUN_1406e5740`), then opens the looter at the margin
+(bag first) and the target at its right edge (`FUN_1406e4960`). Selecting a building opens its own window (`FUN_1406e6640`) beside a target
+already shown, and a selection change closes only that own window (`FUN_140729c80` → `FUN_1406e67f0`), so a storage opened by order stays
+open. Opening the own window sets only its own position; nothing else moves. Every inventory window is entered in the manager's link table
+when made (`FUN_1406e5260` → `FUN_14070f2a0`; an order then sets the pair's trade and take/put flags), and a right click on an item moves it
+to the first other window in that table, that window's bag first (`FUN_140714a20` → `FUN_14070dcd0`, the move `FUN_140713d20`). The table
+is a tree keyed by the window's address, so with three windows of different owners open the partner is not fixed. Meitou (`WorldMap`): an
+item of the inventory goes to the shown (target) window, one of a machine window to the inventory. Esc (`FUN_140917120`): with an inventory window, the prospecting window, the options panel or the overview shown, one press closes every
+inventory window (`FUN_1406e5740`) and hides the options, prospecting and in-game New Game panels (with its advanced options), and no game menu
+opens. **Observed** with the harness (1.0.65, 1920 x 1080, 2026-11-17): Esc with only the overview open closes it and opens no menu; Esc with
+the inventory and the overview, or the inventory and the stats window, closes both in one press, and the next Esc opens the game menu; Esc
+with only the stats window open closes it and opens no menu; the inventory opened with [I] has its top-left corner at (54, 54), the margin.
+A search order on a barrel (Stoat, `Barkeeper-test-1`) opened, top-left corners: the looter's bag (54, 54) 240 x 296, the looter (294, 54)
+498 x 618, the barrel's STORAGE (792, 54) 190 x 227, edge to edge. [I] then closed all three; [I] again opened only the bag and the looter, at
+the same places. Meitou (`InventoryLayout.PlaceWindowRow`, `ProductionWindows`
+(`OwnMachine`, the `-own` machine screens), `TradeWindows`, `PlayerInterface.EscapeCloseAll`, #834): the same for loot, containers, storages
+and trade, the order closing the pinned windows; a storage of the player's still selected goes back to its own window when the inventory
+closes, as observed below; Esc closes the inventory, prospecting, overview, stats, New Game and settings windows together.
 
 Opening (**Observed**, owner's screenshots of the original, 2026-10-24): selecting a machine, bench or storage shows its window alone, with no inventory.
 A right click that sends a character to a storage opens the character's inventory with the storage window beside it; once the inventory closes, the
@@ -1070,12 +1113,12 @@ unless marked; Meitou: `FactionWindow`.
   - **Contracts** are AI packages of characters: a package that involves a player character registers (its character's hand, package id) in a static list (`FUN_140285ac0`).
     Per entry, in list order: the character must still exist and run that package, else the entry is dropped; the package's `getGUIData` (vtable +0x70) writes the rows, and false drops
     the entry. Only `Contract_HiredAlly` (`FUN_140294f40`: hired bodyguards) and `Contract_DefendPlayerBase` / `Campaign_DefendPlayerBase` (`FUN_1402953f0`) write rows: a heading
-    "Bodyguard Contract" / "Base Defence Contract" in `#492620` with the hired character's faction name (**Observed**: name at +0x1a8 of what its vfunc +0x58 returns); "-Protecting:" and the protected target's name (when it resolves); "-Expires in:"
+    "Bodyguard Contract" / "Base Defence Contract" in `#492620` with the hired character's faction name (**Observed**: name at +0x1a8 of what its vfunc +0x58 returns); "-Protecting:" and the name of what it protects when that resolves (the bodyguard's mission target; the base defender's mission town, `FUN_1402953f0` reading the package's +0x8, **Verified**); "-Expires in:"
     and the time to the contract's expiry as below, both in `#afa68b`. A "Manage Contract" button keyed "Renew" is added when the package's `wantsRenewButton` (+0x80) is true, which no
     1.0.68 class returns (all `xor al,al`), so no row has it. Each entry ends with a `-----------` rule.
   - **Upcoming Events** (with the player-only flag set): for each faction of the list at `DAT_1421345b8`, its `FactionWarMgr` (`FUN_1407ac9c0`). When it has active campaigns or
     queued campaign requests: a heading `#afa68b` `-{faction name}-`. Per active campaign whose target faction is a player faction (`isPlayer`) and whose phase is not 2 RETREATING or 3
-    VICTORY: the campaign's name in `#492620`, then `Target:` with `#afa68b` {target faction name}`- `{target's name, or `???` when it does not resolve}, then a spacer. Per queued request
+    VICTORY: the campaign's `display name` (CampaignInstance slot 8, `FUN_1409d4af0`; "" when unset, never the record's name) in `#492620`, then `Target:` with `#afa68b` {target faction name}`- `{target's name, or `???` when it does not resolve}, then a spacer. Per queued request
     (the player filter is not applied here): its campaign's `display name` and the time until it starts, both `#444444`. Times (`TimeOfDay::getTotalTimeString` `FUN_1407a6940`):
     negative `Expired`, above 24 h `{1,num} Days, {2,num}hrs`, above 1 h `{1,num}hrs`, else `{1,num} mins`; days `floor(h/24)` with `(uint)h % 24` hours, hours `floor(h)`, minutes `floor(h x 60)` (**Verified**, decompiled `FUN_1407a6940`).
 - Meitou: the name box takes typing; accepting it (Enter) or losing the key focus sends `RenameFactionCommand`, which takes a name no other faction of the data has; a taken name opens the original's box instead (`FUN_140742130` with button mask 1, its first button "Ok", `PlayerInterface.MessageBox`), and the simulation still posts "This faction name already exists" for one the UI did not catch (there is no empty-name test in the handler (**Verified**, `FUN_1404923d0` goes from the equal-name test straight to the name lookup), so an empty name is accepted; the 64-character cap is an engine choice). The name is `PlayerState.FactionName` (null = the data's "Nameless"), saved as the CAMERA `pfaction name`, the player platoons' faction name and read back on load when it differs from the data's; the GAMESTATE_FACTION record's own name is not rewritten. The lines for every faction met but the player's, the `not real` ones and the template, sorted
@@ -1142,7 +1185,9 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
   as `squad index`), each the list's width less a scroll bar (`Kenshi_ScrollBarV` width, else 17 × UI scale) and 0.28 of its height. Box parts:
   `SquadNameText` (editable, at most 32 characters; the text goes into the platoon's record name), `SquadSizeText` "{1,num}/{2,num}" against
   `max squad size` (Meitou: Bad), `SquadRemoveButton`, `PortraitsPanel` with a
-  `Kenshi_SquadsPanel_PortraitCharacter` cell per member (Meitou shrinks cells to fit one row). `FactionSizeText`: Meitou shows the faction's count
+  `Kenshi_SquadsPanel_PortraitCharacter` cell per member: cells keep their size, as many to a row as fit, filled in rows, and a box whose rows
+  do not fit gets a scroll bar inside it (**Observed**, 1.0.68 at 1680 x 1050: a squad of 25 showed rows of 9, 9 and 7 with the box's scroll
+  bar; Meitou scrolls a row a wheel step). `FactionSizeText`: Meitou shows the faction's count
   against `max faction size`.
 - The constructors pass the translated captions through a locale transform taken to be upper-casing (the box's "Delete" matches its layout's "DELETE"; not seen in a run): `NewSquadButton` "ADD SQUAD", `lbSquadsDismiss` "DISMISS" (the layout's
   "NEW SQUAD" / "DRAG HERE TO DISMISS" are replaced).
@@ -1187,7 +1232,7 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
     origin; over no window: given or dropped (below). After a swap or a partial place the other item or the rest stays on the mouse for the next press.
   - Place (`FUN_140715560`): the cell is round((item top-left - grid origin) / cell), clamped, then slid left, up and diagonally toward 0,0 until the footprint is inside
     (`FUN_14074bec0`); only a footprint larger than the section fails. Acceptance (`FUN_14074bc30`): a limited section (allowed-item list) takes only its records, a general one anything,
-    otherwise the item's slot type must be the section's ("Invalid container type."); armour-only sections take ARMOUR; non-general sections with a wearer also check its race before the slot type ("Can't wear that
+    otherwise the item's attach slot (`Item+0x110`) must be the section's type ("Invalid container type."), whatever the record type (**Verified** by decompile and disassembly): the item's slot is its record's `slot` (`Item::Item` `FUN_14075faf0`; a missing field reads 0; `fcs.def` defaults WEAPON and CROSSBOW 0, ARMOUR 5, CONTAINER and ITEM 7), a crossbow's always 0 (`FUN_140898c90`, though two base CROSSBOWs say 7); `CharacterHuman::setupInventorySections` (`FUN_14062c4e0`) types `hip` and `back` 0 (Weapon), `head` 3, `armour` 5, `legs` 6, `shirt` 8, `boots` 9, `backpack_attach` 12, `belt` 14 and `main` 7 (general), an animal's `backpack_attach` 12 too (`FUN_14062a130`). In the base data every CONTAINER has slot 12. A bag's inner inventory is never looked at, and every CONTAINER item has one (its constructor `FUN_140763810` always makes it); armour-only sections take ARMOUR; non-general sections with a wearer also check its race before the slot type ("Can't wear that
     item."; `RaceLimiter`, built per item by `FUN_140763150`, **Verified** by decompile: a non-empty `races` list names the only races and `races exclude` is then not read, otherwise `races exclude`
     names the barred ones; `fcs.def` gives both lists to ARMOUR, CONTAINER, ITEM, LIMB_REPLACEMENT, NEST_ITEM, WEAPON and CROSSBOW `races` only. Vanilla shirts (Rag Shirt, Cloth Shirt, Leather Turtleneck...) exclude the 10 Hive and Deadhive races, read with `meitou-tools armour`); a section named `out` refuses everything; a non-empty CONTAINER into a CONTAINER's inventory: "Container cannot be placed here unless it is empty.". Under the footprint: two or
     more items refuse it; none, but the section's item-count cap reached, refuses it (`FUN_14071a6b0`: InventorySection `+0xa8` KenshiLib `itemsLimit`, when above 0, at most the
@@ -1381,7 +1426,7 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
   (`FUN_1405f5d10`) for each human of its list when not in mode 1 (the window's byte `+0x1c0` is mode == 1, set in `FUN_1405f4dd0`), right after `starting health`, so a race
   switched at a new game loses what it wore in the sections it closes. The other `InventorySection::setEnabled` callers are the furnace, crafting benches and animals. Meitou:
   `InventoryCommands.SectionClosed`, `CharacterSnapshot.ClosedSlots`, drawn disabled and refusing drops and every automatic equip (`TryEquip`, `Transfer`, `MoveInto`: trade, pick-up, loot, scavenge, storage, slave clothing);
-  `InventoryCommands.ValidateSections` runs when a leg is severed (the limb queue of `PopulationSystem`) and for the start's squad when the creation ends (`CharacterEditing.EndCreation`):
+  `InventoryCommands.ValidateSections` runs when a leg is severed (the limb queue of `PopulationSystem`) and for the start's squads when the creation ends (`CharacterEditing.EndCreation`):
   boots dropped 3 ahead of the character (as a dropped held item, engine offset), the rest destroyed.
 - **Unknown**: the trader window's panel lines beyond Money.
 - Item placement failure messages (FUN_14070f7e0; the checks behind them are in [economy.md](economy.md#shops-and-transactions)): Out of trading range; No room for that item; You can't

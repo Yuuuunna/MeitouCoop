@@ -100,7 +100,7 @@ sealed class UserConfig
     /// retyped or read with a new meaning, and convert older files in <see cref="Migrate"/>. A Tab panel slider whose numbering changes
     /// takes a new label instead (<c>WorldFrame.UpscalerSliders</c>), so its old value is not misread.
     /// </summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
     /// <summary>
     /// The default of <see cref="CharacterFlightSeconds"/>, and the distance from the view a squad member must be past for a double click to
     /// fly there.
@@ -387,11 +387,6 @@ sealed class UserConfig
     /// </summary>
     public bool UnloadedProduction { get; set; } = true;
     /// <summary>
-    /// Doors a walker opened close behind it after 5 s (Advanced settings; Faithful off: they stay open, as in the game; docs/simulation.md "Cages,
-    /// beds and locks").
-    /// </summary>
-    public bool DoorsCloseBehind { get; set; } = true;
-    /// <summary>
     /// A blow that destroys the head cuts it off, under the limbs' rule (Advanced settings; Faithful off: the game never does;
     /// docs/game/character-stats.md "Decapitation").
     /// </summary>
@@ -424,6 +419,11 @@ sealed class UserConfig
     /// </summary>
     public bool PauseOnLoad { get; set; } = true;
     /// <summary>
+    /// The game pauses while the zones round the camera load, as the original does (Advanced settings "Pause while loading", a Faithful / Meitou
+    /// switch whose Faithful side is on; off by default, Meitou; <c>WorldSession.LoadingPause</c>, docs/game/game-loop.md "Loading pause").
+    /// </summary>
+    public bool LoadingPause { get; set; }
+    /// <summary>
     /// A character's bag window opens with their inventory until OPEN BAG closes it (Advanced settings, a Faithful / Meitou switch; on by default,
     /// Meitou: in the game each bag stays shut until OPEN BAG is pressed once per session).
     /// </summary>
@@ -434,6 +434,11 @@ sealed class UserConfig
     /// <c>PlayerSystem.AnimalsPickUp</c>).
     /// </summary>
     public bool AnimalsPickUp { get; set; }
+    /// <summary>
+    /// Cage guards do not turn a caged member of their own faction into a slave (Advanced settings, a Meitou option; off by default, as the game
+    /// enslaves them; <c>CaptiveSettings.SpareOwnFaction</c>).
+    /// </summary>
+    public bool CagesSpareOwn { get; set; }
     /// <summary>
     /// Fixes of the game's own bugs (Fixes settings; on: fixed, off: as the game does; docs/audio.md): doors and gates sound when they break, a biome
     /// entered before its bank loads gets the right day or night ambience, and the wind bed stops when the wind does.
@@ -866,6 +871,21 @@ sealed class UserConfig
             if (AtGame("Tone map (0 = game)", 0)) graphics.Remove("Tone map (0 = game)");
         }
         if (from < 3) MigrateMetalUpscaling(json);
+        if (from < 4) MigrateShadowCascades(json);
+    }
+
+    /// <summary>
+    /// Layout 4 turns the fifth shadow cascade's switch (<c>Meitou: Shadow cascade 5 (Meitou)</c>, 1 on) into the cascade count slider
+    /// (<c>Shadow cascades (Meitou)</c>): on is 5, off 4. A count the launcher already wrote stays.
+    /// </summary>
+    static void MigrateShadowCascades(JsonObject json)
+    {
+        const string old = "Meitou: Shadow cascade 5 (Meitou)", count = "Shadow cascades (Meitou)";
+        if (json["graphics"] is not JsonObject graphics || graphics[old] is not JsonValue value || !value.TryGetValue(out double on))
+            return;
+
+        graphics.Remove(old);
+        graphics[count] ??= on >= 0.5 ? 5 : 4;
     }
 
     /// <summary>

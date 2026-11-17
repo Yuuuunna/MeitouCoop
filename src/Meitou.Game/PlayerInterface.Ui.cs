@@ -55,6 +55,11 @@ sealed partial class PlayerInterface
     /// The settings panel is open: the world pauses (<see cref="UpdateMenuPause"/>).
     /// </summary>
     internal bool SettingsOpen;
+
+    /// <summary>
+    /// Closes the settings panel (the original's options panel) for Esc's close-all; set by the panel when it opens.
+    /// </summary>
+    internal Action? CloseOptions;
     /// <summary>
     /// The original's screens (the windows of <see cref="FaithfulScreenFiles"/>), made in <see cref="LoadUi"/>.
     /// </summary>
@@ -131,7 +136,8 @@ sealed partial class PlayerInterface
         ("loot-bag", "Kenshi_InventoryGenericFixedWindow", false), ("limbs", "Kenshi_LimbReplacementWindow", false),
         ("trader", "Kenshi_InventoryTraderWindow", false),
         ("building", "Kenshi_GenericBuildingWindow", false), ("bench", "Kenshi_InventoryResearchWindow", false),
-        ("storage", "Kenshi_InventoryGenericWindow", false),
+        ("storage", "Kenshi_InventoryGenericWindow", false), ("building-own", "Kenshi_GenericBuildingWindow", false),
+        ("bench-own", "Kenshi_InventoryResearchWindow", false), ("storage-own", "Kenshi_InventoryGenericWindow", false),
         ("build", "Kenshi_BuildWindow", false), ("editor", "Kenshi_CharacterEditor", true), ("dialogue", "Kenshi_ConversationPanel", true),
         ("file", "Kenshi_OpenSaveFileDialog", true), ("prospect", "Kenshi_ProspectingWindow", false), ("tutorials", "Kenshi_TutorialsWindow", false),
         ("leveleditor", "Kenshi_LevelEditor", false),
@@ -242,9 +248,43 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>
+    /// The tick buttons the interface extensions add to the squad AI tab (<see cref="UiHost.SquadAiOptions"/>), given the snapshot the tab is laid
+    /// out from; none without such an extension.
+    /// </summary>
+    internal IReadOnlyList<UiSquadAiOption> ModSquadAiOptions(WorldSnapshot snapshot)
+    {
+        if (!_uiHost.HasSquadAiOptions) return [];
+
+        return _uiHost.SquadAiOptions(new UiSquadAiContext(snapshot, () => Session.CommandTick, Say));
+    }
+
+    /// <summary>
     /// Future code-mod loader entry point; disposal removes the extension's owned registrations.
     /// </summary>
     public IDisposable RegisterUiExtension(IUiExtension extension) => _uiHost.Register(extension);
+
+    /// <summary>
+    /// Whether any UI extension adds markers to the world map.
+    /// </summary>
+    internal bool HasModMapMarkers => _uiHost.HasMapMarkers;
+
+    /// <summary>
+    /// The markers the UI extensions add to the world map (<see cref="UiHost.MapMarkers"/>), each group checked by <paramref name="knownGroup"/>.
+    /// </summary>
+    internal IReadOnlyList<(string Owner, UiMapMarker Marker)> ModMapMarkers(UiMapContext context, Func<string, bool> knownGroup) =>
+        _uiHost.MapMarkers(context, knownGroup);
+
+    /// <summary>
+    /// The rows the interface extensions add to <paramref name="target"/>'s right-click menu (<see cref="UiHost.CharacterMenuVerbs"/>); none
+    /// without such an extension.
+    /// </summary>
+    internal IEnumerable<(string Caption, Action Give)> ModMenuVerbs(CharacterSnapshot target)
+    {
+        if (!_uiHost.HasMenuVerbs) return [];
+
+        var context = new UiMenuContext(target, SelectedIds(), Mouse, () => SlowModifier, () => Session.CommandTick, Say);
+        return _uiHost.CharacterMenuVerbs(context).Select(v => (v.Caption, v.Choose));
+    }
 
     /// <summary>
     /// Switches the interface style; a drag or a held order under way ends.
@@ -275,7 +315,8 @@ sealed partial class PlayerInterface
         // The orders, jobs and squad tab stay the player's while another faction's character is inspected.
         var own = Selected().FirstOrDefault() ?? lead;
         OrdersPanel.BindOrders(b, own);
-        foreach (string name in new[] { "LoadingPanel", "TownPanel", "TooltipPanel", "MessagePanel" }) b.Hidden.Add(name);
+        foreach (string name in new[] { "TownPanel", "TooltipPanel", "MessagePanel" }) b.Hidden.Add(name);
+        BindLoadingPanel(b);
         BiomeBanner.BindBiome(b);
         BindFloorAndPanels(b, lead);
         bool buildingFocus = BindBuildingFocus(b, lead);
@@ -361,15 +402,45 @@ sealed partial class PlayerInterface
         // The information panel starts collapsed (as the original's, docs/game/ui-screens.md section 4): the extending part (name, state lines,
         // extended stats) slid down
         // until its bottom is the panel's, behind the stats panel, so only the name and the state lines show; the ^ button between them toggles it.
-        if (!InfoExpanded && FaithfulHud.Find("InformationPanel") is { } info && FaithfulHud.Find("ExtendingPanel") is { } extending)
-        {
-            var infoRect = info.Position.RelativeTo(new(0, 0, Width, Height), true);
-            var rect = extending.Position.RelativeTo(infoRect, true);
-            b.Positions["ExtendingPanel"] = rect with { Y = infoRect.Y + infoRect.Height - rect.Height };
-        }
+        if (!InfoExpanded && CollapsedExtendingPanel() is { } collapsed) b.Positions["ExtendingPanel"] = collapsed;
+
         b.Actions["ExtendedStatsButton"] = "meitou:extendedstats";
-        if (Session.TimeScale != 0) b.Hidden.Add("PausedPanel");
+        if (Session.TimeScale != 0 && Session is not Host.WorldSession { Simulation.LoadingHold: true }) b.Hidden.Add("PausedPanel");
     }
+
+    /// <summary>
+    /// The HUD's <c>LoadingPanel</c>: shown, with the catalog's "Loading..." over the layout's caption as the exe sets it, while the loading pause is
+    /// on and the camera's load is under way (<see cref="WorldSession.ZonesLoading"/>, docs/game/game-loop.md "Loading pause"); hidden otherwise.
+    /// </summary>
+    void BindLoadingPanel(UiBindings b)
+    {
+        if (Session is not WorldSession { ZonesLoading: true })
+        {
+            b.Hidden.Add("LoadingPanel");
+            return;
+        }
+
+        b.Text["LoadingPanel"] = Loc.Tr("Loading...");
+    }
+
+    /// <summary>
+    /// The information panel's <c>ExtendingPanel</c> collapsed: its bottom on the panel's bottom; null before the HUD is read.
+    /// </summary>
+    UiRect? CollapsedExtendingPanel()
+    {
+        if (FaithfulHud?.Find("InformationPanel") is not { } info || FaithfulHud.Find("ExtendingPanel") is not { } extending) return null;
+
+        var infoRect = info.Position.RelativeTo(new(0, 0, Width, Height), true);
+        var rect = extending.Position.RelativeTo(infoRect, true);
+        return rect with { Y = infoRect.Y + infoRect.Height - rect.Height };
+    }
+
+    /// <summary>
+    /// Where a selected building's own window puts its bottom-left corner (<c>FUN_1406e6640</c>, <b>Verified</b>): the point the HUD keeps from
+    /// its build (<c>FUN_14072d3b0</c>, <b>Verified</b>): the collapsed <c>ExtendingPanel</c>'s left edge, and its top less 1 % of the screen
+    /// height (<c>DAT_141682ad8</c> = 0.01); null before the HUD is read.
+    /// </summary>
+    internal Vector2? OwnWindowAnchor() => CollapsedExtendingPanel() is { } panel ? new(panel.X, panel.Y - 0.01f * Height) : null;
 
     /// <summary>
     /// The medical bars of the lead or the selected building, with the building's status word in the medical header; whether a building is
@@ -496,6 +567,7 @@ sealed partial class PlayerInterface
     /// </summary>
     void SyncScreens()
     {
+        InventoryWindows.SyncClosedInventories();
         TradeWindows.SyncTradeScreens();
         Production.SyncMachineScreens();
         TradeWindows.SyncLootScreen();
@@ -505,6 +577,8 @@ sealed partial class PlayerInterface
         DialogueWindow.SyncDialogueScreen();
         TradeWindows.SyncCharacterTradeScreen();
         InventoryWindows.ValidateInventoryDrag();
+        CharactersWindow.Sync();
+        ItemsWindow.Sync();
         FaithfulScreens.FocusRing = UiMode == UiMode.Meitou;
     }
 
@@ -579,6 +653,7 @@ sealed partial class PlayerInterface
         if (hud) TutorialWindow.AddTutorialHighlight(controls);
         MessageRoller.AddNotice(controls);
         InventoryWindows.AddInventoryDrag(controls);
+        ItemsWindow.AddDrag(controls);
 
         var nameTags = new List<UiControl>();
         GroundItemPicks.AddItemLabels(nameTags);
@@ -640,7 +715,8 @@ sealed partial class PlayerInterface
     /// The base shows something that moves on real time or with the camera: it is arranged every frame.
     /// </summary>
     bool UiAnimating => TitleOpen || CharacterEditor.EditorOpen || Frontend.ShowCredits || BiomeBanner.BiomeShown || WorldMap.MapShown
-        || PortraitBar.PortraitFlashes.Count > 0 || TutorialWindow.TutorialFlashes.Count > 0 || FaithfulScreens.CapturesPointer;
+        || CharactersWindow.Shown || ItemsWindow.Shown || PortraitBar.PortraitFlashes.Count > 0 || TutorialWindow.TutorialFlashes.Count > 0
+        || FaithfulScreens.CapturesPointer;
 
     #endregion
 
@@ -674,6 +750,7 @@ sealed partial class PlayerInterface
         if (!UiVisible) return false;
         var controls = ArrangeUi();
         if (InventoryWindows.InventoryPointerDown(p)) return true;
+        if (ItemsWindow.PointerDown(p)) return true;
         if (WorldMap.MapPointerDown(p)) return true;
         if (SquadWindows.SquadPointerDown(p)) return true;
         if (FaithfulScreens.PointerDown(p))
@@ -1041,7 +1118,7 @@ sealed partial class PlayerInterface
         if (key == Key.Escape) TalkRequests.Cancel();
         UiInput++;
         if (!UiVisible) return false;
-        if (key == Key.Escape && InventoryWindows.CancelInventoryDrag()) return true;
+        if (key == Key.Escape && (InventoryWindows.CancelInventoryDrag() || ItemsWindow.CancelDrag())) return true;
 
         // toggle_camera_grid (Shift+; fixed: a binding carries no modifier, and ; alone is the free camera's).
         if (shift && key == Key.Semicolon && !FaithfulScreens.HasKeyboardFocus)
@@ -1058,11 +1135,20 @@ sealed partial class PlayerInterface
     }
 
     /// <summary>
-    /// Esc in the interface: closes the top window (or the title, the loot, the trade), else opens the game menu; always taken.
+    /// Esc in the interface: closes every inventory window and the prospecting window at once, else the top window (or the title), else opens the game menu; always taken.
     /// </summary>
     bool EscapeKey()
     {
         if (OnlinePreparing && !FaithfulScreens.IsOpen("message")) { CancelOnline(); return true; }
+        // With an inventory, prospecting, overview or stats window shown, one Esc closes them all and opens no game menu (EscapeCloseAll). The
+        // game menu and the New Game panel it opens do not hold Esc back; another modal window does.
+        if (EscapeClosesAll())
+        {
+            EscapeCloseAll();
+            UpdateMenuPause();
+            return true;
+        }
+
         if (AdvancedOptions.AdvancedOpen && FaithfulScreens.OpenScreens.LastOrDefault() == "new-game")
         {
             AdvancedOptions.AdvancedOpen = false;
@@ -1091,27 +1177,44 @@ sealed partial class PlayerInterface
         {
             Frontend.HandleFrontendAction(new("message", Frontend.CancelButton, Frontend.CancelButton));
         }
-
-        // While looting, one Esc closes the looter's and the body's windows together (their bags follow); the loot closes with its window.
-        else if (FaithfulScreens.IsOpen("loot") && FaithfulScreens.OpenScreens[^1] is "inventory" or "bag" or "loot" or "loot-bag")
-        {
-            FaithfulScreens.Close("loot");
-            FaithfulScreens.Close("inventory");
-        }
-
-        // So does trading: one Esc closes the trader with the customer's windows, whichever of them was clicked last (closing the trader ends the
-        // trade).
-        else if (FaithfulScreens.IsOpen("trader") && FaithfulScreens.OpenScreens[^1] is "inventory" or "bag" or "limbs" or "trader")
-        {
-            FaithfulScreens.Close("trader");
-            FaithfulScreens.Close("inventory");
-        }
         else if (!FaithfulScreens.Escape())
         {
             FaithfulScreens.Open("menu");
         }
         UpdateMenuPause();
         return true;
+    }
+
+    /// <summary>
+    /// Whether Esc runs the original's close-all (<see cref="EscapeCloseAll"/>): an inventory, prospecting, overview or stats window is shown and no
+    /// modal window other than the game menu and its New Game panel is open.
+    /// </summary>
+    bool EscapeClosesAll()
+    {
+        bool shown = InventoryWindows.AnyInventoryWindowOpen() || new[] { "prospect", "overview", "stats" }.Any(FaithfulScreens.IsOpen);
+        bool held = FaithfulScreens.OpenScreens.Any(id => FaithfulScreens.IsModal(id) && id is not ("menu" or "new-game"));
+        return shown && !held;
+    }
+
+    /// <summary>
+    /// The original's Esc close-all (<c>FUN_140917120</c>, <b>Verified</b> by decompile: the inventory windows' close-all <c>FUN_1406e5740</c>, the
+    /// options, prospecting and in-game New Game panels with its advanced options; <b>Observed</b> with the harness, 1.0.65: the overview and the
+    /// stats window close in the same press and no game menu opens): every inventory window (the trader's, the loot, the container and the
+    /// trade close with theirs), the prospecting, overview and stats windows, the New Game panel and the settings panel.
+    /// </summary>
+    internal void EscapeCloseAll()
+    {
+        FaithfulScreens.Close("trader");
+        InventoryWindows.CloseInventoryWindows();
+        foreach (string screen in new[] { "prospect", "overview", "stats" }) FaithfulScreens.Close(screen);
+
+        if (!FaithfulScreens.IsOpen("title"))
+        {
+            AdvancedOptions.AdvancedOpen = false;
+            FaithfulScreens.Close("new-game");
+        }
+
+        CloseOptions?.Invoke();
     }
 
     /// <summary>
@@ -1326,13 +1429,14 @@ sealed partial class PlayerInterface
     double ButtonSpeed(int index) => index == 0 ? 0 : Session.TimeScales[index - 1];
 
     /// <summary>
-    /// The lit speed button's action: the button whose speed is the clock's (none for a console speed off the steps).
+    /// The lit speed button's action: the button whose speed is the clock's (none for a console speed off the steps); the pause button while the
+    /// loading pause holds the game, as the original lights the button of 0 while its paused flag is set (<c>FUN_140724880</c>).
     /// </summary>
     string SpeedButtonAction
     {
         get
         {
-            double speed = Session.TimeScale;
+            double speed = Session is Host.WorldSession { Simulation.LoadingHold: true } ? 0 : Session.TimeScale;
             int index = speed == 0 ? 0 : SpeedStep(speed) is var i and >= 0 ? i + 1 : -1;
             return $"meitou:speed.{index}";
         }

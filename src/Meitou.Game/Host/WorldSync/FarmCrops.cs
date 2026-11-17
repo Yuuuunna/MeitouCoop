@@ -16,9 +16,10 @@ sealed class FarmCrops(GameHost host)
 {
     /// <summary>
     /// Where a farm's building stands: its site id, BUILDING record, position and rotation, and the building it was placed in (a player's
-    /// hydroponic farm indoors), null for none.
+    /// hydroponic farm indoors), null for none; a layout object names its house, floor and interior visibility.
     /// </summary>
-    readonly record struct FarmPlace(string Id, string Record, Vector3 Position, Quaternion Rotation, string? Container = null);
+    readonly record struct FarmPlace(string Id, string Record, Vector3 Position, Quaternion Rotation, string? Container = null, string? House = null,
+        int Floor = 0, bool InteriorOnly = false);
 
     /// <summary>
     /// A farm's crops as laid out once for its building: the place, its farm data, the plant layout and meshes, and what was last handed to
@@ -69,9 +70,13 @@ sealed class FarmCrops(GameHost host)
     /// </summary>
     readonly Dictionary<string, FarmData?> _farmData = new(StringComparer.Ordinal);
     /// <summary>
-    /// The towns' buildings by run-time key (<see cref="TownBuildingOf"/>), and the revision of their lists it was made from.
+    /// The towns' buildings by run-time key (<see cref="IndexTowns"/>), and the revision of their lists it was made from.
     /// </summary>
     Dictionary<string, TownBuilding>? _townBuildings;
+    /// <summary>
+    /// Town layout objects by their canonical building key, rebuilt with the town building index.
+    /// </summary>
+    Dictionary<string, TownLayoutBuilding>? _townPieces;
     /// <summary>
     /// See <see cref="_townBuildings"/>.
     /// </summary>
@@ -120,32 +125,41 @@ sealed class FarmCrops(GameHost host)
     }
 
     /// <summary>
-    /// Where the farm of a machine's site stands: a player's site shown, else a town building's; null for neither.
+    /// Where a canonical farm site stands: a player building, town building or house layout object.
     /// </summary>
     FarmPlace? PlaceOf(string id)
     {
         if (host.BuildingSync.ShownBuildings.TryGetValue(id, out var site))
             return new(site.Id, site.Record, site.Position, site.Rotation, site.Parent);
-        if (TownBuildingOf(id) is not { } b) return null;
+        if (!IndexTowns()) return null;
+        if (_townBuildings!.TryGetValue(id, out var b))
+            return new(id, b.BuildingId, b.Position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, b.Yaw));
+        if (!_townPieces!.TryGetValue(id, out var piece)) return null;
 
-        return new(id, b.BuildingId, b.Position, Quaternion.CreateFromAxisAngle(Vector3.UnitY, b.Yaw));
+        return new(id, piece.RecordId, piece.Position, piece.Rotation, House: piece.House, Floor: piece.Floor, InteriorOnly: piece.InteriorOnly);
     }
 
     /// <summary>
-    /// The town building of a run-time key, over the towns' lists (made again when they change); null for none.
+    /// Indexes town buildings and layout objects by canonical key when their source revision changes.
     /// </summary>
-    TownBuilding? TownBuildingOf(string key)
+    bool IndexTowns()
     {
-        if (host.PopData is not { } data) return null;
-        if (_townBuildings is null || _townBuildingsRevision != data.BuildingsRevision)
+        if (host.PopData is not { } data) return false;
+        if (_townBuildings is not null && _townBuildingsRevision == data.BuildingsRevision) return true;
+
+        _townBuildingsRevision = data.BuildingsRevision;
+        _townBuildings = new(StringComparer.Ordinal);
+        _townPieces = new(StringComparer.Ordinal);
+        foreach (var town in data.Sites)
         {
-            _townBuildingsRevision = data.BuildingsRevision;
-            _townBuildings = new(StringComparer.Ordinal);
-            foreach (var town in data.Sites)
-                foreach (var b in town.Buildings) _townBuildings[b.Key] = b;
+            foreach (var b in town.Buildings)
+            {
+                _townBuildings[b.Key] = b;
+                foreach (var piece in b.LayoutBuildings) _townPieces[piece.Id] = piece;
+            }
         }
 
-        return _townBuildings.GetValueOrDefault(key);
+        return true;
     }
 
     /// <summary>
@@ -179,6 +193,9 @@ sealed class FarmCrops(GameHost host)
             FarmPlant = true,
             Contained = site.Container is not null,
             ContainerId = site.Container,
+            Floor = site.Floor,
+            Interior = site.InteriorOnly,
+            ParentPlacementId = site.House,
         };
 
     /// <summary>
@@ -189,6 +206,7 @@ sealed class FarmCrops(GameHost host)
         foreach (string id in _farms.Keys) host.ActiveObjects?.Farms.Remove(id);
         _farms.Clear();
         _townBuildings = null;
+        _townPieces = null;
         _townBuildingsRevision = -1;
         _farmsVersion = (-1, -1);
     }

@@ -199,8 +199,8 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
 
     /// <summary>
     /// First aid 25 and Splint 249 need the patient alive (else the order leaves the queue) and an able medic with a kit (a medkit or a robot kit
-    /// anyone of its squad near it carries; its own splint kit), Rest an able character; the Medic button an able player character. The failure texts
-    /// are the orders' refusals.
+    /// anyone of its squad near it carries; its own splint kit) with a working arm (<see cref="HasWorkingArm"/>), Rest an able character; the Medic
+    /// button an able player character. The failure texts are the orders' refusals.
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
@@ -214,7 +214,8 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         if (!table.TryResolveNext(order.Target, out int patient) || table.Cold(patient)!.Medical is not { Dead: false })
             return OrderCheck.Gone;
 
-        if (cold is not { Race: not null, Stats: not null } || !CanAct(cold)) return OrderCheck.Blocked();
+        if (cold is not { Race: not null, Stats: not null } || !CanAct(cold) || !HasWorkingArm(cold))
+            return OrderCheck.Blocked();
         if (order.Row == TaskType.SplintOrder)
         {
             // the medic's own kit only (the original's kit search)
@@ -250,11 +251,28 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
     }
 
     /// <summary>
+    /// A started treatment order is planned again each update (<c>FUN_14050d970</c> re-tests the running row's list B): a medic whose arms both go
+    /// out stops and the order waits queued (<see cref="HasWorkingArm"/>).
+    /// </summary>
+    bool IOrderOwner.StillHolds(World world, int slot, OrderEntry order) =>
+        order.Row == TaskType.Rest || HasWorkingArm(world.Characters.Cold(slot)!);
+
+    /// <summary>
     /// A character that can be ordered to treat or rest: it has a medical state, is awake and not carried. Orders outrank Self preservation and First
     /// aid 25 and Splint 249 test no threat (docs/game/combat.md "Fight lifecycle and orders"): a fighting character's fight ends with the order's
     /// new task (<see cref="TaskStart.Start"/>).
     /// </summary>
     static bool CanAct(CharacterCold cold) => cold.Medical is { Incapacitated: false } && cold.CarriedBy.IsNone;
+
+    /// <summary>
+    /// State 38 <c>hasOneWorkingArm</c> (evaluator <c>FUN_140998470</c>, <b>Verified</b>): an animal always; anyone else awake, alive and with
+    /// either arm working (<see cref="MedicalState.ArmWorks"/>). The treatment rows 25 First aid, 60 Repairing and 249 Splinting need it in list B
+    /// and no row provides it (<b>Verified</b>, registration <c>FUN_140319a60</c>): no order, job or NPC look starts a treatment without it, so a
+    /// medic with both arms out (a robot one too) treats no one, itself included.
+    /// </summary>
+    internal static bool HasWorkingArm(CharacterCold cold) =>
+        cold.Animal is not null
+        || cold.Medical is { Incapacitated: false } arms && (arms.ArmWorks(left: true) || arms.ArmWorks(left: false));
 
     /// <summary>
     /// Registers the treat and rest tasks.
@@ -402,6 +420,8 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
                 continue;
             }
 
+            if (ArmsOut(world, i, cold)) continue;
+
             const ushort path = (ushort)MoveFlags.AnyPath;
             var spot = TreatSpot(world, table.Cold(t)!, next[t]);
             if (t == i || InReach(next[i], spot))
@@ -453,6 +473,20 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
             n.Flags |= (ushort)MoveFlags.NeedPath;
             n.TaskTime = PursuitSystem.RepathSeconds;
         }
+    }
+
+    /// <summary>
+    /// The plan step ends a running treatment whose medic has lost both arms (<c>FUN_14050d970</c> re-tests list B, state 38,
+    /// <see cref="HasWorkingArm"/>): a job's or an NPC's ends here; an order's is only sent to the decision step, whose order queue ends it and keeps
+    /// the order waiting (<see cref="IOrderOwner.StillHolds"/>). True when the arms are out.
+    /// </summary>
+    static bool ArmsOut(World world, int i, CharacterCold cold)
+    {
+        if (HasWorkingArm(cold)) return false;
+        if (cold.Running is { Source: TaskSource.Order }) DecisionSystem.Request(cold);
+        else
+            End(world, i);
+        return true;
     }
 
     /// <summary>
@@ -594,7 +628,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
         }
 
         // once per part bandaged; only the player's medics use up kits here (FUN_140649a00: faction +0x250)
-        if (playerMedic) Drain(kit, skill, dt, robot, touched);
+        if (playerMedic) Drain(world, m, kit, skill, dt, robot, touched);
         medicCold.UseSkill(StatOf(robot), world.Tick);
         _xp.Medic(stats, race, medicRace, dt, StatOf(robot));
 
@@ -630,7 +664,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
 
         float woundSkill = SkillOf(stats, m == p, race.IsRobot && !kitless);
         body.CloseWound(dt, woundSkill, woundKit is { } wk ? Items.Info(wk.Item.Record)?.Quality ?? 0 : KitlessQuality, Constants);
-        if (woundKit is { } used) Drain(used, woundSkill, dt, race.IsRobot, 1);
+        if (woundKit is { } used) Drain(world, m, used, woundSkill, dt, race.IsRobot, 1);
         medicCold.UseSkill(StatOf(race.IsRobot && !kitless), world.Tick);
         _xp.Medic(stats, race, medicRace, dt, StatOf(race.IsRobot && !kitless));
     }
@@ -685,7 +719,7 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
             return;
         }
 
-        Drain(kit, skill, dt, false, 1);
+        Drain(world, m, kit, skill, dt, false, 1);
         medicCold.UseSkill(StatsEnumerated.Medic, world.Tick);
         _xp.Medic(stats, race, medicRace, dt, StatsEnumerated.Medic);
     }
@@ -695,12 +729,18 @@ public sealed partial class FirstAidSystem(GameConstants constants, BodyOptions 
     #region Kits
 
     /// <summary>
-    /// Uses <paramref name="times"/> drains of a kit (<see cref="MedicalState.KitDrain"/>); a used-up kit is gone.
+    /// Uses <paramref name="times"/> drains of a kit (<see cref="MedicalState.KitDrain"/>) by medic <paramref name="m"/>; a used-up kit is gone.
+    /// Observers hear the charges it had that the drain spent (<see cref="ItemUseKind.FirstAid"/>).
     /// </summary>
-    void Drain((ItemInstance Item, Inventory Owner) kit, float skill, float dt, bool robotKit, int times)
+    void Drain(World world, int m, (ItemInstance Item, Inventory Owner) kit, float skill, float dt, bool robotKit, int times)
     {
-        kit.Item.Charges -= MedicalState.KitDrain(Constants, skill, dt, robotKit) * times;
-        if (kit.Item.Charges <= 0) kit.Owner.RemoveOne(kit.Item);
+        float amount = MedicalState.KitDrain(Constants, skill, dt, robotKit) * times;
+        float spent = MathF.Min(amount, MathF.Max(kit.Item.Charges, 0));
+        kit.Item.Charges -= amount;
+        bool finished = kit.Item.Charges <= 0;
+        if (finished) kit.Owner.RemoveOne(kit.Item);
+
+        ItemUseObservers.Report(world, ItemUseKind.FirstAid, kit.Item.Record, world.Characters.IdOf(m), null, spent, finished);
     }
 
     /// <summary>

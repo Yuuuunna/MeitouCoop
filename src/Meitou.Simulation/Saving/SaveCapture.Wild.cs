@@ -4,6 +4,7 @@ using Meitou.Data.Gameplay;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Save;
 using Meitou.Data.World;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Population;
 using SquadMemoryData = Meitou.Simulation.Dialogue.SquadMemoryData;
@@ -264,78 +265,12 @@ public static partial class SaveCapture
     /// record and <c>hometown</c> the nest's handle, a homeless one with neither; <c>sqt</c> 2 (every wild platoon of the samples), the region as <c>map area</c>, the package
     /// running; its characters as new ones. Loaded again they are the save's wild platoons, counted by their nest or sector.
     /// </summary>
-    static void WriteWildNpcs(SaveBuilder builder, World world, PopulationData data, PopulationSystem population, Dictionary<int, Hand> nests, SaveCaptureOptions options, SaveClock clock,
-        IReadOnlyDictionary<string, FcsRecord> buildings, Dictionary<string, RaceData?> races)
+    static void WriteWildNpcs(SaveBuilder builder, World world, PopulationData data, PopulationSystem population, Dictionary<int, Hand> nests,
+        SaveCaptureOptions options, SaveClock clock, IReadOnlyDictionary<string, FcsRecord> buildings, Dictionary<string, RaceData?> races)
     {
-        var game = builder.Game;
-        var table = world.Characters;
-        var factions = new Dictionary<string, SaveFaction>(StringComparer.Ordinal);
-        foreach (var f in game.Factions) factions.TryAdd(f.Id, f);
-        void Write(WildSite? site, string templateId, int factionIndex, long money, string? package, List<(CharacterCold Cold, Vector3 Position, float Yaw, CharacterId Id, bool Leader)> members, SquadMemoryData? memory = null,
-            bool persistent = false)
-        {
-            var faction = data.Factions[factionIndex];
-            factions.TryGetValue(faction.Id, out var state);
-            var at = members.First(m => m.Leader).Position;
-            var platoon = builder.AddPlatoon(FreshName(game, state, faction.Name), faction.Name, faction.Id, templateId, at, (int)Math.Clamp(money, int.MinValue, int.MaxValue));
-            var record = platoon.Record;
-            record.Ints["sqt"] = 2;
-            // Not persistent, but while it occupies a town (the original's occupation makes its platoon persistent, docs/game/ai.md "Package classes").
-            record.Bools["persistent"] = persistent || Ai.AiSystem.Occupies(data.Ai, package);
-            if (site is { Kind: WildKind.Nest, Nest: { } nest } && nests.TryGetValue(site.Index, out var hand))
-            {
-                record.Strings["basetown"] = nest.Id;
-                hand.Write(record, "hometown");
-            }
-            WriteMapArea(record, data, at);
-            if (package is not null) record.Strings["currentPackage"] = package;
-            NoteMemory(record, memory);
-            foreach (var m in members)
-            {
-                int f = m.Cold.Faction;
-                string owner = f >= 0 && f < data.Factions.Count ? data.Factions[f].Id : faction.Id;
-                WriteCharacter(builder, world, data, options, clock, buildings, races, platoon, null, m.Cold, m.Position, m.Yaw, m.Id, owner, m.Leader, orders: false);
-            }
-            SetCharCount(platoon);
-        }
-
-        foreach (var site in population.WildSites)
-        {
-            foreach (int squadId in population.WildSquadsOf(site.Index))
-            {
-                if (world.Squads.Find(squadId) is not { } squad || squad.Faction < 0 || squad.Faction >= data.Factions.Count) continue;
-                // The dead stay in the platoon's list as the original writes it (FUN_1404ff410, docs/game/character-stats.md "Corpses").
-                var every = squad.Members.Where(m => table.IsAlive(m) && table.Cold(m.Slot) is { IsPlayer: false, Save: null }).ToList();
-                var alive = every.Where(m => table.Cold(m.Slot)!.DiedTick < 0).ToList();
-                if (alive.Count == 0) continue;
-                var leader = alive.Contains(squad.Leader) ? squad.Leader : alive[0];
-                Write(site, squad.TemplateId, squad.Faction, squad.Money, squad.Ai?.Current?.Id,
-                    [.. every.Select(id => (table.Cold(id.Slot)!, table.Previous[id.Slot].Position, table.Previous[id.Slot].Yaw, id, id == leader))], MemoryOf(world)?.Snapshot(squad.Id));
-            }
-            // Kept while the site is unloaded (the Meitou KeepWild switch): their characters as they were stored.
-            foreach (var k in population.KeptWildOf(site.Index))
-            {
-                if (k.Faction < 0 || k.Faction >= data.Factions.Count || k.Stored.Members.Count == 0) continue;
-                bool hasLeader = k.Stored.Members.Any(m => m.Leader);
-                Write(site, k.TemplateId, k.Faction, k.Money, k.Stored.Package,
-                    [.. k.Stored.Members.Select((m, i) => (m.Cold, m.Position, m.Yaw, CharacterId.None, m.Leader || !hasLeader && i == 0))], k.Stored.Memory);
-            }
-        }
-        // NPC squads of no town, platoon or wild site: a dismissed character's "Wandering Squad" (the original's FUN_14048fa30 makes it a persistent platoon, which saveGame
-        // writes like any other), a slave bought free or handed over, one separated by dialogue. Written homeless and persistent; loaded again they are homeless wild platoons.
-        var wild = new HashSet<int>();
-        foreach (var site in population.WildSites) wild.UnionWith(population.WildSquadsOf(site.Index));
-        foreach (var squad in world.Squads.All)
-        {
-            if (squad.Town >= 0 || squad.PlatoonId >= 0 || squad.Dead || wild.Contains(squad.Id) ||
-                (world.Players.RequiresExplicitControl ? squad.PlayerManaged : squad.Faction == world.Player.Faction) || squad.Faction < 0 || squad.Faction >= data.Factions.Count) continue;
-            var every = squad.Members.Where(m => table.IsAlive(m) && table.Cold(m.Slot) is { IsPlayer: false, Save: null }).ToList();
-            var alive = every.Where(m => table.Cold(m.Slot)!.DiedTick < 0).ToList();
-            if (alive.Count == 0) continue;
-            var leader = alive.Contains(squad.Leader) ? squad.Leader : alive[0];
-            Write(null, squad.TemplateId, squad.Faction, squad.Money, squad.Ai?.Current?.Id,
-                [.. every.Select(id => (table.Cold(id.Slot)!, table.Previous[id.Slot].Position, table.Previous[id.Slot].Yaw, id, id == leader))], MemoryOf(world)?.Snapshot(squad.Id), persistent: true);
-        }
+        var writer = new WildPlatoonWriter(builder, world, data, nests, options, clock, buildings, races, FactionsOf(builder.Game));
+        WriteSiteSquads(world, data, population, writer);
+        WriteStraySquads(world, data, population, writer);
     }
 
     /// <summary>
@@ -353,12 +288,12 @@ public static partial class SaveCapture
                 // The dead stay in the platoon's list as the original writes it (FUN_1404ff410, docs/game/character-stats.md "Corpses").
                 var every = squad.Members.Where(m => table.IsAlive(m) && table.Cold(m.Slot) is { IsPlayer: false, Save: null }).ToList();
                 var alive = every.Where(m => table.Cold(m.Slot)!.DiedTick < 0).ToList();
-                if (alive.Count == 0) continue;
+                bool regenerates = site.Kind == WildKind.Nest && population.NestRegenerates(squad.TemplateId, site.Index);
+                if (!WritesSquad(world, squad, alive, every, regenerates, out var leader, out bool dead)) continue;
 
-                var leader = alive.Contains(squad.Leader) ? squad.Leader : alive[0];
                 writer.Write(site, squad.TemplateId, squad.Faction, squad.Money, squad.Ai?.Current?.Id,
                     [.. every.Select(id => (table.Cold(id.Slot)!, table.Previous[id.Slot].Position, table.Previous[id.Slot].Yaw, id, id == leader))],
-                    MemoryOf(world)?.Snapshot(squad.Id));
+                    MemoryOf(world)?.Snapshot(squad.Id), dead: dead);
             }
 
             // Kept while the site is unloaded (the Meitou KeepWild switch): their characters as they were stored.
@@ -388,19 +323,37 @@ public static partial class SaveCapture
         foreach (var site in population.WildSites) wild.UnionWith(population.WildSquadsOf(site.Index));
         foreach (var squad in world.Squads.All)
         {
-            if (squad.Town >= 0 || squad.PlatoonId >= 0 || squad.Dead || wild.Contains(squad.Id) || squad.Faction == world.Player.Faction
+            if (squad.Town >= 0 || squad.PlatoonId >= 0 || squad.Dead || wild.Contains(squad.Id)
+                || (world.Players.RequiresExplicitControl ? squad.PlayerManaged : squad.Faction == world.Player.Faction)
                 || squad.Faction < 0 || squad.Faction >= data.Factions.Count)
                 continue;
 
             var every = squad.Members.Where(m => table.IsAlive(m) && table.Cold(m.Slot) is { IsPlayer: false, Save: null }).ToList();
             var alive = every.Where(m => table.Cold(m.Slot)!.DiedTick < 0).ToList();
-            if (alive.Count == 0) continue;
+            if (!WritesSquad(world, squad, alive, every, false, out var leader, out bool dead)) continue;
 
-            var leader = alive.Contains(squad.Leader) ? squad.Leader : alive[0];
             writer.Write(null, squad.TemplateId, squad.Faction, squad.Money, squad.Ai?.Current?.Id,
                 [.. every.Select(id => (table.Cold(id.Slot)!, table.Previous[id.Slot].Position, table.Previous[id.Slot].Yaw, id, id == leader))],
-                MemoryOf(world)?.Snapshot(squad.Id), persistent: true);
+                MemoryOf(world)?.Snapshot(squad.Id), persistent: true, dead: dead);
         }
+    }
+
+    /// <summary>
+    /// Whether a wild or stray squad (<paramref name="every"/>, its members it writes; <paramref name="alive"/>, those not dead) is written, the
+    /// member it is led by and whether it is written declared dead (<paramref name="dead"/>): one with someone alive always; one with only its
+    /// dead that <paramref name="regenerates"/> (a nest's whose template <c>regenerates</c>, its nest living: <c>Platoon::declareDead</c> only marks
+    /// it) as usual; any other is declared dead and written by <see cref="KeepsDead"/> at <see cref="LastPlace"/>, so a fight's bodies by the
+    /// player stay through a save (#860).
+    /// </summary>
+    static bool WritesSquad(World world, Squad squad, List<CharacterId> alive, List<CharacterId> every, bool regenerates, out CharacterId leader,
+        out bool dead)
+    {
+        leader = WrittenLeader(squad, alive, every);
+        dead = alive.Count == 0 && !regenerates;
+        if (alive.Count > 0) return true;
+        if (every.Count == 0) return false;
+
+        return !dead || KeepsDead(world, every, LastPlace(world, every));
     }
 
     /// <summary>
@@ -411,11 +364,12 @@ public static partial class SaveCapture
         Dictionary<string, SaveFaction> factions)
     {
         /// <summary>
-        /// A platoon of the wild <paramref name="site"/> (none: homeless) with its <paramref name="members"/>.
+        /// A platoon of the wild <paramref name="site"/> (none: homeless) with its <paramref name="members"/>; a <paramref name="dead"/> one is
+        /// declared dead (<c>dead</c>, not persistent, as <c>Platoon::declareDead</c> leaves it).
         /// </summary>
         public void Write(WildSite? site, string templateId, int factionIndex, long money, string? package,
             List<(CharacterCold Cold, Vector3 Position, float Yaw, CharacterId Id, bool Leader)> members, SquadMemoryData? memory = null,
-            bool persistent = false)
+            bool persistent = false, bool dead = false)
         {
             var faction = data.Factions[factionIndex];
             factions.TryGetValue(faction.Id, out var state);
@@ -427,7 +381,8 @@ public static partial class SaveCapture
 
             // Not persistent, but while it occupies a town (the original's occupation makes its platoon persistent, docs/game/ai.md "Package
             // classes").
-            record.Bools["persistent"] = persistent || Ai.AiSystem.Occupies(data.Ai, package);
+            record.Bools["persistent"] = !dead && (persistent || Ai.AiSystem.Occupies(data.Ai, package));
+            record.Bools["dead"] = dead;   // +0x1f0
             if (site is { Kind: WildKind.Nest, Nest: { } nest } && nests.TryGetValue(site.Index, out var hand))
             {
                 record.Strings["basetown"] = nest.Id;

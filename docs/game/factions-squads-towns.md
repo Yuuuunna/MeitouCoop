@@ -66,11 +66,11 @@ The real-content reproduction above does not reject the slaves' chosen mines at 
 ### Squad leader
 
 `ActivePlatoon` (KenshiLib 1ce4a16, **Observed**) keeps `squadleader` (`+0xa0`, set by `setSquadLeader`, which gives it member type 2) and `backupLeader`
-(`+0xa8`). The effective leader (`getSquadLeader`, `FUN_140792b90`, **Verified**) is the leader while it is not down (`FUN_1405c9e10`: knocked out, dead, ragdolled or carried, or leg
-state 3+) and not `inSomething` (`+0x2f8`, bed or cage), else the backup under the same test, else the first member of the container list (animals included) that is not down and
+(`+0xa8`). The effective leader (`getSquadLeader`, `FUN_140792b90`, **Verified**) is the leader while it is not down (`isDown`, `FUN_1405c9e10`: dead `+0x5bc`, `+0x5b9`, carried `+0x3d4` or a WHOLE or
+CARRY_MODE ragdoll (`FUN_1407d1440`, [ragdolls](ragdolls.md)), or posture `+0xe0` of 3 PS_PLAYING_DEAD or 4 PS_KO; a limb-only ragdoll or a crawl is not down) and not `inSomething` (`+0x2f8`, bed or cage), else the backup under the same test, else the first member of the container list (animals included) that is not down and
 stands in a loaded or requested zone, cached as the backup; else the leader itself, usable or not. That member scan tests the *leader's* `+0x2f8`, not the member's (so a leader in a
 bed or cage is kept). The stored leader is never replaced there. Meitou (`PopulationSystem.EffectiveLeader`, `Squad.Backup`):
-the same rule for a loaded platoon's place and the unload anchor; down = out (unconscious or dead) or carried, a limb hold and playing dead are not modelled. A campaign's announcement is task 129 in the leader's AI package, and animals get only
+the same rule for a loaded platoon's place, the unload anchor and the owner character of a building's goods ([theft](carry-loot.md#theft-and-witnesses)); down is `CharacterFacts.Down`, the same `isDown`. A campaign's announcement is task 129 in the leader's AI package, and animals get only
 `dialog animal`, so an animal never announces. Meitou keeps one leader: a squad without one (leaving, a save or stand-in without a leader), and an NPC squad whose leader died while a member
 lives, takes its first living member that is not an animal, else its first living one (`SquadRegistry.Successor`, engine choice), who then acts
 the leader's goals (a patrol), so the squad does not stand by the corpse. A player squad edited on the squads screen still makes its index 0 the leader.
@@ -217,6 +217,9 @@ faction) when no member is a character that is not dead: with the template's `re
 `dead` flag (+0x1f0) and clears `persistent` (destroyed at its next unload, its PLATOON record deleted by `FUN_1407ec5e0`; a campaign's platoon stays with its campaign, `FUN_1407ec570`); a save before then leaves it out unless the player is near ([save.md](../formats/save.md#npc-platoons-meitou-mapping)).
 Meitou: `Platoon.Dead` (saved as `dead`, read at load), set in `StepLoaded`; the platoon leaves the pool counts at once, is not kept and is despawned when it unloads (its dead lie where they fell).
 Meitou (g-008): a town unloads with its coverage zones only; a town squad with a living member in the loaded box of an active zone, or one carrying a player character (the carry test of `FUN_1404febd0`), then stays in the world as a loaded pinned platoon (`PopulationSystem.KeepLoaded`) that unloads by its own place after `TownUnloadGraceSeconds` (0), as each original platoon checks itself (the old "town stays loaded while a member is active" engine choice is gone; wild sites keep it).
+A pinned platoon is otherwise wanted and made with its town's zone (engine choice), except one under a contract (hired bodyguards, a base defence;
+`PopulationSystem.TownBound`): that one is wanted, gated and activated by its own place like any original platoon, at game load too, and
+unloads after the original's 4 s outside the loaded zones (#858).
 No distance, age or emptiness rule removes a persistent platoon. A wiped-out town refills only through its pools, with non-persistent squads;
 no path re-running the initial resident placement was found.
 
@@ -441,7 +444,7 @@ from a save. Meitou (`BuildingSwaps`, `BuildingSwapPass.ApplyBuildingSwaps`, run
 - Making one: a weighted pick over the group's lists (a roll in [0, total weight) against running sums); a WEAPON pick takes a manufacturer from `weapon manufacturers`
   and the weapon is made by it (**Verified**, `FUN_1409540d0` / `FUN_140580750`): with no manufacturer no item is made and the slot stays empty (tried again next update); a model from its `weapon models` (v1 weight) whose v0 is the level, and a manufacturer with no model or a level-0 model is replaced by manufacturer `1057-gamedata.base` with model `1058-gamedata.base` (level from the 1057 entry for 1058, plus the 1057 `overall level`; shops use the same factory). Every item gets the quality of a weighted grade (0..5 -> 5, 20, 40, 60, 80, 95); the grade weights come from the item list's faction (**Verified**, `FUN_140954c80` builds, `FUN_14063cea0` draws: its `armors 0..5` chances above 0 only, a faction with none gives grade 0, no faction 50 / 80 / 25 / 5 for 0..3; one grade is taken with no draw, one list entry too; Meitou `ShopFiller.Grade`, `ItemSlots.Roll`). Handle-serial draws of the item factory are not reproduced (item rolls use Meitou's own stream).
   The item gets a value of the group (**Observed**: likely the owner faction) and is put
-  at the slot. A picked BLUEPRINT or MAP_ITEM record is also taken out of the group's pool (`FUN_140969100` from `FUN_1409540d0`).
+  at the slot. A picked BLUEPRINT or MAP_ITEM record is also taken out of the group's pool (`FUN_140969100` from `FUN_1409540d0`), the session's shared table for the group and owner faction, which the slot keeps ([list cache](economy.md#building-shops-observed-decompile); Meitou `ItemSlots`, `VendorTables`).
 - The faction's weighted grade (5/20/40/60/80/95, `FUN_140952320`) is the 6th argument of the item factory for every pick but a WEAPON (**Verified**): it becomes the level of ARMOUR, CROSSBOW and LIMB_REPLACEMENT.
 - Saved per group (in its generated interior): `base data sid`, `floornum`, `isInsideBuilding` handle, `is inside building`, `respawn time`, then its item.
 
@@ -581,6 +584,19 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   ([ai.md](ai.md)); job 0 becomes 2 for a non-persistent platoon and, for a persistent one with no "separated" hand (+0xb8, null in Meitou), 4 (GOHOME) when its home town (vfunc 0x98 -> +0x30) is over 9216 away (`DAT_141700514`, plain distance), else the idle hook `FUN_1409a7730` runs (job stays 0). Both stand still (GOHOME sets no speed): Meitou's persistent job-0 stand-in does not travel; its non-persistent one keeps the engine's travel. No character data is read or changed:
   no healing, needs or fights (**Observed**).
   - GOHOME: the mover's speed (+0xbc) is reset to 0 every step and only the branch for a platoon handle (+0xb8) sets 55, going to that object; the goto to the home (only once within 2000) sets no speed. So a GOHOME stand-in without a resolving handle stands still (**Verified**, `FUN_1407ee790`, `FUN_14065ef80` takes its speed from +0xbc). Meitou has no such handle: it stands still.
+  - Under a contract (**Verified**, `FUN_1402721a0`, `FUN_140272240`): the contract (+0x210) becomes the current package (+0x48), so its
+    `unloaded func` is the job: Bodyguard and its Dialogue.mod variants 6 (Black Dog's 5), `contract Mercenary outpost guard` 6 (base data dump).
+    The job's target is first `FUN_140269b60`: with a contract, its slot 1; `Contract_HiredAlly`'s (`FUN_1402859e0`) is the package's `mission
+    target` hand (+0x28), which its start (`FUN_140289490`) copies from the employer (+0x48, the dialogue partner); the resolver
+    (`FUN_140284510`) finds a character (type 1) anywhere, so a hired squad that fell behind travels to its employer at 60 / 90 and comes back
+    into the world where it meets the loaded zones. Unresolved, it falls to `FUN_140269cd0`: the contract's `mission town` hand (+0x8), which
+    the starts of `Contract_HiredAlly` and `Contract_DefendPlayerBase` (`FUN_14028a170`) set to the town of the player's faction
+    (`DAT_142134690`+0x2a0) nearest the squad (`FUN_140927f10`), none without one. `Contract_DefendPlayerBase`'s slot 1 (`FUN_14028fa10`) gives
+    the mission town itself (outside a campaign), so a base defender's stand-in travels to its outpost. Meitou: `PlatoonContracts.EmployerGoal`, a
+    town's own hired squad included (with the employer gone from the world, or for a base defence, to `Blackboard.ContractTown` and stopping
+    inside its radius; with none it stands);
+    **Observed** (headless, `probe hire`, the Hub's Mercenary guild hired, the player put 20000 away): its stand-in reached the
+    loaded zones after about 480 s and rejoined the player.
   - TRAVEL_TARGET / _FAST: to the mission target: the blackboard's override package's, else the campaign's target, else the current
     package's saved `mission target`, else a fallback (`FUN_140269cd0`); no move when it is the town the squad is in (**Observed**); a campaign's `travel speed unloaded` WALK / JOG / RUN gives 25 / 55 / 90;
     otherwise (GROUPED, NO_SPEED_CHANGE, no campaign) FAST 60 (90 beyond 25000), TRAVEL_TARGET 25. The mover caps speed at 70 (**Observed**: no other writer of the cap). `FUN_140269cd0` (**Verified**): `+0x210` the override target; else the war manager's campaign target when it is a town (hand type 0xd) or nest (0x55); else the blackboard's saved mission target `+0x48`; else (caller flag) the platoon's Ownerships home town `+0x30`; Meitou `PopulationSystem.MissionGoal` for every TRAVEL job outside a campaign: `Platoon.Target` (set to the package's mission town where the squad unloads, saved as `meitou mission town`), a shipping squad with slaves and none chosen the nearest camp, else the origin; it stays once inside that town's radius.
@@ -597,11 +613,27 @@ Meitou: [ground items](../simulation.md#items-and-eating).
 - **Pool growth** (`FUN_1408f4c20`): each pool's current max (`pop`) grows `+0.21818` per game hour (5.24 a day) up to its desired max
   (`popd`), for every town whether loaded or not; roaming grows only once residents are within 1 of full, and
   keeps its time stamp meanwhile, so the waiting time is credited when it next grows (**Verified**, `FUN_1408f6760`, `FUN_1408f4c20`). Towns never spawn squads over
-  time by themselves (only nests call the pool spawner). Once per town load (`0x14092a020`, **Verified**) a squad that lost ≥ 0.6 × its spawn size (double compare), if
-  the budget allows, is marked to be made afresh from its template on its next activation. The same pass runs over the roaming pool (its own budget, shared running total) and a flag at `+0xd9` forces a resident squad's mark past both tests; neither is modelled.
+  time by themselves (only nests call the pool spawner). Once per town or nest load (`0x14092a020`, slot 5 of the Base, Town and Nest population managers, run by
+  `TownBase`'s activation `FUN_14092dbb0`, which `Nest` shares, while the site is not `ded` and not already active, **Verified**) a squad that lost ≥ 0.6 × its size
+  (`+0xa4`, double compare; lost = `+0xa4` less its count `FUN_140792f90`), if the losses so far fit the pool's current max less its living, is marked to be made afresh from its template on its next activation
+  (+0x118 = 1; `FUN_1404ffad0` then deletes the old characters and builds the template into the same platoon). The pass looks only at a pool member whose `separated`
+  hand (`+0xb8`) is null and whose `canref` (`+0xd8`) is set; it runs over the residents' pool, where the template's `regenerates` (`+0xd9`) forces the mark at any loss,
+  then over the roaming pool (its own budget, the running total shared), which has no such override. A nest's squads are all roaming-pool ones. The running count starts as the count of
+  every member of both pools, whatever its state (`FUN_1408f6a40`). A platoon's `+0xa4` is its template's expected size (at least 1), set by `FUN_1407ed0f0` for a new
+  platoon and a save's alike from `FUN_1408fe0f0` (no other writer); its count is its living while active, else the count it kept (`+0xa0`): a save's platoon its
+  `char count` (dead included), so a squad saved with its dead lying has lost only the members no longer in its list (**Verified**, `FUN_1407ed0f0`, `FUN_140792f90`). Pool membership has no faction test (**Verified**, `FUN_1407ec8d0`): a platoon joins the pool (its
+  `+0xa8`) of its home town (a save's platoon: its `hometown`, `FUN_140624640`) when its faction and the town's owner are both the player's or both not (faction
+  `+0x250`), and the town's spawn puts a `roaming military` template's platoon in pool 2 (`FUN_14057f4c0`). Meitou (`CheckRegeneration`, `CheckNestRegeneration`):
+  `PoolSize`, `PoolCount`; both of a town's passes, each over its pool's platoons outside a campaign (`PoolOf`: a save's `sqt`; one the population made is in pool 1 when town-bound and not
+  `roaming military`, as it is saved; residents and bar squads alike, so the Hub's `Mercenary guild` counts), a town-bound one remade at its home and a roamer by
+  `RenewRoamer`, and a nest's (`RegenerateWild`), in platoon id order and of any faction on the town's side; a declared-dead platoon is out of its pool and not looked at. A marked
+  platoon is remade into itself (`TakeRemade`): its old characters leave, and a save writes the new squad into its record, name and handle kept (**Observed** headless:
+  bench-bases Squin, a marked `Shek Town Guard` came back as 5 in `Shek Kingdom_289` and kept that name and the 5 through a second save and load). **Observed** headless
+  with the counts above: bench-bases Squin, `Shek Town Guard` saved with 3 of 4 dead, and METARU's Hub, `Mercenary guild` saved with 4 of 6 dead, are not marked at the
+  load (their `char count` holds the dead).
 - **Despawn cost** (**Verified**, `FUN_1406bab60`, `FUN_140796b30`): a non-kept platoon that leaves while not intact (the platoon flag, below)
   is taken out of its pool (platoon +0xa8: 1 residents, 2 roaming) and, while that pool is above 0, lowers it by its living members (no floor);
-  a `regenerates` platoon (+0xd9) is charged nothing and only marked to be remade. The platoon's faction's prosperity also drops by 10, floor 0, when its +0xa4 is above 0, pool or not (`FUN_1406bab60`, **Verified**; +0xa4 is the count `FUN_14079acf0` compares with 4, read as the member count: **Observed**). Meitou: roamers and a save's wild platoons that despawn Faithful (`PayRoamerDespawn`, both costs) and nests
+  a `regenerates` platoon (+0xd9) is charged nothing and only marked to be remade. The platoon's faction's prosperity also drops by 10, floor 0, when its +0xa4 is above 0, pool or not (`FUN_1406bab60`, **Verified**; +0xa4 is the template's expected size above, which `FUN_14079acf0` compares with 4). Meitou: roamers and a save's wild platoons that despawn Faithful (`PayRoamerDespawn`, both costs) and nests
   (`PayNestDespawn`). Not intact is the squad-intact rule for all of them (`SquadIntact`); the pool is only charged while above 0, no floor; the prosperity drop applies to every wild site's squad that leaves not intact (nest or sector).
 - **Town pools in saves** (**Observed**, saves 1, 2, wade): every town has `pop` = `popd`, `started` true when populated, `popd2` 0 (none of
   304), while `read_roaming_population_n4` (`0x1408f98d0`) would set pool 2 to the faction's `roaming population`. `pop` is near the living members of the town's resident platoons (`is resident`) of the town's own faction:
@@ -616,8 +648,13 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   The check runs only while the zone at the town's position is loaded (zone byte +0xb1, **Verified** `FUN_1408f6760`). There is no faction test anywhere on the path (**Verified**: the town list's tick `FUN_14092d850`
   -> each town `FUN_14092cd20` -> `FUN_1408f6760` runs the check for every town whose zone is loaded), so Meitou judges the player's towns too.
 - **`regenerates`** (SQUAD_TEMPLATE, 18 true; `Platoon::declareDead`, **Verified**): when the last member dies and the home town is not `ded`, the platoon is not declared
-  dead but set to CM_REFRESH (remade on next activation). Meitou: a loaded pinned platoon whose members are all dead (`DeclareDead`), a town squad that unloads with no one alive, or an
-  empty pinned platoon at the town's load, is marked to regenerate (whatever the budget).
+  dead but set to CM_REFRESH (remade on next activation); the home is the platoon's town or nest. A `regenerates` platoon leaving the world damaged is not charged to its
+  pool, only marked (`FUN_140796b30`, **Verified**). Meitou: a loaded pinned platoon whose members are all dead (`DeclareDead`), a town squad that unloads with no one alive,
+  or a resident platoon with any loss at the town's load, is marked to regenerate (whatever the budget); a nest's squad of such a template is written with its dead and not
+  charged to the nest's pool when it leaves (`PayNestDespawn`). A save's platoon that comes in with only its dead is declared dead then (`HoldsDead`): one that regenerates
+  is marked and stays, its dead lying and its record written not `dead`, until it comes in again after leaving the world (`Platoon.AwaitsLeave`), when it is made afresh
+  (**Observed** headless, bench-bases: Squin's `Shek Gate Guards`, all 5 killed, and a Wolf Den pack of 2 with `regenerates` forced on, saved and loaded twice, lie dead
+  with their platoon kept each time).
 - **Nests** (`NestPopulationManager::vfunc_4`): pool 2 starts at 0.7 × `nest resident population` and grows as above. While the nest's
   zone is loaded it spawns one squad per visit, and it is visited once every N frames, N = every nest in the list, loaded or not (`TownList::vfunc_4`'s nest cursor, **Verified**) (weight `max(0, v0 − existing) × faction wealth`; an entry passes when its size fits the free budget `floor(pop2)` − living, or
   the pool is empty and more than 4 are free, so a squad bigger than the budget can open a nest: `FUN_1408f7e80`, **Verified** by code) unless a
@@ -740,9 +777,25 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   The move: `CharMovement::setPatrolInput` (`FUN_14065eaa0`, vtable +0xa0) in mode 3 (a `PatrolInfo` with a biome group) draws the point
   above and sends the character to it exactly; it redraws (up to 10 times) only a point whose ground is present and below 95 when the
   byte at +0x79 of the object at Character +0x2e0 is set (a race flag, water below 95: **Observed**), else accepts it (**Verified**). The
-  1250 in `FUN_1405c6b30` is the order's scatter radius, used only by other modes: there the destination is jittered ±radius/2 in X/Z, and
-  a point with a building within 300 is rejected (retry, up to 10) unless that building is public, or its owner is the mover's ally or the
-  player faction, and it lies in the mover's own town (**Observed**, decompile; the earlier "radius 1250 (Observed)" reading was wrong).
+  1250 in `FUN_1405c6b30` is the order's scatter radius, used only by the other modes (the town patrol, goal 36). **Patrol draws** there
+  (**Verified**, decompile of `FUN_14065eaa0`): the destination is the order's position jittered ±radius/2 in X/Z (its Y kept), then moved to
+  the closest navmesh point within 300 (`DAT_14168dc94`), the query's filter leaving out face data 3 (water) and 5 (closed door); a face of a
+  building's own navmesh section (`FUN_1403a43c0` to the building) stands only when the building has an open door (`Building::hasAnOpenDoor`
+  `FUN_1405499a0`: none, or one open, opening or broken) and is public (vfunc `0x290`), or its faction (`+0x10`) is the mover's own or an
+  ally (`FUN_1406b2630`), or the player's (`+0x250`). A person passes the last term (Character and CharacterHuman slot 73, `0x248`, return
+  null); a CharacterAnimal returns itself there and also needs its slot 101 (`FUN_1405c81d0`: its race may enter buildings, race `+0x9c`, the
+  inverse of `cant enter buildings`, and its movement's `pathfind footprint radius` (`+0x364`, read from the race by `FUN_140661f90`) x its
+  size (vfunc `0x390`) is under 4.5 (`DAT_1416e2bc4`), or the building is `cavernous` (`+0xc2`)) and `FUN_140547500` (the building has an
+  interior object, `+0x1f0`, made only for a record with an `interior` list, whose `+0xe0` is the record's `allow animals`, `FUN_140551660`).
+  So an animal strolls only into the 10 base records with `allow animals` (Ancient Citadel, Ancient Lab, Ash Dome, Black Market, Metal
+  Warehouse among them; **Verified**, gamedata dump), and only a small one unless the building is cavernous. A face outside any building stands; a standing face then takes the water test above. A rejected face, or no face, draws again; no face on
+  the tenth draw still sends the unmoved point; ten rejections send no move. Meitou (`AiSystem.PatrolPoint`, `MayPatrolInto`): the first of
+  10 draws on walkable ground whose nearest navmesh polygon within 300 (X/Z first, the area centre's height as the tie-break; water and
+  closed doors left out, `IWalkability.InteriorNear`) is outdoors or in a building passing the person's terms (`FixtureRegistry.HasOpenDoor`,
+  `IsPublic`, `OwnerOf`) and, for an animal, the animal terms (`AdmitsAnimal`: both `Locks.AnimalEntry.MayEnter` and `AnimalEntry.Allows`); the walk
+  goes to the drawn point. **Observed** (headless, #803 save, Sho-Battai): before, a Merchant Nomad on
+  goal 36 walked into Lord Nagata's private Bughouse, the noble's guards shooed it and the noble house fought it as a trespasser; after, no
+  patroller enters it.
   A loaded patrol draws again when the task's update finds the move ended (`FUN_1405c6b30` mode 1 returns unless the mover reports
   idle, reached or failed), so the squad walks up to 200 outside the gate, stops, and turns to the next sector or town. Off screen a new
   point is picked within 500 of the last (`FUN_1407ee790`).
@@ -791,6 +844,9 @@ towns, hunts after story kills, visits, ally help; chains via victory/loss trigg
   and again by the record reader (**Observed**). Appended lists (`squads to use`, `special leader`, victory/loss triggers) thus count an
   ancestor's entries twice (double weight); AI packages and `trigger player ally` are inherited (the child wins where set); `world state`
   merges by query. Own-record only: scalars and bools, ranges, chance, `key`, `num forces`, `faction override`, speeds, `dialog announcement`.
+- `display name` names the campaign: {1} of every campaign message below and its Upcoming Events line read it through CampaignInstance slot 8
+  (`FUN_1409d4af0`, called by `FUN_1409c9830` and `FUN_1409c70f0`); unset, it is "" (the string map's lookup inserts an empty value), never the record
+  name (**Verified** by decompile).
 
 **Roll** (`FUN_1409cb310`): each run updates every active campaign, then the requests, then, when the clock passes `updatetime`, sets it
 to now + 6 h and, only if the faction has no active campaign and no pending request, rolls (**Verified** +6; gate **Observed**).
@@ -857,7 +913,7 @@ campaign is not hostile, or that is not active (slot 70); a redirected request d
   earlier "an empty outpost falls" reading was this).
 - Redirect (`FUN_1409d62f0`, **Verified** by decompile): when the target town no longer resolves, or its faction is the player's and slot 70 is false (the player has left it),
   a timer (+0xf0, started the first time this is found, restarted after each look) lets the war manager look for a new target every 0.2 h with the campaign's target rule
-  (`CampaignData::vfunc_0`, [above](#campaigns)); a different town found replaces the target ("{1} has redirected to {2}", {1} from `FUN_1409d3fe0` read as the campaign's name (**Observed**), {2} the town) and the home stays. None found keeps the old one. Meitou:
+  (`CampaignData::vfunc_0`, [above](#campaigns)); a different town found replaces the target ("{1} has redirected to {2}", {1} the campaign's `display name`, {2} the town) and the home stays. None found keeps the old one. Meitou:
   `PopulationCampaigns.Redirect` (no look for a campaign with no target faction, an engine choice).
 - Packages: phase 0 `pt1 AI`, 1 `pt2 AI`, 2 `retreat AI`; the leader platoon uses `... leader`, others `... others` (else the leader's).
   Installed (`FUN_140272570`, **Verified**) at the platoon's next AI update: when the phase's package differs from the blackboard's override

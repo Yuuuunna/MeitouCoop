@@ -44,6 +44,18 @@ sealed class TownPlaceIndex(PopulationData data)
     readonly Dictionary<int, IReadOnlyList<TownBuilding>> _realWork = [];
 
     /// <summary>
+    /// The workplaces of each outpost a squad has as its town (<see cref="Blackboard.Outpost"/>), by the player town's number, and those 189 can
+    /// really work at: rebuilt with the places (derived, not hashed).
+    /// </summary>
+    readonly Dictionary<int, (IReadOnlyList<TownBuilding> All, IReadOnlyList<TownBuilding> Real)> _outposts = [];
+
+    /// <summary>
+    /// The stand-in of each player-built workplace, by site id: kept across refreshes, as a worker holds its workplace by reference
+    /// (<see cref="AiMind.WorkPost"/>); a site whose record changed gets a new one (derived, not hashed).
+    /// </summary>
+    readonly Dictionary<string, TownBuilding> _standIns = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// The places of town <paramref name="site"/> (<see cref="None"/> when it was not looked at).
     /// </summary>
     public TownPlaces Of(int site) => site >= 0 && _places.TryGetValue(site, out var p) ? p : None;
@@ -57,6 +69,25 @@ sealed class TownPlaceIndex(PopulationData data)
     /// The workplaces of <paramref name="town"/> 189 can really work at (none for a town not looked at).
     /// </summary>
     public IReadOnlyList<TownBuilding> RealWorkOf(int town) => town >= 0 && _realWork.TryGetValue(town, out var real) ? real : [];
+
+    /// <summary>
+    /// The workplaces of outpost <paramref name="number"/> (a player town's number): its complete, standing buildings with a function in
+    /// <see cref="WorkFunctions"/> that the finder's <c>couldIOperate</c> takes (<see cref="NeedsWork"/>), each a stand-in known by its site id (<see cref="TownBuilding.RuntimeKey"/>, the id of its machine); 189
+    /// takes only those it can really work at (<paramref name="real"/>, <see cref="AiSystem.RealWork"/>). None for an outpost not looked at.
+    /// </summary>
+    public IReadOnlyList<TownBuilding> OutpostWorkplaces(int number, bool real)
+    {
+        if (!_outposts.TryGetValue(number, out var work)) return [];
+
+        return real ? work.Real : work.All;
+    }
+
+    /// <summary>
+    /// The outposts' workplaces as the last refresh found them, by outpost number in order.
+    /// </summary>
+    public IEnumerable<TownBuilding> OutpostStandIns() => _outposts
+        .OrderBy(o => o.Key)
+        .SelectMany(o => o.Value.All);
 
     /// <summary>
     /// The buildings wandering in <paramref name="site"/> can go to from <paramref name="at"/>: its public ones with a general node in the zone of
@@ -79,10 +110,63 @@ sealed class TownPlaceIndex(PopulationData data)
     {
         _places.Clear();
         _realWork.Clear();
+        _outposts.Clear();
         var refresh = new Refresher(this, world, ai, data);
 
         refresh.NoteHomes();
         refresh.AddTowns();
+        AddOutposts(world, ai);
+    }
+
+    /// <summary>
+    /// The workplaces of each outpost a squad has as its town (<see cref="OutpostWorkplaces"/>).
+    /// </summary>
+    void AddOutposts(World world, AiSystem ai)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var squad in world.Squads.All)
+        {
+            if (squad.Ai is not { Outpost: > 0 and var number } || _outposts.ContainsKey(number)) continue;
+
+            var all = new List<TownBuilding>();
+            foreach (var site in world.Buildings.All)
+            {
+                if (!site.Complete || site.Destroyed || ai.FunctionOf(site.Record) is not (>= 0 and var fn)) continue;
+                if ((WorkFunctions >> fn & 1) == 0 || !NeedsWork(world, site, fn)) continue;
+                if (Construction.TownLookup.PlayerTownOf(world, site)?.Number != number) continue;
+
+                all.Add(StandIn(site, fn));
+                seen.Add(site.Id);
+            }
+
+            _outposts[number] = (all, [.. all.Where(b => AiSystem.RealWork(world, b))]);
+        }
+
+        foreach (string gone in _standIns.Keys.Where(id => !seen.Contains(id)).ToList()) _standIns.Remove(gone);
+    }
+
+    /// <summary>
+    /// <c>dontNeedWorkRightNow</c> (slot <c>0x4e8</c>) is false, which the finder's <c>couldIOperate</c> (slot <c>0x500</c>, <c>FUN_1400f7c90</c>)
+    /// asks: a constant 0 but for a research bench (<c>FUN_1402995e0</c>: true for the player's bench while no research is current).
+    /// </summary>
+    static bool NeedsWork(World world, Construction.BuildSite site, int function) =>
+        function != TownBuildings.ResearchFunction || !world.IsPlayerFaction(site.Owner)
+        || world.Factions.Find(site.Owner)?.Research.Queue.Count > 0;
+
+    /// <summary>
+    /// The stand-in of a player-built workplace (<see cref="_standIns"/>): its place, facing and function, known by its site id.
+    /// </summary>
+    TownBuilding StandIn(Construction.BuildSite site, int function)
+    {
+        if (_standIns.TryGetValue(site.Id, out var known) && known.BuildingId == site.Record) return known;
+
+        return _standIns[site.Id] = new TownBuilding(site.Id, site.Record, site.Name, site.Position, TownBuildings.YawOf(site.Rotation), false,
+            false, [])
+        {
+            RuntimeKey = site.Id,
+            Zone = site.Zone,
+            Function = function,
+        };
     }
 
     /// <summary>

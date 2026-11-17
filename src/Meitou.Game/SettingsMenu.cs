@@ -310,6 +310,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             {
                 Motion.LastFrameAt = 0;
                 Player.SetSettingsOpen(true);
+                Player.CloseOptions = () => Visible = false;
             }
 
             if (!value) save();
@@ -447,11 +448,6 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// The Reset Tutorials button.
     /// </summary>
     public Action? ResetTutorials { get; init; }
-
-    /// <summary>
-    /// The door auto-close switch changed (<see cref="UserConfig.DoorsCloseBehind"/>).
-    /// </summary>
-    public Action<bool>? DoorsCloseChanged { get; init; }
 
     /// <summary>
     /// The animals' pick-up switch changed (<see cref="UserConfig.AnimalsPickUp"/>).
@@ -618,7 +614,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         {
             "Interior lamps" or "Lamp warmth" => "Advanced",
             "Anti-aliasing" or "Weather particles" => "Hidden",
-            "Shadows" or "Traced sun shadows" or "Contact shadows" or "Lamp shadows" or "Soft grazing sun" or WorldFrame.FifthCascadeSwitch
+            "Shadows" or "Traced sun shadows" or "Contact shadows" or "Lamp shadows" or "Soft grazing sun"
                 or WorldFrame.TracedGrassSwitch => "Lighting",
             "Indirect light" or "Indoor GI" or "Hybrid GI" or "Ambient occlusion" or "Ground-truth occlusion" or "Light shafts" or "Planetshine"
                 or WorldFrame.GiRelocateSwitch or WorldFrame.GiCloudShadowsSwitch or WorldFrame.GiCacheSwitch
@@ -803,7 +799,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
 
     /// <summary>
     /// Whether a Graphics row acts now: a setting of an effect shows only while that effect is on, and one of a technique only with that technique
-    /// (the cascades' map size, filter and fifth cascade without the traced shadows, which draw no cascade, the size and filter also with their far
+    /// (the cascades' map size, filter and count without the traced shadows, which draw no cascade, the size and filter also with their far
     /// cascades; the grass shadows with them; the screen-space contact shadows with the cascades; the cache's parts
     /// with the hybrid indirect light).
     /// </summary>
@@ -816,12 +812,12 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             WorldFrame.ShadowDistanceSlider => sun != 0,
             WorldFrame.ShadowMapSlider => sun is not (0 or 3),
             WorldFrame.ShadowFilterSlider => sun is -1 or 2 or 4,
-            WorldFrame.FifthCascadeSwitch => sun is -1 or 2,
+            WorldFrame.ShadowCascadesSlider => sun is -1 or 2,
             "Contact shadows" => sun is not (3 or 4),
             WorldFrame.TracedGrassSwitch => sun is -1 or 3 or 4,
             "Indoor GI" or WorldFrame.GiRaysSwitch => gi != 0,
             WorldFrame.GiRelocateSwitch or WorldFrame.GiCloudShadowsSwitch or WorldFrame.GiCacheSwitch => gi is -1 or 2,
-            WorldFrame.GtaoQualitySlider => occlusion is -1 or 2,
+            WorldFrame.GtaoQualitySlider => occlusion != 0 && SwitchOn("Ambient occlusion"),
             WorldFrame.ShaftStrengthSlider or WorldFrame.ShaftAirSlider or WorldFrame.ShaftAirDawnSlider
                 or WorldFrame.ShaftQualitySlider => SwitchOn("Light shafts"),
             WorldFrame.PlanetshineStrengthSlider => SwitchOn("Planetshine"),
@@ -1305,7 +1301,9 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             }
             else if (ActiveChoice is not null) ActiveChoice = null;
             else if (Search.Active) Search.Clear();
-            else Visible = false;
+
+            // Closing it is the original's Esc close-all (FUN_140917120): the other windows it closes go with it.
+            else Player.EscapeCloseAll();
 
             return true;
         }
@@ -1513,16 +1511,16 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             LateDefencesChanged?.Invoke(false);
             Config.KeepRoamers = Config.OffscreenFights = Config.OffscreenHealing = Config.CampaignAncestorsOnce = Config.KeepWild
                 = Config.ResidentSchedule = Config.UnloadedProduction = true;
-            Config.DoorsCloseBehind = true;
             Config.Decapitation = true;
             Config.AdvancedRagdolls = true;
-            DoorsCloseChanged?.Invoke(true);
         }
         Config.PauseOnLoad = true;
+        Config.LoadingPause = false;
         Player.InventoryWindows.AutoOpenBags = Config.AutoOpenBags = true;
         if (!Player.IsRemoteSession)
         {
             Config.AnimalsPickUp = false;
+            Config.CagesSpareOwn = false;
             AnimalsPickUpChanged?.Invoke(false);
         }
         Config.FixDoorBreak = Config.FixAmbienceSuffix = Config.FixWindStop = true;
@@ -1833,7 +1831,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         "Fast zone hopping" or "Turret gunners turn" or "Animals pick up items" or "Fast speed" or "Fastest speed" or "Town attacks frequency" or "Dismemberment" or "Auto save" or "Auto save time (minutes)" or
         "Interior lamps" or "Attackers per target" or "Harpoon limit" or "Late dodges and blocks" or
         "Squads keep their people" or "Fights far away" or "Healing far away" or "Wild squads stay" or
-        "Towns keep their schedule" or "Production far away" or "Doors close behind" or "Decapitation" or
+        "Towns keep their schedule" or "Production far away" or "Guards spare their own" or "Decapitation" or
         "Advanced ragdolls" or "luckyren Mode" or "Dropped items kept" or "Raids as written" or "Weak punch reach" or "Bench facing"
         or "Bags in the inventory" or "Squad XP" or "Others' XP";
 

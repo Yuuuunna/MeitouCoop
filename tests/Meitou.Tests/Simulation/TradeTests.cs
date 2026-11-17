@@ -47,7 +47,8 @@ public class TradeTests
             Rec("junk-t", FcsRecordType.Item, r => r.Ints["value"] = 100),
             Rec("ration-t", FcsRecordType.Item,
                     r => { r.Ints["value"] = 10; r.Ints["item function"] = 3; r.Floats["charges"] = 100; r.Ints["stackable"] = 10; }),
-            Rec("cats-t", FcsRecordType.Item, r => { r.Name = Market.MoneyItemName; r.Ints["value"] = 1; r.Ints["stackable"] = 100; }),
+            Rec("cats-t", FcsRecordType.Item,
+                    r => { r.Name = Market.MoneyItemName; r.Ints["value"] = 1; r.Ints["stackable"] = 100; r.Ints["item function"] = 14; }),
             Rec("atg-t", FcsRecordType.VendorList, r => { r.Name = Market.AllTradeGoods; r.References["items"] = [Ref("cloth-t", 100)]; }),
             .. extra]);
         TownPlacement At(string town, float x) => new("i-" + town, town, new Vector3(x, 0, 0), null);
@@ -111,9 +112,11 @@ public class TradeTests
         var shop = b.SquadOf(shopkeeper).Shop!;
         Assert.Equal(home.Key, shop.Building);
         Assert.Equal((20, 15), (shop.Stock.Width, shop.Stock.Height));   // the widest container's columns, ceil(300 cells / 20) rows
-        Assert.InRange(b.SquadOf(shopkeeper).Money, 5000 - 2000 + 500, 5000 + 2000 + 500);   // vendor money +/- 0.4 x it, plus the money roll
+        Assert.InRange(b.SquadOf(shopkeeper).Money, 5000 - 2000, 5000 + 2000);   // vendor money +/- 0.4 x it
         Assert.Empty(shop.Stock.Items);   // the goods lie in the containers
-        Assert.InRange(shop.Containers.Sum(id => b.World.Fixtures.Find(id)!.Contents!.All().Sum(i => i.Quantity)), 8, 12);
+        var held = shop.Containers.SelectMany(id => b.World.Fixtures.Find(id)!.Contents!.All()).ToList();
+        Assert.InRange(held.Where(i => i.Record != "cats-t").Sum(i => i.Quantity), 8, 12);
+        Assert.Equal(500, held.Where(i => i.Record == "cats-t").Sum(i => i.Quantity));   // the money roll, as money items
 
         // No stock container: a squad shop of 18 x 18.
         var bare = new TownBuilding("bare", "bare", "Bare", Vector3.Zero, 0, false, false,
@@ -241,7 +244,7 @@ public class TradeTests
         Assert.NotNull(m.Trade.PublishTrade(m.A)); Assert.NotNull(m.Trade.PublishTrade(m.B));
         m.World.ReleasePlayerConnection(current);
         Assert.Null(m.Trade.PublishTrade(m.A)); Assert.NotNull(m.Trade.PublishTrade(m.B));
-        Assert.True(m.World.Characters.Cold(m.Trader.Slot)!.Engaged);
+        Assert.False(m.World.Characters.Cold(m.Trader.Slot)!.Engaged); // open trade windows leave the trader with its AI
         Assert.True(m.World.Players.CanControl(m.A, m.CustomerA));
     }
 
@@ -313,7 +316,7 @@ public class TradeTests
     }
 
     [Fact]
-    public void ClosingOneWindowDoesNotCloseAnotherOrReleaseItsTrader()
+    public void ClosingOneWindowDoesNotCloseAnotherAndOpenTradesLeaveTheTraderFree()
     {
         using var m = new MultiplayerShop();
         m.OpenBoth();
@@ -323,7 +326,7 @@ public class TradeTests
         m.World.RunTick();
         Assert.Null(m.Trade.PublishTrade(m.A));
         Assert.Equal(b, m.View(m.B).SessionId);
-        Assert.True(m.World.Characters.Cold(m.Trader.Slot)!.Engaged);
+        Assert.False(m.World.Characters.Cold(m.Trader.Slot)!.Engaged); // open trade windows leave the trader with its AI
         m.Send(m.B, new CloseTrade { Tick = 0, SessionId = b });
         m.World.RunTick();
         Assert.Null(m.Trade.PublishTrade(m.B));
@@ -388,7 +391,7 @@ public class TradeTests
         m.World.Characters.Place(m.CustomerA.Slot, new Vector3(10000, 150, 10000), 0);
         m.Send(m.A, new BuyItem(view.Stock.Single().Token, 1) { Tick = 0, SessionId = view.SessionId, InventoryRevision = view.StockRevision });
         m.World.RunTick();
-        Assert.Null(m.Trade.PublishTrade(m.A));
+        Assert.Equal(view.SessionId, m.View(m.A).SessionId); // only item moves are blocked beyond the pass range
         Assert.Single(m.Shop.Stock.Items);
         Assert.Equal(long.MaxValue, m.PlayerA.State.Money);
     }
@@ -493,15 +496,16 @@ public class TradeTests
         var shopkeeper = b.Spawn("shopkeeper", new Vector2(10, 0), b.Data.FactionIndex("f-t"), false, "shop-t");
         b.World.RunTicks(1);
         var shop = b.SquadOf(shopkeeper).Shop!;
-        int units = shop.Stock.All().Sum(i => i.Quantity);
-        Assert.InRange(units, 8, 12);                            // round(U(0.8, 1.2) x 10)
-        Assert.Equal(3000 + 500, b.SquadOf(shopkeeper).Money);   // a small stock is worth less than 12000: the floor, plus the money roll
+        int units = shop.Stock.All().Where(i => i.Record != "cats-t").Sum(i => i.Quantity);
+        Assert.InRange(units, 8, 12);                                                         // round(U(0.8, 1.2) x 10)
+        Assert.Equal(500, shop.Stock.All().Where(i => i.Record == "cats-t").Sum(i => i.Quantity));   // the money roll, as money items
+        Assert.Equal(3000, b.SquadOf(shopkeeper).Money);   // a small stock, its money items included, is worth less than 12000: the floor
         Assert.Equal(1 + (long)(24 / BodySystem.HoursPerTick) - 1, shop.NextRestockTick);
 
         b.Say(new OpenTrade(hero, shopkeeper) { Tick = 0 });
         b.World.RunTicks(2);
         var view = b.View;
-        Assert.Equal(units, view.Stock.Sum(i => i.Quantity));
+        Assert.Equal(units, view.Stock.Sum(i => i.Quantity));   // the window leaves the money items out
         Assert.True(b.World.Snapshot.Characters.Single(c => c.Id == shopkeeper).IsTrader);
 
         // Buy one unit of the first stack: its unit price leaves the purse and enters the shop's.
@@ -509,7 +513,7 @@ public class TradeTests
         b.Say(new BuyItem(first.Token, 1) { Tick = 0, Section = "main", X = 3, Y = 2 });   // dropped on a pocket cell
         b.World.RunTicks(1);
         Assert.Equal(1000 - first.UnitPrice, b.World.Player.Money);
-        Assert.Equal(3500 + first.UnitPrice, b.SquadOf(shopkeeper).Money);
+        Assert.Equal(3000 + first.UnitPrice, b.SquadOf(shopkeeper).Money);
         Assert.Equal((1, 3, 2), b.Bag(hero).All().Select(i => (i.Quantity, i.X, i.Y)).Single());
 
         // Sell it back: the sell price (a trade item at full price, junk at half).
@@ -518,7 +522,8 @@ public class TradeTests
         b.World.RunTicks(1);
         Assert.Equal(1000 - first.UnitPrice + mine.Price, b.World.Player.Money);
         Assert.Empty(b.Bag(hero).All());
-        Assert.Contains(shop.Stock.Items, i => (i.X, i.Y) == (11, 17));
+        Assert.Contains(shop.Window.Items, i => (i.X, i.Y) == (11, 17));   // the window, a copy of the goods (Shop.Window)
+        Assert.Equal(units, shop.Stock.All().Where(i => i.Record != "cats-t").Sum(i => i.Quantity));
 
         // Too poor: nothing moves.
         b.World.Player.Money = 0;
@@ -527,10 +532,11 @@ public class TradeTests
         Assert.Contains("You can't afford that.", b.World.TakeMessages());
         Assert.Empty(b.Bag(hero).All());
 
-        // Walking away (beyond TradeSettings.PassRange) closes the trade; the stock is replaced when the refresh time comes.
+        // Walking away (beyond TradeSettings.PassRange) leaves the trade open, as the original's; the stock is replaced when the refresh time comes.
         b.Say(new MoveOrder([hero], new Vector3(-1100, 150, 0)) { Tick = 0 });
         b.World.RunTicks(1500);
-        Assert.Null(b.World.Snapshot.Trade);
+        Assert.NotNull(b.World.Snapshot.Trade);
+        b.Say(new CloseTrade { Tick = 0 });
         b.World.RunTicks((int)(shop.NextRestockTick - b.World.Tick) + 15);
         Assert.Equal(2, shop.Fills);
     }
@@ -595,6 +601,7 @@ public class TradeTests
         r.Ints["inventory footprint height"] = 4;
         r.Ints["storage size width"] = 6;
         r.Ints["storage size height"] = 8;
+        r.Ints["slot"] = 12;   // ATTACH_BACKPACK, as every base-game bag
     });
 
     [Theory]
@@ -621,22 +628,26 @@ public class TradeTests
         b.World.RunTick();
         Assert.Same(bag, Assert.Single(shop.Stock.Items));
         Assert.Equal(playerMoney, b.World.Player.Money);
+        // The window trades a copy of the goods' bag (Shop.Window); emptied, the copy trades.
+        var copy = Assert.Single(shop.Window.Items);
+        Assert.NotSame(bag, copy);
+        contents = copy.Contents!;
         contents.Items.Clear();
         b.World.RunTick();
         stock = Assert.Single(b.View.Stock);
         b.Say(new BuyItem(stock.Token, 1) { Tick = 0, Section = section, X = 2, Y = 3, Equip = equip });
         b.World.RunTick();
-        Assert.Same(bag, Assert.Single(b.Bag(hero).Items));
-        Assert.Same(contents, bag.Contents);
-        Assert.Equal(section == "main" ? "main" : "backpack_attach", bag.Section);
-        if (section == "main") Assert.Equal((2, 3), (bag.X, bag.Y));
-        Assert.Empty(shop.Stock.All());
+        Assert.Same(copy, Assert.Single(b.Bag(hero).Items));
+        Assert.Same(contents, copy.Contents);
+        Assert.Equal(section == "main" ? "main" : "backpack_attach", copy.Section);
+        if (section == "main") Assert.Equal((2, 3), (copy.X, copy.Y));
+        Assert.Empty(shop.Stock.All());   // the goods' bag left with it
         Assert.Equal(playerMoney - stock.Price, b.World.Player.Money);
         Assert.True(contents.Add(b.Data.Items.Create("ration-t")!));
         b.World.RunTick();
         b.Say(new SellItem(b.View.Goods.Single(i => i.Record == "bag-t").Token, 1) { Tick = 0 });
         b.World.RunTick();
-        Assert.Same(bag, Assert.Single(b.Bag(hero).Items));
+        Assert.Same(copy, Assert.Single(b.Bag(hero).Items));
         Assert.Equal(playerMoney - stock.Price, b.World.Player.Money);
         // Emptied, it sells back for exactly what it cost (buyback).
         contents.Items.Clear();
@@ -646,8 +657,9 @@ public class TradeTests
         b.Say(new SellItem(goods.Token, 1) { Tick = 0 });
         b.World.RunTick();
         Assert.Empty(b.Bag(hero).All());
-        Assert.Same(bag, Assert.Single(shop.Stock.Items));
-        Assert.Same(contents, bag.Contents);
+        Assert.Same(copy, Assert.Single(shop.Window.Items));
+        Assert.Same(contents, copy.Contents);
+        Assert.Equal("bag-t", Assert.Single(shop.Stock.Items).Record);   // the goods take a copy of it
         Assert.Equal(playerMoney, b.World.Player.Money);
         Assert.Equal(shopMoney, b.SquadOf(trader).Money);
     }

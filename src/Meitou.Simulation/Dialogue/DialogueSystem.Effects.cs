@@ -39,8 +39,12 @@ public sealed partial class DialogueSystem
         if (!PrepareEffects(world, c, line, me)) { c.Ended = true; return; }
         var mc = Cold(world, me);
         if (mc is not null) RunLocks(c, line, mc);
-        if (line.Interrupt is { } interrupt) SetInterrupt(c, me, interrupt);
-        RunRelationChanges(world, c, line);
+        if (line.Interrupt is { } interrupt)
+        {
+            SetInterrupt(c, me, interrupt);
+            world.DialogueLines.Line(world, "interrupt", $"{EventLog.Who(world, me)}: next talk opens {interrupt}");
+        }
+        RunRelationChanges(world, c, line, me);
         CrowdTrigger(world, c, line, me);
         var target = c.Player;
         var tc = Cold(world, target);
@@ -62,15 +66,16 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// The line's <c>change relations</c>: each listed faction's relation with the player's faction changed by the amount, and the change posted.
+    /// The line's <c>change relations</c>: each listed faction's relation with the player's faction changed by the amount, and the change posted;
+    /// <paramref name="speaker"/> is the line's NPC-side speaker.
     /// </summary>
-    void RunRelationChanges(World world, Conversation c, DialogueNode line)
+    void RunRelationChanges(World world, Conversation c, DialogueNode line, CharacterId speaker)
     {
         foreach (var (factionId, amount) in line.ChangeRelations)
         {
             int f = _data.Relations.IndexOf(factionId);
             if (f < 0 || amount == 0 || c.Faction < 0) continue;
-            ChangeRelation(world, f, c.Faction, amount);
+            ChangeRelation(world, f, c.Faction, amount, new(RelationCauseType.Dialogue, speaker));
             Post(world, c, amount > 0
                 ? Loc.Tr("Relations with {1} improved by {2}", _data.Factions[f].Name, amount)
                 : Loc.Tr("Relations with {1} decreased by {2}", _data.Factions[f].Name, -amount));
@@ -203,7 +208,7 @@ public sealed partial class DialogueSystem
         switch (effect.Action)
         {
             case DialogueActions.AffectRelations when mc is not null && tc is not null:
-                ChangeRelation(world, mc.Faction, tc.Faction, effect.Value);
+                ChangeRelation(world, mc.Faction, tc.Faction, effect.Value, new(RelationCauseType.Dialogue, me));
                 break;
             case DialogueActions.AffectReputation when mc is not null:
                 _data.Relations.AddGlobalTrust(mc.Faction, effect.Value);   // the speaker's faction's global trust (slot 9), whoever the target is
@@ -216,11 +221,11 @@ public sealed partial class DialogueSystem
                 break;
             case DialogueActions.DeclareWar when mc is not null && tc is not null && _data.Relations.Contains(mc.Faction)
                 && _data.Relations.Contains(tc.Faction):
-                PlayerRelations.DeclareWar(world, _data.Relations, mc.Faction, tc.Faction);
+                PlayerRelations.DeclareWar(world, _data.Relations, mc.Faction, tc.Faction, me);
                 break;
             case DialogueActions.EndWar when mc is not null && tc is not null && _data.Relations.Contains(mc.Faction)
                 && _data.Relations.Contains(tc.Faction):
-                PlayerRelations.EndWar(world, _data.Relations, mc.Faction, tc.Faction);
+                PlayerRelations.EndWar(world, _data.Relations, mc.Faction, tc.Faction, me);
                 break;
         }
     }
@@ -452,9 +457,16 @@ public sealed partial class DialogueSystem
     /// </summary>
     void TalkToLeader(World world, Conversation c, CharacterCold mc, CharacterId target, CharacterCold tc)
     {
-        if (!world.IsPlayerFaction(tc.Faction) && !tc.IsPlayer || mc.SquadId < 0 || world.Squads.Find(mc.SquadId) is not { Leader: { IsNone: false } leader }) return;
-        if (HoldsNpc(leader) || _npcApproaches.Has(leader)) return;
+        if (!world.IsPlayerFaction(tc.Faction) && !tc.IsPlayer || mc.SquadId < 0) return;
+        if (world.Squads.Find(mc.SquadId) is not { Leader: { IsNone: false } leader }) return;
+        string who = $"{EventLog.Who(world, leader)} to {EventLog.Who(world, target)}";
+        if (HoldsNpc(leader) || _npcApproaches.Has(leader))
+        {
+            world.DialogueLines.Line(world, "walkup", $"{who}: DA 2 ignored, " + (HoldsNpc(leader) ? "already talking" : "already walking up"));
+            return;
+        }
         if (!world.Characters.TryResolveNext(leader, out int l) || !Awake(world.Characters, l)) return;
+        world.DialogueLines.Line(world, "walkup", $"{who}: starts walking up (DA 2)");
         _npcApproaches.Add(world, leader, target);
         Hold(world, l);
     }
@@ -476,15 +488,11 @@ public sealed partial class DialogueSystem
     static void Lock(CharacterCold cold, string dialogue, bool locked) => (cold.DialogueLocks ??= new(StringComparer.Ordinal))[dialogue] = locked;
 
     /// <summary>
-    /// Changes the relation of factions <paramref name="a"/> and <paramref name="b"/> by the amount, posting the notice when one is the player's.
+    /// Changes the relation of factions <paramref name="a"/> and <paramref name="b"/> by the amount, posting the notice when one is the player's
+    /// (<see cref="PlayerRelations.Add"/>).
     /// </summary>
-    internal void ChangeRelation(World world, int a, int b, int amount)
-    {
-        var (before, after) = _data.Relations.Add(a, b, amount);
-        if (world.IsPlayerFaction(a) && _data.Relations.Contains(b)
-            && PlayerRelations.Notice(_data.Factions[b].Name, before, after) is { } first) world.PostFaction(a, first);
-        if (b != a && world.IsPlayerFaction(b) && _data.Relations.Contains(a) && PlayerRelations.Notice(_data.Factions[a].Name, before, after) is { } second) world.PostFaction(b, second);
-    }
+    internal void ChangeRelation(World world, int a, int b, int amount, RelationCause cause = default) =>
+        PlayerRelations.Add(world, _data.Relations, a, b, amount, cause);
 
     /// <summary>
     /// Money to (or from, when negative) the character's faction: the player's purse, else its squad's.
@@ -516,7 +524,7 @@ public sealed partial class DialogueSystem
             return;
         }
         if (table.Cold(s) is { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, Fighter.CanAttack: true })
-            world.Defer(new Combat.AttackOrder([me], target) { Tick = world.Tick + 1, Source = TaskSource.Npc });
+            world.Defer(new Combat.AttackOrder([me], target) { Tick = world.Tick + 1, Source = TaskSource.Npc, Cause = "a dialogue line (attack)" });
     }
 
     #endregion

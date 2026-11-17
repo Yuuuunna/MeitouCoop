@@ -39,7 +39,7 @@ static class ServerRuleValues
             "Wild squads stay" => rules.KeepWild,
             "Towns keep their schedule" => rules.ResidentSchedule,
             "Production far away" => rules.UnloadedProduction,
-            "Doors close behind" => rules.DoorsCloseBehind,
+            "Guards spare their own" => rules.CagesSpareOwn,
             "Decapitation" => rules.Decapitation,
             "Advanced ragdolls" => rules.AdvancedRagdolls,
             "luckyren Mode" => rules.Luckyren,

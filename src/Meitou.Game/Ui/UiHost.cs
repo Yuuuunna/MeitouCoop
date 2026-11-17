@@ -3,14 +3,120 @@ using Meitou.Data.Ui;
 namespace Meitou.Game.Ui;
 
 /// <summary>
+/// A row of the faction tab's relations list (mods arrange them with <c>ModContext.ArrangeFactionList</c>).
+/// </summary>
+/// <param name="Faction">The faction (a position in the relation table); -1: a heading, its name alone with no number or bar.</param>
+/// <param name="Name">The text shown (translated when the catalog has it).</param>
+/// <param name="Relation">The player's relation towards the faction, -100 to 100 (the bars stop at 100).</param>
+public readonly record struct FactionListRow(int Faction, string Name, float Relation);
+
+
+/// <summary>
 /// A UI extension's failure: the extension, what it was doing and the exception.
 /// </summary>
 public sealed record UiDiagnostic(string Extension, string Operation, Exception Error);
 
 /// <summary>
+/// A marker an extension puts on the world map (<see cref="UiRegistration.AddMapMarkers"/>): the world point it stands on (X, Z), its image group
+/// in the game's map marker set (<c>Kenshi_MapMarkers</c>: Town, Village, Outpost, Ruin, Camp, Nest, Workcamp, SmallPlace, Character, Movement,
+/// NewDiscovered), its tint (RGBA, 0 to 1), a label under it from zoom level 1 (null: none), its tooltip (null: none), the least zoom level it
+/// shows at (0, the whole map, to 2) and its size against the group's image.
+/// </summary>
+public sealed record UiMapMarker(System.Numerics.Vector2 At, string Group, System.Numerics.Vector4 Colour, string? Label = null,
+    string? Tooltip = null, int FromLevel = 0, float Scale = 1);
+
+/// <summary>
+/// What an extension's map markers get: the snapshot the map is drawn from and its zoom level (0, the whole map, to 2).
+/// </summary>
+public sealed class UiMapContext(Simulation.WorldSnapshot snapshot, int level)
+{
+    /// <summary>
+    /// The snapshot the map is drawn from (the one on screen).
+    /// </summary>
+    public Simulation.WorldSnapshot Snapshot { get; } = snapshot;
+
+    /// <summary>
+    /// The map's zoom level: 0 shows the whole map, 2 is the closest.
+    /// </summary>
+    public int Level { get; } = level;
+}
+
+/// <summary>
+/// A tick button an extension adds to the squad overview's AI tab (<see cref="UiRegistration.AddSquadAiOptions"/>): its caption, its tooltip,
+/// whether it shows ticked, and what pressing it does (on the host's thread).
+/// </summary>
+public sealed record UiSquadAiOption(string Caption, string Tooltip, bool Ticked, Action Press);
+
+/// <summary>
+/// What an extension's AI tab options get: the snapshot the tab is laid out from and, read when asked, the tick; and the command queue, through which
+/// a press changes the world.
+/// </summary>
+public sealed class UiSquadAiContext(Simulation.WorldSnapshot snapshot, Func<long> tick, Action<Simulation.SimCommand> enqueue)
+{
+    /// <summary>
+    /// The snapshot the tab is laid out from (the one on screen).
+    /// </summary>
+    public Simulation.WorldSnapshot Snapshot { get; } = snapshot;
+
+    /// <summary>
+    /// The world's tick now, for a command's <see cref="Simulation.SimCommand.Tick"/>.
+    /// </summary>
+    public long Tick => tick();
+
+    /// <summary>
+    /// Queues a command for the world.
+    /// </summary>
+    public void Enqueue(Simulation.SimCommand command) => enqueue(command);
+}
+
+/// <summary>
 /// What an action handler gets: the frame's data and the control's argument.
 /// </summary>
 public sealed record UiActionContext(UiFrameContext Frame, string Argument);
+
+/// <summary>
+/// What an extension's right-click menu rows get (<see cref="UiRegistration.AddCharacterMenuVerbs"/>): the character the menu is for, the selected
+/// characters and the cursor when the menu was built; Shift (it turns the game's own orders into jobs) and the tick read when asked, so a row's
+/// action sees them as the player chooses it; and the command queue.
+/// </summary>
+public sealed class UiMenuContext(Simulation.CharacterSnapshot target, IReadOnlyList<Simulation.CharacterId> selected,
+    System.Numerics.Vector2 cursor, Func<bool> shift, Func<long> tick, Action<Simulation.SimCommand> enqueue)
+{
+    /// <summary>
+    /// The character the menu is for.
+    /// </summary>
+    public Simulation.CharacterSnapshot Target { get; } = target;
+
+    /// <summary>
+    /// The selected characters when the menu was built.
+    /// </summary>
+    public IReadOnlyList<Simulation.CharacterId> Selected { get; } = selected;
+
+    /// <summary>
+    /// The cursor (screen pixels) when the menu was built.
+    /// </summary>
+    public System.Numerics.Vector2 Cursor { get; } = cursor;
+
+    /// <summary>
+    /// Whether Shift is held now.
+    /// </summary>
+    public bool Shift => shift();
+
+    /// <summary>
+    /// The world's tick now, for a command's <see cref="Simulation.SimCommand.Tick"/>.
+    /// </summary>
+    public long Tick => tick();
+
+    /// <summary>
+    /// Queues a command for the world.
+    /// </summary>
+    public void Enqueue(Simulation.SimCommand command) => enqueue(command);
+}
+
+/// <summary>
+/// A row an extension adds to a character's right-click menu: its caption and what choosing it does (on the host's thread).
+/// </summary>
+public sealed record UiMenuVerb(string Caption, Action Choose);
 
 /// <summary>
 /// Read-only presentation data. UI extensions cannot mutate UiBindings or receive the simulation world.
@@ -123,9 +229,19 @@ public sealed class UiHost
     readonly List<(string Owner, string Target, Func<UiFrameContext, UiNode> Factory)> _controlOverrides = [];
 
     /// <summary>
+    /// The squad AI tab option sources, with their owners, in registration order.
+    /// </summary>
+    readonly List<(string Owner, Func<UiSquadAiContext, IEnumerable<UiSquadAiOption>> Options)> _squadAiOptions = [];
+
+    /// <summary>
     /// The contributions: owner, slot, mode (null: every mode), order and factory.
     /// </summary>
     readonly List<(string Owner, string Slot, UiMode? Mode, int Order, Func<UiFrameContext, UiNode> Factory)> _contributions = [];
+
+    /// <summary>
+    /// The right-click menu row sources, with their owners, in registration order.
+    /// </summary>
+    readonly List<(string Owner, Func<UiMenuContext, IEnumerable<UiMenuVerb>> Verbs)> _menuVerbs = [];
 
     /// <summary>
     /// The registered extensions' ids.
@@ -133,12 +249,18 @@ public sealed class UiHost
     readonly HashSet<string> _extensions = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// The world map marker sources, with their owners, in registration order.
+    /// </summary>
+    readonly List<(string Owner, Func<UiMapContext, IEnumerable<UiMapMarker>> Markers)> _mapMarkers = [];
+
+    /// <summary>
     /// The data of the last arranged frame (the actions get it); null before the first.
     /// </summary>
     UiFrameContext? _frame;
 
     /// <summary>
-    /// An extension failed (a contribution's build or an action).
+    /// An extension failed (a contribution's build, an action, a map marker source, a right-click menu row source or a row's action, or a squad
+    /// AI option source or press).
     /// </summary>
     public event Action<UiDiagnostic>? Diagnostic;
 
@@ -224,28 +346,98 @@ public sealed class UiHost
     }
 
     /// <summary>
+    /// Adds a squad AI tab option source for <paramref name="owner"/>.
+    /// </summary>
+    internal void AddSquadAiOptions(string owner, Func<UiSquadAiContext, IEnumerable<UiSquadAiOption>> options) =>
+        _squadAiOptions.Add((owner, options));
+
+    /// <summary>
     /// Adds a contribution to <paramref name="slot"/> for <paramref name="owner"/>.
     /// </summary>
     internal void Contribute(string owner, string slot, UiMode? mode, int order, Func<UiFrameContext, UiNode> factory) =>
         _contributions.Add((owner, slot, mode, order, factory));
 
     /// <summary>
+    /// Adds a world map marker source for <paramref name="owner"/>.
+    /// </summary>
+    internal void AddMapMarkers(string owner, Func<UiMapContext, IEnumerable<UiMapMarker>> markers) => _mapMarkers.Add((owner, markers));
+
+    /// <summary>
+    /// Adds a right-click menu row source for <paramref name="owner"/>.
+    /// </summary>
+    internal void AddMenuVerbs(string owner, Func<UiMenuContext, IEnumerable<UiMenuVerb>> verbs) => _menuVerbs.Add((owner, verbs));
+
+    /// <summary>
     /// Removes everything <paramref name="owner"/> registered.
     /// </summary>
     internal void Remove(string owner)
     {
+        _squadAiOptions.RemoveAll(o => o.Owner == owner);
         foreach (string id in _styles.Where(p => p.Value.Owner == owner).Select(p => p.Key).ToArray()) _styles.Remove(id);
         foreach (string id in _controls.Where(p => p.Value.Owner == owner).Select(p => p.Key).ToArray()) _controls.Remove(id);
         foreach (string id in _actions.Where(p => p.Value.Owner == owner).Select(p => p.Key).ToArray()) _actions.Remove(id);
         _overrides.RemoveAll(o => o.Owner == owner);
         _controlOverrides.RemoveAll(o => o.Owner == owner);
         _contributions.RemoveAll(c => c.Owner == owner);
+        _mapMarkers.RemoveAll(m => m.Owner == owner);
+        _menuVerbs.RemoveAll(v => v.Owner == owner);
         _extensions.Remove(owner);
     }
 
     #endregion
 
     #region Lookup
+
+    /// <summary>
+    /// Whether any extension adds rows to the right-click menu (<see cref="CharacterMenuVerbs"/>).
+    /// </summary>
+    public bool HasMenuVerbs => _menuVerbs.Count > 0;
+
+    /// <summary>
+    /// The rows the extensions add to a character's right-click menu, in registration order (a copy of the sources is walked, so a source may
+    /// register or dispose). A source that throws, or names a row without a caption or action, is reported once as a <see cref="Diagnostic"/> and
+    /// dropped (it is asked every frame a character is under the cursor). A row's action that throws is reported each time.
+    /// </summary>
+    public IReadOnlyList<UiMenuVerb> CharacterMenuVerbs(UiMenuContext context)
+    {
+        var rows = new List<UiMenuVerb>();
+        foreach (var entry in _menuVerbs.ToArray())
+        {
+            try
+            {
+                var added = entry.Verbs(context).ToList();
+                if (added.Any(v => v is null || string.IsNullOrWhiteSpace(v.Caption) || v.Choose is null))
+                    throw new InvalidOperationException("A menu row needs a caption and an action.");
+
+                rows.AddRange(added.Select(v => v with { Choose = Guarded(entry.Owner, v) }));
+            }
+            catch (Exception e)
+            {
+                _menuVerbs.Remove(entry);
+                Diagnostic?.Invoke(new UiDiagnostic(entry.Owner, "menu verbs (dropped)", e));
+            }
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// A menu row's action that reports a throw as a <see cref="Diagnostic"/> instead of passing it on to the input, and does nothing once its
+    /// extension is removed.
+    /// </summary>
+    Action Guarded(string owner, UiMenuVerb row) => () =>
+    {
+        if (!_extensions.Contains(owner)) return;
+
+        try
+        {
+            row.Choose();
+        }
+        catch (Exception e)
+        {
+            Diagnostic?.Invoke(new UiDiagnostic(owner, $"menu row {row.Caption}", e));
+        }
+    };
 
     /// <summary>
     /// Style <paramref name="id"/>, the last override's if any; the default for an empty id.
@@ -268,6 +460,101 @@ public sealed class UiHost
         var factory = useOverrides ? _controlOverrides.LastOrDefault(o => o.Target == id).Factory ?? entry.Factory : entry.Factory;
         return factory(context);
     }
+
+    /// <summary>
+    /// Whether any extension adds world map markers (<see cref="MapMarkers"/>).
+    /// </summary>
+    public bool HasMapMarkers => _mapMarkers.Count > 0;
+
+    /// <summary>
+    /// The markers the extensions add to the world map, with their owners, in registration order (a copy of the sources is walked, so a source may
+    /// register or dispose). A source that throws, or gives a marker whose group <paramref name="knownGroup"/> does not know, with a point, tint or
+    /// size not finite, a size not above 0 or a zoom level outside 0 to 2, is reported once as a <see cref="Diagnostic"/> and dropped (it is asked
+    /// every frame the map is shown).
+    /// </summary>
+    public IReadOnlyList<(string Owner, UiMapMarker Marker)> MapMarkers(UiMapContext context, Func<string, bool> knownGroup)
+    {
+        var markers = new List<(string Owner, UiMapMarker Marker)>();
+        foreach (var entry in _mapMarkers.ToArray())
+        {
+            try
+            {
+                var added = entry.Markers(context).ToList();
+                int bad = added.FindIndex(m => !ValidMarker(m, knownGroup));
+                if (bad >= 0)
+                    throw new InvalidOperationException($"A map marker needs a known group, a finite point and tint, and a size: {added[bad]}.");
+
+                markers.AddRange(added.Select(m => (entry.Owner, m)));
+            }
+            catch (Exception e)
+            {
+                _mapMarkers.Remove(entry);
+                Diagnostic?.Invoke(new UiDiagnostic(entry.Owner, "map markers (dropped)", e));
+            }
+        }
+
+        return markers;
+    }
+
+    /// <summary>
+    /// Whether a map marker names a group <paramref name="knownGroup"/> knows and has a finite point and tint, a finite size above 0 and a zoom
+    /// level from 0 to 2.
+    /// </summary>
+    static bool ValidMarker(UiMapMarker? m, Func<string, bool> knownGroup) =>
+        m is not null && !string.IsNullOrWhiteSpace(m.Group) && knownGroup(m.Group) && float.IsFinite(m.At.X) && float.IsFinite(m.At.Y)
+        && float.IsFinite(m.Colour.X + m.Colour.Y + m.Colour.Z + m.Colour.W)
+        && float.IsFinite(m.Scale) && m.Scale > 0 && m.FromLevel is >= 0 and <= 2;
+
+    /// <summary>
+    /// Whether any extension adds squad AI tab options (<see cref="SquadAiOptions"/>).
+    /// </summary>
+    public bool HasSquadAiOptions => _squadAiOptions.Count > 0;
+
+    /// <summary>
+    /// The tick buttons the extensions add to the squad AI tab, in registration order (a copy of the sources is walked, so a source may register or
+    /// dispose). A source that throws, or names an option without a caption or press, is reported once as a <see cref="Diagnostic"/> and dropped
+    /// (it is asked on every layout pass while the tab is open). An option's press that throws is reported each time.
+    /// </summary>
+    public IReadOnlyList<UiSquadAiOption> SquadAiOptions(UiSquadAiContext context)
+    {
+        var options = new List<UiSquadAiOption>();
+        foreach (var entry in _squadAiOptions.ToArray())
+        {
+            try
+            {
+                var added = entry.Options(context).ToList();
+                if (added.Any(o => o is null || string.IsNullOrWhiteSpace(o.Caption) || o.Press is null))
+                    throw new InvalidOperationException("A squad AI option needs a caption and a press.");
+
+                options.AddRange(added.Select(o => o with { Tooltip = o.Tooltip ?? "", Press = GuardedPress(entry.Owner, o) }));
+            }
+            catch (Exception e)
+            {
+                _squadAiOptions.Remove(entry);
+                Diagnostic?.Invoke(new UiDiagnostic(entry.Owner, "squad AI options (dropped)", e));
+            }
+        }
+
+        return options;
+    }
+
+    /// <summary>
+    /// An option's press that reports a throw as a <see cref="Diagnostic"/> instead of passing it on to the input, and does nothing once its
+    /// extension is removed.
+    /// </summary>
+    Action GuardedPress(string owner, UiSquadAiOption option) => () =>
+    {
+        if (!_extensions.Contains(owner)) return;
+
+        try
+        {
+            option.Press();
+        }
+        catch (Exception e)
+        {
+            Diagnostic?.Invoke(new UiDiagnostic(owner, $"squad AI option {option.Caption}", e));
+        }
+    };
 
     #endregion
 
@@ -507,6 +794,18 @@ public sealed class UiRegistration : IDisposable
     }
 
     /// <summary>
+    /// Adds tick buttons to the squad overview's AI tab, after the game's own (docs/modding.md "Registration surface"): <paramref name="options"/>
+    /// runs on the host's thread every frame the tab is open, so it must be cheap, and while a tick may be in flight, so it must not touch the world;
+    /// a pressed option changes the world through commands (<see cref="UiSquadAiContext.Enqueue"/>).
+    /// </summary>
+    public void AddSquadAiOptions(Func<UiSquadAiContext, IEnumerable<UiSquadAiOption>> options)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(options);
+        _host.AddSquadAiOptions(Id, options);
+    }
+
+    /// <summary>
     /// Contributes a node to <paramref name="slot"/> (in <paramref name="order"/>; only in <paramref name="mode"/> when given).
     /// </summary>
     public void Contribute(string slot, Func<UiFrameContext, UiNode> factory, int order = 0, UiMode? mode = null)
@@ -514,6 +813,30 @@ public sealed class UiRegistration : IDisposable
         Check();
         ArgumentNullException.ThrowIfNull(factory);
         _host.Contribute(Id, slot, mode, order, factory);
+    }
+
+    /// <summary>
+    /// Adds markers to the world map (docs/modding.md "Map markers"): <paramref name="markers"/> is asked on the host's thread each frame the map is
+    /// shown, after the places and before the player's characters, so it must not touch the world; it reads the snapshot it is given.
+    /// </summary>
+    public void AddMapMarkers(Func<UiMapContext, IEnumerable<UiMapMarker>> markers)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(markers);
+        _host.AddMapMarkers(Id, markers);
+    }
+
+    /// <summary>
+    /// Adds rows to a character's right-click menu, after the game's own (docs/modding.md "Registration surface"): <paramref name="verbs"/> runs
+    /// on the host's thread whenever the game asks for the menu, which includes every frame a character is under the cursor, so it must be cheap,
+    /// and while a tick may be in flight, so it must not touch the world; it reads the context and a chosen row queues commands
+    /// (<see cref="UiMenuContext.Enqueue"/>). Shift is the row's own to read: the game's order-to-job switch does not apply.
+    /// </summary>
+    public void AddCharacterMenuVerbs(Func<UiMenuContext, IEnumerable<UiMenuVerb>> verbs)
+    {
+        Check();
+        ArgumentNullException.ThrowIfNull(verbs);
+        _host.AddMenuVerbs(Id, verbs);
     }
 
     /// <summary>

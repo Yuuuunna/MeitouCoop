@@ -1,31 +1,43 @@
 # 上游同步基准
 
-**Verified**（2026-11-16，Git 与 GitHub 远端核对）：上游为
+**Verified**（2026-11-17，Git 与 GitHub 远端核对）：上游为
 [VlcekM/MeitouClient](https://github.com/VlcekM/MeitouClient)，当前纳入基准为
-`5108032d29e1b64d6695d39251dedd0a48786d61`（提交时间 2026-11-16 05:45:03 UTC）。
-从已对齐的 `704cc1ec281209d628c83c608b8cf5c4b7556647` 起纳入 211 个提交；
-Coop 主分支基线为 `f38e53d678dce0265950254bb74965f06f6bc50f`。
+`3072d79cdf2c44fad4e474c37cd40041dc63b97e`（提交时间 2026-11-17 09:00:13 UTC）。
+从已对齐的 `5108032d29e1b64d6695d39251dedd0a48786d61` 起纳入 96 个提交；
+Coop 主分支基线为 `3beff7cf7931b292d093745d3918678034c2d06d`。
 用 `git merge-base --is-ancestor <上述提交> HEAD` 核对纳入关系。
 
 **Observed**（当前实现）：客户端与服务端须匹配构建身份
-`meitou-upstream-5108032d-authority-1-combat-sync-1`，传输 framing 仍为 protocol 21。
-物品与交易同步见[网络契约](networking.md#item-actions-and-shared-stock)，
-本次带宽计量见[库存与交易预算](networking-next.md#inventory-and-trade-budget)。
+`meitou-upstream-3072d79c-authority-1`，传输 framing 仍为 protocol 21。
+新增状态及其权限边界见[网络契约](networking.md)，本次增量带宽计量见
+[新增组件带宽](networking.md#incremental-component-bandwidth)。
 
 ## 联机适配范围
 
 **Observed**（源代码）：
 
-- 门侧区域、跨区导航、建筑与墙体碰撞采用当前上游逻辑，保留 Coop 的异步取消、版本与世界生命周期边界。
-- 新 NPC 工作、奴隶工作、搬运和尸体处理在权威模拟执行；角色、机器、音效与成交浮字通过既有授权视图和事件同步。
-- 常驻城镇机器继续使用 Coop 的 canonical ID、资产权限与单一保存路径；机器库存采用原生 `in1..`、`backpack_content`，兼容旧数据。
-- 建筑商店以实体容器保存库存；共享交易视图逐操作对账，保留各玩家的交易/容器会话及库存版本，拖拽物品可归还至重建后的商店。
-- 物品使用回调验证角色控制权、库存版本和标签身份。完整标签保留在模拟、容器、义肢、地面物品与存档中，网络只发送固定长度摘要。
-- 新静态/布局供电检查保留可见性限制；伪用电负载和缓存按城镇及派系电网分开，不跨玩家派系计费。
-- `SquadXp`、`OthersXp`、`BagSearchFix` 由服务端统一配置。旧 XP 模组设置只采用一次，覆盖功能的代码模组停用，避免重复倍率。
-- `animalage`、派系关系编辑等调试修改仅可在本地世界使用；远端保持命令白名单。
+- 合入上游 AI 任务完成判断、感知轮询、奴隶与镣铐行为、NPC 工作经验、周期速度刷新，以及城镇、住宅和布局机器功能。
+  这些行为由服务端模拟，沿用角色、机器、事件和效果的授权视图。
+- 新独立小队在服务端保有归属，但独立期间不接受玩家控制命令；切换指挥状态刷新授权版本。
+  客户端只收到本派系及可见成员的信息。模组创建玩家小队成员时必须得到明确控制归属。
+- 模组工作名称加入快照与变更组件；不可变名称表和编码结果复用。
+  地图标记回调使用现有授权快照，未加入逐帧标记广播；任意模组私有状态仍需显式的授权快照契约。
+- 报警、偷窃或非法交易造成的关闭库存通知按玩家发送，同时撤销对应的容器、战利品与交易会话。
+  其他玩家的窗口不被全局关闭。客户端命令继续携带会话、库存及资产版本。
+- 商店窗口采用上游库存副本，实体库存仍为权威来源；逐操作对账，保留逐玩家交易会话、付款派系、买回凭证及拖拽物品归还路径。
+  补货和关闭副本只受同一商店的拖拽影响。打开后的交易窗口可保留，越界购买和出售仍拒绝。
+- 城镇建筑与布局物件继续使用 Coop 的 canonical ID、资产权限和单一原生保存路径；室内机器、农田、电池及废墟重建都沿用该身份。
+  旧 CAMERA 布局电量不再复活已移除的物件。NPC 尸体、未生成袭击队伍、背包和雇佣任务采用新保存逻辑。
+- 联机开局保留多小队分组：首个模板及直接角色组成首队，后续模板各成一队。服务端校验整批人数、单队人数、派系人数和队伍数，
+  一次创建并授予所有角色；失败清理整批产物。预览、自定义及实际创建保持相同成员种子。
+  创建回执的 `Squad` 是首队，`Roles` 包含全部队伍，支付及重放语义不变。
+- 导航队列按玩家路线和游戏速度优先准备区域，保留 Coop 请求 generation、incarnation、异步取消及发布边界。
+  “加载时暂停”只作用于本地世界，显式控制的联机世界不会因客户端相机而暂停或激活区域。
+- `CagesSpareOwn` 由服务端统一配置，移除上游已废弃的 `DoorsCloseBehind` 设置。
+  图形、库存布局、编辑器、日志和反馈更新保留远端只读快照及调试命令白名单；日志仍支持多客户端进程。
 
-Coop 的离线饥饿暂停、空手受击经验、被奴役玩家队伍归属、笼内物品丢弃、门锁协作、诊断收集和 Steam 显示逻辑保留。
+Coop 的离线饥饿暂停、空手受击经验、被奴役玩家队伍归属、笼内物品丢弃、门锁协作、报警/群战 CPU 优化、
+诊断收集、Steam 显示及连接前隔离模组同步保留。
 自加补丁及回归上游条件：[空手受击经验](game/character-stats.md#levelling-xp)。
 
 ## Coop 自行修复
@@ -42,26 +54,29 @@ Coop 已去除；证据及范围见[笼内拾取](game/carry-loot.md#ground-item
 
 ## 验证范围
 
-**Verified**（2026-11-16，Windows x64、.NET SDK 11.0.100，当前工作区）：
+**Verified**（2026-11-17，Linux x64、.NET SDK 11.0.100，当前修改树）：
 
 | 检查 | 结果与范围 |
 |---|---|
 | Release 全解决方案构建 | 14 个项目成功，0 警告、0 错误 |
 | Metal 条件编译 | Release、`MeitouMetal=true` 的 14 个项目成功，0 警告、0 错误；未执行 macOS/Metal 运行验收 |
-| 完整既有测试套件 | 1,745 项：1,659 通过、86 跳过、0 失败、0 错误；包括本地现有的 20 项 `ServerModSyncTests` |
+| 完整既有测试套件 | 1,764 项：1,529 通过、235 跳过、0 失败、0 错误 |
+| 上游 benchmark 数据校验 | 5 台机器、344 行、42 个提交；接受既有非标准目标数据，本地未获取的历史 release 标签给出提示 |
+| 新增组件编解码及应用层计量 | 10 个合成场景完成完整往返；包含最大名称表、独立小队、关闭通知、电池、工作点和附属字段 |
 
-完整套件包含 `GameFilesTests`、`WorldGateRegionTests`、motion、协议 ACK、Crime、Aggro、Arrest、Determinism 和 GoldenHash；
-不筛选 Slow/Bench，不新增测试或削弱断言。命令：
-`tests/Meitou.Tests/bin/Release/net11.0/Meitou.Tests.dll -parallel none -maxThreads 1`。
-构建串行执行，`Configuration=Release`、`UseSharedCompilation=false`；
-Metal 条件编译另加 `MeitouMetal=true`，并设置 `AVALONIA_TELEMETRY_OPTOUT=1`。
-跳过项包括不可用的 Vulkan 设备、未配置受信任的原生 QUIC 构建、缺少参考存档及平台/Debug 条件。
+完整套件不筛选 Slow/Bench，保留现有平台和资源条件。
+命令：`tests/Meitou.Tests/bin/Release/net11.0/Meitou.Tests.dll -parallel none -maxThreads 1`。
+构建串行执行，`Configuration=Release`、`UseSharedCompilation=false`；Metal 条件编译另加 `MeitouMetal=true`。
+本环境未安装 Kenshi；跳过项包括原版内容、参考存档、Vulkan 设备、受信任的原生 QUIC 构建、Windows 固定哈希及其他平台/Debug 条件。
+上游原有测试随源码同步；交易测试三处窗口生命周期预期随新行为调整，物品数量、付款、竞争、会话隔离和重放断言保留。
 
-**Verified**（Linux .NET 11 合成诊断）：库存/交易 20 组场景的往返、标签身份、畸形压缩输入、展开后容量和失败清理检查通过，
-见[计量方法与边界](networking-next.md#inventory-and-trade-budget)。
-500 KiB/s 是每玩家平均带宽目标；固定长度标签、压缩、稀疏姿态和 motion/checkpoint 合批减少冗余，未增加限速、包配额或降低更新频率。
-合成库存/交易组合最大计量为双向应用层 357.32 KiB/s，不代表整场游戏或实际链路已达标。
+**Observed**（合成计量）：常规小队/关闭通知场景增量约 1.85 KiB/s；100 个独立小队、2,000 名成员在每次发布变化的场景
+约 76.92 KiB/s；300 个持续充电电池及城镇电力汇总约 46.37 KiB/s。均按单个接收玩家计入保守的反向 ACK，
+详见[场景、首次基线与计量边界](networking.md#incremental-component-bandwidth)。
+500 KiB/s 是每玩家平均带宽目标；本次使用变更组件、不可变数据缓存、已有压缩与接收者投影，未增加硬限速、包配额或降低发布频率。
+独立的增量场景不相加声称整场游戏达标，也不与历史库存/交易计量拼接成实机结果。
 
-真实存档、图形化双客户端、原生 QUIC/VPS 双向总流量及警报/群战 CPU 延迟，按
-[联机验收](multiplayer.md)及[传输门禁](networking-next.md)在对应环境验收。
-构建和应用层编码计量不替代这些验收；客户端与服务端使用相同构建身份。
+真实游戏验收重点：双客户端同店竞争与拖拽物品归还、共享阵营独立小队的控制恢复、多小队创建后的存档/重连、
+原版布局电池和室内农场的保存恢复、废墟及城镇替换后的对象重建、共享容器恢复、佣兵跨区随行和附近/携带 NPC 尸体保存。
+完整双向 QUIC/VPS 流量、警报/群战 CPU 延迟及图形表现，按[联机验收](multiplayer.md)及[传输门禁](networking-next.md)
+在真实 Kenshi 环境验证；本次构建和编码计量不替代这些验收。

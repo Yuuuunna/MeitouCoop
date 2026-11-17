@@ -405,8 +405,8 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
         // its (new) squad remembers the buyer as the one who freed it (FUN_1406add20, Observed)
         system.Memory.Remember(world, c.SquadId, player, MemoryTag.FreedMe);
         system.FireEvent(world, id, player, DialogueSystem.BoughtMeFromSlavery);
-        ChangeTowardPlayer(world, context, slaver.Faction, 1);
-        ChangeTowardPlayer(world, context, c.Faction, 4);
+        ChangeTowardPlayer(world, context, slaver.Faction, 1, player);
+        ChangeTowardPlayer(world, context, c.Faction, 4, player);
     }
 
     /// <summary>
@@ -470,8 +470,8 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
         Locks.FixtureRegistry.Enslave(world, c, slaver.Faction, slaver.SquadId);
         Chain(c);
         system.Memory.Remember(world, c.SquadId, customer, MemoryTag.Captor);
-        ChangeTowardPlayer(world, context, slaver.Faction, 4);
-        ChangeTowardPlayer(world, context, c.Faction, -4);
+        ChangeTowardPlayer(world, context, slaver.Faction, 4, customer);
+        ChangeTowardPlayer(world, context, c.Faction, -4, customer);
     }
 
     /// <summary>
@@ -480,12 +480,13 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
     void Chain(CharacterCold c) => (_chainAssembly ??= new CharacterAssembly(data)).Chain(c);
 
     /// <summary>
-    /// Changes <paramref name="faction"/>'s relation toward the player's faction by the amount (not for the player's own faction or an unknown one).
+    /// Changes <paramref name="faction"/>'s relation toward the player's faction by the amount (not for the player's own faction or an unknown one);
+    /// <paramref name="actor"/> is the player's character who traded.
     /// </summary>
-    void ChangeTowardPlayer(World world, Conversation context, int faction, int amount)
+    void ChangeTowardPlayer(World world, Conversation context, int faction, int amount, CharacterId actor)
     {
         if (context.Faction < 0 || faction == context.Faction || !data.Relations.Contains(faction)) return;
-        system.ChangeRelation(world, faction, context.Faction, amount);
+        system.ChangeRelation(world, faction, context.Faction, amount, new(RelationCauseType.Trade, actor));
     }
 
     /// <summary>

@@ -62,12 +62,13 @@ public static partial class MachineSave
         ClearResetMachines(game, world);
         world.SavedMachines?.WritePending(game.Camera.Record, world);
         if (world.Machines.Count == 0) return;
+        SavedPieces? pieces = null;
         foreach (var m in world.Machines.All)
         {
             if (world.Buildings.Find(m.Site) is not { } site) continue;
             if (IsInteriorMachine(site))
             {
-                WriteInterior(game, world, site, m);
+                WriteInterior(game, world, site, m, pieces ??= new SavedPieces(game));
                 continue;
             }
             if (!game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list)
@@ -93,14 +94,14 @@ public static partial class MachineSave
     /// <summary>
     /// A layout machine belongs to its parent; its stable runtime id is not a zone placement id.
     /// </summary>
-    static bool IsInteriorMachine(BuildSite site) => site.LevelMachine && site.Parent is not null;
+    static bool IsInteriorMachine(BuildSite site) => site.LevelMachine && Locks.FixtureRegistry.TownMachineParent(site) is not null;
 
     /// <summary>
     /// Finds a machine's existing parent placement and its native building state in the save.
     /// </summary>
     static (SaveZone Zone, FcsRecord State)? InteriorParent(SaveGame game, BuildSite site)
     {
-        if (site.Parent is not { } parent || !game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list) return null;
+        if (Locks.FixtureRegistry.TownMachineParent(site) is not { } parent || !game.Zones.TryGetValue(site.Zone, out var zone) || zone.BuildingList is not { } list) return null;
         string prefix = $"{site.Zone.X}.{site.Zone.Y}:";
         string raw = parent.StartsWith(prefix, StringComparison.Ordinal) ? parent[prefix.Length..] : parent;
         var instance = list.Instances.FirstOrDefault(i => i.Id == raw && !i.IsRemoved);
@@ -112,13 +113,22 @@ public static partial class MachineSave
     /// <summary>
     /// Saves a layout machine's native building and inventory records, referenced by its parent rather than added to the placement list.
     /// </summary>
-    static void WriteInterior(SaveGame game, World world, BuildSite site, Machine machine)
+    static void WriteInterior(SaveGame game, World world, BuildSite site, Machine machine, SavedPieces pieces)
     {
         if (InteriorParent(game, site) is not { } parent)
             throw new InvalidOperationException("Capturing an interior machine requires its parent building's native zone state.");
 
         var file = parent.Zone.File;
         string reference = InteriorPrefix + site.Id;
+        if (!parent.State.Strings.ContainsKey(reference)
+            && pieces.Of(LayoutPiece(site)) is { Fresh: false, State: { } nativeState } native)
+        {
+            WriteKeys(nativeState, machine, world.GameHours);
+            if (WriteInventory(native.Zone.File, native.Zone.Coordinate, native.Instance, null,
+                Items(machine, !SharedStorage(world, site, machine))) is { } nativeInventory) nativeInventory.Bools[OriginalSectionsKey] = true;
+            return;
+        }
+
         string stateId = parent.State.Strings.GetValueOrDefault(reference) ?? site.Id + "-machine-S23";
         var state = file.Records.FirstOrDefault(r => r.StringId == stateId && r.RecordType == FcsRecordType.GamestateBuilding);
         if (state is null)
@@ -137,6 +147,11 @@ public static partial class MachineSave
         if (inventory is null) state.Strings.Remove(InteriorInventory);
         else state.Strings[InteriorInventory] = inventory;
     }
+
+    /// <summary>
+    /// The canonical layout site's placement for matching the original save's furniture entry.
+    /// </summary>
+    static TownLayoutBuilding LayoutPiece(BuildSite site) => new(site.Id, site.Record, site.Parent is null, site.Position, site.Rotation);
 
     /// <summary>
     /// The common native reader's record references, without adding a synthetic placement to the world's geometry.
@@ -482,25 +497,50 @@ public static partial class MachineSave
         readonly Dictionary<string, string> _consumed = new(StringComparer.Ordinal);
         readonly LegacyTownMachines _legacy = new(source);
         readonly HashSet<string> _importedLegacy = new(StringComparer.Ordinal);
+        readonly HashSet<string> _invalidated = new(StringComparer.Ordinal);
+        readonly HashSet<string> _retiredNative = new(StringComparer.Ordinal);
+        SavedPieces? _pieces;
         internal void RequireNativeCapture(string site)
         {
             if (_importedLegacy.Contains(site)) throw new InvalidOperationException("Capturing a migrated town machine requires its native zone state; supply the world's level data.");
         }
-        internal void Invalidate(string key) { _consumed.TryAdd(key, key); _legacy.Invalidate(key); }
+        internal void Invalidate(string key)
+        {
+            _consumed.TryAdd(key, key);
+            _invalidated.Add(key);
+            _legacy.Invalidate(key);
+        }
+
+        /// <summary>
+        /// Retires every native object entry of a house's old layout, including objects not yet materialized as canonical machines.
+        /// </summary>
+        internal void InvalidateLayout(TownBuilding house)
+        {
+            foreach (var piece in house.LayoutBuildings) InvalidatePiece(piece);
+            _invalidated.Add(house.Key);
+            _legacy.Invalidate(house.Key);
+            _pieces?.InvalidateHouse(house.Key);
+        }
+
+        /// <summary>
+        /// Retires a canonical machine and its original saved furniture entry when a ruin or a replacement layout removes it.
+        /// </summary>
+        internal void InvalidatePiece(BuildSite site) => InvalidatePiece(LayoutPiece(site));
+
+        void InvalidatePiece(TownLayoutBuilding piece)
+        {
+            if ((_pieces ??= new SavedPieces(Source)).Of(piece) is { } native)
+                _retiredNative.Add(BuildingKey.Of(native.Zone.Coordinate, native.Instance.Id));
+            Invalidate(piece.Id);
+        }
         internal void WritePending(FcsRecord camera, World world) => _legacy.WritePending(camera, world.Fixtures.ResetBuildings);
-        internal IEnumerable<string> Retired(World world) => _consumed.Where(p => world.Machines.Find(p.Value) is null).Select(p => p.Key);
+        internal IEnumerable<string> Retired(World world) => _consumed.Where(p => world.Machines.Find(p.Value) is null).Select(p => p.Key).Concat(_invalidated).Concat(_retiredNative);
 
         internal void Apply(World world, ProductionSystem production, BuildSite site, Machine machine)
         {
             if (IsInteriorMachine(site))
             {
-                if (!_consumed.TryAdd(site.Id, site.Id) || InteriorParent(Source, site) is not { } parent) return;
-                string? stateId = parent.State.Strings.GetValueOrDefault(InteriorPrefix + site.Id);
-                var state = parent.Zone.File.Records.FirstOrDefault(r => r.StringId == stateId && r.RecordType == FcsRecordType.GamestateBuilding);
-                if (state is null || state.Strings.GetValueOrDefault("meitou machine site") != site.Id
-                    || state.Strings.GetValueOrDefault("meitou machine record") != site.Record) return;
-                RestoreSite(parent.Zone, InteriorReferences(state), machine, production, factory, SharedStorage(world, site, machine));
-                world.Machines.Touch();
+                ApplyLayout(world, production, site, machine);
                 return;
             }
             string rawId = site.LevelPlacement?.InstanceId ?? site.Id;
@@ -525,6 +565,45 @@ public static partial class MachineSave
                 _importedLegacy.Add(site.Id);
             }
             if (restoreNative || importLegacy) world.Machines.Touch();
+        }
+
+        /// <summary>
+        /// A canonical layout machine prefers its Coop parent record, otherwise the original furniture entry. Legacy CAMERA data is read only
+        /// when neither native source holds machine state; shared container grids restore once from their parent record or the original entry.
+        /// </summary>
+        void ApplyLayout(World world, ProductionSystem production, BuildSite site, Machine machine)
+        {
+            if (_invalidated.Contains(site.Id) || Locks.FixtureRegistry.TownMachineParent(site) is { } house && _invalidated.Contains(house)) return;
+            if (!_consumed.TryAdd(site.Id, site.Id)) return;
+            var row = _legacy.Take(site.Id);
+            bool restored = false;
+            var parent = InteriorParent(Source, site);
+            string? stateId = parent?.State.Strings.GetValueOrDefault(InteriorPrefix + site.Id);
+            var state = parent?.Zone.File.Records.FirstOrDefault(r => r.StringId == stateId && r.RecordType == FcsRecordType.GamestateBuilding);
+            if (state is not null && state.Strings.GetValueOrDefault("meitou machine site") == site.Id
+                && state.Strings.GetValueOrDefault("meitou machine record") == site.Record)
+            {
+                RestoreSite(parent!.Value.Zone, InteriorReferences(state), machine, production, factory, SharedStorage(world, site, machine));
+                restored = true;
+            }
+            else if ((_pieces ??= new SavedPieces(Source)).Of(LayoutPiece(site)) is { Fresh: false } native)
+            {
+                string suffix = site.Id[(site.Id.IndexOf('/') + 1)..];
+                bool shared = SharedStorage(world, site, machine)
+                    && parent?.State.Strings.ContainsKey(Locks.ContainerSave.KeyPrefix + suffix) == true;
+                RestoreSite(native.Zone, native.Instance, machine, production, factory, shared);
+                if (native.State is { } original && machine.Data.IsBattery)
+                    machine.PowerOn = original.Bools.GetValueOrDefault("power on");
+                restored = HasNativeMachineState(native.Zone, native.Instance);
+            }
+
+            if (!restored && row is not null)
+            {
+                row.Apply(machine);
+                _importedLegacy.Add(site.Id);
+                restored = true;
+            }
+            if (restored) world.Machines.Touch();
         }
     }
 

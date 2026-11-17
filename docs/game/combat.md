@@ -560,7 +560,7 @@ Meitou (`CombatSystem.HasSlot` / `MayJoin`, `Fighting.Steer`):
 | 5, 6, 7 | aggressive / defensive / evasive | AI +0x2b8 (no reader found) |
 | 8, 9 | far / near | manoeuvre mode: 8 ROAM_FAR (centre target cleared), 9 STAY_CLOSE (centre at its position). **Verified** (decompile sweep of every call of the Character slot 0x308 and of `FUN_1407f3880`, the HUD's sender): no HUD button, hotkey, saved-state replay (`FUN_140626f50`) or AI package sends 9; 8 is sent once, to a spawned character (`FUN_1405836e0`, a no-op: ROAM_FAR is the default); Hold (12) leaves the mode alone, and HOLD_GROUND (0) is never set. The orders panel's buttons send only 3/4, 11, 12, 13, 14, 15, 17 and the speed ids 0-2, 16. Meitou has the commands and no UI for them, as the original |
 | 11 | Block (`DEFENSIVE_COMBAT`) | CharStats +0x128 (set only with vfunc 0x250, KenshiLib `isHuman`) |
-| 12 | Hold | +0x12b; on: hold point +0x130 = position (a running order move's update overwrites it with its destination; a get-up's start sets it to where it wakes) and goal 16 added (priority 3); off: goal 16 removed |
+| 12 | Hold | +0x12b; on: hold point +0x130 = position (a running order move's update overwrites it with its destination, `Task_Follow`'s update `FUN_14033b350` with its follow aim whether holding or not, at the followed character's height for a person (its position plus a flat formation offset, `FUN_1403335c0`, or a flat drawn distance, `FUN_140333500`; the formation branch's door aim is an animal's, [following](pathfinding.md#squads-travelling-together)), except on its early returns: no target (a dead one still resolves, `FUN_14034b9a0`), a target that is not a character (type 0x22 is walked to directly), and the lost-target end `FUN_14033a800` (only for a follower outside the player's faction, faction `+0x250` null, `FUN_14033a700`, of a non-ally: once a timer has run, it ends when the follower's sense entry of the target is gone, or neither seen nor heard and either stale or its last known point within 60 of the follower); a get-up's start sets it to where it wakes) and goal 16 added (priority 3); off: goal 16 removed. It gates no job: the job pass `FUN_14050e5b0` reads it only for the implicit jobs; the desires of 45 Bodyguard (AI slot 44 `FUN_1405991c0`) and 31 Staying close (slot 15 `FUN_1405a33f0`), the evaluators of 31's list B (59 `FUN_140597030`, 60 `FUN_1405a2710`, 90 `FUN_140597160`), `isMovementAllowed` and `Task_Follow` read no +0x12b, so a bodyguard on Hold follows (**Verified**, decompile) |
 | 13 | Passive | +0x12c |
 | 14 | Taunt | +0x12a |
 | 15 | Jobs (`CHASE`) | `OrdersReceiver::setJobsEnabled` |
@@ -938,7 +938,7 @@ below is what the engine uses.
 ### Bolt visuals
 
 **Observed** (decompile; `Harpoon` +0x70 state 0 recycle, 1 flying, 2 hit a character, 3 landed): each bolt is one hardware-instanced entity of the
-CROSSBOW `live ammo` mesh (one `HarpoonManager_<mesh>` per mesh) with the gun's material, its local +z along the flight (`setDirection(dir, TS_WORLD,
+CROSSBOW `live ammo` mesh (one `HarpoonManager_<mesh>` per mesh) with the gun's material (Meitou: the debris renderer's material resolver; the flat sandbox, with no object renderer, makes its own, else every bolt drew untextured), its local +z along the flight (`setDirection(dir, TS_WORLD,
 UNIT_Z)`), scaled (1, 1, max(1, speed x 0.005)) in flight as a fake motion blur and 1 once it hits; no trail. A bolt past its range pitches down 8°
 a second about world x and is recycled at range -5000. Landed (`FUN_14043acf0`): exactly at the hit point, flight orientation kept, a world node;
 terrain hits under |dot(normal, dir)| 0.1 vanish; objects and buildings land with the "Stone" impact switch; above `harpoonLimit` (setting, default 60; **Verified**, `FUN_14043acf0`: the list is per bolt mesh, the test is count > limit, the new bolt included)
@@ -958,7 +958,7 @@ flies on into the stop point within 0.15 s. Needs the particle renderer: nothing
 node in the shooter's `hands` (`Bip01 Prop2` with the attach offset; without built meshes the character's position + (0, 10, 0)); the muzzle (slot 9
 `FUN_140434fc0`) is that node's world position + its orientation x (`barrel pos Y`, `barrel pos Z`, 0), the place of loaded bolt 0 (base game: (-1, 5.9, 0),
 Spring Bat (-1, 1.75, 0)). The direction is normalise(aim point - muzzle) (slot 12), the aim point the target's `Bip01 Spine2` (`Spine1` for some targets)
-plus a lead of target velocity x distance / `shot speed` (first order, **Verified**), tilted by `randomDeviant(random x deviation)`. Flight: each frame a ray from the bolt along its z on the physics
+plus a lead of target velocity x distance / `shot speed` (first order, **Verified**; Meitou: `RangedTuning.AimHeight` 13 above the feet, a lying target's lying-hull middle), tilted by `randomDeviant(random x deviation)`. Flight: each frame a ray from the bolt along its z on the physics
 thread (raycastClosestShape, group mask `0x087fde47`, read one frame late); a hit counts within 2 x the step. Groups tested: 0 and 1 (0: the characters' click hulls, below),
 2 terrain, 6 and 14 foliage, 9-12 building floors, 15-18 stairs, 19-22 furniture, 27 unwalkable roofs; not ragdolls, items, doors, interior hulls or
 passable parts. The shooter is skipped (`FUN_1400cd0b0`). The flight tests only what the physics scene holds: `FUN_1404380e0` has no case for
@@ -986,7 +986,7 @@ fire. The terrain is such a shape (`FUN_1407eaf90`: heightfield, group 2, no use
 **Closing ray** (`FUN_140438c70`, state 1): from the muzzle along (target feet + 5 up) − (own feet + 5 up) (read through the decompiler's garbled Ogre operators: the feet-to-feet
 line), mask `0x87f9e04` (no characters); it passes when it meets something
 farther from the shooter than the target is. Meeting nothing does not pass, so on open ground a walker goes on until its path fails or the planner turns it to melee.
-Meitou: `CombatSystem.HullHalf`, `HitHull`, `LineOfFire`, `ClosingRayPasses`; a down character has no hull (every Meitou knock-out is ragdolled), nor a carried one, awake too (every pick-up requests CARRY_MODE, [ragdolls](ragdolls.md)).
+Meitou: `CombatSystem.HullHalf`, `HitHull`, `LineOfFire`, `ClosingRayPasses`; a down character (knocked out or dead) keeps a lying hull, height max(X, Z) as the prone rule, standing in for the ragdoll bodies the original's bolts would strike (how they do is **Unknown**); a carried one has none, awake too (every pick-up requests CARRY_MODE, [ragdolls](ragdolls.md)).
 
 ### Arms
 

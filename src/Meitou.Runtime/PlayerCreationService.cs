@@ -203,14 +203,15 @@ public sealed class PlayerCreationService
                 prepared = _population.RetargetNewFaction(_world, prepared, faction);
             }
 
-            var squad = _population.MaterializePlayerSquad(_world, prepared);
+            var squads = _population.MaterializePlayerSquads(_world, prepared);
             // From this point unexpected failure is terminal: never continue a world with partly granted/charged creation output.
             granting = true;
             if (initial)
                 _world.Players.SetMembership(player, faction, FactionPermission.All);
-            foreach (var role in squad.Members)
-                _world.Players.AssignInitial(player, role);
-            var receipt = _world.CreationQualifications.Complete(reservation, squad);
+            foreach (var squad in squads)
+                foreach (var role in squad.Members)
+                    _world.Players.AssignInitial(player, role);
+            var receipt = _world.CreationQualifications.Complete(reservation, squads);
             reservation = null;
             _world.AdvanceDurableRevision(barrier);
             _pending = new Pending(player, request.Id, fingerprint, receipt, barrier);

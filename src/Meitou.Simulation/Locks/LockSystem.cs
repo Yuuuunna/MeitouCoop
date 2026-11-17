@@ -133,7 +133,7 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
             // One picker per order (the nearest is not looked for: the first listed whose repertoire has row 76); a prisoner picks
             // where it stands.
             if (StartWork(world, s, c.IsImprisoned ? CharacterTask.Idle : CharacterTask.GoTo, TaskType.PickLock, cage.Id, pick.Prisoner,
-                    queued: pick.Queued, command: pick))
+                    queued: pick.Queued, command: pick, point: OrderEntry.AtBuilding(world, pick, cage.Position)))
                 break;
         }
     }

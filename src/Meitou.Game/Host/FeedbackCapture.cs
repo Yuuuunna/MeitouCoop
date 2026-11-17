@@ -286,17 +286,32 @@ sealed class FeedbackCapture(GameHost host)
             saveWritten = host.Saves.SaveWrite;
         }
         string[] mods = [.. Data.LoadOrder.FromInstall(host.Install).Entries.Select(e => e.Name)];
-        string? log = form.Log && File.Exists(GameLog.CurrentPath) ? GameLog.CurrentPath : null;
         if (_diagnostics.Report != Guid.Empty)
         {
             string body = form.Body.Length > 4900 ? form.Body[..4900] : form.Body;
             form = form with { Body = body + $"\n\nDiagnostic report: {_diagnostics.Report:N} (private attachments)." };
         }
         var package = new FeedbackPackage(form, BuildVersion.Tag, BuildVersion.Commit, FeedbackSender.Platform(), mods,
-            form.Screenshot ? _feedbackPicture : null, form.Navmesh ? _feedbackNavPicture : null, _feedbackLocation, saveFolder, saveWritten, log);
+            form.Screenshot ? _feedbackPicture : null, form.Navmesh ? _feedbackNavPicture : null, _feedbackLocation, saveFolder, saveWritten,
+            LogsOf(form));
         _feedbackStatus = _feedbackStatusShown = form.Save ? "Saving the game..." : "Sending...";
         host.Player.FeedbackPanel.FeedbackProgress(_feedbackStatus);
         host.Player.FeedbackPanel.FeedbackSending = true;
         _feedbackSend = Task.Run(() => FeedbackSender.Send(package, s => Volatile.Write(ref _feedbackStatus, s)));
+    }
+
+    /// <summary>
+    /// The log files the form asked for that exist beside the executable: log.txt, then the action and dialogue logs.
+    /// </summary>
+    static List<string> LogsOf(FeedbackForm form)
+    {
+        List<string> names = [];
+        if (form.Log) names.Add("log.txt");
+        if (form.GameLogs) names.AddRange(["log_actions.txt", "log_dialogue.txt"]);
+
+        return [.. names
+            .Select(GameLog.PathOf)
+            .OfType<string>()
+            .Where(File.Exists)];
     }
 }

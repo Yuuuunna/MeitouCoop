@@ -95,7 +95,13 @@ public sealed class NavSystem : IDisposable
     /// </summary>
     public Task<NavZoneReady> LoadZone(ZoneCoordinate zone) => _service.Request(zone);
     /// <summary>
-    /// Asks for a zone and its neighbours within <paramref name = "radius"/> (1 = the 3 × 3 ring around the player), nearest first.
+    /// Has the builder serve the asked-for zones in the order <paramref name="world"/>'s player characters reach them: those their paths enter,
+    /// nearest along the path first, then the others by distance (<c>NavBuildQueue</c>). Call between ticks.
+    /// </summary>
+    public void Favour(World world) => _service.Favour(world);
+
+    /// <summary>
+    /// Asks for a zone and its neighbours within <paramref name="radius"/> (1 = the 3 × 3 ring around the player), nearest first.
     /// </summary>
     public void LoadRing(ZoneCoordinate centre, int radius = 1)
     {

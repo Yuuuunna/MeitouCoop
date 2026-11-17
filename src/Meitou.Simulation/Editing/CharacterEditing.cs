@@ -216,7 +216,7 @@ public static class CharacterEditing
                 cold.Medical = body.Medical;
                 cold.FootprintRadius = body.Race.PathfindFootprintRadius;
                 ref var hot = ref table.Next[slot];
-                hot.MaxSpeed = Bodies.Speed.Run(body.Race, body.Stats, body.Medical, 1);
+                // Top speed follows the periodic upstream stat and mover updates after a race change.
                 hot.WalkSpeed = body.Race.WalkSpeed;
             }
             cold.Appearance = updated;
@@ -292,14 +292,14 @@ public static class CharacterEditing
 
     /// <summary>
     /// The end of the new game's creation (<see cref="FinishCreation"/>; the editor's close in mode 0, <c>FUN_1405f5d10</c>): every human of the
-    /// start's squad has its inventory sections validated for the race it has now (<see cref="Items.InventoryCommands.ValidateSections"/>,
+    /// start's squads has its inventory sections validated for the race it has now (<see cref="Items.InventoryCommands.ValidateSections"/>,
     /// <c>validateInventorySections</c>), so one switched in the editor to a race with <c>no hats</c>, <c>no shirts</c> or <c>no shoes</c> loses what
     /// it wore there, and its worn look and gear are refreshed.
     /// </summary>
     internal static void EndCreation(World world, CharacterAssembly? assembly)
     {
-        if (world.Players.RequiresExplicitControl || !world.Player.InCreation || world.Squads.Find(world.Player.Squad) is not { } squad) return;
-        foreach (var id in squad.Members)
+        if (world.Players.RequiresExplicitControl || !world.Player.InCreation) return;
+        foreach (var id in SquadManagement.PlayerSquads(world).SelectMany(s => s.Members))
         {
             if (!world.Characters.TryResolveNext(id, out int slot) || world.Characters.Cold(slot) is not { IsPlayer: true, Inventory: { } inventory } cold
                 || cold.Faction != world.Player.Faction || SquadRegistry.IsAnimal(cold)) continue;

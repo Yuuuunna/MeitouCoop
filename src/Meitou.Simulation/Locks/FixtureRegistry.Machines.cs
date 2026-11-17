@@ -22,6 +22,11 @@ public sealed partial class FixtureRegistry
     void RegisterTownMachine(World world, PopulationData data, int site, TownBuilding building, int owner)
     {
         if (_properties.TryGetValue(building.Key, out var property)) owner = property.Owner;
+        if (_townMachines.TryGetValue(building.Key, out var old) && !old.Building.LayoutBuildings.SequenceEqual(building.LayoutBuildings))
+        {
+            world.SavedMachines?.InvalidateLayout(old.Building);
+            SavedPieces?.InvalidateHouse(building.Key);
+        }
         _townMachines[building.Key] = (data, site, building, owner);
         if (world.Buildings.Find(building.Key) is { LevelMachine: true } known)
         {
@@ -79,10 +84,21 @@ public sealed partial class FixtureRegistry
     /// </summary>
     public BuildSite? GetTownPieceMachineSite(World world, TownBuilding building, TownPiece piece)
     {
+        var layout = building.LayoutBuildings.FirstOrDefault(p => p.Id == piece.Id)
+            ?? new TownLayoutBuilding(piece.Id, piece.RecordId, false, piece.Position, piece.Rotation) { Floor = piece.Floor, InteriorOnly = !piece.Outside };
+        return GetTownPieceMachineSite(world, building, layout);
+    }
+
+    /// <summary>
+    /// Every machine-capable layout object uses the same authoritative identity as selectable furniture, including batteries and exterior pieces.
+    /// </summary>
+    public BuildSite? GetTownPieceMachineSite(World world, TownBuilding building, TownLayoutBuilding piece)
+    {
         if (IsEmptied(building.Key)) return null;
         if (world.Buildings.Find(piece.Id) is { } known) return known;
         if (!_townMachines.TryGetValue(building.Key, out var source) || IsDestroyed(source.Building)
-            || !source.Building.Pieces.Contains(piece) || source.Data.Db.Find(piece.RecordId) is not { } record
+            || !source.Building.LayoutBuildings.Contains(piece) && !source.Building.Pieces.Any(p => p.Id == piece.Id && p.RecordId == piece.RecordId)
+            || source.Data.Db.Find(piece.RecordId) is not { } record
             || world.SystemOf<Production.ProductionSystem>()?.Data(piece.RecordId) is null) return null;
         if (_townWorkTargets.TryGetValue(piece.Id, out var target) && target.Record == piece.RecordId
             && target.Position == piece.Position && target.Rotation == piece.Rotation && target.Owner == source.Owner) return target;
@@ -94,7 +110,7 @@ public sealed partial class FixtureRegistry
             Record = piece.RecordId,
             Name = record.Name,
             LevelMachine = true,
-            Parent = building.Key,
+            Parent = piece.Outdoors ? null : building.Key,
             LevelPlacement = new BuildingPlacement(building.Zone, piece.Id, piece.RecordId, piece.Position, piece.Rotation, null, piece.Position.Y),
             LevelTownName = source.Data.Sites[source.Site].Town.Name,
             Position = piece.Position,
@@ -112,33 +128,55 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
+    /// The house that owns a canonical layout object, including an exterior piece whose spatial parent is null.
+    /// </summary>
+    internal static string? TownMachineParent(BuildSite site) =>
+        site.LevelMachine && site.Id.IndexOf('/') is > 0 and var slash ? site.Id[..slash] : site.Parent;
+
+    /// <summary>
     /// A materialized worksite still names the registered placement or layout piece, its current owner and an intact parent.
     /// </summary>
     internal bool CurrentTownMachine(BuildSite site)
     {
         if (!site.LevelMachine) return true;
-        string parent = site.Parent ?? site.Id;
+        string? layout = TownMachineParent(site);
+        string parent = layout ?? site.Id;
         if (!_townMachines.TryGetValue(parent, out var source) || source.Owner != site.Owner || IsDestroyed(source.Building)
-            || site.Parent is not null && IsEmptied(parent)) return false;
+            || layout is not null && IsEmptied(parent)) return false;
         if ((uint)source.Site >= (uint)source.Data.Sites.Count || !source.Data.Sites[source.Site].Buildings.Contains(source.Building)) return false;
-        return site.Parent is null ? source.Building.BuildingId == site.Record
-            : source.Building.Pieces.Any(piece => piece.Id == site.Id && piece.RecordId == site.Record);
+        return layout is null ? source.Building.BuildingId == site.Record
+            : source.Building.LayoutBuildings.Any(piece => piece.Id == site.Id && piece.RecordId == site.Record
+                && piece.Position == site.Position && piece.Rotation == site.Rotation)
+                || source.Building.Pieces.Any(piece => piece.Id == site.Id && piece.RecordId == site.Record
+                    && piece.Position == site.Position && piece.Rotation == site.Rotation);
     }
 
     /// <summary>
     /// Purchased houses discard their layout targets together with the furniture; future observation cannot resurrect them.
     /// </summary>
-    void ForgetTownInterior(World world, string building, bool spill)
+    void ForgetTownInterior(World world, string building, bool spill, TownBuilding? layout = null)
     {
-        foreach (var target in _townWorkTargets.Values.Where(s => s.Parent == building).ToArray()) _townWorkTargets.Remove(target.Id);
+        layout ??= _townMachines.TryGetValue(building, out var source) ? source.Building : null;
+        if (layout is not null) world.SavedMachines?.InvalidateLayout(layout);
+        SavedPieces?.InvalidateHouse(building);
+        foreach (var target in _townWorkTargets.Values.Where(s => TownMachineParent(s) == building).ToArray()) _townWorkTargets.Remove(target.Id);
         world.SystemOf<Production.ProductionSystem>()?.RemoveTownInterior(world, building, spill);
+    }
+
+    /// <summary>
+    /// Drops a removed layout object's observed target so a later object receives a fresh revision and current placement.
+    /// </summary>
+    internal void ForgetTownWorkTarget(World world, string key)
+    {
+        _townWorkTargets.Remove(key);
+        ClearTownWorkers(world, key);
     }
 
     void TransferTownMachine(World world, string key, int owner)
     {
         if (_townMachines.TryGetValue(key, out var source)) _townMachines[key] = (source.Data, source.Site, source.Building, owner);
         if (world.Buildings.Find(key) is { LevelPlacement: not null } machine) { machine.Owner = owner; world.Buildings.Touch(); }
-        foreach (var piece in world.Buildings.All.Where(s => s.LevelMachine && s.Parent == key))
+        foreach (var piece in world.Buildings.All.Where(s => s.LevelMachine && TownMachineParent(s) == key))
         {
             piece.Owner = owner;
             ClearTownWorkers(world, piece.Id);

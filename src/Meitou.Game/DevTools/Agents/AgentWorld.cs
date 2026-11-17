@@ -1415,11 +1415,7 @@ sealed class AgentWorld(GameHost host)
                         t.Lock!.Level = Math.Max(t.Lock.Level, 1);
                         t.Lock.Locked = true;
                         t.Lock.Broken = false;
-                        if (t.Motion is DoorMotion.Open or DoorMotion.Opening)
-                        {
-                            t.Motion = DoorMotion.Closing;
-                            t.AutoOpened = false;
-                        }
+                        if (t.Motion is DoorMotion.Open or DoorMotion.Opening) t.Motion = DoorMotion.Closing;
                         break;
                     case "--unlock":
                         if (t.Lock is { } ul) ul.Locked = false;

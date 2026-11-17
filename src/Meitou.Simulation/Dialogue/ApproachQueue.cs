@@ -72,18 +72,20 @@ sealed class ApproachQueue(DialogueSystem dialogue)
             {
                 TaskStart.Stand(table, n);
                 _approaches.RemoveAt(k--);
+                LogWalkUp(world, a, "arrived, fires event 1");
                 dialogue.Start(world, a.Npc, a.Target, DialogueEvents.PlayerTalkToMe, quiet: true);
                 if (state.Open?.Npc != a.Npc) DialogueSystem.Release(world, a.Npc);
                 continue;
             }
             if (!done && world.GameHours >= a.GiveUpHours && GettingAway(table, n, t))
             {
-                // The NPC drops its plan and the approach, and event 60 fires.
-                if (table.Cold(n)?.Ai is { } mind) { mind.Plan.Clear(); mind.Goal = null; mind.Version = -1; }
-                TaskStart.Stand(table, n);
-                world.Defer(new DialogueEvent(a.Npc, a.Target, GiveUpChase) { Tick = world.Tick + 1 });
+                LogWalkUp(world, a, "gives up (event 60)");
+                GiveUp(world, table, a, n);
                 done = true;
             }
+            else if (done)
+                LogWalkUp(world, a, "dropped (one is gone or down)");
+
             if (done)
             {
                 _approaches.RemoveAt(k--);
@@ -98,6 +100,12 @@ sealed class ApproachQueue(DialogueSystem dialogue)
             if (nh.Task != (byte)CharacterTask.GoTo || Vector2.Distance(nh.Goal, to) > DialogueSystem.TalkReach) TaskStart.Walk(world, n, to, SpeedMode.Free, Meitou.Data.Gameplay.Ai.TaskType.TalktoNearestPlayerCharacter, TaskSource.Npc);
         }
     }
+
+    /// <summary>
+    /// A walk-up line in the dialogue log: the walker, the one it walks to, then <paramref name="what"/>.
+    /// </summary>
+    static void LogWalkUp(World world, Approach a, string what) =>
+        world.DialogueLines.Line(world, "walkup", $"{EventLog.Who(world, a.Npc)} to {EventLog.Who(world, a.Target)}: {what}");
 
     /// <summary>
     /// Walking: towards where the target stands, again when it has moved on.

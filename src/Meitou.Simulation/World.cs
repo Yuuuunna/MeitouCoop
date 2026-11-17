@@ -246,7 +246,13 @@ public sealed partial class World : IDisposable
         _ragdolls = this._systems.OfType<Ragdolls.IRagdollSource>().FirstOrDefault();
         _hasGoalSources = this._systems.OfType<IGoalSource>().Any();
         Claims.Configure(settings.TickSeconds);
-        for (int k = 0; k < this._systems.Count; k++) RegisterCombatHitObserver(this._systems[k], k);
+        for (int k = 0; k < this._systems.Count; k++)
+        {
+            RegisterCombatHitObserver(this._systems[k], k);
+            CombatHitFilters.Register(this._systems[k], k);
+            ItemUseObservers.Register(this._systems[k], k);
+            RelationObservers.Register(this._systems[k], k);
+        }
         foreach (var owner in this._systems.OfType<ITaskOwner>()) owner.RegisterTasks(Tasks);
         foreach (var owner in this._systems.OfType<IDecisionOwner>()) owner.RegisterSources(Decisions);
         for (int k = 0; k < this._systems.Count; k++) if (DecidesAfter(this._systems[k])) _decideAfter = k;
@@ -286,6 +292,21 @@ public sealed partial class World : IDisposable
     /// The index of the last system the decisions run after (-1: none; see <see cref="Decisions"/>).
     /// </summary>
     int _decideAfter = -1;
+
+    /// <summary>
+    /// The action log the host follows characters with (null: none): told of each tick boundary (<see cref="ActionLog.Observe"/>).
+    /// </summary>
+    public ActionLog? ActionLog { get; set; }
+
+    /// <summary>
+    /// The event lines for the game's log (fights, relations, crimes, deaths; <see cref="EventLog"/>): the host takes them between ticks.
+    /// </summary>
+    public EventLog Events { get; } = new();
+
+    /// <summary>
+    /// The dialogue log's lines (lines said, conversations, walk-ups; <see cref="Dialogue.DialogueLog"/>): the host takes them between ticks.
+    /// </summary>
+    public Dialogue.DialogueLog DialogueLines { get; } = new();
 
     /// <summary>
     /// Whether the decisions run after <paramref name="system"/>: retaliation, aggro or flight.
@@ -370,6 +391,18 @@ public sealed partial class World : IDisposable
     /// </summary>
     public GoalClaims Claims { get; } = new();
     /// <summary>
+    /// The systems observing items used up (<see cref="Items.IItemUseObserver"/>).
+    /// </summary>
+    internal Items.ItemUseObservers ItemUseObservers { get; } = new();
+    /// <summary>
+    /// The systems filtering hits before they land (<see cref="Combat.ICombatHitFilter"/>).
+    /// </summary>
+    internal Combat.CombatHitFilters CombatHitFilters { get; } = new();
+    /// <summary>
+    /// The systems observing changed faction relations (<see cref="IRelationChangeObserver"/>).
+    /// </summary>
+    internal RelationObservers RelationObservers { get; } = new();
+    /// <summary>
     /// The camera the host last passed (<see cref="CameraViewCommand"/>); null: none, nothing is tested against a screen.
     /// </summary>
     public CameraViewCommand? View { get; internal set; }
@@ -398,6 +431,10 @@ public sealed partial class World : IDisposable
     /// Loose items lying in the world, so far the severed limbs combat drops (docs/simulation.md "Ground items").
     /// </summary>
     public Items.GroundItems GroundItems { get; } = new();
+    /// <summary>
+    /// The session's vendor list tables, which shop fills, item slots, camp loot and pack loads draw from (<see cref="Items.VendorTables"/>).
+    /// </summary>
+    public Items.VendorTables VendorTables { get; } = new();
     /// <summary>
     /// The loose-item slots of the towns' interiors (docs/simulation.md "Ground items"); hashed once a town with any registered.
     /// </summary>
@@ -558,6 +595,9 @@ public sealed partial class World : IDisposable
         _ragdolls ??= system as Ragdolls.IRagdollSource;
         RegisterCombatHitObserver(system, _systems.Count - 1);
         if (system is ITaskOwner taskOwner) taskOwner.RegisterTasks(Tasks);
+        CombatHitFilters.Register(system, _systems.Count - 1);
+        ItemUseObservers.Register(system, _systems.Count - 1);
+        RelationObservers.Register(system, _systems.Count - 1);
         if (system is IDecisionOwner owner) owner.RegisterSources(Decisions);
         if (DecidesAfter(system)) _decideAfter = _systems.Count - 1;
     }
@@ -656,7 +696,9 @@ public sealed partial class World : IDisposable
         PlayerTrades.Prune(this);
         table.Phase = TablePhase.Outside;
         table.EndTick();
-        prof?.Part("end tick");   // F12: the squads, the prune and the table's end, apart from the snapshot
+        Events.EndTick(this);
+        ActionLog?.Observe(this);
+        prof?.Part("end tick");   // F12: the squads, the prune, the table's end and the logs, apart from the snapshot
         Tick++;
         StateRevision = checked(StateRevision + 1);
         GameHours += TickSeconds / SecondsPerGameHour;
@@ -1053,6 +1095,9 @@ public sealed partial class World : IDisposable
         foreach (var s in _systems) if (s is IStateHashed hashed) hashed.Hash(ref h);
 
         HashCombatHitObserverFaults(ref h);
+        CombatHitFilters.HashFaults(ref h);
+        ItemUseObservers.HashFaults(ref h);
+        RelationObservers.HashFaults(ref h);
         return h.Value;
     }
 

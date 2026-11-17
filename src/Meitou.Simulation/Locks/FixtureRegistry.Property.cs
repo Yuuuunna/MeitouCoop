@@ -90,6 +90,11 @@ public sealed partial class FixtureRegistry
     public int? PropertyOwner(string building) => _properties.TryGetValue(building, out var p) ? p.Owner : null;
 
     /// <summary>
+    /// The faction owning <paramref name="building"/>: its property's owner, else the owner its doors were registered with; -1 for neither.
+    /// </summary>
+    public int OwnerOf(string building) => PropertyOwner(building) ?? DoorOwner(building);
+
+    /// <summary>
     /// Where property <paramref name="building"/> stands; null when it is no property.
     /// </summary>
     internal Vector3? PropertyPosition(string building) => _properties.TryGetValue(building, out var p) ? p.Building.Position : null;
@@ -195,8 +200,8 @@ public sealed partial class FixtureRegistry
 
     /// <summary>
     /// Buys a town house at its quoted price (docs/simulation.md "Town house purchases"): it becomes the player's and private, its furniture and
-    /// loose items go (<see cref="EmptyInterior"/>, <see cref="Meitou.Simulation.Items.ItemSlots.EmptyBuilding"/>) and the squads living in it move
-    /// out (<see cref="Meitou.Simulation.Ai.AiSystem.Evict"/>).
+    /// loose items go (<see cref="EmptyInterior"/>, <see cref="Meitou.Simulation.Items.ItemSlots.EmptyBuilding"/>), so does its residents' camp
+    /// (<see cref="ClearCamp"/>), and the squads living in it move out (<see cref="Meitou.Simulation.Ai.AiSystem.Evict"/>).
     /// </summary>
     public void Buy(World world, BuyBuilding order)
     {
@@ -210,23 +215,64 @@ public sealed partial class FixtureRegistry
             if (!float.IsFinite(distance) || distance > 2000 * 2000) return;
         }
         if (SalePrice(order.Building, funds.Index) is not { } price || price != order.Price) return;
-        if (!funds.TryDebit(price)) { world.Post(order.Issuer ?? PlayerId.Local, Meitou.Localisation.Loc.Tr("You can't afford that.")); return; }
-        p.Owner = funds.Index;
-        p.Purchased = true;
-        TransferTownMachine(world, order.Building, p.Owner);
-        p.Revision = NextPropertyRevision();
-        _resetBuildings.Remove(order.Building);
-        _ownedProperties = null;
-        foreach (var f in OfBuilding(order.Building)) { f.Owner = p.Owner; RevisionOf(f); }
-        _containerSpots = null; _doorPicks = null; _bedSpots = null; _cageList = null;
-        world.ItemSlots.TransferBuilding(world, p.Building, p.Owner);
-        SetPublic(order.Building, false);
-        foreach (var f in OfBuilding(order.Building).ToList()) OpenDoor(f);
-        RegisterTownConstruction(world, p);
-        DropRuin(order.Building);
+        if (!funds.TryDebit(price))
+        {
+            world.Post(order.Issuer ?? PlayerId.Local, Meitou.Localisation.Loc.Tr("You can't afford that."));
+            return;
+        }
+
+        bool ruin = IsDestroyed(p.Building);
+        TakeOver(world, p, funds.Index, ruin);
         world.ItemSlots.EmptyBuilding(world, p.Building);
         EmptyInterior(world, order.Building, spill: false);
+        ClearCamp(world, p, ruin);
         world.SystemOf<Ai.AiSystem>()?.Evict(world, order.Building);
+    }
+
+    /// <summary>
+    /// The bought house's share of its town's camp goes, as the original's purchase (<c>FUN_1407ad6c0</c>, <c>FUN_140928ee0</c>,
+    /// <c>FUN_1408146f0</c>; docs/formats/zones.md "Nest debris and loot"): when its residents' nest stands, the pieces standing on the house
+    /// (its interior objects there), sleepers let out first, and the camp's debris meshes within the radius of the house's bounding box, as it
+    /// was when bought (<paramref name="ruin"/>), of its position. The pieces on the ground beside it stay.
+    /// </summary>
+    void ClearCamp(World world, Property p, bool ruin)
+    {
+        var b = p.Building;
+        float radius = p.Data.Sight?.BoundsRadius(b, ruin) ?? 0;
+        var gone = world.NestBuildings.ClearHome(b.Key, new Vector2(b.Position.X, b.Position.Z), radius);
+        if (gone.Count > 0) UnregisterNestBuildings(world, gone);
+    }
+
+    /// <summary>
+    /// Transfers the bought house and its fixtures to the authorized buyer's faction, preserving their version checks; a ruin becomes a site.
+    /// </summary>
+    void TakeOver(World world, Property p, int owner, bool ruin)
+    {
+        string key = p.Building.Key;
+        p.Owner = owner;
+        p.Purchased = true;
+        TransferTownMachine(world, key, owner);
+        p.Revision = NextPropertyRevision();
+        _resetBuildings.Remove(key);
+        _ownedProperties = null;
+        foreach (var f in OfBuilding(key))
+        {
+            f.Owner = owner;
+            RevisionOf(f);
+        }
+
+        // Every door is opened (FUN_1407ad6c0 calls FUN_140297040, from closed; Verified); sleepers leave when the interior is emptied.
+        foreach (var f in OfBuilding(key).ToList()) OpenDoor(f);
+        _containerSpots = null;
+        _doorPicks = null;
+        _bedSpots = null;
+        _bedList = null;
+        _cageList = null;
+        _dummySpots = null;
+        world.ItemSlots.TransferBuilding(world, p.Building, owner);
+        SetPublic(key, false);
+        RegisterTownConstruction(world, p, ruin);
+        DropRuin(key);   // Its site shows it now.
     }
 
     /// <summary>
@@ -261,7 +307,7 @@ public sealed partial class FixtureRegistry
             {
                 _resetBuildings[b.Key] = (b, data, LevelOwner(b));
                 _townWorkTargets.Remove(b.Key);
-                ForgetTownInterior(world, b.Key, spill: false);
+                ForgetTownInterior(world, b.Key, spill: false, layout: b);
                 _townMachines.Remove(b.Key);
                 ClearTownWorkers(world, b.Key);
                 world.SavedMachines?.Invalidate(b.Key);

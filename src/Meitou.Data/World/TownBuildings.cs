@@ -96,6 +96,11 @@ public readonly record struct HomeSpot(HomeSpotKind Kind, Vector3 Position, floa
     /// </summary>
     public Vector3? Marker { get; init; }
     /// <summary>
+    /// The <see cref="TownLayoutBuilding.Id"/> of the interior layout object a throne, dummy or workstation of <see cref="TownBuilding.Furniture"/>
+    /// is; null for any other spot and for a building standing alone as one.
+    /// </summary>
+    public string? Piece { get; init; }
+    /// <summary>
     /// A node a goal may stand at: neither a bed, a seat nor a dummy.
     /// </summary>
     public bool IsNode => Kind is not (HomeSpotKind.Bed or HomeSpotKind.Chair or HomeSpotKind.ThroneSeat or HomeSpotKind.Training
@@ -220,6 +225,11 @@ public sealed record TownBuilding(string InstanceId, string BuildingId, string N
     /// Its turret, when its record has a <c>BUILDING_FUNCTIONALITY</c> function BF_TURRET (a mounted harpoon turret or crossbow); null otherwise.
     /// </summary>
     public TurretPost? Turret { get; init; }
+    /// <summary>
+    /// The <see cref="BuildingKey"/> of the building it stands in: the one its level state's <c>isInsideBuilding</c> handle names (type BUILDING,
+    /// the original's RootObject +0x80); null when the handle is null or names no known building.
+    /// </summary>
+    public string? InsideOf { get; init; }
     /// <summary>
     /// Its interior layout's name (the one its <see cref="Spots"/> come from: its residents', <see cref="LayoutName"/>); empty when none.
     /// </summary>
@@ -351,9 +361,23 @@ public sealed record TownDisposal(string Id, string RecordId, Vector3 Position);
 /// <summary>
 /// An object a building's interior or exterior layout places (<see cref="TownBuilding.LayoutBuildings"/>): an interior's <paramref name="Id"/> is a
 /// <see cref="TownPiece"/>'s, an exterior's the parent's <see cref="BuildingKey"/>, "/exterior/" and its index; <paramref name="Outdoors"/> for an
-/// exterior's.
+/// exterior's. <paramref name="Position"/> and <paramref name="Rotation"/> are its world placement (<see cref="BuildingLayouts.Place"/>).
 /// </summary>
-public sealed record TownLayoutBuilding(string Id, string RecordId, bool Outdoors);
+public sealed record TownLayoutBuilding(string Id, string RecordId, bool Outdoors, Vector3 Position, Quaternion Rotation)
+{
+    /// <summary>
+    /// The run-time key of the building whose layout places it: its <see cref="Id"/> before the layout part.
+    /// </summary>
+    public string House => Id[..Id.IndexOf('/')];
+    /// <summary>
+    /// The floor it stands on (<see cref="LayoutItem.Floor"/>).
+    /// </summary>
+    public int Floor { get; init; }
+    /// <summary>
+    /// An interior object hidden while the house shows its outside (no <see cref="LayoutItem.Outside"/> flag); false for an exterior's.
+    /// </summary>
+    public bool InteriorOnly { get; init; }
+}
 
 /// <summary>
 /// A level building no town takes that draws power (<see cref="TownBuildings.Townless"/>): its <see cref="BuildingPlacement.Key"/>, BUILDING, position,

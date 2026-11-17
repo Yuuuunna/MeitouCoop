@@ -38,6 +38,16 @@ sealed class ProbeWorld : IDisposable
     public required World World { get; init; }
 
     /// <summary>
+    /// What the load made of the save, which a capture carries on from.
+    /// </summary>
+    public required LoadedSave Loaded { get; init; }
+
+    /// <summary>
+    /// The level data of the load order.
+    /// </summary>
+    public required WorldLevelData Levels { get; init; }
+
+    /// <summary>
     /// The navmesh, when it was asked for.
     /// </summary>
     public NavSystem? Nav { get; init; }
@@ -107,9 +117,20 @@ sealed class ProbeWorld : IDisposable
         IWalkability walk = nav is null ? new OpenGroundWalkability(height) : new NavAdapter(nav.Walkability);
         var streamer = stream && nav is not null ? new ProbeZoneStreamer(nav, zones) : null;
         var buildings = nav is null ? null : Collision(install, db, levels, height, nav, SavedStart(save));
-        var world = MakeWorld(data, walk, save, seed, streamer, buildings);
+        var (world, loaded) = MakeWorld(data, walk, save, seed, streamer, buildings);
         if (nav is not null) GiveGateCodes(world, nav);
-        return new ProbeWorld { Db = db, Data = data, Save = save, World = world, Nav = nav, Streamer = streamer, Buildings = buildings };
+        return new ProbeWorld
+        {
+            Db = db,
+            Data = data,
+            Save = save,
+            World = world,
+            Loaded = loaded,
+            Levels = levels,
+            Nav = nav,
+            Streamer = streamer,
+            Buildings = buildings,
+        };
     }
 
     /// <summary>
@@ -188,9 +209,10 @@ sealed class ProbeWorld : IDisposable
     /// <summary>
     /// The world on one thread with paths found at once, the save loaded into it and the camera focus on the player's squad leader;
     /// <paramref name="streamer"/> gates its population's zones before the load; <paramref name="buildings"/> is the buildings' collision (null: none).
+    /// Returns the world and what the load made of the save.
     /// </summary>
-    static World MakeWorld(PopulationData data, IWalkability walk, SaveGame save, ulong seed, ProbeZoneStreamer? streamer,
-        Meitou.Simulation.Ragdolls.IRagdollEnvironment? buildings)
+    static (World World, LoadedSave Loaded) MakeWorld(PopulationData data, IWalkability walk, SaveGame save, ulong seed,
+        ProbeZoneStreamer? streamer, Meitou.Simulation.Ragdolls.IRagdollEnvironment? buildings)
     {
         var options = new StandardSystemOptions
         {
@@ -208,7 +230,7 @@ sealed class ProbeWorld : IDisposable
 
         var focus = LeaderSlot(world) is { } slot ? world.Characters.Previous[slot].Position : SavedStart(save);
         world.Commands.Enqueue(new FocusCommand(focus) { Tick = world.Tick });
-        return world;
+        return (world, loaded);
     }
 
     /// <summary>

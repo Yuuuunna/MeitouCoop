@@ -512,7 +512,6 @@ sealed class GameLoop(GameHost host)
             BagSearchChanged = on => { if (host.Session is WorldSession local) local.World.BagSearchFix = on; },
             TakeIntoBackpackChanged = on => { if (host.Session is WorldSession local) local.World.TakeIntoBackpack = on; },
             TimeSpeedsChanged = () => { if (host.Session is WorldSession local) local.Simulation.SetFastSpeeds(host.Config.FastSpeed, host.Config.FastestSpeed); },
-            DoorsCloseChanged = on => EachSystem<Simulation.Locks.LockSystem>(locks => locks.DoorsCloseBehind = on),
             AnimalsPickUpChanged = on => EachSystem<Simulation.Player.PlayerSystem>(players => players.AnimalsPickUp = on),
             OffscreenChanged = ApplyOffscreenSettings,
         };
@@ -1464,6 +1463,7 @@ sealed class GameLoop(GameHost host)
         host.UpdateCameraLeash(_cinemaHolds || _tour.Active);
         if (host.Session is WorldSession profileOwner) profileOwner.World.Profile.Enabled = host.DebugMenu.Profiler is { Showing: not FrameProfiler.Mode.Off }
             || host.GameOptions.PlayBench is not null || SpikeLog.Enabled;
+        host.UpdateLoadingPause();
         if (!host.Covered) host.Session.Advance(frameDt);   // loading and arrival preserve the loaded world's exact time
         else if (host.Session.IsRemote) host.Session.Advance(0);
         host.Online.ReportOnlineDisconnection();

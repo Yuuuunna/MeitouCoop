@@ -204,7 +204,7 @@ public sealed class PlayerTradeService(Func<PlayerId, bool> isActive)
             foreach (var (grid, section) in grids)
             {
                 if (ReferenceEquals(offered.Item.Contents, grid)
-                    || InventoryCommands.SlotRefusal(section, offered.Item.Type, offered.Item.EquipmentSection, offered.Item.Contents) is not null) continue;
+                    || InventoryCommands.SlotRefusal(section, offered.Item) is not null) continue;
                 int limit = grid.LimitOf(offered.Item);
                 if (offered.Item.Contents is null)
                     foreach (var existing in grid.Items.Where(i => i.Section == section && CanStack(i, offered.Item)))

@@ -512,8 +512,8 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// <see cref="EscapeDistanceSquared"/> (<b>Verified</b>; the town is <see cref="CharacterCold.StatusTown"/>). The owner is the master squad's
     /// leader (<see cref="Kidnap.ObedientSlave.OwnerOf"/>, Meitou's stand-in for the owner handle). With no owner handle the slave escapes in town
     /// too (<c>FUN_1404fe6e0</c> rejects a null handle); a master squad or saved owner (the save's <c>slaver</c> handle, or the Obedient Slave job's,
-    /// <see cref="Kidnap.ObedientSlave.PendingOwnerJob"/>) still waiting to load is kept, and so is a slave held in an owned cage
-    /// (<see cref="CagedByOwner"/>).
+    /// <see cref="Kidnap.ObedientSlave.PendingOwnerJob"/>) still waiting to load is kept, and so is one whose Meitou save lost its owner
+    /// (<see cref="Saving.SavedCharacterLink.SlaverLost"/>) and a slave held in an owned cage (<see cref="CagedByOwner"/>).
     /// </summary>
     void EscapeFarFromOwner(World world)
     {
@@ -524,7 +524,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
             if (!table.Next[s].Alive || table.Cold(s) is not { SlaveState: 1 } c) continue;
             if (Kidnap.ObedientSlave.OwnerOf(world, c) is not { } owner)
             {
-                bool pending = c.Save is { Slaver.IsNull: false } || Kidnap.ObedientSlave.PendingOwnerJob(c) >= 0;
+                bool pending = c.Save is { Slaver.IsNull: false } or { SlaverLost: true } || Kidnap.ObedientSlave.PendingOwnerJob(c) >= 0;
                 if (c.SlaveMaster < 0 && !pending && !CagedByOwner(world, c)) FixtureRegistry.TagEscaped(world, c);
 
                 continue;
@@ -683,13 +683,18 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// test within <paramref name="range"/> with the sight ray (<see cref="SightRay.Sees"/>), and for a sneaking suspect only once the looker has spotted it (its spot meter is full,
     /// <see cref="CrimeSystem.Spotted"/>; docs/game/perception.md "Spotting a sneaker"), not at first sight (#649).
     /// </summary>
-    bool SeesSuspect(World world, int w, int s, CharacterCold c, float range)
+    bool SeesSuspect(World world, int w, int s, CharacterCold c, float range) => SuspectView(world, w, s, c, range) > 0;
+
+    /// <summary>
+    /// The view factor of <see cref="SeesSuspect"/> (<see cref="SightRay.Sees"/>'s v), 0 when the looker does not see the suspect.
+    /// </summary>
+    float SuspectView(World world, int w, int s, CharacterCold c, float range)
     {
         var next = world.Characters.Next;
         bool sneaking = (c.Orders & CharacterOrders.Sneak) != 0;
         float v = SightRay.Sees(world, w, s, next[w].Position, next[s].Position, range, sneaking ? Orders.Stealth(c) : -1);
 
-        return v > 0 && (!sneaking || Crimes.Spotted(world, w, world.Characters.IdOf(s)));
+        return !sneaking || Crimes.Spotted(world, w, world.Characters.IdOf(s)) ? v : 0;
     }
 
     /// <summary>
@@ -698,11 +703,11 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     public const int BountySpotted = 44, EscapedPrisonerSpotted = 45, EscapingSlaveSpotted = 36;
 
     /// <summary>
-    /// Slave catching (the packages' Capture Slaves, goal 167; <b>engine</b> rules, the original's finder and escape test are <b>Unknown</b>,
-    /// docs/simulation.md "Arrest and jail"): an awake NPC of the slave's owner faction in its own town that sees the slave (its daylight sight test,
-    /// full range) tags a slave (state 1) as escaping when it wears no locked shackles or stands outside that NPC's town; the nearest such
-    /// police-like or slaver NPC then captures an escaping slave (state 2): it fights it down and cages it, and the caging makes it the faction's
-    /// slave again. True when a capture started (the slave is then the arrest's, not the bounty spotting's).
+    /// Slave catching (docs/simulation.md "Arrest and jail"): an awake NPC of the slave's owner faction in its own town (<b>engine</b> gate) that
+    /// sees a slave (state 1; its daylight sight test, full range) with a view factor above <see cref="EscapingSlave.SpotValue"/> tags it escaping
+    /// when <see cref="EscapingSlave.Test"/> holds (the original's sight pass, <b>Verified</b>); the nearest such police-like or slaver NPC then
+    /// captures an escaping slave (state 2; <b>engine</b> for the event 36 line's attack): it fights it down and cages it, and the caging makes it
+    /// the faction's slave again. True when a capture started (the slave is then the arrest's, not the bounty spotting's).
     /// </summary>
     bool CatchSlave(World world, int s, CharacterCold c)
     {
@@ -722,9 +727,10 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
             }
             float d2 = Vector3.DistanceSquared(next[w].Position, at), range = AggroSystem.RangeOf(wc, AggroSystem.OutdoorSight);
             if (d2 > range * range || !InTownOf(world, w, next[w].Position)) continue;
-            if (!SeesSuspect(world, w, s, c, range)) continue;
+            float view = SuspectView(world, w, s, c, range);
+            if (view <= 0) continue;
 
-            if (c.SlaveState == 1 && (LockSystem.WornShackles(c) is null || !InTownOf(world, w, at))) FixtureRegistry.TagEscaped(world, c);
+            if (c.SlaveState == 1 && view > EscapingSlave.SpotValue && Escapes(world, w, s, c, at)) FixtureRegistry.TagEscaped(world, c);
             if (c.SlaveState == 2 && d2 < catcherD2
                 && (Crimes.IsPoliceLike(world, wc) || wc.NpcClass == FundamentalType.Slaver) && FreeGuard(world, w))
             {
@@ -740,6 +746,13 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         if (Talks) Talk!.FireEvent(world, arrest.Guard, arrest.Target, EscapingSlaveSpotted);
         return true;
     }
+
+    /// <summary>
+    /// The escape test of slave catching: <see cref="EscapingSlave.Test"/>, and for a slave whose owner Meitou does not know (a saved master that
+    /// never loads) standing outside the looker's town (<b>engine</b>: the original's owner hand then resolves to nothing, which escapes at once).
+    /// </summary>
+    bool Escapes(World world, int w, int s, CharacterCold c, Vector3 at) =>
+        EscapingSlave.Test(world, w, s, c, Captives, Crimes) || Kidnap.ObedientSlave.OwnerOf(world, c) is null && !InTownOf(world, w, at);
 
     /// <summary>
     /// The point is within the town of the guard's resident squad (engine choice: towns are not round, Rebirth's gates stand about 1500 from its
@@ -927,7 +940,10 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
                 if (Vector3.DistanceSquared(table.Next[s].Position, at) <= r * r) fighters.Add(m);
             }
         }
-        world.Defer(new AttackOrder(fighters, table.IdOf(t)) { Tick = world.Tick + 1, Source = TaskSource.Npc });
+        world.Defer(new AttackOrder(fighters, table.IdOf(t))
+        {
+            Tick = world.Tick + 1, Source = TaskSource.Npc, Cause = "an arrest resisted or out of town",
+        });
     }
 
     /// <summary>
@@ -1383,7 +1399,19 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     void Note(World world, ArrestEventKind kind, CharacterId guard, CharacterId target, int faction, int amount)
     {
         if (Settings.RecordLog) _log.Add(new ArrestEvent(world.Tick, kind, guard, target, faction, amount));
+        string by = EventLog.Who(world, guard), whom = EventLog.Who(world, target), of = EventLog.FactionName(world, faction);
+        world.Events.Line(world, "arrest", $"{kind}: {by} ({of}) and {whom}{AmountText(kind, amount)}");
     }
+
+    /// <summary>
+    /// The event log's reading of an arrest event's amount: a fine or a bail is money, a spotting's is a dialogue event (left out), else the bounty.
+    /// </summary>
+    static string AmountText(ArrestEventKind kind, int amount) => kind switch
+    {
+        ArrestEventKind.Spotted => "",
+        ArrestEventKind.Fine or ArrestEventKind.Paid or ArrestEventKind.Bailed => $", c.{amount}",
+        _ => $", bounty {amount}",
+    };
 
     /// <summary>
     /// Adds the bounty, disguise, spotting and arrest state to the world hash; the spottings and arrests only while there are any.

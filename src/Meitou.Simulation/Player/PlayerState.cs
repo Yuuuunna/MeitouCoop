@@ -156,17 +156,19 @@ public sealed class PlayerState
     public List<CharacterId> InventoryShown { get; } = [];
 
     /// <summary>
-    /// Drops characters that are gone (serial phases, after the commit).
+    /// Drops characters that are gone, and from the selection those of a squad the player does not lead (<see cref="Squad.Independent"/>; serial
+    /// phases, after the commit).
     /// </summary>
-    internal void Prune(CharacterTable table, Func<CharacterId, bool>? canControl = null)
+    internal void Prune(CharacterTable table, SquadRegistry squads, Func<CharacterId, bool>? canControl = null)
     {
         bool hadSelection = Selection.Count > 0;
-        Selection.RemoveAll(c => !table.TryResolveNext(c, out _) || canControl is not null && !canControl(c));
+        Selection.RemoveAll(c => !table.TryResolveNext(c, out int slot) || table.Cold(slot) is { } cold && squads.IsIndependent(cold.SquadId) || canControl is not null && !canControl(c));
         // Somebody stays selected (the original keeps one of the player's characters selected): when every selected one is gone or dead, the first
         // living one is.
         if (hadSelection && Exists && !Selection.Any(c => table.TryResolveNext(c, out int slot) && table.Cold(slot) is { DiedTick: < 0 }))
             for (int i = 0; i < table.HighWater; i++)
                 if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: true, DiedTick: < 0 } candidate
+                    && !squads.IsIndependent(candidate.SquadId)
                     && (canControl is not null ? canControl(new CharacterId(i, table.Next[i].Generation)) : candidate.Faction == Faction))
                 {
                     Selection.Clear();
@@ -260,6 +262,12 @@ public sealed class PlayerState
     /// The <see cref="Items.HeldCommand.Serial"/> of the last held-item command applied (display only: not hashed, not saved).
     /// </summary>
     public long HeldSerial { get; set; }
+
+    /// <summary>
+    /// How often the world closed every inventory window (a town alarm raised against the player's, <see cref="Crime.CrimeSystem.TownAlarm"/>);
+    /// the interface closes its windows when it changes (display only: not hashed, not saved).
+    /// </summary>
+    public long InventoriesClosed { get; set; }
 
     #endregion
 

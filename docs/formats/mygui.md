@@ -237,7 +237,7 @@ change that gave every Widget a `Client` (its `Widget::initialiseOverride` is em
 - **ScrollBar** (Verified, `ScrollBar.cpp`): parts `Start`, `End`, `TrackPlace`, `Track`, `FirstPart`, `SecondPart`; positions run `0 .. Range-1`. The thumb sits at
   `(line - thumb) * pos / (Range - 1)`, `line` the TrackPlace length; it is hidden when `Range < 2` or `line <= thumb`, FirstPart / SecondPart then take half the line each.
   Thumb size: set by the owner (`line * view / content`), else the skin's Track; at least `MinTrackSize` (the Track's user string, else the bar's; Kenshi: 10). Start / End step by `Page`,
-  FirstPart / SecondPart by `ViewPage`, the wheel by `WheelPage` (all default 1), one step per event; held, they repeat after 0.5 s then every 0.1 s (`ControllerRepeatClick`
+  FirstPart / SecondPart by `ViewPage`, the wheel by `WheelPage` (all default 1; Meitou: a `WheelPage` of 0 leaves the wheel to the view under the bar, the Edit characters window's sliders), one step per event; held, they repeat after 0.5 s then every 0.1 s (`ControllerRepeatClick`
   defaults, set by `ScrollBar.initialiseOverride`; the Track never repeats). `MoveToClick` (default false): a press on the track parts puts the thumb's centre on the pointer and
   keeps dragging it. Dragging maps the thumb start back to a position rounded to the nearest step. `eventScrollChangePosition` comes from user changes, not setters; Meitou raises `scroll`
   (widget: the bar, or the owner of a template's `Slider` part; `Value`: the position) for bars no widget drives. A free bar's position starts at the skin's thumb (engine choice; the HUD's
@@ -278,6 +278,7 @@ change that gave every Widget a `Client` (its `Widget::initialiseOverride` is em
   focused closed combo changes the selection one item; an empty list does not open. `SmoothShow` (`Kenshi_ComboBox` sets it; `ControllerFadeAlpha`, `COMBO_ALPHA_COEF` 4): the list
   fades in from alpha 0 and out to 0 by 4 a second from the alpha it has; fading out it is disabled, so it takes no input and a press goes to what lies below (MyGUI picks no disabled widget), and at 0 it is hidden and enabled again. Opened again
   during that fade, the fade-out's controller is replaced before its end handler runs, so the list stays disabled until a later fade-out ends (Meitou: `ComboListFade`).
+  Meitou: the popup list and its parts carry `PopupControl`, so the host draws and picks them over the controls a screen adds after arranging (the Items window's item cells).
   `ModeDrop` and horizontal flows are not implemented. The install uses combos only in editor layouts (`Fog_Editor`, `Kenshi_LevelEditor`,
   `Kenshi_EffectsPanel`) and `Kenshi_OpenSaveFileDialog` (`CurrentFolder`), so this is widget support: items are `UiBindings.Lists[combo]`, the selection `SelectedItems[combo]`, the closed text the selected item (else `Text[combo]`).
 - **MultiListBox** (Verified, `MultiListBox.cpp`): per column a header button (`SkinButton`, in `HeaderPlace`, its `Image` child shows `Up` / `Down` on the sorted column, `None` on the others; the arrows are in `Kenshi_MiscImages`

@@ -29,7 +29,10 @@ internal static class GameComponentSchema
         F(1057, "WorkSites", (WorldSnapshot x) => x.WorkSites, (x, v) => x with { WorkSites = v }),
         F(1058, "FoliageOutposts", (WorldSnapshot x) => x.FoliageOutposts, (x, v) => x with { FoliageOutposts = v }),
         new(1059, "InspectedLevelPower", (_, x) => ModPresentationCodec.EncodePower(x.InspectedLevelPower),
-            (_, x, bytes) => x with { InspectedLevelPower = ModPresentationCodec.DecodePower(bytes) }), ];
+            (_, x, bytes) => x with { InspectedLevelPower = ModPresentationCodec.DecodePower(bytes) }),
+        F(1060, "IndependentSquads", (WorldSnapshot x) => x.IndependentSquads, (x, v) => x with { IndependentSquads = v }),
+        F(1061, "InventoriesClosed", (WorldSnapshot x) => x.InventoriesClosed, (x, v) => x with { InventoriesClosed = v }),
+        F(1062, "ModJobNames", (WorldSnapshot x) => x.ModJobNames, (x, v) => x with { ModJobNames = v }), ];
     /// <summary>
     /// Independently replicated character values; binary codecs retain their own uncompressed format.
     /// </summary>

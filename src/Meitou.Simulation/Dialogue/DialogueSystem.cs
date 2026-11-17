@@ -134,28 +134,11 @@ public sealed class DialogueSettings
     /// </summary>
     public float ApproachSeconds { get; init; } = 60;
     /// <summary>
-    /// NPCs react to a player character they see with an ambient line (events 3 neutral, 66 enemy, 67 ally) as a speech bubble. Engine choice for the
-    /// Unknown perception rules (docs/game/dialogue.md "Ambient conversations"): off by default (the pinned scenarios), the game turns it on.
+    /// Characters react to those they sense with an event line (the sight pass: 3 neutral, 66 enemy, 67 ally, 27 animals and the rest) and fire the
+    /// other event lines as speech bubbles (docs/game/dialogue.md "Ambient conversations"): off by default (the pinned scenarios), the game turns it
+    /// on.
     /// </summary>
     public bool AmbientEvents { get; init; }
-    /// <summary>
-    /// How near a player character NPCs must be for their exchanges with each other to be run (a player character is seen by the sight test instead),
-    /// how often (ticks) the NPCs look, how many speak per look and the game hours before a squad reacts to the same character again (engine
-    /// choices).
-    /// </summary>
-    public float AmbientRange { get; init; } = 600;
-    /// <summary>
-    /// Ticks between the NPCs' ambient looks.
-    /// </summary>
-    public int AmbientEveryTicks { get; init; } = 30;
-    /// <summary>
-    /// The most ambient lines said per look.
-    /// </summary>
-    public int AmbientPerScan { get; init; } = 2;
-    /// <summary>
-    /// Game hours before a squad reacts to the same character again.
-    /// </summary>
-    public float AmbientRepeatHours { get; init; } = 0.5f;
     /// <summary>
     /// Whether the displayed lines go through <see cref="Censorship"/> (the player's setting, read when a line is built).
     /// </summary>
@@ -431,8 +414,8 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     }
 
     /// <summary>
-    /// The slow-world step: the speech and trade window upkeep, the memory's ageing, the bubbles, the ambient looks, the NPC approaches, followers
-    /// and stalkers, then the Talk order's walk (the conversation opens in talk range).
+    /// The slow-world step: the speech and trade window upkeep, the memory's ageing, the bubbles, the sight pass and the get-up events, the NPC
+    /// approaches, followers and stalkers, then the Talk order's walk (the conversation opens in talk range).
     /// </summary>
     public void SlowWorld(World world)
     {
@@ -442,7 +425,11 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         Memory.Age(world);
 
         if (_bubbles.Count > 0) StepBubbles(world);
-        if (Settings.AmbientEvents && world.Tick % Settings.AmbientEveryTicks == 0) { SeeOthers(world); SeeGettingUp(world); }
+        if (Settings.AmbientEvents)
+        {
+            SeeOthers(world);
+            SeeGettingUp(world);
+        }
         if (_npcApproaches.Count > 0) _npcApproaches.Step(world);
         _followers.StepFollowers(world);
         _stalkers.StepStalkers(world);
@@ -492,7 +479,10 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         {
             if (state.Attributed) { world.Post(state.Actor, "This character will not talk right now."); return; }
             var context = Context(world, new Conversation { Npc = order.Target, Player = order.Talker, Event = DialogueEvents.PlayerTalkToMe }, state);
-            DeferPlayer(world, context, new Combat.AttackOrder([order.Talker], order.Target) { Tick = world.Tick + 1 });
+            DeferPlayer(world, context, new Combat.AttackOrder([order.Talker], order.Target)
+            {
+                Tick = world.Tick + 1, Cause = "talking to a hostile character",
+            });
             return;
         }
         state.Talker = order.Talker;
@@ -615,26 +605,41 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     {
         var table = world.Characters;
         if (!table.TryResolveNext(npc, out int n) || table.Cold(n) is not { } nc) return;
-        if (SleepsThrough(table, n, ev)) return;
+        string pair = $"{EventLog.Who(world, npc)} with {EventLog.Who(world, player)}, {DialogueLog.Event(ev)}";
+        if (SleepsThrough(table, n, ev))
+        {
+            world.DialogueLines.Line(world, "talk", $"{pair}: not opened, asleep");
+            return;
+        }
         if (world.Players.RequiresExplicitControl && world.Players.ControlOf(player) is null) return;
-        if (!world.Players.RequiresExplicitControl && ev == DialogueEvents.PlayerTalkToMe && TooFarFromCamera(table, player)) return;
+        if (!world.Players.RequiresExplicitControl && ev == DialogueEvents.PlayerTalkToMe && TooFarFromCamera(table, player))
+        {
+            world.DialogueLines.Line(world, "talk", $"{pair}: not opened, the talker is too far from the camera");
+            return;
+        }
+
         bool supplied = state is not null;
         state ??= InteractionFor(world.Players.ControlOf(player)?.Player ?? PlayerId.Local);
         if (!NpcAvailable(world, npc, state) || state.Open is not null) return;
         if (!supplied || state.Id == 0) state.Id = _nextInteraction = checked(_nextInteraction + 1);
         var c = Context(world, new Conversation { Npc = npc, Player = player, Event = ev }, supplied ? state : null);
         c.Interaction = state;
-        state.Attributed = c.Actor is not null; state.Control = c.Control;
-        state.Faction = c.Faction; state.MembershipRevision = c.MembershipRevision;
+        state.Attributed = c.Actor is not null;
+        state.Control = c.Control;
+        state.Faction = c.Faction;
+        state.MembershipRevision = c.MembershipRevision;
         IReadOnlyList<DialogueNode> roots = TakeInterrupt(npc, c.Actor, c.Faction, out var pending) && _dialogue.Node(pending) is { IsRoot: true } interrupt
             ? [interrupt] : SetOf(world, n).For(ev);
+        string from = pending is null ? $"{roots.Count} root(s) of the event" : $"pending interrupt {pending}";
         var picked = Pick(world, c, roots);
         if (picked is not { } p)
         {
+            world.DialogueLines.Line(world, "talk", $"{pair}: nothing to say (from {from})");
             if (!quiet) Post(world, c, $"{nc.Name} has nothing to say.");
             return;
         }
         DropBubbles(npc);   // the conversation takes over the NPC's dialogue state: a chain it was saying does not go on after (#707)
+        world.DialogueLines.Line(world, "talk", $"{pair}: conversation opens with {DialogueLog.Node(p.Root ?? p.Line)} (from {from})");
         state.Open = c;
         Hold(world, n);
         if (TaskStart.OnAiWalk(table, n)) TaskStart.Stand(table, n);   // a walking NPC stops to talk (engine choice); the approach chased it
@@ -732,8 +737,9 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         text += MoneySuffix(line);
         c.Text = text;
         c.Log.Add($"{NameOf(world, speaker)}: {text}");
-        LogLine(
-        world, c, speaker, NameOf(world, speaker), text, false);
+        LogLine(world, c, speaker, NameOf(world, speaker), text, false);
+        world.DialogueLines.Line(world, "say", $"{EventLog.Who(world, speaker)} to {EventLog.Who(world, c.Player)}: \"{text}\" "
+            + $"(line {DialogueLog.Node(line)}{DialogueLog.Effects(line)})");
         RunEffects(world, c, line, speaker);
         if (c.Ended) return;
         Offer(world, c, line);
@@ -783,8 +789,9 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         {
             if (!PrepareEffects(world, c, reply, c.Npc)) return;
             c.Log.Add($"{NameOf(world, c.Player)}: {text}");
-            LogLine(
-            world, c, c.Player, NameOf(world, c.Player) is { Length: > 0 } name ? name : "Player", text, true);
+            LogLine(world, c, c.Player, NameOf(world, c.Player) is { Length: > 0 } name ? name : "Player", text, true);
+            world.DialogueLines.Line(world, "reply", $"{EventLog.Who(world, c.Player)} to {EventLog.Who(world, c.Npc)}: \"{text}\" "
+                + $"(line {DialogueLog.Node(reply)}{DialogueLog.Effects(reply)})");
             MarkUsed(world, c, reply);
             RunEffects(world, c, reply, c.Npc);
             if (c.Ended) return;
@@ -819,6 +826,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     {
         if (state.Open is not { } c) return;
         state.Open = null;
+        world.DialogueLines.Line(world, "talk", $"{EventLog.Who(world, c.Npc)} with {EventLog.Who(world, c.Player)}: conversation ends");
         state.View = null;
 
         // the bail list closing: the conversation was counted already
@@ -937,16 +945,17 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
 
     /// <summary>
     /// Adds the dialogue state (rolls, line uses, permanent rolls, counters, memories, followers, stalkers, interrupts, bubbles, cooldowns,
-    /// approaches, downs, quiet pairs, the open conversation and the Talk walk) to the world hash; nothing while all are empty.
+    /// approaches, downs, quiet pairs, sight cursors, the open conversation and the Talk walk) to the world hash; nothing while all are empty.
     /// </summary>
     public void Hash(ref StateHasher hasher)
     {
         HashAreaArrivals(ref hasher);
         HashInteractions(ref hasher);
         var (open, talker, target) = (Local.Open, Local.Talker, Local.Target);
-        if (_lastUse.Count == 0 && _permanent.Count == 0 && _counters.Count == 0 && Memory.IsEmpty && _interrupts.Count == 0 && _playerInterrupts.Count == 0 && _bubbles.Count == 0
-            && _ambientAt.Count == 0 && _npcApproaches.Count == 0 && _down.Count == 0 && _quiet.Count == 0 && _followers.Count == 0
-            && _stalkers.Count == 0 && open is null && talker.IsNone)
+        if (_lastUse.Count == 0 && _permanent.Count == 0 && _counters.Count == 0 && Memory.IsEmpty && _interrupts.Count == 0
+            && _playerInterrupts.Count == 0 && _bubbles.Count == 0 && _eventCooldown.Count == 0 && _npcApproaches.Count == 0
+            && _down.Count == 0 && _quiet.Count == 0 && _sightCursor.Count == 0 && _followers.Count == 0 && _stalkers.Count == 0
+            && open is null && talker.IsNone)
         {
             return;
         }
@@ -987,11 +996,11 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             hasher.Add(Rng.StableHash(b.Line.StringId));
             hasher.Add(b.DueTick);
         }
-        foreach (var ((squad, whom), hours) in _ambientAt)
+        foreach (var ((npc, ev), until) in _eventCooldown)
         {
-            hasher.Add(squad);
-            hasher.Add(whom);
-            hasher.Add(hours);
+            hasher.Add(npc);
+            hasher.Add(ev);
+            hasher.Add(until);
         }
         _npcApproaches.Hash(ref hasher);
         foreach (var id in _down) hasher.Add(id);
@@ -999,6 +1008,11 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         {
             hasher.Add(npc);
             hasher.Add(pc);
+        }
+        foreach (var (who, cursor) in _sightCursor)
+        {
+            hasher.Add(who);
+            hasher.Add(cursor);
         }
         hasher.Add(talker);
         hasher.Add(target);

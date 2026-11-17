@@ -71,6 +71,22 @@ public static class SquadManagement
     public static List<Squad> PlayerSquads(World world) => PlayerSquads(world, world.Player.Faction);
 
     /// <summary>
+    /// The player's squads the player leads, in order (<see cref="PlayerSquads"/> without the <see cref="Squad.Independent"/> ones): the squad tabs,
+    /// the squads screen, Tab and the squad commands, and what <c>max squads</c> counts.
+    /// </summary>
+    public static List<Squad> LedSquads(World world) => LedSquads(world, world.Player.Faction);
+
+    /// <summary>
+    /// The led squads belonging to one explicit faction, independent of the local host player.
+    /// </summary>
+    public static List<Squad> LedSquads(World world, int faction)
+    {
+        var list = PlayerSquads(world, faction);
+        list.RemoveAll(s => s.Independent);
+        return list;
+    }
+
+    /// <summary>
     /// The player's characters alive (what CONSTANTS <c>max faction size</c> counts).
     /// </summary>
     public static int FactionHeads(World world) => FactionHeads(world, world.Player.Faction);
@@ -105,7 +121,7 @@ public static class SquadManagement
                 if (data is null || !float.IsFinite(create.At.X) || !float.IsFinite(create.At.Y) || !float.IsFinite(create.At.Z)) return;
 
                 // The original counts the squad boxes against `max squads` (FUN_140491b50).
-                if (PlayerSquads(world, faction).Count >= constants!.MaxSquads)
+                if (LedSquads(world, faction).Count >= constants!.MaxSquads)
                 {
                     Notice("Maximum number of squads reached.");
                     return;
@@ -126,7 +142,7 @@ public static class SquadManagement
                     Notice("The squad needs to be empty before it can be removed.");
                     return;
                 }
-                if (PlayerSquads(world, faction).Count == 1)
+                if (LedSquads(world, faction).Count == 1)
                 {
                     Notice("You must have at least one squad.");
                     return;
@@ -141,7 +157,7 @@ public static class SquadManagement
                 break;
             case ReorderSquadCommand reorder:
                 if (Own(world, faction, reorder.Squad) is not { } moved) return;
-                var order = PlayerSquads(world, faction);
+                var order = LedSquads(world, faction);
                 order.Remove(moved);
                 order.Insert(reorder.Index < 0 || reorder.Index > order.Count ? order.Count : reorder.Index, moved);
                 Renumber(order);
@@ -160,9 +176,9 @@ public static class SquadManagement
     }
 
     /// <summary>
-    /// The player's squad of id <paramref name="id"/>; null when there is none.
+    /// The player's squad of id <paramref name="id"/> that the player leads; null when there is none.
     /// </summary>
-    static Squad? Own(World world, int faction, int id) => world.Squads.Find(id) is { } s && Mine(world, faction, s) ? s : null;
+    static Squad? Own(World world, int faction, int id) => world.Squads.Find(id) is { Independent: false } s && Mine(world, faction, s) ? s : null;
 
     /// <summary>
     /// Whether a squad is the player's: of the player's faction, no platoon's and not the squad of the dead.
@@ -245,7 +261,7 @@ public static class SquadManagement
     /// </summary>
     static void NextSquad(World world, PlayerState player)
     {
-        var squads = PlayerSquads(world, player.Faction);
+        var squads = LedSquads(world, player.Faction);
         if (squads.Count < 2) return;
         int at = squads.FindIndex(s => s.Id == player.Squad);
         for (int k = 1; k < squads.Count; k++)
@@ -390,6 +406,7 @@ public static class SquadManagement
         int faction = data.FactionIndex(DismissFaction);
         if (faction < 0) faction = data.FactionIndex(DismissFallbackFaction);
         if (faction < 0) return;
+        world.Events.Line(world, "recruit", $"{EventLog.Who(world, slot)} dismissed: leaves for {EventLog.FactionName(world, faction)}");
         if (world.Squads.Find(cold.SquadId) is { } old)
         {
             old.Members.Remove(id);
@@ -487,9 +504,9 @@ public static class SquadManagement
     static void KeepActive(World world, PlayerState player)
     {
         if (!player.Exists) { player.Squad = -1; return; }
-        if (world.Squads.Find(player.Squad) is { } active && Mine(world, player.Faction, active)
+        if (world.Squads.Find(player.Squad) is { Independent: false } active && Mine(world, player.Faction, active)
             && (world.Players.RequiresExplicitControl || active.Members.Count > 0)) return;
-        var squads = PlayerSquads(world, player.Faction);
+        var squads = LedSquads(world, player.Faction);
         player.Squad = (squads.FirstOrDefault(s => s.Members.Count > 0) ?? squads.FirstOrDefault())?.Id ?? -1;
     }
 

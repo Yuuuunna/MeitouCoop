@@ -72,7 +72,7 @@ public sealed partial class DialogueSystem
         {
             return selectedSquad;
         }
-        return SquadManagement.PlayerSquads(world).FirstOrDefault();
+        return SquadManagement.LedSquads(world).FirstOrDefault();
     }
 
     /// <summary>
@@ -83,7 +83,7 @@ public sealed partial class DialogueSystem
     static void ExtraSquadAtTheCap(World world, PopulationData data, Squad active, GameConstants limits)
     {
         if (PlayerHeads(world, active.Faction) >= limits.MaxFactionSize || active.Members.Count + 1 <= limits.MaxSquadSize
-            || SquadManagement.PlayerSquads(world, active.Faction).Count < limits.MaxSquads)
+            || SquadManagement.LedSquads(world, active.Faction).Count < limits.MaxSquads)
         {
             return;
         }
@@ -156,6 +156,7 @@ public sealed partial class DialogueSystem
             if (owner is not null) owner.Squad = squad.Id;
         }
 
+        world.Events.Line(world, "recruit", $"{EventLog.Who(world, slot)} joins the player's squad");
         Leave(world, me, mc);
         mc.Faction = context.Faction;
         mc.RoadPreference = _data.RoadPreferenceOf(mc.Faction);

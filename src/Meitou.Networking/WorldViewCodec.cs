@@ -307,6 +307,7 @@ public sealed partial class WorldViewCodec
             throw new InvalidDataException("Invalid view records.");
         ValidateContainerOpener(view);
         ValidateSceneMetadata(view.Snapshot);
+        ValidateSquadPresentation(view);
         ValidateDrawAnchors(view.Snapshot);
         ValidateModPresentation(view.Snapshot);
         if (view.Snapshot.GroundItems is null || view.Snapshot.GroundItems.Any(item => item.Material is null || item.Material.Length > 4096))
@@ -364,6 +365,30 @@ public sealed partial class WorldViewCodec
             || snapshot.FoliageOutposts.Any(t => !float.IsFinite(t.At.X) || !float.IsFinite(t.At.Y)
                 || !float.IsFinite(t.Range) || t.Range < 0))
             throw new InvalidDataException("Invalid outpost foliage geometry.");
+    }
+
+    /// <summary>
+    /// Per-recipient squad lists and static mod job labels remain bounded without requiring same-frame component references.
+    /// </summary>
+    static void ValidateSquadPresentation(PlayerWorldView view)
+    {
+        if (view.Snapshot.InventoriesClosed < 0 || view.Snapshot.ModJobNames is not { } names
+            || names.Count > SimulationExtensions.MaximumJobTypes
+            || names.Any(p => p.Key < SimulationExtensions.FirstModCode || string.IsNullOrWhiteSpace(p.Value)
+                || p.Value.Length > SimulationExtensions.MaximumJobNameLength))
+            throw new InvalidDataException("Invalid job labels or inventory close serial.");
+
+        CheckSquads(view.Snapshot.IndependentSquads);
+        foreach (var faction in view.Factions) CheckSquads(faction.IndependentSquads);
+
+        static void CheckSquads(IReadOnlyList<SquadView>? squads)
+        {
+            if (squads is null || squads.Count > 65536 || squads.Any(s => s is null || s.Id < 0 || s.Name is null
+                || s.Name.Length > 4096 || s.Members is null || s.Members.Count > 65536
+                || s.Members.Any(c => c.IsNone || c.Slot < 0 || c.Generation < 0)
+                || s.Members.Distinct().Count() != s.Members.Count) || squads.Select(s => s.Id).Distinct().Count() != squads.Count)
+                throw new InvalidDataException("Invalid independent squad presentation.");
+        }
     }
 
     /// <summary>

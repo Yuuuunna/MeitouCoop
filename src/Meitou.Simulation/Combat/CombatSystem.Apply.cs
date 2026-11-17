@@ -96,6 +96,10 @@ public sealed partial class CombatSystem
         float progress = reaction is not null ? Math.Clamp((now - dSlot.ReactStart) / (float)dSlot.ReactTicks, 0, 1) : 0;
         var outcome = HitOutcomes.Decide(reaction, progress, direction);
 
+        // A hit's packet, which a code mod's filter may change, or cancel the hit, which makes it a miss (CombatHitFilters).
+        var packet = outcome == BlowOutcome.Hit ? BlowPacket(world, a, ac, dc, ac.Fighter, dc.Fighter, tech, blow) : default;
+        if (outcome == BlowOutcome.Hit && !FiltersPass(world, a, d, seq, blow, aSlot, ref packet)) outcome = BlowOutcome.Missed;
+
         if (live) aSlot.LastOutcome = outcome;
         else if (aSlot.AttackSeq == seq) Pause(world, ref aSlot, outcome, now);
 
@@ -125,7 +129,19 @@ public sealed partial class CombatSystem
                 return;
         }
 
-        LandBlow(world, e, ref aSlot, ref dSlot, ac, dc, tech, direction);
+        LandBlow(world, e, ref aSlot, ref dSlot, ac, dc, tech, direction, packet);
+    }
+
+    /// <summary>
+    /// Asks the code mods' hit filters about a melee blow about to land (<see cref="ICombatHitFilter"/>); false when one cancels it.
+    /// </summary>
+    static bool FiltersPass(World world, int a, int d, int seq, int blow, in CombatSlot aSlot, ref DamagePacket packet)
+    {
+        if (!world.CombatHitFilters.Active) return true;
+
+        var table = world.Characters;
+        bool intended = d == aSlot.TargetSlot && table.Previous[d].Generation == aSlot.TargetGeneration;
+        return world.CombatHitFilters.Pass(world, CombatHitSource.Melee, table.IdOf(a), table.IdOf(d), seq, blow, intended, ref packet);
     }
 
     /// <summary>
@@ -155,11 +171,12 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>
-    /// A blow that hits (<see cref="ApplyBlow"/> checked both fighters, their stats, bodies and races): the packet through armour and the body, the
-    /// medical events, the defender down or staggered, XP, sounds, blood, the knock-down, crimes and relations, the record and the hit observers.
+    /// A blow that hits (<see cref="ApplyBlow"/> checked both fighters, their stats, bodies and races): its packet (<see cref="BlowPacket"/>, as the
+    /// hit filters left it) through armour and the body, the medical events, the defender down or staggered, XP, sounds, blood, the knock-down,
+    /// crimes and relations, the record and the hit observers.
     /// </summary>
     void LandBlow(World world, in Effect e, ref CombatSlot aSlot, ref CombatSlot dSlot, CharacterCold ac, CharacterCold dc, CombatTechnique tech,
-        int direction)
+        int direction, DamagePacket packet)
     {
         var table = world.Characters;
         var prev = table.Previous;
@@ -167,13 +184,12 @@ public sealed partial class CombatSystem
         var fighter = ac.Fighter!;
         var target = dc.Fighter!;
         float toughness = Eff(dc, StatsEnumerated.Toughness);
-        var packet = BlowPacket(world, a, ac, dc, fighter, target, tech, blow);
-
         var ctx = MakeContext(world, d, dc);
         var events = _hitEvents;   // Apply is serial, so one list serves every hit
         events.Clear();
         var cover = new CoverRoll(world.Seed, Rng.Key(table.IdOf(d)), a, seq, blow);
         var medical = dc.Medical!;
+        bool defenderWasDown = Bodies.CharacterFacts.Down(dc);
         bool observe = world.WantsCombatHits;
         bool wasAlive = observe && !medical.Dead, wasIncapacitated = observe && medical.Incapacitated;
         bool intended = observe && d == aSlot.TargetSlot && prev[d].Generation == aSlot.TargetGeneration;
@@ -204,7 +220,7 @@ public sealed partial class CombatSystem
         if (death && world.Luckyren) dc.Burst = -new Vector2(toAttacker.X, toAttacker.Y);
         if (medical.Incapacitated) Sound(world, SoundKind.Down, d, a, prev[d].Position, fatal: death);
 
-        BlowConsequences(world, a, d, ac, dc, medical, death);
+        BlowConsequences(world, a, d, ac, dc, medical, death, defenderWasDown);
         Record(now, a, d, blow, BlowOutcome.Hit, part, damage, knockout, death);
         if (observe && part >= 0)
         {
@@ -312,12 +328,13 @@ public sealed partial class CombatSystem
 
     /// <summary>
     /// What a hit means beyond the fighters: the police-hit rule first (the game's hit outcome runs before the damage), then the victim's alarm and
-    /// replan and its faction's relation events (docs/game/factions-squads-towns.md 3.5), and a unique's death.
+    /// replan and its faction's relation events (docs/game/factions-squads-towns.md 3.5), and a unique's death. <paramref name="defenderWasDown"/>:
+    /// the defender was down before the blow landed.
     /// </summary>
-    void BlowConsequences(World world, int a, int d, CharacterCold ac, CharacterCold dc, MedicalState medical, bool death)
+    void BlowConsequences(World world, int a, int d, CharacterCold ac, CharacterCold dc, MedicalState medical, bool death, bool defenderWasDown)
     {
         var table = world.Characters;
-        Crimes?.Hit(world, a, d);
+        Crimes?.Hit(world, a, d, defenderWasDown);
         if (!medical.Incapacitated)
         {
             // the victim senses its attacker, with the alarm flag (FUN_140999f00)

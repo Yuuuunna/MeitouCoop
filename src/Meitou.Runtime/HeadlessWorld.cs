@@ -216,7 +216,7 @@ public sealed class HeadlessWorld : IDisposable
             UnloadedProduction = rules.UnloadedProduction,
             EdgeGap = siteEdgeGap,
         },
-        DoorsCloseBehind = rules.DoorsCloseBehind,
+        Captives = new Meitou.Simulation.Kidnap.CaptiveSettings { SpareOwnFaction = rules.CagesSpareOwn },
         AnimalsPickUp = rules.AnimalsPickUp,
     };
     static void ApplyWorldRules(World world, GameplayRules rules)

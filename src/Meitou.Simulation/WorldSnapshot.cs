@@ -342,6 +342,27 @@ public sealed record InventoryItemView(int Index, string Record, string Name, st
     /// (<see cref="Crime.CrimeSystem.StealChanceOf(World, int, int, Items.ItemInstance)"/>): the tooltip's stealing chance. Null otherwise.
     /// </summary>
     public float? StealChance { get; init; }
+
+    /// <summary>
+    /// The view of <paramref name="item"/> as item <paramref name="index"/> of a window: everything the item itself says, none of what depends on
+    /// its holder (stolen marks, stealing chance).
+    /// </summary>
+    public static InventoryItemView Of(int index, Items.ItemInstance item) =>
+        new(index, item.Record, item.Name, item.Section, item.X, item.Y, item.Width, item.Height, item.Quantity, item.Weight, item.Quality)
+        {
+            Material = item.MaterialId,
+            Rotated = item.Rotated,
+            Colour = item.ColourId,
+            Charge = item.ChargeFraction,
+            Company = item.CompanyId,
+            Crafter = item.Crafter,
+            ModTag = item.ModTag,
+            Level = item.Level,
+            Charges = item.Charges,
+            MaxCharges = item.MaxCharges,
+            Unique = item.Unique,
+            BagItems = item.Contents?.Items.Count ?? -1,
+        };
 }
 
 /// <summary>
@@ -951,9 +972,19 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// </summary>
     public SquadAi SquadAi { get; init; } = SquadAi.Defaults;
     /// <summary>
-    /// The player's squads in order (<see cref="SquadManagement.PlayerSquads"/>), each with its members in squad order (the first leads).
+    /// The player's squads the player leads, in order (<see cref="SquadManagement.LedSquads"/>), each with its members in squad order (the first
+    /// leads).
     /// </summary>
     public IReadOnlyList<SquadView> PlayerSquads { get; init; } = [];
+    /// <summary>
+    /// The player's squads the player does not lead (<see cref="Squad.Independent"/>), with their members: clicking one inspects it as another
+    /// faction's character is.
+    /// </summary>
+    public IReadOnlyList<SquadView> IndependentSquads { get; init; } = [];
+    /// <summary>
+    /// Authoritative names for registered mod job types; clients do not run simulation systems to name their job rows.
+    /// </summary>
+    public IReadOnlyDictionary<int, string> ModJobNames { get; init; } = new Dictionary<int, string>();
     /// <summary>
     /// The active squad's id (<see cref="PlayerState.Squad"/>; -1 none): the squad bar shows it.
     /// </summary>
@@ -980,6 +1011,10 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// The serial of the last held-item command applied (see <see cref="Held"/>).
     /// </summary>
     public long HeldSerial { get; init; }
+    /// <summary>
+    /// How often the world closed every inventory window (<see cref="Player.PlayerState.InventoriesClosed"/>).
+    /// </summary>
+    public long InventoriesClosed { get; init; }
     /// <summary>
     /// Player-built buildings and construction sites, in creation order (docs/simulation.md "Buildings").
     /// </summary>

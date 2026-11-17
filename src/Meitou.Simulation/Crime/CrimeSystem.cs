@@ -116,14 +116,19 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     /// diplomat becomes code 9 (<see cref="DiplomatVictim"/>); an Assault does not
     /// replace another pending crime (it raises that one's timer to 20); the same code again keeps the booked flag; a new code clears it. The timer
     /// is at least <see cref="MinTimer"/>. True when the crime is now pending. <paramref name="viaWrapper"/>: the original's callers that go through
-    /// its wrapper <c>FUN_140852e10</c> (police hit, caught stealing, fencing, kidnapping seen) also drop the culprit's
+    /// its wrapper <c>FUN_140852e10</c> (police hit, caught stealing, fencing, kidnapping seen, a uniform impostor seen) are refused for a culprit
+    /// that is down (vfunc <c>0x30</c>, <see cref="Bodies.CharacterFacts.Down"/>) or an animal (vfunc <c>0x248</c>), and drop the culprit's
     /// <see cref="CharacterCold.Freed"/> flag when the crime is set (the other callers do not; <b>Verified</b>). The wrapper also writes the
-    /// recently-wanted marker first, which makes the uniform test a no-op for its callers, so it is skipped for them.
+    /// recently-wanted marker first, which makes the uniform test a no-op for its callers, so it is skipped for them. <paramref name="victimHolder"/>:
+    /// a victim that is a building's holder of goods rather than a character (<see cref="PendingCrime.VictimHolder"/>). <paramref name="wasUp"/>: the
+    /// caller's deed ran before the culprit could go down (the police hit: the game's hit outcome runs before the blow's damage).
     /// </summary>
-    public bool SetPending(World world, int culprit, CrimeCode code, int victimFaction, CharacterId victim, float timer, bool viaWrapper = false)
+    public bool SetPending(World world, int culprit, CrimeCode code, int victimFaction, CharacterId victim, float timer, bool viaWrapper = false,
+        string? victimHolder = null, bool wasUp = false)
     {
         var c = world.Characters.Cold(culprit);
-        if (c is null || IsPoliceLike(world, c) || c.IsImprisoned || victimFaction == c.Faction
+        if (c is null || viaWrapper && (!wasUp && Bodies.CharacterFacts.Down(c) || c.Fighter?.IsAnimal == true)) return false;
+        if (IsPoliceLike(world, c) || c.IsImprisoned || victimFaction == c.Faction
             || !viaWrapper && c.SlaveState == 0 && victimFaction == ArrestSystem.SeenFaction(c) || Factions.Lawless(victimFaction)) return false;
         timer = MathF.Max(timer, MinTimer);
         if (code == CrimeCode.Assault && DiplomatVictim(world, victim)) code = CrimeCode.Terrorism2;
@@ -136,11 +141,12 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         {
             same.VictimFaction = victimFaction;
             same.Victim = victim;
+            same.VictimHolder = victimHolder;
             same.Timer = MathF.Max(same.Timer, timer);
             if (viaWrapper) c.Freed = false;
             return true;
         }
-        c.Pending = new PendingCrime { Code = code, VictimFaction = victimFaction, Victim = victim, Timer = timer };
+        c.Pending = new PendingCrime { Code = code, VictimFaction = victimFaction, Victim = victim, VictimHolder = victimHolder, Timer = timer };
         if (viaWrapper) c.Freed = false;
         Note(world, CrimeEventKind.Pending, culprit, code, victimFaction, 0, CharacterId.None);
         return true;
@@ -247,11 +253,11 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
 
     /// <summary>
     /// A landed hit between <paramref name="attacker"/> and <paramref name="defender"/> (the game's hit outcome <c>FUN_140665fa0</c>,
-    /// <b>Observed</b>): when exactly one of them is police-like, the other gets a pending Assault (timer 30) against the police faction, and
-    /// whatever crime it has pending is booked with that faction at once. The game's code reads as charging the non-police side whichever way the
-    /// blow went (being hit by the police counts too).
+    /// <b>Verified</b>): when exactly one of them is police-like, the other, player's or not, gets a pending Assault (timer 30) against the police
+    /// faction through the setter's wrapper, and whatever crime it has pending is booked with that faction at once, whichever way the blow went
+    /// (being hit by the police counts too). <paramref name="defenderWasDown"/>: the defender was down before the blow.
     /// </summary>
-    public void Hit(World world, int attacker, int defender)
+    public void Hit(World world, int attacker, int defender, bool defenderWasDown = false)
     {
         var table = world.Characters;
         if (table.Cold(attacker) is not { } a || table.Cold(defender) is not { } d) return;
@@ -263,8 +269,9 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         int culprit = pd ? attacker : defender, police = pd ? defender : attacker;
         var c = table.Cold(culprit)!;
         var p = table.Cold(police)!;
-        if (!c.IsPlayer) return;
-        SetPending(world, culprit, CrimeCode.Assault, p.Faction, table.IdOf(police), PoliceHitTimer, viaWrapper: true);
+        // The outcome runs before the damage: the striker is up, the struck one as it stood before the blow.
+        bool wasUp = culprit == attacker || !defenderWasDown;
+        SetPending(world, culprit, CrimeCode.Assault, p.Faction, table.IdOf(police), PoliceHitTimer, viaWrapper: true, wasUp: wasUp);
         if (c.Pending is not null) Book(world, culprit, p.Faction, table.IdOf(police));
     }
 
@@ -420,7 +427,9 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
                 SetPending(world, culprit, CrimeCode.Trespassing, wf, table.IdOf(w), MinTimer);
             if (c.Pending is not { } p) continue;
             if (!Reacts(world, wc, c, p)) continue;
-            if (Friendly(wf, c.Faction) && Betrays(p.Code)) PlayerRelations.Add(world, Relations, wf, c.Faction, BetrayalDelta);
+            if (Friendly(wf, c.Faction) && Betrays(p.Code))
+                PlayerRelations.Add(world, Relations, wf, c.Faction, BetrayalDelta, new(RelationCauseType.Crime, culpritId),
+                    $"a friend's crime witnessed ({p.Code})");
             p.Timer = WitnessTimer;
             c.RecentlyWanted = RecentlyWantedSeconds;
             var witness = table.IdOf(w);
@@ -433,7 +442,10 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
                     && fight.TargetGeneration == culpritId.Generation))
             {
                 world.SystemOf<Dialogue.DialogueSystem>()?.TagEnemy(world, w, culprit);
-                world.Defer(new Combat.AttackOrder([witness], culpritId) { Tick = world.Tick + 1, Source = TaskSource.Npc });
+                world.Defer(new Combat.AttackOrder([witness], culpritId)
+                {
+                    Tick = world.Tick + 1, Source = TaskSource.Npc, Cause = $"the victim saw the crime ({p.Code})",
+                });
             }
             bool first = !p.Witnessed;
             if (first)
@@ -574,7 +586,8 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
 
     /// <summary>
     /// The alarm of <paramref name="town"/> raised at <paramref name="target"/> (<c>FUN_1409335e0</c>, <b>Observed</b>), for the crime
-    /// <paramref name="code"/> against <paramref name="faction"/>: nothing for code 0; "Alarm raised" at most every 30 s for the player's; the town
+    /// <paramref name="code"/> against <paramref name="faction"/>: nothing for code 0; "Alarm raised" at most every 30 s for the player's, every
+    /// inventory window closing with it (<see cref="World.CloseInventories"/>); the town
     /// keeps one alarm per code and faction, a repeated raise only moving it to the target (the life, set at the first raise, is not extended:
     /// <b>Verified</b>, the merge path of <c>FUN_1409335e0</c> leaves <c>+0x24</c> alone). The town's investigators answer it
     /// (<see cref="Investigate"/>).
@@ -586,8 +599,10 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
         if (t.IsPlayer && world.GameHours - _lastAlarmHours >= AlarmPostSeconds / World.SecondsPerGameHour)
         {
             _lastAlarmHours = world.GameHours;
+            world.CloseInventories(table.IdOf(target));   // The alarm's system message closes the affected player's inventories.
             world.PostCharacter(t, Loc.Tr("Alarm raised"));
         }
+
         var at = table.Next[target].Position;
         int place = world.Sight.LocationOf(target), floor = FloorOf(world, target, at);
         foreach (var a in _alarms)
@@ -735,7 +750,13 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
             last = suspect;
         }
 
-        if (last >= 0) world.Defer(new Combat.AttackOrder([table.IdOf(slot)], table.IdOf(last)) { Tick = world.Tick + 1, Source = TaskSource.Npc });
+        if (last >= 0)
+        {
+            world.Defer(new Combat.AttackOrder([table.IdOf(slot)], table.IdOf(last))
+            {
+                Tick = world.Tick + 1, Source = TaskSource.Npc, Cause = "investigating an alarm",
+            });
+        }
     }
 
     /// <summary>
@@ -828,6 +849,23 @@ public sealed partial class CrimeSystem(FactionRelations relations, CrimeSetting
     internal void Note(World world, CrimeEventKind kind, int culprit, CrimeCode code, int faction, int amount, CharacterId witness)
     {
         if (Settings.RecordLog) _log.Add(new CrimeEvent(world.Tick, kind, world.Characters.IdOf(culprit), code, faction, amount, witness));
+        world.Events.Line(world, "crime", CrimeLine(world, kind, culprit, code, faction, amount, witness));
+    }
+
+    /// <summary>
+    /// The event log's line of a crime event.
+    /// </summary>
+    static string CrimeLine(World world, CrimeEventKind kind, int culprit, CrimeCode code, int faction, int amount, CharacterId witness)
+    {
+        string who = EventLog.Who(world, culprit), against = EventLog.FactionName(world, faction);
+        return kind switch
+        {
+            CrimeEventKind.Pending => $"{who} committed {code} against {against}",
+            CrimeEventKind.Witnessed => $"{EventLog.Who(world, witness)} saw {who} commit {code}",   // the faction noted is the witness's
+            CrimeEventKind.Booked => $"{against} put a bounty on {who} for {code}: {amount} in all",
+            CrimeEventKind.Expired => $"{who}'s bounty with {against} expired",
+            _ => $"{kind}: {who}, {code}, {against}",
+        };
     }
 
     #endregion

@@ -661,14 +661,10 @@ sealed class GamePages(SettingsMenu menu)
     }
 
     /// <summary>
-    /// The world and play rows: doors, decapitation, ragdolls, XP, the speeds, pausing, animals, outlines, selection and ground items.
+    /// The world and play rows: decapitation, ragdolls, XP, the speeds, pausing, animals, cage guards, outlines, selection and ground items.
     /// </summary>
     void AddWorldRows(List<SettingsMenu.Entry> result)
     {
-        result.Add(new("Doors close behind",
-            "A door someone opened by walking through it closes again a few seconds after the last person went through. In the game doors stay open.",
-            Toggle: new("Doors close behind", () => menu.Config.DoorsCloseBehind,
-                v => { menu.Config.DoorsCloseBehind = v; menu.DoorsCloseChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
         result.Add(new("Decapitation",
             "A blow that destroys a character's head cuts it off, by the same rule the Dismemberment setting cuts off limbs. "
             + "In the game a destroyed head only kills.",
@@ -696,6 +692,10 @@ sealed class GamePages(SettingsMenu menu)
         result.Add(new("Pause after loading",
             "A save starts paused once it has loaded, so nothing happens before you look around. In the game it runs at once.",
             Toggle: new("Pause after loading", () => menu.Config.PauseOnLoad, v => menu.Config.PauseOnLoad = v, Remaster: true, OnOff: true)));
+        if (!menu.Player.IsRemoteSession) result.Add(new("Pause while loading",
+            "Faithful, as in the game: when the camera comes to places that are not loaded yet (a jump to a squad far away), the game pauses and "
+            + "shows Loading... until they are. Meitou: the game runs on while they load.",
+            Toggle: new("Pause while loading", () => !menu.Config.LoadingPause, v => menu.Config.LoadingPause = !v, Remaster: true)));
         result.Add(new("Camera stays near your squads",
             "As in the game, the camera (the free camera too) cannot go farther than 2250 units from the nearest of your characters. "
             + "Off, it can fly anywhere in the world.",
@@ -710,6 +710,11 @@ sealed class GamePages(SettingsMenu menu)
             + "Meitou: only people pick items up, and an animal only a limb to carry in its mouth.",
             Toggle: new("Animals pick up items", () => !menu.Config.AnimalsPickUp,
                 v => { menu.Config.AnimalsPickUp = !v; menu.AnimalsPickUpChanged?.Invoke(!v); }, Remaster: true)));
+        result.Add(new("Guards spare their own",
+            "Slavers and other cage guards leave their own faction's people in their cages alone instead of making them slaves. "
+            + "In the game they enslave them too. Arrests that end in slavery are not affected.",
+            Toggle: new("Guards spare their own", () => menu.Config.CagesSpareOwn,
+                v => { menu.Config.CagesSpareOwn = v; menu.GameplayChanged?.Invoke(); }, Remaster: true, OnOff: true)));
         result.Add(new("Hover outline", "Outline and tint the character under the cursor, in the colour of what a right click would do.",
             Toggle: new("Hover outline", () => menu.Config.HoverOutline, v => menu.Config.HoverOutline = v, Remaster: true, OnOff: true)));
         result.Add(new("Building outline",

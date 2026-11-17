@@ -59,6 +59,9 @@ public sealed partial class World
             Characters.Phase = TablePhase.Outside;
             Characters.EndTick();
         }
+
+        Events.EndTick(this);
+        ActionLog?.Observe(this);
         foreach (var trade in _systems.OfType<Trading.TradeSystem>()) trade.RefreshView(this);
         foreach (var talk in _systems.OfType<Dialogue.DialogueSystem>()) talk.RefreshView(this);
         if (Settings.PublishSnapshots)
@@ -75,6 +78,55 @@ public sealed partial class World
     /// </summary>
     internal T? SystemOf<T>() where T : class =>
         (T?)_systemsByType.GetOrAdd(typeof(T), static (_, list) => list.OfType<T>().FirstOrDefault(), _systems);
+
+    /// <summary>
+    /// Closes every inventory window, as the original's close-all (<c>FUN_1406e5740</c>, after a town alarm against the player's or an item move
+    /// caught stealing, selling stolen goods or smuggling; docs/game/economy.md "Trading range"): the open container, loot and trade now, the
+    /// interface's windows when it sees <see cref="PlayerState.InventoriesClosed"/> change. A walk to open one goes on. Serial phases only.
+    /// </summary>
+    internal void CloseInventories()
+    {
+        if (!Players.RequiresExplicitControl) CloseInventories(PlayerId.Local);
+    }
+
+    /// <summary>
+    /// Closes only the windows belonging to the actor's controller; an NPC never closes the local host's windows.
+    /// </summary>
+    internal void CloseInventories(CharacterId actor)
+    {
+        if (Players.ControlOf(actor) is { } control) CloseInventories(control.Player);
+        else if (!Players.RequiresExplicitControl && Characters.TryResolveNext(actor, out int slot)
+            && Characters.Cold(slot) is { IsPlayer: true }) CloseInventories(PlayerId.Local);
+    }
+
+    /// <summary>
+    /// A town alarm closes the affected faction's players' windows without touching other connected factions.
+    /// </summary>
+    internal void CloseFactionInventories(int faction)
+    {
+        foreach (var player in Players.All)
+            if (player.IsMember(faction) || !Players.RequiresExplicitControl && player.State.Faction == faction)
+                CloseInventories(player.Id);
+    }
+
+    /// <summary>
+    /// Invalidates the open interaction sessions while preserving orders already walking towards another window.
+    /// </summary>
+    void CloseInventories(PlayerId owner)
+    {
+        if (Players.Find(owner)?.State is not { } state) return;
+
+        state.OpenContainer = null;
+        state.ContainerOpener = CharacterId.None;
+        if (state.OpeningContainer is null) state.ContainerAccess = null;
+        state.OpenLoot = CharacterId.None;
+        state.LootOpener = CharacterId.None;
+        state.LootSessionId = checked(state.LootSessionId + 1);
+        state.InventoryShown.Clear();
+        SystemOf<Trading.TradeSystem>()?.EndTrade(this, owner);
+        PlayerTrades.Disconnect(owner);
+        state.InventoriesClosed = checked(state.InventoriesClosed + 1);
+    }
 
     /// <summary>
     /// Puts the item on the mouse back where it came from (<see cref="PlayerState.Held"/>, <see cref="PlayerSystem.ReturnHeldItem"/>):
@@ -224,8 +276,9 @@ public sealed partial class World
 
 
     internal bool MayOrder(SimCommand command, CharacterId character) =>
-        command.Issuer is not { } issuer || command.ControlGrants.Any(grant => grant.Player == issuer && Players.Validate(grant)
-            && Entities.TryResolve(grant.Entity, out var current) && current == character);
+        command.Issuer is not { } issuer || Players.CanControl(issuer, character)
+            && command.ControlGrants.Any(grant => grant.Player == issuer && Players.Validate(grant)
+                && Entities.TryResolve(grant.Entity, out var current) && current == character);
 
 
     internal void ApplyAuthorityCommand(SimCommand command)

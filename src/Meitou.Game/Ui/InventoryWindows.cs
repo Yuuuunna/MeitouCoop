@@ -80,6 +80,11 @@ sealed class InventoryWindows(PlayerInterface player)
     CharacterId _pinnedFrom = CharacterId.None;
 
     /// <summary>
+    /// The world's count of closings of every inventory window last acted on (<see cref="WorldSnapshot.InventoriesClosed"/>).
+    /// </summary>
+    long _inventoriesClosed;
+
+    /// <summary>
     /// The bag window's layout as read, registered again for each pinned window's bag.
     /// </summary>
     internal MyGuiLayout? BagLayout;
@@ -115,12 +120,13 @@ sealed class InventoryWindows(PlayerInterface player)
     static string PinnedSlotOf(string bag) => PinnedPrefix + bag[PinnedBagPrefix.Length..];
 
     /// <summary>
-    /// The screen a window binds as: a pinned window as the inventory, its bag as the bag, any other as itself.
+    /// The screen a window binds as: a pinned window as the inventory, its bag as the bag, the selected building's own machine window as its kind
+    /// (<see cref="ProductionWindows.MachineKind"/>), any other as itself.
     /// </summary>
     internal static string ScreenKind(string screen) =>
         IsPinnedInventory(screen) ? "inventory"
         : IsPinnedBag(screen) ? "bag"
-        : screen;
+        : ProductionWindows.MachineKind(screen);
 
     /// <summary>
     /// How long the interface waits for the world to apply a held command before it shows the world's held item again (engine choice).
@@ -130,7 +136,7 @@ sealed class InventoryWindows(PlayerInterface player)
     /// <summary>
     /// The screens that show items: the held item goes back when none of them is open.
     /// </summary>
-    static readonly string[] ItemScreens = ["inventory", "bag", "limbs", "loot", "loot-bag", "trader", "building", "bench", "storage"];
+    static readonly string[] ItemScreens = ["inventory", "bag", "limbs", "loot", "loot-bag", "trader", .. ProductionWindows.MachineScreens];
 
     /// <summary>
     /// The character the inventory window (and its bag and limbs) shows: the looter of the open loot or container window while selected, else the
@@ -288,7 +294,47 @@ sealed class InventoryWindows(PlayerInterface player)
     /// </summary>
     internal void CloseInventoryWindows()
     {
-        foreach (string screen in ItemScreens.Where(s => s != "trader").Concat(PinnedInventories.Keys)) player.FaithfulScreens.Close(screen);
+        var open = ItemScreens.Where(s => s != "trader")
+            .Concat(PinnedInventories.Keys)
+            .Where(player.FaithfulScreens.IsOpen)
+            .ToList();
+        foreach (string screen in open) player.FaithfulScreens.Close(screen);
+    }
+
+    /// <summary>
+    /// Once an arrangement: closes every inventory window when the world closed them all (a town alarm against the player's; the trade and the open
+    /// container close in the world).
+    /// </summary>
+    internal void SyncClosedInventories()
+    {
+        long closed = player.Session.CurrentSnapshot.InventoriesClosed;
+        if (closed == _inventoriesClosed) return;
+
+        _inventoriesClosed = closed;
+        CloseInventoryWindows();
+    }
+
+    /// <summary>
+    /// Whether any inventory window is open: an item window (<see cref="ItemScreens"/>) or a pinned one.
+    /// </summary>
+    internal bool AnyInventoryWindowOpen() => ItemScreens.Concat(PinnedInventories.Keys).Any(player.FaithfulScreens.IsOpen);
+
+    /// <summary>
+    /// Closes the character's inventory window with its bag and limbs windows, as the inventory key does.
+    /// </summary>
+    internal void CloseInventory()
+    {
+        player.FaithfulScreens.Close("inventory");
+        player.FaithfulScreens.Close("bag");
+        player.FaithfulScreens.Close("limbs");
+    }
+
+    /// <summary>
+    /// Closes the pinned inventory windows (their bags follow); <see cref="SyncPinnedInventories"/> lets them go.
+    /// </summary>
+    internal void ClosePinnedInventories()
+    {
+        foreach (string slot in PinnedInventories.Keys) player.FaithfulScreens.Close(slot);
     }
 
     /// <summary>
@@ -325,7 +371,7 @@ sealed class InventoryWindows(PlayerInterface player)
         "limbs" => LimbsCharacter() is { } limbed ? ItemOwner.Of(limbed.Id) : null,
         "loot" or "loot-bag" => player.TradeWindows.LootBody() is { } body ? ItemOwner.Of(body.Id) : null,
         "trader" => player.Session.CurrentSnapshot.Trade is not null ? ItemOwner.Stock : null,
-        "building" or "bench" or "storage" => player.Production.ShownMachine is { } site ? ItemOwner.AtSite(site) : null,
+        _ when ProductionWindows.IsMachineScreen(screen) => player.Production.SiteOf(screen) is { } site ? ItemOwner.AtSite(site) : null,
         _ => null,
     };
 
@@ -471,7 +517,7 @@ sealed class InventoryWindows(PlayerInterface player)
     bool LiftAt(string screen, UiControl control, Vector2 p)
     {
         Lift? lift = control.Properties.TryGetValue("TradeItem", out var stockIndex) ? StockLift(stockIndex)
-            : control.Properties.TryGetValue("MachineItem", out var raw) ? MachineLift(raw)
+            : control.Properties.TryGetValue("MachineItem", out var raw) ? MachineLift(screen, raw)
             : control.Properties.TryGetValue("InventoryItem", out var index) ? InventoryLift(screen, index)
             : null;
         if (lift is not { } chosen) return false;
@@ -523,11 +569,11 @@ sealed class InventoryWindows(PlayerInterface player)
     /// An item of the shown machine (its storage, a bench's finished craft, its output or an input), taken by the inventory's or the selected
     /// character.
     /// </summary>
-    Lift? MachineLift(string raw)
+    Lift? MachineLift(string screen, string raw)
     {
         int code = int.Parse(raw, CultureInfo.InvariantCulture);
 
-        if (player.Production.Machine(player.Production.ShownMachine) is not { } m
+        if (player.Production.Machine(player.Production.SiteOf(screen)) is not { } m
             || (InventoryOwner() ?? player.Selected().FirstOrDefault()) is not { } who)
         {
             return null;
@@ -688,7 +734,7 @@ sealed class InventoryWindows(PlayerInterface player)
         var look = window.Holder == ItemHolder.Character
             ? player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == window.Character)?.Appearance
             : null;
-        bool takes = InventoryCommands.SlotRefusal(section, h.Type, h.EquipmentSection, h.BagItems,
+        bool takes = InventoryCommands.SlotRefusal(section, h.Type, h.AttachSlot, h.BagItems,
             h.WearableBy(look?.Race.StringId, look?.Animal is not null)) is null;
 
         if (section is "in1" or "in2" or "out")

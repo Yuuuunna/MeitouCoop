@@ -126,6 +126,32 @@ slave/prisoner/bounty/bandit/police/diplomat/own-property branches, not just con
 drag-drop unpermitted down-character→Theft3, other source→Looting10. Ordinary loot UI path unknown.
 Ground pickup can raise Theft inside another faction's building, and taking from another faction's container does (Theft by right-click, Looting by drag).
 
+**Verified** (decompile of the right click `FUN_140713d20`, the drag `FUN_140715560` and the give `FUN_140712490`): the three set the crime and roll
+only when the source window has an owner character (`InventoryGUI` slot 15, `FUN_14070cfe0` -> `FUN_14070cef0`), and book it against that
+character's faction with it as the victim (the setter `FUN_140852c80` gets its handle), none when it is the player's (faction `+0x250`,
+`FUN_1407916d0`). The owner character is the window's character; a CONTAINER's character parent (`+0x230`); for a BUILDING, Building slot 59
+(`isIndoors`, `FUN_140547530`: the null handle for a door or unless the record is `is interior furniture`, [lights](../formats/lights.md)) gives the
+building it stands in: its `isInsideBuilding` hand (`+0x80`), else its interior layout's building; a building of no layout with a null hand has
+none (Building slot 122 returns 0 for every class but doors). That building's resident squad (`+0xD0`, a CHARACTER or PLATOON hand; its active
+platoon `+0x1d8`; [whose](factions-squads-towns.md#whose-template-a-home-carries)) gives its effective leader (`FUN_140792b90`,
+[squad leader](factions-squads-towns.md#squad-leader)), which keeps the member it falls back on as the backup. So a take out of a building that is no interior furniture (the wells, the outdoor farms, mines, refineries
+and wind generators: `is interior furniture` False in gamedata.base; the indoor farms, rain collectors and generators are True), out of interior
+furniture standing outdoors or out of furniture in a building nobody lives in is never a crime and has no roll; `isStealing` alone still marks the
+item. A building window's codes: the right click sets Theft 3 unless the owner character is down, when the loot permission decides
+(`FUN_140793940`, which allows any subject that is no character, so no crime, but the roll follows); the drag sets Looting 10 (its downed-owner
+branch needs a character subject, vfunc `0x20` = 1); the give Theft 3. The roll's object is the window's subject (right click: the GUI's `+0x50`;
+drag: slot 16 `FUN_14070d010`), but the give passes the owner character, so a give out of a building's window rolls as a take out of that
+character (the pickpocket chance below) and a caught thief's Theft is against it; out of the right click and the drag a caught Theft has the
+window's building as its victim, which the witness function (`FUN_140854d10`, resolving only a CHARACTER or type 0x5b victim) reads as none. The window's "Stealing chance:" (`FUN_140712920`) asks only the
+subject's faction (not the player's) and `isStealing`, so it is shown with no owner character too.
+Meitou (`CrimeSystem.PendSteal`, `OwnerCharacter`, #808): the same rule, the building it stands in being an interior piece's house or a town
+building's `isInsideBuilding` parent (`TownBuilding.InsideOf`). The resident squad is the squad living there of the template the building carries
+(the handle and the template are written together), the last made when several are, none when none is; it alone gives the owner character
+(`PopulationSystem.EffectiveLeader`, its `Squad.Backup` kept) and the watcher. A caught Theft names the holder in `PendingCrime.VictimHolder`. **Observed**
+(scratch harness, `PendSteal` on the #808 save): a Rebirth bar's barrels book against its Barman, not its guard housemates; a Hub bar the town's
+faction owns books against its blackmarket residents' faction; an empty Hub house's chest, Rebirth's wells and farms and Farming Village's
+outdoor Biofuel Distillery (interior furniture) book nothing.
+
 **Observed** steal roll (`FUN_140794810`, chance `FUN_1407944d0`; virtual names KenshiLib 1ce4a16): both inventory transfers above and the give
 set their pending crime, then roll; caught refuses the move. **Verified** (`FUN_140713d20` decompile): the right click asks the taker's
 inventory for room (`Inventory` slot 4 `FUN_14074afa0`), else its backpack, after setting the crime and before the roll (`Character` slot 83);
@@ -143,7 +169,7 @@ save, Rebirth's raised barrels read floor 1, the guards below floor 0, and a thi
 (`+0xD5`) is set; the roof flag is only set for a character whose `isIndoors` building is set (`FUN_1405d00b0`). Each movement step
 sets the floor from the surface under the character, roof or not (`FUN_1405c7c30`: `setFloor(CharMovement::getCurrentFloor())`, no roof test):
 that thief loaded with no saved `floor` key (read by `FUN_140626f50`; the original's saves write one per character) and read 1 on the roof. No watcher, or one unconscious, dead, carried or imprisoned (or a down thief): p = 1, the
-pending crime stays. Caught (`rand > p`): a watcher in bed says event 47 instead half the time (`rand > 0.5`); else it stands up, says event 8, the
+pending crime (set only with an owner character, above) stays. Caught (`rand > p`): a watcher in bed says event 47 instead half the time (`rand > 0.5`); else it stands up, says event 8, the
 thief gets Theft timer 30 against the owner's faction and the watcher's squad a long-term STOLE_FROM_ME tag (4, `FUN_140673a20`); no faction
 relation event (none of the slot-5 callers in [factions 3.5](factions-squads-towns.md#35-what-fires-relation-changes-observed-decompile) is a theft
 or loot path). Thievery XP 2 x 20, caught 2 x 80, none when p >= 0.98, the thief is imprisoned or its `+0x180` is 10 or more after the roll.
@@ -182,6 +208,13 @@ player's) only when `InventoryGUI::isStealing(source window, other window)` (`FU
 
 The mark does not ask `isItOkForMeToLoot` (that only picks the crime), so a bandit's or bounty holder's gear is stolen from its faction too.
 Right click and drag mark only an item with no owner yet; a give to a portrait (`FUN_140712490`) calls `notifyTheftFrom` whatever the owner (**Verified** call sites).
+`isStealing` also holds for a move out of the player's window into another faction's (a container, #851); the crime and roll are skipped for a source of
+the player's faction (`FUN_1407916d0`), an ownerless item stays unmarked, and a marked one put into the window of its from-owner, or of an owner of the
+from-owner's faction, loses its mark (owner set to the null handle, vfunc 0x2b0; **Observed**, both paths). Meitou: `HeldItemTheft.PutMark`, for a container or storage machine whose
+owner is the mark's faction (the drag through `MarkFor`, the right click in `ProductionSystem.PutInGrid`), before the units stack; units left behind keep the mark.
+A drag out of a window not the player's into a container or storage machine (another faction's or the player's) marks an ownerless item from the source's owner and leaves a marked one
+as it is, whatever its owner (**Observed**, `FUN_140715560`: the mark needs the source window not the player's, the clearing the player's); Meitou
+`HeldItemTheft.MarkFor` / `TheftMark`.
 
 Meitou: `CrimeSystem.IsStealing` (character and container overloads) gates `Pickpocket`, `Steal` and the marks (`MarksTheft`, container takes);
 the player's-windows and trade terms are the callers' own-faction tests and the separate trade window.
@@ -377,7 +410,8 @@ The same update (1.0.68 `FUN_1405a4f50`, **Verified** by decompile) makes a slav
 When the handle's character does not resolve, its platoon is looked up and the slave is measured to it the same way. A squad handle (0x5b) is resolved to its platoon.
 **Observed** (1.0.68 `FUN_1405a4f50` and `FUN_1404fe6e0`): with neither found, the slave escapes unless the handle still names a registered object.
 A null handle (type 11) fails that check, so an ownerless slave becomes escaped even inside town; only the resolved-owner distance branch checks the town.
-A cage or a carry is not tested. Meitou keeps an unloaded master squad or pending saved `slaver` handle until it can resolve.
+A cage or a carry is not tested. Meitou keeps an unloaded master squad or pending saved `slaver` handle until it can resolve, and a slave whose Meitou save lost its owner
+([save](../formats/save.md) "Slave state") until it finds one.
 
 Since the setter removes job 187 Obedient Slave, the slave then plans with its own lists. In the Rebirth hold (**Observed**, one slave), a slave sent to a workplace about 4 000 from its owner became an escaped slave and took its own 172 Getting in my cage, whose finder (`FUN_1408caaf0`) has no slave state test.
 

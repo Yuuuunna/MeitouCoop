@@ -31,6 +31,12 @@ public sealed class ItemInstance
     /// </summary>
     public string EquipmentSection { get; init; } = "";
     /// <summary>
+    /// The item's attach slot (<c>Item+0x110</c>, an <see cref="Data.Characters.AttachSlot"/> value), which an equipment section's type must equal
+    /// (<see cref="InventoryCommands.SlotRefusal(string, ItemInstance, bool)"/>): the record's <c>slot</c> (0 when it has none), a crossbow's
+    /// always 0 (Weapon). An item not made from a record has none (7).
+    /// </summary>
+    public int AttachSlot { get; init; } = (int)Data.Characters.AttachSlot.None;
+    /// <summary>
     /// ARMOUR <c>is locked</c> (the original makes it a <c>LockedArmour</c>: shackles); worn, it shows the portrait's <c>Slave</c> overlay
     /// (docs/game/ui-screens.md "Portrait cells").
     /// </summary>
@@ -46,11 +52,13 @@ public sealed class ItemInstance
     /// <summary>
     /// Whether a character of the RACE <paramref name="race"/> may wear it (null: no wearer, no limit).
     /// </summary>
-    public bool WearableBy(string? race, bool animal = false) => Wearable(WornOnlyBy, WornNeverBy, race, animal);
+    public bool WearableBy(string? race, bool animal = false) => Wearable(WornOnlyBy, WornNeverBy, race, animal, Record);
     /// <summary>
-    /// Whether a wearer of <paramref name="race"/> passes the only and never lists (<see cref="RaceLimiter.Allows"/>).
+    /// Whether a wearer of <paramref name="race"/> passes the only and never lists and the mods' wear rules for the item record
+    /// <paramref name="item"/> (<see cref="RaceLimiter.Allows(string[], string[], string?, bool, string?)"/>).
     /// </summary>
-    internal static bool Wearable(string[] only, string[] never, string? race, bool animal = false) => RaceLimiter.Allows(only, never, race, animal);
+    internal static bool Wearable(string[] only, string[] never, string? race, bool animal, string item) =>
+        RaceLimiter.Allows(only, never, race, animal, item);
     /// <summary>
     /// Shackles' lock (level = ARMOUR <c>lock level</c> clamped 0..100, its <c>hardness</c>, locked when made: <c>FUN_14089a440</c>); null for other
     /// items.
@@ -294,7 +302,8 @@ public sealed class ItemInstance
     /// </summary>
     public bool Unique { get; set; }
     /// <summary>
-    /// A worn backpack's contents (null for other items).
+    /// A bag's inner inventory (null for other items). Every CONTAINER has one, as in the original, whose bag constructor always makes it
+    /// (<c>FUN_140763810</c>): <see cref="ItemFactory"/> sizes it from the record and the copies keep one.
     /// </summary>
     public Inventory? Contents { get; init; }
     /// <summary>
@@ -308,10 +317,18 @@ public sealed class ItemInstance
     public FcsRecord? Saved { get; set; }
 
     /// <summary>
-    /// A copy of this item with another quantity (a stack split off; never used for a backpack, whose contents are not copied). Fewer units than
-    /// the stack's are full ones: the stack keeps its partly used unit (<see cref="Charges"/>), which only a copy of the whole stack carries.
+    /// A copy of this item with another quantity (a stack split off). A bag gets its own empty inventory with the same size and stack bonuses;
+    /// its contents are not copied. Fewer units than the stack's are full ones: the stack keeps its partly used unit (<see cref="Charges"/>),
+    /// which only a copy of the whole stack carries.
     /// </summary>
-    public ItemInstance WithQuantity(int quantity) => Copied(quantity, null);
+    public ItemInstance WithQuantity(int quantity) => Copied(quantity, Contents is { } bag
+        ? new Inventory(bag.Width, bag.Height)
+        {
+            StackBonusMinimum = bag.StackBonusMinimum,
+            StackBonusMult = bag.StackBonusMult,
+            Limited = bag.Limited,
+        }
+        : null);
 
     /// <summary>
     /// A copy of the whole stack, a bag with a copy of what it holds (the trader window's copy of a building shop's goods,
@@ -329,6 +346,7 @@ public sealed class ItemInstance
         Name = Name,
         Type = Type,
         EquipmentSection = EquipmentSection,
+        AttachSlot = AttachSlot,
         IsLocked = IsLocked,
         WornOnlyBy = WornOnlyBy,
         WornNeverBy = WornNeverBy,

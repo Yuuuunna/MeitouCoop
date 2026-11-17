@@ -25,6 +25,20 @@ be interpreted as another layout.
 862 bin files startNXUSTREAM; converted XML cache (scale suffix/baked shape scale), prefer existing
 bin in original loader. XML is source of truth. Nonuniform Ogre scale maps(sx,sz,sy) to exporter.
 
+### File lookup
+
+**Observed** (machine code: `SimplePhysXEntity::createBT` at `0x1404cd4f0`, the cooking step `0x1407e5ba0`, the XML opener `0x1407e53f0`;
+each cuts the record path to its bare file name with `FUN_1409b4610`): the folders a record writes never matter. The game first asks whether
+any resource group holds the name (none: the part gets no collision and the log says `Missing collision file`). It then looks in every group
+for a cooked file, the stem plus `.bin` (a scaled part: the stem, `_`, its scale's x, `.bin`), and uses that without reading the XML; only
+without one does it open the XML by bare name through Ogre (`openResource`, every group searched) and cook it beside that file. So a mod's
+file of the same name replaces the base game's, the last enabled mod holding it winning ([overview](overview.md#resource-lookup-and-mod-overrides)),
+except where a cooked file of the name exists: the base game ships cooked files beside many XMLs, and those win over a mod's XML unless the
+mod ships its own cooked file. Meitou (`CollisionPaths.ResolveCollision`, for every file the collision cache reads and for door frames) reads
+the XML beside the unscaled cooked file of the name, else the XML found by bare name (General first, then the other groups), else the path as
+written. It checks the unscaled cooked name for every part: a scaled part whose own cooked file is missing, where the base game has the
+unscaled one and a mod replaces the XML, keeps the base XML in Meitou but uses the mod's in the original.
+
 ## Placement and groups
 
 **Verified** C(x,y,z)=(x,z,-y) wins398-part AABB comparison. World point=building.position+
@@ -91,7 +105,7 @@ use every rendered triangle as collision or infer PhysX actor dynamics from appe
 | 2 | the terrain (Observed: the ground-height rays' masks `0x204` and `0x4004` pair it with floors 9 or foliage 14; the interior-ambience ray `0x2004` is 2 + 13, [audio.md](../audio.md#interiors)) |
 | 3, 4 | other physics objects (items, FUN_1407626e0, FUN_1407e7460); not used by the navmesh |
 
-Assignment order (`FUN_14055f6e0`:183-330, **Verified**; later tests win): 9 + floor for floors 0..3, else 9; `is unwalkable roof` 27; `is stairs` 15 + floor for floors 0..3, else unchanged; then `passable` or path mode IGNORE: 23 + object floor, else an owner that is `is exterior furniture` / `is interior furniture`: 19 + object floor (object floor 0..3, else 0). The floor is the part's own `building floor` (raw, not clamped), except that a furniture owner's base and stairs groups, and the passable / IGNORE and furniture groups always, use the placed object's floor (int +0xa4, loaded from `floornum` of the placed building's state, 0 without one; `FUN_140552b70`:48-57). Meitou: `ZoneGeometryGatherer.CollisionGroup`.
+Assignment order (`FUN_14055f6e0`:183-330, **Verified**; later tests win): 9 + floor for floors 0..3, else 9; `is unwalkable roof` 27; `is stairs` 15 + floor for floors 0..3, else unchanged; then `passable` or path mode IGNORE: 23 + object floor, else an owner that is `is exterior furniture` / `is interior furniture`: 19 + object floor (object floor 0..3, else 0). The floor is the part's own `building floor` (raw, not clamped), except that a furniture owner's base and stairs groups, and the passable / IGNORE and furniture groups always, use the placed object's floor (int +0xa4, loaded from `floornum` of the placed building's state, 0 without one; `FUN_140552b70`:48-57). Meitou: `BuildingShape.CollisionGroup` (the navmesh gatherer's, and the nest pieces' ground ray, [nest debris](zones.md#nest-debris-and-loot)).
 
 The character's ground ray (`FUN_14065f160`, **Verified**: from 20 units above the feet, straight down) uses mask `0x7de04` (groups 2, 9..12, 14, 15..18) outdoors and `0x7f9e00` (groups 9..12, 15..22) when the
 character is in a building; the hit's group and BUILDING decide the footstep surface (`interior material` / `exterior material`, [audio](../audio.md#characters-footsteps-combat-voices)). No per-shape physics material is

@@ -132,7 +132,8 @@ public sealed partial class WorldPlayers
         return true;
     }
 
-    public bool CanControl(PlayerId id, CharacterId character) => ControlOf(character) is { } grant && grant.Player == id;
+    public bool CanControl(PlayerId id, CharacterId character) => ControlOf(character) is { } grant && grant.Player == id
+        && !_world.Squads.IsIndependent(_world.Characters.Cold(character.Slot)!.SquadId);
 
     public CharacterControl? ControlOf(CharacterId character) => _world.Characters.TryResolveNext(character, out int slot)
         && _controls.TryGetValue(_world.Characters.Cold(slot)!.Entity, out var grant) && Validate(grant) ? grant : null;
@@ -193,6 +194,23 @@ public sealed partial class WorldPlayers
         PruneView(Required(grant.Player));
     }
 
+    /// <summary>
+    /// Fences commands captured before a squad changed who directs it, while retaining persistent ownership for saves and reassignment.
+    /// </summary>
+    internal void SquadDirectionChanged(Factions.Squad squad)
+    {
+        EnsureMutable();
+        foreach (var id in squad.Members)
+        {
+            if (!_world.Characters.TryResolveNext(id, out int slot)) continue;
+            var entity = _world.Characters.Cold(slot)!.Entity;
+            if (!_controls.TryGetValue(entity, out var grant)) continue;
+
+            _controls[entity] = grant with { Revision = NextRevision() };
+            PruneView(Required(grant.Player));
+        }
+    }
+
     bool LivingCharacter(CharacterId character, out int faction)
     {
         faction = -1;
@@ -214,8 +232,8 @@ public sealed partial class WorldPlayers
     {
         foreach (var player in _players.Values)
         {
-            if (player.Id == PlayerId.Local && !RequiresExplicitControl) player.State.Prune(_world.Characters);
-            else player.State.Prune(_world.Characters, id => CanControl(player.Id, id));
+            if (player.Id == PlayerId.Local && !RequiresExplicitControl) player.State.Prune(_world.Characters, _world.Squads);
+            else player.State.Prune(_world.Characters, _world.Squads, id => CanControl(player.Id, id));
         }
     }
 

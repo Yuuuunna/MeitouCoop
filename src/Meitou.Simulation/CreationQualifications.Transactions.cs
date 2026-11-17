@@ -1,8 +1,10 @@
 using Meitou.Simulation.Factions;
+using Meitou.Simulation.Population;
 namespace Meitou.Simulation;
 
 /// <summary>
-/// Historical creation result. Current role ownership/liveness may change after this receipt was committed.
+/// Historical creation result. Squad identifies the first created squad; Roles contains the entire roster in preview order across all squads.
+/// Current role ownership/liveness may change after this receipt was committed.
 /// </summary>
 public sealed record CreationReceipt(PlayerId Player, Guid RequestId, string Fingerprint, ulong Qualification,
     ulong QualificationRevision, int Faction, int Squad, EntityId[] Roles, long Paid, bool IncludesStartResources);
@@ -40,33 +42,80 @@ public sealed partial class CreationQualifications
         if (_reservations.TryGetValue(reservation.Grant.Id, out var current) && ReferenceEquals(current, reservation)) _reservations.Remove(reservation.Grant.Id);
     }
 
-    internal CreationReceipt Complete(Reservation reservation, Squad squad)
+    /// <summary>
+    /// Commits a creation that produced one squad.
+    /// </summary>
+    internal CreationReceipt Complete(Reservation reservation, Squad squad) => Complete(reservation, [squad]);
+
+    /// <summary>
+    /// Validates every created squad and role, then consumes one qualification and payment for the complete roster.
+    /// </summary>
+    internal CreationReceipt Complete(Reservation reservation, IReadOnlyList<Squad> squads)
     {
         Boundary();
         var grant = reservation.Grant;
         if (!_world.HasPendingDurableMutation || !_reservations.TryGetValue(grant.Id, out var current) || !ReferenceEquals(current, reservation) ||
-            _grants[grant.Id] != grant || !ReferenceEquals(_world.Squads.Find(squad.Id), squad) || !squad.PlayerManaged || squad.Members.Count != reservation.Count)
+            !_grants.TryGetValue(grant.Id, out var available) || available != grant)
             throw new InvalidOperationException("Creation reservation changed.");
-        var roles = squad.Members.Select(id => _world.Players.ControlOf(id)).ToArray();
-        if (roles.Any(r => r is null || r.Value.Player != grant.Player || r.Value.Faction != squad.Faction || r.Value.Entity.Value <= reservation.EntityFloor) ||
-            roles.Select(r => r!.Value.Entity).Distinct().Count() != roles.Length) throw new InvalidOperationException("Creation output is not a new controlled roster.");
-        if (grant.Kind == CreationQualificationKind.FactionApproved)
-        {
-            if (squad.Faction != grant.Faction || Assess(grant.Player, grant.Id, grant.Revision, reservation.Count) != CreationEligibility.Eligible)
-                throw new InvalidOperationException("Faction creation authority changed.");
-        }
-        else if (_world.Players.KnownRoles(grant.Player).Count() != roles.Length || Player(grant.Player).Memberships.Count() != 1 ||
-            !Player(grant.Player).IsMember(squad.Faction)) throw new InvalidOperationException("Initial creation acquired unrelated roles or memberships.");
+
+        var roles = CreationOutput(reservation, squads);
+        var first = squads[0];
+        ValidateCreationAuthority(reservation, first.Faction, roles.Length);
         ulong next = checked(_revision + 1);
         var receipt = new CreationReceipt(grant.Player, reservation.Request, reservation.Fingerprint, grant.Id, grant.Revision,
-            squad.Faction, squad.Id, roles.Select(r => r!.Value.Entity).ToArray(), grant.Cost, grant.IncludesStartResources);
+            first.Faction, first.Id, roles, grant.Cost, grant.IncludesStartResources);
         var consumed = grant with { Revision = next, Status = CreationQualificationStatus.Consumed };
         _receipts.EnsureCapacity(_receipts.Count + 1);
-        if (grant.Cost > 0 && _world.Factions.Find(grant.Faction)?.TryDebit(grant.Cost) != true) throw new InvalidOperationException("Creation funds changed.");
-        _grants[grant.Id] = consumed; _revision = next;
+        if (grant.Cost > 0 && _world.Factions.Find(grant.Faction)?.TryDebit(grant.Cost) != true)
+            throw new InvalidOperationException("Creation funds changed.");
+        _grants[grant.Id] = consumed;
+        _revision = next;
         _receipts.Add((grant.Player, reservation.Request), receipt);
         _reservations.Remove(grant.Id);
         return Copy(receipt);
+    }
+
+    /// <summary>
+    /// The new controlled entities in preview order, after checking squad identity, roster ownership and the faction's post-creation capacity.
+    /// </summary>
+    EntityId[] CreationOutput(Reservation reservation, IReadOnlyList<Squad> squads)
+    {
+        var constants = _world.SystemOf<PopulationSystem>()?.Data.Bodies.Constants
+            ?? throw new InvalidOperationException("Creation output has no population policy.");
+        if (squads.Count == 0 || squads.Count > constants.MaxSquads || squads.Any(s => s is null) ||
+            squads.Select(s => s.Id).Distinct().Count() != squads.Count)
+            throw new InvalidOperationException("Creation output has invalid squads.");
+
+        int faction = squads[0].Faction;
+        if (squads.Any(s => !ReferenceEquals(_world.Squads.Find(s.Id), s) || !s.PlayerManaged || s.Independent || s.Dead ||
+                s.Faction != faction || s.Members.Count < 1 || s.Members.Count > constants.MaxSquadSize || !s.Members.Contains(s.Leader) ||
+                s.Members.Any(id => !_world.Characters.TryResolveNext(id, out int slot) || _world.Characters.Cold(slot)?.SquadId != s.Id)) ||
+            squads.Sum(s => (long)s.Members.Count) != reservation.Count || reservation.Count < 1 || reservation.Count > reservation.Grant.CharacterLimit ||
+            SquadManagement.FactionHeads(_world, faction) > constants.MaxFactionSize ||
+            SquadManagement.PlayerSquads(_world, faction).Count > constants.MaxSquads)
+            throw new InvalidOperationException("Creation output exceeds its quota or changed squad ownership.");
+
+        var roles = squads.SelectMany(s => s.Members).Select(id => _world.Players.ControlOf(id)).ToArray();
+        if (roles.Any(r => r is null || r.Value.Player != reservation.Grant.Player || r.Value.Faction != faction ||
+                r.Value.Entity.Value <= reservation.EntityFloor) || roles.Select(r => r!.Value.Entity).Distinct().Count() != roles.Length)
+            throw new InvalidOperationException("Creation output is not a new controlled roster.");
+        return roles.Select(r => r!.Value.Entity).ToArray();
+    }
+
+    /// <summary>
+    /// Rechecks the approval's membership and permissions, or the initial player's exclusive new faction and complete first roster.
+    /// </summary>
+    void ValidateCreationAuthority(Reservation reservation, int faction, int count)
+    {
+        var grant = reservation.Grant;
+        if (grant.Kind == CreationQualificationKind.FactionApproved)
+        {
+            if (faction != grant.Faction || Assess(grant.Player, grant.Id, grant.Revision, reservation.Count) != CreationEligibility.Eligible)
+                throw new InvalidOperationException("Faction creation authority changed.");
+        }
+        else if (_world.Players.KnownRoles(grant.Player).Count() != count || Player(grant.Player).Memberships.Count() != 1 ||
+            !Player(grant.Player).IsMember(faction))
+            throw new InvalidOperationException("Initial creation acquired unrelated roles or memberships.");
     }
 
     static void ValidateReceipts(CreationQualificationState state, PlayerRegistryState authority, int factionCount, IReadOnlySet<EntityId>? entities)

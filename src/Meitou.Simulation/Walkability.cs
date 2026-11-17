@@ -102,6 +102,14 @@ public interface IWalkability
     /// sight a fight's chase test asks, docs/game/combat.md "Combat stance"). Default: clear.
     /// </summary>
     bool LineOfSight(Vector3 from, Vector3 to) => true;
+
+    /// <summary>
+    /// The building whose interior navmesh holds the walkable face nearest <paramref name="at"/> within <paramref name="reach"/>, water and closed
+    /// doors left out (the original's closest-point query with its door and water filter, docs/game/factions-squads-towns.md "Patrol draws"); null
+    /// for an outdoor face, none in reach, or no navmesh. Default: null.
+    /// </summary>
+    string? InteriorNear(Vector3 at, float reach) => null;
+
     /// <summary>
     /// The terrain's own height at world X/Z, also under the water (where <see cref="GroundHeight(float, float)"/> is the flat water surface): the
     /// depth of the water is the water level minus this.
@@ -205,8 +213,8 @@ public interface IAgentWalkability : IWalkability
 
 /// <summary>
 /// What a unit of path through water costs a character, by depth: the wet water states 1 shallow, 2 waist-deep, 3 deep
-/// (<see cref="Bodies.Speed.WaterState"/>). Each is the larger of RACE <c>water avoidance</c> (the original's flat water cost) and how much longer
-/// the character takes there than on land (docs/game/pathfinding.md "Water costs"). Default: unset.
+/// (<see cref="Bodies.Speed.WaterState"/>). The original charges every depth the same, the character's water factor (docs/game/pathfinding.md
+/// "Water costs"). Default: unset.
 /// </summary>
 public readonly record struct WaterCost(float Shallow, float Waist, float Deep)
 {
@@ -228,23 +236,11 @@ public readonly record struct WaterCost(float Shallow, float Waist, float Deep)
     public static WaterCost Uniform(float factor) => new(factor, factor, factor);
 
     /// <summary>
-    /// The costs for avoidance factor <paramref name="avoidance"/> (0 or less: unset), land top speed <paramref name="run"/> and swim speed
-    /// <paramref name="swim"/>, with the speeds of <see cref="Bodies.Speed.InWater"/> (a race that does not swim has no shallow state: it walks those
-    /// at its land speed).
+    /// The costs for the character's water factor <paramref name="avoidance"/> (<see cref="CharacterCold.WaterFactor"/>; 0 or less: unset): that
+    /// factor at every depth, with no speed term (<b>Verified</b>, <c>WaterCostModifier</c> <c>FUN_1403b57e0</c> multiplies a water face's cost,
+    /// material 3, by the one factor its path request <c>FUN_1403aad30</c> sets).
     /// </summary>
-    public static WaterCost Of(float avoidance, float run, Meitou.Data.Gameplay.Bodies.RaceData? race, float swim)
-    {
-        if (avoidance <= 0) return default;
-        if (race is null || run <= 0) return Uniform(avoidance);
-
-        return new(Factor(1), Factor(2), Factor(3));
-
-        float Factor(int state)
-        {
-            float speed = state == 1 && !race.Swims ? run : Bodies.Speed.InWater(state, run, race, swim);
-            return speed > 0 ? MathF.Max(avoidance, run / speed) : avoidance;
-        }
-    }
+    public static WaterCost Of(float avoidance) => avoidance <= 0 ? default : Uniform(avoidance);
 }
 
 /// <summary>

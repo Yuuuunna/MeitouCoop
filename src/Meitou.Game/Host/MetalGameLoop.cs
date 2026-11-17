@@ -792,6 +792,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         host.LocalSession.World.BenchFacingFix = host.Config.FixBenchFacing;
         host.LocalSession.World.BagSearchFix = host.Config.FixBagSearch;
         host.LocalSession.World.TakeIntoBackpack = host.Config.TakeIntoBackpack;
+        host.LocalSession.World.ActionLog = host.ActionLogs.Log;
         host.LocalSession.Simulation.SetFastSpeeds(host.Config.FastSpeed, host.Config.FastestSpeed);
         host.Render.Grid = host.Sandbox.IsSandbox;
         host.Session.Camera.Place(new Vector2((float)(host.WorldOptions.X ?? host.Scene.Focus.X), (float)(host.WorldOptions.Z ?? host.Scene.Focus.Z)),
@@ -1242,10 +1243,6 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
                 foreach (var combat in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.LateDefences = on;
             },
             TimeSpeedsChanged = () => host.LocalSession.Simulation.SetFastSpeeds(host.Config.FastSpeed, host.Config.FastestSpeed),
-            DoorsCloseChanged = on =>
-            {
-                foreach (var locks in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Locks.LockSystem>()) locks.DoorsCloseBehind = on;
-            },
             AnimalsPickUpChanged = on =>
             {
                 foreach (var players in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Player.PlayerSystem>()) players.AnimalsPickUp = on;
@@ -1479,8 +1476,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         {
             sliders.Add(new Slider("Shadow filter 0-2 (Meitou; 0 low-end)", 0, 2, () => _shadow.FilterQuality,
                 v => _shadow.FilterQuality = (int)MathF.Round(v), "0"));
-            toggles.Add(new Toggle("Shadow cascade 5 (Meitou)", () => _shadow.MeitouCascades >= 5,
-                v => _shadow.MeitouCascades = v ? 5 : 4));
+            sliders.Add(WorldFrame.ShadowCascades(_shadow));
         }
         sliders.Add(new Slider("Haze strength (1 = game)", 0, 3, () => _sky.HazeStrength,
             v => _sky.HazeStrength = v, "0.00", Faithful: 1, Meitou: Enhancements.MeitouHazeStrength));
@@ -1605,9 +1601,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             v => host.WorldOptions.Post.ShaftAir = MathF.Round(v * 20) / 20, "0.00"));
         sliders.Add(new Slider("Light shafts air at dawn and dusk (x)", 0, 6, () => host.WorldOptions.Post.ShaftAirDawn,
             v => host.WorldOptions.Post.ShaftAirDawn = MathF.Round(v * 10) / 10, "0.0"));
-        sliders.Add(new Slider(WorldFrame.ShaftQualitySlider, 0, 2, () => host.WorldOptions.Post.ShaftQuality,
-            v => host.WorldOptions.Post.ShaftQuality = Math.Clamp((int)MathF.Round(v), 0, 2), "0",
-            Text: v => (int)MathF.Round(v) switch { 0 => "Low", 1 => "Medium", _ => "High" }));
+        sliders.Add(WorldFrame.ShaftQuality(host.WorldOptions.Post));
+        sliders.Add(WorldFrame.OcclusionQuality(host.WorldOptions.Post));   // the SSAO's taps: Metal has no GTAO
         toggles.Add(new Toggle("Dithering", () => host.WorldOptions.Post.Dither, v => host.WorldOptions.Post.Dither = v));
     }
 
@@ -2627,6 +2622,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         if (_bench.Active) host.LocalSession.World.Profile.Enabled = true;
         long started = Stopwatch.GetTimestamp();
 
+        host.UpdateLoadingPause();
         if (!host.Covered) host.Session.Advance(dt);
         if (_hud is not null) host.Duel.DuelHoldClock();
 

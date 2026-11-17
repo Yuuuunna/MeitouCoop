@@ -12,6 +12,11 @@ public interface IRegionNavigation
 
     IEnumerable<ZoneCoordinate> RouteHints { get; }
 
+    /// <summary>
+    /// Ranks pending requests from the authority's current characters before requesting more zones.
+    /// </summary>
+    void Prioritize(World world) { }
+
     bool Ready(ZoneCoordinate zone);
     void Request(ZoneCoordinate zone);
     void Unload(ZoneCoordinate zone);
@@ -21,6 +26,13 @@ public sealed class NavigationRegions(NavSystem navigation) : IRegionNavigation
 {
     public IReadOnlyCollection<ZoneCoordinate> Tracked => navigation.TrackedZones;
     public IEnumerable<ZoneCoordinate> RouteHints => navigation.Walkability.RouteZones(TimeSpan.FromSeconds(30));
+
+    /// <inheritdoc/>
+    public void Prioritize(World world)
+    {
+        navigation.Favour(world);
+        navigation.Walkability.GameSpeed = world.PhysicsSpeed;
+    }
 
     public bool Ready(ZoneCoordinate zone) => navigation.IsReady(zone);
     public void Request(ZoneCoordinate zone) => _ = navigation.LoadZone(zone);
@@ -51,6 +63,7 @@ public sealed class WorldRegionNavigation : IRuntimeWorldService
         if (_active is not null && !ReferenceEquals(_active, world))
             throw new InvalidOperationException("Region retention is bound to another world.");
         _active = world;
+        _navigation.Prioritize(world);
         double now = _clock();
         var wanted = world.Regions.Capture(simulation: false).Where(p => world.Players.RequiresExplicitControl || (p.Value.Reasons & (RegionReason.PlayerRole | RegionReason.LoadedEntity | RegionReason.Preparation)) != 0).Select(p => p.Key).ToHashSet();
         if (world.ActiveZones is { } simulation)

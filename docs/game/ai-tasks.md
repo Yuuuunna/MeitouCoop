@@ -39,7 +39,7 @@ Factory mappings grouped by identical class; each ID occurs exactly once:
 - Task_FirstAidRig: 249
 - Task_FocusedMeleeAttack: 5, 61
 - Task_Follow: 31, 44, 253, 289
-- Task_Follow / Task_FollowAndTalk: 164
+- Task_FollowAndTalk: 164 (built on the Task_Follow constructor, then its vtable installed)
 - Task_FollowLeader: 141, 171
 - Task_GetOutOfBed: 116, 208, 257
 - Task_GetOutOfCage: 133, 207, 256
@@ -55,7 +55,7 @@ Factory mappings grouped by identical class; each ID occurs exactly once:
 - Task_LeaveBuilding: 200
 - Task_LiftSomething: 68, 170, 213, 225, 240
 - Task_LockDoor: 77, 79, 162, 198
-- Task_Loot_AI / Task_Pickup: 3
+- Task_Loot_AI / Task_Pickup: 3 (Task_Loot_AI for a character target, hand type 1)
 - Task_Loot_Order: 26
 - Task_Loot_ResourcesWeHaveStorageFor: 241
 - Task_MakeAnnouncement: 103, 129
@@ -647,22 +647,28 @@ Meitou: [simulation, captives](../simulation.md#captives).
   "Work, Protect, Capture", "South drone sacrifice farmer" and, in the Slave role list, "slave worker day guard" (171 at 0.1, 189, 172 at night, 190). The finder asks the platoon's town
   (`Blackboard +0x88`) for a building through `BuildingFinder_SpecialFunction` (mask 0x41a read as bits, **Observed**: 1 MINE, 3 RESEARCH, 4 REFINERY, 10 CRAFTING) and takes one at random
   (slot 2 `FUN_1409fb020`: index `FUN_1409b3b40(0, n - 1)`); the town test is the one in the table above. Acting out is 87 (real: needs the machine's inputs and output room, power, a free operator slot) or
-  221 (pretend); both `Task_OperateMachine` ([sitting and the held tool](ai-tasks.md#town-goals), [production](buildings-production.md#production)). Meitou: 189 operates the town building's machine when its plan starts with 87 and empties it when it starts with 92, 190 pretends at the building at its functionality's clip (`stonemine` by default, with its `animation events`, [audio](../audio.md#characters-footsteps-combat-voices) "Machine work"; [NPC town machines](buildings-production.md#npc-town-machines)); **it has arrived within the building functionality's `use range` of the building's position, twice that once stopped ([work distance](buildings-production.md#work-distance)).
+  221 (pretend); both `Task_OperateMachine` ([sitting and the held tool](ai-tasks.md#town-goals), [production](buildings-production.md#production)). So a pretending worker
+  operates the building as a real one does (**Verified**: the factory fills the task alike for both rows and the update `FUN_14035bc90` reads no row: once `tryOperate` (slot `0x4f8`) passes, whatever the machine holds,
+  it calls the operating XP ([seat XP](#town-goals)) and the building's work step (slot `0x4b0`), which works a fed refinery or a mine as 87 does; Rebirth's Quarry Mines and the Manual Stone Processor both have `stat used` labouring, merged data).
+  At a bench the work step makes nothing for an NPC town (**Verified**): `ResearchBuilding`'s (`FUN_14029b8d0`) acts only when the owner faction has the player flag (`+0x250`), `CraftingBuilding`'s (`FUN_1402b5a40`)
+  only at status 2 with a current craft. Meitou: 189 operates the town building's machine when its plan starts with 87 and empties it when it starts with 92, 190 operates it with 221 (`AiSystem.WorkAtMachine`, `ProductionSystem.TownOperate`) at its functionality's clip (`stonemine` by default, with its `animation events`, [audio](../audio.md#characters-footsteps-combat-voices) "Machine work"; [NPC town machines](buildings-production.md#npc-town-machines)); **it has arrived within the building functionality's `use range` of the building's position, twice that once stopped ([work distance](buildings-production.md#work-distance)).
   - **The finder's visit** (`FUN_1408cebe0`, the query's slot 0, **Verified** by disassembly) keeps a building when all of these hold:
     - `getUseableStuff()` (vfunc 0x300) is set and `getBuildState()` (0x228) is complete;
     - its function (0x2f0) is in the mask, and it is of the query's town;
     - a test of the building against the worker passes (`FUN_14003bd0e`), or the worker is in slave state 1;
     - it is not on a list of the worker's (`+0x650`, `+0x20`), and a foliage building (`+0xc0`) is within reach;
     - `UseableStuff::couldIOperate(worker)` (vfunc 0x500, `FUN_1400f7c90`, the same for UseableStuff, ProductionBuilding and
-      CraftingBuilding) holds: not `dontNeedWorkRightNow()` (0x4e8; false but for ResearchBuilding and FarmBuilding), and the worker already
+      CraftingBuilding) holds: not `dontNeedWorkRightNow()` (0x4e8: a constant 0, `FUN_1402ab3c0`, for UseableStuff, ProductionBuilding and CraftingBuilding; ResearchBuilding's `FUN_1402995e0` is true only for a player-owned bench with no current research, FarmBuilding's for a growing crop), and the worker already
       operates it or the operators (`+0x3d0`) are fewer than `numOperatorsMax` (`+0x3ac`; the functionality's `max operators`, 6 for a
       Stone mine, 1 for Stone processing).
     - So the finder takes a refinery with a free slot whatever its inputs.
   - **The plan refuses an empty machine**: 87's B list has !62 `machineHasEmptyInputs`, whose only provider is 93 Filling machine (67
     `haveSomeResourcesFor`, from 94 and a source of the input). **Observed** (KenshiOracle state 0.5 hold, Rebirth, N = 1): the
     original's slaves on 189 work only the quarries (Stone mine) and never the four unfed Manual Stone Processors.
-  - Meitou: 189 picks only a workplace it can run (`AiSystem.RealWork`): a mine, or a refinery, research or crafting bench with a machine
-    running there that has its inputs. An NPC town's machine counts only once it holds its inputs: the pick does not ask whether 94 / 93 could fill it (engine choice for the plan's fill-or-fail).
+  - **A bench passes 87's list B** (**Verified**, vtables): a `ResearchBuilding` has no StorageBuilding cast (`0x2f8` `FUN_1402adb10` returns null), so `!62`, `!63` and `!89` hold there, and `!169` needs production class 6 (**Observed**: the class has no slot `0x5a8`); so 189 operates
+    research benches too, power as at any machine.
+  - Meitou: 189 picks only a workplace it can run (`AiSystem.RealWork`): a mine, a research bench, a crafting bench whose sections draw nothing (no queued craft binds them, `CraftingBuilding::vfunc_182`, **Observed**), or a refinery with a machine
+    running there that has its inputs. An NPC town's refinery counts only once it holds its inputs: the pick does not ask whether 94 / 93 could fill it (engine choice for the plan's fill-or-fail).
     190 (pretend, no 62 in 221's B list) still picks any workplace. A member on 189 or 190 holds an operator slot (`AiMind.WorkPost`,
     `AiSystem.ClaimWork`, serial on the package cadence, the kept slots reserved first): up to the functionality's `max operators` per
     workplace, no limit for a building without a functionality record. `Task_OperateMachine` (87 and 221) adds the worker to the building's
@@ -705,7 +711,7 @@ Meitou: [simulation, captives](../simulation.md#captives).
     `FUN_140852700` (**Verified**, disassembly) holds when the target has no order queued (its order list empty, or one entry of type 65 or 52) and the AI it is called on holds job 187. Its only callers,
     the escaped-slave test `FUN_140855a80` and its helper `FUN_140852750`, are reached from the sight pass `FUN_140859680` through `FUN_140856b50` with the **looker's** AI, and that pass has
     already returned for a looker in any slave state but 0. A character in state 0 holds no job 187 (only a change to 1, chaining or processing adds it, after clearing the list; every
-    change away from 1 removes it), so the test is false there and changes no spotting; Meitou has nothing to model.
+    change away from 1 removes it), so the test is false there and the job exempts no slave ([escaping slave spotted](#slave-work-shout-and-capture) below).
   - The status tooltip tells the player: "Your character will have a permanent job assigned called [Obedient slave]. While this is active he will automatically work for his master."
   - **Meitou**: the AI's slaves (a slave member of its owner's squad in the Slave role; one in another squad takes the Slave list of the squad it obeys, `CharacterCold.SlaveMaster`: the owner squad of
     the squad factory's slaves, the slaver who bought or processed it, the arresting guard's squad, the receiver of a delivery) run it through the AI ([ai](ai.md#goal-loading)). A **player character** gets the job in
@@ -724,7 +730,47 @@ Meitou: [simulation, captives](../simulation.md#captives).
     `AiSystem.ObedientRunDesire`, [combat](combat.md#fight-lifecycle-and-orders) "Self-defence"; acted out as `Task_Runaway`'s run from the sensed enemies, `FleeSystem.EnemyRunPoint`, again when a run ends) and
     **14**. A faction owner with no squad has no master: the job is held but nothing runs. The job names the master squad's leader (the original's handle names a character or a squad). `SlaveMaster` is
     runtime only: after a load it is the squad of the owner character the save's `slaver` handle names ([save](../formats/save.md)), else of the one the job's saved handle names
-    (`CaptiveSystem.RestoreSlavers`, both once that character is loaded; the escape far from the owner waits for either), so 41's finder and the senses read it as the original's owner handle.
+    (`CaptiveSystem.RestoreSlavers`, both once that character is loaded; the escape far from the owner waits for either, a job whose owner the decision step found first too,
+    `ObedientSlave.PendingOwnerJob`), so 41's finder and the senses read it as the original's owner handle.
+- **Escaping slave spotted** (**Verified**, decompile and disassembly of `FUN_140859680`, `FUN_140856b50`, `FUN_140855a80`, `FUN_140852750`, `FUN_140852700`,
+  `FUN_140853620`, `FUN_1405c8a10`, `FUN_140998790`, constants from the data dump): the sight pass of an NPC looker in slave state 0, whose faction has no player flag, that does
+  not take the target for an enemy (slot 125; a slave owned by the looker's faction never is), asks the test for a target in slave state 1, not caged, whose owner faction is the
+  looker's or none and whose owner hand is not null. It fires when the looker's spot value (`FUN_140853620`: the sight test's v when at least 0.01 and the ray is clear, else 0) is
+  above 0.05 (`DAT_141696c74`): the looker says event 36 ESCAPING_SLAVE_SPOTTED to the target and the target's slave state becomes 2. No timer and no distance of its own. The test
+  (`FUN_140855a80`) holds when the target:
+  - sneaks out of a fight (`isStealthMode`, `FUN_1405c9750`; a sneaker reaches the sight pass only once spotted, [spotting a sneaker](perception.md#spotting-a-sneaker));
+  - has an owner hand that resolves to nothing and is not in a bed or cage (Character `+0x2f8` 0), unless it is a character hand whose character the character table
+    still finds with no object at `+0x1d8` or with its byte `+0xf0` clear (then the tests below run without an owner: the walk test is rows 35 / 127 or not looking like a slave);
+  - wears no shackles (`FUN_1405c8a10`: the item in the boots section, else in the body section, answers slot 94 non-null; only `LockedArmour` overrides it, returning the item
+    itself, so shackles count locked or not);
+  - walks away from its owner (`FUN_140852750`): its current task (Character `+0x648` -> `+0x68`) is 35 Running away or 127 Run away hometown; or the task's position (Tasker
+    `+0x58`) is non-zero, farther than 250 (`DAT_141fedd00`, no writer) from the owner and farther from it than the target stands, the target's movement heading (`+0x640` ->
+    `+0xd0`) does not point at the owner (dot product with owner minus target not above 0, `FUN_1409b1960`), and the target is outdoors on the ground floor (floor below 1 and
+    building hand null), or farther than 250 x sqrt 3 (about 433, `DAT_14168a254` 3 on the square) from the owner, or does not [look like a slave](#prisoner-fate-and-slave-rows)
+    to the looker (`FUN_1405a6bb0`);
+  - or, shackled and not walking away, is in a fight whose target (CombatClass `+0x2a0`, else the first of `+0x200`) is a character of a faction allied to the looker's
+    (`FUN_140998790` -> `FUN_1406b2630`).
+  The walk test's exemption `FUN_140852700` (no order queued and job 187) reads job 187 on the looker ([above](#slave-work-shout-and-capture)), so an obedient slave is tested
+  like any other. A task's position is the one given to the Tasker factory (`FUN_14032ebd0` stores it at `+0x58`): a player order's point (`FUN_140508380`, from
+  `FUN_1405d20d0`), while the role lists' goals, the Slave goals included, are made at the zero point (`FUN_14026b530`, `FUN_14026b790` -> `FUN_140330530`). A planned
+  step has its goal's point (**Verified**: `FUN_14050fe10` hands the goal tasker's `+0x58` to the plan's root node, `+0x48`; the node expansion `FUN_14051bae0` gives each child
+  its parent's; each step's tasker is made at its node's point), so the walks of a slave's own job goals (to its workplace, its master, a cage) never pass the walk test.
+  The orders' points (**Verified**, disassembly of the right-click dispatch `FUN_1407fc6e0` and of `FUN_1407fae70`, `FUN_1407fa650`, `FUN_1407f9e20`, which hand
+  their point on to `FUN_1405d20d0`): a ground move's point (29, scattered round the click); a complete building's default order (its vfunc `0x418` row, or 76 Pick
+  lock with Alt, 207 / 107 / 108 at a cage) at the building's position (vfunc `0x40`, `+0x48`) with the terrain's height there (`FUN_1409b32f0`). Every other dispatch
+  passes the zero vector: an unfinished building's 2 Build and a damaged one's 95 Repair, a container's 26 Loot and the 29 walk to it without Alt, an item's 3
+  pick-up (`FUN_1407fb3a0`) and walk (`FUN_1407fc440`), the orders on a character (`FUN_1407fb410`), and a verb picked from the held right
+  button's menu (`FUN_1407a7f10`, through `FUN_1407fa650`). The walk to a barred door (no Alt) is a 29 move made at the door's
+  `getPositionMarker` from the zero point (`FUN_1407fa850`, vfunc `0x470` `FUN_14054b850`: its marker, or of 2+ use nodes the one nearest the
+  world origin; [lie spot](locks.md#cages-and-beds)); Meitou: `LockSystem.DoorPoint`.
+  **Observed** (harness, 1.0.65, the task tasker's `+0x58` read after
+  each right click): three clicks on different points of an Iron Resource gave its walk step the node's own position each time, three clicks on a
+  door the door's one point, while clicks on a plain building (the Hub's bar) or a wall gave each its own point, the cursor's hit on the wall
+  at the hit's height: a building with no order of its own takes a move to the clicked point. Event 36's Holy Nation line ("Escaped holy
+  nation slave", 40885-Dialogue.mod, in `Npc MILITARY Holy Nation Law 3`) is "Escapee! /SEIZE/ /HIM/!" with DA 6 ATTACK_CHASE_FOREVER and DA 33 CRIME_ALARM. Meitou:
+  `EscapingSlave` from `ArrestSystem.CatchSlave` ([simulation](../simulation.md#arrest-and-jail) "Slave catching"); it reads the running order's `TaskPoint` as the task
+  position and none for its job goals, and while the owner is not known (no master squad, or one still to load) tests
+  nothing past the shackles but standing outside the looker's town (engine).
 - **States 140 and 16** (**Verified**): 140 `target swimming` = `FUN_140598ec0(ai, target hand)`: the hand resolves to an object (else false) and `FUN_1405c7fd0(object)` is 3, i.e. the target's water state is deep water (the HUD's Swimming). 16 `isAggressionTowards` = `FUN_14059de10(ai, target hand)`: only for a character hand (type 1), true when that character's byte `+0x2b0` is set ([combat](combat.md): the immediate-melee flag), so it means "the target is being meleed right now", not an aggression relation. Rows with `!140`: 25 First aid, 249 Splinting, 60 Repairing, 4 Attacking, 64 (which also has `!16`). Meitou's planner target is a position, not a character, so 140 and 16 are not wired; those rows are run by the first aid, repair and combat systems, which do not read them.
 - **Nests and the town list** (`FUN_14092d850`, [factions](factions-squads-towns.md)): one town and one nest get the full step per frame (cursors `DAT_142135440` / `DAT_142135438`), so a loaded nest makes at most one squad every N frames, N the nests in the list. Meitou's nests top up on their own look (engine choice: the throttle is the look cadence, not a cursor over the list).
 - **`BuildingFinder_SlavesToProcess` accept** (**Verified**, slot 0 `FUN_1408db680` -> `FUN_1408db510`): a building with vfunc `0x300` non-null whose owner faction (vfunc `0x58`) has no player flag (`+0x250`), then a cage (function 8, vfunc `0x2f0`) of the finder's town context within a relation limit (rating <= `0x100`), `Ownerships::canIUseThisBuilding(worker, cage)` true (`FUN_140621230`: [locks](locks.md#beds)), the owner not on the character's excluded list (`FUN_1405b0290`) and occupancy (vfunc `0x4f0`) equal to the wanted flag. No taken or reserved test and no "another job works this occupant" test: Meitou's `Taken` / `Busy` claims in `CaptiveSystem.ProcessTarget` are an engine guard against two processors. Meitou uses `FixtureRegistry.CanUse`.
@@ -765,12 +811,12 @@ Meitou: [simulation, captives](../simulation.md#captives).
   The packages that list 167 and 168 are slaver, guard and workmaster packages ("addon- slave catching", "wandering slaver base", "slave worker day guard", the Rebirth and Holy Nation guards).
 - **Looks like a slave**: processing (182) makes state 120 TARGET_LOOKS_LIKE_A_SLAVE true. The watchers' "needs processing" test `FUN_1408ca3d0` (**Verified**): a character with no owner needs it; one with an owner who is not an ally (`FUN_1406b2630`; same faction counts), carried, dead or an animal (vfunc `0x248`) never does; one with an owner of an
   allied faction needs it unless its slave state is not 2 or 3 and vfunc `0x3e0` is true and `FUN_1405a6bb0(platoon, character)` holds. That function (**Verified**, whole body): an animal is fine, NPC
-  class 1 or 5 is not; when the watcher's faction lacks `allow slaves weapons` (faction byte `+0x30`), a held weapon or an item in a weapon section (back, hip) fails it; then the torso and leg slots (inventory sections 5 and 6) must each be empty, a slave garment (`stigma` 6) or an item of the `slave clothing` list of the faction of the character that owns the AI task system (the **watcher's**, `+0x240`, not the slave's owner; processing, `FUN_14035aa20`, reads the same worker-side list; the status-panel level `FUN_1405a51e0` is a separate function that keeps the owner list); then the shackle slot (section 9) must hold a locked item (true) or be empty (true only for a locked torso item on a shaven head, vslot `0x3e0`).
+  class 1 or 5 is not; when the watcher's faction lacks `allow slaves weapons` (faction byte `+0x30`), a held weapon or an item in a weapon section (back, hip) fails it; then the torso and leg slots (inventory sections 5 and 6) must each be empty, a slave garment (`stigma` 6) or an item of the `slave clothing` list of the faction of the character that owns the AI task system (the **watcher's**, `+0x240`, not the slave's owner; processing, `FUN_14035aa20`, reads the same worker-side list; the status-panel level `FUN_1405a51e0` is a separate function that keeps the owner list); then the shackle slot (section 9) must hold shackles (true; slot `0x2f0` is non-null only for `LockedArmour`, which returns the item itself, locked or not) or be empty (true only for `LockedArmour` on the torso on a shaven head, vslot `0x3e0`); so shackles count worn open too (Meitou `LockSystem.IsShackles`).
   The sections are `Inventory::getSectionOfType(AttachSlot)` (`FUN_140745ef0`): 5 body (Meitou `armour`), 6 legs, 9 boots, each read at its item. So an empty
-  list passes only a slave in locked shackles, or a shaven one in a locked torso piece.
+  list passes only a slave in shackles, or a shaven one in torso shackles.
   Callers: `FUN_1408ca3d0` (needs processing: a slave of an allied owner is left alone when its head is shaven and it passes this test; Meitou
   `CaptiveSystem.NeedsProcessing` and `LooksLikeASlave`; **Observed**, KenshiOracle state 0.5 hold, Rebirth, N = 1: the save's 32 NPC slaves are all shaven, and
-  the original's watchers processed only the two escaped player characters in an hour), the state-120 evaluator `FUN_1405a6f60`, the trespass test `FUN_140852240`, and the attack-target slave branches `FUN_140852750` (those three are not wired in Meitou).
+  the original's watchers processed only the two escaped player characters in an hour), the state-120 evaluator `FUN_1405a6f60` and the trespass test `FUN_140852240` (both not wired in Meitou), and the escaping-slave walk test `FUN_140852750` (Escaping slave spotted, below).
 - **Cage memory**: `Task_PutInSomething` for a cage (`FUN_140358670`) makes the prisoner's squad remember the putter as captor (`FUN_140673a20(prisoner, putter, 5)`) and calls `FUN_14067aca0` (Meitou `DialogueSystem.Forgive`, also run by processing a slave and by Task_ReleasePrisoner `FUN_1403570a0`: the prisoner forgives the releaser, and a booking releaser forgives the prisoner; **Verified** argument order), which
   adds nothing to a slave list: it clears the short-term tags TEMP_ENEMY (4), criminal (7) and aggressor (2) on the prisoner in the putter's squad memory, in the memory of every ally its sensor lists and in every platoon of its faction (`FUN_140289400` over `FUN_1406788d0`, **Verified**), clears the ENEMY bit of the prisoner's entry in the putter's sensor and empties a list of the putter's town. [Squad memory](dialogue.md#squad-memory) has the other writers. Engine choice (#599): Meitou's caging also clears TEMP_ENEMY on the putter's faction in the prisoner's squad memory (`DialogueSystem.Captured`). Left set (as the original does; **Observed** in the #599 save: 23 tags on Mongrel guards from the arrest 7 hours earlier), a released player character on Hold or with job 16 attacks its jailers on sight, which the police-hit rule books as an Assault.
 
@@ -782,9 +828,19 @@ vfunc 5 `FUN_14050caf0`). TaskData fields: +0x108 desire (a member function, nea
 by it when the row has an effect, `FUN_14060fd80`);
 +0x18 / +0x1c commitment minimum / random range in game hours; +0x20 commits; +0x34 crowd factor (default 1); +0x3c is read by the senses
 (`FUN_1408529c0`).
++0x15 never finished (**Verified**, the registration's `*(short *)(row + 0x14) = 0x100` or `0x101`, the latter also setting +0x14): rows 20, 22, 25, 26, 31, 36, 37, 38, 39, 44, 47, 51, 60,
+62, 97, 141, 146, 147, 149, 150, 153, 157, 165, 171, 175, 180, 222, 234, 236, 239, 249, 253, 258, 261, 268, 269, 289. The factory (`FUN_14032ebd0`) acts out 26, 147 and 165 with
+`Task_Loot_Order`, `Task_Stumble` and `Task_TownStalker`, whose slot 4 does not read the byte; the other 34 with classes whose slot 4 is the base one (`Task_Blank` by default)
+(**Verified**, the factory's cases and the vtables; Meitou `TaskDataFlags.NeverDone` on those 34). It is read by the
+base `Tasker`'s slot 4 (`FUN_14032dee0`) and the move and door tasks' (`FUN_140332130`); the other classes' own tests ignore it (**Observed**: these two functions are the only
+byte compares at `+0x15` in the exe's code). Readers and every class's test: [finished tests](#finished-tests). A row with an empty list A and no effect never holds
+there (`FUN_14060f570` answers false), so for 180 Man the gate the byte changes none of the list-A tests.
 
 - Score = desire x goal weight x crowd^n; x1.25 for the current task. For a committing current task the
-  score is at least 0.4 until the commitment ends and at most 0.05 after it, so the character moves on.
+  score is at least 0.4 until the commitment ends and at most 0.05 after it, so the character moves on. Then, while the running task (the plan's current step) answers
+  slot 4 false and the score is below 1 (`DAT_14167c308`), x1.25 again (`DAT_14168ba14`; **Verified**, `FUN_14050df10`). Man the gate at its desire 1 and the Gate guard packages'
+  weight 1 (val2 0, **Verified** data) scores 1.25 as the current goal, so this never applies to it in the base data. The job and order passes have no x1.25 at all (their
+  keys are list places, `FUN_14050e5b0`, `FUN_140510920`). Meitou: [finished tests](#finished-tests).
 - Commitment: when a committing task becomes current, end = now + min + rand x range. A candidate that is not the current task has its target cleared
   before it is chosen, so a newly chosen goal gets a fresh target from its finder.
 - Desires (`AI` vtable slots): 19 = 1, 39 = 0.1 (Idleness), 40 = 0.25 (Patrolling, Patrolling town), 41 = 0.5 (Stand at node, Shopkeeper, Static guard,
@@ -814,6 +870,57 @@ by it when the row has an effect, `FUN_14060fd80`);
 | 248 Attacking Squad | 0.3 + r x 2 (+0x20 and +0x21 set; **Verified**, the registration in `FUN_140319a60`; Meitou `TaskProfiles`) | 1 |
 | 45 Bodyguard | - | 0.9 |
 | 57, 58, 125, 237, 250 | - | 0.8 |
+
+### Finished tests
+
+**Verified**: which function is slot 4 (`+0x20`) of every `Task_*` vtable (`re/vtables.txt`), the factory's cases (`FUN_14032ebd0`), the constructors' 0 bytes and each byte's
+writers (decompiled). **Observed**: the reader list (a search of the decompile for two-argument calls through `+0x20` on task objects), the clip readings (shares of a clip's
+length), the meanings of state 9, of CharBody `+8` as the fight state, of the line start `FUN_140685750` and of the hand +0x80 as the campaign's lead. Slot 4 takes the task and
+the character (AITaskSytem `+0x278`, the object `+8` also holds). Each reader gates a list-A test (`FUN_14060f570`, then the effect test `FUN_14050c8e0`):
+- the scorer `FUN_14050df10`: a candidate that is not the current goal (another type, or either target hand differs: hand vfunc `0x10` answers "differs", as `FUN_140506b10`
+  reads it) is dropped when its own slot 4 and list A hold; the current goal skips that test, and gets the second x1.25 while slot 4 of the running task (the driver
+  `+0x270` → `+0x68`) is false and the score is below 1;
+- the plan step `FUN_14050d970` (each AI update) and `FUN_14050f0b0` (AI slot 3 `FUN_1405965b0`, with a frame time; only while the goal does not commit or its commitment has
+  passed) end the running task when its slot 4 and its own list A hold (`FUN_140513f50`, then `FUN_14050d7d0`);
+- the job pass `FUN_14050e5b0` skips a job, and the order step `FUN_140510920` pops the front order, when slot 4 and list A hold; the order step asks the running task instead
+  when it matches the front order (`FUN_140506b10`: same type and target).
+
+Goals, jobs and orders are factory instances that never run (the planner builds new ones for its plan, `FUN_14050fe10`, `FUN_1405104d0`), so their own bytes hold the
+constructor's 0. A byte raised together with the task's own end (CharBody slot 4 `FUN_1405c67e0`, AITaskSytem `+0x26c`) or a replan request (slot 5 `FUN_1405c6810`, `+0x26d`)
+is acted on in the same character update (`FUN_1405c7c30`: CharBody slot 1 `FUN_1405c6d20` runs the task's update, then `FUN_14050d920` ends the task through
+`FUN_14050d7d0` or replans through `FUN_14050d080`), so no chooser pass sees it set on a running task; `FUN_14050d920` is skipped while the character is down
+(`FUN_1407d1440`), whose task update runs only on a branch of `FUN_140598c20`.
+
+| Class (rows) | Slot 4 | Never run | Running |
+|---|---|---|---|
+| base `Tasker` (all other classes) | `FUN_14032dee0`: +0x15 clear | as running | +0x15 clear |
+| `Task_Move` (1, 29, 40, 67), `Task_MoveToDoor` and its four subclasses (82, 83, 121, 163, 199) | `FUN_140332130`: +0x15 clear and +0x94, set by every update (`FUN_140354600`, `FUN_140332910`, `FUN_140332c10`, `FUN_140332e40`, `FUN_140333170`), cleared by nothing | false | true from its first update |
+| `Task_MakeAnnouncement` (103, 129) | `FUN_140333f60`: +0x78 (its line started near the target, `FUN_140685750`; update `FUN_140355770`) and +0x79 (the character's conversation then ended, `Dialogue::conversationHasEnded` `FUN_140671c60`); start and end clear both; an update that finds the conversation over but `FUN_140673830(dialogue, 2)` false clears +0x78 and announces again | false | true once announced, the conversation over and `FUN_140673830` true; it has no end of its own (list A 76 ends it) |
+| `Task_MeleeAttack` (4, 227), `Task_FocusedMeleeAttack` (5, 61) | `FUN_140334230` → `FUN_14060cd80` on Character +0x648 (CharBody) → +8: CombatClass state +0x1f0 9 (no target), and no technique (+0x150) whose clip (`FUN_1405b4bb0`; 1.01 when not playing) is at 0.99 (`DAT_141696c78`) or less | same | same |
+| `Task_Loot_Order` (26) | `FUN_1403343c0`: +0x7c, set when an update finds the melee threat flag (Character +0x2b0), with a replan request | false | false |
+| `Task_Loot_AI` (3 on a character target, hand type 1; else `Task_Pickup`, base) | `FUN_140334460`: +0x78, set with its end once the take is done (update `FUN_14034d930`) | false | false |
+| `Task_Loot_ResourcesWeHaveStorageFor` (241) | `FUN_140334590`: +0x78 after 3 s (`DAT_14168a254`, update `FUN_14034e2a0`), with its end (or a replan without a target) | false | false |
+| `Task_StripWeapons` (181) | `FUN_140334600`: +0x78 after 0.8 s (`DAT_14168a178`) when the weapons are taken, with its end | false | false |
+| `Task_ProcessNewSlave` (182) | `FUN_140334670`: +0x78 once the slave is processed (+0x79, after 3 s) and the character's conversation then ended, with its end (`FUN_14035aa20`) | false | false |
+| `Task_GetUp` (52, 65) | `FUN_140334a10`: +0x79, set with its end: the get-up clip past 0.86 (`DAT_1416be6cc`), or at once without a clip or in a bed or cage (start `FUN_14033ca10`, update `FUN_140334a20`) | false | false |
+| `Task_LiftSomething` (68, 170, 213, 225, 240), `Task_Kidnapping` (246) | `FUN_140334d40`: +0x7a, set with its end when the `shoulder lift` clip reaches 0.95 (`DAT_1416b77d8`, update `FUN_140354ff0`, which 246's `FUN_1403552d0` calls); the end `FUN_1403471e0` clears it | false | false |
+| `Task_Stumble` (147) | `FUN_140334f80`: the character's AnimationClass (+0x448) has no stumble clip (+0x228) | same | same |
+| `Task_TownStalker` (165), `Task_FollowAndTalk` (164; case `0xa4` always installs it) | `FUN_14033bc90`: the character's conversation has ended and so has its target's (or the target does not resolve), or its melee threat flag +0x2b0 is set | same | same |
+| `Task_TravelToMissionTarget_ArmyFormation` (215) | `FUN_140349de0`: the leader of the character's platoon's campaign (the faction's war manager, +0x88, `FUN_140283500` → `CampaignInstance` slot 5 `FUN_140285820`: its lead hand +0x80, a character, or a squad's leader `FUN_140792b90`) is the character; else +0x78, which the update sets only for that leader once its mover arrived | as running (+0x78 0) | same |
+
+Meitou (`TaskFinishes.Of`, `TaskFinished`): `TaskFinished.Fresh` is the never-run answer, asked by the done test of `PlanContext.TryPlan` for every goal, the current one too (the
+original ends a current goal's running root task by its slot 4 and list A, then drops the goal at the re-pick by the never-run answer, which implies the running one for every
+class). `TaskFinished.Unfinished` is the running answer, behind the second x1.25 (`AiSystem.Score` with the plan's step, `DecisionSystem.PickGoal` with `CharacterCold.Running`);
+where Meitou's plan names the goal, the act-out names the original's task: a fight (`Attack`) is 4 or 227, or Task_RangedAttack's 262 (base) with `CombatSlot.Ranged`; a
+treatment 25 (60, 249 and 269 answer the same); a lift (`PickUp`) 68; a loot its start's row. Melee reads `CombatSlot.TargetSlot` and `CombatSystem.Playing`; Stumble the hit
+reaction (`StumbleClip` until `StunUntil`); Talk `DialogueSystem.Talking` and `CharacterFacts.ImmediateThreat`; Formation the squad leading its platoon's campaign
+(`CampaignInstance.Leader`) with the character its leader (215's list A, state 131, is not wired and never holds, so this changes no drop yet); a move counts as updated once
+its act-out has had a tick. The fight answer raises a running fight goal below 1 (the `goal-fights` golden scenario). Still different: no goal or plan step Meitou runs is of the
+Announcement, Stumble or Talk classes (147, 164 and 165 are engine systems, 103 and 129 not acted out), so their answers are never asked; Meitou re-plans at every think
+instead of ending a running step by its slot 4 and list A, and tests the current goal's list A whatever step runs; an act-out an engine reaction started is read as the
+current goal's task. The order step and the job pass ask no generic list-A test, so no slot 4: an order leaves when its act-out ends (`ITaskHandler.Done`,
+`PlayerOrders.Prepare`), a job by its contributor's rules (152's `!62` in `ProductionSystem.Blocked`, a base-class row). In the original, list A never pops a running order of an own-end class
+(26, 225, 246) and never skips a job of an own-end or move class.
 
 ## Planner
 
@@ -1230,8 +1337,9 @@ update `FUN_140511130`, `Character::setupAI` `FUN_140621b70`; KenshiLib names **
   home fallback: override, campaign town, mission target, else the Ownerships home town; resolved by `FUN_1409f9100`, which takes a hand of type 13 TOWN or 85, a nest's (**Verified** by the decompile), so a nest squad patrols round its nest (that a nest platoon's Ownerships home is its nest is inferred from its save `hometown`, **Observed**); Meitou `AiSystem.PatrolArea` via `PopulationSystem.NestOf`, #771). With a town the move is an area order on the town's position with scatter
   max(500, 0.5 x the town's radius, Town vfunc 84); with none, on the character's own position with scatter 1250 (`DAT_1416f190c`). `setPatrolInput` draws the destination within ±scatter/2 in
   X and Z (redraws: [patrol moves](factions-squads-towns.md#off-screen-world)). So a resident strolls within ±625 of a Town's centre (±250 for a Village), after its list B is met (`atDestinationTown`).
-  Meitou (`AiSystem.PatrolArea`, `PatrolPoint`): the board's `Destination`, else its home `Town`, else the own position; the first of 10 draws on walkable ground (the building and water redraws are
-  not modelled), a new draw each time a walk is over. **Observed** (headless, #370 save, The Hub): before, residents on 36 drifted to 2479 from the centre; after 3000 ticks they end 248-556 from it.
+  Meitou (`AiSystem.PatrolArea`, `PatrolPoint`): the board's `Destination`, else its home `Town`, else the own position; the first of 10 draws on
+  walkable ground that passes the building test of the [patrol draws](factions-squads-towns.md#off-screen-world), a new draw each time a walk is over.
+  **Observed** (headless, #370 save, The Hub): before, residents on 36 drifted to 2479 from the centre; after 3000 ticks they end 248-556 from it.
 - Building layouts' `is bar` / `is shop` are 0 on every exterior layout of the base game and mods checked (2 interior layouts set `is bar`, 9 `is shop`),
   so they do not mark bars and shops (**Verified** over the merged `interiors.level`).
 - **43 Staying home** (`FUN_1408cbc00`): furniture in the home whose BuildingFunction is in mask 0x2049a (bits MINE, RESEARCH, REFINERY, TRAINING,
@@ -1244,7 +1352,18 @@ update `FUN_140511130`, `Character::setupAI` `FUN_140621b70`; KenshiLib names **
   (MINE, RESEARCH, REFINERY, CRAFTING pieces of the interior layout; `TownBuilding.Furniture`), then the nest's pieces (`NestBuildings.FurnitureOf`), of `Blackboard.OwnHome`
   are the candidates; `TownPlaceClaims.HasStayingFurniture` is the desire (0 without any), members draw a free
   piece at random (`FreeFurniture`; distinct pieces per member is the engine's claim, **Observed**), sit on a chair, stand at a dummy, or stand at a workstation facing it at the machine's work clip and
-  hunger rate (`PretendOperate`: 221's look; no machine runs).
+  hunger rate (`PretendOperate`: 221's look). 221 runs `Task_OperateMachine`'s update there (**Verified**, `FUN_14035bc90`: `tryOperate`, then
+  the operating XP `FUN_1408c7250` for any function but 7, then the building's work step, slot `0x4b0`), so the resident gains the piece's operating
+  XP and at a dummy its training; at a workstation Meitou runs `TownOperate` on the layout object's own machine (`ProductionSystem.HomePretenders`,
+  [layout objects](buildings-production.md#npc-town-machines)), so a refinery's step draws its inputs into its output and a
+  hydroponic farm's harvests; a research or crafting piece's step makes nothing for an NPC owner (no player flag, no queued craft).
+  A piece without power gives 221 no plan: its list B needs 93 and no row provides it, so once the resident is home (18) the goal has no plan
+  and another wins (**Verified**, the row table). Meitou: the claim marks such a piece (`Blackboard.UnpoweredSeats`, `TownPlaceClaims.Claim`),
+  93 on the seat target reads it, and the resident walks home instead of to the piece (`AiSystem.Adopt`); at home 43 has no plan, and the next
+  choice once its commitment ends takes another goal. **Observed** (headless, METARU): a Reaver Camp Neophyte (no generator) whose claimed
+  workstation draws power stands at home under 43, then patrols the town; none stands at such a piece.
+  **Observed** (headless, a Hive Village of the base data): the Worker Drones staying home operate their hut's tanning bench, campfire and other
+  refineries; with empty inputs nothing is made.
 - **275 Sitting around** (`FUN_1408caf00`; the registration's finder thunk `LAB_1400061db` is not in the RE files, so the row link is **Observed**; the rest **Verified** by decompile):
   - Gate: 0 (not wanted, no target) when the character is in no town location (character vfunc `0x78`). A non-player-faction character (faction `+0x250` clear) needs that town to
     be its squad's home town (Ownerships `+0x30`) or owned by the squad's faction (`FUN_140621390`); a player-faction one needs a town owned by a player faction, with no home test.
@@ -1289,7 +1408,8 @@ update `FUN_140511130`, `Character::setupAI` `FUN_140621b70`; KenshiLib names **
   is a GatewayBuilding (vfunc `0x3d8`). The guard walks to its first door's point `+0x3bc` and turns along `+0x3bc - +0x3c8`. A door's
   two points (`FUN_14029cc90`) are its leaf's centre ± 15 (constant `0x14168a258`) along the leaf's thin axis, dropped to the ground;
   Meitou takes the fallback gate nearest the squad (one `Blackboard.Gate` per squad), not nearest each guard (engine choice, one guard per gate squad in practice).
-  which side `+0x3bc` is depends on a door body offset. Gate BUILDING records have no nodes (**Verified**, the merged
+  which side `+0x3bc` is depends on a door body offset. Its list B needs the gate open (52), so the guard unlocks and opens it first
+  ([locks](locks.md#doors) "Gate guards open their gate"). Gate BUILDING records have no nodes (**Verified**, the merged
   load order's Defensive Gates II-V), the door setup makes the gate's guard posts at run time (Gate posts above).
 
 ## Perma-jobs
@@ -1427,6 +1547,7 @@ hand), `isGettingEaten` (+0x279), `CharStats._holdPositionMode` (+0x12b).
   First aid while crawling (**Verified**): rows 25, 58 and 269 are registered for the crippled repertoire (category 0x45 has 0x40, `TaskDataTable`), the update `FUN_1403563a0` tests no posture, and the clip picker `FUN_1405209d0` plays `medic`, or `crawl use` at posture 1 or 2 (staying low or crawling). A crawling medic treats; it is not made to stand first. Meitou: `Repertoire` / `CharacterFacts.GetUpGoal` already agree; a crawling NPC medic in the real save crawled to a patient and treated (**Observed**); a looping get-up report was not reproduced.
 - **Give-up**: a task walk that cannot get to its target puts it in `pathFailures` for 20 s (`notifyPathImpossible` `FUN_140796ed0` stores 20.0; **Verified** callers besides the combat chase: the AI plan step `FUN_14050d970` when the task's reach test fails, and `AI::isWithinChoppingRange` `FUN_14059c6d0`, which logs "Task impossible: X can't get to Y"), so the finder skips that patient meanwhile. Meitou: the walk to a patient gives up when its path request finds none or one whose navmesh part ends farther than the treat reach from the goal (`FirstAidSystem.Schedule`); before, a medic re-asked the same hopeless path every 0.5 s (issue #124). A provisional route ends on the goal itself, so its last point said nothing: medics shut in a locked house stood at its corner nearest the patient, by its stair, for minutes (**Observed**, Gigachad save, zone 39.16 at night).
 - **Kits**: any item of function 1 (organic) or 12 (robot) in the medic's inventory or its backpack (**Verified**: `FUN_14099f690` tests the inventory, then a second lookup of the backpack's inventory; `FUN_14004b84e` compares each item's function only, with no charge or quantity test). Squad mates' kits do not count for the job. The task then takes a kit from the medic's own main grid, then its worn backpack, the fewest charges above zero (the rig task's search, **Verified**; the first aid tasks share its vtable slot, **Observed**: [kit search](character-stats.md#first-aid-update)). The splint finder wants function 2 and takes X = min(the medic's `medic` stat, the kit's quality). Meitou: the Medic and Robotics finder (`FirstAidSystem.FindPatient`) tests the main grid and the worn backpack with `HoldsKit` (the planner's state 23), where the task takes its own kit from; a kit in a bag carried in the grid, not worn, counts for neither.
+- **Arms**: the treatment rows 25 First aid, 60 Repairing and 249 Splinting have 38 `hasOneWorkingArm` in list B (**Verified**, `TaskDataTable`). Its evaluator `FUN_140998470` (**Verified**, decompile) is true for an animal (vfunc `0x248`), else only with the medical object's knocked-out (`+0x161`, set by the medical tick `FUN_140649320`) and dead (`+0x164`) bytes clear and one of its two arm bytes set ([arms](combat.md#arms)). No row provides 38 (**Verified**, registration `FUN_140319a60`: state 0x26 is only ever added to list B, `FUN_14060e940`; never to list A, `FUN_14060e710`, or as a goal effect, `FUN_14060e740`). The plan step re-tests a running row's list B (rows 25, 60, 249 lack `+0x16`, [precedence](#precedence)). So a medic with both arms out, a skeleton with both arms below 0 too, starts no treatment, of itself neither (**Verified**, the original 1.0.65 through the Kenshi harness: a skeleton with Medic and Robotics jobs and a Skeleton Repair Kit, both arms set to -20 in the save, stood "Standing still" after the Medic button with its arms unchanged; with both at 120 it went to "Robotics" and repaired its left arm to 195 within 25 s). A running one stops when both arms go out (**Observed**, from the plan step's re-test; not seen in the running game). Meitou (`FirstAidSystem.HasWorkingArm`): the First aid and Splint orders wait in the queue (`CanRun`, `StillHolds`), the Medic and Robotics finders (jobs, the Medic button, NPCs) and the splint finder find no patient, and a running job's or NPC's treatment ends (`ArmsOut`).
 - **Desire** (`FUN_140998410`): 0.01 while the AI's `+0xb0` is above 0, else 0.05 while `+0xbc` is above 0 (the senses' threat towards the medic and `numEnemies`, **Verified**, [senses](perception.md#senses)), else 0.1 while the medic carries someone, else 1. Always above 0, and `FUN_14050e5b0` keeps a job whose desire is above 0 (**Verified**). The finder has no squad-fight test (**Verified**, `FUN_14099f690`): the finder alone does not keep a player medic from a downed mate while its squad fights (**Observed**, offscreen sandbox run); the step does, through 15 Protect allies at step 4 ([precedence](#precedence)). Meitou: an NPC medic waits while its squad fights or it carries someone (engine stand-ins for the low desire; a kidnapper otherwise walked off after a patient with its captive).
 - **Need** (`FUN_140998200`) of a patient for this medic: 0 while the patient's CombatClass `+0x130` is set (fighting). The kit test is on unless the medic is not of the player's faction and the patient is imprisoned or a chained
   slave of the medic's faction (`FUN_14032e2a0`, which then counts without kits); the organic need score ([first aid need](character-stats.md#first-aid-need-score)) counts with an organic kit, the robot one with a robot kit.
@@ -1478,7 +1599,8 @@ feed, eject on; heal, help off (on in 4), rescue, stay, shootfirst off. Readers 
 - **Heal Allies** (+0x110): the medic finder's other-faction test, pass 1 only ([Medic jobs](#medic-jobs)); "Characters with the medic job will also heal characters of allied factions".
 - Meitou-only lines after the nine (not in the original): **Heal Neutrals**, a player medic's pass 2 takes any free downed stranger that is no enemy and not carried by one, without the
   `heals strangers`, class and `FUN_14059a670` tests; **Heal All**, the same with enemies too. CAMERA bools `meitou heal neutrals` / `meitou heal all`, written only while on; the
-  tab's lines shrink to fit the original panel.
+  tab's lines shrink to fit the original panel. Code mods' tick buttons come after these ([modding](../modding.md#registration-surface), squad AI tab options) and shrink
+  the lines the same way.
 - **Help Allies** (+0x111): the protect-allies finder `FUN_14099ca10` (goals 15, 288; its same-town twin `FUN_14099cf80` is never registered) (sensed (1, 0x208), seen or heard): for a
   player-faction looker each fighting candidate's threat (`FUN_14099a190`) is × `FUN_1409b2380`(d², 10, 1000, 0.1); one of another faction is
   skipped with the option off and squared with it on. Result capped at 1.2.

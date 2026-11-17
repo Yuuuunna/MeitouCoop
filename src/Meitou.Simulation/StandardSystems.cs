@@ -176,10 +176,6 @@ public sealed record StandardSystemOptions
     /// </summary>
     public Crime.ArrestSettings? Arrest { get; init; }
     /// <summary>
-    /// Meitou (on; Faithful off): doors walkers opened close behind them (<see cref="Meitou.Simulation.Locks.LockSystem.DoorsCloseBehind"/>).
-    /// </summary>
-    public bool DoorsCloseBehind { get; init; } = true;
-    /// <summary>
     /// The player's animals pick up loose items into their bags (<see cref="PlayerSystem.AnimalsPickUp"/>; off by default).
     /// </summary>
     public bool AnimalsPickUp { get; init; }
@@ -559,7 +555,7 @@ public static class StandardSystems
             // The relation events of deeds (blows, first aid, cagings) go with the live relations, which the aggro part brings.
             _deeds = Has(StandardParts.Aggro) ? new FactionDeeds(_data.Relations, _data) : null;
             if (_combat is not null && Has(StandardParts.Aggro)) (_combat.Relations, _combat.Deeds) = (_data.Relations, _deeds);
-            if (_combat is not null) _combat.Buildings = _o.RagdollEnvironment;
+            if (_combat is not null) (_combat.Buildings, _combat.Extensions) = (_o.RagdollEnvironment, _o.Extensions);
             if (_ai is not null && _combat is not null) _ai.ThreatSource = _combat;
             if (_combat is not null)
                 (_combat.TurretGuns, _combat.Towns) = (new Meitou.Data.Gameplay.Combat.TurretCatalog(_data.Db), _data);
@@ -762,7 +758,6 @@ public static class StandardSystems
                     _locks = new Locks.LockSystem(_data.Bodies.Constants, _data.BodyOptions)
                     {
                         Crimes = _crime,
-                        DoorsCloseBehind = _o.DoorsCloseBehind,
                         Assembly = new CharacterAssembly(_data),
                         Combat = _combat,
                         CombatConstants = _data.Combat.Constants
@@ -797,7 +792,7 @@ public static class StandardSystems
             if (_talk is not null) (_talk.Arrests, _talk.Extensions) = (_arrest, _o.Extensions);
             if (_weather is not null) _weather.Talk = _talk;
             if (_talk is not null && _aggro is not null)
-                (_aggro.Memory, _aggro.SightLines, _talk.Aggro) = (_talk.Memory, _talk.HasSightLines, _aggro);
+                (_aggro.Memory, _talk.Aggro) = (_talk.Memory, _aggro);
             if (_talk is not null && _ai is not null) _ai.Memory = _talk.Memory;
             if (_talk is not null && _combat is not null) _combat.Memory = _talk.Memory;
             if (_talk is not null && _population is not null) _population.Memory = _talk.Memory;

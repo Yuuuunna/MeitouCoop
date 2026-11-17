@@ -150,6 +150,58 @@ holds refuses the second mod.
   (`World.CombatHitFeed`, like `BloodMarks`) that the simulation never reads, so it cannot change a run; a new world (load, new game) gets a
   new queue, dropping the old world's hits. A tick may be in flight, so `view` must not touch the world; the list is reused, so copy what you
   keep. A throw is logged with the mod id and that feed gets no more hits for the session.
+- **Hits before they land:** a registered system implementing `ICombatHitFilter` receives `HitLanding(World, ref PendingHit)` for each melee
+  blow about to hit (after the defender's block and dodge are decided), bolt about to strike a body and execution blow on a captive, before
+  armour and toughness: the tick, the `CombatHitSource`, attacker and victim, the sequence and blow as in `CombatHit`, whether the victim
+  was the chosen target, and the `DamagePacket` as it leaves the weapon (cut, blunt, pierce, stun, bleed multiplier, armour penetration).
+  The filter may change `Packet` (a changed value finite and, but for armour penetration, not negative) or set `Cancelled`; nothing else it
+  changes is taken back. A cancelled melee blow is a miss in every respect, a cancelled bolt flies on past the victim as past a friend, and
+  a cancelled execution blow does no damage: the captive jobs that strike it keep striking, and the kill job's scream still plays, until one
+  lands. A melee blow's "hit dealt" experience follows the filtered packet. Filters run in system order, each seeing the hit as the earlier
+  ones left it, until one cancels. They run serially where the hit lands (melee in Commit, bolts in `CombatSystem.Schedule`, executions in
+  the captives' `SlowWorld`), may read the world and change their own hashed state, must not change characters or other world state or call
+  combat, and must answer from the world and the hit alone. The one-punch debug cheat ignores the packet but keeps a cancel. Hits on doors
+  and walls are not filtered. A filter that throws or breaks the packet's rule is undone for that hit, logged and disabled for that world;
+  faulted registrations enter the state hash. Without a filter no payload is made.
+- **Items used up:** a registered system implementing `IItemUseObserver` receives `ItemUsedUp(World, in ItemUsed)` inside the step that
+  used an item, once the item has changed: the tick, the `ItemUseKind`, the item record's string id, the user (none for a machine, a
+  research order or an upgrade pulling from the building's own stock), the building it went into or came from (a construction, machine or
+  research bench site, a cut fixture; else null), the amount (charges for `Eaten`, `FirstAid` and `Ammunition`, where one bolt shot is one
+  charge; else units) and whether a whole unit left the inventory or storage. The kinds: food bites (each bite, the eater's own, its
+  backpack's or a squad mate's backpack's food; a limb counts as the bite it gave), first-aid, robot and splint kit charges spent, crossbow
+  shots, building materials delivered or pulled from the building itself (a later dismantle's refund is not reported), tools broken
+  cutting locks or shackles, maps read, blueprints learned, machine inputs (production, crafting, generator fuel, farm water, furnace
+  smelting), research costs, and the units of the clicked stack a mod's item use took out of the user's inventory, whatever the handler
+  did with them (charges or other items it spends are not seen). Every use runs in a serial step; callbacks run in system order, may read
+  the world and change their own hashed state, and must not change items, characters or other world state, since the step may still be
+  walking them: gameplay changes go through commands. Without an observer no payload is made. A throwing callback is logged and disabled
+  for that world; faulted registrations enter the state hash.
+- **Relation changes:** a registered system implementing `IRelationChangeObserver` receives `RelationChanged(World, in RelationChange)`
+  once per change of a faction relation, after the change and its threshold message: the two factions (the player's row comes as the other
+  faction's view of the player), the value before and after, and a `RelationCause`: its type (a deed, a witnessed crime, a captive sold or a
+  slave bought free, dialogue, war declared or ended, a debug command), the deed's kind, the acting character (none for a debug command) and
+  the deed's victim. One killing blow reports each of its events (killed, hit, knockout, killing blow); first aid reports each update. An
+  ended war counts when its flag clears even if the value does not. Loads, a new game's start values, global trust, rank and direct
+  `FactionRelations` writes are not reported. Callbacks run serially in system order inside the serial step that made the change; they may
+  read the world, change their own hashed state and change relations (a change made through `PlayerRelations` during a callback is not
+  reported again), and must not change characters or other world state. A throwing callback is logged and disabled for that world, as for
+  combat; faulted registrations enter the state hash.
+- **Faction list:** `ArrangeFactionList(arrange)` arranges the Overview's Faction tab: `arrange` gets the rows the tab would show
+  (`FactionListRow`: faction, name, the player's relation), sorted by name, and returns the rows to show, in order. It can reorder, rename
+  (names go through the translation catalog like the tab's own), leave out, or add headings (faction -1: the name alone, no number or bar),
+  for example to group factions under another. It runs on the host's thread whenever the tab is drawn, so it must not touch the world; mods chain in
+  load order. A throw or a null is logged and that arranger is not called again.
+- **Combat moves:** `AddCombatMove(source)`: `source(world, id, tick)` answers a `CombatMove` (a `CombatTechnique` and its progress, 0 to
+  1) or null, and the animation plays the first answer, in load order, as the character's technique (`CombatSystem.ModMove`). It is asked
+  only when the game plays nothing of its own: not while the character attacks, blocks or dodges, is stunned or stumbling, holds a crossbow
+  pose, is down, carried or getting up (as of the last finished tick). The move is animation only: it lands no blow, nobody blocks it, and
+  the combat system may start its own swing over it at any tick. A technique the animation library has no clip for plays nothing. The
+  source runs in the animation's parallel step for every stepping character, and the move enters the world: its layers are hashed and a
+  relocating clip's root motion moves the character. So it must be cheap, thread-safe, read-only and deterministic: answer from state the
+  tick has already settled (its own system's serial step, the last finished tick), never from call order or caches that change the answer,
+  and never call `ModMove` itself. A throw, a move without a technique or a progress that is not finite is a fault: logged once with the mod
+  id; the source still answers for the rest of that tick and answers nothing in that world from the next tick on, and the fault enters the
+  state hash.
 - **Dialogue codes:** `AddDialogueCondition(code, handler)` and `AddDialogueEffect(code, handler)`, named from FCS data in a
   DIALOG_ACTION's `condition name` / `action name`. A condition gets `DialogueCheck` (world, speaker, the subject `who` picked, the
   condition) with `Matches(bool)` and `Compare(double)` that apply the vanilla value and `compare by` rules; it only reads (it also runs
@@ -163,6 +215,15 @@ holds refuses the second mod.
   stats, look, trade, looting, locks), and shows in the character and loot windows as a copy of the belt slot at (`x`, `y`) layout pixels
   (UI scale 1) from the window's top-left corner, clipped to the window: the mod picks a free spot; the window does not grow. Animals get none.
   Saves keep the section name ([save](formats/save.md#compatibility-exceptions)). Races' `no hats`-style closing never applies.
+- **Wear rules:** `AddWearRule((item, race, animal) => bool)` (`WearRules`, `src/Meitou.Data/Gameplay`) answers "may a wearer of this race
+  wear this item?" with the item's record id, the wearer's RACE id and whether it is an animal, after the item's own `races` / `races exclude`
+  lists pass ([RaceLimiter](game/ui-screens.md#6-inventory-trade-dialogue-build)). False refuses the item wherever those lists are checked:
+  equipping (an NPC drawing a weapon, picking up, scavenging, a purchase worn at once), wearing a bag, dragging or moving an item into a slot
+  (trade included), the worn clothing and armour of a loaded save, and the clothing, armour, backpack and robot limbs a generated character
+  rolls. A generated character's weapons, a loaded save's back and hip weapons and a quick move's bag or prosthetic are checked against
+  neither. Weapon slots, bags and mod slots are asked too, so a rule meant for clothing checks the item's type (`ctx.Data`); no item record
+  changes, so it works with other mods' gear. It may run on any thread: quick, no world state, the same answer for the same arguments. A
+  throw counts as yes and is logged once; with no rule the race lists alone decide.
 - **Medical meters:** `AddMedicalMeter(label)` returns a `ModMeter` (`ModMeters`, `src/Meitou.Simulation/Bodies`): a bar on the medical panel after
   Hunger, in registration order. The mod's system sets a character's `MeterReading(Green, Value) { Yellow, Red, Arrows, Tooltip }` in the tick with
   `meter.Set(cold, reading)` (the character's own partition in a parallel phase) and hides it with `Clear`; layers are width fractions clamped to
@@ -187,7 +248,7 @@ holds refuses the second mod.
   full column refuses the mod. The shared simulation registry enforces these limits on the headless server and client (34 mod skills total).
   Coop publishes levels only for an owned lead selected or inspected character, in registration order; peers must load the same mods. `Set`
   accepts finite levels and NaN, but refuses infinity. A legacy infinite level remains in the save and is displayed as NaN in the snapshot.
-  Not shown in the HUD's stat lines or the debug character editor.
+  Not shown in the HUD's stat lines.
 - **Bone anchors:** `CharacterCold.DrawAnchor = new DrawAnchor(carrier, bone, offset, rotation)` draws a character on another's named bone
   as the renderer poses the carrier in the drawn frame (a rider on a mount; the rule and its limits:
   [character-renderer](character-renderer.md#bone-anchors-meitou-engine-choice)); null removes it. Set it in the tick from the mod's own
@@ -204,6 +265,15 @@ holds refuses the second mod.
   display only: not saved, not hashed, read by no system, so set it again after a load. Coop publishes attachments for every visible character;
   unchanged lists produce no delta. A character takes at most 64 attachments, with finite transforms and nonempty key/mesh/bone names limited to
   128/1024/256 UTF-8 bytes. `SetBoneMesh` enforces the same limits as snapshot decoding.
+- **Mod jobs:** `AddJobType(type, name)` claims a task type number from 1000 up (`SimulationExtensions.FirstModCode`; the game's tasks stay
+  below it; one mod per type). The mod puts such jobs in `CharacterCold.Jobs` and runs them itself (an `IJobSource` of its system); like the
+  game's jobs, they are worked only while the character's jobs switch is on. Taking a mod job off the list does not stop a task the mod already
+  started from it, so the mod checks that the job is still listed. The jobs panel names them `name`. A save keeps each in its place in the list
+  under Meitou keys (`meitou mjob<k>`, [save](formats/save.md)), out of the original's `pjob` list, with its building id but not a character
+  target; a load puts it back while the type is registered and drops it otherwise.
+  Coop publishes the authority's immutable name table with the recipient snapshot; remote job rows never inspect a mutable world.
+  Registration accepts at most 4096 distinct types with nonblank names of at most 256 UTF-16 code units, and rejects excess entries explicitly.
+  The complete table is cached and sent on a baseline or value change; unchanged tables add no delta bytes.
 - **Item use:** `AddItemUse(record, handler)`, one mod per item record string id. A right click on such an item in a player character's own
   inventory window (or its bag), with no other character's window open and no trade, runs `handler(ItemUse)` (world, user, item, that
   character's inventory) in the player system's serial step, before the click would equip or move it (`ItemUses`, `src/Meitou.Simulation/Player`),
@@ -225,9 +295,36 @@ holds refuses the second mod.
   with each new interface (`ConfigurePlayerInterface`, Vulkan and Metal). A picture from the mod's folder is an image node:
   `new UiNode(id, UiNodeKind.Image) { Image = Path.Combine(context.Folder, "face.png") }`; a CHARACTER record's portrait is
   `{ Portrait = "<string id>" }` on the same kind of node ([native UI](native-ui.md#layout-input-and-lifetime)).
+- **Map markers:** `UiRegistration.AddMapMarkers(markers)` puts markers on the world map (Overview's Map tab). `markers` gets `UiMapContext`
+  (the snapshot the map is drawn from and its zoom level, 0 for the whole map to 2) on the host's thread each frame the map shows, so it
+  must not touch the world, and returns `UiMapMarker`s: a world point (X, Z), an image group of the game's map marker set
+  (`Kenshi_MapMarkers`: Town, Village, Outpost, Ruin, Camp, Nest, Workcamp, SmallPlace, Character, Movement, NewDiscovered; names are
+  exact), a tint, an optional label (shown from zoom level 1) and tooltip (rows split by new lines, a tab between a row's label and value,
+  as a place's), the least zoom level it shows at and a size against the group's image. They are drawn after the towns, camps and outposts
+  and before the tracked squads and the player's characters, centred on their point and sized as a place's are. A mod keeps its markers
+  itself (in its `IModSaveData` to keep them across a load). A source that throws or gives a marker with a group the marker set lacks, a
+  point, tint or size not finite, a size not above 0 or a zoom level outside 0 to 2 is logged once and dropped.
+  In Coop, markers are client presentation derived from the authorized snapshot and add no marker traffic. Mod-local state and sidecars
+  are not replicated by this callback; shared markers must derive from state carried by the authorized snapshot.
+- **Right-click menu rows:** in `Register`, `registration.AddCharacterMenuVerbs(context => rows)` adds rows to a character's right-click menu
+  after the game's own. The source runs on the host thread whenever the game asks for the menu, which includes every frame a character is under
+  the cursor (whether it offers a menu decides what a right click there does), so it must be cheap; a tick may be in flight, so it must not
+  touch the world. It gets `UiMenuContext`: the target's snapshot, the selection and the cursor as the menu is built, `Shift` and `Tick` read
+  when asked (so a chosen row sees them as the player chooses it), and `Enqueue`; a chosen `UiMenuVerb` queues commands. Return no rows to keep
+  a plain right click (a row makes the character offer a menu). Shift does not turn a mod row into a job; the row reads `Shift` itself. Menus
+  that stay empty or fixed get no mod rows: no selection, a body the first selected carries (Put Down only), a body someone outside the player's
+  faction carries; an animals-only selection keeps only the original's animal verbs. A source that throws, or returns a row without a caption
+  or action, is logged once and dropped for the session; a row's action that throws is logged.
 - **Debug rows:** `AddDebugCommand(label, run, hasField)` adds a row to the F10 menu after the vanilla ones. `run` gets
   `DebugCommandContext` (field, selection, camera target, tick, `Enqueue`) on the host thread while a tick may be in flight, so it must
   not touch the world; it returns the status line, and a throw shows as the status.
+- **Squad AI tab options:** in `Register`, `registration.AddSquadAiOptions(context => options)` adds tick buttons to the squad overview's AI
+  tab, after the game's own and above Follow Formation; the tab's lines shrink to fit. The source runs on the host thread on every layout pass
+  while the tab is open, so it must be cheap; a tick may be in flight, so it must not touch the world. It gets `UiSquadAiContext` (the
+  `Snapshot` on screen, `Tick` read when asked, `Enqueue`) and returns `UiSquadAiOption`s: caption, tooltip, whether it shows ticked, and the
+  press. The option's state is the mod's own: a press queues a command, its system applies it in a serial step and saves it (`IModSaveData`),
+  and the system publishes the value (a volatile field, set again after a load) for the source to read. A source that throws, or returns an
+  option without a caption or press, is logged once and dropped for the session; a press that throws is logged.
 - **Settings:** `AddSettings(object)`, once per mod: the object's public get/set properties marked
   `[Setting(label, Hint, Min, Max, Step, Options, SubGroup, VisibleWhen)]` (`ModSettings.cs`) become one group, in declaration order (a
   sub-group's settings together at its first one's place), under the mod's row on the Settings screen's Mods page
@@ -261,8 +358,16 @@ holds refuses the second mod.
   the AI run a player's squad; then `ChangeAi(squadId, packageId)` and `StartContract(squadId, packageId, hours)` give it packages as dialogue's
   `change AI` / `AI contract` give an NPC squad's (both are ignored for a player squad that is not autonomous), and
   `SetSquadHome(squadId, building)` its home: a town building's key (`TownBuilding.Key`, `x.y:instance`) or a player-built building's id
-  (`BuildSite.Id`); null clears it. The player's orders and jobs come first. The switch, package and home are saved with the squad. Off drops the
-  package and the members' minds. Ids: `SquadManagement.PlayerSquads(world)`, `world.Buildings.All`, `PopulationData.Sites[i].Buildings`.
+  (`BuildSite.Id`); null clears it. A player-built home in one of the faction's outposts makes the outpost the squad's town: its patrols and
+  going home and town work on the outpost's own machines use it ([rules](simulation.md#autonomous-player-squads)). The player's orders and
+  jobs come first. `SetSquadAutonomy(squadId, true, Independent: true)` makes it a squad the player does not lead: not selectable, no squad
+  tab, no squad commands, not counted against `max squads` (for staff, caravans or companions with a will of their own; orders that name its
+  characters still apply; refused for the last squad the player leads; `SetSquadAutonomy(squadId, true)` leads it again). Pass your mod's id
+  as `Owner` (`SetSquadAutonomy(squadId, true, Owner: context.Id)`): a load without your mod running (not installed, refused or failed to
+  start) gives the squad back to the player (autonomy, independence and home cleared, with a notice), so removing the mod never strands it; a
+  squad switched on with no owner, as in a save from before `Owner`, stays as saved until a command names one (send `Independent: true` again
+  with it to keep the squad independent). The switch, package, home and owner are saved with the squad. Off drops the package, the members'
+  minds and the independence. Ids: `SquadManagement.PlayerSquads(world)`, `world.Buildings.All`, `PopulationData.Sites[i].Buildings`.
   **Observed** (2026-11-13, headless, two saves, 'Guard building, residents'): members without a job patrol, go home and lie in the home's beds, a
   move order takes them at once and they resume after it, and a re-saved game loads autonomous.
 - **World hooks** (engine API, not in the original; serial phases): `PopulationSystem.RequestCampaign` queues a
@@ -270,7 +375,16 @@ holds refuses the second mod.
   adds an unloaded platoon of a SQUAD_TEMPLATE at a walkable point in a ring round a point, with a purse, that loads like a roaming one, is
   kept off screen whatever the keep switches say, is saved also before it first loads and loads back as the same roaming squad (-1 and nothing
   added when no walkable point is found); `Platoon.ModTag` is a free string, saved when set, that finds a mod's platoon again after a load,
-  when platoon ids are given anew; the `VisitTown` command sends a squad running a wandering trader package to a
+  when platoon ids are given anew; `PopulationSystem.SpawnIntoPlayerSquad` makes one
+  character of a CHARACTER or ANIMAL_CHARACTER record as a new game makes the player's (a look rolled for the player's faction, body,
+  starting items, name; a unique claimed as any spawn claims it) and adds it, standing idle on the ground at a walkable point, to a living
+  player squad, leading it when it has no leader. Only player squads: an NPC squad loaded from a save keeps only the save's members, so an
+  added NPC would be lost at the next save or unload (`SpawnPlatoon` adds NPCs). It returns the character's id, or none and adds nothing
+  for another squad, another record type, a point that is not finite or not walkable, a unique already claimed, or the recruit's caps
+  (`max squad size`, `max faction size`). Coop grants the new character to the squad's sole current controller; the overload taking
+  `PlayerId? controller` selects a member of that squad's faction explicitly. Empty or mixed-owner squads require the explicit controller;
+  grants run only at setup, input or slow-world boundaries. Invalid ownership or phase adds nothing and does not claim a unique.
+  The `VisitTown` command sends a squad running a wandering trader package to a
   player town for a stay of N hours, counted from its first step there after the command (it leaves a town that is not public at once, as any
   trader); `BedSystem.PlayerBedRent` prices the player's indoor beds for other factions: set, an NPC must afford it from its squad purse and
   pays the player once it lies in the bed, and a visitor in a player town picks the nearest bed it can afford before the NPC bed search (null

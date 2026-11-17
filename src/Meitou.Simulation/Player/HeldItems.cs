@@ -321,7 +321,7 @@ sealed class HeldItems(PopulationData? data)
 
     /// <summary>
     /// Places the held item (<c>FUN_140715560</c>, <b>Observed</b>): the section must take it
-    /// (<see cref="InventoryCommands.SlotRefusal(string, Data.Fcs.FcsRecordType, string, Inventory?, bool)"/>, a worn slot only what the owner's
+    /// (<see cref="InventoryCommands.SlotRefusal(string, ItemInstance, bool)"/>, a worn slot only what the owner's
     /// race may wear, a limited storage its items, a prosthetic slot a stump of its side); the cell is the drop's, moved inside the section (a
     /// footprint larger than the section is refused); two or more items under it refuse it; one locked on refuses it ("Item is locked in place.");
     /// one of the same kind takes what its stack has room for (the rest stays on the mouse; a full stack takes nothing); any other is swapped.
@@ -390,7 +390,8 @@ sealed class HeldItems(PopulationData? data)
         // the old marks.
         bool changes = into != held.From, death = item.Death;
         var mark = item.Mark;
-        if (changes) (item.Death, item.Mark) = (false, HeldItemTheft.MarkFor(world, held, target.Owner, overwrite: false));
+        string? site = into.Holder == ItemHolder.Site ? into.Site : null;
+        if (changes) (item.Death, item.Mark) = (false, HeldItemTheft.MarkFor(world, held, target.Owner, overwrite: false, site));
         var p = new Placing(world, held, into, target, x, y, limit, buy, sell, trade, changes, death, mark);
         if (under is [var other])
         {
@@ -449,7 +450,7 @@ sealed class HeldItems(PopulationData? data)
                         _heldRequest?.ContainerSessionId ?? held.ContainerSessionId) is { } container)
                 {
                     var grid = container.Contents!;
-                    bool open = opener is not null && HeldPlayer(world).OpenContainer == into.Site && ContainerAccess.ShopOf(world, container) is null;
+                    bool open = opener is not null && HeldPlayer(world).OpenContainer == into.Site;
                     return open ? new(grid, grid, "main", grid.Width, grid.Height, null, container, null) : null;
                 }
 
@@ -460,12 +461,12 @@ sealed class HeldItems(PopulationData? data)
     }
 
     /// <summary>
-    /// A player's character window other than the customer's takes the trade over when in reach; false (after "Out of trading range.") when it is too
-    /// far.
+    /// A player's character window trades when in reach of the trader, one other than the customer's taking the trade over; false (after "Out of
+    /// trading range.") when it is too far.
     /// </summary>
     bool PassTrade(World world, Trading.TradeSystem trade, ItemOwner window, ref CharacterId customer, SimCommand command)
     {
-        if (window.Holder != ItemHolder.Character || window.Character == customer) return true;
+        if (window.Holder != ItemHolder.Character) return true;
         if (!world.Characters.TryResolveNext(window.Character, out int w) || world.Characters.Cold(w) is not { IsPlayer: true })
             return true;
         if (!trade.TradeWith(world, window.Character, _heldPlayerId, command)) return false;
@@ -478,7 +479,7 @@ sealed class HeldItems(PopulationData? data)
     /// </summary>
     string? Refusal(Target target, ItemInstance item)
     {
-        string? refusal = InventoryCommands.SlotRefusal(target.Section, item.Type, item.EquipmentSection, item.Contents,
+        string? refusal = InventoryCommands.SlotRefusal(target.Section, item,
                 item.WearableBy(target.Owner?.Race?.StringId, target.Owner is { } wearer && SquadRegistry.IsAnimal(wearer)));
         if (refusal is null && InventoryCommands.SectionClosed(target.Owner, target.Section))
             refusal = "Can't wear that item.";
@@ -853,13 +854,13 @@ sealed class HeldItems(PopulationData? data)
         if (held.From.Holder == ItemHolder.Stock)
         {
             stock = world.Squads.All.Select(squad => squad.Shop).FirstOrDefault(shop => shop is not null
-                && (held.SourceShop is not null ? ReferenceEquals(shop, held.SourceShop) : ReferenceEquals(shop.Stock, held.Grid)));
+                && (held.SourceShop is not null ? ReferenceEquals(shop, held.SourceShop) : ReferenceEquals(shop.Window, held.Grid)));
             if (stock is not null) world.SystemOf<Trading.TradeSystem>()?.SettleView(world, stock);
         }
         player.Held = null;
         try
         {
-            ReturnHeldCore(world, held, held.From.Holder == ItemHolder.Stock ? stock?.Stock : held.Grid);
+            ReturnHeldCore(world, held, held.From.Holder == ItemHolder.Stock ? stock?.Window : held.Grid);
         }
         finally
         {
@@ -1038,7 +1039,7 @@ sealed class HeldItems(PopulationData? data)
             From = from,
             Grid = grid,
             SourceShop = from.Holder == ItemHolder.Stock
-                ? world.Squads.All.Select(squad => squad.Shop).FirstOrDefault(shop => shop is not null && ReferenceEquals(shop.Stock, grid)) : null,
+                ? world.Squads.All.Select(squad => squad.Shop).FirstOrDefault(shop => shop is not null && ReferenceEquals(shop.Window, grid)) : null,
             Section = section,
             X = x,
             Y = y,

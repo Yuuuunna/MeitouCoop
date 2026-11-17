@@ -421,6 +421,12 @@ sealed class WorldOptions
     public bool NoAudio;
 
     /// <summary>
+    /// <c>--action-log off|squad|everyone</c>: whose task changes go to log_actions.txt from the start (<see cref="Host.ActionLogHost"/>; everyone by
+    /// default, F10 switches it).
+    /// </summary>
+    public Simulation.Ai.ActionLogScope ActionLog = Simulation.Ai.ActionLogScope.Everyone;
+
+    /// <summary>
     /// <c>--audio-gain</c>: the whole mix raised or lowered, in dB (0: the game's levels).
     /// </summary>
     public float AudioGainDb;
@@ -625,7 +631,7 @@ sealed class WorldOptions
         (Post.Upscale.Scale, Post.Upscale.Explicit) = (LowEndRenderScale, true);
         Post.ParticleDivisor = 4;
         ParticleDensity = LowEndParticleDensity;
-        (Anisotropy, TextureQuality, MaterialDistance) = (1, LowEndTextureQuality, 15000);
+        (Anisotropy, TextureQuality, MaterialDistance) = (1, LowEndTextureQuality, LowEndMaterialDistance);
     }
 
     /// <summary>
@@ -652,7 +658,7 @@ sealed class WorldOptions
     /// </summary>
     public const float LowEndObjectDistance = 5000, LowEndObjectLod = 0.25f, LowEndLargeRange = 5050,
         LowEndImpostorDistance = 1150, LowEndLargeImpostorDistance = 1100,
-        LowEndGrassDensity = 0.1f, LowEndRenderScale = 0.83f, LowEndParticleDensity = 0.1f;
+        LowEndGrassDensity = 0.1f, LowEndRenderScale = 0.83f, LowEndParticleDensity = 0.1f, LowEndMaterialDistance = 15000;
 
     /// <summary>
     /// The texture quality <c>--low-end</c> sets (Low).

@@ -29,6 +29,7 @@ public static partial class MachineSave
                 if (!Parts(pair.Key, out int index, out string suffix) || suffix.Length != 0) continue;
                 if (pair.Key != Prefix + index.ToString(CultureInfo.InvariantCulture)) throw new InvalidDataException("Noncanonical legacy town machine row index.");
                 string key = pair.Value;
+                if (key.Contains('/')) continue;
                 if (string.IsNullOrEmpty(key)) throw new InvalidDataException("A legacy town machine has no building identity.");
                 int colon = key.IndexOf(':');
                 var coordinates = colon > 0 ? key[..colon].Split('.') : [];
@@ -54,11 +55,15 @@ public static partial class MachineSave
         }
 
         internal Row? Take(string key) => _pending.Remove(key, out var row) ? row : null;
-        internal void Invalidate(string key) => _pending.Remove(key);
+        internal void Invalidate(string key)
+        {
+            foreach (string pending in _pending.Keys.Where(p => p == key || p.StartsWith(key + "/", StringComparison.Ordinal)).ToArray())
+                _pending.Remove(pending);
+        }
 
         internal void WritePending(FcsRecord camera, IEnumerable<string> invalidated)
         {
-            foreach (string key in invalidated) _pending.Remove(key);
+            foreach (string key in invalidated) Invalidate(key);
             foreach (string key in camera.Strings.Keys.Where(key => Parts(key, out _, out _)).ToArray()) camera.Strings.Remove(key);
             foreach (string key in camera.Ints.Keys.Where(key => Parts(key, out _, out _)).ToArray()) camera.Ints.Remove(key);
             foreach (string key in camera.Floats.Keys.Where(key => Parts(key, out _, out _)).ToArray()) camera.Floats.Remove(key);

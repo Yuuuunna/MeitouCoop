@@ -1,5 +1,6 @@
 using System.Globalization;
 using Meitou.Data.Ui;
+using Meitou.Game.DevTools;
 using Meitou.Simulation;
 
 namespace Meitou.Game.Ui;
@@ -31,6 +32,8 @@ sealed class ScreenRouter(PlayerInterface player)
         if (e.Screen == "editor") player.CharacterEditor.EditorAction(e);
         else if (e.Screen == "file") player.CharacterEditor.Files.FileDialogAction(e);
         else if (e.Screen == FeedbackPanel.FeedbackScreen) player.FeedbackPanel.FeedbackFormAction(e);
+        else if (e.Screen == DebugCharactersLayout.Screen) player.CharactersWindow.Action(e);
+        else if (e.Screen == DebugItemsLayout.Screen) player.ItemsWindow.Action(e);
         else if (player.Frontend.HandleFrontendAction(e)) player.UpdateMenuPause();
         else if (e.Screen == "stats" && e.Action == "select") player.StatsWindow.SelectedStat = e.Text;
         else if (e.Screen == "stats" && e.Action.StartsWith("stat:", StringComparison.Ordinal)) player.StatsWindow.SelectedStat = e.Action[5..];
@@ -50,7 +53,7 @@ sealed class ScreenRouter(PlayerInterface player)
             player.SquadWindows.SquadsAction(e);
             player.FactionWindow.FactionAction(e);
         }
-        else if (e.Screen is "building" or "bench" or "storage") player.Production.MachineAction(e);
+        else if (ProductionWindows.IsMachineScreen(e.Screen)) player.Production.MachineAction(e);
         else if (e.Screen == "loot" && e.Widget == "OpenBagButton") player.TradeWindows.LootBagOpen = !player.TradeWindows.LootBagOpen;
         else if (e.Screen == "loot" && e.Widget == "LimbsButton") player.InventoryWindows.ToggleLimbs(player.TradeWindows.LootBody());
         else if (e.Screen == "trader" && e.Widget == "ArrangeButton" && player.Session.CurrentSnapshot.Trade is { } trade)
@@ -94,6 +97,18 @@ sealed class ScreenRouter(PlayerInterface player)
             return b;
         }
 
+        if (id == DebugCharactersLayout.Screen)
+        {
+            player.CharactersWindow.Bind(b);
+            return b;
+        }
+
+        if (id == DebugItemsLayout.Screen)
+        {
+            player.ItemsWindow.Bind(b);
+            return b;
+        }
+
         if (player.Frontend.BindFrontend(id, b)) return b;
         if (id == "editor")
         {
@@ -107,7 +122,7 @@ sealed class ScreenRouter(PlayerInterface player)
             return b;
         }
 
-        BindFeatureScreen(id, b, layout, lead, pinned);
+        BindFeatureScreen(id, screen, b, layout, lead, pinned);
 
         if (id is "inventory" or "bag" or "limbs" or "trader" or "loot" or "loot-bag") player.InventoryLayout.BindInventoryGeometry(screen, b);
         return b;
@@ -117,7 +132,7 @@ sealed class ScreenRouter(PlayerInterface player)
     /// Hands an in-game screen to the feature that owns it: trade, dialogue, prospecting, tutorials, town, build, level editor, machines, loot,
     /// the character windows and the overview.
     /// </summary>
-    void BindFeatureScreen(string id, UiBindings b, MyGuiLayout layout, CharacterSnapshot? lead, bool pinned)
+    void BindFeatureScreen(string id, string screen, UiBindings b, MyGuiLayout layout, CharacterSnapshot? lead, bool pinned)
     {
         if (id == "trader") player.TradeWindows.BindTraderScreen(b);
         else if (id == "dialogue") player.DialogueWindow.BindDialogueScreen(b);
@@ -127,7 +142,7 @@ sealed class ScreenRouter(PlayerInterface player)
         else if (id == TownPanel.TownScreen) player.TownPanel.BindTownScreen(b);
         else if (id == "build") player.Build.BindBuildScreen(b);
         else if (id == "leveleditor") player.LevelEditorPanel.BindLevelEditorScreen(b);
-        else if (id is "building" or "bench" or "storage") player.Production.BindMachineScreen(id, b);
+        else if (ProductionWindows.IsMachineScreen(screen)) player.Production.BindMachineScreen(screen, b);
         else if (TradeWindows.IsLootScreen(id)) player.TradeWindows.BindLootScreen(id, b);
         else if (id is "inventory" or "stats" or "bag" or "limbs") BindCharacterWindow(id, b, layout, lead, pinned);
         else if (id == "overview") BindOverview(b, layout);
@@ -226,6 +241,18 @@ sealed class ScreenRouter(PlayerInterface player)
     /// </summary>
     internal void AddFaithfulContent(string id, List<UiControl> controls)
     {
+        if (id == DebugCharactersLayout.Screen)
+        {
+            player.CharactersWindow.AddContent(controls);
+            return;
+        }
+
+        if (id == DebugItemsLayout.Screen)
+        {
+            player.ItemsWindow.AddContent(controls);
+            return;
+        }
+
         if (AddFrontendContent(id, controls) || AddFeatureContent(id, controls)) return;
 
         // The bag window has no caption buttons (the vanilla screenshot): OPEN BAG closes it.
@@ -326,7 +353,7 @@ sealed class ScreenRouter(PlayerInterface player)
             return true;
         }
 
-        if (id is "building" or "bench" or "storage")
+        if (ProductionWindows.IsMachineScreen(id))
         {
             player.Production.AddMachineContent(id, controls);
             return true;

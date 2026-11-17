@@ -174,6 +174,7 @@ public sealed class WorldRuntime : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var next = MakeWorld(systems, attachDoors: false);
+        next.ActionLog = World.ActionLog;
         try
         {
             setup?.Invoke(next);

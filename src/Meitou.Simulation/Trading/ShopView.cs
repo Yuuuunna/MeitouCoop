@@ -4,14 +4,15 @@ using Meitou.Simulation.Player;
 namespace Meitou.Simulation.Trading;
 
 /// <summary>
-/// A building shop's trader window (docs/game/economy.md "Building shops", <b>Observed</b> decompile): its goods stay in the stock containers and
-/// the window shows copies of them. Each time the window opens (<c>FUN_1406e6af0</c> makes the shop wrapper <c>FUN_140953850</c> anew) the grid
+/// A shop's trader window (docs/game/economy.md "Building shops", <b>Observed</b> decompile): its goods stay in the stock containers (a squad
+/// shop's in its <see cref="Shop.Stock"/>) and the window (<see cref="Shop.Window"/>) shows copies of them. Each time the window opens (<c>FUN_1406e6af0</c> makes the shop wrapper <c>FUN_140953850</c> anew) the grid
 /// takes a copy of every item of the containers but money (item function 14) by auto-add (<c>FUN_1409528d0</c>; an item with no room grows it by
 /// twice its footprint height, <c>FUN_140954ba0</c>) and is arranged (<c>FUN_140749d30</c>). What the trade changes in the grid goes back to the
 /// containers (the section callbacks <c>FUN_140952c70</c>, <c>FUN_140952cf0</c>, <c>FUN_140952da0</c>): units taken out leave the containers'
 /// matching items (<c>FUN_140952a70</c>), units put in go to the first container that takes them (<c>FUN_1409529e0</c>), and what none takes is
 /// destroyed (<c>FUN_140799af0</c>) while its copy stays in the grid. <b>Engine choice</b>: the write-back compares the grid with what it last
-/// mirrored (<see cref="Write"/>), and units match by stack (<see cref="Inventory.SameStack"/>) where the original matches the record alone.
+/// mirrored (<see cref="Write"/>) where the original reacts to each change; the units that left are taken from the containers' items alike to
+/// them (<see cref="Alike"/>), as the original takes them.
 /// </summary>
 sealed class ShopView
 {
@@ -30,7 +31,7 @@ sealed class ShopView
         var hash = new StateHasher();
         foreach (var box in boxes)
         {
-            hash.Add(Rng.StableHash(box.Fixture.Id));
+            hash.Add(Rng.StableHash(box.Fixture?.Id ?? ""));
             hash.Add(_containerVersions.Read(box.Grid));
         }
         return hash.Value;
@@ -46,25 +47,65 @@ sealed class ShopView
     public bool Pending { get; private set; }
 
     /// <summary>
-    /// Builds the trader window from what <paramref name="boxes"/> hold.
+    /// Builds the trader window from canonical goods. An external refresh preserves active receipts only for matching surviving units;
+    /// a restock or a freshly opened projection starts without old window receipts.
     /// </summary>
-    public void Build(Shop shop, IReadOnlyList<StockBox> boxes)
+    public void Build(Shop shop, IReadOnlyList<StockBox> boxes, bool preserveReceipts = false)
     {
+        var receipts = preserveReceipts
+            ? shop.Window.Items.Where(i => i.Buyback is not null).Select(i => (Sample: i, Receipt: i.Buyback!)).ToList()
+            : null;
         var (columns, rows) = shop.ViewSize;
-        shop.Stock = new Inventory(columns, rows) { StackBonusMult = Shop.StockStackMult };
+        shop.Window = new Inventory(columns, rows) { StackBonusMult = Shop.StockStackMult };
 
         foreach (var box in boxes)
         {
             foreach (var item in box.Grid.Items)
-                if (item.ItemFunction != PlayerSystem.MoneyFunction) Put(shop, item.Copy());
+                if (item.ItemFunction != PlayerSystem.MoneyFunction) PutCopy(shop, item, receipts);
         }
 
-        InventoryCommands.Arrange(shop.Stock);
-        _mirrored = Frozen(Tally(shop.Stock.Items));
+        InventoryCommands.Arrange(shop.Window);
+        _mirrored = Frozen(Tally(shop.Window.Items));
         _containersHash = HashOf(boxes);
         Live = true;
         Pending = false;
     }
+
+    /// <summary>
+    /// Copies one canonical stack, keeping at most its surviving units' receipt coins from the previous window. Sessions remain separate;
+    /// units without an identical receipt-bearing predecessor are ordinary stock. Physical inventories never receive these receipts.
+    /// </summary>
+    static void PutCopy(Shop shop, ItemInstance source, List<(ItemInstance Sample, TradeReceipt Receipt)>? receipts)
+    {
+        var copy = source.Copy();
+        if (receipts is not null)
+        {
+            copy.Buyback = null;
+            for (int i = 0; i < receipts.Count; i++)
+            {
+                var prior = receipts[i];
+                if (prior.Receipt.Coins.Length == 0 || !ReceiptMatches(source, prior.Sample)) continue;
+
+                int count = Math.Min(copy.Quantity, prior.Receipt.Coins.Length);
+                var unit = count == copy.Quantity ? copy : copy.WithQuantity(count);
+                unit.Buyback = prior.Receipt.Take(count);
+                receipts[i] = (prior.Sample, prior.Receipt.Skip(count));
+                Put(shop, unit);
+                if (ReferenceEquals(unit, copy)) return;
+                copy.Quantity -= count;
+            }
+        }
+        Put(shop, copy);
+    }
+
+    /// <summary>
+    /// Goods whose price and identity match the receipt's goods. Nonempty containers cannot be traded and do not inherit receipt provenance.
+    /// </summary>
+    static bool ReceiptMatches(ItemInstance item, ItemInstance prior) => Inventory.SameStack(item, prior)
+        && item.CompanyId == prior.CompanyId && item.Type == prior.Type && item.Level == prior.Level
+        && item.Crafter == prior.Crafter && item.Uniform == prior.Uniform && item.ColourId == prior.ColourId
+        && item.Charges == prior.Charges && item.MaxCharges == prior.MaxCharges && item.AttachSlot == prior.AttachSlot
+        && (item.Contents is null && prior.Contents is null || item.Contents is { Items.Count: 0 } && prior.Contents is { Items.Count: 0 });
 
     /// <summary>
     /// The grid holds goods the containers do not (an older save's stock, read into it): the next <see cref="Write"/> hands them all over.
@@ -83,7 +124,7 @@ sealed class ShopView
     {
         if (!Live) return;
 
-        var now = Tally(shop.Stock.Items);
+        var now = Tally(shop.Window.Items);
         bool changed = false;
 
         foreach (var was in _mirrored)
@@ -115,7 +156,7 @@ sealed class ShopView
     public void Drop(Shop shop)
     {
         var (columns, rows) = shop.ViewSize;
-        shop.Stock = new Inventory(columns, rows) { StackBonusMult = Shop.StockStackMult };
+        shop.Window = new Inventory(columns, rows) { StackBonusMult = Shop.StockStackMult };
         _mirrored = [];
         Live = false;
         Pending = false;
@@ -127,9 +168,9 @@ sealed class ShopView
     /// </summary>
     static void Put(Shop shop, ItemInstance item)
     {
-        if (item.Width > shop.Stock.Width) return;
+        if (item.Width > shop.Window.Width) return;
 
-        while (!shop.Stock.AddTo("main", item)) shop.Stock = Taller(shop.Stock, 2 * item.Height);
+        while (!shop.Window.AddTo("main", item)) shop.Window = Taller(shop.Window, 2 * item.Height);
     }
 
     /// <summary>
@@ -178,13 +219,14 @@ sealed class ShopView
     }
 
     /// <summary>
-    /// Takes <paramref name="units"/> of <paramref name="kind"/> out of the containers, the first ones first.
+    /// Takes <paramref name="units"/> of <paramref name="kind"/> out of the containers, the first ones first, from any item alike to its sample
+    /// (<see cref="Alike"/>), as the original's removal callback does (<c>FUN_140952a70</c>).
     /// </summary>
     static void Remove(IReadOnlyList<StockBox> boxes, Kind kind, int units)
     {
         foreach (var box in boxes)
         {
-            foreach (var item in box.Grid.Items.Where(i => kind.Is(i, i.Contents is not null)).ToList())
+            foreach (var item in box.Grid.Items.Where(i => Alike(i, kind.Sample)).ToList())
             {
                 int take = Math.Min(units, item.Quantity);
 
@@ -196,6 +238,12 @@ sealed class ShopView
             }
         }
     }
+
+    /// <summary>
+    /// Whether the original's item likeness (<c>FUN_14075d510</c>, <b>Verified</b> by decompile) holds: the same record, company (<c>Item+0xc0</c>,
+    /// the save's <c>company sid</c>) and material (<c>+0xc8</c>, <c>material sid</c>); quality, condition and marks are not compared.
+    /// </summary>
+    static bool Alike(ItemInstance a, ItemInstance b) => a.Record == b.Record && a.CompanyId == b.CompanyId && a.MaterialId == b.MaterialId;
 
     /// <summary>
     /// Puts <paramref name="units"/> of <paramref name="kind"/> (a sample of the grid's own items) into the first containers that take them, a bag

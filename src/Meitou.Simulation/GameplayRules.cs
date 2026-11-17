@@ -36,7 +36,10 @@ public sealed record GameplayRules
     /// Searches carried bags and the worn backpack during confiscation and scavenging.
     /// </summary>
     public bool BagSearchFix { get; init; } = true;
-    public bool DoorsCloseBehind { get; init; } = true;
+    /// <summary>
+    /// Cage guards spare captives of their own faction when the authority enables the optional rule.
+    /// </summary>
+    public bool CagesSpareOwn { get; init; }
     /// <summary>
     /// Whether player animals may collect loose items into their bags.
     /// </summary>
@@ -66,7 +69,7 @@ public sealed record GameplayRules
         var population = world.Systems.OfType<PopulationSystem>().FirstOrDefault();
         var ai = world.Systems.OfType<Ai.AiSystem>().FirstOrDefault();
         var production = world.Systems.OfType<Production.ProductionSystem>().FirstOrDefault();
-        var locks = world.Systems.OfType<Locks.LockSystem>().FirstOrDefault();
+        var captives = world.Systems.OfType<Kidnap.CaptiveSystem>().FirstOrDefault();
         return new()
         {
             GlobalDamageMultiplier = bodies?.GlobalDamageMultiplier ?? 1,
@@ -88,7 +91,7 @@ public sealed record GameplayRules
             PunchReachFix = combat?.PunchReachFix ?? true,
             BenchFacingFix = world.BenchFacingFix,
             BagSearchFix = world.BagSearchFix,
-            DoorsCloseBehind = locks?.DoorsCloseBehind ?? true,
+            CagesSpareOwn = captives?.Settings.SpareOwnFaction ?? false,
             AnimalsPickUp = world.SystemOf<PlayerSystem>()?.AnimalsPickUp ?? false,
             SquadSize = population?.Settings.SquadSizeMultiplier ?? 1,
             Population = population?.Settings.PopulationMultiplier ?? 1,

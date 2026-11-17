@@ -208,7 +208,7 @@ public sealed partial class ProductionSystem
         {
             if (input.Rate <= 0) continue;
             float need = input.Rate * amount;
-            while (input.Level < need && input.Count > 0) { input.Count--; input.Level += 1; }
+            while (input.Level < need && input.Count > 0) TakeInput(world, m, input);
             input.Level = MathF.Max(0, input.Level - need);
         }
 
@@ -489,7 +489,7 @@ public sealed partial class ProductionSystem
 
     Meitou.Data.World.ZoneCoordinate? FocusZone(PlayerId viewer) => _focuses.TryGetValue(viewer, out var at) ? Meitou.Data.World.WorldLayout.ZoneOf(at.X, at.Z) : null;
     /// <summary>The items of the player's research benches (where costs are paid from; engine: every bench, the original takes the benches near the player).</summary>
-    IEnumerable<Inventory> Benches(World world, int faction, PlayerId? viewer = null)
+    IEnumerable<(string Site, Inventory Storage)> Benches(World world, int faction, PlayerId? viewer = null)
     {
         var near = FocusZone(viewer ?? PlayerId.Local);
         foreach (var m in world.Machines.All)
@@ -498,14 +498,14 @@ public sealed partial class ProductionSystem
                 continue;
             if (near is { } zone && Meitou.Data.World.WorldLayout.ZoneOf(m.Position.X, m.Position.Z)is var at && (Math.Abs(at.X - zone.X) > 1 || Math.Abs(at.Y - zone.Y) > 1))
                 continue;
-            yield return storage;
+            yield return (m.Site, storage);
         }
     }
 
     int CountInBenches(World world, string item, int faction, PlayerId? viewer = null)
     {
         int n = 0;
-        foreach (var s in Benches(world, faction, viewer))
+        foreach (var (_, s) in Benches(world, faction, viewer))
             foreach (var i in s.Items)
                 if (i.Record == item)
                     n += i.Quantity;
@@ -543,7 +543,7 @@ public sealed partial class ProductionSystem
             foreach (var(item, count)in r.CostAt(ResearchFor(world, faction).Times(id)))
             {
                 int left = count;
-                foreach (var s in Benches(world, faction, recipient))
+                foreach (var (site, s) in Benches(world, faction, recipient))
                     foreach (var i in s.Items.Where(i => i.Record == item).ToList())
                     {
                         int take = Math.Min(left, i.Quantity);
@@ -551,6 +551,7 @@ public sealed partial class ProductionSystem
                         if (i.Quantity == 0)
                             s.Items.Remove(i);
                         left -= take;
+                        if (take > 0) ItemUseObservers.Report(world, ItemUseKind.Research, item, CharacterId.None, site, take, true);
                         if (left == 0)
                             break;
                     }
@@ -714,8 +715,7 @@ public sealed partial class ProductionSystem
         if (command.ContainerSessionId != 0 || world.Machines.Find(command.Site) is null)
         {
             if (world.CommandPlayer(command) is not { } player || player.OpenContainer != command.Site
-                || world.Fixtures.Find(command.Site) is not { Contents: not null } container
-                || ContainerAccess.ShopOf(world, container) is not null) return;
+                || world.Fixtures.Find(command.Site) is not { Contents: not null } container) return;
             var storage = container.Contents!;
             if (command.Issuer is not null && (player.ContainerAccess is not { } access
                 || access.Player != command.Issuer || access.Id != command.ContainerSessionId || access.Fixture != container
@@ -998,8 +998,8 @@ public sealed partial class ProductionSystem
     /// <summary>Lazily creates the machine of a registered town placement with its resolved owner.</summary>
     public Machine? TownWork(World world, TownBuilding building)
     {
-        if (Data(building.BuildingId)is null)
-            return null;
+        if (building.RuntimeKey is { } runtime) return world.Machines.Find(runtime);
+        if (Data(building.BuildingId) is null) return null;
         var site = world.Buildings.Find(building.Key) ?? world.Fixtures.GetTownMachineSite(world, building);
         return site is { Complete: true, Destroyed: false } && site.Record == building.BuildingId ? Ensure(world, site) : null;
     }

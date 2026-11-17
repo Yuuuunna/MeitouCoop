@@ -165,12 +165,6 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     public Dialogue.SquadMemory? Memory { get; set; }
 
     /// <summary>
-    /// Whether a character's dialogue has a sight line (the dialogue system's <see cref="Dialogue.DialogueSystem.HasSightLines"/>, the original's
-    /// Dialogue <c>+0x28</c> flag): a looker without one sets no bandit fight tag (<see cref="BanditFightTag"/>). Null: every looker has one.
-    /// </summary>
-    public Func<World, int, bool>? SightLines { get; set; }
-
-    /// <summary>
     /// Brings the slots and the census up to the table before the looks (<see cref="Sync"/>).
     /// </summary>
     public void Schedule(World world) => Sync(world.Characters);
@@ -723,14 +717,6 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
         /// </summary>
         public Dialogue.SquadMemory? Memory;
         /// <summary>
-        /// Whether a character's dialogue has a sight line (<see cref="AggroSystem.SightLines"/>; null: every one has).
-        /// </summary>
-        public Func<World, int, bool>? SightLines;
-        /// <summary>
-        /// The looker's <see cref="SightLines"/> answer once asked: 0 not yet, 1 yes, -1 no.
-        /// </summary>
-        public sbyte LookerSees;
-        /// <summary>
         /// The looker's slot, faction and squad.
         /// </summary>
         public int Self, Faction, Squad;
@@ -1025,7 +1011,6 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
             Relations = Relations,
             World = world,
             Memory = Memory,
-            SightLines = SightLines,
             Self = i,
             Faction = cold.Faction,
             Squad = cold.SquadId,
@@ -1069,38 +1054,29 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     }
 
     /// <summary>
-    /// The faction <paramref name="cold"/>'s squad is contracted to (<see cref="Scan.Employer"/>): the contract target's (the hirer) for signals 12
-    /// and 15; -1 otherwise.
+    /// The faction <paramref name="cold"/>'s squad is contracted to (<see cref="Scan.Employer"/>): the mission employer's (the hirer) for signal 12,
+    /// the mission town's owner for 15; -1 otherwise.
     /// </summary>
     static int EmployerOf(World world, CharacterCold cold, out bool allies, out bool defending)
     {
         allies = defending = false;
         var table = world.Characters;
 
-        // Contract_DefendPlayerBase (15): the exempt faction is the owner of the player town nearest the platoon leader (FUN_14028a290 against the
-        // town set at the start by FUN_14028a170), not a stored hirer; none without a player town.
-        if (cold.Ai?.Squad.Ai is { Contract.Signal: 15 })
+        // Contract_DefendPlayerBase (15): the exempt faction is the owner of its mission town, the player town nearest the platoon leader when it
+        // started (FUN_14028a290 against the town FUN_14028a170 set), not a stored hirer; none without a player town.
+        if (cold.Ai?.Squad.Ai is { Contract.Signal: 15 } defence)
         {
             defending = true;
-            var from = cold.Ai.Squad.Position;
-            Construction.PlayerTown? nearest = null;
-
-            foreach (var t in world.Buildings.Towns)
-            {
-                if (nearest is null || Vector3.DistanceSquared(t.Position, from) < Vector3.DistanceSquared(nearest.Position, from))
-                    nearest = t;
-            }
-
-            return nearest?.Owner ?? -1;
+            return world.Buildings.FindTown(defence.ContractTown.PlayerTown)?.Owner ?? -1;
         }
 
-        if (cold.Ai?.Squad.Ai is not { Contract.Signal: 12 or 15 } board || board.MissionTarget is not { IsNone: false } id
+        if (cold.Ai?.Squad.Ai is not { Contract.Signal: 12 } board || board.MissionEmployer is not { IsNone: false } id
             || id.Slot >= table.HighWater || table.Previous[id.Slot].Generation != id.Generation || table.Cold(id.Slot) is not { } h)
         {
             return -1;
         }
 
-        allies = board.Contract.Signal == 12;
+        allies = true;
         return h.Faction;
     }
 
@@ -1541,8 +1517,8 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
     }
 
     /// <summary>
-    /// The sensing hooks of the looker's squad package on a sensed character (war assault TEMP_ENEMY and assault targets, hired ally TEMP_ALLY, the
-    /// bandit fight tag), emitted as effects.
+    /// The sensing hooks of the looker's squad package on a sensed character (war assault TEMP_ENEMY and assault targets, hired ally TEMP_ALLY),
+    /// emitted as effects. The sight pass's bandit fight tag is the dialogue system's (<see cref="Dialogue.DialogueSystem"/>, on the update turns).
     /// </summary>
     static void SenseHooks(ref Scan s, EffectBuffer fx, in SenseEntry e, int slot, CharacterCold c, Vector3 at)
     {
@@ -1557,40 +1533,6 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
 
         if (s.EmployerTags && s.Employer >= 0 && c.Faction == s.Employer)
             fx.Emit(s.Self, slot, TagEffect, Dialogue.MemoryTag.TempAlly);
-
-        if (BanditFightTag(ref s, e, c, at))
-            fx.Emit(s.Self, slot, TagEffect, Dialogue.MemoryTag.TempEnemy);
-    }
-
-    /// <summary>
-    /// The sight pass's squad-memory tag (<c>FUN_140859680</c> ending in <c>FUN_1406744a0(looker, target, 4)</c>, <b>Verified</b>; "event 4" in the
-    /// swarm notes is the memory tag TEMP_ENEMY, not a dialogue event): a sensed character that is no ally and not down or an animal, while the
-    /// looker or it is in combat mode or it has a pending crime, with no status town (<see cref="CharacterCold.StatusTown"/>, the original's status
-    /// <c>+0x88</c>: a town entered holds out to 1.5 x its radius) and outside every town's radius, with a bandit (NPC class 8) as looker or target,
-    /// is tagged TEMP_ENEMY by the looker's squad (<c>FUN_1406744a0</c> skips an allied faction and one the looker regards as friendly: the ALLY
-    /// tag). The looker must be free (slave state 0), not an escaped prisoner and without a pending crime of its own (<b>Verified</b>). Only a
-    /// looker whose dialogue has a sight line tags (<see cref="SightLines"/>: the original's sight pass does nothing else while its Dialogue
-    /// <c>+0x28</c> flag is clear). The view gate is <see cref="HookRuns"/>'s; the looker's sleeping is treated as open (engine choice).
-    /// </summary>
-    static bool BanditFightTag(ref Scan s, in SenseEntry e, CharacterCold c, Vector3 at)
-    {
-        if (s.Cold is not { } me || (e.Tags & (SenseTag.Ally | SenseTag.Ko)) != 0 || c.Fighter?.IsAnimal == true || me.SlaveState != 0
-            || me.Escaped || me.Pending is not null || me.IsImprisoned)
-        {
-            return false;
-        }
-
-        if (!(me.InCombat || c.InCombat || c.Pending is not null)) return false;
-        if (me.NpcClass != FundamentalType.Bandit && c.NpcClass != FundamentalType.Bandit) return false;
-        if (s.SightLines is { } lines)
-        {
-            if (s.LookerSees == 0) s.LookerSees = lines(s.World, s.Self) ? (sbyte)1 : (sbyte)-1;
-            if (s.LookerSees < 0) return false;
-        }
-
-        // Inside a town's radius the status town is always set; the radius test also covers a status town not yet written (the arrest system's
-        // pass after a load or a spawn) and a world that keeps none (no Crime part).
-        return c.StatusTown.IsNone && s.Towns is { } towns && AiSystem.TownAt(towns, s.World, at).IsNone;
     }
 
     /// <summary>
@@ -2427,7 +2369,10 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
             if (t < 0) return;
 
             var targetId = table.IdOf(t);
-            world.Defer(new AttackOrder([table.IdOf(slot)], targetId) { Tick = world.Tick + 1, Source = TaskSource.Job, Job = k });
+            world.Defer(new AttackOrder([table.IdOf(slot)], targetId)
+            {
+                Tick = world.Tick + 1, Source = TaskSource.Job, Job = k, Cause = "an attack job of its list",
+            });
             owner.Started++;
             world.EmitSound(new SoundEvent(SoundKind.Alert, table.IdOf(slot), targetId, table.Next[t].Position));   // its alert voice
         }
@@ -2484,7 +2429,10 @@ public sealed class AggroSystem(FactionRelations relations, AggroSettings? setti
             if (t < 0) return;
 
             var targetId = table.IdOf(t);
-            world.Defer(new AttackOrder([table.IdOf(slot)], targetId) { Tick = world.Tick + 1 });
+            world.Defer(new AttackOrder([table.IdOf(slot)], targetId)
+            {
+                Tick = world.Tick + 1, Cause = "holding its ground: an enemy came in range",
+            });
             owner.Started++;
             world.EmitSound(new SoundEvent(SoundKind.Alert, table.IdOf(slot), targetId, table.Next[t].Position));   // its alert voice
         }

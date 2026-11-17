@@ -52,7 +52,10 @@ sealed class QuickMoves(PopulationData? data)
         if (item.Type == FcsRecordType.Blueprint && cold.Faction >= 0)
         {
             // One read whatever Shift says: a second unit would only say "Research already known".
-            if (world.SystemOf<Production.ProductionSystem>()?.Learn(world, item, cold.Faction, quick.Issuer) == true) root.RemoveOne(item);
+            if (world.SystemOf<Production.ProductionSystem>()?.Learn(world, item, cold.Faction, quick.Issuer) != true) return;
+
+            root.RemoveOne(item);
+            ItemUseObservers.Report(world, ItemUseKind.Blueprint, item.Record, table.IdOf(s), null, 1, true);
             return;
         }
 
@@ -126,8 +129,8 @@ sealed class QuickMoves(PopulationData? data)
 
     /// <summary>
     /// One unit's move out of <paramref name="from"/>: a worn one to the main grid (else the open bag, unless it is that bag); a grid one to the
-    /// slot that takes it, a bag onto the back, a prosthetic onto its stump, a bag item to the main grid, a main grid item into the open bag; a live
-    /// animal's shut grid takes nothing. False when nothing took it.
+    /// slot that takes it, a bag onto the back, a prosthetic onto its stump, a bag item to the main grid, a main grid item into the open bag (not
+    /// a container holding items); a live animal's shut grid takes nothing. False when nothing took it.
     /// </summary>
     bool Step(ItemInstance unit, bool worn, CharacterCold cold, Inventory root, Inventory? bag, string from)
     {
@@ -137,15 +140,12 @@ sealed class QuickMoves(PopulationData? data)
         // The worn bag never goes into its own open window (it would hold itself and be lost with its contents, #703): with no room in the
         // grid it stays on, as in the original.
         if (worn)
-            return !shut && root.AddTo("main", unit) || unit.Contents != bag && (bag?.AddTo("backpack_content", unit) ?? false);
-        if (InventoryCommands.TryEquip(root, unit, cold)) return true;
-        if (unit.Type == FcsRecordType.Container && unit.Contents is not null && from == "main"
-                && !root.Items.Exists(i => i.Section == "backpack_attach"))
         {
-            (unit.Section, unit.X, unit.Y) = ("backpack_attach", 0, 0);
-            root.Items.Add(unit);
-            return true;
+            return !shut && root.AddTo("main", unit)
+                || unit.Contents != bag && InventoryCommands.FitsInBag(unit) && (bag?.AddTo("backpack_content", unit) ?? false);
         }
+        if (InventoryCommands.TryEquip(root, unit, cold)) return true;
+        if (from == "main" && InventoryCommands.TryWearBag(root, unit, cold)) return true;
         if (unit.Type == FcsRecordType.LimbReplacement && data?.Items.Limb(unit.Record) is { LimbSlot: >= 0 and <= 3 } limb
             && cold.Medical?.LimbPart(limb.LimbSlot) is { Limb: Bodies.LimbState.Stump })
         {
@@ -165,7 +165,7 @@ sealed class QuickMoves(PopulationData? data)
         }
         if (from == "backpack_content") return !shut && root.AddTo("main", unit);   // out of the open bag into the main grid
 
-        return from == "main" && bag is not null && bag.AddTo("backpack_content", unit);
+        return from == "main" && bag is not null && InventoryCommands.FitsInBag(unit) && bag.AddTo("backpack_content", unit);
     }
 
     /// <summary>

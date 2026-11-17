@@ -486,6 +486,7 @@ sealed class GameSaves(GameHost host)
             {
                 loaded = SaveLoader.Load(world, read.Result, data, loadOptions ?? new SaveLoadOptions { Appearances = data.Appearances });
                 host.Modding.RestoreModData(world, read.Result);
+                host.Modding.DropUnownedAutonomy(world);
                 if (world.Squads.Find(world.Player.Squad) is { Members.Count: > 0 } squad)
                 {
                     world.Player.Selection.Clear();
@@ -655,6 +656,8 @@ sealed class GameSaves(GameHost host)
             population.Settings.FastZoneHopping = gameplay.FastZoneHopping;
         foreach (var ai in host.LocalSession.World.Systems.OfType<Simulation.Ai.AiSystem>()) ai.Settings.TownAttacks = gameplay.TownAttacks;
         foreach (var combat in host.LocalSession.World.Systems.OfType<Simulation.Combat.CombatSystem>()) combat.StuckLimit = gameplay.HarpoonLimit;
+        foreach (var captives in host.LocalSession.World.Systems.OfType<Simulation.Kidnap.CaptiveSystem>())
+            captives.Settings.SpareOwnFaction = host.Config.CagesSpareOwn;
     }
 
     /// <summary>
@@ -690,6 +693,7 @@ sealed class GameSaves(GameHost host)
                 FastZoneHopping = Gameplay.FastZoneHopping,
             },
             Ai = new Simulation.Ai.AiSettings { TownAttacks = Gameplay.TownAttacks },
+            Captives = new Simulation.Kidnap.CaptiveSettings { SpareOwnFaction = host.Config.CagesSpareOwn },
             Construction = new Simulation.Construction.ConstructionSettings { BuildingSpeed = (settings ?? Difficulty)[5], EdgeGap = SiteEdgeGap },
             Production = new Simulation.Production.ProductionSettings { ProductionOption = (settings ?? Difficulty)[3],
                 ResearchOption = (settings ?? Difficulty)[4], EdgeGap = SiteEdgeGap, UnloadedProduction = host.Config.UnloadedProduction },
@@ -699,7 +703,6 @@ sealed class GameSaves(GameHost host)
             Combat = new Simulation.Combat.CombatOptions { SelfApproach = false, TickMedical = false, RecordLog = host.Duel.IsDuel,
                 AttackSlots = host.Config.AttackSlotsOption, StuckLimit = Gameplay.HarpoonLimit, LateDefences = host.Config.LateDefences,
                 GunnerFacesBarrel = host.Config.FixGunnerFacing, PunchReachFix = host.Config.FixPunchReach },
-            DoorsCloseBehind = host.Config.DoorsCloseBehind,
             AnimalsPickUp = host.Config.AnimalsPickUp,
             AnimationLengths = host.AnimationLengths,
             AnimationLibrary = host.AnimationLibrary,
