@@ -87,6 +87,11 @@ sealed partial class GameHost(
     /// </summary>
     public IDisposable? Splash { get; init; }
 
+    /// <summary>
+    /// How the session's game data was read, with the code mods' data phase (docs/modding.md "Data phase"); null: read without one.
+    /// </summary>
+    internal Meitou.Modding.ModDataPhase? DataPhase { get; init; }
+
     #endregion
 
     #region Features
@@ -178,6 +183,10 @@ sealed partial class GameHost(
     /// The corpse flies.
     /// </summary>
     internal CorpseFlies CorpseFlies = null!;
+    /// <summary>
+    /// The animations' dust kicks on dry ground.
+    /// </summary>
+    internal DryGroundEffects DryGround = null!;
 
     /// <summary>
     /// The character editor's host side.
@@ -263,6 +272,7 @@ sealed partial class GameHost(
         Debris = new(this);
         Decapitation = new(this);
         CorpseFlies = new(this);
+        DryGround = new(this);
 
         CharacterEditor = new(this);
         LevelEditorHost = new(this);
@@ -720,6 +730,8 @@ sealed partial class GameHost(
             clock: clock, simulation: settings, systems: systems, walkability: walkability);
 
         LocalSession.World.BenchFacingFix = Config.FixBenchFacing;
+        LocalSession.World.PrisonPoseFix = Config.FixPrisonPose;
+        LocalSession.World.GroundRepair = Config.FixGround;
         LocalSession.World.BagSearchFix = Config.FixBagSearch;
         LocalSession.World.TakeIntoBackpack = Config.TakeIntoBackpack;
         LocalSession.World.ActionLog = ActionLogs.Log;
@@ -1000,6 +1012,7 @@ sealed partial class GameHost(
         if (start is not null)
         {
             PlayerSquad = Population.StartPlayer(LocalSession.World, start);
+            LocalSession.World.TellReady(fromSave: false);
             var lead = LocalSession.World.Characters.Previous[PlayerSquad.Leader.Slot].Position;
             target = lead;
             Console.WriteLine($"player    {PlayerSquad.Members.Count} characters, leader at {lead.X:0}, {lead.Z:0}");
@@ -1039,6 +1052,7 @@ sealed partial class GameHost(
             // The frame clock DrawWorld gives the foliage sway: a recorded flight poses the same every take.
             PoseClock = () => AnimClock ? AnimSeconds : RealTime.Elapsed.TotalSeconds,
             SoakClock = () => Session.Clock.GameSeconds,
+            MotionClock = () => Session.Clock.GameSeconds + Session.SimulationAlpha * Session.SimulationStepSeconds,
             RainWetness = () => Gpu.Surfaces?.Wetness ?? 0,
         };
     }
@@ -1433,6 +1447,7 @@ sealed partial class GameHost(
         UpdateWakes();
         UpdateSplashes();
         Modding.UpdateModHits();
+        Modding.UpdateModFaults();
         Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Blood, "blood marks");
 
         Online.UpdateFoliageOwnership();

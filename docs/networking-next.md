@@ -485,6 +485,38 @@ publication retain the 32 MiB expanded-byte limit, including framing within the 
 the existing 256 KiB bound and against the publication that applies them. Schema metadata distinguishes compressed JSON from binary fields.
 Raw `WorldViewCodec.EncodeComponent`, Events encoding and event-retention/critical-fragment byte accounting remain unchanged.
 
+### Absolute bulk and motion compression
+
+**Observed** (`AbsolutePayloadCompression`, `GameViewProtocol`, `MotionReplicationProducer`): complete ordinary component batches and
+status-effect definition tables may use an independent `MBCF` envelope: four ASCII magic bytes, version `01`, exact uncompressed
+little-endian int32 length, then one Brotli stream (quality 1, window 22). Bulk/definitions consider payloads from 1024 bytes; motion
+considers batches from 256 bytes. The envelope must save both 128 bytes and one eighth of the original or the original bytes are sent.
+There is no dictionary from an earlier publication, delay to accumulate packets, changed precision or changed publication frequency.
+
+Both received and expanded lengths are checked before allocating output. Bulk/definitions retain the 32 MiB bound and aggregate
+expanded-component accounting; a motion envelope retains the negotiated datagram limit, at most 1150 bytes. Decode requires the stream
+to finish, consume every input byte and write exactly the declared length, followed by the unchanged inner-format checks. The magic
+cannot be a valid definition count, packed-frame length or canonical `MTN2` header. Nested envelopes do not pass inner validation.
+
+Bulk manifests, SHA-256, offsets, retained retransmission bytes and cumulative ACKs describe the final compressed representation.
+Only after the complete bulk digest matches does the receiver unpack the publication. Motion compression wraps the final state
+packet after canonical serialization; grouping, sequences, revisions, epochs, server ticks and interpolation history are unchanged.
+Reliable lifecycle checkpoints still use canonical `MTN2`. The `EngineBuild` identity rejects older peers before these formats are used.
+
+### Status effects and head targets
+
+**Observed** (component schema): fields 1063/1064 publish faction total/cap-counted living heads; character field 2101 publishes nullable
+head targets (one absent byte, or one present byte plus X/Y/Z float32). Field 2102 is the complete active effect reading list: u16 count;
+nonempty lists add int64 tick, float32 tick duration, a 32-byte definition digest, and 14 bytes per effect (u16 definition index,
+float64 remaining game hours, int32 stacks). Positive infinity denotes a permanent effect. A clock-only advance does not change this
+component; the receiver calculates display time and waits for authority to remove the effect.
+
+Field 2103 is the matching bounded definition table, optionally `MBCF` compressed. Each definition has its ID, name, description, tone,
+stacking policy, maximum stacks and exact stat modifiers. Definitions use strict UTF-8, at most 4096 entries and 65536 description bytes
+each, subject to the aggregate publication bound. The digest binds readings to the exact encoded definition table; delivery in either
+order cannot attach a reading to the wrong definition. Metadata caching, recipient privacy and visibility withdrawal are specified in
+[networking](networking.md#head-targets-status-effects-and-faction-counts).
+
 The receiver and renderer share a monotonic authority-clock estimate. Receive-side sampling consumes
 due animation transitions while content/GPU loading has no renderer callbacks; renderer frame deltas do
 not advance the clock a second time. The estimate never presents beyond received server time, keeps a

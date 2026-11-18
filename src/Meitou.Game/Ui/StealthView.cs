@@ -122,6 +122,12 @@ sealed class StealthView(PlayerInterface player)
     const float UprightHead = 12, LyingHead = 8;
 
     /// <summary>
+    /// The drawn head's height above the feet of a standing character of the usual size (measured, see <see cref="UprightHead"/>); a standing
+    /// tag rises over a taller one's head (a scaled-up race) in proportion, so it keeps clear of the face.
+    /// </summary>
+    const float StandingHead = 17.4f;
+
+    /// <summary>
     /// Whether the world leaves a character undrawn (above the viewed floor, or inside a closed building): its tag shows only while it is selected.
     /// </summary>
     public Func<CharacterId, bool>? HiddenInWorld { get; set; }
@@ -238,15 +244,18 @@ sealed class StealthView(PlayerInterface player)
     }
 
     /// <summary>
-    /// The point a name tag, task bar or speech bubble stands on (Meitou's: the original's anchor is not mapped): over a standing character's height,
-    /// or just over the drawn head of one lying down, whose body its clip may lay away from its feet (a sleeper's from the bed's use node onto the
+    /// The point a name tag, task bar or speech bubble stands on (Meitou's: the original's anchor is not mapped): over a standing character's height
+    /// (raised over a taller one's drawn head, <see cref="StandingHead"/>), or just over the drawn head of one lying down, whose body its clip may lay away from its feet (a sleeper's from the bed's use node onto the
     /// mattress).
     /// </summary>
     internal Vector3 TagAnchor(CharacterSnapshot c, Vector3 feet)
     {
-        var standing = feet + new Vector3(0, PlayerInterface.CharacterHeight + 4, 0);
+        const float tagHeight = PlayerInterface.CharacterHeight + 4;
+        var standing = feet + new Vector3(0, tagHeight, 0);
         if (DrawnHead?.Invoke(c.Id) is not { } head) return standing;
 
+        float rise = MathF.Max(tagHeight, (head.Y - feet.Y) * tagHeight / StandingHead);
+        standing = feet + new Vector3(0, rise, 0);
         float lying = Math.Clamp((UprightHead - (head.Y - feet.Y)) / (UprightHead - LyingHead), 0, 1);
         return Vector3.Lerp(standing, head + new Vector3(0, 4, 0), lying);
     }
@@ -266,9 +275,9 @@ sealed class StealthView(PlayerInterface player)
     string? _taskBarTrack;
 
     /// <summary>
-    /// The floating progress bar over a player character at work (<c>FloatingProgressBar::ProgressBarWidget</c>, the <c>Kenshi_ProgressBarPanel</c>
-    /// layout, <b>Verified</b>): the bar's fill and the centred caption of <see cref="CharacterSnapshot.Bar"/>. It stands just above the name tag
-    /// (the original's anchor is not mapped).
+    /// The floating progress bar over a player character at work, or a code mod's over any character (<c>FloatingProgressBar::ProgressBarWidget</c>,
+    /// the <c>Kenshi_ProgressBarPanel</c> layout, <b>Verified</b>): the bar's fill and the centred caption of <see cref="CharacterSnapshot.Bar"/>. It
+    /// stands just above the name tag (the original's anchor is not mapped). Another character's bar shows only while that character is drawn.
     /// </summary>
     internal void AddTaskBars(List<UiControl> controls)
     {
@@ -282,6 +291,7 @@ sealed class StealthView(PlayerInterface player)
         {
             var c = all[i];
             if (c.Bar is not { } bar || c.CarriedBy != CharacterId.None) continue;
+            if (!c.IsPlayer && !IsDrawn(c.Id)) continue;
 
             var feet = player.Where(c);
             if (Vector3.DistanceSquared(player.Eye, feet) >= NameTagRangeSquared) continue;
@@ -291,6 +301,16 @@ sealed class StealthView(PlayerInterface player)
             float y = (head.Y - 8 * scale - tag) / player.Height - root.Position.Height;
             AddTaskBar(controls, TaskBarLayout, root, root.Position with { X = x, Y = y }, bar, $"taskbar-{n++}-");
         }
+    }
+
+    /// <summary>
+    /// Whether another character's bar may show: it is not hidden indoors or above the viewed floor, and is drawn (within the NPC view range).
+    /// </summary>
+    bool IsDrawn(CharacterId id)
+    {
+        if (HiddenInWorld?.Invoke(id) == true) return false;
+
+        return DrawnHead is not { } drawn || drawn(id) is not null;
     }
 
     /// <summary>

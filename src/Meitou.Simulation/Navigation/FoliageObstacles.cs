@@ -12,7 +12,7 @@ namespace Meitou.Simulation.Navigation;
 internal sealed class FoliageObstacles : IDisposable
 {
     /// <summary>
-    /// Zones kept at most; all are dropped when more would be.
+    /// Zones kept at most; when more would be, all are dropped but the kept ones of the ring being asked for.
     /// </summary>
     const int MaxCachedFoliageZones = 64;
     /// <summary>
@@ -44,6 +44,12 @@ internal sealed class FoliageObstacles : IDisposable
     /// </summary>
     FoliageCatalog? _foliageCatalog;
     System.Collections.Frozen.FrozenSet<(int X, int Z)>? _ownership;
+    /// <summary>
+    /// The foliage layout cache the placements read and write (the renderer's files: the same key), made with the catalog; null without one.
+    /// The navmesh placed every zone it gathered again on every load (some 3 CPU-s of a save's warm-up).
+    /// </summary>
+    FoliageLayoutCache? _layoutCache;
+
     /// <summary>
     /// The player's towns the placement shares; null: none are ever added.
     /// </summary>
@@ -105,27 +111,59 @@ internal sealed class FoliageObstacles : IDisposable
         {
             _ownership = ownership;
             _foliageZones.Clear();
-            while (_foliagePool.TryTake(out var previous))
-                previous.Dispose();
+            while (_foliagePool.TryTake(out var previous)) previous.Dispose();
         }
 
         UseTowns(_runtime?.FoliageTowns ?? PlayerFoliageTowns.None);
-        var missing = zones.Where(z => !_foliageZones.ContainsKey(z)).ToList();
-        if (missing.Count > 0)
+
+        // The kept lists are taken before anything is dropped: a zone of this call that was kept is not placed again, so it must not be read
+        // back from a store that was emptied meanwhile.
+        var lists = new FoliageObstacle[zones.Count][];
+        var missing = new List<int>();
+        for (int i = 0; i < zones.Count; i++)
         {
-            if (_foliageZones.Count + missing.Count > MaxCachedFoliageZones)
-                _foliageZones.Clear();
-            _foliageCatalog ??= FoliageCatalog.Load(_db);
-            if (_overlayTiles.Count > 6)
-                _overlayTiles.Clear();
-            var options = new ParallelOptions
-            {
-                MaxDegreeOfParallelism = Math.Max(1, Math.Min(missing.Count, Environment.ProcessorCount - 1))
-            };
-            Parallel.ForEach(missing, options, z => PlaceFoliageZone(z));
+            if (_foliageZones.TryGetValue(zones[i], out var kept)) lists[i] = kept;
+            else missing.Add(i);
         }
 
-        return[..zones.Select(z => _foliageZones.TryGetValue(z, out var a) ? a : [])];
+        if (missing.Count == 0) return lists;
+
+        if (_foliageZones.Count + missing.Count > MaxCachedFoliageZones) DropAllBut(zones, lists);
+        LoadCatalog();
+        if (_overlayTiles.Count > 6) _overlayTiles.Clear();
+
+        var options = new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Math.Min(missing.Count, Environment.ProcessorCount - 1)) };
+        Parallel.ForEach(missing, options, i => lists[i] = PlaceFoliageZone(zones[i]));
+        return lists;
+    }
+
+    /// <summary>
+    /// Drops every kept zone but those of <paramref name="zones"/> that have a list in <paramref name="lists"/> (the ring being asked for, which
+    /// the next zone's ring shares).
+    /// </summary>
+    void DropAllBut(IReadOnlyList<ZoneCoordinate> zones, FoliageObstacle[][] lists)
+    {
+        _foliageZones.Clear();
+        for (int i = 0; i < zones.Count; i++)
+            if (lists[i] is { } kept) _foliageZones[zones[i]] = kept;
+    }
+
+    /// <summary>
+    /// Loads the foliage catalog and opens the layout cache, the first time a zone is placed.
+    /// </summary>
+    void LoadCatalog()
+    {
+        if (_foliageCatalog is not null) return;
+
+        _foliageCatalog = FoliageCatalog.Load(_db);
+        try
+        {
+            _layoutCache = new FoliageLayoutCache(_install, _foliageCatalog, FoliageWorld.ReadTowns(_db, _levels, _ownership));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _layoutCache = null;
+        }
     }
 
     /// <summary>
@@ -138,12 +176,12 @@ internal sealed class FoliageObstacles : IDisposable
     }
 
     /// <summary>
-    /// Places one zone's foliage on a pooled foliage world and keeps its obstacles.
+    /// Places one zone's foliage on a pooled foliage world, keeps its obstacles and returns them.
     /// </summary>
-    void PlaceFoliageZone(ZoneCoordinate z)
+    FoliageObstacle[] PlaceFoliageZone(ZoneCoordinate z)
     {
         if (!_foliagePool.TryTake(out var world))
-            world = new FoliageWorld(_install, _db, _levels, _foliageCatalog, _overlayTiles, ownedTowns: _ownership);
+            world = new FoliageWorld(_install, _db, _levels, _foliageCatalog, _overlayTiles, _layoutCache, ownedTowns: _ownership);
 
         world.ExtraTowns = _placedWith.Towns;
 
@@ -166,7 +204,9 @@ internal sealed class FoliageObstacles : IDisposable
                 }
             }
 
-            _foliageZones[z] = [..list];
+            FoliageObstacle[] obstacles = [.. list];
+            _foliageZones[z] = obstacles;
+            return obstacles;
         }
         finally
         {

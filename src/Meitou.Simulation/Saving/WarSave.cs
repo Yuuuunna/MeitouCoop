@@ -283,7 +283,9 @@ internal static class WarSave
 
         foreach (var f in game.Factions)
         {
-            if (f.War is not { } war || population.WarOf(data.FactionIndex(f.Id)) is not { } m) continue;
+            if (population.WarOf(data.FactionIndex(f.Id)) is not { } m) continue;
+
+            var war = f.War ??= NewWar(game);
             war.Strings["faction"] = f.Id;
             war.Ints["fwc id"] = m.NextId;
             war.Floats["updatetime"] = (float)m.UpdateTime;
@@ -350,6 +352,19 @@ internal static class WarSave
             war.Ints["num plats"] = k;
             for (int i = k; i < old; i++) Remove(war, i, [], ["forces"], [], ["p"], [CarryPlatoonKey]);
         }
+    }
+
+    /// <summary>
+    /// Adds an empty WAR_SAVESTATE to <c>quick.save</c> for a faction the save has none for: an imported save drops them all (#952), and the original
+    /// writes one per faction.
+    /// </summary>
+    static FcsRecord NewWar(SaveGame game)
+    {
+        int n = SaveBuilder.NextNumber(game.Quick);
+        var war = new FcsRecord { Type = (int)FcsRecordType.WarSavestate, Id = n, Name = "0", StringId = $"{n}-{SaveFolder.QuickSaveName}-INGAME" };
+        game.Quick.Records.Add(war);
+        game.Quick.Data.NextId = n;
+        return war;
     }
 
     /// <summary>

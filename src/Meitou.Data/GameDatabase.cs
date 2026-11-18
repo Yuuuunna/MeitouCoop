@@ -67,6 +67,12 @@ public sealed class GameDatabase
     /// </summary>
     public List<string> Translations { get; } = [];
 
+    /// <summary>
+    /// A fingerprint of each set of changes code merged after the data files (<see cref="Change"/>: a code mod's data phase, docs/modding.md "Data
+    /// phase"), in order, for the caches keyed on what the records were made from; empty when no code changed them.
+    /// </summary>
+    public List<string> CodeEdits { get; } = [];
+
     #endregion
 
     #region Loading
@@ -78,9 +84,11 @@ public sealed class GameDatabase
 
     /// <summary>
     /// Reads and applies every file of <paramref name="loadOrder"/>: the core files, the language's core translation, the mods, then the translation
-    /// of the first mod that has one (docs/formats/localisation.md, "Data translation").
+    /// of the first mod that has one (docs/formats/localisation.md, "Data translation"). <paramref name="edit"/> (the code mods' data phase,
+    /// docs/modding.md "Data phase") runs on the merged records after the translations and before the loader's own passes (wall masters, gear
+    /// blueprints), so its changes are treated like a last data file's.
     /// </summary>
-    public static GameDatabase Load(LoadOrder loadOrder)
+    public static GameDatabase Load(LoadOrder loadOrder, Action<GameDatabase>? edit = null)
     {
         var db = new GameDatabase();
         db.Issues.AddRange(loadOrder.Issues);
@@ -97,6 +105,7 @@ public sealed class GameDatabase
         if (!coreTranslated) db.LoadTranslation(loadOrder.Language.CoreTranslationFile);
         db.LoadTranslation(loadOrder.Language.ModTranslationFile);
         db.DropTranslationOnlyRecords();
+        edit?.Invoke(db);
         db.AddWallMasters();
         db.AddGearBlueprints();
         return db;
@@ -285,6 +294,10 @@ public sealed class GameDatabase
     /// </summary>
     static void CopyFields(GameRecord from, GameRecord to)
     {
+        to.BoolTable.EnsureCapacity(to.BoolTable.Count + from.BoolTable.Count);
+        to.FloatTable.EnsureCapacity(to.FloatTable.Count + from.FloatTable.Count);
+        to.IntTable.EnsureCapacity(to.IntTable.Count + from.IntTable.Count);
+        to.StringTable.EnsureCapacity(to.StringTable.Count + from.StringTable.Count);
         foreach (var (k, v) in from.BoolTable) to.BoolTable[k] = v;
         foreach (var (k, v) in from.FloatTable) to.FloatTable[k] = v;
         foreach (var (k, v) in from.IntTable) to.IntTable[k] = v;
@@ -306,6 +319,17 @@ public sealed class GameDatabase
         Headers[fileName] = new(file.Version, file.Author, file.Description);
         foreach (var record in file.Records)
             Apply(record, fileName);
+    }
+
+    /// <summary>
+    /// Merges one record change made by code after the data files (a code mod's data phase, docs/modding.md "Data phase") by the rules of a file's
+    /// record, as if the file <paramref name="by"/> listed it after everything loaded so far; <paramref name="by"/> is not added to
+    /// <see cref="Files"/>, and problems are <see cref="Issues"/> as a file's are.
+    /// </summary>
+    public void Change(FcsRecord change, string by)
+    {
+        Version++;
+        Apply(change, by);
     }
 
     /// <summary>
@@ -374,6 +398,7 @@ public sealed class GameDatabase
         foreach (var (list, refs) in source.References)
         {
             var target = record.ReferenceList(list);
+            target.EnsureCapacity(target.Count + refs.Count);   // grown once (fewer needed when some repeat or go)
             foreach (var r in refs)
             {
                 if (r.IsRemoved) target.Remove(r.TargetStringId);
@@ -415,6 +440,9 @@ public sealed class GameDatabase
     /// </summary>
     static void Merge<T>(Dictionary<string, T> into, OrderedDictionary<string, T> from)
     {
+        // Grown once to hold them all (fewer when keys repeat): set one by one, a record's tables grew by doubling, a quarter of a heavy mod
+        // list's load.
+        if (from.Count > 0) into.EnsureCapacity(into.Count + from.Count);
         foreach (var (k, v) in from) into[k] = v;
     }
 

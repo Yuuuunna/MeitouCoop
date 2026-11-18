@@ -446,7 +446,7 @@ public sealed class AnimationSystem(
         _ when CrouchGoal(cold) != 0 && SquatClip >= 0 => SquatClip,
         // The lock picker plays the cage's `animation lockpick`, else the medic clip every update it picks
         // (Task_PickLock, FUN_140359160; the crawler's kneeling clip is chosen in Crawl).
-        _ when cold.PickingLock is not null && cold.PickWork.Tick >= tick - 1
+        _ when (cold.PickingLock is not null || cold.DoorWay is not null) && cold.PickWork.Tick >= tick - 1
             => (cold.PickWork.Clip is { } pick ? SitClipOf(pick) : -1) is >= 0 and var picking ? picking : TreatingClip,
         CharacterTask.Build or CharacterTask.DeliverMaterials or CharacterTask.Prospect => TreatingClip,
         // A medic kneels only at a patient keeping still (Task_FirstAid's update plays the clip; FirstAidSystem);
@@ -556,6 +556,7 @@ public sealed class AnimationSystem(
         var next = table.Next;
         var wantedLower = s_lowerScratch ??= [];
         var wantedUpper = s_upperScratch ??= [];
+        _prisonPoseFix = world.PrisonPoseFix;   // every partition writes the same value
         for (int i = part.Start; i < part.End; i++)
         {
             if (!prev[i].Alive || prev[i].Dormant || !world.Steps(i)) continue;
@@ -1063,7 +1064,7 @@ public sealed class AnimationSystem(
         // beds"; #733: a body put in a bed lay on the floor by it).
         if (!inCage && !inBed && HoldsForRagdoll(a, down, carried, ragdoll)) return Vector2.Zero;
 
-        UpdateFallAndGetUp(a, cold, down, carried, crawling, inBed, inCage, ragdoll);
+        UpdateFallAndGetUp(a, cold, down, carried, crawling, inBed, inCage, ragdoll, FirstAid.FirstAidSystem.AtTreatment(cold, task));
         int technique = TechniqueAndAction(a, cold, speed, dt, down, carried, fight);
         bool fullTechnique = technique >= 0 && Library.Definitions[technique].Area == AnimationArea.All;
 
@@ -1081,7 +1082,7 @@ public sealed class AnimationSystem(
             wanted.Add((technique, 1));
         }
 
-        if (!down && !carried) AddArmOverlay(a, cold, stance, crawling, speed, wanted);
+        if (!down && !carried) AddArmOverlay(a, cold, stance, crawling, inCage, speed, wanted);
 
         var (lift, liftTime) = PickLift(a, cold, task, down, carried, wanted, ref legs);
 
@@ -1327,18 +1328,19 @@ public sealed class AnimationSystem(
     /// <summary>
     /// A carrier (FUN_140520000, the arm overlay update every frame): the carrying arm's overlay clip whatever else plays, a technique included
     /// (docs/animation.md "A carrier"). A character that carries nothing and stands holds its hurt parts (FUN_140520000 -> FUN_14051fe60,
-    /// docs/animation.md "Injury holds").
+    /// docs/animation.md "Injury holds"); a prisoner does too, unless <see cref="World.PrisonPoseFix"/>.
     /// </summary>
-    void AddArmOverlay(CharacterAnimation a, CharacterCold cold, in AnimationStance stance, bool crawling, float speed,
+    void AddArmOverlay(CharacterAnimation a, CharacterCold cold, in AnimationStance stance, bool crawling, bool inCage, float speed,
         List<(int Index, float Weight)> wanted)
     {
         bool swims = cold is { WaterState: 3, Race.Swims: true };
         bool armsFree = !stance.CarryingLeft && !stance.CarryingRight;
+        bool holds = armsFree && !crawling && speed <= PainHoldMaxSpeed && !swims && !(inCage && _prisonPoseFix);
         if (stance.CarryingLeft && CarryArmClip >= 0)
         {
             wanted.Add((CarryArmClip, 1));
         }
-        else if (armsFree && !crawling && speed <= PainHoldMaxSpeed && !swims && PainHold(a, cold, stance, wanted) is >= 0 and var hold)
+        else if (holds && PainHold(a, cold, stance, wanted) is >= 0 and var hold)
         {
             wanted.Add((hold, 1));
         }
@@ -1390,10 +1392,10 @@ public sealed class AnimationSystem(
         if (cold.StandingUp) FinishStandUp(a, cold, moving: a.HeldIndex < 0);
         else if (CrouchGoal(cold) != 0) FinishCrouch(a, cold, CrouchGoal(cold));
 
-        if (cold.LeavingBed && !cold.BedExitDone) FinishBedExit(a, cold);
-
         // The end of the task that crouched calls the stance setter with (0, 0).
         else if (cold.Crouched && cold.Ai is not null) cold.Crouched = false;
+
+        if (cold.LeavingBed && !cold.BedExitDone) FinishBedExit(a, cold);
     }
 
     /// <summary>
@@ -1418,7 +1420,7 @@ public sealed class AnimationSystem(
     {
         if (cold.StandingUp && held == SquatClip) return -1;
         if (held == SquatClip && CrouchGoal(cold) != 0) return CrouchGoal(cold);
-        if (cold.PickingLock is not null && cold.PickWork.Tick >= tick - 1) return cold.PickWork.Rate;
+        if ((cold.PickingLock is not null || cold.DoorWay is not null) && cold.PickWork.Tick >= tick - 1) return cold.PickWork.Rate;
 
         bool seated = task == CharacterTask.Rest && cold.Ai?.SitClip is not null;
         return task == CharacterTask.Operate || seated ? OperateRateOf(task, cold) : 1;
@@ -1426,9 +1428,11 @@ public sealed class AnimationSystem(
 
     /// <summary>
     /// Starts or ends the character's fall and getting-up action, from its posture and ragdoll this tick, and records the posture for the next one.
+    /// <paramref name="atTreatment"/>: kneeling at a treatment, which a leg coming back up does not interrupt
+    /// (<see cref="FirstAid.FirstAidSystem.AtTreatment"/>).
     /// </summary>
     void UpdateFallAndGetUp(CharacterAnimation a, CharacterCold cold, bool down, bool carried, bool crawling, bool inBed,
-        bool inCage, RagdollView ragdoll)
+        bool inCage, RagdollView ragdoll, bool atTreatment)
     {
         // Held in a cage or on a pole, it plays the fixture's own pose whatever it was doing: a fall left over from before it was put in, or a
         // get-up, would show over it (docs/game/locks.md "Cages and beds": a captive lies in a cage or stands on a pole, and an awake one stands at
@@ -1453,7 +1457,7 @@ public sealed class AnimationSystem(
 
         // The leg back up or Stand Up from staying low: posture 2 or 1 ends in 0 and the posture setter queues the get-up task 65 (FUN_1405c7e20),
         // which plays `standing up 3`.
-        else if (a.WasCrawling && !down && !carried && !inBed && !inCage && cold.Medical is { Crawling: false, Prone: false })
+        else if (a.WasCrawling && !down && !carried && !inBed && !inCage && !atTreatment && cold.Medical is { Crawling: false, Prone: false })
             StartAction(a, _getUp, false);
 
         a.WasDown = down;
@@ -1871,6 +1875,11 @@ public sealed class AnimationSystem(
     const float PainHoldMaxSpeed = 50;
 
     /// <summary>
+    /// The world's <see cref="World.PrisonPoseFix"/>, read each tick (true for an <see cref="Update"/> outside a world: tests, the title battle).
+    /// </summary>
+    bool _prisonPoseFix = true;
+
+    /// <summary>
     /// The breathing overlay every standing human plays (<c>breathing noarms</c>: spine, neck and head only; <b>Verified</b>,
     /// <c>AnimationClassHuman</c> slot 32 <c>FUN_14051e150</c>, docs/animation.md "Breathing"); -1 when the data has none.
     /// </summary>
@@ -2070,7 +2079,7 @@ public sealed class AnimationSystem(
         // The crawl records are prone; no standing clip (stumbles included) fits a crawler. Crouched is never together with prone (FUN_14051dda0).
         var stance = new AnimationStance
         {
-            Right = new HandHold(cold.DrawnWeapon),
+            Right = HandHold.OfDrawn(cold.DrawnWeapon),
             Combat = cold.InCombat,
             Stealth = (cold.Orders & CharacterOrders.Sneak) != 0,
             CarryingLeft = !cold.Carrying.IsNone,

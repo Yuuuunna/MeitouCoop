@@ -41,16 +41,17 @@ static partial class WorldFrame
 
     /// <summary>
     /// The region round the options' place (<c>--at</c>, <c>--zone</c> or <c>--town</c>; the origin without one): its heights, the game data and its
-    /// objects. Null when no town matches.
+    /// objects. The game data is <paramref name="preloaded"/>, else read by <paramref name="loadData"/> (the game's, with the code mods' data phase),
+    /// else read here. Null when no town matches.
     /// </summary>
-    public static WorldScene? Load(GameInstall install, WorldOptions o, GameDatabase? preloaded = null)
+    public static WorldScene? Load(GameInstall install, WorldOptions o, GameDatabase? preloaded = null, Func<GameDatabase>? loadData = null)
     {
         var watch = Stopwatch.StartNew();
         var map = TerrainHeightmap.Open(install);
         GameDatabase? db = null;
         if (o.Town is not null || !o.NoTextures || !o.NoObjects)
         {
-            db = preloaded ?? GameDatabase.Load(LoadOrder.FromInstall(install));
+            db = preloaded ?? loadData?.Invoke() ?? GameDatabase.Load(LoadOrder.FromInstall(install));
             Console.WriteLine($"game data {db.Records.Count} records ({watch.ElapsedMilliseconds} ms)");
             LogIssues("game data", db.Issues);
             Title.DataLoadErrors.Log(db, install);
@@ -312,12 +313,18 @@ static partial class WorldFrame
     /// The parts of Advanced materials (<c>chars2</c>), plain on / off rows under it.
     /// </summary>
     public const string MaterialHairSwitch = "Hair highlights", MaterialClothSwitch = "Cloth sheen", MaterialSkinSwitch = "Skin sheen and glow",
-        MaterialEyesSwitch = "Eye catchlights", MaterialMetalSwitch = "Metal on characters", MaterialBeadsSwitch = "Water beads";
+        MaterialEyesSwitch = "Eye catchlights", MaterialMetalSwitch = "Metal on characters", MaterialPolishSwitch = "Polished armour",
+        MaterialBeadsSwitch = "Water beads";
 
     /// <summary>
     /// Grass keeps its cover at a distance (<c>FoliageRenderer.GrassFarCover</c>), a plain on / off row.
     /// </summary>
     public const string GrassCoverSwitch = "Far grass cover";
+
+    /// <summary>
+    /// Large trees near the gameplay camera fade round the middle of the view (<c>FoliageNearFade.Enabled</c>), a plain on / off row.
+    /// </summary>
+    public const string NearTreeFadeSwitch = "Near tree fade";
 
     /// <summary>
     /// The world's surfaces show their wetness (<c>WeatherSurfaces.WetWorld</c>), a plain on / off row.
@@ -344,6 +351,13 @@ static partial class WorldFrame
     /// The probes' rays per update, 32 or 64 (<see cref="PostOptions.GiMoreRays"/>).
     /// </summary>
     public const string GiRaysSwitch = "GI 64 probe rays";
+
+    /// <summary>
+    /// The characters' traced indirect light (<see cref="PostOptions.CharacterOcclusion"/>, docs/render-gi.md "Characters"): rays gather each
+    /// character pixel's bounced light in place of the probes'. It needs GTAO and the indirect light; it had no switch of its own, and turning
+    /// ambient occlusion off was the only way to its cost.
+    /// </summary>
+    public const string GiCharactersSwitch = "GI traced on characters";
 
     /// <summary>
     /// The weather particle sliders' labels: the particles' resolution and their density.
@@ -396,6 +410,8 @@ static partial class WorldFrame
         HeatHazeStrengthSlider = "Heat haze strength (1 = game)",
         BloomStrengthSlider = "Bloom strength (0 = game)",
         DofApertureSlider = "Depth of field aperture (f-number)",
+        VignetteStrengthSlider = "Vignette strength",
+        GrainStrengthSlider = "Film grain strength",
         NightGradeStrengthSlider = "Night grading strength (0 = game)",
         ShaftStrengthSlider = "Light shafts strength",
         ShaftAirSlider = "Light shafts air (0 = none)",
@@ -407,6 +423,8 @@ static partial class WorldFrame
     public const string
         BloomSwitch = "Bloom",
         DepthOfFieldSwitch = "Depth of field",
+        VignetteSwitch = "Vignette",
+        FilmGrainSwitch = "Film grain",
         CameraEffectsSwitch = "Camera effects in the strategy camera",
         // The ground relief's Faithful / Meitou switches (Enhancements "parallax", "displace"), by name.
         GroundParallaxSwitch = "Ground parallax",
@@ -1008,6 +1026,8 @@ static partial class WorldFrame
             Faithful: 1, Meitou: Enhancements.MeitouHeatHazeStrength));
         sliders.Add(new Slider(BloomStrengthSlider, 0, 0.25f, () => options.BloomStrength, v => options.BloomStrength = MathF.Round(v * 200) / 200,
             "0.000", Faithful: 0));
+        sliders.Add(new Slider(VignetteStrengthSlider, 0, 1, () => options.VignetteStrength, v => options.VignetteStrength = Round20(v), "0.00"));
+        sliders.Add(new Slider(GrainStrengthSlider, 0, 1, () => options.GrainStrength, v => options.GrainStrength = Round20(v), "0.00"));
         sliders.Add(new Slider(DofApertureSlider, 0.25f, 22, () => options.DofAperture, v => options.DofAperture = MathF.Round(v * 20) / 20, "0.00",
             Logarithmic: true));
         sliders.Add(new Slider(NightGradeStrengthSlider, 0, 1, () => options.NightGradeStrength, v => options.NightGradeStrength = Round20(v),
@@ -1055,7 +1075,11 @@ static partial class WorldFrame
 
         if (g.Post is { } post) AddPostToggles(toggles, post);
         if (g.Foliage is { } farGrass)
+        {
             toggles.Add(new Toggle(GrassCoverSwitch, () => farGrass.GrassFarCover, v => farGrass.GrassFarCover = v, Remaster: true, OnOff: true));
+            toggles.Add(new Toggle(NearTreeFadeSwitch, () => farGrass.NearFade.Enabled, v => farGrass.NearFade.Enabled = v, Remaster: true,
+                OnOff: true));
+        }
         if (g.Surfaces is { } wetWorld)
         {
             toggles.Add(new Toggle(WetWorldSwitch, () => wetWorld.WetWorld, v => wetWorld.WetWorld = v, Remaster: true, OnOff: true,
@@ -1088,6 +1112,7 @@ static partial class WorldFrame
         toggles.Add(new Toggle(GiCloudShadowsSwitch, () => post.Options.GiCloudShadows, v => post.Options.GiCloudShadows = v));
         toggles.Add(new Toggle(GiCacheSwitch, () => post.Options.GiCache, v => post.Options.GiCache = v));
         toggles.Add(new Toggle(GiRaysSwitch, () => post.Options.GiMoreRays, v => post.Options.GiMoreRays = v));
+        toggles.Add(new Toggle(GiCharactersSwitch, () => post.Options.CharacterOcclusion, v => post.Options.CharacterOcclusion = v));
 
         // The traced sun shadows' grass, a plain on / off row, and their far cascades (the sun shadows' choice); they act while the sun is traced.
         toggles.Add(new Toggle(TracedGrassSwitch, () => post.Options.TracedGrass, v => post.Options.TracedGrass = v));
@@ -1103,7 +1128,8 @@ static partial class WorldFrame
         {
             (MaterialHairSwitch, Characters.CharacterRenderer.SurfaceHair), (MaterialClothSwitch, Characters.CharacterRenderer.SurfaceCloth),
             (MaterialSkinSwitch, Characters.CharacterRenderer.SurfaceSkin), (MaterialEyesSwitch, Characters.CharacterRenderer.SurfaceEyes),
-            (MaterialMetalSwitch, Characters.CharacterRenderer.SurfaceMetal), (MaterialBeadsSwitch, Characters.CharacterRenderer.SurfaceBeads),
+            (MaterialMetalSwitch, Characters.CharacterRenderer.SurfaceMetal), (MaterialPolishSwitch, Characters.CharacterRenderer.SurfacePolished),
+            (MaterialBeadsSwitch, Characters.CharacterRenderer.SurfaceBeads),
         };
         foreach (var (label, bit) in parts)
         {

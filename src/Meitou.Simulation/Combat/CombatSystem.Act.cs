@@ -120,6 +120,17 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>
+    /// The creature category of the elephant techniques ("elephant type bash" <c>attack1</c>, "elephant type bite" <c>attack2</c>).
+    /// </summary>
+    const int ElephantCategory = 9;
+
+    /// <summary>
+    /// The category a fighter's techniques are picked by: <paramref name="own"/>, or the elephant one for an animal with a drawn weapon while
+    /// <see cref="AnimalMovesFix"/> is on.
+    /// </summary>
+    int MovesCategory(Fighter f, int own) => AnimalMovesFix && f.WeaponDrawn ? ElephantCategory : own;
+
+    /// <summary>
     /// The seconds one swing of an animal's door bash takes (<c>Task_BashDoor</c>, <c>FUN_140887420</c>, <b>Verified</b>): the first attack
     /// technique, in data order, that fits the animal's weapon category (not <c>disabled</c>, no block or dodge) plays at speed 1; its clip's length
     /// from the animal's own skeleton over the technique's <c>anim speed mult</c>. 0 when there is none or the clip is unknown (the caller keeps the
@@ -130,7 +141,7 @@ public sealed partial class CombatSystem
         if (cold.Fighter is not { IsAnimal: true } f) return 0;
         foreach (var t in _asWritten)
         {
-            if (t.Disabled || t.IsBlock || t.IsDodge || !TechniqueChooser.Fits(t, f.AnimalCategory)) continue;
+            if (t.Disabled || t.IsBlock || t.IsDodge || !TechniqueChooser.Fits(t, MovesCategory(f, f.AnimalCategory))) continue;
             return _lengths.For(cold.Race?.StringId).Of(t.AnimName) / MathF.Max(t.AnimSpeedMult, 0.1f);
         }
         return 0;
@@ -253,9 +264,9 @@ public sealed partial class CombatSystem
 
         FollowArms(cold, ref s);
 
-        // A player's character out of a fight keeps its weapon out while it walks or follows on an order; idle or at work it sheathes (Idleness and
-        // the jobs need it away).
-        if (cold.IsPlayer && !cold.InCombat && cold.DrawnWeapon != WeaponKinds.None
+        // A player's character out of a fight keeps its weapon out while it walks or follows on an order, or bashes a door (the bash rows need it in
+        // hand); idle or at work it sheathes (Idleness and the jobs need it away).
+        if (cold.IsPlayer && !cold.InCombat && cold.DrawnWeapon != WeaponKinds.None && cold.Bashing is null
             && next[i].Task is not ((byte)CharacterTask.GoTo or (byte)CharacterTask.Follow or (byte)CharacterTask.Attack))
             cold.DrawnWeapon = WeaponKinds.None;
 
@@ -263,8 +274,14 @@ public sealed partial class CombatSystem
 
         // The leg back up (posture 2 to 0, not a waking): the posture setter queues the get-up task 65 (FUN_1405c7e20), which stands the character
         // through the `standing up 3` clip with no bone blend (no ragdoll to leave: FUN_140334a20), holding it like a waker.
+        // One kneeling at a treatment stays at it instead (AtTreatment): in the original a crippled character treating itself went on kneeling until
+        // the leg was fully bandaged and stood only then (Observed, original 1.0.68, docs/game/ai-tasks.md "Medic jobs", Fixing Legs). The get-up's
+        // hold would stop the treatment (FirstAidSystem.Act) while the untreated damage pulls the leg back under the knock-out point, which knocks
+        // it out again.
         bool crawling = cold.Medical.Crawling;
-        if (s.Crawl && !crawling && !s.Down && !cold.Medical.Incapacitated && !cold.Medical.Prone && GetUpClipSeconds > 0 && cold.CarriedBy.IsNone)
+        bool atTreatment = FirstAid.FirstAidSystem.AtTreatment(cold, (CharacterTask)next[i].Task);
+        if (s.Crawl && !crawling && !atTreatment && !s.Down && !cold.Medical.Incapacitated && !cold.Medical.Prone && GetUpClipSeconds > 0
+            && cold.CarriedBy.IsNone)
         {
             cold.GettingUpUntil = now + (int)MathF.Ceiling(GetUpClipSeconds / dt);
             cold.StaggeredUntil = Math.Max(cold.StaggeredUntil, cold.GettingUpUntil);
@@ -745,7 +762,7 @@ public sealed partial class CombatSystem
         float e = fighter.EncumbranceFactor;
         var query = new AttackQuery
         {
-            Category = fighter.TechniqueCategory,
+            Category = MovesCategory(fighter, fighter.TechniqueCategory),
             Skill = cold.Stats![fighter.WeaponSkill],
             // the chooser asks FUN_140884e00 with the injury term on (FUN_140884580 subtracts the dust penalty)
             UnarmedSkill = WeaponStats.Lerp(e, 0.2f, 1)
@@ -1515,7 +1532,7 @@ public sealed partial class CombatSystem
             dodge = DefenceFormulas.BlockChance(effective, attack.AttackSkill, _combat, 0, 95);
         }
         int direction = BlowSide(world, i, in swing);
-        return TechniqueChooser.ChooseReaction(_techniques, fighter.TechniqueCategory, cold.Medical!.Prone, fighter.CanBlock, direction,
+        return TechniqueChooser.ChooseReaction(_techniques, MovesCategory(fighter, fighter.TechniqueCategory), cold.Medical!.Prone, fighter.CanBlock, direction,
             block, dodge, chanceRoll, pickRoll, stumbling);
     }
 

@@ -35,6 +35,12 @@ public sealed class SavedPieces
     readonly HashSet<string> _invalidated = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// The entries already matched to a layout object: one entry serves one object, so two identical objects standing within <see cref="Reach"/>
+    /// of each other cannot both read and write it.
+    /// </summary>
+    readonly HashSet<SavedPiece> _taken = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
     /// Prevents a destroyed or replaced layout from restoring an earlier object's state.
     /// </summary>
     internal void InvalidateHouse(string house) => _invalidated.Add(house);
@@ -57,23 +63,32 @@ public sealed class SavedPieces
     }
 
     /// <summary>
-    /// The entry of the layout object <paramref name="piece"/>: the first of its record within <see cref="Reach"/>; null for none.
+    /// The entry of the layout object <paramref name="piece"/> (<see cref="Of(string, string, Vector3)"/>); null for none.
     /// </summary>
-    public SavedPiece? Of(TownLayoutBuilding piece)
+    public SavedPiece? Of(TownLayoutBuilding piece) => Of(piece.Id, piece.RecordId, piece.Position);
+
+    /// <summary>
+    /// The entry of the layout object <paramref name="id"/> (record <paramref name="recordId"/>, standing at <paramref name="position"/>): the nearest
+    /// of its record within <see cref="Reach"/> no other object took (the first of equals in the save's order); null for none.
+    /// </summary>
+    public SavedPiece? Of(string id, string recordId, Vector3 position)
     {
-        if (_invalidated.Contains(piece.House)) return null;
-        if (_matched.TryGetValue(piece.Id, out var known)) return known;
+        int slash = id.IndexOf('/');
+        if (slash >= 0 && _invalidated.Contains(id[..slash])) return null;
+        if (_matched.TryGetValue(id, out var known)) return known;
 
         SavedPiece? found = null;
-        foreach (var entry in _byRecord.GetValueOrDefault(piece.RecordId) ?? [])
+        float best = Reach * Reach;
+        foreach (var entry in _byRecord.GetValueOrDefault(recordId) ?? [])
         {
-            if (Vector3.DistanceSquared(entry.Instance.Position, piece.Position) > Reach * Reach) continue;
+            float d = Vector3.DistanceSquared(entry.Instance.Position, position);
+            if (d > best || d == best && found is not null || _taken.Contains(entry)) continue;
 
-            found = entry;
-            break;
+            (found, best) = (entry, d);
         }
 
-        _matched[piece.Id] = found;
+        _matched[id] = found;
+        if (found is not null) _taken.Add(found);
         return found;
     }
 

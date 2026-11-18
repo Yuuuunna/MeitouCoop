@@ -23,6 +23,8 @@ public static class ClientCommandBinding
         ArgumentNullException.ThrowIfNull(selection);
         if (!CommandProtocol.Supports(intent))
             throw new InvalidOperationException("This operation is not exposed by the remote command protocol.");
+        if (intent is PointedCommand { Target.IsNone: false } pointed && !view.Snapshot.Characters.Any(c => c.Id == pointed.Target))
+            throw new InvalidOperationException("The pointer target is outside the current view.");
         CharacterId[] Selected() => selection.Distinct().ToArray();
         CharacterId Buyer() => selection.Count > 0 ? selection[0] : throw new InvalidOperationException("Select a buyer first.");
         var command = intent switch

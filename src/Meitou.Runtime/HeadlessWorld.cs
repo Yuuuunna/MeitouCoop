@@ -60,7 +60,7 @@ public sealed class HeadlessWorld : IDisposable
     public CompatibilityHello CreateCompatibilityHello(string engineBuild, IReadOnlyDictionary<string, string> rules, IEnumerable<ContentFile> gameplayAssets)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var manifest = ContentManifest.ReadLoadOrder(_loadOrder, gameplayAssets.Concat(ServerCompatibility.CodeEvidence(_install, _trustedCodeMods)));
+        var manifest = ContentManifest.ReadLoadOrder(_loadOrder, ServerCompatibility.GameplayEvidence(_install, gameplayAssets, _trustedCodeMods));
         var effective = rules.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
         if (_gameplay is not null)
         {
@@ -70,7 +70,7 @@ public sealed class HeadlessWorld : IDisposable
                 effective.Add("gameplay/" + setting.Name, setting.Value.GetRawText());
         }
 
-        return new CompatibilityHello(CompatibilityHandshake.Protocol, engineBuild, ContentManifest.RulesDigest(ServerCompatibility.WithCodeSettings(effective, _install, _trustedCodeMods, _modSettings)), manifest.Digest);
+        return new CompatibilityHello(CompatibilityHandshake.Protocol, engineBuild, ContentManifest.RulesDigest(ServerCompatibility.WithCodeSettings(effective, _install, _trustedCodeMods, _modSettings, Population.Db.CodeEdits)), manifest.Digest);
     }
 
     public WorldCheckpointCoordinator CreateCheckpointCoordinator(CheckpointStore store, LoadedSave? loaded = null)
@@ -90,10 +90,13 @@ public sealed class HeadlessWorld : IDisposable
         return coordinator.Restore(checkpoint, candidate, data => WithModFeeds(Content.BuildSystems(_systemOptions with { Environment = candidateWeather }, data).Systems, Mods), new SaveCaptureOptions { DataFiles = candidate.Db.Files, Levels = Content.Levels, Placements = Content.Levels?.Towns().ToArray() }, candidate.Appearances, deferPlayerRoles, _gameplay is null ? null : world => ApplyWorldRules(world, _gameplay));
     }
 
-    public static HeadlessWorld Open(GameInstall install, WorldSettings? settings = null, StandardSystemOptions? options = null, IReadOnlySet<string>? trustedCodeMods = null, IReadOnlyDictionary<string, Dictionary<string, string>>? modSettings = null, GameplayRules? gameplay = null)
+    public static HeadlessWorld Open(GameInstall install, WorldSettings? settings = null, StandardSystemOptions? options = null, IReadOnlySet<string>? trustedCodeMods = null, IReadOnlyDictionary<string, Dictionary<string, string>>? modSettings = null, GameplayRules? gameplay = null, bool notifyReady = true)
     {
+        HeightmapRepair.Configure(install, gameplay?.GroundRepair ?? true);
         var order = LoadOrder.FromInstall(install);
-        var db = GameDatabase.Load(order);
+        var allowed = trustedCodeMods ?? new HashSet<string>(StringComparer.Ordinal);
+        var dataPhase = new ModDataPhase(install, allowed, ModHost.RunningVersion());
+        var db = dataPhase.LoadData();
         var levels = WorldLevelData.Load(install, includeInteriors: true);
         var terrain = TerrainSource.Open(install);
         WorldContent? content = null;
@@ -112,10 +115,13 @@ public sealed class HeadlessWorld : IDisposable
                     SquadXp = gameplay.SquadXp,
                     OthersXp = gameplay.OthersXp,
                 });
-            var (enabled, disabled) = ModHost.CodeMods(install);
+            var (enabled, disabled) = dataPhase.CodeMods();
             BuiltInMods.SkipCovered(enabled, disabled);
-            var mods = ModHost.Load(new ModHostOptions(enabled, trustedCodeMods ?? new HashSet<string>(StringComparer.Ordinal),
-                db, content.Population, () => runtime?.World, id => modSettings?.GetValueOrDefault(id), Disabled: disabled, StrictSystems: true));
+            var modOptions = new ModHostOptions(enabled, allowed, db, content.Population, () => runtime?.World,
+                id => modSettings?.GetValueOrDefault(id), GameVersion: ModHost.RunningVersion(), Disabled: disabled, StrictSystems: true);
+            var mods = dataPhase.Mods;
+            if (mods is null) mods = ModHost.Load(modOptions);
+            else mods.Start(modOptions);
             if (mods.Refused.Keys.Any(name => trustedCodeMods?.Contains(name) == true))
                 throw new InvalidDataException("A trusted authoritative code mod failed to initialize.");
             var weather = SimulationWeather.Load(install, db, terrain.HeightAt);
@@ -144,6 +150,7 @@ public sealed class HeadlessWorld : IDisposable
             runtime = new WorldRuntime(worldSettings, content.Walkability, WithModFeeds(systems.Systems, mods));
             if (gameplay is not null)
                 ApplyWorldRules(runtime.World, gameplay);
+            if (notifyReady) mods.TellReady(runtime.World, fromSave: false);
             return new HeadlessWorld(terrain, content, runtime, order, configured, mods, install, trustedCodeMods, modSettings, gameplay);
         }
         catch
@@ -180,6 +187,7 @@ public sealed class HeadlessWorld : IDisposable
             LateDefences = rules.LateDefences,
             GunnerFacesBarrel = rules.GunnerFacesBarrel,
             PunchReachFix = rules.PunchReachFix,
+            AnimalMovesFix = rules.AnimalMovesFix,
         },
         Population = new PopulationSettings
         {
@@ -222,6 +230,8 @@ public sealed class HeadlessWorld : IDisposable
     static void ApplyWorldRules(World world, GameplayRules rules)
     {
         world.BenchFacingFix = rules.BenchFacingFix;
+        world.PrisonPoseFix = rules.PrisonPoseFix;
+        world.GroundRepair = rules.GroundRepair;
         world.BagSearchFix = rules.BagSearchFix;
         world.Luckyren = rules.Luckyren;
         world.GroundItems.Limit = rules.GroundItemLimit;

@@ -38,7 +38,8 @@ sealed class FeatureGrouping(SettingsMenu menu)
             "Contact shadows", "Lamp shadows"]),
         new("Soft grazing sun", "Soft grazing sun", []),
         new("Indirect light", "Indirect light", [SettingsMenu.TechniqueKey(WorldFrame.GiChoice), "Indoor GI", WorldFrame.GiRelocateSwitch,
-            WorldFrame.GiCloudShadowsSwitch, WorldFrame.GiCacheSwitch, WorldFrame.GiRaysSwitch], LauncherHeader: WorldFrame.GiChoice),
+            WorldFrame.GiCloudShadowsSwitch, WorldFrame.GiCacheSwitch, WorldFrame.GiRaysSwitch, WorldFrame.GiCharactersSwitch],
+            LauncherHeader: WorldFrame.GiChoice),
         new("Ambient occlusion", "Ambient occlusion", [SettingsMenu.TechniqueKey(WorldFrame.OcclusionChoice), WorldFrame.GtaoQualitySlider],
             LauncherHeader: WorldFrame.OcclusionChoice),
         new("Light shafts", "Light shafts", [
@@ -69,6 +70,7 @@ sealed class FeatureGrouping(SettingsMenu menu)
         new("Far impostors", "Far impostors", ["Impostor distance (F7 Meitou)", "Large impostor distance (F7 Meitou)",
             WorldFrame.ImpostorBudgetSlider]),
         new(WorldFrame.GrassCoverSwitch, WorldFrame.GrassCoverSwitch, []),
+        new(WorldFrame.NearTreeFadeSwitch, WorldFrame.NearTreeFadeSwitch, []),
 
         // Objects
         new("Draw distances", "Draw distances", [WorldFrame.ObjectDistanceSlider, "Landmark distance (Meitou)", "Distant towns (zones)",
@@ -80,7 +82,7 @@ sealed class FeatureGrouping(SettingsMenu menu)
         // Characters: the skin switch, then one row per race (added by Entries)
         new(SkinGroup, "Skin", []),
         new("Advanced materials", "Advanced materials", [WorldFrame.MaterialHairSwitch, WorldFrame.MaterialClothSwitch, WorldFrame.MaterialSkinSwitch,
-            WorldFrame.MaterialEyesSwitch, WorldFrame.MaterialMetalSwitch, WorldFrame.MaterialBeadsSwitch]),
+            WorldFrame.MaterialEyesSwitch, WorldFrame.MaterialMetalSwitch, WorldFrame.MaterialPolishSwitch, WorldFrame.MaterialBeadsSwitch]),
         new("Blood on weapons and gear", "Blood on weapons and gear", []),
         new("Blood cells", "Blood cells", []),
         new("Blood on surfaces", "Blood on surfaces", []),
@@ -100,6 +102,8 @@ sealed class FeatureGrouping(SettingsMenu menu)
         // Post FX
         new(WorldFrame.BloomSwitch, WorldFrame.BloomSwitch, [WorldFrame.BloomStrengthSlider]),
         new(WorldFrame.DepthOfFieldSwitch, WorldFrame.DepthOfFieldSwitch, [WorldFrame.DofApertureSlider, WorldFrame.CameraEffectsSwitch]),
+        new(WorldFrame.VignetteSwitch, WorldFrame.VignetteSwitch, [WorldFrame.VignetteStrengthSlider]),
+        new(WorldFrame.FilmGrainSwitch, WorldFrame.FilmGrainSwitch, [WorldFrame.GrainStrengthSlider]),
         new("Heat haze", "Heat haze", ["Heat haze strength (1 = game)"]),
     ];
 

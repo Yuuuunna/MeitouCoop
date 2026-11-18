@@ -79,9 +79,14 @@ public static class MotionDatagramCodec
         return result;
     }
 
+    /// <summary>
+    /// Accepts a canonical datagram or one independent lossless envelope. Both encoded and expanded lengths fit the negotiated MTU before
+    /// decompression allocates output; ordinary record, epoch and revision validation then sees the original exact bytes.
+    /// </summary>
     public static MotionDatagram Decode(ReadOnlySpan<byte> bytes, int negotiatedLimit = MaximumDatagramBytes)
     {
         int limit = Limit(negotiatedLimit);
+        if (AbsolutePayloadCompression.IsCompressed(bytes)) bytes = AbsolutePayloadCompression.Expand(bytes, limit);
         if (bytes.Length < HeaderBytes + 2 || bytes.Length > limit)
             throw new InvalidDataException("Invalid motion datagram length.");
         if (!bytes[..4].SequenceEqual("MTN2"u8) || BinaryPrimitives.ReadUInt16LittleEndian(bytes[4..]) != Version || bytes[6] != MotionKind || bytes[7] != 0)

@@ -162,6 +162,11 @@ public sealed class OrderEntry(TaskType row, IOrderOwner owner)
     /// Its check ran at the front once (its failure text was shown); a front not tried yet is tried at once.
     /// </summary>
     public bool Tried { get; internal set; }
+    /// <summary>
+    /// The order runs its own row (<see cref="ListTests.OrderNeedsFail"/>): its list B held at its start, or since, a step of its plan (a follow
+    /// row's fight, 13) being over; the original runs its row only then, so only then does a failing list B end it.
+    /// </summary>
+    public bool RowRuns { get; internal set; }
 
     /// <summary>
     /// Whether the order is a move (row <c>MoveCusOrdered</c>).
@@ -300,8 +305,8 @@ public static class PlayerOrders
 
     /// <summary>
     /// Whether the order can start for the character now (a pure read; the M6 <c>World.CanOrder</c> rests on it): the row is in the character's
-    /// repertoire (<see cref="TaskStart.Eligible"/>), its owner's check, and a row needing no melee threat (<see cref="NeedsNoThreat"/>) has none
-    /// (<see cref="Threatened"/>).
+    /// repertoire (<see cref="TaskStart.Eligible"/>), its owner's check, a row needing no melee threat (<see cref="NeedsNoThreat"/>) has none
+    /// (<see cref="Threatened"/>), and no failing list B entry leaves its plan without a step (<see cref="ListTests.OrderBlocked"/>).
     /// </summary>
     public static OrderCheck CanRun(World world, int slot, OrderEntry order)
     {
@@ -334,7 +339,7 @@ public static class PlayerOrders
         var task = (CharacterTask)table.Next[slot].Task;
         if (cold.Running is not { Source: TaskSource.Order } run || order.IsMove && !cold.OrderMove)
             return false;
-        var handler = world.Tasks.Of(run.Task, run.Row);
+        var handler = world.Tasks.Of(run.Task, run.Row, run.Site);
         if (handler is null) return run.Runs(task);
         return handler.Runs(world, slot, run) && !handler.Done(world, slot, task);
     }
@@ -386,6 +391,7 @@ public static class PlayerOrders
                 return check;
             }
             front.Started = true;
+            front.RowRuns = ListTests.OrderNeedsFailNow(world, slot, front) == false;   // else a step of its plan comes first
             front.Owner.Start(world, slot, front);
             if (q.Front != front || Runs(world, slot, front)) return check;
             q.PopFront();
@@ -405,8 +411,24 @@ public static class PlayerOrders
         if (q.Front is not { IsMove: true } next) return false;
         if (!world.ValidOrder(slot, next)) { q.Clear(); return false; }
         next.Started = next.Tried = true;
+        next.RowRuns = false;
         n.Goal = new Vector2(next.Point.X, next.Point.Z);
         n.Flags |= (ushort)MoveFlags.NeedPath;
+        return true;
+    }
+
+    /// <summary>
+    /// A move's walk found no path or was given up blocked (the character's own partition): the move leaves the queue and the rest stays, the next
+    /// tried at the decision step (state 1 holds once the mover has no path, <c>FUN_14065edb0</c>, so the original's order step pops the front
+    /// alone). False when the walk was no queued order's move.
+    /// </summary>
+    internal static bool WalkFailed(CharacterCold cold)
+    {
+        var q = cold.OrderQueue;
+        if (!cold.OrderMove || q.Front is not { IsMove: true, Started: true }) return false;
+
+        q.PopFront();
+        DecisionSystem.Request(cold);
         return true;
     }
 
@@ -460,6 +482,7 @@ public static class PlayerOrders
     internal static void Prepare(World world, int slot)
     {
         var q = world.Characters.Cold(slot)!.OrderQueue;
+        PopDone(world, slot);
         while (q.Front is { } front)
         {
             if (!world.ValidOrder(slot, front))
@@ -495,6 +518,70 @@ public static class PlayerOrders
     }
 
     /// <summary>
+    /// The order step and the plan step on the front order (<c>FUN_14050d970</c>, then <c>checkOrders</c>' first pop <c>FUN_140510920</c>,
+    /// <b>Verified</b>; docs/game/ai-tasks.md "Finished tests"). The plan step ends a running front's task when its row is done
+    /// (<see cref="ListTests.OrderDone"/>, slot 4 asked of the running task) or its list B fails (<see cref="ListTests.OrderNeedsFail"/>), and
+    /// the end pops the order (<c>FUN_14050d7d0</c>); a move's walk goes on (<c>Task_Move</c>'s end, Tasker slot 3 <c>FUN_1403547b0</c>, stops the
+    /// mover only once it is done, so a move left within 12 of its point walks on unless the next order's start takes it over). The order step drops
+    /// the entry alone when its desire is 0 or less (<see cref="OrderDesire"/>), the act-out going on to its own end (a lift past the attach to its
+    /// clip's 0.95), and a front not yet started whose row is done.
+    /// </summary>
+    static void PopDone(World world, int slot)
+    {
+        var q = world.Characters.Cold(slot)!.OrderQueue;
+        if (Step(world, slot) is not { } step) return;
+
+        if (step.EndsTask && !step.Front.IsMove) TaskStart.End(world, slot, TaskEnd.Done);
+        if (q.Front == step.Front) q.PopFront();
+    }
+
+    /// <summary>
+    /// Whether the front order leaves at this AI update (<see cref="PopDone"/>'s tests; serial, it records <see cref="OrderEntry.RowRuns"/>): the
+    /// decision step asks it of every character with a front on every tick it steps, as the original's order step runs on every AI update.
+    /// </summary>
+    internal static bool PopsNow(World world, int slot) =>
+        world.Characters.Cold(slot)!.OrderQueue.Front is not null && Step(world, slot) is not null;
+
+    /// <summary>
+    /// The front's pop, if it leaves now: whether it ends its running task with it (the plan step's) or only leaves the queue (the order step's).
+    /// </summary>
+    static (OrderEntry Front, bool EndsTask)? Step(World world, int slot)
+    {
+        var q = world.Characters.Cold(slot)!.OrderQueue;
+        if (q.Front is not { } front || front.Started && !Runs(world, slot, front)) return null;
+
+        bool running = front.Started;
+        bool ends = running && (ListTests.OrderDone(world, slot, front, true) || RowEnds(world, slot, front));
+        if (ends) return (front, true);
+
+        bool leaves = OrderDesire.Of(world, slot, front) is <= 0 || !running && ListTests.OrderDone(world, slot, front, false);
+        if (leaves) return (front, false);
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether the running front's row ends by its list B now (<see cref="ListTests.OrderNeedsFail"/>), after it held since the start
+    /// (<see cref="OrderEntry.RowRuns"/>, recorded here).
+    /// </summary>
+    static bool RowEnds(World world, int slot, OrderEntry front)
+    {
+        if (ListTests.OrderNeedsFail(world, slot, front) is not { } fails) return false;
+        if (!fails) front.RowRuns = true;
+
+        return fails && front.RowRuns;
+    }
+
+    /// <summary>
+    /// Whether the character's follow order (31, 45, 289) runs its own row: its list B has held since its start, so a threat to the followed
+    /// character (16) or its going down (7) ends the order (<see cref="RowEnds"/>) instead of making a fight a step of it, as the original's plan
+    /// step does (<c>FUN_14050d970</c>, <b>Verified</b> in the running game). A pure read.
+    /// </summary>
+    public static bool FollowRowRuns(CharacterCold cold) =>
+        cold.Running is { Source: TaskSource.Order } run && Production.PermaJobs.Follows(run.Row)
+        && cold.OrderQueue.Front is { Started: true, RowRuns: true };
+
+    /// <summary>
     /// The decision step's start of source 1: the front starts (<see cref="TryFront"/>).
     /// </summary>
     internal static void StartFront(World world, int slot) => TryFront(world, slot, show: true);
@@ -524,7 +611,10 @@ public static class PlayerOrders
         var cold = world.Characters.Cold(slot)!;
         if (!TaskStart.Eligible(world, cold, order.Row)) return OrderCheck.Blocked();
         var own = order.Owner.CanRun(world, slot, order);
-        return own.CanRun && Threatened(world, slot, order.Row) ? OrderCheck.Blocked() : own;
+        if (!own.CanRun) return own;
+        if (Threatened(world, slot, order.Row)) return OrderCheck.Blocked();
+
+        return ListTests.OrderBlocked(world, slot, order, out string? line) ? OrderCheck.Blocked(line is null ? null : Loc.Tr(line)) : own;
     }
 
     internal static void ValidateAuthority(World world)

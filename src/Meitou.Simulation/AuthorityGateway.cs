@@ -564,7 +564,8 @@ public sealed class AuthorityGateway : IDisposable
         if (!Current(connection)) return AuthorityStatus.InvalidConnection;
         if (connection.Phase != AdmissionPhase.Active) return AuthorityStatus.NotActive;
         if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return AuthorityStatus.NoActiveRole; }
-        if (request.Command is InspectCommand inspect && !inspect.Target.IsNone && !connection.PublishedCharacters.Contains(inspect.Target)
+        if (request.Command is PointedCommand pointed && !pointed.Target.IsNone && !connection.PublishedCharacters.Contains(pointed.Target)
+            || request.Command is InspectCommand inspect && !inspect.Target.IsNone && !connection.PublishedCharacters.Contains(inspect.Target)
             || request.Command is InspectBuildingCommand { Instance: { } site } && !connection.PublishedSites.Contains(site)
                 && !_world.CanObserveLevelBuilding(connection.Player, site, connection.Observation, connection.ObservationRules))
             return AuthorityStatus.InvalidRequest;

@@ -10,7 +10,11 @@ public enum ContentKind : byte
     GameplayAsset
 }
 
-public sealed record ContentFile(ContentKind Kind, string Key, string Path);
+public sealed record ContentFile(ContentKind Kind, string Key, string Path)
+{
+    /// <summary>A declared file rebind may intentionally hide its target; ordinary required assets still fail when missing.</summary>
+    public bool AllowMissing { get; init; }
+}
 public sealed record ContentFingerprint(ContentKind Kind, string Key, long Length, string Sha256);
 /// <summary>
 /// Ordered compatibility evidence. Paths are local-only; only logical keys, sizes and digests enter the manifest.
@@ -73,6 +77,13 @@ public sealed class ContentManifest
                 throw new InvalidDataException("Missing compatibility file.");
             string key = CanonicalKey(input.Key);
             string path = GameFiles.Resolve(input.Path);
+            if (input.AllowMissing && !File.Exists(path))
+            {
+                // HIDE and missing rebind targets have the same runtime meaning, distinct from a present zero-byte file.
+                result.Add(new ContentFingerprint(input.Kind, key, 0,
+                    Convert.ToHexString(SHA256.HashData("Meitou.ContentMissing.1"u8))));
+                continue;
+            }
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             long length = stream.Length;
             string hash = Convert.ToHexString(SHA256.HashData(stream));

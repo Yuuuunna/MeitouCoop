@@ -13,11 +13,13 @@ static class CharacterSurface
     /// </summary>
     public const string Prototypes = """
         bool surfaceOn = false;
-        uint surfaceParts = 0u;   // the Advanced materials' parts that are on (CharacterRenderer.SurfaceParts): 1 hair, 2 cloth, 4 skin, 8 eyes, 16 metal, 32 water beads
+        uint surfaceParts = 0u;   // the Advanced materials' parts that are on (CharacterRenderer.SurfaceParts): 1 hair, 2 cloth, 4 skin, 8 eyes, 16 metal, 32 water beads,
+                                  // 64 polished armour
         vec3 surfaceSun(vec3 sun, float sunScale, vec3 diffuseAlbedo, float share);
         vec3 surfaceSunTraced(vec3 sun, vec3 diffuseAlbedo);
         vec3 surfaceSpecular(vec3 l);
         vec3 surfaceAmbient(vec3 sky);
+        float surfaceSkin();
 
         """;
 
@@ -29,7 +31,7 @@ static class CharacterSurface
     /// <summary>
     /// What the surface adds to the sun's and the sky's light, after <see cref="SunAnchor"/>.
     /// </summary>
-    const string SunHook = "if (surfaceOn) { lit += surfaceSun(sun, am.a * 2.0, albedo * fresnelDiffuse, 1.0 - tracedShare) + surfaceAmbient(envDiffuse); if (tracedShare > 0.0) tracedSunOut += surfaceSunTraced(tracedSun, albedo * fresnelDiffuse); }";
+    const string SunHook = "if (surfaceOn) { vec3 surfaceSky = surfaceAmbient(envDiffuse); float skinPart = surfaceSkin(); lit += surfaceSun(sun, am.a * 2.0, albedo * fresnelDiffuse, 1.0 - tracedShare) + surfaceSky - skinPart * sun * sunGlint / ATMO_PI; ambientGlossOut += dot(surfaceSky, vec3(0.2126, 0.7152, 0.0722)); if (tracedShare > 0.0) tracedSunOut += surfaceSunTraced(tracedSun, albedo * fresnelDiffuse) - skinPart * tracedSun * sunGlint / ATMO_PI; }";
 
     /// <summary>
     /// The line of the atmosphere text that <see cref="LampHook"/> follows: a lamp's specular.
@@ -39,7 +41,7 @@ static class CharacterSurface
     /// <summary>
     /// What the surface adds to a lamp's specular, after <see cref="LampAnchor"/>.
     /// </summary>
-    const string LampHook = "if (surfaceOn) specular += radiance * surfaceSpecular(l);";
+    const string LampHook = "if (surfaceOn) specular += radiance * (surfaceSpecular(l) - surfaceSkin() * (nl * D * (0.04 * vis + 0.96 * fresnel * vis)) / 3.14159265358979);";
 
     /// <summary>
     /// The atmosphere text with the two hooks only the character fragment has, so no other program's text changes.
@@ -112,9 +114,20 @@ static class CharacterSurface
 
         float lobeD(float nh, float a) { float a2 = a * a, d = nh * nh * (a2 - 1.0) + 1.0; return a2 / (ATMO_PI * d * d); }
 
+        // How much of a worn plate's bare metal is metal, from its diffuse's alpha, the gloss the artists painted: cloth is black in it, a dull plate
+        // (paint, grime, rust) low, a polished one high, so it says how much, not only where. The polished look (the Advanced materials part 64) and
+        // an item's own metalness (ARMOUR `metalness`) take it as where only. Wholly opaque means none was painted: no metal, or the item's own.
+        float wornPainted(float a, float wornMetal)
+        {
+            bool own = wornMetal >= 0.0;
+            float painted = own || (surfaceParts & 64u) != 0u ? smoothstep(0.08, 0.22, a) : smoothstep(0.1, 0.5, a);
+            return mix(painted, own ? 1.0 : 0.0, smoothstep(0.97, 1.0, a));
+        }
+
         // How much of a fragment is bare metal. A worn item says so in its colour map (metal); nothing marks it on a robot's body or a held item, so there it is what shines
-        // and has no colour of its own: rust and paint are saturated, and rust is matte.
-        float surfaceMetal(float metal, vec3 albedo, inout float gloss, uint shading, bool mechanical, bool worn, bool mapped, float wornGlossMap, float heldGlossMap)
+        // and has no colour of its own: rust and paint are saturated, and rust is matte. wornMetal: a worn plate's own metalness, -1 for none.
+        float surfaceMetal(float metal, vec3 albedo, inout float gloss, uint shading, bool mechanical, bool worn, bool mapped, float wornGlossMap, float heldGlossMap,
+            float wornMetal)
         {
             float top = max(albedo.r, max(albedo.g, albedo.b));
             float saturation = 1.0 - min(albedo.r, min(albedo.g, albedo.b)) / max(top, 1e-3);
@@ -123,10 +136,9 @@ static class CharacterSurface
             else if (mapped) metal = bare * 0.65 * smoothstep(0.02, 0.2, metal);   // the map says where the metal is, the estimate how much
             else if (shading == 1u ? mechanical : !worn)
             {
-                // A worn plate: the diffuse's alpha is the gloss the artists painted: cloth is black in it. Wholly opaque means none was painted.
-                float painted = wornGlossMap >= 0.0 ? smoothstep(0.08, 0.22, wornGlossMap) * (1.0 - smoothstep(0.97, 1.0, wornGlossMap))
+                float painted = wornGlossMap >= 0.0 ? wornPainted(wornGlossMap, wornMetal)
                     : heldGlossMap >= 0.0 ? smoothstep(0.04, 0.14, heldGlossMap) : 1.0;   // a held item's gloss map is painted lower: wood is near 0 in it
-                metal = max(metal, bare * 0.65 * painted);
+                metal = max(metal, bare * (wornMetal >= 0.0 ? wornMetal : 0.65) * painted);
             }
             // Worn plate has no gloss of its own in the game: the painted one says where it is polished and where it is dull.
             float polish = wornGlossMap >= 0.0 && wornGlossMap < 0.97 ? mix(0.25, 0.8, smoothstep(0.1, 0.7, wornGlossMap)) : mix(0.45, 0.9, gloss);
@@ -152,17 +164,25 @@ static class CharacterSurface
             vec3 hue = skinAlbedo / max(max(skinAlbedo.r, max(skinAlbedo.g, skinAlbedo.b)), 1e-3);
             return hue * hue;
         }
-        // Skin's oil: two lobes (a tight sheen over a broad one, d'Eon's fit of skin), F0 0.028, and the fine hairs' soft bright edge.
+        // How much of the fragment is skin lit by the skin's own lobe (skinLight): the hooks take the game's lobe off that share.
+        float skinRoughness = 0.5;
+        float surfaceSkin() { return (surfaceParts & 4u) != 0u ? skinShare : 0.0; }
+        // Skin's reflection: one GGX lobe with the height-correlated Smith term, as measured skin is modelled (the roughness the fragment set, 0.5 dry; index
+        // 1.4, 2.8 % at normal incidence). The game's lobe on skin has a chalk's width (its gloss map is 0.08 to 0.23) and an eighth of this lobe's energy, so
+        // skin showed no highlight. In a light's units: its irradiance is pi squared times its term in the world, pi times in the studio.
         vec3 skinLight(vec3 l)
         {
-            float nl = dot(surfaceNormal, l), nv = clamp(dot(surfaceNormal, surfaceView), 0.0, 1.0);
+            float nl = dot(surfaceNormal, l), nv = clamp(dot(surfaceNormal, surfaceView), 1e-3, 1.0);
             if ((surfaceParts & 4u) == 0u || skinShare <= 0.0 || nl <= 0.0) return vec3(0.0);
             vec3 h = normalize(l + surfaceView);
             float nh = clamp(dot(surfaceNormal, h), 0.0, 1.0), lh = clamp(dot(l, h), 0.0, 1.0);
+            // The pores are finer than a pixel at any distance but a close-up's: their slopes (0.19 all round: a 0.4 mm cell 0.075 mm deep, the reference's) widen
+            // the lobe by their variance instead of bumping the normal (Kaplanyan's filtering: the squared width takes the slopes' squared).
+            float a = skinRoughness * skinRoughness, a2 = min(a * a + 0.035, 1.0);
+            float d = nh * nh * (a2 - 1.0) + 1.0;
+            float visible = 0.5 / (nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2));
             float fresnel = 0.028 + 0.972 * pow(1.0 - lh, 5.0);
-            float oil = min(nl * (0.6 * lobeD(nh, 0.22) + 0.4 * lobeD(nh, 0.42)) * fresnel * 0.25 / max(lh * lh, 0.1), 1.5);
-            float fuzz = pow(1.0 - nv, 3.0) * nl * 0.35;
-            return skinShare * (vec3(oil) + skinAlbedo * (view.fogDistance > 0.0 ? ATMO_PI : 1.0) * fuzz);
+            return vec3(skinShare * (view.fogDistance > 0.0 ? ATMO_PI * ATMO_PI : ATMO_PI) * nl * a2 / (ATMO_PI * d * d) * visible * fresnel);
         }
         // Light through a thin part (ears, fingers), in the units of the diffuse N.L: its share of skin, facing away from the light. A thin part curves tightly and is about
         // two radii thick (the curvature bake), and passes exp(-thickness / 0.05 units): red light's reach in skin is some 5 mm, so an ear or a finger glows and a nose
@@ -213,13 +233,9 @@ static class CharacterSurface
             float nv = clamp(dot(surfaceNormal, surfaceView), 0.0, 1.0), edge = 1.0 - nv;
             vec3 added = vec3(0.0);
             if (strandStrength > 0.0) added += strandTint * sky * strandStrength * 0.3 * strandLobe(normalize(vec3(0.0, 1.0, 0.0) + surfaceView), (strandGrain - 0.5) * 0.4, 8.0);
-            if (skinShare > 0.0 && (surfaceParts & 4u) != 0u) added += skinAlbedo * sky * skinShare * 0.5 * edge * edge * edge;
             if (clothSheen > 0.0) added += clothSheen * clothTint * sky * 0.8 * edge * edge;
-            if (eyeShare > 0.0)
-            {
-                vec3 r = reflect(-surfaceView, surfaceNormal);
-                added += eyeShare * sky * (0.05 + 0.95 * pow(edge, 5.0)) * (1.0 + 3.0 * smoothstep(0.1, 0.8, r.y));
-            }
+            // (No reflection of the sky on the eye here: the game's own, at the eye's gloss, is already its cornea's. Added again the eyes took 4.5 times the
+            // reflection a traced cornea has, and stayed bright in the shade.)
             if (metalShare > 0.0 && view.fogDistance < 0.0)   // the studio has no reflection of its own: the sky in the mirror direction, blurred by the gloss
             {
                 vec3 r = reflect(-surfaceView, surfaceNormal);

@@ -38,6 +38,17 @@ public sealed partial class World
     const int PublishChunk = 256;
 
     /// <summary>
+    /// The points the characters look at this publish, by slot (<see cref="Movement.LookTargets"/>; read by the fills, not hashed).
+    /// </summary>
+    readonly Dictionary<int, Vector3> _looks = [];
+
+    /// <summary>
+    /// Points the control channel's <c>look</c> command has characters look at, over their tasks' (a debug aid for head turning captures; not hashed
+    /// or saved).
+    /// </summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<CharacterId, Vector3> DebugLooks { get; } = new();
+
+    /// <summary>
     /// A set of character snapshots the publish fills in place: one object per slot, reused tick after tick. Four of them: the shown pair
     /// (<see cref="Snapshot"/> and <see cref="PreviousSnapshot"/>) stays untouched while the next ticks, run ahead, publish twice into the other two
     /// (docs/simulation.md "Snapshots").
@@ -130,6 +141,7 @@ public sealed partial class World
     /// </summary>
     void Publish(TickProfile? prof = null, bool farShared = false)
     {
+        _publishedPointed = Player.Pointed;
         var list = PublishCharacters(Player, prof: prof, farShared: farShared);
         var population = SystemOf<PopulationSystem>()?.Data;
         PreviousSnapshot = Snapshot;
@@ -195,6 +207,8 @@ public sealed partial class World
             PlayerSquads = PublishSquads(),
             IndependentSquads = PublishIndependentSquads(),
             ModJobNames = PublishModJobNames(),
+            FactionHeads = SquadManagement.FactionHeads(this),
+            CappedHeads = SquadManagement.CappedHeads(this),
             ActiveSquad = Player.Squad,
             OpenLoot = Player.OpenLoot,
             LootOpener = Player.LootOpener,
@@ -418,6 +432,7 @@ public sealed partial class World
         s.ModSkills = modDetails && Bodies.ModSkills.All.Count > 0 && cold!.Stats is { } modStats
             ? Array.AsReadOnly(Bodies.ModSkills.Levels(modStats))
             : [];
+        s.Effects = modDetails && cold!.Stats is { EffectsOrNull.Count: > 0 } effectStats ? Bodies.StatusEffects.Shown(effectStats, TickSeconds) : [];
         s.LimbBits = cold?.Medical?.LimbBits ?? 0;
         s.BloodAmounts = cold?.Medical?.ShownBlood ?? 0UL;
         s.Knockdown = cold?.Knockdown ?? default;
@@ -467,13 +482,12 @@ public sealed partial class World
         s.Anchor = cold?.DrawAnchor;
         s.BoneMeshes = cold?.BoneMeshes ?? [];
         s.Carrying = cold?.Carrying ?? CharacterId.None;
-        s.HeldTool = state[i].Task == (byte)CharacterTask.Operate && cold is { OperateSite: not null, Appearance.Animal: null }
-            ? cold.OperateTool
-            : null;
+        s.WorkEvents = WorkEventsOf(state[i].Task, cold);
+        s.HeldTool = HeldToolOf(state[i].Task, cold, s.WorkEvents);
         s.Mouth = cold?.Mouth?.Record;
         s.MouthTone = cold?.MouthTone ?? default;
-        s.WorkEvents = WorkEventsOf(state[i].Task, cold);
         s.Task = (CharacterTask)state[i].Task;
+        s.LookAt = _looks.TryGetValue(i, out var lookAt) ? lookAt : null;
         s.PickingLock = cold?.PickingLock is not null;
         s.WorkingShackles = cold?.Shackles is { Work: Locks.ShackleWork.Pick or Locks.ShackleWork.Cut };
         s.InBed = cold is { InSomething: Locks.HeldState.Bed };
@@ -564,7 +578,8 @@ public sealed partial class World
         s.Stealth = sneaking ? watchers.Length == 0 ? StealthExposure.Unobserved : watchers.Max(w => w.Level) : null;
         s.Light = sneaking ? Sight.PeekLight(i) : 1;
         s.Watchers = watchers;
-        s.Bar = cold is { IsPlayer: true } ? PickBar(cold, state[i].Task) ?? CutBar(cold, state[i].Task) ?? TrainBar(cold) : null;
+        var gameBar = cold is { IsPlayer: true } ? PickBar(cold, state[i].Task) ?? CutBar(cold, state[i].Task) ?? TrainBar(cold) : null;
+        s.Bar = ModBar(cold) ?? gameBar;
         s.Prison = cold is { IsImprisoned: true }
             ? new PrisonView(!(cold.InWhat is { } cageId && Fixtures.Find(cageId) is { } cage && cage.Lock is not { EffectivelyLocked: true }),
                 cold.SentenceLength, cold.SentenceStart + cold.SentenceLength - GameHours)
@@ -699,6 +714,18 @@ public sealed partial class World
     }
 
     /// <summary>
+    /// The ITEM held in the <c>hands</c> point (docs/game/buildings-production.md "Held tool"; none for an animal): the operate task's tool once at
+    /// the machine, or the standing work's (<paramref name="work"/>, an AI worker or obedient slave) while it works.
+    /// </summary>
+    static string? HeldToolOf(byte task, CharacterCold? cold, WorkEvents? work)
+    {
+        if (cold is not { Appearance.Animal: null }) return null;
+        if (task == (byte)CharacterTask.Operate) return cold is { OperateSite: not null, OperateToolHeld: true } ? cold.OperateTool : null;
+
+        return work?.Tool;
+    }
+
+    /// <summary>
     /// The machine whose <c>animation events</c> sound on the character's clip: the player's operate task while it works (its functionality on
     /// <see cref="CharacterCold.OperateClip"/>), or an AI worker's or obedient slave's standing work while its <see cref="CharacterCold.ActionClip"/>
     /// is still that work's clip; null otherwise.
@@ -789,6 +816,14 @@ public sealed partial class World
             StealChance = steal?.Invoke(item)
         };
     }
+
+    /// <summary>
+    /// A code mod's bar (<see cref="CharacterCold.ModTaskBar"/>) as drawn: no caption shows as an empty one, and a fill that is not a number
+    /// as empty.
+    /// </summary>
+    static TaskBar? ModBar(CharacterCold? c) => c?.ModTaskBar is { } bar
+        ? new TaskBar(bar.Text ?? "", float.IsFinite(bar.Progress) ? Math.Clamp(bar.Progress, 0, 1) : 0)
+        : null;
 
     /// <summary>
     /// The bar of Task_PickLock and Task_PickLock_Shackles (docs/game/locks.md "Lockpicking"): "Lockpicking (Chance {p}%)" with the cage penalty,
@@ -1099,6 +1134,7 @@ public sealed partial class World
             jobRevisions[i] = JobsRevision(table.IdOf(i));
             if (table.Cold(i)?.Inventory is { } inventory) inventoryRevisions[i] = InventoryRevision(inventory);
         }
+        Movement.LookTargets.Gather(this, _looks);
         var facts = new PublishFacts(koSlot, leadSlot, pointed, talk, combat, bodyConstants, population, extraBloodLoss,
             viewer, fullDetails, eligible, inventoryRevisions, jobRevisions, recipient);
         bool ring = include is null && detailEligible is null && !fullDetails;

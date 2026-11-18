@@ -57,6 +57,8 @@ public sealed partial class WorldViewCodec
                 tag.ShouldSerialize = (_, value) => value is string { Length: > 0 };
                 tag.CustomConverter = new ItemTagDigest();
             }
+            if (info.Type == typeof(Meitou.Simulation.Bodies.StatusEffectView))
+                info.Properties.Single(p => p.Name == nameof(Meitou.Simulation.Bodies.StatusEffectView.HoursLeft)).CustomConverter = new EffectHours();
             if (info.Type == typeof(CharacterSnapshot))
             {
                 info.Properties.Single(p => p.Name == nameof(CharacterSnapshot.DrawYaw)).CustomConverter = new SingleNumber(allowNaN: true);
@@ -110,6 +112,7 @@ public sealed partial class WorldViewCodec
                 Turret = c.Turret is { } turret ? turret with { Angles = turret.Angles?.ToArray() } : null,
                 Meters = c.Meters.ToArray(),
                 ModSkills = c.ModSkills.ToArray(),
+                Effects = StatusEffectPresentationCodec.Detach(c.Effects),
                 BoneMeshes = c.BoneMeshes.ToArray(),
             }).ToArray()
         },
@@ -379,7 +382,14 @@ public sealed partial class WorldViewCodec
             throw new InvalidDataException("Invalid job labels or inventory close serial.");
 
         CheckSquads(view.Snapshot.IndependentSquads);
-        foreach (var faction in view.Factions) CheckSquads(faction.IndependentSquads);
+        if (view.Snapshot.FactionHeads < 0 || view.Snapshot.CappedHeads < 0)
+            throw new InvalidDataException("Invalid faction head counts.");
+        foreach (var faction in view.Factions)
+        {
+            CheckSquads(faction.IndependentSquads);
+            if (faction.FactionHeads < 0 || faction.CappedHeads < 0 || faction.CappedHeads > faction.FactionHeads)
+                throw new InvalidDataException("Invalid faction head counts.");
+        }
 
         static void CheckSquads(IReadOnlyList<SquadView>? squads)
         {
@@ -398,6 +408,7 @@ public sealed partial class WorldViewCodec
     {
         foreach (var character in snapshot.Characters)
         {
+            if (character.LookAt is { } lookAt) LookAtCodec.Validate(lookAt);
             if (character.Lean is { } lean && !Finite(lean)) throw new InvalidDataException("Invalid bed lean.");
             if (character.Anchor is { } anchor && (anchor.Carrier.IsNone || anchor.Carrier.Slot < 0 || anchor.Carrier.Generation < 0
                 || anchor.Bone is null || anchor.Bone.Length > 4096 || !Finite(anchor.Offset) || !Finite(anchor.Rotation)))
@@ -412,6 +423,7 @@ public sealed partial class WorldViewCodec
     {
         foreach (var character in snapshot.Characters)
         {
+            StatusEffectPresentationCodec.Validate(character.Effects);
             ModPresentationCodec.ValidateMeters(character.Meters);
             ModPresentationCodec.ValidateSkills(character.ModSkills);
             ModPresentationCodec.ValidateBoneMeshes(character.BoneMeshes);
@@ -495,6 +507,33 @@ public sealed partial class WorldViewCodec
                 writer.WriteStringValue("NaN");
             else
                 throw new JsonException("Non-finite state number.");
+        }
+    }
+
+    /// <summary>
+    /// Only status-effect durations accept the permanent-effect sentinel; ordinary state doubles remain finite-only.
+    /// </summary>
+    sealed class EffectHours : JsonConverter<double>
+    {
+        /// <summary>
+        /// Reads the exact finite countdown or the explicit permanent sentinel.
+        /// </summary>
+        public override double Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.String && reader.GetString() == "Forever") return double.PositiveInfinity;
+            if (reader.TokenType != JsonTokenType.Number) throw new JsonException("Invalid status effect duration.");
+            double value = reader.GetDouble();
+            return double.IsFinite(value) && value >= 0 ? value : throw new JsonException("Invalid status effect duration.");
+        }
+
+        /// <summary>
+        /// Writes permanent effects without changing validation of unrelated numeric state.
+        /// </summary>
+        public override void Write(Utf8JsonWriter writer, double value, JsonSerializerOptions options)
+        {
+            if (double.IsPositiveInfinity(value)) writer.WriteStringValue("Forever");
+            else if (double.IsFinite(value) && value >= 0) writer.WriteNumberValue(value);
+            else throw new JsonException("Invalid status effect duration.");
         }
     }
 

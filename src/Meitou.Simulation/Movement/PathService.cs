@@ -25,6 +25,10 @@ public readonly record struct PathAnswer(long Id, CharacterId Character, PathRes
 /// </summary>
 public sealed class PathService : IDisposable
 {
+    /// <summary>Limits diagnostics for an invalid navigation surface while every failed request still receives an answer.</summary>
+    const int ReportedFailures = 8;
+    int _failed;
+
     /// <summary>
     /// The surface the paths are found on (its <c>FindPath</c> runs on the path threads).
     /// </summary>
@@ -137,8 +141,26 @@ public sealed class PathService : IDisposable
     {
         while (_requests!.Take(playerOnly) is { } request)
         {
-            _answers.Enqueue(Answer(request));
+            _answers.Enqueue(AnswerOrNone(request));
             Interlocked.Decrement(ref _pending);
+        }
+    }
+
+    /// <summary>A failed asynchronous search answers no path without terminating its worker or leaving the actor waiting forever.</summary>
+    PathAnswer AnswerOrNone(PathRequest request)
+    {
+        bool traced = _traced.ContainsKey(request.Id);
+        try
+        {
+            return Answer(request);
+        }
+        catch (Exception e)
+        {
+            if (Interlocked.Increment(ref _failed) <= ReportedFailures)
+                Console.Error.WriteLine($"paths     the search from {request.From} to {request.To} failed: {e}");
+            if (traced && TraceSink is { } sink)
+                LatencyTrace.Emit(sink, new(LatencyStage.PathFinished, PathService: TraceIncarnation, Path: request.Id, Outcome: LatencyOutcome.NoPath));
+            return new(request.Id, request.Character, PathResult.NotFound);
         }
     }
 

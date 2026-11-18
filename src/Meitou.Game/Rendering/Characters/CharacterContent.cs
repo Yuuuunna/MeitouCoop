@@ -53,9 +53,23 @@ internal sealed class AssetPart
     /// </summary>
     public int AttachIndex = -1;
     /// <summary>
+    /// The hanging gear point it swings with (<see cref="CharacterAsset.Sways"/>, <see cref="GearSway"/>); -1: it does not swing, or it is skinned
+    /// gear, which swings through its bones' copies in the palette (<see cref="CharacterAsset.SwayPalette"/>).
+    /// </summary>
+    public int SwayGroup = -1;
+    /// <summary>
+    /// For a part that swings: its own local transform (<see cref="CharacterPart.Local"/>) and its attachment point's offset from the bone, whose
+    /// product is <see cref="Offset"/>; the swing turns between them.
+    /// </summary>
+    public Matrix4x4 SwayLocal = Matrix4x4.Identity, SwayPoint = Matrix4x4.Identity;
+    /// <summary>
     /// Only while the weapon or crossbow is stowed or in hand (<see cref="CharacterPart.Shown"/>).
     /// </summary>
     public WeaponShown Shown;
+    /// <summary>
+    /// A weapon or crossbow part (<see cref="AttachSlot.Weapon"/>): photo mode can hide every one (<see cref="CharacterInstance.WeaponsHidden"/>).
+    /// </summary>
+    public bool IsWeapon;
     /// <summary>
     /// When it shows by the bolts loaded in its crossbow (<see cref="CharacterPart.ShownShots"/>).
     /// </summary>
@@ -66,10 +80,12 @@ internal sealed class AssetPart
     public bool Muzzle;
     /// <summary>
     /// Whether the part shows with a weapon drawn (<paramref name="weaponDrawn"/>), that weapon being the crossbow (<paramref name="ranged"/>) or the
-    /// back melee weapon (<paramref name="back"/>, else the hip one), with <paramref name="shots"/> bolts loaded in the crossbow.
+    /// back melee weapon (<paramref name="back"/>, else the hip one), with <paramref name="shots"/> bolts loaded in the crossbow; never a weapon part
+    /// with <paramref name="weaponsHidden"/>.
     /// </summary>
     public bool ShowsWith(bool weaponDrawn, bool ranged, int shots = 1,
-        bool back = false) => (ShownShots == 0 || (ShownShots < 0 ? shots <= 0 : shots >= ShownShots)) && Shown switch
+        bool back = false, bool weaponsHidden = false) => !(weaponsHidden && IsWeapon)
+        && (ShownShots == 0 || (ShownShots < 0 ? shots <= 0 : shots >= ShownShots)) && Shown switch
     {
         WeaponShown.Drawn => weaponDrawn && !ranged && !back,
         WeaponShown.Sheathed => !(weaponDrawn && !ranged && !back),
@@ -218,8 +234,8 @@ internal sealed class PartMaterial
     public bool Strands;
 
     /// <summary>
-    /// The cloth sheen of the <c>chars2</c> switch (<see cref="ClothSheen"/>): x a worn item's; a body's vest layers in x, y, z. Sent in the record's
-    /// <c>DiffuseChannel</c>, which only hair reads.
+    /// The cloth sheen of the <c>chars2</c> switch (<see cref="ClothSheen"/>): x a worn item's; a body's vest layers in x, y, z. w a worn plate's
+    /// own metalness (<see cref="ArmourMetal"/>), -1 for none. Sent in the record's <c>DiffuseChannel</c>, which only hair reads.
     /// </summary>
     public Vector4 Sheen;
 
@@ -377,7 +393,7 @@ internal sealed class PartMaterial
     /// </summary>
     public bool MetalMap;
     /// <summary>
-    /// A worn item of chain or plate (<see cref="CharacterShaders.ArmourMetal"/>).
+    /// A worn item of chain or plate, or an armour with a metalness of its own (<see cref="CharacterShaders.ArmourMetal"/>).
     /// </summary>
     public bool ArmourMetal;
     /// <summary>
@@ -451,6 +467,25 @@ internal sealed class CharacterAsset
     /// the race has none.
     /// </summary>
     public (int Bone, Matrix4x4 Offset, int AttachIndex)? Mouth;
+    /// <summary>
+    /// The points that hang gear (a weapon, its sheath or a crossbow at the hip or on the back, a backpack; <see cref="GearSway"/>): the bone and
+    /// the point's offset from it, the lever from the point to its largest part's centre (in the point's frame) and that part's radius. The
+    /// bone-attached parts name theirs by <see cref="AssetPart.SwayGroup"/>.
+    /// </summary>
+    public readonly List<SwayPoint> Sways = [];
+    /// <summary>
+    /// The asset wears skinned gear that swings (a backpack, <see cref="GearSway.BakeMesh"/>): its palette holds every bone twice, the rig's and
+    /// then its copy turned by the gear's swing, which the gear's hanging vertices are skinned to.
+    /// </summary>
+    public bool SwayPalette;
+    /// <summary>
+    /// The wearer's limbs that hanging gear is kept out of (<see cref="GearSway.PushAngle"/>): the pelvis, the thighs and the calves.
+    /// </summary>
+    public SwayCollider[] SwayColliders = [];
+    /// <summary>
+    /// How many matrices its bone palette holds (<see cref="SwayPalette"/>).
+    /// </summary>
+    public int PaletteCount => Rig.BoneCount * (SwayPalette ? 2 : 1);
     /// <summary>
     /// How many attach slots (bone-attached parts, carried lights, the mouth) the asset uses: the length of each instance's attach matrices.
     /// </summary>
@@ -655,10 +690,10 @@ internal sealed class CharacterContent : IDisposable
     /// </summary>
     const int IconBones = -2;
     /// <summary>
-    /// The uploaded meshes by (lower-case path, bone count or <see cref="IconBones"/> or -1 unskinned, close-up, part map); null: the file could not
-    /// be read.
+    /// The uploaded meshes by (lower-case path, bone count or <see cref="IconBones"/> or -1 unskinned, close-up, part map, the rule its hanging
+    /// mass was baked by); null: the file could not be read.
     /// </summary>
-    readonly Dictionary<(string Path, int Bones, bool Close, string? PartMap), LoadedMesh?> _meshes = [];
+    readonly Dictionary<(string Path, int Bones, bool Close, string? PartMap, GearSway.Bake? Sway), LoadedMesh?> _meshes = [];
     /// <summary>
     /// The GPU bytes of the uploaded meshes' vertices and indices, for the statistics.
     /// </summary>
@@ -680,18 +715,28 @@ internal sealed class CharacterContent : IDisposable
     /// The meshes prepared or being prepared, by the key of <see cref="_meshes"/>; an uploaded one is left as <see cref="Uploaded"/> so no worker
     /// prepares it again.
     /// </summary>
-    readonly ConcurrentDictionary<(string Path, int Bones, bool Close, string? PartMap), Lazy<Prepared>> _prepared = new();
+    readonly ConcurrentDictionary<(string Path, int Bones, bool Close, string? PartMap, GearSway.Bake? Sway), Lazy<Prepared>> _prepared = new();
+
     /// <summary>
     /// A character mesh ready to draw: its GPU mesh, first material, bounding sphere, morphs, shadow and file levels, pick boxes, and neck
     /// and head caps.
     /// </summary>
     /// <param name = "FirstMaterialName">The first submesh's material (script) name, which is all the material resolver takes of a submesh; null: no
     /// submesh.</param>
-    sealed record LoadedMesh(GpuObjectMesh Gpu, string? FirstMaterialName, Vector3 Centre, float Radius, MeshMorphs? Morphs = null, float[]? ShadowDistances = null, int ShadowFirst = 0, PickBox[]? PickBoxes = null, float[]? FileDistances = null, int FileFirst = 0, float FileRadius = 0, PreparedMesh? NeckCap = null, PreparedMesh? HeadCap = null);
+    /// <param name="Sway">Its hanging mass, when it was baked to swing (<see cref="GearSway.BakeMesh"/>).</param>
+    sealed record LoadedMesh(GpuObjectMesh Gpu, string? FirstMaterialName, Vector3 Centre, float Radius, MeshMorphs? Morphs = null,
+        float[]? ShadowDistances = null, int ShadowFirst = 0, PickBox[]? PickBoxes = null,
+        float[]? FileDistances = null, int FileFirst = 0, float FileRadius = 0, PreparedMesh? NeckCap = null, PreparedMesh? HeadCap = null,
+        GearSway.Mass? Sway = null);
+
     /// <summary>
     /// What a worker makes of a mesh file (<see cref = "PrepareMesh"/>): everything but the GPU buffers.
     /// </summary>
-    sealed record PreparedMesh(PreparedPart[] Parts, float[] Distances, string? FirstMaterialName, Vector3 Centre, float Radius, MeshMorphs? Morphs, float[]? ShadowDistances, int ShadowFirst, PickBox[] PickBoxes, float[]? FileDistances, int FileFirst, float FileRadius, PreparedMesh? NeckCap = null, PreparedMesh? HeadCap = null);
+    sealed record PreparedMesh(PreparedPart[] Parts, float[] Distances, string? FirstMaterialName, Vector3 Centre, float Radius, MeshMorphs? Morphs,
+        float[]? ShadowDistances, int ShadowFirst, PickBox[] PickBoxes,
+        float[]? FileDistances, int FileFirst, float FileRadius, PreparedMesh? NeckCap = null, PreparedMesh? HeadCap = null,
+        GearSway.Mass? Sway = null);
+
     /// <summary>
     /// A prepared mesh (null: it could not be read) and the messages its reading left.
     /// </summary>
@@ -702,11 +747,11 @@ internal sealed class CharacterContent : IDisposable
     /// preparing it.
     /// </summary>
     LoadedMesh? Mesh(string path, int? boneCount, float lodScale = 1, bool shadowLevels = false, LimbHide? limbs = null, bool close = false,
-        bool icon = false, string? partMap = null, bool worn = false)
+        bool icon = false, string? partMap = null, bool worn = false, GearSway.Bake? sway = null)
     {
-        var key = (path.ToLowerInvariant(), icon ? IconBones : boneCount ?? -1, close, partMap?.ToLowerInvariant());
+        var key = (path.ToLowerInvariant(), icon ? IconBones : boneCount ?? -1, close, partMap?.ToLowerInvariant(), sway);
         if (_meshes.TryGetValue(key, out var cached)) return cached;
-        var (ready, messages) = Prepare(path, boneCount, lodScale, shadowLevels, LodPixelsPerRadian, limbs, close, icon, partMap, worn).Value;
+        var (ready, messages) = Prepare(path, boneCount, lodScale, shadowLevels, LodPixelsPerRadian, limbs, close, icon, partMap, worn, sway).Value;
         _prepared[key] = new Lazy<Prepared>(Uploaded);
         Messages.AddRange(messages);
         return _meshes[key] = ready is null ? null : Upload(ready);
@@ -716,19 +761,20 @@ internal sealed class CharacterContent : IDisposable
     /// The preparation of a mesh, made once (any thread; the first caller's level settings stand).
     /// </summary>
     Lazy<Prepared> Prepare(string path, int? boneCount, float lodScale, bool shadowLevels, float pixelsPerRadian, LimbHide? limbs = null,
-        bool close = false, bool icon = false, string? partMap = null, bool worn = false) =>
-        _prepared.GetOrAdd((path.ToLowerInvariant(), icon ? IconBones : boneCount ?? -1, close, partMap?.ToLowerInvariant()),
+        bool close = false, bool icon = false, string? partMap = null, bool worn = false, GearSway.Bake? sway = null) =>
+        _prepared.GetOrAdd((path.ToLowerInvariant(), icon ? IconBones : boneCount ?? -1, close, partMap?.ToLowerInvariant(), sway),
                 _ => new Lazy<Prepared>(
-                    () => PrepareMesh(path, boneCount, lodScale, shadowLevels, pixelsPerRadian, limbs, close, icon, partMap, worn)));
+                    () => PrepareMesh(path, boneCount, lodScale, shadowLevels, pixelsPerRadian, limbs, close, icon, partMap, worn, sway)));
 
     /// <summary>
     /// Reads a mesh file and makes its levels and index buffers (no GPU work, any thread): with its skinning weights for a skeleton of
     /// <paramref name="boneCount"/> bones (null: unskinned); its generated levels start <paramref name="lodScale"/> times farther than the rule
     /// gives. A <paramref name="close"/> mesh (the character editor's close-up) keeps only its full level: generating the others is nearly all of the
-    /// time a mesh takes (a hair 1 to 2 s), and the editor shows one character up close.
+    /// time a mesh takes (a hair 1 to 2 s), and the editor shows one character up close. With <paramref name="sway"/> its hanging mass is baked to
+    /// swing (<see cref="GearSway.BakeMesh"/>).
     /// </summary>
     static Prepared PrepareMesh(string path, int? boneCount, float lodScale, bool shadowLevels, float pixelsPerRadian, LimbHide? limbs, bool close,
-        bool icon = false, string? partMap = null, bool worn = false)
+        bool icon = false, string? partMap = null, bool worn = false, GearSway.Bake? sway = null)
     {
         var messages = new List<string>();
         try
@@ -747,7 +793,7 @@ internal sealed class CharacterContent : IDisposable
             }
 
             // Not an icon's: its colour is the mesh's own vertex colour (CharacterShaders.VertexColoured), and icons take no skin.
-            if (!icon) MarkCurvature(model);
+            if (!icon) MarkCurvatureCached(path, model);
             foreach (var w in model.Warnings) messages.Add($"{Path.GetFileName(path)}: {w}");
             var centre = mesh.Bounds is { } b ? (b.Min + b.Max) / 2 : model.Center;
             float radius = mesh.Bounds is { } bb ? bb.Radius : model.Radius, fileRadius = radius;
@@ -781,12 +827,15 @@ internal sealed class CharacterContent : IDisposable
                 levels.AddRange(own.Skip(1).Select(l => l with { Distance = float.PositiveInfinity }));
             }
             var decoded = new DecodedObjectMesh { Model = model, Levels = levels, Manual = [], Centre = centre, Radius = radius };
+            var pickBoxes = PickBox.From(model);
+            var neckCap = limbs is not null && !close && !icon ? CapMesh(model, head: false) : null;
+            var headCap = limbs is not null && !close && !icon ? CapMesh(model, head: true) : null;
+
+            // Last before the parts are made: the levels, the pick boxes and the caps read the file's own bones.
+            GearSway.Mass? mass = sway is { } bake ? GearSway.BakeMesh(model.Parts, bake) : null;
             var parts = model.Parts.Select(part => ObjectMeshCache.PreparePart(decoded, part, keepLevels: false)).ToArray();
             return new(new PreparedMesh(parts, [.. levels.Select(l => l.Distance)], mesh.SubMeshes.FirstOrDefault()?.MaterialName, centre, radius,
-                morphs, shadowDistances, shadowFirst,
-                PickBox.From(model), fileDistances, fileFirst, fileRadius,
-                limbs is not null && !close && !icon ? CapMesh(model, head: false) : null,
-                limbs is not null && !close && !icon ? CapMesh(model, head: true) : null), messages);
+                morphs, shadowDistances, shadowFirst, pickBoxes, fileDistances, fileFirst, fileRadius, neckCap, headCap, mass), messages);
         }
         catch (Exception e) when (e is OgreFormatException or IOException or EndOfStreamException or InvalidDataException)
         {
@@ -840,7 +889,7 @@ internal sealed class CharacterContent : IDisposable
         MeshBytes += gpuMesh.Bytes;
         return new LoadedMesh(gpuMesh, ready.FirstMaterialName, ready.Centre, ready.Radius, ready.Morphs, ready.ShadowDistances, ready.ShadowFirst,
             ready.PickBoxes,
-            ready.FileDistances, ready.FileFirst, ready.FileRadius, ready.NeckCap, ready.HeadCap);
+            ready.FileDistances, ready.FileFirst, ready.FileRadius, ready.NeckCap, ready.HeadCap, ready.Sway);
     }
 
     /// <summary>
@@ -849,7 +898,7 @@ internal sealed class CharacterContent : IDisposable
     /// </summary>
     LoadedMesh? NeckCapMesh(string bodyPath, LoadedMesh body, int bones, bool head)
     {
-        var key = (bodyPath.ToLowerInvariant() + (head ? "#head cap" : "#neck cap"), bones, false, (string?)null);
+        var key = (bodyPath.ToLowerInvariant() + (head ? "#head cap" : "#neck cap"), bones, false, (string?)null, (GearSway.Bake?)null);
         if (_meshes.TryGetValue(key, out var cached)) return cached;
         return _meshes[key] = (head ? body.HeadCap : body.NeckCap) is { } ready ? Upload(ready) : null;
     }
@@ -957,7 +1006,7 @@ internal sealed class CharacterContent : IDisposable
         // Asked again every frame while it waits: the first answer's reading is kept by item.
         if (_iconReads.TryGetValue(item, out var started)) return started is null || started.IsValueCreated;
         string field = ItemIconStyle.MeshOf(item);
-        if (field.Length == 0 || FindMesh(field) is not { } path || _meshes.ContainsKey((path.ToLowerInvariant(), IconBones, true, null)))
+        if (field.Length == 0 || FindMesh(field) is not { } path || _meshes.ContainsKey((path.ToLowerInvariant(), IconBones, true, null, null)))
         {
             _iconReads[item] = null;
             return true;
@@ -1010,7 +1059,7 @@ internal sealed class CharacterContent : IDisposable
         var bodyPath = FindMesh(c.BodyMesh);
         if (bodyPath is null) return null;
         var parts = c.Parts.Select(p => (Path: FindMesh(p.Mesh), Shared: p.Mode == AttachMode.SharedSkeleton, Scale: PartLodScale(c,
-            p))).Where(p => p.Path is not null).ToList();
+            p), Pack: PackSways(c, p))).Where(p => p.Path is not null).ToList();
         var partMap = PartMapPath(c);
         float pixels = LodPixelsPerRadian;
         Interlocked.Increment(ref _fetchesRunning);
@@ -1021,9 +1070,10 @@ internal sealed class CharacterContent : IDisposable
                 if (BodySkeletonName(bodyPath) is not { } name || Rig(name) is not { } rig) return true;
                 var limbs = LimbHideOf(c, rig);
                 _ = Prepare(bodyPath, rig.BoneCount, 1, true, pixels, limbs, close, partMap: partMap).Value;
-                foreach (var (path, shared, scale) in parts)
+                foreach (var (path, shared, scale, pack) in parts)
                 {
-                    _ = Prepare(path!, shared ? rig.BoneCount : null, scale, false, pixels, shared ? limbs : null, close, worn: shared).Value;
+                    _ = Prepare(path!, shared ? rig.BoneCount : null, scale, false, pixels, shared ? limbs : null, close, worn: shared,
+                        sway: pack ? PackBake(rig) : null).Value;
                 }
             }
             catch (Exception)
@@ -1305,6 +1355,128 @@ internal sealed class CharacterContent : IDisposable
     }
 
     /// <summary>
+    /// Bumped when what <see cref="MarkCurvature"/> writes changes (its formula, <see cref="MaxThickness"/>, <see cref="ThicknessCell"/>): the key of
+    /// <see cref="MarkCurvatureCached"/>'s files.
+    /// </summary>
+    const int CurvatureVersion = 1;
+
+    /// <summary>
+    /// The first four bytes of a curvature cache file, "MCRV".
+    /// </summary>
+    const uint CurvatureMagic = 0x5652434D;
+
+    /// <summary>
+    /// <see cref="MarkCurvature"/> through a disk cache beside the levels' (<see cref="LodRoot"/>'s <c>curvature</c>), keyed by everything it reads:
+    /// each part's vertices and indices, and <see cref="CurvatureVersion"/>. The thickness rays cost 11 CPU-seconds of a large save's load (a mod's
+    /// dense hair alone 0.6 s on every core), every load.
+    /// </summary>
+    static void MarkCurvatureCached(string path, Model model)
+    {
+        if (Data.World.LoadCaches.Disabled)
+        {
+            MarkCurvature(model);
+            return;
+        }
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var part in model.Parts)
+        {
+            hash.AppendData(BitConverter.GetBytes(part.Vertices.Length));
+            hash.AppendData(MemoryMarshal.AsBytes(part.Vertices.AsSpan()));
+            hash.AppendData(BitConverter.GetBytes(part.Indices.Length));
+            hash.AppendData(MemoryMarshal.AsBytes(part.Indices.AsSpan()));
+        }
+        var key = Convert.ToHexString(hash.GetHashAndReset())[..32].ToLowerInvariant();
+        var safe = new string(Path.GetFileNameWithoutExtension(path).Select(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray());
+        if (safe.Length > 40) safe = safe[..40];
+        var file = Path.Combine(LodRoot, "curvature", $"{safe}_{key}_v{CurvatureVersion}.mcrv");
+        if (TryLoadCurvature(file, model)) return;
+        MarkCurvature(model);
+        SaveCurvature(file, model);
+    }
+
+    /// <summary>
+    /// Sets every vertex's curvature and thickness (colour Z and W) from <paramref name="file"/>; false (nothing set) when it is missing, unreadable
+    /// or for other parts.
+    /// </summary>
+    static bool TryLoadCurvature(string file, Model model)
+    {
+        try
+        {
+            if (!File.Exists(file)) return false;
+            var bytes = File.ReadAllBytes(file);
+            var span = bytes.AsSpan();
+            if (span.Length < 12 || System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span) != CurvatureMagic
+                || System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span[4..]) != CurvatureVersion
+                || System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span[8..]) != model.Parts.Count)
+                return false;
+            int at = 12;
+            foreach (var part in model.Parts)
+            {
+                if (span.Length < at + 4) return false;
+                if (System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(span[at..]) != part.Vertices.Length) return false;
+                at += 4;
+                if (span.Length < at + part.Vertices.Length * 8) return false;
+                at += part.Vertices.Length * 8;
+            }
+            if (at != span.Length) return false;
+
+            // Verified whole before anything is written.
+            at = 12;
+            foreach (var part in model.Parts)
+            {
+                at += 4;
+                var v = part.Vertices;
+                for (int i = 0; i < v.Length; i++, at += 8)
+                {
+                    v[i].Colour.Z = System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(span[at..]);
+                    v[i].Colour.W = System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(span[(at + 4)..]);
+                }
+            }
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Writes every vertex's curvature and thickness to a temporary file and moves it into place; failures are ignored (it is only a cache).
+    /// </summary>
+    static void SaveCurvature(string file, Model model)
+    {
+        try
+        {
+            int length = 12 + model.Parts.Sum(p => 4 + p.Vertices.Length * 8);
+            var bytes = new byte[length];
+            var span = bytes.AsSpan();
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(span, CurvatureMagic);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span[4..], CurvatureVersion);
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span[8..], model.Parts.Count);
+            int at = 12;
+            foreach (var part in model.Parts)
+            {
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span[at..], part.Vertices.Length);
+                at += 4;
+                foreach (var v in part.Vertices)
+                {
+                    System.Buffers.Binary.BinaryPrimitives.WriteSingleLittleEndian(span[at..], v.Colour.Z);
+                    System.Buffers.Binary.BinaryPrimitives.WriteSingleLittleEndian(span[(at + 4)..], v.Colour.W);
+                    at += 8;
+                }
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            var temporary = file + "." + Environment.ProcessId.ToString(CultureInfo.InvariantCulture) + "."
+                + Environment.CurrentManagedThreadId.ToString(CultureInfo.InvariantCulture) + ".tmp";
+            File.WriteAllBytes(temporary, bytes);
+            File.Move(temporary, file, overwrite: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>
     /// Writes each tightly curved vertex's thickness (world units) into its colour's W: how far a ray straight in from it goes before leaving the
     /// mesh by the back of a surface. An ear or a finger is thin; a nose or an eyelid over the head behind it is not, whatever its curvature.
     /// <see cref="MaxThickness"/> for the rest.
@@ -1314,13 +1486,30 @@ internal sealed class CharacterContent : IDisposable
         var v = part.Vertices;
         var idx = part.Indices;
         var grid = ThicknessGrid(v, idx);
-        var tested = new HashSet<int>();
-        for (int i = 0; i < v.Length; i++)
+        // Each vertex's ray is its own (it reads positions and normals, writes only its own thickness): the vertices are dealt over the cores. On
+        // one thread a mod's 60k-triangle hair, its cards dense and curved, took 9 s, and the loading screen waited for it.
+        Parallel.For(0, v.Length, () => new ThicknessScratch(idx.Length / 3), (i, _, scratch) =>
         {
             v[i].Colour.W = MaxThickness;
-            if (v[i].Colour.Z < 2 || v[i].Normal.LengthSquared() < 1e-8f) continue;
-            v[i].Colour.W = ThicknessAt(v, idx, grid, tested, i);
-        }
+            if (v[i].Colour.Z >= 2 && v[i].Normal.LengthSquared() >= 1e-8f) v[i].Colour.W = ThicknessAt(v, idx, grid, scratch, i);
+            return scratch;
+        }, _ => { });
+    }
+
+    /// <summary>
+    /// A <see cref="MarkThickness"/> worker's record of the triangles one ray has tested: a triangle is tested when its stamp is the ray's. A new
+    /// ray takes the next stamp, where emptying a set cleared its whole grown table each time (a mod's dense hair: 11 of its 26 CPU-s).
+    /// </summary>
+    sealed class ThicknessScratch(int triangles)
+    {
+        /// <summary>
+        /// Each triangle's last stamp.
+        /// </summary>
+        public readonly int[] Stamps = new int[triangles];
+        /// <summary>
+        /// The current ray's stamp.
+        /// </summary>
+        public int Stamp;
     }
 
     /// <summary>
@@ -1356,18 +1545,19 @@ internal sealed class CharacterContent : IDisposable
     /// Vertex <paramref name="i"/>'s thickness: the nearest back face a ray straight in from it meets, walking the grid cells along it,
     /// <see cref="MaxThickness"/> when none is nearer.
     /// </summary>
-    static float ThicknessAt(Vertex[] v, uint[] idx, Dictionary<(int, int, int), List<int>> grid, HashSet<int> tested, int i)
+    static float ThicknessAt(Vertex[] v, uint[] idx, Dictionary<(int, int, int), List<int>> grid, ThicknessScratch tested, int i)
     {
         var dir = -Vector3.Normalize(v[i].Normal);
         var from = v[i].Position + dir * 0.01f;
         float best = MaxThickness;
-        tested.Clear();
+        int stamp = ++tested.Stamp;
         for (float along = 0; along < best + ThicknessCell; along += ThicknessCell * 0.5f)
         {
             if (!grid.TryGetValue(ThicknessCellOf(from + dir * MathF.Min(along, best)), out var list)) continue;
             foreach (int t in list)
             {
-                if (!tested.Add(t)) continue;
+                if (tested.Stamps[t / 3] == stamp) continue;
+                tested.Stamps[t / 3] = stamp;
                 float hit = ThicknessRayHit(v, idx, t, from, dir);
                 if (hit > 0 && hit < best) best = hit;
             }
@@ -1534,6 +1724,8 @@ internal sealed class CharacterContent : IDisposable
         AddBody(asset, c, body, bodyPath);
         AddNeckCap(asset, c, body, bodyPath, rig);
         AddItemParts(asset, c, rig, close);
+        HangSways(asset, rig);
+        AddSwayColliders(asset, rig);
         AddLights(asset, c, rig);
         AddMouth(asset, c, rig);
 
@@ -1642,7 +1834,8 @@ internal sealed class CharacterContent : IDisposable
 
             // An animal's fur is a shell over the whole body (5.5k triangles on the bonedog, more than its body), not a few hair cards: it takes the
             // rule's own distances.
-            var loaded = Mesh(path, shared ? rig.BoneCount : null, PartLodScale(c, part), limbs: limbs, close: close, worn: shared);
+            var loaded = Mesh(path, shared ? rig.BoneCount : null, PartLodScale(c, part), limbs: limbs, close: close, worn: shared,
+                sway: PackSways(c, part) ? PackBake(rig) : null);
             if (loaded is null || loaded.Gpu.Parts.Count == 0) continue;
             var ap = new AssetPart
             {
@@ -1653,6 +1846,7 @@ internal sealed class CharacterContent : IDisposable
                 BoundsCentre = loaded.Centre,
                 BoundsRadius = loaded.Radius,
                 Shown = part.Shown,
+                IsWeapon = part.Slot == AttachSlot.Weapon,
                 ShownShots = part.ShownShots,
                 Muzzle = part is { Field: "live ammo", ShownShots: 1, Shown: WeaponShown.RangedDrawn },
                 HideSide = part.HideSide,
@@ -1662,8 +1856,45 @@ internal sealed class CharacterContent : IDisposable
                 FileRadius = loaded.FileRadius,
             };
             if (!shared) AttachToBone(asset, ap, c, part, rig, partLimbs);
+            else if (loaded.Sway is { } mass) AddPackSway(asset, ap, mass);
             asset.Parts.Add(ap);
         }
+    }
+
+    /// <summary>
+    /// A person's backpack (a worn mesh in the backpack slot) is baked to swing; an animal's bags are not.
+    /// </summary>
+    static bool PackSways(CharacterAppearance c, CharacterPart part) =>
+        part.Mode == AttachMode.SharedSkeleton && part.Slot == AttachSlot.Backpack && c.Animal is null;
+
+    /// <summary>
+    /// Where a backpack's straps end and its hanging mass begins on <paramref name="rig"/> (<see cref="GearSway.Bake"/>), from its binding pose:
+    /// the straps lie in front of the shoulders' line (the clavicles' Z; 0.2 units before it nothing moves), the mass behind the wearer's back
+    /// (0.9 units behind that line: the human bodies' backs are 0.75 to 1.2 behind it at the shoulder blades, Verified on human_male.mesh and
+    /// human_female.mesh), and nothing lies on the wearer 1.2 units above the neck's base. Null for a rig without those bones, or too large for the
+    /// palette to hold twice.
+    /// </summary>
+    static GearSway.Bake? PackBake(SkeletonRig rig)
+    {
+        if (rig.BoneCount > 128 || rig.Handle("Bip01 L Clavicle") is not int left || rig.Handle("Bip01 R Clavicle") is not int right
+            || rig.Handle("Bip01 Neck") is not int neck)
+        {
+            return null;
+        }
+        float shoulders = (rig.BindPosition[left].Z + rig.BindPosition[right].Z) / 2;
+        return new GearSway.Bake(rig.BoneCount, shoulders + 0.2f, shoulders - 0.9f, rig.BindPosition[neck].Y + 1.2f);
+    }
+
+    /// <summary>
+    /// Gives the asset the sway point of a baked backpack and the doubled palette its hanging vertices are skinned to
+    /// (<see cref="CharacterAsset.SwayPalette"/>). One swing serves every baked part: a second one's vertices follow the first's point.
+    /// </summary>
+    static void AddPackSway(CharacterAsset asset, AssetPart ap, GearSway.Mass mass)
+    {
+        asset.SwayPalette = true;
+        if (asset.Sways.Any(w => w.Skinned)) return;
+        asset.Sways.Add(new SwayPoint("backpack", mass.Bone, Matrix4x4.Identity)
+            { Skinned = true, Pivot = mass.Pivot, Lever = GearSway.Pendulum(mass.Lever, ap.BoundsRadius), Radius = ap.BoundsRadius });
     }
 
     /// <summary>
@@ -1681,6 +1912,141 @@ internal sealed class CharacterContent : IDisposable
             ap.Offset = Matrix4x4.CreateFromQuaternion(point.Rotation) * Matrix4x4.CreateTranslation(point.Position + part.PointOffset);
         if (part.Local is { } local) ap.Offset = local * ap.Offset;
         ap.AttachIndex = asset.AttachCount++;
+        if (point is not null && part.Slot == AttachSlot.Weapon && part.Point != "hands") AddSway(asset, ap, part, bone);
+    }
+
+    /// <summary>
+    /// Puts a part hanging at a weapon point into its point's sway group (<see cref="CharacterAsset.Sways"/>), the group's lever going to its largest
+    /// part's centre.
+    /// </summary>
+    static void AddSway(CharacterAsset asset, AssetPart ap, CharacterPart part, int bone)
+    {
+        ap.SwayLocal = part.Local ?? Matrix4x4.Identity;
+        ap.SwayPoint = ap.Offset;
+        if (part.Local is { } local && Matrix4x4.Invert(local, out var undo)) ap.SwayPoint = undo * ap.Offset;
+        int g = asset.Sways.FindIndex(w => w.Name == part.Point);
+        if (g < 0)
+        {
+            g = asset.Sways.Count;
+            asset.Sways.Add(new SwayPoint(part.Point!, bone, ap.SwayPoint));
+        }
+        ap.SwayGroup = g;
+        var sway = asset.Sways[g];
+        if (ap.BoundsRadius <= sway.Radius) return;
+
+        // The group's gear is its largest part: its centre and radius; where it hangs from comes once the look is whole (HangSways).
+        var centre = Vector3.Transform(ap.BoundsCentre, ap.SwayLocal);
+        (sway.Centre, sway.Radius) = (centre, ap.BoundsRadius);
+        float length = centre.Length();
+        sway.Pivot = Vector3.Zero;
+        sway.Lever = GearSway.Pendulum(centre, sway.Radius);
+
+        // The gear's span along its long axis (through the point and its centre), and its half thickness: the least side of its own box (a blade
+        // lies flat on the wearer).
+        if (length > 1e-4f) (sway.SpanFrom, sway.SpanTo) = (centre * ((length - sway.Radius) / length), centre * ((length + sway.Radius) / length));
+        (sway.Thickness, sway.Side) = (0.1f, Vector3.Zero);
+        foreach (var box in ap.PickBoxes)
+        {
+            // The box's least side is the gear's thickness, its middle one its width: the edges stand half of it from the span, along that side's
+            // axis as the part is placed.
+            var size = box.Max - box.Min;
+            float thin = MathF.Min(size.X, MathF.Min(size.Y, size.Z)), longest = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
+            var across = size.X != thin && size.X != longest ? Vector3.UnitX : size.Y != thin && size.Y != longest ? Vector3.UnitY : Vector3.UnitZ;
+            float width = Vector3.Dot(size, across);
+            sway.Thickness = Math.Clamp(thin / 2, 0.05f, 0.5f);
+            sway.Side = Vector3.TransformNormal(across, ap.SwayLocal) * (width / 2);
+        }
+    }
+
+    /// <summary>
+    /// The gear of a sway point passing within this of a shoulder joint hangs from that shoulder (world units).
+    /// </summary>
+    const float ShoulderReach = 2.5f;
+
+    /// <summary>
+    /// Where each bone-attached sway point's gear hangs from, its pivot: where it lies against the wearer, not the point it is placed by (a
+    /// weapon's grip, which a hip point holds out in front of the hip: turned about it, the sheath left the belt). It is the place on the gear's
+    /// long axis, over the gear's length, nearest the bone the point is on (the belt, for a hip point) or, for gear that passes a shoulder joint
+    /// within <see cref="ShoulderReach"/> (a weapon across the back), nearest that shoulder: hung from the middle of the back, a blade the hips
+    /// pushed out turned its upper end into the shoulder. In the binding pose with the look's shape.
+    /// </summary>
+    static void HangSways(CharacterAsset asset, SkeletonRig rig)
+    {
+        if (asset.Sways.All(s => s.Skinned)) return;
+        var scratch = rig.Rent();
+        scratch.PoseDerived(asset.Shape, []);
+        int[] shoulders = [.. new[] { "Bip01 L UpperArm", "Bip01 R UpperArm" }.Select(rig.Handle).OfType<int>()];
+        foreach (var point in asset.Sways)
+        {
+            float length = point.Centre.Length();
+            if (point.Skinned || length <= 1e-4f || !Matrix4x4.Invert(scratch.TagTransform(point.Bone, point.Offset), out var toPoint)) continue;
+            var axis = point.Centre / length;
+            float low = Math.Min(0, length - point.Radius), high = length + point.Radius;
+            var target = Vector3.Transform(scratch.DerivedPosition[point.Bone], toPoint);
+            float nearest = ShoulderReach;
+            foreach (int shoulder in shoulders)
+            {
+                var at = Vector3.Transform(scratch.DerivedPosition[shoulder], toPoint);
+                float away = (at - axis * Math.Clamp(Vector3.Dot(at, axis), low, high)).Length();
+                if (away < nearest) (nearest, target) = (away, at);
+            }
+            point.Pivot = axis * Math.Clamp(Vector3.Dot(target, axis), low, high);
+            point.Lever = GearSway.Pendulum(point.Centre - point.Pivot, point.Radius);
+        }
+        rig.Return(scratch);
+    }
+
+    /// <summary>
+    /// The limbs hanging gear is kept out of (<see cref="CharacterAsset.SwayColliders"/>), from the body's own boxes (<see cref="PickBox"/>: its
+    /// vertices by their main bone, in the binding pose): a thigh and a calf are capsules from their joint to the next, as thick as their box
+    /// across; the pelvis is one across the hips, as thick as its box is deep. Then each bone-attached sway point's clearance in the binding pose
+    /// (<see cref="SwayPoint.RestClearance"/>): gear placed touching a limb stays so.
+    /// </summary>
+    static void AddSwayColliders(CharacterAsset asset, SkeletonRig rig)
+    {
+        if (asset.Animal || asset.Sways.All(s => s.Skinned) || asset.Parts.Find(p => p.IsBody) is not { } body) return;
+        var limbs = new List<SwayCollider>();
+        Vector3? Size(int bone, out Vector3 centre)
+        {
+            centre = default;
+            foreach (var box in body.PickBoxes)
+            {
+                if (box.Bone != bone) continue;
+                centre = (box.Min + box.Max) / 2;
+                return box.Max - box.Min;
+            }
+            return null;
+        }
+        void Limb(string bone, string next)
+        {
+            if (rig.Handle(bone) is not int h || rig.Handle(next) is not int n || Size(h, out _) is not { } size) return;
+            // Across the limb: the mean of its box's two smaller sides; a limb's box also holds the skin stretched to its joints.
+            float across = (size.X + size.Y + size.Z - MathF.Max(size.X, MathF.Max(size.Y, size.Z))) / 2;
+            limbs.Add(new SwayCollider(h, rig.BindPosition[h], rig.BindPosition[n], across / 2 * 0.85f + 0.1f));
+        }
+        if (rig.Handle("Bip01 Pelvis") is int pelvis && Size(pelvis, out var middle) is { } hips)
+        {
+            float radius = MathF.Min(hips.Y, hips.Z) / 2 * 0.9f, half = MathF.Max(hips.X / 2 - radius, 0);
+            limbs.Add(new SwayCollider(pelvis, middle - Vector3.UnitX * half, middle + Vector3.UnitX * half, radius));
+        }
+        Limb("Bip01 L Thigh", "Bip01 L Calf");
+        Limb("Bip01 R Thigh", "Bip01 R Calf");
+        Limb("Bip01 L Calf", "Bip01 L Foot");
+        Limb("Bip01 R Calf", "Bip01 R Foot");
+        if (limbs.Count == 0) return;
+        asset.SwayColliders = [.. limbs];
+
+        var scratch = rig.Rent();
+        var skin = new Matrix4x4[rig.BoneCount];
+        scratch.Pose(asset.Shape, [], skin);
+        foreach (var point in asset.Sways)
+        {
+            if (point.Skinned || point.SpanFrom == point.SpanTo) continue;
+            var tag = scratch.TagTransform(point.Bone, point.Offset);
+            point.RestClearance = MathF.Min(0, GearSway.Clearance(asset.SwayColliders, skin, point.Bone, Vector3.Transform(point.SpanFrom, tag),
+                Vector3.Transform(point.SpanTo, tag), Vector3.TransformNormal(point.Side, tag), point.Thickness));
+        }
+        rig.Return(scratch);
     }
 
     /// <summary>
@@ -1825,6 +2191,13 @@ internal sealed class CharacterContent : IDisposable
         item.Type != FcsRecordType.Armour ? 0 : item.GetInt("material type") switch { 0 => 1, 1 => 0.35f, _ => 0 };
 
     /// <summary>
+    /// An ARMOUR's own <c>metalness</c> float (a Meitou field, no vanilla record has it): how much of its bare-metal parts is metal, 0 to 1; -1
+    /// for none, which leaves it to the estimate (docs/character-renderer.md "Metal").
+    /// </summary>
+    static float OwnMetalness(GameRecord item) =>
+        item.Type == FcsRecordType.Armour && item.GetFloat("metalness", -1) is >= 0 and var v ? Math.Min(v, 1) : -1;
+
+    /// <summary>
     /// A weapon's <c>sheath</c> mesh, or its sheathed <c>mesh</c> when the record has a <c>sheath</c> (that mesh is the weapon in its scabbard).
     /// </summary>
     static bool IsScabbard(CharacterPart part) =>
@@ -1913,7 +2286,11 @@ internal sealed class CharacterContent : IDisposable
         bool worn = part.Mode == AttachMode.SharedSkeleton;
         m.Worn = worn;
         if (worn) m.Sheen.X = ClothSheen(item);
-        m.ArmourMetal = worn && item.Type == FcsRecordType.Armour && item.GetInt("material type") >= 2;
+
+        // Chain and plate are estimated as metal, and so is any armour with a metalness of its own.
+        float ownMetal = OwnMetalness(item);
+        m.ArmourMetal = worn && item.Type == FcsRecordType.Armour && (item.GetInt("material type") >= 2 || ownMetal >= 0);
+        m.Sheen.W = m.ArmourMetal ? ownMetal : -1;
         m.LimbMetal = item.Type == FcsRecordType.LimbReplacement;
 
         var spec = ClothingSpec(c, part, item);
@@ -2113,3 +2490,40 @@ internal sealed class CharacterContent : IDisposable
 
     static string? FindMesh(AssetLocator assets, string fcsPath) => assets.FindMesh(fcsPath);
 }
+
+/// <summary>
+/// A point of a character asset that hangs gear (<see cref="CharacterAsset.Sways"/>): its name, bone and offset from the bone; the pivot its gear
+/// turns about, in the point's frame (where the gear lies against the wearer); the lever it is stepped with, from the pivot towards the centre of
+/// its largest part (<see cref="GearSway.Pendulum"/>), and that part's radius. A <see cref="Skinned"/> one (a backpack) has its pivot and lever
+/// in the mesh's space, carried by the bone's skin matrix.
+/// </summary>
+internal sealed class SwayPoint(string name, int bone, Matrix4x4 offset)
+{
+    public string Name { get; } = name;
+    public int Bone { get; } = bone;
+    public Matrix4x4 Offset { get; } = offset;
+    public Vector3 Lever;
+    public float Radius;
+    public bool Skinned;
+    public Vector3 Pivot;
+    /// <summary>
+    /// A bone-attached point's gear: the centre of its largest part, in the point's frame.
+    /// </summary>
+    public Vector3 Centre;
+    /// <summary>
+    /// A bone-attached point's gear as the wearer's limbs meet it: its span along its long axis (the point's frame), its half thickness, and its
+    /// clearance from the limbs in the binding pose (at most 0).
+    /// </summary>
+    public Vector3 SpanFrom, SpanTo;
+    public float Thickness, RestClearance;
+    /// <summary>
+    /// From the span to one edge of the gear: half its width, across its flat, in the point's frame.
+    /// </summary>
+    public Vector3 Side;
+}
+
+/// <summary>
+/// A limb of the wearer as hanging gear meets it: a capsule from <paramref name="From"/> to <paramref name="To"/> in the binding pose, carried by
+/// <paramref name="Bone"/>'s skin matrix.
+/// </summary>
+internal readonly record struct SwayCollider(int Bone, Vector3 From, Vector3 To, float Radius);

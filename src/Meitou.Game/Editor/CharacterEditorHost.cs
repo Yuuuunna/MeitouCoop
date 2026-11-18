@@ -1,3 +1,4 @@
+using Meitou.Game.Rendering.Gpu;
 using System.Numerics;
 using Meitou.Data.Ui;
 using Meitou.Data.World;
@@ -126,6 +127,7 @@ sealed class CharacterEditorHost(GameHost host)
     /// </summary>
     internal void DrawEditorStage(int width, int height, bool posed = false)
     {
+        if (StudioSize is { } size) (width, height) = size;
         if (host.ActiveCharacters is not { } characters) return;
         _editorStaged = true;
         if (host.Player.CharacterEditor.EditorView() is not { } view)
@@ -179,6 +181,35 @@ sealed class CharacterEditorHost(GameHost host)
     /// <summary>
     /// The editor has closed: the platform goes, and the close-up looks warmed for it and never shown are dropped.
     /// </summary>
+    /// <summary>
+    /// Debug (<c>studio size</c>): the stage picture's size in place of the window's.
+    /// </summary>
+    internal (int Width, int Height)? StudioSize { get; set; }
+
+    /// <summary>
+    /// Debug (<c>studio shot</c>): where the next frame's stage picture goes.
+    /// </summary>
+    internal string? StudioShot { get; set; }
+
+    /// <summary>
+    /// The stage picture and the file <c>studio shot</c> asked for, to be saved at the end of the frame (the ask is taken); null when none is due.
+    /// </summary>
+    internal (GpuTexture Picture, string Path)? TakeStudioShot()
+    {
+        if (StudioShot is not { } path || host.ActiveCharacters?.StageTexture is not { } stage) return null;
+        StudioShot = null;
+        return (stage.Texture, path);
+    }
+
+    /// <summary>
+    /// Saves the stage picture <c>studio shot</c> asked for, at the end of the frame.
+    /// </summary>
+    internal void SaveStudioShot(GpuContext context)
+    {
+        if (TakeStudioShot() is not { } shot) return;
+        FramebufferCapture.SavePng(context, shot.Picture, shot.Path, shot.Picture.Desc.Width, shot.Picture.Desc.Height);
+    }
+
     internal void ClearEditorStage()
     {
         if (!_editorStaged) return;

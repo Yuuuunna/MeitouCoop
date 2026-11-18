@@ -107,6 +107,8 @@ sealed class NewGameLaunch(GameHost host)
                         world.RestoreSeed(seed);
                         world.Player.BanditsLoot = nextDifficulty.BanditsLoot;
                         spawned = built.Population!.StartPlayer(world, chosen);
+                        if (host.Modding.Mods is { } mods) mods.TellReady(world, fromSave: false);
+                        else world.TellReady(fromSave: false);
                     });
                 }
                 catch (Exception e)

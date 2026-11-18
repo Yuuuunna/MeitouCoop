@@ -95,6 +95,15 @@ public sealed partial class ProductionSystem
     /// </summary>
     public static bool IsNatural(string id) => id.StartsWith(NaturalPrefix, StringComparison.Ordinal);
     /// <summary>
+    /// The BUILDING of the rock a natural id names (<see cref="NaturalId"/>); null for any other id.
+    /// </summary>
+    public static string? NaturalRecord(string id)
+    {
+        int at = id.LastIndexOf('@');
+        return IsNatural(id) && at > NaturalPrefix.Length ? id[NaturalPrefix.Length..at] : null;
+    }
+
+    /// <summary>
     /// A player site of the registry, else the rock a natural id names, else a town seat or training dummy; null for none.
     /// </summary>
     BuildSite? Site(World world, string id) => world.Buildings.Find(id) ?? Seat(world, id) ?? Natural(world, id) ?? TownDummy(world, id) ?? TownMachineSite(world, id);
@@ -114,7 +123,7 @@ public sealed partial class ProductionSystem
                         sites[id] = new(id, rock.Position, rock.Owner, world.BuildingRevision(rock));
                 }
 
-        if (TownBuildingIndex(world) is { } buildings)
+        if (TownBuildingIndex(world)?.Buildings is { } buildings)
             foreach (var (building, _, _) in buildings.Values)
             {
                 if (world.Fixtures.IsDestroyed(building)) continue;

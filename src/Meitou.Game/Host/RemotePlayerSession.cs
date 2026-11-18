@@ -345,6 +345,8 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
             UnlockedBuildings = faction?.UnlockedBuildings ?? new HashSet<string>(),
             PlayerSquads = faction?.Squads ?? [],
             IndependentSquads = faction?.IndependentSquads ?? [],
+            FactionHeads = faction?.FactionHeads ?? 0,
+            CappedHeads = faction?.CappedHeads ?? 0,
             ActiveSquad = faction?.Squads.Any(s => s.Id == _view.Snapshot.ActiveSquad) == true ? _view.Snapshot.ActiveSquad : faction?.Squads.FirstOrDefault()?.Id ?? -1,
         };
     }

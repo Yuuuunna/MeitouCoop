@@ -496,6 +496,13 @@ sealed class ProductionWindows(PlayerInterface player)
             }
 
             var input = m.Inputs[k];
+
+            if (input.Idle)
+            {
+                BindIdleInput(n, b);
+                continue;
+            }
+
             b.Text[$"Input{n}Text"] = input.Name;
 
             if (m.Craft is not null)
@@ -516,6 +523,16 @@ sealed class ProductionWindows(PlayerInterface player)
     }
 
     /// <summary>
+    /// A bench section the bound craft takes nothing from (<c>FUN_1402b6110</c>, its ingredient cleared): name "-", no status, bar 0.
+    /// </summary>
+    static void BindIdleInput(string n, UiBindings b)
+    {
+        b.Text[$"Input{n}Text"] = "-";
+        b.Text[$"Input{n}StatusText"] = "";
+        b.Progress[$"Input{n}ProgressBar"] = 0;
+    }
+
+    /// <summary>
     /// A furnace's one input is its 12 x 7 grid (FurnaceBuilding::setupFromData), drawn in in1 by AddMachineContent; its label, status and bar are
     /// an engine choice (left empty).
     /// </summary>
@@ -527,7 +544,8 @@ sealed class ProductionWindows(PlayerInterface player)
     }
 
     /// <summary>
-    /// The building window's output: its stock and bar (a farm's ripeness), a bench's current craft, or the column hidden.
+    /// The building window's output: its stock and bar, a bench's current craft, or the column hidden. A farm's bar is the plant being harvested
+    /// (ProductionBuilding slot 179 <c>FUN_140298810</c>: the output entry's progress, which <c>FUN_1400e59e0</c> works), so 0 while it grows.
     /// </summary>
     static void BindOutput(MachineSnapshot m, UiBindings b)
     {
@@ -536,7 +554,7 @@ sealed class ProductionWindows(PlayerInterface player)
             string count = output.Count.ToString(CultureInfo.InvariantCulture);
             string capacity = output.Capacity.ToString(CultureInfo.InvariantCulture);
             b.Text["OutputText"] = $"{output.Name}\n{count}/{capacity}";
-            b.Progress["OutputProgressBar"] = m.Farm is { } farm ? farm.Ripeness : output.Fill;
+            b.Progress["OutputProgressBar"] = m.Farm is { } farm ? farm.HarvestProgress : output.Fill;
         }
         else if (m.Craft is { } done)
         {
@@ -665,9 +683,16 @@ sealed class ProductionWindows(PlayerInterface player)
     /// </summary>
     void AddSlot(List<UiControl> controls, MachineSnapshot m, string name, MachineSlotView view, int code)
     {
-        if (SizeSection(controls, name) is not var (b, clip)) return;
+        if (SizeSection(controls, name) is not var (section, clip)) return;
 
-        if (view.Count <= 0 && m.Craft is not null)
+        // The item sits at the section's top left at its own footprint (a bench's sections can be larger).
+        var b = view.ItemWidth > 0
+            ? new UiRect(section.X, section.Y, view.ItemWidth * player.InventoryCell, view.ItemHeight * player.InventoryCellHeight)
+            : section;
+
+        // An idle bench section has no ghost and is disabled while empty (FUN_1402bb470, setEnabled through FUN_14014ea30).
+        if (view is { Idle: true, Count: <= 0 }) DisableSection(controls, name);
+        if (view.Count <= 0 && m.Craft is not null && !view.Idle)
             AddItemGhost(controls, $"machine-{name}", b, view.Item, "", clip);
         if (view.Count <= 0 || player.InventoryWindows.Lifted(ItemOwner.AtSite(m.Site), code)) return;
 
@@ -698,6 +723,18 @@ sealed class ProductionWindows(PlayerInterface player)
     }
 
     /// <summary>
+    /// Draws a section in the slot skin's red <c>disabled</c> state.
+    /// </summary>
+    static void DisableSection(List<UiControl> controls, string name)
+    {
+        int index = controls.FindIndex(c => c.Name == name);
+        if (index < 0) return;
+
+        var slot = controls[index];
+        controls[index] = slot with { Properties = new Dictionary<string, string>(slot.Properties) { ["State"] = "disabled" } };
+    }
+
+    /// <summary>
     /// A furnace's input grid and its items.
     /// </summary>
     void AddFurnaceGrid(List<UiControl> controls, MachineSnapshot m, InventoryView fg, FurnaceView burn)
@@ -705,13 +742,12 @@ sealed class ProductionWindows(PlayerInterface player)
         // The furnace's grid in in1, its items the storage's (picked up as storage items); disabled while it burns
         // (InventorySection::setEnabled(!active)).
         AddSlot(controls, m, "in1", new MachineSlotView("", "", 0, 0, 0, fg.Width, fg.Height), -1);
+        if (burn.Burning) DisableSection(controls, "in1");
         int gi = controls.FindIndex(c => c.Name == "in1");
 
         if (gi >= 0)
         {
             var g = controls[gi];
-            if (burn.Burning)
-                controls[gi] = g with { Properties = new Dictionary<string, string>(g.Properties) { ["State"] = "disabled" } };
 
             foreach (var item in fg.Items)
             {
@@ -1557,6 +1593,7 @@ sealed class ProductionWindows(PlayerInterface player)
         b.Lists["CraftingStationsList"] = [.. stations.Select(s => new UiListItem(s.Site, StationName(s)))];
         b.SelectedItems["CraftingStationsList"] = stations.FindIndex(s => s.Site == _craftStation);
         bool repeat = stations.FirstOrDefault(s => s.Site == _craftStation)?.Craft?.Repeat == true;
+        if (_craftStation is not null) b.Disabled.Remove("QueueRepeat");
         b.Actions["QueueRepeat"] = stations.FirstOrDefault(s => s.Site == _craftStation) is { } shown
             ? CraftActionId("craft-repeat", shown, repeat ? "0" : "1") : "";
         b.Properties["QueueRepeat"] = new Dictionary<string, string>

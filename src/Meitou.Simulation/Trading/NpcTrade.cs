@@ -28,13 +28,15 @@ public enum NpcSale : byte
 /// <c>FUN_14074a630</c> that <c>FUN_1409a14b0</c> makes for <c>Task_Shopping</c>. Changes shared state, so it runs in a serial step only.
 /// <list type="bullet">
 /// <item><b>Sellers</b>: the containers of the building (<b>Observed</b>, <c>FUN_14054add0</c> / <c>FUN_1409a14b0</c> list only container objects,
-/// never a trader's carried stock): the building's stock containers, a shop's or a house's. The first with an item of the function sells a random
-/// one of them. Engine choice: a unique item (an artifact) is never sold.</item>
+/// never a trader's carried stock): the building's stock containers, a shop's or a house's, then the shop counters the player built in it
+/// (<see cref="PlayerShops"/>). The first with an item of the function sells a random one of them. Engine choice: a unique item (an artifact) is
+/// never sold.</item>
 /// <item><b>Price</b> (<b>Verified</b>): the item's stack price (slot 82) of one unit, with the sell flag set only for a buyer of the player's
 /// faction. With no trade window open the trader factor is 1 and no town's market factor applies (<b>Observed</b>), so it is
 /// <see cref="Market.StackPrice"/> with <see cref="Trader.None"/>.</item>
 /// <item><b>Money</b> (<b>Verified</b>): from the buyer's squad purse (the player's purse for a buyer of the player's faction; none: 0) to the squad
-/// that owns the stock. The buyer must hold the price in full.</item>
+/// that owns the stock. The buyer must hold the price in full. A counter the player built pays the player's purse (<b>Observed</b>, disassembly: the
+/// sale pays the owner of the selling container, a counter's own handle else its owner faction).</item>
 /// <item><b>The item</b> (<b>Verified</b>): when the stock's owner is not of the player's faction and a roll is above <see cref="KeepChance"/> the
 /// unit is paid for and leaves the stock without going anywhere; otherwise it goes into the buyer's inventory, and with no room the sale is called
 /// off.</item>
@@ -51,12 +53,12 @@ public static class NpcTrade
     /// Tries to buy one unit of an item of the item function <paramref name="function"/> in <paramref name="building"/> for the character in slot
     /// <paramref name="buyer"/>. <paramref name="roll"/> picks the item and decides whether it is kept.
     /// </summary>
-    public static NpcSale Buy(World world, Market market, int playerFaction, int buyer, TownBuilding building, int function, ulong roll)
+    public static NpcSale Buy(World world, Market market, int buyer, TownBuilding building, int function, ulong roll)
     {
         var table = world.Characters;
         if (table.Cold(buyer) is not { } cold) return NpcSale.NoItem;
 
-        foreach (var (stock, owner) in Sellers(world, building))
+        foreach (var (stock, owner, counterFaction) in Sellers(world, building))
         {
             int count = 0;
             foreach (var item in stock.Items)
@@ -78,27 +80,38 @@ public static class NpcTrade
             if (chosen is null) continue;
 
             bool player = cold.IsPlayer || world.IsPlayerFaction(cold.Faction);
-            if (player && world.Players.RequiresExplicitControl && (world.Players.ControlOf(table.IdOf(buyer)) is not { } grant || !world.Players.Validate(grant)
-                || world.Players.Find(grant.Player)?.HasPermission(cold.Faction, FactionPermission.SpendFunds) != true)) return NpcSale.Failed;
-            var funds = player && cold.Faction >= 0 ? world.Factions.GetOrCreate(cold.Faction) : null;
-            var ownerFunds = owner is not null && world.IsPlayerFaction(owner.Faction) ? world.Factions.GetOrCreate(owner.Faction) : null;
-            var purse = player ? null : world.Squads.Find(cold.SquadId);
+            var squad = world.Squads.Find(cold.SquadId);
+            bool shared = player && squad is not { OwnPurse: true };
+            if (shared && world.Players.RequiresExplicitControl && (world.Players.ControlOf(table.IdOf(buyer)) is not { } grant
+                || !world.Players.Validate(grant)
+                || world.Players.Find(grant.Player)?.HasPermission(cold.Faction, FactionPermission.SpendFunds) != true))
+                return NpcSale.Failed;
+            var funds = shared && cold.Faction >= 0 ? world.Factions.GetOrCreate(cold.Faction) : null;
+            var purse = shared ? null : squad;
+            if (shared && funds is null) return NpcSale.Failed;
+            int seller = counterFaction >= 0 ? counterFaction : owner?.Faction ?? -1;
+            var ownerFunds = world.IsPlayerFaction(seller) && owner is not { OwnPurse: true }
+                ? world.Factions.GetOrCreate(seller) : null;
             var unit = chosen.WithQuantity(1);
-            long price = market.StackPrice(unit, player, Trader.None, owner?.Faction ?? -1);
-            if ((player ? funds?.Money ?? 0 : purse?.Money ?? 0) < price) return NpcSale.Failed;
-            if (price < 0 || ownerFunds is not null && ownerFunds.Money > long.MaxValue - price || ownerFunds is null && owner is not null && owner.Money > long.MaxValue - price) return NpcSale.Failed;
+            long price = market.StackPrice(unit, player, Trader.None, seller);
+            if (world.TradePriceFilters.Active)
+            {
+                var deal = new TradeDeal(world.Tick, unit.Record, 1, false, table.IdOf(buyer), owner?.Id ?? -1);
+                price = world.TradePriceFilters.Pass(world, deal, price);
+            }
+            if (price < 0 || (shared ? funds?.Money ?? 0 : purse?.Money ?? 0) < price) return NpcSale.Failed;
+            if (ownerFunds is not null && ownerFunds.Money > long.MaxValue - price
+                || ownerFunds is null && owner is not null && owner.Money > long.MaxValue - price) return NpcSale.Failed;
 
-            bool toBuyer = owner is { } own && world.IsPlayerFaction(own.Faction) || Rng.Float(Rng.Mix(roll)) <= KeepChance;
-            if (toBuyer && (cold.Inventory is null || !cold.Inventory.Add(unit)))
+            bool toBuyer = world.IsPlayerFaction(seller) || Rng.Float(Rng.Mix(roll)) <= KeepChance;
+            if (toBuyer && (cold.Inventory is null || TradeSystem.Place(cold.Inventory, unit, 1) == 0))
                 return NpcSale.Failed;
 
-            if (chosen.Quantity <= 1) stock.Remove(chosen);
-            else chosen.Quantity--;
-            if (player) funds!.TryDebit(price);
+            TradeSystem.Take(stock, chosen, 1);
+            if (shared) funds!.TryDebit(price);
             else if (purse is not null) purse.Money -= price;
             if (ownerFunds is not null) ownerFunds.TryCredit(price);
-            else
-                if (owner is not null) owner.Money += price;
+            else if (owner is not null) owner.Money += price;
 
             // FUN_1409a14b0: a sale worth more than nothing floats the price over the shopper and posts Sell_Item on it (both only while the interface
             // is shown, which the host decides).
@@ -108,6 +121,10 @@ public static class NpcTrade
 
         return NpcSale.NoItem;
     }
+
+    /// <summary>Compatibility entry point; ownership now resolves from every authoritative player faction.</summary>
+    public static NpcSale Buy(World world, Market market, int playerFaction, int buyer, TownBuilding building, int function, ulong roll) =>
+        Buy(world, market, buyer, building, function, roll);
 
     /// <summary>
     /// The price floater over the shopper and its <c>Sell_Item</c> (<see cref="SoundKind.NpcBought"/>). Display only.
@@ -127,9 +144,10 @@ public static class NpcTrade
 
     /// <summary>
     /// The building's stock containers in its order, each with the squad that owns what it holds: the squad with a building shop living in it, else
-    /// the first squad living in it (none: the money goes nowhere; the original pays the owner faction).
+    /// the first squad living in it (none: the money goes nowhere; the original pays the owner faction); then the shop counters the player built in
+    /// it, which pay their actual owning faction.
     /// </summary>
-    static IEnumerable<(Inventory Stock, Squad? Owner)> Sellers(World world, TownBuilding building)
+    static IEnumerable<(Inventory Stock, Squad? Owner, int CounterFaction)> Sellers(World world, TownBuilding building)
     {
         Squad? resident = null, shop = null;
 
@@ -143,7 +161,10 @@ public static class NpcTrade
 
         foreach (var f in building.Fixtures)
         {
-            if (f.HoldsShopStock && world.Fixtures.Find(f.Id)?.Contents is { } box) yield return (box, shop ?? resident);
+            if (f.HoldsShopStock && world.Fixtures.Find(f.Id)?.Contents is { } box) yield return (box, shop ?? resident, -1);
         }
+
+        foreach (int faction in world.PlayerFactionIndices())
+            foreach (var counter in PlayerShops.Counters(world, building, faction)) yield return (counter, null, faction);
     }
 }

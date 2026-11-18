@@ -9,9 +9,12 @@ RE_Kenshi plugin DLLs are never loaded: wishlist plugins get built in or ported 
 ## Multiplayer authority
 
 **Observed** (source inspection; runtime acceptance not yet verified): the server loads only enabled code mods approved in
-`ServerConfiguration.TrustedCodeMods`, using its `ModSettings`; an unapproved mod still contributes data. Trusted initialization or
-system-factory failure aborts server startup. Client approval, enabled order, complete mod-folder hashes and code settings must match
-compatibility rules before connection; native and private dependencies are included.
+`ServerConfiguration.TrustedCodeMods`, using its `ModSettings`; an unapproved mod still contributes its ordinary `.mod` data, but no C# executes.
+The same trust gate runs before data-phase assemblies or entry constructors load. Trusted data-phase, initialization or system-factory failure
+aborts startup. Client approval, enabled order, complete mod-folder hashes and code settings must match
+compatibility rules before connection; native and private dependencies are included. Actual `GameDatabase.CodeEdits` fingerprints also enter the
+rules digest: equal files that produce different data-phase edits cannot join. The client codec and renderer share the same edited database;
+the dedicated server derives population, navigation and systems from its edited database.
 
 Launcher [server synchronization](mod-sync.md) supplies per-session client trust/settings after code consent. It does not change saved
 single-player trust; address-only discovery uses the same approved code evidence as subsequent admission.
@@ -28,7 +31,8 @@ world. Missing-mod sidecars remain in the cloned source save. See [checkpoint bo
 through `ModHost.DeliverCombatHits`. Candidate setup publishes no feed, and suspension clears and detaches the old queue.
 `ModContext.Population` and `Tick` resolve the active/factory/restore world; mods must not cache population across worlds.
 `PrepareWorld` scopes candidate construction and restore: factory/cleanup commands are dropped, restore commands target only
-the candidate. A failed candidate cannot enqueue into the active world. Compatibility hashes the entire mod directory, so
+the candidate. `IWorldReady` runs after restore, ownership reconstruction and missing-mod squad cleanup, with the context scoped to the candidate.
+A dedicated server loading a checkpoint does not notify its temporary empty world as a new game. A failed candidate cannot enqueue into the active world. Compatibility hashes the entire mod directory, so
 runtime settings belong in standard `AddSettings` configuration or sidecars outside that directory.
 
 ## Why this shape
@@ -41,7 +45,8 @@ runtime settings belong in standard `AddSettings` configuration or sidecars outs
 - **Harmony is not an alternative to an API.** It works on the game's JIT publish whether blessed or not, so the decision is only what the
   engine promises beyond raw patching. **Observed** (2026-11-11, scratch app, win-x64, tiered compilation off): Lib.Harmony 2.4.3
   throws `PlatformNotSupportedException` ("CoreCLR version 11.0.0 is not supported") on .NET 11; 3.0.0-rc.5 patches (prefix, postfix,
-  unpatch), and code compiled against 2.4.3 runs unchanged on the 3.0.0-rc.5 `0Harmony.dll`.
+  unpatch), and code compiled against 2.4.3 runs unchanged on the 3.0.0-rc.5 `0Harmony.dll`. 3.0.0-rc.7 patches the same way on the .NET 11.0.0
+  release (2026-11-18, same setup).
 - **No accessor mirrors.** Mods reference `Meitou.*` assemblies directly, as a patch needs the types anyway. Compatibility is per game
   version (RimWorld's model).
 
@@ -52,6 +57,7 @@ A class library matching the release runtime (`net11.0` standard, `net10.0` lega
 `Meitou.Simulation.dll`, `Meitou.Core.dll`, `Meitou.Data.dll` and `0Harmony.dll`, plus `MeitouClient.dll` when using graphical UI types,
 all with `Private="false"`: the host supplies them. **Observed** (project layout): the multiplayer build retains the independent modding assembly for headless hosting. Most namespaces
 follow folders (`Meitou.Simulation.Population`, `Meitou.Game.Rendering.Terrain`); mods built against the previous assembly layout need rebuilding.
+The [reference package](#reference-package) describes upstream packaging; Coop code mods must reference the matching Coop release assemblies.
 
 ```csharp
 public sealed class MyMod : IMod
@@ -66,6 +72,41 @@ public sealed class MyMod : IMod
 ```
 
 Folder: `mods/MyMod/MyMod.mod` (the data mod, may be empty of records), `meitou.json`, `MyMod.dll`.
+
+### Reference package
+
+The Coop release workflow builds `MeitouCoop.References`, versioned as the release; publishing to nuget.org requires this repository's `NUGET_USER` and trusted-publishing policy (`tools/scripts/package-references.ps1`; `release.yml`
+pushes it after publishing through nuget.org's trusted publishing, and a release goes out without it when it fails to build; nightlies
+push none). The fork uses a separate package identity from upstream `Meitou.References`. A mod's project references the matching Coop release:
+
+```xml
+<PackageReference Include="MeitouCoop.References" Version="<game version>" />
+```
+
+For `net11.0` (standard builds) and `net10.0` (legacy macOS builds), its `assemblies/<framework>/ref/` folder holds the compiler's reference
+assemblies of `MeitouClient`, `Meitou.Simulation`, `Meitou.Core`, `Meitou.Data`, `Meitou.Modding`, `Meitou.Networking` and `Meitou.Runtime` (their public API; the internals two of them keep for the game's tools and tests stay out of a
+mod's reach) beside the game's own builds of its other managed libraries (`0Harmony`, Bepu, DotRecast, Silk.NET and the rest), which the
+compiler needs for any member typed in one of them. The Meitou assemblies carry the release's version like the game's: .NET binds a mod
+only to an assembly of at least the version it was compiled against, so a mod does not load on a release older than the package it was built against.
+The game never loads these copies: the Meitou ones are reference assemblies .NET refuses to run, and the libraries are always taken from
+the game ([Loading](#loading)). The Metal backend's types (macOS builds only) are not in the package.
+
+- NuGet imports the package's `build/MeitouCoop.References.targets` into the project, which references every assembly of the set for the
+  mod's `TargetFramework`, with `Private="false"`. The assemblies are not under the package's `lib/` or `ref/`, which NuGet would reference
+  by itself; another `TargetFramework` (`net9.0`, `net11.0-windows`) is an error naming the two.
+- `publicized/` beside `ref/` holds the seven Meitou assemblies with every type and member public (compiler-generated members and explicit
+  interface implementations left as they are), method bodies replaced by a throw and resources dropped, made by `tools/Meitou.ReferencePack` with
+  BepInEx.AssemblyPublicizer (MIT, on AsmResolver, MIT); the targets take its libraries from `ref/`. `<MeitouPublicized>true</MeitouPublicized>`,
+  set anywhere in the project, makes the targets reference this set and compile in `Meitou.IgnoresAccessChecksTo.cs`, which declares
+  `IgnoresAccessChecksTo` for the seven Meitou assemblies in the mod's own assembly: .NET then lets the mod reach their non-public members.
+  A mod that already declares the attribute itself (a publicizer package does) leaves `MeitouPublicized` unset.
+- Internals change between releases without notice: a mod using them should name its `gameVersion` in `meitou.json`.
+- `THIRD_PARTY_NOTICES.md` and `licenses/` in the package carry the libraries' licences.
+- **Observed** (upstream reference-package report, 2026-11-18, win-x64, a package built locally and restored from a folder feed): a `net11.0` and a `net10.0` mod implementing
+  `IMod`, calling `ModContext.Harmony` and reading `VulkanDevice.Vk` (a Silk.NET type) compile with the `PackageReference` alone, and no
+  package file is copied to their output; loading a Meitou file of the package throws `BadImageFormatException`. A mod calling an internal
+  static of `Meitou.Data` and naming an internal type of `Meitou.Simulation` compiles only with `MeitouPublicized`, and the call then runs
+  against the real `net11.0` assemblies.
 
 ## Discovery
 
@@ -90,34 +131,83 @@ is the consent, as in RimWorld: the game loads every enabled code mod's code, wi
 
 - One non-collectible `AssemblyLoadContext` per mod (`ModLoadContext`), loaded once at startup; no unload or hot reload.
 - Resolution by simple name: an assembly on the game's trusted platform list (`Meitou.*`, the framework, Bepu, `0Harmony`) comes from
-  the game even when the mod folder has a copy; anything else comes from the mod folder, so two mods may ship different versions of a
-  library. Listing a game assembly in `assemblies` refuses the mod. Native libraries resolve from the mod folder first.
+  the game even when the mod folder has a copy; anything else comes from the mod folder, so
+  two mods may ship different versions of a library. Listing a game assembly in `assemblies` refuses the mod. Native libraries resolve from the mod folder first.
 - Between the two: an assembly a declared dependency exports comes from that dependency's context, so a framework loads once
   ([dependencies](modding-dependencies.md#assembly-resolution)).
 - **One Harmony, loaded by the game.** **Observed** ([pardeike/Harmony #741](https://github.com/pardeike/Harmony/issues/741), open since
   2025-10): outside Unity, Harmony loaded in several load contexts duplicates `HarmonySharedState`, and two mods can no longer patch the
-  same method. The game references Lib.Harmony 3.0.0-rc.5 (`0Harmony.dll` with MonoMod merged in) and the resolution rule hands every mod
+  same method. The game references Lib.Harmony 3.0.0-rc.7 (`0Harmony.dll` with MonoMod merged in) and the resolution rule hands every mod
   that copy.
 - Refusals, each a log line and a notice, the game going on: not allowed, unreadable manifest, other `apiVersion`, an id another mod
   took, a missing DLL, an entry type that is absent, not an `IMod` or without a public parameterless constructor, a throwing
   `Initialize` (local host; trusted server failures abort startup).
-- Constraint: the game stays a JIT publish, never `PublishTrimmed`, `PublishAot` or single-file. **Verified**
-  (`tools/scripts/package-release.ps1`): the game publishes self-contained with `MeitouClient.dll` (holding `Meitou.Modding`) and the
-  other `Meitou.*.dll` beside the executable, and `meitou-tools` with it. **Observed** (2026-11-04, win-x64 publish of the three programs
-  into one folder, before `Meitou.Modding.dll` was merged into the game): `0Harmony.dll` and `Meitou.Modding.dll` were there, the game's 228 files are byte-identical to a game-only publish, and the published `meitou-tools.exe mod-check` runs. Since the four-project layout
-  (2026-11-08) the viewer and `meitou-tools` reference the game and bring copies of its runtimeconfig and deps, so the game publishes last;
-  **Observed** (win-x64, tools then game into one folder): `MeitouClient.runtimeconfig.json` is the game's own.
+- Constraint: the game stays a JIT publish, never `PublishTrimmed`, `PublishAot` or single-file. Coop keeps the mod contract and loader in
+  `Meitou.Modding.dll` so the dedicated CPU host can load the same trusted mods without a graphical game assembly. The game, runtime and
+  server use that shared assembly and one `0Harmony.dll`; graphical mod UI types still require `MeitouClient.dll`. The shipping scripts
+  publish tools before the game so the game's runtime configuration remains its own. The shared modding assembly embeds the game tag and
+  both hosts use it for `gameVersion` checks in the data phase and `Initialize`.
 
 ## Lifecycle
 
 - `IMod.Initialize(ModContext)` runs once per session on the boot worker (`BootSimulation`), after the data load and mod merge and before
   the first world's systems, in `mods.cfg` order. Registering is only allowed inside it. A throw drops the mod's registrations and
-  removes its Harmony patches (`UnpatchAll` of its id).
+  removes its Harmony patches (`UnpatchAll` of its id). Records are not changed in it: much is built from them by then, and the renderer reads
+  them on other threads at the same time; change them in the [data phase](#data-phase).
 - Worlds are built again for every new game and load, so systems are registered as factories and made per world.
 - `ModContext`: `Id`, `Name`, `Folder`, `Manifest`, the merged `Data` (`GameDatabase`), `Population` (`PopulationData`), `Log`/`LogError`,
   `RngPurpose`, `Harmony`, `Tick` and `Enqueue(SimCommand)` for the running world (dropped and logged before the first world),
   `Dependency<T>(id)` and `HasDependency(id)` for declared dependencies ([dependencies](modding-dependencies.md#using-a-dependency)).
 - `RngPurpose` is `StableHash(id) | 0x80000000` cast to `RngPurpose`, so it never equals a vanilla purpose.
+
+### Data phase
+
+- An entry type that implements `IModDataPhase`, directly or through a base class (generic or not) defined in the same assembly, gets
+  `EditData(ModDataContext)` once per session while the game data is read: after every data file and translation is merged
+  (`GameDatabase.Load`) and before the loader's own passes (wall masters, gear blueprints, docs/formats/fcs-mod.md), so before anything is
+  built from the records, in `mods.cfg` order and before any mod's `Initialize`. One thread; nothing else reads the data yet. Which mods have
+  one is read from the assemblies' metadata (no code run); a base class in another assembly (a framework's) does not give a mod a data phase,
+  and only the mods found that way are called, whatever other mods are enabled. A loaded entry that is an `IModDataPhase` the scan did not
+  find gets a log line saying its `EditData` does not run.
+- `ModDataContext`: `Id`, `Name`, `Folder`, `Manifest`, `Log`/`LogError`, the merged `Data` to read (the files, translations
+  and the earlier mods' changes), and changes in the form of a `.mod` file's records: `Edit(id)` (a change of a loaded record, returned to
+  fill), `Add(id, type, name)`, `Remove(id)` and `Apply(FcsRecord)`, allowed only during `EditData` (later they throw). They are queued; when
+  `EditData` returns they are copied and checked whole (an id on each, no null name, value, reference target or instance), then merged in
+  order by the
+  record rules of a data file listed after every loaded one ([fcs-mod](formats/fcs-mod.md#merging); the loader's byte rules for reading a
+  file do not apply), counted as made by the mod's own `.mod` file (`ModifiedBy`, problems in `Issues`), which is not listed again in
+  `GameDatabase.Files`. Writing to `Data` directly is unsupported: it is not checked, counted or in the navmesh key. Not offered: `Harmony`
+  (patch in `Initialize`), saved settings and `Dependency<T>` (a framework cannot serve its dependents here). `Edit` and `Remove` take only a
+  record loaded before the mod: change a record the mod adds on the object `Add` returned, and check `Data.Find` before changing one an
+  earlier mod may have removed.
+- In Coop a trusted data-phase failure aborts this startup, so no partially edited database reaches a connection or authority. In the loader,
+  a throw in `EditData`, or a change that fails the check, merges none of the mod's changes and leaves the mod out for the session (a notice,
+  as a refused mod). A mod whose required dependency was left out or skipped there, directly or through others, is skipped and then refused.
+  Changes are never undone: when a mod (or a dependency) is refused later, in `Initialize` or its checks, its merged changes stay for the
+  session.
+- Merged after the translations: a record a mod adds or renames is not translated, not even by its own translation file, and a rename sets
+  the shown name only: on a record a translation renamed, the name the engine finds records by (`BaseName`, which it uses for the records it
+  finds by a fixed id or name) keeps its earlier value, as when a mod's data file renames a record the core translation renamed. The gear
+  blueprints (`<id>.TECH.1`) and wall masters are made after the phase, so they cannot be changed in it; an `<id>.TECH.1` a mod adds is kept
+  in place of the blueprint.
+- Without any enabled code mod whose entry declares `IModDataPhase`, nothing changes: the data loads as before and mods load in
+  `BootSimulation` as described above. With one, every enabled, locally trusted code mod's assemblies load and its entry type is constructed while the data is
+  read, before the scene, renderer and population exist (an entry constructor must not need them), including a mod refused later.
+  `Initialize` keeps its order and place, each mod checked again against the mods initialized before it, so a dependency that fails to
+  initialize refuses its dependents as without a data phase (an optional one that failed is dropped from `Dependency`, though the mod's
+  assemblies stay bound to its exports). One difference: of two mods with one id, or two incompatible ones, the later is refused once the
+  earlier's code loaded, even if the earlier then fails to initialize.
+- `GameDatabase.CodeEdits` holds a fingerprint of each mod's merged changes (the same on every machine and in every language for the same
+  changes); the navmesh cache key takes them ([simulation](simulation.md#navmesh)) as it stamps the data files, so a mod whose changes differ
+  from one start to the next rebuilds the navmesh at every start. Coop independently hashes this ordered list in the compatibility rules;
+  remote discovery never supplies fingerprints on the client's behalf.
+- The game's own runs read the data with the phase; `--no-population` runs it but no `Initialize` (no population is made),
+  `--list-starts` runs it before listing the starts, and
+  `--data-check`, the launcher and the developer tools read the data files without it.
+- Built from the records before `Initialize` (so only the data phase reaches them): the start's place and the scene's objects, the
+  renderer's tables, the level data's building swaps, ruins and layouts, the navmesh, the population's towns, factions, relations and
+  biome groups, the town buildings, sight and resource rocks, rigs and animations. Made on first use after `Initialize`
+  (`PopulationData.Ai`, `Dialogue`, `Combat`, `Items`, `Bodies`, `Surgeons`) or read at each use (squad templates when a squad is made).
 
 ## Registration surface
 
@@ -130,7 +220,12 @@ holds refuses the second mod.
   end; systems at one place keep registration order. `StandardSystems.Build` builds the standard list first, then splices
   (`Splice`), so the list without mods is the standard one. Captives and beds have no anchor of their own. A factory gets
   `SystemBuildContext` (`Data`, the standard systems, `Find<T>()`); one that throws or returns null leaves its system out of that world
-  and logs in local hosts; strict server construction fails. `IStateHashed` puts a system's state into `World.StateHash`. A mod system implementing a source interface `World` looks
+  and logs in local hosts; strict server construction fails. A phase of a mod's system that throws (a bug, or a game method the mod was built against that has since changed) is caught and
+  logged once with the mod id, the system's name and the phase, and the player gets a notice; the system's tick phases (paused orders'
+  `Inputs` too) stop from the next serial step, and the fault enters the state hash (`ModSystemFaults`). A throw in a parallel phase lets
+  that phase's other partitions finish, so that tick's partial work depends on the thread count, and none of the system's effects of that
+  tick are applied. The system's other hooks (observers, filters, task and decision sources) keep their own rules. `IStateHashed` puts a
+  system's state into `World.StateHash`. A mod system implementing a source interface `World` looks
   up by first match (`IAnimationSource`, `IProjectileSource`...) and placed before the standard one would replace it.
 - **Resolved combat:** a registered system implementing `ICombatHitObserver` receives `HitResolved(World, in CombatHit)` once per
   landed melee/projectile contact and execution blow on a captive (`CombatSystem.Execute`, `CombatHitSource.Execution`), after its
@@ -163,6 +258,30 @@ holds refuses the second mod.
   combat, and must answer from the world and the hit alone. The one-punch debug cheat ignores the packet but keeps a cancel. Hits on doors
   and walls are not filtered. A filter that throws or breaks the packet's rule is undone for that hit, logged and disabled for that world;
   faulted registrations enter the state hash. Without a filter no payload is made.
+- **Trade prices:** a registered system implementing `ITradePriceFilter` (`Meitou.Simulation.Trading`) is asked
+  `Price(World, in TradeDeal, long price)` for every price the game asks: the trade window's stack and unit prices and the coins it takes,
+  and an NPC shopper's purchase from a building's stock. The deal names the tick, the item record, the units, whether the customer sells,
+  the customer (the player's character in the window, or the NPC shopper) and the shop's squad (-1 none); the filter returns the price to
+  ask, so a mod gives a town's own faction a discount or marks prices up. Filters run in system order (mods in load order), each seeing the
+  price the earlier ones left. A buy-back (undoing a trade of the open window) keeps its coins and is not asked. A filter must be a pure
+  read, since the same price is asked again for the window and the payment; one that throws or answers a negative price is undone for that
+  price and disabled for that world, and the fault enters the state hash. Without a filter nothing is built. Engine API, not in the original.
+- **World ready:** a registered system implementing `IWorldReady` receives `Ready(World, bool fromSave)` once, between ticks before the
+  first: after a save has loaded (`IModSaveData.Read` done and settings of mods no longer running dropped; an import counts as a save) or a
+  new game has placed the player's characters (`fromSave` false). Systems are told in system order (mods in load order); one may change
+  the world as a serial phase does, so a mod sets its unsaved runtime settings (a held platoon, a sleeping town) back on here, also for a
+  save made without its own saved state. One that throws is logged and the others are still told. Engine API, not in the original.
+- **Goods taken:** a registered system implementing `IGoodsTakenObserver` (`Meitou.Simulation.Crime`) receives
+  `GoodsTaken(World, in GoodsTaken)` when one of the player's characters takes goods that are not its own by hand: a held item dragged or
+  given out of an owned container or another character, a click take out of an owned container or a town machine, a right-click loot take off
+  a body (not the take-all loot, NPCs' own looting or money). The report names the tick,
+  the taker, the owning faction (-1 none), the character taken from (none for a container or machine), the site ("" for a character), the
+  item record, the units and whether the taker was caught (the goods stayed). It includes takes the game makes no crime of, such as the
+  player's own characters taking from a container of the player's faction, so a mod can judge them by its own law. Observers are called in
+  system order once the goods have moved (the units that moved) or the taker was caught; they may read the world and change their own state,
+  and gameplay changes go through commands.
+  One that throws is disabled for that world and the fault enters the state hash. Without an observer nothing is built. Engine API, not in
+  the original.
 - **Items used up:** a registered system implementing `IItemUseObserver` receives `ItemUsedUp(World, in ItemUsed)` inside the step that
   used an item, once the item has changed: the tick, the `ItemUseKind`, the item record's string id, the user (none for a machine, a
   research order or an upgrade pulling from the building's own stock), the building it went into or came from (a construction, machine or
@@ -229,13 +348,21 @@ holds refuses the second mod.
   `meter.Set(cold, reading)` (the character's own partition in a parallel phase) and hides it with `Clear`; layers are width fractions clamped to
   0..1, drawn as a part's green, yellow and red. A selected or inspected character's readings are published with the snapshot; not saved, not
   hashed, read by no system, so the mod keeps its value (`IModSaveData`) and sets the reading again after a load. The layout has nine rows,
-  which a human fills; each meter adds a copy of the ninth, and more than nine rows share the nine rows' height. A label another meter has
+  which a human fills; each meter adds a copy of the ninth, and more than nine rows share the nine rows' height. A character with more rows than
+  the bars (a race of more parts) scrolls through them with the wheel ([medical panel](game/ui-screens.md)). A label another meter has
   (case-insensitive), one over 32 characters or a fifth meter of all mods together refuses the mod. A building's rows never show meters.
   Coop publishes readings for the recipient's lead selected character and inspected character. `Set` requires finite layers and clamps them
   to 0..1; UTF-8 text is limited to 256 bytes for `Value`, 64 for `Arrows` and 4096 for `Tooltip`, with the same limits on the wire.
   Stable tooltips send separately from changing readings. A changing tooltip table over 1024 encoded bytes coalesces the entire meter
   presentation to 2 Hz; keep frequently changing explanations short. New entities and visibility or text withdrawals publish immediately.
 
+- **Task bars:** `cold.ModTaskBar = new TaskBar(caption, progress)` shows the floating bar the game draws over a character picking a lock, with
+  the mod's caption (a message of the game's catalog shows translated, as the game's own; any other as given) and its fill (0..1, clamped; not a
+  finite number shows empty), over any character within the name tags' range (another character's only while it is drawn); null removes it. It
+  wins over the game's own bars (lockpicking, cutting, training) while set. One bar per character: the last system to set it in the tick wins,
+  so a mod clears only its own (`if (cold.ModTaskBar == mine) cold.ModTaskBar = null;`). Set it in the tick from the mod's own system (the
+  character's own partition in a parallel phase). Display only: not saved, not hashed, read by no system, so the mod keeps its progress and sets
+  the bar again after a load. A carried character shows no bar.
 - **Skills:** `AddSkill(new ModSkill(id, label, column) { Description, Affects, Training, Start })` (`ModSkills`, `src/Meitou.Simulation/Bodies`)
   lists the skill at the foot of a stats-window column (`SkillColumn`: Weapons, Combat, Thievery, Sciences, under that column's last heading)
   with its whole level, and a click shows the description pane with the mod's lines and the next-level bar. The mod's systems read
@@ -265,6 +392,29 @@ holds refuses the second mod.
   display only: not saved, not hashed, read by no system, so set it again after a load. Coop publishes attachments for every visible character;
   unchanged lists produce no delta. A character takes at most 64 attachments, with finite transforms and nonempty key/mesh/bone names limited to
   128/1024/256 UTF-8 bytes. `SetBoneMesh` enforces the same limits as snapshot decoding.
+- **Decision sources** (`Meitou.Simulation.Ai`, [rules](simulation.md#decision-step)): what each of the player's characters does next (the
+  order queue, jobs, goals, idling) is picked by the decision step from an open list of `IDecisionSource`s. A registered system implementing
+  `IDecisionOwner` gets `RegisterSources(DecisionSystem)` once when the world is made and adds its own with `Register(source)`, so a mod adds
+  a behavior without patching. Sources are asked in `Step` order (`DecisionStep`: 1 orders, 2 commitment, 3 urgent jobs, 4 goals, 5 jobs,
+  6 fallback) and by `Key` within a step, equal keys in registration order (mods in load order); in step 4 the best desire x weight wins,
+  elsewhere the first that can run. `CanRun` and `Desire` are pure reads of the world; `Start` starts the task (`TaskStart.Walk`, a row of
+  the mod's own from 1000 up). To run before a character idles, register at step 6 with a key below Idleness (`2000 + TaskType.Idle`).
+  Every player character is asked, so a source checks that the character is one of its own squads'. Several mods can each add sources.
+  `RegisterJob(type, source)` is the other kind: one contributor per job type, for the types a mod claimed with `AddJobType`. NPCs do not
+  go through this step; their AI packages run them.
+- **Task handlers** (`Meitou.Simulation.Ai`, [task starts](simulation.md#task-starts)): a registered system implementing `ITaskOwner` gets
+  `RegisterTasks(TaskHandlers)` once when the world is made, in system order, and registers an `ITaskHandler` (`Start`, `End`, `Done`) per
+  `CharacterTask`, per row (`Register(TaskType, handler)`, a mod's row from 1000 up) or per row on a site (`RegisterOnSite`). One handler per
+  key: a later registration replaces an earlier one, so a mod system replaces a standard handler only when it sits after that handler's system.
+  Handlers run in the serial phases only (`TaskStart.Start` throws in a parallel one).
+- **Goal claims** (`IGoalSource`, [claims](game/ai-tasks.md#perma-jobs) "Claims"): a registered system implementing it adds the (worker,
+  target) pairs it acts out now in `Publish(World, SquadGoals)` with `goals.Add(squad, worker, GoalTarget.Of(body) or GoalTarget.At(site id))`.
+  It is asked each time a finder takes a snapshot (`SquadGoals.Of`, serial) and once at the end of every tick; a pair stays claimed 3 s after
+  it was last published (`World.Claims`). The finders that skip what a squad mate already works on (NPC looting, the medic and splint finders,
+  captive gathering, production errands) then skip the mod's targets too. `Publish` only reads the world, in a fixed order: the claims steer
+  later starts, so they must be the same on every run.
+  Neither hook is caught as a mod fault outside the mod system's own phases: a throw from a handler or `Publish` called by another system's
+  step escapes that step.
 - **Mod jobs:** `AddJobType(type, name)` claims a task type number from 1000 up (`SimulationExtensions.FirstModCode`; the game's tasks stay
   below it; one mod per type). The mod puts such jobs in `CharacterCold.Jobs` and runs them itself (an `IJobSource` of its system); like the
   game's jobs, they are worked only while the character's jobs switch is on. Taking a mod job off the list does not stop a task the mod already
@@ -339,7 +489,8 @@ holds refuses the second mod.
   not one of the setting's (or not finite) ignored with a log line; the values the object had are the defaults Reset and Restore defaults put back as
   they were, not snapped to the step (Restore defaults also drops every kept mod value). The page sets a changed property at once on the interface's
   thread, outside the tick, and raises the returned group's `Changed`; a throw from the setter or a handler is logged and shown as the page's
-  notice. A slider's arrow keys move one Step. A mod copies what its simulation needs in a serial step (its system's `Inputs`). **Verified** by
+  notice. A value the mod sets itself with `ModSetting.Set` or `Reset` (a window's place, an in-game slider) raises `Changed` the same way and is
+  kept in `meitou.user.json` like the page's; call them on the interface's thread. A slider's arrow keys move one Step. A mod copies what its simulation needs in a serial step (its system's `Inputs`). **Verified** by
   `ModdingTests`; the page **Observed** drawn (2026-11-04, Windows, Vulkan, `--settings-showcase` changed locally to open it with a scratch group).
 - **Weather kinds:** a WEATHER or EFFECT `affect type` outside 1-5 is kept as its number, with ARMOUR `weather protection<N>` and RACE `weather
   immunity<N>` naming it the same way, so a mod defines a hazard in data and acts on it from its own system
@@ -353,7 +504,33 @@ holds refuses the second mod.
   Medic, HiveMedic and Vet share one storage. Change it from the mod's system outside the parallel phases. The body's look reads the stored value;
   a new body (a race change at character creation) starts without modifiers. Coop runs these changes on the server and publishes the resulting
   effective stats through the existing character fields; clients do not replay modifier sources. **Verified** by `StatsTests` (reads, save, gain, hash).
-- **Commands:** trusted server/local mod systems may enqueue their own `SimCommand` types for `Inputs`; remote UI/debug submissions require a supported typed binding and current authorization.
+- **Status effects:** `AddStatusEffect(new StatusEffect(id, name) { Description, Tone, Stacking, MaxStacks, Modifiers })` (`StatusEffects`,
+  `src/Meitou.Simulation/Bodies`) adds a named effect (a poison, a drug, a blessing) the mod's systems put on a character with `effect.Apply(world,
+  character, hours, stacks)` (positive infinity: until removed) and take off with `Remove(world, character)`; `On(world, character)` or `On(stats)`
+  reads it (ticks left, -1 forever, and stacks) and `stats.EffectsOrNull` lists every effect a character holds. Applying it again follows
+  `Stacking`: `Refresh` starts the time again, `Extend` adds the hours, `Stack` adds stacks up to `MaxStacks` and starts the time again (a stack
+  count read from a save is held to the same rule). While it lasts its `Modifiers` (stat, amount per stack; the list is copied at registration) are
+  set through the character's [stat modifiers](#registration-surface) under the key `effect:<id>`, so they work and display as any modifier (a mod's
+  own modifier key must not start with `effect:`). It ends by itself on the tick its time runs out, counted in ticks of game time after the slow
+  world, only while its character is in the world (an NPC whose platoon is off screen keeps its time; a corpse's counts on). The HUD's State line
+  shows the effects of a selected or inspected character: where it would read Normal, the first effect's name (in registration order) in its tone's
+  colour, with "+N" for N more; its tooltip lists every effect with its stacks, game time left and description, after the line's own text. Any other
+  state (dead, caged, unconscious, sleeping, aiming or reloading, defensive, a weather notice) keeps its word, so the effects are then in the
+  tooltip only, and in a cage without a lock, which has no State line, nowhere. Saved with the character in its STATS record
+  ([save](formats/save.md#compatibility-exceptions)), so it follows the character through squad moves and recruiting, and set again with its amounts
+  at a load. An effect of a mod not running now is kept and saved again, not shown, adding nothing, its time standing still;
+  `StatusEffects.Forget(stats, id)` drops any id, registered or not (an effect a mod renamed, or one of a mod that is gone). Effects enter the state
+  hash while a character holds one. Apply, Remove and Forget run from the mod's system outside the parallel phases, as stat modifiers. `Forget`
+  drops any mod's effect, by design (it is the cure for orphans), so a mod forgets only ids it knows to be its own or orphaned. Refused: a bad id (1
+  to 48 letters, digits, `_`, `.`, `-`), an id another effect has (case-insensitive), a blank name or one over 32 characters, `MaxStacks` below 1,
+  an unknown tone or stacking, a null list or description, or a modifier on a stat without storage, on a storage another of its modifiers names
+  (Medic, HiveMedic and Vet share one), or whose amount, or amount times `MaxStacks`, is not finite. With no effect registered the tick step does
+  nothing, and a save without effect keys makes, saves and hashes nothing. Engine API, not in the original.
+- **Commands:** trusted server/local mod systems may enqueue their own `SimCommand` types for `Inputs`; remote UI/debug submissions require a supported typed binding and current authorization. Every system's `Inputs` gets every due
+  command (`World.RunInputs`), so a system picks its own by type. A type is its load context's: each mod loads its assemblies into its own context
+  ([loading](#loading)), so another mod's command type, even from a copy of the same DLL in another mod folder, is a different type and does not
+  match. A mod whose commands another mod's system should handle shares the type through a [dependency](modding-dependencies.md); otherwise each
+  mod handles its own commands in a system of its own.
 - **Player squads on AI packages** (`Meitou.Simulation.Ai`, [rules](simulation.md#autonomous-player-squads)): `SetSquadAutonomy(squadId, on)` lets
   the AI run a player's squad; then `ChangeAi(squadId, packageId)` and `StartContract(squadId, packageId, hours)` give it packages as dialogue's
   `change AI` / `AI contract` give an NPC squad's (both are ignored for a player squad that is not autonomous), and
@@ -362,20 +539,42 @@ holds refuses the second mod.
   going home and town work on the outpost's own machines use it ([rules](simulation.md#autonomous-player-squads)). The player's orders and
   jobs come first. `SetSquadAutonomy(squadId, true, Independent: true)` makes it a squad the player does not lead: not selectable, no squad
   tab, no squad commands, not counted against `max squads` (for staff, caravans or companions with a will of their own; orders that name its
-  characters still apply; refused for the last squad the player leads; `SetSquadAutonomy(squadId, true)` leads it again). Pass your mod's id
-  as `Owner` (`SetSquadAutonomy(squadId, true, Owner: context.Id)`): a load without your mod running (not installed, refused or failed to
+  characters still apply; refused for the last squad the player leads; `SetSquadAutonomy(squadId, true)` leads it again). Its menu has no
+  inventory row, but a mod may open the inventory: a row of its own (`AddCharacterMenuVerbs`) queues `OpenLootOrder(selection, member)`, and
+  the window works as an own character's (handing out a uniform, a dress code). **Observed** (2026-11-17, release 0.21.0, a test mod's row on an
+  independent member): the window opened, armour moved into its slot was worn, and an item dropped on the member in the world went into its
+  grid. Pass your mod's id as `Owner` (`SetSquadAutonomy(squadId, true, Owner: context.Id)`): a load without your mod running (not installed, refused or failed to
   start) gives the squad back to the player (autonomy, independence and home cleared, with a notice), so removing the mod never strands it; a
   squad switched on with no owner, as in a save from before `Owner`, stays as saved until a command names one (send `Independent: true` again
   with it to keep the squad independent). The switch, package, home and owner are saved with the squad. Off drops the package, the members'
   minds and the independence. Ids: `SquadManagement.PlayerSquads(world)`, `world.Buildings.All`, `PopulationData.Sites[i].Buildings`.
   **Observed** (2026-11-13, headless, two saves, 'Guard building, residents'): members without a job patrol, go home and lie in the home's beds, a
   move order takes them at once and they resume after it, and a re-saved game loads autonomous.
+- **Squads outside the faction size count** (`Meitou.Simulation.Factions`): `SetSquadUncounted(squadId, on, Owner: context.Id)` keeps a squad of
+  the player's faction out of the `max faction size` count (`Squad.Uncounted`; recruiting, slave trading, `SpawnIntoPlayerSquad` and the squads
+  screen's count use `SquadManagement.CappedHeads`), for townspeople, staff or followers a mod adds beside the player's own characters; the
+  dismiss rule still counts everyone (`FactionHeads`). Several mods can each mark their own squads. Saved with the squad; a load without the
+  owner mod running counts the squad again, with a notice. Engine API, not in the original.
+- **Squad purses** (`Meitou.Simulation.Factions`): `SetSquadPurse(squadId, own, Owner: context.Id)` gives a squad of the player's faction its own
+  purse (`Squad.OwnPurse`, its `Squad.Money`): its members pay an NPC-style purchase (a shopper buying from a building's stock) from it
+  instead of the player's money, and a shop the squad owns keeps its takings in it, so a shopkeeper keeps its own earnings. The trade window
+  still uses the player's money. Ending it pours what is left into the player's money. Saved with the squad; a load without the owner mod
+  running ends it the same way, with a notice. Engine API, not in the original.
+- **Off-screen squads:** squads the player does not lead (`SetSquadAutonomy(..., Independent: true)`) are stepped as NPCs are when far from the
+  camera and the led characters ([far cadence](simulation.md#far-cadence)), so a town's residents cost what NPCs cost. `SetSquadDormant(squadId,
+  on, Owner: context.Id)` (`Meitou.Simulation.Factions`) puts a squad of the player's faction to sleep: its members ask for no zones round them,
+  so their place unloads when nothing else keeps it, and while the far cadence runs they stand still away from the camera and the led
+  characters (a town that sleeps while the player is away; the mod catches it up itself when it wakes, for example in `IWorldReady` or when
+  the player comes near). Saved with the squad; a load without the owner mod running wakes it, with a notice. Engine API, not in the original.
 - **World hooks** (engine API, not in the original; serial phases): `PopulationSystem.RequestCampaign` queues a
   FACTION_CAMPAIGN against a town as a dialogue trigger does (the request pass then applies the game's gates); `PopulationSystem.SpawnPlatoon`
   adds an unloaded platoon of a SQUAD_TEMPLATE at a walkable point in a ring round a point, with a purse, that loads like a roaming one, is
-  kept off screen whatever the keep switches say, is saved also before it first loads and loads back as the same roaming squad (-1 and nothing
+  kept off screen whatever the keep switches say (and stays loaded while a member lies knocked out in the loaded zones,
+  [roaming](simulation.md#off-screen-tier)), is saved also before it first loads and loads back as the same roaming squad (-1 and nothing
   added when no walkable point is found); `Platoon.ModTag` is a free string, saved when set, that finds a mod's platoon again after a load,
-  when platoon ids are given anew; `PopulationSystem.SpawnIntoPlayerSquad` makes one
+  when platoon ids are given anew; for the player's own squads and outposts, whose ids and town numbers are also given anew at every load,
+  `Squad.ModTags[context.Id]` and `PlayerTown.ModTags[context.Id]` hold one tag per mod (keyed by the mod's id, so several mods tag the same
+  squad or town without replacing each other's), saved with the squad and on the outpost's town state; `PopulationSystem.SpawnIntoPlayerSquad` makes one
   character of a CHARACTER or ANIMAL_CHARACTER record as a new game makes the player's (a look rolled for the player's faction, body,
   starting items, name; a unique claimed as any spawn claims it) and adds it, standing idle on the ground at a walkable point, to a living
   player squad, leading it when it has no leader. Only player squads: an NPC squad loaded from a save keeps only the save's members, so an
@@ -384,9 +583,11 @@ holds refuses the second mod.
   (`max squad size`, `max faction size`). Coop grants the new character to the squad's sole current controller; the overload taking
   `PlayerId? controller` selects a member of that squad's faction explicitly. Empty or mixed-owner squads require the explicit controller;
   grants run only at setup, input or slow-world boundaries. Invalid ownership or phase adds nothing and does not claim a unique.
-  The `VisitTown` command sends a squad running a wandering trader package to a
-  player town for a stay of N hours, counted from its first step there after the command (it leaves a town that is not public at once, as any
-  trader); `BedSystem.PlayerBedRent` prices the player's indoor beds for other factions: set, an NPC must afford it from its squad purse and
+  `PopulationSystem.JoinPlayerSquad(world, character, squadId, controller)` recruits an existing living NPC with the same explicit controller
+  and faction checks. An uncounted squad bypasses only the faction cap, retaining the squad cap. The `VisitTown` command sends a squad running a
+  wandering trader package to a player town for a stay of N hours, counted from its first step there after the command (on the way it stops at no
+  other town; it leaves a town that is not public at once, as any trader); `BedSystem.PlayerBedRent` prices the player's indoor beds for other factions:
+  set, an NPC must afford it from its squad purse and
   pays the player once it lies in the bed, and a visitor in a player town picks the nearest bed it can afford before the NPC bed search (null
   keeps the original: NPCs never pay). Non-finite delays, hours, points and radii are refused. **Verified** by `ModHookTests` (synthetic
   world): the spawn ring, purse and refusals, a never-loaded spawn kept and reloaded with its tag, and the campaign queue.
@@ -394,7 +595,7 @@ holds refuses the second mod.
   stand-in's travel (not saved: find it by its tag and hold again after a load; it still unloads, and despawns as any platoon but a mod's
   spawn). `PopulationSystem.SendPlatoon` sends a held platoon's stand-in off screen toward a point or a living character (by the roads, at the
   stand-in travel speed, stopping within the roam arrival radius; null stops it; not saved, cleared when the hold ends); once loaded the mod
-  walks its members. The `EndContract(squadId)` command ends a running contract as its hours running out would (a `StartContract` of the
+  walks its members. A hold on a platoon that is in the world changes its members' minds on the next package step: they stop acting out their package (a sleeper gets up, one sitting stands, the followers follow their leader again and the leader stands; one in a fight or knocked out rejoins once it stands idle) and keep only its combat goals, and releasing the hold gives the full minds back. A held squad whose package itself travels (a wandering trader's, a mission's) is still walked by that package while it has somewhere to go. The `EndContract(squadId)` command ends a running contract as its hours running out would (a `StartContract` of the
   same package after it starts it afresh; the game ignores a start of the contract already running), and `StartContract { AnyRange = true }`
   lets the contract's assault take its target wherever it is, not only within the manoeuvre mode's reach (about 6517 units for ROAM_FAR;
   saved with the contract). **Verified** by `ModHookTests` (synthetic world): a held stand-in, travel to a point, the contract's end and restart,
@@ -405,10 +606,16 @@ holds refuses the second mod.
   takes the carried body to a cage as its faction's slave), `AggroSystem.Spotted` / `Unseen`. `CharacterCold.FedTo` is a free hunger level
   that comes before the game's rule (not saved), for a captive the mod's squad carries.
 
+## Data mods
+
+Some shapes need no code: a race's anatomy of any length, extra or missing parts, and parts of a new type such as a tail are plain records
+([bodies of other shapes](game/character-stats.md#bodies-of-other-shapes-meitou)).
+
 ## Harmony
 
 - With code mods enabled the JIT warm-up (`JitWarmup`) starts only after `Initialize` returns. Tiered compilation is off, so a caller
-  compiled before a patch keeps any inlined copy of its target.
+  compiled before a patch keeps any inlined copy of its target. Started that late, it compiles the game's code (its renderers first) before the
+  simulation's: the title's first frames are near. **Observed** (one code mod, 655 mods): the title's first warm-up frame went from 1.8 to 1.0 s.
 - **Observed** ([Harmony docs](https://harmony.pardeike.net/articles/patching-edgecases.html)): an inlined method cannot be patched; the
   patch silently does nothing. Patch methods large enough not to be inlined, or their callers. `Rng` helpers are `AggressiveInlining`.
 - **Observed** (2026-11-04, scratch run): Harmony finds a patch method again by module identity, so the same DLL file loaded by two mods
@@ -445,15 +652,19 @@ difference it runs the game without mods: if that differs too, the fault is the 
 
 - The manifest's `apiVersion` must lie in `ModApi.MinimumVersion` (1) to `ModApi.Version` (2); otherwise the mod is refused at load with a
   message. 2 added `version`, `dependencies`, `loadAfter`, `incompatible`, `gameVersion`, `ModContext.Dependency<T>` and
-  `IModDependents`; an API 1 mod loads unchanged. `gameVersion` ties a mod to the engine releases it was built against.
-- Harmony patches non-public members; compile-time references need public types or a publicizer. Open: which simulation types to make
-  public, or ship publicized reference assemblies; ship reference assemblies per release so modders build without a game install.
+  `IModDependents`; an API 1 mod loads unchanged. `gameVersion` ties a mod to the engine releases it was built against. The
+  [data phase](#data-phase) (`IModDataPhase`) adds no manifest key; a mod using it names the releases that have it in `gameVersion`.
+- Harmony patches non-public members; compiling against them takes the [reference package](#reference-package)'s publicized set, or a
+  publicizer package (BepInEx.AssemblyPublicizer.MSBuild with `Publicize="true"`) on a release folder's assemblies. Compatibility is per game
+  version ([Why this shape](#why-this-shape)): public names change too, as after v0.17.1, and internals change without notice.
 
 ## Platforms
 
 - Managed DLLs run unchanged on the Windows, Linux and macOS builds.
 - **Observed** (Harmony 3.0 RC notes): native async methods cannot be patched. The game runs on .NET 11, so this applies to any
   method compiled as runtime-async.
+- **Observed** (2026-11-18, scratch app, win-x64, .NET 11.0.0, Lib.Harmony 3.0.0-rc.7): patching a generic method instantiation
+  (`Method<int>`) throws `NotSupportedException`.
 
 ## Evidence
 
@@ -472,3 +683,12 @@ sidecar round trip, and a hashed mod system agreeing at 1 and 4 threads.
 server-owned `GameplayRules`, included in compatibility and shown read-only remotely. Rates are finite, 0..1000.
 The server adopts enabled legacy Player-Only XP settings once into `server.json` (`AdoptedMods`); later starts preserve administrator edits.
 Client preferences are adopted only for a local game. The shared loader skips the covered code mod on both hosts so XP is not multiplied twice.
+
+### Coop squad extensions
+
+`SetSquadUncounted`, `SetSquadPurse` and `SetSquadDormant` are trusted authority/local commands. Their squad's actual owning faction selects the
+cap and treasury; a remote player command cannot name a mod owner to change these flags. Unloaded saved player members still count toward faction
+caps unless their squad is uncounted. Ending an own purse credits that faction's treasury only if the full amount fits; it does not discard money
+on overflow. NPC shoppers use a mod-owned squad purse when present, and public counters credit their actual owning faction across all players.
+Dormant saved members do not keep regions active merely because they are stored player roles; an explicitly authorized role entry can still load
+the requested character. Missing mod cleanup restores counts, returns purses, and wakes dormant squads before world-ready callbacks.

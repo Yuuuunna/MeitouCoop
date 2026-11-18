@@ -30,9 +30,10 @@ public readonly record struct AnimationLayer(string Name, float Time, float Weig
 
 /// <summary>
 /// The sound events a working machine puts on its operator's clip: the BUILDING_FUNCTIONALITY's <c>animation events</c> (string id) and the ANIMATION
-/// record (name) they ride on (docs/audio.md "Character tasks").
+/// record (name) they ride on (docs/audio.md "Character tasks"), and for standing work (<see cref="CharacterCold.ActionWork"/>) the functionality's
+/// <c>special tool</c> ITEM (string id) held in the <c>hands</c> point meanwhile (null: none).
 /// </summary>
-public readonly record struct WorkEvents(string Functionality, string Clip);
+public readonly record struct WorkEvents(string Functionality, string Clip, string? Tool = null);
 
 /// <summary>
 /// What a character is doing about its body: nothing, bandaging someone (<see cref="CharacterTask.Treat"/>) or resting
@@ -604,6 +605,11 @@ public sealed record CharacterSnapshot
     /// </summary>
     public IReadOnlyList<float> ModSkills { get; internal set; } = [];
     /// <summary>
+    /// A selected or inspected character's status effects from the code mods (docs/modding.md "Status effects"), in registration order; empty
+    /// otherwise.
+    /// </summary>
+    public IReadOnlyList<Bodies.StatusEffectView> Effects { get; internal set; } = [];
+    /// <summary>
     /// The inventory of a selected character, of the one whose loot window is open, or of a player character whose inventory is shown (null for
     /// the others).
     /// </summary>
@@ -658,6 +664,11 @@ public sealed record CharacterSnapshot
     /// The movement task (<see cref="CharacterTask"/>); the host's sounds follow building, treating and looting from it.
     /// </summary>
     public CharacterTask Task { get; internal set; }
+    /// <summary>
+    /// The point its task has it look at this tick (<see cref="LookTargets"/>; the original's <c>Character::lookatPosition</c>); null when none. The
+    /// host turns the drawn head toward it (docs/animation.md "Head turning").
+    /// </summary>
+    public Vector3? LookAt { get; internal set; }
     /// <summary>
     /// Working on a cage's lock (the picker's order is given and it is in reach or walking there).
     /// </summary>
@@ -757,7 +768,8 @@ public sealed record CharacterSnapshot
     /// </summary>
     public float Light { get; internal set; } = 1;
     /// <summary>
-    /// The floating progress bar over a player character picking a lock (docs/game/locks.md "Lockpicking"); null when none.
+    /// The floating progress bar over a player character picking a lock (docs/game/locks.md "Lockpicking"), cutting one or training, or the bar a
+    /// code mod set (<see cref="CharacterCold.ModTaskBar"/>); null when none.
     /// </summary>
     public TaskBar? Bar { get; internal set; }
     /// <summary>
@@ -985,6 +997,15 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// Authoritative names for registered mod job types; clients do not run simulation systems to name their job rows.
     /// </summary>
     public IReadOnlyDictionary<int, string> ModJobNames { get; init; } = new Dictionary<int, string>();
+    /// <summary>
+    /// The player's characters alive, as the faction size cap counts them (<see cref="SquadManagement.FactionHeads"/>): the squads screen's
+    /// count and its dismiss rule read it.
+    /// </summary>
+    public int FactionHeads { get; init; }
+    /// <summary>
+    /// The player's characters alive that the faction size cap counts (<see cref="SquadManagement.CappedHeads"/>): the squads screen's faction size.
+    /// </summary>
+    public int CappedHeads { get; init; }
     /// <summary>
     /// The active squad's id (<see cref="PlayerState.Squad"/>; -1 none): the squad bar shows it.
     /// </summary>

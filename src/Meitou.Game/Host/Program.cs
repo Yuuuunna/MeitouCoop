@@ -7,6 +7,7 @@ using Meitou.Game.Rendering.Terrain;
 using Meitou.Game.Scenarios;
 using Meitou.Game.Settings;
 using Meitou.Game.Title;
+using Meitou.Modding;
 
 namespace Meitou.Game.Host;
 
@@ -82,6 +83,7 @@ static class Program
         bool showSplash = world.Screenshot is null && !game.ListStarts && !world.HiddenWindow && !world.Headless && !game.ConnectionCheck;
         using var splash = showSplash ? SplashWindow.Show(install.DataDirectory) : null;
         var config = UserConfig.Load();
+        Data.World.HeightmapRepair.Configure(install, config.FixGround);
         Loc.Use(install);   // the language of settings.cfg: texts from locale/<code>/LC_MESSAGES/main.mo (docs/formats/localisation.md)
         RestoreTextureQuality(args, game, world, config);
         if (game.Connect is not null) return RunOnline(install, world, game, config, splash);
@@ -110,13 +112,16 @@ static class Program
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-            connection = OnlineBootstrap.ConnectAsync(install, game.Connect!, game.CreateFaction, game.OnlineRole, timeout.Token)
+            var dataPhase = GameMods.CreateDataPhase(install, config);
+            connection = OnlineBootstrap.ConnectAsync(install, game.Connect!, game.CreateFaction, game.OnlineRole, timeout.Token, dataPhase)
                 .GetAwaiter().GetResult();
             var view = connection.State.View ?? throw new IOException("The server withdrew the entry view.");
+            var rules = view.AuthorityRules ?? throw new IOException("The server did not supply its gameplay rules.");
+            Data.World.HeightmapRepair.Configure(install, rules.GroundRepair);
             Console.WriteLine($"online    joined player {view.Player}, {view.Roles.Count} role(s), server tick {view.Snapshot.Tick}");
             if (game.ConnectionCheck) return 0;
             PlaceOnlineView(connection, world, game.OnlineRole);
-            return RunRemoteHost(connection, install, world, game, config, splash);
+            return RunRemoteHost(connection, install, world, game, config, splash, dataPhase);
         }
         catch (Exception e)
         {
@@ -150,18 +155,18 @@ static class Program
     /// Loads compatible content for a remote host, with the interactive loading cover or the screenshot path.
     /// </summary>
     static int RunRemoteHost(Meitou.Networking.RemoteGameSession connection, GameInstall install, WorldOptions world,
-        GameOptions game, UserConfig config, IDisposable? splash)
+        GameOptions game, UserConfig config, IDisposable? splash, ModDataPhase dataPhase)
     {
-        var db = Data.GameDatabase.Load(Data.LoadOrder.FromInstall(install));
+        var db = dataPhase.LoadData();
         if (world.Screenshot is null)
             return new GameHost(install, null!, new AssetLocator(install), world, game, config, null)
             {
-                OnlineConnection = connection, Splash = splash, LoadScene = () => WorldFrame.Load(install, world, db),
+                OnlineConnection = connection, Splash = splash, DataPhase = dataPhase, LoadScene = () => WorldFrame.Load(install, world, db),
             }.Run();
         using var scene = WorldFrame.Load(install, world, db);
         return scene is null ? 1 : new GameHost(install, scene, new AssetLocator(install), world, game, config, null)
         {
-            OnlineConnection = connection,
+            OnlineConnection = connection, DataPhase = dataPhase,
         }.Run();
     }
 
@@ -191,6 +196,7 @@ static class Program
         // Booting to the Meitou title: the world is loaded round the title's view, which it shows first (docs/engine.md).
         bool toTitle = game.TitlePreview || world.Screenshot is null && !game.NewGame && game.Load is null && !game.Continue && game.Sandbox == 0
             && !game.Duel && game.Battle is null && !game.NoPopulation;
+        game.BootsToTitle = toTitle && world.Screenshot is null;
         if (world.X is null && world.Zone is null && world.Town is null && toTitle) (world.X, world.Z) = TitleComposition.Focus;
         if (world.X is null && world.Zone is null && world.Town is null) world.Town = "The Hub";
     }
@@ -275,9 +281,12 @@ static class Program
         if (game.Duel && PlaceDuel(game, rest, world) is { } duelExit) return duelExit;
         if (game.Battle is not null) PlaceBattle(game, rest, world);
 
+        // The game data is read with the code mods' data phase (docs/modding.md "Data phase").
+        var dataPhase = GameMods.CreateDataPhase(install, config);
         Data.GameDatabase? db = null;
         Data.Gameplay.NewGameStart? start = null;
-        if ((game.ListStarts || game.NewGame) && PrepareNewGame(install, game, rest, world, out db, out start) is { } startExit) return startExit;
+        if ((game.ListStarts || game.NewGame) && PrepareNewGame(install, dataPhase, game, rest, world, out db, out start) is { } startExit)
+            return startExit;
         if (LoadStartSave(game, world, out var save) is { } loadExit) return loadExit;
 
         // Interactive: the host reads the world behind its loading screen (docs/engine.md "Loading"); a picture reads it first.
@@ -285,13 +294,14 @@ static class Program
         {
             var sceneHost = new GameHost(install, null!, new AssetLocator(install), world, game, config, start)
             {
-                StartSave = save, Splash = splash, LoadScene = () => WorldFrame.Load(install, world, db),
+                StartSave = save, Splash = splash, DataPhase = dataPhase,
+                LoadScene = () => WorldFrame.Load(install, world, db, dataPhase.LoadData),
             };
             return sceneHost.Run();
         }
-        using var scene = WorldFrame.Load(install, world, db);
+        using var scene = WorldFrame.Load(install, world, db, dataPhase.LoadData);
         if (scene is null) return 1;
-        return new GameHost(install, scene, new AssetLocator(install), world, game, config, start) { StartSave = save }.Run();
+        return new GameHost(install, scene, new AssetLocator(install), world, game, config, start) { StartSave = save, DataPhase = dataPhase }.Run();
     }
 
     /// <summary>
@@ -301,7 +311,8 @@ static class Program
     {
         // The animation sandbox: no world, a flat floor (docs/simulation.md "Sandbox"). The real game data is still loaded for the characters and
         // animations.
-        var db = Data.GameDatabase.Load(Data.LoadOrder.FromInstall(install));
+        var dataPhase = GameMods.CreateDataPhase(install, config);
+        var db = dataPhase.LoadData();
         (world.NoTextures, world.NoObjects, world.NoFoliage, world.NoWater, world.NoFogFeatures,
             world.WaterReflection, world.DistantZones) = (true, true, true, true, true, 0, 0);
         world.Post.Ssao = false;   // SSAO bands a perfectly flat floor; the Tab panel can turn it back on
@@ -312,7 +323,7 @@ static class Program
         world.Pitch ??= 22;
         world.Yaw ??= 35;
         using var flat = WorldFrame.LoadFlat(world, db);
-        return new GameHost(install, flat, new AssetLocator(install), world, game, config, null) { Splash = splash }.Run();
+        return new GameHost(install, flat, new AssetLocator(install), world, game, config, null) { Splash = splash, DataPhase = dataPhase }.Run();
     }
 
     /// <summary>
@@ -379,10 +390,10 @@ static class Program
     /// <c>--list-starts</c> and <c>--new-game</c>: loads the game data and either lists the starts or finds the chosen one and puts the world
     /// round its place; an exit code when the run ends here.
     /// </summary>
-    static int? PrepareNewGame(GameInstall install, GameOptions game, string[] rest, WorldOptions world, out Data.GameDatabase? db,
-        out Data.Gameplay.NewGameStart? start)
+    static int? PrepareNewGame(GameInstall install, ModDataPhase dataPhase, GameOptions game, string[] rest, WorldOptions world,
+        out Data.GameDatabase? db, out Data.Gameplay.NewGameStart? start)
     {
-        db = Data.GameDatabase.Load(Data.LoadOrder.FromInstall(install));
+        db = dataPhase.LoadData();
         var starts = Data.Gameplay.NewGameStart.LoadAll(db);
         start = null;
         if (game.ListStarts)

@@ -229,8 +229,8 @@ public sealed partial class PopulationSystem
             made = checked(made + group.Count);
         }
 
-        int heads = prepared.NewFaction ? 0 : SquadManagement.FactionHeads(world, prepared.Faction);
-        int squads = prepared.NewFaction ? 0 : SquadManagement.PlayerSquads(world, prepared.Faction).Count;
+        int heads = prepared.NewFaction ? 0 : SquadManagement.CappedHeads(world, prepared.Faction);
+        int squads = prepared.NewFaction ? 0 : SquadManagement.LedSquads(world, prepared.Faction).Count;
         if (made != prepared.CharacterCount || made < 1 || made > prepared.CharacterLimit ||
             (long)heads + made > constants.MaxFactionSize || (long)squads + prepared.Groups.Count > constants.MaxSquads)
             throw new InvalidOperationException("The faction no longer has capacity for this roster.");

@@ -14,14 +14,43 @@ namespace Meitou.Simulation.Ai;
 public sealed partial class AiSystem
 {
     /// <summary>
+    /// Puts the way through a locked door (the lock system's, <see cref="Locks.LockSystem.StartDoorWay"/>) at the front of the NPC's kept plan as the
+    /// step the original's planner adds there (docs/game/locks.md "Locked doors on the way": 78 / 80 unlocking, 81 / 287 bashing, 76 picking, 285
+    /// cutting), on the door at <paramref name="door"/>: the plan step ends it by its finished test and list A and any choice may take over
+    /// (<see cref="PlanSteps"/>). False when the character has no kept plan to put it in (an engine-run mind, a goal that is its own plan): the lock
+    /// system then holds it.
+    /// </summary>
+    internal static bool TakeDoorStep(CharacterCold cold, TaskType row, Vector3 door)
+    {
+        if (row == TaskType.None || cold.Ai is not { Engine: false, Goal: { } goal } mind) return false;
+        if (mind.Plan.Count == 0 || !PlanContext.Stepped(goal)) return false;
+
+        if (!IsDoorStep(mind.Plan[0].Type)) mind.Plan.Insert(0, new PlanStep(row, new PlanTarget(Targets.Door, door)));
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the NPC's kept plan runs a door step now (<see cref="TakeDoorStep"/>): the lock system works the way only while it does.
+    /// </summary>
+    internal static bool RunsDoorStep(CharacterCold cold) => cold.Ai is { Plan: [var step, ..] } && IsDoorStep(step.Type);
+
+    /// <summary>
+    /// The rows of a way through a door (<see cref="TakeDoorStep"/>).
+    /// </summary>
+    static bool IsDoorStep(TaskType type) => type is TaskType.UnlockDoor or TaskType.UnlockDoorHere or TaskType.BashDoor or TaskType.BashDoorHere
+        or TaskType.PickLock or TaskType.CutLock;
+
+    /// <summary>
     /// Kinds of <see cref="PlanTarget"/> the finders give.
     /// </summary>
     static class Targets
     {
         /// <summary>
-        /// The target kinds: a spot, bed, seat, turret, town, work place, machine and store.
+        /// The target kinds: a spot, bed, seat, turret, town, work place, machine and store; the character a follow goal follows (its place is read
+        /// live, <see cref="PlanContext.Followed"/>); the door a way through works (<see cref="TakeDoorStep"/>, the door read live from
+        /// <see cref="CharacterCold.Bashing"/>).
         /// </summary>
-        public const byte Spot = 1, Bed = 2, Seat = 3, Turret = 4, Town = 5, Work = 6, Machine = 7, Store = 8;
+        public const byte Spot = 1, Bed = 2, Seat = 3, Turret = 4, Town = 5, Work = 6, Machine = 7, Store = 8, Follow = 9, Door = 10;
     }
 
     /// <summary>
@@ -82,6 +111,22 @@ public sealed partial class AiSystem
         /// A scratch step list of the bound think.
         /// </summary>
         readonly List<PlanStep> _scratch = [];
+        /// <summary>
+        /// The worker thread's functionality cache for the gate test of state 131 (<see cref="TownExit.HasGates"/>).
+        /// </summary>
+        readonly Dictionary<string, Meitou.Data.GameRecord?> _gateFunctions = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// State 131's reaches (<c>FUN_140506d30</c>, <b>Verified</b>): a gated town's point outside its gates (squared 62500,
+        /// <c>DAT_1416e3460</c>), a character target that no longer resolves (22500, <c>DAT_1416e345c</c>) and the point before its building's door
+        /// (10000, <c>DAT_14168dae4</c>), as distances.
+        /// </summary>
+        const float GatesReach = 250, LostTargetReach = 150, DoorReach = 100;
+        /// <summary>
+        /// State 131's share of an ungated town's radius (<c>DAT_141696c90</c>) and how far out its door point lies, A + (A − B) × 3
+        /// (<c>DAT_14168a254</c>).
+        /// </summary>
+        const float TownShare = 0.4f, DoorBeyond = 3;
 
         /// <summary>
         /// The task repertoire it plans with, the original's <c>FUN_14060e840</c> order (<see cref="Repertoire.Of"/>: imprisoned 4, crippled 0x40,
@@ -117,10 +162,11 @@ public sealed partial class AiSystem
         }
 
         /// <summary>
-        /// Plans a goal; true (and the plan in <see cref="AiMind.Plan"/>) when it has one whose first step the engine carries out. A goal without a
-        /// TaskData row is its own plan; one whose list A already holds is left out when its class's finished test agrees (the scorer's done test).
+        /// Plans a goal; true (and the plan in <see cref="AiMind.Plan"/>) when it has one whose first step the engine carries out; a failed plan leaves
+        /// the mind's plan as it was. A goal without a TaskData row is its own plan; one whose list A already holds is left out when its class's
+        /// finished test agrees (the scorer's done test), but for the <paramref name="current"/> goal, which the scorer does not test.
         /// </summary>
-        public bool TryPlan(AiGoal goal, float desire)
+        public bool TryPlan(AiGoal goal, float desire, bool current = false)
         {
             var type = goal.Task.Type;
 
@@ -128,10 +174,10 @@ public sealed partial class AiSystem
             // and its only list B entry (!47, not carrying) is what Holds already requires of a character the AI runs. So are the combat goals
             // (engine choice): the desire already holds the finder's pick (and for the protect goals row 13's attacker), and the fight is the combat
             // system's. And the Medic goal: its desire holds the patient finder's score, and the treatment is the first aid system's. And the leader
-            // rescue (142: its finder and its done state, the leader down, are the desire's; the lift is the carry system's). And a captive goal: its
-            // desire holds what the job start found, and the job is the captive system's.
-            if (TaskBehaviours.Of(type) is AiBehaviour.Assault or AiBehaviour.Fight or AiBehaviour.Medic or AiBehaviour.RescueLeader
-                or AiBehaviour.Captive)
+            // rescue (142: its finder and its done state, the leader down, are the desire's; the lift is the carry system's), and the rescue to a bed
+            // (148: its desire and finder are kept by the carry system's sweep, which lifts the body). And a captive goal: its desire holds what the
+            // job start found, and the job is the captive system's.
+            if (EngineActs(type))
             {
                 _mind.Plan.Clear();
                 _mind.Plan.Add(new PlanStep(type, default));
@@ -171,16 +217,128 @@ public sealed partial class AiSystem
                 return true;
             }
 
-            var target = row.Is(TaskDataFlags.NeedsTarget) && !row.Is(TaskDataFlags.Finder) ? Find(row, default) : default;
+            // The planner looks the root row up in the character's repertoire: a row it lacks plans nothing (docs/game/ai-tasks.md "Leaving the
+            // night cage"), so an animal of a bar squad does not relax (214 is human only).
+            if ((row.Category & Category) == 0) return false;
+
+            var target = GoalTarget(row);
             if (row.Is(TaskDataFlags.NeedsTarget) && !row.Is(TaskDataFlags.Finder) && target.IsNone) return false;
-            // A goal whose list A holds is done (FUN_14060f570) when a fresh task of its class says it is finished (slot 4, FUN_14050df10).
-            if (row.Done.Length > 0 && TaskFinished.Fresh(_world, _slot, type, CharacterId.None) && Array.TrueForAll(row.Done, c => Holds(c, target)))
+
+            // A goal whose list A holds is done (FUN_14060f570) when a fresh task of its class says it is finished (slot 4, FUN_14050df10). The scorer
+            // asks it of a goal that is not the current one only.
+            if (!current && row.Done.Length > 0 && TaskFinished.Fresh(_world, _slot, type, CharacterId.None)
+                && Array.TrueForAll(row.Done, c => Holds(c, target)))
+            {
                 return false;
+            }
             if (TaskPlanner.Local.Plan(row, desire, target, this, _mind.Plan, _scratch) <= 0) return false;
             if (_scratch[0].Type != type && !Carried(_scratch[0].Type)) return false;
             _mind.Plan.Clear();
             _mind.Plan.AddRange(_scratch);
             return true;
+        }
+
+        /// <summary>
+        /// Whether goal <paramref name="type"/> is its own plan, acted out by an engine system (the assault, the combat goals, Medic, the leader
+        /// rescue, the rescue to a bed, the captive goals: <see cref="TryPlan"/>).
+        /// </summary>
+        static bool EngineActs(TaskType type) => TaskBehaviours.Of(type) is AiBehaviour.Assault or AiBehaviour.Fight or AiBehaviour.Medic
+            or AiBehaviour.RescueLeader or AiBehaviour.RescueToBed or AiBehaviour.Captive;
+
+        /// <summary>
+        /// Whether a goal's plan is the planner's, run step by step (<see cref="PlanSteps"/>): not one of the plans of its own (<see cref="TryPlan"/>:
+        /// the engine-run goals, Self preservation, a follow aimed at the squad's mission), and of a row that acts or has an effect (a row with
+        /// neither, Idleness among them, makes no task: the original's update drops such a goal at once, <c>FUN_140511130</c>).
+        /// </summary>
+        public static bool Stepped(AiGoal goal)
+        {
+            var type = goal.Task.Type;
+            if (EngineActs(type) || type == TaskType.SelfPreservation) return false;
+            if (TaskBehaviours.Of(type) == AiBehaviour.Follow && goal.Task.Target == TaskTargetType.SquadMission) return false;
+
+            return TaskDataTable.Of(type) is { } row && (row.Is(TaskDataFlags.Acts) || row.Effect is not null);
+        }
+
+        /// <summary>
+        /// A goal row's own target: its finder's when it needs one and has none of its own; the followed character for a follow row without one
+        /// (141, 171: state 59 reads the building the follower's walk heads into, <c>FUN_140793230</c> with the task's hand, else the mover's
+        /// destination, which following puts by the followed character); else none.
+        /// </summary>
+        PlanTarget GoalTarget(TaskDataRow row)
+        {
+            if (row.Is(TaskDataFlags.NeedsTarget)) return row.Is(TaskDataFlags.Finder) ? default : Find(row, default);
+            if (TaskBehaviours.Of(row.Type) != AiBehaviour.Follow) return default;
+
+            return Followed() is >= 0 and var at ? new PlanTarget(Targets.Follow, _world.Characters.Next[at].Position) : default;
+        }
+
+        /// <summary>
+        /// The slot of the character the bound one follows (its slave owner, else its squad leader, as <c>FollowFactor</c> resolves it); -1 for none.
+        /// </summary>
+        public int Followed()
+        {
+            var cold = _world.Characters.Cold(_slot)!;
+            var target = Kidnap.ObedientSlave.OwnerOf(_world, cold) ?? _mind.Squad.Leader;
+            return _world.Characters.TryResolveNext(target, out int at) && at != _slot ? at : -1;
+        }
+
+        /// <summary>
+        /// States 59 DESTINATION_IS_ACCESSIBLE and 168 DESTINATION_IS_ACCESSIBLE_ANIMAL for the target's building (<see cref="DestinationBuilding"/>),
+        /// providers folded in (<see cref="DestinationAccess.Accessible"/>): a walk into a building shut by another's locked doors does not plan.
+        /// </summary>
+        bool Accessible(in PlanTarget target, bool animalDefault) =>
+            DestinationAccess.Accessible(_world, _slot, DestinationBuilding(target), animalDefault, _restrictedOpen);
+
+        /// <summary>
+        /// The building a target lies in (<c>FUN_140793230</c>): the followed character's; none for a town (a town's own place is outdoors); else the
+        /// room at the target's point, a point with no floor height taken on the ground (a workplace, a store, the home); null outdoors. Engine
+        /// reading: for a point the original reads the building of the mover's destination (Character <c>_destinationInsideBuilding</c>), which is
+        /// the target's once the walk there is set.
+        /// </summary>
+        string? DestinationBuilding(in PlanTarget target)
+        {
+            if (target.Kind == Targets.Follow) return Followed() is >= 0 and var at ? _world.Sight.BuildingOf(at) : null;
+            if (target.IsNone || target.Kind == Targets.Town) return null;
+
+            return DestinationAccess.BuildingAt(_world, target.Position);
+        }
+
+        /// <summary>
+        /// 131 atPackageTarget (<c>FUN_140506d30</c>, <b>Verified</b>; row 215's list A), at the squad's package target (<see cref="PackageTarget"/>):
+        /// a character as <see cref="AtCharacter"/>; no target, or a town that is not there, holds; a town with gates
+        /// (<see cref="TownExit.HasGates"/>) within 250 of its point outside the gates (Town vfunc 0x38, <see cref="TownExit"/>), any other within
+        /// 0.4 of its radius.
+        /// </summary>
+        bool AtPackageTarget()
+        {
+            var (town, character) = _system.PackageTarget(_world, _mind.Squad, _board);
+            if (!character.IsNone) return AtCharacter(character);
+            if (TownPlace(_system.Data, _world, town) is not { } placed) return true;
+
+            var here = Flat(Me.Position);
+            if (!TownExit.HasGates(_world, _system.Data, town, _gateFunctions))
+                return Vector2.DistanceSquared(here, placed.Centre) < placed.Radius * TownShare * (placed.Radius * TownShare);
+
+            var outside = TownExit.Of(_world, _system.Data, _system._locks?.Regions, town, _gateFunctions);
+            return Vector2.DistanceSquared(here, outside) < GatesReach * GatesReach;
+        }
+
+        /// <summary>
+        /// 131 for a character target: one that no longer resolves is the hand's own point, which the package hands leave at the origin; else (state
+        /// 90 held, as <see cref="HeldTrue"/>, so the original's 1.1-radius test behind walls is not reached) at it when the building the target is in
+        /// lets the character in as state 59's own test reads it (<see cref="DestinationAccess.OpenTo"/>; outdoors, or the same building, holds), else
+        /// within 100 of the point 3 beyond that building's first door (<see cref="DoorFront"/>).
+        /// </summary>
+        bool AtCharacter(CharacterId who)
+        {
+            var here = Flat(Me.Position);
+            if (!_world.Characters.TryResolveNext(who, out int at)) return here.LengthSquared() < LostTargetReach * LostTargetReach;
+
+            var building = _world.Sight.BuildingOf(at);
+            if (building is null || DestinationAccess.OpenTo(_world, _slot, building)) return true;
+
+            var inside = Flat(_world.Characters.Next[at].Position);
+            return DoorFront(_world, building, inside, DoorBeyond) is { } front && Vector2.DistanceSquared(here, front) < DoorReach * DoorReach;
         }
 
         /// <summary>
@@ -246,9 +404,13 @@ public sealed partial class AiSystem
         public bool Holds(TaskCondition condition, in PlanTarget target)
         {
             var cold = _world.Characters.Cold(_slot)!;
+            if (target.Kind == Targets.Door) return DoorHolds(condition, cold);
+
             bool value = condition.State switch
             {
                 StateType.IsAtLocation or StateType.IsAtLocation46 or StateType.AtNode => At(target),
+                StateType.DestinationIsAccessible => Accessible(target, animalDefault: false),
+                StateType.DestinationIsAccessibleAnimal => Accessible(target, animalDefault: true),
                 StateType.IsWithin10Meters => Distance(target) < Within10Meters,
                 StateType.IsWithin50Meters => Distance(target) < Within50Meters,
                 StateType.IsNearTo => Distance(target) <= 10,
@@ -272,8 +434,7 @@ public sealed partial class AiSystem
                     target.Kind == Targets.Store && cold.Inventory is { } carried ? Production.ProductionSystem.Ditchable(carried).Any()
                     : MachineAt(target) is { } fillable && Production.ProductionSystem.CarriesInputOf(cold, fillable),
                 StateType.HaveSomeResourcesFrom => MachineAt(target) is { } emptiable && Production.ProductionSystem.CarriesOutputOf(cold, emptiable),
-                // 5: a weapon in hand that is not ranged; 156: a ranged one (FUN_140596a30 / FUN_140596a70, Verified); 157's evaluator is an
-                // undecoded stub.
+                // 5: a weapon in hand that is not ranged; 156: a ranged one; 157: either (FUN_140596a30 / FUN_140596a70 / FUN_14060e540, Verified).
                 StateType.HasWeaponEquipped => cold.DrawnWeapon != WeaponKinds.None && cold.DrawnWeapon != BowHold,
                 StateType.HasWeaponEquipped156 => cold.DrawnWeapon == BowHold,
                 StateType.HasWeaponEquipped157 => cold.DrawnWeapon != WeaponKinds.None,
@@ -282,6 +443,25 @@ public sealed partial class AiSystem
                 _ => BodyOrTownHolds(condition.State, target, cold),
             };
             return value == condition.Holds;
+        }
+
+        /// <summary>
+        /// A state of a door step (<see cref="TakeDoorStep"/>) for the door its way through works: the door's own states (52 open, 53 and 54 / 55
+        /// locked, the door here being that door, 56 broken) as <see cref="RowStates"/> reads them; every other state of the step's list B (at the
+        /// door, the lock skill, tools, a weapon, its owner) is the way the lock system chose and works by (<see cref="Locks.LockSystem.WayThrough"/>,
+        /// asked again each update; with no way left the way fails), held true.
+        /// </summary>
+        bool DoorHolds(TaskCondition condition, CharacterCold cold)
+        {
+            var state = condition.State switch
+            {
+                StateType.DoorIsOpenHere => StateType.DoorIsOpen,
+                StateType.DoorIsLockedHere => StateType.IsDoorLocked,
+                var other => other,
+            };
+            if (state is not (StateType.DoorIsOpen or StateType.IsDoorLocked or StateType.DoorIsBroken)) return true;
+
+            return RowStates.Holds(_world, _slot, state, new RowTarget(CharacterId.None, cold.Bashing)) == condition.Holds;
         }
 
         /// <summary>
@@ -302,7 +482,10 @@ public sealed partial class AiSystem
             StateType.CarryingExcessLoot => Kidnap.TownDutySystem.CarriesLoot(_world, cold),
             StateType.IsInBed => cold.InSomething == Locks.HeldState.Bed
                 || (CharacterTask)Me.Task == CharacterTask.Rest && _mind.Behaviour == AiBehaviour.Sleep,
-            StateType.IsWorking or StateType.IsWorkingPretend or StateType.UsingTargetTurret or StateType.UsingAnyTurret => Settled(target),
+            // 123 IS_WORKING and 136 IS_WORKING_PRETEND share an evaluator that answers false (the thunk 14002fb1c, Verified), so 87 and 221 never
+            // end by their list A.
+            StateType.IsWorking or StateType.IsWorkingPretend => false,
+            StateType.UsingTargetTurret or StateType.UsingAnyTurret => Settled(target),
             // AI::iAmInsideTargetBuilding (FUN_14059a4b0) for a target that is not a building: inside its home building (no home: held true).
             // A player-built home has no indoor volume in the sight map: within the home radius counts (engine choice).
             StateType.AmInsideTargetBuilding => _board.Home is not { } inHome
@@ -324,10 +507,9 @@ public sealed partial class AiSystem
             StateType.IsLeaderDown => SquadIntact.Down(_world.Characters, _mind.Squad.Leader)
                 || _world.Characters.TryResolveNext(_mind.Squad.Leader, out int lead)
                 && _world.Characters.Cold(lead) is { Medical.Crawling: true },
-            // 72 (FUN_1405a0610, Observed): never for a character not of the player's faction, so an NPC's sleep rows (98, 100, 175, 261)
-            // are never done; for the player's a medical float above 0.9 (MedicalSystem +0xb0, meaning Unknown), here "not incapacitated". A
-            // player character of an autonomous squad is read as an NPC (engine choice: with that stand-in its sleep goals would never plan).
-            StateType.IsFullyRested => _playerSide && !_mind.Player && cold.Medical is not { Incapacitated: true },
+            // 72 of the character itself (its rows target it or a bed): never for one not of the player's faction, so an NPC's sleep rows
+            // (98, 100, 175, 261) are never done.
+            StateType.IsFullyRested => RowStates.FullyRested(_world, cold),
             StateType.HasOneWorkingArm => cold.Medical is not { } arms || arms.ArmWorks(left: true) || arms.ArmWorks(left: false),
             // 80 (evaluator 1405c7930, Verified): the medical left-arm byte +0x166; the lift rows 213, 240, 225, 246, 68 and 170 need it. States
             // 7 and 48 are not wired: no goal reaches those rows.
@@ -343,6 +525,7 @@ public sealed partial class AiSystem
             // without the public test.
             StateType.StrangersInHouseP => _system.StrangersInHouseP(_world, _board, _slot),
             StateType.StrangersInHouse => _system.StrangersInHouse(_world, _board, _slot),
+            StateType.AtPackageTarget => AtPackageTarget(),
             _ => HeldTrue(state),
         };
 
@@ -352,12 +535,11 @@ public sealed partial class AiSystem
         static bool HeldTrue(StateType state) => state switch
         {
             // Held true: moving, standing up, power and buildings; doors are the movement's and the lock-up round's (docs/simulation.md
-            // "Planner").
+            // "Planner"), but for the way into the destination (59, 168: Accessible).
             StateType.IsMovementAllowed or StateType.CanGetUp or StateType.IsBuildingComplete
                 or StateType.MachineHasFreeOperatorSlot or StateType.IsReadyForAction
                 or StateType.DoorIsOpen or StateType.DoorIsOpenHere or StateType.AtLocationBuildingDoor or StateType.AtCurrentLocationBuildingDoor
-                or StateType.AtLocationBuildingDoorInside or StateType.AtLocationBuildingDoorOutside or StateType.DestinationIsAccessible
-                or StateType.LocationIsAccessible or StateType.DestinationNotBlockedByFortifications or StateType.AtLocationFortificationGate
+                or StateType.AtLocationBuildingDoorInside or StateType.AtLocationBuildingDoorOutside or StateType.LocationIsAccessible or StateType.DestinationNotBlockedByFortifications or StateType.AtLocationFortificationGate
                 or StateType.DoorIsLockedAndImInside or StateType.DoorIsLockedAndImOutside or StateType.AllDoorsLocked or StateType.IsObjectMine
                 or StateType.IsAlly or StateType.CrowdLimit8 or StateType.TargetStandingStill
                 or StateType.IsMachineOutputEmpty or StateType.HasBuildingMaterials or StateType.BuildingHasBuildingMaterials => true,
@@ -390,10 +572,10 @@ public sealed partial class AiSystem
                 case TaskType.GoHomeAndGoToBed or TaskType.GoHomeAndGoToBedSecure:
                     // A character in a bed keeps it (the bed search FUN_1408cfe00, docs/game/locks.md "Bed search"): the target is where it lies.
                     if (_world.Characters.Cold(_slot) is { InSomething: Locks.HeldState.Bed })
-                        return Spot(Targets.Bed, (Flat(Me.Position), true, Me.Position.Y, null));
+                        return Spot(Targets.Bed, (Flat(Me.Position), true, Me.Position.Y, null, false));
 
                     if (_system.SpareBed(_world, _board, _mind, _slot) is { } spare)
-                        return Spot(Targets.Bed, (Flat(spare.Position), true, spare.Position.Y, null));
+                        return Spot(Targets.Bed, (Flat(spare.Position), true, spare.Position.Y, null, false));
 
                     if (!_system.HasBed(_world, _board, _mind, _slot)) return default;
                     return Spot(Targets.Bed, _system.SpotFor(_world, _mind, _board, AiBehaviour.Sleep, type));
@@ -449,7 +631,7 @@ public sealed partial class AiSystem
         /// <summary>
         /// A spot as the act-out walks to it: one on a floor over a hole furniture cuts is at the nearest floor point (<see cref="GoToSpot"/>).
         /// </summary>
-        PlanTarget Spot(byte kind, (Vector2 Target, bool Home, float? Floor, float? Yaw) s)
+        PlanTarget Spot(byte kind, (Vector2 Target, bool Home, float? Floor, float? Yaw, bool Watch) s)
         {
             if (s.Floor is { } y && _world.Walkability.FloorNear(s.Target.X, s.Target.Y, y, FloorSlack) is { } floor) return new(kind, floor);
             return new(kind, new Vector3(s.Target.X, s.Floor ?? float.NaN, s.Target.Y));

@@ -545,7 +545,8 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         else
             foreach (var p in _players) ZoneActivation.AddZonesAround(p, _settings.FastZoneHopping ? 1 : 0, _boxZones);
         foreach (var p in world.Platoons.All)
-            if (world.IsPlayerFaction(p.Faction)) ZoneActivation.AddZonesAround(new Vector3(p.Position.X, 0, p.Position.Y), _settings.FastZoneHopping ? 1 : 0, _boxZones);
+            if (world.IsPlayerFaction(p.Faction) && !world.Squads.IsDormant(p.SquadId))
+                ZoneActivation.AddZonesAround(new Vector3(p.Position.X, 0, p.Position.Y), _settings.FastZoneHopping ? 1 : 0, _boxZones);
         foreach (var zone in _boxZones) Ask(zone, boxUntil);
         AskTownZones();
         List<ZoneCoordinate>? gone = null;
@@ -640,9 +641,11 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         _players.Clear();
         if (world.Player.Exists || world.Players.RequiresExplicitControl)
         {
+            // A squad a code mod put to sleep asks for no zones (Squad.Dormant).
             var prev = world.Characters.Previous;
             for (int i = 0; i < prev.Length; i++)
                 if (prev[i].Alive && world.Characters.Cold(i) is { IsPlayer: true } cold
+                    && !world.Squads.IsDormant(cold.SquadId)
                     && (!world.Players.RequiresExplicitControl || cold.DiedTick < 0 && cold.Medical?.Dead != true)) _players.Add(prev[i].Position);
         }
 
@@ -822,7 +825,8 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     /// <summary>
     /// What the original drops from a replaced town's zone file (<c>FUN_1409fe340</c>, docs/game/factions-squads-towns.md "Town overrides"): the
     /// state of the town's buildings in that zone that are not the player's (they come back as the level has them, under the town's faction now), the
-    /// item slots' timers there (due at once), and every loose item in the zone. The town's buildings in other zones change owner only.
+    /// item slots' timers there (due at once), and every loose item in the zone. The town's buildings in other zones change owner, and its homes
+    /// in every zone are furnished anew (<see cref="Locks.FixtureRegistry.IsRebuilt"/>).
     /// </summary>
     void ResetZone(World world, TownSite site)
     {
@@ -1125,7 +1129,8 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
     /// slave squad is made as a squad of its template's <c>faction</c> (else the owner's), every member a slave (state 1) of the owner squad's
     /// faction, shaven and chained (<b>Verified</b>). <b>Engine choices</b>: they are made at the owner squad's spot; with a home building, each goes
     /// into a random free cage of it (their package's goal is Slave get in Cage, which Meitou does not act out), those left over stand by the owner
-    /// squad. Each obeys the owner squad (job 187: its Slave AI Goals, <see cref="CharacterCold.SlaveMaster"/>).
+    /// squad. Each obeys the owner squad (job 187: its Slave AI Goals, <see cref="CharacterCold.SlaveMaster"/>), even when its template lists no AI
+    /// package (the AI runs such a squad of slaves, #938).
     /// </summary>
     void MakeSlaves(World world, BuiltSquad owner, Squad squad, TownSite site, float radius, SiteState state)
     {
@@ -1541,7 +1546,7 @@ public sealed partial class PopulationSystem : ITickSystem, IDisposable, IStateH
         if (playerFaction >= 0 && cold.Faction == playerFaction) return true;
         var town = Ai.AiSystem.TownAt(_data, world, at);
         if (town.IsNone) return false;
-        int owner = FactionOfTown(world, town);
+        int owner = town.Owner(world, _data);
         var relations = _data.Relations;
         if (owner == cold.Faction || owner >= 0 && relations.Contains(owner) && relations.Contains(cold.Faction)
             && relations.IsAlly(owner, cold.Faction))

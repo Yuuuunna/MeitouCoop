@@ -18,7 +18,7 @@ public sealed class FoliageWorld : IDisposable
     /// <summary>
     /// The layout cache; null places every zone.
     /// </summary>
-    FoliageLayoutCache? _cache;
+    readonly FoliageLayoutCache? _cache;
     /// <summary>
     /// The heightmap. It and the three below are opened on the first zone that is actually placed: a zone read from the layout cache needs none
     /// of them.
@@ -112,6 +112,7 @@ public sealed class FoliageWorld : IDisposable
         _map = TerrainHeightmap.Open(_install);
     }
 
+
     /// <summary>
     /// The biome colours of a zone, in blend slot order: the slots with weight anywhere in the zone's box.
     /// </summary>
@@ -164,9 +165,10 @@ public sealed class FoliageWorld : IDisposable
     public (FoliageZone Zone, FoliageGround? Ground) Load(ZoneCoordinate zone, bool farOnly = false)
     {
         if (!zone.IsInsideGrid) return (new FoliageZone { Zone = zone }, null);
+        var owned = Ownership;
         bool cached = !ExtraTownsReach(zone);
-        if (cached && _cache?.TryLoad(zone, farOnly) is { } hit) return (hit.Zone, hit.Ground);
-        return Place(zone, farOnly, cached);
+        if (cached && _cache?.TryLoad(zone, farOnly, owned) is { } hit) return (hit.Zone, hit.Ground);
+        return Place(zone, farOnly, cached, owned);
     }
 
     /// <summary>
@@ -176,9 +178,10 @@ public sealed class FoliageWorld : IDisposable
     public GroupedFoliageZone LoadGrouped(ZoneCoordinate zone, bool farOnly = false)
     {
         if (!zone.IsInsideGrid) return FoliageGrouping.Group(new FoliageZone { Zone = zone }, null);
+        var owned = Ownership;
         bool cached = !ExtraTownsReach(zone);
-        if (cached && _cache?.TryLoadGrouped(zone, farOnly) is { } hit) return hit;
-        var (laid, ground) = Place(zone, farOnly, cached);
+        if (cached && _cache?.TryLoadGrouped(zone, farOnly, owned) is { } hit) return hit;
+        var (laid, ground) = Place(zone, farOnly, cached, owned);
         var grouped = FoliageGrouping.Group(laid, ground);
         laid.Instances.Clear();
         laid.Instances.TrimExcess();
@@ -194,7 +197,6 @@ public sealed class FoliageWorld : IDisposable
     {
         if (ExtraTowns.Count == 0) return false;
 
-        Open();
         float levelRange = _towns.Select(t => t.Range).DefaultIfEmpty(0).Max();
         var (x0, z0) = WorldLayout.ZoneOrigin(zone);
         foreach (var t in ExtraTowns)
@@ -211,7 +213,7 @@ public sealed class FoliageWorld : IDisposable
     /// <summary>
     /// Places one zone's foliage from the maps (and saves it to the layout cache when there is one and <paramref name="save"/> is set).
     /// </summary>
-    (FoliageZone Zone, FoliageGround? Ground) Place(ZoneCoordinate zone, bool farOnly, bool save = true)
+    (FoliageZone Zone, FoliageGround? Ground) Place(ZoneCoordinate zone, bool farOnly, bool save = true, IReadOnlySet<(int X, int Z)>? owned = null)
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         Open();
@@ -235,7 +237,8 @@ public sealed class FoliageWorld : IDisposable
             NearestTown = NearestTown,
         };
         var laid = FoliageLayout.Place(input, Catalog, farOnly);
-        if (save) _cache?.Save(zone, farOnly, laid, ground, System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+        double took = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        if (save) _cache?.Save(zone, farOnly, laid, ground, took, owned ?? Ownership);
         return (laid, ground);
     }
 
@@ -256,7 +259,7 @@ public sealed class FoliageWorld : IDisposable
         var ownership = (ownedTowns ?? world.FoliageOwnership).ToFrozenSet();
         Ownership = ownership;
         _towns = ReadTowns(db, world, ownership);
-        this._cache = cache is not null && cache.MatchesOwnership(ownership) ? cache : null;
+        this._cache = cache;
         Catalog = catalog ?? FoliageCatalog.Load(db);
     }
 
@@ -269,8 +272,6 @@ public sealed class FoliageWorld : IDisposable
         Ownership = next;
         _towns.Clear();
         _towns.AddRange(ReadTowns(_database, _source, next));
-        if (_cache is not null && !_cache.MatchesOwnership(next))
-            _cache = null;
         return true;
     }
 

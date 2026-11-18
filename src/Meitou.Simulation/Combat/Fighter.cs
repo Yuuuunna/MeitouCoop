@@ -113,7 +113,14 @@ public sealed class Fighter
     public int TechniqueCategory => Weapon?.Data.SkillCategory ?? (int)WeaponCategory.Unarmed;
 
     /// <summary>
-    /// Whether it has an attack: an animal without a natural weapon (a swamp turtle) has none; it can still be hit.
+    /// Whether its natural weapon was drawn from its manufacturer's <c>weapon types</c> (an animal that names no weapon, the Swamp Turtle;
+    /// docs/game/animals.md "Natural weapon"): a person's weapon then, which <see cref="CombatSystem.AnimalMovesFix"/> swings with creature moves.
+    /// </summary>
+    public bool WeaponDrawn { get; init; }
+
+    /// <summary>
+    /// Whether it has an attack: an animal without a natural weapon (no <c>weapon level</c>, or nothing its manufacturer makes) has none; it can
+    /// still be hit.
     /// </summary>
     public bool CanAttack => !IsAnimal || Weapon is not null;
 

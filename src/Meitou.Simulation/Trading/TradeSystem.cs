@@ -605,7 +605,9 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     {
         if (world.Tick < squad.NextHomeFillTick) return;
 
-        // While the home's interior is shown the refill waits without moving its time, as the original's restock (FUN_1404ff5e0).
+        // While the home's interior is shown the refill waits without moving its time, as the original's restock (FUN_1404ff5e0). The first fill,
+        // with the specials, is the squad factory's when the squad is made (FUN_140583a10): a squad a save gave back comes with its time at 1
+        // (SavedPopulation), having had it before that save.
         bool first = squad.NextHomeFillTick == 0;
         if (!first && squad.HomeInteriorShown) return;
 
@@ -863,6 +865,20 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         && (ReferenceEquals(held.SourceShop, shop) || held.SourceShop is null && ReferenceEquals(held.Grid, shop.Window)));
 
     readonly SquadWages _wages;
+
+    /// <summary>Places units in an inventory and returns the count placed.</summary>
+    internal static int Place(Inventory into, ItemInstance copy, int units, bool mainShut = false)
+    {
+        copy.Section = "main";
+        return into.Add(copy, mainShut) ? units : units - copy.Quantity;
+    }
+
+    /// <summary>Removes purchased units from stock.</summary>
+    internal static void Take(Inventory from, ItemInstance item, int units)
+    {
+        if (units >= item.Quantity) from.Remove(item);
+        else item.Quantity -= units;
+    }
 }
 
 public abstract record TradeCommand : InventoryCommand { public ulong SessionId { get; init; } }

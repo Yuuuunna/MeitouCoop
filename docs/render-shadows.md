@@ -28,6 +28,11 @@ dunes, a town from afar under a low sun. Texel grids are anchored at the
 camera's focus point, moved only while the sun turns and the point is 200+ units away (anchored at
 the eye, the first cascade's grid slid boom x sun turn under the squad). Least filter radius 1.5
 texels: a 0.06° sun turn changed 0.36 % of a Hub view by more than 8 levels, 0.56 % at 1 texel.
+With no caster bias the casters' `gl_FragDepth` write is the clamped rasterised depth the depth clamp gives anyway, so the Meitou
+cascades' pass is `DrawState.CasterBiasFree` and Metal binds each caster program's fragment stage without the write
+(`MetalProgram.BiasFreeFragment`; landmarks and the faithful atlas keep it): a shader depth write turns Apple's early depth test and
+hidden-surface removal off. **Verified** (save 111 offscreen, M6): bit-identical picture; **Observed** (Metal System Trace, orbit):
+the cascade encoder 1.88 -> 1.23 ms. Vulkan still writes it.
 
 Receiver plane (`msTileV`; **Code reading**, not compared on a GPU): the filter's taps and the blocker search shift their reference depth by the receiver plane's tilt along
 the offset, `dot(o, slope)` in tile UV. `ReceiverTile` flips v on Metal, so light-space y runs against v there and the plane's y tilt flips with it; `msTileV` takes the sign from the
@@ -81,8 +86,9 @@ Metal: never. `--debug-shadows 4` draws over the scene: blue where the cascades 
 falls; with it the log prints every 120th frame whether the frame traces and why (`LogTraced`). **Observed** (siwa-test6 save, 08:40): traced over every lit surface of the view; against the cascades its mean change is 0.17/255 there, a close-up whose first cascade is already fine.
 
 **Frame.** `kenshiLight` leaves the sun out of the colour of every lit surface but impostors (`atmoReceiver` -1: the quad is not the surface), at every depth
-(`ShadowPass.Traced`; with far cascades as far as the handoff, below), and writes it, shadowless but for clouds, relief, the terrain map and the landmark map (the cascades left out, `msTraced`), to a third scene
-attachment (RGBA16F, location 2, `WithAlbedo`), before the haze. Bit 16 of the surface target (RGBA32UI) marks such a pixel, bits 17-18 its receiver (0 solid, 1 grass,
+(`ShadowPass.TracedWhole`), and writes it, shadowless but for clouds, relief, the terrain map and the landmark map (the cascades left out, `msTraced`), to a third scene
+attachment (RGBA32F, location 2, `WithAlbedo`), before the haze. Its alpha is not the sun's: it packs three log levels in 24 exact bits and the sign, `log2(1 + 256 x L) / 12` as whole numbers (`GiResolveShaders.giPackTerm`, read by `TermLuminances`), plus 1 (0: nothing written): the lamps' diffuse light the fragment took (1023 levels, steps of 0.8 %, the channels' mean; `lampDiffuseOut`), their specular's luminance (8 bits, the eighth the sign, rounded up so it is never read back short; `lampSpecularOut`) and what it took of the sky beside its diffuse light (7; `ambientGlossOut`). The [lamp shadows](render-lights.md#traced-lamp-shadows) and the [characters' gather](render-gi.md#characters) read them back. Bit 16 of the surface target (RGBA32UI) marks such a pixel, bits 17-18 its receiver (0 solid, 1 grass,
+A receiver that is no interior's and no character is not shaded by what the floor view hides when its ray starts in or right under such a part (`solidBlocks` `open`: asked only of a ray a hidden part blocks, a second ray of 12 units against the hidden parts, then the ray again without them). **Observed**: no visible change on the band it was made for (save grass-through interior); kept as the cache's rule, unmeasured cost.
 2 foliage, 3 character). After the characters, before `CaptureScene` (refraction sees the sun), a compute pass traces one ray a pixel into an RGBA16F mask (visibility,
 blocker distance), the penumbra filter softens it, and a fullscreen pass adds term x mask x the haze's multiplier (`atmoApplyCoefficients`).
 
@@ -106,7 +112,7 @@ and skip 3 footprints plus 0.5. Queries, each after the last missed:
 **Characters** (receiver class 3): a low-poly body's facet can face away from the sun while its smooth shading (and skin's band past the terminator) is still lit; a
 ray from it stopped inside the body, a dark triangle (**Observed** on a face: eye corners, nostrils, the temple). There the ray starts under the facet, the nearest back of a
 face within 0.8 units (`BodyChord`) is where it leaves the body, and blockers count from that point on. Its sun-facing facets skip blockers within 0.03 units (`BodyContact`: a crease between two facets drew hair-thin dark lines and notches). A shadow edge on a character is at least 0.025 units wide each way
-(`BodyPenumbra`): the body's own shadows are polygons, and skin spreads light that far.
+(`BodyPenumbra`): the body's own shadows are polygons, and skin spreads light that far. What a character wears (surface bit 20 with no skin share, bits 28-31 0) has no body to cross: a cloth turned from the sun is in its own shadow (`TracedSunShaders.visibility`, `worn`), as for the lamps. The measurement is under [Traced lamp shadows](render-lights.md#traced-lamp-shadows); the sun's own is **Unknown**.
 
 **Penumbra** (`PenumbraFilter`, shared with the lamps, no history): the rays write, where blocked, the penumbra's radius at the receiver (the sun's tangent 0.00465, the real
 0.267 degrees, times the blocker's distance; KenshiNative's 0.015 widened far penumbrae threefold). A pixel the light does not reach (turned away from it: its term is 0, or no traced
@@ -151,6 +157,7 @@ the volume 0.09-0.11 ms, a close-up character 0.06 ms. With a still camera the f
 ## Traced near, cascades far
 
 `TracedFarCascades` (the switch of the sun shadows' fourth position, "Traced near, cascades far": Meitou engine choice, off by default, on in the
+Meitou-local (this branch): no tier turns the far cascades on (`QualityTiers`); the switch stays. **Observed** (save trees, 2560x1440): with them the shadows of trees turn from sharp to soft blobs in the band at view depth 1600-2000, which moves over the trees with the camera (10,900 pixels differ by more than 15 levels against the rays at every depth), and the frame cost more (12.1 ms against 10.0).
 tiers that trace the sun, Ultra and Extreme; `ShadowPass.FarCascades`): the rays take the sun to view depth 2000 (`ShadowPass.TracedHandoff`)
 and four cascades (`HandoffCascades`) from 1600 to the shadow range, split by the practical scheme without the focus rule (`CascadeSplits`), drawn, cached and filtered as the Meitou cascades are (their blocker search included). `atmoTracedShare` falls from 1 to 0 over 1600-2000 (cascade 0's
 first depth to `msHandoff`), the colour taking the cascades' share; past 2000 no pixel is marked traced, so the rays and the grass reach (`TracedDepth` 2000) end there. The

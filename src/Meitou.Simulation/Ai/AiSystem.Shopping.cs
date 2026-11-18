@@ -70,7 +70,7 @@ public sealed partial class AiSystem
         var market = _trade.Market(world);
         var list = mind.Shopping;
         var id = world.Characters.IdOf(slot);
-        list.Begin(mind.Squad.Ai?.Town ?? -1, ShoppingList.DayOf(world.GameHours), world.Hour);
+        list.Begin(ShopTown(world, slot, mind.Squad.Ai?.Town ?? -1).Key, ShoppingList.DayOf(world.GameHours), world.Hour);
         Span<int> skipped = stackalloc int[list.Count];
         int skips = 0;
         int k = list.NextOpen(skipped[..0]);
@@ -78,7 +78,7 @@ public sealed partial class AiSystem
         {
             int function = list.FunctionOf(k);
             ulong roll = Rng.Hash(world.Seed, Rng.Key(id), RngPurpose.Trade, SeedSalts.AiShop ^ (ulong)world.Tick << 8 ^ (ulong)attempt);
-            var sale = NpcTrade.Buy(world, market, data.PlayerFaction, slot, shop, function, roll);
+            var sale = NpcTrade.Buy(world, market, slot, shop, function, roll);
             if (sale == NpcSale.NoItem)
             {
                 skipped[skips++] = function;

@@ -4,6 +4,7 @@ using Meitou.Connections;
 using Meitou.Game.Host;
 using Meitou.Data;
 using Meitou.Networking;
+using Meitou.Modding;
 using Meitou.Simulation;
 
 namespace Meitou.Game;
@@ -18,19 +19,26 @@ internal static class OnlineBootstrap
     /// Resolves compatible content, authenticates and prepares one role without starting a local world.
     /// </summary>
     public static async Task<RemoteGameSession> ConnectAsync(GameInstall install, string profileFile,
-        string? createFaction, ulong? role, CancellationToken token)
+        string? createFaction, ulong? role, CancellationToken token, ModDataPhase? dataPhase = null)
     {
         if (role == 0) throw new ArgumentException("--role requires a nonzero persistent EntityId.");
         if (createFaction is not null && (string.IsNullOrWhiteSpace(createFaction) || createFaction.Trim().Length > 30))
             throw new ArgumentException("--create-faction requires a name of 1–30 characters.");
 
         bool device = !profileFile.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
-        var (profile, hello) = await PrepareConnectionAsync(install, profileFile, device, token).ConfigureAwait(false);
+        dataPhase ??= GameMods.CreateDataPhase(install, UserConfig.Load());
+        // Enumerated only after public discovery (or the private profile) supplies the server manifest.
+        IEnumerable<string> CodeEdits()
+        {
+            token.ThrowIfCancellationRequested();
+            foreach (string fingerprint in dataPhase.LoadData().CodeEdits) yield return fingerprint;
+        }
+        var (profile, hello) = await PrepareConnectionAsync(install, profileFile, device, token, CodeEdits()).ConfigureAwait(false);
         if (device) profileFile = DeviceJournalPath(profile);
 
         Console.WriteLine("Online: checking local content and loading the compatible database...");
         token.ThrowIfCancellationRequested();
-        var database = GameDatabase.Load(LoadOrder.FromInstall(install));
+        var database = dataPhase.LoadData();
         token.ThrowIfCancellationRequested();
         Console.WriteLine("Online: connecting and authenticating...");
         var session = await RemoteGameSession.ConnectAsync(profile.Host, profile.Port, hello,
@@ -57,17 +65,17 @@ internal static class OnlineBootstrap
     /// Uses the same effective code permissions for public discovery and final compatibility, including isolated launcher profiles.
     /// </summary>
     internal static async Task<(ServerConnectionProfile Profile, CompatibilityHello Hello)> PrepareConnectionAsync(GameInstall install,
-        string profileFile, bool device, CancellationToken token)
+        string profileFile, bool device, CancellationToken token, IEnumerable<string>? codeEdits = null)
     {
         var userConfig = UserConfig.Load();
         var modProfile = ServerModProfile.FromEnvironment();
         var trusted = (modProfile?.TrustedCodeMods ?? [.. userConfig.TrustedCodeMods]).ToHashSet(StringComparer.Ordinal);
         var modSettings = modProfile?.ModSettings ?? userConfig.ModSettings;
         var profile = device
-            ? await DeviceConnection.PrepareAsync(install, profileFile, token, trustedCodeMods: trusted, modSettings: modSettings).ConfigureAwait(false)
+            ? await DeviceConnection.PrepareAsync(install, profileFile, token, trustedCodeMods: trusted, modSettings: modSettings, codeEdits: codeEdits).ConfigureAwait(false)
             : ServerConnectionProfile.Read(profileFile);
         token.ThrowIfCancellationRequested();
-        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets, trusted, modSettings);
+        var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, profile.Rules, profile.GameplayAssets, trusted, modSettings, codeEdits);
         var compatibility = new CompatibilityHandshake(hello).Receive(profile.Hello);
         if (compatibility != CompatibilityFailure.None)
             throw new InvalidDataException($"Connection profile does not match this client's local {compatibility}; check the install, mod order and server profile.");

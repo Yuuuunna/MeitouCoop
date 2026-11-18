@@ -75,10 +75,10 @@ public sealed record ServerConfiguration
     /// </summary>
     public ServerConfiguration AdoptBuiltIns(GameInstall install, string path)
     {
-        var settings = new BuiltInModSettings { SquadXp = Gameplay.SquadXp, AdoptedMods = [.. AdoptedMods], ModSettings = ModSettings };
+        var settings = new BuiltInModSettings { SquadXp = Gameplay.SquadXp, FixAnimalMoves = Gameplay.AnimalMovesFix, AdoptedMods = [.. AdoptedMods], ModSettings = ModSettings };
         if (BuiltInMods.Adopt(settings, install).Count == 0) return this;
 
-        var updated = this with { Gameplay = Gameplay with { SquadXp = settings.SquadXp }, AdoptedMods = [.. settings.AdoptedMods] };
+        var updated = this with { Gameplay = Gameplay with { SquadXp = settings.SquadXp, AnimalMovesFix = settings.FixAnimalMoves }, AdoptedMods = [.. settings.AdoptedMods] };
         string target = Path.GetFullPath(path);
         string temporary = target + ".adopt-" + Guid.NewGuid().ToString("N");
         try

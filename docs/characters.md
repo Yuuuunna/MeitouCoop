@@ -259,7 +259,7 @@ from the look's sex's list (appearance `sex female`): `data/namesM.txt` (men) or
 both. Lines are trimmed, blank ones skipped; each file is optional. An empty list gives a fixed fallback string (Meitou: the record
 name). 135 of 639 merged CHARACTERs are `named`, among them most start-squad members (Wanderer, Nobody, start slave; not Citizen, Exile).
 Meitou: `NamePool`, rolled at spawn (`PopulationSystem.SpawnName`, `RngPurpose.Name`) from the world seed, which a new game from the menu rolls afresh
-(`--seed` keeps one), so the start squad's names differ from game to game as the original's; files read from the install, not mods.
+(`--seed` keeps one), so the start squad's names differ from game to game as the original's; each file as the game opens it from resource group `General` (an enabled mod's copy, else the language's, else the install's `data/`).
 **Verified** (`FUN_14062b210` end): once the character is set up, a name holding a `/` goes through the dialogue text expansion and censorship
 (`FUN_14067e8b0`, [dialogue tokens](game/dialogue.md#tokens)) with the character's own dialogue and no target, so a word swap's line replaces the token
 (UWE names CHARACTERs "Trader /GENNAME/" with a GENNAME WORD_SWAPS of first names). Meitou: `DialogueSystem.ExpandName` at spawn.
@@ -288,8 +288,11 @@ exe decompile unless marked; Meitou: `CharacterDraft` (data), `EditCharacter` / 
   first frame; a one-shot holds its last frame. Before the draw, the character shown before and the new one each get their whole update
   once (Character slot 28 `FUN_1405cf130` -> AnimationClass slot 6, layers stepped) by the paused frame time, 0.01 s (`FUN_140788a00`,
   `DAT_141682ad8`), plus the time it put by: each frame `FUN_1405c9f60` adds the frame time to `+0xc0` only while the character fails its
-  view test (beyond the camera's range or outside its view), and slot 28 spends it. **Observed** (harness screenshots): the editor's
-  characters stand together where the camera looks, so none is put by. The idle's rate has no size factor (the world's idle update `FUN_14051d3b0` passes `+0x74`
+  view test (beyond the camera's range or outside its view), and slot 28 spends it. A player's character puts none by, whatever the tab
+  (**Verified**, decompile): `FUN_1405c79c0` holds for the player's faction, so the pass skips the range and frustum tests and the character
+  stays in view ([game-loop](game/game-loop.md#the-character-update-budget)). The pass also adds only while the paused flag `DAT_1421349c9`
+  (GameWorld `+0x8b9`, [speed and pause](game/game-loop.md#speed-and-pause)) is clear, and the editor pauses right after its first show
+  (`FUN_1405f03c0` -> `FUN_140787fb0` with 1). The idle's rate has no size factor (the world's idle update `FUN_14051d3b0` passes `+0x74`
   alike; only movement clips take F, `FUN_14051de70`). **Verified** (Kenshi harness, 1.0.65, Guy with a dog, game clock unchanged, frame
   diffs over 32 CHANGE CHARACTER shows of the Bonedog): a show left it looping (40 s and more), moving about 2.5 s and then still (its
   one-shot `idle noloop`, 2.53 s), or still; in a run of 20 a still show came only after a held one-shot (6 of 6), and a held one-shot never

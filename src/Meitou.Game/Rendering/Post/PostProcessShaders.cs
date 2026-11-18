@@ -1098,6 +1098,7 @@ static class PostProcessShaders
         uniform sampler2D uLuminance, uLast;
         uniform float uLevel, uBlend;   // the luminance target's 1 × 1 level; the share of the new mean (1: no smoothing)
         uniform vec2 uBand;             // MIN_LUMINANCE, MAX_LUMINANCE
+        uniform vec2 uIndoor;           // x above 0, an interior in view: the minimum follows the mean times x down, to no less than y of itself (PostProcess.IndoorExposure)
         void main()
         {
             float mean = textureLod(uLuminance, vec2(0.5), uLevel).r;
@@ -1105,7 +1106,8 @@ static class PostProcessShaders
             float adapted = mix(last, mean, uBlend);
             // G: the same smoothing of the mean without the band (Meitou's night grading reads it; equal to the mean when the blend is 1)
             float smoothMean = mix(texture(uLast, vec2(0.5)).g, mean, uBlend);
-            fragColour = vec4(clamp(adapted, uBand.x, max(uBand.x, uBand.y)), smoothMean, 0.0, 1.0);
+            float low = uIndoor.x > 0.0 ? clamp(smoothMean * uIndoor.x, uBand.x * uIndoor.y, uBand.x) : uBand.x;
+            fragColour = vec4(clamp(adapted, low, max(low, uBand.y)), smoothMean, 0.0, 1.0);
         }
         """;
 
@@ -1202,6 +1204,10 @@ static class PostProcessShaders
         uniform float uSharpen;    // after TAA or DLSS (neither sharpens): the upscaler sharpness, 0 off
         uniform sampler2D uBloom;  // Meitou bloom: the linear scene convolved with the point spread function, at a quarter of its size
         uniform float uBloomStrength;   // its strength, 0 off
+        uniform vec4 uFilterR, uFilterG, uFilterB;   // photo mode's filter (PostOptions.PhotoFilter): each channel's weights and offset
+        uniform float uFilterContrast;  // its contrast about mid-grey; 0: no filter
+        uniform vec4 uVignette;         // the vignette's window centre (pixels), the distance to its corner (pixels), the strength; 0 off
+        uniform vec3 uGrain;            // film grain: strength (0 off), the grain's size in pixels, the frame's seed
         const float EXPOSURE_KEY = 0.55;   // hdr.material's EXPOSURE_KEY
 
         // The bloom through a cubic B-spline in four bilinear taps (Sigg and Hadwiger, GPU Gems 2 ch. 20): one bilinear tap magnifies each quarter-size
@@ -1289,6 +1295,15 @@ static class PostProcessShaders
             return clamp(c + uSharpen * (c - 0.25 * (n + s + w + e)), lo, hi);
         }
 
+        // Film grain's noise: a value noise of the interleaved gradient noise, smooth between cells of the grain's size, -0.5 to 0.5.
+        float grainNoise(vec2 p)
+        {
+            vec2 i = floor(p), f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = ign(i), b = ign(i + vec2(1.0, 0.0)), c = ign(i + vec2(0.0, 1.0)), d = ign(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) - 0.5;
+        }
+
         void main()
         {
             float exposure = uExposure;
@@ -1316,6 +1331,25 @@ static class PostProcessShaders
             {
                 c = mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, uSaturation);
                 c = clamp((c - 0.5) * uContrast + 0.5, 0.0, top);
+            }
+            // Photo mode's filter (docs/viewer.md "Photo mode"): the colour matrix and offset, then its contrast.
+            if (uFilterContrast > 0.0)
+            {
+                c = vec3(dot(uFilterR.rgb, c), dot(uFilterG.rgb, c), dot(uFilterB.rgb, c)) + vec3(uFilterR.a, uFilterG.a, uFilterB.a);
+                c = clamp((c - 0.5) * uFilterContrast + 0.5, 0.0, top);
+            }
+            // The vignette (docs/render-post.md "Vignette and film grain"): darker towards the window's corners, from a fifth of the way out.
+            if (uVignette.w > 0.0)
+            {
+                float r = length(gl_FragCoord.xy - uVignette.xy) / max(uVignette.z, 1.0);
+                c *= 1.0 - uVignette.w * smoothstep(0.2, 1.0, r);
+            }
+            // Film grain: a noise new each frame, strongest in the mid-tones, weaker in the blacks and highlights.
+            if (uGrain.x > 0.0)
+            {
+                float n = grainNoise(gl_FragCoord.xy / uGrain.y + uGrain.z * vec2(37.1, 17.3));
+                float l = clamp(dot(c, LUM601), 0.0, 1.0);
+                c = clamp(c + n * uGrain.x * 0.2 * (0.3 + 2.8 * l * (1.0 - l)), 0.0, top);
             }
             if (uDither != 0) c += (ign(gl_FragCoord.xy) + ign(gl_FragCoord.xy + 17.0) - 1.0) / 255.0;
             fragColour = vec4(c, 1.0);

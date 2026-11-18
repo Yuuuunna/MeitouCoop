@@ -55,12 +55,17 @@ public sealed class StoredPlayerRoles
         return (entry.Dead ? PlayerRoleAvailability.Dead : entry.Consumed ? PlayerRoleAvailability.Unavailable : PlayerRoleAvailability.Stored,
             entry.Dead || entry.Consumed ? null : Position(entry), entry.Faction);
     }
-    public IEnumerable<Vector3> PendingPositions => _groups.SelectMany(g => g.Entries).Where(e => e.Player && !e.Consumed && !e.Dead).Select(Position);
+    public IEnumerable<Vector3> PendingPositions => _groups.Where(g => !g.Squad.Dormant).SelectMany(g => g.Entries).Where(e => e.Player && !e.Consumed && !e.Dead).Select(Position);
     public IEnumerable<(Vector3 Position, bool Up)> PendingFactionPositions(int faction) => _groups.SelectMany(g => g.Entries)
         .Where(e => e.Faction == faction && !e.Consumed && !e.Dead)
         .Select(e => (Position(e), e.Source.Medical?.Bools.GetValueOrDefault("unconcious") != true));
     public int PendingCount(int squad) => _groups.Where(g => g.Squad.Id == squad).SelectMany(g => g.Entries).Count(e => !e.Consumed && !e.Dead);
     public int PendingFactionHeads(int faction) => _groups.SelectMany(g => g.Entries).Count(e => e.Player && e.Faction == faction && !e.Consumed && !e.Dead);
+    /// <summary>
+    /// Saved living members counted toward the faction cap; dormant and independent squads still count unless explicitly uncounted.
+    /// </summary>
+    public int PendingCappedFactionHeads(int faction) => _groups.Where(g => !g.Squad.Uncounted).SelectMany(g => g.Entries)
+        .Count(e => e.Player && e.Faction == faction && !e.Consumed && !e.Dead);
     internal int PendingMembers => _groups.SelectMany(g => g.Entries).Count(e => !e.Consumed && !e.Dead);
     public bool Failed(EntityId entity) => _entities.TryGetValue(entity, out var entry) && entry.Group.Failed;
     internal Vector3 CarryPosition(CharacterCold cold, Vector3 fallback)

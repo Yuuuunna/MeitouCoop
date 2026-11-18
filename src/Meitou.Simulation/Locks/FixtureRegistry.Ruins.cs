@@ -53,7 +53,7 @@ public sealed partial class FixtureRegistry
     /// The ruins of a replaced town's residents (the original reads the town's zone back from the level file and houses the replacement's residents,
     /// whose ruined templates ruin their homes and whose others stand theirs up, <c>FUN_14057f1f0</c>), for its buildings that are not the player's:
     /// in its own zone a home is a ruin as its template says, any other building as its level file has it; in other zones (which keep their state)
-    /// a home of a ruined template becomes a ruin. A loaded save applies them again from its replacements.
+    /// a home of a ruined template becomes a ruin, and one saved standing stands. A loaded save applies them again from its replacements.
     /// </summary>
     public void ApplyTownRuins(World world, PopulationData data, int site)
     {
@@ -66,9 +66,11 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// Applies a town's resident ruins: the homes its override ruins are destroyed, the ones it no longer ruins restored.
+    /// Applies a town's resident ruins: the homes its override ruins are destroyed, the ones it no longer ruins restored. In other zones a home
+    /// stands when its template stands it right after its override housed the residents (<paramref name="housed"/>), or when the save has it
+    /// standing (a level ruin the override stood up, which the level data would ruin again).
     /// </summary>
-    void ApplyTownRuins(World world, PopulationData data, int site, HashSet<string> reset)
+    void ApplyTownRuins(World world, PopulationData data, int site, HashSet<string> reset, bool housed = false)
     {
         var town = data.Sites[site];
         int factionIndex = site < data.SiteFactions.Count ? data.SiteFactions[site] : -1;
@@ -76,19 +78,20 @@ public sealed partial class FixtureRegistry
         string? playerId = data.PlayerFaction >= 0 ? data.Factions[data.PlayerFaction].Id : null;
         int player = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
         var homes = ResidentRuins.HomeTemplates(data.Db, town.Town, faction, town.Buildings, playerId, PlayerOwnedIn(world, data, site, player));
-        foreach (var b in town.Buildings)
+        foreach (var b in town.Buildings.ToList())
         {
             bool home = homes.TryGetValue(b.Key, out var template);
             bool ruined = home && ResidentRuins.Ruins(data.Db, template!, b);
-            if (reset.Contains(b.Key))
-                SetRuin(world, data, site, b, home ? ruined : b.LevelDestroyed);
-            else if (ruined && !IsPlayers(world, data, site, b, player))
-            {
-                SetRuin(world, data, site, b, true);
-                RemoveShell(b.Key);
-            }
+            if (reset.Contains(b.Key)) SetRuin(world, data, site, b, home ? ruined : b.LevelDestroyed);
+            else if (IsPlayers(world, data, site, b, player)) continue;
+            else if (ruined || home && (housed || SavedIntact(b))) SetRuin(world, data, site, b, ruined);
         }
     }
+
+    /// <summary>
+    /// Whether the loaded save has a town building standing (<c>destroyed</c> false).
+    /// </summary>
+    bool SavedIntact(TownBuilding b) => Saved?.GetValueOrDefault(b.Key) is { } saved && !saved.Bools.GetValueOrDefault("destroyed", true);
 
     /// <summary>
     /// A loaded save's ruins of standing level buildings that are not the player's (an override's homes outside its zone, kept by later overrides
@@ -124,16 +127,24 @@ public sealed partial class FixtureRegistry
         && db.Find(template) is { } record && !record.GetBool("building ruined");
 
     /// <summary>
-    /// A registered building that became a ruin outside a reset zone loses its doors and its own lock (a ruin has none, docs/game/locks.md "Doors");
-    /// its interior's stay.
+    /// A registered building that became a ruin loses what a ruin has none of (<see cref="FixturesOf"/>): its doors and own lock, its interior's
+    /// objects with their contents and its seats, and its item slots with the items lying in them (setting a house destroyed destroys its
+    /// interior's objects and item groups with their items, docs/game/buildings-production.md "A ruin's objects take their items with them").
+    /// Whoever lies or is held in one is let out first, as when a bought house is emptied.
     /// </summary>
-    void RemoveShell(string building)
+    void Ruin(World world, TownBuilding b)
     {
-        if (!_byBuilding.TryGetValue(building, out var list)) return;
-        var shell = list.Where(f => f.Kind == FixtureKind.Door || f.Id == building).ToList();
-        if (shell.Count == 0) return;
-        foreach (var f in shell)
+        ForgetTownInterior(world, b.Key, spill: false, layout: b);
+        RemoveSeats(b.Key);
+        world.ItemSlots.EmptyBuilding(world, b);
+        if (!_byBuilding.TryGetValue(b.Key, out var list)) return;
+
+        var kept = new List<Fixture>();
+        AddDummies(-1, b, -1, kept, layoutObjects: false);
+        var keep = kept.Select(f => f.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var f in list.Where(f => !keep.Contains(f.Id)).ToArray())
         {
+            LetOut(world, f);
             list.Remove(f);
             _all.Remove(f);
             _byId.Remove(f.Id);
@@ -142,38 +153,58 @@ public sealed partial class FixtureRegistry
         _containerSpots = null;
         _doorPicks = null;
         _doorsByBuilding = null;
+        _bedSpots = null;
+        _bedList = null;
+        _cageList = null;
         _doorList = null;
-        _doors?.SetDoorsBlocked(building, false);
+        _dummySpots = null;
+        _doors?.SetDoorsBlocked(b.Key, false);
     }
 
     /// <summary>
     /// Writes each ruined or stood-up building's <c>destroyed</c> into its saved record (those outside a reset zone have no other writer of it), and
-    /// the layout names of each one laid out afresh; a building listed only for its layouts keeps its saved <c>destroyed</c>.
+    /// the layout names of each one laid out afresh; a building listed only for its layouts keeps its saved <c>destroyed</c>, but a home an override
+    /// furnished anew takes the state the override left (a saved ruin it stood up stands as the level has it).
     /// </summary>
     void WriteRuins(IReadOnlyDictionary<string, Data.Fcs.FcsRecord> states)
     {
         foreach (var (key, ruin) in _ruins)
         {
             if (!states.TryGetValue(key, out var state)) continue;
-            if (ruin.Destroyed != ruin.Building.Destroyed) state.Bools["destroyed"] = ruin.Destroyed;
+            if (ruin.Destroyed != ruin.Building.Destroyed || _rebuilt.Contains(key)) state.Bools["destroyed"] = ruin.Destroyed;
             WriteLayouts(ruin.Building, state);
         }
     }
 
     /// <summary>
-    /// Sets a town building's ruin state, keeping it listed while it differs from the level data's or was laid out afresh.
+    /// Sets a town building's ruin state. One laid out as a ruin that stands now is laid out standing from the layout names it has (housing
+    /// furnishes it from them: docs/game/factions-squads-towns.md "Town residents"); in a registered town its fixtures and item slots come when the
+    /// town registers it again (<see cref="TownReplaced"/>). A registered one that became a ruin loses them (<see cref="Ruin"/>).
     /// </summary>
     void SetRuin(World world, PopulationData data, int site, TownBuilding b, bool destroyed)
     {
         bool was = IsDestroyed(b);
-        bool listed = destroyed != b.Destroyed || Relaid(b);
+        if (!destroyed) b = data.Stand(site, b);
+        ListRuin(b, destroyed);
+        if (was == destroyed || !_sites.Contains(site)) return;
+
+        if (destroyed) Ruin(world, b);
+        if (data.Sight is not { } sight) return;
+        if (destroyed) world.Sight.Remove(b.Key);
+        else world.Sight.Restore(sight, b);
+    }
+
+    /// <summary>
+    /// Keeps a town building in <see cref="Ruins"/> while its ruin state differs from the level data's or the save's (a saved ruin an override
+    /// stood up) or it was laid out afresh.
+    /// </summary>
+    void ListRuin(TownBuilding b, bool destroyed)
+    {
+        bool listed = destroyed != b.Destroyed || Relaid(b) || destroyed != SavedDestroyed(b);
         bool changed = !listed ? _ruins.Remove(b.Key) : !_ruins.TryGetValue(b.Key, out var old) || old.Destroyed != destroyed
                 || !ReferenceEquals(old.Building, b);
         if (listed) _ruins[b.Key] = new RuinedBuilding(b, destroyed);
         if (changed) RuinsRevision++;
-        if (was == destroyed || !_sites.Contains(site) || data.Sight is not { } sight) return;
-        if (destroyed) world.Sight.Remove(b.Key);
-        else world.Sight.Restore(sight, b);
     }
 
     /// <summary>
@@ -196,11 +227,18 @@ public sealed partial class FixtureRegistry
     /// Whether a town building is the player's: bought or owned, else (its town not registered) saved as theirs.
     /// </summary>
     bool IsPlayers(World world, PopulationData data, int site, TownBuilding b, int player) =>
-        world.Players.RequiresExplicitControl ? _properties.TryGetValue(b.Key, out var known) ? known.Purchased : Saved?.GetValueOrDefault(b.Key)?.Bools.GetValueOrDefault(PurchasedKey) == true
+        world.Players.RequiresExplicitControl ? _properties.TryGetValue(b.Key, out var known) ? known.Purchased : SavedPurchase(data, b)
         :
         _properties.TryGetValue(b.Key, out var p) ? p.Purchased || p.Owner == player
         : _sites.Contains(site) ? OfBuilding(b.Key).Any(f => f.Owner == player)
         : Saved?.GetValueOrDefault(b.Key)?.Strings.GetValueOrDefault("owner faction ID") is { Length: > 0 } id && data.FactionIndex(id) == player;
+
+    /// <summary>
+    /// A saved purchase, including older native saves that identify the original player faction only by owner.
+    /// </summary>
+    bool SavedPurchase(PopulationData data, TownBuilding building) => Saved?.GetValueOrDefault(building.Key) is { } saved
+        && (saved.Bools.TryGetValue(PurchasedKey, out bool purchased) ? purchased
+            : data.PlayerFaction >= 0 && saved.Strings.GetValueOrDefault("owner faction ID") == data.Factions[data.PlayerFaction].Id);
 
     public HashSet<string> PlayerOwnedIn(World world, PopulationData data, int site, int player) =>
             [.. data.Sites[site].Buildings.Where(b => IsPlayers(world, data, site, b, player)).Select(b => b.Key)];

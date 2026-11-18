@@ -148,6 +148,9 @@ rate mult` x its rate comes off w (down to 0) and goes into b, held to at most M
 treats untreated damage too (**Observed**: a skeleton's limbs with wear only, damage only and both each gained HP at the same rate in a
 Skeleton Repair Bed, the last keeping its untreated gap until its wear was gone).
 Rig is held under 50 - (h - s); s falls 0.05 dt `stun recovery rate` `heal rate mult` R.
+In practice (**Observed**, original 1.0.65 via the harness, #904: a Re_Dev `vagrant bandits` squad beaten down by a `Slaver caravan`, untreated,
+camera on the caravan): the worst part's stun fell about 1.5 a game hour (90 to 77 in 8.6 h), so captives woke one by one over hours; Meitou's
+probe of the same fight gives 1.4 a game hour.
 
 ### Beds (`FUN_140652000`, **Verified** decompile)
 
@@ -290,14 +293,14 @@ skill x 0.8 when treating oneself and q = min(skill, kit quality):
   only on wounds.
 - **Kitless.** `Task_FirstAid` (`FUN_1403563a0`) skips the kit search when the medic is not the player's and the patient is
   imprisoned (+0x2f8 == 2) or a chained slave of the medic's faction (`FUN_14032e2a0`: +0x320 chained, +0x330 != 11, slave owner
-  +0x1a0 → +0xe0). Without a kit, wounds close with quality 5, every part (organic or robotic) takes 1 HP a second (no `medic speed
-  mult`, no skill), nothing drains. Other NPCs still need a kit. Who goes to a prisoner: [Medic jobs](ai-tasks.md#medic-jobs). Meitou: the imprisoned case (`FirstAidSystem.Apply`), ended
+  +0x1a0 → +0xe0). Without a kit, wounds close with quality 5, parts (organic or robotic) are bandaged 1 HP a second in part order as with a kit, the next only
+  once one is full (no `medic speed mult`, no skill; **Verified** `FUN_140649a00`), nothing drains. Other NPCs still need a kit. Who goes to a prisoner: [Medic jobs](ai-tasks.md#medic-jobs). Meitou: the imprisoned case (`FirstAidSystem.Apply`), ended
   as with a kit once the room left is under `Done` (healing turns bandage into flesh, so float dust otherwise reopened a sliver every update and a guard treated a fully
   bandaged prisoner for ever: **Observed**, Rebirth Slave Shop prisoner, original save); chained
   slaves are not modelled.
-- **Skill.** `Task_FirstAid` (`FUN_1403563a0`) runs a first aid kit phase, then (none left) a robot repair kit phase; the skill is
-  CharStats +0x98 (`medic`) in the first, +0xdc (`robotics`) in the second, and the trained stat 9 or 6 likewise; the race's `heal
-  stat` is not read here. The task reads the raw field, no injury/hunger stat multiplier (**Verified**,
+- **Skill.** `Task_FirstAid` (`FUN_1403563a0`) runs a first aid kit phase, then (no organic part left, or no first aid kit found) a
+  robot repair kit phase; the skill is CharStats +0x98 (`medic`) in the first, +0xdc (`robotics`) in the second, and the trained stat 9
+  or 6 likewise; the race's `heal stat` is not read here. The task reads the raw field, no injury/hunger stat multiplier (**Verified**,
   `FUN_14033c5a0`, x0.8 for self; the splint passes the raw field too, `FUN_14034ef20`); Meitou matches (`FirstAidSystem.SkillOf`).
 - **Kit search** (**Verified**): vtable +0x38 of `Task_FirstAid` and `Task_FirstAidRig` is `FUN_14033c740` (the rig task passes
   function 2). It searches the medic's main grid, else its worn backpack's contents (`FUN_1405cb320`: the item with slot id 12 at +0xb8,
@@ -598,7 +601,7 @@ the zone and every neighbour within r. The camera feeds it: `FUN_140a0f590` asks
 camera focus (`DAT_142134690`, the camera object's node at `+0x30`/`+0x58`) and moves only when the focus is more than 4147.2 (0.9 x 4608) from the centre zone's middle (record `+0xf8`/`+0x100`,
 set by `FUN_140a0b950` as origin + half of 4608) on x or z (`FUN_140a0f820`). Each request (`FUN_140a0e570`) re-arms one of three per-zone timers (`+0xc0`, `+0xc4`, `+0xc8`, indexed by the caller; defaults
 4, 6 and 5 s of real time, table `0x141748740`; a caller may pass its own); `FUN_140a0b830` counts them down by the real dt and unloads the zone (`FUN_140a0a4f0`) once all are 0, so a zone left by the
-camera stays 4 s. A Town (not Nest, NestMarker or Null) also asks for its own zone set (r = 0, timer index 2; the requester is the town, not buildings, and there is no fixed 1 s): the zone of its position plus the zone being loaded when that is within one zone on both axes, asked once at load with the 5 s default (`FUN_14092dbb0`), then every frame while its loaded flag `+0x1ac` is set (`FUN_140929b20` from the town update `FUN_140929cf0`): while any zone of the set is requested or loaded (`FUN_140a09360`: flag `+0xb0` or `+0xb1`), every zone of the set is asked again with timer index 2 *set* (not maximised, `FUN_140a0e570`) to the largest of the **index 0 and 1** timers (`+0xc0`, `+0xc4`; `FUN_140a09380` never reads `+0xc8`) among the loaded zones of the set, or to the 5 s default when that is not positive. **Verified** (decompile of `FUN_140929b20`, `FUN_140a09380`, `FUN_140a0e570`, `FUN_140a0b830`): the town only copies the camera's / player's remaining timers onto the other zones of its set, so its zones lapse together with the last of them (the zone update counts all three down and unloads at the first frame all are spent; the town's slot, a copy of that maximum, is spent in the same frame); nothing extends a zone. The 5 s default is written every frame only when no loaded zone of the set has a live index 0 or 1 timer (zones asked by the town alone), which would hold them for good; every load trigger found also covers the town's zone by the camera block or the player box (**Observed**, not provable from the code). With the last zone gone the town clears `+0x1ac` and releases its registrations (`FUN_140929b20`); `+0x1ac` is otherwise written only by the load `FUN_14092dbb0` and the null town's constructor `FUN_140934fe0`. Zones are unloaded by `FUN_140a0b830` alone, and in bulk by the world teardown (`FUN_14036c320`, `FUN_140a0c580`). So the original does **not** keep a visited town loaded until a reload (the earlier reading was wrong): it unloads about 4 s (camera) or 6 s (player box) after the last request, and the town's platoons unload with it ([persistent platoons](factions-squads-towns.md#1-object-model)). While a zone is loaded every character in it is active and updated by the world's tiers ([update budget](game-loop.md#the-character-update-budget): 8 logic ticks and 6 full updates a frame, round robin, for the unflagged, so a far character is visited every N/6 frames with its accumulated time), the original's only LOD. The town list's update (`FUN_14092d850`) runs the town step for every town each frame, and the production step for one loaded town a frame, only while `+0x1ac` is set. Meitou's town sites keep 60 s of grace instead of 4-6 s ([engine choice](../simulation.md#population)); `AskTownZones` copies the same maximum. A camera jump (`FUN_140872e00`) asks for the new place at once.
+camera stays 4 s. A Town (not Nest, NestMarker or Null) also asks for its own zone set (r = 0, timer index 2; the requester is the town, not buildings, and there is no fixed 1 s): the zone of its position plus the zone being loaded when that is within one zone on both axes, asked once at load with the 5 s default (`FUN_14092dbb0`), then every frame while its loaded flag `+0x1ac` is set (`FUN_140929b20` from the town update `FUN_140929cf0`): while any zone of the set is requested or loaded (`FUN_140a09360`: flag `+0xb0` or `+0xb1`), every zone of the set is asked again with timer index 2 *set* (not maximised, `FUN_140a0e570`) to the largest of the **index 0 and 1** timers (`+0xc0`, `+0xc4`; `FUN_140a09380` never reads `+0xc8`) among the loaded zones of the set, or to the 5 s default when that is not positive. **Verified** (decompile of `FUN_140929b20`, `FUN_140a09380`, `FUN_140a0e570`, `FUN_140a0b830`): the town only copies the camera's / player's remaining timers onto the other zones of its set, so its zones lapse together with the last of them (the zone update counts all three down and unloads at the first frame all are spent; the town's slot, a copy of that maximum, is spent in the same frame); nothing extends a zone. The 5 s default is written every frame only when no loaded zone of the set has a live index 0 or 1 timer (zones asked by the town alone), which would hold them for good; every load trigger found also covers the town's zone by the camera block or the player box (**Observed**, not provable from the code). With the last zone gone the town clears `+0x1ac` and releases its registrations (`FUN_140929b20`); `+0x1ac` is otherwise written only by the load `FUN_14092dbb0` and the null town's constructor `FUN_140934fe0`. Zones are unloaded by `FUN_140a0b830` alone, and in bulk by the world teardown (`FUN_14036c320`, `FUN_140a0c580`). So the original does **not** keep a visited town loaded until a reload (the earlier reading was wrong): it unloads about 4 s (camera) or 6 s (player box) after the last request, and the town's platoons unload with it ([persistent platoons](factions-squads-towns.md#1-object-model)). While a zone is loaded every character in it is active and updated by the world's tiers ([update budget](game-loop.md#the-character-update-budget): 8 logic ticks and 6 full updates a frame, round robin, for the unflagged, so a far character is visited every N/6 frames with its accumulated time), the original's only LOD. The town list's update (`FUN_14092d850`) runs the town step for every town each frame, and the production step for one loaded town a frame, only while `+0x1ac` is set. Meitou's town sites unload with their zones, no grace of their own (`TownUnloadGraceSeconds` 0, [population](../simulation.md#population)); `AskTownZones` copies the same maximum. A camera jump (`FUN_140872e00`) asks for the new place at once.
 **The box (Verified**, decompile of `FUN_140a0f640`; constant `DAT_14174a100` = 340.0): every zone overlapping the box of +-340 round a point is asked for with radius r = the `Fast zone hopping` setting (`DAT_142133518`, the storage of that name registered by `FUN_1403eca90`; 1 when on, else 0) and timer index 1 (6 s). Its callers are the character frame update `FUN_1405cfd90` and the character update `FUN_1405c7b20`, each for a living character whose faction is the player's (`FUN_1407916d0`: the character's vtable `0x58` object, its faction (**Observed**), has `+0x250` set), so NPC characters ask for nothing. The unloaded platoon's activation check `FUN_1407ebf30` asks for the platoon's position every time it runs when the platoon's faction is the player's (**Verified**; Meitou `RefreshLoaded`), and the platoon step `FUN_1404ffad0` calls it too (**Observed**); Meitou asks for every platoon of that faction, loaded or not. Timer defaults (**Verified**, the floats of `0x141748740`, `...744`, `...748`): 4, 6, 5 s.
 A corpse is removed when no request holds its zone: the camera's block 4 s after it last covered the zone, the player's box 6 s after. Corpses are not written to a zone file.
 
@@ -645,6 +648,35 @@ byte key = table[`body part type`] (`0x1416fc42c`: torso 10, leg 30, arm 20, hea
 (`FUN_14065d8e0`) into the part array. That array is the medical panel's row order, `parts[0]` the editor's "Hit Points", and the order saves write: head, torso,
 left then right arm (forelegs too), left then right leg. Parts with one key (chest, stomach) keep the map's order, which is keyed by pointer (vanilla shows stomach first). Meitou: `MedicalState.Create` and `ReadSave` sort the parts by `BodyPartTemplate.MedicalOrder`, ties in `combat anatomy` (or saved) order, so
 the stomach comes first; the panel, splinting's "first part", the hit table and saves all use that list.
+
+#### Bodies of other shapes (Meitou)
+
+A race's body is its `combat anatomy` list, read whole (`RaceData.From`), so a data mod shapes it with no code:
+
+- Any number of parts, of the nine base records or its own LOCATIONAL_DAMAGE records, each with its hit weight and base HP; the parts are hit,
+  armoured (by `part coverage`, which names parts by record), healed and saved one by one (`sid<k>`, [save](../formats/save.md)). The medical panel
+  shows every part, scrolling when they outnumber its bars ([ui-screens](ui-screens.md)); blood shows on the body for the first eight parts only
+  ([blood-decals](blood-decals.md)).
+- Fewer parts work as the No-Head MkII skeleton's six do: with no arm part the stat multipliers' arm term is 1, with no torso part the torso term,
+  with no head the head term (`MedicalState.ComputeAggregates`).
+- Animals list their own anatomy: 15 of the 53 base races, all animals, list Left and Right Foreleg (ARM parts) in place of arms; other animals
+  (Goat, Swamp Turtle, Leviathan, Gorillo, Black Gorillo, Crimper, Land Bat, Big-Bones) list Left and Right Arm. **Observed** (2026-11-17, every
+  RACE's `combat anatomy` of the base load order read through `GameDatabase.Load`).
+- Extra parts of the four types count where their type counts: speed follows the worst leg, the arm term the best arm, the stealth term the torso and
+  legs, dialogue conditions 27 to 29 any leg, arm or head. Any part whose `collapse part` names a leg being down makes the character crawl, and any
+  part with an arm's bit (4 left, 2 right) that is cut off or crushed, or collapses and is down, stops that arm working (`ArmWorks`). An arm or leg
+  part with a side shares that side's limb slot ([limb replacements](#limb-replacements-and-robots)). Extra arms never hold a weapon or strike: a
+  technique's blow names limbs 0 to 4 (`RobotLimb` in `fcs_enums.def`).
+
+A `body part type` other than 0 to 3 (a tail or a wing) is Meitou-only: the original's part-order table (`0x1416fc42c`, [part order](#part-order)) has
+entries for the four types only. It is written as the record's int (the construction set's `BodyPartType` list names only 0 to 3; Meitou's `FcsWriter`
+writes any value). Meitou gives such a part none of the four types' roles (`BodyPartTemplate.HasBaseType`): it is hit by its hit weight (low strikes
+too), covered by armour that lists it in `part coverage`, bleeds and heals, knocks out or kills when `death` is set, sorts after the legs and is saved
+with its health like any part. With `severance` and without `death`, a blow (Dismemberment Rare or more) or a worsening wound (Frequent) cuts it off,
+and the rack cuts off any part with a side whatever its `severance` (`MedicalState.StretchLimbs`): it becomes a stump, is no longer hit, stays a stump
+through a save ([save](../formats/save.md#limbs-medical_state-limbs)) and the character cries no lost-limb line (`DialogueEvents.LostLimb`); no item
+drops and the part stays drawn. **Observed** (2026-11-17, scratch run of a Greenlander body with a type 4 tail of hit weight 60: picked by 168 of
+2,000 hit rolls whole, 0 after a 400 cut severed it; the stump loaded back).
 
 ### Per-part state (`MedicalSystem::HealthPartStatus`)
 
@@ -708,6 +740,10 @@ replaced, 3 crushed) and the fitted item (holder `FUN_1400cd3f0`; **Verified** b
   `CharacterGenerator.RollRobotLimbs`, fitted in `CharacterAssembly.Attach` after `starting health`, so the prosthetic wins.
 - A stump shows the RACE `limb replacement` record whose `slot` is 50 + k (`uses_limb_replacement`); a crushed
   limb attaches no mesh. Hidden body vertices: [characters.md](../characters.md#hidden-body-parts-verified--140075600--140071f90--140531cc0-hlsl-skinhlsl).
+- More than one part in a slot (Meitou, a mod's race; none in the base game): the slot's prosthetic, `severed limbs` item and
+  limbs-window state belong to its first part in [part order](#part-order); a later part of the slot can still be cut off (it drops
+  the slot's `severed limbs` item, posed on the first part's `bone name 2`) or crushed, and its state is saved apart
+  ([save](../formats/save.md#limbs-medical_state-limbs)).
 - Meitou in play: fitted items sit in the inventory's `*_replace` sections (the limbs window), weigh nothing, are not traded and
   are saved only through MEDICAL_STATE `limbs`. Dropping a LIMB_REPLACEMENT whose `slot` is 50 + k on slot k fits it when limb k is a
   stump; lifting it out removes it (a right click puts a carried one on its stump or takes a fitted one off). The original cannot fit over a crushed limb: its slot is disabled

@@ -88,14 +88,14 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
     public BuiltInMod? BuiltIn => CoveredMods.BuiltInOf(Mod.Name, Code.Id);
 
     /// <summary>
-    /// The entry suggesting a code mod in place of this RE_Kenshi mod (<see cref="CoveredMods.SuggestionOf"/>); null when none does.
+    /// The endorsed port of this RE_Kenshi mod on the Steam workshop (<see cref="CoveredMods.PortOf"/>); null when it has none.
     /// </summary>
-    public SuggestedMod? Suggestion => CoveredMods.SuggestionOf(Mod);
+    public EndorsedPort? Port => CoveredMods.PortOf(Mod);
 
     /// <summary>
-    /// Whether the mod list holds <see cref="Suggestion"/>'s code mod (set with the list), so the row offers no link to it.
+    /// Whether the mod list holds <see cref="Port"/>'s mod (set with the list), so the row does not offer it.
     /// </summary>
-    public bool SuggestionInstalled
+    public bool PortInstalled
     {
         get;
         set
@@ -103,25 +103,25 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
             if (field == value) return;
             field = value;
             Changed(nameof(Notes));
-            Changed(nameof(SuggestionPage));
+            Changed(nameof(PortPage));
         }
     }
 
     /// <summary>
-    /// The Steam workshop page of the suggested code mod while it is not installed; null otherwise, and the row shows no button.
+    /// The Steam workshop page of the endorsed port while it is not installed; null otherwise, and the row shows no button.
     /// </summary>
-    public Uri? SuggestionPage => Suggestion is { } r && !SuggestionInstalled ? CoveredMods.WorkshopPage(r.ByWorkshopId) : null;
+    public Uri? PortPage => Port is { } r && !PortInstalled ? CoveredMods.WorkshopPage(r.PortWorkshopId) : null;
 
     /// <summary>
-    /// The text of the button that opens <see cref="SuggestionPage"/>.
+    /// The text of the button that offers <see cref="Port"/>.
     /// </summary>
-    public string? SuggestionLabel => Suggestion is { } r ? Loc.Format(LauncherText.Translate("View {1}"), r.By) : null;
+    public string? PortLabel => Port is null ? null : LauncherText.Translate("Get the port");
 
     /// <summary>
-    /// The tip of the button that opens <see cref="SuggestionPage"/> (bound: the list's own text is not translated with the window's labels).
+    /// The tip of the button that offers <see cref="Port"/> (bound: the list's own text is not translated with the window's labels).
     /// </summary>
-    public string? SuggestionTip => Suggestion is null ? null
-        : LauncherText.Translate("Open the Steam workshop page of a Meitou mod that does the same; subscribing is up to you");
+    public string? PortTip => Port is null ? null
+        : LauncherText.Translate("Subscribe to this mod's Meitou port on the Steam workshop, or open its page");
 
     /// <summary>
     /// The tip of the row's link icon, which opens <see cref="WorkshopPage"/>; null (no tip) for a local mod, whose row has no icon.
@@ -129,15 +129,17 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
     public string? PageTip => WorkshopPage is null ? null : LauncherText.Translate("Open its Steam workshop page");
 
     /// <summary>
-    /// The row's notes: built into Meitou, a code mod, an ignored RE_Kenshi plugin and a suggested code mod, an update since the cover was matched,
-    /// its dependencies, its game version, why it will not load and the mods it blanks.
+    /// The row's notes: built into Meitou, a code mod, an ignored RE_Kenshi plugin, its file rebinds and sound banks and its endorsed port, an
+    /// update since the cover was matched, its dependencies, its game version, why it will not load and the mods it blanks.
     /// </summary>
     public string Notes => string.Join(" · ", new[]
     {
         CoveredNote,
         Mod.HasCode && BuiltIn is null ? LauncherText.Translate("Code mod: runs C# code of its own") : null,
         Mod.HasNativePlugin && !Mod.HasCode && BuiltIn is null ? LauncherText.Translate("RE_Kenshi plugin: its DLLs are ignored in Meitou") : null,
-        SuggestionNote,
+        Mod.ReKenshi is { FileRebinds.Count: > 0 } ? LauncherText.Translate("RE_Kenshi file rebinds: applied to the map files") : null,
+        Mod.ReKenshi is { SoundBanks.Count: > 0 } ? LauncherText.Translate("RE_Kenshi sound banks: loaded before the game's") : null,
+        PortNote,
         UpdatedNote,
         Manifest is { DependsOn.Count: > 0 } m ? Loc.Format(LauncherText.Translate("Requires {1}"), string.Join(", ", m.DependsOn)) : null,
         Manifest is { LoadAfter.Count: > 0 } a ? Loc.Format(LauncherText.Translate("Loads after {1}"), string.Join(", ", a.LoadAfter)) : null,
@@ -151,18 +153,18 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
         .OfType<string>());
 
     /// <summary>
-    /// The note for <see cref="BuiltIn"/>: the Meitou setting the feature became, and for a code mod that it is not run; null when not built in.
+    /// The note for <see cref="BuiltIn"/>: the Meitou setting the feature became, and that the mod is not run (a plugin's DLLs never are, a code
+    /// mod is skipped); null when not built in.
     /// </summary>
     string? CoveredNote => BuiltIn is not { } built ? null
-        : Loc.Format(LauncherText.Translate(Mod.HasCode ? "Built into Meitou: {1}; this mod is not run" : "Built into Meitou: {1}"),
-            LauncherText.Translate(built.Setting));
+        : Loc.Format(LauncherText.Translate("Built into Meitou: {1}; this mod is not run"), LauncherText.Translate(built.Setting));
 
     /// <summary>
-    /// The note for <see cref="Suggestion"/>: the suggested code mod, and whether the list holds it; null when none is suggested.
+    /// The note for <see cref="Port"/>: the port, its maintainer, and whether the list holds it; null when the mod has none.
     /// </summary>
-    string? SuggestionNote => Suggestion is not { } r ? null
-        : SuggestionInstalled ? Loc.Format(LauncherText.Translate("One Meitou mod that does the same: {1} (installed)"), r.By)
-        : Loc.Format(LauncherText.Translate("One Meitou mod that does the same: {1}"), r.By);
+    string? PortNote => Port is not { } r ? null
+        : PortInstalled ? Loc.Format(LauncherText.Translate("Meitou port, endorsed by Meitou: {1} by {2} (installed)"), r.Port, r.Maintainer)
+        : Loc.Format(LauncherText.Translate("Meitou port on the Steam workshop, endorsed by Meitou: {1} by {2}"), r.Port, r.Maintainer);
 
     /// <summary>
     /// The note for a covered workshop mod updated after the version its cover was matched against (<see cref="CoveredMods.UpdatedSince"/>): the
@@ -172,7 +174,7 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
     {
         get
         {
-            var items = BuiltIn?.Items ?? Suggestion?.Items;
+            var items = BuiltIn?.Items ?? Port?.Items;
             if (items is null || CoveredMods.UpdatedSince(Mod, items) is not { } updated) return null;
 
             string date = updated.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -182,10 +184,10 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
     }
 
     /// <summary>
-    /// The public wishlist (<see cref="CoveredMods.Wishlist"/>) for an RE_Kenshi plugin Meitou neither builds in nor has a suggestion for, so the
+    /// The public wishlist (<see cref="CoveredMods.Wishlist"/>) for an RE_Kenshi plugin Meitou neither builds in nor knows a port of, so the
     /// player can ask for it; null otherwise, and the row shows no Request button.
     /// </summary>
-    public Uri? RequestPage => Mod.HasNativePlugin && !Mod.HasCode && BuiltIn is null && Suggestion is null ? CoveredMods.Wishlist : null;
+    public Uri? RequestPage => Mod.HasNativePlugin && !Mod.HasCode && BuiltIn is null && Port is null ? CoveredMods.Wishlist : null;
 
     /// <summary>
     /// The text of the button that opens <see cref="RequestPage"/>.
@@ -215,9 +217,36 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
     }
 
     /// <summary>
-    /// Whether the row shows its notes (a code mod, a native plugin, a covered mod or a mod that blanks others).
+    /// Whether the row shows its notes (a code mod, RE_Kenshi entries, a covered mod or a mod that blanks others).
     /// </summary>
-    public bool HasNotes => Mod.HasNativePlugin || Mod.HasCode || BuiltIn is not null || Suggestion is not null || Blanks.Count > 0;
+    public bool HasNotes =>
+        Mod.ReKenshi is { HasPlugins: true } or { FileRebinds.Count: > 0 } or { SoundBanks.Count: > 0 }
+        || Mod.HasCode
+        || BuiltIn is not null
+        || Port is not null
+        || Blanks.Count > 0;
+
+    /// <summary>
+    /// Whether the row matches the Mods page's search (<see cref="Matches"/>); a hidden row keeps its place in the load order.
+    /// </summary>
+    public bool IsShown
+    {
+        get;
+        set
+        {
+            if (field == value) return;
+            field = value;
+            Changed();
+        }
+    } = true;
+
+    /// <summary>
+    /// Whether <paramref name="search"/> is empty or found, ignoring case, in the mod's name or author.
+    /// </summary>
+    public bool Matches(string search) =>
+        search.Length == 0
+        || Name.Contains(search, StringComparison.OrdinalIgnoreCase)
+        || Mod.Header is { Author.Length: > 0 } h && h.Author.Contains(search, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Whether the mod is ticked; a change raises <see cref="PropertyChanged"/>.
@@ -243,8 +272,8 @@ public sealed class ModRow(ModInfo mod, bool enabled, CodeModEntry? code = null)
         Changed(nameof(Detail));
         Changed(nameof(Notes));
         Changed(nameof(PageTip));
-        Changed(nameof(SuggestionLabel));
-        Changed(nameof(SuggestionTip));
+        Changed(nameof(PortLabel));
+        Changed(nameof(PortTip));
         Changed(nameof(RequestLabel));
         Changed(nameof(RequestTip));
     }

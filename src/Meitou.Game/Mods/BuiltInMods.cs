@@ -34,6 +34,7 @@ public static class BuiltInMods
         new(CoveredMods.RekenshiXp, XpTaken, (config, mod, _) => config.SquadXp = Clamped(RekenshiXp(mod.Folder) ?? DefaultXpMod)),
         // The port uses the plugin's file over its own saved setting when the plugin is installed.
         new(CoveredMods.XpPort, XpTaken, (config, _, onDisk) => config.SquadXp = Clamped(PortXp(config, onDisk))),
+        new(CoveredMods.SwampTurtleFix, "Swamp turtle attacks on the Fixes page is on", (config, _, _) => config.FixAnimalMoves = true),
     ];
 
     /// <summary>
@@ -50,7 +51,7 @@ public static class BuiltInMods
 
             covered.Adopt(config, mod, onDisk);
             config.AdoptedMods.Add(mod.Name);
-            Console.WriteLine($"mods      {mod.Name} is built into Meitou: Squad XP {config.SquadXp}");
+            Console.WriteLine($"mods      {mod.Name} is built into Meitou: {covered.Taken}");
             notices.Add($"{mod.Name} is built into Meitou now: {covered.Taken}.");
         }
 
@@ -63,13 +64,18 @@ public static class BuiltInMods
     /// </summary>
     public static void SkipCovered(List<ModInfo> enabled, List<ModInfo> disabled)
     {
-        foreach (var mod in enabled.Where(m => CoveredOf(m) is { Mod.CodeId: not null }).ToList())
+        foreach (var mod in enabled.Where(IsCovered).ToList())
         {
             Console.WriteLine($"mods      {mod.Name} not run: built into Meitou");
             enabled.Remove(mod);
             disabled.Add(mod);
         }
     }
+
+    /// <summary>
+    /// Whether <see cref="SkipCovered"/> leaves <paramref name="mod"/> out (a code mod whose feature Meitou has built in); no log line.
+    /// </summary>
+    public static bool IsCovered(ModInfo mod) => CoveredOf(mod) is { Mod.CodeId: not null };
 
     /// <summary>
     /// <paramref name="saved"/> without the covered code mods, so a save made while one ran does not report it gone.
@@ -166,6 +172,9 @@ public sealed class BuiltInModSettings
     /// Player faction experience rate, updated only for a mod not adopted before.
     /// </summary>
     public float SquadXp { get; set; } = 1;
+
+    /// <summary>The built-in animal move eligibility fix, shared with authoritative gameplay rules.</summary>
+    public bool FixAnimalMoves { get; set; } = true;
 
     /// <summary>
     /// Persisted mod names whose settings have already been adopted.

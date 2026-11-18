@@ -55,6 +55,10 @@ public static class GameViewProtocol
         return (ReadIdentity(frame.Payload.Span), BinaryPrimitives.ReadInt32LittleEndian(frame.Payload.Span[40..]));
     }
 
+    /// <summary>
+    /// Packs one already authorized publication. Optional lossless compression removes repeated field envelopes without delaying any update.
+    /// The retained bulk bytes, digest, retransmission offsets and acknowledgement window all describe this exact packed representation.
+    /// </summary>
     public static byte[] Pack(IReadOnlyList<byte[]> frames)
     {
         long length = frames.Sum(f => 4L + f.Length);
@@ -69,11 +73,17 @@ public static class GameViewProtocol
             offset += frame.Length + 4;
         }
 
-        return result;
+        return AbsolutePayloadCompression.Encode(result);
     }
 
+    /// <summary>
+    /// Expands one complete bounded publication before the unchanged frame digest, epoch, revision and withdrawal checks run.
+    /// No shared dictionary or previous publication is required, including after reconnect or retransmission.
+    /// </summary>
     public static void Unpack(ReadOnlySpan<byte> bytes, Action<ReadOnlyMemory<byte>> apply)
     {
+        _ = AbsolutePayloadCompression.ExpandedLength(bytes);
+        if (AbsolutePayloadCompression.IsCompressed(bytes)) bytes = AbsolutePayloadCompression.Expand(bytes);
         while (!bytes.IsEmpty)
         {
             if (bytes.Length < 4)

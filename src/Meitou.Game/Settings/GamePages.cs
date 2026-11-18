@@ -1,4 +1,5 @@
 using Meitou.Data.Ui;
+using Meitou.Data.World;
 using Meitou.Game.Effects;
 using Meitou.Game.Host;
 using Meitou.Game.Host.Cameras;
@@ -523,7 +524,8 @@ sealed class GamePages(SettingsMenu menu)
         result.Add(new("Tutorials", "Shows the tutorial hints as you play (the game: on).",
             Toggle: new("Tutorials", () => menu.Config.Tutorials != false, v => { menu.Config.Tutorials = v; menu.TutorialsChanged?.Invoke(v); },
                 OnOff: true)));
-        result.Add(new("Reset Tutorials", "Every tutorial can show again, the ones already seen included.", Run: () => menu.ResetTutorials?.Invoke()));
+        result.Add(new("Reset Tutorials", "Every tutorial can show again, the ones already seen included.", Run: () => menu.ResetTutorials?.Invoke(),
+            RunLabel: "Reset"));
     }
 
     /// <summary>
@@ -565,22 +567,67 @@ sealed class GamePages(SettingsMenu menu)
             + "The game's data gives it a negative reach, so they throw it only when nearly touching their target.",
             Toggle: new("Weak punch reach", () => menu.Config.FixPunchReach,
                 v => { menu.Config.FixPunchReach = v; menu.PunchReachChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+        result.Add(new("Swamp turtle attacks",
+            "A swamp turtle butts and bites when it fights. "
+            + "In the game it fights with a sword or club drawn for it, whose moves its body cannot play, so its blows land without any motion.",
+            Toggle: new("Swamp turtle attacks", () => menu.Config.FixAnimalMoves,
+                v => { menu.Config.FixAnimalMoves = v; menu.AnimalMovesChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
         result.Add(new("Bench facing",
             "A character on a bench with the table behind it sits facing away from the table. "
             + "The game mirrors the bench's look point through the middle of the world map, so the sitter faces an unrelated direction.",
             Toggle: new("Bench facing", () => menu.Config.FixBenchFacing,
                 v => { menu.Config.FixBenchFacing = v; menu.BenchFacingChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+        result.Add(new("Prisoners hold still",
+            "A wounded prisoner on a pole or in a cage keeps the pole's or cage's pose. "
+            + "In the game it clutches its wounds there instead.",
+            Toggle: new("Prisoners hold still", () => menu.Config.FixPrisonPose,
+                v => { menu.Config.FixPrisonPose = v; menu.PrisonPoseChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
         result.Add(new("Walls inside buildings",
             "Seen into a building your characters are in, parts of other buildings that run through it are left out, such as the Hub's town wall "
             + "in the Shinobi Thieves tower. The game's world places them there and draws them inside the room.",
             Toggle: new("Walls inside buildings", () => menu.Config.FixPartsInBuildings, v => menu.Config.FixPartsInBuildings = v,
+                Remaster: true, OnOff: true)));
+        result.Add(new("Rain in open buildings",
+            "Seen into a building with its roof hidden, no rain, dust or ash falls over the open room. "
+            + "The game leaves out only what falls inside it, so with the camera pulled back the rain in front still streaks across the room.",
+            Toggle: new("Rain in open buildings", () => menu.Config.FixRainInBuildings, v => menu.Config.FixRainInBuildings = v,
                 Remaster: true, OnOff: true)));
         result.Add(new("Bags in the inventory",
             "Guards searching for smuggled or stolen goods and bandits after food or loot also look inside bags carried in the inventory, and guards "
             + "confiscating stolen goods inside the worn backpack. The game misses those bags, so goods hidden in them are never found.",
             Toggle: new("Bags in the inventory", () => menu.Config.FixBagSearch,
                 v => { menu.Config.FixBagSearch = v; menu.BagSearchChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+        result.Add(new("Guards spare their own",
+            "Slavers and other cage guards leave their own faction's people in their cages alone instead of making them slaves. "
+            + "In the game they enslave them too. Arrests that end in slavery are not affected.",
+            Toggle: new("Guards spare their own", () => menu.Config.CagesSpareOwn,
+                v => { menu.Config.CagesSpareOwn = v; menu.GameplayChanged?.Invoke(); }, Remaster: true, OnOff: true)));
+        result.Add(new("Head turns back",
+            "A character that turned its head toward what it was talking to or watching looks ahead again once it stops looking. "
+            + "In the game the head stays turned until the next thing it looks at.",
+            Toggle: new("Head turns back", () => menu.Config.FixHeadTurnBack, v => menu.Config.FixHeadTurnBack = v, Remaster: true, OnOff: true)));
+        result.Add(GroundRow());
         if (!menu.Player.IsRemoteSession) result.Insert(0, menu.PageSidesEntry(result, "All fixes", "Every bug on this page as the game ships it, or every fix.", "fix"));
+    }
+
+    /// <summary>
+    /// The Fixes page's ground row (<see cref="UserConfig.FixGround"/>): read when the game starts, so tagged for a restart once changed; greyed
+    /// without a tag, naming the mod, while a mod's heightmap stands in for the game's.
+    /// </summary>
+    SettingsMenu.Entry GroundRow()
+    {
+        const string label = "Holes and needles in the ground";
+        var toggle = new Toggle(label, () => menu.Config.FixGround, v => menu.Config.FixGround = v, Remaster: true, OnOff: true);
+        if (HeightmapRepair.Replaced)
+        {
+            string by = HeightmapRepair.ReplacedBy is { } mod ? $"The mod {mod}" : "A mod";
+            return new(label, $"{by} replaces the ground, so its map is used as it is and this fix does nothing.", Toggle: toggle, Locked: true);
+        }
+
+        string hint = "Small pits in the ground are filled and thin needles of ground standing above flat land are lowered, such as the pit near "
+            + "the Dead Workshop and some needles in the Crater. Off, the ground is exactly as the game's map file has it.";
+        bool pending = menu.Config.FixGround != HeightmapRepair.IsOn;
+        return new(label, hint, Toggle: toggle, Tag: pending ? "Restart to apply" : "Needs restart", TagHot: pending);
     }
 
     /// <summary>
@@ -661,7 +708,7 @@ sealed class GamePages(SettingsMenu menu)
     }
 
     /// <summary>
-    /// The world and play rows: decapitation, ragdolls, XP, the speeds, pausing, animals, cage guards, outlines, selection and ground items.
+    /// The world and play rows: decapitation, ragdolls, XP, the speeds, pausing, animals, outlines, selection and ground items.
     /// </summary>
     void AddWorldRows(List<SettingsMenu.Entry> result)
     {
@@ -710,11 +757,6 @@ sealed class GamePages(SettingsMenu menu)
             + "Meitou: only people pick items up, and an animal only a limb to carry in its mouth.",
             Toggle: new("Animals pick up items", () => !menu.Config.AnimalsPickUp,
                 v => { menu.Config.AnimalsPickUp = !v; menu.AnimalsPickUpChanged?.Invoke(!v); }, Remaster: true)));
-        result.Add(new("Guards spare their own",
-            "Slavers and other cage guards leave their own faction's people in their cages alone instead of making them slaves. "
-            + "In the game they enslave them too. Arrests that end in slavery are not affected.",
-            Toggle: new("Guards spare their own", () => menu.Config.CagesSpareOwn,
-                v => { menu.Config.CagesSpareOwn = v; menu.GameplayChanged?.Invoke(); }, Remaster: true, OnOff: true)));
         result.Add(new("Hover outline", "Outline and tint the character under the cursor, in the colour of what a right click would do.",
             Toggle: new("Hover outline", () => menu.Config.HoverOutline, v => menu.Config.HoverOutline = v, Remaster: true, OnOff: true)));
         result.Add(new("Building outline",
@@ -869,7 +911,7 @@ sealed class GamePages(SettingsMenu menu)
                 menu.ConfirmTitle = "Clear cached files?";
                 menu.Confirmation = action.Question();
                 menu.Focus = -1;
-            }));
+            }, RunLabel: "Clear cache"));
         }
     }
 }

@@ -236,6 +236,7 @@ public sealed partial class World : IDisposable
         GameHours = settings.StartHours;
         Walkability = walkability;
         this._systems = [.. systems ?? []];
+        foreach (var system in this._systems) ModFaults.Add(system);
         for (int k = 0; k < this._systems.Count; k++) _phases.Add(new SystemPhases(this, this._systems[k], k));
 
         _animations = this._systems.OfType<IAnimationSource>().FirstOrDefault();
@@ -250,7 +251,9 @@ public sealed partial class World : IDisposable
         {
             RegisterCombatHitObserver(this._systems[k], k);
             CombatHitFilters.Register(this._systems[k], k);
+            TradePriceFilters.Register(this._systems[k], k);
             ItemUseObservers.Register(this._systems[k], k);
+            GoodsTakenObservers.Register(this._systems[k], k);
             RelationObservers.Register(this._systems[k], k);
         }
         foreach (var owner in this._systems.OfType<ITaskOwner>()) owner.RegisterTasks(Tasks);
@@ -325,6 +328,31 @@ public sealed partial class World : IDisposable
     }
 
     /// <summary>
+    /// Tells every <see cref="IWorldReady"/> system, in system order, that the world is ready to run (<paramref name="fromSave"/>: loaded from a
+    /// save, else a new game); one that throws is logged and the rest are still told. Between ticks, before the first.
+    /// </summary>
+    public void TellReady(bool fromSave)
+    {
+        foreach (var system in _systems)
+        {
+            if (system is not IWorldReady ready) continue;
+
+            try
+            {
+                ready.Ready(this, fromSave);
+            }
+            catch (Exception e)
+            {
+                string fault = $"{e.GetType().Name}: {e.Message}";
+                if (SimulationExtensions.FactoryOf(ready) is { } factory)
+                    Console.Error.WriteLine($"mod       {factory.Owner}: world ready of '{factory.Name}' failed: {fault}");
+                else
+                    Console.Error.WriteLine($"world ready of '{ready.GetType().FullName}' failed: {fault}");
+            }
+        }
+    }
+
+    /// <summary>
     /// The walkable ground.
     /// </summary>
     public IWalkability Walkability { get; }
@@ -369,6 +397,11 @@ public sealed partial class World : IDisposable
     /// </summary>
     public bool BenchFacingFix { get; set; } = true;
     /// <summary>
+    /// A prisoner in a cage or on a pole plays only the fixture's pose, no hurt-part hold over it (Fixes settings, Meitou); off, it holds its wounds
+    /// there as the game does (docs/animation.md "Injury holds").
+    /// </summary>
+    public bool PrisonPoseFix { get; set; } = true;
+    /// <summary>
     /// Guards' smuggling search and starving looters' food take reach into bags carried in the inventory grid (Fixes settings, Meitou); off, only
     /// the grid and the worn backpack, as the game does (docs/game/dialogue.md "Conditions", docs/game/carry-loot.md "NPC looting").
     /// </summary>
@@ -395,9 +428,17 @@ public sealed partial class World : IDisposable
     /// </summary>
     internal Items.ItemUseObservers ItemUseObservers { get; } = new();
     /// <summary>
+    /// The systems hearing of goods taken (<see cref="Crime.IGoodsTakenObserver"/>).
+    /// </summary>
+    internal Crime.GoodsTakenObservers GoodsTakenObservers { get; } = new();
+    /// <summary>
     /// The systems filtering hits before they land (<see cref="Combat.ICombatHitFilter"/>).
     /// </summary>
     internal Combat.CombatHitFilters CombatHitFilters { get; } = new();
+    /// <summary>
+    /// The systems adjusting trade prices (<see cref="Trading.ITradePriceFilter"/>).
+    /// </summary>
+    internal Trading.TradePriceFilters TradePriceFilters { get; } = new();
     /// <summary>
     /// The systems observing changed faction relations (<see cref="IRelationChangeObserver"/>).
     /// </summary>
@@ -472,6 +513,18 @@ public sealed partial class World : IDisposable
     /// The systems in tick order.
     /// </summary>
     public IReadOnlyList<ITickSystem> Systems => _systems;
+
+    /// <summary>
+    /// The mod-made systems and the ones stopped after a fault (<see cref="ModSystemFaults"/>).
+    /// </summary>
+    internal ModSystemFaults ModFaults { get; } = new();
+
+    /// <summary>
+    /// The next notice for the player about a mod's system that stopped after a fault, if any (docs/modding.md "Tick systems"); each is given
+    /// once.
+    /// </summary>
+    public bool TryTakeModFaultNotice(out string notice) => ModFaults.TryTakeNotice(out notice);
+
     /// <summary>
     /// The number of ticks run; during a tick, the number of the tick being run.
     /// </summary>
@@ -517,6 +570,12 @@ public sealed partial class World : IDisposable
     /// (<see cref="Ragdolls.RagdollSystem.LimbReach"/>). An input like <see cref="GameHours"/>: not hashed, not saved.
     /// </summary>
     public System.Numerics.Vector3? ViewPosition { get; set; }
+    /// <summary>
+    /// The town buildings whose interior the player sees (by <see cref="Data.World.TownBuilding.Key"/>: one holding a player character, or left by
+    /// one within the keep-open time); a character inside another says no line for most events (<see cref="Dialogue.DialogueSystem"/>). Null without
+    /// a view (headless runs, tests): no such gate. An input like <see cref="ViewPosition"/>: not hashed, not saved.
+    /// </summary>
+    public IReadOnlySet<string>? ShownInteriors { get; set; }
     /// <summary>
     /// Within this distance of <see cref="ViewPosition"/> a character is near for the far cadence (<see cref="WorldSettings.FarTickPeriod"/>): the
     /// renderer's character draw distance plus its reach margin, so every drawn character steps every tick. The host sets it; an input like
@@ -587,6 +646,7 @@ public sealed partial class World : IDisposable
 
         _systems.Add(system);
         _systemsByType.Clear();
+        ModFaults.Add(system);
         _phases.Add(new SystemPhases(this, system, _systems.Count - 1));
         _animations ??= system as IAnimationSource;
         _projectiles ??= system as IProjectileSource;
@@ -596,7 +656,9 @@ public sealed partial class World : IDisposable
         RegisterCombatHitObserver(system, _systems.Count - 1);
         if (system is ITaskOwner taskOwner) taskOwner.RegisterTasks(Tasks);
         CombatHitFilters.Register(system, _systems.Count - 1);
+        TradePriceFilters.Register(system, _systems.Count - 1);
         ItemUseObservers.Register(system, _systems.Count - 1);
+        GoodsTakenObservers.Register(system, _systems.Count - 1);
         RelationObservers.Register(system, _systems.Count - 1);
         if (system is IDecisionOwner owner) owner.RegisterSources(Decisions);
         if (DecidesAfter(system)) _decideAfter = _systems.Count - 1;
@@ -674,6 +736,7 @@ public sealed partial class World : IDisposable
         var prof = Profile.Enabled ? Profile : null;
         prof?.Begin(_systems.Count);
         table.BeginTick();
+        ModFaults.Settle();
 
         // 1. Inputs (serial).
         RunInputs(table, prof);
@@ -687,8 +750,9 @@ public sealed partial class World : IDisposable
         // 6. Commit (serial): the effects in an order the partitioning cannot change.
         Commit(table, prof);
 
-        // 7. Slow world (serial).
+        // 7. Slow world (serial), then the code mods' status effects lose a tick (nothing without registered effects).
         RunSlowWorld(prof);
+        Bodies.StatusEffects.Step(this);
 
         // 8. Publish.
         Squads.Refresh(table, Player.Faction, Players.RequiresExplicitControl);
@@ -721,7 +785,11 @@ public sealed partial class World : IDisposable
 
         for (int k = 0; k < _systems.Count; k++)
         {
-            _systems[k].Inputs(this, due);
+            if (ModFaults.IsMod(k))
+                ModFaults.Run(k, "inputs", _systems[k], this, due, static (s, w, d) => s.Inputs(w, d));
+            else
+                _systems[k].Inputs(this, due);
+
             prof?.Lap(TickProfile.Inputs, k);
         }
         PlayerOrders.ValidateAuthority(this);
@@ -746,7 +814,11 @@ public sealed partial class World : IDisposable
 
         for (int k = 0; k < _systems.Count; k++)
         {
-            _systems[k].Schedule(this);
+            if (ModFaults.IsMod(k))
+                ModFaults.Run(k, "schedule", _systems[k], this, 0, static (s, w, _) => s.Schedule(w));
+            else
+                _systems[k].Schedule(this);
+
             prof?.Lap(TickProfile.Schedule, k);
         }
     }
@@ -757,6 +829,7 @@ public sealed partial class World : IDisposable
     void RunThinkMoveAct(CharacterTable table, TickProfile? prof)
     {
         table.Phase = TablePhase.Parallel;
+        ModFaults.Settle();   // a mod system that threw in Inputs or Schedule runs no parallel phase this tick
 
         // A system that leaves a phase at its empty default is skipped there: a barrier costs more than the nothing it would wait for.
         foreach (var p in _phases) if (p.Think is { } think) RunParallel(think, prof, TickProfile.Think, p.Index);
@@ -783,6 +856,7 @@ public sealed partial class World : IDisposable
     void Commit(CharacterTable table, TickProfile? prof)
     {
         table.Phase = TablePhase.Commit;
+        ModFaults.Settle();   // a mod system that threw in a parallel phase stops here, before its effects of the tick are applied
 
         _effects.Clear();
         for (int i = 0; i < _partitions.Length; i++) _effects.AddRange(_buffers[i].Items);
@@ -792,7 +866,12 @@ public sealed partial class World : IDisposable
 
         foreach (var e in _effects)
         {
-            _systems[e.System].Apply(this, e);
+            var system = _systems[e.System];
+            if (ModFaults.IsMod(e.System))
+                ModFaults.Run(e.System, "apply", system, this, e, static (s, w, effect) => s.Apply(w, effect));
+            else
+                system.Apply(this, e);
+
             prof?.Lap(TickProfile.Commit, e.System);
         }
 
@@ -808,7 +887,11 @@ public sealed partial class World : IDisposable
     {
         for (int k = 0; k < _systems.Count; k++)
         {
-            _systems[k].SlowWorld(this);
+            if (ModFaults.IsMod(k))
+                ModFaults.Run(k, "slow world", _systems[k], this, 0, static (s, w, _) => s.SlowWorld(w));
+            else
+                _systems[k].SlowWorld(this);
+
             prof?.Lap(TickProfile.SlowWorld, k);
             if (k == _decideAfter) RunDecisions(prof);
         }
@@ -991,7 +1074,13 @@ public sealed partial class World : IDisposable
             _stepTicks.AsSpan(was).Fill(1);
         }
 
-        if (Players.RequiresExplicitControl || period <= 1 || ViewPosition is not { } eye)
+        if (Players.RequiresExplicitControl)
+        {
+            RefreshSharedCadence(n);
+            return;
+        }
+
+        if (period <= 1 || ViewPosition is not { } eye)
         {
             if (FarSkipped > 0) _stepTicks.AsSpan(0, n).Fill(1);
 
@@ -999,10 +1088,12 @@ public sealed partial class World : IDisposable
             return;
         }
 
+        // Only the characters the player leads keep themselves and their neighbours at full rate; a squad the player does not lead or a code mod
+        // put to sleep is stepped as NPCs are (Squad.Independent, Squad.Dormant).
         var prev = table.Previous;
         _playerSpots.Clear();
         for (int i = 0; i < n; i++)
-            if (prev[i].Alive && table.Cold(i) is { IsPlayer: true }) _playerSpots.Add(prev[i].Position);
+            if (prev[i].Alive && table.Cold(i) is { IsPlayer: true } led && Led(led)) _playerSpots.Add(prev[i].Position);
 
         float near2 = NearRadius * NearRadius;
         int skipped = 0;
@@ -1016,9 +1107,12 @@ public sealed partial class World : IDisposable
                 continue;
             }
 
+            // A sleeping squad's member gets no far tick: it stands still away from the camera and the led characters.
             var at = prev[i].Position;
-            bool near = (Tick + i) % period == 0 || System.Numerics.Vector3.DistanceSquared(at, eye) <= near2
-                || table.Cold(i) is { IsPlayer: true } || NearPlayer(at);
+            var cold = table.Cold(i);
+            bool farTick = (Tick + i) % period == 0 && !(cold is { IsPlayer: true } && Squads.IsDormant(cold.SquadId));
+            bool led = cold is { IsPlayer: true } && Led(cold);
+            bool near = farTick || System.Numerics.Vector3.DistanceSquared(at, eye) <= near2 || led || NearPlayer(at);
 
             if (!near)
             {
@@ -1035,7 +1129,37 @@ public sealed partial class World : IDisposable
     }
 
     /// <summary>
-    /// Whether <paramref name="at"/> is within <see cref="PlayerNearRadius"/> of a player character.
+    /// Multiplayer keeps normal actors at full rate, independent of any client's camera. A mod's dormant squad wakes near any led character;
+    /// dormant time is not accumulated into a catch-up step when it wakes.
+    /// </summary>
+    void RefreshSharedCadence(int count)
+    {
+        var previous = Characters.Previous;
+        _playerSpots.Clear();
+        for (int i = 0; i < count; i++)
+            if (previous[i].Alive && Characters.Cold(i) is { IsPlayer: true } cold && Led(cold))
+                _playerSpots.Add(previous[i].Position);
+
+        int skipped = 0;
+        for (int i = 0; i < count; i++)
+        {
+            bool asleep = previous[i].Alive && Characters.Cold(i) is { IsPlayer: true } cold
+                && Squads.IsDormant(cold.SquadId) && !NearPlayer(previous[i].Position);
+            _stepTicks[i] = asleep ? (byte)0 : (byte)1;
+            _lastStep[i] = Tick;
+            if (asleep) skipped++;
+        }
+
+        FarSkipped = skipped;
+    }
+
+    /// <summary>
+    /// Whether a player character is one the player leads for the cadence: not in a squad the player does not lead or one put to sleep.
+    /// </summary>
+    bool Led(CharacterCold cold) => Squads.Find(cold.SquadId) is not ({ Independent: true } or { Dormant: true });
+
+    /// <summary>
+    /// Whether <paramref name="at"/> is within <see cref="PlayerNearRadius"/> of a player character the player leads.
     /// </summary>
     bool NearPlayer(System.Numerics.Vector3 at)
     {
@@ -1096,8 +1220,11 @@ public sealed partial class World : IDisposable
 
         HashCombatHitObserverFaults(ref h);
         CombatHitFilters.HashFaults(ref h);
+        TradePriceFilters.HashFaults(ref h);
         ItemUseObservers.HashFaults(ref h);
+        GoodsTakenObservers.HashFaults(ref h);
         RelationObservers.HashFaults(ref h);
+        ModFaults.HashFaults(ref h);
         return h.Value;
     }
 

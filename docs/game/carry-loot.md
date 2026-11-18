@@ -52,7 +52,9 @@ body, **awake or not** (no consciousness test): it sets `+0x3d4`, clears the bed
 special action `AnimationClass +0x228`). The per-frame update `FUN_140520500` with that action set plays it alone (`FUN_1405203b0` by name each frame) and skips the movement, idle and combat picks, so
 a conscious carried character holds the same `carry me` pose as a knocked-out one; category 3 (CARRIED) is only the record's own tag (the only record with `being carried`). Meitou: `AnimationSystem.Update` plays
 `carry me` for any carried body (it did so only for a downed one before, so an awake carried mate fell through to the standing picks, none of which fits `being carried`, and showed the binding pose), and
-a carried body plays no technique, stumble, lift or knock-out clip. Awake carrying exists for the player's standing squad mates (`CarrySystem.AwakeMate`).
+a carried body plays no technique, stumble, lift or knock-out clip. Awake carrying exists for the player's standing squad mates (`CarrySystem.AwakeMate`), lifted
+only by one of the player's own characters: an NPC still walking up to lift a player character gives the lift up once that character is up again
+(`CarrySystem.Liftable`).
 
 **Observed** (other carrier / body pairs; a Shek body on the human leader, the squad's carried mates): the placement formula above takes only the body's `Height` slider
 (0.5 where the race has no body file) and the carrier's attach bone, so a body of another race hangs by the same rule; no difference from it was found. The upper-body movement pick enforces the carrying flags on its
@@ -85,9 +87,18 @@ carried pelvis 8 to 16, head 14 to 16 above the carrier's feet; a crawling carri
 and the only combat-side read of the carrying flag (`+0x348`) is the steering update `FUN_140660dc0`, which lists the carried body with its carrier. The protect-allies desire
 (`FUN_140599b90`, goals 15 / 288) is x0.5 while carrying and 0 in stealth. So a carrier retaliates and fights on its own with the body on its shoulder; weapon choice reads only the
 medical arm bytes (not the carrying flag), and the carrying arm stays on the body because the carrying arm overlay plays every frame ([animation](../animation.md#a-carrier)). Other `+0x348` readers found in the
-exe: squad-level "someone carries" tests (`FUN_140288630`, `FUN_14028fdf0`, a crowd-control count), the walk-to-run rule (`FUN_140342a30`: a carrier walking runs, Meitou `MovementSystem`), the lift and
+exe: squad-level "someone carries" tests (`FUN_140288630`, `FUN_14028fdf0`, a crowd-control count), the walk-to-jog rule (`FUN_140342a30`, `FUN_140332390`: an NPC carrier walking jogs, a player's keeps its mode, [force speed](pathfinding.md#force-speed); Meitou `MovementSystem`), the lift and
 put-down tasks, the FIND_BED desire and the Watching-slaves desire. **Verified** records: `carrying left arm only` (overlay, `override L arm`, every other bone deleted), `stand carrying left` (overlay, `override L arm`),
 `walk/jog carrying left` (upper, `override L arm`), `sword ready (carry)` (upper idle, carrying left, one weapon in hand).
+
+### A carrier at work
+
+**Verified** in `kenshi_x64.exe` (decompile and disassembly): a carrier keeps its jobs. The job pass `FUN_14050e5b0` reads `+0x348` only after the
+ditch entry, to skip the implicit sleep and sit jobs ([implicit jobs](ai-tasks.md)); 87 Operating machine's list B has no `!47`, its desire stub
+`LAB_1400215ee` jumps to `FUN_140318320`, AI vtable `+0x98` (slot 19, constant 1), and `Task_OperateMachine` (`FUN_14035b430`, `FUN_14035bc90`) reads
+neither `+0x348` nor the state-47 evaluator. No production or construction row but 146 Turret gunner has `!47` (234 Turret guard plans through 146).
+Meitou: `ProductionSystem.Able` (#915), `ConstructionSystem.Able` (#361); a carrier takes no job while its lift or put-down clip plays on past the
+order, or while it delivers on an errand (engine choice).
 
 ## Ground items from a cage
 
@@ -246,9 +257,9 @@ finders resolved from the thunks in the exe's bytes):
 | Goal | Desire | Finder | Follow-up |
 | --- | --- | --- | --- |
 | `FIND_AND_RESCUE` 105 | `140599480` (exe bytes): 0 if CharStats `+0x12b` is set or the character carries, else 1 | `FUN_1408cd550` | - |
-| `FIND_AND_RESCUE_IF_THERES_BEDS` 148 | `FUN_1405994c0`: 0 if CharStats `+0x12b` (Hold) or carrying, else the bed search `FUN_1408cfe00(..., 1)` (Meitou `CarrySystem.MayRescue`: all three, the bed one as `FindBed` for the rescuer, also for the one-shot Rescue order, which says "No free bed to take anyone to." over the rescuer when the search finds none, engine choice, the original is silent; a body already in a bed is not lifted again) | `FUN_1408cd550` | 148, then **106** `FIND_BED_AND_PUT_IN` |
-| `FIND_AND_RESCUE_LEADER` 142 | - | `FUN_140598540`: the squad leader (`platoon +0xa0`) when it is not the character itself and not dead, at any distance (**Verified**; Meitou: goal 142 is data driven (`AiBehaviour.RescueLeader`, only the packages that list it: raid retreat, Go home everybody, ex slave, Retreat and refresh, campaign victory occupy town, addon wandering slaver base): the carry sweep `CarrySystem.RescueLeaders` lifts the leader as row 213 once the AI chose the goal, no range; an engine cap: only a knocked-out leader the lift can take, the original also counts a crippled or crawling one) | - |
-| `FIND_BED_AND_PUT_IN` 106 | `FUN_1405a0d50`: 2 while carrying a body the carrier regards as friendly, whose slot `0x248` is null, that (for a police carrier, `FUN_140599600`) has no bounty with the carrier's faction, whose faction is not hostile to the carrier's (`FUN_1406b26d0`) and that the carrier's squad memory holds no grudge tag on (`FUN_140599390`: long-term tags 1, 4, 5, 7-10, short-term 1, 2, 4, 5, 7; **Verified**, Meitou `BedSystem.WantsToPutIn`); else 0 | none | - |
+| `FIND_AND_RESCUE_IF_THERES_BEDS` 148 | `FUN_1405994c0`: 0 if CharStats `+0x12b` (Hold) or carrying, else the bed search `FUN_1408cfe00(..., 1)` (Meitou `CarrySystem.MayRescue`: all three, the bed one as `FindBed` for the rescuer, also for the one-shot Rescue order, which says "No free bed to take anyone to." over the rescuer when the search finds none, engine choice, the original is silent; a body already in a bed is not lifted again; an NPC the AI runs whose goal lists hold 148 weighs it in its chooser at this desire times the finder's factor, both kept by the carry sweep `CarrySystem.RescueToBeds` (`AiBehaviour.RescueToBed`), and lifts the finder's body as row 148 once it chose the goal) | `FUN_1408cd550` | 148, then **106** `FIND_BED_AND_PUT_IN` |
+| `FIND_AND_RESCUE_LEADER` 142 | - | `FUN_140598540`: the squad leader (`platoon +0xa0`) when it is not the character itself and not dead, at any distance (**Verified**; Meitou: goal 142 is data driven (`AiBehaviour.RescueLeader`, only the packages that list it: raid retreat, Go home everybody, ex slave, Retreat and refresh, campaign victory occupy town, addon wandering slaver base): the carry sweep `CarrySystem.RescueLeaders` lifts the leader as row 213 once the AI chose the goal and holds the character, no range; the goal is not wanted by a member not able to lift at all (no usable left arm, or the row not in its repertoire; a fight or a crouch only delays the lift), and a walk to the leader that has not reached it in 60 game seconds, or whose leader died, is given up (engine choices, as for 148); an engine cap: only a knocked-out leader the lift can take, the original also counts a crippled or crawling one) | - |
+| `FIND_BED_AND_PUT_IN` 106 | `FUN_1405a0d50`: 2 while carrying a body the carrier regards as friendly, whose slot `0x248` is null, that (for a police carrier, `FUN_140599600`) has no bounty with the carrier's faction, whose faction is not hostile to the carrier's (`FUN_1406b26d0`) and that the carrier's squad memory holds no grudge tag on (`FUN_140599390`: long-term tags 1, 4, 5, 7-10, short-term 1, 2, 4, 5, 7; **Verified**, Meitou `BedSystem.WantsToPutIn`); else 0. The function itself tests neither death nor power (**Verified**, decompile of `FUN_1405a0d50`: it reads only the above). Its friendly test, Character vfunc `0x3f0` (`FUN_1407923d0`, the same thunk `0x140016892` at slot 126 of the `Character`, `CharacterHuman` and `CharacterAnimal` vtables, **Observed** from the RTTI vtables), returns true at once for a body of the carrier's own faction; for another faction it reads the squad memory tags (`FUN_140678960`, `FUN_140599590`) and the faction relation (`FUN_1406b27b0`, ally at or above `DAT_141683170`); none of these four functions tests death in its own code (**Verified** by decompile). So by these tests 106 wants a dead comrade as much as a living one. Row 99 Put in bed, its plan's step, has no `isCarriedDudeDead` in list B (row table, [ai-tasks](ai-tasks.md)). Its finder's place test tests no power (**Observed**, [locks](locks.md#beds)). Meitou: an NPC carrier whose body no errand's plan holds weighs it with its other carried-body goals (`TownDutySystem.LookCarriers`, `RankDisposals`, `BedSystem.PutInDesire`; after an errand's own lift the goal that lifted goes on, so a corpse lifted for the disposal goes on to it while that errand lasts; a carrier left with a corpse and no errand, after a load, a failed walk to the disposal or a body that died on a 148 or 142 carrier's shoulder, weighs 106 with the rest and may lay it in a bed, as the decompiled desire allows) and walks the body to the bed its finder gives, where it is laid in as by the player's put-in (`BedSystem.PutIn`) | the bed search `FUN_1408cfe00` (its registration stores it at +0x160, **Verified** `FUN_140319a60`; [locks](locks.md#beds)) | - |
 | `CARRY_WOUNDED_SLAVES` 168 | the rescue desire of 105 (registration `FUN_140319a60` gives 105, 138 and 168 the same function pointer; **Observed**: 0 on Hold or carrying; Meitou: Hold only, `CaptiveSystem.TryStartSlaveWork`) | `FUN_1408cdf50` | - |
 | `FIND_AND_KIDNAP` 132 | - | `FUN_1408cd5c0` (the character finder below, masks 0x4008 / 0x811, beds allowed) | - |
 | `FIND_A_DEAD_GUY` 138 / 230 | - | `FUN_1408cfb00` / `FUN_1408ce170` (the nearest dead, ragdolled, uncarried body; `carriable` when asked) | - |
@@ -360,7 +371,8 @@ Status `+0xe9`, saved as `kidn` ([save](../formats/save.md)). **Verified** by de
   registered not-a-provider (TaskData `+0x40` = 1, `FUN_140319a60`), and only the task factory `FUN_14032ebd0` builds `Task_Kidnapping` (`FUN_140334d70`). The code-15
   setters are `Task_Kidnapping`'s two slots, the witness function below and the put-down, the last two only for a load with the flag; so an NPC kidnapper's victim is
   never flagged and its carrier is booked for nothing, by the lift or by those who see it carry the victim off. Meitou: `KidnapSystem` books nothing for a downed
-  victim; a sleeper it takes from a bed it lifts through the kidnap roll (`CarrySystem.BeginPickUp` with `kidnap`, engine choice), which books the Kidnapping.
+  victim; a sleeper it takes from a bed it lifts through the kidnap roll (`CarrySystem.BeginPickUp` with `kidnap`, engine choice), which books the Kidnapping
+  but does not flag the victim.
 - **Cleared** by the per-update `FUN_140852a30`: not carried (`+0x3d4` clear) and in a bed (`+0x2f8` = 1) while its status town (`+0x88`) is its
   home town (`FUN_1407956a0` `+0x30`); or carried by someone it regards as friendly (vfunc `0x3f0`) or loves (`FUN_140599590`), else it tags its
   carrier TEMP ENEMY (4) each update. Also by the separated-squad merge ([locks](locks.md#cages-and-beds)). Caging, release and escape do not touch it.
@@ -374,7 +386,7 @@ Status `+0xe9`, saved as `kidn` ([save](../formats/save.md)). **Verified** by de
   victim faction: the carrier's `+0x110` = 250 and a wrapper-set pending Kidnapping (timer 20, freed flag cleared).
 - No sentence, bail or escape rule reads it.
 
-Meitou: `CharacterCold.KidnapVictim`, set by `CarrySystem.Kidnap` on a roll that took, kept up by `ArrestSystem.UpdateKidnapVictims` (the bed
+Meitou: `CharacterCold.KidnapVictim`, set by `CarrySystem.Kidnap` on a roll of order 246 (the player's) that took, kept up by `ArrestSystem.UpdateKidnapVictims` (the bed
 test reads "its home town" as `InOwnTown`) and `PopulationSystem.RejoinSeparated`, read by `CarrySystem.LetKidnapVictimGo`, the status line and
 the witnesses (`CharacterFacts.Kidnapped`, `CrimeSystem.MindsKidnapping`; a witness friendly to the carrier's faction is still skipped, engine
 choice) and the bounty panel (`TooltipRuntime.ShowsBountyPanel`). Meitou's own
@@ -471,7 +483,6 @@ Meitou: `FixtureRegistry.LayLow` runs from the crime sweep (engine choice) and a
 ## Unknowns
 
 1. The bed search (`FUN_1408cfe00`) is decoded for player-faction characters and, in outline, for others ([locks](locks.md#beds)); the meaning of the designated-building kinds is not.
-   Row 106 does have a finder: its registration stores the bed search `FUN_1408cfe00` at +0x160 (**Verified**, `FUN_140319a60`); `BedSystem` already uses that search.
 2. The **sensed-list category bits** (`FUN_140853960` masks 1, 0x4010, 0x20, 0x210, 0x4008, 0x811, 0x10): which bit is ally, enemy, dead, slave;
    and the size of the sensed list, which is the search range of every finder.
 6. **Witness timing**: how often `FUN_1408580d0` runs per sensed character, with what range and line of sight, and how the pending timer `+0x90`

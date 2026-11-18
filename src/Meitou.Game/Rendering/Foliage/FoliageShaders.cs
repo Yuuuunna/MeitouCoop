@@ -41,6 +41,7 @@ static class FoliageShaders
             layout(location = 9) in vec4 aInstance2;
             layout(location = 10) in vec4 aInstance3;
             out float vFade;
+            out vec3 vWetPos;
             uniform vec3 uEye;
             #define uModel mat4(vec4(aInstance0.xyz, 0.0), vec4(aInstance1.xyz, 0.0), vec4(aInstance2.xyz, 0.0), vec4(aInstance3.xyz, 1.0))
             """, required: true);
@@ -56,6 +57,9 @@ static class FoliageShaders
         // position at tens of thousands of units steps by 0.004 and a swaying leaf near the camera shook with it.
         v = Replace(v, @"gl_Position\s*=\s*uViewProjection\s*\*\s*p\s*;", """
                 vec4 local = skin * vec4(aPosition, 1.0);
+                // The vertex less the instance's origin, in the world's axes, moved by a few units the origin picks: where the wet world's drops sit
+                // (AtmosphereShaders wetFoliage), the same place on the leaf wherever it sways.
+                vWetPos = mat3(uModel) * local.xyz + fract(aInstance3.xyz * 0.371) * 7.0;
                 gl_Position = uViewProjection * vec4(mat3(uModel) * local.xyz + (aInstance3.xyz - uEye), 1.0);
             """, required: true);
         return v;
@@ -87,6 +91,8 @@ static class FoliageShaders
             uniform vec2 uTile;
             uniform int uAlphaSource;
             uniform float uAlphaThreshold;
+            uniform vec3 uEye;
+            uniform vec4 uFoliageNear;
             float foliageDither() { return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))); }
             vec4 sampleMap(sampler2D map, vec2 uv, vec3 n)
             {
@@ -99,6 +105,7 @@ static class FoliageShaders
             void main()
             {
                 if (vFade < 1.0 && foliageDither() >= vFade) discard;
+            """ + NearFadeTest + """
                 if (uAlphaThreshold > 0.0 && uAlphaSource == 2 && uHasNormal)
                 {
                     vec3 n = normalize(vNormal);
@@ -126,7 +133,9 @@ static class FoliageShaders
             // Foliage reads the probes without the visibility test (docs/render-gi.md "Cheaper reads"): half the fetches, over its overdraw.
             #define GI_NO_VISIBILITY
             in float vFade;
+            in vec3 vWetPos;
             uniform bool uCoverage;      // alpha to coverage (multisampled target): the cut-out edge becomes the coverage
+            uniform vec4 uFoliageNear;
             float foliageDither() { return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))); }
             """, required: true);
         if (!solid)
@@ -134,11 +143,12 @@ static class FoliageShaders
             void main()
             {
                 if (vFade < 1.0 && foliageDither() >= vFade) discard;
-            """, required: true);
+            """ + NearFadeTest, required: true);
         // The wet world (Meitou): the drops' glints on the leaves, over the game's wetness as it is.
         f = Replace(f, @"glossLit\s*=\s*wetSurface\.a\s*;", """
             glossLit = wetSurface.a;
-            if (uWetWorld > 0.5 && uFogDistance > 0.0) wetFoliage(uv, max(length(dFdx(uv)), length(dFdy(uv))) * 40.0, uWeatherWet.x, uWeatherWet.y, n, glossLit);
+            if (uWetWorld > 0.5 && uFogDistance > 0.0)
+                wetFoliage(vWetPos, max(length(dFdx(vWetPos)), length(dFdy(vWetPos))), n, uWeatherWet.x, uWeatherWet.y, normalize(uLightDir), n, albedo, glossLit);
             """, required: true);
         // The cut-out: a hard test, or with alpha to coverage a one-pixel ramp around the threshold. (The solid variant has none: its materials have
         // no cut-out.)
@@ -162,6 +172,31 @@ static class FoliageShaders
     }
 
     /// <summary>
+    /// The near fade's test (<see cref="FoliageNearFade"/>), at the top of the full mesh fragment stages (<c>vFade</c>, <c>vWorld</c>, <c>uEye</c>,
+    /// <c>uFoliageNear</c>, <c>foliageDither</c>): a marked instance's fragment is kept where the pattern is under the largest of its distance's
+    /// share (whole from the reach on), its angle's (whole outside the outer angle) and <see cref="FoliageNearFade.MinOpacity"/>. The pattern is the
+    /// fade's, which never moves.
+    /// </summary>
+    static readonly string NearFadeTest = $$"""
+
+                if (vFade > 1.1 && vFade < 1.4 && uFoliageNear.w > 0.0)
+                {
+                    vec3 nearRay = vWorld - uEye;
+                    float nearDistance = max(length(nearRay), 1e-3);
+                    float nearDepth = smoothstep((1.0 - {{F(FoliageNearFade.DepthBand)}}) * uFoliageNear.w, uFoliageNear.w, nearDistance);
+                    float nearSide = 1.0 - smoothstep({{F(MathF.Cos(FoliageNearFade.OuterAngle))}}, {{F(MathF.Cos(FoliageNearFade.InnerAngle))}},
+                        dot(nearRay, uFoliageNear.xyz) / nearDistance);
+                    if (foliageDither() >= max(max(nearDepth, nearSide), {{F(FoliageNearFade.MinOpacity)}})) discard;
+                }
+
+        """;
+
+    /// <summary>
+    /// <paramref name="v"/> as a GLSL float literal.
+    /// </summary>
+    static string F(float v) => v.ToString("0.0######", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
     /// The blades' vertex stage: quads built from <c>gl_VertexID</c> around each blade instance (two at right angles with <c>uCross</c>), the top
     /// edge swaying along X, the blade sinking into the ground over the last fifth of the range, and the aerial perspective per vertex.
     /// </summary>
@@ -183,6 +218,7 @@ static class FoliageShaders
         out vec3 vHazeAdd;
         out vec3 vWorld;
         out vec2 vUv;
+        out vec3 vWetPos;
         out float vFade;
         void main()
         {
@@ -198,6 +234,7 @@ static class FoliageShaders
             float u = float(cu[corner]), v = float(cv[corner]);
             // The blade's own offsets, then its root less the eye (exact): projected relative to the eye (docs/renderer-native.md "Render origin").
             vec3 o = side * (u - 0.5) * width + vec3(0.0, (1.0 - v) * height, 0.0);
+            vWetPos = o + fract(aBlade.xyz * 0.371) * 7.0;   // the blade's own place before it sways: where its drops sit (wetFoliage)
             if (v == 0.0) o.x += uSway * sin(uTime + aBlade.x * uFrequency);
             float dist = distance(uEye.xz, aBlade.xz);
             o.y -= height * clamp(5.0 * dist / uRange - 4.0, 0.0, 1.0);   // grows out of the ground over the last fifth of the range
@@ -219,6 +256,7 @@ static class FoliageShaders
     public static readonly string GrassFragment = "#version 330 core\n#define GI_NO_VISIBILITY\n" + AtmosphereShaders.Functions + """
         in vec3 vWorld;
         in vec2 vUv;
+        in vec3 vWetPos;
         in float vFade;
         in vec3 vHazeMul;
         in vec3 vHazeAdd;
@@ -266,7 +304,11 @@ static class FoliageShaders
             }
             // The wet world (Meitou, the "Rain drops and puddles" row): the drops' glints on the blades, over the game's wetness as it is.
             if (uWetWorld > 0.5 && uFogDistance > 0.0)
-                wetFoliage(vUv, max(length(dFdx(vUv)), length(dFdy(vUv))) * 40.0, uWeatherWet.x, uWeatherWet.y, grassNormal, grassGloss);
+            {
+                vec3 face = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+                if (dot(face, uEye - vWorld) < 0.0) face = -face;
+                wetFoliage(vWetPos, max(length(dFdx(vWetPos)), length(dFdy(vWetPos))), face, uWeatherWet.x, uWeatherWet.y, normalize(uLightDir), grassNormal, albedo, grassGloss);
+            }
             // Lit as the shared mesh shader lights a surface facing straight up (foliage.hlsl writes the normal (0, 1, 0)).
             vec3 l = normalize(uLightDir);
             float diff = max(l.y, 0.0);
@@ -513,13 +555,15 @@ static class FoliageShaders
         // mode.z: the occlusion cull is on (main colour pass; HizPyramid.ViewFor): hz and hzOff as OcclusionView.Vectors says.
         // mode.w: the interior masks' X/Z boxes in interior (min x, min z, max x, max z; the main colour pass with the split, docs/render-interior-cut.md): a fully visible mesh
         // or rock instance over one gets the fade 1.5 (drawn whole, as 2) and is laid out with the fading ones, so it is drawn with the program that has the cut.
-        struct ViewData { vec4 planes[8]; vec4 lengths[2]; uvec4 resident[2]; uvec4 mode; vec4 fog[10]; vec4 hz[6]; uvec4 hzOff[3]; vec4 lod; vec4 interior[32]; };
+        // near: the near fade (FoliageNearFade.CullVector; the main colour pass in the gameplay camera): the eye's height, the reach (0: off), the smallest radius.
+        struct ViewData { vec4 planes[8]; vec4 lengths[2]; uvec4 resident[2]; uvec4 mode; vec4 fog[10]; vec4 hz[6]; uvec4 hzOff[3]; vec4 lod; vec4 interior[32]; vec4 near; };
         layout(push_constant) uniform Push { vec2 eye; uint planeCount; uint chunkCount; uint drawCount; float fullThreshold; uint split; } pc;
         // The split (pc.split, the colour views with EarlyDepth): an instance whose mesh shader dithers it (a fade below 1; not an impostor, and a rock only with its impostor transition,
         // the only one whose fade reaches the shader) is laid out after the batch's others, so the others can be drawn with the program that has no discard.
         bool IsFading(uint flags, float packed)
         {
-            return pc.split != 0u && packed > -1.5 && (flags & 8u) == 0u && (packed == 1.5 || packed < 1.0 && ((flags & 1u) == 0u || (flags & 4u) != 0u));
+            return pc.split != 0u && packed > -1.5 && (flags & 8u) == 0u
+                && (packed == 1.5 || packed == 1.25 || packed < 1.0 && ((flags & 1u) == 0u || (flags & 4u) != 0u));
         }
         uint ChunkIndex() { return gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x; }
         // FogVolumes.Covers: the box wholly inside the eye's fog block (its box and seven planes) and its nearest point at least the hide distance away.
@@ -677,6 +721,10 @@ static class FoliageShaders
                     if (packed > -1.5 && view.mode.z != 0u && HizOccluded(sphere)) { packed = -2.0; occluded = 1u; }
                     // A rock without an impostor transition is drawn whole from a fade of 0.5, so it takes the mark from there.
                     if (view.mode.w != 0u && (k.flags & 8u) == 0u && (packed >= 1.0 || packed > -1.5 && (k.flags & 5u) == 1u) && InInterior(sphere)) packed = 1.5;
+                    // The near fade: a large tree whose sphere reaches nearer the eye than the reach gets 1.25 (drawn whole, as 2; FoliageNearFade.Mark), laid out
+                    // with the fading ones (the program with the discard), and the mesh fragment stages fade it round the middle of the view.
+                    if (view.near.y > 0.0 && (k.flags & 32u) != 0u && packed >= 1.0 && sphere.w >= view.near.z
+                        && length(sphere.xyz - vec3(pc.eye.x, view.near.x, pc.eye.y)) - sphere.w < view.near.y) packed = 1.25;
                 }
             }
             fades[c * 256u + i] = packed;

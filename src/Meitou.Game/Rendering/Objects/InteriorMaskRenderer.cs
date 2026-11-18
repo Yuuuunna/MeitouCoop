@@ -44,6 +44,16 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
     public const float NoFront = 65000;
 
     /// <summary>
+    /// How far behind a mask's floor the cut reaches, along the view (<see cref="CutUnderFloor"/>).
+    /// </summary>
+    const string UnderFloor = "24.0";
+
+    /// <summary>
+    /// Meitou: the cut also takes what lies just under a mask's floor (docs/render-interior-cut.md); off, the game's rule alone.
+    /// </summary>
+    public static bool CutUnderFloor { get; set; } = true;
+
+    /// <summary>
     /// How far from the eye (X/Z, to the building's footprint) masks are drawn.
     /// </summary>
     const float Range = 3000;
@@ -55,7 +65,9 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
         #version 330 core
         layout(location = 0) in vec3 aPos;
         uniform mat4 uMvp;
-        void main() { gl_Position = uMvp * vec4(aPos, 1.0); }
+        uniform mat4 uNode;   // the mask's place relative to the eye
+        out vec3 vRel;
+        void main() { vRel = (uNode * vec4(aPos, 1.0)).xyz; gl_Position = uMvp * vec4(aPos, 1.0); }
         """;
 
     /// <summary>
@@ -66,11 +78,18 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
     const string Fragment = """
         #version 330 core
         out vec4 fragColour;
+        in vec3 vRel;
         uniform int uInside;
+        uniform float uFloor;
+        uniform int uOpen;    // the building is in the interior view (its roof hidden): b keeps its farthest face for the particles
         void main()
         {
             float w = 1.0 / gl_FragCoord.w + 1.0;
-            fragColour = vec4(uInside != 0 ? 0.0 : w, 0.0, 0.0, w);
+            // g: the farthest face that lies flat below the eye, negative (the min blend keeps the farthest): the mask's floor, which the cut
+            // reaches under (Cut).
+            vec3 n = cross(dFdx(vRel), dFdy(vRel));
+            bool flat_ = uFloor > 1.5 ? true : uFloor > 0.5 && abs(n.y) > 0.7 * length(n) && vRel.y < 0.0;
+            fragColour = vec4(uInside != 0 ? 0.0 : w, flat_ ? -w : 0.0, uOpen != 0 ? -w : 0.0, w);
         }
         """;
 
@@ -97,7 +116,7 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
     /// <summary>
     /// The program's <c>uMvp</c> and <c>uInside</c> uniforms.
     /// </summary>
-    readonly UniformHandle _mvp, _inside;
+    readonly UniformHandle _mvp, _inside, _node, _floor, _open;
 
     /// <summary>
     /// The mask meshes' vertex input: one position stream, 12 bytes a vertex.
@@ -150,6 +169,9 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
         _segment = new NativeSegment(gpu, _program, PrimitiveType.Triangles, "interior mask");
         _mvp = _program.Uniform("uMvp");
         _inside = _program.Uniform("uInside");
+        _node = _program.Uniform("uNode");
+        _floor = _program.Uniform("uFloor");
+        _open = _program.Uniform("uOpen");
         _vertexSource = new VertexArrayBindings([new LegacyProgram.Attribute(default, InternalFormat.Rgb32F, 12, false)], default);
     }
 
@@ -162,6 +184,12 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
     /// The depth range's bindless 2D index (valid while <see cref="Active"/>).
     /// </summary>
     public uint Index => _bindless?.Index ?? 0;
+
+    /// <summary>
+    /// The depth range to bind as a plain sampler, with its size (valid while <see cref="Active"/>; the particles read it so).
+    /// </summary>
+    internal (SampledTexture Texture, int Width, int Height)? DepthRange =>
+        Active && _target is { } target ? (new SampledTexture(Nearest(), target.View()), target.Desc.Width, target.Desc.Height) : null;
 
     /// <summary>
     /// The drawn buildings' mask meshes' X/Z bounds: terrain patches outside all of them need no cut.
@@ -232,12 +260,15 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
     /// nearest and the farthest interior-mask face at its pixel (depth + 1) is left out, as the game's shaders <c>clip</c> against
     /// <c>rt_interiormask</c>.
     /// </summary>
-    const string Cut = """
+    static readonly string Cut = $$"""
             if (uInteriorCut)
             {
                 vec4 interiorRange = texelFetch(uInteriorMask, ivec2(gl_FragCoord.xy), 0);
                 float interiorDepth = 1.0 / gl_FragCoord.w;
-                if (interiorDepth < interiorRange.a && interiorDepth > interiorRange.r) discard;
+                // Under the mask's floor too (its farthest face here is one, kept in g by the mask's pass): the ground between the floor's boards and
+                // the mask's bottom, a hump of terrain with its grass coming through a floor (Meitou; the game's rule ends 1 unit behind the face).
+                float interiorBack = -interiorRange.g >= interiorRange.a - 0.3 ? interiorRange.a + {{UnderFloor}} : interiorRange.a;
+                if (interiorDepth < interiorBack && interiorDepth > interiorRange.r) discard;
             }
         """;
 
@@ -278,7 +309,7 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
 
         // Min on the colour (the nearest face), max on the alpha (the farthest); every face drawn, no depth test (the game's target has no depth).
         var blend = new BlendState(true, BlendingFactor.One, BlendingFactor.One, BlendOperation.Min, BlendOperation.Max);
-        var state = DrawState.For(t.Formats, _gpu.DepthClamp, blend: blend, mask: ColorMask.R | ColorMask.A);
+        var state = DrawState.For(t.Formats, _gpu.DepthClamp, blend: blend, mask: ColorMask.R | ColorMask.G | ColorMask.B | ColorMask.A);
         state.Record(cmd, t);
         cmd.BindPipeline(_segment.Get(state, t.Formats, _vertexSource));
 
@@ -317,6 +348,7 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
         node.Translation -= eye;
         var m = node * relative;
         bool any = false, eyeInside = v.Contains(eye);
+        bool open = _objects.CutRainOverViewed && _objects.InteriorView.ContainsKey(v.PlacementId);
         var min = new Vector2(float.MaxValue);
         var max = new Vector2(float.MinValue);
         foreach (var path in v.MaskMeshes)
@@ -324,6 +356,9 @@ public sealed unsafe class InteriorMaskRenderer : IDisposable
             if (Mesh(path) is not { Vertices: { } buffer } mesh) continue;
             _program.Set(_mvp, in m);
             _program.Set(_inside, eyeInside ? 1 : 0);
+            _program.Set(_node, in node);
+            _program.Set(_floor, CutUnderFloor ? 1f : 0f);
+            _program.Set(_open, open ? 1 : 0);
             _program.Flush(cmd);
             cmd.BindVertexBuffers(0, [new GpuBufferBinding(buffer.Handle, 0)]);
             cmd.Draw((uint)mesh.Count);

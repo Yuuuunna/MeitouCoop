@@ -95,13 +95,36 @@ sealed class FoliageEmitters(GameHost host)
             _zones.Clear();
             _for = (world, emitters);
             _generation++;
+            RetireWorld();
         }
 
         if (_catalog is null && host.Scene.Objects is { } objects) _catalog = Task.Run(() => SoundingCatalog(objects.Database));
         if (_catalog is not { IsCompletedSuccessfully: true, Result: { } catalog } || host.Scene.Objects is not { } scene) return false;
 
         _world ??= new FoliageWorld(scene.Install, scene.Database, scene.Levels, catalog);
+        if (_job is not { IsCompleted: false } && _world.RefreshOwnership())
+        {
+            RemoveAll(emitters);
+            _zones.Clear();
+            _generation++;
+        }
         return true;
+    }
+
+    /// <summary>
+    /// Releases the old world's maps after its last placement has finished. A replacement world never reuses its ownership snapshot.
+    /// </summary>
+    void RetireWorld()
+    {
+        if (_world is not { } previous) return;
+        _world = null;
+        if (_job is { IsCompleted: false } pending)
+            _ = pending.ContinueWith(finished =>
+            {
+                _ = finished.Exception;
+                previous.Dispose();
+            }, TaskScheduler.Default);
+        else previous.Dispose();
     }
 
     /// <summary>

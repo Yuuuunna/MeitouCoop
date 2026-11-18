@@ -113,11 +113,17 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     sealed record Refresh(long Revision, Task<CellMap> Result);
 
     /// <summary>
+    /// Gathers collision on the calling thread, including replacements, for deterministic headless runs.
+    /// </summary>
+    public bool Synchronous { get; }
+
+    /// <summary>
     /// Gathers collision from the install and captured runtime placements; the supplied terrain height is the missing-heightmap fallback.
     /// </summary>
     public RagdollGeometry(GameInstall install, GameDatabase db, WorldLevelData levels, Func<float, float, float> terrainHeight,
-        NavRuntimeBuildings? runtime = null)
+        NavRuntimeBuildings? runtime = null, bool synchronous = false)
     {
+        Synchronous = synchronous;
         _gatherer = new ZoneGeometryGatherer(install, db, levels, new CollisionCache(install)) { IncludeFoliage = false };
         _runtime = runtime;
         _ground = new RagdollGround(install, terrainHeight);
@@ -281,8 +287,16 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
             }
         }
 
-        if (entry.Revision != _cachedRevision)
-            entry.Replacement = new Refresh(_cachedRevision, StartGather(key.Zone, key.Roofs));
+        if (entry.Revision == _cachedRevision) return;
+
+        var next = StartGather(key.Zone, key.Roofs);
+        if (Synchronous)
+        {
+            entry.Current = next;
+            entry.Revision = _cachedRevision;
+            _generation++;
+        }
+        else entry.Replacement = new Refresh(_cachedRevision, next);
     }
 
     /// <summary>
@@ -318,6 +332,8 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     Task<CellMap> StartGather(ZoneCoordinate zone, bool roofs)
     {
         var snapshot = _runtimeSnapshot;
+        if (Synchronous) return Task.FromResult(Gather(zone, roofs, snapshot));
+
         var task = Task.Run(() => Gather(zone, roofs, snapshot));
         _pending.Add(task);
         _ = task.ContinueWith(_ => Interlocked.Increment(ref _completionRevision), CancellationToken.None,

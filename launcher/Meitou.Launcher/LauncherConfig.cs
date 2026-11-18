@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Meitou.Content;
 
 namespace Meitou.Launcher;
 
@@ -179,9 +180,9 @@ public sealed class LauncherConfig
     public List<ModPreset> Presets { get; set; } = [];
 
     /// <summary>
-    /// The RE_Kenshi mods (by name) whose suggested code mods the Mods page has offered once (<see cref="Meitou.Content.CoveredMods.Suggested"/>).
+    /// The RE_Kenshi mods (by name) whose endorsed ports the Mods page has offered once (<see cref="Meitou.Content.CoveredMods.Endorsed"/>).
     /// </summary>
-    public List<string> OfferedSuggestions { get; set; } = [];
+    public List<string> OfferedPorts { get; set; } = [];
 
     /// <summary>
     /// Reads <c>launcher.json</c>; defaults when it is missing or cannot be read.
@@ -205,16 +206,7 @@ public sealed class LauncherConfig
     public void Save()
     {
         Directory.CreateDirectory(DataDirectory);
-        string temporary = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try
-        {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(this, LauncherJson.Default.LauncherConfig));
-            File.Move(temporary, FilePath, true);
-        }
-        finally
-        {
-            File.Delete(temporary);
-        }
+        AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(this, LauncherJson.Default.LauncherConfig));
     }
 }
 

@@ -542,6 +542,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
     {
         PollSessionMessages();
         InterfaceSounds.PollUiSounds();
+        StatsWindow.PollStatHover();
         Width = width;
         Height = height;
         BiomeBanner.PollBiome();

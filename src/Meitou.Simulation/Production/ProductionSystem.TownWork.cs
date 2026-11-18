@@ -38,20 +38,22 @@ public sealed partial class ProductionSystem
     readonly PopulationData? _towns;
 
     /// <summary>
-    /// The towns' buildings by run-time key with the faction owning their town (<see cref="TownBuildingIndex"/>).
+    /// The towns' buildings by run-time key with the faction owning their town, the objects of their layouts by <see cref="TownLayoutBuilding.Id"/>
+    /// (with their building, the faction owning their town and the town's site index), and the revision of the towns' building lists they were
+    /// made from (<see cref="TownBuildingIndex"/>).
     /// </summary>
-    Dictionary<string, (TownBuilding Building, int Owner, int Site)>? _townBuildings;
+    sealed record TownIndex(int Revision, Dictionary<string, (TownBuilding Building, int Owner, int Site)> Buildings,
+        Dictionary<string, (TownBuilding House, TownLayoutBuilding Piece, int Owner, int Site)> Pieces);
 
     /// <summary>
-    /// The objects of the towns' buildings' layouts by <see cref="TownLayoutBuilding.Id"/>, with their building, the faction owning their town and
-    /// the town's site index; made with <see cref="_townBuildings"/>.
+    /// The current <see cref="TownIndex"/>, replaced whole: the think phase's power checks read it from every worker (<see cref="MachinePowered"/>).
     /// </summary>
-    Dictionary<string, (TownBuilding House, TownLayoutBuilding Piece, int Owner, int Site)>? _townPieces;
+    volatile TownIndex? _townIndex;
 
     /// <summary>
-    /// The revision of the towns' building lists <see cref="_townBuildings"/> was made from.
+    /// Held while <see cref="_townIndex"/> is made again, so two workers that find it out of date do not both make it.
     /// </summary>
-    int _townBuildingsRevision = -1;
+    readonly Lock _townIndexGate = new();
 
     /// <summary>
     /// The registered towns (site indices) whose buildings have been given their machines (<see cref="TownMachines"/>); cleared when the towns'
@@ -69,6 +71,11 @@ public sealed partial class ProductionSystem
     /// The ruins, town layouts and purchased interiors last checked for removed canonical layout machines.
     /// </summary>
     (long Ruins, int Buildings, long Emptied) _piecesChecked = (-1, -1, -1);
+
+    /// <summary>
+    /// How many of <see cref="FixtureRegistry.RebuiltHouses"/> had their objects' machines dropped (<see cref="DropRebuilt"/>).
+    /// </summary>
+    int _rebuiltSeen;
 
     /// <summary>
     /// The research contributions the town and outpost workers made this tick (<see cref="TownOperate"/>), which the player's operators continue
@@ -99,7 +106,7 @@ public sealed partial class ProductionSystem
     BuildSite? TownMachineSite(World world, string id)
     {
         if (world.Buildings.Find(id) is { } known) return known;
-        if (TownBuildingIndex(world) is not { } buildings) return null;
+        if (TownBuildingIndex(world)?.Buildings is not { } buildings) return null;
         if (buildings.TryGetValue(id, out var found))
             return world.Fixtures.IsDestroyed(found.Building) ? null : world.Fixtures.GetTownMachineSite(world, found.Building);
 
@@ -135,14 +142,14 @@ public sealed partial class ProductionSystem
     /// The town building of a run-time key and the faction owning its town; null for none.
     /// </summary>
     (TownBuilding Building, int Owner, int Site)? TownBuildingOf(World world, string key) =>
-        TownBuildingIndex(world) is { } index && index.TryGetValue(key, out var found) ? found : null;
+        TownBuildingIndex(world) is { } index && index.Buildings.TryGetValue(key, out var found) ? found : null;
 
     /// <summary>
     /// The layout object of a town building of <see cref="TownLayoutBuilding.Id"/> <paramref name="key"/>, with its building, the faction owning its
     /// town and the town's site index; null for none.
     /// </summary>
     (TownBuilding House, TownLayoutBuilding Piece, int Owner, int Site)? TownPieceOf(World world, string key) =>
-        TownBuildingIndex(world) is not null && _townPieces!.TryGetValue(key, out var found) ? found : null;
+        TownBuildingIndex(world) is { } index && index.Pieces.TryGetValue(key, out var found) ? found : null;
 
     /// <summary>
     /// The level-town index of a canonical building or layout machine, null for a player-built or natural site.
@@ -150,29 +157,35 @@ public sealed partial class ProductionSystem
     int? TownSiteOf(World world, string siteId) => TownBuildingOf(world, siteId)?.Site ?? TownPieceOf(world, siteId)?.Site;
 
     /// <summary>
-    /// The current towns' buildings and layout pieces, rebuilt when their lists change.
+    /// The towns' buildings by run-time key with the faction owning their town, and their layout objects (<see cref="TownIndex"/>), made again
+    /// when the lists change (<see cref="PopulationData.BuildingsRevision"/>, which also has <see cref="TownMachines"/> look at every registered
+    /// town again); null without towns.
     /// </summary>
-    Dictionary<string, (TownBuilding Building, int Owner, int Site)>? TownBuildingIndex(World world)
+    TownIndex? TownBuildingIndex(World world)
     {
         if ((_towns ?? world.SystemOf<PopulationSystem>()?.Data) is not { } data) return null;
-        if (_townBuildings is not null && _townBuildingsRevision == data.BuildingsRevision) return _townBuildings;
+        if (_townIndex is { } current && current.Revision == data.BuildingsRevision) return current;
 
-        _townBuildingsRevision = data.BuildingsRevision;
-        _townBuildings = new(StringComparer.Ordinal);
-        _townPieces = new(StringComparer.Ordinal);
-        _townSitesMade.Clear();
-        _townWaiting.Clear();
-        foreach (var site in data.Sites)
+        lock (_townIndexGate)
         {
-            int owner = site.Index < data.SiteFactions.Count ? data.SiteFactions[site.Index] : -1;
-            foreach (var b in site.Buildings)
-            {
-                _townBuildings[b.Key] = (b, owner, site.Index);
-                foreach (var piece in b.LayoutBuildings) _townPieces[piece.Id] = (b, piece, owner, site.Index);
-            }
-        }
+            if (_townIndex is { } made && made.Revision == data.BuildingsRevision) return made;
 
-        return _townBuildings;
+            var buildings = new Dictionary<string, (TownBuilding Building, int Owner, int Site)>(StringComparer.Ordinal);
+            var pieces = new Dictionary<string, (TownBuilding House, TownLayoutBuilding Piece, int Owner, int Site)>(StringComparer.Ordinal);
+            foreach (var site in data.Sites)
+            {
+                int owner = site.Index < data.SiteFactions.Count ? data.SiteFactions[site.Index] : -1;
+                foreach (var b in site.Buildings)
+                {
+                    buildings[b.Key] = (b, owner, site.Index);
+                    foreach (var piece in b.LayoutBuildings) pieces[piece.Id] = (b, piece, owner, site.Index);
+                }
+            }
+
+            _townSitesMade.Clear();
+            _townWaiting.Clear();
+            return _townIndex = new TownIndex(data.BuildingsRevision, buildings, pieces);
+        }
     }
 
     /// <summary>
@@ -233,6 +246,7 @@ public sealed partial class ProductionSystem
         if ((_towns ?? world.SystemOf<PopulationSystem>()?.Data) is not { } data || TownBuildingIndex(world) is null) return;
 
         DropGonePieces(world, data);
+        DropRebuilt(world);
         foreach (var site in data.Sites)
         {
             if (!world.Fixtures.IsRegistered(site.Index) || !_townSitesMade.Add(site.Index)) continue;
@@ -245,7 +259,11 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// A ruined or replaced layout loses its machines and items. Its next objects are new, so saved layout state must not replay on repair.
+    /// The machines of layout objects that are gone, checked when the ruins, the towns' lists or the bought houses change: setting a house
+    /// destroyed destroys its interior's objects (<c>Building::setDestroyed</c> <c>FUN_140557280</c> -> <c>FUN_14054f4d0</c>,
+    /// docs/game/buildings-production.md "A ruin holds no furniture"), buying it does too (<see cref="Locks.FixtureRegistry.IsEmptied"/>,
+    /// docs/simulation.md "Town house purchases"), and a house laid out again has other objects. Each such machine goes with its items; an object of
+    /// a house that is a ruin waits for it to stand again (<see cref="MadeTownMachine"/>) and is made new then; a bought house's never comes back.
     /// </summary>
     void DropGonePieces(World world, PopulationData data)
     {
@@ -266,7 +284,33 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// Whether the canonical site's record and placement still belong to a standing, furnished house.
+    /// The machines of the objects of each house a town override furnished anew since the last look (<see cref="FixtureRegistry.RebuiltHouses"/>)
+    /// go with their items, its layout's names the same or not: the override's housing clears the interior and lays it out again
+    /// (<c>FUN_14092e4b0</c>), so each object made again is new.
+    /// </summary>
+    void DropRebuilt(World world)
+    {
+        var rebuilt = world.Fixtures.RebuiltHouses;
+        if (_rebuiltSeen == rebuilt.Count) return;
+
+        for (; _rebuiltSeen < rebuilt.Count; _rebuiltSeen++) DropHouse(world, rebuilt[_rebuiltSeen]);
+        world.Machines.Touch();
+    }
+
+    /// <summary>
+    /// Drops the machines of a house's layout objects and marks its objects destroyed, so none made again takes the save's entry.
+    /// </summary>
+    void DropHouse(World world, string house)
+    {
+        foreach (var site in world.Buildings.All
+            .Where(s => s.LevelMachine && FixtureRegistry.TownMachineParent(s) == house).ToArray()) DropPiece(world, site);
+        if (TownBuildingOf(world, house) is { } found) world.SavedMachines?.InvalidateLayout(found.Building);
+        world.Fixtures.SavedPieces?.InvalidateHouse(house);
+    }
+
+    /// <summary>
+    /// Whether a town machine site is a layout object's that is gone: no longer in its house's layouts (another record or place under its id) or
+    /// its house is a ruin.
     /// </summary>
     bool IsPieceGone(World world, BuildSite site)
     {
@@ -301,12 +345,13 @@ public sealed partial class ProductionSystem
 
     /// <summary>
     /// Whether a waiting town building or layout object has its machine now: it had one, or its building stands and it gets it (a ruin keeps
-    /// waiting).
+    /// waiting); an object of a bought house gets none and waits no more (the purchase destroyed it).
     /// </summary>
     bool MadeTownMachine(World world, TownBuilding building, TownLayoutBuilding? piece, int owner)
     {
         string id = piece is null ? TownWorkId(building) : piece.Id;
         if (world.Machines.Find(id) is not null) return true;
+        if (piece is not null && world.Fixtures.IsEmptied(building.Key)) return true;
         if (world.Fixtures.IsDestroyed(building)) return false;
 
         return (piece is null ? TownWork(world, building, owner) : PieceWork(world, building, piece, owner)) is not null;

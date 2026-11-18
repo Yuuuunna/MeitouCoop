@@ -421,7 +421,7 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
     void BuyAnimals(World world, Interaction state, CharacterTrade t, int seller, List<(int Slot, CharacterCold Cold, long Price)> chosen, long total)
     {
         var table = world.Characters;
-        int free = data.Bodies.Constants.MaxFactionSize - DialogueSystem.PlayerHeads(world, t.Context.Faction);
+        int free = data.Bodies.Constants.MaxFactionSize - Factions.SquadManagement.CappedHeads(world, t.Context.Faction);
         if (!table.TryResolveNext(t.Player, out int targetSlot) || table.Cold(targetSlot) is not { } target) return;
         if (chosen.Count > free || chosen.Count > system.RecruitSpace(world, t.Context, target))
         {

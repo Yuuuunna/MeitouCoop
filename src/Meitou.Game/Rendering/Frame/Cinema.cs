@@ -97,7 +97,7 @@ enum CinemaKey
     F6,
 
     /// <summary>
-    /// With the editor open: plays from the playhead or stops.
+    /// With the editor open (in the game also in the free camera or on a camera the cinema holds): plays from the playhead or stops.
     /// </summary>
     Space,
 
@@ -151,6 +151,11 @@ sealed class Cinema(Func<WorldCamera> camera, Func<float> getHour, Action<float>
     /// Whether PageUp/PageDown zoom the lens (the viewer always; the game in the free camera and on a camera the cinema holds).
     /// </summary>
     public bool LensZoomLive => lensKeysAlways || LensKeys?.Invoke() == true;
+
+    /// <summary>
+    /// Puts the lens back to its default (Home's 50 degrees), silently.
+    /// </summary>
+    public void ResetLens() => camera().FieldOfView = DefaultFov;
 
     /// <summary>
     /// The viewer's keys file.
@@ -351,7 +356,8 @@ sealed class Cinema(Func<WorldCamera> camera, Func<float> getHour, Action<float>
                 EditorVisible = !EditorVisible;
                 Say(EditorVisible ? "timeline editor open (F6 closes)" : "timeline editor closed");
                 return true;
-            case CinemaKey.Space when EditorVisible: TogglePlay(fromPlayhead: true); return true;
+            // In the game's strategy camera Space stays the pause key, editor open or not.
+            case CinemaKey.Space when EditorVisible && LensZoomLive: TogglePlay(fromPlayhead: true); return true;
             case CinemaKey.Delete when EditorVisible: DeleteSelected(); return true;
             case CinemaKey.KeypadEnter:
                 if (shift && !Playing) StartRecording();
