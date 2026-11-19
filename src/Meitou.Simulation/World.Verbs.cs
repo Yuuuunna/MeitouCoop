@@ -80,10 +80,9 @@ public sealed partial class World
             return null;
 
         var town = Ai.AiSystem.TownAt(data, this, Characters.Next[t].Position);
-        int owner = town.Site >= 0
-            ? (town.Site < data.SiteFactions.Count ? data.SiteFactions[town.Site] : -1)
-            : Buildings.FindTown(town.PlayerTown)?.Owner ?? -1;
-        var ownership = town.IsNone ? TownOwnership.None : owner >= 0 && owner == (viewingFaction ?? Player.Faction) ? TownOwnership.Player : TownOwnership.Other;
+        int owner = town.Owner(this, data);
+        var ownership = town.IsNone ? TownOwnership.None
+            : owner >= 0 && owner == (viewingFaction ?? Player.Faction) ? TownOwnership.Player : TownOwnership.Other;
 
         // The ledger entry of the booking faction of the town's owner (FUN_140852010 with no faction given);
         // a caged target gets Pick Up whatever this says, so its prison owner is not asked.

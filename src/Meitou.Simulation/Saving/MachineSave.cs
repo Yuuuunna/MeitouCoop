@@ -86,8 +86,8 @@ public static partial class MachineSave
                 continue;
             }
             WriteKeys(state, m, world.GameHours);
-            if (WriteInventory(file, site.Zone, instance, null, Items(m)) is { } inventory)
-                inventory.Bools[OriginalSectionsKey] = true;
+            if (ChangedItems(m) is { } items) WriteInventory(file, site, instance, items);
+            if (ListedInventory(file, instance) is { } inventory) inventory.Bools[OriginalSectionsKey] = true;
         }
     }
 
@@ -124,8 +124,12 @@ public static partial class MachineSave
             && pieces.Of(LayoutPiece(site)) is { Fresh: false, State: { } nativeState } native)
         {
             WriteKeys(nativeState, machine, world.GameHours);
-            if (WriteInventory(native.Zone.File, native.Zone.Coordinate, native.Instance, null,
-                Items(machine, !SharedStorage(world, site, machine))) is { } nativeInventory) nativeInventory.Bools[OriginalSectionsKey] = true;
+            if (ChangedItems(machine) is { } nativeItems)
+                WriteInventory(native.Zone.File, native.Zone.Coordinate, native.Instance, null, nativeItems);
+            if (ListedInventory(native.Zone.File, native.Instance) is { } nativeInventory)
+                nativeInventory.Bools[OriginalSectionsKey] = true;
+            if (SharedStorage(world, site, machine))
+                parent.State.Strings.Remove(Locks.ContainerSave.KeyPrefix + site.Id[(site.Id.IndexOf('/') + 1)..]);
             return;
         }
 
@@ -142,7 +146,8 @@ public static partial class MachineSave
         WriteKeys(state, machine, world.GameHours);
 
         var references = InteriorReferences(state);
-        WriteInventory(file, site, references, Items(machine, !SharedStorage(world, site, machine)));
+        if (ChangedItems(machine, !SharedStorage(world, site, machine)) is { } items)
+            WriteInventory(file, site, references, items);
         string? inventory = references.States.FirstOrDefault(id => id != state.StringId);
         if (inventory is null) state.Strings.Remove(InteriorInventory);
         else state.Strings[InteriorInventory] = inventory;
@@ -165,17 +170,35 @@ public static partial class MachineSave
     }
 
     /// <summary>
-    /// A layout container's grid has one save owner, ContainerSave, even when a machine uses the same inventory.
+    /// Whether a layout container and machine share a grid. Its native entry is written with the machine; without one, ContainerSave owns the grid.
     /// </summary>
     static bool SharedStorage(World world, BuildSite site, Machine machine) => IsInteriorMachine(site)
         && machine.Storage is { } grid && ReferenceEquals(grid, world.Fixtures.Find(site.Id)?.Contents);
 
     /// <summary>
-    /// Replaces the building's inventory record with its items, or removes the record when it holds none.
+    /// The machine's items as saved (<see cref="Items"/>), or null when they are as its saved inventory loaded them (<see cref="Loaded"/>): that
+    /// record stays as it was, the original's own entries with it, also those the load could not place (a grid or stack a missing mod made larger).
+    /// </summary>
+    internal static List<SaveItem>? ChangedItems(Machine m, bool includeStorage = true)
+    {
+        var items = Items(m, includeStorage);
+        if (!includeStorage) return items;
+        return m.LoadedItems is { } loaded && SaveInventory.SameRecords(loaded, items) ? null : items;
+    }
+
+    /// <summary>
+    /// Notes the machine's items once its saved inventory is read (<see cref="ChangedItems"/>).
+    /// </summary>
+    internal static void Loaded(Machine m) => m.LoadedItems = Items(m);
+
+    /// <summary>
+    /// Replaces the building's inventory record with its items, or removes the record when it holds none: the record its instance lists (the
+    /// original's own, whatever its id), else <c>&lt;id&gt;-inventory</c>, marked as holding the original's sections.
     /// </summary>
     static void WriteInventory(SaveFile file, BuildSite site, FcsInstance instance, List<SaveItem> saveItems)
     {
-        if (WriteInventory(file, site.Zone, instance, site.Id + InventorySuffix, saveItems) is { } inventory)
+        string? id = ListedInventory(file, instance) is null ? site.Id + InventorySuffix : null;
+        if (WriteInventory(file, site.Zone, instance, id, saveItems) is { } inventory)
             inventory.Bools[OriginalSectionsKey] = true;
     }
 
@@ -348,7 +371,7 @@ public static partial class MachineSave
     /// <summary>
     /// A storage grid's saved items with Meitou's <c>main</c> named as the original's grid section (<see cref="SavedKit.FromInventory"/>).
     /// </summary>
-    static IEnumerable<SaveItem> StorageItems(Inventory s) =>
+    internal static IEnumerable<SaveItem> StorageItems(Inventory s) =>
         s.Items
             .Where(i => !InventoryCommands.IsLimbSection(i.Section))
             .Select(StorageItem);
@@ -369,6 +392,7 @@ public static partial class MachineSave
             if ((!allOwners && site.Owner != world.Player.Faction) || production.Data(site.Record) is null) continue;
             if (production.Ensure(world, site) is { } machine) world.SavedMachines!.Apply(world, production, site, machine);
         }
+        world.Machines.Touch();
     }
 
     /// <summary>
@@ -403,19 +427,28 @@ public static partial class MachineSave
             }
         }
 
-        if (includeStorage && m.Storage is { } grid && storage.Count > 0)
-        {
-            foreach (var item in SavedKit.ToGrid(storage, factory, grid.Width, grid.Height).Items)
-            {
-                // A furnace's in1 and any other building's backpack_content are Meitou's storage grid main.
-                if (m.Data.IsFurnace || item.Section == StorageSection) item.Section = "main";
+        if (includeStorage && m.Storage is { } grid) PutInGrid(grid, storage, factory, m.Data.IsFurnace);
+    }
 
-                // A grid that is now smaller (a storage sized from its one item) gets an item that no longer fits at the next free cell, as the
-                // original's loader does.
-                bool fits = item.X >= 0 && item.Y >= 0 && item.X + item.Width <= grid.Width && item.Y + item.Height <= grid.Height
-                    && grid.IsFree(item.Section, item.X, item.Y, item.Width, item.Height);
-                if (fits || grid.Add(item) is false && item.Quantity > 0) grid.Items.Add(item);
-            }
+    /// <summary>
+    /// Puts a storage grid's saved items into it at their saved cells: a furnace's <c>in1</c> and any other grid's <c>backpack_content</c> are
+    /// Meitou's <c>main</c>.
+    /// </summary>
+    internal static void PutInGrid(Inventory grid, List<SaveItem> storage, ItemFactory factory, bool furnace)
+    {
+        if (storage.Count == 0) return;
+
+        foreach (var item in SavedKit.ToGrid(storage, factory, grid.Width, grid.Height).Items)
+        {
+            if (furnace || item.Section == StorageSection) item.Section = "main";
+
+            // A grid that is now smaller (a storage sized from its one item) gets an item that no longer fits at the next free cells, and
+            // loses what finds no room, as the original's loader (FUN_14074c0e0, docs/game/ui-screens.md "Loading a saved inventory"). Kept
+            // overlapping, it moved and split again at every load.
+            bool fits = item.X >= 0 && item.Y >= 0 && item.X + item.Width <= grid.Width && item.Y + item.Height <= grid.Height
+                && grid.IsFree(item.Section, item.X, item.Y, item.Width, item.Height);
+            if (fits) grid.Items.Add(item);
+            else grid.Add(item);
         }
     }
 
@@ -589,9 +622,12 @@ public static partial class MachineSave
             else if ((_pieces ??= new SavedPieces(Source)).Of(LayoutPiece(site)) is { Fresh: false } native)
             {
                 string suffix = site.Id[(site.Id.IndexOf('/') + 1)..];
+                bool parentStorage = parent?.State.Strings.ContainsKey(Locks.ContainerSave.KeyPrefix + suffix) == true;
                 bool shared = SharedStorage(world, site, machine)
-                    && parent?.State.Strings.ContainsKey(Locks.ContainerSave.KeyPrefix + suffix) == true;
+                    && (parentStorage || world.Fixtures.Find(site.Id)?.LoadedContents is not null);
                 RestoreSite(native.Zone, native.Instance, machine, production, factory, shared);
+                // The parent grid superseded the native entry. Write it there before capture removes that fallback key.
+                if (shared && parentStorage) machine.LoadedItems = null;
                 if (native.State is { } original && machine.Data.IsBattery)
                     machine.PowerOn = original.Bools.GetValueOrDefault("power on");
                 restored = HasNativeMachineState(native.Zone, native.Instance);
@@ -704,7 +740,9 @@ public static partial class MachineSave
         if (inventory is null) return;
         bool fromZero = !inventory.Bools.GetValueOrDefault(OriginalSectionsKey)
             && (inventory.StringId == instance.Id + InventorySuffix || state?.Bools.GetValueOrDefault("meitou machine state") == true);
-        PutItems(m, SaveInventory.Read(zone.File, inventory), factory, fromZero, includeStorage: !sharedStorage);
+        var items = SaveInventory.Read(zone.File, inventory);
+        PutItems(m, items, factory, fromZero, includeStorage: !sharedStorage);
+        if (!fromZero && !items.Any(item => item.Section == "in0")) Loaded(m);
     }
 
 }

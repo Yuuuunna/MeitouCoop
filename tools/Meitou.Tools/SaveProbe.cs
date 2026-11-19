@@ -77,13 +77,24 @@ static class SaveProbe
             case ("crowd", >= 1): Crowd(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 40); return true;
             case ("fight", >= 1): Fight(probe, int.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 40); return true;
             case ("crime", >= 1): Crime(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 10); return true;
+            case ("meet", >= 2):
+                Meet(probe, a[0], a[1], a.Count > 2 ? float.Parse(a[2]) : 300, a.Count > 3 ? int.Parse(a[3]) : 20, a.Count > 4 ? int.Parse(a[4]) : 10,
+                    a.Count > 5 && a[5] == "forget");
+                return true;
             case ("bait", >= 1): Bait(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("squads", >= 1): Squads(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("watch", >= 1): Watch(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 10); return true;
             case ("medic", >= 1): MedicProbe.Run(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 30, a.Count > 2 ? int.Parse(a[2]) : 20); return true;
+            case ("treat", >= 1):
+                TreatProbe.Run(probe, a[0], a.Count > 1 && a[1] != "-" ? a[1] : null, a.Count > 2 ? int.Parse(a[2]) : 30, a.Count > 3 ? int.Parse(a[3]) : 20);
+                return true;
             case ("turrets", >= 4):
                 TurretProbe.Run(probe, a[0], int.Parse(a[1]), new Vector2(float.Parse(a[2]), float.Parse(a[3])),
                     a.Count > 4 ? int.Parse(a[4]) : 10, a.Count > 5 ? int.Parse(a[5]) : 40);
+                return true;
+            case ("stage", >= 4):
+                StageProbe.Run(probe, new Vector2(float.Parse(a[0]), float.Parse(a[1])), a[2], a[3], a.Count > 4 ? int.Parse(a[4]) : 30,
+                    a.Count > 5 ? int.Parse(a[5]) : 1000);
                 return true;
             case ("anim", >= 1): AnimationProbe.Run(probe, float.Parse(a[0]), a.Count > 1 ? int.Parse(a[1]) : 30, a.Count > 2 ? a[2] : null); return true;
             case ("assault", >= 1): Assault(probe, a[0], a.Count > 1 ? int.Parse(a[1]) : 10, a.Count > 2 ? int.Parse(a[2]) : 40); return true;
@@ -130,7 +141,7 @@ static class SaveProbe
             case ("mine", >= 4): MineRock(probe, a[0], Point(a, 1), a.Count > 4 ? int.Parse(a[4]) : 10); return true;
             case ("research", _): Research(probe); return true;
             case ("nests", _): Nests(probe); return true;
-            case ("heights", >= 2) when probe.Nav is not null: Heights(probe, float.Parse(a[0]), float.Parse(a[1])); return true;
+            case ("heights", >= 2) when probe.Nav is not null: HeightsAt(probe, a); return true;
             case ("path", >= 3) when probe.Nav is not null: PathTo(probe, a); return true;
             case ("walk", >= 1) when probe.Nav is not null: Walk(probe, a); return true;
             case ("ray", >= 6) when probe.Nav is not null: Ray(probe, Point(a, 0), Point(a, 3)); return true;
@@ -330,8 +341,75 @@ static class SaveProbe
     }
 
     /// <summary>
+    /// Heals the characters named like <paramref name="name"/> (<see cref="DebugHeal"/>, limbs too) and puts them <paramref name="gap"/> from the
+    /// first character named like <paramref name="near"/> (#807: a healed player character meeting the noble hunters), that one's squad first
+    /// dropping its TEMP_ENEMY tag on them with <paramref name="forget"/>; then every <paramref name="interval"/> ticks, <paramref name="rounds"/>
+    /// times, the lines said and how each member of that squad senses the first of them, whom it fights and what the squad remembers of it.
+    /// </summary>
+    static void Meet(ProbeWorld probe, string name, string near, float gap, int rounds, int interval, bool forget)
+    {
+        var world = probe.World;
+        var t = probe.Characters;
+        var movers = probe.Named(name).Select(t.IdOf).ToList();
+        if (movers.Count == 0 || probe.Named(near) is not [int host, ..])
+        {
+            Console.WriteLine("no such characters");
+            return;
+        }
+
+        // Out of everyone's senses first, so no looker holds them quiet from the first look (SightSystem): then healed and brought over.
+        world.Commands.Enqueue(new DebugTeleport(movers, t.Next[host].Position + new Vector3(0, 0, AwaySpot)) { Tick = world.Tick });
+        probe.Tick(AwayTicks);
+        var to = t.Next[host].Position + new Vector3(gap, 0, 0);
+        world.Commands.Enqueue(new DebugHeal(movers, Limbs: true) { Tick = world.Tick });
+        world.Commands.Enqueue(new DebugTeleport(movers, to) { Tick = world.Tick });
+        world.ViewPosition = to;   // the camera on the meeting: the NPCs there are in view and get their update turns
+        if (forget && world.Systems.OfType<DialogueSystem>().FirstOrDefault() is { } talk)
+            foreach (var id in movers) talk.Memory.ClearShort(t.Cold(host)!.SquadId, id, MemoryTag.TempEnemy);
+        Console.WriteLine($"{movers.Count} healed and sent {gap:F0} from {probe.Who(host)}{(forget ? ", TEMP_ENEMY dropped" : "")}");
+        for (int round = 0; round < rounds; round++)
+        {
+            probe.Tick(interval);
+            foreach (var line in world.TakeSaid()) Console.WriteLine($"  SAID {line.Owner}: {line.Text}");
+            foreach (string line in world.DialogueLines.Take()) Console.WriteLine($"  LOG {line}");
+            Console.WriteLine($"tick {world.Tick} {probe.Who(movers[0].Slot)}{Down(t.Cold(movers[0].Slot)!)} target={Target(probe, movers[0].Slot)}");
+            MetBy(probe, world.Squads.Find(t.Cold(host)!.SquadId), movers[0]);
+            probe.PrintMessages();
+        }
+    }
+
+    /// <summary>
+    /// How far off <see cref="Meet"/> first sends its characters, and for how many ticks.
+    /// </summary>
+    const float AwaySpot = 3000;
+    /// <summary>
+    /// The ticks <see cref="Meet"/>'s characters stay away (several sight rounds of every looker).
+    /// </summary>
+    const int AwayTicks = 200;
+
+    /// <summary>
+    /// How each member of <paramref name="squad"/> senses <paramref name="who"/> (seen, heard or stale, and its tags), whom it fights and what
+    /// its squad remembers of it.
+    /// </summary>
+    static void MetBy(ProbeWorld probe, Squad? squad, CharacterId who)
+    {
+        var t = probe.Characters;
+        var memory = probe.World.Systems.OfType<DialogueSystem>().FirstOrDefault()?.Memory;
+        foreach (var m in squad?.Members ?? [])
+        {
+            if (!t.TryResolveNext(m, out int i)) continue;
+
+            var sensed = Meitou.Simulation.Bodies.CharacterFacts.Senses(probe.World, i)?.Entries
+                .FirstOrDefault(e => e.Target == who.Slot && e.Generation == who.Generation);
+            string sense = sensed is { } e ? $"{(e.Seen ? "seen" : e.Heard ? "heard" : "stale")}/{e.Tags}" : "-";
+            Console.WriteLine($"  {probe.Who(i)} senses={sense} target={Target(probe, i)} tags=[{Tags(probe, memory, t.Cold(i)!.SquadId, who)}]");
+        }
+    }
+
+    /// <summary>
     /// The characters named like <paramref name="name"/> as the law sees them every <paramref name="interval"/> ticks, <paramref name="rounds"/>
-    /// times: the pending crime, bounties and wanted flags, then everyone who targets one with its goal and its squad's memory tags of it.
+    /// times: the lines said, the pending crime, bounties and wanted flags, then everyone who targets one with its goal and its squad's memory tags
+    /// of it.
     /// </summary>
     static void Crime(ProbeWorld probe, string name, int rounds, int interval)
     {
@@ -342,6 +420,7 @@ static class SaveProbe
 
         for (int round = 0; round < rounds; round++)
         {
+            foreach (var line in probe.World.TakeSaid()) Console.WriteLine($"  SAID {line.Owner}: {line.Text}");
             foreach (int slot in probe.Named(name))
             {
                 string law = CrimeLine(probe, memory, slot);
@@ -396,7 +475,22 @@ static class SaveProbe
         var bounties = c.Bounties?.Entries.Select(e => $"{probe.Faction(e.Faction)}:{e.Amount}{(e.Claimed ? "/claimed" : "")}"
             + (relations.Contains(e.Faction) && relations.Contains(c.Faction) ? $" relation={relations.Get(e.Faction, c.Faction):F0}" : "")) ?? [];
         return $"pending=[{pending}] bounties=[{string.Join(", ", bounties)}] recentlyWanted={c.RecentlyWanted:F0} freed={c.Freed} "
-            + $"escaped={c.Escaped} ordered={c.Ordered} row={c.Running?.Row} imprisoned={c.IsImprisoned} squadEnemies={enemies}";
+            + $"escaped={c.Escaped} ordered={c.Ordered} row={c.Running?.Row} imprisoned={c.IsImprisoned} squadEnemies={enemies} "
+            + $"door=[{DoorWork(probe, slot, c)}]";
+    }
+
+    /// <summary>
+    /// The door, gate or lock the character works (a bash, or its way through a locked door): the fixture with its owner and place, whether it is
+    /// a way through, an errand or an order, the building the character stands in and its goal; "-" when it works none.
+    /// </summary>
+    static string DoorWork(ProbeWorld probe, int slot, CharacterCold c)
+    {
+        if (c.Bashing is not { } id) return "-";
+
+        var f = probe.World.Fixtures.Find(id);
+        string fixture = f is null ? id : $"{id} {f.Kind} gate={f.IsGate} owner={probe.Faction(f.Owner)} building={f.Building} at={f.Position:F0}";
+        return $"{fixture} way={c.DoorWay is not null} errand={c.BashErrand} ordered={c.BashOrdered} time={c.BashTime:F1} "
+            + $"in={probe.World.Sight.BuildingOf(slot) ?? "-"} goal={c.Ai?.Goal?.Task.Type}";
     }
 
     /// <summary>
@@ -1446,6 +1540,18 @@ static class SaveProbe
     }
 
     /// <summary>
+    /// <c>heights x z [x z...]</c>: <see cref="Heights"/> at each point, after the point when there are several.
+    /// </summary>
+    static void HeightsAt(ProbeWorld probe, List<string> a)
+    {
+        for (int k = 0; k + 1 < a.Count; k += 2)
+        {
+            if (a.Count > 2) Console.Write($"{a[k]} {a[k + 1]}: ");
+            Heights(probe, float.Parse(a[k]), float.Parse(a[k + 1]));
+        }
+    }
+
+    /// <summary>
     /// The terrain height and every navmesh floor height at a world point.
     /// </summary>
     static void Heights(ProbeWorld probe, float x, float z)
@@ -1457,7 +1563,8 @@ static class SaveProbe
 
     /// <summary>
     /// <c>path [x y z] x y z</c>: the path a human walker gets, as the game asks it, from the leader (or the first point when six numbers are given)
-    /// to a point: whether one was found, where its provisional part starts, its points and how far its end is from the goal. Needs <c>--nav</c>.
+    /// to a point: whether one was found, where its provisional part starts, its points and how far its end is from the goal; one that stops short of
+    /// it, with the polygon chain a search without clearance takes there and the widest walker each step lets by. Needs <c>--nav</c>.
     /// </summary>
     static void PathTo(ProbeWorld probe, List<string> a)
     {
@@ -1469,6 +1576,9 @@ static class SaveProbe
         Console.WriteLine($"path {from:F1} -> {to:F1}: found={path.Found} exact={exact} points={path.Points.Count}");
         foreach (var p in path.Points) Console.WriteLine($"  {p:F1}");
         if (path.Points.Count > 0) Console.WriteLine($"  end {Vector3.Distance(path.Points[^1], to):F1} from the goal");
+
+        bool arrived = path.Points.Count > 0 && Vector3.Distance(path.Points[^1], to) <= 2;
+        if (!arrived) NavmeshTool.DescribeNoPath(probe.Nav.Walkability.World, from, to, verbose: true);
     }
 
     /// <summary>
@@ -1832,12 +1942,16 @@ static class SaveProbe
               crowd <radius> [rounds] [interval]  characters near the leader every interval (40) ticks: down, water state, goal, load, fight target
               fight <slot> [rounds] [interval]  a character's combat state and body, and everyone targeting it: gap, blows thrown and landed
               crime <name> [rounds] [interval]  a character's saved squad memory, then its pending crime, bounties and who targets it with which tags
+              meet <name> <near> [gap] [rounds] [interval] [forget]  heals <name>, puts it gap from <near> (forget: its squad drops TEMP_ENEMY),
+                                       then the lines said and how that squad senses, fights and remembers it
               nests                    the wild layout's nests whose first candidate spot the original would refuse
               bait <radius> [rounds]   send the player's squad after the nearest other squad each round, listing squads as squads does
               squads <radius> [rounds]  the other squads near the leader: leader state, goal, members' spread every 40 ticks
               watch <name> [rounds]    a character's task, AI, fight target, hunger and decision trace every 40 ticks (default 10 rounds)
               medic <name> [rounds] [interval]  a medic's treatment and decision every interval (20) ticks; each downed character in sight: need, senses, sight test, ray (#843)
+              treat <medic> [patient|-] [rounds] [interval]  order a treatment (- or none: itself); task, posture and each leg every interval (20) ticks (#898)
               turrets <character> <count> <x> <z> [rounds] [interval]  spawn hostiles there; the turret squads near: goals, claims, enemies, gunners
+              stage <x> <z> <faction:template> <faction:template> [rounds] [interval]  two squads spawned there; each: size, KO, slaves, carried, centre
               anim <radius> [ticks] [name]  the animation layers of the seated characters near the leader (or those named) each tick, then each clip's rate
               assault <name> [rounds] [interval]  the player's squad attacks a named character; who is near, indoors or out, and how each senses the leader
               move <name> <x> <z> [rounds]  order a character to walk to a point, then watch it
@@ -1858,7 +1972,7 @@ static class SaveProbe
               hire <name|-|#platoon> <jump|walk> <dx> [rounds] [interval] [save folder]
                                        a squad near the leader hired as bodyguards, the player sent dx along X: the hired platoon each round
               places <radius> [step]   the place test over the walkable surface round the leader (needs --nav): outdoor-mesh points it puts indoors, and the reverse
-              path [x y z] <x y z>     the path a walker gets from the leader (or a point) to a point (needs --nav): points, end, provisional part
+              path [x y z] <x y z>     the path a walker gets from the leader (or a point) to a point (needs --nav): points, end, provisional part; short of it, the polygon chain
               walk <name> [x y z] [rounds]  a character walks (to a point, at its height): position, goal, goal height, walk end (needs --nav)
               ray <x y z> <x y z>      the sight ray between two points (needs --nav): where it first hits the terrain or a building
               sightlines <x y z> <radius> [step] [spread]  walkable points whose spot-meter ray reaches the spot (or each spot within spread), with places
@@ -1875,7 +1989,7 @@ static class SaveProbe
               platoons <radius>        the save's platoons near the leader: faction, template, file, characters, base and home town
               research                 the research state and each bench's rate factors
               resave                   re-write the buildings into the save and list ids held by two zones
-              heights <x> <z>          terrain and navmesh heights at a point (needs --nav)
+              heights <x> <z>...       terrain and navmesh heights at each point (needs --nav)
               layout <building key> [buy [save folder]]  a town building (zone:instance id): layout names now, ruin state, its interior layout's
                                        objects and the camp round it; buy: the player buys it and the camp is listed again; a save folder: its
                                        rebuild finished, the world is saved there (needs --nav)

@@ -193,7 +193,9 @@ and keeps those leg ragdoll bits on; the character tick `FUN_1405d00b0` sets pos
 KenshiLib 1ce4a16 names): posture 3 is chosen on getting up when `isItSafeToGetUp` fails, and kept while it does (the test
 runs each tick while WHOLE). Safe: the character's `SensoryData::numEnemies` (`+0x94`) is 0, or its state broadcast's slave
 state is 1 (a slave), or `numConsciousAllies` (`+0x4c`) is above 0 (sensed allies in posture 0, not unconscious or dead). A
-player order gets it up (1 when sneaking), as does a thief's watcher noticing.
+player order gets it up (1 when sneaking), as does a thief's watcher noticing. It is awake to its AI (**Verified**, `FUN_1405d00b0`: posture 3
+is reached only while `FUN_140598c20` holds, medical `+0x161` knocked out and `+0x164` dead clear, and the AI update then runs as an awake
+one's); that its Medic job then treats it where it lies is **Observed** (#870, the original's behaviour as reported) ([medic jobs](ai-tasks.md#medic-jobs)).
 - Counts (`FUN_1408593d0`, per sensed character): `numEnemies` (`+0x94`) and `numNeutrals` (`+0x98`) skip the unconscious
   (vfunc 0x30), the dead (`+0x5bc`) and the carried (`+0x3d4`), so downed enemies do not count; allies count in
   `FUN_1408580d0` (above).
@@ -208,7 +210,8 @@ player order gets it up (1 when sneaking), as does a thief's watcher noticing.
   the blood ends a knockout on the tick it heals, which no window foresees: one whose senses faded (`SenseBlock.Faded`, not carried
   or a slave) is held down, unconscious, until its next look (`MedicalContext.GetUpUnasked`, engine choice), then asked; a player
   order standing it up grants the toughness (`BodySystem.GotUpByOrder`); animals never play dead. Rechecked every 15 ticks
-  (engine choice). `MedicalState.StandUp` ends it. Health header: `HudText.HealthWord`.
+  (engine choice). `MedicalState.StandUp` ends it. Health header: `HudText.HealthWord`. The medic gates read it as awake
+  (`FirstAidSystem.Awake`), and `BodySystem` keeps its treatment of itself.
 
 ## Bodies: kinematic or simulated
 
@@ -401,7 +404,7 @@ within 300 units of the camera (330 once dangling); farther it follows the anima
   passed 0.86. So a waker staying low or crawling (tasks 52) is let go when the 0.75 s blend ends, at once without one; posture 0 (65) stands
   through the clip. Its end clears `+0x278` (getting up) and sets the posture (vfunc 0x370).
 - Also run when a crawler's leg comes back up (posture 2 to 0, `FUN_1405c7e20`; **Observed**): no ragdoll, so no blend, and the character stands through `standing up 3` (clip past 0.86). Meitou: `CombatSystem.Act` holds it
-  (`GetUpClipSeconds`) and `AnimationSystem` plays the clip (`CharacterAnimation.WasCrawling`); posture 1 to 0 (Stand Up) does the same since the setter queues 65 for every return to posture 0 (**Verified**, `FUN_1405c7e20`, `FUN_14033ca10` plays the clip whatever the posture) Checked offscreen in `--sandbox`: leg 80 below the KO point crawls the next tick, a heal 2 s later plays `standing up 3`.
+  (`GetUpClipSeconds`) and `AnimationSystem` plays the clip (`CharacterAnimation.WasCrawling`); one kneeling at a treatment (`FirstAidSystem.AtTreatment`) is neither held nor shown standing and stays at its treatment, as a crippled character treating its own leg did in the original ([Fixing Legs](ai-tasks.md#medic-jobs), **Observed**; the 7.45 s hold stopped the treatment while the untreated damage pulled the leg back down, so it fell and was knocked out again and again); posture 1 to 0 (Stand Up) does the same since the setter queues 65 for every return to posture 0 (**Verified**, `FUN_1405c7e20`, `FUN_14033ca10` plays the clip whatever the posture) Checked offscreen in `--sandbox`: leg 80 below the KO point crawls the next tick, a heal 2 s later plays `standing up 3`.
 - Events 23 / 24 / 25 fire from this start only when the posture flag is clear (**Verified**, `FUN_14033ca10`): a wake into posture 1 or 3 fires nothing, the later stand-up (posture 1 to 0) and a crawler's leg coming back (2 to 0) do. Meitou: `DialogueSystem.SeeGettingUp` remembers a character that is not standing (out cold, staying low, crawling) and fires when it stands.
 - The start (when it found a clip) copies the character's position into the Hold point (CharStats `+0x130`, **Verified** `FUN_14033ca10`).
 - Meitou (`CombatSystem.Act`): a waker staying low or crawling is held `RagdollSystem.GetUpBlend` after a whole-body ragdoll, else not at all,

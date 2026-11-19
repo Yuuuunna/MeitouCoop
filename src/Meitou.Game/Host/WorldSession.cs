@@ -141,6 +141,11 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     /// (a character flight, a cinema take); null: the rig's.
     /// </summary>
     public Vector3? ViewEye { get; set; }
+
+    /// <summary>
+    /// Local rendered interiors; a remote client never changes the authority's simulation gate.
+    /// </summary>
+    public IReadOnlySet<string>? ShownInteriors { get; set; }
     /// <summary>
     /// Where the frame is between the previous and the current control tick (camera interpolation).
     /// </summary>
@@ -166,12 +171,16 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         EnsureNotRunning();
         var floaters = World.Floaters;
         bool benchFacing = World.BenchFacingFix;
+        bool prisonPose = World.PrisonPoseFix;
+        bool fixGround = World.GroundRepair;
         bool bagSearch = World.BagSearchFix;
         bool takeIntoBackpack = World.TakeIntoBackpack;
         var next = _runtime.ReplaceWorld(systems, candidate =>
         {
             candidate.Floaters = floaters;
             candidate.BenchFacingFix = benchFacing;
+            candidate.PrisonPoseFix = prisonPose;
+            candidate.GroundRepair = fixGround;
             candidate.BagSearchFix = bagSearch;
             candidate.TakeIntoBackpack = takeIntoBackpack;
             setup?.Invoke(candidate);
@@ -308,6 +317,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         World.Daytime = Clock.IsDaytime;
         World.PhysicsSpeed = (float)(Simulation.Speed > 0 ? Simulation.Speed : Simulation.LastNonZeroSpeed);
         World.ViewPosition = ViewEye ?? Camera.Current.Eye;
+        World.ShownInteriors = World.Players.RequiresExplicitControl ? null : ShownInteriors;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         _runtime.Step(publish, Clock.TotalHours, Clock.IsDaytime);
         Measure(System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
@@ -349,6 +359,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
             starts[i] = (Clock.TotalHoursAt(seconds), Clock.IsDaytimeAt(seconds));
         World.PhysicsSpeed = (float)Simulation.Speed;
         World.ViewPosition = ViewEye ?? Camera.Current.Eye;
+        World.ShownInteriors = World.Players.RequiresExplicitControl ? null : ShownInteriors;
         _runner ??= new TickRunner();
         _runner.Start(_runtime, starts);
         _running = true;

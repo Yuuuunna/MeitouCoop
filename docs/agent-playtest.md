@@ -105,6 +105,7 @@ c help                                # one usage line per command; `c help <nam
 | `weather-sim` | `weather-sim <none|dust|acid|off>` (the weather the simulation reads everywhere; the sky keeps its own) |
 | `flies` | `flies` (each dead character: flies, effect shown, the weather there) |
 | `ko` | `ko [seconds] [--id <c:slot.gen>]` |
+| `look` | `look <x> <z> \| look off [--id <c:slot.gen>] \| look talk <c:slot.gen> \| look list` (debug head turning: a forced look point, not hashed; `talk` gives the selected character the Talk order; `list` the published look points) |
 | `layouts` | `layouts <building record id or name> [exterior]` |
 | `loot` | `loot <id>` |
 | `machines-power` | `machines-power [town number\|name]` |
@@ -143,6 +144,8 @@ c help                                # one usage line per command; `c help <nam
 | `task` | `task <text>` |
 | `vram` | `vram` (debug: device-local memory in use and the budget, MB) |
 | `terrain-height` | `terrain-height <x> <z> [radius step]` |
+| `ground-at` | `ground-at <x> <z>` (biome, overlay channel, GroundType, building floor and dust slot under a point; read-only) |
+| `dust-stats` | `dust-stats [reset \| on \| off]` (dry ground dust kicks: fired, refused by the full pool, pool use) |
 | `town` | `town <number\|name>` |
 | `towns` | `towns` |
 | `tp` | `tp <x> <z> \| tp <town name or number>` |

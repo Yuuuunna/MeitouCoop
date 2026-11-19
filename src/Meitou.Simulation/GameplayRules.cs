@@ -33,6 +33,18 @@ public sealed record GameplayRules
     public bool PunchReachFix { get; init; } = true;
     public bool BenchFacingFix { get; init; } = true;
     /// <summary>
+    /// Uses animal moves for natural weapons whose item category would choose an unavailable person animation.
+    /// </summary>
+    public bool AnimalMovesFix { get; init; } = true;
+    /// <summary>
+    /// Keeps wounded prisoners in their cage or pole pose.
+    /// </summary>
+    public bool PrisonPoseFix { get; init; } = true;
+    /// <summary>
+    /// Repairs original terrain holes and needles before navigation and presentation load their heightmaps.
+    /// </summary>
+    public bool GroundRepair { get; init; } = true;
+    /// <summary>
     /// Searches carried bags and the worn backpack during confiscation and scavenging.
     /// </summary>
     public bool BagSearchFix { get; init; } = true;
@@ -90,6 +102,9 @@ public sealed record GameplayRules
             GunnerFacesBarrel = combat?.GunnerFacesBarrel ?? true,
             PunchReachFix = combat?.PunchReachFix ?? true,
             BenchFacingFix = world.BenchFacingFix,
+            AnimalMovesFix = combat?.AnimalMovesFix ?? true,
+            PrisonPoseFix = world.PrisonPoseFix,
+            GroundRepair = world.GroundRepair,
             BagSearchFix = world.BagSearchFix,
             CagesSpareOwn = captives?.Settings.SpareOwnFaction ?? false,
             AnimalsPickUp = world.SystemOf<PlayerSystem>()?.AnimalsPickUp ?? false,
@@ -120,4 +135,9 @@ public sealed partial class World
     /// Host persistence policy, exposed to clients as a read-only rule; zero disables scheduled saves.
     /// </summary>
     public int AuthorityAutoSaveSeconds { get; set; } = 600;
+
+    /// <summary>
+    /// The terrain-repair choice captured before this world's content is loaded; retained through checkpoint replacement.
+    /// </summary>
+    public bool GroundRepair { get; set; } = true;
 }

@@ -12,15 +12,15 @@ public sealed record MatchedItem(ulong Id, long Updated);
 public sealed record BuiltInMod(string? ModName, string? CodeId, string Setting, MatchedItem[] Items);
 
 /// <summary>
-/// An RE_Kenshi mod whose plugin does not run in Meitou, with a code mod on the Steam workshop that does the same, offered as a suggestion
-/// (other ports may exist): the RE_Kenshi mod's <c>.mod</c> name and the workshop items that carry it, and the suggested mod's title,
-/// <c>.mod</c> name and workshop item.
+/// An RE_Kenshi mod whose plugin does not run in Meitou, with a port on the Steam workshop that Meitou endorses (docs/formats/rekenshi.md
+/// "Endorsed ports"; the port's source is its maintainer's, not this repository's): the RE_Kenshi mod's <c>.mod</c> name and the workshop
+/// items that carry it, and the port's title, <c>.mod</c> name, workshop item and maintainer.
 /// </summary>
-public sealed record SuggestedMod(string ModName, MatchedItem[] Items, string By, string ByModName, ulong ByWorkshopId);
+public sealed record EndorsedPort(string ModName, MatchedItem[] Items, string Port, string PortModName, ulong PortWorkshopId, string Maintainer);
 
 /// <summary>
 /// The mods Meitou covers, one table for the game (which takes in a built-in mod's settings and does not run its code mod) and the launcher
-/// (which notes both kinds on the Mods page and suggests a code mod for an RE_Kenshi one).
+/// (which notes both kinds on the Mods page and offers to subscribe to the endorsed port of an RE_Kenshi mod).
 /// </summary>
 public static class CoveredMods
 {
@@ -36,18 +36,34 @@ public static class CoveredMods
     public static readonly BuiltInMod XpPort = new(null, "player-only-xp", "Squad XP in the Advanced settings", []);
 
     /// <summary>
-    /// The mods Meitou has built in.
+    /// ikahurula's data mod "Swamp Turtle FIX" (workshop 2237731365, matched against its 2020-09-24 update): it gives the Swamp Turtle the
+    /// elephant creature weapon, whose moves the Swamp turtle attacks fix gives it.
     /// </summary>
-    public static IReadOnlyList<BuiltInMod> BuiltIn { get; } = [RekenshiXp, XpPort];
+    public static readonly BuiltInMod SwampTurtleFix =
+        new("Swamp Turtle FIX", null, "Swamp turtle attacks on the Fixes page", [new(2237731365, 1600962568)]);
 
     /// <summary>
-    /// The RE_Kenshi mods with a suggested code mod: Emkej's "Loot-Scoot-Execute" (workshop 3675700748, matched against its 2026-04-26 update,
-    /// and its "MCM fork" 3813852124, its 2026-11-13 update), with "[MeitouClient] Execution".
+    /// The mods Meitou has built in.
     /// </summary>
-    public static IReadOnlyList<SuggestedMod> Suggested { get; } =
-    [
-        new("Loot-Scoot-Execute", [new(3675700748, 1777211773), new(3813852124, 1794544300)], "[MeitouClient] Execution", "Execution", 3838346946),
-    ];
+    public static IReadOnlyList<BuiltInMod> BuiltIn { get; } = [RekenshiXp, XpPort, SwampTurtleFix];
+
+    /// <summary>
+    /// Emkej's "Loot-Scoot-Execute" (workshop 3675700748, matched against its 2026-04-26 update, and its "MCM fork" 3813852124, its 2026-11-13
+    /// update), with Jame's "[MeitouClient] Execution".
+    /// </summary>
+    static readonly EndorsedPort Execution = new(
+        "Loot-Scoot-Execute", [new(3675700748, 1777211773), new(3813852124, 1794544300)], "[MeitouClient] Execution", "Execution", 3838346946, "Jame");
+
+    /// <summary>
+    /// Shutori's "Proving Grounds" (workshop 3774745195, matched against its 2026-09-26 update), with roscatoday's "[Meitou] Proving Grounds".
+    /// </summary>
+    static readonly EndorsedPort ProvingGrounds = new(
+        "Proving Grounds", [new(3774745195, 1790470536)], "[Meitou] Proving Grounds", "ProvingGroundsMeitou", 3841575072, "roscatoday");
+
+    /// <summary>
+    /// The RE_Kenshi mods with an endorsed port on the Steam workshop.
+    /// </summary>
+    public static IReadOnlyList<EndorsedPort> Endorsed { get; } = [Execution, ProvingGrounds];
 
     /// <summary>
     /// The public wishlist of RE_Kenshi mods for Meitou (the roadmap's compatibility sheet), where players ask for one to be covered.
@@ -67,15 +83,15 @@ public static class CoveredMods
         BuiltIn.FirstOrDefault(c => c.ModName == modName || (codeId is not null && c.CodeId == codeId));
 
     /// <summary>
-    /// The entry suggesting a code mod for <paramref name="mod"/>, an RE_Kenshi plugin without code of its own, by its <c>.mod</c> name or its
-    /// workshop item; null when none does.
+    /// The endorsed port of <paramref name="mod"/>, an RE_Kenshi plugin without code of its own, by its <c>.mod</c> name or its workshop item;
+    /// null when it has none.
     /// </summary>
-    public static SuggestedMod? SuggestionOf(ModInfo mod)
+    public static EndorsedPort? PortOf(ModInfo mod)
     {
         if (!mod.HasNativePlugin || mod.HasCode) return null;
 
         ulong? item = WorkshopId(mod);
-        return Suggested.FirstOrDefault(r => r.ModName == mod.Name || (item is { } id && r.Items.Any(i => i.Id == id)));
+        return Endorsed.FirstOrDefault(r => r.ModName == mod.Name || (item is { } id && r.Items.Any(i => i.Id == id)));
     }
 
     /// <summary>
@@ -93,11 +109,11 @@ public static class CoveredMods
     }
 
     /// <summary>
-    /// Whether <paramref name="mods"/> hold the code mod <paramref name="suggested"/> names: a workshop mod by its item, a local mod (a copy in
-    /// Kenshi's mods folder) by its <c>.mod</c> name.
+    /// Whether <paramref name="mods"/> hold the port <paramref name="port"/> names: a workshop mod by its item, a local mod (a copy in Kenshi's
+    /// mods folder) by its <c>.mod</c> name.
     /// </summary>
-    public static bool HasSuggestion(SuggestedMod suggested, IEnumerable<ModInfo> mods) =>
-        mods.Any(m => WorkshopId(m) is { } id ? id == suggested.ByWorkshopId : m.Name == suggested.ByModName);
+    public static bool HasPort(EndorsedPort port, IEnumerable<ModInfo> mods) =>
+        mods.Any(m => WorkshopId(m) is { } id ? id == port.PortWorkshopId : m.Name == port.PortModName);
 
     /// <summary>
     /// The workshop item of <paramref name="mod"/>: a workshop mod's folder is named by its published file id. Null for a local mod.

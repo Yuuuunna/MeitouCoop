@@ -376,6 +376,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
             Share = TextureShare.For(gpu)
         };
         _rays = new FoliageRayScene(gpu, _textures, _zones);
+        NearFade = new FoliageNearFade(gpu);
         _lodJobs = new FoliageLodJobs(assets, Messages, Decode);
         bool metalGpuCull = Environment.GetEnvironmentVariable("MEITOU_METAL_GPU_CULL")is "1" or "true";
         _gpuCull = gpu is GpuContext || metalGpuCull ? new FoliageGpuCull(gpu) : null;
@@ -393,6 +394,11 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
     /// reflection and the shadow cascades never are.
     /// </summary>
     public bool PrepassView { get; set; }
+
+    /// <summary>
+    /// The near fade of large vegetation round the middle of the gameplay view (Meitou; the world frame opens it around the main view's draw).
+    /// </summary>
+    public FoliageNearFade NearFade { get; }
 
     /// <summary>
     /// Foliage drawn at all (the F key).
@@ -708,6 +714,42 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
     readonly HashSet<ZoneCoordinate> _candidates = [];
 
     /// <summary>
+    /// When and from where the zones were last ranked (<see cref="RankDue"/>): <see cref="Stopwatch.GetTimestamp"/>, the eye, the arrival.
+    /// </summary>
+    long _rankedAt;
+
+    /// <summary>
+    /// See <see cref="_rankedAt"/>.
+    /// </summary>
+    Vector3 _rankedEye;
+
+    /// <summary>
+    /// See <see cref="_rankedAt"/>.
+    /// </summary>
+    Vector3? _rankedArrival;
+
+    /// <summary>
+    /// At rest the zones are ranked this often (seconds), not every frame (<see cref="RankDue"/>).
+    /// </summary>
+    const double RankRest = 1.0 / 30;
+
+    /// <summary>
+    /// Whether this update ranks the zones (<see cref="GatherCandidates"/>, <see cref="RankWanted"/>: every zone within the far reach and round
+    /// each kept point, 0.47 ms a frame at a town with eight kept points). Every update while a layout is wanted or running, while settling, when
+    /// the arrival changes or the eye has moved 64 units since the last ranking; otherwise once in <see cref="RankRest"/>: nothing is wanted
+    /// then, so the ranking can only find that the eye's or a kept point's slow drift has brought a zone within a reach, which the prefetch
+    /// margin (half a zone) allows for many times over.
+    /// </summary>
+    bool RankDue(Vector3 eye, Vector3? arrival, bool settling)
+    {
+        long now = Stopwatch.GetTimestamp();
+        bool due = settling || _wanted.Count > 0 || _runningWhole + _runningFar > 0 || arrival != _rankedArrival
+            || Vector3.DistanceSquared(eye, _rankedEye) > 64 * 64 || Stopwatch.GetElapsedTime(_rankedAt, now).TotalSeconds >= RankRest;
+        if (due) (_rankedAt, _rankedEye, _rankedArrival) = (now, eye, arrival);
+        return due;
+    }
+
+    /// <summary>
     /// The field behind <see cref="Areas"/>.
     /// </summary>
     int _areas = 1;
@@ -772,6 +814,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
     /// One update: takes the finished layouts, drops the far zones, starts the wanted layouts, then the grass pages, meshes, levels, textures,
     /// uploads (within <paramref name = "settling"/>'s or the frame's budget) and atlases.
     /// </summary>
+
     void Update(Vector3 eye, bool settling)
     {
         if (!_ownership.SetEquals(_levels.FoliageOwnership))
@@ -787,8 +830,11 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
         var arrival = settling ? null : Ahead;
         float arrivalReach = nearReach + PrefetchMargin;
         var keptPoints = settling ? [] : Kept;
-        GatherCandidates(eye, farReach + ahead.Length(), arrival, arrivalReach, keptPoints);
-        RankWanted(eye, predicted, arrival, arrivalReach, keptPoints, (nearReach, farReach, wholeReach));
+        if (RankDue(eye, arrival, settling))
+        {
+            GatherCandidates(eye, farReach + ahead.Length(), arrival, arrivalReach, keptPoints);
+            RankWanted(eye, predicted, arrival, arrivalReach, keptPoints, (nearReach, farReach, wholeReach));
+        }
         StartLayouts(layouts);
         NearestMissingMesh = float.PositiveInfinity;
         UpdateGrass(eye, keptPoints, settling);
@@ -1284,9 +1330,10 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
     /// </summary>
     const int MaxGrassJobs = 12;
     /// <summary>
-    /// Grass pages generating at once under the loading screen: at least four per streaming thread.
+    /// Grass pages generating at once under the loading screen: sixteen per streaming thread. The covered frames run at some 35 a second, so this
+    /// bounds the pages a second; at four per thread a save's 11 000 near pages took 6.5 s, the threads two thirds idle.
     /// </summary>
-    static readonly int CoveredGrassJobs = Math.Max(MaxGrassJobs, 4 * BackgroundWork.Threads);
+    static readonly int CoveredGrassJobs = Math.Max(MaxGrassJobs, 16 * BackgroundWork.Threads);
     /// <summary>
     /// The page walk's wanted pages: distance (the eye's, else past all of the eye's for a kept point's), zone and page key.
     /// </summary>
@@ -1642,7 +1689,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
 
         for (int i = 0; i < picked; i++)
         {
-            var (_, state, key) = _grassPicks[i];
+            var (pickedAt, state, key) = _grassPicks[i];
             _grassPicks[i] = default;
             StartGrassPage(state, key);
         }
@@ -1796,6 +1843,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
             a.Size = FoliageSizes.Size(a.Radius, a.Mesh);
             a.SizeClass = FoliageSizes.Classify(a.Size);
             a.LargeBillboard = FoliageSizes.LargeBillboard(a.Radius, a.Mesh);
+            a.Vegetation = FoliageSizes.IsVegetation(a.Mesh.MeshPath);
             a.Triangles = main.Parts.Sum(p => p.Indices.Length / 3) + (leaves?.Parts.Sum(p => p.Indices.Length / 3) ?? 0);
             a.HasBounds = true;
             a.TriExtent = FoliageScreenLod.TriangleExtent(Triangles(main).Concat(leaves is null ? [] : Triangles(leaves)));
@@ -2325,7 +2373,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
 
         if (gpu)
         {
-            _gpuResult = DispatchGpuCull(new Vector2(eye.X, eye.Z), terrain, coverage);
+            _gpuResult = DispatchGpuCull(eye, terrain, coverage);
             if (_gpuResult.IsEmpty)   // the scratch memory is over its cap: this view has no foliage this frame
             {
                 _meshDraws.Clear();
@@ -2524,6 +2572,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
         LastCullGroups = _cullWork.Count;
         var eyeXz = new Vector2(eye.X, eye.Z);
         var view = _cullView;
+        var near = _depthPass ? default : NearFade.CullVector(eye.Y);   // the near fade (FoliageNearFade): the main colour view's vegetation
 
         // The Hub has well over a thousand groups; one work item per group spends more time in the job queue than in the
         // short cull. Each chunk writes its groups' own outputs, so the order and results are unchanged.
@@ -2541,7 +2590,8 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
                         g.Asset.Radius);   // the mesh's bounds are known once it is resident, and never change
                     g.SpheresReady = true;
                 }
-                FoliageCull.CullGroup(g.Instances, range, eyeXz, view, record, _cullOutputs[k], parts, record ? null : FogCull);
+                FoliageCull.CullGroup(g.Instances, range, eyeXz, view, record, _cullOutputs[k], parts, record ? null : FogCull,
+                    g.Asset.Vegetation ? near : default);
             }
         });
         for (int k = 0; k < _cullWork.Count; k++)
@@ -2952,6 +3002,7 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
                     : b >= impostorFirst ? FoliageCullChunk.Impostor
                     : FoliageCullChunk.Rock | (_gpuRockOrder[b - meshBatches].Mirrored ? FoliageCullChunk.Mirrored : 0)
                         | (e.ImpostorMesh ? FoliageCullChunk.ImpostorMesh : 0);
+                if (b < meshBatches && g.Asset.Vegetation) flags |= FoliageNearFade.ChunkFlag;
                 float lodError = 0, lodNext = float.PositiveInfinity;
                 if (b >= meshBatches && b < impostorFirst && _gpuRockOrder[b - meshBatches].Asset.WorkLod is { } workLod)
                 {
@@ -3067,8 +3118,9 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
     /// Records this view's cull ahead of the frame: the chunks (once a frame per work list), one draw per mesh draw (its batch's chunks), then one
     /// per rock draw.
     /// </summary>
-    FoliageCullResult DispatchGpuCull(Vector2 eye, TerrainRenderer terrain, bool coverage)
+    FoliageCullResult DispatchGpuCull(Vector3 eye3, TerrainRenderer terrain, bool coverage)
     {
+        var eye = new Vector2(eye3.X, eye3.Z);
         var cull = _gpuCull!;
         var frame = Gpu.Frame;
         if (_gpuChunkFrame != frame.Number)
@@ -3116,8 +3168,11 @@ public sealed unsafe partial class FoliageRenderer : IDisposable
         // The interior cut (main colour view): with the split, the fully visible instances over a mask go with the fading ones, to the program with
         // the cut.
         var interior = split && InteriorCut is { Active: true } mask ? mask.Boxes : null;
+
+        // The near fade (FoliageNearFade): open only around the main colour view's draw.
+        var near = _depthPass ? default : NearFade.CullVector(eye3.Y);
         var result = cull.Dispatch(new FoliageCullWork(_gpuChunkData, _gpuChunkCount, draws, count) { Instances = _gpuInstances }, _cullView, eye,
-            in rock, 0.999f, fogOn ? fog : default, occlusionOn ? Occlusion : default, _lodView, split, interior);
+            in rock, 0.999f, fogOn ? fog : default, occlusionOn ? Occlusion : default, _lodView, split, interior, near);
         if (occlusionOn && cull.OccludedIsFresh) OccludedInstances = cull.LateOccluded;
         DrawnInstances += cull.LateVisible;
         if (fogOn && cull.LateFogCulled > 0)

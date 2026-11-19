@@ -36,6 +36,14 @@ public sealed record PlayerFactionView(int Faction, string Name, FactionPermissi
     /// Observable autonomous squads that retain this faction but accept no player orders.
     /// </summary>
     public IReadOnlyList<SquadView> IndependentSquads { get; init; } = [];
+    /// <summary>
+    /// All living faction members, including stored roles; the dismiss rule uses this count.
+    /// </summary>
+    public int FactionHeads { get; init; }
+    /// <summary>
+    /// Living members counted by the faction capacity rule, excluding explicitly uncounted squads.
+    /// </summary>
+    public int CappedHeads { get; init; }
     public int Formation { get; init; } = (int)SquadFormation.Random;
     public IReadOnlySet<string> UnlockedBuildings { get; init; } = new HashSet<string>();
     public IReadOnlyList<FactionStandingView> Standings { get; init; } = [];
@@ -117,6 +125,7 @@ public sealed partial class World
             };
             characters[i] = character with
             {
+                LookAt = ProjectLookTarget(character, Nearby),
                 CarriedBy = visible.Contains(character.CarriedBy) ? character.CarriedBy : CharacterId.None,
                 Carrying = visible.Contains(character.Carrying) ? character.Carrying : CharacterId.None,
                 Anchor = character.Anchor is { } anchor && visible.Contains(anchor.Carrier) ? anchor : null,
@@ -141,6 +150,8 @@ public sealed partial class World
                 IndependentSquads = SquadManagement.PlayerSquads(this, member.Key).Where(s => s.Independent)
                     .Select(s => new SquadView(s.Id, s.Name, s.Members.Where(visible.Contains).ToArray()))
                     .Where(s => s.Members.Count > 0).ToArray(),
+                FactionHeads = SquadManagement.FactionHeads(this, member.Key),
+                CappedHeads = SquadManagement.CappedHeads(this, member.Key),
                 Formation = SquadAiKeys.FormationOf(this, member.Key, null),
                 UnlockedBuildings = resource?.Research.Unlocked.ToHashSet(StringComparer.Ordinal) ?? [],
                 Contracts = ActiveContracts(FactionName, member.Key, id => allContracts || owned.Contains(id), _ => allContracts).Select(FactionInfoView.From).ToArray(),
@@ -212,6 +223,8 @@ public sealed partial class World
             SquadAi = state.SquadAi,
             PlayerSquads = activeFaction?.Squads ?? [],
             IndependentSquads = activeFaction?.IndependentSquads ?? [],
+            FactionHeads = activeFaction?.FactionHeads ?? 0,
+            CappedHeads = activeFaction?.CappedHeads ?? 0,
             InventoriesClosed = state.InventoriesClosed,
             ModJobNames = PublishModJobNames(),
             ActiveSquad = activeFaction?.Squads.Any(s => s.Id == state.Squad) == true ? state.Squad : -1,
@@ -313,6 +326,19 @@ public sealed partial class World
         }
     }
 
+    /// <summary>
+    /// Keeps disclosed head targets exact. A target outside the observation area supplies only the visible head bearing, with no true distance.
+    /// </summary>
+    static Vector3? ProjectLookTarget(CharacterSnapshot character, Func<Vector3, bool> nearby)
+    {
+        if (character.LookAt is not { } target || nearby(target)) return character.LookAt;
+        var direction = new Vector2(target.X - character.Position.X, target.Z - character.Position.Z);
+        if (direction.LengthSquared() <= 1e-6f) return character.Position;
+
+        direction = Vector2.Normalize(direction) * 64;
+        return character.Position + new Vector3(direction.X, 0, direction.Y);
+    }
+
     // Public character fields are opt-in. Adding a private field to the local snapshot never exposes it here.
     static CharacterSnapshot PublicCharacter(CharacterSnapshot c) => new(c.Id, c.Appearance, c.Position, c.Yaw, c.Animations)
     {
@@ -338,6 +364,7 @@ public sealed partial class World
         Skills = c.Inspected ? c.Skills : null,
         Hud = c.Inspected ? c.Hud : null,
         Meters = c.Inspected ? c.Meters : [],
+        Effects = c.Inspected ? c.Effects : [],
         HealthParts = c.Inspected ? c.HealthParts : [],
         Bounties = c.Inspected ? c.Bounties : [],
         Slave = c.Inspected ? c.Slave : null,
@@ -365,6 +392,9 @@ public sealed partial class World
         Lean = c.Lean,
         Anchor = c.Anchor,
         HeldTool = c.HeldTool,
+        WorkEvents = c.WorkEvents,
+        Bar = c.Bar,
+        LookAt = c.LookAt,
         BoneMeshes = c.BoneMeshes,
         Scale = c.Scale,
         Task = c.Task,

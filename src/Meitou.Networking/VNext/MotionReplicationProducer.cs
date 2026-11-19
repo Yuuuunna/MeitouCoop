@@ -434,7 +434,7 @@ public sealed class MotionReplicationProducer
                 throw new InvalidOperationException("Canceled motion capture closure invoked.");
         }
 
-        byte[] bytes = MotionDatagramCodec.Encode(packet);
+        byte[] bytes = AbsolutePayloadCompression.Encode(MotionDatagramCodec.Encode(packet), minimumBytes: 256);
         _pendingBatches.Remove(key);
         var now = _now();
         foreach (var entry in selected)

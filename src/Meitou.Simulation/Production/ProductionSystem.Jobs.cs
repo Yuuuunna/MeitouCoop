@@ -176,7 +176,7 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// The production pick's list jobs as the decision step's contributor (<see cref="IJobSource"/>, step 5; 234 also step 3): Operating machine 87,
     /// Operating automatic machine 152, Hauling to 124, Training 97, Turret guard 234, Engineer 125 and the follow jobs 31, 45, 289; and the carrying
-    /// jobs 138, 223, 273 (<see cref="ErrandJobs"/>). A job runs while <see cref="Runnable"/> holds; one that no longer does and that nothing
+    /// jobs 138, 137, 223, 273 (<see cref="ErrandJobs"/>). A job runs while <see cref="Runnable"/> holds; one that no longer does and that nothing
     /// replaces ends (<see cref="End"/>).
     /// </summary>
     public void RegisterSources(DecisionSystem decisions)
@@ -188,7 +188,8 @@ public sealed partial class ProductionSystem
             decisions.RegisterJob(type, jobs);
 
         var errands = new ErrandJobs(this);
-        foreach (var type in (ReadOnlySpan<TaskType>)[TaskType.FindADeadGuy, TaskType.PickupIntruders, TaskType.PickupIntrudersTown])
+        foreach (var type in (ReadOnlySpan<TaskType>)[TaskType.FindADeadGuy, TaskType.DeadGuysGoInThePot, TaskType.PickupIntruders,
+            TaskType.PickupIntrudersTown])
             decisions.RegisterJob(type, errands);
 
         decisions.Register(new ImplicitJobs(this));
@@ -218,9 +219,9 @@ public sealed partial class ProductionSystem
                     return FollowedBy(world, slot, cold, k) is not null ? DecisionCheck.Run : DecisionCheck.No("its character is gone");
             }
 
-            // An operator carrying or carried looks at no job (and keeps the one it is on); an idle carrier still takes up a follow job.
+            // One carried or down looks at no job (and keeps the one it is on); a carrier looks at most (AbleFor).
             bool onErrand = owner._errands.ContainsKey(table.IdOf(slot));
-            if (!AbleFor(cold, type, task, onErrand)) return runs ? DecisionCheck.Runs : DecisionCheck.No("carrying, carried or down");
+            if (!AbleFor(cold, type, task, onErrand)) return runs ? DecisionCheck.Runs : DecisionCheck.No("carried, down, or carrying for it");
 
             // 234's effect (using the turret) is planned through 146, whose list B has !158: not while a melee attacker is within 40
             // (docs/game/ai-tasks.md "Precedence").
@@ -297,7 +298,7 @@ public sealed partial class ProductionSystem
             var job = PermaJobs.ListJob(cold, task);
             if (task == CharacterTask.Attack || cold.InCombat) return DecisionCheck.No("fighting");
             if (job is null && task is not (CharacterTask.Idle or CharacterTask.Wander or CharacterTask.Follow)) return DecisionCheck.No("busy");
-            if (!Able(cold)) return job is { Implicit: true } ? DecisionCheck.Runs : DecisionCheck.No("carrying, carried or down");
+            if (!Able(cold)) return job is { Implicit: true } ? DecisionCheck.Runs : DecisionCheck.No("carried or down");
             if (owner.ImplicitPick(world, slot) is not { } chosen) return DecisionCheck.No("none holds");
             string? current = chosen.Type == TaskType.DitchAllResources ? cold.HaulTo : cold.OperateSite;
             if (job is { Implicit: true } && chosen.Type == job.Row && chosen.Site == current) return DecisionCheck.Runs;
@@ -355,13 +356,14 @@ public sealed partial class ProductionSystem
         {
             if (on == TaskType.DitchAllResources && cold.HaulTo is { } keep && !PlayerOrders.Holds(world, slot) && cold.Inventory is { } held && Site(world, keep)is { Complete: true } keptSite && MayWork(world, cold, keptSite) && Ensure(world, keptSite)is { } keptStore && keptStore.Data.IsStorage && keptStore.Storage is not null && Ditchable(held).Any(item => Stores(keptStore, item)))
                 return (TaskType.DitchAllResources, keep);
-            if (!PlayerOrders.Holds(world, slot) && cold.Inventory is { } inv && NearestSite(world, at, Settings.HaulRange, (_, m) => m.Data.IsStorage && m.Storage is not null && Ditchable(inv).Any(item => Stores(m, item)), cold.Faction)is { } store)
+
+            if (!PlayerOrders.Holds(world, slot) && cold.Inventory is { } inv
+                && NearestSite(world, at, float.MaxValue, (s, m) => InFinderRange(s.Position, at) && TakesDitched(m, inv), cold.Faction) is { } store)
                 return (TaskType.DitchAllResources, store);
         }
 
-        // Sleep and Sit not while holding position (FUN_1402b2b90).
-        if (Orders.Holding(cold))
-            return null;
+        // Sleep and Sit not while holding position (FUN_1402b2b90) or carrying someone (+0x348; FUN_14050e5b0).
+        if (Orders.Holding(cold) || !cold.Carrying.IsNone) return null;
         if ((options & SquadAi.Sleep) != 0 && Injured(cold) && Beds is not null)
         {
             if (on == TaskType.GoHomeAndGoToBed && cold.OperateSite is { } bed && world.Fixtures.Find(bed)is { } kept && Gap(kept.Position, at) <= Locks.FixtureRegistry.BedSearchRange)
@@ -546,8 +548,8 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// Whether a job cannot run (the original skips such a job: an unmet start condition the planner cannot meet, or the target finder found nothing;
     /// docs/game/ai-tasks.md "Perma-jobs"). Operating: the building is gone or not an operable machine, its operator places are taken by others, or
-    /// it has no work (<see cref = "HasWork"/>). Hauling to: the storage is gone, and the character carries nothing it takes and no machine within
-    /// <see cref = "ProductionSettings.HaulRange"/> has an output it takes. Automatic machines (152, and 124 on one): <see cref = "AutoWork"/>.
+    /// it has no work (<see cref="HasWork"/>). Hauling to: the storage is gone, and the character carries nothing it takes and no machine within
+    /// <see cref="InFinderRange"/> has an output it takes. Automatic machines (152, and 124 on one): <see cref="AutoWork"/>.
     /// </summary>
     bool Blocked(World world, CharacterCold cold, PermaJob job)
     {
@@ -592,9 +594,9 @@ public sealed partial class ProductionSystem
     static bool HasWorkingArm(CharacterCold cold) => cold.Medical is { } m && (m.ArmWorks(left: true) || m.ArmWorks(left: false));
     /// <summary>
     /// A machine an operator can work (the original's start conditions of task 87: output not full, inputs not empty, power; docs/game/ai-tasks.md):
-    /// it has power, and a bench a queued research or craft; a farm a dead crop to clear, a ripe one to harvest or a growing one with water (tended);
-    /// inputs that hold something or that the operator can fill (it carries the item or, with <see cref = "ProductionSettings.AutoHaul"/>,
-    /// <see cref = "NearestSource"/> finds it); and room in the output or, with AutoHaul, a storage that takes it.
+    /// it has power, and a bench a queued research or craft; a farm a dead crop to clear, a ripe one to harvest or a growing one with an empty input
+    /// to fill; inputs that hold something or that the operator can fill (it carries the item or, with <see cref="ProductionSettings.AutoHaul"/>,
+    /// <see cref="NearestSource"/> finds it); and room in the output or, with AutoHaul, a storage that takes it.
     /// </summary>
     bool HasWork(World world, BuildSite site, Machine m, CharacterCold cold)
     {
@@ -604,11 +606,13 @@ public sealed partial class ProductionSystem
         if (m.Data.IsResearch) return ResearchFor(world, m).Queue.Count > 0;
         if (m.Farm is { } f)
         {
-            if (f.Death >= m.Data.Farm!.DeathThreshold)
-                return true;
-            if (f.Growth >= 1)
-                return f.Harvested < f.Plants.Length && Room(world, site, m);
-            return Supplied(world, site, m, cold);
+            if (f.Death >= m.Data.Farm!.DeathThreshold) return true;
+            if (f.Growth >= 1) return f.Harvested < f.Plants.Length && Room(world, site, m);
+
+            // A growing crop is no work while it holds water: the original's operate row needs a free operator place, false while the farm's
+            // status is 3 (growing), so a farmer goes on to his next job (#913). Its status is 0 once an input runs empty (state 62), and he
+            // fills it.
+            return m.HasEmptyInputs && Supplied(world, site, m, cold);
         }
 
         if (m.Craft is not { } craft) return Supplied(world, site, m, cold) && Room(world, site, m);
@@ -676,6 +680,12 @@ public sealed partial class ProductionSystem
             && Fits(store.Storage!, item);
 
     /// <summary>
+    /// A storage machine that takes something 242 Ditch all resources carries off from <paramref name="inv"/>.
+    /// </summary>
+    static bool TakesDitched(Machine m, Items.Inventory inv) =>
+        m.Data.IsStorage && m.Storage is not null && Ditchable(inv).Any(item => Stores(m, item));
+
+    /// <summary>
     /// What 242 Ditch all resources carries off (finder <c>FUN_1405a59a0</c>, its item collection <c>FUN_140749490</c>, <b>Verified</b>): ITEMs with
     /// <c>item function</c> 0 or 15, and food (function 3) but the first, in inventory order.
     /// </summary>
@@ -701,7 +711,7 @@ public sealed partial class ProductionSystem
     static IEnumerable<Items.ItemInstance> Delivered(World world, Items.Inventory inv, Machine store, bool ditch) =>
         ditch ? Ditchable(inv).Where(i => Stores(store, i)) : inv.All().Where(i => Takes(world, store, i));
     /// <summary>
-    /// The player's complete machine (not a storage) nearest a storage within <see cref="ProductionSettings.HaulRange"/> whose output (a bench's:
+    /// The player's complete machine (not a storage) nearest a storage within <see cref="InFinderRange"/> whose output (a bench's:
     /// its finished items) holds items the storage takes (ties: the lower site id).
     /// </summary>
     string? HaulSource(World world, BuildSite storage, Machine store)
@@ -714,8 +724,8 @@ public sealed partial class ProductionSystem
             if (s.Data.IsStorage || !holds || Site(world, s.Site) is not { Complete: true } site || site.Owner != storage.Owner || world.Players.RequiresExplicitControl && !WorkSiteOpen(world, site))
                 continue;
             float gap = Gap(site.Position, storage.Position);
-            if (gap > Settings.HaulRange || gap > bestGap || (gap == bestGap && string.CompareOrdinal(s.Site, best) > 0)) continue;
-            if (!Offers(s, store)) continue;
+            if (gap > bestGap || (gap == bestGap && string.CompareOrdinal(s.Site, best) > 0)) continue;
+            if (!InFinderRange(site.Position, storage.Position) || !Offers(s, store)) continue;
 
             best = s.Site;
             bestGap = gap;

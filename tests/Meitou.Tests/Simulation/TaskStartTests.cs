@@ -169,6 +169,7 @@ public class TaskStartTests
             World.Fixtures.Imprison(World, Prisoner, World.Fixtures.Find(LockedCage)!);
             World.Fixtures.Find(LockedCage)!.Lock!.Locked = true;
             Cold(Mate).Medical!.Parts[RLeg].Flesh = Cold(Mate).Medical!.Parts[RLeg].MaxHp * 0.2f;
+            Cold(Mate).Medical!.Parts[RLeg].Bandage = Cold(Mate).Medical!.Parts[RLeg].MaxHp * 0.05f;   // a splint goes on a bandaged part
             Cold(Carried).Medical!.KnockOut(1000);
             Cold(Downed).Medical!.KnockOut(1000);
             if (carrying) (Cold(Fighter).Carrying, Cold(Carried).CarriedBy) = (Carried, Fighter);
@@ -226,7 +227,7 @@ public class TaskStartTests
             "dismantle" => new DismantleOrder([f], rig.WellSite) { Tick = tick },
             "use bed" => new UseBedOrder([f], rig.BedFixture) { Tick = tick },
             "put in bed" => new PutInBedOrder([f], rig.BedFixture) { Tick = tick },
-            "pick lock" => new PickLockOrder([f], CharacterId.None) { Tick = tick, Cage = rig.EmptyCage },
+            "pick lock" => new PickLockOrder([f], CharacterId.None) { Tick = tick, Cage = rig.LockedCage },
             "set free" => new SetFreeOrder([f], rig.Prisoner) { Tick = tick },
             "get in cage" => new GetInCageOrder([f], rig.EmptyCage) { Tick = tick },
             "force lock" => new ForceLockOrder([f], rig.LockedCage, LockForce.Strength) { Tick = tick },

@@ -15,6 +15,11 @@ public sealed partial class World
     readonly System.Collections.Concurrent.ConcurrentDictionary<Type, object?> _systemsByType = new();
 
     /// <summary>
+    /// The local pointer at the last publication; remote pointers use attributed commands.
+    /// </summary>
+    CharacterId _publishedPointed;
+
+    /// <summary>
     /// Applies the interface's commands between ticks while paused, without advancing time or running simulation phases: selection, order toggles, job lists, crafting and
     /// research queues, squads, inventory, open-shop transactions, building settings, the Stop order and every order (<see cref="OrderCommand"/>: each goes into its characters'
     /// queues through the one order path, <see cref="PlayerOrders.Give"/>, and sets their tasks; nobody moves or fights until the next tick).
@@ -27,7 +32,7 @@ public sealed partial class World
         var due = Commands.TakeDue(Tick, c => c is OrderCommand or ManoeuvreCommand or SelectCommand or OrdersCommand or RunSpeedCommand or StandUpCommand or SquadCommand or SquadAiCommand or SquadFormationCommand or RenameFactionCommand or SeenDiscoveriesCommand
             or Production.OperateOrder or Production.UseTurretOrder or Production.AddJob or Production.AddOrderJob or Production.RemoveJob or Production.MoveJob or FirstAid.MedicJobCommand { Job: true } or Carrying.RescueJobCommand { Job: true }
             or Production.QueueCraft or Production.CancelCraft or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace or Production.QueueResearch or Production.CancelResearch
-            or Items.OpenContainerOrder or Items.CloseContainer or Locks.BuyBuilding or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic or InspectCommand or InspectBuildingCommand or ShowInventoryCommand or Items.HeldCommand or Items.QuickMoveItem or Items.ReadMapItem or Items.ArrangeInventory or Items.TransferInventoryItem
+            or Items.OpenContainerOrder or Items.CloseContainer or Locks.BuyBuilding or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic or InspectCommand or PointedCommand or InspectBuildingCommand or ShowInventoryCommand or Items.HeldCommand or Items.QuickMoveItem or Items.ReadMapItem or Items.ArrangeInventory or Items.TransferInventoryItem
             or Carrying.TakeLootItem or Carrying.PutLootItem or Production.PutInMachine or Production.TakeFromMachine
             or Trading.BuyItem or Trading.SellItem or Trading.ArrangeStock or Trading.CloseTrade or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
             or Construction.BuildOrder or Construction.DismantleOrder or Construction.RenameTown or Construction.SetTownPublic or Construction.PlaceBuildings or Construction.CancelSite or Construction.ConfirmDismantle or Construction.PauseSite or Editing.EditCharacter or Editing.FinishCreation or Editing.InPlayEditorOpened
@@ -39,16 +44,32 @@ public sealed partial class World
             or DebugGiveItem or DebugPlaceItem or DebugAnimalAge
             or Items.PickUpItemOrder or Trading.OpenPlayerTrade or Trading.PlayerTradeCommand or Carrying.CloseLoot
             or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder);
-        if (due.Count == 0 && authorityCount == 0) { RuntimeBoundary?.Invoke(this); return; }
+        if (due.Count == 0 && authorityCount == 0)
+        {
+            RuntimeBoundary?.Invoke(this);
+            if (Player.Pointed != _publishedPointed) PublishPaused();
+            return;
+        }
         Characters.BeginTick();
         Characters.Phase = TablePhase.Inputs;
         try
         {
             PlayerTrades.Inputs(this, due);
-            foreach (var system in _systems)
-                if (due.Count > 0 && (system is IOrderOwner || system is (PlayerSystem or Carrying.CarrySystem or Production.ProductionSystem or Trading.TradeSystem or Construction.ConstructionSystem or Dialogue.DialogueSystem
-                    or Ai.AiSystem or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem)))
+            for (int k = 0; k < _systems.Count; k++)
+            {
+                var system = _systems[k];
+                bool takesCommands = system is IOrderOwner or PlayerSystem or Carrying.CarrySystem or Production.ProductionSystem
+                    or Trading.TradeSystem or Construction.ConstructionSystem or Dialogue.DialogueSystem or Ai.AiSystem
+                    or FirstAid.FirstAidSystem or Locks.LockSystem or Locks.BedSystem or Crime.ArrestSystem or MovementSystem or Combat.CombatSystem;
+                if (due.Count == 0 || !takesCommands) continue;
+
+                if (ModFaults.IsMod(k))
+                    ModFaults.Run(k, "inputs", system, this, due, static (handler, world, commands) => handler.Inputs(world, commands));
+                else
                     system.Inputs(this, due);
+            }
+
+            ModFaults.Settle();
             PlayerOrders.ValidateAuthority(this);
             Decisions.Run(this, paused: true);
             RuntimeBoundary?.Invoke(this);
@@ -64,12 +85,19 @@ public sealed partial class World
         ActionLog?.Observe(this);
         foreach (var trade in _systems.OfType<Trading.TradeSystem>()) trade.RefreshView(this);
         foreach (var talk in _systems.OfType<Dialogue.DialogueSystem>()) talk.RefreshView(this);
-        if (Settings.PublishSnapshots)
-        {
-            var (previous, buffer) = (PreviousSnapshot, _previousBuffer);
-            Publish();
-            KeepPrevious(previous, buffer);
-        }
+        PublishPaused();
+    }
+
+    /// <summary>
+    /// Publishes the snapshot between ticks while paused, keeping the previous one the renderer interpolates from.
+    /// </summary>
+    void PublishPaused()
+    {
+        if (!Settings.PublishSnapshots) return;
+
+        var (previous, buffer) = (PreviousSnapshot, _previousBuffer);
+        Publish();
+        KeepPrevious(previous, buffer);
     }
 
     /// <summary>

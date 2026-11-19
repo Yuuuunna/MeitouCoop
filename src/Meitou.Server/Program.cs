@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
 using Meitou.Content;
+using Meitou.Modding;
 using Meitou.Data.Gameplay;
 using Meitou.Networking;
 using Meitou.Networking.VNext;
@@ -75,10 +76,15 @@ static class Program
                 ModList.UseModsCfg(config.ModsCfg);
             config = config.AdoptBuiltIns(install, configFile);
             var rules = ServerCompatibility.WithCodeSettings(config.Rules(), install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
-            var hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
+            CompatibilityHello hello;
             var accounts = new TokenAccountStore(Path.Combine(config.DataDirectory, "accounts.json"));
             if (accountName is not null)
             {
+                var dataPhase = new ModDataPhase(install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), ModHost.RunningVersion());
+                var db = dataPhase.LoadData();
+                rules = ServerCompatibility.WithCodeSettings(rules, install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings, db.CodeEdits);
+                hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets,
+                    config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings, db.CodeEdits);
                 if (output is not null && File.Exists(Path.GetFullPath(output)))
                     throw new IOException("Connection output already exists; use another --output path.");
                 var issued = accounts.Create(accountName);
@@ -100,7 +106,7 @@ static class Program
 
             using var instance = new FileStream(Path.Combine(config.DataDirectory, "server.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             Console.WriteLine("Loading headless world; this may take several minutes.");
-            using var host = HeadlessWorld.Open(install, new WorldSettings { Seed = config.WorldSeed, Threads = config.SimulationThreads, PublishSnapshots = false, }, trustedCodeMods: config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), modSettings: config.ModSettings, gameplay: config.Gameplay);
+            using var host = HeadlessWorld.Open(install, new WorldSettings { Seed = config.WorldSeed, Threads = config.SimulationThreads, PublishSnapshots = false, }, trustedCodeMods: config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), modSettings: config.ModSettings, gameplay: config.Gameplay, notifyReady: false);
             host.Population.Relations.PlayerFaction = -1;
             var store = new CheckpointStore(Path.Combine(config.DataDirectory, "world"));
             var checkpoints = host.CreateCheckpointCoordinator(store);
@@ -113,10 +119,12 @@ static class Program
                     throw new IOException("Old-world cleanup failed after restore.", restored.CleanupFailure);
                 Console.WriteLine("Restored checkpoint " + saved.Id);
             }
+            else if (host.Mods is { } mods) mods.TellReady(host.World, fromSave: false);
+            else host.World.TellReady(fromSave: false);
 
-            rules = ServerCompatibility.WithCodeSettings(config.Rules(GameplayRules.Capture(host.World)), install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
+            rules = ServerCompatibility.WithCodeSettings(config.Rules(GameplayRules.Capture(host.World)), install, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings, host.Population.Db.CodeEdits);
             host.World.ObserveLatency(Meitou.Diagnostics.LatencyTrace.Sink);
-            hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings);
+            hello = ServerCompatibility.CreateHello(install, ServerCompatibility.EngineBuild, rules, config.GameplayAssets, config.TrustedCodeMods.ToHashSet(StringComparer.Ordinal), config.ModSettings, host.Population.Db.CodeEdits);
             host.Population.Relations.PlayerFaction = -1;
             var starts = NewGameStart.LoadAll(host.Population.Db);
             var start = NewGameStart.Find(starts, config.DefaultStart) ?? throw new InvalidDataException("Configured default start was not found.");

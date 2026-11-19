@@ -198,10 +198,13 @@ public sealed partial class PopulationSystem
     /// (<see cref="KeepWild"/> for a save's wild one, else <see cref="KeepRoamers"/>) keep the rest, and a code mod's spawn is always kept
     /// (<see cref="Platoon.ModSpawned"/>; engine API).
     /// </summary>
-    bool Kept(Platoon p) => !p.Dead
-        && (AiSystem.Occupies(_data.Ai, p.Package) || PersistentPlatoon(p) || p.ModSpawned
-            || !p.ReplacedHome && (p.Wild ? KeepWild : KeepRoamers))
-        || CampaignKept(p);
+    bool Kept(Platoon p) => OriginalKeeps(p) || !p.Dead && (p.ModSpawned || !p.ReplacedHome && (p.Wild ? KeepWild : KeepRoamers));
+
+    /// <summary>
+    /// The original's own keep test (see <see cref="Kept"/>): a platoon that is not declared dead and occupies a town or is persistent, or a
+    /// campaign's force that has not been spent.
+    /// </summary>
+    bool OriginalKeeps(Platoon p) => !p.Dead && (AiSystem.Occupies(_data.Ai, p.Package) || PersistentPlatoon(p)) || CampaignKept(p);
 
     /// <summary>
     /// The war manager's record for the platoon exists and is not in phase 2 (<c>FUN_140283500</c>, <c>FUN_1407ec570</c>), outside spawn mode 3: a
@@ -571,6 +574,28 @@ public sealed partial class PopulationSystem
     readonly List<CharacterId> _thinStay = [], _thinGo = [];
 
     /// <summary>
+    /// Whether a platoon kept only by a Meitou rule (<see cref="KeepRoamers"/>, <see cref="KeepWild"/>, a code mod's spawn) holds its loaded state
+    /// because a member lies knocked out inside the loaded zones (engine choice, #912). The original keeps no such platoon and thins it member by
+    /// member (<see cref="ThinOutOfZone"/>), so a member it finds inside the zones stays while its leader walks off. A captive (imprisoned, or
+    /// carried away) does not hold it: the unload splits him off (<see cref="SplitCaptives(World, Platoon, Squad)"/>).
+    /// </summary>
+    bool MemberDownInZone(World world, Platoon p, Squad squad)
+    {
+        if (p.Pinned || !Kept(p) || OriginalKeeps(p)) return false;
+
+        var table = world.Characters;
+        foreach (var m in squad.Members)
+        {
+            if (!Living(world, m) || !table.TryResolveNext(m, out int slot)) continue;
+            if (table.Cold(slot) is not { Medical.Incapacitated: true } cold) continue;
+            if (cold.IsImprisoned || CarriedAway(world, cold)) continue;
+            if (!OutOfZone(table.Next[slot].Position)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// A member is carrying a character of the player's faction: the platoon holds its loaded state whatever the zone at its place
     /// (<c>FUN_1404febd0</c>, <b>Verified</b>: a carry flag and a carried hand whose owner faction is a player faction). The original tests it 0.5 s
     /// after the countdown began; here at once.
@@ -621,7 +646,7 @@ public sealed partial class PopulationSystem
         if (!p.Dead && !world.IsPlayerFaction(p.Faction) && AllDead(world, squad)) DeclareDead(p);
 
         // Away from every active zone for long enough: only the stand-in goes on.
-        if (Wanted(world, p) || SquadCarriesPlayer(world, squad)) p.UnloadAtTick = -1;
+        if (Wanted(world, p) || SquadCarriesPlayer(world, squad) || MemberDownInZone(world, p, squad)) p.UnloadAtTick = -1;
         // A town's own squad keeps the town's grace (it leaves with its town), a hired one the original's timer, a roaming one the roaming grace.
         else if (p.UnloadAtTick < 0)
         {
@@ -722,9 +747,10 @@ public sealed partial class PopulationSystem
         if (p.Pinned || p.Wild || p.Dead) return;   // a town's own or a wild one: its AI runs it, it has no trips (nor has a dead one)
         if (p.Held) return;   // a code mod runs it (HoldPlatoon)
 
-        // A package that travels (the trader, the shipping classes) moves the squad itself: no trip order meanwhile, and the trip starts afresh when
-        // it gives way.
-        if (squad.Ai is { } board && AiSystem.BoardMoves(board))
+        // A squad with a blackboard acts out its package's goals itself (every loaded platoon does in the original): no trip order, so the two
+        // never order the leader against each other, and the stand-in chooses afresh once it unloads. So does a leader obeying its master, which
+        // follows it (its Slave list, job 187). The trip is left for a squad the AI does not run (a template without packages).
+        if (squad.Ai is not null || LeaderObeys(world, squad))
         {
             (p.Target, p.WaitLeft, p.Point) = (-1, 0, null);
             return;
@@ -772,6 +798,14 @@ public sealed partial class PopulationSystem
             }
         }
     }
+
+    /// <summary>
+    /// Whether the squad's leader obeys a master squad (<see cref="AiSystem.ObeyedRoles"/>): a captive split off into a squad of its own follows its
+    /// slaver, so a trip ordered on it walked it off until it escaped far from its owner (#904).
+    /// </summary>
+    static bool LeaderObeys(World world, Squad squad) =>
+        world.Characters.TryResolveNext(squad.Leader, out int s) && world.Characters.Cold(s) is { } leader
+        && AiSystem.ObeyedRoles(world, squad, leader) is not null;
 
     /// <summary>
     /// At the goal the squad mills about in the town (or round the point) it came to.
@@ -1480,13 +1514,43 @@ public sealed partial class PopulationSystem
     }
 
     /// <summary>
+    /// A code mod's recruit (engine API, not in the original): the living character <paramref name="character"/>, not the player's, leaves its
+    /// squad and joins the player squad <paramref name="squadId"/> as a player character, as a recruit joins (<c>DialogueSystem.Join</c>: the
+    /// player's faction, orders and class, no AI, jobs or uniform marks, written as a new member at the next save), leading it when it has no
+    /// leader. False, changing nothing, for a squad that is not a living player squad, a character that is not alive, is the player's already or
+    /// is held in a cage or on a pole,
+    /// a squad at <c>max squad size</c> or a faction at <c>max faction size</c> (as <see cref="SpawnIntoPlayerSquad"/>), and during the parallel
+    /// phase. Serial phases only.
+    /// </summary>
+    public bool JoinPlayerSquad(World world, CharacterId character, int squadId, PlayerId? controller = null)
+    {
+        if (world.Characters.Phase == TablePhase.Parallel) return false;
+        if (world.Squads.Find(squadId) is not { } squad || !SquadManagement.PlayerSquads(world, squad.Faction).Contains(squad)) return false;
+
+        if ((world.Players.RequiresExplicitControl || controller is not null)
+            && world.Characters.Phase is not (TablePhase.Outside or TablePhase.Inputs or TablePhase.SlowWorld)) return false;
+        if (!ModMemberController(world, squad, controller, out var owner)) return false;
+
+        var table = world.Characters;
+        if (!table.TryResolveNext(character, out int slot) || table.Cold(slot) is not { IsPlayer: false, DiedTick: < 0, IsImprisoned: false })
+            return false;
+        if (PlayerSquadFull(world, squad)) return false;
+
+        Dialogue.DialogueSystem.Join(world, _data, slot, squad, owner);
+        return true;
+    }
+
+    /// <summary>
     /// Whether a player squad takes no more members: it holds <c>max squad size</c>, or the player faction has <c>max faction size</c> living
-    /// characters (the recruit's caps, docs/game/dialogue.md "Recruiting").
+    /// characters (the recruit's caps, docs/game/dialogue.md "Recruiting"); a squad a code mod keeps out of that count
+    /// (<see cref="Squad.Uncounted"/>) has only the squad cap.
     /// </summary>
     bool PlayerSquadFull(World world, Squad squad)
     {
         var limits = _data.Bodies.Constants;
-        return squad.Members.Count >= limits.MaxSquadSize || SquadManagement.FactionHeads(world, squad.Faction) >= limits.MaxFactionSize;
+        if (squad.Members.Count + (world.StoredPlayerRoles?.PendingCount(squad.Id) ?? 0) >= limits.MaxSquadSize) return true;
+
+        return !squad.Uncounted && SquadManagement.CappedHeads(world, squad.Faction) >= limits.MaxFactionSize;
     }
 
     /// <summary>

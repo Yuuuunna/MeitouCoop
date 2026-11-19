@@ -59,8 +59,8 @@ bare. Per race (`CharacterRenderer.SkinRaces`, settings Graphics > Skin, `meitou
 person race of the loaded data (RACE records no ANIMAL_CHARACTER uses, mods included) is on unless RACE `is robot`. World and Meitou
 stage (fog distance -3) and the portraits (the plain model, fog distance 0: their fixed key light is near the camera, so the glow stays on the
 shadowed cheek, jaw and neck); the game's stage and icons keep N·L. Lamps too: the character shader defines `LAMP_SKIN`, and
-`LampShaders.lampLight` takes each lamp's diffuse from `lampSkinDiffuse` (the same term, per-fragment inputs set in `main`); the specular keeps
-N·L. Faithful: push `skinLut` 0, unchanged.
+`LampShaders.lampLight` takes each lamp's diffuse from `lampSkinDiffuse` (the same term, per-fragment inputs set in `main`, one normal for the three channels so the lamp shadows' pass can rebuild it, [render-lights](render-lights.md#traced-lamp-shadows)); the specular keeps
+N·L (the `chars2` skin lobe below replaces it). Faithful: push `skinLut` 0, unchanged.
 Limits: the sun shadow is not scattered, so the band past the terminator ends at the shadow edge; no back-lit
 translucency (ears). The `chars2` switch lifts both (below).
 
@@ -72,7 +72,7 @@ and portraits; never the game's stage or the icons.
 
 **Hair**: two Kajiya-Kay lobes over the game's GGX, a sharp near-white one, tighter on dark hair, and a wide one tinted by √albedo (standing in for Marschner's R and TRT; tinted by the normalised hue, black hair turned grey, **Observed**), shifted along the strand only by the texture's brightness: a fixed shift cut the highlight at the mesh's islands, where the tangent's sign changes (**Observed**). The strand is the mesh's bitangent averaged with its up axis (`vColour` outside icons): the screen derivatives of the UVs gave a woven pattern and the bitangent alone showed facets (**Observed**). A hair-mode fragment takes its normal on the side the camera sees (port of KenshiNative's "Hair on the side the camera sees": cards and inward-facing meshes went dark under GI and AO), unless the sun is on the face it would leave: that face is what the game lights, and turning it away put the lock in its own shadow, the black tips against the sun (**Observed**). Such a card keeps 0.35 of the highlight. Animals keep the game's lobe (`CharacterShaders.Strands`).
 
-**Metal** (`surfaceMetal`): a worn item says it in its colour map's blue; nothing marks a robot's body (RACE `is robot`) or a held item without a `metalness map` (scabbards excepted: the `sheath` mesh and the sheathed `mesh` of a record with one), so there metal is what has no colour of its own (saturation 0.35 to 0.7 fades it out: rust and paint are saturated), at 0.65 at most; a held item with a `metalness map` takes the same amount only where the map marks metal, and a worn CHAIN or METAL_PLATE item (ARMOUR `material type`) only where its diffuse alpha, a painted gloss, is not near 0 (a wholly opaque alpha counts as none painted), a held item without a map or a prosthetic with its own material (LIMB_REPLACEMENT) only where its diffuse alpha is above about 0.04 to 0.14, an opaque prosthetic alpha counting as none painted; a worn plate's gloss follows the same painted alpha, with the game's own metalness (specular colour from the albedo, diffuse removed); only buildings keep their diffuse (`atmoMetalDiffuse`). Its gloss is raised to 0.45 to 0.9. In the world that goes through the game's own metalness and reflections (`atmoMetalness`); the studio, which has neither, gets a tinted GGX and a mirror of a bright sky over dark ground with a horizon as sharp as the gloss. **Observed** in the studio and at noon and dusk in the world; not under lamps or rain.
+**Metal** (`surfaceMetal`): a worn item says it in its colour map's blue; nothing marks a robot's body (RACE `is robot`) or a held item without a `metalness map` (scabbards excepted: the `sheath` mesh and the sheathed `mesh` of a record with one), so there metal is what has no colour of its own (saturation 0.35 to 0.7 fades it out: rust and paint are saturated), at 0.65 at most; a held item with a `metalness map` takes the same amount only where the map marks metal, and a worn CHAIN or METAL_PLATE item (ARMOUR `material type`) as much as its diffuse alpha, a painted gloss, says: none below 0.1, all from 0.5 (a wholly opaque alpha counts as none painted). The artists paint a dull plate low: the vanilla plate items' median alpha is 0.07 to 0.37 (Tin Can 0.16, Mercenary Plate 0.09, Masked Helmet 0.31; **Verified**, the diffuse alpha over each item's mesh UVs), so a rough painted helmet is mostly not bare metal. The Advanced materials part `Polished armour` (bit 64, off at start; engine choice) takes that alpha as where only: all from 0.22. An ARMOUR's own `metalness` (a float Meitou reads, 0 to 1; no vanilla record has one; [FCS fields](formats/fcs-mod.md#fields-meitou-adds)) takes the place of the 0.65 on that item, wherever the alpha is above 0.08 to 0.22 or everywhere when it is wholly opaque, and makes an armour of any material type metal; 0 leaves it matte whatever the part; -1 or none leaves it to the estimate. A held item without a map or a prosthetic with its own material (LIMB_REPLACEMENT) is metal only where its diffuse alpha is above about 0.04 to 0.14, an opaque prosthetic alpha counting as none painted; a worn plate's gloss follows the same painted alpha, with the game's own metalness (specular colour from the albedo, diffuse removed); only buildings keep their diffuse (`atmoMetalDiffuse`). Its gloss is raised to 0.45 to 0.9. In the world that goes through the game's own metalness and reflections (`atmoMetalness`); the studio, which has neither, gets a tinted GGX and a mirror of a bright sky over dark ground with a horizon as sharp as the gloss. **Observed** in the studio and at noon and dusk in the world; not under lamps or rain.
 
 **Cloth**: a Charlie sheen (roughness 0.6, Neubelt's visibility), in the diffuse's units, tinted √albedo, at 0.5 × the amount; its visibility is capped at 1, as uncapped and at 0.5 it reached 2 × a dark cloth's diffuse (computed over a sweep of angles); now at most 0.46, 0.27, 0.19 × the diffuse at albedo 0.1, 0.3, 0.6. Data holds no cloth mask, and worn items are matte (`glossMult` 0), so the texture's alpha says nothing. What separates them is the item: ARMOUR
 `material type` (CLOTH 1, LEATHER 0.35, CHAIN and METAL_PLATE 0, not ARMOUR 0), per worn mesh and per vest layer (`CharacterContent.ClothSheen`), mods included; `1 - metal`
@@ -88,11 +88,11 @@ the idea from KenshiNative's skin3; it measures thickness with a ray, which has 
 
 **Water beads** (`wetBeads`, the Advanced materials part `Water beads`, bit 32; engine choice, the game has a wet film only): where the weather or the water's mark leaves a surface wet, drops stand on it. The drops are the wet world's ([weather.md "Wet world"](formats/weather.md), `wetDrops`): the character hands it the mesh's own space (`vBind`, the modelled position; the mesh's X and Y axes in the world come as `vAxisX` and `vColour`) times the mesh's scale (`vAxisX`'s length), so the drops stay on the body as it moves and have one size on any mesh. The share of cells holding a drop follows the wetness, less on what absorbs (cloth: the game's absorbance); rain wets what faces up. Not on hair or eyes, not under the water. **Verified** by pictures, t_flats_shore: after a swim (blades, leather, human and Shek skin, the part on and off) and in forced rain (a face at three times 2 s apart: drops grow, run down with a track, none vanishes at once).
 
-**Skin oil and edges**: two GGX lobes (roughness 0.22 and 0.42, F0 0.028, capped) and a soft edge from the fine hairs in the skin's own albedo, per light (in its normalised hue, dark skin glowed orange, **Observed**); the sky adds an edge to skin and cloth, a sheen along hair and its reflection on the eye (`surfaceAmbient`, **Observed** in the studio and the world).
+**Skin reflection** (`CharacterSurface.skinLight`, the `skin sheen and glow` part, 4): one GGX lobe with the height-correlated Smith visibility, F0 0.028 (IOR 1.4), roughness `CharacterShaders.SkinRoughness` 0.5 (physicallybased.info's measured skin; Epic's skin guide starts at 0.4), or the smoother roughness of the fragment's gloss where wet. The pores are finer than a pixel at all but close range, so their slopes (0.19 all round: a 0.4 mm cell 0.075 mm deep) widen the lobe instead of bumping the normal: the squared width gains 0.035 (Kaplanyan's filtering). In a light's units: pi squared times the term in the world, pi in the studio. The hooks take the game's lobe off the skin share (`surfaceSkin()`, in `SunHook` and `LampHook`): on skin it is a chalk's width (gloss map 0.08 to 0.23) with an eighth of this lobe's energy, so skin had no highlight. The sky's reflection keeps the game's gloss (at 0.5 it doubled against the reference and drew the sky's shapes on a cheek). The two oil lobes, the fine hairs' fuzz and the sky's edge term on skin are gone; cloth keeps its sky edge and hair its sheen (`surfaceAmbient`). A character whose light is gathered gives its sky reflection its ambient's hue ([Characters](render-gi.md#characters)). **Observed** (against a path-traced reference of the same scenes, Blender Cycles with the engine's geometry, lights and per-pixel materials, local tooling not in the repo; the editor's bar at night and an outdoor close-up by day, two scenes only): lamp specular on a lit chest 0.0207 against 0.0187 (0.0056 before), sun specular on lit skin 0.022 against 0.029 (luminance). In the reference the cloth's sheen does not flatten a face in a hood (sheen off: the same face) and the skin's scattering is under a pixel at these sizes (Cycles' Burley radius 4.82 mm is a diffusion length of about 0.2 mm, shadow edges on skin equally wide in both, 23 px), so no screen-space scattering is needed. **Unknown**: explicit pores at close range (only the widening is in), cost.
 
 **Eyes** (needs the skin switch and the race's skin): the game's eyeball is head texture at gloss about 0.93, a mirror of the specular cube (**Observed** by KenshiNative on its
 game data, `docs/features/characters.md` "Eyes"). Port of the surface of its eyes2: the eyeball by data (`eyeOf`: head UV, bare, no skin tone, gloss 0.5 to 0.7 up, curvature 2.5
-to 4.5 up in place of its race list) takes no skin terms, gloss 0.4 for the sky, and a bounded tear-film catchlight from the
+to 4.5 up in place of its race list; hive shells stay out by curvature, **Unknown** until measured) takes no skin terms, gloss 0.4 for the sky (the game's own reflection only: a second sky reflection in `surfaceAmbient` gave the eye 4.5 times a traced cornea's, **Observed** against the path-traced reference, outdoor close-up; without it an eye is 1.0 to 1.4 times the reference), and a bounded tear-film catchlight from the
 sun and the lamps. Not ported: eyes2's refracted iris and eyes3's drawn iris: KenshiNative turned them off after play (they often looked worse than the game's eye), and eyes3 needs a
 table per head mesh, against the modded-race rule.
 **Parts.** The `chars2` switch (Advanced materials) has five parts, each a plain on / off row under it on the Characters tab (`CharacterRenderer.SurfaceParts`, saved as `Meitou: <label>`, all on by default; the colour pass's `fill.a` carries them, `surfaceParts` in the shader): hair highlights (1), cloth sheen (2), skin sheen and glow (4), eye catchlights (8), metal on characters (16). **Observed** (offscreen, a plate-armoured arm): metal alone gives the picture of all five there, and all but metal the picture of the switch off.
@@ -122,6 +122,39 @@ so an orbit or zoom round a fixed target moves the eye smoothly instead of by st
 over 0.001 (the ground read under the eye wavers by a few ten-thousandths frame to frame). Every other scene pass follows the same convention: [renderer-native.md "Render origin"](renderer-native.md#render-origin).
 
 The camera reprojection (`Reprojection.ClipToPrevious`: the velocity pass, the upscaler's and frame generation's `ClipToPrevClip`) takes the eye's step with the residuals (`PostProcess.EyeStep`). By the float eyes alone it was off by up to a float step each frame, a pixel or more for what is within 10 units.
+
+### Visibility buffer (Meitou, for crowds)
+
+`CharacterVisibility`, `CharacterVisibilityShaders`; `CharacterRenderer.VisibilityMode`: by the main view's triangles (on past 400 thousand, off again
+under 250 thousand: a change of way builds the materials' table anew), or `MEITOU_CHARACTER_VISIBILITY=0` / `1` for never / always. **Observed**
+(same measure as the cost below): 1.6 million triangles in a town street 1.75 -> 1.43 ms; 69 thousand in a close-up 0.53 -> 0.65 ms, 53 thousand in the
+desert 0.10 -> 0.17 ms. The main view's colour pass split in
+two so each character pixel is shaded once (Burns and Hunt 2013, JCGT 2(2)); every other view (shadows, reflection, motion, icons, portraits, stage, hover
+masks) draws forward. Needs Vulkan with ray query (meshes read by device address), `VK_KHR_fragment_shader_barycentric` and the geometry shader feature
+(`gl_PrimitiveID` in a fragment program), and no late-depth discard workaround.
+- **Id pass**: outside the scene's pass, the colour pass's vertex program (plus the instance row) over the scene's depth and its shading rate attachment, with
+  the colour pass's discards at the same lookups. Per pixel: row + 1 (0: none), primitive, `gl_ShadingRateEXT`, facing, the perspective barycentrics and their
+  fine and coarse derivatives (RGBA32UI + 2 x RGBA32F: 48 bytes a pixel, 177 MB at 2560x1440).
+- **Resolve**: one triangle over the scene's colour targets (set 0 adds storage 10, the instance rows, and 11, each row's vertex and index addresses). Per
+  pixel the triangle's corners by address (`GpuVertex` character layout), the vertex program's
+  text on each, its outputs interpolated, then the colour pass's `main` text: its lookups and derivatives are macros (`TEXG`, `DFDX`, `FWIDTH`, ...) that the
+  colour pass expands to its original text (the preprocessed program is unchanged) and the resolve to gradients from the triangle: implicit lookups the
+  coarse ones, `dFdx`/`fwidth` the fine ones. A hair card's mipmap bias widens the lookup's derivatives (`hairTexGrad`, by 2^bias): a gradient lookup takes no bias. **Observed** (save flickering-hair): a second texture entry with the bias in its sampler was freed under the records that held it (the cache keeps two entries a texture), and hair drew black whenever the buffer came on.
+  Where the colour pass takes a derivative inside a branch the resolve applies the quad rule below: the worn items' blood splatter lookup, and the blood film's
+  edge and slope, whose neighbour values come from probes (the colour pass's `main` run up to the film at the quad's three other lanes).
+- **Observed** (RTX 4090, same-frame captures of both paths): an implicit lookup's level of detail is the coarse derivatives' (gradients from
+  `dFdxCoarse` matched the implicit lookups bit for bit on 99.1 % of a close-up's character pixels, from `dFdx` on 91 %); `dFdx` is `dFdxFine` and `fwidth`
+  the fine one (replacing them changed no pixel); inside divergent control flow a derivative is 0 for every lane of a quad unless all four lanes took the
+  branch (the blood film's: 0 on all 578 lanes of partly active quads, non-zero on 2068 of 2360 in whole ones); a text edit that leaves a program's meaning
+  moves about 11 % of character pixels by rounding.
+- **Observed** cost (2560x1440, paused, alternated in one session): heavy-scene's characters stage 6.2 -> 2.1 ms, frame 32.4 -> 28.4 ms (about one
+  triangle a pixel: the colour pass shaded quads of tiny triangles and hidden surfaces); the studio close-ups (`lamp`, `studio view 5 2 11` and `5 0 5`,
+  large triangles) 0.55 -> 0.61 and 0.80 -> 0.85 ms: the id pass and three corners a pixel cost more than the quads saved.
+- **Observed** picture: not bit-identical. The resolve interpolates its inputs itself, so most differences are a float's last bits (median 0.07 % of a
+  pixel's value: the close-ups 1 % of character pixels a level of 255 off after a tone map, a handful more, none over 15; screenshots within the
+  temporal floor). Steep functions of them (the blood film's edge, its slope's normal) make about 300 pixels of heavy-scene's 830000 differ by more than
+  8 levels. Not emulated (gaps): derivatives after a cut-out's discard, in the skin's light-through shadow, at the traced sun's boundary and in the wet
+  beads (all where part of a quad left early).
 
 ## Content, LOD and memory
 
@@ -164,6 +197,44 @@ no shadow, motion or reflection pass sees it either; the simulation, the host's 
 
 `CharacterInstance.BoneMeshes` (a code mod's `BoneMesh`, issue #740) uses the same placement for a rigid mesh: `CollectBolts` puts the mesh's origin at the node the bone, offset and rotation give on the character's drawn palette (after `PlaceAnchored`, so a rider's mesh follows the rider) and sizes the mesh with the character. It is a loose debris mesh like a stuck bolt or a held limb: the mesh's own material, a stable debris id for motion vectors, no shadow, no hover outline or picking. Left out while the character is not posed in the world or lacks the bone.
 
+### Gear sway (Meitou `sway` switch, optional, off by default)
+
+The original's hanging gear is rigid (**Verified**, decompile: the three callers of `Entity::attachObjectToBone`, `FUN_14052bfa0`, `FUN_14052d480`, `FUN_1400f8e10`, attach at
+the `.phs` point's fixed offset and discard the returned TagPoint; the exe has no other TagPoint import; **Observed**: no sway, jiggle or dangle strings, and the rigs have no gear
+bones), and a backpack is a worn mesh skinned to the spine (**Verified**, the CONTAINER meshes of `data/items`: 83 to 100 % of their weight on `Bip01 Spine1` / `Spine2`, the
+rest on the clavicles, upper arms and neck along the straps).
+
+Meitou (`GearSway`, `CharacterRenderer.Sway`), common to both: a hanging mass is a point on a damped spring toward where the pose holds it (damped against the posed tip's own
+speed, so a steady walk leaves no lag), kept at its lever's length and within a largest angle of the posed direction, stepped at 120 Hz or finer in game time (`MotionClock`:
+the game clock plus the tick fraction). The lever stepped is the equivalent pendulum's, `(k² + l²) / l` with `l` from the pivot to the mass's centre and `k` 0.58 of its radius
+(`GearSway.Pendulum`): a long thing held near its middle hardly swings. At rest again after a first pose, a snap back on screen, a gap over 0.25 s or a pivot jump over 6 lever
+lengths; off for animals, portraits, ragdolls and characters under 40 px tall.
+
+- **Weapons** (1.6 Hz, damping ratio 0.3, 22° at most along the body, never past the posed place towards the wearer and 6° at most away from it; towards the wearer is from the hanging mass to the bone, across the lever, so it follows the trunk's lean; swinging both ways a long weapon on the back went through the back and the legs, **Observed** by the user): each weapon point other than `hands` (`hip`, `back`, `back2`) is a sway group (`CharacterAsset.Sways`). Its pivot is where
+  the gear lies against the wearer (`HangSways`, in the binding pose): the place on the gear's long axis (through the point and the centre of the group's largest part, over that
+  part's length) nearest the bone the point is on (the belt, for a hip point) or, for gear that passes a shoulder joint within 2.5 units (a weapon across the back), nearest that
+  shoulder: hung from the middle of the back, a blade the hips pushed out turned its upper end into the shoulder (**Observed** by the user).
+  Before the swing the gear is turned out of the wearer (`GearSway.PushAngle`): the pelvis, thighs and calves are capsules from the body's own boxes by bone
+  (`AddSwayColliders`, `SwayCollider`), the gear its span along its axis with half its box's least side; it turns about its pivot, away from the bone it hangs from, by the
+  least angle up to 40° that gives it the clearance it has in the binding pose (at most 0: gear placed touching a limb stays so), and the swing hangs from there. The pose
+  fixes the gear to one bone and the others move into it: a long blade on the back went through the hips and the legs in a stance that pushes them back, in the original
+  too (**Observed**, the user's save `leviathan bug`, four views, sway off against on: through the trousers off, along the buttock and thigh on, the guard in place at the
+  shoulder). The point itself is the weapon's grip, which a hip point holds out in front of the hip: turned about it the sheath left the belt. The swing turns every part of
+  the group about the pivot. **Observed** (sandbox, a staff at the hip, run and turn, sway on against off on the same paused frames): the difference is a wedge with its tip at
+  the hip.
+- **Backpacks** (2.2 Hz, damping ratio 0.45, 7° at most, never past the posed place towards the wearer's back): a person's worn mesh in the backpack slot is baked when it is
+  read (`GearSway.BakeMesh`, a mesh cache key of its own). Each vertex gets a hanging share from its place in the binding pose: 0 in front of the shoulders' line (the clavicles' Z
+  plus 0.2 units), 1 behind the back (that line minus 0.9; the human bodies' backs are 0.75 to 1.2 behind it at the shoulder blades, **Verified** on `human_male.mesh` and
+  `human_female.mesh`), smooth between, and 1 above the neck's base plus 1.2 (a frame's canopy). Its bones are split by that share between the rig's and their copies (the same
+  handles plus the bone count; a vertex on three bones or more takes all or nothing: it has four slots). The asset's palette then holds every bone twice
+  (`CharacterAsset.SwayPalette`, `PaletteCount`), the copies being the bones after a turn of the mesh about the pack's pivot (on the back plane, at the height the straps go
+  over the shoulders), so at rest, in a portrait, a ragdoll or with the switch off the copies equal the bones and the mesh is skinned as the file has it. The straps on the chest
+  stay; over the shoulders they stretch. Not baked: a mesh with under half its vertices hanging or whose hanging weight is not 75 % on two bones (a coat in the backpack slot),
+  a lever under 1 unit, a rig over 128 bones or without the clavicle and neck bones, animals' bags. **Observed** (sandbox, Wooden Backpack, same method): the frame shifts a few
+  pixels on a turn and a stop, whole; sway on and off at rest differ by no more than two captures of one frame do.
+
+Not built: cloth, hair, shields on the back as separate groups.
+
 ## Animals and portraits
 
 Animal race/body/mesh/fur/clips/size use shared assembly with animal inputs, not human fallback.
@@ -197,7 +268,7 @@ Studio (`previewsun`, Meitou, on by default; `CharacterRenderer.Studio`): enhanc
 whatever the hour. Per view: the character's depth from the sun into a 2048 px map (an orthographic box round its sphere, the matrix relative to the
 sphere's centre), its depth from the camera, a horizon-based occlusion from that depth (8 directions of 6 steps out to an eighth of the sphere, a fixed
 4 x 4 turn the supersampling averages), then its colour in the shader's studio model (fog distance -4): a warm sun (shadowed, 4 x 4 compare, a
-normal and light offset of a texel or two), a cool sky over warm sand (the ground's bounce, `studioAmbient`: x2.2, 30 % of it staying however closed the point is, so a side the sun does not reach is dark, not black), the sky's visibility and the occlusion on the sky and bounce only.
+normal and light offset of a texel or two), a cool sky over warm sand (the ground's bounce, `studioAmbient`: x2.75, 40 % of it staying however closed the point is, so a side the sun does not reach is dark, not black), the sky's visibility and the occlusion on the sky and bounce only.
 The sky's visibility is the large-scale occlusion the hybrid GI gives in the world (a hood over the face): the character's depth from 32 directions of a
 Fibonacci spiral over the whole sphere (384 px tiles of one atlas, the matrices rebuilt in the shader), each point taking the share of directions,
 weighted by its normal, from which nothing of the character hides it (2 x 2 compare a direction); the screen's occlusion adds the folds at 0.6. The depth draws

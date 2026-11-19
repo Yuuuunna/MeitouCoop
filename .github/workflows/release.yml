@@ -2,6 +2,7 @@
 # (tools/scripts/package-release.ps1; the Windows zip with NVIDIA DLSS/Streamline and AMD FidelityFX next to the exes, the Linux zip with NVIDIA's DLSS model and NGX client library and our FidelityFX build), tags the commit
 # v<version> and publishes a GitHub release with one Meitou-<version>-<rid>.zip per runtime (docs/launcher.md), never a pre-release (only nightlies are) and never marked Latest
 # (that is the newest full launcher release, launcher-release.yml).
+# The code-mod reference package (MeitouCoop.References, docs/modding.md "Reference package") is pushed to nuget.org afterwards, when it built.
 name: Release
 
 on:
@@ -115,6 +116,39 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+  # MeitouCoop.References, the NuGet package code mods compile against (tools/scripts/package-references.ps1, docs/modding.md "Reference package"),
+  # one package for every platform. Nothing waits on it: the release job does not need this job, so a failure here leaves the release as it
+  # would have been, without the package; references-publish pushes it once the release is out. Read-only: it publishes nothing itself. A
+  # build_only run stops here, with the package as a workflow artifact to look at.
+  references:
+    needs: version
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            11.0.x
+            10.0.x
+
+      - name: Package references
+        shell: pwsh
+        run: ./tools/scripts/package-references.ps1 -Version "${{ needs.version.outputs.version }}" -Output out -Work "$env:RUNNER_TEMP/references"
+
+      # Not named zip-*: the release job downloads that pattern and must never see this file.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: references-nupkg
+          path: out/MeitouCoop.References.*.nupkg
+          compression-level: 0
+          if-no-files-found: error
+
   release:
     if: ${{ !inputs.build_only }}
     needs: [version, package]
@@ -175,6 +209,46 @@ jobs:
           } else {
             Invoke-RestMethod -Uri $env:WEBHOOK -Method Post -ContentType 'application/json; charset=utf-8' -Body $bytes
           }
+
+  # Pushes MeitouCoop.References to nuget.org once the release is out; skipped when the release or the package failed, never undoing the release.
+  # Full releases only: nightlies push nothing, as a nuget.org version can be unlisted but never removed. No key is stored: nuget.org's
+  # trusted publishing (a policy on the owner's nuget.org account naming this repository and release.yml) trades the job's GitHub identity
+  # token for a key that lives an hour. NUGET_USER is that account's profile name; without it nothing is pushed.
+  references-publish:
+    needs: [version, release, references]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: references-nupkg
+          path: out
+
+      - name: NuGet user
+        id: user
+        shell: pwsh
+        env:
+          NUGET_USER: ${{ secrets.NUGET_USER }}
+        run: |
+          if (-not $env:NUGET_USER) { 'No NUGET_USER secret set; MeitouCoop.References not pushed.' >> $env:GITHUB_STEP_SUMMARY }
+          "set=$([bool]$env:NUGET_USER)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+
+      - name: NuGet login
+        id: login
+        if: steps.user.outputs.set == 'true'
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to nuget.org
+        if: steps.user.outputs.set == 'true'
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          $package = Get-ChildItem out -Filter 'MeitouCoop.References.*.nupkg' | Select-Object -First 1
+          dotnet nuget push $package.FullName --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json
 
   # Every release becomes a benchmark target (bench/README.md).
   bench-target:

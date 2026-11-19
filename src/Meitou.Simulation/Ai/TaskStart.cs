@@ -95,6 +95,11 @@ public enum StartResult : byte
     /// The character's <see cref="Repertoire"/> does not register the row; nothing changed.
     /// </summary>
     NotEligible,
+    /// <summary>
+    /// An engine walk into a building shut to the walker (<see cref="DestinationAccess.WalkRefused"/>): its plan fails; the walk counts as one that
+    /// ended short.
+    /// </summary>
+    Inaccessible,
 }
 
 /// <summary>
@@ -248,6 +253,10 @@ public sealed class TaskHandlers
     /// The handlers of rows that have one of their own.
     /// </summary>
     readonly Dictionary<TaskType, ITaskHandler> _rows = [];
+    /// <summary>
+    /// The handlers of rows whose starts on a site (a fixture or building id) have one of their own.
+    /// </summary>
+    readonly Dictionary<TaskType, ITaskHandler> _siteRows = [];
 
     /// <summary>
     /// Registers the handler of <paramref name="task"/>.
@@ -261,23 +270,40 @@ public sealed class TaskHandlers
     public void Register(TaskType row, ITaskHandler handler) => _rows[row] = handler ?? throw new ArgumentNullException(nameof(handler));
 
     /// <summary>
+    /// Registers the handler of the starts of <paramref name="row"/> on a site, whatever their act-out; its other starts keep the row's or the
+    /// task's handler.
+    /// </summary>
+    public void RegisterOnSite(TaskType row, ITaskHandler handler) =>
+        _siteRows[row] = handler ?? throw new ArgumentNullException(nameof(handler));
+
+    /// <summary>
     /// The handler of <paramref name="task"/>; null: none (the start just sets the task).
     /// </summary>
     public ITaskHandler? Of(CharacterTask task) => _handlers[(byte)task];
 
     /// <summary>
-    /// The handler of a start of <paramref name="row"/> acting out <paramref name="task"/>: the row's own, else the task's.
+    /// The handler of a start of <paramref name="row"/> acting out <paramref name="task"/>, on <paramref name="site"/> (null: none): the row's own on
+    /// a site, else the row's own, else the task's.
     /// </summary>
-    public ITaskHandler? Of(CharacterTask task, TaskType row) => _rows.TryGetValue(row, out var own) ? own : _handlers[(byte)task];
+    public ITaskHandler? Of(CharacterTask task, TaskType row, string? site = null)
+    {
+        if (site is not null && _siteRows.TryGetValue(row, out var onSite)) return onSite;
+
+        return _rows.TryGetValue(row, out var own) ? own : _handlers[(byte)task];
+    }
 
     /// <summary>
     /// The handler of the character's task <paramref name="task"/>: the one of its running row when its provenance runs it
     /// (<see cref="RunningTask.Runs"/>), else the task's.
     /// </summary>
-    public ITaskHandler? Of(CharacterCold cold, CharacterTask task) => cold.Running is { } run && run.Runs(task) ? Of(task, run.Row) : Of(task);
+    public ITaskHandler? Of(CharacterCold cold, CharacterTask task) =>
+        cold.Running is { } run && run.Runs(task) ? Of(task, run.Row, run.Site) : Of(task);
 
+    /// <summary>
+    /// Uses the running row's site-specific handler while its act-out remains active.
+    /// </summary>
     public ITaskHandler? Of(World world, int slot, CharacterCold cold, CharacterTask task) =>
-            cold.Running is { } run && Of(run.Task, run.Row) is { } own && own.Runs(world, slot, run) ? own : Of(task);
+        cold.Running is { } run && Of(run.Task, run.Row, run.Site) is { } own && own.Runs(world, slot, run) ? own : Of(task);
 }
 
 /// <summary>
@@ -308,8 +334,8 @@ public static class TaskStart
         var cold = table.Cold(slot)!;
         if (!Eligible(world, cold, request.Row)) return StartResult.NotEligible;
         var current = (CharacterTask)table.Next[slot].Task;
-        var handler = world.Tasks.Of(request.Task, request.Row);
-        bool step = cold.Running is { } kept && Step(kept, current, request);
+        var handler = world.Tasks.Of(request.Task, request.Row, request.Site);
+        bool step = cold.Running is { } kept && Step(cold, kept, current, request);
         PlayerOrders.Replacing(world, slot, request, step);
         if (request.Task != CharacterTask.Attack) world.Tasks.Of(CharacterTask.Attack)?.End(world, slot, CharacterTask.Attack, TaskEnd.Replaced);
         if (current != CharacterTask.Attack && world.Tasks.Of(world, slot, cold, current) is { } before
@@ -339,15 +365,36 @@ public static class TaskStart
     /// Starts an engine walk to <paramref name="goal"/> at <paramref name="mode"/> as row <paramref name="row"/> (<see cref="Start"/> of a
     /// <see cref="CharacterTask.GoTo"/> with <see cref="TaskRequest.Goal"/>).
     /// </summary>
-    public static StartResult Walk(World world, int slot, System.Numerics.Vector2 goal, byte mode, TaskType row, TaskSource source) =>
-        Start(world, slot, new TaskRequest(CharacterTask.GoTo, row, source) { Goal = goal, Mode = mode });
+    public static StartResult Walk(World world, int slot, System.Numerics.Vector2 goal, byte mode, TaskType row, TaskSource source)
+    {
+        var point = new System.Numerics.Vector3(goal.X, float.NaN, goal.Y);
+        if (DestinationAccess.WalkRefused(world, slot, row, point)) return Refuse(world, slot);
+
+        return Start(world, slot, new TaskRequest(CharacterTask.GoTo, row, source) { Goal = goal, Mode = mode });
+    }
 
     /// <summary>
     /// Starts an engine walk onto the floor at <paramref name="at"/> (<see cref="MovementSystem.GoToFloor"/>), as
     /// <see cref="Walk(World, int, System.Numerics.Vector2, byte, TaskType, TaskSource)"/>.
     /// </summary>
-    public static StartResult Walk(World world, int slot, System.Numerics.Vector3 at, byte mode, TaskType row, TaskSource source) =>
-        Start(world, slot, new TaskRequest(CharacterTask.GoTo, row, source) { Point = at, Mode = mode });
+    public static StartResult Walk(World world, int slot, System.Numerics.Vector3 at, byte mode, TaskType row, TaskSource source)
+    {
+        if (DestinationAccess.WalkRefused(world, slot, row, at)) return Refuse(world, slot);
+
+        return Start(world, slot, new TaskRequest(CharacterTask.GoTo, row, source) { Point = at, Mode = mode });
+    }
+
+    /// <summary>
+    /// An engine walk refused by its destination's doors (docs/game/locks.md "Locked doors on the way"): it counts as a walk that ended short, as one
+    /// stopped at a locked door; a walk under way stops, its provenance kept.
+    /// </summary>
+    static StartResult Refuse(World world, int slot)
+    {
+        var table = world.Characters;
+        if (table.Next[slot].Task == (byte)CharacterTask.GoTo) Stand(table, slot);
+        table.Cold(slot)!.WalkEnd = WalkEnd.Failed;
+        return StartResult.Inaccessible;
+    }
 
     /// <summary>
     /// Starts an engine standing task (<see cref="CharacterTask.Idle"/>, <see cref="CharacterTask.Wander"/>, or a <see cref="CharacterTask.Follow"/>
@@ -452,11 +499,12 @@ public static class TaskStart
         !DecisionSystem.Decides(cold) && task is CharacterTask.Wander or CharacterTask.Follow ? task : CharacterTask.Idle;
 
     /// <summary>
-    /// Whether the request is a step of the running task: a goal's or reaction's attack while a following job runs its follow or attack.
+    /// Whether the request is a step of the running task: a goal's or reaction's attack while a follow row runs its follow or attack, unless it is
+    /// a follow order running its own row (<see cref="PlayerOrders.FollowRowRuns"/>), which a threat ends instead.
     /// </summary>
-    static bool Step(RunningTask running, CharacterTask current, in TaskRequest request) =>
+    static bool Step(CharacterCold cold, RunningTask running, CharacterTask current, in TaskRequest request) =>
         request.Task == CharacterTask.Attack && request.Source is TaskSource.Goal or TaskSource.Reaction && Production.PermaJobs.Follows(running.Row)
-        && running.Runs(current) && current is CharacterTask.Follow or CharacterTask.Attack;
+        && running.Runs(current) && current is CharacterTask.Follow or CharacterTask.Attack && !PlayerOrders.FollowRowRuns(cold);
 
     /// <summary>
     /// The act-out a task is a step of: a builder's delivering, fetching and dismantling are steps of its work (<see cref="CharacterTask.Build"/>;

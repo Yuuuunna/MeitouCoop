@@ -31,10 +31,10 @@ public sealed record ServerConnectionProfile(string Host, int Port, Guid Account
 public static class ServerCompatibility
 {
     /// <summary>
-    /// Both endpoints must accept item tags, experience rules, corpse-machine sound metadata and sparse binary ragdoll poses.
+    /// Both endpoints must accept effect definitions/countdowns, head targets, faction counts and the current authoritative gameplay rules.
     /// Discovery metadata is opaque to older clients, so their own build identity must reject admission.
     /// </summary>
-    public const string EngineBuild = "meitou-upstream-3072d79c-authority-1";
+    public const string EngineBuild = "meitou-upstream-315d26ec-authority-1";
     // Hash without loading DLLs: connecting never grants permission to execute installed code.
     public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
     {
@@ -56,9 +56,39 @@ public static class ServerCompatibility
         }
     }
 
-    public static IReadOnlyDictionary<string, string> WithCodeSettings(IReadOnlyDictionary<string, string> rules, GameInstall install, IReadOnlySet<string>? trusted, IReadOnlyDictionary<string, Dictionary<string, string>>? settings)
+    /// <summary>
+    /// Explicit gameplay files resolve exactly as map/resource readers do. The enabled RE_Kenshi configuration and its final override targets
+    /// are evidence even for data-only mods; no other resource directory is scanned and target paths stay local.
+    /// </summary>
+    public static IEnumerable<ContentFile> GameplayEvidence(GameInstall install, IEnumerable<ContentFile> assets, IReadOnlySet<string>? trusted)
     {
-        var result = rules.Where(p => !p.Key.StartsWith("code-setting/", StringComparison.Ordinal)).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        var rebinds = ReKenshiRebinds.For(install);
+        foreach (var asset in assets)
+        {
+            string path = GameFiles.Resolve(asset.Path);
+            yield return rebinds.TryRedirect(path, out var target)
+                ? asset with { Path = target, AllowMissing = true } : asset with { Path = path };
+        }
+        foreach (var file in CodeEvidence(install, trusted)) yield return file;
+        foreach (var mod in ReKenshiFile.EnabledMods(install))
+        {
+            string path = GameFiles.Resolve(Path.Combine(mod.Folder, ModList.NativePluginFile));
+            if (File.Exists(path)) yield return new(ContentKind.GameplayAsset, "rebind-config/" + mod.Name + "/RE_Kenshi.json", path);
+        }
+        foreach (var (source, target) in rebinds.Files)
+        {
+            string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)));
+            yield return new ContentFile(ContentKind.GameplayAsset, "rebind/" + key, target) { AllowMissing = true };
+        }
+    }
+
+    public static IReadOnlyDictionary<string, string> WithCodeSettings(IReadOnlyDictionary<string, string> rules, GameInstall install, IReadOnlySet<string>? trusted, IReadOnlyDictionary<string, Dictionary<string, string>>? settings, IEnumerable<string>? codeEdits = null)
+    {
+        var result = rules.Where(p => !p.Key.StartsWith("code-setting/", StringComparison.Ordinal)
+            && !p.Key.StartsWith("code-data/", StringComparison.Ordinal)).ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
+        int edit = 0;
+        foreach (string fingerprint in codeEdits ?? [])
+            result.Add("code-data/" + (edit++).ToString(System.Globalization.CultureInfo.InvariantCulture), fingerprint);
         var mods = ModList.Discover(install).ToDictionary(m => m.Name, StringComparer.Ordinal);
         foreach (string name in ModList.ReadEnabled(install))
         {
@@ -74,7 +104,7 @@ public static class ServerCompatibility
         return result;
     }
 
-    public static CompatibilityHello CreateHello(GameInstall install, string engineBuild, IReadOnlyDictionary<string, string> rules, IEnumerable<string>? gameplayAssets = null, IReadOnlySet<string>? trustedCodeMods = null, IReadOnlyDictionary<string, Dictionary<string, string>>? modSettings = null)
+    public static CompatibilityHello CreateHello(GameInstall install, string engineBuild, IReadOnlyDictionary<string, string> rules, IEnumerable<string>? gameplayAssets = null, IReadOnlySet<string>? trustedCodeMods = null, IReadOnlyDictionary<string, Dictionary<string, string>>? modSettings = null, IEnumerable<string>? codeEdits = null)
     {
         var assets = (gameplayAssets ?? []).Select(relative =>
         {
@@ -82,8 +112,8 @@ public static class ServerCompatibility
                 throw new InvalidDataException("Gameplay assets must use relative installation paths.");
             return new ContentFile(ContentKind.GameplayAsset, relative.Replace('\\', '/'), GameFiles.Resolve(Path.Combine(install.Root, relative)));
         }).ToArray();
-        var codeFiles = CodeEvidence(install, trustedCodeMods);
-        var manifest = ContentManifest.ReadLoadOrder(LoadOrder.FromInstall(install), assets.Concat(codeFiles));
-        return new(CompatibilityHandshake.Protocol, engineBuild, ContentManifest.RulesDigest(WithCodeSettings(rules, install, trustedCodeMods, modSettings)), manifest.Digest);
+        var effective = WithCodeSettings(rules, install, trustedCodeMods, modSettings, codeEdits);
+        var manifest = ContentManifest.ReadLoadOrder(LoadOrder.FromInstall(install), GameplayEvidence(install, assets, trustedCodeMods));
+        return new(CompatibilityHandshake.Protocol, engineBuild, ContentManifest.RulesDigest(effective), manifest.Digest);
     }
 }

@@ -154,6 +154,7 @@ public sealed class BuildingFootprints
     public BuildingFootprints(GameInstall install, GameDatabase db, WorldLevelData? levels)
     {
         this._install = install;
+        _assets = new(() => new Data.Ogre.AssetLocator(install));
         this._db = db;
         this._levels = levels;
         _collision = new CollisionCache(install);
@@ -232,9 +233,7 @@ public sealed class BuildingFootprints
     /// </summary>
     public IReadOnlyList<Vector2[]> FeatureObstacles(Func<double, double, float> terrainHeight)
     {
-        var path = Path.Combine(_install.DataDirectory, MapFeatureFile.RelativePath);
-        if (!System.IO.File.Exists(path))
-            return[];
+        if (!System.IO.File.Exists(MapFeatureFile.PathOf(_install))) return [];
         var features = MapFeatureFile.Open(_install).All().Select(t => t.Feature).ToList();
         float agentHeight = new NavBuildSettings().AgentHeight;
         var result = new ConcurrentBag<Vector2[]>();
@@ -318,33 +317,33 @@ public sealed class BuildingFootprints
 
     /// <summary>
     /// The triangles of a building record's collision shapes in its own space (scale applied, as the hull is): what a click on a building is tested
-    /// against after its hull. Read from the cache on demand, not kept; empty without a database record or collision files.
+    /// against after its hull. A <paramref name="destroyed"/> building's are its ruin's (destroyed collision, no doors), as it is drawn and as the
+    /// navmesh has it. Read from the cache on demand, not kept; empty without a database record or collision files.
     /// </summary>
-    public IReadOnlyList<(Vector3[] Vertices, int[] Indices)> Mesh(string buildingId) =>
-        [.. MeshShapes(buildingId).Select(s => (s.Vertices, s.Indices))];
+    public IReadOnlyList<(Vector3[] Vertices, int[] Indices)> Mesh(string buildingId, bool destroyed) =>
+        [.. MeshShapes(buildingId, destroyed).Select(s => (s.Vertices, s.Indices))];
 
     /// <summary>
     /// Each shape of <see cref="Mesh"/>, in the same order, with the index of the door whose part it belongs to in the building's <c>doors</c>
     /// list (closed placement); -1 for a shape of any other part.
     /// </summary>
-    public IReadOnlyList<int> MeshDoors(string buildingId) => [.. MeshShapes(buildingId).Select(s => s.Door)];
+    public IReadOnlyList<int> MeshDoors(string buildingId, bool destroyed) => [.. MeshShapes(buildingId, destroyed).Select(s => s.Door)];
 
     /// <summary>
     /// The shapes behind <see cref="Mesh"/> and <see cref="MeshDoors"/>.
     /// </summary>
-    List<(Vector3[] Vertices, int[] Indices, int Door)> MeshShapes(string buildingId)
+    List<(Vector3[] Vertices, int[] Indices, int Door)> MeshShapes(string buildingId, bool destroyed)
     {
         var result = new List<(Vector3[], int[], int)>();
         if (_db.Find(buildingId) is not { } building) return result;
 
         float scale = building.GetFloat("scale", 1);
-        if (scale <= 0)
-            scale = 1;
-        foreach (var mesh in WorldObjectLayout.Building(_db, building, "footprint", Vector3.Zero, Quaternion.Identity, new BuildingState()))
+        if (scale <= 0) scale = 1;
+        var state = new BuildingState(destroyed);
+        foreach (var mesh in WorldObjectLayout.Building(_db, building, "footprint", Vector3.Zero, Quaternion.Identity, state))
         {
-            string path = mesh.Source.GetPath("xml collision");
-            if (path.Length == 0 || _collision.Get(path)is not { } prepared)
-                continue;
+            string path = mesh.CollisionPath(destroyed);
+            if (path.Length == 0 || _collision.Get(path) is not { } prepared) continue;
             foreach (var shape in prepared.Shapes)
                 result.Add(([.. shape.Vertices.Select(v => v * scale)], shape.Indices, mesh.DoorIndex));
         }
@@ -369,7 +368,8 @@ public sealed class BuildingFootprints
         var points = new List<Vector3>();
         foreach (var mesh in WorldObjectLayout.Building(_db, building, "footprint", Vector3.Zero, Quaternion.Identity, new BuildingState()))
         {
-            if (Data.Physics.CollisionPaths.Resolve(_install, mesh.MeshPath)is not { } path || !Data.Ogre.OgreMeshReader.TryReadBounds(path, out var b))
+            if (MeshFile(mesh.MeshPath) is not { } path
+                    || !Data.Ogre.OgreMeshReader.TryReadBounds(path, out var b))
                 continue;
             for (int corner = 0; corner < 8; corner++)
                 points.Add(Vector3.Transform(new Vector3((corner & 1) == 0 ? b.Min.X : b.Max.X, (corner & 2) == 0 ? b.Min.Y : b.Max.Y, (corner & 4) == 0 ? b.Min.Z : b.Max.Z), mesh.Transform));
@@ -380,6 +380,19 @@ public sealed class BuildingFootprints
         var hull = NavGeometry.Footprint(points, 0, 0, 0).Polygon;
         return hull.Length < 3 ? null : new BuildingFootprint(hull, points.Min(p => p.Y), points.Max(p => p.Y));
     });
+
+    /// <summary>
+    /// The resource index the renderer finds a mesh by bare name in (a mod's own folders), made on first use.
+    /// </summary>
+    readonly Lazy<Data.Ogre.AssetLocator> _assets;
+
+    /// <summary>
+    /// The file of a part mesh a record names: its install-relative path, else the file of that name in the resource folders the game registers (the
+    /// mods': the renderer draws such a mesh, so its bounds must be found too).
+    /// </summary>
+    string? MeshFile(string meshPath) => Data.Physics.CollisionPaths.Resolve(_install, meshPath)
+        ?? _assets.Value.Find(Path.GetFileName(meshPath.Replace('\\', '/')));
+
     /// <summary>
     /// The bounds box of a building part's mesh in its own space, cached by path. Falls back to the structural reader when stored chunk lengths
     /// prevent a fast bounds read; null when the file is missing, unreadable or has no bounds.
@@ -391,7 +404,7 @@ public sealed class BuildingFootprints
     /// </summary>
     (Vector3 Min, Vector3 Max)? ReadPartBounds(string meshPath)
     {
-        if (Data.Physics.CollisionPaths.Resolve(_install, meshPath) is not { } file) return null;
+        if (MeshFile(meshPath) is not { } file) return null;
 
         try
         {
@@ -570,7 +583,7 @@ public sealed class BuildingFootprints
                     if (Wait(b.BuildingId) is not { } footprint || y < b.Position.Y + footprint.YMin - 1 || y > b.Position.Y + footprint.YMax + 1)
                         continue;
 
-                    Cut(Mesh(b.BuildingId), b.Position, b.Rotation, y, segments);
+                    Cut(Mesh(b.BuildingId, destroyed: false), b.Position, b.Rotation, y, segments);
                 }
             }
         }

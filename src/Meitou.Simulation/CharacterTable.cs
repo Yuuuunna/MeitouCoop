@@ -315,7 +315,9 @@ public sealed class CharacterCold
     public CharacterAnimation? Animation { get; set; }
 
     /// <summary>
-    /// The kind of weapon drawn in the right hand (None while sheathed): the stance animations are chosen for.
+    /// The kind of weapon drawn in the right hand (None while sheathed): the stance animations are chosen for
+    /// (<see cref="Data.Gameplay.HandHold.OfDrawn"/>); a drawn crossbow is plain <c>1 handed</c>, a person's melee weapon of no skill class
+    /// <c>1 handed</c> with <see cref="Data.Gameplay.WeaponKinds.MeleeMark"/>.
     /// </summary>
     public Data.Gameplay.WeaponKinds DrawnWeapon { get; set; }
 
@@ -566,8 +568,9 @@ public sealed class CharacterCold
     /// <summary>
     /// The status byte <c>+0x114</c> ("ordered", docs/game/economy.md 11.6): set on an attacker by the assault booking of an ordered attack
     /// (<c>FUN_140334070</c>), cleared when its fight ends (<see cref="Combat.CombatSystem"/> <c>EndFight</c>, the stand-in for the attack task's
-    /// end, <c>FUN_1405c91c0</c>); a victim with it set is not assaulted again. The original also sets it at ordered task starts and for the cannibal
-    /// assault package's squad (not modelled). Not saved; hashed while set.
+    /// end, <c>FUN_1405c91c0</c>); a victim with it set is not assaulted again. Also set on every member of a squad running a war assault package
+    /// (20, 32) on each package step (<c>FUN_14028a4e0</c>, <c>AiSystem.StepWar</c>), and cleared on them by the first step after that package
+    /// stops running. The original also sets it at ordered task starts (not modelled). Not saved; hashed while set.
     /// </summary>
     public bool Ordered { get; set; }
 
@@ -824,6 +827,12 @@ public sealed class CharacterCold
     public DrawAnchor? DrawAnchor { get; set; }
 
     /// <summary>
+    /// The floating progress bar a code mod shows over this character (docs/modding.md "Task bars"; null: none): published as the snapshot's
+    /// <see cref="CharacterSnapshot.Bar"/> ahead of the game's own bars, for any character; not saved, not hashed and read by no system.
+    /// </summary>
+    public TaskBar? ModTaskBar { get; set; }
+
+    /// <summary>
     /// The rigid meshes code mods hang on this character's bones (docs/modding.md "Bone meshes"), in the order first set: replaced as a whole on each
     /// change, so the snapshot publishes it as it is. Not saved, not hashed and read by no system.
     /// </summary>
@@ -1051,7 +1060,8 @@ public sealed class CharacterCold
 
     /// <summary>
     /// The prison sentence as the original stores it (docs/game/economy.md 11.5): the start in <see cref="World.GameHours"/> and the length in game
-    /// hours (save keys <c>sentence</c>, <c>psts</c>); served when start + length is not after now. Length 0: none (served).
+    /// hours (save keys <c>sentence</c>, <c>psts</c>); served when start + length is not after now. Start and length 0: no sentence (served); a start
+    /// with length 0: a sentence under an hour, served.
     /// </summary>
     public double SentenceStart { get; set; }
     /// <summary>
@@ -1149,6 +1159,13 @@ public sealed class CharacterCold
     /// Goals</c> (<see cref="Ai.AiSystem"/>). Runtime only (not saved, not hashed): set where the slave is made or sold.
     /// </summary>
     public int SlaveMaster { get; set; } = -1;
+
+    /// <summary>
+    /// An NPC slave's job 187 is gone though it stays a slave of its master: DA 28 split it into a squad of its own, whose perma-job wipe takes the
+    /// job (<c>FUN_1405ce4e0</c> -> <c>FUN_140507280</c>), so it plans with its own lists, not the master's Slave list (<see cref="Ai.AiSystem.ObeyedRoles"/>).
+    /// Cleared by every slave state change and reset, which add the job again. Saved as <c>meitou slave disobeys</c> (<see cref="Saving.SlaveSave"/>); not hashed.
+    /// </summary>
+    public bool ObedienceLost { get; set; }
 
     /// <summary>
     /// Its head is shaven (<c>CharacterHuman::isHeadShaven</c>, Character vslot 124 <c>0x3e0</c>: the appearance's <c>shaved</c>, <b>Verified</b>;
@@ -1353,9 +1370,15 @@ public sealed class CharacterCold
     public string? OperateFunctionality { get; set; }
 
     /// <summary>
-    /// The ITEM the operator holds while its operate task runs (the functionality's <c>special tool</c>); derived, not hashed.
+    /// The ITEM the operator holds at its machine (the functionality's <c>special tool</c>, while <see cref="OperateToolHeld"/>); derived, not hashed.
     /// </summary>
     public string? OperateTool { get; set; }
+
+    /// <summary>
+    /// The operator has reached its machine and holds <see cref="OperateTool"/>: not on the walk there or a haul trip (the original's walk is
+    /// task 1 Moving, before <c>Task_OperateMachine</c> attaches the tool); derived, not hashed.
+    /// </summary>
+    public bool OperateToolHeld { get; set; }
 
     /// <summary>
     /// The machine's <see cref="Meitou.Data.Gameplay.Construction.MachineData.HungerRate"/> while its operate task runs; derived, not hashed.
@@ -1999,7 +2022,7 @@ public sealed class CharacterTable
             hasher.Add(k.InWhat is { } w ? Rng.StableHash(w) : 0UL);
         }
 
-        if (k.SentenceLength > 0)
+        if (k.SentenceStart > 0 || k.SentenceLength > 0)
         {
             hasher.Add(k.SentenceStart);
             hasher.Add(k.SentenceLength);

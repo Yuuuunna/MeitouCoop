@@ -324,7 +324,8 @@ sealed class HeldItems(PopulationData? data)
     /// (<see cref="InventoryCommands.SlotRefusal(string, ItemInstance, bool)"/>, a worn slot only what the owner's
     /// race may wear, a limited storage its items, a prosthetic slot a stump of its side); the cell is the drop's, moved inside the section (a
     /// footprint larger than the section is refused); two or more items under it refuse it; one locked on refuses it ("Item is locked in place.");
-    /// one of the same kind takes what its stack has room for (the rest stays on the mouse; a full stack takes nothing); any other is swapped.
+    /// one of the same kind in a grid is joined with it (<see cref="Combine"/>, even one that does not stack); in a trade or with a buy-back receipt
+    /// a stack of its kind takes what it has room for (<see cref="Merge"/>); any other is swapped.
     /// Between the stock and the customer the units are capped to what the payer can afford and paid; a stolen item put on a stock that is no fence
     /// may get the seller caught. A refusal puts the item back.
     /// </summary>
@@ -395,7 +396,9 @@ sealed class HeldItems(PopulationData? data)
         var p = new Placing(world, held, into, target, x, y, limit, buy, sell, trade, changes, death, mark);
         if (under is [var other])
         {
-            if (target.Columns > 0 && limit > 1 && InventoryCommands.Stackable(item, other)) Merge(in p, other);
+            bool kind = target.Columns > 0 && InventoryCommands.Stackable(item, other);
+            if (kind && !buy && !sell && item.Buyback is null && other.Buyback is null) Combine(in p, other);
+            else if (kind && limit > 1) Merge(in p, other);
             else
                 Swap(in p, other);
             return;
@@ -487,11 +490,21 @@ sealed class HeldItems(PopulationData? data)
                 && InventoryCommands.MainClosed(target.Owner)) refusal = "";   // a live animal's grid (the original leaves it out of the window)
         if (refusal is null && target.Machine is { Data.IsStorage: true } storage && !storage.Data.TakesByHand(item.Record, item.Type))
             refusal = "Invalid container type.";
-        if (refusal is null && InventoryCommands.LimbSlotOf(target.Section) is >= 0 and var limbSlot
-            && (data?.Items.Limb(item.Record)?.LimbSlot != limbSlot
-                    || target.Owner?.Medical?.LimbPart(limbSlot) is not { Limb: Bodies.LimbState.Stump or Bodies.LimbState.Replaced }))
-            refusal = "Can't wear that item.";   // a prosthetic of the slot's side, on a stump (or swapped with the one fitted there)
+        if (refusal is null && InventoryCommands.LimbSlotOf(target.Section) is >= 0 and var limbSlot)
+            refusal = LimbRefusal(target, item, limbSlot);
         return refusal;
+    }
+
+    /// <summary>
+    /// Why prosthetic slot <paramref name="limbSlot"/> refuses the item, or null when it takes it: another side's (or no) prosthetic gets "Invalid
+    /// container type." (the section's type 50 + slot against the item's <c>slot</c>, <c>FUN_14074bc30</c>); a slot without a stump or a fitted
+    /// prosthetic is disabled in the original and takes no drop, so it refuses silently.
+    /// </summary>
+    string? LimbRefusal(Target target, ItemInstance item, int limbSlot)
+    {
+        if (data?.Items.Limb(item.Record)?.LimbSlot != limbSlot) return "Invalid container type.";
+        if (target.Owner?.Medical?.LimbPart(limbSlot) is not { Limb: Bodies.LimbState.Stump or Bodies.LimbState.Replaced }) return "";
+        return null;
     }
 
     /// <summary>
@@ -585,6 +598,7 @@ sealed class HeldItems(PopulationData? data)
         else
             Undo(in p, item);
         if (p.Changes) HeldItemTheft.LeftLoot(world, held, p.Death);
+        if (p.Changes) HeldItemTheft.ReportTake(world, held, n, caught: false);
         Touched(world, held, target);
     }
 
@@ -610,11 +624,52 @@ sealed class HeldItems(PopulationData? data)
         if (InventoryCommands.LimbSlotOf(target.Section) is >= 0 and var fitted)
             target.Owner?.Medical?.RemoveReplacement(fitted);
         Put(target, item, p.X, p.Y);
-        HeldPlayer(world).Held = NewHeld(world, other, p.Into, target.Root, other.Section, other.X, other.Y,
-            held.Actor, held.ControlGrant, _heldRequest?.SessionId ?? held.SessionId, _heldRequest?.ContainerSessionId ?? held.ContainerSessionId);
+        HoldOther(in p, other);
         if (p.Changes) HeldItemTheft.LeftLoot(world, held, p.Death);
+        if (p.Changes) HeldItemTheft.ReportTake(world, held, item.Quantity, caught: false);
         Touched(world, held, target);
     }
+
+    /// <summary>
+    /// The held item onto one of its kind outside a trade (<c>FUN_140715560</c> with the stack join <c>FUN_14075e220</c>, <b>Verified</b> by
+    /// decompile): the held units past the stack limit are split off first (<c>FUN_14070f240</c>); the rest and the other pool their units and
+    /// charges (<see cref="InventoryCommands.Join"/>), lying at the drop's cell with the units up to the limit, full ones when it is cut there; what
+    /// is left of the other, with the partly used unit, goes onto the mouse, and the split-off units then go back where they came from
+    /// (<c>FUN_14070d860</c>), else they stay on the mouse. So a full stack, or an item that does not stack, takes the held item's charges: two
+    /// half-used first aid kits make one full kit.
+    /// </summary>
+    void Combine(in Placing p, ItemInstance other)
+    {
+        var (world, held, target) = (p.World, p.Held, p.Target);
+        var item = held.Item;
+        int placed = Math.Min(p.Limit, item.Quantity);
+        var unit = Part(item, placed);
+        bool rest = !ReferenceEquals(unit, item);
+        InventoryCommands.Join(unit, other, p.Limit);
+
+        target.Grid.Items.Remove(other);
+        Put(target, unit, p.X, p.Y);
+
+        // The split-off units keep their old marks: they go back, or stay on the mouse.
+        if (rest) Undo(in p, item);
+        if (other.Quantity > 0)
+        {
+            if (rest) ReturnHeldItem(world);
+            HoldOther(in p, other);
+        }
+        else if (!rest) HeldPlayer(world).Held = null;
+
+        if (p.Changes) HeldItemTheft.LeftLoot(world, held, p.Death);
+        if (p.Changes) HeldItemTheft.ReportTake(world, held, placed, caught: false);
+        Touched(world, held, target);
+    }
+
+    /// <summary>
+    /// Puts <paramref name="other"/>, taken out of the placement's window, onto the mouse.
+    /// </summary>
+    void HoldOther(in Placing p, ItemInstance other) => HeldPlayer(p.World).Held = NewHeld(p.World, other, p.Into,
+        p.Target.Root, other.Section, other.X, other.Y, p.Held.Actor, p.Held.ControlGrant,
+        _heldRequest?.SessionId ?? p.Held.SessionId, _heldRequest?.ContainerSessionId ?? p.Held.ContainerSessionId);
 
     /// <summary>
     /// The held item onto free cells: the units the section's stack and the trade let through, the rest staying on the mouse.
@@ -639,6 +694,7 @@ sealed class HeldItems(PopulationData? data)
         else
             Undo(in p, item);
         if (p.Changes) HeldItemTheft.LeftLoot(world, held, p.Death);
+        if (p.Changes) HeldItemTheft.ReportTake(world, held, n, caught: false);
         Touched(world, held, target);
     }
 
@@ -682,7 +738,7 @@ sealed class HeldItems(PopulationData? data)
             ReturnHeldItem(world);
             return;
         }
-        if (m.Inputs[k].Item != item.Record)
+        if (!m.Inputs[k].Takes(item.Record))
         {
             world.Post(_heldPlayerId, "Invalid container type.");
             ReturnHeldItem(world);
@@ -762,6 +818,7 @@ sealed class HeldItems(PopulationData? data)
             (item.Death, item.Mark) = (death, mark);
         if (worn) _assembly?.RefreshEquipment(taker);
         HeldItemTheft.LeftLoot(world, held, death);
+        HeldItemTheft.ReportTake(world, held, all ? before : before - item.Quantity, caught: false);
         if (held.From.Holder == ItemHolder.Site) world.Machines.Touch();
     }
 

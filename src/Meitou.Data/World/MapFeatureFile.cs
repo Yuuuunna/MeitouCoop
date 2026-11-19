@@ -35,62 +35,77 @@ public sealed class MapFeatureFile
     public IEnumerable<(ZoneCoordinate Zone, MapFeature Feature)> All() =>
         Zones.SelectMany((list, i) => list.Select(f => (ZoneOf(i), f)));
     /// <summary>
-    /// Reads the install's <see cref = "RelativePath"/>.
+    /// The file the game reads: it opens <c>features.dat</c> by bare name from the resource group <c>Landscape</c> (docs/formats/overview.md), so
+    /// an enabled mod's copy in a folder of that group replaces the install's <see cref="RelativePath"/>.
     /// </summary>
-    public static MapFeatureFile Open(GameInstall install) => Read(File.ReadAllBytes(GameFiles.Resolve(Path.Combine(install.DataDirectory, RelativePath))));
+    public static string PathOf(GameInstall install) => Ogre.GameResources.Resolve(install, "features.dat", "Landscape", RelativePath);
 
     /// <summary>
-    /// Parses a map feature file: the magic, the zone count, a table of (offset, size) per zone, then the blocks back to back; throws when a block is
-    /// out of place or bytes are left over.
+    /// Reads the file the game reads (<see cref="PathOf"/>).
+    /// </summary>
+    public static MapFeatureFile Open(GameInstall install) => Read(File.ReadAllBytes(PathOf(install)));
+
+    /// <summary>
+    /// Parses a map feature file as the original reads it (<c>FUN_14039a4d0</c>, <c>FUN_14039a820</c>): the magic, the zone count, a table of
+    /// (offset, size) per zone, and each zone's block read at its offset alone (0: no features). The sizes, the blocks' order and any bytes after a
+    /// block are never looked at, so a mod's file may hold its blocks anywhere. A file with another magic or zone count has no features.
     /// </summary>
     public static MapFeatureFile Read(byte[] data)
     {
-        if (data.Length < 8 || !data.AsSpan(0, 4).SequenceEqual(Magic))
-            throw new InvalidDataException("Not a map feature file (magic MF01 missing).");
-        int count = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(4));
-        long tableEnd = 8 + 8L * count;
-        if (count < 0 || tableEnd > data.Length)
-            throw new InvalidDataException($"Implausible zone count {count}.");
         var file = new MapFeatureFile();
-        long expected = tableEnd;
+        if (data.Length < 8 || !data.AsSpan(0, 4).SequenceEqual(Magic)) return file;
+        int count = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(4));
+        if (count != WorldLayout.ZoneCount * WorldLayout.ZoneCount || 8 + 8L * count > data.Length) return file;
+
         for (int i = 0; i < count; i++)
         {
             uint offset = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(8 + 8 * i));
-            uint size = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(12 + 8 * i));
             var list = new List<MapFeature>();
             file.Zones.Add(list);
-            if (size == 0) continue;
-            if (offset != expected || offset + (long)size > data.Length)
-                throw new InvalidDataException($"Zone {i}: block at {offset} (+{size}) is not where the previous one ended ({expected}).");
-            ReadBlock(data.AsSpan((int)offset, (int)size), list, i);
-            expected = offset + size;
+            if (offset != 0 && offset < data.Length) ReadBlock(data.AsSpan((int)offset), ZoneOf(i), list);
         }
-        if (expected != data.Length)
-            throw new InvalidDataException($"{data.Length - expected} bytes after the last block.");
+
         return file;
     }
 
     /// <summary>
     /// Reads one zone's block into <paramref name="list"/>: a count, then per placement its id (a length byte and UTF-8), position, scale and
-    /// rotation (w, x, y, z); throws when bytes are left over.
+    /// rotation (w, x, y, z). A placement standing exactly where the last one kept in the zone stands is skipped (<see cref="Repeats"/>). A block
+    /// cut short by the end of the file ends there (Meitou's choice for a broken file).
     /// </summary>
-    static void ReadBlock(ReadOnlySpan<byte> block, List<MapFeature> list, int zone)
+    static void ReadBlock(ReadOnlySpan<byte> block, ZoneCoordinate zone, List<MapFeature> list)
     {
+        const int floats = 40;
+        if (block.Length < 4) return;
         int n = BinaryPrimitives.ReadInt32LittleEndian(block), p = 4;
         static float F(ReadOnlySpan<byte> b, ref int at) { float v = BinaryPrimitives.ReadSingleLittleEndian(b[at..]); at += 4; return v; }
-        for (int k = 0; k < n; k++)
+        MapFeature? last = null;
+        for (int k = 0; k < n && p < block.Length; k++)
         {
             int len = block[p++];
+            if (p + len + floats > block.Length) return;
+
             var id = Encoding.UTF8.GetString(block.Slice(p, len));
             p += len;
             var position = new Vector3(F(block, ref p), F(block, ref p), F(block, ref p));
             var scale = new Vector3(F(block, ref p), F(block, ref p), F(block, ref p));
             float w = F(block, ref p), x = F(block, ref p), y = F(block, ref p), z = F(block, ref p);
-            list.Add(new MapFeature(id, position, scale, new Quaternion(x, y, z, w)));
+            if (Repeats(last, position)) continue;
+
+            var feature = new MapFeature(id, position, scale, new Quaternion(x, y, z, w));
+            list.Add(feature);
+            if (WorldLayout.ZoneOf(position.X, position.Z) == zone) last = feature;
         }
-        if (p != block.Length)
-            throw new InvalidDataException($"Zone {zone}: {block.Length - p} bytes left in its block.");
     }
+
+    /// <summary>
+    /// Whether a placement repeats the last one the game kept in the zone: it skips one whose position equals exactly (<c>Vector3 ==</c>) that of
+    /// the last entry of the zone's feature list, before it looks the record up (<c>FUN_14039a820</c>, <b>Verified</b> by decompile). The game's
+    /// list holds only the placements lying in their zone (one in another zone is logged as in the wrong zone and left out; Meitou keeps it, an
+    /// engine choice, docs/formats/zones.md), so the last placement read in the zone that lies in it stands in for it here; the reader cannot tell a
+    /// record the data lacks, which the game also leaves out.
+    /// </summary>
+    static bool Repeats(MapFeature? last, Vector3 position) => last is not null && last.Position == position;
 }
 
 /// <param name = "StringId">The placed FCS record (MAP_FEATURES).</param>

@@ -2,6 +2,7 @@ using System.Numerics;
 using Meitou.Data;
 using Meitou.Data.Fcs;
 using Meitou.Simulation.Ai;
+using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Population;
@@ -42,6 +43,26 @@ public sealed record ActiveSquadCommand(int Squad) : SquadCommand;
 /// A portrait dropped on DRAG HERE TO DISMISS and confirmed: the character leaves the player's faction.
 /// </summary>
 public sealed record DismissCommand(CharacterId Character) : SquadCommand;
+
+/// <summary>
+/// A code mod keeps a squad of the player's faction out of the faction size count (<paramref name="On"/>) or counts it again
+/// (<see cref="Squad.Uncounted"/>). <paramref name="Owner"/>: the mod's manifest id, so a load without the mod counts the squad again (one that
+/// names none keeps the noted one). Meitou only.
+/// </summary>
+public sealed record SetSquadUncounted(int Squad, bool On, string? Owner = null) : SquadCommand;
+
+/// <summary>
+/// A code mod gives a squad of the player's faction its own purse (<paramref name="Own"/>, <see cref="Squad.OwnPurse"/>) or ends it, pouring what
+/// is left into the player's money. <paramref name="Owner"/>: the mod's manifest id, so a load without the mod ends it the same way (one that
+/// names none keeps the noted one). Meitou only.
+/// </summary>
+public sealed record SetSquadPurse(int Squad, bool Own, string? Owner = null) : SquadCommand;
+
+/// <summary>
+/// A code mod puts a squad of the player's faction to sleep (<paramref name="On"/>, <see cref="Squad.Dormant"/>) or wakes it.
+/// <paramref name="Owner"/>: the mod's manifest id, so a load without the mod wakes it (one that names none keeps the noted one). Meitou only.
+/// </summary>
+public sealed record SetSquadDormant(int Squad, bool On, string? Owner = null) : SquadCommand;
 
 /// <summary>
 /// The player's squads (docs/game/ui-screens.md "Squads tab", from the original's <c>SquadManagementScreen</c>): their order, the active squad, and
@@ -87,12 +108,33 @@ public static class SquadManagement
     }
 
     /// <summary>
-    /// The player's characters alive (what CONSTANTS <c>max faction size</c> counts).
+    /// The player's characters alive, every one (the dismiss rule's count).
     /// </summary>
     public static int FactionHeads(World world) => FactionHeads(world, world.Player.Faction);
 
     public static Squad NewSquad(World world, GameDatabase db, Vector3 at, string factionName, string? templateId)
         => NewSquad(world, db, at, factionName, world.Player.Faction, templateId);
+
+    /// <summary>
+    /// The local player's living faction members that count toward its size cap.
+    /// </summary>
+    public static int CappedHeads(World world) => CappedHeads(world, world.Player.Faction);
+
+    /// <summary>
+    /// Living members of one faction that count toward its cap, excluding mod-owned uncounted squads and including unloaded saved roles.
+    /// </summary>
+    public static int CappedHeads(World world, int faction)
+    {
+        var table = world.Characters;
+        int heads = 0;
+        for (int i = 0; i < table.Current.Length; i++)
+        {
+            if (!table.Current[i].Alive || table.Cold(i) is not { IsPlayer: true, DiedTick: < 0 } cold
+                || cold.Faction != faction || cold.Medical?.Dead == true) continue;
+            if (world.Squads.Find(cold.SquadId) is not { Uncounted: true }) heads++;
+        }
+        return heads + (world.StoredPlayerRoles?.PendingCappedFactionHeads(faction) ?? 0);
+    }
 
     /// <summary>
     /// Keeps the active squad one of the player's with members: when it is gone, or has none, the first in order with members (the squad tab refresh,
@@ -108,6 +150,18 @@ public static class SquadManagement
     /// </summary>
     internal static void Apply(World world, PopulationData? data, SquadCommand command)
     {
+        // Only trusted host code sets mod-owned flags; clients never impersonate a mod owner.
+        if (command is SetSquadUncounted or SetSquadPurse or SetSquadDormant)
+        {
+            if (command.Issuer is not null) return;
+            switch (command)
+            {
+                case SetSquadUncounted uncounted: SetUncounted(world, uncounted); break;
+                case SetSquadPurse purse: SetPurse(world, purse); break;
+                case SetSquadDormant dormant: SetDormant(world, dormant); break;
+            }
+            return;
+        }
         if (world.CommandPlayer(command) is not { } player) return;
         var permission = command is ActiveSquadCommand ? FactionPermission.None
             : command is MoveToSquadCommand or DismissCommand ? FactionPermission.AssignCharacters : FactionPermission.ManageSquads;
@@ -147,6 +201,7 @@ public static class SquadManagement
                     Notice("You must have at least one squad.");
                     return;
                 }
+                if (!EndPurse(world, doomed)) return;
                 world.Squads.Remove(doomed.Id);
                 world.SystemOf<PopulationSystem>()?.ForgetSquad(doomed.Id);
                 Renumber(PlayerSquads(world, faction));
@@ -176,6 +231,134 @@ public static class SquadManagement
     }
 
     /// <summary>
+    /// Whether a command naming the mod <paramref name="named"/> may change a squad setting <paramref name="owner"/> holds: one no mod holds, a
+    /// command naming no mod, or the holder itself. Another mod's setting is left alone, so mods marking the same squad never undo each other's.
+    /// </summary>
+    static bool MayChange(string? owner, string? named) => owner is null || named is not { Length: > 0 } || named == owner;
+
+    /// <summary>
+    /// A trusted mod's actual player-owned squad; an explicitly named faction must agree with its owner.
+    /// </summary>
+    static Squad? ModSquad(World world, SquadCommand command, int id) =>
+        world.Squads.Find(id) is { Dead: false } squad && world.IsPlayerFaction(squad.Faction)
+        && (command.Faction < 0 || command.Faction == squad.Faction) ? squad : null;
+
+    /// <summary>
+    /// Sets or clears <see cref="Squad.Uncounted"/> on a squad of the player's faction, noting the mod that set it.
+    /// </summary>
+    static void SetUncounted(World world, SetSquadUncounted command)
+    {
+        if (ModSquad(world, command, command.Squad) is not { } squad) return;
+        if (!MayChange(squad.UncountedOwner, command.Owner)) return;
+
+        squad.Uncounted = command.On;
+        if (!command.On) squad.UncountedOwner = null;
+        else if (command.Owner is { Length: > 0 } owner) squad.UncountedOwner = owner;
+    }
+
+    /// <summary>
+    /// Gives a squad of the player's faction its own purse or ends it (its money into the player's), noting the mod that set it.
+    /// </summary>
+    static void SetPurse(World world, SetSquadPurse command)
+    {
+        if (ModSquad(world, command, command.Squad) is not { } squad) return;
+        if (!MayChange(squad.PurseOwner, command.Owner)) return;
+
+        if (!command.Own)
+        {
+            EndPurse(world, squad);
+            return;
+        }
+
+        squad.OwnPurse = true;
+        if (command.Owner is { Length: > 0 } owner) squad.PurseOwner = owner;
+    }
+
+    /// <summary>
+    /// Ends a squad's own purse: what is left goes into the player's money.
+    /// </summary>
+    static bool EndPurse(World world, Squad squad)
+    {
+        if (squad.OwnPurse)
+        {
+            if (squad.Faction < 0 || !world.Factions.GetOrCreate(squad.Faction).TryCredit(squad.Money)) return false;
+            squad.Money = 0;
+        }
+
+        squad.OwnPurse = false;
+        squad.PurseOwner = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Ends every squad purse a code mod gave whose mod is not running now (<paramref name="running"/>: whether a mod id runs), pouring each into
+    /// the player's money. Between ticks after a load, before the first. Returns how many.
+    /// </summary>
+    public static int DropUnownedPurses(World world, Func<string, bool> running)
+    {
+        int dropped = 0;
+        foreach (var squad in world.Squads.All)
+        {
+            if (squad.PurseOwner is not { } owner || running(owner)) continue;
+
+            if (EndPurse(world, squad)) dropped++;
+        }
+
+        return dropped;
+    }
+
+    /// <summary>
+    /// Puts a squad of the player's faction to sleep or wakes it, noting the mod that set it.
+    /// </summary>
+    static void SetDormant(World world, SetSquadDormant command)
+    {
+        if (ModSquad(world, command, command.Squad) is not { } squad) return;
+        if (!MayChange(squad.DormantOwner, command.Owner)) return;
+
+        squad.Dormant = command.On;
+        if (!command.On) squad.DormantOwner = null;
+        else if (command.Owner is { Length: > 0 } owner) squad.DormantOwner = owner;
+    }
+
+    /// <summary>
+    /// Wakes every squad a code mod put to sleep whose mod is not running now (<paramref name="running"/>: whether a mod id runs). Between ticks
+    /// after a load, before the first. Returns how many.
+    /// </summary>
+    public static int DropUnownedDormant(World world, Func<string, bool> running)
+    {
+        int dropped = 0;
+        foreach (var squad in world.Squads.All)
+        {
+            if (squad.DormantOwner is not { } owner || running(owner)) continue;
+
+            squad.Dormant = false;
+            squad.DormantOwner = null;
+            dropped++;
+        }
+
+        return dropped;
+    }
+
+    /// <summary>
+    /// Counts again every squad a code mod kept out of the faction size count whose mod is not running now (<paramref name="running"/>: whether a
+    /// mod id runs). Between ticks after a load, before the first. Returns how many.
+    /// </summary>
+    public static int DropUnownedUncounted(World world, Func<string, bool> running)
+    {
+        int dropped = 0;
+        foreach (var squad in world.Squads.All)
+        {
+            if (squad.UncountedOwner is not { } owner || running(owner)) continue;
+
+            squad.Uncounted = false;
+            squad.UncountedOwner = null;
+            dropped++;
+        }
+
+        return dropped;
+    }
+
+    /// <summary>
     /// The player's squad of id <paramref name="id"/> that the player leads; null when there is none.
     /// </summary>
     static Squad? Own(World world, int faction, int id) => world.Squads.Find(id) is { Independent: false } s && Mine(world, faction, s) ? s : null;
@@ -189,7 +372,7 @@ public static class SquadManagement
     /// <summary>
     /// The death handler's player rule (<c>FUN_1407a6200</c>): a character of the player's faction that has died leaves its squad (the next member
     /// leads) for the faction's squad of the dead, made the first time (<c>FUN_1407f4960</c>: the factory with no template, record name
-    /// <see cref="DeadSquadName"/>). NPC squads keep their dead. Serial.
+    /// <see cref="DeadSquadName"/>), and its death is posted (<see cref="DeathMessage"/>). NPC squads keep their dead. Serial.
     /// </summary>
     internal static void BuryDead(World world, GameDatabase? db)
     {
@@ -210,10 +393,26 @@ public static class SquadManagement
                     dead.Members.Add(id);
                     cold.SquadId = dead.Id;
                     moved = true;
+                    world.PostFaction(faction, DeathMessage(cold));
                 }
                 if (moved) Relead(table, squad);
             }
         }
+    }
+
+    /// <summary>
+    /// The death handler's message for a character of the player's faction (<c>FUN_1407a6200</c>, docs/game/factions-squads-towns.md "The
+    /// player's dead"), chosen by the body as it died: blood loss, else starvation, else plain death.
+    /// </summary>
+    static string DeathMessage(CharacterCold cold)
+    {
+        if (cold is { Medical: { } medical, Race: { } race })
+        {
+            float capacity = MedicalState.BloodCapacity(race, cold.Stats?.Strength ?? 50, medical.HasStatsObject, medical.ScaleK, medical.ScaleZ);
+            if (medical.Blood <= -capacity) return Loc.Tr("{1} has died from blood loss.", cold.Name);
+            if (medical.Hunger <= 0) return Loc.Tr("{1} has died from starvation.", cold.Name);
+        }
+        return Loc.Tr("{1} is dead.", cold.Name);
     }
 
     /// <summary>

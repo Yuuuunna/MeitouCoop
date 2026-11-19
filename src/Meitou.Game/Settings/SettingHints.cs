@@ -23,7 +23,7 @@ static class SettingHints
         "Full screen" => "Fill the monitor with a borderless game window.",
         "Grading" => "Apply the scene's colour and contrast adjustments.",
         "Texture quality" => "Texture resolution; terrain changes need a restart.",
-        "Blood decals drawn" => "The most blood marks on walls and objects and bloody footprints drawn in a frame, the nearest first.",
+        "Blood decals drawn" => "The most blood marks on walls and objects and bloody footprints drawn in a frame, the ones that look largest first.",
         "Anisotropic filtering" => "Keep textures sharp when viewed at an angle.",
         "Use Metal upscaling" => "On: render below the screen's size and upscale (MetalFX or TAA), with a render scale to choose. "
             + "Off: render at the screen's size, or in full screen at a fraction of it with a resolution to choose.",
@@ -122,6 +122,7 @@ static class SettingHints
         WorldFrame.GiRelocateSwitch => "Move the light probes out of walls.",
         WorldFrame.GiCloudShadowsSwitch => "Clouds shade the bounced light and the light shafts.",
         WorldFrame.GiCacheSwitch => "A traced cache adds fine indirect light near the camera.",
+        WorldFrame.GiCharactersSwitch => "Rays gather the bounced light on each character instead of the probes'. Needs GTAO.",
         WorldFrame.GiRaysSwitch => "Each light probe traces 64 rays instead of 32: less noise in bounced light, about twice the probe cost.",
         "Tone map and grade" => "Use hybrid tone mapping and scene colour grading.",
         "Light shafts" => "Let shadows shape the light scattered through haze.",
@@ -133,6 +134,8 @@ static class SettingHints
         "Bloom" => "Let bright light glow softly into its surroundings, as in the eye.",
         WorldFrame.DepthOfFieldSwitch => "Blur what is out of focus, as a lens does, in the free and cinematic cameras.",
         WorldFrame.CameraEffectsSwitch => "Use the depth of field in the strategy camera too.",
+        WorldFrame.VignetteSwitch => "Darken the picture towards its corners, as a camera lens does, in every camera.",
+        WorldFrame.FilmGrainSwitch => "Lay a fine film grain over the picture, in every camera.",
         "Clouds" => "Render clouds with volume and depth.",
         "Cloud shadows" => "Let clouds cast shadows across land and water.",
         "Cloud shadows in fog" => "Fade cloud shadows in fog, so foggy places stay lit.",
@@ -160,6 +163,8 @@ static class SettingHints
         WorldFrame.MaterialSkinSwitch => "Skin's oily sheen, a soft bright edge, and light through ears and fingers.",
         WorldFrame.MaterialEyesSwitch => "A small catchlight on the eyes instead of a mirror of the landscape.",
         WorldFrame.MaterialMetalSwitch => "Weapons, armour plates, prosthetics and robots read as metal.",
+        WorldFrame.MaterialPolishSwitch => "Armour plates shine as bare metal wherever they have any gloss. Off: dull, painted or rusty plate "
+            + "stays dull. An armour a mod gives its own metalness keeps it.",
         WorldFrame.MaterialBeadsSwitch => "Drops of water stand on wet skin, leather and metal, in the rain and after a swim.",
         WorldFrame.WetWorldSwitch => "Rain shows on the world: water runs down walls, drops stand on metal and stone, puddles gather on the ground. "
             + "Off: as the original.",
@@ -167,6 +172,8 @@ static class SettingHints
         WorldFrame.TracedFarCascadesSwitch => "Ray-traced shadows near the camera only; four soft cascades take over further away, where "
             + "distant trees and buildings keep their shadows.",
         WorldFrame.GrassCoverSwitch => "Thin grass stays visible far away instead of fading out. Off: as the original.",
+        WorldFrame.NearTreeFadeSwitch => "Trees close to the camera fade out round the middle of the view (not in the free "
+            + "camera). Off: as the original.",
         "Metal on buildings" => "Plate, tanks and machinery read as metal; rust and paint stay matte.",
         "Glass bottles" => "Sake and rum bottles look like glass: they bend and tint what is behind them, catch reflections and show the drink inside.",
         "Blood on weapons and gear" => "Blades keep the blood of what they wound and dry dark; armour and clothing show the wounds under them.",
@@ -232,6 +239,14 @@ static class SettingHints
         InputAction.FocusCharacter => "Centre the camera on the selected character.",
         InputAction.StopMovement => "Stop the selected characters.",
         InputAction.ToggleBuild => "Open or close the build menu.",
+        InputAction.BuildRotateLeft => "While building: turn the held building left. Build keys may share keys with the others.",
+        InputAction.BuildRotateRight => "While building: turn the held building right.",
+        InputAction.BuildMoveUp => "While building: raise the held building (Shift: slowly).",
+        InputAction.BuildMoveDown => "While building: lower the held building (Shift: slowly).",
+        InputAction.BuildTiltIncrease => "While building: tilt the held building more to the slope of the ground.",
+        InputAction.BuildTiltDecrease => "While building: tilt the held building less, towards level.",
+        InputAction.BuildUndo => "While building: drop the wall line being laid, else the last queued building.",
+        InputAction.BuildApply => "While building: queue the held building where it stands, as a left click does.",
         InputAction.ToggleBlock => "Turn the Block order of the selection on or off.",
         InputAction.ToggleHold => "Turn the Hold position order of the selection on or off.",
         InputAction.TogglePassive => "Turn the Passive order of the selection on or off.",

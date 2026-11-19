@@ -1,9 +1,11 @@
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.Json;
+using Meitou.Content;
 using Meitou.Game.Effects;
 using Meitou.Game.Settings;
 using Meitou.Game.Ui;
+using Meitou.Modding;
 
 namespace Meitou.Game.Host;
 
@@ -153,7 +155,8 @@ sealed class UserConfig
     /// <summary>
     /// Frame generation: a generated frame between each two rendered ones, by <see cref="FrameGenerationVendor"/>: FSR 3's frame-interpolation
     /// swapchain (Windows, Proton and Linux, needs <c>amd_fidelityfx_vk.dll</c> / <c>libamd_fidelityfx_vk.so</c>) or DLSS's through Streamline
-    /// (<c>FrameGeneration</c>). Off by default; read at start-up, so a change takes effect after a restart.
+    /// (<c>FrameGeneration</c>). Off by default; followed while the game runs, on, off and from one vendor to the other, without a restart
+    /// (<c>GameLoop.FollowFrameGeneration</c>).
     /// </summary>
     public bool FrameGeneration { get; set; }
 
@@ -185,8 +188,7 @@ sealed class UserConfig
     public float HdrPeakNits { get; set; } = 1000;
 
     /// <summary>
-    /// Whose frame generation <see cref="FrameGeneration"/> turns on: FSR 3 (the default) or DLSS (Windows, RTX 40 or later, through Streamline; read
-    /// at start-up).
+    /// Whose frame generation <see cref="FrameGeneration"/> turns on: FSR 3 (the default) or DLSS (Windows, RTX 40 or later, through Streamline).
     /// </summary>
     public FrameGenerationVendor FrameGenerationVendor { get; set; }
 
@@ -465,10 +467,20 @@ sealed class UserConfig
     /// </summary>
     public bool FixPunchReach { get; set; } = true;
     /// <summary>
+    /// An animal fighting with a weapon drawn from its manufacturer (the Swamp Turtle) attacks with the elephant creature moves (Fixes settings;
+    /// off: its weapon's moves, which its body cannot play, as the game does).
+    /// </summary>
+    public bool FixAnimalMoves { get; set; } = true;
+    /// <summary>
     /// A bench with its table behind is sat facing away from it (Fixes settings; off: towards the world origin, as the game does;
     /// docs/game/ai-tasks.md "Town goals").
     /// </summary>
     public bool FixBenchFacing { get; set; } = true;
+    /// <summary>
+    /// A prisoner in a cage or on a pole plays only the fixture's pose (Fixes settings; off: it holds its wounds there, as the game does;
+    /// docs/animation.md "Injury holds").
+    /// </summary>
+    public bool FixPrisonPose { get; set; } = true;
     /// <summary>
     /// Guards' smuggling search and starving looters' food take reach into bags carried in the inventory grid (Fixes settings; off: only the grid
     /// and the worn backpack, as the game does; docs/game/dialogue.md "Conditions").
@@ -479,6 +491,21 @@ sealed class UserConfig
     /// drawn, as the game does; docs/render-interior-cut.md).
     /// </summary>
     public bool FixPartsInBuildings { get; set; } = true;
+    /// <summary>
+    /// The rain (and the dust and ash the game cuts inside buildings) is also left out in front of a building in the interior view, over the open
+    /// room (Fixes settings; off: only inside it, as the game does; docs/render-interior-cut.md).
+    /// </summary>
+    public bool FixRainInBuildings { get; set; } = true;
+    /// <summary>
+    /// A head a task turned toward something turns back to the front once nothing is looked at (Fixes settings; off by default: it stays turned
+    /// until the next look, as the game does; docs/animation.md "Head turning").
+    /// </summary>
+    public bool FixHeadTurnBack { get; set; }
+    /// <summary>
+    /// The game's own heightmap has its holes filled and its needles lowered (Fixes settings; off: read as the file holds it, as the game does;
+    /// read at start; <c>HeightmapRepair</c>, docs/formats/terrain.md "Holes and needles").
+    /// </summary>
+    public bool FixGround { get; set; } = true;
     /// <summary>
     /// The strategy camera's turn and tilt rate in degrees per second per unit of input (Controls settings): the original's <c>mouse speed pan</c> /
     /// <c>mouse speed tilt</c> (slider 2 … 50, default 6), one value for both here.
@@ -971,6 +998,19 @@ sealed class UserConfig
     }
 
     /// <summary>
+    /// Keeps the setting's value in <see cref="ModSettings"/>, or drops it when it is the default (and the mod's entry when it holds none); written
+    /// with the rest of the config.
+    /// </summary>
+    public void KeepModSetting(ModSetting setting)
+    {
+        string mod = setting.Group.ModId;
+        if (!ModSettings.TryGetValue(mod, out var saved)) ModSettings[mod] = saved = [];
+        if (setting.IsDefault) saved.Remove(setting.Key);
+        else saved[setting.Key] = setting.Text;
+        if (saved.Count == 0) ModSettings.Remove(mod);
+    }
+
+    /// <summary>
     /// Keeps a hand-edited or older config inside the values the Metal path can use.
     /// </summary>
     void Normalize()
@@ -995,7 +1035,7 @@ sealed class UserConfig
     {
         try
         {
-            File.WriteAllText(Path, JsonSerializer.Serialize(this, Json));
+            AtomicFile.WriteAllText(Path, JsonSerializer.Serialize(this, Json));
         }
         catch (IOException e)
         {

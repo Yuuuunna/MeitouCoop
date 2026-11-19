@@ -368,8 +368,8 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// </summary>
     public IReadOnlyList<Spotting> Spottings => _spottings;
     /// <summary>
-    /// The dialogue spotting fires events 44 and 45 through; null, or its event lines off (<see cref="Dialogue.DialogueSettings.AmbientEvents"/>):
-    /// the engine's fine or arrest instead.
+    /// The dialogue spotting fires event 44 through (45 and 36 are the sight pass's, <see cref="SightCrimes"/>); null, or its event lines off
+    /// (<see cref="Dialogue.DialogueSettings.AmbientEvents"/>): the engine's fine or arrest instead.
     /// </summary>
     public Dialogue.DialogueSystem? Talk { get; set; }
     /// <summary>
@@ -603,17 +603,19 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// no disguise level at all (status <c>+0x100</c> at 0: any uniform piece hides it, not only a working disguise) or a running blown cooldown
     /// (<c>+0x110</c>).
     /// </summary>
-    static bool EscapeShows(CharacterCold c) => c.Escaped && (c.RecentlyWanted > 0 || c.DisguiseLevel <= 0);
+    internal static bool EscapeShows(CharacterCold c) => c.Escaped && (c.RecentlyWanted > 0 || c.DisguiseLevel <= 0);
 
     /// <summary>
     /// The spotting pass over the suspects in slot order: slave catching, the recognition meter from the lookers that see the target, then event
-    /// 44/45 or the engine's arrest, and a hunt for a seen bounty.
+    /// 44 or the engine's arrest, the escapee's arrest without the sight pass, and a hunt for a seen bounty.
     /// </summary>
     void Spot(World world, float seconds)
     {
         var table = world.Characters;
         var next = table.Next;
         float range2 = Settings.SpotRange * Settings.SpotRange;
+        // The sight pass fires event 45 itself (Perception.SightCrimes); without it the engine arrests the escapee.
+        bool sight = SightSystem.Running(world);
         for (int s = 0; s < table.HighWater; s++)
         {
             if (!Suspect(world, s)) continue;
@@ -645,7 +647,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
                 // A working disguise hides the bounty: only a looker that sees through it recognises it (Disguise; disguiseMods' bounty branch needs
                 // no disguise level).
                 bool spots = bounty > 0 && bounty >= SpotThreshold(wc.NpcClass) && SeenFaction(c) == c.Faction;
-                bool escapee = EscapeShows(c) && Crimes.IsPoliceLike(world, wc) && InOwnTown(world, w);
+                bool escapee = !sight && EscapeShows(c) && Crimes.IsPoliceLike(world, wc) && InOwnTown(world, w);
                 bool hunts = HuntsFor(wc, c);
                 if (!spots && !escapee && !hunts) continue;
                 if (!SeesSuspect(world, w, s, c, Settings.SpotRange)) continue;
@@ -686,16 +688,19 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     bool SeesSuspect(World world, int w, int s, CharacterCold c, float range) => SuspectView(world, w, s, c, range) > 0;
 
     /// <summary>
+    /// The spot value of the slave events (<c>FUN_140853620</c>): the looker's view factor of the target with its daylight sight range
+    /// (<see cref="SuspectView"/>).
+    /// </summary>
+    internal float SpotValue(World world, int w, int s)
+    {
+        var table = world.Characters;
+        return SuspectView(world, w, s, table.Cold(s)!, AggroSystem.RangeOf(table.Cold(w)!, AggroSystem.OutdoorSight));
+    }
+
+    /// <summary>
     /// The view factor of <see cref="SeesSuspect"/> (<see cref="SightRay.Sees"/>'s v), 0 when the looker does not see the suspect.
     /// </summary>
-    float SuspectView(World world, int w, int s, CharacterCold c, float range)
-    {
-        var next = world.Characters.Next;
-        bool sneaking = (c.Orders & CharacterOrders.Sneak) != 0;
-        float v = SightRay.Sees(world, w, s, next[w].Position, next[s].Position, range, sneaking ? Orders.Stealth(c) : -1);
-
-        return !sneaking || Crimes.Spotted(world, w, world.Characters.IdOf(s)) ? v : 0;
-    }
+    float SuspectView(World world, int w, int s, CharacterCold c, float range) => Crimes.SuspectView(world, w, s, c, range);
 
     /// <summary>
     /// EV_BOUNTY_SPOTTED, EV_ESCAPED_PRISONER_SPOTTED, EV_ESCAPING_SLAVE_SPOTTED.
@@ -705,9 +710,10 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// <summary>
     /// Slave catching (docs/simulation.md "Arrest and jail"): an awake NPC of the slave's owner faction in its own town (<b>engine</b> gate) that
     /// sees a slave (state 1; its daylight sight test, full range) with a view factor above <see cref="EscapingSlave.SpotValue"/> tags it escaping
-    /// when <see cref="EscapingSlave.Test"/> holds (the original's sight pass, <b>Verified</b>); the nearest such police-like or slaver NPC then
-    /// captures an escaping slave (state 2; <b>engine</b> for the event 36 line's attack): it fights it down and cages it, and the caging makes it
-    /// the faction's slave again. True when a capture started (the slave is then the arrest's, not the bounty spotting's).
+    /// when <see cref="Escapes"/> holds, unless the sight pass runs, which tags it and fires event 36 itself (<see cref="SightCrimes"/>); either way
+    /// the nearest such police-like or slaver NPC then captures an escaping slave (state 2; <b>engine</b> for the event 36 line's attack): it
+    /// fights it down and cages it, and the caging makes it the faction's slave again. True when a capture started (the slave is then the
+    /// arrest's, not the bounty spotting's).
     /// </summary>
     bool CatchSlave(World world, int s, CharacterCold c)
     {
@@ -715,6 +721,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         var table = world.Characters;
         var next = table.Next;
         var at = next[s].Position;
+        bool sight = SightSystem.Running(world);
         int catcher = -1;
         float catcherD2 = float.MaxValue;
         for (int w = 0; w < table.HighWater; w++)
@@ -730,7 +737,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
             float view = SuspectView(world, w, s, c, range);
             if (view <= 0) continue;
 
-            if (c.SlaveState == 1 && view > EscapingSlave.SpotValue && Escapes(world, w, s, c, at)) FixtureRegistry.TagEscaped(world, c);
+            if (!sight && c.SlaveState == 1 && view > EscapingSlave.SpotValue && Escapes(world, w, s, c, at)) FixtureRegistry.TagEscaped(world, c);
             if (c.SlaveState == 2 && d2 < catcherD2
                 && (Crimes.IsPoliceLike(world, wc) || wc.NpcClass == FundamentalType.Slaver) && FreeGuard(world, w))
             {
@@ -743,7 +750,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         _arrests.Add(arrest);
         gc.Engaged = true;
         BeginFight(world, arrest, catcher, s);
-        if (Talks) Talk!.FireEvent(world, arrest.Guard, arrest.Target, EscapingSlaveSpotted);
+        if (Talks && !sight) Talk!.FireEvent(world, arrest.Guard, arrest.Target, EscapingSlaveSpotted);
         return true;
     }
 
@@ -751,7 +758,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// The escape test of slave catching: <see cref="EscapingSlave.Test"/>, and for a slave whose owner Meitou does not know (a saved master that
     /// never loads) standing outside the looker's town (<b>engine</b>: the original's owner hand then resolves to nothing, which escapes at once).
     /// </summary>
-    bool Escapes(World world, int w, int s, CharacterCold c, Vector3 at) =>
+    internal bool Escapes(World world, int w, int s, CharacterCold c, Vector3 at) =>
         EscapingSlave.Test(world, w, s, c, Captives, Crimes) || Kidnap.ObedientSlave.OwnerOf(world, c) is null && !InTownOf(world, w, at);
 
     /// <summary>
@@ -1123,7 +1130,10 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     }
 
     /// <summary>
-    /// The target is down: the guard strips it when it must, then lifts it, giving up after 10 s of failed lifts.
+    /// The target is down: the guard strips it when it must, then lifts it, giving up after 10 s of failed lifts. A guard whose left arm cannot carry
+    /// gives up once nothing comes before the lift: the arrest plan needs the target carried, whose only provider (68 Lifting) needs state 80
+    /// <c>isCarryingArmOK</c>, which no row provides (docs/game/ai-tasks.md "Arrest chain", <b>Verified</b>), so the original's plan fails there
+    /// (#906).
     /// </summary>
     bool StepTargetDown(World world, Arrest a, int g, CharacterCold gc, CharacterCold tc, float dt)
     {
@@ -1142,6 +1152,8 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
             return true;
         }
 
+        if (!CanLift(gc)) return End(world, a, ArrestEventKind.GaveUp);
+
         // Not from an ally who carries it already, nor with no cage to take it to: a lift then would only be dropped again, and guards passed
         // the bodies round a full station (#339; the original's arrest goal wants a free cage, docs/game/economy.md "Arrest goal").
         if (CarriedByAlly(world, gc, tc) || !CageFor(world, a, g)) return End(world, a, ArrestEventKind.GaveUp);
@@ -1156,6 +1168,19 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         a.Waited += dt;
         return a.Waited <= 10 || End(world, a, ArrestEventKind.GaveUp);
     }
+
+    /// <summary>
+    /// Whether stripping the target (<see cref="NeedsStrip"/>, <see cref="StepStrip"/>) could still take something: there is a strip step, the
+    /// guard's right arm works, and the target has a weapon drawn or one in its hip or back sections that is not locked on.
+    /// </summary>
+    bool CanStripFurther(CharacterCold guard, CharacterCold target) =>
+        Captives is not null && guard.Medical is { } m && m.ArmWorks(left: false)
+        && (target.DrawnWeapon != WeaponKinds.None || target.Inventory?.Items.Exists(i => i.Section is "hip" or "back" && !i.LockedOn) == true);
+
+    /// <summary>
+    /// Whether the guard's left arm can carry (state 80 <c>isCarryingArmOK</c>, <see cref="Carrying.CarrySystem.LeftArmUsable"/>).
+    /// </summary>
+    static bool CanLift(CharacterCold guard) => guard.Medical is { } m && Carrying.CarrySystem.LeftArmUsable(m);
 
     /// <summary>
     /// The lift: once the guard carries the target he takes it to the cage; a lift that failed 5 times gives up, else the fight resumes.
@@ -1208,7 +1233,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
             world.Fixtures.MarkUnreachable(world, cage, a.Faction);
             return Drop(world, a, g);
         }
-        TaskStart.Walk(world, g, cage.Position, SpeedMode.Free, TaskType.FindCageAndPutInIfBounty, TaskSource.Npc);
+        TaskStart.Walk(world, g, cage.Position, SpeedMode.Free, TaskType.FindCageAndPutIn, TaskSource.Npc);
         return true;
     }
 
@@ -1317,7 +1342,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         var cage = GuardCage(world, g, a);
         if (cage is null) return Drop(world, a, g);
         a.Cage = cage.Id;
-        TaskStart.Walk(world, g, cage.Position, SpeedMode.Free, TaskType.FindCageAndPutInIfBounty, TaskSource.Npc);
+        TaskStart.Walk(world, g, cage.Position, SpeedMode.Free, TaskType.FindCageAndPutIn, TaskSource.Npc);
         return true;
     }
 

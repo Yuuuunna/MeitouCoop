@@ -962,15 +962,15 @@ sealed partial class PlayerInterface
     /// <summary>
     /// With the interface hidden (F7, <c>hud hide</c>) only the speech bubbles are drawn, so a filmed clean picture keeps the <c>say</c> commentary.
     /// </summary>
-    public void DrawSpeechOnly(DebugOverlay overlay, int width, int height)
+    public void DrawSpeechOnly(DebugOverlay overlay, int width, int height, DebugOverlay.OverlayPass? pass = null)
     {
         Width = width;
         Height = height;
         var controls = new List<UiControl>();
         SpeechBubbles.AddSpeech(controls);
         if (controls.Count == 0) return;
-        UiPainter?.Draw(controls, width, height, Mouse, SpeedButtonAction, minimumTextPixels: StandardPixels);
-        overlay.Flush(width, height);
+        UiPainter?.Draw(controls, width, height, Mouse, SpeedButtonAction, minimumTextPixels: StandardPixels, pass: pass);
+        overlay.Flush(width, height, null, pass);
     }
 
     /// <summary>
@@ -1333,6 +1333,7 @@ sealed partial class PlayerInterface
         if (FactionWindow.FactionWheel(p, steps)) return true;
         if (Production.ResearchWheel(p, steps)) return true;
         if (Production.CraftWheel(p, steps)) return true;
+        if (!FaithfulScreens.Contains(p) && HudPanels.MedicalWheel(p, steps)) return true;
         return CharacterEditor.EditorWheel(p, steps) || FaithfulScreens.Wheel(p, steps);
     }
 

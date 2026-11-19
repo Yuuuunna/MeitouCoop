@@ -63,9 +63,9 @@ public readonly record struct FoliageLayoutCacheStats(int Hits, int Misses, int 
 /// <c>%LOCALAPPDATA%\Meitou\foliage\&lt;key&gt;\z&lt;X&gt;.&lt;Y&gt;.&lt;w|f&gt;.mfl</c> (or the constructor's root; never in the repository),
 /// one file per zone and layout kind (whole or far only). The key is a hash of everything the layout reads: the foliage records (every field of the
 /// layers, meshes and grass types reached from the biomes), the towns, the size and write time of the heightmap, blend file, biome map and overlay
-/// tiles, this format's version and <see cref = "LayoutVersion"/>, bumped by hand when a code change alters what the layout places, so an edit
-/// elsewhere keeps the cache (<see cref = "FoliageLayoutCacheKey"/>). Settings (foliage and grass range, grass density) are not inputs of the layout
-/// and are not in it.
+/// tiles, the heightmap fix's repairs while it is on, this format's version and <see cref="LayoutVersion"/>, bumped by hand when a code change
+/// alters what the layout places, so an edit elsewhere keeps the cache (<see cref="FoliageLayoutCacheKey"/>). Settings (foliage and grass range,
+/// grass density) are not inputs of the layout and are not in it.
 /// </para>
 /// <para>
 /// A file is written to a temporary name and moved into place, carries its key, zone, sizes and a checksum, and is read whole: anything that does not
@@ -98,13 +98,30 @@ public sealed class FoliageLayoutCache
     /// </summary>
     readonly FoliageCatalog _catalog;
     /// <summary>
-    /// The folder of this key's files.
+    /// The install the key reads the files of.
     /// </summary>
-    readonly string _directory;
+    readonly GameInstall _install;
     /// <summary>
-    /// The 32-byte key every file carries (<see cref="FoliageLayoutCacheKey"/>).
+    /// The level's towns the layouts keep clear, as given; which of them the player owns is the key's (<see cref="StateFor"/>).
     /// </summary>
-    readonly byte[] _key;
+    readonly FoliageTown[] _towns;
+    /// <summary>
+    /// The folder of every key's folder.
+    /// </summary>
+    readonly string _rootFolder;
+    /// <summary>
+    /// The key in use: the player-owned towns it was made for (the world's snapshot, <see cref="WorldLevelData.FoliageOwnership"/>, and which of the level's
+    /// towns it owns), the 32-byte key every file carries (<see cref="FoliageLayoutCacheKey"/>), its folder and its upkeep.
+    /// </summary>
+    sealed record KeyState(IReadOnlySet<(int X, int Z)>? Snapshot, bool[] Owned, byte[] Key, string Directory, FoliageLayoutCacheUpkeep Upkeep);
+    /// <summary>
+    /// The current <see cref="KeyState"/>, replaced when a load changes which towns the player owns.
+    /// </summary>
+    volatile KeyState _state;
+    /// <summary>
+    /// Serialises the making of a new key.
+    /// </summary>
+    readonly Lock _rekey = new();
     /// <summary>
     /// The counts behind <see cref = "Stats"/>.
     /// </summary>
@@ -147,15 +164,48 @@ public sealed class FoliageLayoutCache
     /// </summary>
     public FoliageLayoutCache(GameInstall install, FoliageCatalog catalog, IEnumerable<FoliageTown> towns, string? root = null, long? maxBytes = null)
     {
-        this._catalog = catalog;
-        var rootFolder = root ?? LoadCaches.Folder("foliage");
-        var list = towns as IReadOnlyCollection<FoliageTown> ?? [..towns];
-        _ownership = list.Where(t => t.Owned).Select(t => FoliageWorld.TownKey(t.At.X, t.At.Y)).ToFrozenSet();
-        _key = FoliageLayoutCacheKey.Compute(install, catalog, list);
-        var keyName = Convert.ToHexString(_key.AsSpan(0, 8)).ToLowerInvariant();
-        _directory = Path.Combine(rootFolder, keyName);
-        Upkeep = new FoliageLayoutCacheUpkeep(rootFolder, keyName, _directory, maxBytes ?? DefaultMaxBytes);
+        (_install, _catalog) = (install, catalog);
+        _rootFolder = root ?? LoadCaches.Folder("foliage");
+        _towns = [.. towns];
+        var ownership = _towns.Where(t => t.Owned).Select(t => FoliageWorld.TownKey(t.At.X, t.At.Y)).ToFrozenSet();
+        _state = MakeState(ownership, [.. _towns.Select(t => t.Owned)], maxBytes ?? DefaultMaxBytes);
     }
+
+    /// <summary>
+    /// The key, folder and upkeep for the level's towns with <paramref name="owned"/> marking the player's.
+    /// </summary>
+    KeyState MakeState(IReadOnlySet<(int X, int Z)>? snapshot, bool[] owned, long maxBytes)
+    {
+        var key = FoliageLayoutCacheKey.Compute(_install, _catalog, _towns.Select((t, i) => t with { Owned = owned[i] }));
+        var keyName = Convert.ToHexString(key.AsSpan(0, 8)).ToLowerInvariant();
+        var directory = Path.Combine(_rootFolder, keyName);
+        return new KeyState(snapshot, owned, key, directory, new FoliageLayoutCacheUpkeep(_rootFolder, keyName, directory, maxBytes));
+    }
+
+    /// <summary>
+    /// The key for the world's towns as <paramref name="snapshot"/> (<see cref="WorldLevelData.FoliageOwnership"/>) owns them: the current one when it owns
+    /// the same level towns, else a new one. A load that changes the player's towns re-keys the cache (it bypassed it before, and every layout of such
+    /// a save was placed again on every load).
+    /// </summary>
+    KeyState StateFor(IReadOnlySet<(int X, int Z)> snapshot)
+    {
+        var state = _state;
+        if (ReferenceEquals(state.Snapshot, snapshot)) return state;
+        var owned = _towns.Select(t => snapshot.Contains(FoliageWorld.TownKey(t.At.X, t.At.Y))).ToArray();
+        lock (_rekey)
+        {
+            state = _state;
+            if (ReferenceEquals(state.Snapshot, snapshot)) return state;
+            return _state = owned.AsSpan().SequenceEqual(state.Owned)
+                ? state with { Snapshot = snapshot }
+                : MakeState(snapshot, owned, state.Upkeep.MaxBytes);
+        }
+    }
+
+    /// <summary>
+    /// The key for the world's current towns.
+    /// </summary>
+    KeyState Current => _state;
 
     /// <summary>
     /// The catalog the files' mesh and layer ids are looked up in.
@@ -164,7 +214,7 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// The pruning and eviction of the cache's folder.
     /// </summary>
-    public FoliageLayoutCacheUpkeep Upkeep { get; }
+    public FoliageLayoutCacheUpkeep Upkeep => Current.Upkeep;
     /// <summary>
     /// The folder holding one folder per key.
     /// </summary>
@@ -185,7 +235,7 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// The folder of this key's files.
     /// </summary>
-    public string Directory => _directory;
+    public string Directory => Current.Directory;
 
     /// <summary>
     /// What the cache did so far.
@@ -197,26 +247,45 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// The file of a zone and layout kind.
     /// </summary>
-    public string PathFor(ZoneCoordinate zone, bool farOnly) => Path.Combine(_directory, $"z{zone.X}.{zone.Y}.{(farOnly ? 'f' : 'w')}.mfl");
+    public string PathFor(ZoneCoordinate zone, bool farOnly) => PathFor(Current, zone, farOnly);
+
+    /// <summary>
+    /// The file of a zone and layout kind under <paramref name="state"/>'s key.
+    /// </summary>
+    static string PathFor(KeyState state, ZoneCoordinate zone, bool farOnly) =>
+        Path.Combine(state.Directory, $"z{zone.X}.{zone.Y}.{(farOnly ? 'f' : 'w')}.mfl");
+
 
     /// <summary>
     /// The cached zone, or null (a miss: absent, or unusable, which is also counted in <see cref="FoliageLayoutCacheStats.Rejected"/>).
     /// </summary>
-    public (FoliageZone Zone, FoliageGround Ground)? TryLoad(ZoneCoordinate zone, bool farOnly) =>
-        Fetch(zone, farOnly, grouped: false) is { } f ? (f.Zone, f.Ground) : null;
+    public (FoliageZone Zone, FoliageGround Ground)? TryLoad(ZoneCoordinate zone, bool farOnly) => TryLoad(zone, farOnly, Current.Snapshot!);
+
+    /// <summary>
+    /// <see cref="TryLoad(ZoneCoordinate, bool)"/> for the towns <paramref name="owned"/> marks the player's (the placement's snapshot).
+    /// </summary>
+    public (FoliageZone Zone, FoliageGround Ground)? TryLoad(ZoneCoordinate zone, bool farOnly, IReadOnlySet<(int X, int Z)> owned) =>
+        Fetch(StateFor(owned), zone, farOnly, grouped: false) is { } f ? (f.Zone, f.Ground) : null;
 
     /// <summary>
     /// Like <see cref="TryLoad"/>, with the instances already grouped for the renderer (<see cref="GroupedFoliageZone"/>; its zone's instance list is
     /// empty): the records are built straight from the file's, so the zone's 56-byte-per-instance list and the copies grouping it made are
     /// never allocated.
     /// </summary>
-    public GroupedFoliageZone? TryLoadGrouped(ZoneCoordinate zone, bool farOnly) => Fetch(zone, farOnly, grouped: true)?.Grouped;
+    public GroupedFoliageZone? TryLoadGrouped(ZoneCoordinate zone, bool farOnly) => TryLoadGrouped(zone, farOnly, Current.Snapshot!);
+
+    /// <summary>
+    /// <see cref="TryLoadGrouped(ZoneCoordinate, bool)"/> for the towns <paramref name="owned"/> marks the player's.
+    /// </summary>
+    public GroupedFoliageZone? TryLoadGrouped(ZoneCoordinate zone, bool farOnly, IReadOnlySet<(int X, int Z)> owned) =>
+        Fetch(StateFor(owned), zone, farOnly, grouped: true)?.Grouped;
 
     /// <summary>
     /// Parses and verifies one file's bytes; null when it is not a valid entry for this key, zone and kind.
     /// </summary>
     public (FoliageZone Zone, FoliageGround Ground, float ComputeMs)? Decode(byte[] bytes, ZoneCoordinate zone, bool farOnly) =>
-        Decode(bytes, bytes.Length, zone, farOnly, grouped: false) is { } d ? (d.Zone, d.Ground, d.ComputeMs) : null;
+        Decode(Current, bytes, bytes.Length, zone, farOnly, grouped: false) is { } d ? (d.Zone, d.Ground, d.ComputeMs) : null;
+
     /// <summary>
     /// A decoded file: the zone, its ground, the time its layout took, and the instances grouped when asked for.
     /// </summary>
@@ -224,11 +293,10 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// Reads and decodes a zone's file, counting the hit or miss.
     /// </summary>
-    Decoded? Fetch(ZoneCoordinate zone, bool farOnly, bool grouped)
+    Decoded? Fetch(KeyState state, ZoneCoordinate zone, bool farOnly, bool grouped)
     {
-        if (LoadCaches.Disabled)
-            return null;
-        var path = PathFor(zone, farOnly);
+        if (LoadCaches.Disabled) return null;
+        var path = PathFor(state, zone, farOnly);
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         byte[]? bytes = null;
         int length;
@@ -250,16 +318,15 @@ public sealed class FoliageLayoutCache
         Decoded? result;
         try
         {
-            result = Decode(bytes, length, zone, farOnly, grouped);
+            result = Decode(state, bytes, length, zone, farOnly, grouped);
         }
         catch (Exception e)when (e is ArgumentException or IndexOutOfRangeException or InvalidDataException or KeyNotFoundException or OverflowException or EndOfStreamException)
         {
             result = null;
         }
 
-        if (result is null)
-            return Miss(true);
-        CountHit(length, result.Value.ComputeMs, t0);
+        if (result is null) return Miss(true);
+        CountHit(state, length, result.Value.ComputeMs, t0);
         return result;
     }
 
@@ -276,10 +343,10 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// Counts a hit of <paramref name="length"/> bytes started at <paramref name="t0"/>: the layout time it saved, less the time loading it took.
     /// </summary>
-    void CountHit(int length, float computeMs, long t0)
+    void CountHit(KeyState state, int length, float computeMs, long t0)
     {
         Interlocked.Increment(ref _hits);
-        Upkeep.TouchOnce();
+        state.Upkeep.TouchOnce();
         Interlocked.Add(ref _bytesRead, length);
         Interlocked.Add(ref _savedMicros, (long)(computeMs * 1000));
         long took = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
@@ -312,7 +379,7 @@ public sealed class FoliageLayoutCache
     /// Parses and verifies the first <paramref name="fileLength"/> bytes; null when they are not a valid entry for this key, zone and kind. A short
     /// read throws (<see cref="InvalidDataException"/>), as does an id the catalog lacks.
     /// </summary>
-    Decoded? Decode(byte[] bytes, int fileLength, ZoneCoordinate zone, bool farOnly, bool grouped)
+    Decoded? Decode(KeyState state, byte[] bytes, int fileLength, ZoneCoordinate zone, bool farOnly, bool grouped)
     {
         const int header = 4 + 4 + 32 + 4 + 4 + 1 + 1 + 4 + 4;
         if (fileLength < header + 8) return null;
@@ -321,7 +388,7 @@ public sealed class FoliageLayoutCache
         if (BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(fileLength - 8)) != Checksum(data)) return null;
 
         var file = new FoliageLayoutFileCursor(bytes, end);
-        if (!ReadHeader(ref file, zone, farOnly)) return null;
+        if (!ReadHeader(ref file, state.Key, zone, farOnly)) return null;
         bool complete = file.ReadU8() != 0;
         int resources = file.ReadI32();
         float computeMs = BitConverter.Int32BitsToSingle(file.ReadI32());
@@ -344,10 +411,10 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// The magic, format version, key, zone and layout kind; false when any differs from this cache's.
     /// </summary>
-    bool ReadHeader(ref FoliageLayoutFileCursor file, ZoneCoordinate zone, bool farOnly)
+    static bool ReadHeader(ref FoliageLayoutFileCursor file, byte[] key, ZoneCoordinate zone, bool farOnly)
     {
         if (file.ReadU32() != Magic || file.ReadI32() != FormatVersion) return false;
-        if (!file.Take(32).SequenceEqual(_key)) return false;
+        if (!file.Take(32).SequenceEqual(key)) return false;
         if (file.ReadI32() != zone.X || file.ReadI32() != zone.Y) return false;
         return (file.ReadU8() != 0) == farOnly;
     }
@@ -522,24 +589,31 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// Records the time a miss took to place (for the summary) and writes the zone; failures are ignored, the cache is only a cache.
     /// </summary>
-    public void Save(ZoneCoordinate zone, bool farOnly, FoliageZone laid, FoliageGround ground, double computeMs)
+    public void Save(ZoneCoordinate zone, bool farOnly, FoliageZone laid, FoliageGround ground, double computeMs) =>
+        Save(zone, farOnly, laid, ground, computeMs, Current.Snapshot!);
+
+    /// <summary>
+    /// <see cref="Save(ZoneCoordinate, bool, FoliageZone, FoliageGround, double)"/> of a zone placed with the towns <paramref name="owned"/> marks the
+    /// player's, under their key.
+    /// </summary>
+    public void Save(ZoneCoordinate zone, bool farOnly, FoliageZone laid, FoliageGround ground, double computeMs, IReadOnlySet<(int X, int Z)> owned)
     {
-        if (LoadCaches.Disabled)
-            return;
+        if (LoadCaches.Disabled) return;
+        var state = StateFor(owned);
         Interlocked.Add(ref _computeTicks, (long)(computeMs * System.Diagnostics.Stopwatch.Frequency / 1000));
         try
         {
-            var bytes = Encode(laid, ground, farOnly, (float)computeMs);
-            if (bytes is null)
-                return;
-            System.IO.Directory.CreateDirectory(_directory);
-            var path = PathFor(zone, farOnly);
-            var temporary = path + "." + Environment.ProcessId.ToString(CultureInfo.InvariantCulture) + "." + Environment.CurrentManagedThreadId.ToString(CultureInfo.InvariantCulture) + ".tmp";
+            var bytes = Encode(state, laid, ground, farOnly, (float)computeMs);
+            if (bytes is null) return;
+            System.IO.Directory.CreateDirectory(state.Directory);
+            var path = PathFor(state, zone, farOnly);
+            var temporary = path + "." + Environment.ProcessId.ToString(CultureInfo.InvariantCulture) + "."
+                + Environment.CurrentManagedThreadId.ToString(CultureInfo.InvariantCulture) + ".tmp";
             File.WriteAllBytes(temporary, bytes);
             File.Move(temporary, path, overwrite: true);
             Interlocked.Increment(ref _written);
             Interlocked.Add(ref _bytesWritten, bytes.Length);
-            Upkeep.TouchOnce();
+            state.Upkeep.TouchOnce();
         }
         catch (IOException)
         {
@@ -552,7 +626,12 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// The file for a zone; null when the zone cannot be written back faithfully (an unknown reference).
     /// </summary>
-    public byte[]? Encode(FoliageZone laid, FoliageGround ground, bool farOnly, float computeMs)
+    public byte[]? Encode(FoliageZone laid, FoliageGround ground, bool farOnly, float computeMs) => Encode(Current, laid, ground, farOnly, computeMs);
+
+    /// <summary>
+    /// <see cref="Encode(FoliageZone, FoliageGround, bool, float)"/> under <paramref name="state"/>'s key.
+    /// </summary>
+    byte[]? Encode(KeyState state, FoliageZone laid, FoliageGround ground, bool farOnly, float computeMs)
     {
         var meshIndex = new Dictionary<FoliageMesh, int>();
         var layerIndex = new Dictionary<FoliageLayer, int>();
@@ -564,7 +643,7 @@ public sealed class FoliageLayoutCache
         using var ms = new MemoryStream(1024 + heights.Length * 4 + densities.Sum(d => d.Length) + laid.Instances.Count * size + laid.Grass.Count * 40);
         using (var w = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true))
         {
-            WriteHeader(w, laid, farOnly, computeMs);
+            WriteHeader(w, state.Key, laid, farOnly, computeMs);
             WriteStrings(w, meshIndex.OrderBy(p => p.Value).Select(p => p.Key.StringId));
             WriteStrings(w, layerIndex.OrderBy(p => p.Value).Select(p => p.Key.StringId));
             w.Write(ground.X0);
@@ -619,11 +698,11 @@ public sealed class FoliageLayoutCache
     /// <summary>
     /// The magic, format version, key, zone, layout kind, completeness, resources and layout time.
     /// </summary>
-    void WriteHeader(BinaryWriter w, FoliageZone laid, bool farOnly, float computeMs)
+    static void WriteHeader(BinaryWriter w, byte[] key, FoliageZone laid, bool farOnly, float computeMs)
     {
         w.Write(Magic);
         w.Write(FormatVersion);
-        w.Write(_key);
+        w.Write(key);
         w.Write(laid.Zone.X);
         w.Write(laid.Zone.Y);
         w.Write((byte)(farOnly ? 1 : 0));
@@ -794,7 +873,5 @@ public sealed class FoliageLayoutCache
         return h;
     }
 
-    // Immutable ownership represented by the town inputs used to compute this instance's cache key.
-    readonly FrozenSet<(int X, int Z)> _ownership;
-    internal bool MatchesOwnership(IReadOnlySet<(int X, int Z)> requested) => _ownership.SetEquals(requested);
+
 }

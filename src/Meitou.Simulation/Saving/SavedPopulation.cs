@@ -392,7 +392,8 @@ internal static class SavedCharacters
 
         if (race is not null && sc.Medical is not null)
         {
-            medical = MedicalState.ReadSave(race, sc.Medical.Floats, sc.Medical.Bools, sc.Medical.Strings, id => PartOf(id, data.Db, parts));
+            medical = MedicalState.ReadSave(race, sc.Medical.Floats, sc.Medical.Bools, sc.Medical.Strings, id => PartOf(id, data.Db, parts),
+                sc.Medical.Ints);
             SavedLimbs.Apply(medical, sc.Platoon.File, sc.Medical, data.Items);
         }
 
@@ -482,7 +483,8 @@ internal static class SavedCharacters
         if (race is not null && stats is not null && medical is not null)
             assembly.AttachSaved(cold, race, stats, medical, p.Record,
                 p.Inventory ?? (sc.Inventory is not null ? SavedKit.ToInventory(p.Items, data.Items, notes, p.Record, race.StringId) : null),
-                sc.GameState is { } aged && aged.Floats.TryGetValue("age", out float age) ? age : 1);
+                sc.GameState is { } aged && aged.Floats.TryGetValue("age", out float age) ? age : 1,
+                CharacterAssembly.NaturalWeaponRoll(world.Seed, (ulong)(uint)sc.Handle.S << 32 | (uint)sc.Handle.I));
         else if (race is not null)
             notes?.Add($"{platoonName}: {cold.Name} has no stats or medical state that could be read; it has no body in the world.");
         // What it holds that was stolen (the save's `ownedby`).
@@ -634,6 +636,13 @@ internal static class SavedCharacters
     #region NPC platoons
 
     /// <summary>
+    /// The <see cref="Squad.NextHomeFillTick"/> of a squad a save gives back: its home was filled when the squad was made, before that save (the squad
+    /// factory, <c>FUN_140583a10</c>), so its next fill is a refill with no specials, due at once (<c>TradeSystem.FillHome</c> takes 0 for the first).
+    /// Carried through the squad's time out of the world like any other value of it.
+    /// </summary>
+    const long HomeFilled = 1;
+
+    /// <summary>
     /// The building of <paramref name="site"/> a saved platoon lives in: its <c>homebuilding</c> handle resolved to the zone's building state
     /// (<c>&lt;instance&gt;-S23</c>), matched by zone and instance id, or (a zone the save has no file of) to the building whose level-data state has
     /// that handle (docs/formats/save.md "NPC platoons"). Null when the platoon names none or it is not one of the town's buildings.
@@ -781,6 +790,7 @@ internal static class SavedCharacters
             Pinned = sp.Pinned,
             Wild = sp.Wild is not null,
             Restored = true,
+            NextHomeFillTick = HomeFilled,
             LeftPackage = platoon.Package,
             Position = new Vector3(platoon.Position.X, walk.GroundHeight(platoon.Position.X, platoon.Position.Y), platoon.Position.Y),
             HomeCentre = homeCentre,

@@ -13,7 +13,8 @@ public static class ModList
     public static readonly IReadOnlyList<string> CoreModNames = ["Newwworld", "Dialogue", "rebirth"];
 
     /// <summary>
-    /// The file in a mod's folder that makes it an RE_Kenshi plugin mod (docs/formats/rekenshi.md); Meitou ignores its DLLs.
+    /// The RE_Kenshi file in a mod's folder (docs/formats/rekenshi.md, <see cref="ReKenshiFile"/>): Meitou applies its file rebinds and ignores
+    /// its DLLs.
     /// </summary>
     public const string NativePluginFile = "RE_Kenshi.json";
 
@@ -212,7 +213,7 @@ public static class ModList
     {
         var text = new StringBuilder();
         foreach (var line in lines) text.Append(line).Append("\r\n");
-        File.WriteAllText(path, text.ToString(), GameNameEncoding.Encoding);
+        AtomicFile.WriteAllText(path, text.ToString(), GameNameEncoding.Encoding);
     }
 
     /// <summary>
@@ -242,14 +243,15 @@ public static class ModList
     {
         var deps = new HashSet<ModInfo>();
         foreach (var dependency in mod.Header?.Dependencies ?? [])
-            if (byName.TryGetValue(StripExtension(dependency), out var other) && other != mod) deps.Add(other);
+            if (byName.TryGetValue(DependencyName(dependency), out var other) && other != mod) deps.Add(other);
         return deps;
     }
 
     /// <summary>
-    /// <paramref name="name"/> without the text from its last dot, unless that dot is the first character (the launcher's rule for dependencies).
+    /// The mod a <c>.mod</c> header's dependency entry names: <paramref name="name"/> without the text from its last dot, unless that dot is the
+    /// first character (the original launcher's rule, docs/formats/overview.md "Load order"). Every check of header dependencies matches by it.
     /// </summary>
-    static string StripExtension(string name)
+    public static string DependencyName(string name)
     {
         int dot = name.LastIndexOf('.');
         return dot >= 1 ? name[..dot] : name;
@@ -285,9 +287,13 @@ public sealed class ModInfo(string name, string path, ModSource source)
     /// </summary>
     bool _headerRead;
     /// <summary>
-    /// <see cref="HasNativePlugin"/> once checked; null before the first use.
+    /// <see cref="ReKenshi"/> once read; null before that or when the mod has none.
     /// </summary>
-    bool? _nativePlugin;
+    ReKenshiFile? _rekenshi;
+    /// <summary>
+    /// Whether <see cref="ReKenshi"/> has tried to read the file yet.
+    /// </summary>
+    bool _rekenshiRead;
     /// <summary>
     /// <see cref="HasCode"/> once checked; null before the first use.
     /// </summary>
@@ -310,9 +316,26 @@ public sealed class ModInfo(string name, string path, ModSource source)
     /// </summary>
     public string Folder => System.IO.Path.GetDirectoryName(Path)!;
     /// <summary>
-    /// An RE_Kenshi plugin mod: its data loads in Meitou, its DLLs do not. Checked on first use.
+    /// An RE_Kenshi plugin mod: its <see cref="ReKenshi"/> file names DLLs, which Meitou does not load (its data does).
     /// </summary>
-    public bool HasNativePlugin => _nativePlugin ??= GameFiles.Exists(System.IO.Path.Combine(Folder, ModList.NativePluginFile));
+    public bool HasNativePlugin => ReKenshi is { HasPlugins: true };
+
+    /// <summary>
+    /// The mod's <see cref="ModList.NativePluginFile"/>, read on first use; null when it has none or it cannot be read.
+    /// </summary>
+    public ReKenshiFile? ReKenshi
+    {
+        get
+        {
+            if (!_rekenshiRead)
+            {
+                _rekenshi = ReKenshiFile.TryRead(Folder);
+                _rekenshiRead = true;
+            }
+            return _rekenshi;
+        }
+    }
+
     /// <summary>
     /// A Meitou code mod: its folder has <see cref = "ModList.CodeManifestFile"/>, so it runs C# code of its own. Checked on first use.
     /// </summary>
@@ -394,6 +417,8 @@ public sealed record ModHeader(int FileType, string Author, string Description, 
         else
         {
             bytes = r.ReadBytes(StringSize);
+            if (bytes.Length < StringSize) throw new EndOfStreamException();
+
             r.BaseStream.Seek((long)(int)length - StringSize, SeekOrigin.Current);
             if (cutLast) bytes = bytes[..(StringSize - 1)];
         }

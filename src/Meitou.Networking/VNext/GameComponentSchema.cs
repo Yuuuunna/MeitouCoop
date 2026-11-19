@@ -16,11 +16,17 @@ internal static class GameComponentSchema
     internal const ushort MeterTooltipsField = 2100;
 
     /// <summary>
+    /// Immutable status-effect text and modifier metadata, independently revisioned from stacks and countdowns.
+    /// </summary>
+    internal const ushort EffectDefinitionsField = 2103;
+
+    /// <summary>
     /// Auxiliary wire components have no redundant public snapshot property; the replica joins them to their explicitly mapped value.
     /// </summary>
     internal static readonly IReadOnlyDictionary<ushort, string> AuxiliaryCharacterFields = new Dictionary<ushort, string>
     {
-        [MeterTooltipsField] = "MeterTooltips"
+        [MeterTooltipsField] = "MeterTooltips",
+        [EffectDefinitionsField] = "EffectDefinitions"
     };
 
     internal static readonly Field<PlayerWorldView>[] ViewFields = [F(1, "Roles", (PlayerWorldView x) => x.Roles, (x, v) => x with { Roles = v }), F(2, "AuthorityRules", (PlayerWorldView x) => x.AuthorityRules, (x, v) => x with { AuthorityRules = v }), F(3, "ActiveFaction", (PlayerWorldView x) => x.ActiveFaction, (x, v) => x with { ActiveFaction = v }), F(4, "Factions", (PlayerWorldView x) => x.Factions, (x, v) => x with { Factions = v }), F(5, "FactionCatalogue", (PlayerWorldView x) => x.FactionCatalogue, (x, v) => x with { FactionCatalogue = v }), F(6, "Prospected", (PlayerWorldView x) => x.Prospected, (x, v) => x with { Prospected = v }), F(7, "Events", (PlayerWorldView x) => x.Events, (x, v) => x with { Events = v }), F(8, "Messages", (PlayerWorldView x) => x.Messages, (x, v) => x with { Messages = v }), F(9, "Weather", (PlayerWorldView x) => x.Weather is { } weather ? weather with { Time = default } : null, (x, v) => x with { Weather = v }), F(10, "WeatherEffects", (PlayerWorldView x) => x.WeatherEffects, (x, v) => x with { WeatherEffects = v }), ];
@@ -32,7 +38,9 @@ internal static class GameComponentSchema
             (_, x, bytes) => x with { InspectedLevelPower = ModPresentationCodec.DecodePower(bytes) }),
         F(1060, "IndependentSquads", (WorldSnapshot x) => x.IndependentSquads, (x, v) => x with { IndependentSquads = v }),
         F(1061, "InventoriesClosed", (WorldSnapshot x) => x.InventoriesClosed, (x, v) => x with { InventoriesClosed = v }),
-        F(1062, "ModJobNames", (WorldSnapshot x) => x.ModJobNames, (x, v) => x with { ModJobNames = v }), ];
+        F(1062, "ModJobNames", (WorldSnapshot x) => x.ModJobNames, (x, v) => x with { ModJobNames = v }),
+        F(1063, "FactionHeads", (WorldSnapshot x) => x.FactionHeads, (x, v) => x with { FactionHeads = v }),
+        F(1064, "CappedHeads", (WorldSnapshot x) => x.CappedHeads, (x, v) => x with { CappedHeads = v }), ];
     /// <summary>
     /// Independently replicated character values; binary codecs retain their own uncompressed format.
     /// </summary>
@@ -143,6 +151,10 @@ internal static class GameComponentSchema
             (_, x, bytes) => x with { ModSkills = ModPresentationCodec.DecodeSkills(bytes) }),
         new(2099, "BoneMeshes", (_, x) => ModPresentationCodec.EncodeBoneMeshes(x.BoneMeshes),
             (_, x, bytes) => x with { BoneMeshes = ModPresentationCodec.DecodeBoneMeshes(bytes) }),
+        new(2101, "LookAt", (_, x) => LookAtCodec.Encode(x.LookAt),
+            (_, x, bytes) => x with { LookAt = LookAtCodec.Decode(bytes) }),
+        new(2102, "Effects", (_, x) => StatusEffectPresentationCodec.EncodeTimes(x.Effects, 0, 1f / 30),
+            (_, x, bytes) => x with { Effects = StatusEffectPresentationCodec.DecodeWithoutDefinitions(bytes) }),
     ];
 
 
@@ -179,6 +191,7 @@ internal static class GameComponentSchema
     /// </summary>
     internal static int ExpandedSize(ushort field, ReadOnlySpan<byte> bytes)
     {
+        if (field == EffectDefinitionsField) return AbsolutePayloadCompression.ExpandedLength(bytes);
         if (!CompressedJsonFields.Contains(field)) return bytes.Length;
         if (bytes.Length == 1 && bytes[0] == 0) return 1;
         if (bytes.Length <= 1 || bytes[0] != 1) throw new InvalidDataException("Invalid component value.");

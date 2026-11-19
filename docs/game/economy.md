@@ -147,7 +147,9 @@ Goal 118/119 shoppers: the sale is `FUN_14074a630`, called by [`FUN_1409a14b0`](
   The stolen x0.5 of `FUN_14079e6d0` (stolen from the player's faction) applies in any case; not modelled.
 - **Money** (**Verified**): the buyer's purse is `Character` slot 55 `FUN_140791660` (player's faction: the player's purse; else the squad's `Ownerships` at platoon `+0x88`, no squad: 0); it must be at least
   the price ("I can't afford that.", nothing moves). Spending is slot 54 `FUN_1407965f0` -> `Ownerships` slot 0 `FUN_1407cbaa0`. The seller's is the building's (`FUN_14054e560`: the squad registered on the
-  building, else the owner faction's); the price is added there. Meitou: `Squad.Money` of the buyer's squad, of the squad living in the building (none: lost).
+  building, else the owner faction's); the price is added there. Meitou: `Squad.Money` of the buyer's squad, of the squad living in the building (none: lost). **Observed** (disassembly): the building that
+  takes the money is the shop counter itself (a UseableStuff, whose `FUN_14054e560` pays the target of its own handle, else its owner faction), so a counter the player built pays the player; Meitou:
+  `PlayerState.Money`.
 - **The item** (**Verified** flow, **Observed** names): the stack of 2+ is split (a clone of quantity 1, the original -1), a single item is removed from its section. When the seller inventory's owner is not of
   the player's faction **and** `rand()/32768 > 0.2` (`DAT_1416885d8`), the add-to-buyer call is skipped: the unit is paid for and gone, the buyer gets nothing (80 %). Otherwise `Character` slot 45 `FUN_1405cb400`
   puts it into the buyer's inventory; it is never equipped or used here; without room: "No room for that item.", the unit goes back to the stock and nothing is paid.
@@ -255,7 +257,7 @@ Goal 118/119 shoppers: the sale is `FUN_14074a630`, called by [`FUN_1409a14b0`](
 - **Wealth** = clamp(faction wealth, 0.2, 1), but the faction wealth function (`FUN_1402dd530`) is a stub returning 1.0, so wealth is always 1
   (**Verified**, kenshi_x64.exe decompile: 9-byte function, constant return). It scales only shop stock count, purse and nest spawn weight; no price reads it.
 - **Trader window** (**Observed**, decompile): a copy of the containers. Each time it opens (`FUN_1406e6af0` makes the shop wrapper `FUN_140953850` anew) the merged section ([ui-screens](ui-screens.md#6-inventory-trade-dialogue-build)) takes a copy of every item of the containers but money (item `+0x124` function 14) by auto-add (`FUN_1409528d0`; an item with no room grows it by twice its `inventory footprint height`, `FUN_140954ba0`), then is arranged (`FUN_140749d30`, ARRANGE's per-section sort). Its callbacks write the trade back: an item put in is copied to the first container whose section takes it (`FUN_140952c70`, `FUN_1409529e0`), the copy destroyed (`FUN_140799af0`) when none does while the item stays in the window; a quantity change adds or removes the difference (`FUN_140952cf0`); a removal takes the units from the containers' items alike to it, first container first (`FUN_140952da0`, `FUN_140952a70`): likeness (`FUN_14075d510`, **Verified** by decompile) is the same record, company (`Item+0xc0`, the save's `company sid`) and material (`+0xc8`, `material sid`), so a blueprint matches by its research; quality, condition and marks are not compared. ARRANGE arranges only the copy (`DAT_142135548` turns the callbacks off).
-- Meitou (`Shop`, `ShopView`; a squad shop's window works the same way over its stock): the goods stay in the containers, saved and hashed with their building; a fill is rolled (`ShopFiller.Roll`) and placed in them (`PlaceFill`), and waits while none is registered. The window is built when the trade opens and again after a restock while open; each tick what the trade changed in it is written back by comparing it with what it last matched (engine choice: the original reacts to each change); the units that left are taken from the containers' items alike to them, as the original's. The window is not state: unhashed, unsaved (`meitou shop` is `[]` for a building shop; an older Meitou save's stock under it goes to the containers). Money items stay in the containers and out of the window, as in the original.
+- Meitou (`Shop`, `ShopView`; a squad shop's window works the same way over its stock): the goods stay in the containers, saved and hashed with their building; a fill is rolled (`ShopFiller.Roll`) and placed in them (`PlaceFill`), and waits while none is registered. The window is built when the trade opens and again after a restock while open; each tick what the trade changed in it is written back by comparing it with what it last matched (engine choice: the original reacts to each change); the units that left are taken from the containers' items alike to them, as the original's. The window is not state: unhashed, unsaved (`meitou shop` is `[]` for a building shop; an older Meitou save's stock under it goes to the containers). Money items stay in the containers and out of the window, as in the original. A save of the original holds a building shop's goods in its containers (the furniture entries' inventories, [save](../formats/save.md#zone-files)) and its next restock as the platoon's `inventory refresh time` (**Observed**, METARU and TESTSKELETON), and no `meitou shop`: Meitou loads such a shop as filled (`Fills` 1, so no specials again), housed traders that make prisoner or slave squads too, and restocks it at that time, at most one `vendors refresh time` away, as for its own saves (`ShopSave.Read`). A squad shop there gets a fresh fill (its stock is not read). A resident squad a save gives back was made, and its home filled, before that save, so its home fills place no specials (`SavedPopulation`: its `NextHomeFillTick` starts at 1, `TradeSystem.FillHome` treats 0 as the first fill).
 
 ## Artifacts
 
@@ -459,19 +461,30 @@ Per-character hash map keyed by faction (`Character+0xf0`). Entry (`FUN_1405e7ee
   original shows those as well. Meitou: `CrimeTable.Name` translates at the point a message or the HUD is built;
   the ledger and saves keep the code (the bit mask `crimes<n>`), the world hash never sees the text.
 
-- **Trespassing** (perception `FUN_140859680` -> test `FUN_140852350`, **Observed**): an NPC seeing a player character inside a
-  building sets a pending Trespassing (code 11) against **its own** faction (victim: itself), fires dialogue event 17 and gives its
+- **Trespassing** (perception `FUN_140859680` -> test `FUN_140852350`, **Verified**, 1.0.68 decompile): an NPC seeing a player character inside a
+  building sets a pending Trespassing (code 11) against **its own** faction (victim: itself), cuts in dialogue event 17 and gives its
   faction's memory of the player (`FUN_140673a20` -> `FUN_140673930`: one entry for the whole player faction, a `SubjectiveTags`
   stamped with the time) the long-term tag 1 MY_INTRUDER ([dialogue](dialogue.md#enums), DC 23); no base-game line reads that tag
-  (**Verified** by probe). Not tested when the witness regards the target as an enemy (Character `vfunc 125`) or an ally
-  (`vfunc 126`: same faction, else `FactionRelationsIsAlly`), when the target is in a code-0xb place, or is chained to the witness
-  (`FUN_14032e1e0`: target `+0x320` "chained mode" and the chain's hand id = the witness's). Two cases, both needing the residents'
-  **"house locked"** flag (the owner platoon's AI `+0xe8`, saved as `homelok`, [locks](locks.md#doors)) unless noted:
-  the **resident** case (the target is in the witness's own home): flag set, and the home is not public (vfunc 82, `public day`; or `+0xc4 != 1`) or the hour is outside 7..22 (game clock `DAT_1421303d0`+0, the hour int). Same-town targets of
-  NPC class 1, 2, 5 are exempt. The **police** case (a police-like witness, someone else's building): the building's faction does
-  not regard the target's as an ally, the building is not public, and the target has a slave state or the owner platoon's flag is
-  set; never when that platoon's leader regards the target as an ally. No hour test. The witness function then books it as any
-  crime (amount 100). `FUN_140852240` fires event 17 without a crime (a squad of the witness's town; NPC side). What follows is the
+  (**Verified** by probe). Not tested when the witness regards the target as an enemy (Character `vfunc 125`, in the caller) or as friendly
+  (`vfunc 126`), when the target is in a code-0xb place (outdoors), is an animal, or holds a live access pass. The **access pass** (BountyManager
+  at Character `+0xf0`: `+0x138` the faction, `+0x140` the expiry; names from KenshiLib, **Observed**) is never given: the Character constructor
+  (`FUN_1406223f0`) zeroes it, and its only setter `giveAccessPass` (`FUN_140337c20`) has no caller (**Verified**, a rel32, rip-relative,
+  pointer and image-relative scan of 1.0.68 `kenshi_x64.exe` finds only its unreferenced jump thunk), so the test always passes. Two cases:
+  the **resident** case (the target is in the witness's own home, ownerships `+0x38`): never a target chained to the witness
+  (`FUN_14032e1e0`: target `+0x320` "chained mode" and the chain's hand id = the witness's), nor one of the witness's ownership town (`+0x30`;
+  none for both counts as the same) of NPC class 1, 2 or 5; else the residents' **"house locked"** flag (the witness's platoon AI `+0xe8`,
+  saved as `homelok`, [locks](locks.md#doors)) and the home neither a shop (designation `+0xc4` 1, BD_SHOP) nor public (Building vfunc `0x290`, `public day`), or no home, or the hour
+  outside 7..22 (game clock `DAT_1421303d0`+0, the hour int). The **police** case (a police-like witness, someone else's building): the
+  building's faction does not regard the target's as an ally and, when it has an owner platoon, that platoon's leader does not regard the
+  target as friendly; then the owner platoon's flag set, or the building not public and the target with a slave state. No hour test; a
+  locked-up house is trespassed in even when public. The witness function then books it as any crime (amount 100). `FUN_140852240` cuts in
+  event 17 and MY_INTRUDER without a crime at any target (not only the player's) standing in the witness's ownership town (status `+0x88`)
+  inside its walls (`amInsideTownWalls` not 0), when that town is not public (Town vfunc `0x298` `isPublic`: a Town's `+0x380`, from TOWN
+  `is public`, player towns 0; TownBase, Nest and TownNull 1), the target is no slave (state 1), does not look like one (`FUN_1405a6bb0`) and
+  is not caged. `FUN_1408525c0` cuts in event 9 at a player character standing in the witness's home that is not public, not chained to it,
+  not friendly, no animal and in no bed or cage. Each ends the reaction ([sight](dialogue.md#ambient-conversations)). **Verified** (probe of
+  the base data): 36 TOWN records have `is public` false (Black Dog HQ, Cannibal Village, Tengu's Vault, Watchtower, Fort Mirage, ...), 310 true.
+  Meitou: `SightCrimes`, `CrimeSystem.Trespasses` (the designation from the building record). What follows is the
   event-17 lines' data (**Verified** by probe: "Intruder!" with DA 6, "Leave my abode" with DA 12 then DA 33/34, "/GUARDS/!" with DA 33).
 - **Spawn bounties** (`FUN_14062b210`, **Observed**): CHARACTER `bounty chance` vs an inclusive roll 0..100 (`roll < chance`);
   amount `trunc(bounty amount + 0.5*k)`, `k` an integer in `[0, 2*bounty amount fuzz]` (the fuzz only adds), for each
@@ -555,7 +568,7 @@ money, mark the entry claimed (it never pays twice) and show "Received c.{1} rew
   wound routes it shares with melee (the carry route's code 10; the lost-limb dialogue events 70 and 71 of `FUN_14064edc0`, whose lines' effects
   can call the setter), so a guard's stray bolt does not make the one it hits a culprit.
 - **Attack order** (`FUN_140334070`): a pending Assault against the victim's faction unless the victim has a bounty with the attacker's
-  faction, its status flag `+0x114` is set, it is a BANDIT, it has a pending crime, or the victim is fighting (`Character::isInCombatMode` `FUN_140436610(victim, 1)`: CombatClass +0x130), tested in that order (**Verified**); the attacker's own +0x114 is then set (before the setter, whether or not it accepts). No faction-hostility test. **`+0x114` ("ordered")** lifecycle: set by the ordered attack task starts, by this booking, and for every member of the active squad by each update of the cannibal assault package (`FUN_14028a4e0` from `FUN_14028fdf0`; Meitou `PopulationCampaigns.CannibalsLoaded` sets `CharacterCold.Ordered`); cleared when the character's task target is cleared (`FUN_1405c91c0`, at task end); read only here, on the victim (`FUN_140795b30` and `FUN_1404ffad0` read a platoon object's own `+0x114`). The caller is the attack task's start with its flag set, which only row 61 Attack Unprovoked has (and the +0x114 mark is then also set unconditionally, `FUN_14033c1e0`; [fight task](combat.md)). Meitou: `CrimeSystem.Assault` (run only for `AttackOrder.Unprovoked`) and `CharacterCold.Ordered` (set by the booking, cleared in `CombatSystem.EndFight` as the stand-in for the task end; the other two setters are not modelled: a cannibal victim is a lawless faction, so its booking is refused anyway); a hostile victim faction is skipped as well (engine choice).
+  faction, its status flag `+0x114` is set, it is a BANDIT, it has a pending crime, or the victim is fighting (`Character::isInCombatMode` `FUN_140436610(victim, 1)`: CombatClass +0x130), tested in that order (**Verified**); the attacker's own +0x114 is then set (before the setter, whether or not it accepts). No faction-hostility test. **`+0x114` ("ordered")** lifecycle: set by the ordered attack task starts, by this booking, and for every member of the active squad by each update of the war assault packages (`FUN_14028a4e0`, the update of `Package_WarAssault`, signal 20, which the cannibal kind's update `FUN_14028fdf0`, signal 32, calls first; Meitou `AiSystem.StepWar` sets `CharacterCold.Ordered` on the package cadence and clears it on the squad's members at the first step after the package stops running, the engine's stand-in for the task-end clear below); cleared when the character's task target is cleared (`FUN_1405c91c0`, at task end); read only here, on the victim (`FUN_140795b30` and `FUN_1404ffad0` read a platoon object's own `+0x114`). The caller is the attack task's start with its flag set, which only row 61 Attack Unprovoked has (and the +0x114 mark is then also set unconditionally, `FUN_14033c1e0`; [fight task](combat.md)). Meitou: `CrimeSystem.Assault` (run only for `AttackOrder.Unprovoked`) and `CharacterCold.Ordered` (set by the booking, cleared in `CombatSystem.EndFight` as the stand-in for the task end; the task-start setter is not modelled); a hostile victim faction is skipped as well (engine choice).
 - **Murder**: no caller of the setter `FUN_140852c80` (26 callers, plus the 7 of its wrapper `FUN_140852e10`) passes code 4, and no
   variable-code caller can yield 4 (task finders pass 2/7, 3/10; dialogue DA 49 passes 0 to clear). A killing therefore sets **no
   crime**: its consequences are the relation events of [factions 3.5](factions-squads-towns.md#35-what-fires-relation-changes-observed-decompile)
@@ -566,7 +579,7 @@ money, mark the entry claimed (it never pays twice) and show "Received c.{1} rew
   the generic assault line, with no tests of their own ([dialogue](dialogue.md#firing-an-event), **Verified** by the witness switch's jump table).
 - **Witness timing** (`FUN_1408580d0`, the perception's per-seen-character update, **Observed**): the witness function `FUN_140854d10` runs for a
   seen character when the update says it is newly seen (either of two flag arguments), or while it has a pending crime whose timer
-  (`+0x180`) is above 5; every run that reacts sets that timer back to 20 (`FUN_140851f40`), so a watched crime stays fresh. The witness function returns at once when the seen character or the witness is imprisoned (`+0x2f8 == 2`, **Verified**, decompile), so a caged culprit's timer runs out and its status line gives way to the bounty. A witness
+  (`+0x180`) is above 5; every run that reacts sets that timer back to 20 (`FUN_140851f40`), so a watched crime stays fresh, except while the culprit is down: the refresh tests vfunc `0x30` first and then sets neither the timer nor the recently-wanted marker (250), so a knocked-out culprit's crime runs out in its witnesses' sight (**Verified**, decompile; Meitou `CrimeSystem.Witnesses`). The witness function returns at once when the seen character or the witness is imprisoned (`+0x2f8 == 2`, **Verified**, decompile), or the witness is in slave state 1 or 2 (both `FUN_1405c8aa0` calls take the witness, **Verified** by disassembly; a culprit in slave state 1 is not skipped), so a caged culprit's timer runs out and its status line gives way to the bounty. A witness
   that regards the culprit as friendly and sees it wrong the witness's own faction costs the culprit's faction 20 relation each time
   ([factions 3.5](factions-squads-towns.md#35-what-fires-relation-changes-observed-decompile)). A reacting witness that is the crime's
   victim (for a trespass, the witness itself) goes for the culprit, which its whole squad then takes for an enemy
@@ -637,7 +650,12 @@ decompile's `DialogActionEnum` / `DialogConditionEnum` / `EventTriggerEnum`, com
   `FUN_14099bfc0`: the first sensed character (mask 0x400e/0x221) not carried, not of a `not real` faction, not an animal (slot `0x248`), not
   imprisoned, that has a perceived bounty with the guard (`FUN_140853fd0`: the entry for the guard's booking faction, visible while
   `+0x110 > 0`, or when the target is down and an enemy), or that the guard's squad marks with flag 7, or regards as an enemy. Its effect
-  129 leads the planner to 203 Arresting (list B: target down, unarmed, carried) and then the cage goals.
+  129 leads the planner to 203 Arresting (list B: target down, unarmed, carried) and then the cage goals. Meitou: `ArrestSystem.BountyTarget`
+  takes the nearest such character the guard sees (the witnesses' sight test: the ray where it applies, and for a sneaker a full spot meter),
+  standing for the sense list;
+  the mask's slave bit (0x20, slave state 1) leaves slaves out. A guard whose left arm cannot carry starts no arrest of a downed target it cannot
+  strip any further, and ends one once only the lift is left (its plan needs the carry, whose provider needs state 80, [ai-tasks](ai-tasks.md) "Arrest
+  chain"), so another guard takes it.
 - **Caging** (goals 112 / 281 "Find and put in cage", subtask 108 `PUT_IN_CAGE`): desire `FUN_1405a1140` (0 unless carrying;
   0.1 / 0.5 / 1.4 / 2.0 by status, death and bounty tests in `FUN_1405a0f10`); cage finder `FUN_1408d0770(ai, wantFree 1, function 8)`
   over the candidates `FUN_1408cbea0` gathers (interiors included): the town in the character's status (`+0x88`), else its faction's nearest town (`FUN_140927f10`, nest markers left out) when within squared `DAT_14172dd88` = 1.5625e7, the buildings within that town's radius x `DAT_1416b1640` = 1.1 of its position (`FUN_140a00690`, each passing the usable test with no character, only complete ones), plus those of the home building's town when it differs; with no town at all every zone is searched, i.e. every building (**Verified**): usable (`FUN_140621230`, `Ownerships::canIUseThisBuilding`, full rule in [locks](locks.md#beds); **Verified** by decompile), not reserved, free; weight
@@ -652,11 +670,12 @@ decompile's `DialogActionEnum` / `DialogConditionEnum` / `EventTriggerEnum`, com
   character whose bounty with the looker's faction is at least a class threshold (`FUN_1408520c0`: LAW_ENFORCEMENT 1, MILITARY 4000
   or 2000, ADVENTURER 1000, SLAVE never, others 10000), immediately while `+0x110 > 0`, else through a recognition meter
   (`FUN_140856cb0`, fires above 1.0; rate `5 + 40 * k`, `k` a 1..2 value from the target's stats scaled by status factors 0.5 / 0.6 /
-  0.75 and x2, not decoded); not while the target is carried or imprisoned. Recognition fires `EV_BOUNTY_SPOTTED` (44). The same function
-  handles escaped slaves (events 36 / 40). `EV_ESCAPED_PRISONER_SPOTTED` (45) fires in `FUN_140859680` for a target with the
-  escaped flag, seen by a police-like looker (or one of a bandit town's faction) in his own town, only while the target's disguise
-  level (`+0x100`) is 0 or its blown cooldown (`+0x110`) runs (**Verified**: any uniform piece hides an escapee, not only a working
-  disguise) and it is not imprisoned. Meitou: `ArrestSystem.EscapeShows`.
+  0.75 and x2, not decoded); not while the target is carried or imprisoned. Recognition fires `EV_BOUNTY_SPOTTED` (44). The escaping-slave
+  events (36 / 40) are the sight pass's ([sight](dialogue.md#ambient-conversations)). `EV_ESCAPED_PRISONER_SPOTTED` (45) is cut in by
+  `FUN_140859680` (**Verified**) at a target with the escaped flag, while its disguise level (`+0x100`) is 0 or its blown cooldown (`+0x110`)
+  runs (any uniform piece hides an escapee, not only a working disguise) and it is not imprisoned, by a looker standing in its own ownership
+  town (`+0x30` against its current town) while the target stands in a town: when that town's faction is a bandit one (type 8), a looker of that
+  faction, else a police-like one (`FUN_140599600`). Meitou: `SightCrimes`, `ArrestSystem.EscapeShows`.
 - **Bounty hunters** (**Verified** by probe): squads "Bounty hunters wandering between towns", "Bounty hunters low", "Bounty Hunter
   Solo Shek", rebirth "Bounty hunters" (faction Bounty Hunters, `legal system` United Cities) run "hang out in a bar" / "Wandering
   from town to town" / "Patrol map (short range) LOOTING", none of which has goal 204 or a cage goal. Their dialogue answers

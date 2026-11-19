@@ -60,6 +60,27 @@ public static class DialogueEvents
     public static readonly int[] Sight = [3, 4, 17, 27, 34, 36, 40, 66, 67];
 
     /// <summary>
+    /// 70 LOST_LEG: what a character cries when a leg is cut off.
+    /// </summary>
+    public const int LostLeg = 70;
+
+    /// <summary>
+    /// 71 LOST_ARM: what a character cries when any other limb of the four types is cut off.
+    /// </summary>
+    public const int LostArm = 71;
+
+    /// <summary>
+    /// The event a character cries when <paramref name="part"/> is cut off: <see cref="LostLeg"/> for the leg slots 2 and 3, else
+    /// <see cref="LostArm"/>; none for a part whose <c>body part type</c> is none of the four (a Meitou-only part such as a tail).
+    /// </summary>
+    public static int? LostLimb(Bodies.BodyPartTemplate part)
+    {
+        if (!part.HasBaseType) return null;
+
+        return part.LimbSlot is 2 or 3 ? LostLeg : LostArm;
+    }
+
+    /// <summary>
     /// The highest event number (EV_MAX is 75).
     /// </summary>
     public const int Max = 75;
@@ -298,15 +319,10 @@ public sealed class DialogueNode
     public string? Interrupt { get; internal set; }
 
     /// <summary>
-    /// <c>crowd trigger</c>: the DIALOGUE the speaker's squadmates start (event 74) and its val0 (a percent; where the original reads it is
-    /// <b>Unknown</b>).
+    /// <c>crowd trigger</c>: the DIALOGUE the speaker's squad starts (event 74): the first reference that resolves (the loader <c>FUN_14067d260</c>,
+    /// <b>Verified</b>; its val0 is never read).
     /// </summary>
     public string? CrowdTrigger { get; internal set; }
-
-    /// <summary>
-    /// The <c>crowd trigger</c>'s val0 (0 without a trigger).
-    /// </summary>
-    public int CrowdChance { get; internal set; }
 
     /// <summary>
     /// <c>change AI</c>: the AI_PACKAGE that replaces the speaker squad's packages; <c>AI contract</c>: the AI_PACKAGE run as a contract and its
@@ -726,8 +742,7 @@ public sealed class DialogueDatabase(GameDatabase db)
         node.UnlockButKeepMe = [.. record.GetReferences("unlock but keep me").Select(r => r.TargetStringId)];
         node.Locks = [.. record.GetReferences("locks").Select(r => r.TargetStringId)];
         node.Interrupt = record.GetReferences("interrupt").FirstOrDefault().TargetStringId;
-        var crowd = record.GetReferences("crowd trigger").FirstOrDefault();
-        (node.CrowdTrigger, node.CrowdChance) = (crowd.TargetStringId, crowd.TargetStringId is null ? 0 : crowd.Values.Value0);
+        node.CrowdTrigger = record.GetReferences("crowd trigger").Select(r => r.TargetStringId).FirstOrDefault(id => db.Find(id) is not null);
         node.ChangeAi = record.GetReferences("change AI").FirstOrDefault().TargetStringId;
         var contract = record.GetReferences("AI contract").FirstOrDefault();
         node.AiContract = contract.TargetStringId is { } package ? (package, contract.Values.Value0) : null;

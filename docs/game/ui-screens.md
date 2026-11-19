@@ -300,7 +300,13 @@ to Jobs; the saved `chase mode` flag is that switch (**Verified**, [perma-jobs](
   ([Biome banner](#biome-banner)).
 - Medical panel (the body parts it shows are in [character-stats.md](character-stats.md#hunger-blood-and-parts)): nine `LifeBar1`..`LifeBar9` widgets in the layout but the code looks up `LifeBar10`, giving the
   MyGUI.log warning "Widget with name 'LifeBar10' not found. [Kenshi_MainPanel.layout]" (**Verified**: log line
-  and `Kenshi_MainPanel.layout`, which has LifeBar1..9 only). Life-bar skins in `data/gui/skins` (**Verified**):
+  and `Kenshi_MainPanel.layout`, which has LifeBar1..9 only). The front skin `Kenshi_HealthPanelTopSkin` (`Kenshi_UI.png` 240,755, 350x325) paints the
+  frame over the rows: nine transparent windows at the layout's row places with opaque bars between them, so anything drawn between those places lies
+  partly under a painted bar (**Observed**: the texture's alpha, and a 2026-11-18 screenshot of ten squeezed rows whose names were cut by bars at the
+  layout's pitch). Meitou: code mods' meters add copies of `LifeBar9` ([modding](../modding.md#registration-surface)). A character with more rows than
+  the bars (Blood or Oil, each part, Hunger, meter readings; a race of more parts, none in the base game) shows them a bar's worth at a time on the
+  bars (the layout's nine places without meters): the wheel over the panel moves the run a row a step, and `^` / `v` before the top / bottom row's
+  arrows mark rows hidden above / below. Life-bar skins in `data/gui/skins` (**Verified**):
   `Kenshi_LifeBarSkin`, `...HurtSkin`, `...HealedSkin`, `...StunnedSkin`, `...CrushedSkin`, `...RobotSkin`,
   `...SplintSkin`; each `LifeBarN` holds the layers `LifeBarNGrey` (Stunned skin), `...Red` (Hurt), `...Yellow` (Healed), `...White` (Splint),
   `...Green` (current), `...Crushed`, `...Robot` (**Verified**, layout).
@@ -515,7 +521,7 @@ to Jobs; the saved `chase mode` flag is that switch (**Verified**, [perma-jobs](
   TaskData's name (+0x138), then ": " + the target's name when TaskData +8 is set and the target resolves; alpha 0.5 when the jobs switch is off and the
   type does not run without it (`FUN_14050c1c0`). **Observed** (owner screenshot 2026-11-07): machine rows read "3: Operating machine" with no
   building, so for them the suffix is empty or the target does not resolve. A follow row names its character: "1: Staying close:
-  Kashyk" on the player's dog (**Observed** in the original, 2026-11-14). Meitou keeps the building, training dummy or character after the number and lays
+  Kashyk" on the player's dog (**Observed** in the original, 2026-11-14). Meitou keeps the building, rock (#969), training dummy or character after the number and lays
   each row from the layout, dragged to reorder. Hold = hold position; Block = defensive mode (CharStats +0x128, read by the block chance, defence and dodge; the buttons' standing orders: [combat.md](combat.md#fight-lifecycle-and-orders)) (+20 melee defence, no attacks; **Verified**
   against the tooltip string in the exe: "gain 20 to his melee defense skill ... will not attempt to make any
   attacks"); Passive = non-combat mode (tooltip strings; all the orders panel's tooltips: [Tooltips](#tooltips)).
@@ -758,7 +764,7 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   `Ground Fertility:` (other: no label); value `{1,num}` of int(yield × 100) (slot 92, no `%`), coloured r = clamp(0.8 − y), g = clamp(0.8 y), b 0.1; tooltip "The
   richness of natural {1} present in this location. Anything over 50% is considered good.", {1} the resource's name (`FUN_140a0c300`: Iron, Stone, Copper, Carbon,
   Water, Fertility) lower-cased. No owner test: rocks, NPC and player mines and wells; farms override slot 186 with their crop lines below. Meitou: the player's machines and rocks (before mining too,
-  `WorldSnapshot.InspectedRichness`); a mine without a resource shows no line; town buildings are not covered.
+  `WorldSnapshot.InspectedRichness`); a mine without a resource shows no line; a town building's by its `townwork:` machine.
 - **Production building** (**Verified** decompile of ProductionBuilding's slots, the strings `OK` / `-` / `+` read from the exe bytes; the formulas match the owner's
   screenshot of a worked Iron Resource: Iron Quality 100, Workers 1/3, Efficiency 40%, Max efficiency 120%). Section 6 (`FUN_1402ffeb0`) is slot 186 (richness),
   155 (Workers, `FUN_1403075b0`), 154 (`FUN_140306050`), 153 (power, `FUN_140307bf0`); section 4 is slot 114 (header word), 115 (Condition rows), 153.
@@ -810,6 +816,9 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     or death >= threshold; otherwise hours = harvest time × max(2 − growth, 0) + death time × (threshold − (growth >= 2 ? death : 0)), floored,
     with `hr`/`hrs`. Its fill is hours/(harvest time + death time × threshold), zero when drought death time > 0 and the first water input level is 0.
     Meitou: `FarmPanel`, `FarmView` (immutable crop data, planting start, average farmer skill and water level); no simulation/save formula changes.
+    No owner test (**Observed**, decompile: `FUN_1400e21a0` gates the bars on the build state's complete flag alone, `FUN_1402ffeb0` tests no owner):
+    a town's farm, well or other producer shows its stats and bars on a left click as on its Loot order (`BuildingSelection.PanelMachine`, its
+    `townwork:` machine); its window opens only by Loot.
   - Turret gun lines (**Observed**, `GunClassTurret` slot 14 `FUN_14030d620` section 6; the base `GunClass` `FUN_14030ce20` draws only section 4's `Loaded` bar;
     suffixes `x` / `*` / `+` **Verified** exe bytes): P = gun slot 19 (0.8 e + 0.2, e = slot 109), M = slot 18 (mount), h = `FUN_140435f60` from the building to
     gun `+0x118` (the last aim point, written with the building's `+0x4a8` by slot 5 `FUN_140435100`; 1 while it is 0), D = Building slot 120. Lines (labels Main,
@@ -927,7 +936,13 @@ entry (building +0x448: progress, record) whose progress is below 1, the `out` g
 ready-made Item it will produce; shown while `out` is empty), `OutputText` that Item's name, `OutputProgressBar` progress x 100 and `CraftingName` `#afa68b` + the entry record's
 name; otherwise ghost none, `OutputText` `-`, bar 0 and `CraftingName` `#afa68b` + an empty string. The layout's setup (`FUN_1401524f0`) writes "Nothing Queued" into
 `CraftingName` (so it shows only until the first update) and `OutputTitleText` the translated "Output" upper-cased.
-Meitou (`ProductionWindows`): these texts and ghosts for crafting benches; a section holds only its ingredient, so "Invalid item!" never shows; the output ghost is the queue front's item (its record and model).
+Meitou (`ProductionWindows`): these texts and ghosts for crafting benches; a section holds only its ingredient, so "Invalid item!" never shows; the output ghost is the queue front's item (its record and model); a section the bound craft takes nothing from (`InputSlot.Idle`) shows `-`, no status, bar 0 and no ghost, drawn disabled while empty, and takes no item (#951).
+
+Production window bars (**Verified**, ProductionBuilding slot 179 `FUN_140298810`, also FarmBuilding's slot 179; setter `FUN_14014dd60`, x 100 (`DAT_141683250`) rounded):
+each `InputNProgressBar` is input N's level, `OutputProgressBar` the current output entry's progress (+0x448), 0 without one. On a farm that entry is
+the plant being harvested: its progress is the harvest progress `FUN_1400e59e0` adds to, reset to 0 per plant and at replanting (`FUN_1400e48e0`),
+kept while the output is full; the farm tick does not touch it, so the bar is empty while the crop grows and fills once per plant. Operating
+a machine draws no floating bar over the worker (`Task_OperateMachine` is not a `ProgressBarTask`). Meitou: `FarmView.HarvestProgress` (#981).
 
 Inventory opening geometry (**Verified**, `FUN_1406e4960`; constants `DAT_141696c74` = 0.05 and `DAT_14167e8d8` = 0.5): independent character
 windows start at the integer margin `0.05 × min(screen width, screen height)`, after other inventory windows on that row. A full row advances by
@@ -990,6 +1005,10 @@ the full bottom width.
 Stats Affected and Ways To Train headings with bullet rows. The right starts with
 a thin Next Level bar and percentage, followed by Description and wrapped prose.
 Help text is available from the installed [gettext catalog](../formats/gettext.md).
+
+**Observed** in the original (1.0.68): the description shows the stat whose row (label or value, attribute or skill) is under the pointer, with
+no click. It keeps the last stat pointed at once the pointer leaves the rows, and a click pins nothing: pointing at another row shows that one.
+The description is empty each time the window opens, until the pointer reaches a row. Meitou: the same; a click on a row still shows it.
 
 **Levels and Next Level** (**Verified** decompile): a row's value is `floorf(stat × character vfunc 0x398)` (`FUN_1408aaa10`), the bar and its
 `{1,num}%` the fraction `stat - floorf(stat)` (`FUN_1408ab4d0`); both read the raw stat (`FUN_140884ac0` with flag 1, no injury factor). So
@@ -1236,8 +1255,15 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
     item."; `RaceLimiter`, built per item by `FUN_140763150`, **Verified** by decompile: a non-empty `races` list names the only races and `races exclude` is then not read, otherwise `races exclude`
     names the barred ones; `fcs.def` gives both lists to ARMOUR, CONTAINER, ITEM, LIMB_REPLACEMENT, NEST_ITEM, WEAPON and CROSSBOW `races` only. Vanilla shirts (Rag Shirt, Cloth Shirt, Leather Turtleneck...) exclude the 10 Hive and Deadhive races, read with `meitou-tools armour`); a section named `out` refuses everything; a non-empty CONTAINER into a CONTAINER's inventory: "Container cannot be placed here unless it is empty.". Under the footprint: two or
     more items refuse it; none, but the section's item-count cap reached, refuses it (`FUN_14071a6b0`: InventorySection `+0xa8` KenshiLib `itemsLimit`, when above 0, at most the
-    section's item count); one item locked (shackles) on either side: "Item is locked in place."; one of the same kind that stacks
-    (same type, material and quality): merged up to the stack limit (partial charges combined), the stack at the drop cell, the rest on the mouse; any other: swapped, the old item on the mouse.
+    section's item count); one item locked (shackles) on either side: "Item is locked in place."; one of the same kind (Item vfunc 0x2a0
+    `FUN_14075d510`: same record, company and material, quality not compared; if either is stolen, also the same owner hand, `FUN_14075d470`) is
+    joined with it by the stack join `FUN_14075e220`, whether its stack is full or the item does not stack at all (`stackable` 1) (**Verified** by
+    decompile): the two partly used units pool their charges (`+0x118`, max `+0x114`), one unit when the sum is at most one unit's, else a full
+    one and the rest; the held item takes the units up to its stack limit at the drop cell, all full when cut there, and the other, with the rest
+    and the partly used unit, goes onto the mouse (none left: it is destroyed). Held units past the limit are split off before
+    (`FUN_14070f240`): they go back to their origin when the other takes the mouse, else stay on it. So two half-used first aid kits dropped one on the other make one
+    full kit. Any other: swapped, the old item on the mouse. Meitou: `HeldItems.Combine`, `InventoryCommands.Join`; in a trade, or for an item
+    with a buy-back receipt, a stack of the kind takes what it has room for (a full one nothing) and a kind that does not stack is swapped.
   - Over no window (`FUN_1407136a0`): a character picked under the pointer other than the source owner is given the item (a live animal's grid takes nothing, [animals](animals.md#pack-animals); Meitou, engine choice as a pick-up: what no grid takes goes into a free slot that takes it, e.g. a 10x1 polearm into `back`; no trade;
     range checked; "No room for that item." or the container message; from a non-player owner "Got caught stealing." may follow); otherwise it is dropped on the ground only from the player's
     own windows or a window of a player-faction owner, else it goes back.
@@ -1296,7 +1322,9 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
     pushes the inventory and bag right. Opened without a parent: it does not move with the inventory (**Observed**). Closing the inventory closes it (`FUN_1406e53d0`); Meitou also
     closes it when the inventory shows another character (the original's inventory is per character).
   - Slots: sections `left_arm_replace`, `right_arm_replace`, `left_leg_replace`, `right_leg_replace` (`FUN_1400d04d0`), arms 2 x 6 and legs 2 x 7 cells (`FUN_1401534f0`). A slot is
-    enabled only for a stump or a replaced limb, else drawn with the skin's `disabled` tile and taking no drop (MyGUI gives it no focus, **Observed**). A fitted prosthetic shows its
+    enabled only for a stump or a replaced limb, else drawn with the skin's `disabled` tile and taking no drop (MyGUI gives it no focus, **Observed**). Each section's type is
+    50 + its slot, and it takes only an item of that `slot` (`FUN_14074bc30`): another side's prosthetic gets "Invalid container type." (message 6 of `FUN_14070f7e0` in the drag
+    `FUN_140715560`, **Verified** by decompile). The window is mirrored: the left limbs' slots are the right-hand column (**Observed**, the original layout in Meitou, #954). A fitted prosthetic shows its
     icon; a stump's race item never sits in the slot. Labels `-ARMS-` / `-LEGS-`; `figure.png` never changes. The slots are built on open (a limb lost meanwhile shows on reopening,
     **Observed**; Meitou refreshes live).
   The pin button (`Kenshi_PinButtonSkin` in the `Kenshi_WindowCXP` caption, drawn "O"; the skin's `*_checked` states while pinned) keeps the inventory window on the character shown

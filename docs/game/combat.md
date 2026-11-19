@@ -472,7 +472,7 @@ Meitou (`CombatSystem.HasSlot` / `MayJoin`, `Fighting.Steer`):
 - **Threats.** The perception pass (`SensoryData::addToThreatsAndFlockingList`) looks at each sensed live character of another faction: its
   state broadcast's intended aggression adds to +0x90; when its intended target (+0x68) passes `AITaskSytem::intendsToAttackTarget` (prone
   state < 3 and its fight on; on Hold with the fight off, only within 40), a target that is the looker puts it on the threats list
-  (SensoryData +0x50) and adds its aggression towards the target to +0x88; a target of the looker's faction adds that to +0x8c.
+  (SensoryData +0x50) and adds its aggression towards the target to +0x88; another target of the looker's faction adds that to +0x8c.
   `iAmBeingMeleeAttacked general` (state 159) is "threats list not empty"; `immediate` (158) is Character +0x2b0, set in the periodic update
   (`FUN_1404378f0`, **Verified**) while a threat within 40 (Ogre `squaredDistance`, full 3D, strictly under 1600, `DAT_1416d4a28`) stands (prone state < 3: staying low and crawling count),
   is not in a bed or cage, not getting up (+0x278), not carried and fails `AI::isTargetOutsideTheGates` (`FUN_140598450`: both places' gate codes
@@ -837,7 +837,7 @@ Order 228 "Stealth KO" (verb list `FUN_14079b2d0`), `Task_StealthKO` (vtable slo
   100 x (X + K) / 2K, K = 30 for X >= 0 else 15 (disassembly: the hidden third argument is +K). Unclamped. 0 when the
   target's sense entry of the attacker has its +0x38 flag (it sees the attacker); x0.5 when it only hears the attacker (+0x39 heard, **Verified**). Also 0 when the target is fighting, has an entry for the attacker and the attacker is not unseen (Character +0xe8 ≠ 1).
 - Roll uniform 0..100; lands when chance > roll. Hit: floating "*Thunk*", target KO time `FUN_140644980` with
-  assassination x 0.01 (the put-down KO formula, [carry-loot](carry-loot.md)). Both set the pending Assault crime (code 5, `FUN_140852c80`, against
+  assassination x 0.01 (the put-down KO formula, [carry-loot](carry-loot.md)); nothing else of the target changes, so a sleeper stays in its bed (+0x2f8), knocked out, to be looted or kidnapped there (**Verified**, `FUN_14034cd80`; Meitou keeps its Sleep task, #994). Both set the pending Assault crime (code 5, `FUN_140852c80`, against
   the target's faction, no other condition) and float the text in a ScreenLabel over the attacker ([floaters](ui-screens.md#8-damage-floaters), font index 1, shown
   whatever the floaters option says): "*Thunk*" colour (0.4, 0.8, 0.4, 0.9), "Failed!" (0.7, 0.4, 0.4, 0.7); **Verified**.
   Miss, in order (**Verified**): the target says event 56 ASSASSINATION_FAILED at the attacker (`FUN_140685660` over `FUN_140684990`); it notices the attacker
@@ -1009,6 +1009,18 @@ weapon at the moment an arm changes (the change's mask bit 2 with the left byte 
 in progress ends when the weapon goes (`CombatSystem.Act`, step 1). **Drawing is not timed**: equipping (`FUN_140346c30`, the Equipping weapon task 6 / 264, planned before Attacking 227, whose list needs
 `hasWeaponEquipped`) sets the weapon in hand at once through Character vfunc 0x3d8 (the hip/back mesh refresh `FUN_1405cbf90`) with no wait for a clip, so a fighter never swings sheathed. Meitou: `Engage`
 and `StartAttack` set `DrawnWeapon` to the weapon of the hand before a swing, and `CharacterAssembly.RefreshEquipment` and the arms' change update a weapon already drawn (a weapon picked up or lost in a fight left it stale).
+`DrawnWeapon` holds the animation kind the clips are matched with: a crossbow is `1 handed`, and so is a melee weapon animating as no skill class
+(category 6, 7, 9 and up, or an override to one). **Verified** (disassembly): the original asks the item in hand (Character `+0x2f8` vfunc `0x3c0`)
+whether it is a crossbow, through Item vfunc `0x2d8`, which returns null for a WEAPON (`FUN_1408a52c0`) and the item itself for a CROSSBOW
+(`FUN_1408aa180`); planner conditions 5 and 156 (`FUN_140596a30`, `FUN_140596a70`) and the HUD's display mode (`FUN_1408840d0`, mode 2) read it so,
+and the display mode's fists test reads the category (CharStats `+0x1f0` = 5). So a WEAPON of any category, 6 and 7 included, is never the drawn
+crossbow, while its current weapon type is its `skill category`. Meitou marks a person's such weapon apart (`WeaponKinds.MeleeMark`,
+`CombatSystem.MeleeDrawn`): the crossbow tests (those three, the in-hand crossbow meshes, the Hold exemption) answer as for a melee weapon, and
+`CombatSystem.HandCategory` answers the weapon's `skill category` (no Current Skill label for 6 or 7). No base weapon a person can hold animates as
+no skill class: of the 48 WEAPON records of the base data and its three bundled mods only the 12 creature weapons (categories 9 to 20) do, and
+nothing but ANIMAL_CHARACTER `weapon` and one unreferenced manufacturer names them (**Observed**, a scan of the four files). An animal's natural
+weapon of a creature category keeps the plain kind, so those tests read it as a crossbow; the Swamp Turtle's, drawn from a manufacturer,
+is a person's weapon of a skill class, whose kind is not the crossbow's.
 
 ### Unknowns of the ranged path
 

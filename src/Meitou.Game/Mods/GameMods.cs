@@ -48,9 +48,15 @@ sealed class GameMods(GameHost host)
     /// </summary>
     internal void StartWarmup()
     {
-        if (ModHost.EnabledCodeMods(host.Install).Count > 0) _warmupAfterMods = true;
+        if (CodeMods().Enabled.Count > 0) _warmupAfterMods = true;
         else JitWarmup.Start();
     }
+
+    /// <summary>
+    /// The code mods on disk (<see cref="ModHost.CodeMods(Content.GameInstall)"/>): the data phase's reading when the session has one, so the
+    /// folders are scanned once.
+    /// </summary>
+    (List<Content.ModInfo> Enabled, List<Content.ModInfo> Disabled) CodeMods() => host.DataPhase?.CodeMods() ?? ModHost.CodeMods(host.Install);
 
     /// <summary>
     /// Starts the JIT warm-up held back for the code mods, once they are initialized.
@@ -59,11 +65,12 @@ sealed class GameMods(GameHost host)
     {
         if (!_warmupAfterMods) return;
         _warmupAfterMods = false;
-        JitWarmup.Start();
+        JitWarmup.Start(late: true);
     }
 
     /// <summary>
-    /// Loads the enabled code mods and runs their initialization; on the boot worker.
+    /// Loads the enabled code mods and runs their initialization; on the boot worker. Mods whose code the data phase loaded already
+    /// (<see cref="ModDataPhase"/>) are initialized from there.
     /// </summary>
     internal void StartMods(Data.GameDatabase db, PopulationData data)
     {
@@ -73,6 +80,7 @@ sealed class GameMods(GameHost host)
             var adopted = new BuiltInModSettings
             {
                 SquadXp = host.Config.SquadXp,
+                FixAnimalMoves = host.Config.FixAnimalMoves,
                 AdoptedMods = host.Config.AdoptedMods,
                 ModSettings = host.Config.ModSettings,
             };
@@ -80,33 +88,101 @@ sealed class GameMods(GameHost host)
             if (_builtInNotices.Count > 0)
             {
                 host.Config.SquadXp = adopted.SquadXp;
+                host.Config.FixAnimalMoves = adopted.FixAnimalMoves;
                 host.Config.Save();
             }
         }
         (data.BodyOptions.SquadXp, data.BodyOptions.OthersXp) = (host.Config.SquadXp, host.Config.OthersXp);
 
-        var (enabled, disabled) = ModHost.CodeMods(host.Install);
+        if (host.DataPhase?.Mods is { } prepared)
+        {
+            StartPrepared(prepared, host.DataPhase.Enabled, db, data);
+            return;
+        }
+
+        var (enabled, disabled) = CodeMods();
         BuiltInMods.SkipCovered(enabled, disabled);
         if (enabled.Count == 0) return;
-        Console.WriteLine($"mods      {enabled.Count} code mod(s) enabled; Harmony {ModHost.HarmonyVersion}, code-mod API {ModApi.Version}");
-        var profile = ServerModProfile.FromEnvironment();
-        var allowed = (profile?.TrustedCodeMods ?? [.. host.Config.TrustedCodeMods]).ToHashSet(StringComparer.Ordinal);
-        var settings = profile?.ModSettings ?? host.Config.ModSettings;
-        Mods = ModHost.Load(new ModHostOptions(enabled, allowed, db, data, () => (host.Session as WorldSession)?.World,
-            id => settings.TryGetValue(id, out var saved) ? saved : null, RunningVersion(), disabled,
-            Enqueue: SubmitModCommand, Tick: () => host.Session?.CommandTick ?? 0));
-        if (host.OnlineConnection is not null && Mods.Refused.Keys.Any(allowed.Contains))
-            throw new InvalidDataException("A trusted client code mod could not initialize; reconnect after correcting its failure.");
+        LogEnabled(enabled.Count);
+        Mods = ModHost.Load(Options(enabled, db, data, disabled));
+
+        // No mod was found with a data phase, so an entry that is one anyway has it where the scan cannot see it.
+        foreach (var mod in Mods.Mods.Where(m => m.Instance is IModDataPhase)) ModHost.NoteUnscannedDataPhase(mod);
+
+        CheckTrustedMods(Mods);
+        KeepModSettings(Mods);
     }
 
     /// <summary>
-    /// Routes mod commands through the same authority boundary as player commands.
+    /// Initializes the mods the data phase loaded (<see cref="ModHost.Start"/>).
     /// </summary>
+    void StartPrepared(ModHost prepared, IReadOnlyList<Content.ModInfo> enabled, Data.GameDatabase db, PopulationData data)
+    {
+        if (enabled.Count == 0) return;
+        LogEnabled(enabled.Count);
+        prepared.Start(Options(enabled, db, data));
+        Mods = prepared;
+        CheckTrustedMods(prepared);
+        KeepModSettings(prepared);
+    }
+
+    /// <summary>
+    /// Keeps a value a mod sets itself (ModSetting.Set, Reset) as the page's are, on either start path; the page's own change is kept twice, the
+    /// same value.
+    /// </summary>
+    void KeepModSettings(ModHost mods)
+    {
+        foreach (var group in mods.Settings) group.Changed += host.Config.KeepModSetting;
+    }
+
+    /// <summary>
+    /// The log line naming how many code mods start.
+    /// </summary>
+    static void LogEnabled(int count) =>
+        Console.WriteLine($"mods      {count} code mod(s) enabled; Harmony {ModHost.HarmonyVersion}, code-mod API {ModApi.Version}");
+
+    /// <summary>
+    /// What the mods are loaded or initialized with: the data, the population, the running world and the player's saved settings.
+    /// </summary>
+    ModHostOptions Options(IReadOnlyList<Content.ModInfo> enabled, Data.GameDatabase db, PopulationData data,
+        IReadOnlyList<Content.ModInfo>? disabled = null)
+    {
+        var profile = ServerModProfile.FromEnvironment();
+        var allowed = (profile?.TrustedCodeMods ?? [.. host.Config.TrustedCodeMods]).ToHashSet(StringComparer.Ordinal);
+        var settings = profile?.ModSettings ?? host.Config.ModSettings;
+        return new(enabled, allowed, db, data, () => (host.Session as WorldSession)?.World,
+            id => settings.TryGetValue(id, out var saved) ? saved : null, RunningVersion(), disabled,
+            Enqueue: SubmitModCommand, Tick: () => host.Session?.CommandTick ?? 0);
+    }
+
+    /// <summary>The shared data phase uses the same explicit trust as later initialization.</summary>
+    internal static ModDataPhase CreateDataPhase(Content.GameInstall install, UserConfig config)
+    {
+        var profile = ServerModProfile.FromEnvironment();
+        var allowed = (profile?.TrustedCodeMods ?? [.. config.TrustedCodeMods]).ToHashSet(StringComparer.Ordinal);
+        return new(install, allowed, RunningVersion());
+    }
+
+    /// <summary>A trusted client mod failing to start cannot silently change an admitted session's behavior.</summary>
+    void CheckTrustedMods(ModHost mods)
+    {
+        var profile = ServerModProfile.FromEnvironment();
+        var allowed = (profile?.TrustedCodeMods ?? [.. host.Config.TrustedCodeMods]).ToHashSet(StringComparer.Ordinal);
+        if (host.OnlineConnection is not null && mods.Refused.Keys.Any(allowed.Contains))
+            throw new InvalidDataException("A trusted client code mod could not initialize; reconnect after correcting its failure.");
+    }
+
+    /// <summary>Routes mod commands through the session's authority boundary.</summary>
     void SubmitModCommand(SimCommand command)
     {
         if (host.Session is null) Console.Error.WriteLine($"mod       no session yet: dropped {command.GetType().Name}");
         else host.Session.Submit(command);
     }
+
+    /// <summary>
+    /// The player's saved settings of a mod by its id, or null.
+    /// </summary>
+    IReadOnlyDictionary<string, string>? SavedSettings(string id) => host.Config.ModSettings.TryGetValue(id, out var saved) ? saved : null;
 
     /// <summary>
     /// The mods' interface extensions and their load notices, for a new interface.
@@ -142,11 +218,22 @@ sealed class GameMods(GameHost host)
     }
 
     /// <summary>
+    /// Once a frame: a notice for each mod system the world stopped after a fault (docs/modding.md "Tick systems").
+    /// </summary>
+    internal void UpdateModFaults()
+    {
+        if (Mods is null || host.Session is not WorldSession local) return;
+        var world = local.World;
+
+        while (world.TryTakeModFaultNotice(out var notice)) Notice(notice);
+    }
+
+    /// <summary>
     /// This build's nearest game tag (<c>v*</c>, Meitou.Game.csproj) as a version for <c>gameVersion</c> ranges; null for a build without one (no git
     /// history), which passes every range.
     /// </summary>
-    static Content.CodeModVersion? RunningVersion() =>
-        Content.CodeModVersion.TryParse(BuildVersion.Tag.TrimStart('v'), out var version) ? version : null;
+    internal static Content.CodeModVersion? RunningVersion() =>
+        ModHost.RunningVersion();
 
     /// <summary>
     /// The code mods running (none without code mods), tagged with this build's version.
@@ -204,8 +291,9 @@ sealed class GameMods(GameHost host)
     internal void RestoreModData(World world, Data.Save.SaveGame save) => Mods?.RestoreSaveData(world, save.ModData);
 
     /// <summary>
-    /// The squads of the world just loaded that a code mod made autonomous, when that mod is not running now (not installed, refused or failed to
-    /// start), go back to the player (<see cref="Simulation.Ai.SquadAutonomy.DropUnowned"/>), with a notice; between ticks, before the first.
+    /// The squads of the world just loaded that a code mod made autonomous or kept out of the faction size count, when that mod is not running now
+    /// (not installed, refused or failed to start), go back to the player (<see cref="Simulation.Ai.SquadAutonomy.DropUnowned"/>) and count again
+    /// (<see cref="Simulation.Factions.SquadManagement.DropUnownedUncounted"/>), each with a notice; between ticks, before the first.
     /// </summary>
     internal void DropUnownedAutonomy(World world)
     {
@@ -213,9 +301,23 @@ sealed class GameMods(GameHost host)
             .Select(m => m.Manifest.Id)
             .ToHashSet(StringComparer.Ordinal);
         int dropped = Simulation.Ai.SquadAutonomy.DropUnowned(world, running.Contains);
-        if (dropped == 0) return;
+        if (dropped > 0) Notice($"{dropped} squad(s) run by a mod that is not loaded are yours again.");
 
-        string line = $"{dropped} squad(s) run by a mod that is not loaded are yours again.";
+        int counted = Simulation.Factions.SquadManagement.DropUnownedUncounted(world, running.Contains);
+        if (counted > 0) Notice($"{counted} squad(s) a mod that is not loaded kept out of your faction size count are counted again.");
+
+        int purses = Simulation.Factions.SquadManagement.DropUnownedPurses(world, running.Contains);
+        if (purses > 0) Notice($"{purses} squad purse(s) of a mod that is not loaded went into your money.");
+
+        int woken = Simulation.Factions.SquadManagement.DropUnownedDormant(world, running.Contains);
+        if (woken > 0) Notice($"{woken} squad(s) a mod that is not loaded put to sleep are awake again.");
+    }
+
+    /// <summary>
+    /// Shows a line about the mods to the player and in the console.
+    /// </summary>
+    void Notice(string line)
+    {
         Console.WriteLine($"mods      {line}");
         host.Player.Notice(line, true);
     }

@@ -98,9 +98,10 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// A move order (29) needs an awake character (one out cold keeps it queued until it wakes) and, out of a building shut by locked doors, a way
-    /// through them (state 60, <see cref="Locks.LockSystem.CanLeave"/>: "I can't get out of here.", the state's failure text in the condition table
-    /// <c>FUN_140610250</c>); a follow order (31, 45) a target that is there, and an awake, free character (not caged or carried).
+    /// A move order (29) needs an awake character (one out cold keeps it queued until it wakes); out of a building shut by locked doors, a way
+    /// out (state 60, <see cref="Locks.LockSystem.CanLeave"/>: "I can't get out of here."), and into one, a way in (state 59,
+    /// <see cref="Locks.LockSystem.CanEnter"/>: "I can't get there."), the states' failure texts in the condition table <c>FUN_140610250</c>, in the
+    /// order the move row lists them; a follow order (31, 45) a target that is there, and an awake, free character (not caged or carried).
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
@@ -108,11 +109,11 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         if (order.IsMove)
         {
             if (table.Cold(slot)!.Medical?.Incapacitated == true) return OrderCheck.Blocked();
+            if (world.SystemOf<Locks.LockSystem>() is not { } locks) return OrderCheck.Run;
 
-            var to = new Vector2(order.Point.X, order.Point.Z);
-            return world.SystemOf<Locks.LockSystem>() is { } locks && !locks.CanLeave(world, slot, to)
-                ? OrderCheck.Blocked(Loc.Tr("I can't get out of here."))
-                : OrderCheck.Run;
+            if (!locks.CanLeave(world, slot, new Vector2(order.Point.X, order.Point.Z)))
+                return OrderCheck.Blocked(Loc.Tr("I can't get out of here."));
+            return locks.CanEnter(world, slot, order.Point) ? OrderCheck.Run : OrderCheck.Blocked(Loc.Tr("I can't get there."));
         }
         if (!table.TryResolveNext(order.Target, out int led) || led == slot) return OrderCheck.Gone;
 
@@ -211,6 +212,24 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         GoTo(world.Characters, slot, flat, mode);
         (cold.GoalHeight, cold.GoalHeightAt) = (floor.Y, flat);
         return flat;
+    }
+
+    /// <summary>
+    /// Where a walker goes to reach a body or an item at <paramref name="at"/>: a floor point (<see cref="IWalkability.FloorNear"/>) within
+    /// <see cref="FloorSlack"/> of its height, asked at its height and then lower. One lying on furniture (a counter, a table, a shelf) is over the
+    /// hole the furniture cuts in the floor, where a walker's height snaps to the storey above or below (<b>Observed</b>: a body 16 over the Hub
+    /// bar's floor, under its upper floor 38 over it, was walked to upstairs and never reached; an item on a Vault shelf 11 over its floor was
+    /// walked to on the storey below, #901). Its own point when no floor is found.
+    /// </summary>
+    public static Vector3 FloorApproach(World world, Vector3 at)
+    {
+        const float slack = FloorSlack;
+        for (float drop = 0; drop <= slack; drop += slack / 2)
+        {
+            if (world.Walkability.FloorNear(at.X, at.Z, at.Y - drop, slack) is { } floor && MathF.Abs(floor.Y - at.Y) <= slack) return floor;
+        }
+
+        return at;
     }
 
     /// <summary>
@@ -795,9 +814,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         if (n.Task == (byte)CharacterTask.GoTo)
         {
             LogDropped(world, n, cold, following ? "no path found on asking again (the path it followed is dropped)" : "no path found");
-            cold.WalkEnd = WalkEnd.Failed;
+            EndWalk(cold, WalkEnd.Failed);
+            PlayerOrders.WalkFailed(cold);
             TaskStart.Step(world.Characters, slot, CharacterTask.Idle);
-            cold.OrderQueue.Clear();
         }
     }
 
@@ -942,9 +961,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
             ? $"blocked {cold.ProvisionalBlocked} times on the provisional long-range part (limit {ProvisionalBlockedLimit})"
             : $"blocked {cold.BlockedRepaths} times on the navmesh part (limit {BlockedRepathLimit})";
         LogDropped(world, n, cold, $"{why}, waypoint {n.PathCursor} of {cold.Path.Length}, stuck stepping to {x:0}, {z:0}");
-        cold.WalkEnd = WalkEnd.Failed;
+        EndWalk(cold, WalkEnd.Failed);
+        PlayerOrders.WalkFailed(cold);
         TaskStart.Step(world.Characters, slot, CharacterTask.Idle);
-        cold.OrderQueue.Clear();
     }
 
     /// <summary>
@@ -957,6 +976,16 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         Console.WriteLine(
             $"order     {cold.Name} blocked on the {part} at tick {world.Tick}, keeps its move and asks again every {BlockedRetrySeconds:0} s; " +
             $"at {n.Position.X:0}, {n.Position.Y:0}, {n.Position.Z:0}, goal {n.Goal.X:0}, {n.Goal.Y:0}");
+    }
+
+    /// <summary>
+    /// A walk ended, followed to its end or given up: a character the AI plans for thinks again at its next turn, not at its cadence (the original
+    /// ends a running walk step by its per-frame test and plans again at once, <c>FUN_14050f0b0</c>, <c>FUN_14050d970</c>).
+    /// </summary>
+    static void EndWalk(CharacterCold cold, WalkEnd how)
+    {
+        cold.WalkEnd = how;
+        if (cold.Ai is { Engine: false } mind) mind.Replan = true;
     }
 
     /// <summary>
@@ -1388,6 +1417,11 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     public const int MaxSeparationContributions = 26;
 
     /// <summary>
+    /// The turns in degrees a refused footwork step is tried at, smallest first (<see cref="SlideStep"/>; engine choice).
+    /// </summary>
+    static readonly float[] SlideTurns = [30, 60];
+
+    /// <summary>
     /// The share of the footprint radius a body is solid over (engine choice: 2.4 units for a human, about half the shoulders' width).
     /// </summary>
     public const float BodyShare = 0.6f;
@@ -1414,6 +1448,18 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// How far a walker's height may be from its path's before the step looks for a layer at the path's height (<see cref="CorridorHeight"/>).
     /// </summary>
     const float CorridorSlack = 4;
+
+    /// <summary>
+    /// How near the terrain a walker off the mesh must stand to count as on the bare ground, and how far to each side its slope is measured
+    /// (<see cref="OnSteepTerrain"/>, engine choice).
+    /// </summary>
+    const float OnTerrainSlack = 2, SlopeProbe = 4;
+
+    /// <summary>
+    /// The rise per unit of the navmesh's terrain slope limit (<see cref="Navigation.ZoneGeometryGatherer.TerrainSlopeDegrees"/>), for
+    /// <see cref="OnSteepTerrain"/>.
+    /// </summary>
+    static readonly float SteepRise = MathF.Tan(Navigation.ZoneGeometryGatherer.TerrainSlopeDegrees * MathF.PI / 180);
 
     /// <summary>
     /// How near the last point of a path counts as arrived (<b>Verified</b>, the nav agent's <c>FUN_140144440</c>: 0.01 squared Havok units, 1 unit);
@@ -1877,7 +1923,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     }
 
     /// <summary>
-    /// The speed a path walker wants: its mode's cap (a carrier's walk raised to a run, a squad's force speed raising it) or a follower's own speed,
+    /// The speed a path walker wants: its mode's cap (an NPC carrier's walk raised to a jog, a squad's force speed raising it) or a follower's own speed,
     /// within its top speed (the mover's S, which carries the sneaking cap and the water state, <see cref="Bodies.TopSpeedDelay"/>), then capped in
     /// its footwork, by its group and by a campaign's pace; a crawler's speed is part of S.
     /// </summary>
@@ -1885,9 +1931,9 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     {
         byte mode = cold.ModeOverride ?? n.Mode;
 
-        // A carrier in walk mode is raised to run mode (the original's speed selector, Observed; docs/game/carry-loot.md "Speed and
-        // weight").
-        if (mode == SpeedMode.Walk && !cold.Carrying.IsNone) mode = SpeedMode.Run;
+        // An NPC carrier in walk mode is raised to jog; a player's carrier keeps the mode it was given (#995; docs/game/pathfinding.md
+        // "Force speed").
+        if (mode == SpeedMode.Walk && !cold.Carrying.IsNone && !cold.IsPlayer) mode = SpeedMode.Run;
 
         // Its squad template's force speed 0..2 replaces the AI's mode (FUN_140332390 never lowers an explicit task mode, so only a raise
         // is applied; docs/game/pathfinding.md "Force speed").
@@ -1956,7 +2002,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
 
         if (!replaced && n.Task == (byte)CharacterTask.GoTo)
         {
-            cold.WalkEnd = WalkEnd.Finished;
+            EndWalk(cold, WalkEnd.Finished);
 
             // The move order leaves the queue; a queued move after it (shift + right click) starts: a path to it is asked for next tick.
             if (!PlayerOrders.Arrived(world, i, cold, ref n)) TaskStart.Step(world.Characters, i, CharacterTask.Idle);
@@ -2079,13 +2125,47 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         bool stands = false;
 
         // Pushed by its neighbours where it cannot stand (over a hole furniture cuts in a floor): its own step alone.
+        var pushed = step;
         if ((push.Sum != Vector2.Zero || shove != Vector2.Zero) && !(stands = walk.TryStand(x, z, p.Position.Y, out y)))
         {
             step = s.Dir * s.Speed * dt;
             (x, z) = (p.Position.X + step.X, p.Position.Z + step.Y);
         }
 
+        // In its footwork, a step that cannot be stood on is turned along what refuses it (#923).
+        if (s.Steering && step != Vector2.Zero && !stands && !walk.TryStand(x, z, p.Position.Y, out _)
+            && (SlideStep(walk, p.Position, pushed) ?? SlideStep(walk, p.Position, step)) is { } slid)
+        {
+            step = slid;
+            (x, z) = (p.Position.X + step.X, p.Position.Z + step.Y);
+            stands = walk.TryStand(x, z, p.Position.Y, out y);
+        }
+
         if (step != Vector2.Zero) Place(world, i, p, ref n, cold, ref s, x, y, z, stands);
+    }
+
+    /// <summary>
+    /// A refused step from <paramref name="from"/> turned along what refuses it, as the original's agent turns the rest of a step along the wall it
+    /// meets (docs/game/pathfinding.md "Walls"): the step turned by each of <see cref="SlideTurns"/> (degrees) to the left and then the right,
+    /// shortened by the turn's cosine, the first whose end point can be stood on; null when none can. Off the mesh (bare terrain too steep for it)
+    /// there are no wall edges to slide along, only end points that cannot be stood on, so the turns stand in for the wall's direction (engine choice).
+    /// </summary>
+    internal static Vector2? SlideStep(IWalkability walk, Vector3 from, Vector2 step)
+    {
+        if (step == Vector2.Zero) return null;
+
+        foreach (float turn in SlideTurns)
+        {
+            float angle = turn * (MathF.PI / 180);
+            float cos = MathF.Cos(angle), sin = MathF.Sin(angle);
+            var left = new Vector2(step.X * cos - step.Y * sin, step.X * sin + step.Y * cos) * cos;
+            if (walk.TryStand(from.X + left.X, from.Z + left.Y, from.Y, out _)) return left;
+
+            var right = new Vector2(step.X * cos + step.Y * sin, -step.X * sin + step.Y * cos) * cos;
+            if (walk.TryStand(from.X + right.X, from.Z + right.Y, from.Y, out _)) return right;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -2139,7 +2219,12 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
         bool escaping = inHole && held && !s.Steering && EscapesToward(walk, n, cold, p.Position, x, z);
         if (escaping) y = p.Position.Y;
 
-        if (stands || offSurface && walk.IsWalkable(x, z) || escaping)
+        // On bare terrain too steep for the mesh (a cliff face, #894) it follows the ground toward its path, also where its own spot counts as a
+        // surface (the terrain at its height under a mesh slope far above, #886) but no step off it does.
+        bool descending = !escaping && !stands && held && !s.Steering && DescendsToward(walk, n, cold, p.Position, x, z);
+        if (descending) y = walk.TerrainHeight(x, z);
+
+        if (stands || offSurface && walk.IsWalkable(x, z) || escaping || descending)
         {
             n.Position = new Vector3(x, y, z);
             if (s.Speed > 0.1f && !s.Facing) n.Yaw = MathF.Atan2(s.Dir.X, s.Dir.Y);
@@ -2169,16 +2254,43 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// <paramref name="z"/>): only nearer its path's current point, and only when that point is a surface it can stand on, so it walks out and never
     /// further in (docs/game/pathfinding.md "Own builder", shoved into furniture).
     /// </summary>
-    static bool EscapesToward(IWalkability walk, in CharacterHot n, CharacterCold cold, Vector3 from, float x, float z)
+    static bool EscapesToward(IWalkability walk, in CharacterHot n, CharacterCold cold, Vector3 from, float x, float z) =>
+        NearerPathPoint(n, cold, from, x, z) is { } point && walk.TryStand(point.X, point.Z, from.Y, out _);
+
+    /// <summary>
+    /// Whether a walker standing on the bare terrain where it is too steep for the mesh (a cliff face) may follow the terrain to
+    /// (<paramref name="x"/>, <paramref name="z"/>): only nearer its path's current point, and only when that point is a surface at the point's own
+    /// height, however far above or below the walker it lies (docs/game/pathfinding.md "Shoved into furniture").
+    /// </summary>
+    static bool DescendsToward(IWalkability walk, in CharacterHot n, CharacterCold cold, Vector3 from, float x, float z) =>
+        OnSteepTerrain(walk, from) && NearerPathPoint(n, cold, from, x, z) is { } point && walk.TryStand(point.X, point.Z, point.Y, out _);
+
+    /// <summary>
+    /// The walker's path's current point when the step to (<paramref name="x"/>, <paramref name="z"/>) comes nearer it than
+    /// <paramref name="from"/>; null without a path or when the step does not.
+    /// </summary>
+    static Vector3? NearerPathPoint(in CharacterHot n, CharacterCold cold, Vector3 from, float x, float z)
     {
-        if ((n.Flags & (ushort)MoveFlags.HasPath) == 0 || n.PathCursor >= cold.Path.Length) return false;
+        if ((n.Flags & (ushort)MoveFlags.HasPath) == 0 || n.PathCursor >= cold.Path.Length) return null;
 
         var point = cold.Path[n.PathCursor];
         var aim = new Vector2(point.X, point.Z);
-        if (Vector2.Distance(new Vector2(x, z), aim) >= Vector2.Distance(new Vector2(from.X, from.Z), aim))
-            return false;
+        return Vector2.Distance(new Vector2(x, z), aim) < Vector2.Distance(new Vector2(from.X, from.Z), aim) ? point : null;
+    }
 
-        return walk.TryStand(point.X, point.Z, from.Y, out _);
+    /// <summary>
+    /// Whether <paramref name="at"/> is on the terrain itself (within <see cref="OnTerrainSlack"/>, not on a building's floor) where it is
+    /// steeper than the navmesh's terrain slope limit (<see cref="Navigation.ZoneGeometryGatherer.TerrainSlopeDegrees"/>), measured
+    /// <see cref="SlopeProbe"/> to each side.
+    /// </summary>
+    static bool OnSteepTerrain(IWalkability walk, Vector3 at)
+    {
+        if (MathF.Abs(at.Y - walk.TerrainHeight(at.X, at.Z)) > OnTerrainSlack) return false;
+
+        float dx = walk.TerrainHeight(at.X + SlopeProbe, at.Z) - walk.TerrainHeight(at.X - SlopeProbe, at.Z);
+        float dz = walk.TerrainHeight(at.X, at.Z + SlopeProbe) - walk.TerrainHeight(at.X, at.Z - SlopeProbe);
+        float rise = MathF.Sqrt(dx * dx + dz * dz) / (2 * SlopeProbe);
+        return rise > SteepRise;
     }
 
     /// <summary>

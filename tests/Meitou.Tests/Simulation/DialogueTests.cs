@@ -512,8 +512,9 @@ public partial class DialogueTests
     }
 
     /// <summary>
-    /// A guard greets a stranger of another squad and faction he sees on his sight pass (event 3; its line refuses player targets) with a crowd
-    /// trigger: his mate cheers (event 74), and the chain passes to the line the stranger says back (speaker T_TARGET).
+    /// A guard greets a stranger of another squad and faction he sees on his sight pass (event 3; its line refuses player targets), the chain
+    /// passes to the line the stranger says back (speaker T_TARGET), and the guard's third line has a crowd trigger: the whole squad, the guard
+    /// with it, cheers (event 74), the cheer taking the place of the line that set it off.
     /// </summary>
     [Fact]
     public void A_greeting_between_npcs_sets_off_the_crowd_and_the_target_answers()
@@ -530,10 +531,18 @@ public partial class DialogueTests
             {
                 r.Strings["text0"] = "Hail, /YOURNAME/.";
                 r.References["conditions"] = [Ref("player-dc", 0)];
-                r.References["crowd trigger"] = [Ref("cheer-d", 100)];
                 r.References["lines"] = [Ref("answer-l")];
             }),
-            Rec("answer-l", FcsRecordType.DialogueLine, r => { r.Ints["speaker"] = (int)Talker.Target; r.Strings["text0"] = "Hail yourself."; }),
+            Rec("answer-l", FcsRecordType.DialogueLine, r =>
+            {
+                (r.Ints["speaker"], r.Strings["text0"]) = ((int)Talker.Target, "Hail yourself.");
+                r.References["lines"] = [Ref("cheer-on-l")];
+            }),
+            Rec("cheer-on-l", FcsRecordType.DialogueLine, r =>
+            {
+                r.Strings["text0"] = "Cheer, lads!";
+                r.References["crowd trigger"] = [Ref("cheer-d", 100)];
+            }),
             Rec("cheer-d", FcsRecordType.Dialogue, r => { r.Bools["monologue"] = true; r.References["lines"] = [Ref("cheer-l")]; }),
             Rec("cheer-l", FcsRecordType.DialogueLine, r => r.Strings["text0"] = "Hurrah!"),
         ]), []);
@@ -541,7 +550,8 @@ public partial class DialogueTests
         var ground = new OpenGroundWalkability((_, _) => 150);
         var senses = new Meitou.Simulation.Aggro.AggroSystem(data.Relations);
         var bodies = new Meitou.Simulation.Bodies.BodySystem(Meitou.Tests.Bodies.BodyFixtures.BaseGame);
-        using var world = new SimWorld(new WorldSettings { Seed = 5, PublishSnapshots = false }, ground, [bodies, senses, dialogue]);
+        var sight = new Meitou.Simulation.Perception.SightSystem(data);
+        using var world = new SimWorld(new WorldSettings { Seed = 5, PublishSnapshots = false }, ground, [bodies, senses, dialogue, sight]);
         world.Player.Faction = data.PlayerFaction;
         world.ViewPosition = new Vector3(0, 150, 100);   // NPCs look at NPCs only in view (+0x1a9); all face +Z
         int villagers = data.FactionIndex("f-d");
@@ -575,7 +585,7 @@ public partial class DialogueTests
 
         string[] all = [.. said.Order()];
 
-        Assert.Equal(["Guard: Hail, Stranger.", "Mate: Hurrah!", "Stranger: Hail yourself."], all);
+        Assert.Equal(["Guard: Hail, Stranger.", "Guard: Hurrah!", "Mate: Hurrah!", "Stranger: Hail yourself."], all);
     }
 
     /// <summary>
@@ -782,9 +792,6 @@ public partial class DialogueTests
 [Slow]
 public class DialogueInstallTests
 {
-    /// <summary>
-    /// Talks to the Hub's barman with two reply choices, then observes a resident's ambient line through the sight pass.
-    /// </summary>
     [Fact]
     public void The_hub_barman_talks_and_offers_two_replies_and_a_resident_says_a_speech_bubble()
     {
@@ -799,16 +806,15 @@ public class DialogueInstallTests
         var hub = data.Sites.Single(s => s.Town.Name == "The Hub");
         var dialogue = new DialogueSystem(data, new DialogueSettings { AmbientEvents = true });
         var walk = new OpenGroundWalkability((_, _) => 300);
-        var bodies = new Meitou.Simulation.Bodies.BodySystem(data.Bodies.Constants, data.BodyOptions, db: db);
+        var bodies = new Meitou.Simulation.Bodies.BodySystem(Meitou.Tests.Bodies.BodyFixtures.BaseGame);
         var senses = new Meitou.Simulation.Aggro.AggroSystem(data.Relations);
+        var sight = new Meitou.Simulation.Perception.SightSystem(data);
         using var world = new SimWorld(new WorldSettings { Seed = 1, PublishSnapshots = false }, walk,
-            [new PopulationSystem(data, new PopulationSettings { CheckEveryTicks = 1 }),
-                new MovementSystem(new PathService(walk, true)), bodies, senses, dialogue]);
+            [new PopulationSystem(data, new PopulationSettings { CheckEveryTicks = 1 }), new MovementSystem(new PathService(walk, true)), bodies,
+                senses, dialogue, sight]);
         world.Player.Faction = data.PlayerFaction;
         world.Commands.Enqueue(new FocusCommand(hub.Position) { Tick = 0 });
-
-        // Finish the first sight round before the player arrives: characters already sensed then stay quiet until lost from sight.
-        world.RunTicks(world.Every(senses.Settings.ScanEveryTicks) + 1);
+        world.RunTicks(5);
 
         var table = world.Characters;
         int barman = Enumerable.Range(0, table.HighWater).First(i => table.Next[i].Alive && table.Cold(i) is { Name: "Barman" });
@@ -835,17 +841,11 @@ public class DialogueInstallTests
         Assert.NotEmpty(talk.Text);
         Assert.Equal(2, talk.Choices.Count);   // trade or decline; their texts are picked at random
 
-        AssertResidentSpeech(world, data, dialogue);
-    }
-
-    /// <summary>
-    /// Allies the residents to the player's faction and waits for one to say an ambient line.
-    /// </summary>
-    static void AssertResidentSpeech(SimWorld world, PopulationData data, DialogueSystem dialogue)
-    {
-        var table = world.Characters;
-
-        // The Hub is allied with the player: its residents have event 67 lines (most event 3 lines are disabled or conditional in the data).
+        // A resident who sees the player character says a speech bubble. The sight pass needs the residents' bodies (their races come with their
+        // looks), update turns (bodies) and senses (aggro). With the Hub allied, a resident reacts on each update turn to one character it senses,
+        // trying its event 67 lines (I_SEE_ALLY_PLAYER) at the player character; a said line cools that speaker's event for 1 s. The Hungry
+        // bandit's (Holy Nation Outlaws) "Good Relations - bandit gang" fires; the "You saved my life!" roots most residents share need a rescue
+        // (docs/game/dialogue.md "Sight").
         for (int i = 0; i < table.HighWater; i++)
             if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: false } resident)
                 data.Relations.Set(resident.Faction, data.PlayerFaction, 100);

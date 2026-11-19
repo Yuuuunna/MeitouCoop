@@ -2,6 +2,27 @@
 
 Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.yml`; each release needs its `## v<version>` section.
 
+## v1.15.0
+
+- Endorsed ports: an RE_Kenshi mod with a Meitou port on the Steam workshop names the port and its maintainer, and Get the port asks whether to subscribe now
+- Subscribe has Steam subscribe to and download the port in one click (Windows with Steam Kenshi, macOS); when Steam cannot, it says why and offers the workshop page
+- Proving Grounds is offered its workshop port, [Meitou] Proving Grounds by roscatoday
+
+## v1.14.0
+
+- Official ports: an enabled RE_Kenshi mod with a Meitou port runs the port in its place, and its row says the port runs on its own
+- The Meitou mods suggestion lists each RE_Kenshi mod beside its Meitou mod in a table; built-in plugins say they are not run
+- Changing the install folder in Settings asks whether to move the installed versions or keep them in the old folder
+
+## v1.13.0
+
+- Mods page: mods Meitou has built in say so on their row, and Loot-Scoot-Execute gets a suggested Meitou mod in its place.
+- A covered mod notes when its workshop page has updated since Meitou checked it; other RE_Kenshi mods get a Request button.
+- RE_Kenshi mods with file rebinds or sound banks say so on their row: rebinds are applied to the map files, sound banks load
+  before the game's.
+- Arrange and the details pane accept a header dependency named without ".mod", as the game's load order already did.
+- The game language follows Steam's language override, and mods can ship their own meitou.po translations.
+
 ## v1.12.1
 
 - Graphics page: an unchanged Faithful look no longer shows the "As the game ships" label.

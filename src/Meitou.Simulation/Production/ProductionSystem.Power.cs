@@ -37,6 +37,12 @@ public sealed partial class ProductionSystem
     /// The tick of the cached NPC generator output.
     /// </summary>
     long _npcOutputTick = -1;
+
+    /// <summary>
+    /// Held while <see cref="_npcOutputs"/> is read or filled: the think phase asks it from every worker (a town's seats, <c>TownPlaceClaims</c>;
+    /// the planning's power checks), and two workers filling the dictionary at once corrupted it (a crash at the next tick's read).
+    /// </summary>
+    readonly Lock _npcOutputsGate = new();
     /// <summary>
     /// Per town, the grid's totals after the last tick (the town panel's power and battery bars, <see cref="TownPower"/>). Not saved.
     /// </summary>
@@ -394,10 +400,15 @@ public sealed partial class ProductionSystem
         SavedPieceState(world, piece) is not { } saved || saved.Bools.GetValueOrDefault("gets battery");
 
     /// <summary>
-    /// The saved GAMESTATE_BUILDING of a layout object whose zone loads it (<see cref="Saving.SavedPiece.Fresh"/>); null for none.
+    /// The saved GAMESTATE_BUILDING of a layout object whose zone loads it (<see cref="Saving.SavedPiece.Fresh"/>); null for none, and for the
+    /// objects of a house a town override furnished anew (<see cref="Locks.FixtureRegistry.IsRebuilt"/>: the save's are the old ones').
     /// </summary>
-    static Meitou.Data.Fcs.FcsRecord? SavedPieceState(World world, TownLayoutBuilding piece) =>
-        world.Fixtures.SavedPieces?.Of(piece) is { Fresh: false, State: { } state } ? state : null;
+    static Meitou.Data.Fcs.FcsRecord? SavedPieceState(World world, TownLayoutBuilding piece)
+    {
+        if (world.Fixtures.IsRebuilt(piece.House)) return null;
+
+        return world.Fixtures.SavedPieces?.Of(piece) is { Fresh: false, State: { } state } ? state : null;
+    }
 
     /// <summary>
     /// A town-less building's <c>gets battery</c>, as <see cref="LevelGetsBattery"/> reads it; with no town, the owner is its saved owner alone.
@@ -834,14 +845,17 @@ public sealed partial class ProductionSystem
     /// </summary>
     float NpcOutputNow(World world, int index)
     {
-        if (_npcOutputTick != world.Tick)
+        lock (_npcOutputsGate)
         {
-            _npcOutputTick = world.Tick;
-            _npcOutputs.Clear();
-        }
+            if (_npcOutputTick != world.Tick)
+            {
+                _npcOutputTick = world.Tick;
+                _npcOutputs.Clear();
+            }
 
-        if (!_npcOutputs.TryGetValue(index, out float output)) _npcOutputs[index] = output = NpcOutput(world, index);
-        return output;
+            if (!_npcOutputs.TryGetValue(index, out float output)) _npcOutputs[index] = output = NpcOutput(world, index);
+            return output;
+        }
     }
 
     /// <summary>
@@ -878,8 +892,7 @@ public sealed partial class ProductionSystem
             {
                 // A farm wants its whole draw whoever works it and whether or not it is switched on (FarmBuilding slot 163, FUN_1400df330:
                 // |power output + increase|).
-                float share = m.Data.Farm is null && m.Data.PowerOperators > 0 ? (float)m.LastOperators / m.Data.PowerOperators : 1;
-                m.Demand = (m.Data.Farm is not null || m.PowerOn) && m.Active ? MathF.Abs(Rated(world, m)) * share : 0;
+                m.Demand = m.Data.Farm is not null || m.PowerOn ? Wanted(world, m) : 0;
                 demandTotal += m.Demand;
                 consumers.Add(m);
             }
@@ -913,7 +926,7 @@ public sealed partial class ProductionSystem
 
         foreach (var m in grid)
         {
-            if (m.Data.IsConsumer) m.Power = m.Demand > 0 ? m.Granted / m.Demand : 1;
+            if (m.Data.IsConsumer) m.Power = Satisfaction(world, m);
             else if (m.Data.IsGenerator)
             {
                 // The load (GeneratorBuilding::vfunc_167): output / rated x (charging + consumer demand) / all generators' output, at most 1.
@@ -930,6 +943,29 @@ public sealed partial class ProductionSystem
     /// </summary>
     static bool OwnsPseudoDraws(World world, (int Town, int Owner) grid) => !world.Players.RequiresExplicitControl || grid.Town < 0
         || grid.Town > 0 && world.Buildings.Towns.FirstOrDefault(t => t.Number == grid.Town)?.Owner == grid.Owner;
+
+    /// <summary>
+    /// A consumer's draw (slot 163, <c>FUN_140299630</c>, <b>Verified</b>): |rated| x its operator share while it is active (slot 164), the switch
+    /// not asked; a farm's whoever works it.
+    /// </summary>
+    float Wanted(World world, Machine m)
+    {
+        if (!m.Active) return 0;
+
+        float share = m.Data.Farm is null && m.Data.PowerOperators > 0 ? (float)m.LastOperators / m.Data.PowerOperators : 1;
+        return MathF.Abs(Rated(world, m)) * share;
+    }
+
+    /// <summary>
+    /// A consumer's power share (slot 109, <c>FUN_140296e00</c>): granted / its draw, 1 with no draw. Switching a machine off (slot 99,
+    /// <c>FUN_1402973f0</c>, <b>Verified</b>) zeroes its grant and takes it off its town's frame but leaves its draw, so a switched-off machine gets
+    /// 0 and an unattended one (a Well II) stops producing (#962).
+    /// </summary>
+    float Satisfaction(World world, Machine m)
+    {
+        float wanted = m.Demand > 0 ? m.Demand : Wanted(world, m);
+        return wanted > 0 ? m.Granted / wanted : 1;
+    }
 
     /// <summary>
     /// The frame's consumers in the order the original sorts them (<c>FUN_140927350</c>): ascending demand, a pseudo consumer before a machine of

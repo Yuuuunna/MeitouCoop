@@ -198,6 +198,7 @@ public static class SaveLoader
         // Building locks and doors are taken from the zones when their town registers; held characters name their bed or cage by building instance.
         var buildingStates = HeldSave.BuildingStates(save);
         world.Fixtures.Saved = buildingStates;
+        world.Fixtures.SavedPlayer = save.PlayerFaction?.Id;
         world.Fixtures.SavedSpots = HeldSave.BuildingSpots(save);
         world.Fixtures.SavedPieces = new SavedPieces(save);
         world.Fixtures.Items = data.Items;
@@ -526,6 +527,8 @@ public static class SaveLoader
             HomeRadius = 100,
         };
         AutonomySave.Read(platoon.Record, squad);
+        ModSquadSave.Read(platoon.Record, squad);
+        ModTagSave.Read(platoon.Record, squad.ModTags);
 
         CharacterId Spawn(SavedParts p)
         {
@@ -634,13 +637,9 @@ public static class SaveLoader
             Job = job,
             Saved = sp,
             Unmade = unmade,
-            Imprisoned = platoon.Record.Bools.GetValueOrDefault("imprisoned"),
-            Dead = platoon.Record.Bools.GetValueOrDefault("dead"),
-            IntactFlag = platoon.Record.Bools.GetValueOrDefault("intact", true),
             Target = MissionTownOf(platoon.Record, data),
-            ModSpawned = modSpawn,
-            ModTag = ModPlatoonSave.Tag(platoon.Record),
         };
+        ReadSavedState(p, platoon);
         Register(world, platoon, loaded, context, p, sp, unmade, travels);
     }
 
@@ -651,8 +650,7 @@ public static class SaveLoader
     /// </summary>
     static (ulong Key, int Size) SquadOf(World world, SavePlatoon platoon, PopulationData data, bool standIn)
     {
-        var record = platoon.Record;
-        ulong key = (ModPlatoonSave.Spawned(record) ? ModPlatoonSave.Key(record) : null) ?? Rng.Mix(Rng.StableHash(platoon.Name));
+        ulong key = KeyOf(platoon);
         int size = Math.Max(platoon.CharCount, platoon.Characters.Count);
         if (size > 0 || !standIn) return (key, size);
         if (data.Db.Find(platoon.SquadTemplate) is not { } template || !SquadFactory.IsTemplate(template)) return (key, 0);
@@ -779,10 +777,14 @@ public static class SaveLoader
     /// are marked <c>is resident</c> and counted in the town's <c>sqt</c> 1 pool, and the bar squads, slaves and farm animals of a town have a
     /// package whose unloaded func keeps them home, 4, or 0): not a resident, and an off-screen job that moves it (unloaded func 2, 5 or 6) and not a
     /// bar squad of the town or its faction (which the population makes with the town), or a template of its base town's <c>roaming squads</c>.
+    /// A platoon Meitou saved as a roaming one carries its own mark and roams whatever its package (<see cref="SaveCapture.RoamsKey"/>).
     /// </summary>
     internal static bool Travels(SavePlatoon platoon, Ai.PlatoonJob job, TownData baseTown, FactionData? townFaction)
     {
         string template = platoon.SquadTemplate;
+
+        // One Meitou saved as roaming roams (SaveCapture.RoamsKey): the package it ran when saved may be the bar's of a town it had stopped in.
+        if (platoon.Record.Bools.GetValueOrDefault(SaveCapture.RoamsKey)) return true;
         if (platoon.Record.Bools.GetValueOrDefault("is resident")) return false;
 
         // `sqt` 1 is the town's resident pool (residents and bar squads, docs/formats/save.md "PLATOON keys"): the platoon belongs to its town,
@@ -872,7 +874,7 @@ public static class SaveLoader
             Origin = -1,
             TemplateId = platoon.SquadTemplate,
             Faction = faction,
-            Key = Rng.Mix(Rng.StableHash(platoon.Name)),
+            Key = KeyOf(platoon),
             Size = Math.Max(platoon.CharCount, platoon.Characters.Count),
             Position = new Vector2(platoon.Position.X, platoon.Position.Z),
             Money = platoon.Money,
@@ -880,11 +882,9 @@ public static class SaveLoader
             Package = package?.Id,
             Job = job,
             Saved = sp,
-            Imprisoned = platoon.Record.Bools.GetValueOrDefault("imprisoned"),
-            Dead = platoon.Record.Bools.GetValueOrDefault("dead"),
-            IntactFlag = platoon.Record.Bools.GetValueOrDefault("intact", true),
             Unmade = unmade,
         };
+        ReadSavedState(p, platoon);
         world.Platoons.Add(p);
         sp.PlatoonId = p.Id;
         context.Platoons.Add(sp);
@@ -895,6 +895,26 @@ public static class SaveLoader
 
         return true;
     }
+
+    /// <summary>
+    /// The state every loaded platoon reads off its saved record, NPC or wild: its imprisoned, dead and intact flags and a code mod's marks (its
+    /// spawn flag and tag, <see cref="ModPlatoonSave"/>).
+    /// </summary>
+    static void ReadSavedState(Platoon p, SavePlatoon platoon)
+    {
+        var record = platoon.Record;
+        p.Imprisoned = record.Bools.GetValueOrDefault("imprisoned");
+        p.Dead = record.Bools.GetValueOrDefault("dead");
+        p.IntactFlag = record.Bools.GetValueOrDefault("intact", true);
+        p.ModSpawned = ModPlatoonSave.Spawned(record);
+        p.ModTag = ModPlatoonSave.Tag(record);
+    }
+
+    /// <summary>
+    /// A loaded platoon's member key: a code mod's spawn keeps the one it was saved with, any other is keyed by its name.
+    /// </summary>
+    static ulong KeyOf(SavePlatoon platoon) =>
+        (ModPlatoonSave.Spawned(platoon.Record) ? ModPlatoonSave.Key(platoon.Record) : null) ?? Rng.Mix(Rng.StableHash(platoon.Name));
 
     /// <summary>
     /// Whether a saved wild platoon with no file is one the game never made (<c>never been activated</c> and a <c>char count</c>): the original

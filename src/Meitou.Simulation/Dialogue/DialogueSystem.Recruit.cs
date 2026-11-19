@@ -29,7 +29,7 @@ public sealed partial class DialogueSystem
         {
             return true;
         }
-        if (PlayerHeads(world, c.Faction) >= _data.Bodies.Constants.MaxFactionSize)
+        if (SquadManagement.CappedHeads(world, c.Faction) >= _data.Bodies.Constants.MaxFactionSize)
         {
             Post(world, c, "It looks like your squad is a little full.");
             c.Ended = true;
@@ -47,16 +47,9 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// The living player characters that have not died (the faction size cap counts them).
+    /// The faction's living, capped members, including saved roles awaiting restoration.
     /// </summary>
-    internal static int PlayerHeads(World world, int faction)
-    {
-        var table = world.Characters;
-        int heads = 0;
-        for (int i = 0; i < table.Next.Length; i++)
-            if (table.Next[i].Alive && table.Cold(i) is { IsPlayer: true, DiedTick: < 0 } member && member.Faction == faction) heads++;
-        return heads;
-    }
+    internal static int PlayerHeads(World world, int faction) => SquadManagement.CappedHeads(world, faction);
 
     /// <summary>
     /// The player's active squad (<c>FUN_1407f5520</c>): the cached one (<see cref="PlayerState.Squad"/>), else the squad of the first selected
@@ -82,7 +75,7 @@ public sealed partial class DialogueSystem
     /// </summary>
     static void ExtraSquadAtTheCap(World world, PopulationData data, Squad active, GameConstants limits)
     {
-        if (PlayerHeads(world, active.Faction) >= limits.MaxFactionSize || active.Members.Count + 1 <= limits.MaxSquadSize
+        if (SquadManagement.CappedHeads(world, active.Faction) >= limits.MaxFactionSize || active.Members.Count + 1 <= limits.MaxSquadSize
             || SquadManagement.LedSquads(world, active.Faction).Count < limits.MaxSquads)
         {
             return;
@@ -156,10 +149,24 @@ public sealed partial class DialogueSystem
             if (owner is not null) owner.Squad = squad.Id;
         }
 
+        Join(world, _data, slot, squad, context.Actor);
+        return true;
+    }
+
+    /// <summary>
+    /// The character at <paramref name="slot"/> leaves its squad and joins the player's squad <paramref name="squad"/> as a player character, as a
+    /// recruit does: the player's faction, orders and class, no AI, jobs or uniform marks, written as a new member at the next save; it leads the
+    /// squad when the squad has no leader. The caller has checked the squad and the caps.
+    /// </summary>
+    internal static void Join(World world, PopulationData data, int slot, Squad squad, PlayerId? controller = null)
+    {
+        var table = world.Characters;
+        var me = table.IdOf(slot);
+        var mc = table.Cold(slot)!;
         world.Events.Line(world, "recruit", $"{EventLog.Who(world, slot)} joins the player's squad");
         Leave(world, me, mc);
-        mc.Faction = context.Faction;
-        mc.RoadPreference = _data.RoadPreferenceOf(mc.Faction);
+        mc.Faction = squad.Faction;
+        mc.RoadPreference = data.RoadPreferenceOf(mc.Faction);
         mc.SquadId = squad.Id;
         mc.Role = (int)SquadRole.Squad1;
         mc.IsPlayer = true;
@@ -180,8 +187,7 @@ public sealed partial class DialogueSystem
         TaskStart.Stand(table, slot);
         squad.Members.Add(me);
         if (squad.Leader.IsNone) squad.Leader = me;
-        if (context.Actor is { } actor) world.Players.AssignInitial(actor, me);
-        return true;
+        if (controller is { } actor) world.Players.AssignInitial(actor, me);
     }
 
     /// <summary>
@@ -215,7 +221,7 @@ public sealed partial class DialogueSystem
             if (slave.IsImprisoned) world.Fixtures.Release(world, id);
             if (tc.IsPlayer || world.IsPlayerFaction(tc.Faction))
             {
-                if (PlayerHeads(world, c.Faction) >= _data.Bodies.Constants.MaxFactionSize || !JoinPlayer(world, c, s, tc)) break;
+                if (SquadManagement.CappedHeads(world, c.Faction) >= _data.Bodies.Constants.MaxFactionSize || !JoinPlayer(world, c, s, tc)) break;
             }
             else if (world.Squads.Find(tc.SquadId) is { } theirs)
             {

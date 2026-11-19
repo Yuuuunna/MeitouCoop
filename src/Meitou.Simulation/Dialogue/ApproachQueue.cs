@@ -43,6 +43,11 @@ sealed class ApproachQueue(DialogueSystem dialogue)
     internal bool Has(CharacterId npc) => _approaches.Any(a => a.Npc == npc);
 
     /// <summary>
+    /// Each approaching NPC and its target (read only).
+    /// </summary>
+    internal IEnumerable<(CharacterId Npc, CharacterId Target)> Pairs => _approaches.Select(a => (a.Npc, a.Target));
+
+    /// <summary>
     /// <paramref name="npc"/> starts walking up to <paramref name="target"/>; it gives up after <see cref="ApproachGiveUpHours"/>.
     /// </summary>
     internal void Add(World world, CharacterId npc, CharacterId target) =>
@@ -120,7 +125,7 @@ sealed class ApproachQueue(DialogueSystem dialogue)
         if (table.Cold(n)!.InCombat) return;
         if (nh.Task != (byte)CharacterTask.GoTo || Vector2.Distance(nh.Goal, to) > DialogueSystem.TalkReach)
         {
-            TaskStart.Walk(world, n, to, SpeedMode.Free, Data.Gameplay.Ai.TaskType.TalktoNearestPlayerCharacter, TaskSource.Npc);
+            TaskStart.Walk(world, n, to, SpeedMode.Free, Data.Gameplay.Ai.TaskType.SeekAndTalkAndSendSignal, TaskSource.Npc);
         }
     }
 

@@ -168,6 +168,11 @@ public sealed class WorldCheckpointCoordinator
                     _mods?.RestoreSaveData(world, save.ModData, strict: true);
                     var running = _mods?.Mods.Select(m => m.Manifest.Id).ToHashSet(StringComparer.Ordinal) ?? [];
                     Meitou.Simulation.Ai.SquadAutonomy.DropUnowned(world, running.Contains);
+                    Meitou.Simulation.Factions.SquadManagement.DropUnownedUncounted(world, running.Contains);
+                    Meitou.Simulation.Factions.SquadManagement.DropUnownedPurses(world, running.Contains);
+                    Meitou.Simulation.Factions.SquadManagement.DropUnownedDormant(world, running.Contains);
+                    if (_mods is null) world.TellReady(fromSave: true);
+                    else _mods.TellReady(world, fromSave: true);
                 });
             }
             catch (Exception e)when (prepared is not null && ReferenceEquals(_runtime.World, prepared))

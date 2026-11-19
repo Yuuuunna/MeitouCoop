@@ -67,6 +67,11 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
     sealed record TrackedPrison(double BaseGameHours, PrisonView Value);
 
     /// <summary>
+    /// Detached immutable effect metadata and its precomputed digest; ticking durations do not hash or encode long descriptions again.
+    /// </summary>
+    sealed record TrackedEffectDefinitions(IReadOnlyList<StatusEffectView> Values, IReadOnlyDictionary<string, int> Indices, byte[] Digest);
+
+    /// <summary>
     /// Last sent tooltip metadata and timestamp. Existing component-cache lifecycle removal also removes this pacing state.
     /// </summary>
     sealed record TrackedMeterTooltips(MeterReading?[] Values, long SentAt);
@@ -80,7 +85,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         3001 => "DrawYaw",
         3002 => "AnimationPlayback",
         3003 => "AnimationDescriptors",
-        GameComponentSchema.MeterTooltipsField => GameComponentSchema.AuxiliaryCharacterFields[id],
+        GameComponentSchema.MeterTooltipsField or GameComponentSchema.EffectDefinitionsField => GameComponentSchema.AuxiliaryCharacterFields[id],
         _ => GameComponentSchema.ViewFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.SnapshotFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.CharacterFields.FirstOrDefault(f => f.Id == id)?.Name ?? throw new ArgumentOutOfRangeException(nameof(id)),
     };
     public PlayerWorldView DetachForEncoding(PlayerWorldView view) => _ragdollCapture.Detach(codec, view);
@@ -170,6 +175,8 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
                 ReserveCaptured(identity.Length + 19L);
                 records.Add((1, entity, generation, 0, identity));
             }
+            CaptureEffectDefinitions(entity, c, out byte[] definitionBytes, out var definitionState);
+            Add(entity, generation, GameComponentSchema.EffectDefinitionsField, definitionBytes, definitionState, true);
             var meters = CaptureMeterPresentation(entity, c.Meters, out byte[] tooltipBytes, out object tooltipState);
             Add(entity, generation, GameComponentSchema.MeterTooltipsField, tooltipBytes, tooltipState, true);
             var presentation = ReferenceEquals(meters, c.Meters) ? c : c with { Meters = meters };
@@ -397,12 +404,71 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
                 data = ModPresentationCodec.EncodeSkills(c.ModSkills);
                 tracked = c.ModSkills.ToArray();
                 return;
+            case 2102:
+                trackObject = true;
+                var definitions = (TrackedEffectDefinitions)_previousObjects[(entity, GameComponentSchema.EffectDefinitionsField)]!;
+                if (hasPrior && priorObj is StatusEffectPresentationCodec.Times oldEffects
+                    && StatusEffectPresentationCodec.SameTimes(oldEffects, c.Effects, view.Snapshot.Tick, view.SimulationStepSeconds,
+                        definitions.Digest, definitions.Indices))
+                {
+                    data = priorBytes!;
+                    tracked = priorObj;
+                    return;
+                }
+
+                data = StatusEffectPresentationCodec.EncodeTimes(c.Effects, view.Snapshot.Tick, view.SimulationStepSeconds,
+                    _previous[(entity, GameComponentSchema.EffectDefinitionsField)], definitions.Indices);
+                tracked = StatusEffectPresentationCodec.DecodeTimes(data);
+                return;
             default:
                 trackObject = false;
                 tracked = null;
                 data = f.Encode(codec, c);
                 return;
         }
+    }
+
+    /// <summary>
+    /// Retains definitions while this character supplies a details panel. Repeated effect removal and reapplication send only small readings;
+    /// deselection, inspection withdrawal and entity withdrawal clear the cache rather than retaining every previously inspected NPC's text.
+    /// </summary>
+    void CaptureEffectDefinitions(ulong entity, CharacterSnapshot character, out byte[] bytes, out TrackedEffectDefinitions tracked)
+    {
+        var key = (entity, GameComponentSchema.EffectDefinitionsField);
+        var values = character.Effects;
+        bool retain = character.Inspected || character.FirstSelected || values.Count > 0;
+        var previous = _previousObjects.GetValueOrDefault(key) as TrackedEffectDefinitions;
+        if (previous is not null && (retain || previous.Values.Count == 0) && values.All(value =>
+            previous.Indices.TryGetValue(value.Effect.Id, out int index)
+            && StatusEffectPresentationCodec.SameDefinition(previous.Values[index].Effect, value.Effect)))
+        {
+            bytes = _previous[key];
+            tracked = previous;
+            return;
+        }
+
+        var definitions = retain && previous is not null ? previous.Values.ToList() : new List<StatusEffectView>();
+        var indices = definitions.Select((value, index) => (value.Effect.Id, index))
+            .ToDictionary(p => p.Id, p => p.index, StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            if (indices.TryGetValue(value.Effect.Id, out int index)) definitions[index] = value;
+            else
+            {
+                indices.Add(value.Effect.Id, definitions.Count);
+                definitions.Add(value);
+            }
+        }
+
+        if (!StatusEffectPresentationCodec.DefinitionsFit(definitions))
+        {
+            definitions = values.ToList();
+            indices = definitions.Select((value, index) => (value.Effect.Id, index))
+                .ToDictionary(p => p.Id, p => p.index, StringComparer.Ordinal);
+        }
+
+        bytes = StatusEffectPresentationCodec.EncodeDefinitions(definitions);
+        tracked = new(StatusEffectPresentationCodec.Detach(definitions), indices, SHA256.HashData(bytes));
     }
 
     /// <summary>
@@ -588,6 +654,11 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
         /// The complete independently revisioned meter components for this interest generation; withdrawal discards both together.
         /// </summary>
         internal readonly MeterPresentationState Meters = new();
+
+        /// <summary>
+        /// Definitions and tick-anchored readings share this entity generation's withdrawal boundary.
+        /// </summary>
+        internal readonly StatusEffectPresentationState Effects = new();
 
         internal CharacterSnapshot Character = character;
         internal uint Generation = generation;
@@ -999,6 +1070,16 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             e.Character = e.Character with { Meters = e.Meters.AcceptBars(value) };
         else if (field == GameComponentSchema.MeterTooltipsField)
             e.Character = e.Character with { Meters = e.Meters.AcceptTooltips(value) };
+        else if (field == 2102)
+        {
+            e.Effects.AcceptTimes(value);
+            e.Character = e.Character with { Effects = e.Effects.Project(_view!.Snapshot.Tick) };
+        }
+        else if (field == GameComponentSchema.EffectDefinitionsField)
+        {
+            e.Effects.AcceptDefinitions(value);
+            e.Character = e.Character with { Effects = e.Effects.Project(_view!.Snapshot.Tick) };
+        }
         else if (GameComponentSchema.CharacterFields.FirstOrDefault(f => f.Id == field)is { } cf)
             e.Character = cf.Apply(codec, e.Character, value);
         else
@@ -1020,6 +1101,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
         double hours = _view.GameHours;
         foreach (var e in _entities.Values)
         {
+            e.Character = e.Character with { Effects = e.Effects.Project(_view.Snapshot.Tick) };
             if (e.HasPrisonTerm || e.HasBountyTerms)
             {
                 e.Character = e.Character with

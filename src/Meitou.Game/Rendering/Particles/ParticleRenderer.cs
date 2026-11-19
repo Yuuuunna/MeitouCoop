@@ -11,6 +11,7 @@ using Meitou.Data.Particles;
 using Meitou.Data.Textures;
 using Meitou.Game.Rendering.Frame;
 using Meitou.Game.Rendering.Gpu;
+using Meitou.Game.Rendering.Objects;
 using Meitou.Game.Rendering.Post;
 using Meitou.Game.Rendering.Sky;
 using Meitou.Game.Rendering.Water;
@@ -155,9 +156,20 @@ public sealed unsafe partial class ParticleRenderer
         uniform vec4 uSoft;                         // x: 0 hard (the game's), 1 fade the alpha, 2 the colour and alpha (additive), 3 towards white (modulate); y, z: the scene depth's near, far; w unused
         uniform float uCoverageMax, uCoverageGain;
         uniform int uCoverage;                      // 0: colour; 1: the particle's alpha, 2: its brightest channel (the upscalers' reactive mask); 3 / 4: the low-resolution target's premultiplied alpha / additive
+        uniform sampler2D uInteriorMask;            // the interior cut's depth range (InteriorMaskRenderer): r the nearest mask face's depth + 1, a the farthest's, b minus the farthest open building's
+        uniform vec4 uInterior;                     // x 1: the material clips inside buildings (CLIP_INTERIOR); y, z: the mask's pixels per pixel of this target
         """ + DepthConvention.Glsl + """
         void main()
         {
+            // basic.hlsl under CLIP_INTERIOR: a fragment between the nearest and the farthest interior-mask face is left out (rain in a building).
+            if (uInterior.x > 0.5)
+            {
+                vec4 interiorRange = texelFetch(uInteriorMask, ivec2(gl_FragCoord.xy * uInterior.yz), 0);
+                float interiorDepth = 1.0 / gl_FragCoord.w;
+                if (interiorDepth < interiorRange.a && interiorDepth > interiorRange.r) discard;
+                // Meitou: in front of a building whose roof is hidden too, so no streaks fall over the open room (b is 0 where there is none).
+                if (interiorDepth < -interiorRange.b) discard;
+            }
             // basic.hlsl: texture * colour * vertex colour. A recoloured burst (negative vertex rgb, Burst's recolour) takes that colour instead of the texture's hue, keeping its brightness.
             vec4 t = texture(uTexture, vUv);
             if (min(vColour.r, min(vColour.g, vColour.b)) < 0.0) t.rgb = vec3(max(t.r, max(t.g, t.b)));
@@ -278,6 +290,10 @@ public sealed unsafe partial class ParticleRenderer
     /// </summary>
     readonly UniformHandle _soft;
     /// <summary>
+    /// The open-interior mask switch.
+    /// </summary>
+    readonly UniformHandle _interior;
+    /// <summary>
     /// The program's uniforms for the Meitou lighting.
     /// </summary>
     readonly UniformHandle _litVertex;
@@ -295,6 +311,10 @@ public sealed unsafe partial class ParticleRenderer
     /// cloud had one brightness everywhere, in sun and in shade, near and far (docs/render-post.md "Fog").
     /// </summary>
     public bool Lit { get; set; }
+    /// <summary>
+    /// The interior masks of this frame, which the materials with <c>CLIP_INTERIOR</c> are cut by (docs/render-interior-cut.md); null: no cut.
+    /// </summary>
+    internal InteriorMaskRenderer? InteriorCut { get; set; }
     /// <summary>
     /// How much of the light on a sprite the sun's shadow takes (the light shafts' darkening: the sun's share of the light).
     /// </summary>
@@ -315,6 +335,10 @@ public sealed unsafe partial class ParticleRenderer
     /// The program's texture and soft-depth samplers.
     /// </summary>
     readonly SamplerSlot _softDepthSlot;
+    /// <summary>
+    /// The open-interior mask sampler.
+    /// </summary>
+    readonly SamplerSlot _interiorSlot;
     /// <summary>
     /// The 1 × 1 white stand-in for a missing texture.
     /// </summary>
@@ -579,6 +603,8 @@ public sealed unsafe partial class ParticleRenderer
         _coverageGain = _program.Uniform("uCoverageGain");
         _textureSlot = _program.Sampler("uTexture");
         _softDepthSlot = _program.Sampler("uSoftDepth");
+        _interiorSlot = _program.Sampler("uInteriorMask");
+        _interior = _program.Uniform("uInterior");
         _soft = _program.Uniform("uSoft");
         (_litVertex, _litFragment, _particleEye) = (_program.Uniform("uLitVertex"), _program.Uniform("uLitFragment"), _program.Uniform("uParticleEye"));
         float[] corners = [-0.5f, -0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f];
@@ -1378,6 +1404,7 @@ public sealed unsafe partial class ParticleRenderer
                 _program.Set(_colourScale, m.ColourScale.X * lit, m.ColourScale.Y * lit, m.ColourScale.Z * lit, m.ColourScale.W);
                 _program.Bind(_textureSlot, d.Texture.Sampled());
                 SetSoftAndLight(m, coverage, softDepth);
+                SetInteriorCut(m, targets);
                 RecordPass(cmd, state, targets, d, first, count);
             }
         }
@@ -1435,6 +1462,24 @@ public sealed unsafe partial class ParticleRenderer
             m.Blend == ParticleBlend.Alpha ? 0 : m.Blend == ParticleBlend.Add ? 1 : 2, 0);
         _program.Set(_particleEye, _frameEye);
         _program.Bind(_softDepthSlot, softDepth is { } bound ? bound.Texture : _white.Sampled());
+    }
+
+    /// <summary>
+    /// The interior cut of a material's sprites: on when it clips inside buildings (<see cref="ParticleMaterial.ClipInterior"/>) and the mask drew
+    /// this frame, read at the mask's size whatever the target's (the low-resolution ones, after the upscale).
+    /// </summary>
+    void SetInteriorCut(ParticleMaterial m, in PassTargets targets)
+    {
+        var viewport = targets.Viewport;
+        if (!m.ClipInterior || InteriorCut?.DepthRange is not { } range || viewport.Width <= 0 || viewport.Height <= 0)
+        {
+            _program.Set(_interior, 0f, 0f, 0f, 0f);
+            _program.Bind(_interiorSlot, _white.Sampled());
+            return;
+        }
+
+        _program.Set(_interior, 1f, (float)range.Width / viewport.Width, (float)range.Height / viewport.Height, 0f);
+        _program.Bind(_interiorSlot, range.Texture);
     }
 
     /// <summary>

@@ -21,15 +21,22 @@ public sealed record PickUpItemOrder(IReadOnlyList<CharacterId> Characters, int 
 }
 
 /// <summary>
+/// The ground item a pick-up order names: its <see cref="GroundItems"/> id and the item itself, which keeps its identity once taken (a stack topped up
+/// into another is left with no units), so state 3 can tell one in the character's inventory from one another took (<see cref="Ai.RowStates"/>).
+/// </summary>
+public sealed record GroundPick(int Id, ItemInstance Item);
+
+/// <summary>
 /// Picking up loose items (docs/simulation.md "Ground items"): walk to the item, then into the inventory (<see cref="Items.Inventory.Add"/>), or
-/// a message when it has no room. The pick-up and the walk to a container start through <see cref="TaskStart.Start"/> as row 3 "Collecting item",
-/// which this handles (the player system registers it, <see cref="PlayerSystem.RegisterTasks"/>).
+/// a message when it has no room. The pick-up starts through <see cref="TaskStart.Start"/> as row 3 "Collecting item", the walk to a container as
+/// 26 "Looting" on a site (the original's container order), which this handles (the player system registers both,
+/// <see cref="PlayerSystem.RegisterTasks"/>).
 /// </summary>
 public sealed class PickUps : ITaskHandler, IOrderOwner
 {
     /// <summary>
-    /// A pick-up of the ground item in <see cref="TaskRequest.Detail"/>, or the walk to the container <see cref="TaskRequest.Site"/> (to open it,
-    /// or only to it: <see cref="ContainerAccess.ContainerWalk"/>).
+    /// A pick-up of the ground item in <see cref="TaskRequest.Detail"/> (row 3), or the walk to the container <see cref="TaskRequest.Site"/> to open
+    /// it (26 Loot on a site).
     /// </summary>
     void ITaskHandler.Start(World world, int slot, in TaskRequest request)
     {
@@ -39,18 +46,13 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
         if (entry is not null && !world.ValidOrder(slot, entry)) return;
         var detail = entry?.Detail ?? request.Detail;
 
-        if (detail is int item)
+        if ((detail is GroundPick pick ? pick.Id : detail) is int item)
         {
             walker.PickingLock = null;
             walker.Shackles = null;
             (walker.PickingUpItem, walker.FetchingFood) = (item, false);
             if (request.Task == CharacterTask.GoTo)
-                MovementSystem.GoToFloor(world, slot, request.Point, walker.RunSpeed);
-            return;
-        }
-        if (detail == ContainerAccess.ContainerWalk)
-        {
-            MovementSystem.GoToFloor(world, slot, request.Point, walker.RunSpeed);
+                MovementSystem.GoToFloor(world, slot, MovementSystem.FloorApproach(world, request.Point), walker.RunSpeed);
             return;
         }
         var command = entry?.SourceCommand;
@@ -97,9 +99,29 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
     }
 
     /// <summary>
-    /// A walker takes the item within this distance of it (an engine choice).
+    /// A walker takes the item within this distance of it on the ground plane (an engine choice).
     /// </summary>
     public const float PickUpReach = 15;
+
+    /// <summary>
+    /// And within this height of it: the original's <c>isAtLocation</c> height (<c>DAT_141683188</c> 20, docs/game/ai-tasks.md "isAtLocation for a
+    /// point target"), so an item on the storey above or below is not taken through the floor.
+    /// </summary>
+    public const float PickUpHeight = 20;
+
+    /// <summary>
+    /// Whether a walker at <paramref name="walker"/> can reach an item at <paramref name="item"/> (<see cref="PickUpReach"/>, <see cref="PickUpHeight"/>).
+    /// </summary>
+    public static bool InReach(Vector3 walker, Vector3 item) =>
+        Vector2.Distance(Flat(walker), Flat(item)) <= PickUpReach && MathF.Abs(walker.Y - item.Y) < PickUpHeight;
+
+    /// <summary>
+    /// Whether the walker's walk to the item has ended at its goal (<see cref="WalkEnd.Finished"/>, a goal within <see cref="PickUpReach"/> of the
+    /// item): the original's <c>isAtLocation</c> also holds once the mover is done, whatever the height, so an item on a high shelf is taken from the
+    /// floor below it (#990).
+    /// </summary>
+    static bool WalkedTo(in CharacterHot n, CharacterCold c, Vector3 item) =>
+        n.Task != (byte)CharacterTask.GoTo && c.WalkEnd == WalkEnd.Finished && Vector2.Distance(n.Goal, Flat(item)) <= PickUpReach;
 
     /// <summary>
     /// The player's animals take a pick-up order on a loose item into their bags (the Advanced setting "Animals pick up items", off by default).
@@ -143,24 +165,27 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
             PlayerOrders.Give(world, best, world.BindOrder(order, new OrderEntry(Meitou.Data.Gameplay.Ai.TaskType.MoveCusOrdered, movement) { Point = item.Position }),
                     order.Queued);
         else if (!walkOnly)
+        {
+            var pick = new GroundPick(item.Id, item.Item);
             PlayerOrders.Give(world, best, world.BindOrder(order,
-                    new OrderEntry(Meitou.Data.Gameplay.Ai.TaskType.Pickup, this) { Point = item.Position, Detail = order.Item }), order.Queued);
+                new OrderEntry(Meitou.Data.Gameplay.Ai.TaskType.Pickup, this) { Point = item.Position, Detail = pick }), order.Queued);
+        }
     }
 
     /// <summary>
-    /// Collecting an item (row 3) or opening, picking or walking to a container: the item or container is still there (else the order leaves the
-    /// queue), and a player character that is awake, not carried and has an inventory takes it. Container orders remain blocked while caged.
+    /// Collecting an item (row 3) or opening (26) or picking (76) a container: the item or container is still there, and an awake player character
+    /// with an inventory takes it. Container orders remain blocked while caged.
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
         if (!world.ValidOrderOrQuery(slot, order)) return OrderCheck.Gone;
         var c = world.Characters.Cold(slot)!;
         if (!c.IsPlayer
-                || (order.Detail is int item ? world.GroundItems.Find(item) is null
+                || (order.Detail is GroundPick pick ? world.GroundItems.Find(pick.Id) is null
                         : world.Fixtures.Find(order.Site!) is not { Contents: not null }))
             return OrderCheck.Gone;
         if (order.SourceCommand is Items.OpenContainerOrder container && !ContainerAccess.MayOpenContainer(world, slot, container)) return OrderCheck.Gone;
-        if (order.Detail is not int && c.IsImprisoned) return OrderCheck.Blocked();
+        if (order.Detail is not GroundPick && c.IsImprisoned) return OrderCheck.Blocked();
 
         return c is { Medical.Incapacitated: false, Inventory: not null } && c.CarriedBy.IsNone ? OrderCheck.Run
                 : OrderCheck.Blocked();
@@ -173,18 +198,16 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
     void IOrderOwner.Start(World world, int slot, OrderEntry order)
     {
         if (!world.ValidOrder(slot, order)) return;
-        if (order.Detail is not int item)
+        if (order.Detail is not GroundPick pick)
         {
             ContainerAccess.StartContainer(world, slot, order);
             return;
         }
-        if (world.GroundItems.Find(item) is not { } ground) return;
+        if (world.GroundItems.Find(pick.Id) is not { } ground || !ReferenceEquals(ground.Item, pick.Item)) return;
         var actor = world.Characters.IdOf(slot);
-        bool far = Vector2.Distance(Flat(world.Characters.Next[slot].Position), Flat(ground.Position)) > PickUpReach;
-        if (
-    TaskStart.Start(world, slot,
-            new TaskRequest(far ? CharacterTask.GoTo : CharacterTask.Idle, Meitou.Data.Gameplay.Ai.TaskType.Pickup,
-                    TaskSource.Order)
+        bool far = !InReach(world.Characters.Next[slot].Position, ground.Position);
+        if (TaskStart.Start(world, slot,
+            new TaskRequest(far ? CharacterTask.GoTo : CharacterTask.Idle, Meitou.Data.Gameplay.Ai.TaskType.Pickup, TaskSource.Order)
             { Point = ground.Position, Detail = order }) == StartResult.Started)
         {
             _pickupAuthority.Remove(actor);
@@ -193,12 +216,11 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
     }
 
     /// <summary>
-    /// Saved: a walk to a container (kind 1 only walks there; 0 opens it); a pick-up of a ground item names a runtime id and is not saved.
+    /// Saved: a container order (kind 0); a pick-up of a ground item names a runtime id and is not saved.
     /// </summary>
-    int IOrderOwner.SaveKind(OrderEntry order) => order.Detail is null ? 0 : order.Detail == ContainerAccess.ContainerWalk ? 1 : -1;
+    int IOrderOwner.SaveKind(OrderEntry order) => order.Detail is null ? 0 : -1;
     /// <inheritdoc/>
-    object? IOrderOwner.LoadDetail(World world, CharacterId self, Meitou.Data.Gameplay.Ai.TaskType row, int kind, CharacterId target) => kind == 1
-            ? ContainerAccess.ContainerWalk : null;
+    object? IOrderOwner.LoadDetail(World world, CharacterId self, Meitou.Data.Gameplay.Ai.TaskType row, int kind, CharacterId target) => null;
 
     /// <summary>
     /// Each tick: a walker in reach takes its item; one whose item is gone, who was given another goal or stopped, or who is down gives up. Gear
@@ -239,7 +261,7 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
             return;
         }
         var at = Flat(item.Position);
-        if (Vector2.Distance(Flat(next[s].Position), at) > PickUpReach)
+        if (!InReach(next[s].Position, item.Position) && !WalkedTo(next[s], c, item.Position))
         {
             if (next[s].Task != (byte)CharacterTask.GoTo || Vector2.Distance(next[s].Goal, at) > PickUpReach)
                 (c.PickingUpItem, c.FetchingFood) = (null, false);

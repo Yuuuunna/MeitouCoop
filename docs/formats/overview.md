@@ -73,7 +73,8 @@ FCS differs: `InheritFiles` fixes gamedata.base, Newwworld.mod, Dialogue.mod, co
 Nizu.mod, Mohamad.mod, rebirth.mod and also searches cfg entries under `data/`.
 
 **Observed:** `.info` XML `ModData` stores id/name/tags/visibility/lastUpdate; no defined `.info`
-string in the engine. Resource scan skips `_`-prefixed files.
+string in the engine. Its `id` is the mod's Steam workshop item: a downloaded item's `_<name>.info` holds its folder's number (Forgotten
+Buildings, 1679230269), and a local mod uploaded from its own folder keeps one with its item's id; a mod never uploaded has none. Resource scan skips `_`-prefixed files.
 
 ## Resource lookup and mod overrides
 
@@ -92,17 +93,27 @@ How the game opens its other files decides whether a mod can replace them (**Obs
 | `.material`, `.program`, `*.pu` scripts | Ogre script parse of every location, mods' too | material: first definition wins (mods cannot redefine); PU system: last wins (`createParticleSystemTemplate` deletes the old template) |
 | `names*.txt`, `tips.txt` | `resourceExists`/`openResource`, group General (`FUN_140641d80`, `FUN_14091a280`) | yes |
 | `areasmap.tga` | `Image::load`, group Overlaymaps (`FUN_140408fa0`, `FUN_140408970`) | yes; mods may ship it RLE-compressed (TGA type 10) |
-| `fogfeatures.dat` | `openResource`, group Landscape (`FUN_14010f060`) | only from a folder mapped to Landscape |
+| `biomemap.png`, `blendMap.png`, `new_overlay.X.Y.png`, `watercolourmap.png` | the same image loader, group Overlaymaps (biome and blend maps `FUN_140408fa0`; overlay tiles `FUN_140a145b0`; water colour map `FUN_1409d70f0`) | yes (**Observed**: a mod's `newland/land/overlaymaps/watercolourmap.png` recolours the water); Meitou reads all four through the same lookup (`TerrainMaps.Overlaymap`), the install's files when no mod ships one |
+| `fogfeatures.dat`, `features.dat` | `openResource`, group Landscape only (fog volumes `FUN_14010f060`; map features `FUN_14039a4d0`, after `resourceExists`) | only from a folder mapped to Landscape (**Observed**: a mod's `newland/land/textures` copies add their fog sphere and map features; copies in `newland/land`, a folder of Overlaymaps, change nothing); Meitou reads both through the same lookup (`GameResources.Resolve`), the install's files when no mod ships one |
 | `newland/land/fullmap.tif` | terrain plugin `fopen` of a fixed path (`FUN_140874930`) | no |
+| `newland/land/blendinfo.dat` | `fopen` of a fixed path in the zone map loader (`FUN_140a12220`) | no |
+| `newland/land/navtiles/seeds.def` | a fixed path (string at `0x1416cc610`) | no |
 | `*.bnk` | Wwise low-level IO, base path `data/audio/` (`FUN_140259620`) | no |
 
-**Observed:** mods that need the last three ship an `RE_Kenshi.json` for the third-party RE_Kenshi loader
-(`FileRebinds` path map, `SoundBanks` list; most such files list native `Plugins`); vanilla ignores it.
+**Observed:** mods that need the fixed-path files and the banks ship an `RE_Kenshi.json` for the third-party RE_Kenshi loader
+(`FileRebinds` path map, `SoundBanks` list; most such files list native `Plugins`); vanilla ignores it. Meitou applies `FileRebinds`
+([RE_Kenshi data entries](rekenshi.md#data-entries)).
 
 **Verified** `FUN_140816d90`: after base folders, walk active mods in cfg order; add subfolders
 holding files to matching base resource group, default General. Skip `leveldata`,
 `newland/leveldata`, `locale`, translation folders. Add mod root only for files other than
 `.mod`, `.translation`, `_`-prefixed metadata/images.
+
+## MyGUI XML
+
+**Observed** (`AppearanceManager::loadEditorXMLData`, `FUN_140077090`): the game reads XML such as a race's `editor limits` with
+`MyGUI::xml::Document::open` and reads attributes with `Element::findAttribute`. A tag may repeat an attribute; the first is used.
+AnimeRace Face+'s `asd*_EditorData.xml` (Workshop 3660471163) repeat `mid` on `Neck width`, which a strict XML parser rejects.
 
 ## Format inventory
 

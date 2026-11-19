@@ -236,6 +236,11 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     readonly TownStalkers _stalkers;
 
     /// <summary>
+    /// Who started each character's last conversation (Dialogue <c>+0x2a0</c>).
+    /// </summary>
+    readonly ConversationStarters _starters = new();
+
+    /// <summary>
     /// Sets up the dialogue system on <paramref name="data"/>'s dialogue (default settings when none are given) and its helpers.
     /// </summary>
     public DialogueSystem(PopulationData data, DialogueSettings? settings = null, PopulationSystem? population = null)
@@ -414,8 +419,8 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     }
 
     /// <summary>
-    /// The slow-world step: the speech and trade window upkeep, the memory's ageing, the bubbles, the sight pass and the get-up events, the NPC
-    /// approaches, followers and stalkers, then the Talk order's walk (the conversation opens in talk range).
+    /// The slow-world step: the speech and trade window upkeep, the memory's ageing, the bubbles, the get-up events, the NPC approaches, followers
+    /// and stalkers, then the Talk order's walk (the conversation opens in talk range). The sight events are <see cref="Perception.SightSystem"/>'s.
     /// </summary>
     public void SlowWorld(World world)
     {
@@ -425,11 +430,9 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         Memory.Age(world);
 
         if (_bubbles.Count > 0) StepBubbles(world);
-        if (Settings.AmbientEvents)
-        {
-            SeeOthers(world);
-            SeeGettingUp(world);
-        }
+        if (Settings.AmbientEvents) SeeGettingUp(world);
+        DropRunOutCooldowns(world);
+        _starters.DropGone(world);
         if (_npcApproaches.Count > 0) _npcApproaches.Step(world);
         _followers.StepFollowers(world);
         _stalkers.StepStalkers(world);
@@ -617,6 +620,11 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             world.DialogueLines.Line(world, "talk", $"{pair}: not opened, the talker is too far from the camera");
             return;
         }
+        if (StarterRefuses(npc, ev))
+        {
+            world.DialogueLines.Line(world, "talk", $"{pair}: not opened, the starter of its last conversation still talks");
+            return;
+        }
 
         bool supplied = state is not null;
         state ??= InteractionFor(world.Players.ControlOf(player)?.Player ?? PlayerId.Local);
@@ -639,6 +647,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
             return;
         }
         DropBubbles(npc);   // the conversation takes over the NPC's dialogue state: a chain it was saying does not go on after (#707)
+        _starters.Started(npc, player);
         world.DialogueLines.Line(world, "talk", $"{pair}: conversation opens with {DialogueLog.Node(p.Root ?? p.Line)} (from {from})");
         state.Open = c;
         Hold(world, n);
@@ -826,6 +835,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
     {
         if (state.Open is not { } c) return;
         state.Open = null;
+        _starters.Ended(c.Npc);
         world.DialogueLines.Line(world, "talk", $"{EventLog.Who(world, c.Npc)} with {EventLog.Who(world, c.Player)}: conversation ends");
         state.View = null;
 
@@ -945,7 +955,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
 
     /// <summary>
     /// Adds the dialogue state (rolls, line uses, permanent rolls, counters, memories, followers, stalkers, interrupts, bubbles, cooldowns,
-    /// approaches, downs, quiet pairs, sight cursors, the open conversation and the Talk walk) to the world hash; nothing while all are empty.
+    /// approaches, downs, starters, the open conversation and the Talk walk) to the world hash; nothing while all are empty.
     /// </summary>
     public void Hash(ref StateHasher hasher)
     {
@@ -954,7 +964,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         var (open, talker, target) = (Local.Open, Local.Talker, Local.Target);
         if (_lastUse.Count == 0 && _permanent.Count == 0 && _counters.Count == 0 && Memory.IsEmpty && _interrupts.Count == 0
             && _playerInterrupts.Count == 0 && _bubbles.Count == 0 && _eventCooldown.Count == 0 && _npcApproaches.Count == 0
-            && _down.Count == 0 && _quiet.Count == 0 && _sightCursor.Count == 0 && _followers.Count == 0 && _stalkers.Count == 0
+            && _down.Count == 0 && _starters.Count == 0 && _followers.Count == 0 && _stalkers.Count == 0
             && open is null && talker.IsNone)
         {
             return;
@@ -1004,16 +1014,7 @@ public sealed partial class DialogueSystem : ITickSystem, IStateHashed, IDialogu
         }
         _npcApproaches.Hash(ref hasher);
         foreach (var id in _down) hasher.Add(id);
-        foreach (var (npc, pc) in _quiet)
-        {
-            hasher.Add(npc);
-            hasher.Add(pc);
-        }
-        foreach (var (who, cursor) in _sightCursor)
-        {
-            hasher.Add(who);
-            hasher.Add(cursor);
-        }
+        _starters.Hash(ref hasher);
         hasher.Add(talker);
         hasher.Add(target);
         if (open is { } c)

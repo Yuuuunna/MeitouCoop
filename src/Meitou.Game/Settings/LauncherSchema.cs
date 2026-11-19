@@ -148,6 +148,8 @@ static class LauncherSchema
         Graphics(WorldFrame.NightGradeStrengthSlider, 0, 1, 0.05f, NightGrade.MeitouStrength) with { Format = "0.00" },
         Graphics(WorldFrame.BloomStrengthSlider, 0, 0.25f, 0.005f, new PostOptions().BloomStrength) with { Format = "0.000" },
         Graphics(WorldFrame.DofApertureSlider, 0.25f, 22, 0.05f, new PostOptions().DofAperture) with { Logarithmic = true, Format = "0.00" },
+        Graphics(WorldFrame.VignetteStrengthSlider, 0, 1, 0.05f, new PostOptions().VignetteStrength) with { Format = "0.00" },
+        Graphics(WorldFrame.GrainStrengthSlider, 0, 1, 0.05f, new PostOptions().GrainStrength) with { Format = "0.00" },
     ];
 
     /// <summary>
@@ -249,15 +251,20 @@ static class LauncherSchema
         yield return Switch(WorldFrame.GiCacheSwitch, "Off", "On", true);
         // The probes' rays, 32 at start.
         yield return Switch(WorldFrame.GiRaysSwitch, "32 rays", "64 rays", false);
+        // The characters' traced indirect light, on at start.
+        yield return Switch(WorldFrame.GiCharactersSwitch, "Off", "On", true);
         // The Advanced materials' parts, on at start.
         yield return Switch(WorldFrame.MaterialHairSwitch, "Off", "On", true);
         yield return Switch(WorldFrame.MaterialClothSwitch, "Off", "On", true);
         yield return Switch(WorldFrame.MaterialSkinSwitch, "Off", "On", true);
         yield return Switch(WorldFrame.MaterialEyesSwitch, "Off", "On", true);
         yield return Switch(WorldFrame.MaterialMetalSwitch, "Off", "On", true);
+        // Polished armour (worn plate shines wherever gloss is painted), off at start.
+        yield return Switch(WorldFrame.MaterialPolishSwitch, "Off", "On", false);
         yield return Switch(WorldFrame.MaterialBeadsSwitch, "Off", "On", true);
         yield return Switch(WorldFrame.TracedGrassSwitch, "Off", "On", true) with { ShownWhen = SunTraced() };
         yield return Switch(WorldFrame.GrassCoverSwitch, "Off", "Meitou: on", true);
+        yield return Switch(WorldFrame.NearTreeFadeSwitch, "Off", "Meitou: on", true);
         yield return Switch(WorldFrame.WetWorldSwitch, "Off", "On", true);
         // An optional effect, in neither look: plain Off / On (Toggle.Optional).
         yield return Switch(WorldFrame.BloomSwitch, "Off", "On", false);

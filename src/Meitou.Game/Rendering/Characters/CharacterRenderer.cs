@@ -29,7 +29,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     /// <summary>
     /// The device everything is drawn on.
     /// </summary>
-    IGpuContext Gpu { get; }
+    internal IGpuContext Gpu { get; }
 
     /// <summary>
     /// Zeroed host-visible memory of this frame (the bone palettes, the material table and the instances are written into it), cleared in place: a
@@ -49,7 +49,8 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     /// <summary>
     /// The programs of the colour pass, the depth-only passes (shadows, prepass) and the motion-vector pass.
     /// </summary>
-    readonly ReflectedProgram _colourProg, _depthProg, _motionProg;
+    ReflectedProgram _colourProg;
+    readonly ReflectedProgram _depthProg, _motionProg;
     /// <summary>
     /// The meshes, textures, rigs, morphs and material table the assets are built from.
     /// </summary>
@@ -226,7 +227,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
 
     /// <summary>
     /// Which parts of the <c>chars2</c> shading are on (the settings' rows under Advanced materials): 1 hair highlights, 2 cloth sheen, 4 skin,
-    /// 8 eyes, 16 metal, 32 water beads. A change redraws the portraits.
+    /// 8 eyes, 16 metal, 32 water beads, 64 polished armour. A change redraws the portraits.
     /// </summary>
     public int SurfaceParts
     {
@@ -240,9 +241,11 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     }
 
     /// <summary>
-    /// The <see cref="SurfaceParts"/> bits: hair highlights, cloth sheen, skin, eyes, metal, water beads, and all of them.
+    /// The <see cref="SurfaceParts"/> bits: hair highlights, cloth sheen, skin, eyes, metal, water beads, polished armour (worn plate shines
+    /// wherever gloss is painted, not as much as it says), and the ones on at start (all but polished armour).
     /// </summary>
-    public const int SurfaceHair = 1, SurfaceCloth = 2, SurfaceSkin = 4, SurfaceEyes = 8, SurfaceMetal = 16, SurfaceBeads = 32, SurfaceAll = 63;
+    public const int SurfaceHair = 1, SurfaceCloth = 2, SurfaceSkin = 4, SurfaceEyes = 8, SurfaceMetal = 16, SurfaceBeads = 32, SurfacePolished = 64,
+        SurfaceAll = 63;
 
     /// <summary>
     /// Backing field of <see cref="SurfaceParts"/>.
@@ -503,7 +506,11 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         /// <c>Repose</c>: posed this frame (else its last palette is held); the others: the weapon drawn, that weapon the crossbow, the back melee
         /// weapon (as <see cref="AssetPart.ShowsWith"/> takes them).
         /// </summary>
-        public bool Repose, WeaponDrawn, RangedDrawn, BackDrawn;
+        public bool Repose, WeaponDrawn, RangedDrawn, BackDrawn, WeaponsHidden;
+        /// <summary>
+        /// The head's pitch in radians (<see cref="CharacterInstance.HeadPitch"/>).
+        /// </summary>
+        public float HeadPitch;
         /// <summary>
         /// The blood of its first 8 body parts, a byte each (<see cref="CharacterInstance.Blood"/>).
         /// </summary>
@@ -609,7 +616,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         /// <summary>
         /// The weapon state of the last update (see <see cref="Live.Repose"/>), and whether it is drawn in the world.
         /// </summary>
-        public bool WeaponDrawn, RangedDrawn, BackDrawn, InWorld;
+        public bool WeaponDrawn, RangedDrawn, BackDrawn, WeaponsHidden, InWorld;
         /// <summary>
         /// Each stuck bolt's transform in its bone's frame, fixed the first time it was drawn (by bolt id).
         /// </summary>
@@ -651,7 +658,31 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         /// The clock the water's mark was last stepped at (NaN: never).
         /// </summary>
         public double SoakAt = double.NaN;
+        /// <summary>
+        /// The hanging gear's swing per sway point of its asset (<see cref="GearSway"/>) and the motion clock it was last stepped at (NaN: never).
+        /// </summary>
+        public GearSway.State[] Sway = [];
+        /// <summary>
+        /// How many of <see cref="Bones"/> are its rig's: the first ones; past them come the copies swinging gear is skinned to
+        /// (<see cref="CharacterAsset.SwayPalette"/>).
+        /// </summary>
+        public int RigBones;
+        /// <summary>
+        /// See <see cref="Sway"/>.
+        /// </summary>
+        public double SwayAt = double.NaN;
     }
+
+    /// <summary>
+    /// The simulation's seconds between the ticks (stopped while paused, faster at the fast speeds, smooth from frame to frame): what the hanging
+    /// gear swings by (<see cref="GearSway"/>). The pose clock without one.
+    /// </summary>
+    public Func<double>? MotionClock { get; set; }
+
+    /// <summary>
+    /// <see cref="MotionClock"/> at the start of this update.
+    /// </summary>
+    double _motionSeconds;
 
     /// <summary>
     /// The game's seconds (stopped while paused, faster at the fast speeds): what the water's mark dries by. The pose clock without one.
@@ -707,8 +738,9 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     public bool HoldPose(long key, long from)
     {
         if (!_states.TryGetValue(from, out var source) || source.Posed < 0 || source.Bones.Length == 0) return false;
-        _states[key] = new CharState { Bones = [.. source.Bones], Previous = [.. source.Bones], Posed = _updateStamp, Seen = _updateStamp,
-            Frozen = true };
+        int bones = source.RigBones > 0 ? source.RigBones : source.Bones.Length;
+        _states[key] = new CharState { Bones = source.Bones.AsSpan(0, bones).ToArray(), Previous = source.Bones.AsSpan(0, bones).ToArray(),
+            RigBones = bones, Posed = _updateStamp, Seen = _updateStamp, Frozen = true };
         return true;
     }
 
@@ -720,7 +752,15 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     {
         if ((!_states.TryGetValue(key, out var own) || !own.Frozen) && (!HoldPose(key, from) || !_states.TryGetValue(key, out own)))
             return false;
-        if (own.Bones.Length != asset.Rig.BoneCount) return false;
+        int bones = asset.Rig.BoneCount;
+        if ((own.RigBones > 0 ? own.RigBones : own.Bones.Length) != bones) return false;
+        if (own.Bones.Length != asset.PaletteCount)
+        {
+            // The held bones, with unswung copies when the asset's gear is skinned to copies.
+            var held = new Matrix4x4[asset.PaletteCount];
+            for (int at = 0; at < held.Length; at += bones) own.Bones.AsSpan(0, bones).CopyTo(held.AsSpan(at));
+            (own.Bones, own.Previous, own.RigBones) = (held, [.. held], bones);
+        }
         if (own.Attach.Length != asset.AttachCount)
             (own.Attach, own.PreviousAttach) = (new Matrix4x4[asset.AttachCount], new Matrix4x4[asset.AttachCount]);
         return true;
@@ -908,10 +948,10 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     uint _textureStandIn;
 
     /// <summary>
-    /// What every material record depends on besides its material: the texture cache's version, the bias, the stand-in and the samplers. A change (or
-    /// a skin setting's) starts a new epoch, and each record is written again when next used.
+    /// What every material record depends on besides its material: the texture cache's version, the bias, the stand-in, the samplers and whether the
+    /// visibility buffer is on (its hair entry). A change (or a skin setting's) starts a new epoch, and each record is written again when next used.
     /// </summary>
-    (int, float, uint, int) _materialInputs;
+    (int, float, uint, int, bool) _materialInputs;
     /// <summary>
     /// The material records' epoch (see <see cref="_materialInputs"/>); a record written in an older one is written again.
     /// </summary>
@@ -941,6 +981,16 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         if (gpu.Bindless is BindlessTable { Freed: { } freed }) _staleCheck = new StaleMaterialCheck(freed);
         _colourTimer = new PassTimer(gpu);
         _depthTimer = new PassTimer(gpu);
+    }
+
+    /// <summary>
+    /// Debug (<c>studio reload</c>): the colour program made again from <c>MEITOU_SURFACE_FILE</c>. The old one stays alive: frames in flight still hold it.
+    /// </summary>
+    internal void ReloadSurface()
+    {
+        string fragment = Gi.GiResolveShaders.WithAlbedo(CharacterShaders.Fragment(Gpu.Shaders.DiscardNeedsLateDepth), inShader: true);
+        _colourProg = new ReflectedProgram(Gpu, _nativeFrame, CharacterShaders.Vertex(), fragment, "characters", CharacterShaders.InstanceLocation);
+        _visibility = null;   // made again from the new text when next used; the old one stays alive as the old colour program does
     }
 
     /// <summary>
@@ -993,7 +1043,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
                 continue;
             }
             var rig = l.Asset.Rig;
-            if (state.Bones.Length != rig.BoneCount) continue;
+            if (state.Bones.Length != l.Asset.PaletteCount) continue;
             if (state.BoltLocal.Count > bolts.Count)
             {
                 foreach (int id in state.BoltLocal.Keys.ToArray())
@@ -1118,6 +1168,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         _textureStandIn = Gpu.StandIn2D;
         _updateStamp++;
         _poseSeconds = PoseClock?.Invoke() ?? Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+        _motionSeconds = MotionClock?.Invoke() ?? _poseSeconds;
 
         // 1. Assets and the characters in range, with their layers resolved (the rig's caches are filled here, on this thread), and which to pose.
         var (boneTotal, partTotal) = GatherLive(eye);
@@ -1173,12 +1224,14 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         int built = 0, boneTotal = 0, partTotal = 0;
         double buildMs = 0;
         float reach = EyeLift.Of(eye, GroundUnderEye) > 0 ? Math.Min(DrawDistance, LiftedReach) : DrawDistance;
-        var items = Draws.Items;
+        // The list's own storage, each instance by reference: copied out one by one (a wide struct of references) they were 2 % of the render thread
+        // in a town. Nothing below adds to the list.
+        var items = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(Draws.Items);
         _keptLooks.Clear();
 
-        for (int i = 0; i < items.Count; i++)
+        for (int i = 0; i < items.Length; i++)
         {
-            var inst = items[i];
+            ref readonly var inst = ref items[i];
 
             // Too small to show (Meitou's choice, docs/character-renderer.md "Tiny characters"): no build, pose or draw; the simulation and the
             // host's lists still hold it.
@@ -1207,7 +1260,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
 
             ref var l = ref AddLive(in inst, asset, centre, scale, far, eye);
             l.BoneBase = boneTotal;
-            boneTotal += asset.Rig.BoneCount;
+            boneTotal += asset.PaletteCount;
             l.PartBase = partTotal;
             partTotal += asset.Parts.Count;
             if (l.OffScreen && !l.MustPose) continue;   // not posed this frame: its clips need not be looked up
@@ -1295,6 +1348,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         l.World = WorldOf(in inst, asset, scale);
         (l.Anchor, l.Scale) = (inst.World is null ? inst.Anchor : null, scale);
         (l.WeaponDrawn, l.RangedDrawn, l.BackDrawn, l.Shots, l.Bolts) = (inst.WeaponDrawn, inst.RangedDrawn, inst.BackDrawn, inst.Shots, inst.Bolts);
+        (l.WeaponsHidden, l.HeadPitch) = (inst.WeaponsHidden, inst.HeadPitch);
         (l.Mouth, l.BoneMeshes) = (inst.Mouth, inst.BoneMeshes);
         l.Centre = centre;
         l.Radius = asset.Radius * scale;
@@ -1350,7 +1404,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
 
         bool newAsset = !ReferenceEquals(state.Asset, asset);
         (state.Asset, state.WeaponDrawn, state.RangedDrawn, state.BackDrawn) = (asset, inst.WeaponDrawn, inst.RangedDrawn, inst.BackDrawn);
-        (state.InWorld, state.Centre, state.Radius) = (!far, l.Centre, l.Radius);
+        (state.InWorld, state.Centre, state.Radius, state.WeaponsHidden) = (!far, l.Centre, l.Radius, inst.WeaponsHidden);
         state.PreviousWorld = state.HasWorld ? state.World : l.World;
         (state.World, state.HasWorld) = (l.World, true);
         if (far)
@@ -1475,12 +1529,13 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         var state = l.State;
         if (l.Repose) Repose(ref l, state);
 
-        state.Bones.CopyTo(new Span<Matrix4x4>((byte*)bonePointer + (long)l.BoneBase * 64, rig.BoneCount));
+        state.Bones.CopyTo(new Span<Matrix4x4>((byte*)bonePointer + (long)l.BoneBase * 64, asset.PaletteCount));
         state.Attach.CopyTo(_attach, l.AttachBase);
         if (motion)
         {
             // Last frame's palette: what was posed before this repose, or the current one when this frame did not repose (no bone motion).
-            (l.Repose ? state.Previous : state.Bones).CopyTo(new Span<Matrix4x4>((byte*)previousPointer + (long)l.BoneBase * 64, rig.BoneCount));
+            (l.Repose ? state.Previous : state.Bones).CopyTo(
+                new Span<Matrix4x4>((byte*)previousPointer + (long)l.BoneBase * 64, asset.PaletteCount));
             if (!l.Repose) state.Attach.CopyTo(state.PreviousAttach, 0);
         }
         if (!l.PortraitOnly && l.Anchor is null) PlaceParts(in l, eye, motion);
@@ -1555,10 +1610,11 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     {
         var asset = l.Asset;
         var rig = asset.Rig;
-        if (state.Bones.Length != rig.BoneCount || state.Attach.Length != asset.AttachCount)
+        if (state.Bones.Length != asset.PaletteCount || state.Attach.Length != asset.AttachCount)
         {
-            state.Bones = new Matrix4x4[rig.BoneCount];
-            state.Previous = new Matrix4x4[rig.BoneCount];
+            state.Bones = new Matrix4x4[asset.PaletteCount];
+            state.Previous = new Matrix4x4[asset.PaletteCount];
+            state.RigBones = rig.BoneCount;
             state.Attach = new Matrix4x4[asset.AttachCount];
             state.PreviousAttach = new Matrix4x4[asset.AttachCount];
             state.Posed = -1;
@@ -1567,11 +1623,12 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         state.Attach.CopyTo(state.PreviousAttach, 0);
 
         var scratch = rig.Rent();
-        scratch.Pose(asset.Shape, _layers.AsSpan(l.LayerStart, l.LayerCount), state.Bones, l.Bones);
+        scratch.Pose(asset.Shape, _layers.AsSpan(l.LayerStart, l.LayerCount), state.Bones, l.Bones, (l.HeadPitch * 0.4f, l.HeadPitch * 0.6f));
         foreach (var part in asset.Parts)
             if (part.AttachIndex >= 0) state.Attach[part.AttachIndex] = scratch.TagTransform(part.Bone, part.Offset);
         foreach (var lamp in asset.Lamps) state.Attach[lamp.AttachIndex] = lamp.Offset * scratch.BoneTransform(lamp.Bone);
         if (asset.Mouth is { } mouth) state.Attach[mouth.AttachIndex] = scratch.TagTransform(mouth.Bone, mouth.Offset);
+        Sway(in l, state, scratch);
         rig.Return(scratch);
 
         if (state.Posed < 0 || l.Snap)
@@ -1581,6 +1638,98 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         }
         state.Posed = _updateStamp;
         state.PosedRagdoll = l.Bones;
+    }
+
+    /// <summary>
+    /// The hanging gear's swing (<see cref="GearSway"/>, the <c>sway</c> switch): each sway point of a person posed at a readable size, out of a
+    /// ragdoll, is stepped from its last pose to this one and its parts turned about the point by the swing: a bone-attached part by its attach
+    /// matrix, skinned gear (a backpack) by the bones' copies in the palette (<see cref="CharacterAsset.SwayPalette"/>), which are the bones after
+    /// a turn of the mesh about the gear's pivot. Else the gear stays as posed (the copies equal the bones) and starts at rest the next time.
+    /// </summary>
+    void Sway(in Live l, CharState state, PoseScratch scratch)
+    {
+        var asset = l.Asset;
+        int bones = asset.Rig.BoneCount;
+        if (!GearSway.Enabled || asset.Sways.Count == 0 || asset.Animal || l.Bones is not null || l.Pixels < GearSway.MinPixels
+            || l.PortraitOnly)
+        {
+            state.SwayAt = double.NaN;
+            if (asset.SwayPalette) state.Bones.AsSpan(0, bones).CopyTo(state.Bones.AsSpan(bones));
+            return;
+        }
+        if (state.Sway.Length != asset.Sways.Count) state.Sway = new GearSway.State[asset.Sways.Count];
+        // A first step, a snap back on screen or a clock that went back by more than a frame's jitter (a load) starts every point at rest.
+        float dt = double.IsNaN(state.SwayAt) || l.Snap ? -1 : (float)(_motionSeconds - state.SwayAt);
+        if (dt is < 0 and > -0.05f) dt = 0;
+        else state.SwayAt = _motionSeconds;
+
+        Span<Quaternion> swing = stackalloc Quaternion[asset.Sways.Count];
+        var skin = state.Bones.AsSpan(0, bones);
+        bool any = false;
+        for (int g = 0; g < asset.Sways.Count; g++)
+        {
+            var point = asset.Sways[g];
+            if (point.Skinned)
+            {
+                // The mesh's own frame at the pivot, carried by the bone that holds most of the gear; its +Z is the wearer's front, where the back is.
+                var frame = Matrix4x4.CreateTranslation(point.Pivot) * state.Bones[point.Bone] * l.World;
+                var wall = Vector3.TransformNormal(Vector3.UnitZ, frame);
+                wall = wall.LengthSquared() > 1e-12f ? Vector3.Normalize(wall) : Vector3.Zero;
+                swing[g] = GearSway.Update(ref state.Sway[g], frame, point.Lever, dt, GearSway.Pack, wall);
+                if (swing[g].IsIdentity)
+                {
+                    state.Bones.AsSpan(0, bones).CopyTo(state.Bones.AsSpan(bones));
+                }
+                else
+                {
+                    var turn = Matrix4x4.CreateTranslation(-point.Pivot) * Matrix4x4.CreateFromQuaternion(swing[g])
+                        * Matrix4x4.CreateTranslation(point.Pivot);
+                    for (int b = 0; b < bones; b++) state.Bones[bones + b] = turn * state.Bones[b];
+                }
+                continue;
+            }
+            var tag = scratch.TagTransform(point.Bone, point.Offset);
+
+            // Out of the wearer first: the pose fixes the gear to one bone, and the others move into it (a long blade on the back goes through the
+            // hips and the legs in a stance that pushes them back). It is turned about its pivot, away from the bone it hangs from, by the least
+            // that clears the limbs; the swing then hangs from there.
+            var push = Quaternion.Identity;
+            var hung = Vector3.Transform(point.Pivot, tag);
+            var out3 = Vector3.Transform(point.Pivot + point.Lever, tag) - scratch.DerivedPosition[point.Bone];
+            var lever3 = Vector3.Transform(point.Pivot + point.Lever, tag) - hung;
+            if (asset.SwayColliders.Length > 0 && point.SpanFrom != point.SpanTo && lever3.LengthSquared() > 1e-10f)
+            {
+                out3 -= lever3 * (Vector3.Dot(out3, lever3) / lever3.LengthSquared());
+                var axis = Vector3.Cross(lever3, out3);
+                if (axis.LengthSquared() > 1e-12f && Matrix4x4.Invert(tag, out var toPoint))
+                {
+                    axis = Vector3.Normalize(axis);
+                    float angle = GearSway.PushAngle(asset.SwayColliders, skin, point.Bone, hung, Vector3.Transform(point.SpanFrom, tag),
+                        Vector3.Transform(point.SpanTo, tag), Vector3.TransformNormal(point.Side, tag), axis, point.Thickness, point.RestClearance);
+                    var local = Vector3.TransformNormal(axis, toPoint);
+                    if (angle > 0 && local.LengthSquared() > 1e-12f) push = Quaternion.CreateFromAxisAngle(Vector3.Normalize(local), angle);
+                }
+            }
+            var world = Matrix4x4.CreateFromQuaternion(push) * Matrix4x4.CreateTranslation(point.Pivot) * tag * l.World;
+
+            // Towards the wearer: from the gear's hanging mass to the bone it hangs from, across the lever (the way the mass can move), so a
+            // weapon on the back is stopped towards the back however the trunk leans, and one at the hip towards the thigh.
+            var mass = Vector3.Transform(point.Lever, world);
+            var arm = mass - world.Translation;
+            var inward = (scratch.BoneTransform(point.Bone) * l.World).Translation - mass;
+            if (arm.LengthSquared() > 1e-10f) inward -= arm * (Vector3.Dot(inward, arm) / arm.LengthSquared());
+            inward = inward.LengthSquared() > 1e-8f ? Vector3.Normalize(inward) : Vector3.Zero;
+            swing[g] = Quaternion.Concatenate(GearSway.Update(ref state.Sway[g], world, point.Lever, dt, GearSway.Weapon, inward), push);
+            any |= !swing[g].IsIdentity;
+        }
+        if (!any) return;
+        foreach (var part in asset.Parts)
+        {
+            if (part.SwayGroup < 0 || part.AttachIndex < 0 || swing[part.SwayGroup].IsIdentity) continue;
+            var pivot = asset.Sways[part.SwayGroup].Pivot;
+            state.Attach[part.AttachIndex] = scratch.TagTransform(part.Bone, part.SwayLocal * Matrix4x4.CreateTranslation(-pivot)
+                * Matrix4x4.CreateFromQuaternion(swing[part.SwayGroup]) * Matrix4x4.CreateTranslation(pivot) * part.SwayPoint);
+        }
     }
 
     /// <summary>
@@ -1594,7 +1743,8 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         if (_budget.Due) OfferTextureNeeds();
         _budget.Update(_content.Textures);
 
-        var inputs = (_content.Textures.Version, textureBias: _textureBias, textureStandIn: _textureStandIn, Gpu.Samplers.Generation);
+        var inputs = (_content.Textures.Version, textureBias: _textureBias, textureStandIn: _textureStandIn, Gpu.Samplers.Generation,
+            VisibilityBuffer);
         if (inputs != _materialInputs) (_materialInputs, _materialEpoch) = (inputs, _materialEpoch + 1);
         var table = _content.Materials;
         table.BeginFrame();
@@ -1635,7 +1785,8 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
             bool still = l.WeaponDrawn && _portraitKeys.Contains(l.Key);
             foreach (var part in l.Asset.Parts)
             {
-                bool shown = part.ShowsWith(l.WeaponDrawn, l.RangedDrawn, l.Shots, l.BackDrawn) || still && ShowsInPortrait(part, in l);
+                bool shown = ShowsNow(part, in l)
+                    || still && ShowsInPortrait(part, in l);
                 if (!shown) continue;
                 if (part.MaterialFrame != _updateStamp)
                 {
@@ -1965,6 +2116,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     public void Dispose()
     {
         if (_updateCount > 0) Console.WriteLine($"characters {Statistics()}");
+        _visibility?.Dispose();
         _colourProg.Dispose();
         _depthProg.Dispose();
         _motionProg.Dispose();

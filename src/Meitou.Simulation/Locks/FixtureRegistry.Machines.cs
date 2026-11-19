@@ -49,7 +49,7 @@ public sealed partial class FixtureRegistry
             || source.Data.Db.Find(building.BuildingId) is not { } record) return null;
         building = source.Building;
         var saved = Saved?.GetValueOrDefault(building.Key);
-        bool destroyed = saved?.Bools.GetValueOrDefault("destroyed", building.Destroyed) ?? building.Destroyed;
+        bool destroyed = IsDestroyed(building);
         bool complete = saved?.Bools.GetValueOrDefault("is complete", true) ?? building.LevelState?.GetBool("is complete", true) ?? true;
         if (destroyed || !complete) return null;
         if (world.SystemOf<Production.ProductionSystem>()?.Data(building.BuildingId) is null) return null;

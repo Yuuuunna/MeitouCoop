@@ -70,6 +70,7 @@ public sealed class WorldRegions
         for (int i = 0; i < table.HighWater; i++)
         {
             if (!table.Current[i].Alive || table.Cold(i) is not { DiedTick: < 0 } cold || cold.Medical?.Dead == true) continue;
+            if (simulation && cold.IsPlayer && _world.Squads.IsDormant(cold.SquadId)) continue;
             var at = table.Current[i].Position;
             if (cold.IsPlayer)
             {

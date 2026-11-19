@@ -4,7 +4,8 @@ namespace Meitou.Data.World;
 /// <summary>
 /// The world heightmap, <c>data/newland/land/fullmap.tif</c>: 16385 × 16385 unsigned 16-bit samples, column
 /// along world +X, row along world +Z, <see cref = "WorldLayout.RawToHeight"/> to world units
-/// (docs/formats/terrain.md). Reads from the file on demand.
+/// (docs/formats/terrain.md). Reads from the file on demand; threads sharing one heightmap take the file in turn (<see cref="TiffImage"/>), so a
+/// worker that reads much opens its own.
 /// </summary>
 public sealed class TerrainHeightmap : IDisposable
 {
@@ -16,53 +17,87 @@ public sealed class TerrainHeightmap : IDisposable
     /// <summary>
     /// A heightmap over <paramref name="image"/>.
     /// </summary>
-    TerrainHeightmap(TiffImage image) => Image = image;
+    TerrainHeightmap(TiffImage image, string? path)
+    {
+        Image = image;
+        FilePath = path;
+    }
 
     /// <summary>
     /// The TIFF the samples are read from.
     /// </summary>
     public TiffImage Image { get; }
     /// <summary>
+    /// The file the heightmap was opened from, or null for a stream.
+    /// </summary>
+    public string? FilePath { get; }
+    /// <summary>
+    /// The holes and needles fix applied to every sample read (<see cref="HeightmapRepair"/>), or null.
+    /// </summary>
+    public HeightmapRepair? Repair { get; private init; }
+    /// <summary>
     /// Samples per side.
     /// </summary>
     public int Size => Image.Width;
 
     /// <summary>
-    /// Opens the install's heightmap (<see cref="RelativePath"/>).
+    /// Opens the install's heightmap (<see cref="RelativePath"/>), or the file an enabled mod rebinds it to (<see cref="PathOf"/>).
     /// </summary>
-    public static TerrainHeightmap Open(GameInstall install) => Open(Path.Combine(install.DataDirectory, RelativePath));
+    public static TerrainHeightmap Open(GameInstall install) => Open(PathOf(install));
+
     /// <summary>
-    /// Opens the heightmap at <paramref name = "path"/>.
+    /// The heightmap file the game reads: <see cref="RelativePath"/>, or an enabled mod's rebind of it (<see cref="ReKenshiRebinds"/>).
     /// </summary>
-    public static TerrainHeightmap Open(string path) => FromImage(TiffImage.Open(GameFiles.Resolve(path)));
+    public static string PathOf(GameInstall install) => ReKenshiRebinds.DataFile(install, RelativePath);
+
+    /// <summary>
+    /// Opens the heightmap at <paramref name="path"/>, with the holes and needles fix when it applies to that file
+    /// (<see cref="HeightmapRepair.For"/>).
+    /// </summary>
+    public static TerrainHeightmap Open(string path)
+    {
+        path = GameFiles.Resolve(path);
+        var repair = HeightmapRepair.For(path);
+        return FromImage(TiffImage.Open(path), path, repair);
+    }
+
+    /// <summary>
+    /// Opens the heightmap at <paramref name="path"/> as the file holds it, without the holes and needles fix.
+    /// </summary>
+    public static TerrainHeightmap OpenUnrepaired(string path) => FromImage(TiffImage.Open(GameFiles.Resolve(path)), GameFiles.Resolve(path), null);
 
     /// <summary>
     /// Opens the heightmap in <paramref name="stream"/>.
     /// </summary>
-    public static TerrainHeightmap Open(Stream stream) => FromImage(TiffImage.Open(stream));
+    public static TerrainHeightmap Open(Stream stream) => FromImage(TiffImage.Open(stream), null, null);
 
     /// <summary>
     /// <paramref name="image"/> as a heightmap; throws (and closes it) unless it is a square 16-bit image.
     /// </summary>
-    static TerrainHeightmap FromImage(TiffImage image)
+    static TerrainHeightmap FromImage(TiffImage image, string? path, HeightmapRepair? repair)
     {
         if (image.BitsPerSample != 16 || image.Width != image.Height)
         {
             image.Dispose();
             throw new InvalidDataException($"Heightmap must be a square 16-bit image, got {image.Width}x{image.Height} at {image.BitsPerSample} bits.");
         }
-        return new TerrainHeightmap(image);
+        return new TerrainHeightmap(image, path) { Repair = repair };
     }
 
     /// <summary>
     /// The raw sample at (<paramref name="column"/>, <paramref name="row"/>).
     /// </summary>
-    public ushort Sample(int column, int row) => Image.ReadSample(column, row);
+    public ushort Sample(int column, int row) =>
+        Repair is { } repair && repair.TryGet(column, row, out var value) ? value : Image.ReadSample(column, row);
 
     /// <summary>
     /// Reads one row of raw samples into <paramref name="destination"/>.
     /// </summary>
-    public void ReadRow(int row, Span<ushort> destination) => Image.ReadRow(row, destination);
+    public void ReadRow(int row, Span<ushort> destination)
+    {
+        Image.ReadRow(row, destination);
+        Repair?.Apply(row, destination);
+    }
 
     /// <summary>
     /// Bilinearly interpolated world height at (<paramref name="x"/>, <paramref name="z"/>), assuming this
@@ -88,7 +123,7 @@ public sealed class TerrainHeightmap : IDisposable
     /// <summary>
     /// The ground an outdoor building stands on in the original (docs/formats/zones.md "Placement height"): each zone keeps a coarse copy of its
     /// heights, every other sample (36 units apart), interpolated bilinearly, and nothing lower than <see cref="BuildingGroundFloor"/>. Up to ~16
-    /// units off <see cref="HeightAt"/> on steep ground. Not thread-safe (it reads the file).
+    /// units off <see cref="HeightAt"/> on steep ground.
     /// </summary>
     public float BuildingGroundAt(double x, double z)
     {
@@ -118,6 +153,7 @@ public sealed class TerrainHeightmap : IDisposable
         {
             Image.ReadRowBytes(r, bytes);
             Image.DecodeRow(bytes, row);
+            Repair?.Apply(r, row);
             for (int x = 0; x < size; x++)
                 result[y * size + x] = row[x * step];
         }
@@ -145,6 +181,7 @@ public sealed class TerrainHeightmap : IDisposable
             {
                 Image.ReadRowBytes(r, bytes);
                 Image.DecodeRow(bytes, row);
+                Repair?.Apply(r, row);
                 lastRow = r;
             }
             for (int i = 0; i < columns; i++)
@@ -164,6 +201,7 @@ public sealed class TerrainHeightmap : IDisposable
         {
             Image.ReadRowBytes(r, bytes);
             Image.DecodeRow(bytes, row);
+            Repair?.Apply(r, row);
             visit(r, row);
         }
     }

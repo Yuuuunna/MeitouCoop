@@ -99,6 +99,12 @@ public sealed partial class FixtureRegistry
     readonly Dictionary<string, GameRecord?> _functions = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Set while <see cref="RegisterAdded"/> registers a building the level editor placed: its containers take no original contents
+    /// (<see cref="ReadOriginalContents"/>).
+    /// </summary>
+    bool _editing;
+
+    /// <summary>
     /// (cage id, faction) -> the game hour until which a walk there is known to fail (engine: the "no path" memo of FindCage). Sorted, so it
     /// hashes in a fixed order.
     /// </summary>
@@ -165,6 +171,11 @@ public sealed partial class FixtureRegistry
     /// its lock and door state from them.
     /// </summary>
     public IReadOnlyDictionary<string, FcsRecord>? Saved { get; set; }
+
+    /// <summary>
+    /// The player faction's string id in the loaded save; null without a save.
+    /// </summary>
+    public string? SavedPlayer { get; set; }
 
     /// <summary>
     /// The placements of a loaded save's building lists by building instance id (<see cref="Saving.HeldSave.BuildingSpots"/>): a prisoner whose <c>in
@@ -467,7 +478,18 @@ public sealed partial class FixtureRegistry
     internal void RegisterAdded(World world, PopulationData data, int site, TownBuilding b)
     {
         if (!_sites.Contains(site)) return;
-        RegisterWithSight(world, data, site, b, site < data.SiteFactions.Count ? data.SiteFactions[site] : -1);
+
+        // A building the editor places has no furniture entries of the original's (one placed again would take its save's items a second time).
+        _editing = true;
+        try
+        {
+            RegisterWithSight(world, data, site, b, site < data.SiteFactions.Count ? data.SiteFactions[site] : -1);
+        }
+        finally
+        {
+            _editing = false;
+        }
+
         Bind(world);
     }
 
@@ -491,6 +513,7 @@ public sealed partial class FixtureRegistry
         Unregister(building);
         _properties.Remove(building);
         _resetBuildings.Remove(building);
+        _rebuilt.Remove(building);
         _publicFlags.Remove(building);
         _levelPublic.Remove(building);
         _nested.Remove(building);
@@ -527,18 +550,24 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// A building's fixtures: its doors and own lock (none while destroyed), its lockable or storage furniture, its beds and training dummies; its
-    /// seats are registered on the way.
+    /// A building's fixtures: its doors and own lock, its lockable or storage furniture, its beds and training dummies; its seats are registered on
+    /// the way. A ruin has none of its own or of its interior, only a training dummy that is no layout object (it may be a ruin itself).
     /// </summary>
     List<Fixture> FixturesOf(World world, PopulationData data, int site, TownBuilding b, int owner)
     {
+        var list = new List<Fixture>();
+
+        // A destroyed building has no doors and no lock of its own (docs/game/locks.md "Doors"), and setting it destroyed destroys its interior's
+        // objects with their items (docs/game/buildings-production.md "A ruin's objects take their items with them").
+        if (IsDestroyed(b))
+        {
+            AddDummies(site, b, owner, list, layoutObjects: false);
+            return list;
+        }
+
         var db = data.Db;
         var faction = owner >= 0 && owner < data.Factions.Count ? data.Factions[owner] : null;
-        var list = new List<Fixture>();
-        var record = db.Find(b.BuildingId);
-
-        // A destroyed building has no doors and no lock of its own (docs/game/locks.md "Doors"); its interior's fixtures stay.
-        if (record is not null && !IsDestroyed(b))
+        if (db.Find(b.BuildingId) is { } record)
         {
             AddDoors(world, db, record, b.Key, site, owner, faction, b.Position, b.Yaw, b.Resolved?.Placement.Rotation, list);
             if (Lockable(db, record) is { } own)
@@ -556,7 +585,7 @@ public sealed partial class FixtureRegistry
 
         RegisterSeats(b, site, owner);
         AddBeds(db, site, b, owner, list);
-        AddDummies(site, b, owner, list);
+        AddDummies(site, b, owner, list, layoutObjects: true);
         return list;
     }
 
@@ -596,14 +625,20 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// Adds a fixture for each training dummy among the building's furniture, numbered in furniture order.
+    /// Adds a fixture for each training dummy among the building's furniture, numbered in furniture order; without
+    /// <paramref name="layoutObjects"/> only the building's own (no layout object), keeping its number.
     /// </summary>
-    static void AddDummies(int site, TownBuilding b, int owner, List<Fixture> list)
+    static void AddDummies(int site, TownBuilding b, int owner, List<Fixture> list, bool layoutObjects)
     {
         int dummy = 0;
         foreach (var piece in b.Furniture)
         {
             if (piece.Kind != HomeSpotKind.Training || piece.Record is not { } dummyRecord) continue;
+            if (!layoutObjects && piece.Piece is not null)
+            {
+                dummy++;
+                continue;
+            }
 
             list.Add(new Fixture
             {
@@ -1650,6 +1685,33 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
+    /// <see cref="FindBed"/> for a carrier: a character that is not the player's and whose squad has no town takes only beds of its own faction or
+    /// an ally's within <see cref="BedSearchRange"/> (<see cref="OutOfTownlessReach"/>, the limit of the AI's sleep search,
+    /// <c>AiSystem.SpareBed</c>), and never one of the player's (engine choice: a roaming squad does not fill the player's beds with its wounded).
+    /// Any other character searches as <see cref="FindBed"/> does (a squad with a town keeps to its town's beds, which no player bed is).
+    /// </summary>
+    public Fixture? FindBedInReach(World world, int slot, FactionRelations relations, Func<Fixture, bool>? skip = null)
+    {
+        if (world.Characters.Cold(slot) is not { } c || c.IsPlayer || world.Squads.Find(c.SquadId) is not { Town: < 0 })
+            return FindBed(world, slot, relations, skip);
+
+        var p = world.Characters.Next[slot].Position;
+        var at = new Vector2(p.X, p.Z);
+        return FindBed(world, slot, relations,
+            f => skip?.Invoke(f) == true || world.IsPlayerFaction(f.Owner) || OutOfTownlessReach(at, c.Faction, relations, f));
+    }
+
+    /// <summary>
+    /// Whether a squad with no town leaves bed <paramref name="f"/> out of its bed search: farther than <see cref="BedSearchRange"/> from
+    /// <paramref name="at"/>, or of a faction that is neither <paramref name="faction"/> nor its ally. It stands in for the original's last step, the
+    /// allied BF_BED buildings in the zones around the character (engine choice for the range).
+    /// </summary>
+    public static bool OutOfTownlessReach(Vector2 at, int faction, FactionRelations relations, Fixture f) =>
+        Vector2.DistanceSquared(at, new Vector2(f.Position.X, f.Position.Z)) > BedSearchRange * BedSearchRange
+        || f.Owner != faction
+            && !(f.Owner >= 0 && relations.Contains(f.Owner) && relations.Contains(faction) && relations.IsAlly(f.Owner, faction));
+
+    /// <summary>
     /// The bed search of a character that is not the player's (the other half of <c>FUN_1408cfe00</c>, docs/game/locks.md "Beds", <b>Observed</b>):
     /// the first free bed (the give-up list stands in as <see cref="Reachable"/>) of its squad's home building; with none there, those of the town's
     /// "designated" buildings of two kinds nearest it, then any BF_BED building near it. The original takes the first in its building list's order (a
@@ -2106,6 +2168,10 @@ public sealed partial class FixtureRegistry
         if (master >= 0) c.SlaveMaster = master;
         SetSlave(world, c, 1, owner);
 
+        // Chaining and processing add job 187 again whatever the old state (FUN_14032e590, FUN_14035aa20): a slave re-chained by its own master after
+        // a split obeys again.
+        if (master >= 0) c.ObedienceLost = false;
+
         // Handed to another master (engine choice: the original resets and re-adds job 187 where it chains or processes, FUN_14032e590,
         // FUN_14035aa20): its job names the new one.
         if (handed)
@@ -2206,7 +2272,8 @@ public sealed partial class FixtureRegistry
     /// Takes a building's lock and door state from its saved GAMESTATE_BUILDING (docs/game/locks.md "Save keys"): <c>hardness</c> and <c>broken</c>
     /// always, level and <c>locked</c> only when the saved <c>lock lvl</c> is above 0; doors by suffix i: <c>state</c>, <c>doa</c>, <c>broken</c>,
     /// <c>wants lock</c>, <c>lock lvl</c>, <c>locked</c>, <c>hardness</c>, and the gate code set to -1 (<c>gatecode</c> is written, not read). Interior fixtures (whose save ids are not mapped) keep
-    /// their rolls but count as restored, apart from Meitou's own <c>meitou lock</c> key (see <see cref="InteriorKey"/>). A <paramref name="level"/>
+    /// their rolls but count as restored, apart from Meitou's own <c>meitou lock</c> key (see <see cref="InteriorKey"/>); a container's contents come
+    /// from Meitou's <c>meitou container</c> key, else from the original's entry of it (<see cref="ReadOriginalContents"/>). A <paramref name="level"/>
     /// state (the level data's, for a building no save has) marks restored only the doors it has a <c>state</c> for, so the squad's <c>initial door
     /// state</c> still applies to the rest.
     /// </summary>
@@ -2214,10 +2281,19 @@ public sealed partial class FixtureRegistry
     {
         foreach (var f in list)
         {
+            // A rebuilt home's layout objects are new: its saved state is the old ones'.
+            if (_rebuilt.Contains(building) && IsLayoutObject(f, building))
+            {
+                f.Restored = false;
+                continue;
+            }
+
             f.Restored = !level || f.Kind == FixtureKind.Door && state.Ints.ContainsKey("state" + f.DoorIndex.ToString(CultureInfo.InvariantCulture));
-            if (f.Contents is { } grid && Items is { } factory && ContainerSave.KeyOf(f, building) is { } contentsKey
-                    && state.Strings.TryGetValue(contentsKey, out var saved))
-                ContainerSave.Read(saved, grid, factory, _usableData);
+            if (f.Contents is { } grid && Items is { } factory && ContainerSave.KeyOf(f, building) is { } contentsKey)
+            {
+                if (state.Strings.TryGetValue(contentsKey, out var saved)) ContainerSave.Read(saved, grid, factory, _usableData);
+                else if (!level) ReadOriginalContents(f, building, grid, factory, state);
+            }
 
             if (f.Kind == FixtureKind.Door)
             {
@@ -2242,14 +2318,37 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
+    /// A town container with no Meitou contents key takes the items of the original's own entry of it, when its house keeps its saved interior and
+    /// was not bought (the purchase destroyed its furniture: <see cref="EmptyPurchased"/> takes the fixture out), it is no machine's object (whose
+    /// machine owns the entry's inventory) and the level editor is not placing it (<see cref="Saving.FurnitureInventorySave"/>).
+    /// </summary>
+    void ReadOriginalContents(Fixture f, string building, Items.Inventory grid, Items.ItemFactory factory, StateKeys house)
+    {
+        if (_editing || IsEmptied(building) || !Saving.FurnitureInventorySave.Keeps(house.Ints)) return;
+        if (_usableData is { } data && Saving.FurnitureInventorySave.MachineOwns(data.Db, f.RecordId)) return;
+        if (SavedPieces?.Of(f.Id, f.RecordId, f.Position) is not { } entry) return;
+
+        f.LoadedContents = Saving.FurnitureInventorySave.Read(entry, grid, factory);
+    }
+
+    /// <summary>
     /// Meitou's save key for the lock of an interior cage or container, whose save ids are not mapped (the original's keys name a placed building's
     /// own lock and doors only): <c>meitou lock &lt;layout index&gt;</c>, an int of level x 4 + broken x 2 + locked, present only while the lock is
     /// locked or broken. Null for any other fixture.
     /// </summary>
     static string? InteriorKey(Fixture f, string building) =>
-        f.Kind is FixtureKind.Cage or FixtureKind.Container && f.Id.Length > building.Length + 1 && f.Id[building.Length] == '/'
-                && f.Id.StartsWith(building, StringComparison.Ordinal)
-            ? "meitou lock " + f.Id[(building.Length + 1)..] : null;
+        f.Kind is FixtureKind.Cage or FixtureKind.Container && IsLayoutObject(f, building) ? InteriorLockPrefix + f.Id[(building.Length + 1)..] : null;
+
+    /// <summary>
+    /// The start of <see cref="InteriorKey"/>'s keys.
+    /// </summary>
+    const string InteriorLockPrefix = "meitou lock ";
+
+    /// <summary>
+    /// Whether a fixture of <paramref name="building"/> is one of its layout's objects (id <c>&lt;building&gt;/&lt;object&gt;</c>).
+    /// </summary>
+    static bool IsLayoutObject(Fixture f, string building) =>
+        f.Id.Length > building.Length + 1 && f.Id[building.Length] == '/' && f.Id.StartsWith(building, StringComparison.Ordinal);
 
     /// <summary>
     /// The keys of a building state, from a save's record or the level data's.
@@ -2297,6 +2396,7 @@ public sealed partial class FixtureRegistry
         if (!_byBuilding.TryGetValue(buildingInstance, out var list)) return false;
         ClearResetContainers(buildingInstance, state);
         WriteReset(buildingInstance, state);
+        DropObjectState(buildingInstance, state);
         WriteProperty(buildingInstance, state);
         if (_publicFlags.TryGetValue(buildingInstance, out bool open)) state.Bools["is public day"] = open;
         WriteRecord(buildingInstance, state);

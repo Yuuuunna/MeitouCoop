@@ -17,7 +17,7 @@ namespace Meitou.Tests.Simulation;
 
 public partial class ProductionTests
 {
-    static (PopulationData Data, TownBuilding House) LateMachineData()
+    static (PopulationData Data, TownBuilding House) LateMachineData(bool destroyed = true)
     {
         var db = Database(); var definitions = new FcsFile();
         var player = Rec("204-gamedata.base", FcsRecordType.Faction, "Nameless");
@@ -32,7 +32,7 @@ public partial class ProductionTests
         definitions.Records.AddRange([player, owner, town, function, building]); db.Apply(definitions, "houses.mod");
         var house = new TownBuilding("home", building.StringId, "House machine", At, 0, false, false, [])
         {
-            Zone = WorldLayout.ZoneOf(At.X, At.Z), Destroyed = true,
+            Zone = WorldLayout.ZoneOf(At.X, At.Z), Destroyed = destroyed,
             Fixtures = [new TownFixture(BuildingKey.Of(WorldLayout.ZoneOf(At.X, At.Z), "home") + "/0", Tank, false, At, 0)
                 { Function = TownBuildings.GeneralStorageFunction, StorageWidth = 4, StorageHeight = 4 }],
         };
@@ -153,7 +153,7 @@ public partial class ProductionTests
     public void TownResetClearsOldContainersButKeepsContentsAcquiredAfterTheReset()
     {
         var (save, metadata) = LateMachineCheckpoint();
-        var (data, house) = LateMachineData(); PlayerRegistrySave.PrepareCatalogue(data, metadata);
+        var (data, house) = LateMachineData(destroyed: false); PlayerRegistrySave.PrepareCatalogue(data, metadata);
         var state = HeldSave.BuildingStates(save)[house.Key];
         state.Bools[FixtureRegistry.PurchasedKey] = false; state.Bools.Remove("meitou town construction");
         state.Strings["owner faction ID"] = "owner";

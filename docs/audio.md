@@ -261,7 +261,7 @@ the counter to 8; the counter counts down every frame and posts `Turret_Mvt_Stop
 The turning parts are the BUILDING_PART records with `rotation function` 5 (ROTATION_TARGET): in order, each takes the aim point in its own frame and turns by its error (yaw part, `rotation axis` Y: `atan2(x, z)`; pitch part: `atan2(-y, √(x²+z²))`) limited to
 ± the turning speed × frame time (efficiency × `aim speed` × (1 + 0.01 × damage), [combat](game/combat.md#turrets)). A shot posts `Attack` on the building's object with the `Weapons` switch `Turret`. **Unknown:** the
 idle behaviour of a manned turret without a target. **Meitou:** the simulation fires turrets and publishes who mans which turret and its aim point (`CharacterSnapshot.Turret`, outside the hash).
-`TurretAudio` keeps a display-only copy of each manned turret's parts within 4000 units, turned toward that aim point by the rule above in game time at efficiency 1 (`TurretSounds`, `TurretRig`),
+`TurretAudio` keeps a display-only copy of each manned turret's parts within 4000 units (stretched by the Sound range, [hearing range](#hearing-range)), turned toward that aim point by the rule above in game time at efficiency 1 (`TurretSounds`, `TurretRig`),
 and posts the two events on an object of its own at the turret (a start beyond 3000 units from the eye is dropped; **engine choice**). The gun mesh turns with the simulation's angles ([render-objects](render-objects.md#turrets)). A shot
 (`SoundKind.TurretShot`) posts `Attack` with `Weapons` = `Turret` on a pooled object at the muzzle (**engine choice**).
 To hear it: a town under attack whose guards man their turrets, or a player character sent to a turret with an enemy in range.
@@ -337,17 +337,28 @@ through one helper (`FUN_1405c9a70(char, event, maxSqDist)`): **dropped when the
   without a bone or when the bone's height comes out 0). Ground events share the clip's event list and cursor with the sounds (`FUN_140064690` calls each event's own fire), so only the
   dominant clip fires them. Under the water height (the depth is the water height less the point's height, so the ankle bone, not the sole): the BIOMES record's `water effects` entry
   (v0 depth, v1 speed) with the greatest v0 at most the depth, then greatest v1 at most the speed, at the water surface, no turn; the biome is the one under the point (`FUN_140a0ac00`,
-  the footsteps' lookup), else the record `EMPTY`; none when no entry fits. Dry: only when the ground ray's hit has the null handle (type `0xb`, the terrain; **Observed**); the biome's
-  `ground effects` slot for the overlay channel at the point (`FUN_140a16f70`, the footsteps' channel pick), fired when the speed is at least its min speed and `rand()`/32768 is at most
-  its chance; a bone puts the point on the terrain. Slots (biome loader `FUN_140a13750`): an entry's v0 above 2 is lowered by one, then 0..4 picks the slot; v1 is the min speed, v2 x 0.01
-  the chance. The effect spawns through a pool (none when full) only inside the camera frustum widened by 100 units (`FUN_140a08c00`, `FUN_1406ae7b0`, the constant at
-  `DAT_141683250`). Data (`gamedata.base` dump): 59 BIOMES list `ground effects`
-  (`Dustkick01`, `01a`, `01b`, `01c`; min speed 0, 30 or 40; chance 100), 70 list `water effects` (`Watersplash` v0 0, `WadingFoam` v0 3; v1 0); a farmer standing at work (speed 0) kicks
-  dust only where the slot's min speed is 0 (**Observed**). The EFFECT records (**Verified**, probe of the user's load order): `Watersplash` is system `Footsplashes01` (three one-particle
+  the footsteps' lookup), else the record `EMPTY`; none when no entry fits. Dry (the point above the water height): only when the ground ray's hit has the null handle (the
+  movement's `+0x340` hit handle type `0xb`: the terrain, not a building floor or foliage; the field `FUN_14065df80` reads for the footsteps' building branch); the biome's
+  `ground effects` slot for the overlay channel at the point (`FUN_140a16f70`, the footsteps' channel pick: `FUN_140a16c90`, A above `0xA0` 4, B 3, G 2, R 2, else 0; nothing while the
+  tile loads), fired when the speed (character vfunc `0x48`: the movement's speed at `+0xb8`, 0 for a character that is down or dead) is at least its min speed and `rand()`/32768 is at
+  most its chance; a bone puts the point on the terrain (the height at the bone's X/Z), no bone leaves the character's position. Slots (biome loader `FUN_140a13750`): an entry's v0
+  above 2 is lowered by one, then 0..4 picks the slot, a later entry for a slot replaces an earlier one; v1 is the min speed, v2 x 0.01 the chance. The effect spawns only inside the
+  camera frustum widened by 100 units (`FUN_140a08c00`, `FUN_1406ae7b0`, the constant at `DAT_141683250`), through a pool of 100 instances (the world's constructor `FUN_140a0ccd0`;
+  none spawns when it is full) that retires an instance when its particle system has stopped or it is 10 s old (`FUN_14040be00`, the float at `DAT_14167fad4`); the instance stands at
+  the point with no turn. Data (`gamedata.base` dump, **Verified** by probe): 59 BIOMES list `ground effects`, four entries each: EFFECT records `Dustkick01`, `01a`, `01b`, `01c`,
+  which all name the one particle system `Dustkick01`; v0 0..5, min speed 0, 4, 30, 40 or 130 (mostly 40 or 30, running; 0 kicks for a standing farmer too), chance always 100; slot
+  1 is never read (no overlay pixel gives channel 1). 70 list `water effects` (`Watersplash` v0 0, `WadingFoam` v0 3; v1 0); a farmer standing at work (speed 0) kicks dust only
+  where the slot's min speed is 0 (**Observed**). The EFFECT records (**Verified**, probe of the user's load order): `Watersplash` is system `Footsplashes01` (three one-particle
   crowns, 7 to 14 units, standing on the surface, gone in 0.2 to 0.5 s), `WadingFoam` is `WadingFoam` (flat foam on the water: a base for 1 s, splashes for 0.8 to 2 s, a residue
-  for 11 s that wanders 0.4 units a tenth of a second and turns, emitted over 0.4 to 2.5 s). So a foot whose ankle bone stays above the water (ankle-deep water) shows nothing.
+  for 11 s that wanders 0.4 units a tenth of a second and turns; each emitter is forced, one burst at its start, the 0.4 to 2.5 s `duration` only ends it). So a foot whose ankle bone
+  stays above the water (ankle-deep water) shows no water effect; it takes the dry half.
   **Meitou** (`GameHost.Splashes`): the water half, as above, on the snapshot's dominant layer with the sounds' cursor; the system is fired with `ParticleRenderer.Burst` for 3 s
-  (its emitters stop at their own `duration`); the speed is the shown snapshots' horizontal speed. The dry half (dust) and the farms are not done.
+  (its emitters stop at their own `duration`); the speed is the shown snapshots' horizontal distance over the ticks between them. The dry half is `Effects.DryGroundEffects`: the
+  biome's slots, a character on a building floor refused (`CharacterAudio.FloorSurface`, the null-handle test), the 100-instance pool kept by counting kicks for 10 s of the frame
+  clock, `Dustkick01` fired with `Burst` for 0.25 s (its emitters are forced). With `contactfoam` a foot over wet ground takes the shallow splash instead of dust. A machine's ground
+  events (the farms' `Impact Farm`, no bone, speed 0) ride on the operator's clip as its sounds do; only a biome slot with min speed 0 kicks dust for a farmer (**Verified**:
+  `FUN_140065330` reads the biome only). Debug: `ground-at`, `dust-stats` ([agent-playtest](agent-playtest.md)). **Observed** (`t_desert_gold`, a runner on sand): a faint cloud
+  behind each step, 9 kicks in about a second of running.
 
 Meitou (`CharacterSounds`, `AnimationSoundEvents`, `GroundSurfaces` in `Meitou.Game.Audio`; `CharacterAudio`): characters within 1100 units of the eye get an object (dropped past 1400, or when they leave the snapshot);
 the host hands each character's place, facing, speed (horizontal distance between the last two snapshots over the tick) and animation layers (`AnimationLayer.Length` and `.Definition`, added to the snapshot) every frame.
@@ -600,6 +611,22 @@ and `Game_Speed_*` events) and 6 of the 14 in `VO_Bank` (`VO_Creature_*`, `VO_Ge
 `Impacts`, `Break`, `Armor_Worn`, `Surface_Material`, `Consume`, `Notifications`, `Stats_Preview`, `Inventory_Items`, `Building_Place`, `Buildings_Click`,
 `Emitters` (`2488FB4C`; values such as `Furnace`, `Stone_Processor`, `Generator`, `Research_Bench`); game parameters `Movement_Speed` (`5A988332`) and others.
 Open for the next wave: which event each game action posts and on which object, and the footstep switches. Interiors and emitters: [Interiors](#interiors), [Point emitters](#point-emitters).
+
+### Mod sound banks
+
+**Observed** in RE_Kenshi's source (`Sound.cpp` `LoadQueuedBanks`, `Settings.cpp`): the banks the enabled mods' `RE_Kenshi.json` list
+under `SoundBanks` ([data entries](formats/rekenshi.md#data-entries)) load after `Init.bnk` and before every game bank, mod by mod in load
+order; each is looked for under `data/audio/` and, when not there, at the path as written (`$(modroot "Name")` expanded). Its source
+says the order is so that mods' sounds override the game's. Mod banks are never unloaded.
+
+Meitou (`ReKenshiFile.ModSoundBanks`, `WwisePlayer`) does the same: mod banks are read on workers at start and handed to the audio thread in
+order, and every game bank waits for them before its own hand-over; the player keeps the first object and recording of an id, so a mod
+bank's event, node or recording with a game bank's id replaces the game's. Their recordings may be Wwise Vorbis or 16-bit PCM (codec
+`0x00010001`, [PCM](formats/wwise-bnk.md#pcm)); a recording of another codec, or one without a sample frame, is logged and left out with
+the rest of its bank kept, a bank that cannot be read is left out whole, an entry that is no path loses that bank alone, and the game's
+sound goes on. **Observed** with FSE-ShoddyMuskets (Workshop 3090308700): its bank is found through `$(modroot)`,
+its 9 PCM recordings decode, and the 9 events it adds are the names its ANIMATION_EVENT records post (`Musket1` to `Musket5`,
+`MusketDouble`, `MusketFinish1` to `3`), which [animation events](#characters-footsteps-combat-voices) play.
 
 ### Not done
 

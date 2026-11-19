@@ -354,9 +354,10 @@ static class NavmeshTool
     }
 
     /// <summary>
-    /// Why no path was found: the start's and the goal's polygons, and whether the goal is reachable at all without clearance.
+    /// Why no path was found: the start's and the goal's polygons, and whether the goal is reachable at all without clearance; with
+    /// <c>--verbose</c> or <paramref name="verbose"/>, the chain of polygons to it.
     /// </summary>
-    static void DescribeNoPath(NavWorld world, Vector3 from, Vector3 to)
+    internal static void DescribeNoPath(NavWorld world, Vector3 from, Vector3 to, bool verbose = false)
     {
         bool okStart = world.TryFindPolygon(from, NavQuery.StartSnap, out var sref, out var sp);
         bool okGoal = world.TryFindPolygon(to, NavQuery.GoalSnap, out var gref, out var gp);
@@ -375,7 +376,7 @@ static class NavmeshTool
             + $"goal reachable: {okGoal && seen.ContainsKey(gref.Key)}");
         // --verbose: the chain of polygon centres the clearance-free search took to the goal, each with the widest agent that enters it from the
         // polygon before it (the one below it in the list).
-        if (s_verbose && okGoal && seen.ContainsKey(gref.Key))
+        if ((s_verbose || verbose) && okGoal && seen.ContainsKey(gref.Key))
         {
             var query = new NavQuery(world);
             for (NavRef? c = gref; c is { } r; c = seen[r.Key])
@@ -769,7 +770,8 @@ static class NavmeshTool
         var file = MapFeatureFile.Open(install);
         int index = g.Zone.Y * WorldLayout.ZoneCount + g.Zone.X;
         float cos = MathF.Cos(40 * MathF.PI / 180);
-        foreach (var f in file.Zones[index])
+        var placed = index < file.Zones.Count ? file.Zones[index] : [];   // a file with another magic or zone count has no features
+        foreach (var f in placed)
         {
             if (db.Find(f.StringId) is not { } record || record.GetPath("collision") is not { Length: > 0 } path
                     || collision.Get(path) is not { } prepared) continue;
