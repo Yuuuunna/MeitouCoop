@@ -60,7 +60,8 @@ public sealed class SaveWriter(SaveGame game)
     }
 
     /// <summary>
-    /// Every file of the save into the working folder: the record files, the portraits, the mod data and the level edits.
+    /// Every file of the save into the working folder: the record files, the rejected files carried on as read, the portraits, the mod data and
+    /// the level edits.
     /// </summary>
     void WriteFiles(string work)
     {
@@ -68,6 +69,8 @@ public sealed class SaveWriter(SaveGame game)
         Directory.CreateDirectory(Path.Combine(work, SaveFolder.ZoneDirectory));
         foreach (var (name, file) in _game.AllFiles())
             file.WriteFile(Path.Combine(work, name.Replace('/', Path.DirectorySeparatorChar)));
+        foreach (var (name, bytes) in _game.CarriedRejects())
+            File.WriteAllBytes(Path.Combine(work, name.Replace('/', Path.DirectorySeparatorChar)), bytes);
         if (_game.Portraits is not null) File.WriteAllBytes(Path.Combine(work, SaveFolder.PortraitName), _game.Portraits);
         WriteModData(work);
         WriteLevelEdits(work);
@@ -76,16 +79,18 @@ public sealed class SaveWriter(SaveGame game)
     }
 
     /// <summary>
-    /// The code mods' sidecar files and the mod environment, when the save has any.
+    /// The code mods' sidecar files, the mod environment and the characters' lasting ids, when the save has any.
     /// </summary>
     void WriteModData(string work)
     {
-        if (_game.ModData.Count == 0 && _game.ModEnvironment is null) return;
+        if (_game.ModData.Count == 0 && _game.ModEnvironment is null && _game.LastingIds is null) return;
         Directory.CreateDirectory(Path.Combine(work, SaveFolder.ModDataDirectory));
         foreach (var (id, bytes) in _game.ModData)
             File.WriteAllBytes(Path.Combine(work, SaveFolder.ModDataName(id).Replace('/', Path.DirectorySeparatorChar)), bytes);
         if (_game.ModEnvironment is not null)
             File.WriteAllBytes(Path.Combine(work, SaveFolder.ModEnvironmentName.Replace('/', Path.DirectorySeparatorChar)), _game.ModEnvironment);
+        if (_game.LastingIds is not null)
+            File.WriteAllBytes(Path.Combine(work, SaveFolder.LastingIdsName.Replace('/', Path.DirectorySeparatorChar)), _game.LastingIds);
     }
 
     /// <summary>

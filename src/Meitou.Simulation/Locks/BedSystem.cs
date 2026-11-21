@@ -58,10 +58,16 @@ public sealed class BedTrip
         h.Add(Body);
         h.Add(Fixed);
         h.Add(Tries);
+        if (Trusted) h.Add(0x54727374);
         if (Control is
             {
             } grant) { h.Add(grant.Player.Value); h.Add(grant.Entity.Value); h.Add(grant.Revision); h.Add(Membership); h.Add(Owner); h.Add(BodyFaction); }
     }
+
+    /// <summary>
+    /// The trip was started by a trusted server order, so it needs no player-issued grant.
+    /// </summary>
+    internal bool Trusted { get; init; }
 
     internal SimCommand? Request { get; set; }
 
@@ -123,7 +129,7 @@ public sealed class BedSettings
 /// system).
 /// </summary>
 public sealed class BedSystem(PopulationData data, BedSettings? settings = null) : ITickSystem, IStateHashed, ITaskOwner, ITaskHandler, IOrderOwner,
-        IDecisionOwner
+        IDecisionOwner, IDutyGoalOwner
 {
     /// <summary>
     /// The bed settings.
@@ -290,6 +296,11 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
     object? IOrderOwner.LoadDetail(World world, CharacterId self, TaskType row, int kind, CharacterId target) => kind == 1 ? Named : null;
 
     /// <summary>
+    /// Registers goal 208 Getting out of bed! (<see cref="WakeGoals"/>).
+    /// </summary>
+    void IDutyGoalOwner.RegisterGoals(DutyGoals goals) => new WakeGoals().Register(goals);
+
+    /// <summary>
     /// Registers the bed's act-outs: sleeping and the put-in rows.
     /// </summary>
     public void RegisterTasks(TaskHandlers tasks)
@@ -357,7 +368,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         var id = table.IdOf(slot);
         var c = table.Cold(slot)!;
         _trips.RemoveAll(t => t.Character == id);
-        if (world.Players.RequiresExplicitControl && c.IsPlayer && world.Players.ControlOf(id) is null) return;
+        if (world.Players.RequiresExplicitControl && c.IsPlayer && world.Players.ControlOf(id) is null && !PlayerOrders.Trusted(world, slot)) return;
         if (c.InSomething == HeldState.Bed && c.InWhat != bed.Id) world.Fixtures.LeaveBed(world, id);
         if (c.InSomething == HeldState.Bed)
         {
@@ -365,7 +376,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
             return;
         }
 
-        var trip = new BedTrip { Character = id, Bed = bed.Id, Fixed = fixedBed };
+        var trip = Trip(world, id, bed, CharacterId.None, fixedBed, request);
         _trips.Add(trip);
         WalkTo(world, slot, bed);
         TaskStart.Step(table, slot, CharacterTask.Sleep);
@@ -381,7 +392,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         var id = table.IdOf(slot);
         var c = table.Cold(slot)!;
         _trips.RemoveAll(t => t.Character == id);
-        if (world.Players.RequiresExplicitControl && c.IsPlayer && world.Players.ControlOf(id) is null) return;
+        if (world.Players.RequiresExplicitControl && c.IsPlayer && world.Players.ControlOf(id) is null && !PlayerOrders.Trusted(world, slot)) return;
         var trip = Trip(world, id, bed, c.Carrying, fixedBed, request);
         _trips.Add(trip);
         WalkTo(world, slot, bed);
@@ -439,7 +450,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
         var table = world.Characters;
         if (!table.TryResolveNext(t.Character, out int s) || table.Cold(s) is not { } c || !CanWalk(c)) return false;
         if (t.Request is { } request && !world.MayOrder(request, t.Character)) return false;
-        if (world.Players.RequiresExplicitControl && c.IsPlayer && (t.Control is not { } control || !world.Players.Validate(control)
+        if (!t.Trusted && world.Players.RequiresExplicitControl && c.IsPlayer && (t.Control is not { } control || !world.Players.Validate(control)
             || t.Membership == 0 || world.Players.Find(control.Player)?.MembershipRevision(c.Faction) != t.Membership)) return false;
         if (t.Target is { } target && (!ReferenceEquals(world.Fixtures.Find(t.Bed), target) || target.Owner != t.Owner || world.Fixtures.RevisionOf(target) != t.FixtureRevision)) return false;
         if (t.BodyCold is { } bodyCold && (!table.TryResolveNext(t.Body, out int bodySlot) || !ReferenceEquals(table.Cold(bodySlot), bodyCold) || bodyCold.Faction != t.BodyFaction)) return false;
@@ -765,7 +776,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
     /// character carrying a body whose faction is not hostile to its own and that is no animal lays it in the bed the bed search finds (row 106
     /// registers the bed search <c>FUN_1408cfe00</c> as its finder, <b>Verified</b>). It runs while its walk does.
     /// </summary>
-    public void RegisterSources(DecisionSystem decisions) => decisions.RegisterJob(TaskType.FindBedAndPutIn, new PutInJob(this));
+    void IDecisionOwner.RegisterSources(DecisionSystem decisions) => decisions.RegisterJob(TaskType.FindBedAndPutIn, new PutInJob(this));
 
     /// <summary>
     /// The put-in-bed job's contributor (<see cref="IJobSource"/>).
@@ -924,6 +935,7 @@ public sealed class BedSystem(PopulationData data, BedSettings? settings = null)
             Body = body,
             Fixed = fixedBed,
             Request = request,
+            Trusted = world.Characters.TryResolveNext(actor, out int worker) && PlayerOrders.Trusted(world, worker),
             Control = grant,
             Membership = grant is { } g ? world.Players.Find(g.Player)?.MembershipRevision(g.Faction) ?? 0 : 0,
             Target = bed,

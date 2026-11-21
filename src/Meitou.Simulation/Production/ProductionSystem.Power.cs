@@ -80,6 +80,16 @@ public sealed partial class ProductionSystem
     /// current list so relaid or restored layouts never leave stale objects in the index.
     /// </summary>
     (PopulationData Data, int Revision, Dictionary<string, TownSite> ByKey)? _levelBuildings;
+    /// <summary>
+    /// The level towns' buildings and layout objects that can draw or generate power, which their frames walk (<see cref="NpcDraws"/>,
+    /// <see cref="NpcOutput"/>).
+    /// </summary>
+    LevelPowerParts? _levelParts;
+
+    /// <summary>
+    /// <see cref="_levelParts"/>, made on first use.
+    /// </summary>
+    LevelPowerParts LevelParts => _levelParts ??= new LevelPowerParts(Data);
 
     /// <summary>
     /// The research upgrade of the machine's building: the player's only (<c>FUN_14082ec70</c>).
@@ -366,13 +376,15 @@ public sealed partial class ProductionSystem
         var draws = new List<PseudoDraw>();
         if (world.SystemOf<PopulationSystem>()?.Data.Sites.FirstOrDefault(t => t.Index == index) is not { } site) return draws;
 
-        foreach (var b in site.Buildings)
+        // Only the buildings whose record or layout objects can draw: the rest of the list adds nothing.
+        foreach (var (b, own, pieces) in LevelParts.Draws(site))
         {
             if (LevelDestroyed(world, b)) continue;
 
-            if (Draw(world, b.BuildingId, outdoors: true) is { } draw) draws.Add(new PseudoDraw(b.Key, draw, LevelGetsBattery(world, site, b)));
-            if (world.Fixtures.IsDestroyed(b) || world.Fixtures.IsEmptied(b.Key)) continue;
-            foreach (var item in b.LayoutBuildings)
+            if (own && Draw(world, b.BuildingId, outdoors: true) is { } draw) draws.Add(new PseudoDraw(b.Key, draw, LevelGetsBattery(world, site, b)));
+            if (pieces.Length == 0 || world.Fixtures.IsDestroyed(b) || world.Fixtures.IsEmptied(b.Key)) continue;   // a ruin holds no layout objects (FUN_140557280)
+
+            foreach (var item in pieces)
                 if (Draw(world, item.RecordId, item.Outdoors) is { } drawn) draws.Add(new PseudoDraw(item.Id, drawn, PieceGetsBattery(world, item)));
         }
 
@@ -596,30 +608,33 @@ public sealed partial class ProductionSystem
     {
         if (world.SystemOf<PopulationSystem>()?.Data.Sites.FirstOrDefault(t => t.Index == index) is not { } site) return 0;
 
+        // Only the buildings whose record or layout objects generate: the rest of the list adds nothing.
         float total = 0;
-        foreach (var b in site.Buildings)
+        foreach (var (b, own, pieces) in LevelParts.Generators(site))
         {
             if (LevelDestroyed(world, b)) continue;
 
-            if (Data(b.BuildingId) is { IsGenerator: true } data)
+            if (own && Data(b.BuildingId) is { } data)
                 total += Generated(data, NpcGeneratorHealth(world, site, b), data.IsWind ? NpcWind(world, b) : 0);
 
-            total += LayoutOutput(world, b);
+            total += LayoutOutput(world, b, pieces);
         }
 
         return total;
     }
 
     /// <summary>
-    /// Generators belonging to a standing, furnished house contribute to its town; ruined and purchased interiors have none.
+    /// What the generators among a standing building's layout objects (<paramref name="pieces"/>) give now; none for a ruin, which holds no layout
+    /// objects (<c>FUN_140557280</c>).
     /// </summary>
-    float LayoutOutput(World world, TownBuilding house)
+    float LayoutOutput(World world, TownBuilding b, TownLayoutBuilding[] pieces)
     {
-        if (world.Fixtures.IsDestroyed(house) || world.Fixtures.IsEmptied(house.Key)) return 0;
+        if (pieces.Length == 0 || world.Fixtures.IsDestroyed(b) || world.Fixtures.IsEmptied(b.Key)) return 0;
+
         float total = 0;
-        foreach (var piece in house.LayoutBuildings)
+        foreach (var piece in pieces)
         {
-            if (Data(piece.RecordId) is not { IsGenerator: true } data) continue;
+            var data = Data(piece.RecordId)!;
             total += Generated(data, PieceGeneratorHealth(world, piece), data.IsWind ? PieceWind(world, piece) : 0);
         }
         return total;
@@ -680,7 +695,8 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// The saved owner when it resolves, otherwise the level owner (player override or town faction), using the same rules as fixture registration.
+    /// Whether the player owns it: by the saved owner when it resolves, otherwise by the level owner (player override, the residents' faction or the
+    /// town's).
     /// </summary>
     static bool PlayerGeneratorOwner(World world, TownSite town, TownBuilding b, Meitou.Data.Fcs.FcsRecord? saved)
     {

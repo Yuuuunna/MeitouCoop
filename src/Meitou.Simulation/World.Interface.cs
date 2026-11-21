@@ -44,6 +44,7 @@ public sealed partial class World
             or DebugGiveItem or DebugPlaceItem or DebugAnimalAge
             or Items.PickUpItemOrder or Trading.OpenPlayerTrade or Trading.PlayerTradeCommand or Carrying.CloseLoot
             or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder);
+        due = Simulation.Player.OrderGiver.SkipGettingUp(this, due);
         if (due.Count == 0 && authorityCount == 0)
         {
             RuntimeBoundary?.Invoke(this);

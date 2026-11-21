@@ -1,11 +1,13 @@
 using System.Globalization;
 using System.Numerics;
 using System.Text;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Dialogue;
 using Meitou.Simulation.Aggro;
 using Meitou.Simulation.Ai;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Movement;
+using Meitou.Simulation.Player;
 
 namespace Meitou.Simulation.Dialogue;
 
@@ -88,7 +90,7 @@ public sealed partial class DialogueSystem
     /// </summary>
     bool RunActions(World world, Conversation c, DialogueNode line, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold? tc)
     {
-        bool takeOver = false, enslave = false;
+        bool takeOver = false;
         foreach (var effect in line.Effects)
         {
             switch (effect.Action)
@@ -112,10 +114,10 @@ public sealed partial class DialogueSystem
                     break;
                 case DialogueActions.AssignBounty or DialogueActions.CrimeAlarm or DialogueActions.PayBounty
                     or DialogueActions.ArrestTargetsCarriedPerson or DialogueActions.EnslaveTargetsCarriedPerson or DialogueActions.ClearBounty:
-                    LawEffect(world, effect, me, mc, target, tc, ref takeOver, ref enslave);
+                    LawEffect(world, effect, me, mc, target, tc, ref takeOver);
                     break;
                 case DialogueActions.ArrestTarget:
-                    if (tc is not null) ArrestEffect(world, line, me, mc, target, tc);
+                    if (tc is not null) ArrestEffect(world, me, mc, target, tc);
                     break;
                 case DialogueActions.GiveTargetMySlaves or DialogueActions.SurrenderNonHumans or DialogueActions.TagEscapedSlave
                     or DialogueActions.RemoveSlaveStatus:
@@ -135,7 +137,7 @@ public sealed partial class DialogueSystem
             }
         }
 
-        if (takeOver) Arrests?.TakeOver(world, me, target, enslave);
+        if (takeOver) Arrests?.TakeOver(world, me, target);
         return true;
     }
 
@@ -161,9 +163,9 @@ public sealed partial class DialogueSystem
         {
             case DialogueActions.Trade:
                 // The window opens whatever the speaker's squad stocks (FUN_1409524f0 tests no stock); a squad with none trades from an empty one
-                // (TradeSystem.StockFor).
+                // (TradeSystem.StockFor). It opens where the conversation stands, with no order (FUN_140791830 only queues the window).
                 c.Ended = true;
-                if (mc is { SquadId: >= 0 }) DeferPlayer(world, c, new Trading.OpenTrade(target, me) { Tick = world.Tick + 1 });
+                if (mc is { SquadId: >= 0 }) DeferPlayer(world, c, new Trading.OpenTradeNow(target, me) { Tick = world.Tick + 1 });
                 return true;
             case DialogueActions.CharacterEditor:
                 c.Ended = true;
@@ -240,12 +242,12 @@ public sealed partial class DialogueSystem
             case DialogueActions.AttackChaseForever or DialogueActions.AttackStayNearHome:
                 if (mc is not null && tc is not null) FlagFrom(world, mc, me, target, tc, MemoryTag.TempEnemy);
                 Aggro?.Notice(world, me, target);
-                Attack(world, me, target);
+                Attack(world, me, mc, target, effect.Action == DialogueActions.AttackStayNearHome);
                 break;
             case DialogueActions.AttackIfNoCoexist when mc is not null && tc is not null && !_data.Relations.Coexists(mc.Faction, tc.Faction):
                 FlagFrom(world, mc, me, target, tc, MemoryTag.TempEnemy);
                 Aggro?.Notice(world, me, target);
-                Attack(world, me, target);
+                Attack(world, me, mc, target, nearHome: false);
                 break;
             case DialogueActions.RememberCharacter when mc is not null && tc is not null:
                 Memory.Remember(world, mc.SquadId, target, MemoryTag.None);
@@ -279,22 +281,15 @@ public sealed partial class DialogueSystem
 
     /// <summary>
     /// The law effects: bounties assigned, paid and cleared, the crime alarm, arrests, and the carried person handed over (set in
-    /// <paramref name="takeOver"/> and <paramref name="enslave"/>, done after the line's other effects).
+    /// <paramref name="takeOver"/>, done after the line's other effects).
     /// </summary>
-    void LawEffect(World world, DialogueEffect effect, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold? tc, ref bool takeOver,
-        ref bool enslave)
+    void LawEffect(World world, DialogueEffect effect, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold? tc, ref bool takeOver)
     {
         switch (effect.Action)
         {
             case DialogueActions.AssignBounty when tc is not null && mc is not null && effect.Value > 0 && _data.Relations.Contains(mc.Faction):
-                {
-                    // FUN_140853e20 (Verified): marks the pending crime booked, then adds the amount to the speaker's faction's booking entry
-                    // (none kept without one).
-                    if (tc.Pending is { } pending) pending.Booked = true;
-                    if (Crime.CrimeFactions.BookingKey(_data.Relations, mc.Faction) is var key and >= 0)
-                        (tc.Bounties ??= new Crime.BountyLedger()).Get(key, _data.Factions[key].Name).Amount += effect.Value;
-                    break;
-                }
+                AssignBounty(world, effect.Value, me, mc, target, tc);
+                break;
             // Without an amount only a speaker whose CHARACTER has `assigns bounties` books the target's pending crime
             // (Character::canAssignBounties, Verified).
             case DialogueActions.AssignBounty when tc is not null && mc is not null && effect.Value <= 0 && Arrests is { } booker
@@ -305,6 +300,7 @@ public sealed partial class DialogueSystem
             case DialogueActions.CrimeAlarm when tc is not null && mc is not null && Arrests is { } law
                 && world.Characters.TryResolveNext(me, out int alarmer) && world.Characters.TryResolveNext(target, out int alarmed):
                 law.Crimes.Alarm(world, alarmer, alarmed);
+                AlarmRun(world, me, mc, alarmer, alarmed, target);
                 break;
             case DialogueActions.PayBounty:
                 Arrests?.PayBounty(world, me, target);
@@ -319,35 +315,57 @@ public sealed partial class DialogueSystem
                 takeOver = true;
                 break;
             case DialogueActions.EnslaveTargetsCarriedPerson when tc is { Carrying.IsNone: false }:
-                takeOver = enslave = true;
+                // the same 213 and 112 as DA 30, any town: the caged body is a captive for the town's slavers (183), not enslaved here
+                takeOver = true;
                 break;
-            case DialogueActions.ClearBounty when tc?.Bounties is { } ledger && mc is not null:
-                if (ledger.BookedFor(_data.Relations, mc.Faction) is { } entry) ledger.Remove(entry);
-                if (Position(world, target) is { } at && TownAt(at) is >= 0 and var town && town < _data.SiteFactions.Count
-                    && ledger.BookedFor(_data.Relations, _data.SiteFactions[town]) is { } local)
-                    ledger.Remove(local);
-                if (ledger.Count == 0) tc.Bounties = null;
-                tc.Recognition = 0;
+            case DialogueActions.ClearBounty when tc?.Bounties is { } ledger && mc is not null
+                && world.Characters.TryResolveNext(target, out int wanted):
+                ClearBounties(world, mc, target, wanted, tc, ledger);
                 break;
         }
     }
 
     /// <summary>
-    /// <c>DA_ARREST_TARGET</c> (29): the speaker captures the target in his own town, else attacks it, and the squads remember it. The capture is
-    /// leashed to the towns (<see cref="Crime.Arrest.Leashed"/>) unless <paramref name="line"/> also attacks (DA 6 / 7, the small-bounty runner's
-    /// line, docs/game/dialogue.md: in which order the original applies the two is <b>Unknown</b>, and that chase has no leash).
+    /// <c>DA_ASSIGN_BOUNTY</c> with an amount (<c>FUN_140853e20</c>, <b>Verified</b>): marks the target's pending crime booked, then adds the amount
+    /// to the speaker's faction's booking entry (none kept without one), reported as a booking with the speaker as the witness
+    /// (<see cref="Crime.CrimeEventKind.Booked"/>).
     /// </summary>
-    void ArrestEffect(World world, DialogueNode line, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold tc)
+    void AssignBounty(World world, int amount, CharacterId me, CharacterCold mc, CharacterId target, CharacterCold tc)
     {
-        bool capture = Arrests?.CapturesInTown(world, me, tc) == true;   // one answer for the memory and the task
-        ArrestMemory(world, me, mc, target, tc, capture);
-        Arrests?.ArrestFromDialogue(world, me, target, capture, leashed: !line.Effects.Any(Attacks));
+        if (tc.Pending is { } pending) pending.Booked = true;
+        if (Crime.CrimeFactions.BookingKey(_data.Relations, mc.Faction) is not (var key and >= 0)) return;
+
+        var entry = (tc.Bounties ??= new Crime.BountyLedger()).Get(key, _data.Factions[key].Name);
+        entry.Amount += amount;
+        if (!world.Characters.TryResolveNext(target, out int culprit)) return;
+
+        var code = tc.Pending?.Code ?? Crime.CrimeCode.None;
+        world.SystemOf<Crime.CrimeSystem>()?.Note(world, Crime.CrimeEventKind.Booked, culprit, code, key, entry.Amount, me);
     }
 
     /// <summary>
-    /// Whether the effect is one of the dialogue's attacks on the target (DA 6 chase forever, DA 7 stay near home).
+    /// <c>DA_CLEAR_BOUNTY</c>: the target's entries of the speaker's faction and of the town it stands in go (each reported as cleared,
+    /// <see cref="Crime.CrimeEventKind.Cleared"/>), and its recognition.
     /// </summary>
-    static bool Attacks(DialogueEffect effect) => effect.Action is DialogueActions.AttackChaseForever or DialogueActions.AttackStayNearHome;
+    void ClearBounties(World world, CharacterCold mc, CharacterId target, int wanted, CharacterCold tc, Crime.BountyLedger ledger)
+    {
+        if (ledger.BookedFor(_data.Relations, mc.Faction) is { } entry)
+            Crime.CrimeSystem.ClearBounty(world, wanted, tc, ledger, entry);
+        if (Position(world, target) is { } at && TownAt(at) is >= 0 and var town && town < _data.SiteFactions.Count
+            && ledger.BookedFor(_data.Relations, _data.SiteFactions[town]) is { } local)
+            Crime.CrimeSystem.ClearBounty(world, wanted, tc, ledger, local);
+        tc.Recognition = 0;
+    }
+
+    /// <summary>
+    /// <c>DA_ARREST_TARGET</c> (29): the speaker is ordered to capture the target in his own town, else to attack it, and the squads remember it.
+    /// </summary>
+    void ArrestEffect(World world, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold tc)
+    {
+        bool capture = Arrests?.CapturesInTown(world, me, tc) == true;   // one answer for the memory and the orders
+        ArrestMemory(world, me, mc, target, tc, capture);
+        Arrests?.ArrestFromDialogue(world, me, target, capture);
+    }
 
     /// <summary>
     /// The slave effects: the speaker's slaves given to the target, non-humans surrendered, a slave tagged escaped or freed.
@@ -357,7 +375,7 @@ public sealed partial class DialogueSystem
         switch (effect.Action)
         {
             case DialogueActions.GiveTargetMySlaves when tc is not null && mc is not null:
-                GiveSlaves(world, c, me, mc, tc);
+                GiveSlaves(world, mc, tc);
                 break;
             case DialogueActions.SurrenderNonHumans when tc is not null && mc is not null:
                 SurrenderNonHumans(world, me, mc, tc);
@@ -382,11 +400,11 @@ public sealed partial class DialogueSystem
             case DialogueActions.TalkToLeader when tc is not null && mc is not null:
                 TalkToLeader(world, c, mc, target, tc);
                 break;
-            case DialogueActions.FollowWhileTalking when !target.IsNone && mc is { IsPlayer: false }:
-                _followers.Add(world, me, target);
+            case DialogueActions.FollowWhileTalking when !target.IsNone && mc is not null:
+                Order(world, me, TaskType.FollowWhileTalking, target);
                 break;
-            case DialogueActions.ThugHunter when !target.IsNone && mc is { IsPlayer: false }:
-                _stalkers.Add(me, target);
+            case DialogueActions.ThugHunter when !target.IsNone && mc is not null:
+                Order(world, me, TaskType.TownStalker, target);
                 break;
             case DialogueActions.RunAway when mc is not null && tc is not null:
                 RunAway(world, me, mc, target, tc);
@@ -451,7 +469,7 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// <c>DA_TALK_TO_LEADER</c> (2, <c>FUN_140680560</c>): for a player-faction target, the speaker squad's leader gets task 102 on it with event 1,
+    /// <c>DA_TALK_TO_LEADER</c> (2, <c>FUN_140680560</c>): for a player-faction target, the speaker squad's leader gets order 102 on it (clear),
     /// so it walks up and opens a conversation (<see cref="ApproachQueue"/>). Nothing when the leader is already in the open player conversation
     /// (its line would send it again); a bubble speaker that leads still walks up.
     /// </summary>
@@ -459,16 +477,16 @@ public sealed partial class DialogueSystem
     {
         if (!world.IsPlayerFaction(tc.Faction) && !tc.IsPlayer || mc.SquadId < 0) return;
         if (world.Squads.Find(mc.SquadId) is not { Leader: { IsNone: false } leader }) return;
+
         string who = $"{EventLog.Who(world, leader)} to {EventLog.Who(world, target)}";
-        if (HoldsNpc(leader) || _npcApproaches.Has(leader))
+        if (HoldsNpc(leader))
         {
-            world.DialogueLines.Line(world, "walkup", $"{who}: DA 2 ignored, " + (HoldsNpc(leader) ? "already talking" : "already walking up"));
+            world.DialogueLines.Line(world, "walkup", $"{who}: DA 2 ignored, already talking");
             return;
         }
-        if (!world.Characters.TryResolveNext(leader, out int l) || !Awake(world.Characters, l)) return;
-        world.DialogueLines.Line(world, "walkup", $"{who}: starts walking up (DA 2)");
-        _npcApproaches.Add(world, leader, target);
-        Hold(world, l);
+
+        world.DialogueLines.Line(world, "walkup", $"{who}: ordered to walk up (DA 2)");
+        Order(world, leader, TaskType.SeekAndTalkAndSendSignal, target);
     }
 
     /// <summary>
@@ -509,22 +527,20 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// The speaker alone is stopped (orders cleared) and attacks the target from the next tick (DA 6/55/57, docs/game/dialogue.md).
-    /// Its squad mates are not ordered: they follow through the TEMP ENEMY tag the caller writes.
+    /// DA 6 / 55 / 57's order (<c>FUN_140680560</c>, <b>Verified</b>): the speaker is stopped (<c>FUN_1405c8330</c>, <see cref="StopSpeaker"/>), then
+    /// gets alone order 101 Assault (55: 248 Attacking squad) on the target (clear), but a speaker of the player's faction holding any order gets
+    /// none (its squad's tag, written by the caller, stands either way). Its mates follow through that tag. The stop keeps the queue, whose front is
+    /// planned again, so a refused speaker's order goes on from its start.
     /// </summary>
-    static void Attack(World world, CharacterId me, CharacterId target)
+    static void Attack(World world, CharacterId me, CharacterCold? mc, CharacterId target, bool nearHome)
     {
         var table = world.Characters;
-        if (!table.TryResolveNext(target, out _) || !table.TryResolveNext(me, out int s) || !table.Next[s].Alive) return;
-        TaskStart.Stand(table, s);
-        if (world.SystemOf<AiSystem>() is { } ai
-            && table.Cold(s) is { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, Fighter.CanAttack: true }
-            && ai.OrderAssault(world, me, target))
-        {
-            return;
-        }
-        if (table.Cold(s) is { IsPlayer: false, IsImprisoned: false, Medical.Incapacitated: false, Fighter.CanAttack: true })
-            world.Defer(new Combat.AttackOrder([me], target) { Tick = world.Tick + 1, Source = TaskSource.Npc, Cause = "a dialogue line (attack)" });
+        if (mc is null || !table.TryResolveNext(target, out _) || !table.TryResolveNext(me, out int s)) return;
+
+        StopSpeaker(world, me);
+        if ((mc.IsPlayer || world.IsPlayerFaction(mc.Faction)) && PlayerOrders.Holds(world, s)) return;
+
+        Order(world, me, nearHome ? TaskType.DefeatSquadLimitChaseRange : TaskType.DefeatSquad, target);
     }
 
     #endregion

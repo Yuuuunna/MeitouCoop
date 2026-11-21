@@ -55,9 +55,21 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
                 MovementSystem.GoToFloor(world, slot, MovementSystem.FloorApproach(world, request.Point), walker.RunSpeed);
             return;
         }
+        if (world.Fixtures.Find(request.Site!) is not { } fixture) return;
         var command = entry?.SourceCommand;
+        if (command is null && world.Players.RequiresExplicitControl)
+        {
+            if (entry?.Trusted != true || world.Players.ControlOf(table.IdOf(slot)) is not { } grant
+                || !world.Players.Validate(grant) || world.Players.Find(grant.Player) is not { } recipient) return;
+            command = new OpenContainerOrder([table.IdOf(slot)], fixture.Id)
+            {
+                Tick = world.Tick, Issuer = grant.Player, ControlGrants = [grant],
+                FactionGrantRevision = recipient.MembershipRevision(fixture.Owner)
+            };
+            if (!ContainerAccess.MayOpenContainer(world, slot, (OpenContainerOrder)command)) return;
+        }
         var player = command is null ? world.PlayerOf(table.IdOf(slot)) : world.CommandPlayer(command);
-        if (player is null || world.Fixtures.Find(request.Site!) is not { } fixture) return;
+        if (player is null) return;
         var member = command?.Issuer is { } issuer ? world.Players.Find(issuer) : null;
         player.ContainerAccess = new(ContainerAccess.NextSession(), command?.Issuer, table.IdOf(slot), fixture, fixture.Owner,
             command?.Issuer is null ? null : world.Players.ControlOf(table.IdOf(slot)),
@@ -154,7 +166,7 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
         foreach (var id in world.CommandCharacters(order, order.Characters))
         {
             if (!table.TryResolveNext(id, out int s)
-                    || table.Cold(s) is not { IsPlayer: true, Medical.Incapacitated: false, Inventory: not null } c
+                    || table.Cold(s) is not { Medical.Incapacitated: false, Inventory: not null } c
                             || !c.CarriedBy.IsNone
                 || !TaskStart.Eligible(world, c, Meitou.Data.Gameplay.Ai.TaskType.Pickup) || !MayPickUp(c, item.Item)) continue;
             float d = Vector2.Distance(Flat(table.Next[s].Position), Flat(item.Position));
@@ -173,16 +185,17 @@ public sealed class PickUps : ITaskHandler, IOrderOwner
     }
 
     /// <summary>
-    /// Collecting an item (row 3) or opening (26) or picking (76) a container: the item or container is still there, and an awake player character
-    /// with an inventory takes it. Container orders remain blocked while caged.
+    /// Collecting an item (row 3) or opening (26) or picking (76) a container: the item or container is still there (else the order leaves the
+    /// queue), and a character that is awake, not carried and has an inventory takes it. Container orders remain blocked while caged. A container's order is anyone's: its act-out opens
+    /// the container window (<see cref="ContainerAccess.StartContainer"/>) for whoever runs it, as <c>Task_Loot_Order</c>'s start opens the
+    /// interface's loot window with no faction test (<c>FUN_140354dc0</c>, <b>Verified</b>).
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
         if (!world.ValidOrderOrQuery(slot, order)) return OrderCheck.Gone;
         var c = world.Characters.Cold(slot)!;
-        if (!c.IsPlayer
-                || (order.Detail is GroundPick pick ? world.GroundItems.Find(pick.Id) is null
-                        : world.Fixtures.Find(order.Site!) is not { Contents: not null }))
+        if (order.Detail is GroundPick pick ? world.GroundItems.Find(pick.Id) is null
+                : world.Fixtures.Find(order.Site!) is not { Contents: not null })
             return OrderCheck.Gone;
         if (order.SourceCommand is Items.OpenContainerOrder container && !ContainerAccess.MayOpenContainer(world, slot, container)) return OrderCheck.Gone;
         if (order.Detail is not GroundPick && c.IsImprisoned) return OrderCheck.Blocked();

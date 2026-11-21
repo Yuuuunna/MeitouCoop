@@ -480,7 +480,8 @@ public sealed record CharacterSnapshot
     /// </summary>
     public bool IsPlayer { get; internal set; }
     /// <summary>
-    /// A member of a squad with a shop (right click trades).
+    /// A member of a squad with a shop (right click trades), or of an independent player squad with a shop a code mod gave it while it is awake
+    /// and not fighting (<see cref="Trading.TradeSystem.KeepsFactionShop"/>).
     /// </summary>
     public bool IsTrader { get; internal set; }
     /// <summary>
@@ -657,6 +658,14 @@ public sealed record CharacterSnapshot
     /// </summary>
     public float Scale { get; internal set; } = 1;
     /// <summary>
+    /// A standing person's name tag height (<c>hull size Y</c> 17 plus 5, see <see cref="TagHeight"/>).
+    /// </summary>
+    public const float PersonTagHeight = 22;
+    /// <summary>
+    /// How far above the feet its name tag, task bar and speech bubble stand (<see cref="Combat.CombatSystem.NameTagHeight"/>).
+    /// </summary>
+    public float TagHeight { get; internal set; } = PersonTagHeight;
+    /// <summary>
     /// How many times farther than the draw distance D the body is drawn: 7 for a gigantic race (<c>FUN_140539020</c>, Verified), else 1.
     /// </summary>
     public float DrawDistanceScale { get; internal set; } = 1;
@@ -735,6 +744,11 @@ public sealed record CharacterSnapshot
     /// The number that turns its portrait camera (<see cref="CharacterCold.PortraitSerial"/>).
     /// </summary>
     public uint PortraitSerial { get; internal set; }
+    /// <summary>
+    /// Its lasting id (<see cref="CharacterCold.LastingId"/>; none until a code mod asked for one), for a mod's interface source, which must not
+    /// touch the world.
+    /// </summary>
+    public LastingId LastingId { get; internal set; }
     /// <summary>
     /// The character this one carries (none when not carrying).
     /// </summary>
@@ -964,7 +978,7 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// </summary>
     public IReadOnlyList<Dialogue.SpeechBubble> Speech { get; init; } = [];
     /// <summary>
-    /// The last thing a conversation asked the host to do (the host acts on each <see cref="Dialogue.DialogueRequest.Id"/> once).
+    /// The last thing a conversation asked the host to do (the host acts on each request object once: ids start again in each world).
     /// </summary>
     public Dialogue.DialogueRequest? DialogueRequest { get; init; }
     /// <summary>

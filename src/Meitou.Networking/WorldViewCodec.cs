@@ -59,6 +59,8 @@ public sealed partial class WorldViewCodec
             }
             if (info.Type == typeof(Meitou.Simulation.Bodies.StatusEffectView))
                 info.Properties.Single(p => p.Name == nameof(Meitou.Simulation.Bodies.StatusEffectView.HoursLeft)).CustomConverter = new EffectHours();
+            if (info.Type == typeof(SoundEvent))
+                info.Properties.Single(p => p.Name == nameof(SoundEvent.Posted)).ShouldSerialize = (_, value) => value is not null;
             if (info.Type == typeof(CharacterSnapshot))
             {
                 info.Properties.Single(p => p.Name == nameof(CharacterSnapshot.DrawYaw)).CustomConverter = new SingleNumber(allowNaN: true);
@@ -174,9 +176,15 @@ public sealed partial class WorldViewCodec
         return bytes;
     }
 
-    internal byte[] EncodeComponent<T>(T value)
+    internal byte[] EncodeComponent<T>(T value) => EncodeBoundedComponent(value, MaximumBytes);
+
+    /// <summary>
+    /// Serializes one component under its own allocation bound, including the event journal's smaller raw JSON retention allowance.
+    /// </summary>
+    internal byte[] EncodeBoundedComponent<T>(T value, int maximumBytes)
     {
-        using var buffer = new BoundedBuffer(MaximumBytes);
+        if (maximumBytes is <= 0 or > MaximumBytes) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+        using var buffer = new BoundedBuffer(maximumBytes);
         JsonSerializer.Serialize(buffer, value, _json);
         return buffer.ToArray();
     }
@@ -408,6 +416,8 @@ public sealed partial class WorldViewCodec
     {
         foreach (var character in snapshot.Characters)
         {
+            if (!float.IsFinite(character.TagHeight) || character.TagHeight < 0)
+                throw new InvalidDataException("Invalid character tag height.");
             if (character.LookAt is { } lookAt) LookAtCodec.Validate(lookAt);
             if (character.Lean is { } lean && !Finite(lean)) throw new InvalidDataException("Invalid bed lean.");
             if (character.Anchor is { } anchor && (anchor.Carrier.IsNone || anchor.Carrier.Slot < 0 || anchor.Carrier.Generation < 0

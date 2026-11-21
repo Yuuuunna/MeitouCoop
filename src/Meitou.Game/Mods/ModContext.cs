@@ -38,7 +38,11 @@ public sealed class ModContext
     readonly Func<long>? _tick;
     readonly PopulationData _initialPopulation;
     readonly Func<PopulationData>? _currentPopulation;
-    internal ModContext(LoadedMod mod, ModRegistry registry, GameDatabase data, PopulationData population, Func<World?> world, IReadOnlyDictionary<string, string>? savedSettings = null, Action<SimCommand>? enqueue = null, Func<long>? tick = null, Func<PopulationData>? currentPopulation = null)
+    /// <summary>
+    /// A remote client's local presentation sink; it never submits a sound to the shared authority.
+    /// </summary>
+    readonly Action<SoundEvent>? _postSound;
+    internal ModContext(LoadedMod mod, ModRegistry registry, GameDatabase data, PopulationData population, Func<World?> world, IReadOnlyDictionary<string, string>? savedSettings = null, Action<SimCommand>? enqueue = null, Func<long>? tick = null, Func<PopulationData>? currentPopulation = null, Action<SoundEvent>? postSound = null)
     {
         Mod = mod;
         this._registry = registry;
@@ -49,6 +53,7 @@ public sealed class ModContext
         Data = data;
         _initialPopulation = population;
         this._currentPopulation = currentPopulation;
+        _postSound = postSound;
         RngPurpose = (RngPurpose)(uint)(Rng.StableHash(mod.Manifest.Id) | 0x8000_0000UL);
     }
 
@@ -146,6 +151,59 @@ public sealed class ModContext
     }
 
     /// <summary>
+    /// Plays a named sound event on a character, from any thread (docs/modding.md "Sounds"): <see cref="World.PostSound(string, CharacterId,
+    /// string?, string?)"/> on the authority or the remote client's local audio; nothing before the first world.
+    /// </summary>
+    public void PostSound(string eventName, CharacterId on, string? switchGroup = null, string? switchValue = null)
+    {
+        CheckSound(eventName, default);
+        if (on.IsNone) return;
+        if (_world() is { } world) world.PostSound(eventName, on, switchGroup, switchValue);
+        else PostLocalSound(SoundKind.Posted, eventName, on, default, switchGroup, switchValue);
+    }
+
+    /// <summary>
+    /// Plays a named sound event at a world point, from any thread: <see cref="World.PostSound(string, System.Numerics.Vector3, string?,
+    /// string?)"/> on the authority or the remote client's local audio; nothing before the first world.
+    /// </summary>
+    public void PostSound(string eventName, System.Numerics.Vector3 at, string? switchGroup = null, string? switchValue = null)
+    {
+        CheckSound(eventName, at);
+        if (_world() is { } world) world.PostSound(eventName, at, switchGroup, switchValue);
+        else PostLocalSound(SoundKind.Posted, eventName, CharacterId.None, at, switchGroup, switchValue);
+    }
+
+    /// <summary>
+    /// Plays a named sound event on the interface, from any thread: <see cref="World.PostInterfaceSound"/> on the authority or the remote
+    /// client's local audio; nothing before the first world.
+    /// </summary>
+    public void PostInterfaceSound(string eventName, string? switchGroup = null, string? switchValue = null)
+    {
+        CheckSound(eventName, default);
+        if (_world() is { } world) world.PostInterfaceSound(eventName, switchGroup, switchValue);
+        else PostLocalSound(SoundKind.PostedInterface, eventName, CharacterId.None, default, switchGroup, switchValue);
+    }
+
+    /// <summary>
+    /// Posts display-only audio through the current remote client's sink when no mutable local world exists.
+    /// </summary>
+    void PostLocalSound(SoundKind kind, string eventName, CharacterId subject, System.Numerics.Vector3 at, string? group, string? value)
+    {
+        bool hasSwitch = !string.IsNullOrEmpty(group) && !string.IsNullOrEmpty(value);
+        var posted = hasSwitch ? new PostedSound(eventName, group, value) : new PostedSound(eventName);
+        _postSound?.Invoke(new SoundEvent(kind, subject, CharacterId.None, at) { Posted = posted });
+    }
+
+    /// <summary>
+    /// Throws, as the world's calls do, for an empty event name or a point that is not finite, also before the first world.
+    /// </summary>
+    static void CheckSound(string eventName, System.Numerics.Vector3 at)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(eventName);
+        if (!float.IsFinite(at.X + at.Y + at.Z)) throw new ArgumentOutOfRangeException(nameof(at), at, "A sound's point must be finite.");
+    }
+
+    /// <summary>
     /// A line in the game's log (log.txt), prefixed with the mod id.
     /// </summary>
     public void Log(string message) => Console.WriteLine($"mod       {Id}: {message}");
@@ -162,10 +220,9 @@ public sealed class ModContext
     {
         CheckOpen();
         ArgumentNullException.ThrowIfNull(factory);
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("A system needs a name.", nameof(name));
-        if (Pending.Systems.Any(s => s.Name == name))
-            throw new ArgumentException($"The mod already has a system named '{name}'.", nameof(name));
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A system needs a name.", nameof(name));
+        if (Pending.Systems.Any(s => s.Name == name)) throw new ArgumentException($"The mod already has a system named '{name}'.", nameof(name));
+        if (name == ModWorldStateSave.EntryName) throw new ArgumentException($"'{name}' is the game's name in the mod's save data.", nameof(name));
         Pending.Systems.Add(new SystemFactory(Id, name, anchor, factory));
     }
 
@@ -233,6 +290,45 @@ public sealed class ModContext
         CheckOpen();
         ArgumentNullException.ThrowIfNull(rule);
         Pending.WearRules.Add(rule);
+    }
+
+    /// <summary>
+    /// Rows in the character editor (docs/modding.md "Character editor rows"): <paramref name="source"/> is asked, on the interface's thread, for the
+    /// rows of each character the editor shows (its race, sex, look and whether it is a new game's creation) and answers sliders, lists and colours
+    /// for any tab, shown after the game's own. Their values are kept on the look record under this mod's id, so the editor's CONFIRM, the save and
+    /// EXPORT carry them; read them with <see cref="Data.Characters.ModLooks"/>. Return none for a character the mod has nothing for.
+    /// </summary>
+    public void AddEditorRows(Data.Characters.LookRowSource source)
+    {
+        CheckOpen();
+        ArgumentNullException.ThrowIfNull(source);
+        Pending.LookRows.Add(source);
+    }
+
+    /// <summary>
+    /// This mod's values for a look (docs/modding.md "Character editor rows"): <paramref name="roll"/> writes them on every generated character's
+    /// look, after the game's own rolls, and on the editor's RANDOMISE (<see cref="Data.Characters.LookRollContext.Tab"/>, the tab rolled, null for
+    /// RANDOMISE ALL), with a random sequence of its own. It may run on any thread, so it must be quick, read no world state and write the same
+    /// values for the same arguments. A throw keeps what it wrote and is logged once.
+    /// </summary>
+    public void AddLookRoll(Data.Characters.LookRoll roll)
+    {
+        CheckOpen();
+        ArgumentNullException.ThrowIfNull(roll);
+        Pending.LookRolls.Add(roll);
+    }
+
+    /// <summary>
+    /// Additions to how people are drawn (docs/modding.md "Look extras"): <paramref name="source"/> is asked each time a person's look is built
+    /// (its look record, race, sex and head) and answers pose weights set over the look's own and colour tints on disks of the skin, or null. It may
+    /// run on any thread, so it must be quick, read no world state and answer the same for the same arguments. A throw, or a tint that is not
+    /// valid, adds nothing to that look and is logged once.
+    /// </summary>
+    public void AddLookExtras(Data.Characters.LookExtrasSource source)
+    {
+        CheckOpen();
+        ArgumentNullException.ThrowIfNull(source);
+        Pending.LookExtras.Add(source);
     }
 
     /// <summary>
@@ -319,7 +415,7 @@ public sealed class ModContext
     /// A job type of the mod's own (docs/modding.md "Mod jobs"): a task type number (<see cref="SimulationExtensions.FirstModCode"/> and up, so
     /// never a game task), which the mod puts in characters' job lists and runs itself. The jobs panel names it <paramref name="name"/>; a save keeps
     /// it in its place in the list under Meitou keys (the original's list never holds it), and a load puts it back while the type is registered.
-    /// One mod per type.
+    /// One mod per number, whether claimed as a job or a goal type (a mod may claim one number as both).
     /// </summary>
     public void AddJobType(Data.Gameplay.Ai.TaskType type, string name)
     {
@@ -329,6 +425,22 @@ public sealed class ModContext
 
         _registry.CheckJobTypeFree(type, Pending, Id);
         Pending.JobTypes[type] = name;
+    }
+
+    /// <summary>
+    /// A goal type of the mod's own (docs/modding.md "Chooser goals and jobs"): a task type number (<see cref="SimulationExtensions.FirstModCode"/>
+    /// and up, so never a game task) that AI_TASK records of a data mod name in AI packages and goal lists; characters whose lists hold it weigh it in
+    /// the AI's chooser by the desire of the goal one of the mod's systems registers (<see cref="Meitou.Simulation.Ai.IChooserOwner"/>), and the
+    /// mod acts it out. Log lines and notices name it <paramref name="name"/>. One mod per number, whether claimed as a goal or a job type (a mod may
+    /// claim one number as both); without the mod the goal stays inert.
+    /// </summary>
+    public void AddGoalType(Data.Gameplay.Ai.TaskType type, string name)
+    {
+        CheckOpen();
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A goal type needs a name.", nameof(name));
+
+        _registry.CheckGoalTypeFree(type, Pending, Id);
+        Pending.GoalTypes[type] = name;
     }
 
     /// <summary>
@@ -344,6 +456,7 @@ public sealed class ModContext
         CheckOpen();
         ArgumentNullException.ThrowIfNull(extension);
         Pending.Ui.Add(extension);
+        Pending.UiFolders[extension] = Folder;
     }
 
     /// <summary>
@@ -385,7 +498,48 @@ public sealed class ModContext
     }
 
     /// <summary>
-    /// The mod's settings (docs/modding.md "Settings"): the public properties of <paramref name = "settings"/> marked <see cref = "SettingAttribute"/>,
+    /// Claims the WORLD_EVENT_STATE <paramref name="record"/> (docs/modding.md "World states"): while the mod has set a value on it in a world
+    /// (<see cref="Simulation.Factions.ModWorldState.Set"/>, in a serial phase), every data record that tests the state reads that value; until then,
+    /// and without the mod, its own conditions answer. The values are saved in the mod's save data. A record that is no WORLD_EVENT_STATE, or one
+    /// another mod claimed, refuses the mod.
+    /// </summary>
+    public Simulation.Factions.ModWorldState AddWorldState(string record)
+    {
+        CheckOpen();
+        ArgumentNullException.ThrowIfNull(record);
+        if (Data.Find(record) is not { Type: global::Meitou.Data.Fcs.FcsRecordType.WorldEventState })
+            throw new ArgumentException($"'{record}' is not a WORLD_EVENT_STATE of the loaded data.", nameof(record));
+        _registry.CheckWorldStateFree(record, Pending, Id);
+
+        var state = new Simulation.Factions.ModWorldState(Id, record);
+        Pending.WorldStates.Add(state);
+        return state;
+    }
+
+    /// <summary>
+    /// A key action (docs/modding.md "Key actions"): a row named <paramref name="label"/> on the settings' Controls page after the game's, bound to
+    /// those of <paramref name="defaults"/> that no other action holds, rebindable and saved as the game's are (under <paramref name="name"/>, unique
+    /// within the mod). Each press in the game view runs <paramref name="pressed"/> on the host's thread while a tick may be in flight: it must not
+    /// touch the world, only read the context and queue commands. A throw is logged and the action gets no more presses.
+    /// </summary>
+    public Game.Host.Input.ModKeyAction AddKeyAction(string name, string label, Action<Game.Host.Input.ModKeyContext> pressed,
+        params Game.Host.Input.Binding[] defaults)
+    {
+        CheckOpen();
+        ArgumentNullException.ThrowIfNull(name);
+        ArgumentNullException.ThrowIfNull(label);
+        ArgumentNullException.ThrowIfNull(pressed);
+        ArgumentNullException.ThrowIfNull(defaults);
+        if (Game.Host.Input.ModKeyAction.Refusal(name, label, defaults, Pending.KeyActions) is { } refusal)
+            throw new ArgumentException(refusal, nameof(name));
+
+        var action = new Game.Host.Input.ModKeyAction(Id, Name, name, label, pressed, [.. defaults]);
+        Pending.KeyActions.Add(action);
+        return action;
+    }
+
+    /// <summary>
+    /// The mod's settings (docs/modding.md "Settings"): the public properties of <paramref name="settings"/> marked <see cref="SettingAttribute"/>,
     /// one group under the mod on the Settings screen's Mods page. The player's saved values are set on the object before this returns; the values it
     /// has now are the defaults. Once per mod.
     /// </summary>

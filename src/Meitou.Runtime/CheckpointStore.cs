@@ -48,6 +48,11 @@ public sealed class CheckpointStore
             Add(name, file.ToBytes());
         if (world.Portraits is not null)
             Add("world/" + SaveFolder.PortraitName, world.Portraits);
+        foreach (var (mod, bytes) in world.ModData) Add("world/" + SaveFolder.ModDataName(mod), bytes);
+        if (world.ModEnvironment is not null) Add("world/" + SaveFolder.ModEnvironmentName, world.ModEnvironment);
+        if (world.LastingIds is not null) Add("world/" + SaveFolder.LastingIdsName, world.LastingIds);
+        if (world.WeaponBlood is not null) Add("world/" + SaveFolder.WeaponBloodName, world.WeaponBlood);
+        foreach (var (zone, bytes) in world.LevelEdits) Add("world/" + SaveFolder.LevelEditsName(zone), bytes);
         Add(MetadataName, metadata.Span);
         ValidateWorld(SaveGame.Load(Path.Combine(stage, "world")));
         observer?.Invoke(CheckpointStage.DataWritten);
@@ -64,6 +69,7 @@ public sealed class CheckpointStore
         return id;
         void Add(string name, ReadOnlySpan<byte> bytes)
         {
+            name = SafeName(name);
             string path = Path.Combine(stage, name.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             WriteNew(path, bytes);

@@ -41,6 +41,7 @@ sealed class HudPanels(PlayerInterface player)
         CharacterTask.Haul => Loc.Tr("Hauling"),
         CharacterTask.Prospect => Loc.Tr("Prospecting"),
         CharacterTask.Sleep => Loc.Tr("Sleeping"),
+        CharacterTask.Talk => Loc.Tr("Talking"),
         _ => Loc.Tr("Aimless"),
     };
 
@@ -640,7 +641,10 @@ sealed class HudPanels(PlayerInterface player)
             var (name, state, stats, _, _, extended) = player.BuildingSelection.BuildingLines(focus);
             player.AddLines(controls, "NameText", [name], row, sidePixels);
             player.AddLines(controls, "StateText", state, row, sidePixels);
-            player.AddLines(controls, "StatsText", stats, row, sidePixels);
+
+            // The code mods' buttons follow the game's own stats lines (docs/modding.md "Building panel buttons").
+            var modButtons = player.BuildingSelection.ModButtons.Lines(focus);
+            player.AddLines(controls, "StatsText", modButtons.Length == 0 ? stats : [.. stats, .. modButtons], row, sidePixels);
 
             // Section 7 ("Stats 2"): only a turret fills it (TurretBuilding slot 40: Workers and Efficiency).
             if (player.InfoExpanded) player.AddLines(controls, "ExtendedStatsText", extended, row, sidePixels);

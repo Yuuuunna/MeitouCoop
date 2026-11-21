@@ -200,11 +200,6 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// A home layout object's BUILDING_HAS_POWER state; objects that draw nothing or have no machine class pass.
-    /// </summary>
-    public bool PiecePowered(World world, string piece) => TownWork(world, piece) is not { } machine || MachinePowered(world, machine);
-
-    /// <summary>
     /// The machine of a town building (made on the first call: empty, owned by the town's faction <paramref name="owner"/>, or by the player's when
     /// the level data gives the building to it, <see cref="PopulationData.LevelOwnerOf"/>: a take out of that one is no theft), null for a building
     /// that neither works nor stores. Serial phases only.
@@ -418,35 +413,8 @@ public sealed partial class ProductionSystem
     /// <summary>
     /// Whether the character carries <paramref name="item"/> (in its inventory or its backpack's).
     /// </summary>
-    static bool Carries(CharacterCold cold, string item) =>
+    internal static bool Carries(CharacterCold cold, string item) =>
         cold.Inventory is { } inv && (inv.All().Any(i => i.Record == item) || inv.Backpack?.Contents?.All().Any(i => i.Record == item) == true);
-
-    /// <summary>
-    /// The finder of row 94 (<c>FUN_14059d9b0</c>, scored by <c>FUN_14059d000</c>, <b>Verified</b>): for each item type the target machine's inputs
-    /// take, in list order, the nearest other machine whose output holds that item and has some; the first item with one decides. <b>Not
-    /// modelled</b>: the cached earlier pick, loose items on the ground (searched first by the original), and the split of buildings by the owner
-    /// test of vfunc <c>0x3b0</c> (<b>Unknown</b>); the candidates are the town's workplaces (the original's building mask is not decoded).
-    /// </summary>
-    public static TownBuilding? InputSource(World world, Machine target, IEnumerable<TownBuilding> candidates, Vector3 from)
-    {
-        foreach (var input in target.Inputs)
-        {
-            TownBuilding? best = null;
-            float bestD = float.MaxValue;
-            foreach (var b in candidates)
-            {
-                if (TownWorkOf(world, b) is not { Output: { Count: > 0 } o } other || ReferenceEquals(other, target) || o.Recipe.Item != input.Item)
-                    continue;
-
-                float d = Vector3.DistanceSquared(new Vector3(from.X, 0, from.Z), new Vector3(b.Position.X, 0, b.Position.Z));
-                if (d < bestD) (best, bestD) = (b, d);
-            }
-
-            if (best is not null) return best;
-        }
-
-        return null;
-    }
 
     /// <summary>
     /// <c>Task_FillMachine</c> (row 93, <c>FUN_140344510</c>, <b>Verified</b>) at a machine with a production component: the carried items (inventory
@@ -502,55 +470,15 @@ public sealed partial class ProductionSystem
             ref var n = ref table.Next[i];
             var mind = cold.Ai!;
             var building = mind.WorkOperate ?? mind.CollectFrom ?? mind.FillTo!;
-            if (!Able(cold) || !Ai.AiSystem.Holds(n, cold) || mind.Behaviour != Ai.AiBehaviour.Work
-                || !AtTownWork(n, building, mind.WorkRange)) continue;
+            if (!Able(cold) || mind.Behaviour != Ai.AiBehaviour.Work || !AtTownWork(world, i, building, mind.WorkRange)) continue;
             if (MachineFor(world, building, mind.WorkOwner) is not { } m || !Live(world, m)) continue;
             if (Site(world, m.Site) is not { Complete: true, Destroyed: false } site || site.Record != building.BuildingId
                 || site.Owner != cold.Faction && !(cold.SlaveState == 1 && cold.SlaveOwner == site.Owner)) continue;
 
             if (mind.FillTo is not null) FillInputs(world, cold, m);
-            else if (mind.CollectFrom is not null) TakeOutput(world, cold, m);
+            else if (mind.CollectFrom is not null) TakeOutput(world, cold, n.Position, m);
             else if (mind.WorkOperate is not null && MachinePowered(world, m)) TownOperate(world, i, cold, m, dt);
         }
-    }
-
-    /// <summary>
-    /// The obedient player slaves at their workplace on goal 189 (<see cref="CharacterCold.SlaveWork"/>; serial, after the AI's workers): as the
-    /// AI's plan for 189 (87's list B in order: <c>!63</c>, whose provider is 92; <c>!62</c>, whose provider is 93), a full output is emptied into
-    /// the inventory (row 92), else an empty input is filled from what it carries (row 93, <see cref="FillInputs"/>), else the machine is operated
-    /// (row 87, <see cref="TownOperate"/>). Fetching an input from another machine and putting output away are walks of the job
-    /// (Kidnap/ObedientSlave.cs). The machine is the AI's workers' (<see cref="TownWork"/>). 190 pretends (row 221, no list B on the machine's
-    /// state) and operates it as row 87 does, whatever it holds.
-    /// </summary>
-    void ObedientWorkers(World world, float dt)
-    {
-        var table = world.Characters;
-        for (int i = 0; i < table.HighWater; i++)
-        {
-            if (!table.Next[i].Alive || table.Cold(i) is not { SlaveWork: { Place: var place } work } cold) continue;
-            if (!Kidnap.ObedientSlave.Obeys(cold) || cold.SlaveOwner != place.Owner || !Able(cold) || cold.ActionClip != place.Clip
-                || !AtTownWork(table.Next[i], place.Building, place.Range)) continue;
-
-            var m = MachineFor(world, place.Building, place.Owner);
-            if (m is null || !Live(world, m) || Site(world, m.Site) is not { Complete: true, Destroyed: false } site
-                || site.Owner != cold.SlaveOwner || !world.Fixtures.CurrentTownMachine(site)) continue;
-
-            if (work.Operates && m.OutputBlocked) TakeOutput(world, cold, m);
-            else if (work.Operates && m.HasEmptyInputs) FillInputs(world, cold, m);
-            else TownOperate(world, i, cold, m, dt);
-        }
-    }
-
-    /// <summary>
-    /// Row 92 at another town machine for an obedient player slave's errand (the source row 94 found): its output goes into the inventory while
-    /// there is room (<see cref="TakeOutput"/>). Serial phases only.
-    /// </summary>
-    internal void TakeTownOutput(World world, CharacterCold cold, TownBuilding building, int owner)
-    {
-        if (MachineFor(world, building, owner) is { } m && Live(world, m)
-            && Kidnap.ObedientSlave.Obeys(cold) && cold.SlaveOwner == owner
-            && Site(world, m.Site) is { Complete: true, Destroyed: false } site && site.Owner == owner
-            && world.Fixtures.CurrentTownMachine(site)) TakeOutput(world, cold, m);
     }
 
     /// <summary>
@@ -561,10 +489,18 @@ public sealed partial class ProductionSystem
         m.Output is { } o && cold.Inventory is { } inv && _items.Create(o.Recipe.Item, 1) is { } unit && inv.HasRoomFor(unit);
 
     /// <summary>
-    /// Whether a worker stands at the town building within <paramref name="reach"/>, idle or resting.
+    /// Whether a worker stands at the town building (<see cref="Ai.AiSystem.AtWorkplace"/>), idle or resting; in a world without the AI system
+    /// (nothing reads the building's use nodes there), within <paramref name="reach"/> of the building's position.
     /// </summary>
-    static bool AtTownWork(in CharacterHot n, TownBuilding building, float reach) =>
-        Ai.AiSystem.AtWork(in n, building.Position, reach) && (CharacterTask)n.Task is CharacterTask.Idle or CharacterTask.Rest;
+    static bool AtTownWork(World world, int slot, TownBuilding building, float reach)
+    {
+        ref readonly var n = ref world.Characters.Next[slot];
+        if ((CharacterTask)n.Task is not (CharacterTask.Idle or CharacterTask.Rest)) return false;
+        if (world.SystemOf<Ai.AiSystem>() is { } ai) return ai.AtWorkplace(world, in n, building);
+
+        return Ai.AiSystem.AtWork(in n, building.Position, reach);
+    }
+
     /// <summary>
     /// One worker's frame at a town machine, rows 87 and 221 alike (<c>Task_OperateMachine</c>'s update reads no row, <c>FUN_14035bc90</c>,
     /// <b>Verified</b>): the building's work step at the worker's skill (<see cref="WorkStep"/>, as the player's operator) and the operating XP. A
@@ -628,21 +564,36 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// <c>Task_EmptyMachine</c> (rows 92 and 284, <c>FUN_14033cd10</c>, <b>Verified</b>) at a machine with an output: the output's items go into the
-    /// character's inventory (the worn backpack when the main grid is full) while there is room, a unit at a time; a producer whose status was 1
-    /// (output full) then goes back to 2.
+    /// State 93 BUILDING_HAS_POWER of a house's layout object (<c>FUN_140596ab0</c> -> <c>FUN_140299370</c>): its machine's power, true for an
+    /// object that is no machine (a building class below 2) or draws nothing. Makes the machine on the first ask (<see cref="TownWork(World,
+    /// string)"/>); serial phases only.
     /// </summary>
-    void TakeOutput(World world, CharacterCold cold, Machine m)
+    public bool PiecePowered(World world, string piece) => TownWork(world, piece) is not { } m || MachinePowered(world, m);
+
+    /// <summary>
+    /// <c>Task_EmptyMachine</c> with flag 0 (row 92, <c>FUN_14033cd10</c>, <b>Verified</b>) at a machine with an output, the character standing at
+    /// <paramref name="at"/>: the output's item goes into its inventory (the worn backpack when the main grid is full) a unit at a time while there
+    /// is room, up to what the town wants of it (<see cref="FillDemand.Count"/>, the task's slot 5); a producer whose status was 1 (output full) then
+    /// goes back to 2. The task then ends, failed when nothing moved (<see cref="Ai.AiSystem.CollectDone"/>).
+    /// </summary>
+    void TakeOutput(World world, CharacterCold cold, Vector3 at, Machine m)
     {
-        if (cold.Inventory is not { } inv || m.Output is not { Count: > 0 } output) return;
-        bool moved = false;
-        while (output.Count > 0 && _items.Create(output.Recipe.Item, 1) is { } unit && inv.HasRoomFor(unit) && inv.Add(unit))
+        if (cold.Inventory is not { } inv) return;
+
+        int moved = 0;
+        if (m.Output is { Count: > 0 } output && _items.Create(output.Recipe.Item, 1) is { } one)
         {
-            output.Count--;
-            moved = true;
+            int wanted = FillDemand.Count(world, _towns, cold, at, one, m.Site, m.Data.Id);
+            while (moved < wanted && output.Count > 0 && _items.Create(output.Recipe.Item, 1) is { } unit && inv.HasRoomFor(unit) && inv.Add(unit))
+            {
+                output.Count--;
+                moved++;
+            }
         }
 
-        if (!moved) return;
+        Ai.AiSystem.CollectDone(cold, moved > 0);
+        if (moved == 0) return;
+
         if (m.Status == 1) m.Status = 2;
         world.Machines.Touch();
     }

@@ -40,9 +40,9 @@ public sealed record MoveOrder(IReadOnlyList<CharacterId> Characters, Vector3 Ta
 public sealed record FollowOrder(IReadOnlyList<CharacterId> Characters, CharacterId Target) : OrderCommand
 {
     /// <summary>
-    /// Bodyguard (order 45) rather than Follow (31): both fight an attacker of the target within 40 of it (state 16), a bodyguard also its own
-    /// attacker within 40 (state 39; <see cref="CharacterCold.Guarding"/>, <c>RetaliationSystem.Guards</c>, docs/game/ai-tasks.md "Precedence"); the
-    /// Bodyguard job's follow is the same row.
+    /// Bodyguard (order 45) rather than Follow (31): both plan a fight on an attacker of the target while it is threatened within 40 (state 16), a
+    /// bodyguard also while it is itself (state 39; <see cref="CharacterCold.Guarding"/>, <see cref="Ai.FollowDefence"/>, docs/game/ai-tasks.md
+    /// "Precedence"); the Bodyguard job's follow is the same row. The game's verb always gives the job, so only tools give this order.
     /// </summary>
     public bool Guard { get; init; }
 }
@@ -265,6 +265,7 @@ public static class PlayerCommandRouting
         Locks.DoorLockOrder c => c.Characters,
         Locks.SetFreeOrder c => c.Characters,
         Locks.GetInCageOrder c => c.Characters,
+        Locks.CageClickOrder c => c.Characters,
         Locks.ForceLockOrder c => c.Characters,
         Locks.ShackleOrder c => c.Characters,
         Locks.PutShacklesOrder c => c.Characters,
@@ -345,7 +346,7 @@ public static class PlayerCommandRouting
         Items.PlaceHeld { Into.Holder: Items.ItemHolder.Site } c => new(CommandFactionSource.WorkSite, Site: c.Into.Site),
         Trading.OpenPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
         Trading.AcceptPlayerTrade c => new(CommandFactionSource.Explicit, Faction: c.PaymentFaction),
-        Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
+        Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder or Locks.CageClickOrder
             or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
             or Crime.PutInCageOrder or Crime.PayBailOrder
             => new(CommandFactionSource.Character, Character: Characters(command).FirstOrDefault()),
@@ -384,7 +385,7 @@ public static class PlayerCommandRouting
         or Carrying.PickUpOrder or Carrying.PutDownOrder or Carrying.LootOrder or Carrying.OpenLootOrder
         or Carrying.StealthKoOrder or Carrying.RescueJobCommand or Carrying.TakeLootItem or Carrying.PutLootItem
         or Carrying.CloseLoot or Production.DisposeCorpseOrder or Crime.PutInCageOrder or Crime.PayBailOrder
-        or Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder
+        or Locks.PickLockOrder or Locks.GetOutOrder or Locks.DoorOrder or Locks.DoorLockOrder or Locks.SetFreeOrder or Locks.GetInCageOrder or Locks.CageClickOrder
         or Locks.ForceLockOrder or Locks.ShackleOrder or Locks.PutShacklesOrder or Locks.UseBedOrder or Locks.PutInBedOrder
         or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
         or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld or Items.RotateHeld

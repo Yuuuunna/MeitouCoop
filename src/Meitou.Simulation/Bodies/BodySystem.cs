@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Numerics;
 using Meitou.Data;
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Simulation.Aggro;
 using Meitou.Simulation.Ai;
@@ -296,12 +297,13 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
         medical.Light = world.Sight.Light(i);
 
         // The load: inventory weight without a living owner's death items, plus carry person weight, against the strength the injuries leave
-        // (character-stats.md "Encumbrance and carrying").
+        // (character-stats.md "Encumbrance and carrying"), with code mods' carry modifiers.
         float load = cold.Inventory?.ContentWeight(world.Player.Held, skipDeath: !medical.Dead) ?? 0;
         bool carrying = !cold.Carrying.IsNone;
+        var carry = stats.CarryModifiersOrNull;
         float encumbrance = load <= 0 && !carrying
             ? 1
-            : Encumbrance.Factor(Constants, load, carrying, stats.Strength, medical.StatMultiplier(StatsEnumerated.Strength));
+            : Encumbrance.Factor(Constants, load, carrying, stats.Strength, medical.StatMultiplier(StatsEnumerated.Strength), carry);
         var ctx = ContextOf(world, i, cold, medical, race, stats, in n, encumbrance, dt);
         cold.MedicalBudgetSeconds = 0;
 
@@ -496,11 +498,9 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
         if (n.Task == (byte)CharacterTask.Operate && cold.Operating) return cold.OperateHungerRate;
         if (n.Task == (byte)CharacterTask.Rest && cold.Ai is { SitClip: not null } mind) return mind.SitHungerRate;
 
-        // An NPC worker at its town building (AiBehaviour.Work, at its work clip), which the original works through Task_OperateMachine.
+        // A worker at its town building (AiBehaviour.Work, at its work clip; a player-faction slave's too), which the original works through
+        // Task_OperateMachine.
         if (cold.Ai is { WorkActive: true, WorkClip: { } clip } worker && cold.ActionClip == clip) return worker.WorkHungerRate;
-
-        // An obedient player slave at its workplace (its job's 189 / 190, Task_OperateMachine in the original).
-        if (cold.SlaveWork is { } slave && cold.ActionClip == slave.Place.Clip) return slave.Place.HungerRate;
         return null;
     }
 
@@ -545,7 +545,7 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
     ExtendedStats ExtendedOf(CharacterCold cold, CharacterStats stats, RaceData race, MedicalState medical, float speed, float encumbrance,
         in MedicalContext ctx, bool carrying)
     {
-        float runValue = Speed.RunValue(race, stats.Athletics);
+        float runValue = Speed.RunValue(race, stats);
         float toughness = XpService.ToughnessFactor(medical);
         bool rest = ctx.Resting || medical.Unconscious || medical.Dead;
         float hunger = race.HungerRate * MedicalState.HungerSituationFactor(Constants, rest, ctx.Still, ctx.Idle, encumbrance, ctx.UseHungerRate);
@@ -678,7 +678,7 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
             _xp.SwimmingInWater(stats, race, carrying, dt);
             return;
         }
-        _xp.AthleticsFromRunning(stats, race, encumbrance, speed, Speed.RunValue(race, stats.Athletics), dt);
+        _xp.AthleticsFromRunning(stats, race, encumbrance, speed, Speed.RunValue(race, stats), dt);
         if (encumbrance < 1) _xp.StrengthFromCarrying(stats, race, encumbrance, dt, carrying);
     }
 
@@ -762,20 +762,40 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
     }
 
     /// <summary>
-    /// The first tick a leg is down (<see cref="MedicalState.CollapseOnset"/>): <c>FUN_1405c8330</c> stops the character and clears its orders and
-    /// tasks (<b>Observed</b>, docs/game/ragdolls.md "Forced crawl"), so the running task and fight end (<see cref="TaskStart.End"/>, which asks for
-    /// a new decision; an NPC's AI picks again from idle), and the queued orders go. Not for one carried or in a bed or cage (the original tests
-    /// both), nor while its current task is Stumbling (147), Getting up (65) or Standing (28; Meitou has no such task: Stand Up is at once), which
-    /// the original's current-task test spares. Runs in the serial slow world, the tick the medical tick set it (the update itself is parallel).
+    /// The first tick a leg is down (<see cref="MedicalState.CollapseOnset"/>): the character is stopped (<see cref="Stop"/>), not one carried or in
+    /// a bed or cage (the original tests both). Runs in the serial slow world, the tick the medical tick set it.
     /// </summary>
     static void Collapse(World world, int slot, CharacterCold cold)
     {
         cold.Medical!.CollapseOnset = false;
-        var table = world.Characters;
-        long now = world.Tick;
-        bool stumbling = cold.StaggeredUntil > now;
-        if (cold.InSomething != Locks.HeldState.None || !cold.CarriedBy.IsNone || stumbling || CharacterFacts.GettingUp(cold, now)) return;
-        cold.OrderQueue.Clear();
+        if (cold.InSomething != Locks.HeldState.None || !cold.CarriedBy.IsNone) return;
+
+        Stop(world, slot);
+    }
+
+    /// <summary>
+    /// The stop <c>FUN_1405c8330</c> (<b>Verified</b>, docs/game/ragdolls.md "Forced crawl"; a leg giving out, the dialogue's DA 6, 7, 34, 55 and 57):
+    /// it deletes the running task, empties the plan and runs <c>FUN_140507530</c> (the second list and the current goal), so the running task and
+    /// fight end (<see cref="TaskStart.End"/>, which asks for a new decision) while the order queue stays: its front is planned again from its start
+    /// (<see cref="PlayerOrders.Interrupt"/>); the second list (a loaded queue) and an AI's plan and goal go. Nothing while its task is a running
+    /// Stumbling (147) or Getting up (65), rows with TaskData <c>+0x22</c> (28 Standing too; Meitou has no such task: Stand Up is at once). Serial
+    /// phases.
+    /// </summary>
+    internal static void Stop(World world, int slot)
+    {
+        var cold = world.Characters.Cold(slot)!;
+        var task = (CharacterTask)world.Characters.Next[slot].Task;
+        bool spared = cold.Running is { Source: TaskSource.Order, Row: TaskType.GetUp or TaskType.StumbleTaskForced } run && run.Runs(task);
+        if (spared) return;
+
+        PlayerOrders.Interrupt(cold);
+        PlayerOrders.ClearSecond(cold);
+        if (cold.Ai is { } mind)
+        {
+            mind.ResetPlan();
+            mind.Goal = null;
+        }
+
         TaskStart.End(world, slot, TaskEnd.Stopped);
     }
 

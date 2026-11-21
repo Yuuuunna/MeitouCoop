@@ -441,6 +441,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     public Action<bool>? PrisonPoseChanged { get; init; }
 
     /// <summary>
+    /// Applies the caged animal fix (<see cref="UserConfig.FixCagedAnimals"/>).
+    /// </summary>
+    public Action<bool>? CagedAnimalsChanged { get; init; }
+
+    /// <summary>
     /// Applies the bag search fix (<see cref="UserConfig.FixBagSearch"/>).
     /// </summary>
     public Action<bool>? BagSearchChanged { get; init; }
@@ -634,7 +639,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             "Ground parallax" or "Ground displacement (tessellation)" or "Ground trails" or WorldFrame.RockSmoothingSwitch
                 or WorldFrame.OutlineRefineSwitch => "Terrain",
             "Foliage ranges" or "Foliage levels" or "Far impostors" or WorldFrame.GrassCoverSwitch or WorldFrame.NearTreeFadeSwitch => "Vegetation",
-            "Haze" or "Night air" or "Night sky" or "Clouds" or "Cloud shadows" or "Cloud shadows in fog" or "Fog"
+            "Haze" or "Night air" or "Night sky" or "Clouds" or "Cloud shadows" or "Cloud shadows in fog" or "Fog" or "Lit dust"
                 or WorldFrame.WetWorldSwitch => "Sky & weather",
             "Tone map and grade" or "Night grading" or "Dithering" => "Colour",
             "Heat haze" or WorldFrame.BloomSwitch or WorldFrame.DepthOfFieldSwitch or WorldFrame.CameraEffectsSwitch or WorldFrame.VignetteSwitch
@@ -1112,6 +1117,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     internal static string ActionLabel(InputAction action) => Regex.Replace(action.ToString(), "(?<=[a-z0-9])(?=[A-Z])|(?<=[a-z])(?=[0-9])", " ");
 
     /// <summary>
+    /// An action's name in the notices: a code mod's action's caption (docs/modding.md "Key actions"), else <see cref="ActionLabel"/>.
+    /// </summary>
+    internal string Label(InputAction action) => Bindings.ModAction(action)?.Caption ?? ActionLabel(action);
+
+    /// <summary>
     /// A page's all-Faithful / all-Meitou switch over its Faithful / Meitou <paramref name="toggles"/> and the <paramref name="sliders"/> with both
     /// marks; it reads 1 when all are Meitou, 0 when all are Faithful, -1 when they are mixed.
     /// </summary>
@@ -1463,7 +1473,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// </summary>
     void SetBinding(InputAction action, Binding binding)
     {
-        if (RefusedBinding(action, binding) is { } refusal)
+        if (RefusedBinding(action, binding, Bindings.ModAction(action) is not null) is { } refusal)
         {
             Notice = refusal;
             return;
@@ -1472,7 +1482,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         // Rotate item acts only over an inventory item, so it shares its control with whatever acts elsewhere (the camera's orbit by default).
         // The build map is a key map of its own (docs/game/ui-input.md section 4): its keys are taken only from its actions, and the reverse.
         bool shared = action == InputAction.RotateItem;
-        var conflicts = InputBindings.SameMap(action)
+        var conflicts = Bindings.Actions
+            .Where(a => InputBindings.IsBuildMap(a) == InputBindings.IsBuildMap(action))
             .Where(a => a != action && a != InputAction.RotateItem && !shared && Bindings.Get(a).Contains(binding))
             .ToArray();
 
@@ -1484,7 +1495,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             Bindings.Set(other, [.. Bindings.Get(other).Where(b => b != binding), previous]);
             Bindings.Set(action, binding);
             Rebinding = null;
-            Notice = $"{ActionLabel(action)} bound to {binding}; {ActionLabel(other)} moved to {previous}.";
+            Notice = $"{Label(action)} bound to {binding}; {Label(other)} moved to {previous}.";
             return;
         }
 
@@ -1494,23 +1505,22 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         Bindings.Set(action, binding);
         Rebinding = null;
         Notice = conflicts.Length == 0
-            ? $"{ActionLabel(action)} bound to {binding}."
-            : $"{ActionLabel(action)} bound to {binding}, taken from {string.Join(", ", conflicts.Select(ActionLabel))}.";
+            ? $"{Label(action)} bound to {binding}."
+            : $"{Label(action)} bound to {binding}, taken from {string.Join(", ", conflicts.Select(Label))}.";
     }
 
     /// <summary>
-    /// Why <paramref name="binding"/> cannot go to <paramref name="action"/>, or null: the reserved keys, and a mouse button for a build map action
-    /// (build mode takes only keys there; its buttons place and clear).
+    /// Why <paramref name="binding"/> cannot go to <paramref name="action"/>, or null: the reserved keys, for a code mod's action
+    /// (<paramref name="modAction"/>) also the keys the game keeps (Insert reaches this page on the Metal host, which has no console key), and a
+    /// mouse button for a build map action (build mode takes only keys there; its buttons place and clear).
     /// </summary>
-    static string? RefusedBinding(InputAction action, Binding binding)
+    static string? RefusedBinding(InputAction action, Binding binding, bool modAction)
     {
         if (binding.IsMouse && InputBindings.IsBuildMap(action)) return "Build keys take a key, not a mouse button. Choose a key, or Esc to cancel.";
         if (binding.IsMouse) return null;
 
-        return binding.Key is Key.Escape or Key.F6 or Key.LeftAlt or Key.RightAlt or Key.LeftControl or Key.RightControl or Key.LeftShift
-            or Key.RightShift
-            ? "That key is reserved. Choose another key, or Esc to cancel."
-            : null;
+        bool reserved = InputBindings.Reserved(binding) || (modAction && InputBindings.HostKey(binding));
+        return reserved ? "That key is reserved. Choose another key, or Esc to cancel." : null;
     }
 
     /// <summary>
@@ -1541,7 +1551,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             Config.LateDefences = false;
             LateDefencesChanged?.Invoke(false);
             Config.KeepRoamers = Config.OffscreenFights = Config.OffscreenHealing = Config.CampaignAncestorsOnce = Config.KeepWild
-                = Config.ResidentSchedule = Config.UnloadedProduction = true;
+                = Config.ResidentSchedule = Config.OffscreenOverrides = Config.UnloadedProduction = true;
             Config.Decapitation = true;
             Config.AdvancedRagdolls = true;
         }
@@ -1569,6 +1579,10 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             Config.FixGround = true;
             Config.FixBenchFacing = true;
             BenchFacingChanged?.Invoke(true);
+            Config.FixCagedAnimals = true;
+            CagedAnimalsChanged?.Invoke(true);
+            Config.FixRaidClocks = true;
+            Config.FixArrestLifts = true;
             Config.FixBagSearch = true;
             BagSearchChanged?.Invoke(true);
             OffscreenChanged?.Invoke();
@@ -1825,7 +1839,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         {
             string prompt = Notice.Length > 0
                 ? Notice
-                : $"{ActionLabel(binding)}: press a key or mouse button.\nDelete clears the binding. Esc cancels.";
+                : $"{Label(binding)}: press a key or mouse button.\nDelete clears the binding. Esc cancels.";
             Canvas.DrawMessage("Assign a control", prompt, () => Rebinding = null);
         }
 
@@ -1871,7 +1885,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         "Towns keep their schedule" or "Production far away" or "Guards spare their own" or "Decapitation" or
         "Advanced ragdolls" or "luckyren Mode" or "Dropped items kept" or "Raids as written" or "Weak punch reach" or "Bench facing"
         or "Bags in the inventory" or "Squad XP" or "Others' XP" or "Swamp turtle attacks" or "Prisoners hold still"
-        or "Holes and needles in the ground";
+        or "Holes and needles in the ground" or "Caged animals idle" or "Towns change far away"
+        or "Raids keep their progress" or "Guards stop passing bodies";
 
     /// <summary>
     /// Presents a server-owned row without mutation controls.

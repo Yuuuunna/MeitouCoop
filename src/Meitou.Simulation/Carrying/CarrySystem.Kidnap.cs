@@ -62,9 +62,9 @@ public sealed partial class CarrySystem
     /// The kidnap's roll on arrival (<c>Task_Kidnapping</c> vfunc 1, <b>Observed</b>); true when the lift goes on. First the victim's squad tags the
     /// kidnapper TEMP_ENEMY and the kidnapping becomes a pending crime on it. A hit (roll &lt;= chance) knocks an awake victim out
     /// (<see cref="KidnapKoMin"/>..<see cref="KidnapKoMax"/>) and trains assassination by 100. A miss: the victim's town alarm is raised at the
-    /// kidnapper; its squad remembers it (long-term intruder) and says event 8 to it; assassination trains by 300; a sleeping victim wakes and goes
-    /// for the kidnapper. The victim notices the kidnapper for 5 s (<see cref="AggroSystem.Alarm"/>). Engine: the kidnapper's field +0x110 = 250
-    /// (<b>Unknown</b>) are not modelled.
+    /// kidnapper; its squad remembers it (long-term intruder) and says event 8 to it; assassination trains by 300; a sleeping victim wakes (order 116)
+    /// with the kidnapper on its threats list (<see cref="Threaten"/>). The victim notices the kidnapper for 5 s (<see cref="AggroSystem.Alarm"/>).
+    /// Engine: the kidnapper's field +0x110 = 250 (<b>Unknown</b>) are not modelled.
     /// </summary>
     bool Kidnap(World world, CharacterTable table, int i)
     {
@@ -83,8 +83,10 @@ public sealed partial class CarrySystem
         // FUN_14034ffa0).
         void Train(float amount)
         {
-            if (cold.Stats is { } stats && cold.Race is { } race)
-                (_xp ??= new XpService(Constants, _bodyOptions)).Continuous(stats, race, StatsEnumerated.Assassination, 1, amount);
+            if (cold.Stats is not { } stats || cold.Race is not { } race) return;
+
+            var xp = _xp ??= new XpService(Constants, _bodyOptions);
+            xp.Continuous(stats, race, StatsEnumerated.Assassination, 1, amount, ExperienceSource.Assassination);
         }
         if (success)
         {
@@ -112,27 +114,28 @@ public sealed partial class CarrySystem
         world.Defer(new Dialogue.DialogueEvent(victimId, kidnapperId, 8) { Tick = world.Tick + 1 });
 
         // Every victim notices the kidnapper for 5 s: the forced sense with the alarm flag (FUN_14034ffa0:73 -> FUN_140858f40, entry seen flag set,
-        // timer +0x3c = 5), then the step decides what a player character does (EngagedDefence.Engage).
-        bool decides = DecisionSystem.Decides(victim);
+        // timer +0x3c = 5). The kidnap gives no fight: the victim's own chooser decides, for every faction.
         Aggro?.Alarm(world, victimId, kidnapperId);
-        if (asleep)
-        {
-            if (victim.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, victimId);
-            TaskStart.Become(world, b, CharacterTask.Idle, Meitou.Data.Gameplay.Ai.TaskType.Idle, TaskSource.Reaction);
-            if (decides)
-            {
-                victim.OrderQueue.Clear();   // order 116 Getting out of bed replaces the whole queue (FUN_1405d20d0, clear flag 1)
-                _engaged.Engage(world, Aggro, b, i);
-            }
-            else
-            {
-                world.Defer(new Combat.AttackOrder([victimId], kidnapperId)
-                {
-                    Tick = world.Tick + 1, Source = TaskSource.Reaction, Cause = "woke up being kidnapped",
-                });
-            }
-        }
+        if (!asleep) return false;
+
+        // The kidnap clears the in-bed state itself, then gives any victim order 116 Getting out of bed with the clear flag (FUN_1405d20d0, no
+        // faction test): its list A (not in bed) holds, so it leaves the queue at once and no order holds the victim any more. Then the kidnapper
+        // goes on the sleeper's threats list (FUN_1405cb0a0).
+        if (victim.InSomething == Locks.HeldState.Bed) world.Fixtures.LeaveBed(world, victimId);
+        OutOfBed(world, b);
+        Threaten(world, b, i);
+
         return false;
+    }
+
+    /// <summary>
+    /// A woken sleeper's order 116 (<see cref="Combat.BodyOrders.OutOfBed"/>), whose act-out stands it; one whose 116 does not start (an animal,
+    /// whose repertoire lacks the row, or a character without a squad) stands from its sleep where it lies.
+    /// </summary>
+    static void OutOfBed(World world, int victim)
+    {
+        world.SystemOf<Combat.CombatSystem>()?.BodyOrders.OutOfBed(world, victim);
+        if (world.Characters.Next[victim].Task == (byte)CharacterTask.Sleep) TaskStart.Stand(world.Characters, victim);
     }
 
     /// <summary>

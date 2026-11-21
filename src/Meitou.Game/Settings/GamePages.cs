@@ -395,7 +395,7 @@ sealed class GamePages(SettingsMenu menu)
     }
 
     /// <summary>
-    /// The Controls page: the camera's speeds and mouse, then one row per bindable action.
+    /// The Controls page: the camera's speeds and mouse, then one row per bindable action, the code mods' last.
     /// </summary>
     internal void ControlsRows(List<SettingsMenu.Entry> result)
     {
@@ -432,6 +432,10 @@ sealed class GamePages(SettingsMenu menu)
             Toggle: new("Loot into backpack", () => menu.Config.TakeIntoBackpack, SetTakeIntoBackpack, OnOff: true)));
         foreach (var action in Enum.GetValues<InputAction>().Where(a => a != InputAction.Quit && a != InputAction.ToggleFps))
             result.Add(new(SettingsMenu.ActionLabel(action), SettingHints.BindingHint(action), Binding: action));
+
+        // The code mods' key actions follow the game's, in load order (docs/modding.md "Key actions").
+        foreach (var mod in menu.Bindings.ModActions)
+            result.Add(new(mod.Caption, Loc.Tr("A key of the mod {1}: {2}.", mod.OwnerName, mod.Label), Binding: mod.Action));
     }
 
     /// <summary>
@@ -539,6 +543,16 @@ sealed class GamePages(SettingsMenu menu)
             + "The game counts them twice, so inherited squads come up more often and follow-up raids are about twice as likely.",
             Toggle: new("Raids as written", () => menu.Config.CampaignAncestorsOnce,
                 v => { menu.Config.CampaignAncestorsOnce = v; menu.OffscreenChanged?.Invoke(); }, Remaster: true, OnOff: true)));
+        result.Add(new("Raids keep their progress",
+            "A raid under way when you save goes on where it was when that save is loaded. "
+            + "The game starts its current stage over at every load, so its waits and time limits begin again.",
+            Toggle: new("Raids keep their progress", () => menu.Config.FixRaidClocks, v => menu.Config.FixRaidClocks = v, Remaster: true,
+                OnOff: true)));
+        result.Add(new("Guards stop passing bodies",
+            "A guard picks up a knocked-out prisoner only when a cage is free for them, and never takes one from a guard of his own faction. "
+            + "The game lets guards lift and grab prisoners anyway, so at a full prison they hand the same body round without end.",
+            Toggle: new("Guards stop passing bodies", () => menu.Config.FixArrestLifts, v => menu.Config.FixArrestLifts = v, Remaster: true,
+                OnOff: true)));
         result.Add(new("Door break sound",
             "Doors and gates make their breaking sound when they are bashed or broken open. "
             + "The game never picks which breaking sound to play, so it plays none.",
@@ -582,6 +596,11 @@ sealed class GamePages(SettingsMenu menu)
             + "In the game it clutches its wounds there instead.",
             Toggle: new("Prisoners hold still", () => menu.Config.FixPrisonPose,
                 v => { menu.Config.FixPrisonPose = v; menu.PrisonPoseChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
+        result.Add(new("Caged animals idle",
+            "An animal in a cage or on a pole breathes, looks around and lies down when knocked out. "
+            + "In the game it stands frozen there, since the cage's poses are for people only.",
+            Toggle: new("Caged animals idle", () => menu.Config.FixCagedAnimals,
+                v => { menu.Config.FixCagedAnimals = v; menu.CagedAnimalsChanged?.Invoke(v); }, Remaster: true, OnOff: true)));
         result.Add(new("Walls inside buildings",
             "Seen into a building your characters are in, parts of other buildings that run through it are left out, such as the Hub's town wall "
             + "in the Shinobi Thieves tower. The game's world places them there and draws them inside the room.",
@@ -591,6 +610,11 @@ sealed class GamePages(SettingsMenu menu)
             "Seen into a building with its roof hidden, no rain, dust or ash falls over the open room. "
             + "The game leaves out only what falls inside it, so with the camera pulled back the rain in front still streaks across the room.",
             Toggle: new("Rain in open buildings", () => menu.Config.FixRainInBuildings, v => menu.Config.FixRainInBuildings = v,
+                Remaster: true, OnOff: true)));
+        result.Add(new("Ground in buried ruins",
+            "The ash filling a half-buried Ash Dome ruin stays drawn while your characters are in it, and they are ordered onto it. "
+            + "The game hides the ground inside the ruin, showing buried floors nobody can reach under characters that seem to walk on air.",
+            Toggle: new("Ground in buried ruins", () => menu.Config.FixRuinGround, v => menu.Config.FixRuinGround = v,
                 Remaster: true, OnOff: true)));
         result.Add(new("Bags in the inventory",
             "Guards searching for smuggled or stolen goods and bandits after food or loot also look inside bags carried in the inventory, and guards "
@@ -700,6 +724,11 @@ sealed class GamePages(SettingsMenu menu)
             + "In the game they are where they stood when you left.",
             Toggle: new("Towns keep their schedule", () => menu.Config.ResidentSchedule,
                 v => { menu.Config.ResidentSchedule = v; menu.OffscreenChanged?.Invoke(); }, Remaster: true, OnOff: true)));
+        result.Add(new("Towns change far away",
+            "A town far from your squads is taken over or destroyed as soon as its story calls for it, so the map and the factions show it at once. "
+            + "In the game it changes only when you come near.",
+            Toggle: new("Towns change far away", () => menu.Config.OffscreenOverrides,
+                v => { menu.Config.OffscreenOverrides = v; menu.OffscreenChanged?.Invoke(); }, Remaster: true, OnOff: true)));
         result.Add(new("Production far away",
             "Farms, mines, wells and generators away from your squads keep working. "
             + "In the game they stop while their area is unloaded, and only farms catch up when you come back.",

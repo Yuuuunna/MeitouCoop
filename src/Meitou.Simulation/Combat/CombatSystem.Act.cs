@@ -280,14 +280,17 @@ public sealed partial class CombatSystem
         // it out again.
         bool crawling = cold.Medical.Crawling;
         bool atTreatment = FirstAid.FirstAidSystem.AtTreatment(cold, (CharacterTask)next[i].Task);
-        if (s.Crawl && !crawling && !atTreatment && !s.Down && !cold.Medical.Incapacitated && !cold.Medical.Prone && GetUpClipSeconds > 0
-            && cold.CarriedBy.IsNone)
+        bool stood = s.Crawl && !crawling && !atTreatment && !s.Down && !cold.Medical.Incapacitated && !cold.Medical.Prone && cold.CarriedBy.IsNone;
+        if (stood) cold.BodyEvents |= BodyEvents.StoodUp;
+        if (stood && GetUpClipSeconds > 0)
         {
             cold.GettingUpUntil = now + (int)MathF.Ceiling(GetUpClipSeconds / dt);
             cold.StaggeredUntil = Math.Max(cold.StaggeredUntil, cold.GettingUpUntil);
             if (Orders.Has(cold, CharacterOrders.Hold)) cold.HoldPoint = prev[i].Position;
         }
         s.Crawl = crawling || cold.Medical.StayingLow;   // any posture above 0: the setter queues task 65 whenever it returns to 0 (FUN_1405c7e20)
+
+        Lie(cold);
         s.Down = cold.Medical.Incapacitated;
         if (s.Down)
         {
@@ -306,6 +309,18 @@ public sealed partial class CombatSystem
             s.NextBlow = 0;
             s.ReactTech = -1;
         }
+    }
+
+    /// <summary>
+    /// Going down (knocked out or dead, whichever phase did it) turns the whole-body ragdoll on, whose setter wipes the orders (<c>FUN_1405d0db0</c>):
+    /// the serial <see cref="BodyOrders"/> pass does it. <see cref="BodyEvents.Lying"/> remembers the body step's last look.
+    /// </summary>
+    static void Lie(CharacterCold cold)
+    {
+        bool down = cold.Medical!.Incapacitated;
+        bool lay = (cold.BodyEvents & BodyEvents.Lying) != 0;
+        if (down && !lay) cold.BodyEvents = BodyEvents.Downed | BodyEvents.Lying;
+        else if (!down && lay) cold.BodyEvents &= ~BodyEvents.Lying;
     }
 
     /// <summary>
@@ -334,11 +349,13 @@ public sealed partial class CombatSystem
         var table = world.Characters;
         var prev = table.Previous;
 
-        // Waking while sneaking it stays low (posture 1, docs/game/ragdolls.md "Staying low"); otherwise it stands.
+        // Waking while sneaking it stays low (posture 1, docs/game/ragdolls.md "Staying low"); otherwise it stands. The serial pass gives the wake
+        // order (BodyOrders).
         if (s.Down && !cold.Medical!.Incapacitated)
         {
             cold.Medical.StayingLow = cold.Medical.WokenLow ?? Orders.Has(cold, CharacterOrders.Sneak);
             cold.Medical.WokenLow = null;
+            cold.BodyEvents |= BodyEvents.Woke;
         }
 
         // A leg down replaces it with the forced crawl (posture 2), which ends standing.
@@ -1147,13 +1164,22 @@ public sealed partial class CombatSystem
     /// Whether <paramref name="i"/> may join the fighters its target lets close in (<see cref="MaxEngaged"/>, <c>FUN_140666e20</c>): it joins while
     /// fewer are in. The ones that are not in yet ask whenever they decide; those with a lower slot ask first (engine choice for the original's
     /// update order), counted only when they may decide this tick (not staggered, blocking or dodging, or swinging past the point where it could
-    /// still give the swing up) and not on a path chase, so a fighter is not left out for one that does not ask.
+    /// still give the swing up) and not on a path chase, so a fighter is not left out for one that does not ask. The melee alert's entries
+    /// (<see cref="AlertedAttackers"/>) that do not fight <paramref name="t"/> and are still on the list take room too, and one the alert put there
+    /// already is in (<c>FUN_140666e20</c>'s contains test comes first).
     /// </summary>
     bool MayJoin(World world, int i, int t, int now)
     {
         var prev = world.Characters.Previous;
-        var range = world.Grid.Range(prev[t].Position.X, prev[t].Position.Z, CombatTuning.EngageScanRadius);
         int generation = prev[t].Generation, count = 0;
+        for (int k = 0; k < _alerted.Count(t); k++)
+        {
+            int a = AlertedAt(world, t, k);
+            if (a == i) return true;
+            if (a >= 0 && !(_read[a].TargetSlot == t && _read[a].TargetGeneration == generation)) count++;
+        }
+
+        var range = world.Grid.Range(prev[t].Position.X, prev[t].Position.Z, CombatTuning.EngageScanRadius);
         foreach (var (_, x, z, other) in _index.AttackersOf(t))
         {
             if (other == i || !range.Holds((x, z))) continue;
@@ -1162,6 +1188,7 @@ public sealed partial class CombatSystem
             if (!Listed(in o, in _read[t]) && (other > i || !MayDecide(in o, now) || ChasesOnPath(world, other, t))) continue;
             if (++count >= MaxEngaged) return false;
         }
+
         return count < MaxEngaged;
     }
 
@@ -1532,8 +1559,11 @@ public sealed partial class CombatSystem
             dodge = DefenceFormulas.BlockChance(effective, attack.AttackSkill, _combat, 0, 95);
         }
         int direction = BlowSide(world, i, in swing);
+
+        // A weapon of a data-named class without a stumble dodge of its own breaks out with its own category's (Meitou; -1: no fallback).
+        int stumbleFallback = fighter.Weapon?.Data is { ClassCategory: not null } classed ? classed.SkillCategory : -1;
         return TechniqueChooser.ChooseReaction(_techniques, MovesCategory(fighter, fighter.TechniqueCategory), cold.Medical!.Prone, fighter.CanBlock, direction,
-            block, dodge, chanceRoll, pickRoll, stumbling);
+            block, dodge, chanceRoll, pickRoll, stumbling, stumbleFallback);
     }
 
     #endregion

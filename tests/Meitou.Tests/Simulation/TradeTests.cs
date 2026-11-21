@@ -4,6 +4,7 @@ using Meitou.Data.Fcs;
 using Meitou.Data.World;
 using Meitou.Data.Gameplay.Dialogue;
 using Meitou.Simulation;
+using Meitou.Simulation.Ai;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Dialogue;
@@ -131,20 +132,18 @@ public class TradeTests
         public SimWorld World { get; }
         public TradeSystem Trade { get; }
         /// <summary>
-        /// The conversations, in a bazaar made with <c>talk</c>.
+        /// The conversations; always there, as the Trade order is the dialogue's talk order 12.
         /// </summary>
-        public DialogueSystem? Dialogue { get; }
+        public DialogueSystem Dialogue { get; }
 
-        public Bazaar(params FcsRecord[] extra) : this(false, extra) { }
-
-        public Bazaar(bool talk, params FcsRecord[] extra)
+        public Bazaar(params FcsRecord[] extra)
         {
-            Data = TradeTests.Data([.. Shops, .. extra]);
+            // The NPCs' record says is trader, as a real shopkeeper's: with the dialogue system there, IS_A_TRADER reads it (DialogueSystem.Trades).
+            Data = TradeTests.Data([.. Shops, Rec("keeper-t", FcsRecordType.Character, r => r.Bools["is trader"] = true), .. extra]);
             Trade = new TradeSystem(Data);
-            Dialogue = talk ? new DialogueSystem(Data) : null;
+            Dialogue = new DialogueSystem(Data);
             var ground = new OpenGroundWalkability((_, _) => 150);   // above the water line
-            ITickSystem[] systems = Dialogue is null ? [new MovementSystem(new PathService(ground, true)), Trade]
-                    : [new MovementSystem(new PathService(ground, true)), Trade, Dialogue];
+            ITickSystem[] systems = [new MovementSystem(new PathService(ground, true)), Trade, Dialogue];
             World = new SimWorld(new WorldSettings { Seed = 3 }, ground, systems);
             World.Player.Faction = Data.PlayerFaction;
             World.Player.Money = 1000;
@@ -160,6 +159,7 @@ public class TradeTests
             var cold = new Combat.Combatant { Name = name }.MakeCold();
             cold.Faction = faction;
             cold.IsPlayer = player;
+            if (!player) cold.RecordId = "keeper-t";
             cold.Inventory = new Inventory();
             cold.SquadId = squad.Id;
             var id = World.Characters.Spawn(new CharacterHot { Position = new Vector3(at.X, 150, at.Y), Health = 100, MaxSpeed = 60, WalkSpeed = 15,
@@ -244,7 +244,8 @@ public class TradeTests
         Assert.NotNull(m.Trade.PublishTrade(m.A)); Assert.NotNull(m.Trade.PublishTrade(m.B));
         m.World.ReleasePlayerConnection(current);
         Assert.Null(m.Trade.PublishTrade(m.A)); Assert.NotNull(m.Trade.PublishTrade(m.B));
-        Assert.False(m.World.Characters.Cold(m.Trader.Slot)!.Engaged); // open trade windows leave the trader with its AI
+        Assert.False(DecisionSystem.Ordered(m.World.Characters.Cold(m.Trader.Slot)!)); // open trade windows leave the trader with its AI
+        Assert.False(m.Bazaar.Dialogue.HoldsNpc(m.Trader));
         Assert.True(m.World.Players.CanControl(m.A, m.CustomerA));
     }
 
@@ -326,11 +327,13 @@ public class TradeTests
         m.World.RunTick();
         Assert.Null(m.Trade.PublishTrade(m.A));
         Assert.Equal(b, m.View(m.B).SessionId);
-        Assert.False(m.World.Characters.Cold(m.Trader.Slot)!.Engaged); // open trade windows leave the trader with its AI
+        Assert.False(DecisionSystem.Ordered(m.World.Characters.Cold(m.Trader.Slot)!)); // open trade windows leave the trader with its AI
+        Assert.False(m.Bazaar.Dialogue.HoldsNpc(m.Trader));
         m.Send(m.B, new CloseTrade { Tick = 0, SessionId = b });
         m.World.RunTick();
         Assert.Null(m.Trade.PublishTrade(m.B));
-        Assert.False(m.World.Characters.Cold(m.Trader.Slot)!.Engaged);
+        Assert.False(DecisionSystem.Ordered(m.World.Characters.Cold(m.Trader.Slot)!));
+        Assert.False(m.Bazaar.Dialogue.HoldsNpc(m.Trader));
     }
 
     [Fact]
@@ -549,7 +552,7 @@ public class TradeTests
     [Fact]
     public void A_caravan_without_is_trader_trades_from_an_empty_stock_and_stays_no_trader()
     {
-        using var b = new Bazaar(talk: true,
+        using var b = new Bazaar(
             Rec("caravan-t", FcsRecordType.SquadTemplate, r => r.References["vendors"] = [Ref("vl-t", 100)]),
             Rec("boss-t", FcsRecordType.Character,
                     r => { r.Name = "Boss"; r.Bools["is trader"] = true; r.References["dialogue"] = [Ref("hello-t")]; }),
@@ -573,7 +576,7 @@ public class TradeTests
         {
             b.Say(new TalkOrder(hero, boss) { Tick = 0 });
             b.World.RunTicks(2);
-            return b.Dialogue!.PublishConversation()!.Choices;
+            return b.Dialogue.PublishConversation()!.Choices;
         }
         Assert.Equal(["Show me."], Talk());
         b.Say(new DialogueChoice(0) { Tick = 0 });

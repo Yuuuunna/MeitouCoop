@@ -35,9 +35,10 @@ public sealed class Platoon
     /// </summary>
     public required int Id { get; init; }
     /// <summary>
-    /// The town (a position in the population's site list) whose pool it counts against; -1 for a save's wild platoon.
+    /// The town (a position in the population's site list) whose pool it counts against; -1 for a save's wild platoon. Changed only when a code mod
+    /// moves the platoon to another town (<see cref="Guest"/>).
     /// </summary>
-    public required int Origin { get; init; }
+    public required int Origin { get; set; }
     /// <summary>
     /// The SQUAD_TEMPLATE its members are made from.
     /// </summary>
@@ -87,10 +88,6 @@ public sealed class Platoon
     /// </summary>
     public long UnloadAtTick { get; set; } = -1;
     /// <summary>
-    /// Seconds before a loaded platoon's leader is sent on again when it has no go-to (a blocked path must not be retried every look).
-    /// </summary>
-    public float OrderCooldown { get; set; }
-    /// <summary>
     /// The AI package it runs (an AI_PACKAGE id, saved as <c>currentPackage</c>; null: none) and the off-screen job that package gives
     /// (<see cref="Ai.PlatoonJobs"/>).
     /// </summary>
@@ -108,6 +105,13 @@ public sealed class Platoon
     /// never-made one's from its template, <see cref="Unmade"/>).
     /// </summary>
     public Saving.SavedPlatoon? Saved { get; init; }
+    /// <summary>
+    /// The town and arrival hour its save record held for its blackboard (<see cref="Saving.CurrentTownSave"/>), until the AI attaches a blackboard
+    /// to the first squad in it since the load and applies them (then null). The original's faction load (<c>FUN_1407f88c0</c> →
+    /// <c>FUN_1407f85f0</c>) builds every saved platoon, never activated or not, with its record, whose blackboard the constructor
+    /// <c>FUN_1407ee2d0</c> reads (<c>FUN_140272c20</c>); its squad being built from the template later (<c>FUN_1404ffad0</c>) keeps it.
+    /// </summary>
+    public Saving.CurrentTownSave? SavedTown { get; set; }
     /// <summary>
     /// A squad the population made, kept as its characters while it is not in the world (null: none): a town's squad since its town unloaded, or (the
     /// Meitou <see cref="PopulationSystem.KeepRoamers"/> switch) a roaming one since it first left. Made of them again, never rolled anew. Set with
@@ -149,7 +153,7 @@ public sealed class Platoon
     public bool Unmade { get; set; }
     /// <summary>
     /// The faction campaign it marches in (null: none; <c>PopulationCampaigns.cs</c>): kept (never despawned) until the campaign is removed, moved by
-    /// the campaign off screen and led to <see cref="CampaignGoal"/> while loaded, out of the roaming pools.
+    /// the campaign off screen toward <see cref="CampaignGoal"/>, out of the roaming pools; loaded, its members act out its phase package's goals.
     /// </summary>
     public CampaignInstance? Campaign { get; set; }
     /// <summary>
@@ -194,13 +198,24 @@ public sealed class Platoon
     /// </summary>
     public bool PersistentCleared { get; set; }
     /// <summary>
+    /// The TOWN its town was when the platoon was stored from it (its own record's id, or the override in its place); null when unknown, as for one
+    /// read from a save, whose record keeps its <c>basetown</c>. A town that changes version drops the platoons of an older one, and its activation
+    /// refuses one (<c>PopulationSystem</c> town overrides); a save writes it as the platoon's <c>basetown</c>.
+    /// </summary>
+    public string? BaseTown { get; set; }
+    /// <summary>
+    /// A code mod moved it to its town (<c>PopulationSystem.RehomePlatoon</c>, engine API): it stays there as a guest, not one of the town's own
+    /// residents, so the town still makes its residents, and a later change of the town's version leaves it where it is. Saved (<c>meitou guest</c>).
+    /// </summary>
+    public bool Guest { get; set; }
+    /// <summary>
     /// The unloaded platoon's activation dwell (+0x78, <c>FUN_1407ebf30</c>, <b>Verified</b>): 5 s when it becomes unloaded, 2 s again whenever it
     /// stands outside its zone's activation box; inside, it counts down and the platoon activates once it is below 0. Not saved (a loaded platoon
     /// starts at 5).
     /// </summary>
     public float DwellLeft { get; set; } = 5;
     /// <summary>
-    /// Where its campaign sends it (the target for the leader platoon, the leader for the others; set each population look).
+    /// Where its campaign sends it off screen (the target for the leader platoon, the leader's trail for the others; set each population look).
     /// </summary>
     public Vector2? CampaignGoal { get; set; }
     /// <summary>
@@ -217,9 +232,10 @@ public sealed class Platoon
     /// </summary>
     public Vector2? RouteGoal { get; set; }
     /// <summary>
-    /// A code mod runs it (<c>PopulationSystem.HoldPlatoon</c>, engine API): the population gives it no trip and moves no stand-in of it; it still
-    /// loads, unloads and despawns as any platoon (a mod's spawn is kept, <see cref="ModSpawned"/>). Not saved: the mod finds it again by
-    /// <see cref="ModTag"/> and holds it again after a load.
+    /// A code mod moves it off screen (<c>PopulationSystem.HoldPlatoon</c>, engine API): the population gives it no trips and moves no stand-in of
+    /// it (the mod's <see cref="ModGoal"/> does); loaded, its members run their package's full minds as any platoon's. It still loads, unloads and
+    /// despawns as any platoon (a mod's spawn is kept, <see cref="ModSpawned"/>). Not saved: the mod finds it again by <see cref="ModTag"/> and
+    /// holds it again after a load.
     /// </summary>
     public bool Held { get; set; }
     /// <summary>
@@ -254,6 +270,11 @@ public sealed class StoredSquad
     /// The squad's name.
     /// </summary>
     public required string Name { get; init; }
+    /// <summary>
+    /// The squad the members were stored from (-1: none yet). The squad they come back as has a new id; the slaves that obey the old one
+    /// (<see cref="CharacterCold.SlaveMaster"/>) are pointed to it then, as the original's owner handle names the same character across the unload.
+    /// </summary>
+    public int SquadId { get; set; } = -1;
     /// <summary>
     /// A town's own squad (else a roaming one, which travels).
     /// </summary>
@@ -387,8 +408,8 @@ public sealed class PlatoonRegistry
             h.Add((int)p.State);
             h.Add(p.SquadId);
             h.Add(p.UnloadAtTick);
-            h.Add(p.OrderCooldown);
             if (p.Held) h.Add(0x48656C64);   // only when held, so worlds without code mods hash as before
+            if (p.Guest) h.Add(0x47756573);   // only for a guest, so worlds without town overrides hash as before
             HashMod(ref h, p);
             if (p.Job != Ai.PlatoonJob.None || p.Point is not null)
             {
@@ -439,6 +460,7 @@ public sealed class PlatoonRegistry
                     }
                 }
             }
+            if (p.SavedTown is { } stay) HashSavedTown(ref h, stay);   // likewise, until the AI applies it
         }
     }
 
@@ -456,5 +478,17 @@ public sealed class PlatoonRegistry
         h.Add(0x476F616C);
         h.Add(p.ModGoal ?? default);
         h.Add(p.ModFollow);
+    }
+
+    /// <summary>
+    /// Hashes the town and arrival hour a save held, while the AI has not applied them yet.
+    /// </summary>
+    static void HashSavedTown(ref StateHasher h, Saving.CurrentTownSave saved)
+    {
+        h.Add(0x54776E53);   // "TwnS"
+        h.Add(saved.Town.Type);
+        h.Add(saved.Town.C);
+        h.Add(saved.Town.Cs);
+        h.Add(saved.Since);
     }
 }

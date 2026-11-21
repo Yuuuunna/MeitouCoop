@@ -6,6 +6,7 @@ using Meitou.Data.World;
 using Meitou.Simulation;
 using Meitou.Simulation.Ai;
 using Meitou.Simulation.Combat;
+using Meitou.Simulation.Factions;
 using Meitou.Simulation.Population;
 using SimWorld = Meitou.Simulation.World;
 
@@ -44,7 +45,7 @@ public class WildTests(ITestOutputHelper output)
         changeDen?.Invoke(nest);
         var group = Rec("50-t", FcsRecordType.BiomeGroup, "Wilds");
         group.Ints["index"] = 0x123456;
-        group.Ints["num nests"] = 2;
+        group.Ints["num nests"] = 1;
         group.Floats["homeless spawn amount"] = 1.5f;
         group.References["homeless spawns"] = [new FcsReference("10-t", 30, 0, 0), new FcsReference("52-t", 10, 0, 0),
                 new FcsReference("11-t", 50, 0, 0)];
@@ -117,9 +118,10 @@ public class WildTests(ITestOutputHelper output)
         var sectors = pop.WildSites.Where(s => s.Kind == WildKind.Sector).ToList();
         var nests = pop.WildSites.Where(s => s.Kind == WildKind.Nest).ToList();
         Assert.Equal(4, sectors.Count);
-        Assert.Equal(2, nests.Count);
+        Assert.Single(nests);
         Assert.All(nests, n => Assert.Equal("Dog Den", n.Nest!.Name));
-        // A den stands in a sector of its own (FUN_1408f62e0) for at least one of them: that sector makes none of the group's squads.
+        // The den stands in a sector of its own (FUN_1408f62e0), not the town's: that sector makes none of the group's squads, and the three others
+        // fill the island's 4 x 1.5.
         Assert.Contains(sectors, s => OwnTownIsNest(data, nests, s));
         foreach (var s in sectors)
         {
@@ -261,9 +263,10 @@ public class WildTests(ITestOutputHelper output)
         return PopulationData.Create(db, InstallData.Levels!.Towns(), biomes: biomes);
     }
 
-    static (SimWorld World, StandardSystemSet Systems) RealWorld(PopulationData data, Vector3 at, StandardParts parts, int threads = 1)
+    static (SimWorld World, StandardSystemSet Systems) RealWorld(PopulationData data, Vector3 at, StandardParts parts, int threads = 1,
+            Func<float, float, float>? ground = null)
     {
-        var walk = new OpenGroundWalkability((_, _) => 300);
+        var walk = new OpenGroundWalkability(ground ?? ((_, _) => 300));
         var systems = StandardSystems.Build(data, walk, new StandardSystemOptions
         {
             Parts = parts, SynchronousPaths = true,
@@ -309,4 +312,121 @@ public class WildTests(ITestOutputHelper output)
         Assert.InRange(members, 1, (int)(0.7f * den.Nest!.NestResidentPopulation) + 4);
         world.RunTicks(300);
     }
+
+    [Fact]
+    [Slow]
+    public void A_wolf_den_whose_wolves_are_killed_loses_them_from_its_pool_and_is_wiped_out()
+    {
+        // Each death takes one from the pool of the nest its platoon is in (docs/game/factions-squads-towns.md "Death cost", #1033): killed packs
+        // are not made again for free.
+        var data = RealData();
+        var sites = PopulationSystem.BuildWildSites(data, new PopulationSettings(), data.Biomes!, 1);
+        var den = sites.First(s => s.Kind == WildKind.Nest && s.Nest!.Name == "Wolf Den");
+        var at = new Vector3(den.Spots[0].X, 300, den.Spots[0].Y);
+        var (world, systems) = RealWorld(data, at, StandardParts.Population | StandardParts.Movement | StandardParts.Body);
+        using var _ = world;
+        world.RunTicks(16);
+        var pop = systems.Population!;
+        var pool = pop.NestPoolsOf(den.Index)!.Roaming;
+        float start = pool.Current;
+
+        int killed = 0;
+        for (int round = 0; round < 8 && Living(world, pop.WildSquadsOf(den.Index)) > 0; round++)
+        {
+            killed += KillSquads(world, pop.WildSquadsOf(den.Index));
+            world.RunTicks(64);
+            output.WriteLine($"round {round}: start {start}, killed {killed}, pool {pool.Current} of {pool.Desired}, "
+                + $"living {Living(world, pop.WildSquadsOf(den.Index))}, ded {pop.NestPoolsOf(den.Index)!.Ded}");
+        }
+
+        Assert.True(killed > 0);
+        Assert.Equal(0, Living(world, pop.WildSquadsOf(den.Index)));
+        Assert.InRange(pool.Current, Math.Max(0, start - killed), Math.Max(0, start - killed) + 0.05f);
+        Assert.True(pop.NestPoolsOf(den.Index)!.Ded);
+
+        // Wiped out, it makes no wolves again when the player comes back to it, as the reporter's gutter camp did.
+        world.Commands.Enqueue(new FocusCommand(new Vector3(at.X + 90000, 300, at.Z + 90000)) { Tick = world.Tick });
+        world.RunTicks(2100);   // the 60 s grace of a wild site, then its block's 4 s
+        Assert.Equal(SiteStatus.Unloaded, pop.WildStatusOf(den.Index));
+        world.Commands.Enqueue(new FocusCommand(at) { Tick = world.Tick });
+        world.RunTicks(64);
+        Assert.Equal(SiteStatus.Loaded, pop.WildStatusOf(den.Index));
+        Assert.Equal(0, Living(world, pop.WildSquadsOf(den.Index)));
+    }
+
+    /// <summary>
+    /// A patrol leader whose walk to its point ends short (no way there) stands and draws the next point, as <c>Task_Patrol</c> does once its move
+    /// ends (<c>FUN_1405c6b30</c> mode 1; docs/game/factions-squads-towns.md "Off-screen world", <see cref="AiSystem.PatrolMoveOver"/>): round the
+    /// corner of four Border Zone sectors, with a water band along the sectors' line north to south, every homeless leader that draws a point
+    /// across the water draws a new one within 4 s. Catches a leader that stands for good before a point it cannot reach.
+    /// </summary>
+    [Fact]
+    [Slow]
+    public void Every_patrol_leader_whose_point_lies_across_water_draws_a_new_one()
+    {
+        var data = RealData();
+        int group = data.Biomes!.Groups.ToList().FindIndex(g => g.Name == "Border Zone");
+        var sector = PopulationSystem.BuildWildSites(data, new PopulationSettings(), data.Biomes, 1)
+            .First(s => s.Kind == WildKind.Sector && s.Group == group);
+        var (minX, minZ, _, _) = WeatherAreas.CellRect(sector.Zone.X, sector.Zone.Y);
+        float WaterBand(float x, float z) => MathF.Abs(x - minX) < 100 ? WorldWater.Height - 50 : 300;
+        var (world, _) = RealWorld(data, new Vector3(minX, 300, minZ), StandardParts.Population | StandardParts.Movement | StandardParts.Ai,
+                ground: WaterBand);
+        using var _ = world;
+        bool Across(Squad s) => s.PatrolPoint is { } p && world.Characters.TryResolveNext(s.Leader, out int l)
+            && (p.X < minX) != (world.Characters.Next[l].Position.X < minX);
+        var stuck = new Dictionary<int, (Vector2 Point, long Since)>();
+        int blocked = 0;
+        for (int t = 0; t < 3000; t++)
+        {
+            world.RunTicks(1);
+            foreach (var squad in world.Squads.All)
+            {
+                if (!Across(squad))
+                {
+                    stuck.Remove(squad.Id);
+                    continue;
+                }
+
+                if (!stuck.TryGetValue(squad.Id, out var was) || was.Point != squad.PatrolPoint!.Value)
+                {
+                    stuck[squad.Id] = (squad.PatrolPoint!.Value, world.Tick);
+                    blocked++;
+                    continue;
+                }
+
+                Assert.True(world.Tick - was.Since < 120, $"{squad.Name} stands before {was.Point} across the water since tick {was.Since}");
+            }
+        }
+
+        output.WriteLine($"{blocked} points drawn across the water");
+
+        Assert.True(blocked > 0, "a leader drew a point across the water");
+    }
+
+    /// <summary>
+    /// Kills every living member of <paramref name="squads"/> outright; the count killed.
+    /// </summary>
+    static int KillSquads(SimWorld world, IReadOnlyList<int> squads)
+    {
+        int killed = 0;
+        foreach (int id in squads.ToList())
+        {
+            foreach (var m in world.Squads.Find(id)!.Members)
+            {
+                if (world.Characters.Cold(m.Slot)!.Medical is not { Dead: false } medical) continue;
+
+                medical.Kill();
+                killed++;
+            }
+        }
+
+        return killed;
+    }
+
+    /// <summary>
+    /// The living members of <paramref name="squads"/>.
+    /// </summary>
+    static int Living(SimWorld world, IReadOnlyList<int> squads) =>
+        squads.Sum(id => world.Squads.Find(id)!.Members.Count(m => world.Characters.Cold(m.Slot)!.Medical is { Dead: false }));
 }

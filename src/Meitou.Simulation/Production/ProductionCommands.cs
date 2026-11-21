@@ -53,8 +53,9 @@ public sealed record AddOrderJob(IReadOnlyList<CharacterId> Characters, Meitou.D
 public sealed record UseTurretOrder(IReadOnlyList<CharacterId> Characters, string Site) : SiteWorkCommand;
 
 /// <summary>
-/// The original's order 136 FEED_CORPSE_INTO_MACHINE without Shift (Corpse Disposal on a corpse machine): each of the characters carrying a dead body takes it to an incinerator as the
-/// corpse disposal job does. Condition 99 is taken as carrying a dead body; the runtime binds the explicitly selected site and rechecks its authority until arrival.
+/// The original's order 136 FEED_CORPSE_INTO_MACHINE without Shift (Corpse Disposal on a corpse machine): each character listed (the selection when
+/// empty) gets order 136 on <see cref="Site"/> through its queue; one carrying a dead body takes it to that machine and feeds it in, one carrying
+/// nothing is done at once.
 /// </summary>
 public sealed record DisposeCorpseOrder(IReadOnlyList<CharacterId> Characters, string Site) : SiteWorkCommand
 {

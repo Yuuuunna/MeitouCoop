@@ -559,7 +559,7 @@ sealed class TooltipRuntime(PlayerInterface player)
     /// The bounty panel's tooltip rows (<c>FUN_1405d2da0</c>, docs/game/ui-screens.md section 4): per faction its name and <c>c.{1,num}</c> (Main for
     /// the local faction, else Greyed), <c>-Wanted For: </c> with the first four crimes and a <c> </c> row with the rest; then the imprisonment row,
     /// or a rule, the turn-in line and the local faction's expiry. <paramref name="everyExpiry"/> (Meitou UI): each faction's expiry under its own
-    /// rows instead.
+    /// rows instead, none for a prisoner.
     /// </summary>
     static List<(string Key, string Value)> BountyRows(IReadOnlyList<Simulation.Crime.BountyLine> bounties, PrisonView? prison, bool everyExpiry)
     {
@@ -573,7 +573,10 @@ sealed class TooltipRuntime(PlayerInterface player)
             if (crimes.Length > 0)
                 rows.Add((wanted + Loc.Tr("-Wanted For:") + " ", wanted + string.Join(", ", crimes.Take(4))));
             if (crimes.Length > 4) rows.Add((" ", wanted + string.Join(", ", crimes.Skip(4))));
-            if (everyExpiry) rows.Add((Expiry(bounty), ""));
+
+            // No expiry for a prisoner (#1064): the original's panel prints none then, and the lifetime's sweep is skipped in a cage
+            // (FUN_1405cbb80), so a prisoner's hours left run below zero and read like a sentence that is over.
+            if (everyExpiry && prison is null) rows.Add((Expiry(bounty), ""));
         }
 
         if (prison is { } p)
@@ -772,7 +775,7 @@ sealed class TooltipRuntime(PlayerInterface player)
         float Charges, float MaxCharges, int StolenFrom, TradeItemView? Trade, string? MapNote)
     {
         /// <summary>
-        /// Only the name (the machine slots' items, which the original's tooltip shows the same way).
+        /// Only the name (a cell given no tip).
         /// </summary>
         public bool Brief { get; init; }
 
@@ -1301,8 +1304,7 @@ sealed class TooltipRuntime(PlayerInterface player)
         lines.Add(Row("Blood loss:", Fixed2(bow.BleedMult) + "x", TooltipTone.Main));
         lines.Add(Row("Required skill:", bow.AccuracyPerfectSkill.ToString(CultureInfo.InvariantCulture), TooltipTone.Main));
         lines.Add(new("---------------", "", TooltipTone.Grey));
-        lines.Add(Row("Ammunition type:", bow.AmmoId.Length > 0 && player.RecordName?.Invoke(bow.AmmoId) is { Length: > 0 } ammo ? ammo : "???",
-            TooltipTone.Main));
+        lines.Add(Row("Ammunition type:", AmmoNames(bow), TooltipTone.Main));
         Signed(lines, "Damage vs robots", (bow.RobotDamageMult - 1) * 100);
         Signed(lines, "Damage vs humans", (bow.HumanDamageMult - 1) * 100);
         Signed(lines, "Damage vs animals", (bow.AnimalDamageMult - 1) * 100);
@@ -1312,13 +1314,35 @@ sealed class TooltipRuntime(PlayerInterface player)
     }
 
     /// <summary>
+    /// The class line of a weapon naming a code mod's skill (WEAPON <c>meitou skill</c>, Meitou only): the skill's label as the mod gave it; null for
+    /// any other weapon, which takes its category's line.
+    /// </summary>
+    static string? ModSkillClass(WeaponData weapon) =>
+        weapon.ModSkill is { } id && Simulation.Bodies.ModSkills.Find(id) is { } skill ? skill.Label + " class" : null;
+
+    /// <summary>
+    /// The crossbow's "Ammunition type:" value: the ammo item's name, "???" without one or without a name; Meitou: a crossbow with a
+    /// <c>meitou ammo</c> list names every kind it loads, in its order, joined by ", " (docs/modding.md "Ammunition").
+    /// </summary>
+    string AmmoNames(CrossbowData bow)
+    {
+        string Name(string id) => id.Length > 0 && player.RecordName?.Invoke(id) is { Length: > 0 } name ? name : "???";
+
+        if (bow.AmmoCount <= 1) return Name(bow.AmmoCount == 0 ? "" : bow.AmmoAt(0));
+
+        var names = new string[bow.AmmoCount];
+        for (int k = 0; k < names.Length; k++) names[k] = Name(bow.AmmoAt(k));
+        return string.Join(", ", names);
+    }
+
+    /// <summary>
     /// A weapon's class, damage, multipliers, bonuses and weight (<see cref="WeaponStats"/>).
     /// </summary>
     void AddWeaponRows(List<TooltipLine> lines, ItemTip t, WeaponData weapon, CombatDatabase combat)
     {
         var maker = combat.Manufacturer(t.Company) ?? WeaponManufacturer.Neutral;
         var stats = WeaponStats.Compute(t.Level * 0.01f, weapon, maker, combat.WeaponMaterial(t.Material) ?? WeaponMaterial.None, combat.Constants);
-        string? className = weapon.SkillCategory switch
+        string? className = ModSkillClass(weapon) ?? weapon.SkillCategory switch
         {
             (int)WeaponCategory.Katanas => "Katana class",
             (int)WeaponCategory.Sabres => "Sabre class",
@@ -1444,11 +1468,13 @@ sealed class TooltipRuntime(PlayerInterface player)
     /// destroyed (h + d - s at or below -m) says so; below 0 a robotic limb "does not degenerate", a vital part above the KO point is "dangerous"
     /// (death at -m; unconscious: regain consciousness before the KO point) and at it "critical", any other part "getting worse"; from 0 a part more
     /// than 20 short of m needs bandaging (robotic: plainly), less than 5 % short (healing and stun within 5) is okay or healing, else bandaging is
-    /// not urgent; okay or healing, wear above 5 adds a wear line. Under 60 left a line on what the damage affects follows. The original's kick line
-    /// and lost-limb line are not modelled.
+    /// not urgent; okay or healing, wear above 5 adds a wear line. Under 60 left a line on what the damage affects follows. A lost limb (a stump)
+    /// says only that it is gone forever. The original's kick line is not modelled.
     /// </summary>
     internal static string PartTip(HealthPartView part, float? koPoint, bool unconscious)
     {
+        if (part.Limb == Simulation.Bodies.LimbState.Stump) return Loc.Tr("This limb is gone forever.");
+
         float h = part.Flesh, d = part.Bandage, s = part.Stun, m = part.Maximum;
         string text;
 

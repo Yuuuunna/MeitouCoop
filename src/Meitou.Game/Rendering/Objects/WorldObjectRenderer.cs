@@ -1423,7 +1423,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         foreach (var zone in _streamer.AllZones)
             foreach (var room in zone.Interiors)
             {
-                if (room.Contains(ground, CutMargin) && room.CutsGround(origin, direction, distance)
+                if (MaskUsed(room) && room.Contains(ground, CutMargin) && room.CutsGround(origin, direction, distance)
                     && room.BoxExit(origin, direction) is { } exit && exit > (reach ?? 0))
                     reach = exit;
             }
@@ -1574,6 +1574,11 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     }
 
     /// <summary>
+    /// Whether a building's mask meshes cut: it has some, and they do not hold its own ground while <see cref="KeepHeldGround"/>.
+    /// </summary>
+    bool MaskUsed(InteriorVolume v) => v.MaskMeshes.Count > 0 && !(KeepHeldGround && v.MaskHoldsGround);
+
+    /// <summary>
     /// The loaded buildings with interior mask meshes whose footprint comes within <paramref name="range"/> of <paramref name="eye"/> (X/Z), into
     /// <paramref name="into"/>.
     /// </summary>
@@ -1586,7 +1591,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
             if (zone.Interiors.Length == 0 || ObjectStreamer.ZoneDistance(zone.X0, zone.Z0, eye) > range + 200) continue;
             foreach (var v in zone.Interiors)
             {
-                if (v.MaskMeshes.Count == 0 || v.Footprint.Length == 0) continue;
+                if (!MaskUsed(v) || v.Footprint.Length == 0) continue;
                 float nearest = float.MaxValue;
                 foreach (var p in v.Footprint) nearest = MathF.Min(nearest, Vector2.DistanceSquared(p, q));
                 if (nearest <= range * range || v.ContainsGround(eye.X, eye.Z)) into.Add(v);
@@ -1651,6 +1656,16 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     bool ViewedShell(PlacedMesh p) =>
         p.Kind == PlacedKind.BuildingPart && !p.Interior && p.ParentPlacementId is null
         && InteriorView.TryGetValue(p.PlacementId, out int shown) && (p.Floor <= shown || p.DoorIndex >= 0);
+
+    /// <summary>
+    /// Whether the instance's building keeps its rooms in its shell (<see cref="InteriorVolume.ShellHoldsRooms"/>): its faces turned up are the
+    /// rooms' floors, not the street's ledges. False when its own volume is not found round the instance.
+    /// </summary>
+    bool ShellHoldsRooms(ObjectStreamer.Instance inst)
+    {
+        var p = inst.Placed;
+        return InteriorAt(inst.Transform.Translation, 2, p.PlacementId) is { ShellHoldsRooms: true } own && own.PlacementId == p.PlacementId;
+    }
 
     /// <summary>
     /// Whether the instance takes the indoor GI (docs/render-gi.md): a building's interior part, its layout furniture inside a hull, or a building of
@@ -2142,10 +2157,12 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         // Spare instance-matrix component: room GI gain without splitting shared furniture batches (1), plus 2 when its building's lights are off,
         // which darkens its EMISSIVE materials (BuildingLodShaders).
         // Plus a half for the own shell of a building whose inside is viewed (ViewedShell): its walls turned to the street are no room's
-        // pixels (BuildingLodShaders atmoStreet).
+        // pixels (BuildingLodShaders atmoStreet); three quarters when that shell holds the rooms, whose floors face up.
         m.M34 = (IndoorFurniture(inst) ? 1 : 0)
             + (!_depthPass && EmissiveDark is { } dark && dark(inst.Placed.ParentPlacementId ?? inst.Placed.PlacementId) ? 2 : 0)
-            + (!_depthPass && ViewedShell(inst.Placed) ? 0.5f : 0);
+            + (_depthPass || !ViewedShell(inst.Placed) ? 0
+                : ShellHoldsRooms(inst) ? 0.75f
+                : 0.5f);
 
         // Another spare component, M44: 1, or for a construction site BuildingLodShaders.ScaffoldBase + its look's f, or a negative packed tint
         // (FarmPlants.PackTint). A site's M34 also carries its part's mesh top and the scaffold tiling (BuildingLodShaders.PackSite).
@@ -2405,6 +2422,13 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     /// building in the interior view, over its mask (docs/render-interior-cut.md); off, only inside it, as the game does.
     /// </summary>
     public bool CutRainOverViewed { get; set; } = true;
+
+    /// <summary>
+    /// Meitou (Fixes settings, <c>Ground in buried ruins</c>): the mask of a building that holds its own ground
+    /// (<see cref="InteriorVolume.MaskHoldsGround"/>) is not used, so nothing is cut in it and a move pick stops on its terrain
+    /// (docs/render-interior-cut.md "Interior terrain"); off, it cuts as the game's does.
+    /// </summary>
+    public bool KeepHeldGround { get; set; } = true;
 
     /// <summary>
     /// The interior masks last drawn (the main view's), whose owners a shadow pass leaves uncut as the colour pass does.

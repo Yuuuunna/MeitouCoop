@@ -159,6 +159,12 @@ public sealed class InstalledQuicAcceptanceTests
                 for (int index = 0; index < candidates.Length; index++)
                 {
                     var cold = host.World.Characters.Cold(candidates[index].Slot)!;
+                    // The fresh player role must not retain an NPC goal, running act-out or queued talk order.
+                    host.World.ReleaseDuties(candidates[index].Slot);
+                    TaskStart.End(host.World, candidates[index].Slot, TaskEnd.Stopped);
+                    PlayerOrders.Wipe(cold);
+                    cold.OrderWins = false;
+                    cold.OrderRoutine = CharacterTask.Idle;
                     // Enroll only this recruit into a real player-managed platoon, as the recruitment/save contract requires.
                     if (host.World.Squads.Find(cold.SquadId) is { } oldSquad)
                     {
@@ -168,7 +174,7 @@ public sealed class InstalledQuicAcceptanceTests
                     var squad = SquadManagement.NewSquad(host.World, host.Population.Db, host.World.Characters.Current[candidates[index].Slot].Position, "Acceptance", cold.Faction);
                     cold.SquadId = squad.Id; cold.Role = (int)SquadRole.Squad1; cold.IsPlayer = true;
                     cold.NpcClass = FundamentalType.Adventurer; cold.Orders = Orders.PlayerDefaults;
-                    cold.Ai = null; cold.Engaged = false; cold.Fleeing = false; cold.Pending = null; cold.Jobs.Clear();
+                    cold.Ai = null; cold.Fleeing = false; cold.Pending = null; cold.Jobs.Clear();
                     cold.Save = null;
                     squad.Members.Add(candidates[index]); squad.Leader = candidates[index];
                     host.World.Players.Find(players[index])!.State.Squad = squad.Id;

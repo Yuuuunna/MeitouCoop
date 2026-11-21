@@ -1664,3 +1664,39 @@ msgstr "Marcar todos os mods que a pesquisa mostra"
 
 msgid "Untick every mod the search shows"
 msgstr "Desmarcar todos os mods que a pesquisa mostra"
+
+msgid "Details"
+msgstr "Detalhes"
+
+msgid "Show or hide the selected mod's details beside the list"
+msgstr "Mostrar ou ocultar os detalhes do mod selecionado ao lado da lista"
+
+msgid "Save the mod list and load order as a preset of this name"
+msgstr "Salvar a lista de mods e a ordem de carregamento como uma predefinição com este nome"
+
+msgid "Take the chosen preset's mod list and load order"
+msgstr "Usar a lista de mods e a ordem de carregamento da predefinição escolhida"
+
+msgid "Delete the chosen preset"
+msgstr "Excluir a predefinição escolhida"
+
+msgid "Needs"
+msgstr "Requer"
+
+msgid "not enabled above it"
+msgstr "não ativado acima dele"
+
+msgid "No description"
+msgstr "Sem descrição"
+
+msgid "Not enabled: the game does not load it"
+msgstr "Não ativado: o jogo não o carrega"
+
+msgid "Image"
+msgstr "Imagem"
+
+msgid "{1} mods, {2} enabled"
+msgstr "{1} mods, {2} ativados"
+
+msgid "{1} of {2} mods shown, {3} enabled"
+msgstr "{1} de {2} mods exibidos, {3} ativados"

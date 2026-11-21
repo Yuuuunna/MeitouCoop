@@ -1,4 +1,5 @@
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Gameplay.Economy;
 using Meitou.Simulation.Aggro;
@@ -13,13 +14,27 @@ using Meitou.Simulation.Population;
 namespace Meitou.Simulation.Trading;
 
 /// <summary>
-/// The player opens a trade between one of their characters and a trader: the customer walks up to the trader and the trade window opens in reach.
+/// The player opens a trade between one of their characters and a trader (Meitou's Trade order): the customer gets order 12 Talking on the trader
+/// in its queue, walks up and the trade window opens in reach instead of the conversation (<see cref="Dialogue.DialogueOrders.Trade"/>).
 /// </summary>
 public sealed record OpenTrade(CharacterId Customer, CharacterId Trader) : OrderCommand;
+/// <summary>
+/// The dialogue's DA_TRADE: the trade window opens where the conversation stands, with no order (<c>FUN_140791830</c> only queues the window).
+/// </summary>
+sealed record OpenTradeNow(CharacterId Customer, CharacterId Trader) : SimCommand;
 /// <summary>
 /// Closes the open trade.
 /// </summary>
 public sealed record CloseTrade : TradeCommand;
+/// <summary>
+/// A code mod gives a squad of the player's faction a shop (<paramref name="On"/>) or ends it (docs/modding.md "Shopkeepers of the player's faction";
+/// Meitou only: the original's squad factory fills no shop for the player's faction). The shop trades only while the squad is independent and keeps
+/// its own purse, which this command gives it when it has none. <paramref name="Template"/>: the string id of a SQUAD_TEMPLATE for its terms (buy
+/// mult, stolen and illegal goods), filled and restocked from its vendor lists when it is a trader's (an id that names none refuses the command);
+/// none: terms of no template, the stock the mod's own (<see cref="Shop.Stock"/>). <paramref name="Owner"/>: the mod's manifest id, so a load
+/// without the mod ends the shop (one that names none keeps the noted one; another mod's shop is left alone by a command naming that other mod).
+/// </summary>
+public sealed record SetSquadShop(int Squad, bool On, string? Template = null, string? Owner = null) : SimCommand;
 /// <summary>
 /// Buys <see cref="Quantity"/> units of the stock item <see cref="Item"/> (its index in the shop's stock) into the customer's inventory: at the cell
 /// <see cref="X"/>, <see cref="Y"/> of <see cref="Section"/> (<c>main</c> or <c>backpack_content</c>, the cell the item was dropped on) when that is
@@ -44,6 +59,11 @@ public sealed record BuyItem(InventoryItemToken Item, int Quantity) : TradeComma
     /// (<see cref="InventoryCommands.TryEquip"/>).
     /// </summary>
     public bool Equip { get; init; }
+    /// <summary>
+    /// With <see cref="Equip"/>: the receiving character's bag window is open, so the units go into the worn bag first, then as
+    /// <see cref="Equip"/> says (the right click's target window is the bag's before the character's, <c>FUN_140714a20</c> -> <c>FUN_14070dcd0</c>).
+    /// </summary>
+    public bool IntoBag { get; init; }
     /// <summary>
     /// The character whose window it goes into: the trade passes to them (<see cref="TradeSystem.TradeWith"/>). None: the customer, or the
     /// selection's.
@@ -247,11 +267,6 @@ public sealed class TradeSettings
     /// Ticks between looks at the squads for new shops and due restocks (engine choice: half a game second).
     /// </summary>
     public int CheckEveryTicks { get; init; } = 15;
-    /// <summary>
-    /// Game seconds the customer may spend not moving on its walk to the trader before the opening is dropped (engine choice,
-    /// <see cref="Dialogue.WalkUp"/>).
-    /// </summary>
-    public float ApproachSeconds { get; init; } = 60;
 }
 
 /// <summary>
@@ -259,8 +274,9 @@ public sealed class TradeSettings
 /// <list type="bullet">
 /// <item><b>Shops</b>: a squad made from a template with <c>is trader</c> and vendor lists gets a <see cref="Shop"/> when it appears (the game's
 /// first fill at squad creation), filled by <see cref="ShopFiller"/>, with the purse in <see cref="Squad.Money"/>; it restocks every <c>vendors
-/// refresh time</c> game hours (9.3). Squads of the player's faction never get one. A housed one gets a building shop when its home has stock
-/// containers (<see cref="Shop.ForBuilding"/>).</item>
+/// refresh time</c> game hours (9.3). Squads of the player's faction get one only from a code mod (<see cref="SetSquadShop"/>, Meitou only:
+/// a faction shop, a squad shop that trades with the player's money against the squad's own purse, which no fill sets). A housed one gets a
+/// building shop when its home has stock containers (<see cref="Shop.ForBuilding"/>).</item>
 /// <item><b>Trading</b> (the trade window <c>FUN_140715560</c>, <b>Observed</b>): a purchase is priced by <see cref="Market.StackPrice"/> without the
 /// sell flag, a sale with it; when the payer cannot afford the stack the number of units it can afford moves instead, none: "You can't afford that."
 /// (3) or "The shopkeeper can't afford that." (4). What does not fit: "No room for that item." (2). The cats move between the player's purse and the
@@ -284,7 +300,6 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     readonly CharacterAssembly _assembly;
     readonly Dictionary<string, SquadTemplate?> _templates = new(StringComparer.Ordinal), _homeTemplates = new(StringComparer.Ordinal);
     readonly Dictionary<PlayerId, Interaction> _interactions = [];
-    readonly Dictionary<CharacterId, (HashSet<Interaction> Owners, bool Wandered)> _holds = [];
     Market? _market;
     ulong _nextSession;
 
@@ -304,12 +319,17 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     {
         foreach (var command in commands)
         {
-            if (command is not (OpenTrade or TradeCommand)) continue;
+            if (command is SetSquadShop shop)
+            {
+                SetShop(world, shop);
+                continue;
+            }
+            if (command is not (OpenTrade or OpenTradeNow or TradeCommand)) continue;
             var actor = command.Issuer ?? PlayerId.Local;
             if (world.Players.Find(actor) is null) continue;
             if (!_interactions.TryGetValue(actor, out var interaction))
             {
-                if (command is not OpenTrade) continue;
+                if (command is not (OpenTrade or OpenTradeNow)) continue;
                 _interactions.Add(actor, interaction = new Interaction(this, actor));
             }
             interaction.Input(world, command);
@@ -322,7 +342,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     /// <summary>
     /// Every tick the homes a player character shows (<see cref="MarkShownHomes"/>); every <see cref="TradeSettings.CheckEveryTicks"/> the wages and
     /// the shops; each player's trade follows its authorized selection and stays open while its parties remain in the world.
-    /// An approach opens the window in talk range and releases the trader to its AI.
+    /// A queued talk order opens the window on arrival; the trader continues its AI.
     /// </summary>
     public void SlowWorld(World world)
     {
@@ -346,8 +366,27 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     public TradeView? PublishTrade() => PublishTrade(PlayerId.Local);
     public TradeView? PublishTrade(PlayerId player) => _interactions.GetValueOrDefault(player)?.View;
     public TradeView? PublishTrade(World world, PlayerId player) => _interactions.GetValueOrDefault(player)?.PublishAuthorized(world);
-    internal bool HoldsNpc(CharacterId npc) => _holds.ContainsKey(npc);
-    internal bool IsServingOther(CharacterId npc, PlayerId player) => _holds.TryGetValue(npc, out var held) && held.Owners.Any(i => i.Actor != player);
+    // Trading never reserves a shopkeeper: each player has an independently authorized window.
+    internal bool HoldsNpc(CharacterId npc) => false;
+    internal bool IsServingOther(CharacterId npc, PlayerId player) => false;
+
+    /// <summary>Opens the arriving trade order or dialogue effect for its authorized player.</summary>
+    internal void OpenAt(World world, CharacterId customer, CharacterId trader, SimCommand? source = null, bool trusted = false)
+    {
+        if (source is null && world.Players.RequiresExplicitControl)
+        {
+            if (!trusted || world.Players.ControlOf(customer) is not { } grant || !world.Players.Validate(grant)
+                || world.Players.Find(grant.Player) is not { } recipient) return;
+            source = new OpenTradeNow(customer, trader) { Tick = world.Tick, Issuer = grant.Player, ControlGrants = [grant],
+                FactionGrantRevision = recipient.MembershipRevision(grant.Faction) };
+        }
+        var actor = source?.Issuer ?? PlayerId.Local;
+        if (world.Players.Find(actor) is null) return;
+        if (!_interactions.TryGetValue(actor, out var interaction))
+            _interactions.Add(actor, interaction = new Interaction(this, actor));
+        interaction.OpenNow(world, customer, trader, source ?? new OpenTradeNow(customer, trader) { Tick = world.Tick });
+        interaction.SettleStock(world);
+    }
 
     /// <summary>
     /// Ends only this player's visible trade; a customer still approaching a trader keeps that order.
@@ -385,34 +424,6 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         Interaction.FenceChance(thievery, stolenFromShopFaction, stolenFromShopSquad);
     internal const string BagNotEmpty = "That bag isn't empty.";
 
-    void Hold(World world, CharacterId trader, Interaction interaction)
-    {
-        if (!world.Characters.TryResolveNext(trader, out int t)) return;
-        ref var n = ref world.Characters.Next[t];
-        if (!_holds.TryGetValue(trader, out var held)) held = ([], false);
-        held.Owners.Add(interaction);
-        held.Wandered |= n.Task == (byte)CharacterTask.Wander;
-        _holds[trader] = held;
-        bool travelling = TaskStart.OnAiWalk(world.Characters, t);
-        world.Characters.Cold(t)!.Engaged = true;
-        if (n.Task is (byte)CharacterTask.Wander or (byte)CharacterTask.Idle || travelling) TaskStart.Stand(world.Characters, t);
-    }
-
-    void Release(World world, CharacterId trader, Interaction interaction)
-    {
-        if (!_holds.TryGetValue(trader, out var held)) return;
-        held.Owners.Remove(interaction);
-        if (held.Owners.Count != 0) return;
-        _holds.Remove(trader);
-        if (!world.Characters.TryResolveNext(trader, out int t)) return;
-        if (world.SystemOf<Dialogue.DialogueSystem>()?.HoldsNpc(trader) != true)
-        {
-            world.Characters.Cold(t)!.Engaged = false;
-            if (held.Wandered && world.Characters.Next[t].Task == (byte)CharacterTask.Idle)
-                TaskStart.Become(world, t, CharacterTask.Wander, Data.Gameplay.Ai.TaskType.Wanderer, TaskSource.Npc);
-        }
-    }
-
     // CHARACTER `wages` (Character::giveBirth and Character::dailyUpdate, Verified): a character not of the player's faction with wages of 1 or more sets (not adds to) its squad's money
     // to them when it is made and every day; with several waged members the last one wins. Engine choices: the day pass runs when the game day changes, members in squad order; "when
     // made" is the first pass that sees the squad, except the squads already there at this system's first pass and a squad of characters back from a save or from out of the world
@@ -441,7 +452,12 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     {
         foreach (var squad in world.Squads.All)
         {
-            if (squad.Faction >= 0 && (world.IsPlayerFaction(squad.Faction) || squad.Faction == _data.PlayerFaction)) continue;
+            if (PlayersSquad(world, squad))
+            {
+                StockFactionShop(world, squad);
+                continue;
+            }
+
             bool living = Living(world, squad);
             if (squad.Shop is { } open) SettleView(world, open);
 
@@ -468,7 +484,15 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
         }
     }
 
-    bool PlayersSquad(World world, Squad squad) => squad.Faction >= 0 && (world.IsPlayerFaction(squad.Faction) || squad.Faction == _data.PlayerFaction);
+    /// <summary>
+    /// Whether the squad is of the player's faction (the world's or the data's).
+    /// </summary>
+    bool PlayersSquad(World world, Squad squad) => PlayersFaction(world, squad.Faction);
+
+    /// <summary>
+    /// Whether <paramref name="faction"/> is the player's (the world's or the data's).
+    /// </summary>
+    bool PlayersFaction(World world, int faction) => faction >= 0 && (world.IsPlayerFaction(faction) || faction == _data.PlayerFaction);
 
     /// <summary>
     /// Marks the squads whose standing home building a player character is in or on (<see cref="Squad.HomeInteriorShown"/>): the original's interior
@@ -744,14 +768,19 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
 
     /// <summary>
     /// A squad shop's fill (<c>FUN_14095ab10</c>, <see cref="ShopFiller.StockSquad"/>), its window built again when the trade shows it; false (it
-    /// waits) while an item lifted from the window is held.
+    /// waits) while an item lifted from the window is held. A faction shop's purse is left as it is, and its stock keeps no money item.
     /// </summary>
     bool RefillSquad(World world, Squad squad, Shop shop, SquadTemplate template)
     {
         if (shop.View.Live && StockHeld(world, shop)) return false;
 
         var fill = ShopFiller.Roll(shop, template, Market(world), _data, world.VendorTables, world.Seed, (ulong)squad.Id, specials: shop.Fills == 0);
-        if (ShopFiller.StockSquad(shop, fill, Market(world)) is { } purse) squad.Money = purse;
+        var purse = ShopFiller.StockSquad(shop, fill, Market(world));
+
+        // A faction shop's purse holds only what trades and its mod put in (Meitou: no fill makes money for the player's faction), and the money
+        // stacks a fill places (never shown in the window) are taken out, so none reaches a player character when the shop ends.
+        if (purse is { } set && !PlayersSquad(world, squad)) squad.Money = set;
+        if (PlayersSquad(world, squad)) shop.Stock.Items.RemoveAll(i => i.ItemFunction == PlayerSystem.MoneyFunction);
 
         ReopenView(world, shop);
         return true;
@@ -812,6 +841,205 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     /// The shop a character trades for: its squad's (null: not a trader).
     /// </summary>
     public static Shop? ShopOf(World world, CharacterCold cold) => cold.SquadId >= 0 ? world.Squads.Find(cold.SquadId)?.Shop : null;
+
+
+
+    /// <summary>
+    /// Whether a squad of the player's faction keeps a shop the player's characters can trade with (<see cref="SetSquadShop"/>, a faction shop): a
+    /// code mod gave it one, the player does not lead it (<see cref="Squad.Independent"/>) and it keeps its own purse (<see cref="Squad.OwnPurse"/>),
+    /// so what the player pays and is paid stays the faction's (docs/modding.md "Shopkeepers of the player's faction").
+    /// </summary>
+    public static bool FactionShopOpen(World world, Squad squad) =>
+        squad is { Shop: not null, Independent: true, OwnPurse: true, Dead: false } && squad.Faction >= 0 && world.IsPlayerFaction(squad.Faction);
+
+    /// <summary>
+    /// Whether the character in <paramref name="slot"/> offers Trade as a shopkeeper of the player's faction: a player character, alive, not held in
+    /// a cage, not asleep and not fighting (a trade would not open, <see cref="CanOpen"/>), in a squad whose shop is open to the player
+    /// (<see cref="FactionShopOpen"/>). Every such member offers it.
+    /// </summary>
+    public static bool KeepsFactionShop(World world, int slot) =>
+        world.Characters.Cold(slot) is { IsPlayer: true, IsImprisoned: false, InCombat: false, SquadId: >= 0, Medical: not { Dead: true } } cold
+        && !Carrying.CarrySystem.Asleep(world.Characters, slot) && world.Squads.Find(cold.SquadId) is { } squad && FactionShopOpen(world, squad);
+
+    /// <summary>
+    /// Gives a squad of the player's faction a shop or ends it (<see cref="SetSquadShop"/>), noting the mod that set it; another mod's shop is left
+    /// alone (<see cref="Factions.SquadManagement.MayChange"/>). A template that names no SQUAD_TEMPLATE refuses the command, with a log line. A new
+    /// shop is a squad shop with the template's terms (none: of no template), first filled when that template is a trader's with vendor lists, and
+    /// the squad gets its own purse when it has none. A shop it already has keeps its template and stock; only a new owner is noted.
+    /// </summary>
+    void SetShop(World world, SetSquadShop command)
+    {
+        if (command.Issuer is not null || world.Squads.Find(command.Squad) is not { Dead: false } squad || !PlayersSquad(world, squad)) return;
+        if (!Factions.SquadManagement.MayChange(squad.ShopOwner, command.Owner)) return;
+
+        if (!command.On)
+        {
+            EndShop(world, squad);
+            return;
+        }
+
+        string? id = command.Template is { Length: > 0 } named ? named : null;
+        var template = id is not null ? TemplateRecord(_data, id) : null;
+        if (id is not null && template is null && squad.Shop is null)
+        {
+            string from = command.Owner ?? "a mod";
+            Console.WriteLine($"trade     SetSquadShop from {from}: '{id}' is no SQUAD_TEMPLATE string id; squad {squad.Id} gets no shop");
+            return;
+        }
+
+        if (command.Owner is { Length: > 0 } owner) squad.ShopOwner = owner;
+        GivePurse(squad);
+        if (squad.Shop is not null) return;
+
+        squad.ShopTemplate = id;
+        squad.Shop = new Shop { Terms = TermsOf(squad, template) };
+        if (id is not null && TemplateOf(id) is { } fills) Refill(world, squad, squad.Shop, fills);
+    }
+
+    /// <summary>
+    /// A faction shop trades against its squad's own purse: a squad without one gets it here, empty and owned by no mod, so a load without the
+    /// shop's mod leaves the money with the squad (only <see cref="Factions.SetSquadPurse"/> off moves it to the player's money).
+    /// </summary>
+    static void GivePurse(Squad squad)
+    {
+        if (squad.OwnPurse) return;
+
+        squad.OwnPurse = true;
+        squad.Money = 0;
+    }
+
+    /// <summary>
+    /// A faction shop at each stock pass: what its window changed goes to its stock, and with a template that fills it restocks when due while a
+    /// member lives, as a trader's squad shop (<see cref="Refill"/>), its purse untouched.
+    /// </summary>
+    void StockFactionShop(World world, Squad squad)
+    {
+        if (squad.Shop is not { } shop) return;
+
+        SettleView(world, shop);
+        if (world.Tick < shop.NextRestockTick || squad.ShopTemplate is not { } id || TemplateOf(id) is not { } template || !Living(world, squad))
+            return;
+
+        Refill(world, squad, shop, template);
+    }
+
+    /// <summary>
+    /// Ends a faction shop: an item the player holds from its window goes back into the window first, an open trade with it closes once the window
+    /// is written back, and its goods go to its members (<see cref="GiveBack"/>). The purse stays (<see cref="Factions.SetSquadPurse"/> ends it).
+    /// </summary>
+    void EndShop(World world, Squad squad)
+    {
+        int dropped = GiveBack(world, squad);
+        if (dropped > 0) world.PostFaction(squad.Faction, Loc.Tr("{1} item stack(s) of a closed shop were left on the ground.", dropped));
+    }
+
+    /// <summary>Settles every player's held stock and closes each view before the shop's goods change ownership.</summary>
+    void CloseShop(World world, Squad squad)
+    {
+        if (squad.Shop is not { } shop) return;
+        foreach (var player in world.Players.All)
+            if (player.State.Held is { From.Holder: ItemHolder.Stock } held && (ReferenceEquals(held.SourceShop, shop) || held.SourceShop is null && ReferenceEquals(held.Grid, shop.Window)))
+                world.SystemOf<PlayerSystem>()?.ReturnHeldItem(world, player.Id);
+        SettleView(world, shop);
+        foreach (var interaction in _interactions.Values)
+            if (interaction.TradesWith(world, squad)) interaction.EndTrade(world);
+    }
+
+    /// <summary>
+    /// Takes a faction shop away: its goods go to the squad's members, else onto the ground (<see cref="HandOut"/>), and its owner and template are
+    /// forgotten. Returns how many stacks went onto the ground.
+    /// </summary>
+    internal static int GiveBack(World world, Squad squad)
+    {
+        world.SystemOf<TradeSystem>()?.CloseShop(world, squad);
+        int dropped = squad.Shop is { } shop ? HandOut(world, squad, shop.Stock) : 0;
+
+        squad.Shop = null;
+        squad.ShopOwner = null;
+        squad.ShopTemplate = null;
+        return dropped;
+    }
+
+    /// <summary>
+    /// The goods of an ended faction shop go into its squad's living members' inventories, the first member's first, where they fit (a live
+    /// animal's shut grid takes none, <see cref="InventoryCommands.MainClosed"/>); what fits nowhere goes onto the ground ahead of the first living
+    /// member, or with none where the squad was made (engine choice: nothing is destroyed). Returns how many stacks went onto the ground.
+    /// </summary>
+    static int HandOut(World world, Squad squad, Inventory stock)
+    {
+        int dropped = 0;
+
+        foreach (var item in stock.Items)
+        {
+            item.Buyback = null;
+            if (Deliver(world.Characters, squad, item)) continue;
+
+            Drop(world, squad, item);
+            dropped++;
+        }
+
+        stock.Items.Clear();
+        return dropped;
+    }
+
+    /// <summary>
+    /// Puts <paramref name="item"/> into the squad's living members' inventories; false when units are left over (they stay in the item).
+    /// </summary>
+    static bool Deliver(CharacterTable table, Squad squad, ItemInstance item)
+    {
+        foreach (var m in squad.Members)
+        {
+            if (!table.TryResolveNext(m, out int slot) || table.Cold(slot) is not { DiedTick: < 0, Inventory: { } into } cold) continue;
+
+            item.Section = "main";
+            if (into.Add(item, InventoryCommands.MainClosed(cold))) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Puts <paramref name="item"/> on the ground ahead of the squad's first living member (<see cref="HeldItems.DropAhead"/>), else at the place
+    /// the squad was made (<see cref="Squad.Position"/>).
+    /// </summary>
+    static void Drop(World world, Squad squad, ItemInstance item)
+    {
+        var table = world.Characters;
+
+        foreach (var m in squad.Members)
+        {
+            if (!table.TryResolveNext(m, out int slot) || table.Cold(slot) is not { DiedTick: < 0 }) continue;
+
+            HeldItems.DropAhead(world, slot, item);
+            return;
+        }
+
+        item.Section = "main";
+        world.GroundItems.Drop(item, squad.Position, 0);
+    }
+
+    /// <summary>
+    /// Ends every faction shop a code mod gave whose mod is not running now (<paramref name="running"/>: whether a mod id runs), its goods going to
+    /// its members or the ground (<see cref="GiveBack"/>; <paramref name="dropped"/>: the stacks on the ground). Between ticks after a load, before
+    /// the first. Returns how many.
+    /// </summary>
+    public static int DropUnownedShops(World world, Func<string, bool> running, out int dropped)
+    {
+        int closed = 0;
+        dropped = 0;
+
+        foreach (var squad in world.Squads.All)
+        {
+            if (squad.ShopOwner is not { } owner || running(owner)) continue;
+
+            dropped += GiveBack(world, squad);
+            closed++;
+        }
+
+        return closed;
+    }
+
+
 
     /// <summary>
     /// Prepares the shop's shared cloned window before an authorized trade mutates it.

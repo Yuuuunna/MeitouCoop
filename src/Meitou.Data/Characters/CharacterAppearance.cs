@@ -402,9 +402,15 @@ public sealed partial class CharacterAppearance
     public Dictionary<string, AttachmentPoint> AttachmentPoints { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Pose weights from the body file, keyed by pose name (only non-zero values).
+    /// Pose weights from the body file, keyed by pose name (only non-zero values), with the code mods' (<see cref="ModLooks.Extras"/>) set over
+    /// them.
     /// </summary>
     public Dictionary<string, float> PoseWeights { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The colour tints code mods lay over the skin (<see cref="ModLooks.Extras"/>, docs/modding.md "Look extras"); none without them.
+    /// </summary>
+    public IReadOnlyList<LookTint> Tints { get; private set; } = [];
 
     /// <summary>
     /// What the build could not resolve or chose to leave out, as readable lines.
@@ -480,6 +486,7 @@ public sealed partial class CharacterAppearance
         var result = CreateResult(db, race, female, body, bodyFile, loadout, character, faction, random, notes);
         result.Notes.AddRange(notes);
         AddPoseWeights(result, body);
+        if (ModLooks.HasExtras && body is not null) AddExtras(result, body, race, female);
 
         var (items, materials, colours) = CollectItems(db, options, character, loadout, random);
         AddEquipped(db, result, options, race, items);
@@ -630,6 +637,24 @@ public sealed partial class CharacterAppearance
             SkinToneParameter = body?.SkinTone is { } tone ? Vector3.One - tone : Vector3.Zero,
             HairColour = HairColourOf(db, race, body, random),
         };
+    }
+
+    /// <summary>
+    /// The code mods' extras for a person's look (docs/modding.md "Look extras"): their pose weights set over the body's (0 takes one off), and
+    /// their tints.
+    /// </summary>
+    static void AddExtras(CharacterAppearance result, AppearanceFile body, GameRecord race, bool female)
+    {
+        var context = new LookExtrasContext(body.Record, race, female, result.Head);
+        if (ModLooks.Extras(context) is not { } extras) return;
+
+        foreach (var (name, weight) in extras.PoseWeights)
+        {
+            if (weight != 0) result.PoseWeights[name] = weight;
+            else result.PoseWeights.Remove(name);
+        }
+
+        result.Tints = extras.Tints;
     }
 
     /// <summary>
@@ -1123,6 +1148,54 @@ public sealed partial class CharacterAppearance
     }
 
     /// <summary>
+    /// Copies an already resolved appearance with new skin tints, retaining its poses and geometry without running generation callbacks.
+    /// </summary>
+    public CharacterAppearance WithTints(IReadOnlyList<LookTint> tints)
+    {
+        if (tints.Count > ModLooks.MaxTints || tints.Any(t => t is null || ModLooks.Problem(t) is not null))
+            throw new InvalidDataException("Invalid character appearance tints.");
+
+        var copy = new CharacterAppearance
+        {
+            Character = Character,
+            Animal = Animal,
+            AnimalBackpack = AnimalBackpack,
+            Race = Race,
+            Female = Female,
+            Body = Body,
+            BodyFile = BodyFile,
+            Loadout = Loadout,
+            Faction = Faction,
+            BodyMesh = BodyMesh,
+            BodyTexture = BodyTexture,
+            BodyNormal = BodyNormal,
+            BodyNormalStrong = BodyNormalStrong,
+            BodyNormalSkinny = BodyNormalSkinny,
+            BodyMask = BodyMask,
+            PartMap = PartMap,
+            Head = Head,
+            Hair = Hair,
+            Shape = Shape,
+            Beard = Beard,
+            SkinToneParameter = SkinToneParameter,
+            HairColour = HairColour,
+            HiddenLimbs = HiddenLimbs,
+            HiddenParts = HiddenParts,
+            Headless = Headless,
+            HeadOnly = HeadOnly,
+            Shaved = Shaved,
+            Tints = [.. tints],
+        };
+        copy.Parts.AddRange(Parts);
+        copy.BodyLayers.AddRange(BodyLayers);
+        copy.Lights.AddRange(Lights);
+        copy.Notes.AddRange(Notes);
+        foreach (var (name, point) in AttachmentPoints) copy.AttachmentPoints.Add(name, point);
+        foreach (var (name, weight) in PoseWeights) copy.PoseWeights.Add(name, weight);
+        return copy;
+    }
+
+    /// <summary>
     /// The head of this look as it falls when cut off (Meitou decapitation): the body and every worn part, drawn head only (<see cref="HeadOnly"/>:
     /// the head bones' vertices of skinned parts, the parts attached to a head bone), so hair, beard, hat and whatever else sits on the head (goggles
     /// in the belt slot) go with it.
@@ -1152,6 +1225,7 @@ public sealed partial class CharacterAppearance
             Shape = Shape,
             Beard = Beard,
             SkinToneParameter = SkinToneParameter,
+            Tints = Tints,
             HairColour = HairColour,
             HeadOnly = true,
         };
@@ -1191,6 +1265,7 @@ public sealed partial class CharacterAppearance
             Shape = Shape,
             Beard = Beard,
             SkinToneParameter = SkinToneParameter,
+            Tints = Tints,
             HairColour = HairColour,
             HiddenLimbs = HiddenLimbs,
             HiddenParts = HiddenParts,
@@ -1218,6 +1293,9 @@ public sealed partial class CharacterAppearance
         var options = new CharacterOptions { Loadout = Loadout, Shaved = Shaved, Faction = Faction?.StringId, HideHat = true };
         var bare = Build(db, installRoot, Character.StringId, options);
         bare.Shape = Shape;
+        bare.Tints = Tints;
+        bare.PoseWeights.Clear();
+        foreach (var (name, weight) in PoseWeights) bare.PoseWeights.Add(name, weight);
         return bare;
     }
 
@@ -1329,6 +1407,9 @@ public sealed partial class CharacterAppearance
         return Rgb(chosen.GetInt("color 1"));
     }
 
+    /// <summary>
+    /// Captures the resolved presentation, including mod pose weights and tints, without private loadout or appearance records.
+    /// </summary>
     public CharacterDisplay CaptureDisplay(GameDatabase db) => new()
     {
         Race = Race,
@@ -1358,11 +1439,33 @@ public sealed partial class CharacterAppearance
         Lights = [..Lights],
         AttachmentPoints = new(AttachmentPoints, StringComparer.Ordinal),
         PoseWeights = new(PoseWeights, StringComparer.Ordinal),
+        Tints = [.. Tints],
     };
+
+    /// <summary>
+    /// Rejects missing or excessive collections and invalid mod extras before the descriptor reaches the renderer.
+    /// </summary>
+    static void ValidateDisplay(CharacterDisplay d)
+    {
+        if (d.Race is not { Type: FcsRecordType.Race } || d.Shape is null
+            || d.Parts is null || d.Parts.Length > 512 || d.BodyLayers is null || d.BodyLayers.Length > 128
+            || d.Lights is null || d.Lights.Length > 128 || d.AttachmentPoints is null || d.AttachmentPoints.Count > 1024
+            || d.PoseWeights is null || d.PoseWeights.Count > 4096 || d.Tints is null || d.Tints.Length > ModLooks.MaxTints)
+            throw new InvalidDataException("Invalid character display descriptor.");
+
+        if (d.Parts.Any(p => p is null) || d.BodyLayers.Any(p => p is null) || d.Lights.Any(p => p is null)
+            || d.AttachmentPoints.Any(p => p.Value is null)
+            || d.PoseWeights.Any(p => string.IsNullOrEmpty(p.Key) || System.Text.Encoding.UTF8.GetByteCount(p.Key) > 512 || !float.IsFinite(p.Value))
+            || d.Tints.Any(t => t is null || ModLooks.Problem(t) is not null))
+            throw new InvalidDataException("Invalid character display presentation data.");
+    }
+
+    /// <summary>
+    /// Reconstructs a rendered appearance from the authority's bounded display descriptor, without running mod generation callbacks.
+    /// </summary>
     public static CharacterAppearance FromDisplay(CharacterDisplay d)
     {
-        if (d.Race.Type != FcsRecordType.Race || d.Parts.Length > 512 || d.BodyLayers.Length > 128 || d.Lights.Length > 128 || d.AttachmentPoints.Count > 1024 || d.PoseWeights.Count > 4096 || d.Parts.Any(p => p is null) || d.BodyLayers.Any(p => p is null) || d.Lights.Any(p => p is null) || d.AttachmentPoints.Any(p => p.Value is null))
-            throw new InvalidDataException("Invalid character display descriptor.");
+        ValidateDisplay(d);
         var appearance = new CharacterAppearance
         {
             Race = d.Race,
@@ -1384,6 +1487,7 @@ public sealed partial class CharacterAppearance
             PartMap = d.PartMap,
             Shape = d.Shape,
             SkinToneParameter = d.SkinToneParameter,
+            Tints = [.. d.Tints],
             HairColour = d.HairColour,
             HiddenLimbs = d.HiddenLimbs,
             HiddenParts = d.HiddenParts,

@@ -1,4 +1,5 @@
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Simulation.Aggro;
 using Meitou.Simulation.Ai;
@@ -25,7 +26,6 @@ public sealed partial class TradeSystem
         int _customerFaction = -1;
         bool _open, _attributed;
         TradeSession _session = new();
-        Dialogue.WalkUp? _approach;
         CharacterControl? _authorization;
         ulong _membershipRevision;
         public ulong SessionId { get; private set; }
@@ -40,34 +40,11 @@ public sealed partial class TradeSystem
                 owner.PrepareView(world, prepared!);
             switch (command)
             {
-                case OpenTrade o:
-                    if (o.Customer == o.Trader) return;
-                    if (world.SystemOf<Dialogue.DialogueSystem>()?.IsServingOther(o.Trader, playerId) == true)
-                    { world.Post(playerId, "This character is busy."); return; }
-                    if (!world.MayOrder(command, o.Customer) || !world.Characters.TryResolveNext(o.Customer, out int initial)) return;
-                    int faction = world.Characters.Cold(initial)!.Faction;
-                    if (faction < 0) return;
-                    if (command.Issuer is not null && (command.FactionGrantRevision == 0 ||
-                        world.Players.Find(playerId)!.MembershipRevision(faction) != command.FactionGrantRevision)) return;
-                    Close(world);
-                    _customer = o.Customer;
-                    _trader = o.Trader;
-                    _customerFaction = faction;
-                    _attributed = command.Issuer.HasValue;
-                    _authorization = command.Issuer is null ? null : world.Players.ControlOf(_customer);
-                    _membershipRevision = command.FactionGrantRevision;
-                    SessionId = owner._nextSession = checked(owner._nextSession + 1);
-                    _approach = new(Settings.ApproachSeconds, Defer);
-                    if (world.Characters.TryResolveNext(_trader, out int stocked)) owner.StockFor(world, stocked);
-                    if (!Resolve(world, out int c, out int t, out _))
-                    {
-                        if (world.Characters.TryResolveNext(_trader, out int who) && world.Characters.Cold(who) is { } tc && AggroSystem.IsEnemy(Data.Relations, faction, tc.Faction))
-                            Defer(world, new Combat.AttackOrder([_customer], _trader) { Tick = world.Tick + 1, Cause = "an order to trade with a hostile trader" });
-                        Close(world);
-                        break;
-                    }
-                    owner.Hold(world, _trader, this);
-                    _approach.Begin(world, _customer, c, t);
+                case OpenTrade order:
+                    GiveTrade(world, order);
+                    break;
+                case OpenTradeNow now:
+                    OpenNow(world, now.Customer, now.Trader, now);
                     break;
                 case CloseTrade:
                     Close(world);
@@ -93,33 +70,60 @@ public sealed partial class TradeSystem
                 FollowSelection(world);
                 if (!Resolve(world, out _, out _, out _)) Close(world);
             }
-            else if (!_customer.IsNone) Approach(world);
 
             RefreshView(world);
         }
 
-        /// <summary>
-        /// Holds the trader only while this player walks up; the open window leaves the trader free to follow its AI.
-        /// </summary>
-        void Approach(World world)
+        /// <summary>Authenticates a player's parties before an order or immediate trade is allowed.</summary>
+        bool Accepts(World world, CharacterId customer, CharacterId trader, SimCommand command, out int slot)
         {
-            if (!Resolve(world, out int c, out int t, out var shop))
+            slot = -1;
+            if (customer == trader || !world.MayOrder(command, customer) || !world.Characters.TryResolveNext(customer, out int initial)) return false;
+            int faction = world.Characters.Cold(initial)!.Faction;
+            if (faction < 0 || command.Issuer is not null && (command.FactionGrantRevision == 0 ||
+                world.Players.Find(playerId)!.MembershipRevision(faction) != command.FactionGrantRevision)) return false;
+            _customer = customer;
+            _trader = trader;
+            _customerFaction = faction;
+            _attributed = command.Issuer.HasValue;
+            _authorization = command.Issuer is null ? null : world.Players.ControlOf(customer);
+            _membershipRevision = command.FactionGrantRevision;
+            SessionId = owner._nextSession = checked(owner._nextSession + 1);
+            if (world.Characters.TryResolveNext(trader, out int stocked)) owner.StockFor(world, stocked);
+            return Resolve(world, out slot, out _, out _);
+        }
+
+        /// <summary>The attributed trade order uses the ordinary talk queue and opens only on its arrival.</summary>
+        void GiveTrade(World world, OpenTrade order)
+        {
+            Close(world);
+            bool trades = Accepts(world, order.Customer, order.Trader, order, out int slot);
+            if (trades && world.OrderOwnerOf(TaskType.PlayerTalkTo) is { } talks)
+            {
+                Close(world);
+                var entry = world.BindOrder(order, new OrderEntry(TaskType.PlayerTalkTo, talks)
+                    { Target = order.Trader, Detail = Dialogue.DialogueOrders.Trade });
+                PlayerOrders.Give(world, slot, entry, order.Queued);
+                return;
+            }
+            if (!_customer.IsNone && world.Characters.TryResolveNext(order.Trader, out int who) && world.Characters.Cold(who) is { } tc
+                && AggroSystem.IsEnemy(Data.Relations, _customerFaction, tc.Faction))
+                Defer(world, new Combat.AttackOrder([order.Customer], order.Trader) { Tick = world.Tick + 1, Cause = "an order to trade with a hostile trader" });
+            Close(world);
+        }
+
+        internal void OpenNow(World world, CharacterId customer, CharacterId trader, SimCommand source)
+        {
+            Close(world);
+            if (!Accepts(world, customer, trader, source, out int slot) || !Resolve(world, out _, out _, out var shop))
             {
                 Close(world);
                 return;
             }
-
-            if (Dialogue.DialogueSystem.InTalkRange(world.Characters, c, t))
-            {
-                TaskStart.Stand(world.Characters, c);
-                owner.PrepareView(world, shop!);
-                _open = true;
-                owner.Release(world, _trader, this);
-                return;
-            }
-
-            if (_approach?.Follow(world, _customer, c, t) == true) owner.Hold(world, _trader, this);
-            else Close(world);
+            TaskStart.Stand(world.Characters, slot);
+            owner.PrepareView(world, shop!);
+            _open = true;
+            RefreshView(world);
         }
 
         internal bool Shows(World world, Shop shop) => _open && Resolve(world, out _, out _, out var open) && ReferenceEquals(open, shop);
@@ -150,7 +154,6 @@ public sealed partial class TradeSystem
             Shop? closing = world.Characters.TryResolveNext(_trader, out int trader) ? ShopOf(world, world.Characters.Cold(trader)!) : null;
             _session.Active = false;
             _session = new();
-            owner.Release(world, _trader, this);
             _customer = _trader = CharacterId.None;
             _customerFaction = -1;
             _open = false;
@@ -159,12 +162,11 @@ public sealed partial class TradeSystem
             _authorization = null;
             _membershipRevision = 0;
             SessionId = 0;
-            _approach = null;
             if (closing is not null) owner.SettleView(world, closing);
         }
 
         void Defer(World world, SimCommand command) => world.Defer(_authorization is { } grant
-            ? command with { Issuer = playerId, ControlGrants = [grant] } : command);
+            ? command with { Issuer = playerId, ControlGrants = [grant], FactionGrantRevision = _membershipRevision } : command);
 
         bool CanSpend(World world) => _authorization is null || world.Players.Find(playerId)?.HasPermission(_customerFaction, FactionPermission.SpendFunds) == true;
         bool CanReadFunds(World world) => _authorization is null || world.Players.Find(playerId)?.HasPermission(_customerFaction, FactionPermission.ReadFunds) == true;
@@ -188,6 +190,9 @@ public sealed partial class TradeSystem
             if (_authorization is { } grant && (!world.Players.Validate(grant) ||
                 world.Players.Find(playerId)?.MembershipRevision(_customerFaction) != _membershipRevision)) return false;
             if (!cc.IsPlayer || cc.Inventory is null) return false;
+            var trader = table.Cold(t)!;
+            if (trader.IsPlayer && (trader.SquadId == cc.SquadId || world.Squads.Find(trader.SquadId) is not { } own || !FactionShopOpen(world, own)))
+                return false;
             if (!_open)
             {
                 var tc = table.Cold(t)!;
@@ -238,7 +243,7 @@ public sealed partial class TradeSystem
         {
             if (!_open || !Resolve(world, out _, out int t, out _) || !world.Characters.TryResolveNext(who, out int c)
                 || world.Characters.Cold(c) is not { IsPlayer: true, Inventory: not null } cold || cold.Faction != _customerFaction
-                || who != _customer && cold.Medical is { Dead: true }) return false;
+                || cold.SquadId == world.Characters.Cold(t)!.SquadId || who != _customer && cold.Medical is { Dead: true }) return false;
             // The current customer's grant is checked by Resolve; choosing a different window needs its own control authorization.
             if (who != _customer && _attributed
                 && (command is not null ? !world.MayOrder(command, who) : !world.Players.CanControl(playerId, who))) return false;
@@ -302,7 +307,7 @@ public sealed partial class TradeSystem
         /// </summary>
         bool Smuggling(World world, int seller, ItemInstance item, Trader terms)
         {
-            if (terms.BuysIllegal || (uint)terms.Site >= (uint)Data.SiteFactions.Count || Market(world).FactionCulture(Data.SiteFactions[terms.Site]) is not { } culture || !culture.Illegal.Contains(item.Record)) return false;
+            if (owner.PlayersFaction(world, terms.Faction) || terms.BuysIllegal || (uint)terms.Site >= (uint)Data.SiteFactions.Count || Market(world).FactionCulture(Data.SiteFactions[terms.Site]) is not { } culture || !culture.Illegal.Contains(item.Record)) return false;
             var witness = _trader;
             var customer = world.Characters.IdOf(seller);
             world.Post(playerId, "Attempted smuggling!");
@@ -373,9 +378,10 @@ public sealed partial class TradeSystem
         {
             var into = cold.Inventory!;
             bool shut = InventoryCommands.MainClosed(cold);
+
             if (item.Contents is not null)
             {
-                // Move the bag itself so its contents inventory survives the trade.
+                // An empty bag moves itself with its contents inventory; its receipt is replaced (none: this undid a sale).
                 int moved = TransferContainer(stock, buy.Item, into, buy.Section, buy.X, buy.Y, buy.Equip, cold);
                 if (moved > 0) item.Buyback = receipt;
                 if (moved > 0 && InventoryCommands.IsEquipmentSection(item.Section)) Assembly.RefreshEquipment(cold);
@@ -384,16 +390,46 @@ public sealed partial class TradeSystem
 
             if (buy.Section == "backpack_attach") return 0;
             if (buy.Section is { } section) return PlaceAt(into, bought, units, section, buy.X, buy.Y, shut);
+
+            int inBag = buy.Equip && buy.IntoBag ? IntoWornBag(into, bought) : 0;
+            if (inBag == units) return units;
+
+            return inBag + PutRest(buy, into, bought, units - inBag, shut, cold);
+        }
+
+        /// <summary>
+        /// Puts as many of the bought units as fit into the worn bag's grid (stacks of it first, then free cells, <see cref="Inventory.AddTo"/>); the
+        /// units placed, the others staying in <paramref name="bought"/>.
+        /// </summary>
+        static int IntoWornBag(Inventory into, ItemInstance bought)
+        {
+            if (into.Backpack?.Contents is not { } bag) return 0;
+
+            int units = bought.Quantity;
+            return bag.AddTo("backpack_content", bought) ? units : units - bought.Quantity;
+        }
+
+        /// <summary>
+        /// Puts the bought units not in the bag: with <see cref="BuyItem.Equip"/> one unit into the equipment slot that takes it when that is free,
+        /// then wherever they fit; the units placed.
+        /// </summary>
+        int PutRest(BuyItem buy, Inventory into, ItemInstance bought, int units, bool shut, CharacterCold cold)
+        {
             if (!buy.Equip || !InventoryCommands.TryEquip(into, bought.WithQuantity(1), cold)) return Place(into, bought, units, shut);
 
-            // One unit is worn; the rest goes where it fits.
+            // One unit is worn; the rest of a stack goes where it fits.
             Assembly.RefreshEquipment(cold);
             if (units == 1) return 1;
+
             var rest = bought.WithQuantity(units - 1);
             rest.Buyback = bought.Buyback?.Skip(1);
             return 1 + Place(into, rest, units - 1, shut);
         }
 
+        /// <summary>
+        /// Sells the units of the customer's (or the giving character's) item to the shop, as many as the shop can afford, after the fence and
+        /// smuggling tests.
+        /// </summary>
         void Sell(World world, SellItem sell)
         {
             if (!Resolve(world, out int c, out int t, out var shop)) return;
@@ -468,6 +504,7 @@ public sealed partial class TradeSystem
         /// </summary>
         float FenceOdds(World world, float thievery, ItemInstance item, int seller, int trader, Squad shopSquad, Trader terms)
         {
+            if (owner.PlayersFaction(world, shopSquad.Faction)) return NeverCaught;
             var table = world.Characters;
             int from = item.StolenFrom;
             CampaignTown? home = null;
@@ -624,7 +661,7 @@ public sealed partial class TradeSystem
                     ModTag = item.ModTag,
                     FenceChance = odds is { } shown ? Math.Clamp(shown, 0, 1) : null,
                     FenceOdds = odds is < 1 ? Math.Max(odds.Value, 0) : null,
-                    Illegal = sell && (uint)shop.Terms.Site < (uint)Data.SiteFactions.Count && m.FactionCulture(Data.SiteFactions[shop.Terms.Site]) is { } culture && culture.Illegal.Contains(item.Record),
+                    Illegal = sell && !owner.PlayersFaction(world, squad.Faction) && (uint)shop.Terms.Site < (uint)Data.SiteFactions.Count && m.FactionCulture(Data.SiteFactions[shop.Terms.Site]) is { } culture && culture.Illegal.Contains(item.Record),
                 };
             }
             // Only the stock grid's own items, at their All() indices (which tokens use): a bag's contents are not loose stock.
@@ -641,7 +678,7 @@ public sealed partial class TradeSystem
             for (int candidate = 0; candidate < world.Characters.HighWater; candidate++)
             {
                 if (!world.Characters.Next[candidate].Alive || world.Characters.Cold(candidate) is not { IsPlayer: true, Inventory: { } own, Medical: not { Dead: true } } seller
-                    || seller.Faction != _customerFaction || _attributed && !world.Players.CanControl(playerId, world.Characters.IdOf(candidate)) || !InReach(world, candidate, t)) continue;
+                    || seller.SquadId == squad.Id || seller.Faction != _customerFaction || _attributed && !world.Players.CanControl(playerId, world.Characters.IdOf(candidate)) || !InReach(world, candidate, t)) continue;
                 goodsOf[world.Characters.IdOf(candidate)] = own.All().Select((item, index) => (item, index)).Where(p => InventoryCommands.IsMovableSection(p.item.Section))
                     .Select(p => View(p.item, p.index, true, seller.Faction, seller.Stats?[StatsEnumerated.Thieving] ?? 0, candidate)).ToArray();
             }

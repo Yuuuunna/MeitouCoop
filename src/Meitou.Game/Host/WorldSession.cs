@@ -170,16 +170,20 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     {
         EnsureNotRunning();
         var floaters = World.Floaters;
+        float nearRadius = World.NearRadius;
         bool benchFacing = World.BenchFacingFix;
         bool prisonPose = World.PrisonPoseFix;
+        bool cagedAnimal = World.CagedAnimalFix;
         bool fixGround = World.GroundRepair;
         bool bagSearch = World.BagSearchFix;
         bool takeIntoBackpack = World.TakeIntoBackpack;
         var next = _runtime.ReplaceWorld(systems, candidate =>
         {
             candidate.Floaters = floaters;
+            candidate.NearRadius = nearRadius;
             candidate.BenchFacingFix = benchFacing;
             candidate.PrisonPoseFix = prisonPose;
+            candidate.CagedAnimalFix = cagedAnimal;
             candidate.GroundRepair = fixGround;
             candidate.BagSearchFix = bagSearch;
             candidate.TakeIntoBackpack = takeIntoBackpack;
@@ -271,7 +275,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         }
 
         for (int i = 0; i < run; i++)
-            SimulationTick(publish: i >= run - 2);
+            SimulationTick(publish: i >= run - 2, views: i == run - 1);
         if (Simulation.IsPaused)
             _runtime.ApplyPausedInterfaceCommands();
         return n;
@@ -288,7 +292,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
             throw new InvalidOperationException("step needs the simulation paused");
         SettleAhead();
         for (int i = 0; i < ticks; i++)
-            SimulationTick(publish: i >= ticks - 2);
+            SimulationTick(publish: i >= ticks - 2, views: i == ticks - 1);
         return World.Tick;
     }
 
@@ -311,7 +315,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
     /// One simulation tick: the world runs its phases (publishing its snapshot when <paramref name = "publish"/>), the game clock moves by one tick of
     /// game time.
     /// </summary>
-    void SimulationTick(bool publish)
+    void SimulationTick(bool publish, bool views)
     {
         World.GameHours = Clock.TotalHours;
         World.Daytime = Clock.IsDaytime;
@@ -319,7 +323,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         World.ViewPosition = ViewEye ?? Camera.Current.Eye;
         World.ShownInteriors = World.Players.RequiresExplicitControl ? null : ShownInteriors;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        _runtime.Step(publish, Clock.TotalHours, Clock.IsDaytime);
+        _runtime.Step(publish, Clock.TotalHours, Clock.IsDaytime, views: views);
         Measure(System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
         Clock.Advance(Simulation.TickSeconds);
     }
@@ -469,7 +473,8 @@ public sealed partial class WorldSession : IDisposable, IClientSession
                 {
                     for (int i = 0; i < _starts.Length; i++)
                     {
-                        _runtime!.Step(publish: i >= _starts.Length - 2, _starts[i].Hours, _starts[i].Daytime);
+                        _runtime!.Step(publish: i >= _starts.Length - 2, _starts[i].Hours, _starts[i].Daytime,
+                            views: i == _starts.Length - 1);
                     }
                 }
                 catch (Exception e)

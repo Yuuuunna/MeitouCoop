@@ -231,10 +231,11 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// A finished craft (<b>Observed</b>, <c>FUN_1402bcac0</c>): armour of the crafter's tier (one better on a critical), capped at the bench's tech
-    /// level, and a robotic limb or crossbow of that grade as its level; a weapon of the queued model, or when the crafter's skill is below its level
-    /// and there was no critical, of the best model of the bench at or below the skill (engine reading of the model pick); other items as they are.
-    /// The craft leaves the queue, and with repeat on goes back to its end.
+    /// A finished craft (<b>Observed</b>, <c>FUN_1402bcac0</c>): armour of the crafter's tier (one better on a critical), whatever the bench's
+    /// tech level (<b>Verified</b>, disassembly: no bench field reaches the factory), and a robotic limb or crossbow of that grade as its level;
+    /// a weapon of the queued model, or when the crafter's skill is below its level and there was no critical, of the best model of the bench at
+    /// or below the skill (engine reading of the model pick); other items as they are. The craft leaves the queue, and with repeat on goes back to
+    /// its end.
     /// </summary>
     void Finish(World world, Machine m, CraftState state, CraftJob job, float skill)
     {
@@ -246,11 +247,11 @@ public sealed partial class ProductionSystem
         {
             case CraftKind.Armour:
                 // the factory gives an armour piece its level from that quality
-                made = _items.Create(option.Item, 1, Math.Min(CraftBench.ArmourQuality(skill, critical), bench.TechLevel));
+                made = _items.Create(option.Item, 1, CraftBench.ArmourQuality(skill, critical));
                 break;
             case CraftKind.Robotics or CraftKind.Crossbow:
                 made = _items.Create(option.Item, 1);
-                if (made is not null) made.Level = Math.Min(CraftBench.ArmourQuality(skill, critical), bench.TechLevel);
+                if (made is not null) made.Level = CraftBench.ArmourQuality(skill, critical);
                 break;
             case CraftKind.Weapon:
                 var model = WeaponModel(bench, option, skill, critical);
@@ -741,30 +742,11 @@ public sealed partial class ProductionSystem
             && InventoryCommands.Arrange(grid)) world.Machines.Touch();
     }
 
-    void StartDisposal(World world, int slot, OrderEntry order)
-    {
-        if (!((IOrderOwner)this).CanRun(world, slot, order).CanRun || Site(world, order.Site!)is not { } site || world.Machines.Find(site.Id)is not { } machine)
-            return;
-        var id = world.Characters.IdOf(slot);
-        var errand = new Errand
-        {
-            Kind = ErrandKind.Corpse,
-            Body = order.Target,
-            Command = order.SourceCommand as DisposeCorpseOrder,
-            Ordered = true,
-            Delivering = true,
-            Control = world.Players.ControlOf(id)
-        };
-        BindDisposal(world, errand, site, machine);
-        _errands[id] = errand;
-        TaskStart.Stand(world.Characters, slot);
-        StepErrand(world, slot, world.Characters.Cold(slot)!, errand);
-    }
-
     void BindDisposal(World world, Errand errand, BuildSite site, Machine machine)
     {
-        errand.Site = site;
-        errand.Machine = machine;
+        errand.Site = site.Id;
+        errand.BoundSite = site;
+        errand.BoundMachine = machine;
         errand.Owner = site.Owner;
         errand.SiteRevision = world.BuildingRevision(site);
         errand.MembershipRevision = errand.Control is { } grant ? world.Players.Find(grant.Player)?.MembershipRevision(site.Owner) ?? 0 : 0;
@@ -813,10 +795,12 @@ public sealed partial class ProductionSystem
             }
 
             var cold = table.Cold(slot)!;
-            bool valid = !world.Players.RequiresExplicitControl || errand.Control is { } grant && world.Players.Validate(grant) && (errand.Command is null || world.MayOrder(errand.Command, actor));
-            if (valid && errand.Site is { } site)
+            bool valid = errand.Order is { } order ? world.ValidOrder(slot, order)
+                : !cold.IsPlayer || !world.Players.RequiresExplicitControl || errand.Control is { } grant && world.Players.Validate(grant);
+            valid &= errand.Command is null || world.MayOrder(errand.Command, actor);
+            if (valid && errand.BoundSite is { } site)
             {
-                valid = ReferenceEquals(Site(world, site.Id), site) && ReferenceEquals(world.Machines.Find(site.Id), errand.Machine) && site.Owner == errand.Owner && site.Complete && MayWork(world, cold, site) && world.BuildingRevision(site) == errand.SiteRevision;
+                valid = ReferenceEquals(Site(world, site.Id), site) && ReferenceEquals(world.Machines.Find(site.Id), errand.BoundMachine) && site.Owner == errand.Owner && site.Complete && MayWork(world, cold, site) && world.BuildingRevision(site) == errand.SiteRevision;
                 if (valid && errand.Control is { } control && site.Owner >= 0 && !PublicTownWork(world, site))
                     valid = world.Players.Find(control.Player)is { } player && player.HasPermission(site.Owner, FactionPermission.ManageAssets) && player.MembershipRevision(site.Owner) == errand.MembershipRevision;
             }

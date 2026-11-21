@@ -27,7 +27,6 @@ public sealed partial class DialogueSystem
         public CharacterTrade? Trade;
         public CharacterTradeView? TradeView;
 
-        public WalkUp? Walk;
     }
 
     readonly SortedDictionary<ulong, Interaction> _interactions = new() { [1] = new Interaction(PlayerId.Local) };
@@ -126,6 +125,43 @@ public sealed partial class DialogueSystem
         if (player != PlayerId.Local) _interactions.Remove(player.Value);
     }
 
+    /// <summary>
+    /// Whether this talker's player has no open conversation and the target is not serving another player.
+    /// </summary>
+    internal bool TalkReady(World world, CharacterId talker, CharacterId target)
+    {
+        var control = world.Players.ControlOf(talker);
+        if (world.Players.RequiresExplicitControl && control is null) return false;
+        var state = InteractionFor(control?.Player ?? PlayerId.Local);
+        return state.Open is null && NpcAvailable(world, target, state);
+    }
+
+    /// <summary>
+    /// Releases only the matching personal approach marker after its queued talk act-out ends.
+    /// </summary>
+    internal void FinishApproach(CharacterId talker, CharacterId target)
+    {
+        foreach (var state in _interactions.Values)
+        {
+            if (state.Talker != talker || state.Target != target) continue;
+            state.Talker = state.Target = CharacterId.None;
+        }
+    }
+
+    /// <summary>
+    /// Cancels the player's current talk approach through the common task lifecycle.
+    /// </summary>
+    void CancelApproach(World world, Interaction state)
+    {
+        var talker = state.Talker;
+        var target = state.Target;
+        state.Talker = state.Target = CharacterId.None;
+        _talks.Drop(talker);
+        if (world.Characters.TryResolveNext(talker, out int slot)
+            && DialogueOrders.Runs(world.Characters, slot, Data.Gameplay.Ai.TaskType.PlayerTalkTo, target))
+            Ai.TaskStart.End(world, slot, Ai.TaskEnd.Stopped);
+    }
+
     void HashInteractions(ref StateHasher h)
     {
         if (_interactions.Count == 1 && !Local.Attributed) return;
@@ -134,7 +170,6 @@ public sealed partial class DialogueSystem
         {
             h.Add(s.Actor.Value); h.Add(s.Id); h.Add(s.Attributed); h.Add(s.Faction); h.Add(s.MembershipRevision);
             h.Add(s.Talker); h.Add(s.Target);
-            s.Walk?.Hash(ref h);
             if (s.Control is { } grant) { h.Add(grant.Entity.Value); h.Add(grant.Revision); }
             h.Add(s.Open is not null);
             if (s.Open is { } c)

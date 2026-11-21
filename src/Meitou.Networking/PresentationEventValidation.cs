@@ -99,9 +99,23 @@ internal static class PresentationEventValidation
         if (!Finite(value.Position)) return "non-finite-position";
         if (value.Item?.Length > 4096) return $"item-length length={value.Item.Length} maximum=4096";
         if (value.Armour is < 0 or > 3) return "invalid-armour-material";
+        bool posted = value.Kind is SoundKind.Posted or SoundKind.PostedInterface;
+        if (posted != (value.Posted is not null)) return "invalid-posted-sound-kind";
+        if (value.Posted is { } sound)
+        {
+            if (string.IsNullOrEmpty(sound.Event) || !SoundNameFits(sound.Event)) return "invalid-sound-event-name";
+            if ((sound.SwitchGroup is null) != (sound.SwitchValue is null)) return "incomplete-sound-switch";
+            if (sound.SwitchGroup is { } group && (group.Length == 0 || !SoundNameFits(group))) return "invalid-sound-switch-group";
+            if (sound.SwitchValue is { } item && (item.Length == 0 || !SoundNameFits(item))) return "invalid-sound-switch-value";
+        }
 
         return null;
     }
+
+    /// <summary>
+    /// Named sound events and switches use a bounded UTF-8 payload.
+    /// </summary>
+    static bool SoundNameFits(string value) => System.Text.Encoding.UTF8.GetByteCount(value) <= 4096;
 
     /// <summary>
     /// Checks speaker and text bounds while keeping names and dialogue out of diagnostics.

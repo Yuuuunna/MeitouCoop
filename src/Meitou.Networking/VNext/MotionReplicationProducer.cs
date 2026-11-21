@@ -85,7 +85,7 @@ public sealed class MotionReplicationProducer
     /// </summary>
     public const int MaximumRetainedBytes = 256 * 1024;
     /// <summary>
-    /// Complete records that fit in one independently decodable state datagram.
+    /// Complete canonical records that always fit the wire MTU, also the fallback and worst-case scheduler-key capacity.
     /// </summary>
     const int Capacity = (MotionDatagramCodec.MaximumDatagramBytes - MotionDatagramCodec.HeaderBytes - 2) / (MotionDatagramCodec.RecordBytes + 2);
     /// <summary>
@@ -380,11 +380,13 @@ public sealed class MotionReplicationProducer
             .ToArray();
         if (due.Length == 0) return MotionPumpOutcome.Idle;
 
-        for (int offset = 0; offset < due.Length; offset += Capacity)
+        int batch = 0;
+        for (int offset = 0; offset < due.Length;)
         {
-            var selected = due.AsSpan(offset, Math.Min(Capacity, due.Length - offset)).ToArray();
-            ulong key = _schedulerKey + (ulong)(offset / Capacity);
-            if (!QueueBatch(key, selected, serverTick, authorityPublication)) return MotionPumpOutcome.ReducedCadence;
+            ulong key = _schedulerKey + (ulong)batch++;
+            int count = QueueBatch(key, due, offset, serverTick, authorityPublication);
+            if (count == 0) return MotionPumpOutcome.ReducedCadence;
+            offset += count;
         }
 
         bool overdue = due.Any(e => time - (e.LastSent == TimeSpan.MinValue ? e.CapturedAt : e.LastSent)
@@ -393,17 +395,28 @@ public sealed class MotionReplicationProducer
     }
 
     /// <summary>
-    /// Queues one immutable packet; native queue capacity, rather than a per-tick packet allowance, governs admission.
+    /// Tries 32 records from this capture boundary, then the canonical capacity if their compressed bytes exceed the MTU. Queues the immutable
+    /// result with its actual wire charge; native queue capacity governs admission. Returns the queued count, or zero on pressure.
     /// </summary>
-    bool QueueBatch(ulong key, Entry[] selected, ulong serverTick, ulong authorityPublication)
+    int QueueBatch(ulong key, Entry[] due, int offset, ulong serverTick, ulong authorityPublication)
     {
         if (_sequence >= long.MaxValue) throw new InvalidOperationException("Motion sequence exhausted; start a new session.");
 
-        var records = selected.Select(e => e.Record).ToArray();
-        var packet = new MotionDatagram(new(_session, _view, _sequence++, serverTick, authorityPublication), records);
-        int length = MotionDatagramCodec.HeaderBytes + 2 + selected.Length * (MotionDatagramCodec.RecordBytes + 2);
-        var outcome = _scheduler.Enqueue(_peer, ScheduledLane.State, key, length, () => SerializeBatch(key, packet, selected));
-        if (outcome is not (ScheduleOutcome.Queued or ScheduleOutcome.Coalesced)) return false;
+        var selected = due.AsSpan(offset, Math.Min(MotionPayloadCompression.MaximumRecords, due.Length - offset)).ToArray();
+        var header = new MotionHeader(_session, _view, _sequence, serverTick, authorityPublication);
+        var packet = new MotionDatagram(header, selected.Select(e => e.Record).ToArray());
+        byte[]? bytes = MotionDatagramCodec.EncodePacked(packet);
+        if (bytes is null)
+        {
+            selected = selected.AsSpan(0, Math.Min(Capacity, selected.Length)).ToArray();
+            packet = new(packet.Header, selected.Select(e => e.Record).ToArray());
+            bytes = MotionDatagramCodec.EncodePacked(packet) ?? throw new InvalidDataException("Canonical motion batch does not fit its MTU.");
+        }
+
+        _sequence++;
+        byte[] payload = bytes;
+        var outcome = _scheduler.Enqueue(_peer, ScheduledLane.State, key, payload.Length, () => SerializeBatch(key, packet, selected, payload));
+        if (outcome is not (ScheduleOutcome.Queued or ScheduleOutcome.Coalesced)) return 0;
 
         _pendingBatches.Add(key);
         try
@@ -415,13 +428,13 @@ public sealed class MotionReplicationProducer
             // Diagnostics never change scheduling.
         }
 
-        return true;
+        return selected.Length;
     }
 
     /// <summary>
     /// Validates an uncanceled batch and advances cadence only when the scheduler actually admits it.
     /// </summary>
-    byte[] SerializeBatch(ulong key, MotionDatagram packet, Entry[] selected)
+    byte[] SerializeBatch(ulong key, MotionDatagram packet, Entry[] selected, byte[] bytes)
     {
         if (packet.Header.SessionEpoch != _session || packet.Header.ViewEpoch != _view)
             throw new InvalidOperationException("Canceled epoch closure invoked.");
@@ -434,7 +447,6 @@ public sealed class MotionReplicationProducer
                 throw new InvalidOperationException("Canceled motion capture closure invoked.");
         }
 
-        byte[] bytes = AbsolutePayloadCompression.Encode(MotionDatagramCodec.Encode(packet), minimumBytes: 256);
         _pendingBatches.Remove(key);
         var now = _now();
         foreach (var entry in selected)

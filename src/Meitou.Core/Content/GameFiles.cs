@@ -77,13 +77,15 @@ public static class GameFiles
     }
 
     /// <summary>
-    /// The spelling on disk of <paramref name="name"/> in <paramref name="folder"/>, relisting the folder when it changed since it was cached.
+    /// The spelling on disk of <paramref name="name"/> in <paramref name="folder"/>, relisting when its stamp changed or a new exact child exists.
     /// </summary>
     static bool Find(string folder, string name, out string real)
     {
         var listing = Listings.GetOrAdd(folder, List);
         if (listing.Entries.TryGetValue(name, out real!)) return true;
-        if (Directory.GetLastWriteTimeUtc(folder) == listing.Stamp) return false;
+        // A newly created save/mod folder can share the cached timestamp on a coarse-resolution filesystem.
+        var candidate = Path.Combine(folder, name);
+        if (Directory.GetLastWriteTimeUtc(folder) == listing.Stamp && !File.Exists(candidate) && !Directory.Exists(candidate)) return false;
         Listings[folder] = listing = List(folder);
         return listing.Entries.TryGetValue(name, out real!);
     }

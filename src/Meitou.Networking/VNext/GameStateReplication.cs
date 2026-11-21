@@ -85,7 +85,8 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
         3001 => "DrawYaw",
         3002 => "AnimationPlayback",
         3003 => "AnimationDescriptors",
-        GameComponentSchema.MeterTooltipsField or GameComponentSchema.EffectDefinitionsField => GameComponentSchema.AuxiliaryCharacterFields[id],
+        GameComponentSchema.MeterTooltipsField or GameComponentSchema.EffectDefinitionsField or GameComponentSchema.AppearanceTintsField
+            => GameComponentSchema.AuxiliaryCharacterFields[id],
         _ => GameComponentSchema.ViewFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.SnapshotFields.FirstOrDefault(f => f.Id == id)?.Name ?? GameComponentSchema.CharacterFields.FirstOrDefault(f => f.Id == id)?.Name ?? throw new ArgumentOutOfRangeException(nameof(id)),
     };
     public PlayerWorldView DetachForEncoding(PlayerWorldView view) => _ragdollCapture.Detach(codec, view);
@@ -179,6 +180,7 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
             Add(entity, generation, GameComponentSchema.EffectDefinitionsField, definitionBytes, definitionState, true);
             var meters = CaptureMeterPresentation(entity, c.Meters, out byte[] tooltipBytes, out object tooltipState);
             Add(entity, generation, GameComponentSchema.MeterTooltipsField, tooltipBytes, tooltipState, true);
+            Add(entity, generation, GameComponentSchema.AppearanceTintsField, CharacterTintsCodec.Encode(c.Appearance?.Tints ?? []));
             var presentation = ReferenceEquals(meters, c.Meters) ? c : c with { Meters = meters };
             foreach (var f in GameComponentSchema.CharacterFields)
             {
@@ -660,6 +662,11 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
         /// </summary>
         internal readonly StatusEffectPresentationState Effects = new();
 
+        /// <summary>
+        /// Latest absolute tints survive independent base-appearance updates and share this generation's lifecycle fence.
+        /// </summary>
+        internal LookTint[] Tints = [];
+
         internal CharacterSnapshot Character = character;
         internal uint Generation = generation;
         internal ulong DeclarationRevision;
@@ -880,7 +887,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                 else if (kind is 6 or 7 or 8)
                     ApplyCollection(kind, entity, generation, field, value, revision);
                 else if (kind == 5)
-                    ApplyCriticalEventFragment(entity, generation, field, value, revision);
+                    ApplyCriticalEventFragment(entity, generation, field, value, revision, ReserveExpanded);
                 else if (kind == 2)
                 {
                     var key = (entity, field);
@@ -1048,6 +1055,16 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             if (e.Animation.Apply(new(sessionEpoch, viewEpoch, entity, generation), state) == AnimationApplyResult.NeedsResync)
                 throw new InvalidDataException($"Animation transition queue overflow: entity={entity}, epoch={state.Epoch}, startTick={state.StartTick}, timelineTick={e.Animation.PresentedTick:R}, pending={e.Animation.PendingTransitions}, replicaTick={_presentedTick:R}, receivedTick={_latestServerTick}.");
         }
+        else if (field == 2005)
+        {
+            var appearance = CharacterTintsCodec.DecodeAppearance(codec, value);
+            e.Character = e.Character with { Appearance = appearance?.WithTints(e.Tints) };
+        }
+        else if (field == GameComponentSchema.AppearanceTintsField)
+        {
+            e.Tints = CharacterTintsCodec.Decode(value);
+            e.Character = e.Character with { Appearance = e.Character.Appearance?.WithTints(e.Tints) };
+        }
         else if (field == 2048)
         {
             e.BountyTerms = GameHoursCountdownCodec.DecodeBounties(value);
@@ -1127,8 +1144,8 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             return false;
         if (packet.Header.AuthorityPublication == 0)
             throw new InvalidDataException("Game motion has no authority publication.");
-        // Reuse the binary codec's complete validation before touching the domain replica.
-        _ = MotionDatagramCodec.Encode(packet);
+        // Reuse complete codec validation with the appropriate expanded motion or canonical checkpoint bound.
+        MotionDatagramCodec.ValidatePacket(packet, checkpoint);
         foreach (var motion in packet.Records)
             if (_entities.TryGetValue(motion.EntityId, out var current) && current.Generation == motion.InterestGeneration && motion.Revision == current.MotionRevision && current.LastMotion is { } old && !MotionDatagramCodec.SamePayload(old, motion))
                 throw new InvalidDataException("Conflicting root at the same motion revision.");

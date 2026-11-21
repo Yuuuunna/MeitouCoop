@@ -76,6 +76,7 @@ public sealed partial class World
 {
     internal PlayerWorldView CapturePlayerView(AuthorityConnection connection, PlayerViewRequest request, PlayerObservationRules rules)
     {
+        FlushPostedSounds();
         rules.Validate();
         if (request.Zones is { Count: > 256 } || request.Zones?.Any(z => !z.IsInsideGrid) == true)
             throw new ArgumentException("Invalid observation zone filter.", nameof(request));
