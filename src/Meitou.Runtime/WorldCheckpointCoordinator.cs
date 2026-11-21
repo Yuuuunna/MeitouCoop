@@ -169,6 +169,7 @@ public sealed class WorldCheckpointCoordinator
                     var running = _mods?.Mods.Select(m => m.Manifest.Id).ToHashSet(StringComparer.Ordinal) ?? [];
                     Meitou.Simulation.Ai.SquadAutonomy.DropUnowned(world, running.Contains);
                     Meitou.Simulation.Factions.SquadManagement.DropUnownedUncounted(world, running.Contains);
+                    Meitou.Simulation.Trading.TradeSystem.DropUnownedShops(world, running.Contains, out _);
                     Meitou.Simulation.Factions.SquadManagement.DropUnownedPurses(world, running.Contains);
                     Meitou.Simulation.Factions.SquadManagement.DropUnownedDormant(world, running.Contains);
                     if (_mods is null) world.TellReady(fromSave: true);

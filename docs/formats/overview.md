@@ -85,6 +85,8 @@ the bare name before Ogre is asked, so the relative path does not matter; within
 registered last wins ([runtime-materials](runtime-materials.md)), i.e. the last enabled mod holding the name.
 **Observed** with a 1,174-mod list: 2,710 base files replaced this way by 95 mods (textures, meshes).
 Letter case of paths is not reliable in the original data: `resources.cfg` and the particle renderer say `data/particles/textures`, the folder is `Textures`; a mesh links `mammal_beak.skeleton`, the file is `Mammal_beak.skeleton`; a record names `automine.xml`, the file is `automine.XML`. `GameFiles.Resolve` finds the real path on a case-sensitive file system (**Observed** (upstream `0d5e98d7` evidence) on Linux with an LD_PRELOAD check of failed lookups over load plus a minute of play on a large save: these three, all found afterwards; area switches, menus and the editor were not covered).
+**Observed** (`GameFiles.Find`): a cached miss relists when the directory timestamp changes or an exact child now exists. Newly created
+save/mod folders therefore do not depend solely on timestamp resolution; relisting still returns the spelling on disk.
 
 How the game opens its other files decides whether a mod can replace them (**Observed** (upstream `0d5e98d7` evidence), decompiled):
 

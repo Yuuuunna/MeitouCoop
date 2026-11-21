@@ -103,7 +103,7 @@ public sealed class WorldRuntime : IDisposable
     /// <summary>
     /// One complete tick. The graphical host may supply its existing calendar values; no scheduler debt is consumed.
     /// </summary>
-    public void Step(bool publish = true, double? gameHours = null, bool? daytime = null)
+    public void Step(bool publish = true, double? gameHours = null, bool? daytime = null, bool views = true)
     {
         EnsureUsable();
         if (gameHours is { } hours)
@@ -120,7 +120,7 @@ public sealed class WorldRuntime : IDisposable
         World.Daytime = daytime ?? (hour > sunrise && hour < sunset);
         try
         {
-            World.RunTick(publish);
+            World.RunTick(publish, views);
         }
         catch
         {

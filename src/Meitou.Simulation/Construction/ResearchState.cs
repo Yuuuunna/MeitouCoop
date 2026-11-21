@@ -274,7 +274,7 @@ public sealed class ResearchState
     /// <c>FUN_14082ec70</c>).
     /// </summary>
     public BuildingUpgrade Upgrade(World world, string building, int owner) =>
-        owner >= 0 && owner == world.Player.Faction ? Upgrade(building) : BuildingUpgrade.None;
+        world.IsPlayerFaction(owner) ? world.Factions.Find(owner)?.Research.Upgrade(building) ?? BuildingUpgrade.None : BuildingUpgrade.None;
 
     /// <summary>
     /// The crafts the finished research unlocks (kind and record; a weapon type or model by its own id).

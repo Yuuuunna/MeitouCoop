@@ -130,6 +130,7 @@ public static class CommandProtocol
         [152] = typeof(PutInCageOrder),
         [153] = typeof(PayBailOrder),
         [154] = typeof(DoorLockOrder),
+        [155] = typeof(CageClickOrder),
         [160] = typeof(LiftItem),
         [161] = typeof(PlaceHeld),
         [162] = typeof(GiveHeld),

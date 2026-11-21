@@ -31,10 +31,10 @@ public sealed record ServerConnectionProfile(string Host, int Port, Guid Account
 public static class ServerCompatibility
 {
     /// <summary>
-    /// Both endpoints must accept effect definitions/countdowns, head targets, faction counts and the current authoritative gameplay rules.
+    /// Both endpoints must accept lasting identities, posted sounds, appearance extras, cage clicks and the current authoritative gameplay rules.
     /// Discovery metadata is opaque to older clients, so their own build identity must reject admission.
     /// </summary>
-    public const string EngineBuild = "meitou-upstream-315d26ec-authority-1";
+    public const string EngineBuild = "meitou-upstream-1b361074-authority-1";
     // Hash without loading DLLs: connecting never grants permission to execute installed code.
     public static IEnumerable<ContentFile> CodeEvidence(GameInstall install, IReadOnlySet<string>? trusted)
     {

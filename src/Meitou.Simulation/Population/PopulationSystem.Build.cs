@@ -165,8 +165,11 @@ public sealed partial class PopulationSystem
         var plan = SquadFactory.Plan(_data.Db, template, _settings.SquadSizeMultiplier, seed, key, States);
         if (plan.TotalMembers == 0) return null;
 
-        // The squad's own faction (its template's) wins over the town's (section 4).
+        // The squad's own faction (its template's) wins over the town's (section 4); its members' races are drawn from it, not from the town's
+        // (createRandomSquad hands every member the squad's faction, docs/characters.md; #1050).
         int squadFaction = template.Faction is { } tf && _data.FactionIndex(tf) is var ti and >= 0 ? ti : townFactionIndex;
+        string? lookFaction = squadFaction >= 0 && squadFaction < _data.Factions.Count
+            ? _data.FactionTemplate(squadFaction) : townFaction?.Id;
         var members = new List<BuiltMember>();
         int n = 0;
         foreach (var m in plan.Members)
@@ -175,7 +178,7 @@ public sealed partial class PopulationSystem
             if (_data.Appearances is { } source)   // an animal gets its species' shared look (GeneratedAppearances)
             {
                 look = source.Create(
-                    m.RecordId, townFactionIndex >= 0 && townFactionIndex < _data.Factions.Count ? _data.FactionTemplate(townFactionIndex) : townFaction?.Id, (int)(Rng.Hash(seed, key, RngPurpose.Spawn, SeedSalts.MemberLook + (ulong)n) & 0x7FFFFFFF),
+                    m.RecordId, lookFaction, (int)(Rng.Hash(seed, key, RngPurpose.Spawn, SeedSalts.MemberLook + (ulong)n) & 0x7FFFFFFF),
                     template.Id);
             }
 

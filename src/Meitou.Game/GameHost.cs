@@ -731,6 +731,7 @@ sealed partial class GameHost(
 
         LocalSession.World.BenchFacingFix = Config.FixBenchFacing;
         LocalSession.World.PrisonPoseFix = Config.FixPrisonPose;
+        LocalSession.World.CagedAnimalFix = Config.FixCagedAnimals;
         LocalSession.World.GroundRepair = Config.FixGround;
         LocalSession.World.BagSearchFix = Config.FixBagSearch;
         LocalSession.World.TakeIntoBackpack = Config.TakeIntoBackpack;
@@ -834,7 +835,7 @@ sealed partial class GameHost(
     void MigrateBindings()
     {
         var bindings = Session.Bindings;
-        UseSavedBindings(bindings, Install, Config);
+        UseSavedBindings(bindings, Install, Config, Modding.KeyActions);
 
         // Right is the command button by default; older saved configs bound it to orbit (kept when Command has moved off it).
         if (bindings.Get(InputAction.Command).Contains(Binding.Of(EngineButton.Right)))
@@ -865,13 +866,15 @@ sealed partial class GameHost(
     }
 
     /// <summary>
-    /// The install's controls.cfg as the defaults, then the config's changes over them; skipped lines are reported on the console.
+    /// The install's controls.cfg as the defaults, then the config's changes over them, then the code mods' key actions; skipped lines are reported on
+    /// the console.
     /// </summary>
-    internal static void UseSavedBindings(InputBindings bindings, GameInstall install, UserConfig config)
+    internal static void UseSavedBindings(InputBindings bindings, GameInstall install, UserConfig config, IReadOnlyList<ModKeyAction> modActions)
     {
         bindings.UseGameControls(GameControls.Read(install.Root, out var problems));
         foreach (var problem in problems) Console.Error.WriteLine($"controls.cfg binding skipped: {problem}");
         foreach (var problem in bindings.ApplySaved(config.Bindings)) Console.Error.WriteLine($"config    binding skipped: {problem}");
+        foreach (var problem in bindings.UseModActions(modActions, config.ModBindings)) Console.WriteLine($"mods      key action: {problem}");
     }
 
     /// <summary>
@@ -1081,11 +1084,17 @@ sealed partial class GameHost(
         if (StartSave is not { } save || GameOptions.Load is not { } folder) return;
 
         Saves.ReadingFolder = folder;
+        var read = Task.FromResult(save);
+
+        // The mesh round the player first, as the menu's load: the save's characters are seated on it when they are made.
+        LoadingStep("navmesh");
+        AwaitLoading(Saves.NavmeshOfPlayer(read));
+
         Task navmesh;
         string summary;
         try
         {
-            navmesh = Saves.SwapInSave(Task.FromResult(save), interactive, out summary);
+            navmesh = Saves.SwapInSave(read, interactive, out summary);
         }
         catch (SceneLoadFailed e)
         {

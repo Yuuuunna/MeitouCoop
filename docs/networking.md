@@ -12,7 +12,8 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-315d26ec-authority-1`; both endpoints require item-tag digests, compressed JSON component envelopes,
+The current identity is `meitou-upstream-1b361074-authority-1`; both endpoints require lasting-character IDs, tag heights, resolved mod tints,
+named mod sounds, cage-click commands, item-tag digests, compressed JSON component envelopes,
 experience rules, corpse-machine sound metadata and sparse binary ragdoll poses,
 the [diagnostic control messages](diagnostics.md), mod-presentation components and editor-open command, in addition to the presentation-event
 and bounty contracts in [networking-next](networking-next.md).
@@ -24,6 +25,9 @@ unknown gameplay rules are not silently accepted. Transport and container framin
 **Observed** (source): `AnimalMovesFix`, `PrisonPoseFix` and `GroundRepair` also belong to the authority's gameplay rules. The headless host
 configures heightmap repair before opening terrain; a remote host uses the admitted rule before opening its scene. The corresponding
 remote settings are read-only; head-turn release, photo poses/lights and other purely visual choices remain local.
+
+**Observed** (source): `CagedAnimalFix`, `KeepCampaignClocks`, `ArrestLiftFix` and `OffscreenOverrides` also use authoritative rules,
+the compatibility digest and read-only remote settings. Campaign clocks and offscreen AI are evaluated by the server.
 
 Trusted code-mod data phases run before derived game content. Both endpoints independently fingerprint the actual merged-record edits
 under `code-data/*`; copying the server's rule strings cannot substitute for running the locally trusted phase. The client reuses the
@@ -143,61 +147,83 @@ roles. Mod-owned `Uncounted` squads are excluded only from the cap. Independent 
 with the squad; their public consequences use existing money, shop, role and motion components. A client's camera never wakes a
 sleeping squad. New work-tool metadata, machine idle/item dimensions and farm harvest progress use their existing typed components.
 
+### Lasting identities, mod appearance and sound
+
+**Observed** (source): observable characters publish `LastingId` in component 2104 as one exact unsigned 64-bit value and `TagHeight`
+in component 2105 as one exact finite, nonnegative 32-bit float. These are independent changed-only fields, not motion payloads.
+The lasting ID is a mod-facing identity across saves; it never substitutes for incarnation-scoped character IDs or control grants.
+Resolved appearance descriptors include the upstream bounded pose weights. Up to four validated `LookTint` values travel separately
+in binary component 2106, so tint changes do not resend meshes or poses. Exact default float bit patterns are omitted; all other values
+remain float32. The field occupies at most 149 bytes before its component envelope. The replica joins appearance and tint publications
+in either order within the same interest generation. Unchanged descriptors and tints add no repeated delta; neither mesh data nor
+per-frame matrices travel with these fields.
+
+Authority mod sound posts drain on the world owner. Character posts require a visible subject and a nearby position; point posts require
+a nearby position; explicit interface posts reach admitted recipients as global presentation. Their event/switch names are bounded UTF-8
+strings and use the existing reliable event journal, high-water acknowledgements and world identity fences. Local UI-mod sound callbacks
+use the client's presentation sink. They cannot issue a network sound command or access the authoritative world, and candidate/data
+preparation suppresses them. Ordinary sounds omit the absent named-post property.
+
+Command 155 (`CageClickOrder`) carries the selected actors, occupant and displayed fixture revision. Execution rechecks the recipient's
+control, faction membership, occupant and cage; forwarded pick/escape orders retain the original grants. Hints are private to the issuer.
+Upstream queued dialogue, trade, body-disposal and cage-escape actions preserve command provenance on execution and restoration.
+Server-origin mod orders carry internal trusted provenance, which is absent from the remote command schema. Mod-owned faction shops
+remain server-only configuration; ordinary players use their attributed trade sessions and existing inventory revisions.
+
 ### Incremental component bandwidth
 
-**Observed** (2026-11-19, .NET 11 Release, synthetic detached snapshots): a repository-external diagnostic used production
-`GameStatePublisher`, `GameStateReplica`, `MotionReplicationProducer`, bulk/control encoders and the motion scheduler, and checked
-complete field round trips. Identical GUIDs, trajectories and effect inputs were replayed before and after the new lossless compression.
-The before column already includes the new synchronized fields and effect-definition cache; it is not a historical measurement of an
-older Coop release. World time advances at 30 Hz, motion sampling at the real server's 50 ms interval (20 Hz), and full components and
-critical clock publication at 100 ms (10 Hz). Existing interest tiers still select each character's motion cadence.
+**Observed** (2026-11-21, .NET 11 Release, repository-external deterministic diagnostic): detached snapshots use the production
+`GameStatePublisher`, `GameStateReplica`, `MotionReplicationProducer`, scheduler, bulk/control framing and reverse acknowledgements.
+World time advances at 30 Hz, motion capture at 20 Hz and full/critical publication at 10 Hz; the established interest tiers still
+select each character's motion cadence. Each result averages ten seconds after baseline. Character positions and velocities differ,
+combat headings drift independently, and head targets change unpredictably. This trace sets DrawYaw to Yaw + 0.15 radians; its predictor
+savings depend on that correlation, and the encoder keeps the earlier representation when prediction is not smaller. Named sounds use
+10/7/5-byte ASCII event/group/value names and retain the full rolling three-second history,
+not just the newest publication's events. Sound journals are prefilled before measurement, so all 100 captures in the 100-sound/s cases
+contain 310 retained sounds. Every decoded motion record is compared with its authoritative capture and applied to the replica.
 
-The following are total application bytes in both directions per simulated second, averaged over ten seconds after the initial
-baseline. They include motion, ordinary components, critical frames, reliable motion checkpoints, bulk framing/control and reverse
-ACKs. KiB means 1024 bytes. The final column adds an explicit budget assumption of 96 bytes per application message, including reverse
-ACK messages; it is not measured QUIC/TLS/UDP/IP overhead.
+The table counts application bytes in both directions, including ordinary components, critical frames, motion, reliable checkpoints,
+bulk manifests/chunks/commits and reverse ACKs. KiB means 1024 bytes. The last column adds a separate **96 bytes per application message**
+allowance, including reverse messages; it is a budget model, not a measurement of QUIC/TLS/UDP/IP overhead.
 
-| Scene for one recipient | Before compression KiB/s | Final KiB/s | Final application messages/s | With 96 B/message allowance KiB/s |
-| --- | ---: | ---: | ---: | ---: |
-| 100 nearby characters moving and looking | 72.02 | 23.06 | 131.0 | 35.34 |
-| 500 nearby characters moving and looking | 313.48 | 59.69 | 229.8 | 81.23 |
-| 500 combat characters, regular motion and look targets | 711.10 | 128.67 | 574.8 | 182.56 |
-| 500 combat characters, unpredictable look targets | 711.10 | 177.80 | 594.8 | 233.56 |
-| 500 combat characters, scattered positions, differing velocities/headings and unpredictable look targets | 711.10 | 405.04 | 594.8 | 460.80 |
+| One-recipient scene | Application KiB/s | Messages/s | With 96 B/message KiB/s |
+| --- | ---: | ---: | ---: |
+| 100 nearby moving characters | 16.83 | 91.0 | 25.36 |
+| 500 nearby moving characters | 49.69 | 154.8 | 64.20 |
+| 500 scattered combat characters | 362.59 | 414.8 | 401.48 |
+| Combat + 10 named sounds/s | 368.70 | 414.8 | 407.58 |
+| Combat + 100 named sounds/s | 395.23 | 414.8 | 434.12 |
+| Combat + four tints per character, changed at 1 Hz | 417.83 | 442.8 | 459.34 |
+| Combat + 100 named sounds/s + four tints at 1 Hz | 450.47 | 442.8 | 491.99 |
+| Combat + four tints per character, changed at 10 Hz | 914.96 | 694.8 | 980.10 |
+| Combat + all nine tint float parameters randomized at 10 Hz | 1059.91 | 754.8 | 1130.67 |
 
-The last row avoids assuming that every character shares the same movement. Motion datagram counts are unchanged by compression:
-400, 1350, 4800, 4800 and 4800 over the respective ten-second traces. The last row sends 480 motion datagrams, 60 bulk/control messages,
-10 critical messages, 2.4 checkpoints and 42.4 reverse ACKs per second. No sampling frequency, coordinate precision, packet grouping,
-reliable checkpoint or retransmission semantics were reduced, and no new rate limit or deferred publication was added.
+The ordinary tint traces randomize seven nondefault parameters per tint; the final row randomizes all nine. The 10 Hz rows are
+explicit high-entropy stress cases and remain above the 500 KiB/s target. Keeping arbitrary new float values, all 500 visible characters
+and the same publication frequency cannot guarantee a fixed bandwidth ceiling. The implementation does not silently
+quantize values, discard events, lower cadence or add a rate cap. Actual mod workloads must be included in live acceptance.
 
-Status-effect samples use two detailed characters, each with 32 effects and 16 KiB of description per effect, including one permanent
-effect. The main sample deliberately uses repeated ASCII text and is highly compressible; its baseline ratio is not representative of
-arbitrary mod text. Dynamic state results below include the existing idle motion and critical-clock traffic, approximately 1.900 KiB/s.
+The scattered combat trace's motion lane falls from 4,184,313 to 2,904,414 bytes per ten seconds. Grouping within the same capture changes
+4800 datagrams to 3200; the trace observes up to 32 records per packed packet and a maximum wire size of 970 bytes. Incompressible batches fall
+back to the original canonical capacity. Sampling, float bits, publication/epoch fences, reliable checkpoints and retransmission semantics
+stay unchanged. The independent packet formats and allocation limits are specified in the
+[transport contract](networking-next.md#absolute-bulk-and-motion-compression).
 
-| Effect changes during ten seconds | Before compression KiB/s | Final KiB/s | Definition traffic after first introduction |
-| --- | ---: | ---: | --- |
-| Static effects, only countdown advances | 1.900 | 1.900 | Zero; countdown component also sends zero deltas |
-| All stacks change once per second | 3.810 | 2.977 | Zero |
-| Remove and reapply one effect each second | 3.796 | 2.975 | Zero |
-| Empty, add, remove all, reapply cycle | 111.280 | 2.978 | Initial addition only; later additions reuse the cache |
+A five-run warmed encoder prototype on the same 32-record trace measured 227.5 ms median CPU without the optional DrawYaw bit predictor
+and 388.6 ms with it, per ten simulated seconds. The predictor saves another 9.00 KiB/s at approximately 16.1 ms extra CPU per simulated
+second for this recipient. This is an encoder comparison, not a real-game frame-time or complete server CPU measurement.
 
-One-time baseline totals, including reverse ACKs, are separate from the steady-state table: the two-character repeated-text sample is
-1088.417 KiB before and 3.188 KiB after compression; the 500-character scattered-motion sample is 2353.272 KiB before and 195.975 KiB
-after. A second description sample uses fixed-seed random bytes encoded as Base64, still 16 KiB per effect. Its high-entropy baseline
-is 1088.417 KiB before and 821.665 KiB after (807.896 KiB down plus 13.770 KiB ACKs), while unchanged subsequent captures remain
-1.900 KiB/s. The empty/add/remove/reapply trace including its first definition transfer averages 111.280 to 84.267 KiB/s. Long new
-definitions can therefore still create a large one-time transfer; text is neither truncated nor resent for ordinary countdowns.
+Unchanged identities and tints send zero steady-state deltas. In the 500-character baseline, adding `LastingId`/`TagHeight` costs 5033 bytes
+including reverse ACKs. Four static tints per character increase that baseline from 220,315 to 280,180 bytes; those are one-time totals,
+not per-second rates. An isolated tint change does not resend the appearance descriptor, and appearance/tint arrival in either order,
+withdrawal and interest re-entry preserve the exact resolved result. Status-effect descriptions remain cached; ordinary countdowns do
+not resend definitions, although new high-entropy descriptions can still create a large baseline transfer.
 
-In the scattered 500-character trace, cumulative motion production/admission/serialization time was 49.61 ms before and 232.93 ms
-after, motion decode 19.72/125.57 ms, and bulk packing/framing 11.23/18.20 ms over ten simulated seconds. These wall-clock sections
-include scheduling, checks and allocation, not just Brotli. The final compressed run partly overlapped test execution, while the
-uncompressed run used an idle build window; these samples do not establish a precise CPU percentage or real-game frame rate.
-
-The 500 KiB/s/player average remains an optimization target, not a hard cap. These synthetic traces omit real Kenshi animation,
-equipment changes, combat events, player commands and loss/retransmission. Initial baselines and simultaneous unrelated gameplay
-must also be included in live acceptance. Neither the application totals nor the 96 B allowance establish a guaranteed on-wire
-maximum. The independent absolute compression format and allocation bounds are specified in
-[the transport contract](networking-next.md#absolute-bulk-and-motion-compression).
+The diagnostics additionally exercised all five event families and 22 sound kinds, exact integer IDs and float bits, null versus empty
+names, malformed envelopes, motion MTU/expansion bounds, and appearance withdrawal/re-entry. They do not simulate actual Kenshi animation,
+equipment churn, all combat event families at once, player-command traffic, RTT, loss or retransmission. Baseline transfers are excluded
+from steady-state averages. Therefore neither the application results nor the 96-byte allowance establish an on-wire guarantee.
+500 KiB/s/player remains an average optimization target; real mixed gameplay and sustained mod activity require the installed-game checks.
 
 ### Item actions and shared stock
 

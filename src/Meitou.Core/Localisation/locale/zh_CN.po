@@ -2179,12 +2179,6 @@ msgstr "模组列表已保存：已启用 {1} 个。"
 msgid "{1} of {2} enabled"
 msgstr "已启用 {1} / {2}"
 
-msgid "Needs {1}"
-msgstr "需要 {1}"
-
-msgid " (not enabled above it: {1})"
-msgstr "（未在上方启用：{1}）"
-
 msgid "Preset '{1}' saved."
 msgstr "预设「{1}」已保存。"
 
@@ -3065,9 +3059,6 @@ msgstr "{1}的那个部位已经戴着东西了"
 msgid "{1}: {2}"
 msgstr "{1}：{2}"
 
-msgid "{1} got out of the cage"
-msgstr "{1}从笼子里出来了"
-
 msgid "{1} bought {2} for c.{3}"
 msgstr "{1}花{3}开币买下了{2}"
 
@@ -3358,3 +3349,39 @@ msgstr "勾选搜索显示的所有模组"
 
 msgid "Untick every mod the search shows"
 msgstr "取消勾选搜索显示的所有模组"
+
+msgid "Details"
+msgstr "详情"
+
+msgid "Show or hide the selected mod's details beside the list"
+msgstr "在列表旁显示或隐藏所选模组的详情"
+
+msgid "Save the mod list and load order as a preset of this name"
+msgstr "将模组列表和加载顺序保存为此名称的预设"
+
+msgid "Take the chosen preset's mod list and load order"
+msgstr "采用所选预设的模组列表和加载顺序"
+
+msgid "Delete the chosen preset"
+msgstr "删除所选预设"
+
+msgid "Needs"
+msgstr "需要"
+
+msgid "not enabled above it"
+msgstr "未在上方启用"
+
+msgid "No description"
+msgstr "无描述"
+
+msgid "Not enabled: the game does not load it"
+msgstr "未启用：游戏不会加载它"
+
+msgid "Image"
+msgstr "图片"
+
+msgid "{1} mods, {2} enabled"
+msgstr "{1} 个模组，{2} 个已启用"
+
+msgid "{1} of {2} mods shown, {3} enabled"
+msgstr "显示 {2} 个模组中的 {1} 个，{3} 个已启用"

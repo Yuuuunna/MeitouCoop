@@ -143,6 +143,11 @@ public delegate CombatMove? CombatMoveSource(World world, CharacterId id, long t
 public sealed record ModCombatMove(string Owner, CombatMoveSource Source);
 
 /// <summary>
+/// A goal type a mod claimed (docs/modding.md "Chooser goals and jobs"): the mod's id and the name its log lines give the goal.
+/// </summary>
+public sealed record ModGoalType(string Owner, string Name);
+
+/// <summary>
 /// What code mods add to the simulation (docs/modding.md): extra systems at anchors, dialogue codes, combat moves and item uses. Filled once at
 /// startup, before the first world is built, and read by <see cref="StandardSystems.Build"/> for every world; never changed while a world runs.
 /// </summary>
@@ -159,7 +164,7 @@ public sealed class SimulationExtensions
     public const int MaximumJobTypes = 4096, MaximumJobNameLength = 256;
 
     /// <summary>
-    /// The lowest dialogue condition, dialogue effect, record type and job type number a mod may register; the vanilla numbers stay below it.
+    /// The lowest dialogue condition, dialogue effect, record type job type and chooser goal type number a mod may register; the vanilla numbers stay below it.
     /// </summary>
     public const int FirstModCode = 1000;
 
@@ -187,6 +192,16 @@ public sealed class SimulationExtensions
     /// The mods' own job types (no game job) and the jobs panel's name of each (docs/modding.md "Mod jobs").
     /// </summary>
     public Dictionary<Data.Gameplay.Ai.TaskType, string> JobTypes { get; } = [];
+    /// <summary>
+    /// The mods' own goal types, each with the mod that claimed it and its name (docs/modding.md "Chooser goals and jobs";
+    /// <see cref="Ai.ChooserRegistry"/>).
+    /// </summary>
+    public Dictionary<Data.Gameplay.Ai.TaskType, ModGoalType> GoalTypes { get; } = [];
+    /// <summary>
+    /// The mod that claimed each task type number, as a job or a goal type: a task row from 1000 up is that mod's (<see cref="Ai.TaskHandlers"/>
+    /// refuses another mod's handler for it).
+    /// </summary>
+    public Dictionary<Data.Gameplay.Ai.TaskType, string> TaskOwners { get; } = [];
 
     /// <summary>
     /// Detached job labels; registration is complete before a world's first publication.
@@ -198,7 +213,7 @@ public sealed class SimulationExtensions
     /// Whether the mods add nothing.
     /// </summary>
     public bool IsEmpty => Systems.Count == 0 && DialogueConditions.Count == 0 && DialogueEffects.Count == 0 && CombatMoves.Count == 0
-        && ItemUses.Count == 0 && JobTypes.Count == 0;
+        && ItemUses.Count == 0 && JobTypes.Count == 0 && GoalTypes.Count == 0;
 
     /// <summary>
     /// Each extra system's factory, for log lines that name the mod and the system; weak, so a dropped world's systems go with it.
@@ -209,6 +224,15 @@ public sealed class SimulationExtensions
     /// The factory an extra system was made by (<see cref="SystemFactory.Owner"/>, <see cref="SystemFactory.Name"/>); null for a standard system.
     /// </summary>
     public static SystemFactory? FactoryOf(ITickSystem system) => MadeBy.TryGetValue(system, out var factory) ? factory : null;
+
+    /// <summary>
+    /// The player's one notice for a mod built for another version of the game (<see cref="Content.CodeModFaults.Tell"/>) when
+    /// <paramref name="system"/>, whose hook threw <paramref name="e"/>, was made by a mod; nothing for a standard system. Any thread.
+    /// </summary>
+    internal static void TellOutdated(ITickSystem system, Exception e)
+    {
+        if (FactoryOf(system) is { } factory) Content.CodeModFaults.Tell(factory.Owner, e);
+    }
 
     /// <summary>
     /// Notes the factory an extra system was made by.

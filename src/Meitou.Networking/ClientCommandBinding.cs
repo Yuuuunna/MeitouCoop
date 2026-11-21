@@ -25,6 +25,8 @@ public static class ClientCommandBinding
             throw new InvalidOperationException("This operation is not exposed by the remote command protocol.");
         if (intent is PointedCommand { Target.IsNone: false } pointed && !view.Snapshot.Characters.Any(c => c.Id == pointed.Target))
             throw new InvalidOperationException("The pointer target is outside the current view.");
+        if (intent is CageClickOrder cageClick && !view.Snapshot.Characters.Any(c => c.Id == cageClick.Occupant))
+            throw new InvalidOperationException("The cage occupant is outside the current view.");
         CharacterId[] Selected() => selection.Distinct().ToArray();
         CharacterId Buyer() => selection.Count > 0 ? selection[0] : throw new InvalidOperationException("Select a buyer first.");
         var command = intent switch
@@ -131,6 +133,10 @@ public static class ClientCommandBinding
                 Characters = Selected()
             },
             GetInCageOrder c when c.Characters.Count == 0 => c with
+            {
+                Characters = Selected()
+            },
+            CageClickOrder c when c.Characters.Count == 0 => c with
             {
                 Characters = Selected()
             },
@@ -241,6 +247,8 @@ public static class ClientCommandBinding
             string? id = fixture switch
             {
                 PickLockOrder c => c.Cage ?? view.Snapshot.Characters.FirstOrDefault(p => p.Id == c.Prisoner)?.Prison?.CageId,
+                CageClickOrder c => view.Snapshot.Characters.FirstOrDefault(p => p.Id == c.Occupant)?.Prison?.CageId
+                    ?? view.Snapshot.Cages.FirstOrDefault(cage => cage.Occupant == c.Occupant)?.Id,
                 DoorOrder c => c.Door,
                 DoorLockOrder c => c.Door,
                 GetInCageOrder c => c.Cage,

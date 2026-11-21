@@ -41,7 +41,8 @@ public enum OrderVerdict : byte
     /// </summary>
     Blocked,
     /// <summary>
-    /// Its target or site is gone or no longer fits the verb (the original's desire x finder is 0): it leaves the queue.
+    /// Its target or site is gone or no longer fits the verb (the original's desire x finder is 0): it leaves the queue, unless its target resolves to
+    /// nothing and its plan fails on that (<see cref="Ai.ListTests.BlockedOnGone"/>: then <see cref="Blocked"/>).
     /// </summary>
     Gone,
 }
@@ -57,7 +58,7 @@ public readonly record struct OrderCheck(OrderVerdict Verdict, string? Why = nul
     /// </summary>
     public static OrderCheck Run => new(OrderVerdict.Run);
     /// <summary>
-    /// The order's target or site is gone: it leaves the queue.
+    /// The order's target or site is gone: it leaves the queue (<see cref="OrderVerdict.Gone"/>).
     /// </summary>
     public static OrderCheck Gone => new(OrderVerdict.Gone);
     /// <summary>
@@ -94,6 +95,13 @@ public interface IOrderOwner
     bool StillHolds(World world, int slot, OrderEntry order) => true;
 
     /// <summary>
+    /// Whether the order stays at the front when its task ends, planned again for its next step (a pure read): the original's order leaves only by
+    /// its row's done test or its desire, so an order whose act-out ends one step at a time (101 and 248 on each member of the squad its finder
+    /// picks, 22's walks) is started again until its owner's check says it is gone.
+    /// </summary>
+    bool Repeats(World world, int slot, OrderEntry order) => false;
+
+    /// <summary>
     /// The code of the order's <see cref="OrderEntry.Detail"/> in a save (<see cref="Saving.OrderSave"/>; 0: no detail), or -1 when the order cannot
     /// be saved (a detail that names a runtime object). An owner whose orders carry a detail overrides it together with <see cref="LoadDetail"/>.
     /// </summary>
@@ -112,6 +120,33 @@ public interface IOrderOwner
     void Restored(World world, OrderEntry order)
     {
     }
+}
+
+/// <summary>
+/// A system that holds NPCs on an engine duty (a record of its own that steers them): when an order's task is about to start on an NPC
+/// (<see cref="PlayerOrders"/>' front start, serial), the world asks every such system to let the character go (<see cref="World.ReleaseDuties"/>). Found on the world's systems, nothing to register.
+/// </summary>
+internal interface IDutyRelease
+{
+    /// <summary>
+    /// Lets the character in <paramref name="slot"/> go through the duty's own give-up: its record dropped, what it carried let go; nothing when the
+    /// system holds it on nothing. Its task is replaced right after, so it need not stand it.
+    /// </summary>
+    void ReleaseForOrder(World world, int slot);
+}
+
+/// <summary>
+/// An order owner whose order's plan runs several tasks one after another (the arrest's fight, strip, lift and cage walk): the original plans the
+/// front again on every update, so the end of one step is not the order's. While the owner's act-out is between two steps the front still runs
+/// (<see cref="PlayerOrders.Runs"/>), and the plan step asks no list B of the order's row while a step of another row runs.
+/// </summary>
+internal interface IOrderSteps
+{
+    /// <summary>
+    /// Whether the owner's act-out of <paramref name="order"/> goes on for the character in <paramref name="slot"/> though no task of the order runs
+    /// now (a pure read, any serial phase).
+    /// </summary>
+    bool Between(World world, int slot, OrderEntry order);
 }
 
 /// <summary>
@@ -163,10 +198,38 @@ public sealed class OrderEntry(TaskType row, IOrderOwner owner)
     /// </summary>
     public bool Tried { get; internal set; }
     /// <summary>
-    /// The order runs its own row (<see cref="ListTests.OrderNeedsFail"/>): its list B held at its start, or since, a step of its plan (a follow
-    /// row's fight, 13) being over; the original runs its row only then, so only then does a failing list B end it.
+    /// The order runs its own row (<see cref="ListTests.OrderNeedsFail"/>): its list B held at its start, or since, the steps of its plan (a follow
+    /// row's fight, 13) are over (<see cref="ListTests.StepsOver"/>); the original runs its row only then, so only then does a failing list B end it.
     /// </summary>
     public bool RowRuns { get; internal set; }
+    /// <summary>
+    /// The list B entry the first step of its plan provides, recorded at its start (<see cref="ListTests.PlannedNeed"/>; null: list B held, or none
+    /// recorded): once it holds the row runs, whatever else of list B fails then.
+    /// </summary>
+    public TaskCondition? Planned { get; internal set; }
+    /// <summary>
+    /// A second-list entry of a row with no TaskData row (Meitou's own orders, 54 Rest: no finished test to ask) whose task ended done, or any entry
+    /// whose start left nothing running (engine choice), or a loaded entry whose target will come no more (<see cref="Awaits"/>): it scores 0 until
+    /// the list is cleared. Every other entry is tested again at each look, as the original's scorer
+    /// does (<see cref="ListTests.OrderDone"/>), so one that turns unfinished again (a walk pushed off its spot) is picked again.
+    /// </summary>
+    public bool Spent { get; internal set; }
+    /// <summary>
+    /// An engine act on the character's body (getting up, stumbling, getting out of bed, <see cref="Combat.BodyOrders"/>): its start lets no duty
+    /// go (<see cref="IDutyRelease"/>), as the original's goals are planned again once it is over.
+    /// </summary>
+    internal bool Interrupts { get; init; }
+    /// <summary>
+    /// The engine starts the order's task itself, with no plan (the stagger's 147, <c>AI::forceOrderInsert</c> <c>FUN_140507cd0</c>, which sets the
+    /// body task directly): the queue tests only its owner's check, not the repertoire, the threat rule or list B.
+    /// </summary>
+    internal bool Forced { get; init; }
+    /// <summary>
+    /// A loaded order whose target character or fixture is still to come into the world (<see cref="Saving.OrderSave.Restore"/>): it holds its
+    /// place in the second list and is no candidate until the look that finds its target makes it from this; null: a made entry. One whose target will
+    /// come no more becomes a spent entry in its place (<see cref="Spent"/>).
+    /// </summary>
+    internal Saving.SavedOrder? Awaits { get; init; }
 
     /// <summary>
     /// Whether the order is a move (row <c>MoveCusOrdered</c>).
@@ -177,6 +240,32 @@ public sealed class OrderEntry(TaskType row, IOrderOwner owner)
 
     internal bool ApplicabilityQuery { get; init; }
 
+    /// <summary>
+    /// Given by trusted simulation code rather than a player's command. Never read from a client payload; server saves retain this provenance.
+    /// </summary>
+    internal bool Trusted { get; set; }
+
+
+    /// <summary>
+    /// The command's actor and grants, or trusted server provenance, in the deterministic state hash of either order list.
+    /// </summary>
+    internal void HashAuthority(ref StateHasher hasher)
+    {
+        if (Trusted) hasher.Add(0x4F547273);
+        if (SourceCommand is not { Issuer: { } issuer } source) return;
+
+        hasher.Add(0x4F417574);
+        hasher.Add(issuer.Value);
+        hasher.Add(source.FactionGrantRevision);
+        hasher.Add(source.ControlGrants.Count);
+        foreach (var grant in source.ControlGrants)
+        {
+            hasher.Add(grant.Player.Value);
+            hasher.Add(grant.Entity.Value);
+            hasher.Add(grant.Faction);
+            hasher.Add(grant.Revision);
+        }
+    }
 
     /// <summary>
     /// The <see cref="TaskPoint"/> of a building's order given by <paramref name="order"/>: on a right click (<see cref="OrderCommand.Clicked"/>)
@@ -220,6 +309,10 @@ public sealed class OrderQueue : IReadOnlyList<OrderEntry>
     /// </summary>
     internal void Add(OrderEntry entry) => _entries.Add(entry);
     /// <summary>
+    /// Adds an order at the front.
+    /// </summary>
+    internal void AddFront(OrderEntry entry) => _entries.Insert(0, entry);
+    /// <summary>
     /// Removes the front order.
     /// </summary>
     internal void PopFront() => _entries.RemoveAt(0);
@@ -241,21 +334,7 @@ public sealed class OrderQueue : IReadOnlyList<OrderEntry>
         hasher.Add(Math.Max(_entries.Count - 1, 0));
         for (int k = 1; k < _entries.Count; k++)
             if (_entries[k].IsMove) hasher.Add(new Vector2(_entries[k].Point.X, _entries[k].Point.Z));
-        foreach (var entry in _entries)
-        {
-            if (entry.SourceCommand is not { Issuer: { } issuer } source) continue;
-            hasher.Add(0x4F417574);
-            hasher.Add(issuer.Value);
-            hasher.Add(source.FactionGrantRevision);
-            hasher.Add(source.ControlGrants.Count);
-            foreach (var grant in source.ControlGrants)
-            {
-                hasher.Add(grant.Player.Value);
-                hasher.Add(grant.Entity.Value);
-                hasher.Add(grant.Faction);
-                hasher.Add(grant.Revision);
-            }
-        }
+        foreach (var entry in _entries) entry.HashAuthority(ref hasher);
         if (legacy) return;
         hasher.Add(0x4F717565);
         foreach (var e in _entries)
@@ -263,6 +342,7 @@ public sealed class OrderQueue : IReadOnlyList<OrderEntry>
             hasher.Add((int)e.Row);
             hasher.Add(e.Started);
             hasher.Add(e.Tried);
+            if (e.Planned is { } planned) hasher.Add(PlayerOrders.PlannedKey(planned));
             hasher.Add(e.Target);
             hasher.Add(e.Site is { } site ? Rng.StableHash(site) : 0UL);
             hasher.Add(e.Point);
@@ -271,42 +351,158 @@ public sealed class OrderQueue : IReadOnlyList<OrderEntry>
 }
 
 /// <summary>
-/// The order queue's rules (docs/simulation.md "Order queue"; the original's <c>checkOrders</c> <c>FUN_140510920</c> and <c>Character::addOrder</c>
-/// <c>FUN_1405c8da0</c>, docs/game/ai-tasks.md "Precedence"): an order command clears the queue (unless Shift) and queues the order; the front starts
+/// The order queue's rules (docs/simulation.md "Order queue"; the original's <c>checkOrders</c> <c>FUN_140510920</c> and order giver
+/// <c>FUN_1405d20d0</c>, docs/game/ai-tasks.md "Precedence"): an order command clears the queue (unless Shift) and queues the order; the front starts
 /// through its owner when it can run, else shows its failure text and stays queued while the character's jobs, goals and reactions go on; a front
-/// whose task ended leaves the queue and the next starts. The decision step asks the front as its source 1 (<see cref="DecisionSystem"/>).
+/// whose task ended leaves the queue and the next starts. The decision step asks the front as its source 1 (<see cref="DecisionSystem"/>), for
+/// every character with a queue: the player's and NPCs alike.
 /// </summary>
 public static class PlayerOrders
 {
     /// <summary>
     /// Gives a character an order (serial phases only): without <paramref name="queued"/> the queue is cleared first; the order is queued and, at the
     /// front, started when it can run, else its failure text is shown (<paramref name="show"/>). The character's task is left alone while the order
-    /// cannot run. Returns the check of the front.
+    /// cannot run. Any character takes orders; an NPC's front starts only while its chooser runs (<see cref="DecisionSystem.TakesOrders"/>), else it
+    /// waits queued. Returns the check of the front.
     /// </summary>
     public static OrderCheck Give(World world, int slot, OrderEntry order, bool queued, bool show = true)
     {
-        if (order.ApplicabilityQuery) return OrderCheck.Gone;
+        if (!world.ValidOrder(slot, order)) return OrderCheck.Gone;
         var cold = world.Characters.Cold(slot)!;
         var q = cold.OrderQueue;
-        // A queue loaded and not restored yet (OrderSave.Restore): a queued order goes behind it, any other replaces it.
-        if (cold.SavedOrders is not null)
+        // A queue loaded and not restored yet (OrderSave.Restore) is the second list's: a queued order keeps it, any other empties it with the queue.
+        if (queued && Saving.OrderSave.Pending(cold)) Saving.OrderSave.Restore(world, slot, cold);
+        if (!queued)
         {
-            if (queued) Saving.OrderSave.Restore(world, slot, cold);
-            else
-                cold.SavedOrders = null;
+            q.Clear();
+            ClearSecond(cold);
         }
-        if (!queued) q.Clear();
         else
+        {
             Settle(world, slot);
+        }
+
         q.Add(order);
-        DecisionSystem.Request(cold);   // addOrder replans at once: the order's own start below, the fall-through at the decision step
-        return q.Count == 1 ? TryFront(world, slot, show) : OrderCheck.Run;
+        SetCentre(world, cold, order);
+        DecisionSystem.Replan(cold);   // addOrder replans at once: the order's own start below, the fall-through at the decision step
+        bool starts = q.Count == 1 && (DecisionSystem.Decides(cold) || DecisionSystem.TakesOrders(cold));
+        var check = starts ? TryFront(world, slot, show) : OrderCheck.Run;
+        DecisionSystem.Hold(world, slot);
+
+        return check;
+    }
+
+    /// <summary>
+    /// Pushes an order to the front of the character's queue (serial phases; <c>AI::forceOrderInsert</c> <c>FUN_140507cd0</c> → <c>FUN_14050b6a0</c>,
+    /// docs/game/combat.md "Fight lifecycle and orders"): a front whose task ended leaves first; a running front stays queued behind it, to be
+    /// planned again from its start once the new one is over. A running front of the same row keeps its task and the new entry takes it over (the
+    /// body task keeps the running stumble, <c>FUN_1405c6ec0</c>), the old one waiting behind it; else the new front starts as <see cref="Give"/>'s,
+    /// a <see cref="OrderEntry.Forced"/> one also for a character whose chooser does not run but that is not down (the insert sets the body task
+    /// itself).
+    /// </summary>
+    internal static void GiveFront(World world, int slot, OrderEntry order)
+    {
+        if (!world.ValidOrder(slot, order)) return;
+        var cold = world.Characters.Cold(slot)!;
+        var q = cold.OrderQueue;
+        Settle(world, slot);
+        bool adopts = q.Front is { } running && running.Row == order.Row && Runs(world, slot, running);
+        Interrupt(cold);
+        q.AddFront(order);
+        DecisionSystem.Replan(cold);   // the front insert's vfunc 3 (FUN_140507a90)
+
+        bool starts = DecisionSystem.Decides(cold) || DecisionSystem.TakesOrders(cold) || order.Forced && !DecisionSystem.Down(cold);
+        if (adopts)
+        {
+            order.Started = true;
+            order.Tried = true;
+        }
+        else if (starts)
+        {
+            TryFront(world, slot, show: false);
+        }
+
+        DecisionSystem.Hold(world, slot);
+    }
+
+    /// <summary>
+    /// The order's point becomes the centre of movement (<c>addOrder</c> <c>FUN_1405d20d0</c> -> <c>AI::setCenterOfMovement</c> <c>FUN_140599970</c>,
+    /// <b>Verified</b>: on the queue path, not the permanent-job one, nor a body's front push): it writes <c>+0x2c0</c>, clears the centre target and
+    /// makes the default task 31 / 30 on that point by the manoeuvre mode, 14 under ROAM_FAR (Meitou reads the row from the mode,
+    /// <see cref="CharacterCold.Manoeuvre"/>, and keeps no centre under ROAM_FAR, where nothing reads it). Engine choice: an order on a character
+    /// with no point takes the character's position; the original writes the point as given, the world origin for the menu's Follow (<b>Observed</b>,
+    /// harness), which only STAY_CLOSE and HOLD_GROUND read, and in 1.0.68 only a mod sets either (every character starts and loads ROAM_FAR).
+    /// </summary>
+    static void SetCentre(World world, CharacterCold cold, OrderEntry order)
+    {
+        if (cold.Manoeuvre == ManoeuvreMode.RoamFar) return;
+
+        var table = world.Characters;
+        if (order.Point != default) cold.CentreOfMovement = order.Point;
+        else if (table.TryResolveNext(order.Target, out int t)) cold.CentreOfMovement = table.Next[t].Position;
+    }
+
+    /// <summary>
+    /// The task-ended handling of a character whose chooser does not run (no squad) but that is not down (Character slot 27 <c>FUN_1405c7c30</c> →
+    /// <c>FUN_14050d920</c> → <c>FUN_14050d7d0</c>, <b>Verified</b>: no platoon test): a started front whose task ended leaves (serial phases).
+    /// </summary>
+    internal static void DropEnded(World world, int slot) => Settle(world, slot);
+
+    /// <summary>
+    /// The running front's task is ended from outside while the order stays queued (the stagger's front insert, the leg collapse's stop
+    /// <c>FUN_1405c8330</c>): it waits unstarted and is planned again from its start (serial phases, or the character's own slot).
+    /// </summary>
+    internal static void Interrupt(CharacterCold cold)
+    {
+        if (cold.OrderQueue.Front is not { Started: true } front) return;
+
+        front.Started = false;
+        front.RowRuns = false;
+        front.Planned = null;
+    }
+
+    /// <summary>
+    /// Whether trusted simulation code owns the order currently starting or running on this actor (a server-only provenance read).
+    /// </summary>
+    internal static bool Trusted(World world, int slot) => world.Characters.Cold(slot) is { } cold
+        && (cold.OrderQueue.Front is { Started: true, Trusted: true }
+            || cold.SecondList.Exists(entry => entry.Started && entry.Trusted));
+
+    /// <summary>
+    /// Whether an order on the character's body (<see cref="OrderEntry.Interrupts"/>: a stumble, a get-up) is its started front now: its body task
+    /// replaced the goal's, so a duty or a flight holding the character ends and the AI chooses again after it (a pure read, any phase).
+    /// </summary>
+    internal static bool BodyHolds(CharacterCold cold) => cold.OrderQueue.Front is { Interrupts: true, Started: true };
+
+    /// <summary>
+    /// Empties the second list (<c>FUN_140507530</c>'s and <c>FUN_1405074a0</c>'s part of it), a loaded queue not put in it yet too (serial phases).
+    /// </summary>
+    internal static void ClearSecond(CharacterCold cold)
+    {
+        cold.SecondList.Clear();
+        cold.SavedOrders = null;
+    }
+
+    /// <summary>
+    /// The ragdoll setter's wipe (<c>FUN_1405d0db0</c> turning WHOLE or CARRY on → <c>FUN_1405074a0</c>, <c>FUN_14050d1b0</c>; a knock-out, death or
+    /// being picked up, docs/game/ai-tasks.md "What clears the queue"): the order queue and the second list (a loaded queue) are
+    /// emptied and an AI's plan and goal dropped; the job list stays (serial phases).
+    /// </summary>
+    internal static void Wipe(CharacterCold cold)
+    {
+        cold.OrderQueue.Clear();
+        ClearSecond(cold);
+        if (cold.Ai is not { } mind) return;
+
+        mind.ResetPlan();
+        mind.Goal = null;
     }
 
     /// <summary>
     /// Whether the order can start for the character now (a pure read; the M6 <c>World.CanOrder</c> rests on it): the row is in the character's
     /// repertoire (<see cref="TaskStart.Eligible"/>), its owner's check, a row needing no melee threat (<see cref="NeedsNoThreat"/>) has none
-    /// (<see cref="Threatened"/>), and no failing list B entry leaves its plan without a step (<see cref="ListTests.OrderBlocked"/>).
+    /// (<see cref="Threatened"/>), and no failing list B entry leaves its plan without a step (<see cref="ListTests.OrderBlocked"/>). An order the
+    /// owner finds gone whose target resolves to nothing waits blocked instead where its plan fails on that (<see cref="ListTests.BlockedOnGone"/>).
     /// </summary>
     public static OrderCheck CanRun(World world, int slot, OrderEntry order)
     {
@@ -329,19 +525,19 @@ public static class PlayerOrders
 
     /// <summary>
     /// Whether the front order started and its task still runs: the task's provenance is an order's for it (<see cref="RunningTask.Runs"/>; a move's
-    /// walk is the order's move) and its handler has more to do.
+    /// walk is the order's move) and its handler has more to do, or its owner's act-out is between two steps of its plan
+    /// (<see cref="IOrderSteps.Between"/>).
     /// </summary>
     public static bool Runs(World world, int slot, OrderEntry order)
     {
-        if (!order.Started) return false;
+        if (!order.Started || !world.ValidOrder(slot, order)) return false;
         var table = world.Characters;
         var cold = table.Cold(slot)!;
         var task = (CharacterTask)table.Next[slot].Task;
-        if (cold.Running is not { Source: TaskSource.Order } run || order.IsMove && !cold.OrderMove)
-            return false;
-        var handler = world.Tasks.Of(run.Task, run.Row, run.Site);
-        if (handler is null) return run.Runs(task);
-        return handler.Runs(world, slot, run) && !handler.Done(world, slot, task);
+        bool between = order.Owner is IOrderSteps steps && steps.Between(world, slot, order);
+        if (cold.Running is not { Source: TaskSource.Order } run || !run.Runs(task) || order.IsMove && !cold.OrderMove) return between;
+
+        return world.Tasks.Of(world, slot, cold, task) is not { } handler || !handler.Done(world, slot, task) || between;
     }
 
     /// <summary>
@@ -352,7 +548,7 @@ public static class PlayerOrders
     {
         var q = world.Characters.Cold(slot)!.OrderQueue;
         if (q.Front is not { } front) return false;
-        if (!front.Started || Runs(world, slot, front)) return true;
+        if (!front.Started || Runs(world, slot, front) || front.Owner.Repeats(world, slot, front)) return true;
         return !front.IsMove && q.Count > 1;   // what Settle keeps
     }
 
@@ -363,6 +559,23 @@ public static class PlayerOrders
     {
         var q = world.Characters.Cold(slot)!.OrderQueue;
         if (q.Front is not { Started: true } front || Runs(world, slot, front)) return;
+
+        Leave(world, slot, front);
+    }
+
+    /// <summary>
+    /// The front's task ended: a repeating order (<see cref="IOrderOwner.Repeats"/>) waits unstarted at the front for its next step; else a move
+    /// leaves with the moves queued after it, any other order alone.
+    /// </summary>
+    static void Leave(World world, int slot, OrderEntry front)
+    {
+        var q = world.Characters.Cold(slot)!.OrderQueue;
+        if (front.Owner.Repeats(world, slot, front))
+        {
+            front.Started = front.Tried = false;
+            return;
+        }
+
         if (front.IsMove) q.Clear();
         else
             q.PopFront();
@@ -390,8 +603,10 @@ public static class PlayerOrders
                 if (show && first) Show(world, slot, check);
                 return check;
             }
+            Ai.OrderStep.TakeOver(world, slot, world.Characters.Cold(slot)!, front.Interrupts);
+            LeaveSecond(world.Characters.Cold(slot)!);
             front.Started = true;
-            front.RowRuns = ListTests.OrderNeedsFailNow(world, slot, front) == false;   // else a step of its plan comes first
+            Plan(world, slot, front);
             front.Owner.Start(world, slot, front);
             if (q.Front != front || Runs(world, slot, front)) return check;
             q.PopFront();
@@ -412,6 +627,7 @@ public static class PlayerOrders
         if (!world.ValidOrder(slot, next)) { q.Clear(); return false; }
         next.Started = next.Tried = true;
         next.RowRuns = false;
+        next.Planned = null;
         n.Goal = new Vector2(next.Point.X, next.Point.Z);
         n.Flags |= (ushort)MoveFlags.NeedPath;
         return true;
@@ -441,9 +657,8 @@ public static class PlayerOrders
         if (request.Source == TaskSource.Order || step) return;
         var q = world.Characters.Cold(slot)!.OrderQueue;
         if (q.Front is not { } front || !Runs(world, slot, front)) return;
-        if (front.IsMove) q.Clear();
-        else
-            q.PopFront();
+
+        Leave(world, slot, front);
     }
 
     /// <summary>
@@ -453,20 +668,27 @@ public static class PlayerOrders
     /// </summary>
     internal static void Ending(World world, int slot, TaskEnd reason)
     {
+        if (reason == TaskEnd.Done && RunningSecond(world, slot) is { } second) MarkSpent(second);
         if (reason == TaskEnd.Replaced) return;
         var q = world.Characters.Cold(slot)!.OrderQueue;
         if (q.Front is not { } front || !Runs(world, slot, front)) return;
-        if (reason == TaskEnd.Stopped || front.IsMove) q.Clear();
+
+        if (reason == TaskEnd.Stopped) q.Clear();
         else
-            q.PopFront();
+            Leave(world, slot, front);
     }
 
     /// <summary>
-    /// Shows a blocked check's failure text: posted as a message, or barked over the character; nothing without one.
+    /// Shows a blocked check's failure text: posted as a message, or barked over the character; nothing without one, and nothing for a character
+    /// not of the player's faction or an animal (the order step's vfunc <c>0x2d8</c> call, docs/game/ai-tasks.md "Precedence": its blocked order
+    /// waits silently).
     /// </summary>
     static void Show(World world, int slot, in OrderCheck check)
     {
-        if (check.Why is not { } why) return;
+        var cold = world.Characters.Cold(slot)!;
+        bool says = DestinationAccess.PlayerSide(world, cold) && !Factions.SquadRegistry.IsAnimal(cold);
+        if (check.Why is not { } why || !says) return;
+
         if (check.Posted) world.PostCharacter(slot, why);
         else
             world.Bark(world.Characters.IdOf(slot), why);
@@ -561,16 +783,34 @@ public static class PlayerOrders
     }
 
     /// <summary>
-    /// Whether the running front's row ends by its list B now (<see cref="ListTests.OrderNeedsFail"/>), after it held since the start
-    /// (<see cref="OrderEntry.RowRuns"/>, recorded here).
+    /// Whether the running front's row ends by its list B now (<see cref="ListTests.OrderNeedsFail"/>), once the steps of its plan are over
+    /// (<see cref="OrderEntry.RowRuns"/>, recorded here). While a step of another row runs for an owner of several steps (<see cref="IOrderSteps"/>:
+    /// a provider of the plan, the arrest's fight or strip), or none between two steps, the row's own list B is not asked.
     /// </summary>
     static bool RowEnds(World world, int slot, OrderEntry front)
     {
+        var cold = world.Characters.Cold(slot)!;
+        if (front.Owner is IOrderSteps && cold.Running?.Row != front.Row) return false;
         if (ListTests.OrderNeedsFail(world, slot, front) is not { } fails) return false;
-        if (!fails) front.RowRuns = true;
+        if (!front.RowRuns) front.RowRuns = ListTests.StepsOver(world, slot, front, fails);
 
         return fails && front.RowRuns;
     }
+
+    /// <summary>
+    /// Records an order's plan at its start: the entry its first step provides (<see cref="OrderEntry.Planned"/>), and whether its own row runs
+    /// at once (its list B holds; else a step of its plan comes first).
+    /// </summary>
+    static void Plan(World world, int slot, OrderEntry order)
+    {
+        order.Planned = ListTests.PlannedNeed(world, slot, order);
+        order.RowRuns = ListTests.OrderNeedsFailNow(world, slot, order) == false;
+    }
+
+    /// <summary>
+    /// The state hash's key of a recorded <see cref="OrderEntry.Planned"/> entry: its state and the value wanted, never 0.
+    /// </summary>
+    internal static int PlannedKey(TaskCondition planned) => ((int)planned.State << 1 | (planned.Holds ? 1 : 0)) + 1;
 
     /// <summary>
     /// Whether the character's follow order (31, 45, 289) runs its own row: its list B has held since its start, so a threat to the followed
@@ -585,6 +825,82 @@ public static class PlayerOrders
     /// The decision step's start of source 1: the front starts (<see cref="TryFront"/>).
     /// </summary>
     internal static void StartFront(World world, int slot) => TryFront(world, slot, show: true);
+
+    /// <summary>
+    /// Whether second-list entry <paramref name="entry"/> can start now (<see cref="CanRun"/>) or runs the character's task already
+    /// (<see cref="Runs"/>); a pure read.
+    /// </summary>
+    internal static DecisionCheck SecondCheck(World world, int slot, OrderEntry entry)
+    {
+        if (entry.Awaits is not null) return DecisionCheck.No("its target is not in the world yet");
+        if (entry.Started && Runs(world, slot, entry)) return DecisionCheck.Runs;
+
+        var check = CanRun(world, slot, entry);
+        return check.CanRun ? DecisionCheck.Run : DecisionCheck.No(check.Why ?? $"{entry.Row} cannot run");
+    }
+
+    /// <summary>
+    /// The chooser picked second-list entry <paramref name="entry"/> (serial phases, after <see cref="SecondCheck"/> said it can start): it starts
+    /// through its owner as a front order does, and stays in the list, which no completion pops.
+    /// </summary>
+    internal static void StartSecond(World world, int slot, OrderEntry entry)
+    {
+        if (entry.Awaits is not null || !world.ValidOrder(slot, entry)) return;
+        var cold = world.Characters.Cold(slot)!;
+        Ai.OrderStep.TakeOver(world, slot, cold, entry.Interrupts);
+        LeaveSecond(cold);
+        entry.Started = entry.Tried = true;
+        Plan(world, slot, entry);
+        entry.Owner.Start(world, slot, entry);
+
+        // A start that left nothing running (a get-up in a bed) is over, as such a front leaves the queue. Engine choice: it is spent whatever its
+        // row, as a body order (GetUp, Aoeu, StumbleTaskForced, GetOutOfBed) whose list A still holds would win every look and start nothing.
+        if (Runs(world, slot, entry)) return;
+        entry.Started = false;
+        entry.Spent = true;
+    }
+
+    /// <summary>
+    /// Marks a second-list entry <see cref="OrderEntry.Spent"/> when its row has no finished test to ask again (no TaskData row).
+    /// </summary>
+    static void MarkSpent(OrderEntry entry)
+    {
+        if (TaskDataTable.Of(Saving.OrderSave.SavedRow(entry.Row)) is null) entry.Spent = true;
+    }
+
+    /// <summary>
+    /// The second-list entry that runs the character's task, if one does; a pure read.
+    /// </summary>
+    internal static OrderEntry? RunningSecond(World world, int slot)
+    {
+        foreach (var e in world.Characters.Cold(slot)!.SecondList)
+            if (Runs(world, slot, e)) return e;
+
+        return null;
+    }
+
+    /// <summary>
+    /// The plan step on a running second-list entry, as on a running front (<see cref="Step"/>): its task ends when its row is done or its list B
+    /// fails, a move's walk going on; the entry stays in the list, tested again at the next look. False when it goes on.
+    /// </summary>
+    internal static bool EndSecond(World world, int slot, OrderEntry entry)
+    {
+        bool ends = ListTests.OrderDone(world, slot, entry, true) || RowEnds(world, slot, entry);
+        if (!ends) return false;
+
+        MarkSpent(entry);
+        if (!entry.IsMove) TaskStart.End(world, slot, TaskEnd.Done);
+        entry.Started = false;
+        return true;
+    }
+
+    /// <summary>
+    /// No second-list entry stands for the character's task any more (another order starts).
+    /// </summary>
+    static void LeaveSecond(CharacterCold cold)
+    {
+        foreach (var e in cold.SecondList) e.Started = false;
+    }
 
     /// <summary>
     /// The decision step went past a front that cannot run: its failure text is shown the first time it is tried, and it stays queued.
@@ -609,8 +925,11 @@ public static class PlayerOrders
     internal static OrderCheck CheckApplicability(World world, int slot, OrderEntry order)
     {
         var cold = world.Characters.Cold(slot)!;
+        if (order.Forced) return order.Owner.CanRun(world, slot, order);
         if (!TaskStart.Eligible(world, cold, order.Row)) return OrderCheck.Blocked();
         var own = order.Owner.CanRun(world, slot, order);
+        if (own.Verdict == OrderVerdict.Gone && ListTests.BlockedOnGone(world, slot, order, out string? gone))
+            return OrderCheck.Blocked(gone is null ? null : Loc.Tr(gone));
         if (!own.CanRun) return own;
         if (Threatened(world, slot, order.Row)) return OrderCheck.Blocked();
 
@@ -622,9 +941,20 @@ public static class PlayerOrders
         var table = world.Characters;
         for (int slot = 0; slot < table.HighWater; slot++)
         {
-            if (!table.Next[slot].Alive || table.Cold(slot)?.OrderQueue.Front is not { } front || world.ValidOrder(slot, front)) continue;
-            if (front.Started) TaskStart.End(world, slot, TaskEnd.Stopped);
-            table.Cold(slot)!.OrderQueue.Clear();
+            if (!table.Next[slot].Alive || table.Cold(slot) is not { } cold) continue;
+            if (cold.OrderQueue.Front is { } front && !world.ValidOrder(slot, front))
+            {
+                if (front.Started) TaskStart.End(world, slot, TaskEnd.Stopped);
+                cold.OrderQueue.Clear();
+            }
+
+            for (int k = cold.SecondList.Count - 1; k >= 0; k--)
+            {
+                var entry = cold.SecondList[k];
+                if (entry.Awaits is not null || entry.Spent && !entry.Started || world.ValidOrder(slot, entry)) continue;
+                if (entry.Started) TaskStart.End(world, slot, TaskEnd.Stopped);
+                cold.SecondList.RemoveAt(k);
+            }
         }
     }
 

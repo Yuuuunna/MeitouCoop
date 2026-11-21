@@ -12,7 +12,7 @@ public sealed partial class FirstAidSystem
         _activityAuthority[world.Characters.IdOf(slot)] = world.Players.ControlOf(world.Characters.IdOf(slot));
 
     bool ActivityAllowed(World world, int slot) =>
-        !world.Players.RequiresExplicitControl || world.Characters.Cold(slot) is { IsPlayer: false } && (!_activityAuthority.TryGetValue(world.Characters.IdOf(slot), out var prior) || prior is null)
+        PlayerOrders.Trusted(world, slot) || !world.Players.RequiresExplicitControl || world.Characters.Cold(slot) is { IsPlayer: false } && (!_activityAuthority.TryGetValue(world.Characters.IdOf(slot), out var prior) || prior is null)
         || world.Players.ControlOf(world.Characters.IdOf(slot)) is { } grant && world.Players.Validate(grant);
 
     bool JobsAllowed(World world, int slot) => ActivityAllowed(world, slot);

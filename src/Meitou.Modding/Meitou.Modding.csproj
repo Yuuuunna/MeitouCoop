@@ -6,7 +6,8 @@
     <InternalsVisibleTo Include="Meitou.Tests" />
     <InternalsVisibleTo Include="MeitouClient" />
     <Compile Include="../Meitou.Game/Mods/*.cs" Exclude="../Meitou.Game/Mods/GameMods.cs;../Meitou.Game/Mods/PlayerUiExtension.cs" Link="Mods/%(Filename)%(Extension)" />
-    <Compile Include="../Meitou.Game/Ui/UiHost.cs;../Meitou.Game/Ui/UiNode.cs" Link="Ui/%(Filename)%(Extension)" />
+    <Compile Include="../Meitou.Game/Ui/UiHost.cs;../Meitou.Game/Ui/UiNode.cs;../Meitou.Game/Ui/MarkerImagePaths.cs" Link="Ui/%(Filename)%(Extension)" />
+    <Compile Include="../Meitou.Game/Host/Input/Keys.cs;../Meitou.Game/Host/Input/InputState.cs;../Meitou.Game/Host/Input/InputBindings.cs;../Meitou.Game/Host/Input/ModKeyActions.cs" Link="Input/%(Filename)%(Extension)" />
   </ItemGroup>
   <Target Name="ReadCodeModGameVersion" BeforeTargets="GetAssemblyAttributes">
     <Exec Command="git describe --tags --abbrev=0 --match &quot;v*&quot;" WorkingDirectory="$(MSBuildProjectDirectory)"

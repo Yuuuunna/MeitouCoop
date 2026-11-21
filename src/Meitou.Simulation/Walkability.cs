@@ -132,6 +132,19 @@ public interface IWalkability
     Vector3? FloorNear(float x, float z, float y, float slack) => ScanFloor(this, x, z, y, slack);
 
     /// <summary>
+    /// The height a character made at (<paramref name="x"/>, <paramref name="y"/>, <paramref name="z"/>) is seated at
+    /// (docs/game/pathfinding.md "Made on the mesh"): the walkable surface of its column nearest <paramref name="y"/> in height, however far up or
+    /// down; null where it stands on one already, is over all of them or the column has none (it keeps its height).
+    /// </summary>
+    float? SeatHeight(float x, float z, float y) => null;
+
+    /// <summary>
+    /// Told by the world as each tick starts: the tick's number and its length in game seconds, for what the surface times in game time (the
+    /// navmesh's unreachable goals). Default: nothing.
+    /// </summary>
+    void TickStarts(long tick, float tickSeconds) { }
+
+    /// <summary>
     /// The search of <see cref="FloorNear"/>, for an implementation that keeps its answers; uncached out to <paramref name="reach"/> for a wider one.
     /// </summary>
     static Vector3? ScanFloor(IWalkability walk, float x, float z, float y, float slack, float reach = FloorSearch)

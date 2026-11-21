@@ -374,6 +374,16 @@ sealed class UserConfig
     /// </summary>
     public bool CampaignAncestorsOnce { get; set; } = true;
     /// <summary>
+    /// A loaded raid goes on where it was: its phase, fight, arrival, announcement and carry clocks are read from the save (Fixes settings; off: they
+    /// start again at load, as the game does; read at load; <c>PopulationSettings.KeepCampaignClocks</c>, docs/formats/save.md "WAR_SAVESTATE").
+    /// </summary>
+    public bool FixRaidClocks { get; set; } = true;
+    /// <summary>
+    /// An arrest's guard lifts a downed target only with a cage free for it and never from another carrier of his faction (Fixes settings; off: he
+    /// lifts either way, as the game does, and guards at a full station pass the same body round; read at load; <c>ArrestSettings.LiftFix</c>).
+    /// </summary>
+    public bool FixArrestLifts { get; set; } = true;
+    /// <summary>
     /// Wild animals and homeless squads keep their characters while their area is unloaded (Advanced settings; Faithful off: removed and made anew,
     /// as the game does).
     /// </summary>
@@ -383,6 +393,11 @@ sealed class UserConfig
     /// stood, as the game does).
     /// </summary>
     public bool ResidentSchedule { get; set; } = true;
+    /// <summary>
+    /// A town away from the player's squads takes its override version (taken over, destroyed) as soon as the story allows (Advanced settings;
+    /// Faithful off: only when the player comes near, as the game does).
+    /// </summary>
+    public bool OffscreenOverrides { get; set; } = true;
     /// <summary>
     /// Farms, automatic machines and generators work in unloaded zones (Advanced settings; Faithful off: they stop there and farms catch up on load,
     /// as the game does).
@@ -482,6 +497,10 @@ sealed class UserConfig
     /// </summary>
     public bool FixPrisonPose { get; set; } = true;
     /// <summary>
+    /// An animal in a cage or on a pole plays its idles (Fixes settings; off: a still frame, as the game does; docs/game/locks.md "Cages and beds").
+    /// </summary>
+    public bool FixCagedAnimals { get; set; } = true;
+    /// <summary>
     /// Guards' smuggling search and starving looters' food take reach into bags carried in the inventory grid (Fixes settings; off: only the grid
     /// and the worn backpack, as the game does; docs/game/dialogue.md "Conditions").
     /// </summary>
@@ -496,6 +515,11 @@ sealed class UserConfig
     /// room (Fixes settings; off: only inside it, as the game does; docs/render-interior-cut.md).
     /// </summary>
     public bool FixRainInBuildings { get; set; } = true;
+    /// <summary>
+    /// The terrain inside an Ash Dome Ruin stays drawn and orders land on it (Fixes settings; off: the ruin's interior mask cuts it, as the game
+    /// does; docs/render-interior-cut.md "Interior terrain").
+    /// </summary>
+    public bool FixRuinGround { get; set; } = true;
     /// <summary>
     /// A head a task turned toward something turns back to the front once nothing is looked at (Fixes settings; off by default: it stays turned
     /// until the next look, as the game does; docs/animation.md "Head turning").
@@ -723,6 +747,13 @@ sealed class UserConfig
     /// <see cref="Input.InputBindings.Apply"/> reads them; an empty value unbinds.
     /// </summary>
     public Dictionary<string, string> Bindings { get; set; } = [];
+    /// <summary>
+    /// The code mods' key actions whose keys differ from their defaults (docs/modding.md "Key actions"): mod id to action name to comma-separated
+    /// keys, as <see cref="Bindings"/>; an empty value unbinds. Null, and not written, until a mod's action is rebound; a mod not running keeps its
+    /// entries.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, Dictionary<string, string>>? ModBindings { get; set; }
     /// <summary>
     /// The Meitou skin per race, where chosen against the default (RACE string id to on or off; Graphics > Skin): <c>CharacterRenderer.SkinRaces</c>.
     /// </summary>

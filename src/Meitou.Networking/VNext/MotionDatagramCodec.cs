@@ -27,16 +27,15 @@ public static class MotionDatagramCodec
     public const int RecordBytes = 50;
     public const int MaximumDatagramBytes = 1150;
     const MotionFlags KnownFlags = MotionFlags.Moving | MotionFlags.Swimming | MotionFlags.Carried | MotionFlags.Ragdoll | MotionFlags.Discontinuity;
-    public static byte[] Encode(MotionDatagram packet, int negotiatedLimit = MaximumDatagramBytes)
+    public static byte[] Encode(MotionDatagram packet, int negotiatedLimit = MaximumDatagramBytes) => EncodeCanonical(packet, Limit(negotiatedLimit));
+
+    /// <summary>
+    /// Writes the exact canonical representation under either its ordinary MTU or the separately bounded packed expansion size.
+    /// </summary>
+    static byte[] EncodeCanonical(MotionDatagram packet, int limit)
     {
-        ArgumentNullException.ThrowIfNull(packet);
-        ArgumentNullException.ThrowIfNull(packet.Records);
-        ValidateHeader(packet.Header);
-        int limit = Limit(negotiatedLimit);
+        ValidatePacket(packet, limit);
         int count = packet.Records.Count;
-        if (count > ushort.MaxValue || count > (limit - HeaderBytes - 2) / (RecordBytes + 2))
-            throw new InvalidDataException("Motion records exceed the datagram limit.");
-        ValidateRecords(packet.Records);
         byte[] bytes = new byte[HeaderBytes + 2 + count * (RecordBytes + 2)];
         WriteHeader(bytes, packet.Header);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(HeaderBytes), (ushort)count);
@@ -49,6 +48,12 @@ public static class MotionDatagramCodec
 
         return bytes;
     }
+
+    /// <summary>
+    /// Encodes at most 32 records with independent lossless compression; null means that batch does not fit the negotiated wire MTU.
+    /// </summary>
+    internal static byte[]? EncodePacked(MotionDatagram packet, int negotiatedLimit = MaximumDatagramBytes) =>
+        MotionPayloadCompression.Encode(EncodeCanonical(packet, MotionPayloadCompression.MaximumExpandedBytes), Limit(negotiatedLimit));
 
     /// <summary>
     /// Splits only between complete records; every returned datagram is independently decodable.
@@ -80,13 +85,19 @@ public static class MotionDatagramCodec
     }
 
     /// <summary>
-    /// Accepts a canonical datagram or one independent lossless envelope. Both encoded and expanded lengths fit the negotiated MTU before
-    /// decompression allocates output; ordinary record, epoch and revision validation then sees the original exact bytes.
+    /// Accepts a canonical datagram or one independent lossless envelope. Wire size always fits the negotiated MTU; only MTBP versions 3 and 4 may
+    /// expand beyond it, to at most 32 records and 1,716 bytes. Ordinary record, epoch and revision validation sees the original exact bytes.
     /// </summary>
     public static MotionDatagram Decode(ReadOnlySpan<byte> bytes, int negotiatedLimit = MaximumDatagramBytes)
     {
         int limit = Limit(negotiatedLimit);
-        if (AbsolutePayloadCompression.IsCompressed(bytes)) bytes = AbsolutePayloadCompression.Expand(bytes, limit);
+        if (MotionPayloadCompression.IsCompressed(bytes))
+        {
+            int expandedLimit = bytes.Length > 4 && bytes[4] is 3 or 4 ? MotionPayloadCompression.MaximumExpandedBytes : limit;
+            bytes = MotionPayloadCompression.Expand(bytes, limit);
+            limit = expandedLimit;
+        }
+        else if (AbsolutePayloadCompression.IsCompressed(bytes)) bytes = AbsolutePayloadCompression.Expand(bytes, limit);
         if (bytes.Length < HeaderBytes + 2 || bytes.Length > limit)
             throw new InvalidDataException("Invalid motion datagram length.");
         if (!bytes[..4].SequenceEqual("MTN2"u8) || BinaryPrimitives.ReadUInt16LittleEndian(bytes[4..]) != Version || bytes[6] != MotionKind || bytes[7] != 0)
@@ -114,6 +125,27 @@ public static class MotionDatagramCodec
         for (int i = 0; i < count; i++)
             records[i] = ReadRecord(bytes[(HeaderBytes + 4 + i * (RecordBytes + 2))..]);
         return new(header, records);
+    }
+
+    /// <summary>
+    /// Validates a decoded packet before replica mutation without re-encoding it. Motion may use the packed 32-record bound; reliable
+    /// checkpoints retain the canonical datagram capacity.
+    /// </summary>
+    internal static void ValidatePacket(MotionDatagram packet, bool checkpoint) =>
+        ValidatePacket(packet, checkpoint ? MaximumDatagramBytes : MotionPayloadCompression.MaximumExpandedBytes);
+
+    /// <summary>
+    /// Shared canonical and expanded validation of packet identity, complete record count, payload values and duplicate revisions.
+    /// </summary>
+    static void ValidatePacket(MotionDatagram packet, int limit)
+    {
+        ArgumentNullException.ThrowIfNull(packet);
+        ArgumentNullException.ThrowIfNull(packet.Records);
+        ValidateHeader(packet.Header);
+        int count = packet.Records.Count;
+        if (count > ushort.MaxValue || count > (limit - HeaderBytes - 2) / (RecordBytes + 2))
+            throw new InvalidDataException("Motion records exceed the datagram limit.");
+        ValidateRecords(packet.Records);
     }
 
     internal static void ValidateHeader(MotionHeader header)

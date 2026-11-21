@@ -353,12 +353,12 @@ public sealed partial class CarrySystem
         bool noXp = !success && target.InCombat && awareness.Known;
         TrainKnockOut(table, cold, target, t, success, noXp);
 
-        if (success) KnockOutTarget(table, t, cold, target);
-        else if (!target.Medical!.Incapacitated) Missed(world, i, t, target, attackerId, targetId);
-
-        // The swing books an Assault on the target's faction at the roll, hit or miss (the pending-crime setter FUN_140852c80 with code 5, called
-        // unconditionally, Verified).
+        // The swing books an Assault on the target's faction at the roll, hit or miss, before its outcome (the pending-crime setter FUN_140852c80
+        // with code 5, called unconditionally first, Verified), so a missed target that notices the attacker witnesses it.
         Crimes?.SetPending(world, i, Crime.CrimeCode.Assault, target.Faction, targetId, Crime.CrimeSystem.MinTimer);
+
+        if (success) KnockOutTarget(table, t, cold, target);
+        else if (!target.Medical!.Incapacitated) Missed(world, i, t, attackerId, targetId);
 
         ReportKnockOut(world, table, i, targetId, chance, success, noXp);
     }
@@ -371,7 +371,7 @@ public sealed partial class CarrySystem
         if (noXp || attacker.Stats is not { } stats || attacker.Race is not { } race) return;
 
         float f = target.IsImprisoned ? 0.07f : Asleep(table, t) ? 0.5f : 1;
-        (_xp ??= new XpService(Constants, _bodyOptions)).Continuous(stats, race, StatsEnumerated.Assassination, 1, f * (success ? 100 : 300));
+        (_xp ??= new XpService(Constants, _bodyOptions)).Continuous(stats, race, StatsEnumerated.Assassination, 1, f * (success ? 100 : 300), ExperienceSource.Assassination);
     }
 
     /// <summary>
@@ -419,11 +419,12 @@ public sealed partial class CarrySystem
     }
 
     /// <summary>
-    /// A miss (Task_StealthKO, FUN_14034cd80, Verified): the victim says event 56 ASSASSINATION_FAILED at the attacker, notices it (its hearing of
-    /// it is alarmed for 5 s), each side's squad tags the other TEMP_ENEMY, and the victim goes for the attacker (Character::attackTarget; no
-    /// assault is booked for that, so the order is a defensive one).
+    /// A miss (Task_StealthKO, FUN_14034cd80, <b>Verified</b>), the same for every victim: it says event 56 ASSASSINATION_FAILED at the attacker,
+    /// notices it (its hearing of it is alarmed for 5 s), each side's squad tags the other TEMP_ENEMY, the victim is under melee attack from it
+    /// (<c>FUN_1405c9290</c> → <c>AI::underMeleeAttack</c> <c>FUN_140999f00</c>: <see cref="RetaliationSystem.UnderMeleeAttack"/>) and has it on its
+    /// threats list (<c>FUN_1405cb0a0</c>, <see cref="Threaten"/>). No fight is pushed: the victim's chooser answers by 32 Self preservation.
     /// </summary>
-    void Missed(World world, int i, int t, CharacterCold target, CharacterId attackerId, CharacterId targetId)
+    void Missed(World world, int i, int t, CharacterId attackerId, CharacterId targetId)
     {
         world.Defer(new Dialogue.DialogueEvent(targetId, attackerId, AssassinationFailed) { Tick = world.Tick + 1 });
         Aggro?.Alarm(world, targetId, attackerId);
@@ -433,15 +434,26 @@ public sealed partial class CarrySystem
             talk.TagEnemy(world, i, t);
         }
 
-        // a player character: attackTarget's replan, the step decides (EngagedDefence.Engage)
-        if (DecisionSystem.Decides(target)) _engaged.Engage(world, Aggro, t, i);
-        else
-        {
-            world.Defer(new AttackOrder([targetId], attackerId)
-            {
-                Tick = world.Tick + 1, Defensive = true, Cause = "a failed knock-out attempt on it",
-            });
-        }
+        world.SystemOf<RetaliationSystem>()?.UnderMeleeAttack(world, i, t);
+        Threaten(world, t, i);
+    }
+
+    /// <summary>
+    /// <c>FUN_1405cb0a0</c> (<b>Verified</b>; a failed stealth knock-out's and a woken kidnap victim's): <paramref name="attacker"/> goes on
+    /// <paramref name="victim"/>'s threats list (SensoryData <c>+0x50</c>, <see cref="AggroSystem.Threaten"/>: forced sense, the entry), its squad
+    /// tags the attacker TEMP_ENEMY, and the victim's AI is updated at once (the immediate-update queue; Meitou: the think at the next tick, asked by
+    /// the replan bits). The push raises the immediate-threat flag at the victim's next think and is in no list its chooser reads, so 32 Self
+    /// preservation is no candidate on it alone (not current, its threats list empty: <c>FUN_14050df10</c>); once the attacker fights it, the look
+    /// puts it on the list and row 13 (<see cref="CombatSystem.BestAttackerOf"/>) finds it. No faction test. Serial.
+    /// </summary>
+    void Threaten(World world, int victim, int attacker)
+    {
+        Aggro?.Threaten(world, victim, attacker);
+        world.SystemOf<Dialogue.DialogueSystem>()?.TagEnemy(world, victim, attacker);
+        if (world.Characters.Cold(victim) is not { } cold) return;
+
+        DecisionSystem.Request(cold);
+        if (cold.Ai is { } mind) mind.Replan = true;
     }
 
     #endregion

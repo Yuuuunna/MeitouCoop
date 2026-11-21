@@ -49,6 +49,13 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     /// </summary>
     public const int MaxIterations = 100000;
     /// <summary>
+    /// The most polygons a dead end round the start may hold to be left through exits too narrow for the radius (<see cref="SqueezeOut"/>; engine
+    /// choice: the failed searches from #1025's ledge closed 2, #1032's pocket between two generators 4 and 5, those of walkers really shut out
+    /// 143 and 2012).
+    /// </summary>
+    public const int SqueezeCluster = 8;
+
+    /// <summary>
     /// The counters behind <see cref = "Stats"/>, updated with <see cref = "Interlocked"/>.
     /// </summary>
     static long s_searches, s_expanded, s_exhausted;
@@ -119,7 +126,18 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         /// The <see cref="NavRef.Key"/> of the node it was reached from; -1 for the start.
         /// </summary>
         public long Parent = -1;
-        public bool Closed, HasExit;
+        /// <summary>
+        /// Whether the node has been expanded.
+        /// </summary>
+        public bool Closed;
+        /// <summary>
+        /// Whether this polygon has an exit wide enough for the query radius.
+        /// </summary>
+        public bool HasExit;
+        /// <summary>
+        /// Whether the polygon is part of the start's dead end, left through exits too narrow for the radius (<see cref="SqueezeOut"/>).
+        /// </summary>
+        public bool Squeezed;
     }
 
     /// <summary>
@@ -173,6 +191,7 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
             var node = _made[_used++];
             (node.Ref, node.Position, node.G, node.F, node.Parent, node.Closed, node.HasExit) = (at, position, g, f, -1, false, false);
             node.Through = float.MaxValue;
+            node.Squeezed = false;
             return node;
         }
     }
@@ -203,10 +222,9 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         /// </summary>
         public readonly float MinFactor = Math.Min(1f, agent.Water.Min);
         /// <summary>
-        /// A start polygon none of whose exits leaves the radius clear (a sliver by a stair or a wall the walker was pushed into) is left through the
-        /// narrow ones: the walker stands in it already (docs/game/pathfinding.md, "Own builder").
+        /// How many polygons of the start's dead end were opened to their narrow exits (<see cref="SqueezeOut"/>; 0: none yet).
         /// </summary>
-        public bool SqueezeOut;
+        public int Squeezed;
     }
 
     /// <summary>
@@ -250,6 +268,22 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
             foreach (var(key, node)in state.Nodes)
                 if (node.Closed && node.HasExit)
                     into.Add(key);
+    }
+
+    /// <summary>
+    /// The keys (<see cref="NavRef.Key"/>) of the polygons the last search on this thread closed, ascending: the ground it covered, which is all
+    /// its start reaches when it failed without running to <see cref="MaxIterations"/>. Empty before any search.
+    /// </summary>
+    public static long[] LastSearchReached()
+    {
+        if (s_searchScratch is not { } s) return [];
+
+        var keys = new List<long>(s.Nodes.Count);
+        foreach (var (key, node) in s.Nodes)
+            if (node.Closed) keys.Add(key);
+
+        keys.Sort();
+        return [.. keys];
     }
 
     /// <summary>
@@ -379,19 +413,36 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
             if (partial && Vector3.Distance(NavWorld.ClosestPoint(mesh, p, goalPoint), goalPoint)is var d && d < nearestDistance)
                 (nearest, nearestDistance) = (node, d);
             Expand(ref search, node, mesh, p);
-            if (node == first && open.Count == 0 && last is null && !search.SqueezeOut)
-            {
-                search.SqueezeOut = true;
-                first.Closed = false;
-                open.Enqueue(first, first.F);
-            }
+            if (open.Count == 0) SqueezeOut(ref search);
         }
 
         return (last, nearest, iterations);
     }
 
     /// <summary>
-    /// Relaxes every way out of polygon <paramref name = "p"/>: its neighbours, its tile links and the world's links.
+    /// A search that ran dry in a dead end of at most <see cref="SqueezeCluster"/> polygons round its start, none of whose exits leaves the radius
+    /// clear (a sliver by a stair or a wall the walker was pushed into, or a ledge of a few), opens them again to leave through the narrow exits:
+    /// the walker stands there already (docs/game/pathfinding.md, "Own builder"). Again for each dead end the way out leads into, while the count
+    /// holds.
+    /// </summary>
+    static void SqueezeOut(ref CorridorSearch search)
+    {
+        var nodes = search.Scratch.Nodes;
+        if (nodes.Count > SqueezeCluster || nodes.Count == search.Squeezed) return;
+
+        search.Squeezed = nodes.Count;
+        foreach (var node in nodes.Values)
+        {
+            if (node.Squeezed) continue;
+
+            node.Squeezed = true;
+            node.Closed = false;
+            search.Scratch.Open.Enqueue(node, node.F);
+        }
+    }
+
+    /// <summary>
+    /// Relaxes every way out of polygon <paramref name="p"/>: its neighbours, its tile links and the world's links.
     /// </summary>
     void Expand(ref CorridorSearch search, Node node, ZoneNavMesh mesh, int p)
     {
@@ -433,11 +484,10 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         // Only an end on a wall takes the radius off the portal (as Pull insets it); a tile-border, seam or area-change end has walkable ground
         // beyond.
         float width = Vector2.Distance(new(left.X, left.Z), new(right.X, right.Z));
-        bool clears = !(width < ((leftWall ? 1 : 0) + (rightWall ? 1 : 0)) * agent.Radius);
-        if (!clears && !(search.SqueezeOut && from == search.First))
-            return;
-        if (clears)
-            from.HasExit = true;
+        bool clears = width >= ((leftWall ? 1 : 0) + (rightWall ? 1 : 0)) * agent.Radius;
+        if (!clears && !from.Squeezed) return;
+        if (clears) from.HasExit = true;
+
         var mid = BestCrossing(from.Position, left, right, search.GoalPoint);
         float g = from.G + Vector3.Distance(from.Position, mid) * factor;
         if (area == NavArea.Door)
@@ -455,6 +505,10 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         float through = g + toGoal * Factor(area, agent);
         if (node.Closed || through >= node.Through) return;
 
+        // A dead end's polygons are open again while nodes reached through them stand (SqueezeOut): entered from one of those, the two would be
+        // each other's parent and the corridor's walk back to the start would never end.
+        if (node.Squeezed && Descends(nodes, from, node)) return;
+
         node.Through = through;
         node.G = g;
         node.Position = mid;
@@ -464,7 +518,19 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
     }
 
     /// <summary>
-    /// The point of the portal that makes the way from <paramref name = "prev"/> through it to the goal shortest (the portal's ends clamp it), so the
+    /// Whether <paramref name="node"/> is <paramref name="ancestor"/> or was reached through it.
+    /// </summary>
+    static bool Descends(Dictionary<long, Node> nodes, Node node, Node ancestor)
+    {
+        for (var n = node; ; n = nodes[n.Parent])
+        {
+            if (n == ancestor) return true;
+            if (n.Parent < 0) return false;
+        }
+    }
+
+    /// <summary>
+    /// The point of the portal that makes the way from <paramref name="prev"/> through it to the goal shortest (the portal's ends clamp it), so the
     /// search sees near-straight legs even through thin polygons.
     /// </summary>
     static Vector3 BestCrossing(Vector3 prev, Vector3 left, Vector3 right, Vector3 goal)
@@ -535,81 +601,158 @@ public sealed class NavQuery(NavWorld world, NavDoors? doors = null)
         right = a0;
         leftWall = ma.IsWallVertex(pa[(edge + 1) % pa.Length]);
         rightWall = ma.IsWallVertex(pa[edge]);
-        // Overlap with the facing edge of the other polygon (found as the edge that leads back, nearest in position).
+
+        // Overlap with the facing edge of the other polygon (the edge that leads back, nearest in position); with no facing edge at all (a degenerate
+        // stitch), the whole edge.
         var mb = World.Mesh(to.Zone);
         var pb = mb.Polygons[to.Polygon];
-        int bestEdge = -1;
+        int best = StrictFacingEdge(a0, a1, mb, pb, out float lo, out float hi);
+        if (best < 0) best = LooseFacingEdge(a0, a1, mb, pb, out lo, out hi);
+        if (best < 0) return true;
+
+        var (loVertex, hiVertex) = WidenOverSplitEdges(from, a0, a1, to, best, ref lo, ref hi);
+        right = Vector3.Lerp(a0, a1, lo);
+        left = Vector3.Lerp(a0, a1, hi);
+        if (hi < 1 - 1e-4f) leftWall = mb.IsWallVertex(hiVertex);
+        if (lo > 1e-4f) rightWall = mb.IsWallVertex(loVertex);
+        return true;
+    }
+
+    /// <summary>
+    /// The edge of <paramref name="pb"/> on a0 a1's line (both ends within 0.2 of it) that runs the opposite way and overlaps it, the nearest by
+    /// midpoint, with the overlap as fractions along a0 a1; -1 for none.
+    /// </summary>
+    static int StrictFacingEdge(Vector3 a0, Vector3 a1, ZoneNavMesh mb, int[] pb, out float lo, out float hi)
+    {
+        lo = hi = 0;
+        var d = a1 - a0;
+        float len2 = d.X * d.X + d.Z * d.Z;
+        if (len2 < 1e-9f) return -1;
+
+        int best = -1;
         float bestDistance = float.MaxValue;
         var mid = (a0 + a1) * 0.5f;
         for (int k = 0; k < pb.Length; k++)
         {
             var b0 = mb.Vertices[pb[k]];
             var b1 = mb.Vertices[pb[(k + 1) % pb.Length]];
-            // Collinear and facing: both ends within a small distance of a0 a1's line, opposite direction, overlapping.
-            var d = a1 - a0;
-            float len2 = d.X * d.X + d.Z * d.Z;
-            if (len2 < 1e-9f)
-                continue;
-            float t0 = ((b0.X - a0.X) * d.X + (b0.Z - a0.Z) * d.Z) / len2, t1 = ((b1.X - a0.X) * d.X + (b1.Z - a0.Z) * d.Z) / len2;
-            float dist0 = DistanceToLine(a0, d, b0), dist1 = DistanceToLine(a0, d, b1);
-            if (dist0 > 0.2f || dist1 > 0.2f)
-                continue;
-            if (t1 > t0)
-                continue; // facing edges run the opposite way
-            float lo = Math.Max(0, t1), hi = Math.Min(1, t0);
-            if (hi - lo < 1e-4f)
-                continue;
+            if (DistanceToLine(a0, d, b0) > 0.2f || DistanceToLine(a0, d, b1) > 0.2f) continue;
+
+            float t0 = Along(a0, d, len2, b0);
+            float t1 = Along(a0, d, len2, b1);
+            if (t1 > t0) continue; // facing edges run the opposite way
+            float l = Math.Max(0, t1);
+            float h = Math.Min(1, t0);
+            if (h - l < 1e-4f) continue;
+
             float score = Vector3.Distance(mid, (b0 + b1) * 0.5f);
-            if (score < bestDistance)
-            {
-                bestDistance = score;
-                bestEdge = k;
-            }
+            if (score >= bestDistance) continue;
+            (best, bestDistance, lo, hi) = (k, score, l, h);
         }
 
-        if (bestEdge < 0)
-        {
-            // A near-miss seam (docs/game/pathfinding.md, "Inner seams") or a door join: the facing edge strays off the line, so take the overlap
-            // with a looser gap, as loose as the join's (a tighter one cuts a slanted door edge down to a sliver no one fits through).
-            for (int k = 0; k < pb.Length; k++)
-            {
-                var b0 = mb.Vertices[pb[k]];
-                var b1 = mb.Vertices[pb[(k + 1) % pb.Length]];
-                if (!NavGeometry.FacingOverlap(a0, a1, b0, b1, Math.Max(NavGeometry.NearMissGap + 0.5f, NavInteriors.JoinDistance), out float lo, out float hi, out _, out _))
-                    continue;
-                float score = Vector3.Distance(mid, (b0 + b1) * 0.5f);
-                if (score >= bestDistance)
-                    continue;
-                bestDistance = score;
-                right = Vector3.Lerp(a0, a1, lo);
-                left = Vector3.Lerp(a0, a1, hi);
-                leftWall = hi < 1 - 1e-4f ? mb.IsWallVertex(pb[k]) : ma.IsWallVertex(pa[(edge + 1) % pa.Length]);
-                rightWall = lo > 1e-4f ? mb.IsWallVertex(pb[(k + 1) % pb.Length]) : ma.IsWallVertex(pa[edge]);
-            }
-
-            return true; // with no facing edge at all (a degenerate stitch): the whole edge
-        }
-
-        {
-            var b0 = mb.Vertices[pb[bestEdge]];
-            var b1 = mb.Vertices[pb[(bestEdge + 1) % pb.Length]];
-            var d = a1 - a0;
-            float len2 = d.X * d.X + d.Z * d.Z;
-            float t0 = ((b0.X - a0.X) * d.X + (b0.Z - a0.Z) * d.Z) / len2, t1 = ((b1.X - a0.X) * d.X + (b1.Z - a0.Z) * d.Z) / len2;
-            float lo = Math.Max(0, t1), hi = Math.Min(1, t0);
-            right = Vector3.Lerp(a0, a1, lo);
-            left = Vector3.Lerp(a0, a1, hi);
-            if (hi < 1 - 1e-4f)
-                leftWall = mb.IsWallVertex(pb[bestEdge]);
-            if (lo > 1e-4f)
-                rightWall = mb.IsWallVertex(pb[(bestEdge + 1) % pb.Length]);
-        }
-
-        return true;
+        return best;
     }
 
     /// <summary>
-    /// The distance on the X/Z plane from <paramref name = "p"/> to the line through <paramref name = "a"/> along <paramref name = "d"/>.
+    /// A near-miss seam (docs/game/pathfinding.md, "Inner seams") or a door join: the facing edge strays off the line, so the overlap is taken with a
+    /// looser gap, as loose as the join's (a tighter one cuts a slanted door edge down to a sliver no one fits through). As
+    /// <see cref="StrictFacingEdge"/> otherwise.
+    /// </summary>
+    static int LooseFacingEdge(Vector3 a0, Vector3 a1, ZoneNavMesh mb, int[] pb, out float lo, out float hi)
+    {
+        lo = hi = 0;
+        float gap = Math.Max(NavGeometry.NearMissGap + 0.5f, NavInteriors.JoinDistance);
+        int best = -1;
+        float bestDistance = float.MaxValue;
+        var mid = (a0 + a1) * 0.5f;
+        for (int k = 0; k < pb.Length; k++)
+        {
+            var b0 = mb.Vertices[pb[k]];
+            var b1 = mb.Vertices[pb[(k + 1) % pb.Length]];
+            if (!NavGeometry.FacingOverlap(a0, a1, b0, b1, gap, out float l, out float h, out _, out _)) continue;
+
+            float score = Vector3.Distance(mid, (b0 + b1) * 0.5f);
+            if (score >= bestDistance) continue;
+            (best, bestDistance, lo, hi) = (k, score, l, h);
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Widens the overlap with the facing edge <paramref name="best"/> of <paramref name="to"/> over the edges either side of it that go on along
+    /// a0 a1 (within <see cref="NavGeometry.NearMissGap"/>) and lead back to <paramref name="from"/>: a near-miss T seam splits the other side of
+    /// one edge at a vertex off its line, and the part on the line can be a sliver (docs/game/pathfinding.md "Inner seams"). Returns the
+    /// vertices of <paramref name="to"/> at the overlap's two ends.
+    /// </summary>
+    (int Lo, int Hi) WidenOverSplitEdges(NavRef from, Vector3 a0, Vector3 a1, NavRef to, int best, ref float lo, ref float hi)
+    {
+        var pb = World.Mesh(to.Zone).Polygons[to.Polygon];
+        int n = pb.Length;
+        // The polygons wind the opposite ways, so the edges after the facing one run on towards a0 (lower fractions), those before it towards a1.
+        int last = best;
+        for (int k = (best + 1) % n; k != best; k = (k + 1) % n)
+        {
+            if (!GoesOn(from, a0, a1, to, k, out float l, out float h) || h < lo - 1e-3f || l >= lo) break;
+            lo = l;
+            last = k;
+        }
+
+        int first = best;
+        for (int k = (best + n - 1) % n; k != last; k = (k + n - 1) % n)
+        {
+            if (!GoesOn(from, a0, a1, to, k, out float l, out float h) || l > hi + 1e-3f || h <= hi) break;
+            hi = h;
+            first = k;
+        }
+
+        return (pb[(last + 1) % n], pb[first]);
+    }
+
+    /// <summary>
+    /// Whether edge <paramref name="k"/> of <paramref name="to"/> faces a0 a1 within <see cref="NavGeometry.NearMissGap"/> and leads back to
+    /// <paramref name="from"/>, with its overlap as fractions along a0 a1.
+    /// </summary>
+    bool GoesOn(NavRef from, Vector3 a0, Vector3 a1, NavRef to, int k, out float lo, out float hi)
+    {
+        var mb = World.Mesh(to.Zone);
+        var pb = mb.Polygons[to.Polygon];
+        var b0 = mb.Vertices[pb[k]];
+        var b1 = mb.Vertices[pb[(k + 1) % pb.Length]];
+        if (!NavGeometry.FacingOverlap(a0, a1, b0, b1, NavGeometry.NearMissGap, out lo, out hi, out _, out _)) return false;
+
+        return LeadsBack(to, k, from);
+    }
+
+    /// <summary>
+    /// Whether edge <paramref name="k"/> of <paramref name="to"/> leads into <paramref name="from"/>: a shared edge, a link in the zone or a border link.
+    /// </summary>
+    bool LeadsBack(NavRef to, int k, NavRef from)
+    {
+        if (to.Zone == from.Zone)
+        {
+            var mesh = World.Mesh(to.Zone);
+            if (mesh.Neighbours[to.Polygon][k] == from.Polygon) return true;
+
+            var links = mesh.LinksOf(to.Polygon);
+            for (int i = 0; i < links.Length; i += 2)
+                if (links[i] == k && links[i + 1] == from.Polygon) return true;
+        }
+
+        foreach (var link in World.LinksOf(to))
+            if (link.Edge == k && link.To == from) return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// How far along a0 a1 the foot of <paramref name="p"/> lies, as a fraction of it (<paramref name="d"/> = a1 − a0, <paramref name="len2"/> its
+    /// squared X/Z length).
+    /// </summary>
+    static float Along(Vector3 a0, Vector3 d, float len2, Vector3 p) => ((p.X - a0.X) * d.X + (p.Z - a0.Z) * d.Z) / len2;
+
+    /// <summary>
+    /// The distance on the X/Z plane from <paramref name="p"/> to the line through <paramref name="a"/> along <paramref name="d"/>.
     /// </summary>
     static float DistanceToLine(Vector3 a, Vector3 d, Vector3 p)
     {

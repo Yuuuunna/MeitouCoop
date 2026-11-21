@@ -32,12 +32,10 @@ public sealed partial class DialogueSystem
         var offers = Arrests.BailOffers(world, b.Npc, state.Faction);
         var c = Context(world, new Conversation { Npc = b.Npc, Player = b.Player, Event = DialogueEvents.PlayerTalkToMe, Speaker = b.Npc, Text = Loc.Tr("Pay Bounty"), Revision = 1 }, state);
         foreach (var (_, name, price) in offers) c.Choices.Add((null, $"{name} (c.{price.ToString("N0", CultureInfo.InvariantCulture)})"));
-        c.Choices.Add((null, "[Leave]"));
+        c.Choices.Add((null, LeaveChoice));
         if (offers.Count == 0) Post(world, c, Loc.Tr("Nobody here to bail out."));
         state.BailList = [.. offers.Select(o => o.Prisoner)];
         state.Open = c;
-
-        Hold(world, n);
     }
 
     /// <summary>
@@ -62,9 +60,9 @@ public sealed partial class DialogueSystem
     public bool FireEvent(World world, CharacterId npc, CharacterId target, int ev) => Settings.AmbientEvents && Fire(world, npc, target, ev);
 
     /// <summary>
-    /// Whether <paramref name="npc"/> is saying a line or is in the open conversation.
+    /// Whether <paramref name="npc"/> is saying a line, is in the open conversation or is on its order 102 (walking up to talk, DA 2).
     /// </summary>
-    public bool Engages(CharacterId npc) => _interactions.Values.Any(s => s.Open?.Npc == npc) || BubbleOf(npc);
+    public bool Engages(CharacterId npc) => _interactions.Values.Any(s => s.Open?.Npc == npc) || BubbleOf(npc) || _npcApproaches.Has(npc);
 
     #endregion
 }

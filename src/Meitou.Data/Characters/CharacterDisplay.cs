@@ -33,4 +33,8 @@ public sealed record CharacterDisplay
     public required CarriedLight[] Lights { get; init; }
     public required Dictionary<string, AttachmentPoint> AttachmentPoints { get; init; }
     public required Dictionary<string, float> PoseWeights { get; init; }
+    /// <summary>
+    /// The authority's resolved skin tints; clients render these values without re-running the mod's appearance callbacks.
+    /// </summary>
+    public LookTint[] Tints { get; init; } = [];
 }

@@ -108,6 +108,7 @@ public sealed partial class CombatSystem
         // asks again before its next swing.
         if (outcome is BlowOutcome.Hit or BlowOutcome.Blocked && dSlot.TargetSlot == a && dSlot.TargetGeneration == prev[a].Generation)
             dSlot.Engaged = false;
+        if (outcome is BlowOutcome.Hit or BlowOutcome.Blocked) _alerted.Remove(a, table.IdOf(d));
 
         switch (outcome)
         {
@@ -123,7 +124,8 @@ public sealed partial class CombatSystem
                 GainCombatXp(ac, dc, XpEvent.GlancingHit, null);
                 var dodgeStats = dc.Stats;
                 _xp.PerEvent(dodgeStats, dc.Race, StatsEnumerated.Dodge,
-                    0.25f * _xp.SkillDifferenceFactor(dodgeStats[StatsEnumerated.Dodge], Eff(ac, StatsEnumerated.MeleeAttack)));
+                    0.25f * _xp.SkillDifferenceFactor(dodgeStats[StatsEnumerated.Dodge], Eff(ac, StatsEnumerated.MeleeAttack)),
+                    ExperienceSource.Combat);
                 Punch(world, a, ac, dc, tech, blow, 0);
                 Record(now, a, d, blow, outcome, -1, default, false, false);
                 return;
@@ -173,7 +175,7 @@ public sealed partial class CombatSystem
     /// <summary>
     /// A blow that hits (<see cref="ApplyBlow"/> checked both fighters, their stats, bodies and races): its packet (<see cref="BlowPacket"/>, as the
     /// hit filters left it) through armour and the body, the medical events, the defender down or staggered, XP, sounds, blood, the knock-down,
-    /// crimes and relations, the record and the hit observers.
+    /// crimes and relations, the record, the hit observers and a death's report (<see cref="DeathObservers"/>).
     /// </summary>
     void LandBlow(World world, in Effect e, ref CombatSlot aSlot, ref CombatSlot dSlot, CharacterCold ac, CharacterCold dc, CombatTechnique tech,
         int direction, DamagePacket packet)
@@ -228,6 +230,8 @@ public sealed partial class CombatSystem
                 damage, absorbed, prev[d].Position, new(-toAttacker.X, 0, -toAttacker.Y), prev[d].Yaw,
                 direction, tech.LowStrike, intended, wasAlive, wasIncapacitated));
         }
+
+        if (death) DeathObservers.Report(world, d, table.IdOf(a), DeathSite.Melee);
     }
 
     /// <summary>
@@ -341,6 +345,9 @@ public sealed partial class CombatSystem
 
         Deeds?.Blow(world, a, d, medical.Incapacitated, death);
 
+        // A blow that leaves the victim out cold or dead names the striker its defeater (FUN_1404394f0, Character +0x2c0)
+        if (medical.Incapacitated) dc.DefeatedBy = table.IdOf(a);
+
         // A unique killed: dead in the registry, with the player flag when the killer is the player's (the body pass would mark it dead without).
         if (death && world.Uniques.RecordOf(world.Characters.IdOf(d)) is { } unique) world.Uniques.Died(unique, ac.IsPlayer, world.Players.RequiresExplicitControl ? ac.Faction : null);
     }
@@ -426,27 +433,34 @@ public sealed partial class CombatSystem
         if (world.Player.NoStumble && dc.IsPlayer) return;
 
         // Outside a fight (docs/game/combat.md "Stagger outside a fight"): one getting up is left alone; any other drops its task, which is planned
-        // again from its start, unless it mans a turret (shooting at a live target).
+        // again from its start behind the Stumbling order 147, unless it mans a turret (shooting at a live target).
         bool outsideFight = dSlot.TargetSlot < 0 && !dc.InCombat;
-        if (outsideFight)
+        if (outsideFight && CharacterFacts.GettingUp(dc, now))
         {
-            if (CharacterFacts.GettingUp(dc, now))
-            {
-                if (!bolt) UnderAttackGettingUp(world, d, dc, counter);
-                return;
-            }
-
-            if (dc.Gunning is null)
-            {
-                // a put-down is finished by the hit, a lift past its attach keeps the body
-                world.SystemOf<Carrying.CarrySystem>()?.Interrupted(world, d);
-                Restart(world.Characters, d, dc);
-
-                // forceOrderInsert replans (the stumble is not modelled as an order)
-                DecisionSystem.Request(dc);
-            }
+            if (!bolt) UnderAttackGettingUp(world, d, dc, counter);
+            return;
         }
 
+        bool stumbles = outsideFight && dc.Gunning is null;
+        if (stumbles)
+        {
+            // a put-down is finished by the hit, a lift past its attach keeps the body
+            world.SystemOf<Carrying.CarrySystem>()?.Interrupted(world, d);
+            Restart(world.Characters, d, dc);
+        }
+
+        HitReaction(world, ref dSlot, d, dc, heavy, now, counter);
+
+        // forceOrderInsert pushes 147 to the front and replans, after the clip set the stumble's hold (its task ends with it)
+        if (stumbles) BodyOrders.Stumble(world, d);
+    }
+
+    /// <summary>
+    /// The clip of a hit's reaction (<see cref="Stagger"/>): a light hit while a stumble plays changes nothing; else the swing and reaction are
+    /// cancelled and a stumble clip, when one is picked, holds the character until it ends.
+    /// </summary>
+    void HitReaction(World world, ref CombatSlot dSlot, int d, CharacterCold dc, bool heavy, int now, ulong counter)
+    {
         bool stumbling = dSlot.StumbleClip >= 0 && now < dSlot.StunUntil;
         dSlot.HitHeavy = heavy && !stumbling;
         if (stumbling && !heavy) return;
@@ -467,9 +481,6 @@ public sealed partial class CombatSystem
             // the stumble state (8) ends the pause (FUN_14060cf60 clears +0x144)
             dSlot.PauseUntil = 0;
             dc.StaggeredUntil = dSlot.StunUntil;
-
-            // reported as Stumbling (147) meanwhile
-            if (outsideFight && dc.Gunning is null) dc.StumbleTaskUntil = dSlot.StunUntil;
             dSlot.ReadyTick = Math.Max(dSlot.ReadyTick, dSlot.StunUntil);
         }
         else

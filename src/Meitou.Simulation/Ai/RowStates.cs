@@ -92,7 +92,7 @@ public static class RowStates
     /// <summary>
     /// The rested level above which state 72 holds (<c>DAT_14168a25c</c>, 0.9 as a float).
     /// </summary>
-    const float RestedPast = 0.9f;
+    public const float RestedPast = 0.9f;
 
     /// <summary>
     /// A state's value for the character at <paramref name="slot"/> and its row's target; null for a state not evaluated here.
@@ -133,8 +133,32 @@ public static class RowStates
             StateType.IsCrouchingOrLying => CharacterFacts.CrouchingOrLying(cold),
             StateType.IsAggressionTowards => Threatened(world, target.Character),
             StateType.IsAggressionTowardsMe => world.SystemOf<CombatSystem>() is { } combat && CharacterFacts.ImmediateThreat(combat, world, slot),
+            StateType.MachineHasFreeOperatorSlot => BedSlotFree(world, slot, target.Site),
+
+            // 70 isObjectMine (FUN_1405a3c10) and 28 isNearTo (FUN_1405a3080 through 0x1405a3270, Verified) are false for a hand that resolves to
+            // nothing; Meitou evaluates them only then.
+            StateType.IsObjectMine or StateType.IsNearTo => Gone(world, target) ? false : null,
+
+            // 145 using any turret (FUN_140997d60, Verified by disassembly): the character's turret hand +0x258 names something (type +0x260 not 0xb),
+            // which the turret's operator slot 150 (FUN_140434d20) writes on every update of the manning.
+            StateType.UsingAnyTurret => cold.Gunning is not null,
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// 73 machineHasFreeOperatorSlot (<c>FUN_140598de0</c> → <c>UseableStuff</c> slot 158 <c>FUN_1400f7bf0</c>, <b>Verified</b>) of a bed target:
+    /// true for a character among its users, else while its users are fewer than its places (one; Meitou reads the users as the bed's occupant).
+    /// The hand asked is read as the character's own (AI <c>+0x300</c> through <c>FUN_1405c6ae0</c>, <b>Observed</b>). False for a site that
+    /// resolves to nothing (<see cref="SiteGone"/>: <c>FUN_140598de0</c> finds no object); null for another target that is no bed (a machine's or a
+    /// cage's slots are their systems' own tests).
+    /// </summary>
+    static bool? BedSlotFree(World world, int slot, string? site)
+    {
+        if (SiteGone(world, site)) return false;
+        if (site is null || world.Fixtures.Find(site) is not { Kind: FixtureKind.Bed } bed) return null;
+
+        return FixtureRegistry.IsFree(world.Characters, bed) || bed.Occupant == world.Characters.IdOf(slot);
     }
 
     /// <summary>
@@ -225,6 +249,21 @@ public static class RowStates
     static bool Threatened(World world, CharacterId who) =>
         world.Characters.TryResolveNext(who, out int at) && world.SystemOf<CombatSystem>() is { } combat
         && CharacterFacts.ImmediateThreat(combat, world, at);
+
+    /// <summary>
+    /// Whether the target names a character or a site that resolves to nothing now (the original's hand kept with an order is looked up each time it
+    /// is read, <c>FUN_140284510</c>): a character no longer in the world, or <see cref="SiteGone"/>.
+    /// </summary>
+    public static bool Gone(World world, in RowTarget target) =>
+        !target.Character.IsNone && !world.Characters.TryResolveNext(target.Character, out _) || SiteGone(world, target.Site);
+
+    /// <summary>
+    /// Whether <paramref name="site"/> names a site the world does not have (a build site, a fixture, a rock, a town dummy or turret); false for
+    /// none.
+    /// </summary>
+    public static bool SiteGone(World world, string? site) =>
+        site is not null && world.Buildings.Find(site) is null && world.Fixtures.Find(site) is null && !Production.ProductionSystem.IsNatural(site)
+        && !FixtureRegistry.IsDummy(site) && world.Machines.Find(site) is null;
 
     /// <summary>
     /// The door fixture of id <paramref name="site"/>; null for none or another fixture.

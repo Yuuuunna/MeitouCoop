@@ -474,7 +474,7 @@ World fields 1056–1058 add `MapSquads` (Knowledge), `WorkSites` and `FoliageOu
 79 and 166 encode item rotation, squad autonomy, squad home, machine arrangement and held rotation respectively. The engine/build
 compatibility identity fences peers with older component or command schemas; protocol 21 framing is unchanged.
 
-**Observed** (`JsonComponentCompression`, schema encode/decode): JSON fields other than Events and keyed collection entries of at least 1 KiB use independent
+**Observed** (`JsonComponentCompression`, schema encode/decode): ordinary JSON fields and keyed collection entries of at least 1 KiB use independent
 Brotli streams (quality 1, window 22) only when the complete envelope saves at least 128 bytes and 12.5%. The envelope is `00 4D 4A 43`,
 version byte `01`, exact uncompressed length (little-endian int32), then the stream; a field's existing presence byte remains outside it.
 Plain JSON and one-byte null withdrawals stay valid. No prior value or dictionary is needed, so inventory revisions, click tokens,
@@ -483,7 +483,21 @@ an output beyond 32 MiB, incomplete consumption, trailing data or a mismatched o
 Compression uses one bounded pooled scratch buffer; decompression allocates the exact declared output. The complete capture and each decoded
 publication retain the 32 MiB expanded-byte limit, including framing within the publication; deferred fields reserve their expanded size against
 the existing 256 KiB bound and against the publication that applies them. Schema metadata distinguishes compressed JSON from binary fields.
-Raw `WorldViewCodec.EncodeComponent`, Events encoding and event-retention/critical-fragment byte accounting remain unchanged.
+Raw `WorldViewCodec.EncodeComponent` and event-retention accounting remain uncompressed.
+
+**Observed** (`PresentationEventsCodec`, schema field 7): events retain their presence byte and use a `00 4D 50 45` envelope, version `01`
+or `02`, and exact original JSON length (little-endian int32). The independent body contains the four non-sound event families as JSON, one
+packet-local strict UTF-8 name table, and exact binary sound records. Each sound uses 40 bytes for its ID, kind, flags, armour, subject,
+other actor, float32 position and item-name reference; named mod sounds add three uint16 name references. Null and empty names remain
+distinct. Version 1 interleaves each sound core and its optional named references; version 2 XORs adjacent 40-byte cores, gathers matching
+byte positions, then appends named references in the original sound order. The encoder keeps the smaller complete body. An optional
+`MBCF` body uses the ordinary quality-1 compression and savings threshold. No earlier event batch or name dictionary is needed.
+Decode checks counts, first-use name ordering, duplicate or unused names, reserved bits, complete consumption and all five
+families' shared ID and payload validation. A bounded re-serialization must reproduce the declared JSON size.
+
+Events retain the 256 KiB original-JSON retention bound, and expanded accounting charges the larger of that size and the envelope plus
+expanded body. Critical capture reserves a further 4 KiB for lifecycle framing. Completed fragments charge their assembled expanded
+bytes before decoding. Event IDs, high-water acknowledgement, ordering, reliable retention and publication frequency are unchanged.
 
 ### Absolute bulk and motion compression
 
@@ -499,9 +513,27 @@ to finish, consume every input byte and write exactly the declared length, follo
 cannot be a valid definition count, packed-frame length or canonical `MTN2` header. Nested envelopes do not pass inner validation.
 
 Bulk manifests, SHA-256, offsets, retained retransmission bytes and cumulative ACKs describe the final compressed representation.
-Only after the complete bulk digest matches does the receiver unpack the publication. Motion compression wraps the final state
-packet after canonical serialization; grouping, sequences, revisions, epochs, server ticks and interpolation history are unchanged.
+Only after the complete bulk digest matches does the receiver unpack the publication. Motion compression preserves sequences,
+revisions, epochs, server ticks and interpolation history.
 Reliable lifecycle checkpoints still use canonical `MTN2`. The `EngineBuild` identity rejects older peers before these formats are used.
+
+**Observed** (`MotionPayloadCompression`): production datagrams also consider a reversible byte-plane transform before Brotli
+(quality 4, window 22). `MTBP` versions `03`/`04` carry the exact expanded length as little-endian int32, then one independent stream.
+The transform preserves the first 52 canonical bytes (header and count), XORs adjacent 52-byte length-prefixed records within that
+packet, and transposes matching byte positions. Every IEEE float bit, identity, sequence and revision is retained. The transformed
+result must be at least 16 bytes smaller than the plain/`MBCF` candidate and fit the negotiated wire MTU, at most 1150 bytes. Version 4
+first subtracts the raw uint32 Yaw bits from the DrawYaw bits, with wrapping arithmetic, before the adjacent-record XOR. It is selected
+only when it saves a further 16 bytes over the best earlier candidate. Decoding adds those bits back after restoring the byte planes;
+no floating-point arithmetic or quantization occurs, including for signed zeros and permitted DrawYaw NaN payloads.
+
+The producer targets 32 records from the same capture tick and publication. If that encoding does not fit, it retries the ordinary
+canonical capacity (21 records at 1150 bytes). It never waits for another capture or changes sampling cadence. Versions 3 and 4 expand to
+at most 32 records / 1716 bytes; versions 1 and 2 remain bounded by the negotiated MTU. Version 1 restores byte planes directly;
+versions 2–4 also reverse the adjacent-record XOR. Decode bounds both wire and expanded sizes before allocation, checks the count
+and exact stream consumption, then applies ordinary motion field validation. Public canonical `MTN2`, generic `MBCF`, split encoding
+and reliable checkpoints retain their original MTU limits. Scheduler reservations use the actual pre-encoded byte length and retain
+the worst-case canonical batch count; epoch and entry validation still precede admission. A lost packet can now affect up to 32 actors,
+but each following packet is independent and recovery continues at the existing cadence. No prior packet dictionary is used.
 
 ### Status effects and head targets
 

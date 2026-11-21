@@ -112,50 +112,9 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
     #region Commands
 
     /// <summary>
-    /// The characters a right-click order goes to (an empty list: the selection), null for any other command.
-    /// </summary>
-    static IReadOnlyList<CharacterId>? Ordered(SimCommand command) => command switch
-    {
-        MoveOrder o => o.Characters,
-        FollowOrder o => o.Characters,
-        AttackOrder o => o.Attackers,
-        ShootAtOrder o => o.Gunners,
-        Carrying.PickUpOrder o => o.Carriers,
-        Carrying.PutDownOrder o => o.Carriers,
-        Carrying.LootOrder o => o.Looters,
-        Carrying.OpenLootOrder o => o.Looters,
-        Carrying.StealthKoOrder o => o.Attackers,
-        FirstAid.TreatOrder o => o.Medics,
-        FirstAid.SplintOrder o => o.Medics,
-        Locks.PickLockOrder o => o.Characters,
-        Locks.UseBedOrder o => o.Characters,
-        Production.OperateOrder o => o.Characters,
-        Construction.BuildOrder o => o.Characters,
-        // Every other right-click verb that names characters goes through the same dispatcher (FUN_1407f9e20 :96 sets the flag before any
-        // order-specific code); only the job giver's orders (45, 0x111, 0xdf) skip it.
-        Dialogue.TalkOrder o => [o.Talker],
-        FirstAid.RestOrder o => o.Characters,
-        Items.OpenContainerOrder o => o.Characters,
-        Items.PickUpItemOrder o => o.Characters,
-        Locks.DoorOrder o => o.Characters,
-        Locks.DoorLockOrder o => o.Characters,
-        Locks.ForceLockOrder o => o.Characters,
-        Locks.PutShacklesOrder o => o.Characters,
-        Locks.ShackleOrder o => o.Characters,
-        Locks.SetFreeOrder o => o.Characters,
-        Locks.GetInCageOrder o => o.Characters,
-        Locks.GetOutOrder o => o.Characters,
-        Locks.PutInBedOrder o => o.Carriers,
-        Crime.PutInCageOrder o => o.Carriers,
-        Construction.DismantleOrder o => o.Characters,
-        Production.ProspectOrder o => [o.Character],
-        _ => null,
-    };
-
-    /// <summary>
     /// <c>playerWantsMeToGetUp</c> (Character <c>+0xec</c>, docs/game/ragdolls.md "Staying low"): the order dispatch sets it on each selected
-    /// character it reaches; one playing dead gets up (staying low when sneaking), one still getting up stands rather than staying low. Internal
-    /// orders (an empty selection, or none of it) leave it.
+    /// character it reaches, which is none getting up (<see cref="OrderGiver"/> skips them); one playing dead gets up (staying low when sneaking).
+    /// Internal orders (an empty selection, or none of it) leave it.
     /// </summary>
     static void WantsToGetUp(World world, PlayerState player, SimCommand command, IReadOnlyList<CharacterId> ordered)
     {
@@ -165,14 +124,12 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
             if (command.Issuer is null && !player.Selection.Contains(id) || !table.TryResolveNext(id, out int slot)
                     || table.Cold(slot) is not { IsPlayer: true, Medical: { } medical } cold)
                 continue;
-            if (medical.PlayingDead)
-            {
-                bool low = Orders.Has(cold, CharacterOrders.Sneak);
-                medical.StandUp(low);
-                // Standing up (not staying low) on the order trains toughness when enemies are about.
-                if (!low) world.SystemOf<BodySystem>()?.GotUpByOrder(world, slot, cold);
-            }
-            else if (medical.StayingLow && CharacterFacts.GettingUp(cold, world.Tick)) medical.StandUp();
+            if (!medical.PlayingDead) continue;
+
+            bool low = Orders.Has(cold, CharacterOrders.Sneak);
+            medical.StandUp(low);
+            // Standing up (not staying low) on the order trains toughness when enemies are about.
+            if (!low) world.SystemOf<BodySystem>()?.GotUpByOrder(world, slot, cold);
         }
     }
     /// <summary>
@@ -183,7 +140,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         foreach (var command in commands)
         {
             if (world.CommandPlayer(command) is not { } player) continue;
-            if (Ordered(command) is { } ordered) WantsToGetUp(world, player, command, ordered);
+            if (OrderGiver.Ordered(command) is { } ordered) WantsToGetUp(world, player, command, ordered);
             if (!ApplyViewCommand(world, player, command)) ApplyActionCommand(world, player, command);
         }
     }
@@ -343,7 +300,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         }
     }
     /// <summary>
-    /// Clears the current issuer's authorized actors' orders.
+    /// Stops the issuer's authorized characters: their queue, second list and goal go, the task ends and they no longer follow.
     /// </summary>
     static void Stop(World world, StopCommand stop)
     {
@@ -351,7 +308,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         foreach (var id in world.CommandCharacters(stop, stop.Characters))
         {
             if (!table.TryResolveNext(id, out int slot) || !table.Cold(slot)!.IsPlayer) continue;
-            table.Cold(slot)!.OrderQueue.Clear();   // drops the queued orders too
+            PlayerOrders.Wipe(table.Cold(slot)!);
             TaskStart.End(world, slot, TaskEnd.Stopped);
             table.Cold(slot)!.FollowOrder = CharacterId.None;
         }

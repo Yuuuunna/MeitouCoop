@@ -797,6 +797,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             systems: systems, walkability: walkability);
         host.LocalSession.World.BenchFacingFix = host.Config.FixBenchFacing;
         host.LocalSession.World.PrisonPoseFix = host.Config.FixPrisonPose;
+        host.LocalSession.World.CagedAnimalFix = host.Config.FixCagedAnimals;
         host.LocalSession.World.GroundRepair = host.Config.FixGround;
         host.LocalSession.World.BagSearchFix = host.Config.FixBagSearch;
         host.LocalSession.World.TakeIntoBackpack = host.Config.TakeIntoBackpack;
@@ -816,7 +817,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
     void StartPlayerSquad()
     {
         // The saved key bindings feed the same settings dialog and camera/order input as Vulkan.
-        GameHost.UseSavedBindings(host.Session.Bindings, host.Install, host.Config);
+        GameHost.UseSavedBindings(host.Session.Bindings, host.Install, host.Config, host.Modding.KeyActions);
         // The game's new-game shortcut: the player's squad in the simulation, which the world draw list then shows.
         if (start is not null && host.Population is not null)
         {
@@ -1276,7 +1277,11 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             host.Saves.ReadingFolder = host.GameOptions.Load ?? "";
             try
             {
-                var navmesh = host.Saves.SwapInSave(Task.FromResult(startSave), interactive: true, out string summary);
+                // The mesh round the player first, as the menu's load: the save's characters are seated on it when they are made.
+                var read = Task.FromResult(startSave);
+                host.AwaitLoading(host.Saves.NavmeshOfPlayer(read));
+
+                var navmesh = host.Saves.SwapInSave(read, interactive: true, out string summary);
                 host.AwaitLoading(navmesh);
                 host.SettleNewWorld();
                 _hud.FollowSelected();
@@ -1335,6 +1340,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             },
             BenchFacingChanged = on => host.LocalSession.World.BenchFacingFix = on,
             PrisonPoseChanged = on => host.LocalSession.World.PrisonPoseFix = on,
+            CagedAnimalsChanged = on => host.LocalSession.World.CagedAnimalFix = on,
             AnimalMovesChanged = on =>
             {
                 foreach (var combat in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>())
@@ -1351,6 +1357,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
                     (population.KeepRoamers, population.OffscreenFights, population.OffscreenHealing, population.CampaignAncestorsOnce,
                         population.KeepWild, population.ResidentSchedule) = (host.Config.KeepRoamers, host.Config.OffscreenFights,
                         host.Config.OffscreenHealing, host.Config.CampaignAncestorsOnce, host.Config.KeepWild, host.Config.ResidentSchedule);
+                    population.OffscreenOverrides = host.Config.OffscreenOverrides;
                 }
                 foreach (var production in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Production.ProductionSystem>())
                     production.UnloadedProduction = host.Config.UnloadedProduction;
@@ -1711,6 +1718,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         if (_hud is not null && (!host.GameOptions.LowEnd || _hud.UiMode != Meitou.Data.Ui.UiMode.Faithful))
             host.Config.UiMode = _hud.UiMode;   // --low-end's Faithful UI is for the run
         host.Config.Bindings = host.Session.Bindings.ToDictionary();
+        host.Config.ModBindings = host.Session.Bindings.ModChanges(host.Config.ModBindings);
         if (_settingsValues is not null)
         {
             foreach (var slider in _settingsValues.Sliders)
@@ -2240,6 +2248,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         if (actions.Pressed(InputAction.QuickLoad)) host.Saves.QuickLoadRequested = true;
         if (actions.Pressed(InputAction.FloorUp)) host.Interiors.StepFloor(1);
         if (actions.Pressed(InputAction.FloorDown)) host.Interiors.StepFloor(-1);
+        host.Modding.PressKeyActions(actions);
         if (_hud is not null)
         {
             // Panning, or leaving for the free camera, lets go of the character the camera follows; turning and

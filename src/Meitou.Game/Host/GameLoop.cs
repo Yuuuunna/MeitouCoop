@@ -520,6 +520,7 @@ sealed class GameLoop(GameHost host)
             PunchReachChanged = on => EachSystem<Simulation.Combat.CombatSystem>(combat => combat.PunchReachFix = on),
             AnimalMovesChanged = on => EachSystem<Simulation.Combat.CombatSystem>(combat => combat.AnimalMovesFix = on),
             PrisonPoseChanged = on => { if (host.Session is WorldSession local) local.World.PrisonPoseFix = on; },
+            CagedAnimalsChanged = on => { if (host.Session is WorldSession local) local.World.CagedAnimalFix = on; },
             BenchFacingChanged = on => { if (host.Session is WorldSession local) local.World.BenchFacingFix = on; },
             BagSearchChanged = on => { if (host.Session is WorldSession local) local.World.BagSearchFix = on; },
             TakeIntoBackpackChanged = on => { if (host.Session is WorldSession local) local.World.TakeIntoBackpack = on; },
@@ -548,6 +549,7 @@ sealed class GameLoop(GameHost host)
                 (host.Config.KeepRoamers, host.Config.OffscreenFights, host.Config.OffscreenHealing);
             (population.CampaignAncestorsOnce, population.KeepWild, population.ResidentSchedule) =
                 (host.Config.CampaignAncestorsOnce, host.Config.KeepWild, host.Config.ResidentSchedule);
+            population.OffscreenOverrides = host.Config.OffscreenOverrides;
         }
 
         foreach (var production in host.LocalSystems.OfType<Simulation.Production.ProductionSystem>())
@@ -779,6 +781,7 @@ sealed class GameLoop(GameHost host)
         // PageUp / PageDown step the viewed floor in the strategy camera: in the free camera and on a held one the cinema takes them for the lens.
         if (actions.Pressed(InputAction.FloorUp)) host.Interiors.StepFloor(1);
         if (actions.Pressed(InputAction.FloorDown)) host.Interiors.StepFloor(-1);
+        host.Modding.PressKeyActions(actions);
         if (actions.Pressed(InputAction.CycleProfiler) && host.DebugMenu.Profiler is not null)
             host.DebugMenu.Profiler.Showing = (FrameProfiler.Mode)(((int)host.DebugMenu.Profiler.Showing + 1) % 3);
         // The camera the cinema left (a cut, a scrub, the end of a flight) goes back to the rig at the first camera input: the free camera at
@@ -1416,7 +1419,7 @@ sealed class GameLoop(GameHost host)
         var pointer = PreparePointer(takeFile);
         host.PlayBench.BenchLap(5);
         if (_display.BeginFrame(size.X, size.Y)) DrawFrame(size, pointer, takeFile);
-        else if (host.ScreenshotRequested && host.AgentChannel.ShotPath is not null && ++host.ShotNoFrame >= 30)
+        else if (host is { ScreenshotRequested: true, AgentChannel.ShotPath: not null } && ++host.ShotNoFrame >= 30)
             host.AgentChannel.ControlShotFailed("the frame cannot be drawn (window minimised or device lost)");
         UpdateStats(dt);
         _totalFrames++;
@@ -1490,6 +1493,8 @@ sealed class GameLoop(GameHost host)
         if (host.Session is WorldSession profileOwner) profileOwner.World.Profile.Enabled = host.DebugMenu.Profiler is { Showing: not FrameProfiler.Mode.Off }
             || host.GameOptions.PlayBench is not null || SpikeLog.Enabled;
         host.UpdateLoadingPause();
+
+        // TICKS HAPPEN HERE!
         if (!host.Covered) host.Session.Advance(frameDt);   // loading and arrival preserve the loaded world's exact time
         else if (host.Session.IsRemote) host.Session.Advance(0);
         host.Online.ReportOnlineDisconnection();
@@ -2443,6 +2448,7 @@ sealed class GameLoop(GameHost host)
             _panel.Tiers.SavePreset();
         }
         host.Config.Bindings = host.Session.Bindings.ToDictionary();
+        host.Config.ModBindings = host.Session.Bindings.ModChanges(host.Config.ModBindings);
         if (!host.GameOptions.LowEnd || host.Player.UiMode != Data.Ui.UiMode.Faithful)
             host.Config.UiMode = host.Player.UiMode;   // --low-end's Faithful UI is for the run
         host.Config.Save();

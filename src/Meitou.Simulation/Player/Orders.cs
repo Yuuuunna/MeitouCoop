@@ -1,5 +1,6 @@
 using System.Numerics;
 using Meitou.Data.Fcs;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Simulation.Ai;
 using Meitou.Simulation.Movement;
@@ -261,17 +262,25 @@ public static class Orders
     public static float SneakView(float v, float stealth) => v * (v >= 0.5f ? 0.75f : 0.5f) * (1 + (0.6f - 1) * stealth);
 
     /// <summary>
-    /// The looker's alertness f in the spot time (<c>FUN_140856cb0</c>): 0.5 when the looker has no current AI goal to read it from (Verified
-    /// literal); the goal's own value (<b>Unknown</b> meaning) is not modelled, so every looker uses 0.5.
+    /// The alertness f of a looker that runs no task (<c>FUN_1408529c0</c>, Verified literal).
     /// </summary>
     public const float SpotAlertness = 0.5f;
 
     /// <summary>
-    /// The seconds a looker's spot meter takes to fill on a sneaking target it sees with view factor <paramref name="v"/> (docs/game/perception.md
-    /// "Spotting a sneaker"): lerp(v, 0.5 + 5 s, 0.5) x lerp(f, 4, 1), f = <see cref="SpotAlertness"/>. Clear in view a sneaker lasts 1.25 s; a
-    /// master sneaker at the edge of sight about 14 s.
+    /// The looker's alertness f in the spot time (<c>FUN_1408529c0</c>, Verified): the alertness of the task it runs
+    /// (<see cref="TaskDataTable.Alertness"/>, its plan's running step), <see cref="SpotAlertness"/> with none. At 0 or less an awake looker fills
+    /// no meter and sees no sneaker.
     /// </summary>
-    public static float SpotSeconds(float v, float stealth) => (0.5f + 5 * stealth * (1 - Math.Clamp(v, 0, 1))) * (4 + (1 - 4) * SpotAlertness);
+    public static float Alertness(CharacterCold looker) =>
+        looker.Ai is { Step: not TaskType.None } mind ? TaskDataTable.Alertness(mind.Step) : SpotAlertness;
+
+    /// <summary>
+    /// The seconds a looker's spot meter takes to fill on a sneaking target it sees with view factor <paramref name="v"/> (docs/game/perception.md
+    /// "Spotting a sneaker"): lerp(v, 0.5 + 5 s, 0.5) x lerp(f, 4, 1), f = <paramref name="alertness"/> (<see cref="Alertness"/>). Clear in view
+    /// of a guard on its post (f = 1) a sneaker lasts 0.5 s, of one walking by (0.4) 1.4 s; a master sneaker at the edge of sight 5.5 and 15.4 s.
+    /// </summary>
+    public static float SpotSeconds(float v, float stealth, float alertness) =>
+        (0.5f + 5 * stealth * (1 - Math.Clamp(v, 0, 1))) * (4 + (1 - 4) * alertness);
 
     /// <summary>
     /// The seconds a full spot meter takes to empty once the looker no longer sees its target (<c>FUN_140853aa0</c>: it falls by dt / 260, Verified
@@ -352,6 +361,19 @@ public static class Orders
     }
 
     /// <summary>
+    /// Sneaking turned on (<c>Character::setSneaking</c> <c>FUN_1405ca9a0</c>, the standing order's case 3 in <c>FUN_1405caa50</c>, <b>Verified</b>):
+    /// only a change asks anything, and only with the AI's current goal 16 Attacking enemies the original's replan request (vfunc 3); turning it
+    /// off asks none. Serial phases.
+    /// </summary>
+    internal static void SneakOn(CharacterCold cold)
+    {
+        if ((cold.Orders & CharacterOrders.Sneak) != 0) return;
+
+        cold.Orders |= CharacterOrders.Sneak;
+        if (cold.Ai?.Goal?.Task.Type == TaskType.AttackEnemies) DecisionSystem.Replan(cold);
+    }
+
+    /// <summary>
     /// The point a holding character holds (<see cref="CharacterCold.HoldPoint"/>, else where it stands).
     /// </summary>
     public static Vector3 HoldPointOf(CharacterCold cold, Vector3 at) => cold.HoldPoint ?? at;
@@ -380,6 +402,7 @@ public static class Orders
                 {
                     if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { IsPlayer: true } cold) continue;
                     on ??= (cold.Orders & set.Order) == 0;
+                    if ((set.Order & CharacterOrders.Sneak) != 0 && on.Value) SneakOn(cold);
                     cold.Orders = on.Value ? cold.Orders | set.Order : cold.Orders & ~set.Order;
                     if ((set.Order & CharacterOrders.Jobs) != 0) DecisionSystem.Request(cold);   // the jobs switch: decided again
                     // Sneak off stands one staying low (setStandingOrder 4).

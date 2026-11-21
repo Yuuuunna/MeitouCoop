@@ -326,10 +326,16 @@ sealed class ScreenRouter(PlayerInterface player)
     }
 
     /// <summary>
-    /// The build, dialogue, character trade, prospecting and machine windows' content; false for any other screen.
+    /// The build, dialogue, character trade, prospecting and machine windows' content and the town panel's mod lines; false for any other screen.
     /// </summary>
     bool AddFeatureContent(string id, List<UiControl> controls)
     {
+        if (id == TownPanel.TownScreen)
+        {
+            player.TownPanel.AddModLines(controls);
+            return true;
+        }
+
         if (id == "build")
         {
             player.Build.AddBuildContent(controls);
@@ -390,7 +396,7 @@ sealed class ScreenRouter(PlayerInterface player)
             player.InventoryLayout.ArrangeEquipmentGrid(controls, grid);
             player.InventoryLayout.AddModSlots(controls);
             InventoryLayout.CloseSlots(controls, lead);
-            if (id == "inventory" && TradeWindows.IsAnimal(lead)) InventoryLayout.TrimAnimalWindow(controls);
+            if (lead.ClosedSlots.Contains("main")) InventoryLayout.TrimAnimalWindow(controls);
         }
 
         if (id is "inventory" or "loot") player.InventoryLayout.AddInventorySummary(controls, lead);

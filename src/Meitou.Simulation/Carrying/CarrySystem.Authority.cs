@@ -67,12 +67,20 @@ public sealed partial class CarrySystem
         world.Players.Find(player)?.State.LootSessionId == session && session > 0
         && OpenLoot(world, player) is { } pair && pair.Looter == actor && pair.Body == body;
 
-    bool CanLiftFor(World world, int carrier, int body)
+    /// <summary>
+    /// A standing player character is lifted only by its controller; unconscious bodies, open cages and friendly NPCs keep the lift rules.
+    /// </summary>
+    static bool CanLiftFor(World world, int carrier, int body)
     {
-        var target = world.Characters.Cold(body)!;
-        return CanBeLifted(target) || world.Characters.Cold(carrier)!.Snatching && Snatchable(target) || InOpenCage(world, target) is not null || AwakeMate(target)
-            && (!world.Players.RequiresExplicitControl || world.Players.ControlOf(world.Characters.IdOf(carrier)) is { } grant
-                && world.Players.CanControl(grant.Player, world.Characters.IdOf(body)));
+        var table = world.Characters;
+        var target = table.Cold(body)!;
+        var actor = table.Cold(carrier)!;
+        if (CanBeLifted(target) || actor.Snatching && Snatchable(target) || InOpenCage(world, target) is not null) return true;
+        if (!actor.IsPlayer) return false;
+        if (AwakeFriend(world, carrier, body)) return true;
+
+        return AwakeMate(target) && (!world.Players.RequiresExplicitControl || world.Players.ControlOf(table.IdOf(carrier)) is { } grant
+            && world.Players.CanControl(grant.Player, table.IdOf(body)));
     }
 
     static bool OpenableFor(World world, int actor, int target)

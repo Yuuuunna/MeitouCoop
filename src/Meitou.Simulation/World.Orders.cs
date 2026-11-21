@@ -6,7 +6,7 @@ using Meitou.Simulation.Player;
 namespace Meitou.Simulation;
 
 /// <summary>
-/// The world's order checks: whether an order could start, and the system that owns its row.
+/// The world's orders: whether an order could start, giving one (<see cref="GiveOrder"/>), and the system that owns its row.
 /// </summary>
 public sealed partial class World
 {
@@ -42,16 +42,45 @@ public sealed partial class World
     /// </summary>
     public (bool Can, string? Why) CanOrder(TaskType row, CharacterId actor, CharacterId target = default, string? site = null, Vector3 point = default)
     {
-        var entry = OrderOwnerOf(row, site is not null) is { } owner
-            ? new OrderEntry(row, owner)
-            {
-                Target = target,
-                Site = site,
-                Point = point,
-                Detail = owner is Locks.LockSystem locks ? locks.WorkDetail() : null,
-            }
-            : null;
+        var entry = EntryOf(row, actor, target, site, point);
         return entry is null ? (false, null) : CanOrder(entry, actor);
+    }
+
+    /// <summary>
+    /// Gives <paramref name="actor"/> (a player character or an NPC) the order <paramref name="row"/> with its parts as the row's <c>CanOrder</c>
+    /// takes them (no <paramref name="target"/>: none), through the one order queue the player's orders use (<see cref="PlayerOrders.Give"/>): without
+    /// <paramref name="queued"/> it replaces the queue. A move (<see cref="TaskType.MoveCusOrdered"/>) is the player's move command for the one
+    /// character (<see cref="MovementSystem.GiveMove(World, int, Vector3, bool)"/>); any other row gets the detail a saved order of that row is loaded
+    /// with and its owner's readying (<see cref="IOrderOwner.LoadDetail"/>, <see cref="IOrderOwner.Restored"/>). Serial phases only (between ticks, or
+    /// a system's serial step). Returns the check of the order's start when it is alone in the queue and the character takes orders now, else
+    /// <see cref="OrderCheck.Run"/> (it waits queued); <see cref="OrderCheck.Gone"/> for an actor not in the world or a row no system owns as an
+    /// order (nothing is queued then).
+    /// </summary>
+    public OrderCheck GiveOrder(CharacterId actor, TaskType row, CharacterId? target = null, string? site = null, Vector3 point = default,
+        bool queued = false)
+    {
+        if (Characters.Phase == TablePhase.Parallel) throw new InvalidOperationException("Orders are given in the serial phases only.");
+        RequireNoDurableMutation();
+        if (!Characters.TryResolveNext(actor, out int slot) || Characters.Cold(slot) is null) return OrderCheck.Gone;
+        if (row == TaskType.MoveCusOrdered && SystemOf<MovementSystem>() is { } movement) return movement.GiveMove(this, slot, point, queued);
+        if (EntryOf(row, actor, target ?? CharacterId.None, site, point) is not { } entry) return OrderCheck.Gone;
+
+        TrustOrder(entry);
+        entry.Owner.Restored(this, entry);
+        return PlayerOrders.Give(this, slot, entry, queued);
+    }
+
+    /// <summary>
+    /// The order entry of <paramref name="row"/> for <paramref name="actor"/> with its parts, owned by the row's order owner
+    /// (<see cref="OrderOwnerOf"/>), with the detail its owner gives a saved order of that row (<see cref="IOrderOwner.LoadDetail"/>, its plain
+    /// kind: a lock order's walk with its row's work, the player's pick of an attack); null for a row no system owns as an order.
+    /// </summary>
+    OrderEntry? EntryOf(TaskType row, CharacterId actor, CharacterId target, string? site, Vector3 point)
+    {
+        if (OrderOwnerOf(row, site is not null) is not { } owner) return null;
+
+        var detail = owner.LoadDetail(this, actor, row, 0, target);
+        return new OrderEntry(row, owner) { Target = target, Site = site, Point = point, Detail = detail };
     }
 
     /// <summary>
@@ -62,14 +91,29 @@ public sealed partial class World
     {
         TaskType.LootTarget when onSite => SystemOf<PlayerSystem>()?.PickUps,
         TaskType.MoveCusOrdered or TaskType.StayCloseToTarget or TaskType.Bodyguard => SystemOf<MovementSystem>(),
-        TaskType.LiftPersonPlayerOrder or TaskType.KidnapOrder or TaskType.LootTarget or TaskType.StealthKnockout or TaskType.PutDownObject => SystemOf<Carrying.CarrySystem>(),
-        TaskType.FocusedMeleeAttack or TaskType.UnprovokedFocusedMeleeAttack => SystemOf<Combat.CombatSystem>(),
-        TaskType.Build or TaskType.Repair or TaskType.Dismantle => SystemOf<Construction.ConstructionSystem>(),
-        TaskType.OperateMachinery or TaskType.OperateAutomaticMachinery or TaskType.OperateStorage or TaskType.UseTrainingDummy or TaskType.UseTurret or TaskType.Prospecting or TaskType.FeedCorpseIntoMachine => SystemOf<Production.ProductionSystem>(),
-        TaskType.FirstAidOrder or TaskType.SplintOrder or TaskType.Rest => SystemOf<FirstAid.FirstAidSystem>(),
+        TaskType.LiftPersonPlayerOrder or TaskType.KidnapOrder or TaskType.LootTarget or TaskType.StealthKnockout or TaskType.PutDownObject
+            or TaskType.LootAnimalsJob => SystemOf<Carrying.CarrySystem>(),
+        TaskType.FocusedMeleeAttack or TaskType.UnprovokedFocusedMeleeAttack or TaskType.MeleeAttack or TaskType.AttackEnemies
+            => SystemOf<Combat.CombatSystem>(),
+        TaskType.ShootAtTarget => Combat.ShootAt.Instance,
+        TaskType.FeedCorpseIntoMachine => SystemOf<Production.ProductionSystem>()?.CorpseOrders,
+        TaskType.Build or TaskType.Repair or TaskType.Dismantle or TaskType.JobBuilder => SystemOf<Construction.ConstructionSystem>(),
+        TaskType.OperateMachinery or TaskType.OperateAutomaticMachinery or TaskType.OperateStorage or TaskType.UseTrainingDummy
+            or TaskType.UseTurret or TaskType.Prospecting => SystemOf<Production.ProductionSystem>(),
+        TaskType.FirstAidOrder or TaskType.SplintOrder or TaskType.Rest or TaskType.JobMedic or TaskType.JobRepairRobot or TaskType.SplintJob
+            => SystemOf<FirstAid.FirstAidSystem>(),
         TaskType.Pickup => SystemOf<PlayerSystem>()?.PickUps,
         TaskType.UseBed or TaskType.PutSomeoneInBed => SystemOf<Locks.BedSystem>(),
-        TaskType.PutInCage => SystemOf<Crime.ArrestSystem>(),
+        TaskType.PutInCage or TaskType.LiftPersonSnatchingAllowed or TaskType.LiftPersonSnatchingAllowedInTownOnly or TaskType.FindCageAndPutIn
+            => SystemOf<Crime.ArrestSystem>(),
+        TaskType.GetOutOfCageLegit => Locks.FreedPrisoner.Instance,
+        TaskType.GetOutOfCageEscape => Locks.CageEscape.Instance,
+        TaskType.RunAway => SystemOf<Aggro.FleeSystem>(),
+        TaskType.GetUp or TaskType.Aoeu or TaskType.StumbleTaskForced or TaskType.GetOutOfBed => SystemOf<Combat.CombatSystem>()?.BodyOrders,
+        TaskType.PlayerTalkTo or TaskType.SeekAndTalkAndSendSignal or TaskType.FollowWhileTalking or TaskType.TownStalker
+            => SystemOf<Dialogue.DialogueSystem>()?.TalkOrders,
+        TaskType.GoHomebuilding or TaskType.Patrol or TaskType.MoveOnFreeWillFast or TaskType.RunAwayForced or TaskType.DefeatSquad
+            or TaskType.DefeatSquadLimitChaseRange => SystemOf<Ai.AiSystem>()?.NpcOrders,
         _ => Locks.LockSystem.OwnsRow(row) ? SystemOf<Locks.LockSystem>() : null,
     };
 
@@ -78,12 +122,34 @@ public sealed partial class World
 
     public bool ValidOrder(int slot, OrderEntry entry) => !entry.ApplicabilityQuery && (entry.SourceCommand is { } source
         ? MayOrder(source, Characters.IdOf(slot)) && (source.Issuer is null || source.ControlGrants.All(Players.Validate))
-        : !Players.RequiresExplicitControl || Characters.Cold(slot) is not { IsPlayer: true });
+        : entry.Trusted || !Players.RequiresExplicitControl || Characters.Cold(slot) is not { IsPlayer: true });
 
     public OrderEntry BindOrder(SimCommand command, OrderEntry entry)
     {
         entry.SourceCommand = command;
+        entry.Trusted = false;
         return entry;
     }
 
+    /// <summary>
+    /// Marks an engine or direct server-code order as trusted. Client commands use <see cref="BindOrder"/> and retain their grants instead.
+    /// </summary>
+    internal static OrderEntry TrustOrder(OrderEntry entry)
+    {
+        entry.SourceCommand = null;
+        entry.Trusted = true;
+        return entry;
+    }
+
+    /// <summary>
+    /// An order's task is about to start on the NPC in <paramref name="slot"/> (serial): every system holding it on an engine duty lets it go
+    /// (<see cref="IDutyRelease.ReleaseForOrder"/>), in system order.
+    /// </summary>
+    internal void ReleaseDuties(int slot)
+    {
+        foreach (var system in _systems)
+        {
+            if (system is IDutyRelease holder) holder.ReleaseForOrder(this, slot);
+        }
+    }
 }

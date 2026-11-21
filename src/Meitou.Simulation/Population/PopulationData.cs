@@ -559,9 +559,14 @@ public sealed class PopulationData
     /// </summary>
     Dictionary<string, int>? _factionIndex;
     /// <summary>
-    /// A faction cache by squad template id; nothing fills or reads it.
+    /// The first faction listing each squad template, by template id, made on first use (<see cref="FactionOfTemplate"/>).
     /// </summary>
     Dictionary<string, int>? _templateFaction;
+
+    /// <summary>
+    /// The faction index a squad template's <c>faction</c> reference names, by template id (<see cref="HousedFaction"/>); -1 for none.
+    /// </summary>
+    readonly ConcurrentDictionary<string, int> _housedFaction = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The turret buildings of each site, cached by <see cref="Turrets"/> (locked: the AI asks from worker threads).
@@ -678,12 +683,36 @@ public sealed class PopulationData
     public float RoadPreferenceOf(int faction) => faction >= 0 && faction < Factions.Count ? Factions[faction].RoadPreference : 0;
 
     /// <summary>
-    /// The faction owning a town building before any saved owner: the player's faction when the level data names it, else the town's faction whatever
-    /// the level data says, since the town populate gives the town faction every non-player building of the town (<c>FUN_1409370d0</c>:35-75,
-    /// <c>FUN_14092e4b0</c>:35-37).
+    /// The faction owning a town building before any saved owner (docs/game/factions-squads-towns.md "Building owner after populate"): the player's
+    /// faction when the level data names it; else, for a home, the faction its residents' template names (the housing <c>FUN_14092e4b0</c> ->
+    /// <c>FUN_140552140</c>:23 sets it, so a slave shop is the Slave Traders' and a shop its traders'); else the town's faction whatever the level
+    /// data says, since the town populate gives the town faction every non-player building of the town (<c>FUN_1409370d0</c>:35-75).
     /// </summary>
-    public int LevelOwnerOf(TownBuilding b, int townFaction) =>
-        b.OwnerFactionId is { } id && FactionIndex(id) is >= 0 and var faction && faction == PlayerFaction ? faction : townFaction;
+    public int LevelOwnerOf(TownBuilding b, int townFaction)
+    {
+        if (b.OwnerFactionId is { } id && FactionIndex(id) is >= 0 and var named && named == PlayerFaction) return named;
+
+        // The template the housing gave it (a town override's first), not the one a later squad stamped on it: only the housing sets the faction.
+        string housed = b.Naming?.SquadTemplate ?? b.ResidentsTemplate;
+        return housed.Length > 0 && HousedFaction(housed) is >= 0 and var residents ? residents : townFaction;
+    }
+
+    /// <summary>
+    /// The faction index a squad template's <c>faction</c> reference names (its first entry, as the housing reads it); -1 for no such template, no
+    /// reference, or a faction that is not loaded.
+    /// </summary>
+    int HousedFaction(string templateId) => _housedFaction.GetOrAdd(templateId, ReadHousedFaction);
+
+    /// <summary>
+    /// <see cref="HousedFaction"/> read from the game data.
+    /// </summary>
+    int ReadHousedFaction(string templateId)
+    {
+        if (Db.Find(templateId) is not { } record) return -1;
+
+        var faction = record.GetReferences("faction");
+        return faction.Count > 0 ? FactionIndex(faction[0].TargetStringId) : -1;
+    }
 
     /// <summary>
     /// The position of a faction id in <see cref="Factions"/> (the first when an id repeats), or -1. The index is built once.
@@ -693,6 +722,11 @@ public sealed class PopulationData
         var index = LazyInitializer.EnsureInitialized(ref _factionIndex, () => BuildFactionIndex(Factions));
         return index.GetValueOrDefault(id, -1);
     }
+
+    /// <summary>
+    /// The FACTION record id at position <paramref name="index"/> of <see cref="Factions"/>; null for one outside it.
+    /// </summary>
+    public string? FactionId(int index) => (uint)index < (uint)Factions.Count ? Factions[index].Id : null;
 
     /// <summary>
     /// The faction <c>Wildlife</c> (<c>3943-gamedata.base</c>): a spawned squad's faction when nothing else gives one (<c>FUN_1408fe6b0</c>); -1
@@ -1051,6 +1085,12 @@ public sealed class PopulationSettings
     public bool CampaignAncestorsOnce { get; init; } = true;
 
     /// <summary>
+    /// Fixes option: a loaded campaign takes its phase, fight, arrival, announcement and carry clocks from Meitou's WAR_SAVESTATE keys. Off: they are
+    /// ignored and each clock starts as the original's after a load (the phase at the load's hour, the rest not started); they are written either way.
+    /// </summary>
+    public bool KeepCampaignClocks { get; init; } = true;
+
+    /// <summary>
     /// Meitou: a wild site keeps its squads' characters while it is unloaded and makes the same ones again. Faithful: they are dropped (and a save's
     /// wild platoon despawned on leaving), as the original.
     /// </summary>
@@ -1062,6 +1102,12 @@ public sealed class PopulationSettings
     /// nothing for them off screen.
     /// </summary>
     public bool ResidentSchedule { get; init; } = true;
+
+    /// <summary>
+    /// Meitou: a town that is not loaded takes its <c>override town</c> at the next look once one qualifies (<see cref="TownOverrides"/>).
+    /// Faithful: only when its zone loads, as the original.
+    /// </summary>
+    public bool OffscreenOverrides { get; init; } = true;
 
     // ---- faction campaigns (docs/game/factions-squads-towns.md "Campaigns") ----
 

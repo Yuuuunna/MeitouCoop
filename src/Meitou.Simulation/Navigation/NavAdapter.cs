@@ -24,6 +24,9 @@ public sealed class NavAdapter(NavmeshWalkability nav) : IAgentWalkability, Lock
     /// <inheritdoc/>
     public Locks.DoorSpot? DoorSpotOf(string buildingRecordId, int doorIndex) => nav.DoorGeometry?.Spot(buildingRecordId, doorIndex);
     /// <inheritdoc/>
+    public void TickStarts(long tick, float tickSeconds) => nav.TickStarts(tick, tickSeconds);
+
+    /// <inheritdoc/>
     public float GroundHeight(float x, float z) => nav.GroundHeight(x, z);
     /// <inheritdoc/>
     public bool IsWalkable(float x, float z) => nav.IsWalkable(x, z);
@@ -42,6 +45,9 @@ public sealed class NavAdapter(NavmeshWalkability nav) : IAgentWalkability, Lock
 
     /// <inheritdoc/>
     public bool TryStand(float x, float z, float nearY, out float y) => nav.TryStand(x, z, nearY, out y);
+    /// <inheritdoc/>
+    public float? SeatHeight(float x, float z, float y) => nav.SeatHeight(x, z, y);
+
     /// <inheritdoc/>
     public Vector2 Slide(Vector3 from, Vector2 step, float radius) => nav.Slide(from, step, radius);
     /// <inheritdoc/>

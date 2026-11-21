@@ -1,3 +1,4 @@
+using Meitou.Content;
 using Meitou.Data.Gameplay.Ai;
 using Meitou.Simulation.Combat;
 using Meitou.Simulation.Factions;
@@ -100,6 +101,11 @@ public enum StartResult : byte
     /// ended short.
     /// </summary>
     Inaccessible,
+    /// <summary>
+    /// The character's order holds it (an NPC's, <see cref="DecisionSystem.Ordered"/>): a goal's or reaction's start that is no step of the order is
+    /// refused, as the original's order step comes before every goal (docs/game/ai-tasks.md "Precedence"); nothing changed.
+    /// </summary>
+    Ordered,
 }
 
 /// <summary>
@@ -172,6 +178,11 @@ public readonly record struct TaskRequest(CharacterTask Task, TaskType Row, Task
     /// The speed mode of a walk (null: the character's run speed).
     /// </summary>
     public byte? Mode { get; init; }
+
+    /// <summary>
+    /// The engine sets the task itself, with no plan (the stagger's 147, <see cref="Player.OrderEntry.Forced"/>): the repertoire is not tested.
+    /// </summary>
+    internal bool Forced { get; init; }
 }
 
 /// <summary>
@@ -238,10 +249,10 @@ public interface ITaskOwner
 }
 
 /// <summary>
-/// The act-out handlers by <see cref="CharacterTask"/> (<see cref="World.Tasks"/>): an open list each owning system fills (<see cref="ITaskOwner"/>)
-/// and later code may add to or replace. A task with no handler is started by setting it. A row may have a handler of its own, which takes the row's
-/// starts and ends from the task's handler: the lock, door, cage, item and bed rows a walk acts out (<see cref="CharacterTask.GoTo"/>) are their
-/// systems', not the movement's.
+/// The act-out handlers by <see cref="CharacterTask"/> (<see cref="World.Tasks"/>): a list each owning system fills in its
+/// <see cref="ITaskOwner.RegisterTasks"/>, and only there (a later system's handler replaces an earlier one's). A task with no handler is started
+/// by setting it. A row may have a handler of its own, which takes the row's starts and ends from the task's handler: the lock, door, cage, item
+/// and bed rows a walk acts out (<see cref="CharacterTask.GoTo"/>) are their systems', not the movement's.
 /// </summary>
 public sealed class TaskHandlers
 {
@@ -259,22 +270,162 @@ public sealed class TaskHandlers
     readonly Dictionary<TaskType, ITaskHandler> _siteRows = [];
 
     /// <summary>
-    /// Registers the handler of <paramref name="task"/>.
+    /// The mod whose system registers now (<see cref="RegisterMod"/>; null for an engine system's, or outside registration).
     /// </summary>
-    public void Register(CharacterTask task, ITaskHandler handler) =>
-        _handlers[(byte)task] = handler ?? throw new ArgumentNullException(nameof(handler));
+    string? _mod;
 
     /// <summary>
-    /// Registers the handler of the starts of <paramref name="row"/>, whatever their act-out.
+    /// The task numbers the mods claimed (job and goal types) and the mod of each, while a mod registers.
     /// </summary>
-    public void Register(TaskType row, ITaskHandler handler) => _rows[row] = handler ?? throw new ArgumentNullException(nameof(handler));
+    IReadOnlyDictionary<TaskType, string>? _claimed;
+
+    /// <summary>
+    /// The faults of the world's mod systems and the registering system's index, while a mod registers: its handlers are guarded
+    /// (<see cref="ModTaskHandler"/>).
+    /// </summary>
+    (ModSystemFaults Faults, int System)? _guard;
+
+    /// <summary>
+    /// The mod that registered each row handler from 1000 up (null until a mod does).
+    /// </summary>
+    Dictionary<TaskType, string>? _rowOwners;
+
+    /// <summary>
+    /// The undo of the registering mod's registrations, replayed in reverse when its <see cref="ITaskOwner.RegisterTasks"/> throws.
+    /// </summary>
+    List<Action>? _undo;
+
+    /// <summary>
+    /// Whether a system's <see cref="ITaskOwner.RegisterTasks"/> runs now: registering is allowed only then.
+    /// </summary>
+    bool _open;
+
+    /// <summary>
+    /// Registers the handler of <paramref name="task"/>. Only inside <see cref="ITaskOwner.RegisterTasks"/>, as the registrations below.
+    /// </summary>
+    public void Register(CharacterTask task, ITaskHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        CheckOpen();
+        handler = Guarded(handler);
+        if (_undo is not null)
+        {
+            var before = _handlers[(byte)task];
+            _undo.Add(() => _handlers[(byte)task] = before);
+        }
+
+        _handlers[(byte)task] = handler;
+    }
+
+    /// <summary>
+    /// Registers the handler of the starts of <paramref name="row"/>, whatever their act-out. A mod's system may not register a row from 1000 up that
+    /// another mod claimed (a job or goal type) or registered first: one mod owns a row (docs/modding.md "Task handlers").
+    /// </summary>
+    public void Register(TaskType row, ITaskHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        CheckOpen();
+        handler = Guarded(handler);
+        if (_mod is not null) Own(row, _rows);
+
+        _rows[row] = handler;
+    }
 
     /// <summary>
     /// Registers the handler of the starts of <paramref name="row"/> on a site, whatever their act-out; its other starts keep the row's or the
-    /// task's handler.
+    /// task's handler. A mod's rows from 1000 up are owned as by <see cref="Register(TaskType, ITaskHandler)"/>.
     /// </summary>
-    public void RegisterOnSite(TaskType row, ITaskHandler handler) =>
-        _siteRows[row] = handler ?? throw new ArgumentNullException(nameof(handler));
+    public void RegisterOnSite(TaskType row, ITaskHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        CheckOpen();
+        handler = Guarded(handler);
+        if (_mod is not null) Own(row, _siteRows);
+
+        _siteRows[row] = handler;
+    }
+
+    /// <summary>
+    /// An engine system's <see cref="ITaskOwner.RegisterTasks"/>, its handlers as they are.
+    /// </summary>
+    internal void RegisterEngine(ITaskOwner owner)
+    {
+        _open = true;
+        try
+        {
+            owner.RegisterTasks(this);
+        }
+        finally
+        {
+            _open = false;
+        }
+    }
+
+    /// <summary>
+    /// A mod system's <see cref="ITaskOwner.RegisterTasks"/>, with its rows from 1000 up checked against <paramref name="claimed"/> and the rows
+    /// other mods registered, and its handlers guarded (<see cref="ModTaskHandler"/>: a throw stops system <paramref name="system"/>). A throw of the
+    /// registration (a refused row among them) undoes that system's registrations and is logged, the world is made without them, and the system is
+    /// stopped as for a throw of one of its phases, with the player's notice (<see cref="ModSystemFaults.Fault"/>).
+    /// </summary>
+    internal void RegisterMod(ITaskOwner owner, string mod, IReadOnlyDictionary<TaskType, string>? claimed, ModSystemFaults faults, int system)
+    {
+        (_mod, _claimed, _undo, _guard, _open) = (mod, claimed, [], (faults, system), true);
+        try
+        {
+            owner.RegisterTasks(this);
+        }
+        catch (Exception e)
+        {
+            for (int i = _undo.Count - 1; i >= 0; i--) _undo[i]();
+            Console.Error.WriteLine($"mod       {mod}: task handlers not registered for this world: {e}");
+            faults.Fault(system, "task registration", e);
+        }
+        finally
+        {
+            (_mod, _claimed, _undo, _guard, _open) = (null, null, null, null, false);
+        }
+    }
+
+    /// <summary>
+    /// Throws outside <see cref="ITaskOwner.RegisterTasks"/>: a handler registered later would not be guarded or owned.
+    /// </summary>
+    void CheckOpen()
+    {
+        if (!_open) throw new InvalidOperationException("Task handlers are registered only in ITaskOwner.RegisterTasks.");
+    }
+
+    /// <summary>
+    /// <paramref name="handler"/> as registered: guarded while a mod's system registers (<see cref="RegisterMod"/>), else as it is.
+    /// </summary>
+    ITaskHandler Guarded(ITaskHandler handler) => _guard is { } guard ? new ModTaskHandler(handler, guard.Faults, guard.System) : handler;
+
+    /// <summary>
+    /// The registering mod takes <paramref name="row"/> in <paramref name="table"/>: a row from 1000 up another mod claimed or registered is refused
+    /// (a throw); the change is noted for the undo.
+    /// </summary>
+    void Own(TaskType row, Dictionary<TaskType, ITaskHandler> table)
+    {
+        string mod = _mod!;
+        if ((int)row >= SimulationExtensions.FirstModCode)
+        {
+            if (_claimed?.TryGetValue(row, out var claimant) == true && claimant != mod)
+                throw new InvalidOperationException($"Task row {(int)row} is claimed by mod '{claimant}'.");
+            if (_rowOwners?.TryGetValue(row, out var owner) == true && owner != mod)
+                throw new InvalidOperationException($"Task row {(int)row} has a handler of mod '{owner}'.");
+
+            var owners = _rowOwners ??= [];
+            bool owned = owners.ContainsKey(row);
+            owners[row] = mod;
+            if (!owned) _undo!.Add(() => owners.Remove(row));
+        }
+
+        bool had = table.TryGetValue(row, out var before);
+        _undo!.Add(() =>
+        {
+            if (had) table[row] = before!;
+            else table.Remove(row);
+        });
+    }
 
     /// <summary>
     /// The handler of <paramref name="task"/>; null: none (the start just sets the task).
@@ -321,21 +472,24 @@ public static class TaskStart
         && (row is TaskType.Idle or TaskType.Aoeu || !Repertoire.StuckInBed(world, cold));
 
     /// <summary>
-    /// Starts a task (serial phases only): the row must be <see cref="Eligible"/>; then a fight ends (a new task drops the fight task,
+    /// Starts a task (serial phases only): the row must be <see cref="Eligible"/> (unless <see cref="TaskRequest.Forced"/>); then a fight ends (a new task drops the fight task,
     /// docs/game/combat.md "Fight lifecycle and orders"), the task before ends through its handler, the provenance is recorded
     /// (<see cref="CharacterCold.Running"/>) and the act-out starts. A fight the character did not take up by an order or a job, while it runs a
     /// follow row (31, 45, 289), is a step of that row (31 and 45 need state 16, which 13 "Attacking attackers of" gives; docs/game/ai-tasks.md
-    /// "Precedence"): the row's provenance is kept, so the follow is taken up again after it.
+    /// "Precedence"): the row's provenance is kept, so the follow is taken up again after it. An NPC its order holds
+    /// (<see cref="DecisionSystem.Ordered"/>) takes no goal's or reaction's start but such a step (<see cref="StartResult.Ordered"/>).
     /// </summary>
     public static StartResult Start(World world, int slot, in TaskRequest request)
     {
         var table = world.Characters;
         if (table.Phase == TablePhase.Parallel) throw new InvalidOperationException("tasks start in the serial phases only");
         var cold = table.Cold(slot)!;
-        if (!Eligible(world, cold, request.Row)) return StartResult.NotEligible;
+        if (!request.Forced && !Eligible(world, cold, request.Row)) return StartResult.NotEligible;
         var current = (CharacterTask)table.Next[slot].Task;
         var handler = world.Tasks.Of(request.Task, request.Row, request.Site);
         bool step = cold.Running is { } kept && Step(cold, kept, current, request);
+        if (!step && Yields(cold, request.Source)) return StartResult.Ordered;
+
         PlayerOrders.Replacing(world, slot, request, step);
         if (request.Task != CharacterTask.Attack) world.Tasks.Of(CharacterTask.Attack)?.End(world, slot, CharacterTask.Attack, TaskEnd.Replaced);
         if (current != CharacterTask.Attack && world.Tasks.Of(world, slot, cold, current) is { } before
@@ -363,11 +517,13 @@ public static class TaskStart
 
     /// <summary>
     /// Starts an engine walk to <paramref name="goal"/> at <paramref name="mode"/> as row <paramref name="row"/> (<see cref="Start"/> of a
-    /// <see cref="CharacterTask.GoTo"/> with <see cref="TaskRequest.Goal"/>).
+    /// <see cref="CharacterTask.GoTo"/> with <see cref="TaskRequest.Goal"/>). A goal's or reaction's walk that yields to an order is refused before
+    /// the destination is tested (<see cref="Yields"/>).
     /// </summary>
     public static StartResult Walk(World world, int slot, System.Numerics.Vector2 goal, byte mode, TaskType row, TaskSource source)
     {
         var point = new System.Numerics.Vector3(goal.X, float.NaN, goal.Y);
+        if (Yields(world.Characters.Cold(slot)!, source)) return StartResult.Ordered;   // before a refusal would stand the order's walk
         if (DestinationAccess.WalkRefused(world, slot, row, point)) return Refuse(world, slot);
 
         return Start(world, slot, new TaskRequest(CharacterTask.GoTo, row, source) { Goal = goal, Mode = mode });
@@ -379,10 +535,17 @@ public static class TaskStart
     /// </summary>
     public static StartResult Walk(World world, int slot, System.Numerics.Vector3 at, byte mode, TaskType row, TaskSource source)
     {
+        if (Yields(world.Characters.Cold(slot)!, source)) return StartResult.Ordered;   // before a refusal would stand the order's walk
         if (DestinationAccess.WalkRefused(world, slot, row, at)) return Refuse(world, slot);
 
         return Start(world, slot, new TaskRequest(CharacterTask.GoTo, row, source) { Point = at, Mode = mode });
     }
+
+    /// <summary>
+    /// Whether a start from <paramref name="source"/> yields to the character's order (<see cref="StartResult.Ordered"/>): a goal's or a
+    /// reaction's, while an NPC's order holds it (<see cref="DecisionSystem.Ordered"/>). A step of a follow row is decided by the caller.
+    /// </summary>
+    static bool Yields(CharacterCold cold, TaskSource source) => source is TaskSource.Goal or TaskSource.Reaction && DecisionSystem.Ordered(cold);
 
     /// <summary>
     /// An engine walk refused by its destination's doors (docs/game/locks.md "Locked doors on the way"): it counts as a walk that ended short, as one
@@ -410,12 +573,14 @@ public static class TaskStart
     /// <see cref="TaskRequest.Goal"/>, or stops the character on the standing task (its <see cref="CharacterHot.TaskTime"/> restarted); nothing
     /// outside the slot is touched, so no fight or task before it is ended (the AI acts out nothing for a fighting character, and its walks and
     /// standing tasks hold nothing) and no handler runs. The row's repertoire is not tested: the AI's planner chose the row
-    /// (<see cref="Ai.AiSystem"/>).
+    /// (<see cref="Ai.AiSystem"/>). Nothing for an NPC its order holds (<see cref="DecisionSystem.Ordered"/>).
     /// </summary>
     public static void StartOwn(World world, int slot, in TaskRequest request)
     {
         var table = world.Characters;
         var cold = table.Cold(slot)!;
+        if (DecisionSystem.Ordered(cold)) return;   // the order's task is not the AI's to replace
+
         cold.Running = new RunningTask(request.Task, request.Row, request.Source, request.Job, request.Target, request.Site, world.Tick)
         {
             Resume = request.Resume,
@@ -496,7 +661,7 @@ public static class TaskStart
     /// following when it does that, else idle; idle for a character the decision step decides (its routine is the step's, step 6).
     /// </summary>
     public static CharacterTask Standing(CharacterCold cold, CharacterTask task) =>
-        !DecisionSystem.Decides(cold) && task is CharacterTask.Wander or CharacterTask.Follow ? task : CharacterTask.Idle;
+        OrderStep.ResumesRoutine(cold) && task is CharacterTask.Wander or CharacterTask.Follow ? task : CharacterTask.Idle;
 
     /// <summary>
     /// Whether the request is a step of the running task: a goal's or reaction's attack while a follow row runs its follow or attack, unless it is
@@ -556,7 +721,7 @@ public static class TaskStart
         var cold = table.Cold(slot)!;
         PlayerOrders.Ending(world, slot, reason);
         var current = (CharacterTask)table.Next[slot].Task;
-        var resume = !DecisionSystem.Decides(cold) && cold.Running is { } run && run.Runs(current) ? run.Resume : CharacterTask.Idle;
+        var resume = OrderStep.ResumesRoutine(cold) && cold.Running is { } run && run.Runs(current) ? run.Resume : CharacterTask.Idle;
         if (reason != TaskEnd.Done) world.Tasks.Of(CharacterTask.Attack)?.End(world, slot, CharacterTask.Attack, reason);
         if (current != CharacterTask.Attack) world.Tasks.Of(world, slot, cold, current)?.End(world, slot, current, reason);
         if (reason != TaskEnd.Replaced) MovementSystem.Stop(table, slot);
@@ -569,7 +734,10 @@ public static class TaskStart
 
         cold.Running = null;
         (cold.EndedTick, cold.Ended) = (table.Ticks, reason);   // the action log's
-        DecisionSystem.Request(cold);   // the plan finished or was stopped: the character is decided again
+        // The plan finished or was stopped: the character is decided again. A plan that ended by itself with no order queued is the original's
+        // plan end (FUN_14050d7d0), which asks a replan (vfunc 3).
+        if (reason == TaskEnd.Done && cold.OrderQueue.Count == 0) DecisionSystem.Replan(cold);
+        else DecisionSystem.Request(cold);
         Stamp(table, slot);
     }
 

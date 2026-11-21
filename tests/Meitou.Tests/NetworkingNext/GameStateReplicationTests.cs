@@ -216,7 +216,15 @@ public class GameStateReplicationTests
         var publisher=new GameStatePublisher(codec,_=>42,11,22); var replica=new GameStateReplica(codec,11,22);
         AnimationPlaybackState Playback(ulong epoch,string name)=>new(epoch,0,1f/30,0,900,[new(name,-1,1,0,1,AnimationWrap.Loop,1,1,1,0,AnimationBlendArea.All,true,false)]);
         var baseline=publisher.Capture(source,new Dictionary<ulong,AnimationPlaybackState>{{42,Playback(1,"old")}});
-        var events=Enumerable.Range(1,128).Select(i=>new FloaterEvent((ulong)i,Floater.Text(source.Snapshot.Characters[0].Id,Vector3.Zero,new string('x',500)))).ToArray();
+        var random = new Random(1729);
+        var events = new FloaterEvent[128];
+        var textBytes = new byte[750];
+        for (int i = 0; i < events.Length; i++)
+        {
+            random.NextBytes(textBytes);
+            events[i] = new FloaterEvent((ulong)i + 1,
+                Floater.Text(source.Snapshot.Characters[0].Id, Vector3.Zero, Convert.ToBase64String(textBytes)));
+        }
         var changed=source with { Publication=2,Events=new(128,events),Snapshot=source.Snapshot with { Characters=[source.Snapshot.Characters[0] with { Name="deferred" }] } };
         var critical=publisher.CaptureCritical(changed,new Dictionary<ulong,AnimationPlaybackState>{{42,Playback(2,"new")}});
         Assert.True(critical.Count>1);
