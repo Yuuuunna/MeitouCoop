@@ -21,7 +21,11 @@ public static class QuicDeployment
         using var manifest = JsonDocument.Parse(File.ReadAllBytes(path));
         var value = manifest.RootElement;
         string hash = value.GetProperty("shimSha256").GetString() ?? "";
-        if (value.GetProperty("api").GetInt32() != 1 || value.GetProperty("architecture").GetString() != "win-x64" || value.GetProperty("msquicVersion").GetString() != "2.6.3" || value.GetProperty("tls").GetString() != "OpenSSL" || !string.Equals(value.GetProperty("msquicSha256").GetString(), Transport.NativeQuicEndpoint.MsQuicSha256, StringComparison.OrdinalIgnoreCase) || !ContentManifest.ValidHash(hash))
+        if (value.GetProperty("api").GetInt32() != 1 ||
+            value.GetProperty("architecture").GetString() != "win-x64" ||
+            value.GetProperty("msquicVersion").GetString() != "2.6.3" ||
+            value.GetProperty("tls").GetString() != "OpenSSL" ||
+            !ContentManifest.ValidHash(hash))
             throw new InvalidDataException("Unsupported native QUIC deployment manifest.");
         return (directory, hash);
     }

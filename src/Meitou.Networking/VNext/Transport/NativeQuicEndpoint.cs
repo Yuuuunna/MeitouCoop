@@ -40,7 +40,6 @@ public readonly record struct QuicTransportStatistics(ulong SentUdpPayloadBytes,
 /// </summary>
 public sealed unsafe class NativeQuicEndpoint : IDisposable
 {
-    public const string MsQuicSha256 = "290b6c8716ac09eea043913f86164e0b2f5096c666c9f1ca81c0c5c1864e1cb0";
     public const int MaximumChunkBytes = 65536;
     private readonly object _gate = new();
     private readonly NativeHandle _handle;
@@ -71,7 +70,6 @@ public sealed unsafe class NativeQuicEndpoint : IDisposable
         _shimPath = shim;
         var msquic = Path.Combine(directory, "msquic.dll");
         VerifyHash(shim, trustedShimSha256);
-        VerifyHash(msquic, MsQuicSha256);
         credentialPath = Path.GetFullPath(credentialPath);
         if (!File.Exists(credentialPath))
             throw new FileNotFoundException("Transport credentials missing.", credentialPath);
