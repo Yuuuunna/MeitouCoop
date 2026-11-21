@@ -999,6 +999,8 @@ unload, hashed only once non-empty. Facts: [locks](game/locks.md), [economy 11.5
 - **Ids** (engine): a building's own lock = its instance id; door i `<inst>#i`; interior item `<inst>/<layout index>`
   (`TownBuildings` collects them as `TownFixture`s); bed k `<inst>@bed<k>`. Owner: the placement's `owner faction ID`, else
   the town's faction. Lock levels roll from `Rng.Hash(seed, StableHash(id), Lock, 0)`: load order never changes them.
+  **Verified** (2026-11-21, restored multiplayer checkpoint with Rebirth interior cage): materializing the cage's production worksite preserves
+  the original fixture and publishes one cage with its layout ID. `RegisterPlayerBuilding` skips interior level machines.
 - **Doors**: a building no save has starts from its level-data GAMESTATE_BUILDING (`TownBuilding.LevelState`: lock levels and door
   state; only doors with a `state` key count as restored). `AiSystem` applies the template's `initial door state` when it assigns a home (first squad, not to restored
   doors). `IDoorGate` (the game's `NavAdapter` -> `NavDoors`, reset on `ReplaceWorld`) closes a building for every path while

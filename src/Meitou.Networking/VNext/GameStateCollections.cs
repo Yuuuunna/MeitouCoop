@@ -34,17 +34,31 @@ internal static class GameCollectionSchema
     {
         public ushort Id => id;
 
+        /// <summary>
+        /// Encodes collection entries in view order and reports the field, key and world tick of a duplicate.
+        /// </summary>
         public (CollectionManifest Manifest, IReadOnlyList<(string Key, byte[] Value)> Items) Capture(WorldViewCodec codec, PlayerWorldView view)
         {
             var values = get(view);
-            if (values.Count > 65536)
-                throw new InvalidDataException("Collection exceeds record bound.");
-            var result = values.Select(value => (Key: key(value), Value: JsonComponentCompression.Encode(codec, value))).ToArray();
-            if (result.Select(p => p.Key).Distinct(StringComparer.Ordinal).Count() != result.Length)
-                throw new InvalidDataException("Duplicate keyed collection identity.");
-            foreach (var item in result)
-                ValidateKey(item.Key);
-            return (new(present?.Invoke(view) ?? true, enabled?.Invoke(view) ?? true, result.Select(p => p.Key).ToArray()), result);
+            if (values.Count > 65536) throw new InvalidDataException("Collection exceeds record bound.");
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var keys = new string[values.Count];
+            var entries = new (string Key, byte[] Value)[values.Count];
+            for (int i = 0; i < values.Count; i++)
+            {
+                var item = values[i];
+                string itemKey = key(item);
+                ValidateKey(itemKey);
+                if (!seen.Add(itemKey))
+                    throw new InvalidDataException($"Duplicate keyed collection identity in {GameStatePublisher.ComponentName(Id)} ({Id}) "
+                        + $"at tick {view.Snapshot.Tick}: {System.Text.Json.JsonSerializer.Serialize(itemKey)}.");
+
+                keys[i] = itemKey;
+                entries[i] = (itemKey, JsonComponentCompression.Encode(codec, item));
+            }
+
+            return (new(present?.Invoke(view) ?? true, enabled?.Invoke(view) ?? true, keys), entries);
         }
 
         public object Decode(WorldViewCodec codec, string expectedKey, byte[] value)

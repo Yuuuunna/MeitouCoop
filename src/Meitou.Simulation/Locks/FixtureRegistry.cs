@@ -756,10 +756,12 @@ public sealed partial class FixtureRegistry
     /// from its owner's faction) and takes their state from a loaded save; a bed the player built is a bed fixture <c>&lt;site&gt;@bed0</c> at the
     /// site's origin and facing (the ones lain in bind to it). A cage or a <c>has lock</c> building (a safe) gets its own lock as a town one does
     /// (docs/game/locks.md "Lock object": the owner's <c>doors lock level</c>, unlocked); a safe's items stay the machine's storage, so its fixture
-    /// has no grid; while its machine is broken (being dismantled) that lock counts as broken. A building registered already is left as it is.
+    /// has no grid; while its machine is broken (being dismantled) that lock counts as broken. A town's interior layout keeps its own fixtures when
+    /// production adds a layout object to the building registry. A building registered already is left as it is.
     /// </summary>
     public void RegisterPlayerBuilding(World world, PopulationData data, Construction.BuildSite site)
     {
+        if (site.LevelMachine && site.Parent is not null) return;
         if (_byBuilding.ContainsKey(site.Id) || data.Db.Find(site.Record) is not { } record) return;
         var bed = BedDataOf(data.Db, record);
         var own = Lockable(data.Db, record);
