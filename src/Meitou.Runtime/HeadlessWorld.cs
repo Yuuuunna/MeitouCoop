@@ -203,6 +203,8 @@ public sealed class HeadlessWorld : IDisposable
             CampaignAncestorsOnce = rules.CampaignAncestorsOnce,
             KeepWild = rules.KeepWild,
             ResidentSchedule = rules.ResidentSchedule,
+            OffscreenOverrides = rules.OffscreenOverrides,
+            KeepCampaignClocks = rules.KeepCampaignClocks,
         },
         Ai = new Meitou.Simulation.Ai.AiSettings
         {
@@ -225,12 +227,14 @@ public sealed class HeadlessWorld : IDisposable
             EdgeGap = siteEdgeGap,
         },
         Captives = new Meitou.Simulation.Kidnap.CaptiveSettings { SpareOwnFaction = rules.CagesSpareOwn },
+        Arrest = new Meitou.Simulation.Crime.ArrestSettings { LiftFix = rules.ArrestLiftFix },
         AnimalsPickUp = rules.AnimalsPickUp,
     };
     static void ApplyWorldRules(World world, GameplayRules rules)
     {
         world.BenchFacingFix = rules.BenchFacingFix;
         world.PrisonPoseFix = rules.PrisonPoseFix;
+        world.CagedAnimalFix = rules.CagedAnimalFix;
         world.GroundRepair = rules.GroundRepair;
         world.BagSearchFix = rules.BagSearchFix;
         world.Luckyren = rules.Luckyren;
@@ -249,12 +253,17 @@ public sealed class HeadlessWorld : IDisposable
         var result = new SimulationExtensions();
         result.Systems.AddRange(configured.Systems);
         result.Systems.AddRange(mods.Systems);
+        result.CombatMoves.AddRange(configured.CombatMoves);
+        result.CombatMoves.AddRange(mods.CombatMoves);
         foreach (var(code, handler)in configured.DialogueConditions.Concat(mods.DialogueConditions))
             result.DialogueConditions.Add(code, handler);
         foreach (var(code, handler)in configured.DialogueEffects.Concat(mods.DialogueEffects))
             result.DialogueEffects.Add(code, handler);
         foreach (var (record, handler) in configured.ItemUses.Concat(mods.ItemUses))
             result.ItemUses.Add(record, handler);
+        foreach (var (row, name) in configured.JobTypes.Concat(mods.JobTypes)) result.JobTypes.Add(row, name);
+        foreach (var (row, goal) in configured.GoalTypes.Concat(mods.GoalTypes)) result.GoalTypes.Add(row, goal);
+        foreach (var (row, owner) in configured.TaskOwners.Concat(mods.TaskOwners)) result.TaskOwners.Add(row, owner);
         return result;
     }
 

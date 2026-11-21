@@ -88,6 +88,16 @@ public sealed class SavedPlatoon
     /// </summary>
     public const string BaseTownKey = "meitou basetown";
     /// <summary>
+    /// Set on a platoon a code mod moved to its town as a guest (<see cref="Platoon.Guest"/>); its <c>basetown</c> and <c>hometown</c> name the host
+    /// town, so the game reads it as one of that town's.
+    /// </summary>
+    public const string GuestKey = "meitou guest";
+    /// <summary>
+    /// On an unloaded guest (<see cref="GuestKey"/>): the platoon place, x and z, its members' saved places belong to (their old town); read back as
+    /// <see cref="Anchor"/>, so they come to the host with the platoon.
+    /// </summary>
+    public const string GuestAnchorKey = "meitou guest anchor";
+    /// <summary>
     /// A platoon of an older Meitou save: its <c>basetown</c> is the placement's own id even in a replaced town, so it is taken to fit (the
     /// original's test is not applied).
     /// </summary>
@@ -458,6 +468,11 @@ internal static class SavedCharacters
         var race = p.Race;
         var stats = p.Stats;
         var medical = p.Medical;
+
+        // The original seats a character on the mesh when its movement is made (docs/game/pathfinding.md "Made on the mesh").
+        float? seat = world.Walkability.SeatHeight(position.X, position.Z, position.Y);
+        if (seat is { } floor) position.Y = floor;
+
         float athletics = stats?.Athletics ?? 20;
         float speed = race is null ? 45 : medical is not null && stats is not null ? Speed.Run(race, stats, medical, 1) : Speed.RunUnhurt(race, athletics);
         var hot = new CharacterHot
@@ -478,6 +493,10 @@ internal static class SavedCharacters
             throw new InvalidDataException("Player role has an unknown player faction.");
         var cold = NewCold(p, platoonName, squad, faction, player);
         cold.Entity = entity.IsNone ? EntitySave.Read(sc) : entity;
+        if (seat is not null) cold.Save!.Ragdoll = null;   // the ragdoll saved where it lay is not on that floor
+
+        cold.LastingId = world.LastingIds.ForSaved(sc);
+
         ReadState(world, sc, cold, ref hot, data, context, bounties);
         // The body: the saved stats and medical state go to the body systems, the rest of the assembly (inventory, fighter) is made as for a new character.
         if (race is not null && stats is not null && medical is not null)
@@ -555,7 +574,8 @@ internal static class SavedCharacters
         if (cold.InSomething == Locks.HeldState.Bed)
             hot.Task = (byte)CharacterTask.Sleep;   // it lies there until an order (Locks.BedSystem)
 
-        if (cold.IsPlayer && sc.Ai is { } ai)
+        // Every character's job list, an NPC's too (the loader FUN_140508e10 has no faction test: an NPC robot's 57, an NPC slave's 187).
+        if (sc.Ai is { } ai)
         {
             PermaJobSave.Read(ai, sc.GameState, cold, world.Buildings, context.Handles, context.InstanceOf, context.InstanceIds,
                 world.SystemOf<Player.PlayerSystem>()?.Extensions?.JobTypes);
@@ -823,6 +843,10 @@ internal static class SavedCharacters
         // Its shop as it was when it left the world, else the save's (a fresh fill when the save has none).
         squad.Shop = sp.Shop ?? ShopSave.Read(world, squad, sp.Source.Record, data);
         squad.SavedAi = sp.Ai;
+        squad.SavedPackage = PackageSave.Read(sp.Source.Record);
+
+        // Its house flag as the save had it, the first time it is made (its town and arrival hour wait on its platoon, Platoon.SavedTown).
+        if (!sp.Touched) HomeLockSave.Read(sp.Source.Record, world, squad);
         world.Squads.Add(squad);
 
         // What the squad remembered: the save's, else what it kept when it last left the world.

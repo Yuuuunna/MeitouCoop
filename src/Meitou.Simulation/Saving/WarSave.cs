@@ -9,7 +9,8 @@ namespace Meitou.Simulation.Saving;
 /// with the original's keys. Keys Meitou does not know are kept (the capture writes into the loaded save's records). The original saves no phase
 /// timer (its phases start again at load); Meitou writes its own floats <c>meitou phase start c&lt;i&gt;</c>, <c>meitou fight start c&lt;i&gt;</c>,
 /// <c>meitou arrived c&lt;i&gt;</c>, <c>meitou announced c&lt;i&gt;</c> and <c>meitou carry start p&lt;i&gt;</c> (on the campaign platoon
-/// <c>p&lt;i&gt;</c>; absolute game hours, as <c>updatetime</c>; absent: not started) and reads them back, so a loaded campaign goes on where it was.
+/// <c>p&lt;i&gt;</c>; absolute game hours, as <c>updatetime</c>; absent: not started) and, under the Fixes option
+/// <see cref="PopulationSettings.KeepCampaignClocks"/>, reads them back, so a loaded campaign goes on where it was.
 /// Older saves' <c>meitou carry start c&lt;i&gt;</c> (one stamp per campaign) is read onto each of its platoons and dropped on the next write.
 /// </summary>
 internal static class WarSave
@@ -66,74 +67,29 @@ internal static class WarSave
     {
         var data = population.Data;
         double now = world.GameHours;
+
         foreach (var (factionId, war) in saved.Wars)
         {
             if (population.WarOf(data.FactionIndex(factionId)) is not { } m) continue;
             if (war.Floats.TryGetValue("updatetime", out float update)) m.UpdateTime = update;
+
             m.NextId = war.Ints.GetValueOrDefault("fwc id");
             var leaders = new Dictionary<CampaignInstance, int>();
-            var legacyCarry = new Dictionary<CampaignInstance, double>();   // saves before the stamp was per platoon: every platoon starts there, and those carrying nobody drop it
-            for (int i = 0, n = war.Ints.GetValueOrDefault("num actives"); i < n; i++)
-            {
-                string id = war.Strings.GetValueOrDefault($"dat c{i}", "");
-                if (population.CampaignOf(id) is not { } c) continue;
-                string enemy = war.Strings.GetValueOrDefault($"enemy c{i}", "");
-                var inst = new CampaignInstance
-                {
-                    Faction = m.Faction,
-                    Id = war.Ints.GetValueOrDefault($"id c{i}"),
-                    CampaignId = id,
-                    Target = Town(world, saved, Hand.Read(war, $"target c{i}")),
-                    Home = Town(world, saved, Hand.Read(war, $"home c{i}")),
-                    Enemy = enemy.Length > 0 ? data.FactionIndex(enemy) : -1,
-                    Phase = Math.Clamp(war.Ints.GetValueOrDefault($"phase c{i}"), 0, 2),
-                    Reached = war.Bools.GetValueOrDefault($"rd c{i}"),
-                    Trig = war.Bools.GetValueOrDefault($"trig c{i}"),
-                    PhaseStart = Hour(war, PhaseStartKey + i) ?? now,
-                    Required = (int)(c.NumForces * population.Settings.RaidSizeMult),
-                    FightStart = Hour(war, FightStartKey + i) ?? -1,
-                    ArrivedAt = Hour(war, ArrivedKey + i) ?? -1,
-                    AnnouncedAt = Hour(war, AnnouncedKey + i) ?? -1,
-                    FoughtPlayer = war.Bools.GetValueOrDefault($"meitou fought target c{i}"),
-                };
-                if (Hour(war, CarryStartKey + i) is double carry) legacyCarry[inst] = carry;
-                if (inst.Phase == 1 && !c.HasPt2) inst.Phase = 2;
-                if (Platoon(saved, Hand.Read(war, $"leader c{i}")) is int leader) leaders[inst] = leader;
-                m.Know(id);
-                m.Actives.Add(inst);
-                m.NextId = Math.Max(m.NextId, inst.Id + 1);
-            }
-            for (int i = 0, n = war.Ints.GetValueOrDefault("num requests"); i < n; i++)
-            {
-                string id = war.Strings.GetValueOrDefault($"req sid{i}", "");
-                int enemy = data.FactionIndex(war.Strings.GetValueOrDefault($"req enemysid{i}", ""));
-                if (population.CampaignOf(id) is null || enemy < 0) continue;
-                m.Requests.Add(new CampaignRequest
-                {
-                    CampaignId = id,
-                    Enemy = enemy,
-                    Due = war.Floats.GetValueOrDefault($"req time{i}"),
-                    Tries = war.Ints.TryGetValue($"meitou req tries{i}", out int tries) ? Math.Clamp(tries, 0, 101)
-                        : Math.Clamp(war.Ints.GetValueOrDefault($"meitou req attempts{i}"), 0, 100) + Math.Clamp(war.Ints.GetValueOrDefault($"meitou req delays{i}"), 0, 10),
-                    Target = Town(world, saved, Hand.Read(war, $"req targ{i}")),
-                    Home = Town(world, saved, Hand.Read(war, $"req home{i}")),
-                });
-            }
+
+            // saves before the stamp was per platoon: every platoon starts there, and those carrying nobody drop it
+            var legacyCarry = new Dictionary<CampaignInstance, double>();
+
+            ReadActives(world, population, saved, war, m, now, leaders, legacyCarry);
+            ReadRequests(world, population, saved, war, m);
+
             for (int i = 0, n = war.Ints.GetValueOrDefault("num poss"); i < n; i++)
-                if (m.Known.FirstOrDefault(k => k.Id == war.Strings.GetValueOrDefault($"poss sid{i}", "")) is { } known) known.LastStart = war.Floats.GetValueOrDefault($"poss time{i}");
-            for (int i = 0, n = war.Ints.GetValueOrDefault("num plats"); i < n; i++)
             {
-                var h = Hand.Read(war, $"p{i}");
-                if (h.Type is not (1 or (int)FcsRecordType.Platoon) || Platoon(saved, h) is not int pid || world.Platoons.Find(pid) is not { } p || p.Campaign is not null) continue;
-                int forces = war.Ints.GetValueOrDefault($"forces{i}");
-                if (m.Actives.FirstOrDefault(a => a.Id == forces) is not { } inst) continue;
-                p.Campaign = inst;
-                inst.Platoons.Add(p.Id);
-                inst.Men += population.LivingOf(world, p);
-                double? carry = Hour(war, CarryPlatoonKey + i);
-                if (carry is null && legacyCarry.TryGetValue(inst, out double legacy)) carry = legacy;
-                if (carry is { } stamp) inst.CarryStarts[p.Id] = stamp;
+                if (m.Known.FirstOrDefault(k => k.Id == war.Strings.GetValueOrDefault($"poss sid{i}", "")) is { } known)
+                    known.LastStart = war.Floats.GetValueOrDefault($"poss time{i}");
             }
+
+            ReadPlatoons(world, population, saved, war, m, legacyCarry);
+
             foreach (var inst in m.Actives)
                 inst.Leader = leaders.TryGetValue(inst, out int l) && inst.Platoons.Contains(l) ? l : inst.Platoons.Count > 0 ? inst.Platoons[0] : -1;
         }
@@ -146,6 +102,7 @@ internal static class WarSave
         Dictionary<CampaignInstance, int> leaders, Dictionary<CampaignInstance, double> legacyCarry)
     {
         var data = population.Data;
+        bool kept = population.Settings.KeepCampaignClocks;
         for (int i = 0, n = war.Ints.GetValueOrDefault("num actives"); i < n; i++)
         {
             string id = war.Strings.GetValueOrDefault($"dat c{i}", "");
@@ -163,13 +120,14 @@ internal static class WarSave
                 Phase = Math.Clamp(war.Ints.GetValueOrDefault($"phase c{i}"), 0, 2),
                 Reached = war.Bools.GetValueOrDefault($"rd c{i}"),
                 Trig = war.Bools.GetValueOrDefault($"trig c{i}"),
-                PhaseStart = Hour(war, PhaseStartKey + i) ?? now,
+                PhaseStart = Clock(war, PhaseStartKey + i, kept) ?? now,
                 Required = (int)(c.NumForces * population.Settings.RaidSizeMult),
-                FightStart = Hour(war, FightStartKey + i) ?? -1,
-                ArrivedAt = Hour(war, ArrivedKey + i) ?? -1,
-                AnnouncedAt = Hour(war, AnnouncedKey + i) ?? -1,
+                FightStart = Clock(war, FightStartKey + i, kept) ?? -1,
+                ArrivedAt = Clock(war, ArrivedKey + i, kept) ?? -1,
+                AnnouncedAt = Clock(war, AnnouncedKey + i, kept) ?? -1,
+                FoughtPlayer = war.Bools.GetValueOrDefault($"meitou fought target c{i}"),
             };
-            if (Hour(war, CarryStartKey + i) is double carry) legacyCarry[inst] = carry;
+            if (Clock(war, CarryStartKey + i, kept) is double carry) legacyCarry[inst] = carry;
             if (inst.Phase == 1 && !c.HasPt2) inst.Phase = 2;
             if (Platoon(saved, Hand.Read(war, $"leader c{i}")) is int leader) leaders[inst] = leader;
 
@@ -196,6 +154,9 @@ internal static class WarSave
                 CampaignId = id,
                 Enemy = enemy,
                 Due = war.Floats.GetValueOrDefault($"req time{i}"),
+                Tries = war.Ints.TryGetValue($"meitou req tries{i}", out int tries) ? Math.Clamp(tries, 0, 101)
+                    : Math.Clamp(war.Ints.GetValueOrDefault($"meitou req attempts{i}"), 0, 100)
+                        + Math.Clamp(war.Ints.GetValueOrDefault($"meitou req delays{i}"), 0, 10),
                 Target = Town(world, saved, Hand.Read(war, $"req targ{i}")),
                 Home = Town(world, saved, Hand.Read(war, $"req home{i}")),
             });
@@ -224,11 +185,17 @@ internal static class WarSave
             p.Campaign = inst;
             inst.Platoons.Add(p.Id);
             inst.Men += population.LivingOf(world, p);
-            double? carry = Hour(war, CarryPlatoonKey + i);
+            double? carry = Clock(war, CarryPlatoonKey + i, population.Settings.KeepCampaignClocks);
             if (carry is null && legacyCarry.TryGetValue(inst, out double legacy)) carry = legacy;
             if (carry is { } stamp) inst.CarryStarts[p.Id] = stamp;
         }
     }
+
+    /// <summary>
+    /// A Meitou clock key's game hour (<see cref="Hour(FcsRecord, string)"/>); null, as when it is missing, while <paramref name="kept"/>
+    /// (<see cref="PopulationSettings.KeepCampaignClocks"/>) is off.
+    /// </summary>
+    static double? Clock(FcsRecord war, string key, bool kept) => kept ? Hour(war, key) : null;
 
     /// <summary>
     /// The game hour under <paramref name="key"/>; null when it is missing or not finite.

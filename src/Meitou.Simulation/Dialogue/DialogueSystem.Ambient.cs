@@ -6,6 +6,7 @@ using Meitou.Simulation.Factions;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Perception;
 using Meitou.Simulation.Player;
+using Meitou.Simulation.Population;
 
 namespace Meitou.Simulation.Dialogue;
 
@@ -90,6 +91,50 @@ public sealed partial class DialogueSystem
             && StartBubbles(world, npc, target, root, DialogueEvents.Announcement, now: false);
 
     /// <summary>
+    /// <c>isMessageDelivered</c> (state 76, <c>FUN_140792190</c> -> <c>FUN_140673830(dialogue, 2)</c>, <b>Verified</b>): an ANNOUNCEMENT conversation of
+    /// <paramref name="npc"/> has ended (<see cref="_delivered"/>) in its current status town (any town while it is in none), and it is saying nothing
+    /// now (its conversation ended, no chained speaker: here no line on show, no bubble chain of its own and not in the open conversation). Read by
+    /// the AI's parallel think and the war manager; only serial steps write what it reads.
+    /// </summary>
+    internal bool MessageDelivered(World world, CharacterId npc)
+    {
+        if (!_delivered.TryGetValue(npc, out var town) || !SaysNothing(npc)) return false;
+
+        var now = world.Characters.TryResolveNext(npc, out int s) ? world.Characters.Cold(s)?.StatusTown ?? CampaignTown.None : CampaignTown.None;
+        return now.IsNone || now == town;
+    }
+
+    /// <summary>
+    /// <c>Dialogue::conversationHasEnded</c> as the announcement reads it: <paramref name="npc"/> has no line on show, no bubble chain of its own or
+    /// to speak in, and is not the open conversation's NPC. Any phase.
+    /// </summary>
+    internal bool SaysNothing(CharacterId npc) => !BubbleOf(npc) && !_interactions.Values.Any(s => s.Open?.Npc == npc);
+
+    /// <summary>
+    /// Whether <paramref name="npc"/> is saying an ANNOUNCEMENT bubble conversation of its own.
+    /// </summary>
+    bool Announcing(CharacterId npc)
+    {
+        foreach (var b in _bubbles)
+            if (b.C.Npc == npc && b.C.Event == DialogueEvents.Announcement) return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Records an ANNOUNCEMENT of <paramref name="npc"/> as delivered in its current status town (<see cref="_delivered"/>); records of characters no
+    /// longer in the world go (their Dialogue object went with them).
+    /// </summary>
+    void Deliver(World world, CharacterId npc)
+    {
+        var table = world.Characters;
+        foreach (var gone in _delivered.Keys.Where(k => !table.TryResolveNext(k, out _)).ToArray()) _delivered.Remove(gone);
+        if (!table.TryResolveNext(npc, out int s) || table.Cold(s) is not { } c) return;
+
+        _delivered[npc] = c.StatusTown;
+    }
+
+    /// <summary>
     /// Starts <paramref name="root"/> as a bubble conversation of <paramref name="npc"/> with <paramref name="whom"/> (<c>FUN_140683f90</c>): the
     /// best of its lines (speakers resolved as in any choice) is said, the chain after it. <paramref name="now"/>: said this tick, else on the next
     /// bubble step. Returns whether a line was found. <paramref name="force"/> (a crowd trigger): the start is not refused for a character busy
@@ -108,6 +153,7 @@ public sealed partial class DialogueSystem
         var c = Context(world, new Conversation { Npc = npc, Player = whom, Event = ev, Root = root });
         if (Pick(world, c, root.Children) is not { } first || !force && Busy(first.Speaker, c)) return false;
         _starters.Started(npc, whom);
+        FaceOnce(world, n, whom);
         _bubbles.Add(new Bubble(c, first.Line, world.Tick, first.Speaker));
         if (now) StepBubbles(world);
         return true;
@@ -143,6 +189,7 @@ public sealed partial class DialogueSystem
 
         c.Root = picked.Root;
         _starters.Started(npc, whom);
+        FaceOnce(world, n, whom);
         _bubbles.Add(new Bubble(c, picked.Line, world.Tick, picked.Speaker));
         StepBubbles(world);
         if (ev is 3 or 4 or SeeAnimalSquad or 66 or 67) _eventCooldown[(npc, ev)] = world.Tick + CooldownTicks(world);
@@ -177,17 +224,21 @@ public sealed partial class DialogueSystem
     /// Whether the character's dialogue state is free (<c>FUN_140671c60</c>): it says no line, has none on show and is not the NPC of the open
     /// player conversation.
     /// </summary>
-    bool Free(CharacterId who) => !BubbleOf(who) && !_interactions.Values.Any(s => s.Open?.Npc == who);
+    internal bool Free(CharacterId who) => !BubbleOf(who) && !_interactions.Values.Any(s => s.Open?.Npc == who);
 
     /// <summary>
     /// A crime event of the sight pass (<c>FUN_140685730</c> -> <c>FUN_140685660</c>, <b>Verified</b>: events 45, 36, 40, 17 and 9): fired as any
     /// event when the looker is free; else, when the conversation it is in runs another event and it has a line for this one, that conversation
     /// ends (<c>FUN_140674830</c>) and the event fires; the same event again does nothing. Returns whether a line was said.
     /// </summary>
-    internal bool CutIn(World world, int slot, int target, int ev)
+    internal bool CutIn(World world, int slot, int target, int ev) => CutIn(world, slot, world.Characters.IdOf(target), ev);
+
+    /// <summary>
+    /// <see cref="CutIn(World, int, int, int)"/> with a partner given by id, none for an event said to nobody (a slave's escape, 55).
+    /// </summary>
+    internal bool CutIn(World world, int slot, CharacterId whom, int ev)
     {
-        var table = world.Characters;
-        var (npc, whom) = (table.IdOf(slot), table.IdOf(target));
+        var npc = world.Characters.IdOf(slot);
         if (Free(npc)) return Fire(world, npc, whom, ev);
         if (RunningEvent(npc) == ev || SetOf(world, slot).For(ev).Count == 0) return false;
 
@@ -528,6 +579,7 @@ public sealed partial class DialogueSystem
     void EndBubbles(World world, Conversation c)
     {
         _starters.Ended(c.Npc);
+        if (c.Event == DialogueEvents.Announcement) Deliver(world, c.Npc);
         var key = (c.Npc, c.Event);
         var (count, _) = _counters.GetValueOrDefault(key);
         _counters[key] = (count + 1, world.GameHours);

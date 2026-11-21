@@ -1,21 +1,26 @@
 # Code-mod dependencies
 
-Code-mod API 2: one code mod declares others it builds on and then uses their loaded assemblies (one copy of each type and its statics)
+Code-mod API 2 and up: one code mod declares others it builds on and then uses their loaded assemblies (one copy of each type and its statics)
 instead of a private copy. Code: `CodeModManifest`, `CodeModVersion`, `CodeModChecks`, `CodeModDependencies` (`Meitou.Core`),
 `ModLoadContext`, `ModHost`, `ModContext.Dependency<T>` (`Meitou.Modding`), the launcher's mod list. Tests: `ModDependencyTests`.
 General loader contract: [modding](modding.md).
 
 **Observed** (source): `ModContext.AddEquipmentSlot` registrations commit in dependency order through the shared
 `Meitou.Modding` assembly on both client and server. A failed initialization commits no pending slots; duplicate
-inventory sections or FCS slot numbers are refused. This adds no manifest keys and retains loader API 2.
+inventory sections or FCS slot numbers are refused. This adds no manifest keys.
 
 `AddMedicalMeter` and `AddSkill` use the same shared registration path and dependency order. Meter and skill snapshot indices follow that
 order on the server and every client. Simulation owns the limits (four meters; skill column capacities 11, 8, 10 and 5), so a headless server
-does not load the game's stats window to validate a mod. These additive APIs retain loader API 2 and require matching code mods on peers.
+does not load the game's stats window to validate a mod. These additive APIs require matching code mods on peers.
 
 `AddItemUse` registrations use the same shared assembly and dependency transaction on the headless authority. World hooks and settings subgroups
-add no manifest keys and retain loader API 2. Covered legacy XP code mods are classified as disabled on both hosts; their built-in replacement
+add no manifest keys. Covered legacy XP code mods are classified as disabled on both hosts; their built-in replacement
 runs from the authority's public gameplay rules. See [item use and XP adoption](modding.md).
+
+**Observed** (Coop source): the chooser contract is API 3. Key binding and key-action types keep their `Meitou.Game.Host.Input` namespace but
+are compiled once into `Meitou.Modding`, so the headless host and game initialize the same mod entry. The UI callbacks submit supported typed
+commands through the recipient's session. World-state sidecars restore with the mod context scoped to the candidate world; strict failures
+abort replacement without changing the active world.
 
 ## Manifest
 
@@ -43,8 +48,8 @@ runs from the authority's public gameplay rules. See [item use and XP adoption](
 - `loadAfter`: ids of code mods that, when enabled, must load earlier. Ordering only: nothing is imported or required.
 - `incompatible`: code mods (id, or `{ id, version }` for some versions) this one must not run beside. Either side declaring it is enough;
   the one that loads second is refused. `optional` is refused here.
-- `gameVersion`: the Meitou releases the mod was built against (its references bind to engine methods; `apiVersion` covers only the loader
-  contract). The running version is the build's nearest game tag (`git describe --tags --abbrev=0 --match "v*"`, Meitou.Game.csproj;
+- `gameVersion`: the Meitou releases the mod was built against (its references bind to engine methods; `apiVersion` covers the loader
+  contract and, from 3, the chooser surface, not every engine member). The running version is the build's nearest game tag (`git describe --tags --abbrev=0 --match "v*"`, Meitou.Game.csproj;
   `launcher-v*` tags never count; release and nightly zips embed their own `v<version>`, package-release.ps1), compared as its release: pre-release and build are dropped, so `v0.16.1-nightly.20261106` counts as
   `0.16.1`. `>=0.16.1` takes every 0.16.1 nightly; `<0.17.0` refuses 0.17.0 nightlies. A range naming a pre-release refuses the manifest.
   Local builds carry the nearest `v*` tag too; only a build without one (no git history) passes every range.
@@ -162,7 +167,8 @@ static void UseVisitors(ModContext c) => c.Dependency<VisitorsMod>("settlement.v
 
 ## Compatibility
 
-- `ModApi.Version` is 2 and `ModApi.MinimumVersion` 1. API 1 manifests load as before; an API 2 mod on an API 1 game is refused.
+- `ModApi.Version` is 3 and `ModApi.MinimumVersion` 1. API 1 and 2 manifests load as before; a mod naming a newer API than the game's is
+  refused.
 - `CodeModManifest` keeps its API 1 four-parameter constructor and four-part `Deconstruct` beside the six-part ones. `ModApi.Version` is a
   `const`, so an API 1 DLL keeps the 1 it was compiled with.
 

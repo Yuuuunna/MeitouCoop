@@ -33,9 +33,10 @@ public sealed partial class World
     #region Snapshot buffers
 
     /// <summary>
-    /// Slots a publish job takes at a time: the characters are made on the worker pool, each one reading only the tick's state.
+    /// Slots a publish job takes at a time: the characters are made on the worker pool, each one reading only the tick's state. Small enough that
+    /// a few hundred characters still spread over the workers.
     /// </summary>
-    const int PublishChunk = 256;
+    const int PublishChunk = 64;
 
     /// <summary>
     /// The points the characters look at this publish, by slot (<see cref="Movement.LookTargets"/>; read by the fills, not hashed).
@@ -139,19 +140,29 @@ public sealed partial class World
     /// <summary>
     /// Publishes the baseline after the complete serial world boundary.
     /// </summary>
-    void Publish(TickProfile? prof = null, bool farShared = false)
+    /// <param name="farShared">A tick's publish: a character the far cadence skipped this tick (<see cref="Steps"/>) is published as the last publish
+    /// had it, the same object.</param>
+    /// <param name="views">False: only what the host interpolates from is new (the characters, the projectiles); the other views are the last
+    /// snapshot's (<see cref="MotionOf"/>).</param>
+    void Publish(TickProfile? prof = null, bool farShared = false, bool views = true)
     {
         _publishedPointed = Player.Pointed;
         var list = PublishCharacters(Player, prof: prof, farShared: farShared);
         var population = SystemOf<PopulationSystem>()?.Data;
         PreviousSnapshot = Snapshot;
-        Snapshot = SnapshotOf(list, population, SystemOf<Locks.BedSystem>(), SystemOf<Combat.CombatSystem>());
+        Snapshot = views ? SnapshotOf(list, population, SystemOf<Locks.BedSystem>(), SystemOf<Combat.CombatSystem>()) : MotionOf(list);
         prof?.Part("publish views");
     }
 
     /// <summary>
-    /// The selection's slots the context figures are against: its first member that could knock someone out from behind (the stealth KO
-    /// chances) and its lead (the kidnap chances); -1 for none.
+    /// The snapshot of a tick the host only interpolates from (a frame's second-to-last, docs/simulation.md "Snapshots"): the characters and the
+    /// projectiles of the tick, every other view the last snapshot's.
+    /// </summary>
+    WorldSnapshot MotionOf(IReadOnlyList<CharacterSnapshot> list) =>
+        Snapshot with { Tick = Tick, StateRevision = StateRevision, Characters = list, Projectiles = _projectiles?.PublishProjectiles() ?? [] };
+
+    /// <summary>
+    /// The selection's first member that could knock someone out from behind and its lead for the UI; -1 for none. Kidnap previews choose per target.
     /// </summary>
     (int Ko, int Lead) SelectionSlots()
     {
@@ -160,7 +171,7 @@ public sealed partial class World
         // The selection's first member that could knock someone out from behind: the stealth KO chances are against it.
         int koSlot = Carrying.CarrySystem.KnockOutAttacker(table, Player.Selection);
 
-        // The selection's lead: the kidnap chances are against it.
+        // The selection's lead supplies the UI's FirstSelected marker.
         int leadSlot = -1;
 
         foreach (var s in Player.Selection)
@@ -376,7 +387,7 @@ public sealed partial class World
         s.Lean = cold is { InSomething: Locks.HeldState.Bed, InWhat: { } lainIn } && Fixtures.Find(lainIn) is { } bed
             ? Locks.FixtureRegistry.LeanOf(bed)
             : null;
-        s.Position = DrawnPosition(cold, state[i].Position, s.Lean);
+        s.Position = DrawnPosition(cold, state[i].Position);
         s.Yaw = state[i].Yaw;
         s.Animations = cold?.Animation is { } anim && _animations is not null
             ? _animations.Publish(anim, s.Layers)
@@ -394,7 +405,8 @@ public sealed partial class World
         s.RecordId = cold?.RecordId ?? "";
         s.SquadId = cold?.SquadId ?? -1;
         s.IsPlayer = cold?.IsPlayer ?? false;
-        s.IsTrader = talk?.Trades(this, i) ?? (cold is { IsPlayer: false, SquadId: >= 0 } && Squads.Find(cold.SquadId)?.Shop is not null);
+        s.IsTrader = (talk?.Trades(this, i) ?? (cold is { IsPlayer: false, SquadId: >= 0 } && Squads.Find(cold.SquadId)?.Shop is not null))
+            || cold is { IsPlayer: true } && Trading.TradeSystem.KeepsFactionShop(this, i);
         s.IsDiplomat = cold?.NpcClass == FundamentalType.Diplomat;
         s.Selected = selected;
         s.FirstSelected = i == f.LeadSlot;
@@ -436,7 +448,11 @@ public sealed partial class World
         s.LimbBits = cold?.Medical?.LimbBits ?? 0;
         s.BloodAmounts = cold?.Medical?.ShownBlood ?? 0UL;
         s.Knockdown = cold?.Knockdown ?? default;
-        s.ClosedSlots = cold is null || !detailed ? [] : ClosedSlotsOf(cold);
+
+        // A character an inventory window shows (selected, the open loot, a pinned own one) gets its grid and closed sections.
+        bool windowed = v.Eligible && (f.FullDetails || selected || id == f.Viewer.OpenLoot ||
+            cold is { IsPlayer: true } && f.Viewer.InventoryShown.Contains(id));
+        s.ClosedSlots = cold is null || !(detailed || windowed) ? [] : ClosedSlotsOf(cold);
         s.HealthParts = detailed && cold!.Medical is { } health && cold.Race is { } anatomy ? HealthPartsOf(health, anatomy) : [];
         s.ItemGrid = v.Eligible && (f.FullDetails || selected || id == f.Viewer.OpenLoot || cold is { IsPlayer: true } && f.Viewer.InventoryShown.Contains(id))
             && cold!.Inventory is { } grid
@@ -518,6 +534,7 @@ public sealed partial class World
         s.HostileToPlayer = cold is not null && CharacterFacts.HostileToPlayer(population?.Relations, f.Viewer.Faction, cold.Faction, fightsPlayer);
         s.Shackled = cold?.Inventory is { } worn && WearsLocked(worn);
         s.PortraitSerial = cold?.PortraitSerial ?? 0;
+        s.LastingId = cold?.LastingId ?? LastingId.None;
         s.ShacklesLocked = shown && Locks.LockSystem.WornShackles(cold) is not null;
         s.CanBeShackled = shown && cold is { IsPlayer: false } && Locks.LockSystem.CanBeShackled(cold, true);
         s.CarriesShackles = selected && Locks.LockSystem.CarriedShackles(cold) is not null;
@@ -528,6 +545,7 @@ public sealed partial class World
         s.WantsToTalk = cold is { IsPlayer: false } && f.Talk?.HasInterrupt(id, f.Recipient ?? PlayerId.Local) == true;
         s.Jobs = cold is { Jobs.Count: > 0 } ? cold.Jobs.ToArray() : [];
         s.Scale = cold?.Animal is { } animal ? animal.Scale(cold.ShownAge) : 1;   // the size last refreshed (BodySystem.Age)
+        s.TagHeight = cold is null ? CharacterSnapshot.PersonTagHeight : Combat.CombatSystem.NameTagHeight(cold);
         s.DrawDistanceScale = cold?.Race is { Gigantic: true } ? RaceData.GiganticDrawScale : 1;
         s.WeatherNotice = cold?.WeatherNotice ?? WeatherNotice.None;
         s.WeatherNoticeProtection = cold?.WeatherNoticeProtection ?? 0;
@@ -551,7 +569,6 @@ public sealed partial class World
         var watchers = v.Watchers;
         var combat = f.Combat;
         int koSlot = f.KoSlot;
-        int leadSlot = f.LeadSlot;
 
         // The turret the combat system runs with this gunner; else (no combat system) at the gun of the turret its squad gave it: the AI's turret
         // goal, walked to and stood at (derived from the claims, not hashed).
@@ -600,21 +617,26 @@ public sealed partial class World
         s.Standing = cold is not null && CharacterFacts.Standing(cold);
         s.Animal = cold is not null && CharacterFacts.Animal(cold);
         s.CanOpenInventory = cold is not null && Carrying.CarrySystem.Openable(table, i);
-        s.KidnapChance = shown && leadSlot >= 0 && i != leadSlot && cold is { IsPlayer: false }
-            ? Carrying.CarrySystem.KidnapChance(table.Cold(leadSlot)!, cold, Tick)
-            : null;
+        s.KidnapChance = KidnapChance(i, cold, shown, f);
         s.LockpickSkill = cold is { IsPlayer: true } ? Locks.Lockpicking.Skill(cold) : 0;
+    }
+
+    /// <summary>
+    /// A recipient's kidnap chance against its nearest selected actor who can execute that order; other players' controllers are never candidates.
+    /// </summary>
+    float? KidnapChance(int target, CharacterCold? cold, bool shown, in PublishFacts facts)
+    {
+        if (!shown || cold is not { IsPlayer: false } || SystemOf<Carrying.CarrySystem>() is not { } carry) return null;
+
+        IReadOnlyList<CharacterId> selected = facts.Viewer.Selection;
+        if (facts.Recipient is { } recipient) selected = selected.Where(id => Players.CanControl(recipient, id)).ToArray();
+        int actor = carry.KidnapAttacker(this, selected, target);
+        return actor < 0 ? null : Carrying.CarrySystem.KidnapChance(Characters.Cold(actor)!, cold, Tick);
     }
 
     #endregion
 
     #region Character views
-
-    /// <summary>
-    /// How far a sleeper is drawn above its lie spot (engine choice, docs/game/locks.md "Beds"): the bed clips hold <c>Bip01</c> about level with the
-    /// mattress top (<c>sleepinbed</c> 6.7 on <c>Bed</c>'s 7.36, <c>sleeponfloor</c> 1.46 on <c>Camp Bed</c>'s 1.73), so the body sank into it.
-    /// </summary>
-    const float BedLift = 1.5f;
 
     /// <summary>
     /// The equipment slots a closed section of the inventory can be (<see cref="ClosedSlotsOf"/>).
@@ -630,12 +652,11 @@ public sealed partial class World
     /// Where a character is drawn: a character on the water, which the simulation keeps on the navmesh's flat surface, is lowered to what it stands
     /// on (<see cref="IWalkability.WaterBed"/>: a sunken floor, else the seabed) or, swimming, to <see cref="Bodies.Speed.WadingHeight"/> (the same
     /// surface test as <see cref="MovementSystem"/>'s water state: within <see cref="Bodies.Speed.WaterSlack"/> of the water level). Not a carried or
-    /// a downed body. One lying in a bed is raised by <see cref="BedLift"/>, along the up axis of a bed that leans (<paramref name="lean"/>).
+    /// a downed body, nor one lying in a bed: it lies at its lie spot as the original draws it (docs/game/locks.md "Lie spot").
     /// </summary>
-    Vector3 DrawnPosition(CharacterCold? cold, Vector3 at, Quaternion? lean)
+    Vector3 DrawnPosition(CharacterCold? cold, Vector3 at)
     {
-        if (cold?.InSomething == Locks.HeldState.Bed)
-            return lean is { } leaning ? at + Vector3.Transform(Vector3.UnitY, leaning) * BedLift : at with { Y = at.Y + BedLift };
+        if (cold?.InSomething == Locks.HeldState.Bed) return at;
 
         if (cold is not { Race: { } race, Medical: not { Incapacitated: true } } || !cold.CarriedBy.IsNone
             || at.Y > Data.World.WorldWater.Height + Speed.WaterSlack)
@@ -765,7 +786,8 @@ public sealed partial class World
     /// <summary>
     /// The inventory window's view: Total Weight is the carried weight (<see cref="Bodies.Encumbrance.CarriedWeight"/>, a carried person included
     /// and a living holder's death items left out, as the original's panel <c>FUN_1405d4260</c>, docs/game/ui-screens.md), the maximum from the
-    /// holder's strength times the stats multiplier (an animal's age) and the burden factor from its strength.
+    /// holder's strength times the stats multiplier (an animal's age) and the burden factor from its strength; both with code mods' carry
+    /// modifiers.
     /// </summary>
     InventoryView InventoryViewOf(CharacterCold cold, Items.Inventory grid, PopulationData? population, GameConstants? constants,
         Items.HeldItem? held, Func<Items.ItemInstance, float?>? steal)
@@ -774,12 +796,15 @@ public sealed partial class World
         bool carrying = !cold.Carrying.IsNone;
         float strengthMult = cold.Medical?.StatMultiplier(StatsEnumerated.Strength) ?? 1;
         var stats = constants is null ? null : cold.Stats;
+        var carry = stats?.CarryModifiersOrNull;
         return new InventoryView(grid.Width, grid.Height, grid.Backpack?.Contents?.Width ?? 0, grid.Backpack?.Contents?.Height ?? 0,
             ItemsOf(grid, cold.Faction, population, steal))
         {
             TotalWeight = constants is null ? items : Encumbrance.CarriedWeight(constants, items, carrying),
-            CarryCapacity = stats is null ? null : Encumbrance.WindowCapacity(constants!, stats.Strength * stats.Scale, strengthMult),
-            Burden = stats is null || items <= 0 && !carrying ? 1 : Encumbrance.Factor(constants!, items, carrying, stats.Strength, strengthMult),
+            CarryCapacity = stats is null ? null : Encumbrance.WindowCapacity(constants!, stats.Strength * stats.Scale, strengthMult, carry),
+            Burden = stats is null || items <= 0 && !carrying
+                ? 1
+                : Encumbrance.Factor(constants!, items, carrying, stats.Strength, strengthMult, carry),
         };
     }
 
@@ -1009,16 +1034,19 @@ public sealed partial class World
             // only writer besides the constructor, so this display state lives on the character; each character is published by one worker, so the
             // write does not race.
             cold.LastWeaponCategory = Combat.CombatSystem.HandCategory(cold);
-            var (label, skill) = cold.LastWeaponCategory switch
-            {
-                3 => ("Heavy:", StatsEnumerated.HeavyWeapons),
-                0 => ("Katana:", StatsEnumerated.Katanas),
-                4 => ("Hacker:", StatsEnumerated.Hackers),
-                1 => ("Sabre:", StatsEnumerated.Sabres),
-                5 => ("Martial Arts:", StatsEnumerated.MartialArts),
-                8 => ("Polearm:", StatsEnumerated.Polearms),
-                _ => ((string?)null, StatsEnumerated.None),
-            };
+            // A weapon naming a code mod's skill is labelled by that skill (Meitou; the original has none).
+            var (label, skill) = Combat.CombatSystem.HandModSkill(cold) is { } mod
+                ? (mod.Label + ":", cold.Fighter!.Weapon!.Skill)
+                : cold.LastWeaponCategory switch
+                {
+                    3 => ("Heavy:", StatsEnumerated.HeavyWeapons),
+                    0 => ("Katana:", StatsEnumerated.Katanas),
+                    4 => ("Hacker:", StatsEnumerated.Hackers),
+                    1 => ("Sabre:", StatsEnumerated.Sabres),
+                    5 => ("Martial Arts:", StatsEnumerated.MartialArts),
+                    8 => ("Polearm:", StatsEnumerated.Polearms),
+                    _ => ((string?)null, StatsEnumerated.None),
+                };
             if (label is not null)
                 return new(skill, label, (int)stats[skill]) { Damage = combat.HudDamage(this, id.Slot, cold) };
         }
@@ -1043,7 +1071,7 @@ public sealed partial class World
 
         return new(StatsEnumerated.Athletics, "Athletics:", (int)stats.Athletics)
         {
-            Athletics = new((int)stats.Athletics, Speed.RunValue(race, stats.Athletics), (int)((1 - Speed.LegFactor(med)) * 100),
+            Athletics = new((int)stats.Athletics, Speed.RunValue(race, stats), (int)((1 - Speed.LegFactor(med)) * 100),
                 (int)((1 - encumbrance) * 100), cold.Fighter?.AthleticsFactor ?? 1, (int)((med.LegItemFactor(StatsEnumerated.Athletics) - 1) * 100),
                 cold.StatsTopSpeed ?? hot.MaxSpeed)   // FUN_14088e780's "Total speed:", the stats' S
         };
@@ -1109,7 +1137,7 @@ public sealed partial class World
         var state = table.Previous;
         // The selection's first member that could knock someone out from behind: the stealth KO chances are against it.
         int koSlot = Carrying.CarrySystem.KnockOutAttacker(table, viewer.Selection);
-        // The selection's lead: the kidnap chances are against it.
+        // The selection's lead supplies the UI's FirstSelected marker.
         int leadSlot = -1;
         foreach (var s in viewer.Selection)
             if (table.TryResolveNext(s, out int l)) { leadSlot = l; break; }

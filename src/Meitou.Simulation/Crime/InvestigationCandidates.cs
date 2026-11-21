@@ -33,7 +33,7 @@ sealed class InvestigationCandidates
     public void Clear() => _built = false;
 
     /// <summary>
-    /// The suspects near <paramref name="at"/>, ordered by slot so all qualifying enemies are tagged and the same last one is attacked.
+    /// The suspects near <paramref name="at"/>, ordered by slot so all qualifying enemies are tagged and threatened in the original scan order.
     /// The returned scratch list is valid until the next query.
     /// </summary>
     public List<int> Near(World world, Vector3 at, float range)

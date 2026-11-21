@@ -30,6 +30,16 @@ sealed class CharacterAudio(GameHost host)
     AudioSystem? _characterAudioFor;
 
     /// <summary>
+    /// The code mods' own sound objects (made on the first posted mod sound, again for another audio).
+    /// </summary>
+    ModSoundPosts? _modPosts;
+
+    /// <summary>
+    /// Remote UI mods' client-only sounds, fenced by the presentation world active when they were posted.
+    /// </summary>
+    readonly System.Collections.Concurrent.ConcurrentQueue<(object World, SoundEvent Event)> _localModSounds = new();
+
+    /// <summary>
     /// The characters' sound objects; null before the first frame with a database and the animations.
     /// </summary>
     internal CharacterSounds? Sounds;
@@ -171,6 +181,7 @@ sealed class CharacterAudio(GameHost host)
         if (!ReferenceEquals(_characterAudioFor, sound))
         {
             _characterAudioFor = sound;
+            _modPosts = null;
             Sounds = null;
             _soundsFor = null;
         }
@@ -190,6 +201,8 @@ sealed class CharacterAudio(GameHost host)
         ForgetStaleMemos();
         _fedBodies!.Update(source.TimeScale);
         while (source.TryDequeueSound(out var happened)) PlayCombatSound(sounds, happened, eye);
+        while (_localModSounds.TryDequeue(out var local))
+            if (ReferenceEquals(local.World, source.WorldIdentity)) PlayCombatSound(sounds, local.Event, eye);
     }
 
     /// <summary>
@@ -202,6 +215,7 @@ sealed class CharacterAudio(GameHost host)
         _soundSource?.EnableSounds(false);
         _soundSource = null;
         _soundsFor = null;
+        _localModSounds.Clear();
     }
 
     /// <summary>
@@ -455,6 +469,15 @@ sealed class CharacterAudio(GameHost host)
     #region Happenings
 
     /// <summary>
+    /// Queues a remote UI mod's display-only event from any thread while audio follows an active world; never writes to the authority.
+    /// </summary>
+    internal void PostLocalModSound(SoundEvent sound)
+    {
+        if (System.Threading.Volatile.Read(ref _soundsFor) is not { } world) return;
+        _localModSounds.Enqueue((world, sound));
+    }
+
+    /// <summary>
     /// Plays a local storage-window inspection on its character object; opening a client window never writes to the authoritative sound queue.
     /// </summary>
     internal void Inspect(CharacterId who) => Sounds?.Job(SoundKey(who), "Character_Inspect");
@@ -558,7 +581,27 @@ sealed class CharacterAudio(GameHost host)
             case SoundKind.FedToMachine:
                 _fedBodies!.Post(e.Position, e.Armour, eye);
                 break;
+            case SoundKind.Posted or SoundKind.PostedInterface when e.Posted is { } posted:
+                PlayModSound(sounds, in e, posted, subject, eye);
+                break;
         }
+    }
+
+    /// <summary>
+    /// A code mod's event (docs/modding.md "Sounds"), never setting a switch on an object of the game's: on the mods' interface object; on a
+    /// character, its own object when there is no switch (the sound follows it), else a mods' pooled object at its place; or a mods' pooled object
+    /// at the point. A character too far to have an object hears nothing.
+    /// </summary>
+    void PlayModSound(CharacterSounds sounds, in SoundEvent e, PostedSound posted, ulong subject, Vector3 eye)
+    {
+        var (name, group, value) = (posted.Event, posted.SwitchGroup, posted.SwitchValue);
+        if (_characterAudioFor is not { } audio) return;
+
+        var posts = _modPosts ??= new ModSoundPosts(audio.Player);
+        if (e.Kind == SoundKind.PostedInterface) posts.OnInterface(name, group, value);
+        else if (e.Subject.IsNone) posts.At(e.Position, eye, name, group, value);
+        else if (group is null) sounds.Job(subject, name, CharacterSounds.EventLimit);
+        else if (sounds.TryPlace(subject, out var at)) posts.At(at, eye, name, group, value);
     }
 
 

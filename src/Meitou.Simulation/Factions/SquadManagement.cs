@@ -202,6 +202,9 @@ public static class SquadManagement
                     return;
                 }
                 if (!EndPurse(world, doomed)) return;
+                // An empty mod shop returns its stock at the squad's position before the squad is removed.
+                if (Trading.TradeSystem.GiveBack(world, doomed) is > 0 and var dropped)
+                    Notice(Loc.Tr("{1} item stack(s) of a closed shop were left on the ground.", dropped));
                 world.Squads.Remove(doomed.Id);
                 world.SystemOf<PopulationSystem>()?.ForgetSquad(doomed.Id);
                 Renumber(PlayerSquads(world, faction));
@@ -234,7 +237,7 @@ public static class SquadManagement
     /// Whether a command naming the mod <paramref name="named"/> may change a squad setting <paramref name="owner"/> holds: one no mod holds, a
     /// command naming no mod, or the holder itself. Another mod's setting is left alone, so mods marking the same squad never undo each other's.
     /// </summary>
-    static bool MayChange(string? owner, string? named) => owner is null || named is not { Length: > 0 } || named == owner;
+    internal static bool MayChange(string? owner, string? named) => owner is null || named is not { Length: > 0 } || named == owner;
 
     /// <summary>
     /// A trusted mod's actual player-owned squad; an explicitly named faction must agree with its owner.
@@ -591,7 +594,8 @@ public static class SquadManagement
     /// <summary>
     /// Dismiss (<c>FUN_14049b050</c>, the confirmation's <c>FUN_14048fa30</c>): refused for the faction's only character ("Cannot dismiss the only
     /// remaining character in the faction."). The character is deselected, joins Tech Hunters (else No Faction) and leaves in a new squad of its own
-    /// of the "Wandering Squad" template, whose AI packages then run it.
+    /// of the "Wandering Squad" template, whose AI packages then run it. Its jobs go (<c>FUN_140507280</c>), its order queue stays, the front to be
+    /// planned again (<b>Verified</b>, <c>FUN_14048fa30</c>).
     /// </summary>
     static void Dismiss(World world, PopulationData data, CharacterId id, int ownerFaction, PlayerId? actor)
     {
@@ -606,6 +610,7 @@ public static class SquadManagement
         if (faction < 0) faction = data.FactionIndex(DismissFallbackFaction);
         if (faction < 0) return;
         world.Events.Line(world, "recruit", $"{EventLog.Who(world, slot)} dismissed: leaves for {EventLog.FactionName(world, faction)}");
+        world.ReleaseDuties(slot);   // the faction change empties its goal lists (FUN_1405cbac0 -> FUN_14050a9d0): a food run it was on ends
         if (world.Squads.Find(cold.SquadId) is { } old)
         {
             old.Members.Remove(id);
@@ -634,12 +639,15 @@ public static class SquadManagement
         cold.IsPlayer = false;
         cold.Orders = CharacterOrders.None;
         cold.Ai = null;
-        cold.Engaged = false;
         cold.Fleeing = false;
-        cold.Pending = null;
+        Crime.CrimeSystem.DropPending(world, slot, cold);
         cold.Jobs.Clear();
         cold.Save = null;   // no longer in the player's platoon file
         table.Next[slot].Mode = SpeedMode.Walk;
+
+        // The order queue stays (neither the confirmation nor the faction change, Character slot 20 FUN_1405cbac0, empties it); the plan is
+        // emptied (FUN_14050d1b0 on +0x300), so the front is planned again from its start, now as an NPC's order.
+        Player.PlayerOrders.Interrupt(cold);
         TaskStart.Stand(table, slot);
         squad.Members.Add(id);
         squad.Leader = id;

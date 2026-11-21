@@ -397,11 +397,16 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// The panel's view of a building's doors (null for no building, or one without fixtures).
+    /// The panel's view of a building's doors, or of a selected container fixture's emptiness (null for no building, or one without fixtures).
     /// </summary>
     internal BuildingDetail? DetailOf(string? instance, int faction)
     {
-        if (instance is null || !_byBuilding.TryGetValue(instance, out var list)) return null;
+        if (instance is null) return null;
+
+        // A container is selected by its fixture id, which is no building's key unless the container is a level building of its own.
+        bool empty = Find(instance) is { Contents.Items.Count: 0 };
+        if (!_byBuilding.TryGetValue(instance, out var list)) return empty ? new BuildingDetail(instance, []) { Empty = true } : null;
+
         var doorList = list.Where(f => f.Kind == FixtureKind.Door).OrderBy(f => f.DoorIndex)
             .Select(f
                     => new DoorDetail(f.Motion is DoorMotion.Open or DoorMotion.Opening, f.Lock is { EffectivelyLocked: true }, f.Lock?.Level ?? 0,
@@ -412,6 +417,7 @@ public sealed partial class FixtureRegistry
             PropertyRevision = PropertyRevision(instance),
             DoorGroupRevision = DoorGroupRevision(instance),
             ResidentsPublic = PublicDayOf(instance),
+            Empty = empty,
         };
     }
 
@@ -458,6 +464,22 @@ public sealed partial class FixtureRegistry
         foreach (var b in data.Sites[site].Buildings) RegisterWithSight(world, data, site, b, townFaction);
         Bind(world);
         EmptyPurchased(world, site);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="id"/> names a building of a town not registered yet (<see cref="RegisterSite"/>), or a fixture of one (its ids start
+    /// with the building's key): it is there once the town comes into the world.
+    /// </summary>
+    internal bool Unregistered(PopulationData data, string id)
+    {
+        for (int s = 0; s < data.Sites.Count; s++)
+        {
+            if (_sites.Contains(s)) continue;
+            foreach (var b in data.Sites[s].Buildings)
+                if (b.Key.Length > 0 && id.StartsWith(b.Key, StringComparison.Ordinal) || b.Fixtures.Any(f => f.Id == id)) return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -527,13 +549,10 @@ public sealed partial class FixtureRegistry
     /// </summary>
     void RegisterBuilding(World world, PopulationData data, int site, TownBuilding b, int townFaction)
     {
-        int levelOwner = PlacementOwner(data, b, townFaction);
-        int owner = levelOwner;
-        if (Saved?.GetValueOrDefault(b.Key)?.Strings.GetValueOrDefault("owner faction ID") is { Length: > 0 } savedOwner
-            && data.FactionIndex(savedOwner) is >= 0 and var savedFaction)
-        {
-            owner = savedFaction;
-        }
+        if (_byBuilding.ContainsKey(b.Key)) return;
+
+        int levelOwner = data.LevelOwnerOf(b, townFaction);
+        int owner = SavedOwner(data, b) ?? levelOwner;
 
         RegisterTownMachine(world, data, site, b, owner);
         if (_byBuilding.ContainsKey(b.Key)) return;
@@ -907,33 +926,30 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// A BUILDING's NODE_USE instances (<see cref="UseNode"/>) in instance id order; null with none (a bed with fewer than 2 is lain in at its
-    /// position marker, <see cref="Fixture.Marker"/>, facing its lone node's way).
+    /// A BUILDING's NODE_USE instances (<see cref="UseNode"/>) in instance id order, placed by the building's <c>scale</c> as its parts are; null with
+    /// none (a bed with none is lain in at its position marker, <see cref="Fixture.Marker"/>).
     /// </summary>
-    static UseNode[]? UseNodes(GameDatabase db, GameRecord building)
+    internal static UseNode[]? UseNodes(GameDatabase db, GameRecord building)
     {
+        float scale = building.GetFloat("scale", 1) is > 0 and var s ? s : 1;
         UseNode[] nodes = [.. building.Instances.Values.Where(i => !i.IsCleared && db.Find(i.Target) is { } n && n.GetBool("is node")
                 && n.GetInt("node type") == UseNodeType)
-            .OrderBy(i => i.Id, StringComparer.Ordinal).Select(i => new UseNode(i.Position, TownBuildings.YawOf(i.Rotation) - MathF.PI / 2))];
+            .OrderBy(i => i.Id, StringComparer.Ordinal)
+            .Select(i => new UseNode(i.Position * scale, TownBuildings.YawOf(i.Rotation) - MathF.PI / 2))];
         return nodes.Length > 0 ? nodes : null;
     }
 
     /// <summary>
     /// Where a sleeper is put in a bed and the way it faces (<c>Building::getPositionMarker</c> / <c>getDirectionMarkerQuat</c>, docs/game/locks.md
-    /// "Beds"): with 2 or more use nodes the one nearest <paramref name="from"/>, else the bed's position marker (its origin without a flagged part)
-    /// facing its lone node's way, or the bed's own with none (Forgotten Buildings' one-node "Bed with Pillow", #718).
+    /// "Beds"): the use node nearest <paramref name="from"/>, facing its way (a lone node is the position marker the original reads with fewer than
+    /// 2: Forgotten Buildings' one-node "Bed with Pillow", #718), else the bed's position marker (its origin without a flagged part) facing the bed's way.
     /// </summary>
     public static (Vector3 At, float Yaw) LieSpot(Fixture bed, Vector3 from, double now = 0)
     {
-        if (bed.Bed.Nodes is { Length: >= 2 } nodes)
-        {
-            Func<int, bool>? skip = bed.BadNodes is { Count: > 0 } ? i => IsBad(bed, i, now) : null;
-            return Nearest(bed, nodes, from, skip)!.Value;
-        }
+        if (bed.Bed.Nodes is not { Length: > 0 } nodes) return (bed.Marker ?? bed.Position, bed.Yaw);
 
-        // the direction marker reads any node, the position marker only 2 or more (FUN_140549720, FUN_14054b850)
-        float yaw = bed.Bed.Nodes is [var only] ? MathF.IEEERemainder(bed.Yaw + only.Yaw, MathF.Tau) : bed.Yaw;
-        return (bed.Marker ?? bed.Position, yaw);
+        Func<int, bool>? skip = bed.BadNodes is { Count: > 0 } ? i => IsBad(bed, i, now) : null;
+        return Nearest(bed, nodes, from, skip)!.Value;
     }
 
     /// <summary>
@@ -977,15 +993,15 @@ public sealed partial class FixtureRegistry
     public static Vector3? ExitSpot(Fixture cage) => Nearest(cage, cage.UseNodes, cage.Position)?.At;
 
     /// <summary>
-    /// <c>Building::getPositionMarker(from)</c> (vtable slot 0x470, FUN_14054b850, <b>Verified</b>) of a bed or cage by fixture id: with two or more
-    /// use nodes the nearest one to <paramref name="from"/> (a bed skips its marked-bad nodes), else the building's position marker
+    /// <c>Building::getPositionMarker(from)</c> (vtable slot 0x470, FUN_14054b850, <b>Verified</b>) of a bed or cage by fixture id: the use node
+    /// nearest <paramref name="from"/> (a bed skips its marked-bad nodes; a lone node is the marker), else the building's position marker
     /// (<see cref="Fixture.Marker"/>, its position without one); null for an unknown id.
     /// </summary>
     public Vector3? PositionMarker(string fixtureId, Vector3 from, double now = 0)
     {
         if (Find(fixtureId) is not { } f) return null;
         if (f.Kind == FixtureKind.Bed) return LieSpot(f, from, now).At;
-        return Nearest(f, f.UseNodes is { Length: >= 2 } nodes ? nodes : null, from)?.At ?? f.Marker ?? f.Position;
+        return Nearest(f, f.UseNodes, from)?.At ?? f.Marker ?? f.Position;
     }
 
     /// <summary>
@@ -997,7 +1013,7 @@ public sealed partial class FixtureRegistry
     public Vector3? FloorMarker(string fixtureId, Vector3 from, IWalkability walk, double now = 0)
     {
         if (Find(fixtureId) is not { } f) return null;
-        if (f.Kind == FixtureKind.Bed || f.UseNodes is not { Length: >= 2 } nodes) return PositionMarker(fixtureId, from, now);
+        if (f.Kind == FixtureKind.Bed || f.UseNodes is not { Length: > 0 } nodes) return PositionMarker(fixtureId, from, now);
 
         var turn = Matrix4x4.CreateRotationY(f.Yaw);
         Vector3? best = null;
@@ -1167,12 +1183,14 @@ public sealed partial class FixtureRegistry
 
             // A loaded sleeper is put at its lie spot again (engine choice: a save from before LieSpot holds it at the bed's origin, half off the
             // mattress), still sleeping: a task other than Sleep would get it up (BedSystem). It plays the bed's clip as one laid in does (EnterBed);
-            // the clip is not saved.
+            // the clip is not saved. It takes the clip at once, as a character's first clips are: until its bed registered it lay in the lying clip,
+            // and a fade from that one (held while a load stays paused) twisted the body across the mattress.
             if (c.InSomething == HeldState.Bed)
             {
                 var (at, yaw) = LieSpot(f, next[s].Position, world.GameHours);
                 table.Place(s, at, yaw, CharacterTask.Sleep);
                 c.OperateClip = f.Bed.Clip;
+                if (c.Animation is { } shown) shown.Count = 0;
             }
         }
     }
@@ -1548,11 +1566,17 @@ public sealed partial class FixtureRegistry
     /// functionality's <c>use range</c>, doubled while it is not moving, and it is less than 15 above or below it (the original's same-floor test has
     /// no counterpart here: Meitou's cage has no floor of its own).
     /// </summary>
-    public static bool AtCage(Fixture cage, Vector3 character, bool moving)
+    public static bool AtCage(Fixture cage, Vector3 character, bool moving) => AtFixture(cage, character, moving);
+
+    /// <summary>
+    /// Whether a character is at a piece of furniture to use it (a cage, a bed, a storage container; <c>isAtLocation</c> for a building,
+    /// <c>AI::isWithinChoppingRange</c> <c>FUN_14059c6d0</c>, <b>Verified</b>): as <see cref="AtCage"/>.
+    /// </summary>
+    public static bool AtFixture(Fixture f, Vector3 character, bool moving)
     {
-        float reach = cage.UseRange * (moving ? 1 : StillReachFactor);
-        return Vector2.Distance(new(character.X, character.Z), new(cage.Position.X, cage.Position.Z)) < reach
-                && MathF.Abs(character.Y - cage.Position.Y) < WorkHeight;
+        float reach = f.UseRange * (moving ? 1 : StillReachFactor);
+        return Vector2.Distance(new(character.X, character.Z), new(f.Position.X, f.Position.Z)) < reach
+                && MathF.Abs(character.Y - f.Position.Y) < WorkHeight;
     }
 
     /// <summary>
@@ -1948,14 +1972,14 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// Puts a character into its fixture: placed there, standing, its path and orders dropped.
+    /// Puts a character into its fixture: placed there, standing, its path dropped. Its queued orders stay (the cage or bed entry
+    /// <c>FUN_140330600</c> wipes no queue, docs/game/ai-tasks.md "What clears the queue").
     /// </summary>
     static void Hold(CharacterTable table, int slot, CharacterCold c, Vector3 at, float yaw)
     {
         table.Place(slot, at, yaw);
         TaskStart.Step(table, slot, CharacterTask.Idle);   // the teleport stands it
         c.Path = [];
-        c.OrderQueue.Clear();
     }
 
     /// <summary>
@@ -1980,9 +2004,10 @@ public sealed partial class FixtureRegistry
 
         if (releaserFaction >= 0 && crimes is not null && crimes.Factions.Books(releaserFaction) && c.Bounties is { } ledger)
         {
-            if (ledger.BookedFor(crimes.Factions.Relations, releaserFaction) is { } a) ledger.Remove(a);
-            if (cage is not null && ledger.BookedFor(crimes.Factions.Relations, cage.Owner) is { } b) ledger.Remove(b);
-            if (ledger.Count == 0) c.Bounties = null;
+            if (ledger.BookedFor(crimes.Factions.Relations, releaserFaction) is { } a)
+                CrimeSystem.ClearBounty(world, s, c, ledger, a);
+            if (cage is not null && ledger.BookedFor(crimes.Factions.Relations, cage.Owner) is { } b)
+                CrimeSystem.ClearBounty(world, s, c, ledger, b);
         }
 
         Clear(c);
@@ -2019,8 +2044,8 @@ public sealed partial class FixtureRegistry
     /// Task 133 Get out of cage (legit, flag 0; <see cref="LeaveCage"/>), given with the queue cleared to a prisoner bailed out
     /// (<c>FUN_1406ae170</c>), bought free (<c>FUN_1406add20</c>) or released by a jailer (<c>FUN_1403570a0</c>). The bought and the released are out
     /// of their cage before the task runs (both clear the hold themselves, <c>FUN_140330600</c>, right after the give), so its leave finds no cage and
-    /// does nothing (<b>Verified</b>: the leave tests the held building's handle, which the clear set to none); only a bailed prisoner, whose cage
-    /// the bail merely unlocks, leaves through it. False when the character is in no cage (nothing to do).
+    /// does nothing (<b>Verified</b>: the leave tests the held building's handle, which the clear set to none); only a bailed prisoner, whose hold
+    /// the bail leaves (its cage stays locked), leaves through it. False when the character is in no cage (nothing to do).
     /// </summary>
     public bool GetOutLegit(World world, CharacterId prisoner, CrimeSystem? crimes = null)
     {
@@ -2184,9 +2209,15 @@ public sealed partial class FixtureRegistry
     }
 
     /// <summary>
-    /// Clears a character's slave state and owner (state 0) without DA 53's "Free!" (a slave bought free, <c>FUN_1406add20</c>).
+    /// Clears a character's slave state and owner (state 0) without DA 53's "Free!" (a slave bought free, <c>FUN_1406add20</c>, or bailed,
+    /// <c>FUN_1406ae170</c>). Both first give it the null owner hand (<c>FUN_14032e430</c>), whose tail turns a member of type 4 (slave) into type 0
+    /// (<b>Verified</b>): a bought slave alone in its squad, which the split leaves where it is, plans from the members' list, not the slaves'.
     /// </summary>
-    public static void ClearSlave(World world, CharacterCold c) => SetSlave(world, c, 0, -1);
+    public static void ClearSlave(World world, CharacterCold c)
+    {
+        if (c.Role == (int)Factions.SquadRole.Slave) c.Role = (int)Factions.SquadRole.Squad1;
+        SetSlave(world, c, 0, -1);
+    }
 
     /// <summary>
     /// <c>DA_TAG_ESCAPED_SLAVE</c> (25): the character becomes an escaped slave (state 2), keeping its owner (<c>FUN_140680560</c>).
@@ -2194,17 +2225,24 @@ public sealed partial class FixtureRegistry
     public static void TagEscaped(World world, CharacterCold c) => SetSlave(world, c, 2, c.SlaveOwner);
 
     /// <summary>
-    /// <c>DA_REMOVE_SLAVE_STATUS</c> (53, <c>FUN_140680560</c>): a character in shackles or slave state is freed with "Free!" (the original floats it
-    /// in green over the head) and <c>Character_Unlock_Success</c>; its slave state is cleared and its worn shackles unlocked.
+    /// <c>DA_REMOVE_SLAVE_STATUS</c> (53, <c>FUN_140680560</c> case 0x35, <b>Verified</b>): a character in shackles or slave state is told "Free!"
+    /// (the original floats it in green over the head) with <c>Character_Unlock_Success</c>; then, whoever it is, its slave state is set to 0
+    /// (the setter: job 187 removed), its perma-jobs are destroyed (<c>FUN_140507280</c>) and its worn shackles' lock is broken (<c>FUN_140297db0</c>
+    /// sets the lock's broken flag <c>+0x21</c>, as a cut does). The setter leaves the owner handle; Meitou clears it with the state (engine choice,
+    /// <see cref="LayLow"/>).
     /// </summary>
     public static void FreeSlave(World world, int slot, CharacterCold c)
     {
         var shackles = LockSystem.WornShackles(c);
-        if (shackles is null && c.SlaveState == 0) return;
-        world.Bark(world.Characters.IdOf(slot), Loc.Tr("Free!"));
-        world.EmitSound(SoundKind.Unlocked, slot, world.Characters.Next[slot].Position);
+        if (shackles is not null || c.SlaveState != 0)
+        {
+            world.Bark(world.Characters.IdOf(slot), Loc.Tr("Free!"));
+            world.EmitSound(SoundKind.Unlocked, slot, world.Characters.Next[slot].Position);
+        }
+
         SetSlave(world, c, 0, -1);
-        if (shackles?.Lock is { } l) l.Locked = false;
+        Kidnap.ObedientSlave.DropJobs(world, c);
+        if (shackles?.Lock is { } l) l.Broken = true;
     }
 
     /// <summary>
@@ -2344,7 +2382,7 @@ public sealed partial class FixtureRegistry
     /// <summary>
     /// The start of <see cref="InteriorKey"/>'s keys.
     /// </summary>
-    const string InteriorLockPrefix = "meitou lock ";
+    internal const string InteriorLockPrefix = "meitou lock ";
 
     /// <summary>
     /// Whether a fixture of <paramref name="building"/> is one of its layout's objects (id <c>&lt;building&gt;/&lt;object&gt;</c>).

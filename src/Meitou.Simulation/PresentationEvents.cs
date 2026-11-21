@@ -111,8 +111,11 @@ internal sealed class PresentationEventJournal(TimeProvider? clock = null)
                     speech.Add(new(e.Id, spoken.Speaker, spoken.Line with { Player = e.TargetOwner == player }));
                 if (e.Sound is not { } sound) continue;
                 bool personal = sound.Kind is SoundKind.ShacklesOn or SoundKind.BountyPaid or SoundKind.DismantleDone or SoundKind.ReleasedFromPrison;
-                bool positional = sound.Kind is SoundKind.BoltStuck or SoundKind.TurretShot or SoundKind.WallBroken or SoundKind.FedToMachine;
-                if (personal ? e.TargetOwner != player : !nearby(sound.Position) || !positional && !visible.Contains(sound.Subject)) continue;
+                bool positional = sound.Kind is SoundKind.BoltStuck or SoundKind.TurretShot or SoundKind.WallBroken or SoundKind.FedToMachine
+                    || sound.Kind == SoundKind.Posted && sound.Subject.IsNone;
+                bool broadcast = sound.Kind == SoundKind.PostedInterface;
+                if (personal ? e.TargetOwner != player : !broadcast && (!nearby(sound.Position) || !positional && !visible.Contains(sound.Subject)))
+                    continue;
                 sounds.Add(new(e.Id, sound with
                 {
                     Subject = visible.Contains(sound.Subject) ? sound.Subject : CharacterId.None,

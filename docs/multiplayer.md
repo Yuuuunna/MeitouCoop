@@ -503,6 +503,12 @@ grant alone do not claim an NPC squad. Management, active-squad selection and re
 classification. Entering explicit mode preserves existing player-managed factions even before assigning
 their roles to an account.
 
+**Observed** (source): the atomic checkpoint manifest includes native save files, portraits, per-mod sidecars, the mod environment,
+lasting-character IDs, weapon blood and level edits. Every file is checksummed before publishing the current pointer; sidecar paths
+pass the same relative-path validation as native records. Save capture freezes lasting-ID allocation until the next tick, so mod save
+callbacks read existing identities. Missing mod owners remove their faction shops through the same restore cleanup as autonomous
+squads and independent purses; ordinary player clients cannot install a mod-owned shop.
+
 Multiplayer world saves mark their format and every managed platoon, retain each squad's actual faction,
 per-faction ordering, persistent squad ID and allocator high-water, and write each character's actual owner,
 player-role flag and death flag. Empty squads and dead archives survive recapture; loaded controlled roles

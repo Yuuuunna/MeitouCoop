@@ -81,13 +81,25 @@ public sealed partial class NavmeshWalkability : IWalkability
     /// </summary>
     public const float HandoverMargin = 120;
     /// <summary>
-    /// How long (s) a goal found unreachable is remembered (engine choice; a door locked or unlocked meanwhile drops it at once).
+    /// How long in game seconds a goal found unreachable is remembered; a changed door or world invalidates it immediately.
     /// </summary>
     public const double UnreachableSeconds = 10;
     /// <summary>
     /// How many unreachable goals are remembered at most; reaching it clears them all.
     /// </summary>
     const int UnreachableLimit = 4096;
+    /// <summary>
+    /// Maximum polygon keys retained by the unreachable-goal cache (eight bytes per key).
+    /// </summary>
+    const long GroundLimit = 2_000_000;
+    /// <summary>
+    /// Simulation time sampled at the owner boundary, independently of query-thread wall time.
+    /// </summary>
+    long _tick;
+    /// <summary>
+    /// The duration of one simulation tick in game seconds.
+    /// </summary>
+    float _tickSeconds;
     /// <summary>
     /// Goals found unreachable over the loaded zones, by goal polygon and the agent's radius and door rule: the navmesh they were found on (any other
     /// mesh, after a zone went live or unloaded, asks again), the doors' version (NavDoors.Version), the nearest reachable point, a closed leaf
@@ -262,6 +274,29 @@ public sealed partial class NavmeshWalkability : IWalkability
         }
 
         return w.Contains(WorldLayout.ZoneOf(x, z)) ? reachable : AllowUnloadedFallback && _fallback.IsWalkable(x, z);
+    }
+
+    /// <inheritdoc/>
+    public float? SeatHeight(float x, float z, float y)
+    {
+        var w = _world;
+        if (!TryStand(w, x, z, y, out _, out bool stands) || stands) return null;
+
+        var heights = s_scratch!;
+        heights.Clear();
+        w.HeightsAt(x, z, heights);
+        if (heights.Count == 0) return null;
+
+        float nearest = heights[0], top = heights[0];
+        foreach (float h in heights)
+        {
+            if (MathF.Abs(h - y) < MathF.Abs(nearest - y)) nearest = h;
+            top = MathF.Max(top, h);
+        }
+
+        // Over every face of its column it keeps its height: the floors of a building the save or the world's state adds are not in the mesh yet
+        // when its characters are made, and the ground under them would take it.
+        return top < y ? null : Snap(w, x, z, nearest, out _);
     }
 
     /// <summary>
@@ -443,12 +478,9 @@ public sealed partial class NavmeshWalkability : IWalkability
         bool fromLoaded = w.Contains(WorldLayout.ZoneOf(from.X, from.Z));
         if (!fromLoaded || !w.Contains(WorldLayout.ZoneOf(to.X, to.Z)))
             return Authoritative(LongRoute(w, from, to, agent, fromLoaded, incarnation));
-        var key = (to, agent);
+        var key = UnreachableKey(w, to, agent);
         bool Current() => ReferenceEquals(w, _world) && doorVersion == Doors.Version && incarnation == (NavigationIncarnation?.Invoke() ?? 0);
-        if (AllowUnloadedFallback && cache is not null && cache.Found.TryGetValue(key, out var hit)
-            && System.Diagnostics.Stopwatch.GetElapsedTime(hit.At).TotalSeconds < UnreachableSeconds
-            && Exact(w, from, hit.Nearest, agent) is { Found: true } near && Current())
-            return Provisional(w, near, to, incarnation, hit.Door);
+        if (Remembered(w, from, to, agent, key, cache, incarnation) is { } known && Current()) return known;
         var exact = Exact(w, from, to, agent);
         if (exact.Found)
             return exact;
@@ -472,25 +504,91 @@ public sealed partial class NavmeshWalkability : IWalkability
             var route = LongRoute(w, from, to, agent, fromLoaded, incarnation);
             if (CrossesUnloaded(w, route.Points)) return Authoritative(route);
 
-            // A loaded goal inside a mine's collision still has a reachable working edge. Keep only the mesh path;
-            // the immediate-mode provisional tail would cross the obstacle and is not authoritative movement.
-            return Toward(w, from, to, agent);
         }
 
         var part = Toward(w, from, to, agent);
         if (!part.Found)
             return exact;
-        if (Vector2.Distance(new(part.Points[^1].X, part.Points[^1].Z), new(to.X, to.Z)) <= NavQuery.GoalSnap)
-            return part;
-        // A provisional tail crosses the closed leaf, so the lock system can stop it at the gate instead of a nearby post.
-        var door = NavQuery.LastSearchMetClosedDoor ? new NavQuery(w, Doors).ClosedDoorOnTheWay(from, to, part.Points[^1], agent) : null;
-        if (cache is not null && Current())
-        {
-            if (cache.Found.Count >= UnreachableLimit) cache.Found.Clear();
-            cache.Found[key] = (part.Points[^1], door, System.Diagnostics.Stopwatch.GetTimestamp());
-        }
+        bool metDoor = NavQuery.LastSearchMetClosedDoor;
+        long[] ground = key is null ? [] : NavQuery.LastSearchReached();
+        var nearest = part.Points[^1];
+        bool arrives = Arrives(nearest, to);
+        var door = metDoor && !arrives ? new NavQuery(w, Doors).ClosedDoorOnTheWay(from, to, nearest, agent) : null;
+        if (key is { } found && cache is not null && Current())
+            Remember(cache, found, new(nearest, door, arrives, ground, Volatile.Read(ref _tick)));
 
-        return Provisional(w, part, to, incarnation, door);
+        // A loaded goal inside collision still has a working edge; authoritative movement keeps only this real mesh path.
+        return arrives || !AllowUnloadedFallback ? part : Provisional(w, part, to, incarnation, door);
+    }
+
+    /// <summary>
+    /// Whether a mesh path ends within the goal's horizontal snap distance.
+    /// </summary>
+    static bool Arrives(Vector3 end, Vector3 goal) => Vector2.Distance(new(end.X, end.Z), new(goal.X, goal.Z)) <= NavQuery.GoalSnap;
+
+    /// <summary>
+    /// Reuses a failed search only for starts on ground that search actually covered; reaching its endpoint alone is insufficient.
+    /// </summary>
+    PathResult? Remembered(NavWorld world, Vector3 from, Vector3 to, NavAgent agent, (NavRef, float, bool)? key,
+        UnreachableCache? cache, long incarnation)
+    {
+        if (key is not { } known || cache is null || !cache.Found.TryGetValue(known, out var hit) || !Fresh(hit.At)) return null;
+        if (!world.TryFindPolygon(from, NavQuery.StartSnap, out var start, out _) || Array.BinarySearch(hit.Ground, start.Key) < 0) return null;
+
+        bool arrives = Arrives(hit.Nearest, to);
+        if (hit.Arrived && !arrives) return null;
+        var near = new NavQuery(world, Doors).FindPath(from, hit.Nearest, agent, null, out _);
+        if (!near.Found) return null;
+
+        var path = FromWalker(from, near);
+        return arrives || !AllowUnloadedFallback ? path : Provisional(world, path, to, incarnation, hit.Door);
+    }
+
+    /// <summary>
+    /// Retains a bounded failed-search footprint in its immutable world's bucket.
+    /// </summary>
+    void Remember(UnreachableCache cache, (NavRef, float, bool) key, Unreachable found)
+    {
+        lock (_unreachableGate)
+        {
+            if (!ReferenceEquals(cache, _unreachable)) return;
+            if (cache.Found.Count >= UnreachableLimit || cache.GroundKept + found.Ground.Length > GroundLimit)
+            {
+                cache.Found.Clear();
+                cache.GroundKept = 0;
+            }
+
+            if (cache.Found.TryGetValue(key, out var old)) cache.GroundKept -= old.Ground.Length;
+            cache.Found[key] = found;
+            cache.GroundKept += found.Ground.Length;
+        }
+    }
+
+    /// <summary>
+    /// A failed route's nearest point, closed door, arrival result, explored ground and simulation timestamp.
+    /// </summary>
+    readonly record struct Unreachable(Vector3 Nearest, Vector3? Door, bool Arrived, long[] Ground, long At);
+
+    /// <summary>
+    /// The goal polygon and traversal properties that decide whether two failed searches can be shared.
+    /// </summary>
+    static (NavRef, float, bool)? UnreachableKey(NavWorld world, Vector3 to, NavAgent agent) =>
+        world.TryFindPolygon(to, NavQuery.GoalSnap, out var goal, out _) ? (goal, agent.Radius, agent.DoorsClosed) : null;
+
+    /// <inheritdoc/>
+    public void TickStarts(long tick, float tickSeconds)
+    {
+        _tickSeconds = tickSeconds;
+        Volatile.Write(ref _tick, tick);
+    }
+
+    /// <summary>
+    /// A cached result expires by simulation time and cannot survive a tick-counter reset.
+    /// </summary>
+    bool Fresh(long at)
+    {
+        long ticks = Volatile.Read(ref _tick) - at;
+        return ticks >= 0 && ticks * (double)_tickSeconds < UnreachableSeconds;
     }
 
     /// <summary>
@@ -725,8 +823,14 @@ public sealed partial class NavmeshWalkability : IWalkability
         public readonly WeakReference<NavWorld> World = new(world);
         public readonly long Incarnation = incarnation;
         public readonly int Doors = doors;
-        public readonly long At = System.Diagnostics.Stopwatch.GetTimestamp();
-        public readonly System.Collections.Concurrent.ConcurrentDictionary<(Vector3 Goal, NavAgent Agent), (Vector3 Nearest, Vector3? Door, long At)> Found = new();
+        /// <summary>
+        /// Failed searches grouped by goal polygon and traversal properties.
+        /// </summary>
+        public readonly System.Collections.Concurrent.ConcurrentDictionary<(NavRef, float, bool), Unreachable> Found = new();
+        /// <summary>
+        /// Polygon keys retained by this bucket, changed under the owner's cache lock.
+        /// </summary>
+        public long GroundKept;
     }
 
     UnreachableCache? UnreachableFor(NavWorld w, long incarnation, int doors)
@@ -739,7 +843,8 @@ public sealed partial class NavmeshWalkability : IWalkability
             var cache = _unreachable;
             if (cache is not null && cache.Incarnation > incarnation)
                 return null;
-            if (cache is null || cache.Incarnation != incarnation || cache.Doors != doors || !cache.World.TryGetTarget(out var cachedWorld) || !ReferenceEquals(cachedWorld, w) || System.Diagnostics.Stopwatch.GetElapsedTime(cache.At).TotalSeconds >= UnreachableSeconds)
+            if (cache is null || cache.Incarnation != incarnation || cache.Doors != doors ||
+                !cache.World.TryGetTarget(out var cachedWorld) || !ReferenceEquals(cachedWorld, w))
                 _unreachable = cache = new UnreachableCache(w, incarnation, doors);
             return cache;
         }

@@ -57,7 +57,7 @@ public sealed class LoadedMod
 /// <param name = "SavedSettings">The player's saved settings of a mod by its id (setting key to text), or null.</param>
 /// <param name = "GameVersion">The running Meitou for <c>gameVersion</c> ranges; null passes every range.</param>
 /// <param name = "Disabled">The installed code mods not enabled, only so a dependent's refusal says "not enabled" rather than "not installed".</param>
-public sealed record ModHostOptions(IReadOnlyList<ModInfo> Enabled, IReadOnlySet<string> Allowed, GameDatabase Data, PopulationData Population, Func<World?> World, Func<string, IReadOnlyDictionary<string, string>?>? SavedSettings = null, CodeModVersion? GameVersion = null, IReadOnlyList<ModInfo>? Disabled = null, Action<SimCommand>? Enqueue = null, Func<long>? Tick = null, bool StrictSystems = false)
+public sealed record ModHostOptions(IReadOnlyList<ModInfo> Enabled, IReadOnlySet<string> Allowed, GameDatabase Data, PopulationData Population, Func<World?> World, Func<string, IReadOnlyDictionary<string, string>?>? SavedSettings = null, CodeModVersion? GameVersion = null, IReadOnlyList<ModInfo>? Disabled = null, Action<SimCommand>? Enqueue = null, Func<long>? Tick = null, bool StrictSystems = false, Action<SoundEvent>? PostSound = null)
 {
     /// <summary>
     /// Loads the enabled code set for an explicit local tool invocation.
@@ -75,6 +75,12 @@ public sealed record ModHostOptions(IReadOnlyList<ModInfo> Enabled, IReadOnlySet
 /// </summary>
 public sealed class ModHost
 {
+    /// <summary>
+    /// The reason of a mod refused as one built for another version of the game (<see cref="CodeModFaults.BuiltForAnother"/>), whose notice is
+    /// <see cref="CodeModFaults.Notice"/>.
+    /// </summary>
+    const string Outdated = "built for another version of the game";
+
     /// <summary>
     /// Every loaded mod's committed registrations.
     /// </summary>
@@ -143,6 +149,11 @@ public sealed class ModHost
     /// </summary>
     public IReadOnlyList<ModDebugCommand> DebugCommands => _registry.DebugCommands;
     /// <summary>
+    /// Every mod's key actions, in load order.
+    /// </summary>
+    public IReadOnlyList<Game.Host.Input.ModKeyAction> KeyActions => _registry.KeyActions;
+
+    /// <summary>
     /// A mod registered a combat hit feed: the host then gives each world a <see cref = "World.CombatHitFeed"/> and drains it every frame.
     /// </summary>
     public bool WantsCombatHits => _registry.HitFeeds.Count > 0;
@@ -167,6 +178,7 @@ public sealed class ModHost
             {
                 feed.Faulted = true;
                 Console.Error.WriteLine($"mod       {feed.Owner}: combat hit feed disabled: {e.GetType().Name}: {e.Message}");
+                CodeModFaults.Tell(feed.Owner, e);
             }
         }
     }
@@ -194,6 +206,7 @@ public sealed class ModHost
             {
                 list.Faulted = true;
                 Console.Error.WriteLine($"mod       {list.Owner}: faction list arranger disabled: {e.GetType().Name}: {e.Message}");
+                CodeModFaults.Tell(list.Owner, e);
             }
         }
         return rows;
@@ -300,7 +313,7 @@ public sealed class ModHost
         catch (Exception e)
         {
             Console.Error.WriteLine($"mod       {info.Name}: {e}");
-            RefuseEarly(info.Name, $"failed to start: {e.GetBaseException().Message}");
+            RefuseEarly(info.Name, CodeModFaults.BuiltForAnother(e) ? Outdated : $"failed to start: {e.GetBaseException().Message}");
         }
     }
 
@@ -390,7 +403,7 @@ public sealed class ModHost
         catch (Exception e)
         {
             Console.Error.WriteLine($"mod       {mod.Info.Name}: {e}");
-            failure = $"failed to change the game data: {e.GetBaseException().Message}";
+            failure = CodeModFaults.BuiltForAnother(e) ? Outdated : $"failed to change the game data: {e.GetBaseException().Message}";
         }
         finally
         {
@@ -461,7 +474,7 @@ public sealed class ModHost
         catch (Exception e)
         {
             Console.Error.WriteLine($"mod       {mod.Info.Name}: {e}");
-            Refuse(mod.Info.Name, $"failed to start: {e.GetBaseException().Message}");
+            Refuse(mod.Info.Name, CodeModFaults.BuiltForAnother(e) ? Outdated : $"failed to start: {e.GetBaseException().Message}");
         }
     }
 
@@ -497,7 +510,7 @@ public sealed class ModHost
         catch (Exception e)
         {
             Console.Error.WriteLine($"mod       {info.Name}: {e}");
-            Refuse(info.Name, $"failed to start: {e.GetBaseException().Message}");
+            Refuse(info.Name, CodeModFaults.BuiltForAnother(e) ? Outdated : $"failed to start: {e.GetBaseException().Message}");
         }
     }
 
@@ -513,12 +526,13 @@ public sealed class ModHost
     }
 
     /// <summary>
-    /// Leaves a mod out: a log line, a notice, and its reason for the dependency checks.
+    /// Leaves a mod out: a log line, a notice (for one built for another version of the game, <see cref="CodeModFaults.Notice"/>), and its reason
+    /// for the dependency checks.
     /// </summary>
     void Refuse(string mod, string reason)
     {
         Console.Error.WriteLine($"mod       {mod}: not loaded: {reason}");
-        _notices.Add($"Mod {mod} not loaded: {reason}");
+        _notices.Add(reason == Outdated ? CodeModFaults.Notice(mod) : $"Mod {mod} not loaded: {reason}");
         _pass.Refused(mod, reason);
     }
 
@@ -621,7 +635,8 @@ public sealed class ModHost
     /// </summary>
     static IMod CreateEntry(LoadedMod mod)
     {
-        var type = mod.Assemblies.Select(a => a.GetType(mod.Manifest.Entry, throwOnError: false)).FirstOrDefault(t => t is not null) ?? throw new ModLoadException($"entry type {mod.Manifest.Entry} is not in its assemblies");
+        var type = mod.Assemblies.Select(a => a.GetType(mod.Manifest.Entry, throwOnError: false)).FirstOrDefault(t => t is not null)
+            ?? throw EntryMissing(mod);
         if (!typeof(IMod).IsAssignableFrom(type))
             throw new ModLoadException($"entry type {type.FullName} does not implement {typeof(IMod).FullName}");
         if (type.GetConstructor(Type.EmptyTypes)is null)
@@ -630,7 +645,29 @@ public sealed class ModHost
     }
 
     /// <summary>
-    /// Runs <see cref = "IMod.Initialize"/>; commits the registrations when it returns, removes the mod's patches when it throws.
+    /// Why the mod's entry type was not found: an assembly whose types cannot load as built for another version of the game (an entry that
+    /// implements a type the game no longer has or no longer shows is not found by name; <see cref="CodeModFaults.BuiltForAnother"/>), else that it
+    /// is not in the assemblies.
+    /// </summary>
+    static Exception EntryMissing(LoadedMod mod)
+    {
+        foreach (var assembly in mod.Assemblies)
+        {
+            try
+            {
+                assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException e) when (CodeModFaults.BuiltForAnother(e))
+            {
+                return e;
+            }
+        }
+
+        return new ModLoadException($"entry type {mod.Manifest.Entry} is not in its assemblies");
+    }
+
+    /// <summary>
+    /// Runs <see cref="IMod.Initialize"/>; commits the registrations when it returns, removes the mod's patches when it throws.
     /// </summary>
     void Initialize(LoadedMod mod, ModHostOptions options)
     {
@@ -653,7 +690,15 @@ public sealed class ModHost
                 Console.Error.WriteLine($"mod       {mod.Manifest.Id}: no world yet: dropped {command.GetType().Name}");
         }
 
-        var context = new ModContext(mod, _registry, options.Data, options.Population, CurrentWorld, options.SavedSettings?.Invoke(mod.Manifest.Id), Enqueue, CurrentTick, CurrentPopulation);
+        void PostLocalSound(SoundEvent sound)
+        {
+            if (_registry.BuildingData is not null || _preparingData.Value is not null) return;
+
+            options.PostSound?.Invoke(sound);
+        }
+
+        var context = new ModContext(mod, _registry, options.Data, options.Population, CurrentWorld,
+            options.SavedSettings?.Invoke(mod.Manifest.Id), Enqueue, CurrentTick, CurrentPopulation, PostLocalSound);
         try
         {
             mod.Instance!.Initialize(context);
@@ -690,6 +735,7 @@ public sealed class ModHost
             catch (Exception e)
             {
                 Console.Error.WriteLine($"mod       {dependency.Manifest.Id}: cleanup after {mod.Manifest.Id} failed: {e}");
+                CodeModFaults.Tell(dependency.Manifest.Id, e);
             }
         }
     }
@@ -719,7 +765,172 @@ public sealed class ModHost
     public CodeModEnvironment Environment(string gameVersion)
     {
         var entries = _mods.Select(m => new CodeModEnvironmentEntry(m.Manifest.Id, m.Manifest.Version?.ToString(), m.Info.Name));
-        return new CodeModEnvironment(gameVersion, [..entries]);
+        return new CodeModEnvironment(gameVersion, [.. entries]);
+    }
+
+    /// <summary>
+    /// The save data of the world's mod systems (<see cref="IModSaveData"/>) into <paramref name="files"/>, one file per mod by id; between ticks. A
+    /// mod without such systems, or whose write fails, keeps the file it had (a save made without the mod keeps the mod's data too). A mod that
+    /// claimed world states gets the same entries, then its states' entry (<see cref="ModWorldStateSave"/>): where it would keep its file, the file's
+    /// entries of systems it still registers are kept instead, so a removed or renamed system's data is not carried on.
+    /// </summary>
+    public void CaptureSaveData(World world, IDictionary<string, byte[]> files, bool strict = false) =>
+        InWorldScope(world, () => CaptureSaveDataCore(world, files, strict));
+
+    /// <summary>
+    /// Captures systems and claimed world-state values with the mod context bound to the world being saved.
+    /// </summary>
+    void CaptureSaveDataCore(World world, IDictionary<string, byte[]> files, bool strict)
+    {
+        var systems = SaveableSystems(world).ToLookup(s => s.Tag.ModId);
+        foreach (var mod in SavingMods(systems))
+        {
+            var entries = SystemEntries(mod, systems[mod], strict);
+            if (OwnedWorldStates(mod) is { } owned)
+            {
+                entries = entries is { Count: > 0 } ? entries : EarlierEntries(files, mod, strict);
+                entries.Add((ModWorldStateSave.EntryName, ModWorldStateSave.Write(ModWorldStateSave.ValuesOf(world, owned))));
+            }
+            if (entries is not null) files[mod] = ModSaveFile.Write(entries);
+        }
+    }
+
+    /// <summary>
+    /// The entries of <paramref name="mod"/>'s saveable systems in this world, in system order; null, with a log line, when one's write throws.
+    /// </summary>
+    static List<(string Name, byte[] Data)>? SystemEntries(string mod, IEnumerable<(IModSaveData System, ModSystemTag Tag)> systems, bool strict)
+    {
+        try
+        {
+            return systems.Select(s => (s.Tag.Name, Written(s.System))).ToList();
+        }
+        catch (Exception e)
+        {
+            if (strict) throw new InvalidDataException($"Mod {mod}: save data not written.", e);
+            Console.Error.WriteLine($"mod       {mod}: save data not written: {e}");
+            CodeModFaults.Tell(mod, e);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Hands each mod system of a world just loaded its saved data, and each mod's world states their saved values; between ticks, before the first.
+    /// A system without data stays as made, a state without a value answers from its record. A fault in a mod's systems' data does not stop its
+    /// states' values, nor the other way round.
+    /// </summary>
+    public void RestoreSaveData(World world, IReadOnlyDictionary<string, byte[]> files, bool strict = false) =>
+        InWorldScope(world, () => RestoreSaveDataCore(world, files, strict));
+
+    /// <summary>
+    /// Restores systems and world-state values into this candidate; a strict failure aborts replacement without touching the active world.
+    /// </summary>
+    void RestoreSaveDataCore(World world, IReadOnlyDictionary<string, byte[]> files, bool strict)
+    {
+        var systems = SaveableSystems(world).ToLookup(s => s.Tag.ModId);
+        foreach (var mod in SavingMods(systems))
+        {
+            if (!files.TryGetValue(mod, out var file)) continue;
+            Dictionary<string, byte[]> entries;
+            try
+            {
+                entries = ModSaveFile.Read(file);
+            }
+            catch (Exception e)
+            {
+                if (strict) throw new InvalidDataException($"Mod {mod}: save data not read.", e);
+                Console.Error.WriteLine($"mod       {mod}: save data not read: {e}");
+                continue;
+            }
+            RestoreSystems(mod, systems[mod], entries, strict);
+            if (OwnedWorldStates(mod) is { } owned) RestoreWorldStates(mod, world, owned, entries, strict);
+        }
+    }
+
+    /// <summary>
+    /// Hands <paramref name="mod"/>'s systems their entries; a throwing <see cref="IModSaveData.Read"/> stops that mod's systems' restore, logged.
+    /// </summary>
+    static void RestoreSystems(string mod, IEnumerable<(IModSaveData System, ModSystemTag Tag)> systems, Dictionary<string, byte[]> entries,
+        bool strict)
+    {
+        try
+        {
+            foreach (var (system, tag) in systems)
+                if (entries.TryGetValue(tag.Name, out var data))
+                    system.Read(new MemoryStream(data, writable: false));
+        }
+        catch (Exception e)
+        {
+            if (strict) throw new InvalidDataException($"Mod {mod}: save data not read.", e);
+            Console.Error.WriteLine($"mod       {mod}: save data not read: {e}");
+            CodeModFaults.Tell(mod, e);
+        }
+    }
+
+    /// <summary>
+    /// Sets <paramref name="mod"/>'s world state values from its states' entry, if the file has one; a bad entry is logged and sets nothing more.
+    /// </summary>
+    static void RestoreWorldStates(string mod, World world, IReadOnlyDictionary<string, Simulation.Factions.ModWorldState> owned,
+        Dictionary<string, byte[]> entries, bool strict)
+    {
+        if (!entries.TryGetValue(ModWorldStateSave.EntryName, out var states)) return;
+        try
+        {
+            ModWorldStateSave.Read(states, world, owned);
+        }
+        catch (InvalidDataException e)
+        {
+            if (strict) throw new InvalidDataException($"Mod {mod}: world states not read.", e);
+            Console.Error.WriteLine($"mod       {mod}: world states not read: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The entries of <paramref name="mod"/>'s file in <paramref name="files"/> (the loaded save's) for the systems the mod still registers, in the
+    /// file's order: what a mod whose systems are all out of this world (or whose write failed) keeps. Empty for no file or an unreadable one
+    /// (logged).
+    /// </summary>
+    List<(string Name, byte[] Data)> EarlierEntries(IDictionary<string, byte[]> files, string mod, bool strict)
+    {
+        if (!files.TryGetValue(mod, out var file)) return [];
+
+        Dictionary<string, byte[]> earlier;
+        try
+        {
+            earlier = ModSaveFile.Read(file);
+        }
+        catch (InvalidDataException e)
+        {
+            if (strict) throw new InvalidDataException($"Mod {mod}: earlier save data not kept.", e);
+            Console.Error.WriteLine($"mod       {mod}: earlier save data not kept: {e.Message}");
+            return [];
+        }
+        var registered = _registry.Simulation.Systems
+            .Where(f => f.Owner == mod)
+            .Select(f => f.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        return [.. earlier.Where(e => registered.Contains(e.Key)).Select(e => (e.Key, e.Value))];
+    }
+
+    /// <summary>
+    /// The mods with save data: those with saveable systems, in system order, then those that claimed world states, in load order.
+    /// </summary>
+    IEnumerable<string> SavingMods(ILookup<string, (IModSaveData System, ModSystemTag Tag)> systems) =>
+        systems
+            .Select(g => g.Key)
+            .Concat(_mods.Select(m => m.Manifest.Id).Where(id => OwnedWorldStates(id) is not null))
+            .Distinct();
+
+    /// <summary>
+    /// The WORLD_EVENT_STATEs <paramref name="mod"/> claimed, by record id; null for none.
+    /// </summary>
+    IReadOnlyDictionary<string, Simulation.Factions.ModWorldState>? OwnedWorldStates(string mod)
+    {
+        if (_registry.WorldStates.Count == 0) return null;
+
+        var owned = _registry.WorldStates
+            .Where(s => s.Owner == mod)
+            .ToDictionary(s => s.Record, StringComparer.Ordinal);
+        return owned.Count == 0 ? null : owned;
     }
 
     /// <summary>
@@ -749,18 +960,25 @@ public sealed class ModHost
     /// <summary>
     /// Registers the mods' interface extensions with a new interface; one that throws is logged and skipped.
     /// </summary>
-    public List<IDisposable> RegisterUi(Func<IUiExtension, IDisposable> register)
+    public List<IDisposable> RegisterUi(Func<IUiExtension, IDisposable> register) => RegisterUi((extension, _) => register(extension));
+
+    /// <summary>
+    /// Registers the mods' interface extensions with a new interface, each with its mod's folder (null when unknown); one that throws is logged and
+    /// skipped.
+    /// </summary>
+    public List<IDisposable> RegisterUi(Func<IUiExtension, string?, IDisposable> register)
     {
         var registrations = new List<IDisposable>();
         foreach (var extension in _registry.Ui)
         {
             try
             {
-                registrations.Add(register(extension));
+                registrations.Add(register(extension, _registry.UiFolders.GetValueOrDefault(extension)));
             }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"mod       interface extension {extension.Id} not registered: {e}");
+                if (_registry.UiOwners.GetValueOrDefault(extension) is { } owner) CodeModFaults.Tell(owner, e);
             }
         }
 
@@ -771,54 +989,6 @@ public sealed class ModHost
     /// The Harmony version every mod patches with, for the log.
     /// </summary>
     public static string HarmonyVersion => typeof(Harmony).Assembly.GetName().Version?.ToString() ?? "?";
-
-    /// <summary>
-    /// The save data of the world's mod systems (<see cref = "IModSaveData"/>) into <paramref name = "files"/>, one file per mod by id; between ticks. A mod without such
-    /// systems, or whose write fails, keeps the file it had (a save made without the mod keeps the mod's data too).
-    /// </summary>
-    public void CaptureSaveData(World world, IDictionary<string, byte[]> files, bool strict = false) => InWorldScope(world, () => CaptureSaveDataCore(world, files, strict));
-    void CaptureSaveDataCore(World world, IDictionary<string, byte[]> files, bool strict)
-    {
-        foreach (var group in SaveableSystems(world).GroupBy(s => s.Tag.ModId))
-        {
-            try
-            {
-                files[group.Key] = ModSaveFile.Write([..group.Select(s => (s.Tag.Name, Written(s.System)))]);
-            }
-            catch (Exception e)
-            {
-                if (strict)
-                    throw new InvalidDataException($"Mod {group.Key}: save data not written.", e);
-                Console.Error.WriteLine($"mod       {group.Key}: save data not written: {e}");
-            }
-        }
-    }
-
-    /// <summary>
-    /// Hands each mod system of a world just loaded its saved data; between ticks, before the first. A system without data stays as made.
-    /// </summary>
-    public void RestoreSaveData(World world, IReadOnlyDictionary<string, byte[]> files, bool strict = false) => InWorldScope(world, () => RestoreSaveDataCore(world, files, strict));
-    void RestoreSaveDataCore(World world, IReadOnlyDictionary<string, byte[]> files, bool strict)
-    {
-        foreach (var group in SaveableSystems(world).GroupBy(s => s.Tag.ModId))
-        {
-            if (!files.TryGetValue(group.Key, out var file))
-                continue;
-            try
-            {
-                var entries = ModSaveFile.Read(file);
-                foreach (var(system, tag)in group)
-                    if (entries.TryGetValue(tag.Name, out var data))
-                        system.Read(new MemoryStream(data, writable: false));
-            }
-            catch (Exception e)
-            {
-                if (strict)
-                    throw new InvalidDataException($"Mod {group.Key}: save data not read.", e);
-                Console.Error.WriteLine($"mod       {group.Key}: save data not read: {e}");
-            }
-        }
-    }
 
     /// <summary>
     /// Isolates replacement construction and cleanup from the active world. Save Read is explicitly bound to its candidate.

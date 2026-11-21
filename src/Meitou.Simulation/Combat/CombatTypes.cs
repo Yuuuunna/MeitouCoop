@@ -1,5 +1,6 @@
 using System.Numerics;
 using Meitou.Data.Gameplay;
+using Meitou.Data.Gameplay.Ai;
 using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.Gameplay.Combat;
 using Meitou.Simulation.Ai;
@@ -39,6 +40,12 @@ public sealed record AttackOrder(IReadOnlyList<CharacterId> Attackers, Character
     public TaskSource? Source { get; init; }
 
     /// <summary>
+    /// The row the fight runs (<see cref="TaskRequest.Row"/>; null: told from <see cref="Picked"/> and <see cref="Defensive"/>): an engine order's own
+    /// attack row, 4 Attacking.
+    /// </summary>
+    public TaskType? Row { get; init; }
+
+    /// <summary>
     /// The job of the attackers' lists the fight runs (<see cref="TaskRequest.Job"/>; -1: none).
     /// </summary>
     public int Job { get; init; } = -1;
@@ -50,9 +57,9 @@ public sealed record AttackOrder(IReadOnlyList<CharacterId> Attackers, Character
 }
 
 /// <summary>
-/// Shoot At (order 235, offered to a character on a turret): the gunners (the selection when empty) that man a turret fire at <see cref="Target"/>
-/// instead of choosing; the turret keeps the target while it scores for it and is no friend, and waits while it is out of range; otherwise it chooses
-/// itself (<see cref="CharacterCold.TurretTarget"/>).
+/// Shoot At (order 235, offered to a character on a turret): each character listed (the selection when empty) gets order 235 on <see cref="Target"/>
+/// through its queue (<see cref="ShootAt"/>); a gunner's turret takes the target while it scores for it and is no friend, and waits while it is out of
+/// range; otherwise it chooses itself.
 /// </summary>
 public sealed record ShootAtOrder(IReadOnlyList<CharacterId> Gunners, CharacterId Target) : OrderCommand;
 

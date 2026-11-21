@@ -37,7 +37,7 @@ public sealed partial class PopulationSystem
             if (hot.Alive) carry?.DropForUnload(world, slot);
             if (!dead && hot.Alive)
             {
-                Detach(cold);
+                Detach(world, slot, cold);
                 bool leads = id == squad.Leader;
                 stored.Members.Add(new StoredMember(cold, hot.Position, hot.Yaw, leads));
                 if (leads || !placed) at = new Vector2(hot.Position.X, hot.Position.Z);
@@ -46,7 +46,7 @@ public sealed partial class PopulationSystem
             else if (hot.Alive)
             {
                 // FUN_1404ff410 writes the whole list, the dead with it; FUN_1404feed0 then destroys every member.
-                Detach(cold);
+                Detach(world, slot, cold);
                 stored.Dead.Add(new StoredMember(cold, hot.Position, hot.Yaw, false));
             }
 
@@ -54,6 +54,7 @@ public sealed partial class PopulationSystem
             RemoveMember(world, id);
         }
 
+        stored.SquadId = squad.Id;
         stored.Anchor = at;
         stored.StoredTick = world.Tick;
         stored.StoredHours = world.GameHours;
@@ -72,9 +73,9 @@ public sealed partial class PopulationSystem
 
     /// <summary>
     /// Clears what a character's cold state holds only while it is in the world: paths, AI, carrying, treatment, combat and stealth state, a pending
-    /// crime, jobs.
+    /// crime (reported as lapsed, <see cref="Crime.CrimeSystem.DropPending"/>), jobs.
     /// </summary>
-    static void Detach(CharacterCold c)
+    static void Detach(World world, int slot, CharacterCold c)
     {
         c.Path = [];
         c.PathExact = int.MaxValue;
@@ -91,7 +92,6 @@ public sealed partial class PopulationSystem
         c.Ordered = false;
         c.InCombat = false;
         c.Fleeing = false;
-        c.Engaged = false;
         c.Watchers = null;
         c.StealthExposure = default;
         c.StealthExposureTick = long.MinValue;
@@ -104,7 +104,7 @@ public sealed partial class PopulationSystem
         c.CarriedBy = CharacterId.None;
         c.CarryTarget = CharacterId.None;
         c.LiftTime = -1;
-        c.Pending = null;
+        Crime.CrimeSystem.DropPending(world, slot, c);
         c.Ai = null;
         c.PickingLock = null;
         c.BuildSite = null;
@@ -148,7 +148,7 @@ public sealed partial class PopulationSystem
             : (platoon.Position, _settings.HomelessHomeRadius, null);
         var squad = SpawnKept(world, stored, platoon.TemplateId, platoon.Faction, -1, platoon.Id, platoon.Position, centre, radius, platoon.Size,
             wild: platoon.Wild);
-        BindNest(squad, nest);
+        BindNest(squad, nest, platoon.Saved?.WildSite ?? -1);
         return squad;
     }
 
@@ -239,10 +239,39 @@ public sealed partial class PopulationSystem
         world.Squads.Add(squad);
         Memory?.Restore(squad.Id, stored.Memory);
         stored.Memory = null;
+        RepointSlaves(world, stored.SquadId, squad.Id);
 
         // A resident in its bed takes it again.
         world.Fixtures.Bind(world);
         return squad;
+    }
+
+    /// <summary>
+    /// The slaves that obeyed squad <paramref name="from"/>, in the world or stored with another platoon or wild site, obey <paramref name="to"/>, the
+    /// squad the same characters came back as (<see cref="StoredSquad.SquadId"/>).
+    /// </summary>
+    void RepointSlaves(World world, int from, int to)
+    {
+        if (from < 0) return;
+
+        var table = world.Characters;
+        for (int s = 0; s < table.HighWater; s++)
+            if (table.Cold(s) is { } c && c.SlaveMaster == from) c.SlaveMaster = to;
+
+        foreach (var p in world.Platoons.All)
+            if (p.Stored is { } stored) RepointStored(stored, from, to);
+
+        foreach (var site in _keptWild.Values)
+            foreach (var k in site) RepointStored(k.Stored, from, to);
+    }
+
+    /// <summary>
+    /// <see cref="RepointSlaves"/> for the members of one stored squad.
+    /// </summary>
+    static void RepointStored(StoredSquad stored, int from, int to)
+    {
+        foreach (var m in stored.Members)
+            if (m.Cold.SlaveMaster == from) m.Cold.SlaveMaster = to;
     }
 
     /// <summary>

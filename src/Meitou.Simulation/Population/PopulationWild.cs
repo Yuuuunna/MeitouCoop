@@ -23,6 +23,11 @@ public enum WildKind : byte
 }
 
 /// <summary>
+/// A nest standing in the world as a town: its wild site's index and its centre (X/Z).
+/// </summary>
+public readonly record struct PlacedNest(int Site, Vector2 Centre);
+
+/// <summary>
 /// A place in the wild that gets squads while its zone is active: an area sector (one zone cell and its BIOME_GROUP) or a nest of a biome group.
 /// <see cref="Spots"/> are the seeded candidate centres of a nest (the first walkable one is used when it loads); a sector has none.
 /// <see cref="SaveInstance"/> is the town-list entry of a nest that came from a save (its one spot is the saved position). <see cref="Key"/> keys a
@@ -47,8 +52,9 @@ public sealed record WildSite(int Index, WildKind Kind, ZoneCoordinate Zone, int
 /// made. A sector whose nearest town is the player's makes none, and so does one whose own town is a nest with roaming squads.</item>
 /// <item><b>Nests</b> (6.3). The original adds one nest per area tick until a group has <c>num nests</c> x the nests multiplier; here the layout is
 /// made at once from the world seed (engine choice; the end state is the same count): each nest's TOWN is a weighted pick from the group's
-/// <c>nests</c> (v0, 0 as 100, the TOWN's <c>world state</c> gate), its place a seeded cell of the group's area with candidate spots away from placed
-/// towns and on terrain no lower than <see cref="SpawnFloor"/>, or for groups with <c>nests at fixed markers only</c> one of the placed
+/// <c>nests</c> (v0, 0 as 100, the TOWN's <c>world state</c> gate), its place a seeded cell of the group's area no town stands in and without a
+/// town of its own (any cell once 10 draws a nest found none), with candidate spots away from placed towns and on terrain no lower than
+/// <see cref="SpawnFloor"/>, or for groups with <c>nests at fixed markers only</c> one of the placed
 /// NEST_MARKER towns of the area. When its zone activates the nest fills its roaming pool to its pool's floor(<c>pop2</c>) members (0.7 x
 /// <c>nest resident population</c> at first; <c>PopulationPools.cs</c>) from the TOWN's <c>roaming squads</c> (weight max(0, v0 - count), k = 1;
 /// an entry whose expected size passes the free capacity is skipped, unless the pool is empty and more than 4 are free), the squads wandering round
@@ -104,6 +110,11 @@ public sealed partial class PopulationSystem
     readonly Dictionary<int, TownData> _nestSquads = [];
 
     /// <summary>
+    /// The wild site of the nest each nest squad was made for, by squad id (see <see cref="NestSiteOf"/>).
+    /// </summary>
+    readonly Dictionary<int, int> _nestSites = [];
+
+    /// <summary>
     /// The wild squads made since the last take of the log.
     /// </summary>
     readonly List<WildSpawn> _wildLog = [];
@@ -152,6 +163,12 @@ public sealed partial class PopulationSystem
     public TownData? NestOf(int squad) => _nestSquads.GetValueOrDefault(squad);
 
     /// <summary>
+    /// The wild site of the nest a squad was made for (its Ownerships home town in the original, docs/game/ai-tasks.md "36 Patrolling town"); -1:
+    /// not a nest's. Derived like <see cref="NestOf"/>; the parallel steps read it.
+    /// </summary>
+    internal int NestSiteOf(int squad) => _nestSites.GetValueOrDefault(squad, -1);
+
+    /// <summary>
     /// Where the squads of wild site <paramref name="site"/> are in their life.
     /// </summary>
     public SiteStatus WildStatusOf(int site) => _wildStates[site].Status;
@@ -163,6 +180,38 @@ public sealed partial class PopulationSystem
     /// Where a nest site stood when it last loaded (null: never loaded, or not a nest).
     /// </summary>
     internal Vector2? WildCentreOf(int site) => site >= 0 && site < _wildCentres.Length ? _wildCentres[site] : null;
+
+    /// <summary>
+    /// The nests standing in the world as towns (the original's town list keeps its <c>Nest</c> objects in a second list, <c>TownList +0x88</c>,
+    /// which the status town falls back to): every nest site whose centre is decided, but a nest marker (radius 0, it holds nobody). A nest gets
+    /// its centre when it first loads (engine choice: the original places a nest when it makes it), and keeps its place in the list when it is
+    /// wiped out (the wipe <c>FUN_14092f010</c> only posts the message and stamps the hour, <b>Verified</b>). A new array on every change, so
+    /// the parallel steps read it freely.
+    /// </summary>
+    internal PlacedNest[] PlacedNests => _placedNests ??= BuildPlacedNests();
+
+    /// <summary>
+    /// The faction of nest wild site <paramref name="site"/>; -1 when it is no nest.
+    /// </summary>
+    internal int NestFaction(int site) => _wildSites is { } sites && site >= 0 && site < sites.Count && sites[site].Kind == WildKind.Nest
+        ? sites[site].Faction
+        : -1;
+
+    /// <summary>
+    /// Lists the nests with a decided centre for <see cref="PlacedNests"/>.
+    /// </summary>
+    PlacedNest[] BuildPlacedNests()
+    {
+        var nests = new List<PlacedNest>();
+        var sites = WildSites;
+        for (int i = 0; i < sites.Count && i < _wildCentres.Length; i++)
+        {
+            if (sites[i] is { Kind: WildKind.Nest, Nest.Type: not TownType.NestMarker } && _wildCentres[i] is { } centre)
+                nests.Add(new PlacedNest(i, centre));
+        }
+
+        return [.. nests];
+    }
 
     /// <summary>
     /// A wild squad made: when, by a sector or a nest (its biome group or nest name), the squad, its members.
@@ -203,6 +252,7 @@ public sealed partial class PopulationSystem
         _wildSites = BuildWildSites(_data, _settings, biomes, world.Seed, saved?.Nests, States, world.Walkability.TerrainHeight);
         _wildStates = new SiteState[_wildSites.Count];
         _wildCentres = new Vector2?[_wildSites.Count];
+        _placedNests = null;
         for (int i = 0; i < _wildStates.Length; i++) _wildStates[i] = new SiteState();
         foreach (var site in _wildSites)
         {
@@ -271,6 +321,17 @@ public sealed partial class PopulationSystem
     internal void RememberNest(int site, string instance, Data.Save.Hand handle) => _nestSaveIds[site] = (instance, handle);
 
     /// <summary>
+    /// The nest site whose remembered handle is <paramref name="handle"/> (by its container and serial, as handles are matched); -1 for none.
+    /// </summary>
+    internal int NestSiteOf(Data.Save.Hand handle)
+    {
+        foreach (var (site, id) in _nestSaveIds)
+            if (id.Handle.C == handle.C && id.Handle.Cs == handle.Cs) return site;
+
+        return -1;
+    }
+
+    /// <summary>
     /// What a wild site holds already when it loads: the save's platoons bound to it that still have someone (squads, members, squads per template).
     /// </summary>
     sealed record WildHold(int Squads, int Members, Dictionary<string, int> Templates);
@@ -332,8 +393,9 @@ public sealed partial class PopulationSystem
         {
             if (p.Saved is not { Wild: not null } sp || sp.WildSite != site) continue;
             // A never-made one (SaveLoader.UnmadeWild) counts its `char count`, then, once made (or made afresh), its squad's living (LivingOf):
-            // it has no saved members that count.
-            int alive = sp.Members.Count == 0 || p.Stored is not null
+            // it has no saved members that count. A nest's in the world counts its living now, as the pool counts an active platoon
+            // (FUN_140792f90): its saved members only learn of a death when it leaves.
+            int alive = sp.Members.Count == 0 || p.Stored is not null || NestSquadInWorld(world, p, sp)
                 ? LivingOf(world, p)
                 : sp.Members.Count(m => !m.Dead && !m.Gone && (m.Position is not null || m.Source.Medical?.Bools.GetValueOrDefault("dead") != true));
             if (alive == 0) continue;
@@ -345,6 +407,12 @@ public sealed partial class PopulationSystem
 
         return hold is null ? null : hold with { Squads = squads, Members = members };
     }
+
+    /// <summary>
+    /// Whether a save's platoon is a nest's with its squad in the world.
+    /// </summary>
+    static bool NestSquadInWorld(World world, Platoon p, Saving.SavedPlatoon sp) =>
+        sp.Wild == WildKind.Nest && p.State == PlatoonState.Loaded && world.Squads.Find(p.SquadId) is not null;
 
     /// <summary>
     /// The sectors (every in-map zone whose group has homeless spawns), then the nests of every group in record order: the <paramref name="saved"/>
@@ -409,6 +477,11 @@ public sealed partial class PopulationSystem
         readonly List<(int X, int Z)>[] _cellsOf;
 
         /// <summary>
+        /// The cells a town stands in (<see cref="TownZones"/>): no nest is rolled there.
+        /// </summary>
+        readonly HashSet<ZoneCoordinate> _townZones;
+
+        /// <summary>
         /// A save's nests by the group of the cell they stand in.
         /// </summary>
         readonly Dictionary<int, List<Saving.SavedNest>> _savedOf = new();
@@ -438,6 +511,7 @@ public sealed partial class PopulationSystem
             _groups = _biomes.Groups;
             _cellsOf = new List<(int X, int Z)>[_groups.Count];
             for (int g = 0; g < _groups.Count; g++) _cellsOf[g] = [];
+            _townZones = TownZones(data);
         }
 
         /// <summary>
@@ -513,21 +587,32 @@ public sealed partial class PopulationSystem
             int rolls = markers is null ? count * NestDraws : count;
             for (int i = 0; i < rolls && room > 0; i++)
             {
-                if (RollNest(g, group, mine, markers, groupKey, i)) room--;
+                if (RollNest(g, group, mine, markers, groupKey, i, anyCell: false)) room--;
+            }
+
+            // A nest whose 10 draws found no sector takes a random one of the group, a town's too (FUN_1408f6350's fallback), so a group whose
+            // cells all hold towns still gets its count; the spots keep their tests (engine choice: the original takes that sector's spot
+            // unchecked).
+            if (markers is not null) return;
+
+            for (int i = rolls; i < rolls + count * NestDraws && room > 0; i++)
+            {
+                if (RollNest(g, group, mine, markers, groupKey, i, anyCell: true)) room--;
             }
         }
 
         /// <summary>
-        /// One roll of a group's nest: its spots (a marker, else up to 8 in a random cell), then a saved nest there takes it over, else a town is
-        /// picked.
+        /// One roll of a group's nest: its spots (a marker, else up to 8 in a random cell that takes a nest, <see cref="CellTakesNest"/>), then a
+        /// saved nest there takes it over, else a town is picked. <paramref name="anyCell"/>: the fallback's roll, which takes any cell.
         /// </summary>
-        bool RollNest(int g, BiomeGroupData group, List<Saving.SavedNest> mine, List<TownSite>? markers, ulong groupKey, int i)
+        bool RollNest(int g, BiomeGroupData group, List<Saving.SavedNest> mine, List<TownSite>? markers, ulong groupKey, int i, bool anyCell)
         {
             ulong key = Rng.Mix(groupKey ^ (ulong)i << 16);
             ulong pick = 0, place = SeedSalts.NestPlace;
             ulong Pick() => Rng.Hash(_seed, key, RngPurpose.Spawn, pick++);
             ulong Place() => Rng.Hash(_seed, key, RngPurpose.Spawn, place++);
             var spots = new List<Vector2>();
+            (int X, int Z)? cell = null;
             if (markers is not null)
             {
                 // A seeded draw without repeats: marker i of a shuffled order.
@@ -546,6 +631,8 @@ public sealed partial class PopulationSystem
                 }
 
                 if (spots.Count == 0) return false;
+
+                cell = (cx, cz);
             }
 
             float near = markers is not null ? 100 : 1;
@@ -556,12 +643,41 @@ public sealed partial class PopulationSystem
                 return false;
             }
 
+            // After the save's nest took its roll: that nest is its cell's own town, and may stand in a town's zone.
+            if (!anyCell && cell is var (x, z) && !CellTakesNest(x, z)) return false;
+
             if (SquadFactory.WeightedPick(group.Nests, Gated, Pick) is not { } townId || _data.Db.Find(townId) is not { } record) return false;
             var town = TownData.From(record);
             var zone = WorldLayout.ZoneOf(spots[0].X, spots[0].Y);
             int faction = town.Faction is { } f ? _data.FactionIndex(f) : -1;
             _sites.Add(new WildSite(_sites.Count, WildKind.Nest, zone, g, town, faction, spots, Key: key));
             return true;
+        }
+
+        /// <summary>
+        /// Whether the original draws a sector for a new nest (<c>FUN_1408f6350</c>, <b>Verified</b>): no town stands in it (the sector flag
+        /// +0x30, <see cref="TownZones"/>) and it has no town of its own (<c>FUN_1408f62e0</c>): the town nearest its centre does not stand in
+        /// it. That town is a placed one or a nest made before, at its first spot (<b>Observed</b>: a nest is a sector's own town,
+        /// docs/game/factions-squads-towns.md). So no nest is made in a town's zones, and a cell gets a second nest only when another town is
+        /// nearer its centre than the first.
+        /// </summary>
+        bool CellTakesNest(int cx, int cz)
+        {
+            var cell = new ZoneCoordinate(cx, cz);
+            if (_townZones.Contains(cell)) return false;
+
+            var (minX, minZ, maxX, maxZ) = WeatherAreas.CellRect(cx, cz);
+            var centre = new Vector2((minX + maxX) / 2, (minZ + maxZ) / 2);
+            var town = NearestTown(_data, centre, out float nearest);
+            ZoneCoordinate? own = town is null ? null : WorldLayout.ZoneOf(town.Position.X, town.Position.Z);
+            foreach (var s in _sites)
+            {
+                if (s.Kind != WildKind.Nest || s.Spots.Count == 0) continue;
+                float d = Vector2.Distance(centre, s.Spots[0]);
+                if (d < nearest) (own, nearest) = (s.Zone, d);
+            }
+
+            return own != cell;
         }
 
         /// <summary>
@@ -736,7 +852,7 @@ public sealed partial class PopulationSystem
 
             squad.Money = k.Money;
             state.Squads.Add(squad.Id);
-            if (_wildSites![site].Kind == WildKind.Nest) _nestSquads[squad.Id] = _wildSites[site].Nest!;
+            if (_wildSites![site].Kind == WildKind.Nest) BindNest(squad, _wildSites[site].Nest, site);
         }
     }
 
@@ -864,7 +980,12 @@ public sealed partial class PopulationSystem
         var site = _wildSites![b.Site];
         // A load that found a centre has a layout (empty or not), also when a player near it held its squads back; a dormant nest has none.
         bool found = b.Squads.Count > 0 || site.SaveInstance is not null || b.Layout is not null;
-        if (site.Kind == WildKind.Nest && found) _wildCentres[b.Site] = b.Centre;
+        if (site.Kind == WildKind.Nest && found)
+        {
+            _wildCentres[b.Site] = b.Centre;
+            _placedNests = null;
+        }
+
         if (!b.TopUp) SpawnKeptWild(world, b.Site, state);
         if (b.Layout is { IsEmpty: false } layout)
         {
@@ -887,7 +1008,7 @@ public sealed partial class PopulationSystem
         {
             squad.HomeCentre = b.Centre;
             squad.HomeRadius = NestRadius(site.Nest!);
-            _nestSquads[squad.Id] = site.Nest!;
+            BindNest(squad, site.Nest, b.Site);
         }
         else squad.HomeRadius = _settings.HomelessHomeRadius;
         state.Squads.Add(squad.Id);

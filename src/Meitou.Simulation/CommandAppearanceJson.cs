@@ -11,13 +11,13 @@ namespace Meitou.Simulation;
 public sealed class CommandAppearanceJson : JsonConverter<FcsRecord>
 {
     sealed record Appearance(string Race, bool Female, Dictionary<string, float> Floats,
-        Dictionary<string, Vector3> Colours, Dictionary<string, string> Styles);
+        Dictionary<string, Vector3> Colours, Dictionary<string, string> Styles, Dictionary<string, int> Ints);
 
     public override FcsRecord Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
     {
         var value = JsonSerializer.Deserialize<Appearance>(ref reader, options) ?? throw new JsonException("Missing appearance.");
-        if (value.Race is null || value.Floats is null || value.Colours is null || value.Styles is null ||
-            value.Floats.Count > 512 || value.Colours.Count > 32 || value.Styles.Count > 32)
+        if (value.Race is null || value.Floats is null || value.Colours is null || value.Styles is null || value.Ints is null ||
+            value.Floats.Count > 512 || value.Colours.Count > 512 || value.Styles.Count > 32 || value.Ints.Count > 512)
             throw new JsonException("Invalid appearance intent.");
         var record = new FcsRecord { Type = (int)FcsRecordType.CharacterAppearance };
         record.References["race"] = [new(value.Race, 0, 0, 0)];
@@ -33,6 +33,7 @@ public sealed class CommandAppearanceJson : JsonConverter<FcsRecord>
             record.Vector3S[key] = colour;
         }
         foreach (var (key, style) in value.Styles) record.Strings[key] = style;
+        foreach (var (key, number) in value.Ints) record.Ints[key] = number;
         return record;
     }
 
@@ -40,6 +41,6 @@ public sealed class CommandAppearanceJson : JsonConverter<FcsRecord>
     {
         string race = value.References.TryGetValue("race", out var races) ? races.FirstOrDefault().TargetStringId ?? "" : "";
         JsonSerializer.Serialize(writer, new Appearance(race, value.Bools.GetValueOrDefault("sex female"),
-            value.Floats.ToDictionary(), value.Vector3S.ToDictionary(), value.Strings.ToDictionary()), options);
+            value.Floats.ToDictionary(), value.Vector3S.ToDictionary(), value.Strings.ToDictionary(), value.Ints.ToDictionary()), options);
     }
 }

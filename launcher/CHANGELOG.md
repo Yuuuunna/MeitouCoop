@@ -2,6 +2,22 @@
 
 Released with tags `launcher-v<version>` by `.github/workflows/launcher-release.yml`; each release needs its `## v<version>` section.
 
+## v1.17.0
+
+- Mods page: presets sit above the list, with compact icon buttons and one Select all / none toggle
+- Selecting a mod opens a sliding details pane with formatted workshop descriptions and unmet dependencies highlighted in red
+- The mod list scrolls smoothly and shows its total and enabled counts from the first listing
+- The launcher opens wider by default and remembers its window size, maximised and full-screen state
+
+## v1.16.0
+
+- Seven more RE_Kenshi mods are offered their workshop ports, by dxseba: Disarm, It. Tickles. Me., Kill Counter, Level Up Notifications, Speed Menu, Stack Sort and Taunt Expansion
+- Character Highlight is noted as built into Meitou: its Alt outline is the Hover outline setting
+- A search box filters the mod list by name or author, and the rows are more compact so more fit
+- News videos have sound again (lost since v1.10.0)
+- Settings, launcher.json and the mod list are written safely: an interrupted save keeps the previous file
+- A mod whose header is cut short no longer breaks the mod scan
+
 ## v1.15.0
 
 - Endorsed ports: an RE_Kenshi mod with a Meitou port on the Steam workshop names the port and its maintainer, and Get the port asks whether to subscribe now

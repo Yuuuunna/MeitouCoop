@@ -41,6 +41,18 @@ public sealed record GameplayRules
     /// </summary>
     public bool PrisonPoseFix { get; init; } = true;
     /// <summary>
+    /// Keeps caged animals in their corrected prisoner pose.
+    /// </summary>
+    public bool CagedAnimalFix { get; init; } = true;
+    /// <summary>
+    /// Preserves campaign elapsed time when a save is loaded.
+    /// </summary>
+    public bool KeepCampaignClocks { get; init; } = true;
+    /// <summary>
+    /// Avoids repeatedly lifting prisoners when no destination cage can accept them.
+    /// </summary>
+    public bool ArrestLiftFix { get; init; } = true;
+    /// <summary>
     /// Repairs original terrain holes and needles before navigation and presentation load their heightmaps.
     /// </summary>
     public bool GroundRepair { get; init; } = true;
@@ -68,6 +80,10 @@ public sealed record GameplayRules
     public bool CampaignAncestorsOnce { get; init; } = true;
     public bool KeepWild { get; init; } = true;
     public bool ResidentSchedule { get; init; } = true;
+    /// <summary>
+    /// Applies town overrides while their regions are unloaded.
+    /// </summary>
+    public bool OffscreenOverrides { get; init; } = true;
     public bool UnloadedProduction { get; init; } = true;
     public bool Luckyren { get; init; } = false;
     public int GroundItemLimit { get; init; } = Items.GroundItems.DefaultLimit;
@@ -104,6 +120,9 @@ public sealed record GameplayRules
             BenchFacingFix = world.BenchFacingFix,
             AnimalMovesFix = combat?.AnimalMovesFix ?? true,
             PrisonPoseFix = world.PrisonPoseFix,
+            CagedAnimalFix = world.CagedAnimalFix,
+            KeepCampaignClocks = population?.Settings.KeepCampaignClocks ?? true,
+            ArrestLiftFix = world.SystemOf<Crime.ArrestSystem>()?.Settings.LiftFix ?? true,
             GroundRepair = world.GroundRepair,
             BagSearchFix = world.BagSearchFix,
             CagesSpareOwn = captives?.Settings.SpareOwnFaction ?? false,
@@ -120,6 +139,7 @@ public sealed record GameplayRules
             CampaignAncestorsOnce = population?.CampaignAncestorsOnce ?? true,
             KeepWild = population?.KeepWild ?? true,
             ResidentSchedule = population?.ResidentSchedule ?? true,
+            OffscreenOverrides = population?.OffscreenOverrides ?? true,
             UnloadedProduction = production?.UnloadedProduction ?? true,
             Luckyren = world.Luckyren,
             GroundItemLimit = world.GroundItems.Limit,

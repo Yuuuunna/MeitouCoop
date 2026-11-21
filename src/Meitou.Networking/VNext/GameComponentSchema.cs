@@ -21,15 +21,21 @@ internal static class GameComponentSchema
     internal const ushort EffectDefinitionsField = 2103;
 
     /// <summary>
+    /// Resolved skin tints change independently of the rest of the public Appearance descriptor.
+    /// </summary>
+    internal const ushort AppearanceTintsField = 2106;
+
+    /// <summary>
     /// Auxiliary wire components have no redundant public snapshot property; the replica joins them to their explicitly mapped value.
     /// </summary>
     internal static readonly IReadOnlyDictionary<ushort, string> AuxiliaryCharacterFields = new Dictionary<ushort, string>
     {
         [MeterTooltipsField] = "MeterTooltips",
-        [EffectDefinitionsField] = "EffectDefinitions"
+        [EffectDefinitionsField] = "EffectDefinitions",
+        [AppearanceTintsField] = "AppearanceTints"
     };
 
-    internal static readonly Field<PlayerWorldView>[] ViewFields = [F(1, "Roles", (PlayerWorldView x) => x.Roles, (x, v) => x with { Roles = v }), F(2, "AuthorityRules", (PlayerWorldView x) => x.AuthorityRules, (x, v) => x with { AuthorityRules = v }), F(3, "ActiveFaction", (PlayerWorldView x) => x.ActiveFaction, (x, v) => x with { ActiveFaction = v }), F(4, "Factions", (PlayerWorldView x) => x.Factions, (x, v) => x with { Factions = v }), F(5, "FactionCatalogue", (PlayerWorldView x) => x.FactionCatalogue, (x, v) => x with { FactionCatalogue = v }), F(6, "Prospected", (PlayerWorldView x) => x.Prospected, (x, v) => x with { Prospected = v }), F(7, "Events", (PlayerWorldView x) => x.Events, (x, v) => x with { Events = v }), F(8, "Messages", (PlayerWorldView x) => x.Messages, (x, v) => x with { Messages = v }), F(9, "Weather", (PlayerWorldView x) => x.Weather is { } weather ? weather with { Time = default } : null, (x, v) => x with { Weather = v }), F(10, "WeatherEffects", (PlayerWorldView x) => x.WeatherEffects, (x, v) => x with { WeatherEffects = v }), ];
+    internal static readonly Field<PlayerWorldView>[] ViewFields = [F(1, "Roles", (PlayerWorldView x) => x.Roles, (x, v) => x with { Roles = v }), F(2, "AuthorityRules", (PlayerWorldView x) => x.AuthorityRules, (x, v) => x with { AuthorityRules = v }), F(3, "ActiveFaction", (PlayerWorldView x) => x.ActiveFaction, (x, v) => x with { ActiveFaction = v }), F(4, "Factions", (PlayerWorldView x) => x.Factions, (x, v) => x with { Factions = v }), F(5, "FactionCatalogue", (PlayerWorldView x) => x.FactionCatalogue, (x, v) => x with { FactionCatalogue = v }), F(6, "Prospected", (PlayerWorldView x) => x.Prospected, (x, v) => x with { Prospected = v }), Events(), F(8, "Messages", (PlayerWorldView x) => x.Messages, (x, v) => x with { Messages = v }), F(9, "Weather", (PlayerWorldView x) => x.Weather is { } weather ? weather with { Time = default } : null, (x, v) => x with { Weather = v }), F(10, "WeatherEffects", (PlayerWorldView x) => x.WeatherEffects, (x, v) => x with { WeatherEffects = v }), ];
     internal static readonly Field<WorldSnapshot>[] SnapshotFields = [F(1001, "FoliageOwnedTowns", (WorldSnapshot x) => x.FoliageOwnedTowns, (x, v) => x with { FoliageOwnedTowns = v }), F(1002, "Buildings", (WorldSnapshot x) => x.Buildings, (x, v) => x with { Buildings = v }), F(1003, "BuildingsRevision", (WorldSnapshot x) => x.BuildingsRevision, (x, v) => x with { BuildingsRevision = v }), F(1004, "NestBuildings", (WorldSnapshot x) => x.NestBuildings, (x, v) => x with { NestBuildings = v }), F(1005, "NestMeshes", (WorldSnapshot x) => x.NestMeshes, (x, v) => x with { NestMeshes = v }), F(1006, "NestBuildingsRevision", (WorldSnapshot x) => x.NestBuildingsRevision, (x, v) => x with { NestBuildingsRevision = v }), F(1007, "Ruins", (WorldSnapshot x) => x.Ruins, (x, v) => x with { Ruins = v }), F(1008, "RuinsRevision", (WorldSnapshot x) => x.RuinsRevision, (x, v) => x with { RuinsRevision = v }), F(1009, "EmptiedHouses", (WorldSnapshot x) => x.EmptiedHouses, (x, v) => x with { EmptiedHouses = v }), F(1010, "EmptiedHousesRevision", (WorldSnapshot x) => x.EmptiedHousesRevision, (x, v) => x with { EmptiedHousesRevision = v }), F(1011, "GroundItems", (WorldSnapshot x) => x.GroundItems, (x, v) => x with { GroundItems = v }), F(1012, "GroundItemsRevision", (WorldSnapshot x) => x.GroundItemsRevision, (x, v) => x with { GroundItemsRevision = v }), F(1013, "Containers", (WorldSnapshot x) => x.Containers, (x, v) => x with { Containers = v }), F(1014, "Beds", (WorldSnapshot x) => x.Beds, (x, v) => x with { Beds = v }), F(1015, "Dummies", (WorldSnapshot x) => x.Dummies, (x, v) => x with { Dummies = v }), F(1016, "Seats", (WorldSnapshot x) => x.Seats, (x, v) => x with { Seats = v }), F(1017, "Cages", (WorldSnapshot x) => x.Cages, (x, v) => x with { Cages = v }), F(1018, "DoorPicks", (WorldSnapshot x) => x.DoorPicks, (x, v) => x with { DoorPicks = v }), F(1019, "Doors", (WorldSnapshot x) => x.Doors, (x, v) => x with { Doors = v }), F(1020, "DoorGroupRevisions", (WorldSnapshot x) => x.DoorGroupRevisions, (x, v) => x with { DoorGroupRevisions = v }), F(1021, "VerbLead", (WorldSnapshot x) => x.VerbLead, (x, v) => x with { VerbLead = v }), F(1022, "Verbs", (WorldSnapshot x) => x.Verbs, (x, v) => x with { Verbs = v }), F(1023, "ArrivalSerial", (WorldSnapshot x) => x.ArrivalSerial, (x, v) => x with { ArrivalSerial = v }), F(1024, "ArrivalForget", (WorldSnapshot x) => x.ArrivalForget, (x, v) => x with { ArrivalForget = v }), F(1025, "Trade", (WorldSnapshot x) => x.Trade, (x, v) => x with { Trade = v }), F(1026, "Conversation", (WorldSnapshot x) => x.Conversation, (x, v) => x with { Conversation = v }), F(1027, "CharacterTrade", (WorldSnapshot x) => x.CharacterTrade, (x, v) => x with { CharacterTrade = v }), F(1028, "DialogueRequest", (WorldSnapshot x) => x.DialogueRequest, (x, v) => x with { DialogueRequest = v }), F(1029, "OpenLoot", (WorldSnapshot x) => x.OpenLoot, (x, v) => x with { OpenLoot = v }), F(1030, "LootOpener", (WorldSnapshot x) => x.LootOpener, (x, v) => x with { LootOpener = v }), F(1031, "LootSessionId", (WorldSnapshot x) => x.LootSessionId, (x, v) => x with { LootSessionId = v }), F(1032, "Held", (WorldSnapshot x) => x.Held, (x, v) => x with { Held = v }), F(1033, "HeldSerial", (WorldSnapshot x) => x.HeldSerial, (x, v) => x with { HeldSerial = v }), F(1034, "PlayerTrade", (WorldSnapshot x) => x.PlayerTrade, (x, v) => x with { PlayerTrade = v }), F(1035, "InspectedBuilding", (WorldSnapshot x) => x.InspectedBuilding, (x, v) => x with { InspectedBuilding = v }), F(1036, "InspectedRichness", (WorldSnapshot x) => x.InspectedRichness, (x, v) => x with { InspectedRichness = v }), F(1037, "InspectedTurret", (WorldSnapshot x) => x.InspectedTurret, (x, v) => x with { InspectedTurret = v }), F(1038, "Towns", (WorldSnapshot x) => x.Towns, (x, v) => x with { Towns = v }), F(1039, "Camps", (WorldSnapshot x) => x.Camps, (x, v) => x with { Camps = v }), F(1040, "KnownFactions", (WorldSnapshot x) => x.KnownFactions, (x, v) => x with { KnownFactions = v }), F(1041, "TutorialFacts", (WorldSnapshot x) => x.TutorialFacts, (x, v) => x with { TutorialFacts = v }), F(1042, "SquadAi", (WorldSnapshot x) => x.SquadAi, (x, v) => x with { SquadAi = v }), F(1043, "PlayerSquads", (WorldSnapshot x) => x.PlayerSquads, (x, v) => x with { PlayerSquads = v }), F(1044, "ActiveSquad", (WorldSnapshot x) => x.ActiveSquad, (x, v) => x with { ActiveSquad = v }), F(1045, "Outposts", (WorldSnapshot x) => x.Outposts, (x, v) => x with { Outposts = v }), F(1046, "UnlockedBuildings", (WorldSnapshot x) => x.UnlockedBuildings, (x, v) => x with { UnlockedBuildings = v }), F(1047, "OwnedTownBuildings", (WorldSnapshot x) => x.OwnedTownBuildings, (x, v) => x with { OwnedTownBuildings = v }), F(1048, "Machines", (WorldSnapshot x) => x.Machines, (x, v) => x with { Machines = v }), F(1049, "MachinesVersion", (WorldSnapshot x) => x.MachinesVersion, (x, v) => x with { MachinesVersion = v }), F(1050, "Research", (WorldSnapshot x) => x.Research, (x, v) => x with { Research = v }), F(1051, "Crafts", (WorldSnapshot x) => x.Crafts, (x, v) => x with { Crafts = v }), F(1052, "Smiths", (WorldSnapshot x) => x.Smiths, (x, v) => x with { Smiths = v }), F(1053, "Projectiles", (WorldSnapshot x) => x.Projectiles, (x, v) => x with { Projectiles = v }), F(1054, "Speech", (WorldSnapshot x) => x.Speech, (x, v) => x with { Speech = v }), F(1055, "ContainerOpener", (WorldSnapshot x) => x.ContainerOpener, (x, v) => x with { ContainerOpener = v }),
         F(1056, "MapSquads", (WorldSnapshot x) => x.MapSquads, (x, v) => x with { MapSquads = v }),
         F(1057, "WorkSites", (WorldSnapshot x) => x.WorkSites, (x, v) => x with { WorkSites = v }),
@@ -50,7 +56,8 @@ internal static class GameComponentSchema
         F(2002, "SquadId", (CharacterSnapshot x) => x.SquadId, (x, v) => x with { SquadId = v }),
         F(2003, "IsPlayer", (CharacterSnapshot x) => x.IsPlayer, (x, v) => x with { IsPlayer = v }),
         F(2004, "Controller", (CharacterSnapshot x) => x.Controller, (x, v) => x with { Controller = v }),
-        F(2005, "Appearance", (CharacterSnapshot x) => x.Appearance, (x, v) => x with { Appearance = v }),
+        new(2005, "Appearance", (codec, x) => CharacterTintsCodec.EncodeAppearance(codec, x.Appearance),
+            (codec, x, bytes) => x with { Appearance = CharacterTintsCodec.DecodeAppearance(codec, bytes) }, CompressedJson: true),
         new(2006, "Build", (_, x) => BodyBuildCodec.Encode(x.Build), (_, x, bytes) => x with { Build = BodyBuildCodec.Decode(bytes) }),
         F(2007, "Name", (CharacterSnapshot x) => x.Name, (x, v) => x with { Name = v }),
         F(2008, "RecordId", (CharacterSnapshot x) => x.RecordId, (x, v) => x with { RecordId = v }),
@@ -155,11 +162,15 @@ internal static class GameComponentSchema
             (_, x, bytes) => x with { LookAt = LookAtCodec.Decode(bytes) }),
         new(2102, "Effects", (_, x) => StatusEffectPresentationCodec.EncodeTimes(x.Effects, 0, 1f / 30),
             (_, x, bytes) => x with { Effects = StatusEffectPresentationCodec.DecodeWithoutDefinitions(bytes) }),
+        new(2104, "LastingId", (_, x) => CharacterIdentityCodec.EncodeLastingId(x.LastingId),
+            (_, x, bytes) => x with { LastingId = CharacterIdentityCodec.DecodeLastingId(bytes) }),
+        new(2105, "TagHeight", (_, x) => CharacterIdentityCodec.EncodeTagHeight(x.TagHeight),
+            (_, x, bytes) => x with { TagHeight = CharacterIdentityCodec.DecodeTagHeight(bytes) }),
     ];
 
 
     /// <summary>
-    /// Only the declared JSON codecs may carry compression. Binary values and the separately bounded event history keep their existing formats.
+    /// Only the declared JSON codecs use JSON compression. Events have their own bounded encoding; other binary fields keep their formats.
     /// </summary>
     static readonly IReadOnlySet<ushort> CompressedJsonFields = ViewFields.Where(f => f.CompressedJson).Select(f => f.Id)
         .Concat(SnapshotFields.Where(f => f.CompressedJson).Select(f => f.Id))
@@ -192,11 +203,35 @@ internal static class GameComponentSchema
     internal static int ExpandedSize(ushort field, ReadOnlySpan<byte> bytes)
     {
         if (field == EffectDefinitionsField) return AbsolutePayloadCompression.ExpandedLength(bytes);
+        if (field == 7) return ExpandedEvents(bytes);
         if (!CompressedJsonFields.Contains(field)) return bytes.Length;
         if (bytes.Length == 1 && bytes[0] == 0) return 1;
         if (bytes.Length <= 1 || bytes[0] != 1) throw new InvalidDataException("Invalid component value.");
 
-        return Math.Max(bytes.Length, 1 + JsonComponentCompression.DecodedLength(bytes[1..]));
+        int expanded = JsonComponentCompression.DecodedLength(bytes[1..]);
+        return Math.Max(bytes.Length, 1 + expanded);
+    }
+
+    /// <summary>
+    /// The absolute event history keeps the presence wrapper and its original raw JSON retention charge.
+    /// </summary>
+    static Field<PlayerWorldView> Events() => new(7, "Events",
+        (codec, source) => source.Events is { } value ? [1, .. PresentationEventsCodec.Encode(codec, value)] : [0],
+        (codec, target, bytes) => target with
+        {
+            Events = bytes.Length == 1 && bytes[0] == 0 ? null!
+                : bytes.Length > 1 && bytes[0] == 1 ? PresentationEventsCodec.Decode(codec, bytes.AsSpan(1))
+                : throw new InvalidDataException("Invalid component value.")
+        });
+
+    /// <summary>
+    /// Bounds the event envelope and expanded body before publication or reassembly can allocate their decoded representation.
+    /// </summary>
+    static int ExpandedEvents(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length == 1 && bytes[0] == 0) return 1;
+        if (bytes.Length <= 1 || bytes[0] != 1) throw new InvalidDataException("Invalid component value.");
+        return Math.Max(bytes.Length, 1 + PresentationEventsCodec.ExpandedSize(bytes[1..]));
     }
 
     /// <summary>
@@ -204,18 +239,8 @@ internal static class GameComponentSchema
     /// </summary>
     static Field<T> F<T, V>(ushort id, string name, Func<T, V> get, Func<T, V, T> set) => new(id, name,
         (codec, source) => get(source) is { } value
-            ? [1, .. id == 7 ? codec.EncodeComponent(value) : JsonComponentCompression.Encode(codec, value)] : [0],
+            ? [1, .. JsonComponentCompression.Encode(codec, value)] : [0],
         (codec, target, bytes) => bytes.Length == 1 && bytes[0] == 0 ? set(target, default!)
-            : bytes.Length > 1 && bytes[0] == 1 ? set(target, id == 7 ? DecodeJson<V>(codec, bytes.AsSpan(1))
-                : JsonComponentCompression.Decode<V>(codec, bytes.AsSpan(1)))
-            : throw new InvalidDataException("Invalid component value."), CompressedJson: id != 7);
-
-    /// <summary>
-    /// Events keep their original JSON validation and retention/critical-fragment byte limits.
-    /// </summary>
-    static V DecodeJson<V>(WorldViewCodec codec, ReadOnlySpan<byte> bytes)
-    {
-        WorldViewCodec.ValidateJson(bytes);
-        return codec.DecodeComponent<V>(bytes);
-    }
+            : bytes.Length > 1 && bytes[0] == 1 ? set(target, JsonComponentCompression.Decode<V>(codec, bytes.AsSpan(1)))
+            : throw new InvalidDataException("Invalid component value."), CompressedJson: true);
 }

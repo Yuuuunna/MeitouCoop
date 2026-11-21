@@ -60,6 +60,10 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     /// </summary>
     HashSet<ZoneCoordinate> _held = [];
     /// <summary>
+    /// The cache grew, its held set changed, or unfinished gathers still prevent eviction; read and changed under the cache lock.
+    /// </summary>
+    bool _evictDue = true;
+    /// <summary>
     /// The latest runtime snapshot captured at a reader boundary.
     /// </summary>
     NavRuntimeBuildings? _runtimeSnapshot;
@@ -178,7 +182,12 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
         lock (_cacheLock)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _held = [.. zones];
+            if (!_held.SetEquals(zones))
+            {
+                _held = [.. zones];
+                _evictDue = true;
+            }
+
             Evict();
         }
     }
@@ -321,6 +330,7 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
         {
             entry = new ZoneEntry(StartGather(zone, roofs), _cachedRevision);
             _zones.Add(key, entry);
+            _evictDue = true;
         }
 
         return entry.Current;
@@ -346,6 +356,9 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     /// </summary>
     void Evict()
     {
+        if (!_evictDue) return;
+
+        _evictDue = false;
         int spare = _zones.Keys.Count(k => !_held.Contains(k.Zone)) - MaxZones;
         if (spare <= 0) return;
 
@@ -355,7 +368,10 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
 
             _zones.Remove(key);
             _used.Remove(key);
+            spare--;
         }
+
+        _evictDue = spare > 0;
     }
 
     /// <summary>

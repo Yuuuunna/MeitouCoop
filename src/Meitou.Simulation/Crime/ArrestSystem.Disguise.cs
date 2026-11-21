@@ -84,10 +84,11 @@ public sealed partial class ArrestSystem
     }
 
     /// <summary>
-    /// Once a scan: the player's characters' disguise levels, the marks' countdown, and every NPC looker within <see cref="DisguiseRange"/> that sees
-    /// a working disguise filling its meter on it (<see cref="DisguiseSeconds"/>; the original's spot meter, <c>FUN_140856cb0</c>). A meter that was
-    /// full before this look sees through it: with a bounty of the looker's faction the looker fires event 44 BOUNTY_SPOTTED, else the disguise is
-    /// blown for 250 s (<see cref="CharacterCold.RecentlyWanted"/>, the same status field). Unseen meters empty by dt / 260.
+    /// Once a scan: the player's characters' disguise levels, the marks' countdown, and every NPC looker within <see cref="DisguiseRange"/>, not in
+    /// combat mode, that sees a working disguise filling its meter on it (<see cref="DisguiseSeconds"/>; the original's spot meter,
+    /// <c>FUN_140856cb0</c>). A meter that was full before this look sees through it: with a bounty of the looker's faction the looker fires event
+    /// 44 BOUNTY_SPOTTED, else the disguise is blown for 250 s (<see cref="CharacterCold.RecentlyWanted"/>, the same status field). Unseen meters
+    /// empty by dt / 260.
     /// </summary>
     void Disguise(World world, float seconds)
     {
@@ -112,8 +113,9 @@ public sealed partial class ArrestSystem
                     continue;
                 }
                 if (Vector3.DistanceSquared(next[w].Position, at) > DisguiseRange * DisguiseRange) continue;
+                if (InCombatMode(world, w, wc)) continue;   // FUN_140856f00 returns at once: no look, the meter empties as unseen
                 float v = SightRay.Sees(world, w, s, next[w].Position, at, DisguiseRange);
-                if (v <= 0) continue;
+                if (v <= 0 || Orders.Alertness(wc) <= 0) continue;   // no alertness: the meter empties (FUN_140856cb0)
                 var key = (table.IdOf(w), target);
                 seen.Add(key);
                 float meter = _disguiseMeters.GetValueOrDefault(key);
@@ -140,7 +142,7 @@ public sealed partial class ArrestSystem
     /// lerp(stealth, 1, 2) x level x the factors (the uniform is the looker's faction's x 0.6, its faction owns the slave x 0.5, its squad has a
     /// grudge on the character x 0.5, the character is inside the walls of a town that is not public x 0.75, the looker stands outside a friendly
     /// town of a real faction x 2); then the spot meter's time lerp(v, 5a, a) x lerp(f, 4, 1) with the looker's alertness f
-    /// (<see cref="Orders.SpotAlertness"/>). The looker's marks go on the character for the tooltip.
+    /// (<see cref="Orders.Alertness"/>). The looker's marks go on the character for the tooltip.
     /// </summary>
     float DisguiseSeconds(World world, int w, CharacterCold wc, CharacterId target, CharacterCold c, float v, bool secure)
     {
@@ -164,7 +166,7 @@ public sealed partial class ArrestSystem
         if (secure) k *= 0.75f;
         if (!InFriendlyTown(world, world.Characters.Next[w].Position, wc.Faction)) k *= 2;
         float a = 5 + 40 * k;
-        return (5 * a + (a - 5 * a) * Math.Clamp(v, 0, 1)) * (4 + (1 - 4) * Orders.SpotAlertness);
+        return (5 * a + (a - 5 * a) * Math.Clamp(v, 0, 1)) * (4 + (1 - 4) * Orders.Alertness(wc));
     }
 
     /// <summary>
@@ -173,15 +175,18 @@ public sealed partial class ArrestSystem
     static void Mark(CharacterCold c, int mark) => (c.DisguiseMarks ??= new float[3])[mark] = MarkSeconds;
 
     /// <summary>
-    /// A looker has seen through the disguise: event 44 when the character is wanted by the looker's faction, else blown for 250 s.
+    /// A looker has seen through the disguise: event 44 when the character is wanted by the looker's faction, else blown for 250 s; neither when the
+    /// looker regards the character as friendly by its real faction (slot 126 with the disguise unread, its love included; <c>FUN_140856f00</c>).
     /// </summary>
     void SeeThrough(World world, int w, int s, CharacterCold c, CharacterCold wc)
     {
+        if (Crimes.RegardsFriendly(world, w, s)) return;
+
         if (c.Bounties?.BookedFor(Crimes.Factions.Relations, wc.Faction) is { Claimed: false, Amount: > 0 })
         {
             if (!FreeGuard(world, w)) return;
             if (Talks) Spotted(world, w, s, BountySpotted);
-            else Start(world, w, s, force: false);
+            else OrderArrest(world, w, s, CapturesInTown(world, world.Characters.IdOf(w), c));
             return;
         }
         c.RecentlyWanted = CrimeSystem.RecentlyWantedSeconds;

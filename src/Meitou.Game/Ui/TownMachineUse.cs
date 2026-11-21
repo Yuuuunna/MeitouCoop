@@ -25,7 +25,7 @@ sealed class TownMachineUse(PlayerInterface player)
     {
         if (player.Ray(pixel) is not { } ray || player.Build.Services is not { } host) return null;
 
-        float limit = player.Picking.GroundHit(ray.Origin, ray.Direction) is { } ground ? Vector3.Distance(ray.Origin, ground) : 6000;
+        var (limit, terrain) = player.Picking.PickReach(ray.Origin, ray.Direction);
         MachineHit? best = null;
         foreach (var candidate in host.Placement.StaticAlong(ray.Origin, ray.Direction, limit))
         {
@@ -48,7 +48,7 @@ sealed class TownMachineUse(PlayerInterface player)
             float y = b.WorldY ?? player.Ground(b.Position.X, b.Position.Z) + b.Position.Y;
             var hull = candidate.Footprint.Place(b.Position, b.Rotation);
             float? hit = candidate.Plot
-                ? WorldPicking.PlotT(ray, hull, limit < 6000 ? limit : null)
+                ? WorldPicking.PlotT(ray, hull, terrain)
                 : player.Picking.BuildingRayT(ray, hull, candidate.Footprint.YMin, candidate.Footprint.YMax, b.BuildingId, b.Position, y, b.Rotation);
             if (hit is not { } distance || distance >= (best?.T ?? limit) || player.Hidden(ray, distance)) continue;
 

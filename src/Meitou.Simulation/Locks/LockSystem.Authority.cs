@@ -6,7 +6,6 @@ public sealed partial class LockSystem
 {
     sealed record WorkAccess(SimCommand Command, Fixture? Fixture, int Owner, ulong FixtureRevision, CharacterId Target, CharacterCold? TargetCold, int TargetFaction, ulong Membership);
     readonly Dictionary<CharacterId, WorkAccess> _workAccess = [];
-    readonly Dictionary<CharacterId, Fixture> _doorWalkers = [];
 
     void Remember(World world, SimCommand command, CharacterId actor, Fixture? fixture = null, CharacterId target = default)
     {
@@ -25,7 +24,7 @@ public sealed partial class LockSystem
         foreach (var (actor, access) in _workAccess.ToArray())
         {
             var table = world.Characters;
-            if (!table.TryResolveNext(actor, out int slot)) { _workAccess.Remove(actor); _doorWalkers.Remove(actor); continue; }
+            if (!table.TryResolveNext(actor, out int slot)) { _workAccess.Remove(actor); continue; }
             var c = table.Cold(slot)!;
             bool valid = world.MayOrder(access.Command, actor)
                 && (access.Command.Issuer is not { } issuer || access.Membership != 0 && world.Players.Find(issuer)?.MembershipRevision(c.Faction) == access.Membership)
@@ -35,9 +34,9 @@ public sealed partial class LockSystem
             if (!valid)
             {
                 ClearWork(c); c.Bashing = null; c.BashOrdered = false;
-                _doorWalkers.Remove(actor); _workAccess.Remove(actor);
+                c.DoorWalk = null; _workAccess.Remove(actor);
             }
-            else if (c.PickingLock is null && c.Shackles is null && c.ForcingLock is null && c.DoorJob is null && c.Freeing.IsNone && c.EnteringCage is null && !c.BashOrdered && !_doorWalkers.ContainsKey(actor)) _workAccess.Remove(actor);
+            else if (c.PickingLock is null && c.Shackles is null && c.ForcingLock is null && c.DoorJob is null && c.Freeing.IsNone && c.EnteringCage is null && !c.BashOrdered && c.DoorWalk is null) _workAccess.Remove(actor);
         }
     }
 }

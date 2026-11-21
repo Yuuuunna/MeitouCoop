@@ -34,6 +34,11 @@ sealed class BuildingSelection(PlayerInterface player)
     internal UseableLines Useable { get; } = new(player);
 
     /// <summary>
+    /// The code mods' buttons on the panel.
+    /// </summary>
+    internal BuildingModButtons ModButtons { get; } = new(player);
+
+    /// <summary>
     /// A left click on the ground ends the building's selection (Advanced settings "Click away deselects"); false: it stays, as in the game.
     /// </summary>
     public bool DeselectBuildings { get; set; } = true;
@@ -126,7 +131,7 @@ sealed class BuildingSelection(PlayerInterface player)
         if (player.Ray(pixel) is not { } ray) return null;
         if (PickFurnitureAt(pixel) is { } furniture) return furniture;
 
-        float limit = player.Picking.GroundHit(ray.Origin, ray.Direction) is { } groundPoint ? Vector3.Distance(ray.Origin, groundPoint) : 6000;
+        var (limit, terrain) = player.Picking.PickReach(ray.Origin, ray.Direction);
         float bestT = limit;
         SelectedBuilding? best = null;
         var site = player.Build.PickSiteAt(pixel);
@@ -147,7 +152,7 @@ sealed class BuildingSelection(PlayerInterface player)
                 float y = b.WorldY ?? player.Ground(b.Position.X, b.Position.Z) + b.Position.Y;
                 var hull = candidate.Footprint.Place(b.Position, b.Rotation);
                 float? hit = candidate.Plot
-                    ? WorldPicking.PlotT(ray, hull, limit < 6000 ? limit : null)
+                    ? WorldPicking.PlotT(ray, hull, terrain)
                     : player.Picking.BuildingRayT(ray, hull, candidate.Footprint.YMin, candidate.Footprint.YMax,
                         b.BuildingId, b.Position, y, b.Rotation);
                 if (hit is not { } t || t >= bestT) continue;
@@ -217,7 +222,7 @@ sealed class BuildingSelection(PlayerInterface player)
     {
         if (player.Ray(pixel) is not { } ray || player.Build.Services is not { } host) return null;
 
-        float limit = player.Picking.GroundHit(ray.Origin, ray.Direction) is { } ground ? Vector3.Distance(ray.Origin, ground) : 6000;
+        float limit = player.Picking.PickReach(ray.Origin, ray.Direction).Reach;
         (Data.World.TownPiece Piece, Data.World.BuildingPlacement House, float T)? best = null;
         foreach (var candidate in host.Placement.StaticAlong(ray.Origin, ray.Direction, limit))
         {
@@ -454,7 +459,7 @@ sealed class BuildingSelection(PlayerInterface player)
         var inspected = player.Session.CurrentSnapshot.InspectedRichness is { } ir && ir.Instance == focus.Instance
             ? ir : (Simulation.Production.RichnessView?)null;
         if ((focus.Town ?? site?.TownName ?? detail?.Bed?.Town ?? inspected?.TownName) is { Length: > 0 } town) state.Add(new("Town:", town));
-        Useable.AddEmptyLine(focus, site?.Record ?? focus.Record, state);
+        Useable.AddEmptyLine(focus, site?.Record ?? focus.Record, detail, state);
         Useable.AddStateLine(site?.Record ?? focus.Record, state);
         if (own && player.Session.CurrentSnapshot.InspectedTurret is { } turret && turret.Instance == focus.Instance)
             AddHeightLines(turret, state);

@@ -126,7 +126,8 @@ public sealed class CharacterAnimation
     public bool WasCrawling;
 
     /// <summary>
-    /// The body's playback factor F = 2 - H (H the skeleton's movement scale; docs/animation.md "Movement"); 0 until the first tick sets it.
+    /// The body's playback factor F = 2 - H (H the skeleton's movement scale; docs/animation.md "Movement"), 0 until a person's first tick sets
+    /// it; an animal's is 1 / its live size, rewritten every tick as the original's <c>FUN_14052bad0</c> reads slot 0x390 at each pick.
     /// </summary>
     public float Rate;
 
@@ -557,6 +558,7 @@ public sealed class AnimationSystem(
         var wantedLower = s_lowerScratch ??= [];
         var wantedUpper = s_upperScratch ??= [];
         _prisonPoseFix = world.PrisonPoseFix;   // every partition writes the same value
+        _cagedAnimalFix = world.CagedAnimalFix;
         for (int i = part.Start; i < part.End; i++)
         {
             if (!prev[i].Alive || prev[i].Dormant || !world.Steps(i)) continue;
@@ -841,7 +843,7 @@ public sealed class AnimationSystem(
     {
         float sin = MathF.Sin(c.Yaw), cos = MathF.Cos(c.Yaw);
         var step = new Vector2(root.X * cos + root.Y * sin, -root.X * sin + root.Y * cos);
-        var block = new BodyBlock { Step = step, Radius = CombatTuning.Footprint(world.Characters.Cold(self)) };
+        var block = new BodyBlock { Step = step, Radius = CombatSteering.Radius(world.Characters.Cold(self)) };
 
         // The walls stop it as they stop the original's agent, which this move goes through: its circle slides along the first wall it meets
         // (docs/game/pathfinding.md "Walls").
@@ -913,7 +915,7 @@ public sealed class AnimationSystem(
         }
 
         var pos = table.Previous[slot].Position;
-        float radius = CombatTuning.Footprint(table.Cold(slot));
+        float radius = CombatSteering.Radius(table.Cold(slot));
         var walk = world.Walkability;
         if (at is { } where) pos = new Vector3(where.X, walk.TryStand(where.X, where.Y, pos.Y, out float ay) ? ay : pos.Y, where.Y);
 
@@ -960,7 +962,7 @@ public sealed class AnimationSystem(
             return lines;
         }
 
-        float footprint = CombatTuning.Footprint(table.Cold(slot));
+        float footprint = CombatSteering.Radius(table.Cold(slot));
         var walk = world.Walkability;
         float y0 = table.Previous[slot].Position.Y;
         var tally = new RootScanTally();
@@ -1801,24 +1803,29 @@ public sealed class AnimationSystem(
     /// an <b>engine reading</b>); standing (in a fight too), one of its idles; a creature technique the combat system plays, over everything; down,
     /// its <c>gotosleep</c> once, then <c>sleep</c> (or the fall's last frame held); no hit reactions (no animal record has <c>stumbles</c>) and no
     /// getting up (none exists: it fades back to standing). Standing in a job's clip (a spider eating a body), its own clip of that name.
-    /// Root motion of an attack is scaled by the size.
+    /// Root motion of an attack is scaled by the size. F and the movement clips' speeds follow the live size, so an animal that ages (or is set
+    /// by <c>animalage</c>) plays slower and takes its run at a higher speed as it grows.
     /// </summary>
     Vector2 UpdateAnimal(CharacterAnimation a, CharacterCold cold, AnimalPlan plan, float speed, float dt, ulong seed, ulong key, long tick,
         List<(int Index, float Weight)> wanted, in CombatView fight, RagdollView ragdoll, CharacterTask task)
     {
         float size = cold.Medical?.ScaleK ?? 1;
         if (!(size > 0.01f)) size = 1;
-        if (a.Rate == 0) a.Rate = 1 / size;
+        a.Rate = 1 / size;
         bool carried = !cold.CarriedBy.IsNone;
         bool down = cold.Medical?.Incapacitated ?? false;
+        bool caged = cold.InSomething == Locks.HeldState.Imprisoned;
+
         // Held in a cage or on a pole, an animal is left as it is: the original shows a still frame there, no idle and no fall
-        // (docs/game/locks.md "Cages and beds").
-        if (cold.InSomething == Locks.HeldState.Imprisoned) return Vector2.Zero;
-        if (HoldsForRagdoll(a, down, carried, ragdoll)) return Vector2.Zero;
-        if (down && !a.WasDown && !carried && !ragdoll.Has) StartAction(a, plan.Fall, false);
-        if (carried || !down) a.Action = -1;   // the fall is an animal's only one-shot clip
+        // (docs/game/locks.md "Cages and beds"). With the fix it stands in its idles, or lies down at once while down (the fixture refuses the
+        // ragdoll).
+        if (caged && !_cagedAnimalFix) return Vector2.Zero;
+        if (!caged && HoldsForRagdoll(a, down, carried, ragdoll)) return Vector2.Zero;
+        if (down && !a.WasDown && !carried && !ragdoll.Has && !caged) StartAction(a, plan.Fall, false);
+        if (carried || !down || caged) a.Action = -1;   // the fall is an animal's only one-shot clip
         a.WasDown = down;
-        int technique = down ? -1 : fight.Technique;
+        if (caged) speed = 0;
+        int technique = down || caged ? -1 : fight.Technique;
         if (a.Action >= 0)
         {
             var d = Library.Definitions[a.Action];
@@ -1843,7 +1850,7 @@ public sealed class AnimationSystem(
         {
             // Down without any lying clip (the crab, the robot spiders, gorillos: their skeletons have none) it stays in its idle rather than the
             // binding pose.
-            if (v >= MovingSpeed && !down) Library.Movement(plan.Movement, v, wanted);
+            if (v >= MovingSpeed && !down) Library.Movement(plan.Movement, v, size, wanted);
             if (wanted.Count == 0)
             {
                 bool fresh = a.Idle < 0 || a.IdleLeft <= 0;
@@ -1878,6 +1885,11 @@ public sealed class AnimationSystem(
     /// The world's <see cref="World.PrisonPoseFix"/>, read each tick (true for an <see cref="Update"/> outside a world: tests, the title battle).
     /// </summary>
     bool _prisonPoseFix = true;
+
+    /// <summary>
+    /// The world's <see cref="World.CagedAnimalFix"/>, read each tick (true for an <see cref="Update"/> outside a world).
+    /// </summary>
+    bool _cagedAnimalFix = true;
 
     /// <summary>
     /// The breathing overlay every standing human plays (<c>breathing noarms</c>: spine, neck and head only; <b>Verified</b>,

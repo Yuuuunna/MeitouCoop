@@ -112,6 +112,16 @@ fight (six spawned enemies, `--scene-npc`), loot, the panels opened cold then wa
 Each interaction targets the nearest candidate within 150 m and retries every 3 s; a modal message box is closed and logged.
 `MEITOU_BENCH_ONLY=settle,zoom` keeps only the named segments (the run is deterministic from the save, so a hitch comes back at its tick).
 A later `--vsync` keeps vsync on (the frame limit stays off); the summary's run line says which.
+`gc0`-`gc2` and `gc_pause_ms` are read once the frame is drawn, so a collection's pause stands in the row before the long `frame_ms` it caused.
+The navmesh cache changes a run: from an empty one (`--cache-root` on a copy of the cache folder without `navmesh` keeps the other caches warm)
+the zones in reach are built during the script, 65-88 of them on `bench-bases-2026-10-27` by timing, and a run on the cache earlier runs
+filled still builds about 20 more (**Observed**, 2026-11-19).
+
+**Observed** (2026-11-19, Windows Release, Ryzen 5600X and RTX 4070, `settle,flights` on `bench-bases-2026-10-27`):
+with the autosave interval set to one minute, live capture took 330 ms and allocated 80 MiB on the frame thread, down from
+523–1,002 ms and 326–329 MiB in two baseline runs. In the detailed baseline, ruin cleanup allocated 91 MiB and updating
+derived save fields allocated 86 MiB. The latter now runs on the write worker ([simulation](simulation.md#saves)).
+Loading the same autosave and resaving after 300 headless ticks gave matching SHA-256 hashes for all 776 files.
 
 **Metal** (`--renderer metal`, `MetalPlayBench`): the same script, sections and columns, with these differences.
 - `gpu_total_ms` is the frame's command buffer (`GPUEndTime - GPUStartTime`) minus its overlap with the previous frame's

@@ -174,7 +174,7 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
     town; 123/290 give !54 and 56 at a gate (91, walked to by 121). So raiders breaking a locked gate is the planner's chain on gate codes
     (the chain itself is an inference from the table, as for 81; the user reports it in play). Codes and states: [gate codes](pathfinding.md#gate-codes).
     122 and 270 are restricted rows, offered to every NPC plan (**Verified**, `FUN_14051bae0`: the acting character's faction is not the player's, [planner](ai-tasks.md#planner)), so raiders plan the gate chain. Meitou: [simulation](../simulation.md#cages-beds-and-locks) ("Bashing gates").
-    270 (Assaulting town, effect state 163 `isBuildingDestroyed`, provided by 272 Smashing, which shares 123's desire function `LAB_14000dc29`; its finder `LAB_14001bcca` is an unresolved thunk, so the link to `FUN_1405a3f60` is **Observed** by shape only): with a nonzero place (Character vfunc `0x78`) it first returns the route gate as 122's finder `FUN_1405a28e0` does, so 270 -> 272 bashes the same gate door (`FUN_140348c10` resolves a hand to a building's door, else bashes the object itself); a target that is a building in the looker's gate region is kept; only when no gate is found does it scan the place's wall buildings (function mask `0x100000`, sorted by distance) for the first whose gate code is the looker's (`FUN_1405b0eb0`). The gate codes are flooded from gates only ([gate codes](pathfinding.md#gate-codes)), so for two different known codes a gate route normally exists and the wall scan is **Observed** to be a rare fallback. Meitou (`GatePlan`, `LockSystem.Smash`): 270's finder gives the gate first (as 122), else the nearest non-destroyed wall site of the attacker's own gate code (`LockSystem.NearestWall`); state 163 holds when the wall line is destroyed, 46 (`isWithinChoppingRange`: the wall's reach range 60 of its footprint, the height test of `SiteReach`) is provided only by 67 Running whose list B needs 90 again, so a repeat of 270: **the plan exists only for an attacker already within reach of the wall**. No gate leads to the target (`RouteState` gives no gate) -> the wall fallback (s01-f25). Smashing (272, s01-f26): `Task_BashDoor` on a hand that is no door damages the object itself; Meitou walks to the wall's reach, faces it and strikes every `BashSwingSeconds` with the attacker's packet (x0.25 for animals) through the wall formula shared with the fight's blows (`CombatSystem.StrikeWall`: clamp((2 blunt + 0.5 cut) / 2, 10, 60) x 0.003 of the wall line's progress, destroyed at 0). No crime is booked (only doors book Burglary). `CharacterCold.BashWall` marks that `Bashing` names a wall site.
+    270 (Assaulting town, effect state 163 `isBuildingDestroyed`, provided by 272 Smashing, which shares 123's desire function `LAB_14000dc29`; its finder `LAB_14001bcca` is a `jmp` to `FUN_1405a3f60`, **Verified** by the exe bytes): with a current town (Character vfunc `0x78`) it first returns the route gate as 122's finder `FUN_1405a28e0` does (the route to the hand's object, else to that town; factor 1, 0 without a gate), so 270 -> 272 bashes the same gate door (`FUN_140348c10` resolves a hand to a building's door, else bashes the object itself); a target that is a building in the looker's gate region is kept; only when no gate is found does it scan the place's wall buildings (function mask `0x100000`, sorted by distance) for the first whose gate code is the looker's (`FUN_1405b0eb0`). The gate codes are flooded from gates only ([gate codes](pathfinding.md#gate-codes)), so for two different known codes a gate route normally exists and the wall scan is **Observed** to be a rare fallback. Meitou (`GatePlan`, `LockSystem.Smash`): 270's finder gives the gate first (as 122), else the nearest non-destroyed wall site of the attacker's own gate code (`LockSystem.NearestWall`); state 163 holds when the wall line is destroyed, 46 (`isWithinChoppingRange`: the wall's reach range 60 of its footprint, the height test of `SiteReach`) is provided only by 67 Running whose list B needs 90 again, so a repeat of 270: **the plan exists only for an attacker already within reach of the wall**. No gate leads to the target (`RouteState` gives no gate) -> the wall fallback (s01-f25). Smashing (272, s01-f26): `Task_BashDoor` on a hand that is no door damages the object itself; Meitou walks to the wall's reach, faces it and strikes every `BashSwingSeconds` with the attacker's packet (x0.25 for animals) through the wall formula shared with the fight's blows (`CombatSystem.StrikeWall`: clamp((2 blunt + 0.5 cut) / 2, 10, 60) x 0.003 of the wall line's progress, destroyed at 0). No crime is booked (only doors book Burglary). `CharacterCold.BashWall` marks that `Bashing` names a wall site.
     123 / 290 also list `!158` (`iAmBeingMeleeAttacked immediate`, Character `+0x2b0`, **Verified**: thunk `140042866` returns that byte; [threats](combat.md#fight-lifecycle-and-orders)), so a basher with a melee threat in reach does not plan the gate bash: `GatePlan` reads `CombatSystem.ImmediateThreat`.
 - **Repair** (order 95, `Task_Build`; **Verified**: `FUN_1407fc6e0`, `FUN_1405595a0`, `FUN_14034a440`, `FUN_14029fb40`): a door is a Building of its own whose progress a builder raises. Slot 70 pushes the same work as for a site (`lerp(0.3, 2, engineering/100) x dt` x options, falloff), x3 for a door (`+0x1a0`, `DAT_14168a254`); `FUN_14029fb40` leaves the complete flag set on every door,
   so `FUN_14054a3f0` never stalls it and repair needs no materials. Progress above 0 calls slot 98 (`FUN_1402adca0`: only sets `+0x3ec`) with 0: the door is no longer broken (the lock is not touched; it stays open and unlocked from the bash). The task ends once progress / target (`FUN_140547200`, at most 1) reaches 1; the door never "completes" (no message). A right click on a complete, broken, own building (only doors report broken, slot 97) gives order 95 (Shift: job 125 Engineer, [table](ai-tasks.md)). Meitou: `ConstructionSystem` (`BuildOrder` on a door fixture id, own doors; `DoorStep`): the character walks to the door's work spot, adds `Rate x work / Target` of the door's record to `DoorProgress` (a fraction), clears `DoorBroken` above 0 and stops at 1; one falloff counter per door per tick.
@@ -218,8 +218,8 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   `6475-Newwworld-INGAME` Makeshift Gate) stands open once its guard plans. The five `Gate guard` packages give the leader Man the gate 0-24 and
   hold no lock goal (**Verified**, data), and the door's state `+0x380` is set only by the open (`FUN_140297040`), close (`FUN_140298c50`) and
   update functions, a snap shut (`FUN_1402991c0`) and `FUN_140299000`, which the initial door state (`FUN_140553210`) calls (**Observed**, the
-  field writers and callers): no relation to the player closes a gate. Meitou: `LockSystem.OpenGate`
-  ([simulation](../simulation.md#arrest-and-jail) "Rounds", "Gates"; #816).
+  field writers and callers): no relation to the player closes a gate. Meitou: `GateGoals` (goal 180's act-out)
+  ([simulation](../simulation.md#arrest-and-jail) "Gates"; #816).
 - **Door panel** (player's building, the HUD lines of a selected house: [ui-screens](ui-screens.md#selected-building)): open/close button `FUN_140546fb0`: an open door closes; otherwise an effectively locked
   one is unlocked first, then opened (**Verified**). Meitou: a door still moving counts by where it heads and turns back (an opening one closes, a
   closing one reopens); the original's open/close act only from closed / open, so a slow gate ignores the button for seconds.
@@ -253,7 +253,9 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   building's door on its side (the paths stop at the shut doors), unlocks its own (3.3 s), bashes another's (Burglary booked, the blows of the
   attackers' bash; never a gate, which its own rows bash, [gates](#doors)) or, on its way in where the restricted rows are offered (an NPC, a
   player's character on an order: `LockSystem.Restricted`), cuts (`Lockpicking.CutLock`) or picks it (`Lockpicking.Step`, the pick's clip and
-  floaters), and walks on once it is open; anyone else stops at the door ("It's locked." for the player). An NPC on 36
+  floaters), and walks on once it is open; anyone else stops at the door ("It's locked." for the player), except a lift's or a talk's own walk
+  that no order runs, which fails there as one blocked past the limit does (`MovementSystem.FailOwnWalk`): its goal takes it as a lost walk (the body ignored 20 s,
+  `FUN_14050d970` answers any failed mover so, **Verified**). An NPC on 36
   Patrolling town stops at a locked gate, its own faction's too: the patrol's move goes straight to the movement (`FUN_1405c6b30`,
   **Verified**), and row 36's list B has 60 but not 90, whose provider 122 Open gate (after 78) is what opens a gate on the way (**Verified**,
   row table); Meitou `LockSystem.PatrolsPast`. Row 36's list B has no 59 either (**Verified**, row table), so the patroller has no way in
@@ -270,8 +272,13 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   out of a shut building is refused the same way (the walk's 60, `LockSystem.CanLeave`, as the AI's own walks test it). The
   way through the door is a step of the NPC's plan (80 / 78 unlock, 287 / 81 bash, 76 pick, 285 cut, the providers of 59 / 60 the planner
   inserts; `AiSystem.TakeDoorStep`): ended by its list A on the door (52 open, 54 locked, 56 broken) or when the lock system's way ends, and
-  replaced as any running step, which drops the way (**Verified**, the providers in the row table). An NPC without a stepped plan (an engine
-  walk, an engine-run goal) is still left alone until the door opens (`Engaged`, engine).
+  replaced as any running step, which drops the way (**Verified**, the providers in the row table). Nothing but that plan holds the walker
+  (**Verified**): the door rows come only from the planner, the plan step (`FUN_14050d970`) ends a step whose list B fails (no `+0x16`), the
+  chooser keeps choosing, and the door opener (`FUN_140297040`) is called only by Task_OpenDoor (`FUN_140337000` / `FUN_1403370f0`), the
+  door's break, its panel button (`FUN_140546fb0`), a dialogue action (`FUN_140680560`) and a building's purchase (`FUN_1407ad6c0`), never
+  the mover. An order's walk (a player's 29, an NPC's) has the same rows, so the way is the order's step. Meitou (`LockSystem.StartDoorWay`, `DoorWayHolder`): the way is a step of the kept plan, else of the engine
+  goal's act-out (`AiMind.Duty`), else of the task running the walk (an order's, a player's source's, an engine system's, a mod's, a held
+  platoon's or a squadless character's), and ends with it (another task's start).
   **Observed** (headless, #807 save at 3 h): a Civilian solo UC woken in its locked Storm House and ordered
   out unlocked the door and walked out; with its way forced to the bash, it swung for 3.3 s, broke the door and walked out; with no way forced,
   its move order stayed queued and it did not move. #803's save at 8.00: the UC town racists' boss (United Heroes League, in the United Cities
@@ -284,7 +291,7 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   `Character_Lock` / `Character_Unlock_Success`. Locking closes the door first. No skill or level involved (**Verified**). Task_LockDoor update `FUN_140337670` (**Verified**): work += dt x 0.3; on reaching 1 it starts the door closing (`FUN_140298c50`,
   only from open), sets the lock's locked byte at once (`wants lock` is not touched), plays `Character_Lock` and sets the squad's house flag. The context menu's own-door verbs are these two orders: Lock 77 on an unlocked own door, Unlock 140 (0x8c) on a locked own door (`FUN_1407a6bc0` door branch, **Verified**); an own cage gets Lock 77 / Unlock 78 (cage branch, **Verified**; the update has no door to close there; Meitou runs the cage's unlock as row 140, same conditions); the panel's buttons are the instant toggle below.
   Row 77 (lock) lists `!DOOR_IS_BROKEN` in list B, so it is never planned on a smashed door (rows 79/162/198 have none; a lock on a broken door is not shown). The close acts only on an open, whole door (a closing, opening or smashed door is left as it is).
-  Meitou: `DoorLockOrder` (nearest selected character walks to the door's work spot, `LockSystem.DoorLockJobs`); the job (`CharacterCold.DoorJob`) is hashed while set and not saved. The lock-up round (`LockSystem.Rounds`) does the same: `FixtureRegistry.CloseDoor` then the lock at once, smashed doors left out of the round (engine choice for 198: the data does not exclude them).
+  Meitou: `DoorLockOrder` (nearest selected character walks to the door's work spot, `LockSystem.DoorLockJobs`); the job (`CharacterCold.DoorJob`) is hashed while set and not saved. The lock-up act-out ([wardens' goals](#wardens-goals)) does the same: `FixtureRegistry.CloseDoor` then the lock at once; rows 162 / 198 have no `!DOOR_IS_BROKEN`, so a smashed door is worked too: Meitou leaves it open and unlocked (engine choice) and still runs the house-flag test.
 - **Residents** (`allDoorsLocked` 87, `FUN_140596bd0`): true when the character is in bed, or its squad's "house locked" flag
   is set (squad AI object +0xe8, saved `homelok`; also read by dialogue condition 11 `BUILDING_IS_CLOSED_AND_SECURED`, **Verified** `FUN_140676950` case 0xb; set by Task_LockDoor at each door it locks whose lock is the worker's faction's, and Task_CloseDoor (a door with a working lock), when no door of the home is open or opening (`FUN_1407933a0`, **Verified**: one locked door is enough); cleared by unlocking, picking or a
   non-player opening a door (`Task_OpenDoor` update `FUN_1403370f0`, **Verified**: every update with the door unlocked, unless the opener's faction is the player's; Meitou `LockSystem.NoteDoorOpened`, from the walk-through opening)), else when the home building has no door that is open, broken or effectively unlocked
@@ -299,21 +306,23 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
 | Storage Guard, Slaver Storage Guard | 197 Lock all the doors - stay outside | 23-7 |
 | Cage Warden (and copy) | 195 Lock all my cages | 22-24 (leader), 19-21 (squad) |
 
-- **Lock-cage finder** (**Observed**, installed `kenshi_x64.exe` disassembly, SHA-256
-  `a596ab4e407c67b58599c54ffb32dc1bf2b64510cdebd3fa9359ef05a576aeb1`): goal 195's registration at `0x14031cd69`
-  installs `FUN_1408cc2a0` through thunk `0x140035c01`. It requires the worker's location hand (vfunc `0x1d8`) to resolve to a building,
-  then queries that building's function-8 cages and their occupancy/lock state; no sensed-list, sight or distance gate.
-  Meitou `LockSystem.LockCages` likewise has no perception gate, but gathers its faction's cages across the squad's town instead of that building.
+- **Lock all my cages** (195, **Verified**, finder `FUN_1408cc2a0`, desire slot 19 = 1): only with an empty target, the finder walks the cages (function 8 list
+  `+0x1f0`) of the building the warden stands in, not its town's, and takes the first with an occupant whose lock is not effectively locked (factor 1, none 0); the
+  effect 54 is planned through 77 Locking door. 155 and 197's desire is [slot 31](ai-tasks.md#desire-and-commitment).
+
 - **Lock up from outside** (197; **Verified** rows, `FUN_140596e90`): list B is `!strangers in house` and `!107` (107 I_AM_INSIDE_TARGET_BUILDING), and the lock row 198 needs state 126 AT_LOCATION_BUILDING_DOOR_OUTSIDE
   (**Verified**, `FUN_140596e90`: true when the character's X/Z distance to the door's outer point is below its reach range, 45 for a door; the outer point is the door record's point `+0x3bc` pushed out
-  by 1.1 times (`DAT_14169bb44`) its distance to the other point `+0x3c8`; the two points lie 15 either side of the leaf, so about 48 from the leaf), so a 197 worker inside first
-  leaves (row 200) and locks each door from its outer side. Meitou: a 197 round (`Round.FromOutside`) is given to a member already outside when there is one, else the worker first walks out to the first
-  door's outer point (the side away from the building's origin), then works each door within 45 of its outer point (`LockSystem.OuterPoint`); 155 rounds are unchanged.
+  by 1.1 times (`DAT_14169bb44`) its distance to the other point `+0x3c8`; the two points lie 15 either side of the leaf, so about 48 from the leaf).
+  107 without a target is "inside the squad's home" (`FUN_14059a4b0`, **Verified**: the current building against the target's building, else against the
+  home `FUN_1407956a0` `+0x38`). A member inside the home has no plan for 197 (**Verified**, `FUN_14051bae0`, `FUN_14050f800`, `FUN_14060fd80`): the
+  node expansion gives a list-B entry's providers the node's own target, for the root the goal's hand, empty for 197 (`targeting` 0, SPECIFIC; the
+  finder's door goes only to the effect's child), and skips a provider that needs a target (row 200) on an empty hand, so `!107` has no provider.
+  Meitou plans the same ([wardens' goals](#wardens-goals)).
 - **Opening up** (86 `OPEN_UP_SHOP_DOORS`, Task_Blank, finder `FUN_1408cb360`, **Verified** decompile): the building the character stands in when
   its owner matches the AI's (an owner test, **Observed**), else its home; the target is the first door that is closed and not opening (the plan unlocks, then opens it). With none left
   the finder clears the squad's "house locked" flag. A = !87, so it scores only while the home counts as locked. Only squads whose packages list
   86 open up (base data: Civilian, Shop, Shop-24hr, Slaver and Storage Guard leaders, among others); the rest stay locked.
-  Meitou (`LockSystem.LockUpSweep`): the opener's round starts while the home counts as locked by either branch of 87 (the round's flag, or `FixtureRegistry.AllDoorsLocked`). The worker approaches each door from its nearer side, unlocks it and starts the opening motion. **Observed** (headless, #293): the three `stolen slave clothing shop` Swamp Shacks of Slave Markets (Newwworld level data) start `locked0` true with `initial door state` 0 (CLOSED) on the template; the level state wins, so with only round-locked homes opened the shopkeeper outside could not get in, its path ended 29 units from its node behind the back wall (within the goal snap 30) and it stood there all day.
+  Meitou: [wardens' goals](#wardens-goals); the opener approaches the door from its nearer side, unlocks it and starts the opening motion. **Observed** (headless, #293): the three `stolen slave clothing shop` Swamp Shacks of Slave Markets (Newwworld level data) start `locked0` true with `initial door state` 0 (CLOSED) on the template; the level state wins, so with only round-locked homes opened the shopkeeper outside could not get in, its path ended 29 units from its node behind the back wall (within the goal snap 30) and it stood there all day.
 - **Initial door state** (`FUN_140553210`, when the home building is assigned to a squad; **Verified**): CLOSED -> unlocked, not
   broken, closed; OPEN -> unlocked, open; LOCKED -> locked, closed; BROKEN -> unlocked, lock broken, door broken, pose 0 (closed). Saved buildings keep
   their saved values. The gate on building +0xa8 that allows it is **Unknown**.
@@ -331,6 +340,28 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   [save](../formats/save.md#object-handles-and-slot-lists)). Meitou: lock and door state from the level state, the save's on top;
   only doors with a `state` key count as restored, so `initial door state` still applies to the others (**engine choice**, the
   +0xa8 gate is Unknown).
+
+### Wardens' goals
+
+Goals 211, 155, 197, 86 and 195 (**Verified**, registration `FUN_140319a60`, its stubs read in the exe, and the state evaluators `FUN_140610250`):
+- **Desires**: 1.0 for 211 and the rows 110, 162, 198, 72, 73, 77, 78 (AI slot 19 `FUN_140641550`), 1.0 for 82, 163, 199 (slot 57 `FUN_1405983f0`),
+  1.0 for 86 and 195 (slot 19); 155 and 197 slot 31 `FUN_140795f80`: 1.0 while the squad's house flag is clear, else 1.0 only for a member standing outdoors
+  whose home's first door is open or broken (`FUN_1402ea2f0`), else 0.
+- **Finders** (each gives one target; factor 1.0, none 0): 211 the prisoner ([economy 11.5](economy.md#115-bail-and-sentence)). 155 and 197 share
+  `FUN_1408cb1c0`: the building the character stands in when its owner is the character's faction (building vfunc `0x58` against the character's), else the
+  platoon's home (`FUN_1407956a0` `+0x38`); its first door whose lock is not effectively locked (locked byte clear, broken `FUN_140297d60`, or level below 1), or
+  that is open or broken. 86 `FUN_1408cb360`: the same building, its first door neither broken nor open (state not 1); with none in the home, clears the
+  house flag. 195 `FUN_1408cc2a0` above.
+- **States**: 73 machineHasFreeOperatorSlot is false for a target that is no building, so 110's list B `!73` holds on a prisoner (`FUN_140598de0`); 54 of a
+  character is the lock of the cage it is held in (`FUN_1405a00c0`); 52 is false for a building without a door, a cage (`FUN_1405a3ad0`); 112 is the door
+  locked with the character inside a building, false outdoors (`FUN_1405a02d0`); 127 the same outdoors (`FUN_1405a0470`); 111 the inner point's mirror of 126
+  (`FUN_140596cf0`); 57 the chopping range of the door or the cage (`FUN_1405a25b0`).
+- **Plans**: 211 `[1, 110, 211]`; 155 `[163, 162, 155]` with 82 and 73 first while the door stands open; 197 `[199, 198, 197]`; 86 `[82, 78, 72, 86]` (78 only
+  while locked); 195 `[82, 77, 195]`.
+
+Meitou (`WardenGoals`, [simulation](../simulation.md#arrest-and-jail)): the finders run in a serial look every 15 ticks for each member weighing the goal,
+the act-out is a round on the one target, done once worked; 111's inner point is `DoorPoints.Inner`, the outer point mirrored through the leaf
+(**Observed**).
 
 ## Cages and beds
 
@@ -361,7 +392,8 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   the cage's `animation KO` (the Prisoner Cage's `foetal`), an awake one stands in its `animation` (the Cage's stand) at once, and the Prisoner Pole keeps its stand
   pose whatever its occupant's state. No fall is played into the cage and no get-up out of it. An animal, which has no such clips, is left as a still frame: its
   animation does not advance. Meitou: `AnimationSystem` skips the ragdoll hold for a held character (the furniture refuses the ragdoll, so nobody posed it and it
-  stayed flat in the knockout's pose) and leaves a held animal's layers alone. A prisoner loaded from a save takes its cage's clips when `FixtureRegistry.Bind` binds it,
+  stayed flat in the knockout's pose) and leaves a held animal's layers alone, unless Fixes option **Caged animals idle** (`World.CagedAnimalFix`, on by
+  default; #1008): then the animal plays its standing idles, or its lying clip at once while down, with no fall, move or technique. A prisoner loaded from a save takes its cage's clips when `FixtureRegistry.Bind` binds it,
   as one put in by `Imprison` does; before, it played the plain idle or lying clip.
 - **Leaving** (`Task_GetOutOfCage`, `FUN_1403554b0`, **Verified**): restores AI flags and pose. The task's constructor flag (`+0x80`; 1 for 207 and 256, 0 for 133, the task factory `FUN_14032ebd0` and `FUN_140335200`) is copied to the prisoner's
   `+0x1a0 -> +0xe8` (Meitou `Escaped`) only when the cage owner faction is real (`+0x1d0` clear); for a `not real` owner nothing is written. A nonzero flag also turns a slave in
@@ -372,9 +404,8 @@ Same targets as picking; Task_CutLock / Task_BruteForceLock share the shackle ta
   held building's handle `+0x300` is a building (`+0x308` = 0): the hold clear `FUN_140330600` sets it to none. 133 is given, with the order queue cleared
   (`FUN_1405d20d0` with its clear argument 1, **Verified** by disassembly), by `Task_ReleasePrisoner` (to a releaser that books bounties or is the player's), by the bail
   and by buying a slave free ([economy 11.5](economy.md#115-bail-and-sentence), [12](economy.md#12-slaves-prisoners-animals)); the release and the buy clear the hold
-  themselves right after the give, so only a bailed prisoner leaves through it. Meitou: `FixtureRegistry.GetOut` (207, 256) and `GetOutLegit` (133, the bail's
-  `ArrestSystem.SendOut`), both through `LeaveCage`; `LockSystem.OpportunisticEscapes`: an AI prisoner whose role list holds 256, 207 or 202 in its hours walks out of
-  an unlocked cage. Lifting a prisoner out of another faction's cage (`FUN_14034fbe0`): the lifter gets code 7; the prisoner gets the escaped flag and a code 0xc call made while it is still
+  themselves right after the give, so only a bailed prisoner leaves through it. Meitou: `FixtureRegistry.GetOut` (207, 256) and `GetOutLegit` (133, the act-out of
+  the order `Locks.FreedPrisoner` owns, given by the bail, the release and the buy), both through `LeaveCage`; the AI's are the escape goals' act-outs ([simulation](../simulation.md#engine-goals)). Lifting a prisoner out of another faction's cage (`FUN_14034fbe0`): the lifter gets code 7; the prisoner gets the escaped flag and a code 0xc call made while it is still
   held (`+0x2f8` = 2), which the setter refuses ([carry-loot](carry-loot.md)), so no pending crime (**Verified**).
 - **Escaped flag** (`StateBroadcastData::isEscapedPrisoner` `+0xe8`, KenshiLib 1ce4a16; **Verified** by decompile: every write through `+0x1a0`). Set only by `FUN_14034fbe0`
   (lifted out) and `Task_GetOutOfCage` flag 1 (above). Cleared only by: being caged again (`FUN_140330600`'s put-in branch); `Task_GetOutOfCage`
@@ -427,12 +458,21 @@ Meitou registers them as outdoor fixtures using their level placement and bed ma
   (faction vfunc 5 with the task's +0x7c).
 - **Lie spot** (**Verified** by decompile: `FUN_140357d00` calls vfuncs 0x470 / 0x480, `Building::getPositionMarker` `FUN_14054b850` and
   `getDirectionMarkerQuat` `FUN_140549720`, names from KenshiLib 1ce4a16): with fewer than 2 usage nodes (Building+0x2f0) the position is the marker
-  +0x26c (the construction position, set in the constructor `FUN_14055ca90`) and the orientation the building's; else the usage node nearest the
+  +0x26c and the orientation the building's; else the usage node nearest the
   character (squared 3D distance; nodes in the bad-node map +0x300 skipped), turned by Quaternion(w -0.707107, y 0.707107): the node's yaw - 90°, as for
   town nodes ([ai-tasks](ai-tasks.md#town-goals)). Data (**Verified**, base game probe): `Bed` and `Skeleton Repair Bed` hold two `Node Use` (node type 4)
-  instances at local Z +11.18 / -11.05 (+12.18 / -12.05), the second turned 180°; Old, Camp and Fish Bed have none. A bed with exactly one node (Forgotten Buildings' `Bed with Pillow`, its node at Z -11.05 turned 180°; the mod also gives `Old Bed` one) lies at the marker but faces that node's yaw - 90° (`FUN_140549720` reads any node; #718: Meitou faced the bed's own yaw, 90° off, and the sleeper lay across). `sleepinbed` holds `Bip01` at about
-  (-11.8, 6.7, -1.5) in model space (`gotobed` moves it there from the origin), so from a node the pelvis lands on the mattress centre. Meitou:
-  `FixtureRegistry.LieSpot`, also applied to a sleeper bound on load (engine choice), which also takes the bed's clip again (it is not saved; without it a loaded sleeper lay on the floor at the node).
+  instances at local Z +11.18 / -11.05 (+12.18 / -12.05), the second turned 180°; Old, Camp and Fish Bed have none. A bed with exactly one node (Forgotten Buildings' `Bed with Pillow`, its node at Z -11.05 turned 180°; the mod also gives `Old Bed` one) faces that node's yaw - 90° (`FUN_140549720` reads any node; #718: Meitou faced the bed's own yaw, 90° off, and the sleeper lay across).
+  **Marker +0x26c** (**Verified** by decompile): the constructor `FUN_14055ca90` and the setup `FUN_1405609e0` set it to the construction position, the part setup
+  `FUN_14055f6e0` (called from the setup) to a flagged part's offset (below), and every change of the usage node list then sets it to node 0's position: the node add
+  `FUN_14054fdd0`, the revalidation `FUN_14054f7c0` (after a navmesh change, logged "Updated interior usage nodes") and `FUN_14054fad0`, the removal `FUN_14054d9d0`, and the
+  setup's own node pass. So a building with one node lies its sleeper on that node, as a two-node bed does (a body at the construction position lay beside the mattress,
+  **Observed** in Meitou: `Bed with Pillow` mesh `old_bed2.mesh` spans Z -7.9..7.9). **Observed** in the original (KenshiHarness memory read, an awake sleeper in a `Bed with Pillow`,
+  `scale` 1.1): `Character+0x48` and the animation's position (`AnimationClass+0x258`) are 12.15 from the bed's origin toward its node (11.05 x 1.1) at the bed's height + 0.47
+  (0.43 x 1.1): a node is placed by the building's scale, and the sleeper is drawn at it with no lift; the body lies on the mattress. (The harness's `state` position, `getPosition`,
+  reads the bed's origin. Sleepers out cold in a save the original loads lie as ragdolls, scattered: no reference.) `sleepinbed` holds `Bip01` at about
+  (-11.8, 6.7, -1.5) in model space (`gotobed` moves it there from the origin), so from a node the pelvis lands on the mattress centre; Cuddling.mod's `newsleep`
+  (which replaces the `sleeping` functionality's clip) holds it at the same side offset (-11.7 from the bind pose, **Verified**, `Male_Sleep_Anim.skeleton`). Meitou:
+  `FixtureRegistry.LieSpot` and `PositionMarker` take the nearest node whenever there is one (`UseNodes` scales the instances), also applied to a sleeper bound on load (engine choice), which also takes the bed's clip again, at full weight (it is not saved; without it a loaded sleeper lay on the floor at the node, and a fade from the lying clip it showed until its bed registered, held while a load stays paused, twisted the body across the mattress).
   **Bad nodes** (**Verified**): with 2 or more use nodes `getPositionMarker` skips every node in the building's bad-node map (`+0x318` / `+0x338`) and returns node 0 when all are skipped. `FUN_14054d410(building, position)` marks the node
   nearest the position within 20 units (squared 400) with the world clock (`DAT_1421303d0 + 0xa0`, game hours, **Observed**: Task_TakeIntruderOutside's 5-minute rule reads its differences x 60); its only producer is `notifyPathImpossible`
   (`FUN_140796ed0`, from the path-failure paths `FUN_140332150`, `FUN_14033da80`, `FUN_14050d970`, `FUN_14060d6a0`, `FUN_1405c6840` when the failed goal is a building; the position is the movement object's vector `+0xdc`). It also
@@ -441,12 +481,12 @@ Meitou registers them as outdoor fixtures using their level placement and bed ma
   offset), else the construction position. Of the 12 flagged base parts (`bed`, `camp_bed1_part`, two Cannibal cages, five `stone processor`s, three training dummies) only `camp_bed1_part`
   (offset Y 1) belongs to a bed with fewer than 2 nodes (`bed` has two), so a Camp Bed's lie spot is 1 x scale above its origin. Meitou: `WorldObjectLayout.PositionMarker` (from the laid-out parts, last flagged part with a mesh wins) stored on the bed fixture (`Fixture.Marker`) and used by `LieSpot`. The cages' marker (offset Z 12) is not their occupant's place, see "Facing in a cage".
   Heights (**Verified**, base game probe of the clips and `bed1.mesh` / `camp_bed1.mesh` bounds): `sleepinbed` holds `Bip01` 6.7 above the spot, `Bed`'s mesh
-  top is 7.36; `Camp Bed` plays `sleeponfloor` (`Bip01` 1.46) on a mesh 1.73 high. Drawn there, the body sinks into the mattress; Meitou draws a sleeper 1.5
-  higher (`World.BedLift`, engine choice). **Tilt** (**Observed** by decompile, `FUN_1405cf130` state 1 and `FUN_140549720`; the listing drops the operands of the two quaternion products, read as marker = building x (building inverse x marker)): the sleeper is given the direction marker's whole quaternion, written straight to its node
+  top is 7.36; `Camp Bed` plays `sleeponfloor` (`Bip01` 1.46) on a mesh 1.73 high. Drawn there, the body sinks into the mattress, in the original as in Meitou
+  (`World.DrawnPosition` lifts no sleeper). **Tilt** (**Observed** by decompile, `FUN_1405cf130` state 1 and `FUN_140549720`; the listing drops the operands of the two quaternion products, read as marker = building x (building inverse x marker)): the sleeper is given the direction marker's whole quaternion, written straight to its node
   (`FUN_1405c8540` over `FUN_1405b1a30`), so on a bed placed on a slope the body leans with the bed. `FUN_140549720` returns the building's orientation (vfunc 0xc0) when the bed has no use node
   (count 0, not the position marker's "fewer than 2"), else the nearest node's orientation turned -90° about Y; the nearest-node search there skips no bad node. Meitou: display only, the simulation keeps a yaw:
   a bed standing on its own keeps its whole rotation (`Fixture.Rotation`), `FixtureRegistry.LeanOf` gives the snapshot's `Lean` (none for a level bed) and the host draws the body turned by its yaw, then
-  the lean, lifted along the bed's up axis; a tilted bed with use nodes still has its nodes placed by yaw only (`Nearest`), no base bed on its own has any (#688: sleepers on Camp Beds built on a hillside lay level and cut through the mattress).
+  the lean; a tilted bed with use nodes still has its nodes placed by yaw only (`Nearest`), no base bed on its own has any (#688: sleepers on Camp Beds built on a hillside lay level and cut through the mattress).
 - **Getting out of bed** (`Task_GetOutOfBed`, **Verified**): the start `FUN_140345760` posts Get_Out / Character_Bed; when the bed's clip name (`FUN_140297330`) is `gotobed` the sleeper stays in bed, else it leaves at once (`FUN_140345620`). The update `FUN_140348480` plays `gotobed` at rate -1 and leaves once its progress is under 0.1. No base bed names `gotobed` (they use `sleepinbed`), so only modded beds animate the exit. Meitou: `FixtureRegistry.GetOutOfBed` (`CharacterCold.LeavingBed` / `BedExitDone`, `AnimationSystem.FinishBedExit`) for the AI's get-out step and the bed system's get-up; forced removals (carried off, kidnapped, an order) use `LeaveBed` at once. Meitou stands one getting out where it lay unless the bed's navmesh hole leaves no floor at its height there (a modded bunk's node lies 16 or more inside it); then it stands on the nearest floor point at that height within 40.
 - **Rent cost** (UseableStuff slot 152 `FUN_140330ab0(bed, character)`): 0 in this order: no bed faction; the faction's `not real` flag
   (+0x1d0; the FACTION loader `FUN_1407fe270` reads `not real` into it, **Verified**); ally(bed faction, character's) ([factions](factions-squads-towns.md) 3.3); a
@@ -504,7 +544,8 @@ Meitou registers them as outdoor fixtures using their level placement and bed ma
   The finders' allies test (`FUN_1408ca5d0`, **Verified** by decompile) passes a building of the finder's faction or one `canIUseThisBuilding` accepts, which
   includes the town the squad occupies ([economy](economy.md)), so a homeless occupier sleeps in the occupied town's beds. Meitou: `AiSystem.OccupiedBed`, the
   member index's (round robin) complete BF_BED of the occupied town not held outside the squad (engine choice for the order).
-- **UI**: a quick right click on a bed (function 6 or 25) gives 258 (UseableStuff slot 131 `FUN_140299230`), sent to every selected character (`FUN_1407f9e20`, **Verified**: no gate for 258); the first to arrive takes the bed, the others are refused at it; the held menu (`FUN_1407a6bc0`) offers
+- **UI**: a quick right click on a bed (function 6 or 25) gives 258 (UseableStuff slot 131 `FUN_140299230`), sent to every selected character (`FUN_1407f9e20`, **Verified**: no gate for 258); the first to arrive takes the bed, the others are refused at it (258's list B state 73, the bed's "free for X", fails for them: their plan fails and the
+  order stays queued, [precedence](ai-tasks.md#precedence)); the held menu (`FUN_1407a6bc0`) offers
   99 "Put in Bed" when the last selected player character carries someone, else 258 "Sleep" (verb names `FUN_14079b2d0`).
 - Meitou: [simulation](../simulation.md#cages-beds-and-locks).
 

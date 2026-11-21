@@ -36,7 +36,7 @@ public sealed partial class GameStatePublisher
         var events = GameComponentSchema.ViewFields.Single(f => f.Id == 7).Encode(codec, view);
         if (!_previous.TryGetValue((0, 7), out var oldEvents) || !oldEvents.AsSpan().SequenceEqual(events))
         {
-            if (events.Length > CriticalOutstandingBytes - 4096)
+            if (GameComponentSchema.ExpandedSize(7, events) > CriticalOutstandingBytes - 4096)
                 throw new InvalidDataException("Critical event history exceeds lifecycle capacity.");
             committed[(0, 7)] = events;
             if (events.Length <= CriticalPartPayload)
@@ -175,7 +175,8 @@ public sealed partial class GameStateReplica
         internal int Offset;
     }
 
-    void ApplyCriticalEventFragment(ulong entity, uint generation, ushort field, byte[] value, ulong publicationRevision)
+    void ApplyCriticalEventFragment(ulong entity, uint generation, ushort field, byte[] value, ulong publicationRevision,
+        Action<long> reserveExpanded)
     {
         if (entity != 0 || generation != 0 || field != 7 || value.Length <= 48)
             throw new InvalidDataException("Invalid critical event fragment.");
@@ -215,6 +216,9 @@ public sealed partial class GameStateReplica
             return;
         if (!SHA256.HashData(fragment.Bytes).AsSpan().SequenceEqual(hash))
             throw new InvalidDataException("Critical event digest mismatch.");
+        // Earlier pieces may belong to other publications. Charge the assembled value before allocating its expanded JSON.
+        int expanded = GameComponentSchema.ExpandedSize(field, fragment.Bytes);
+        reserveExpanded(Math.Max(0, expanded - (long)count));
         _view = GameComponentSchema.ViewFields.Single(f => f.Id == 7).Apply(codec, _view!, fragment.Bytes);
         _revisions[key] = revision;
         _valueDigests[key] = hash;
