@@ -362,6 +362,8 @@ public sealed partial class DialogueSystem
     /// </summary>
     void ArrestEffect(World world, CharacterId me, CharacterCold? mc, CharacterId target, CharacterCold tc)
     {
+        if (mc is not null && Combat.TargetScore.RefusesSlaveAttack(mc, tc)) return;
+
         bool capture = Arrests?.CapturesInTown(world, me, tc) == true;   // one answer for the memory and the orders
         ArrestMemory(world, me, mc, target, tc, capture);
         Arrests?.ArrestFromDialogue(world, me, target, capture);

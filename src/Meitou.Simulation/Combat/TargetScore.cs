@@ -121,6 +121,11 @@ public static class TargetScore
         candidate.SlaveState == 1 && FirstAid.FirstAidSystem.OwnedChained(chooser, candidate) && Kidnap.ObedientSlave.HasJob(candidate);
 
     /// <summary>
+    /// Coop-local: extends the owned obedient slave's target-score protection to NPC attack and arrest orders, leaving player-issued attacks alone.
+    /// </summary>
+    internal static bool RefusesSlaveAttack(CharacterCold attacker, CharacterCold target) => !attacker.IsPlayer && SparesSlave(attacker, target);
+
+    /// <summary>
     /// The score of <paramref name="c"/> (higher is better), null when dropped. <paramref name="prone"/>: the chooser crawls (stubbornness x4, range
     /// term x20). The range term is the chooser's manoeuvre mode's (<see cref="RangeOf"/>).
     /// </summary>

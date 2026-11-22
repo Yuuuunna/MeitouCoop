@@ -7,12 +7,15 @@ using Meitou.Data.Gameplay.Bodies;
 using Meitou.Data.World;
 using Meitou.Simulation;
 using Meitou.Simulation.Aggro;
+using Meitou.Simulation.Ai;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Carrying;
 using Meitou.Simulation.Combat;
 using Meitou.Simulation.Crime;
+using Meitou.Simulation.Dialogue;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Locks;
+using Meitou.Simulation.Items;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Population;
@@ -112,20 +115,20 @@ public class ArrestTests
     /// The world of <see cref="Scripted"/>: player, pursuit, movement, bodies, carrying, combat, retaliation, aggro, crime, arrest and locks, the
     /// town's site registered.
     /// </summary>
-    static SimWorld ScriptedWorld(PopulationData data, FactionRelations relations, int threads, out ArrestSystem arrest)
+    static SimWorld ScriptedWorld(PopulationData data, FactionRelations relations, int threads, out ArrestSystem arrest, DialogueSystem? talk = null)
     {
         var combat = new CombatSystem(KatanaTechniques(), Constants, BaseGame, BodyOptions.Default, DuelFixture.Lengths,
-                new CombatOptions { SelfApproach = false, TickMedical = false }) { Relations = relations };
+                new CombatOptions { SelfApproach = false, TickMedical = false, RecordLog = talk is not null }) { Relations = relations };
         var carry = new CarrySystem(BaseGame, BodyOptions.Default, 1) { Relations = relations };
         var crime = new CrimeSystem(relations);
         combat.Crimes = crime;
         carry.Crimes = crime;
-        arrest = new ArrestSystem(crime, BaseGame, new ArrestSettings { RecordLog = true }) { Carry = carry };
+        arrest = new ArrestSystem(crime, BaseGame, new ArrestSettings { RecordLog = true }) { Carry = carry, Talk = talk };
         var locks = new LockSystem(BaseGame, BodyOptions.Default) { Crimes = crime };
         var walk = new OpenGroundWalkability((_, _) => 150);
         var world = new SimWorld(new WorldSettings { Seed = 31, Threads = threads, PublishSnapshots = false, MinPartitionSize = 1 }, walk,
             [new PlayerSystem(), new PursuitSystem(combat), new MovementSystem(new PathService(walk, true)), new BodySystem(BaseGame), carry, combat,
-             new RetaliationSystem(combat), new AggroSystem(relations), crime, arrest, locks]);
+             new RetaliationSystem(combat), new AggroSystem(relations), crime, arrest, locks, .. talk is null ? [] : new ITickSystem[] { talk }]);
         world.Fixtures.RegisterSite(world, data, 0);
         return world;
     }
@@ -293,5 +296,133 @@ public class ArrestTests
         target.RecentlyWanted = CrimeSystem.RecentlyWantedSeconds;
 
         Assert.True(arrest.PerceivedBounty(guard, target));
+    }
+
+    /// <summary>
+    /// A three-line event-44 bubble ending in DA 29, without slave conditions, as the base bounty recognition chain does.
+    /// </summary>
+    static FcsRecord[] SlaveBountyLines()
+    {
+        var guard = SyntheticTown.Rec("arrest-c", FcsRecordType.Character, "Guard");
+        guard.References["dialogue package"] = [SyntheticTown.Ref("arrest-p")];
+        var package = SyntheticTown.Rec("arrest-p", FcsRecordType.DialoguePackage, "Law");
+        package.References["dialogs"] = [SyntheticTown.Ref("arrest-d", ArrestSystem.BountySpotted)];
+        var root = SyntheticTown.Rec("arrest-d", FcsRecordType.Dialogue, "Bounty recognition");
+        root.Bools["monologue"] = true;
+        root.Ints["repetition limit"] = 1;
+        root.References["lines"] = [SyntheticTown.Ref("arrest-l1")];
+        var first = SyntheticTown.Rec("arrest-l1", FcsRecordType.DialogueLine, "Recognise");
+        first.Strings["text0"] = "Familiar.";
+        first.References["lines"] = [SyntheticTown.Ref("arrest-l2")];
+        var second = SyntheticTown.Rec("arrest-l2", FcsRecordType.DialogueLine, "Wanted");
+        second.Strings["text0"] = "Wanted.";
+        second.References["lines"] = [SyntheticTown.Ref("arrest-l3")];
+        var last = SyntheticTown.Rec("arrest-l3", FcsRecordType.DialogueLine, "Arrest");
+        last.Strings["text0"] = "Arrest.";
+        last.References["effects"] = [SyntheticTown.Ref("arrest-a")];
+        var effect = SyntheticTown.Rec("arrest-a", FcsRecordType.DialogAction, "Arrest target");
+        effect.Ints["action name"] = 29;
+        return [guard, package, root, first, second, last, effect];
+    }
+
+    /// <summary>
+    /// A wanted, shackled player slave and its owner-faction guard, with the recognition dialogue and a retained bounty of 13500.
+    /// </summary>
+    static (SimWorld World, ArrestSystem Arrest, DialogueSystem Talk, CharacterId Guard, CharacterId Slave) SlaveBountyWorld(byte state, bool ownTown)
+    {
+        var data = Town(SlaveBountyLines());
+        var talk = new DialogueSystem(data, new DialogueSettings { AmbientEvents = true });
+        var world = ScriptedWorld(data, data.Relations, 1, out var arrest, talk);
+        talk.Arrests = arrest;
+        world.Player.Faction = data.PlayerFaction;
+        int city = data.FactionIndex("50-a");
+        var guard = Police(world, city, new Vector2(0, 60));
+        var gc = world.Characters.Cold(guard.Slot)!;
+        gc.RecordId = "arrest-c";
+        if (!ownTown) world.Squads.Find(gc.SquadId)!.HomeCentre += new Vector2(10000, 0);
+
+        var squad = new Squad { Id = 1000, TemplateId = "p", Faction = data.PlayerFaction };
+        world.Squads.Add(squad);
+        var slave = Hero(world, data.Relations, city, squad, Vector2.Zero, "slave", 13500, new Combatant());
+        var sc = world.Characters.Cold(slave.Slot)!;
+        sc.Inventory = new Inventory();
+        sc.Inventory.Items.Add(new ItemInstance { Record = "shackles", Section = "boots", Lock = new LockState { Locked = true } });
+        FixtureRegistry.Enslave(world, sc, city, gc.SquadId);
+        if (state == 2) FixtureRegistry.TagEscaped(world, sc);
+
+        return (world, arrest, talk, guard, slave);
+    }
+
+    /// <summary>
+    /// The full bubble chain still speaks and opens no conversation. Its DA 29 spares an owned obedient slave in or out of town, but still
+    /// pursues an escaped slave. Catches a dialogue effect that bypasses the ordinary target-score protection or tags the slave as an enemy.
+    /// </summary>
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(1, false)]
+    [InlineData(2, true)]
+    [InlineData(2, false)]
+    public void Bounty_bubbles_spare_obedient_slaves_but_still_pursue_escapees(byte state, bool ownTown)
+    {
+        var (world, arrest, talk, guard, slave) = SlaveBountyWorld(state, ownTown);
+        using var owned = world;
+        world.Commands.Enqueue(new DialogueEvent(guard, slave, ArrestSystem.BountySpotted) { Tick = world.Tick });
+        world.RunTicks(450);
+
+        Assert.Contains(world.DialogueLines.Take(), line => line.Contains("Arrest.", StringComparison.Ordinal));
+        Assert.Null(talk.PublishConversation());
+        bool pursued = arrest.Log.Any(e => e.Target == slave && e.Kind is ArrestEventKind.Arrest or ArrestEventKind.Attack);
+        Assert.Equal(state == 2, pursued);
+        if (state != 1) return;
+
+        var sc = world.Characters.Cold(slave.Slot)!;
+        Assert.Equal(13500, sc.Bounties!.Entries.Single().Amount);
+        Assert.False(world.Characters.Cold(guard.Slot)!.InCombat);
+        Assert.Empty(world.Characters.Cold(guard.Slot)!.OrderQueue);
+        Assert.False(talk.Memory.HasShort(world, world.Characters.Cold(guard.Slot)!.SquadId, slave, MemoryTag.TempEnemy));
+        Assert.Equal(0u, (talk.Memory.Find(world, sc.SquadId, guard)?.Long ?? 0) & (1u << MemoryTag.Captor));
+    }
+
+    /// <summary>
+    /// An NPC's already queued capture and deferred attack both refuse the obedient slave. Catches saved orders and commands issued before the
+    /// dialogue guard, including a first swing before the ordinary target chooser runs.
+    /// </summary>
+    [Fact]
+    public void Queued_capture_and_deferred_attack_refuse_an_owned_obedient_slave()
+    {
+        var (world, arrest, _, guard, slave) = SlaveBountyWorld(1, true);
+        using var owned = world;
+        PlayerOrders.Give(world, guard.Slot, new OrderEntry(TaskType.LiftPersonSnatchingAllowedInTownOnly, arrest) { Target = slave }, queued: false);
+        world.Commands.Enqueue(new AttackOrder([guard], slave) { Tick = world.Tick, Source = TaskSource.Order, Row = TaskType.MeleeAttack });
+        world.RunTicks(1);
+        Assert.False(world.Characters.Cold(guard.Slot)!.InCombat);
+
+        world.RunTicks(179);
+
+        Assert.False(world.Characters.Cold(guard.Slot)!.InCombat);
+        Assert.Empty(world.Characters.Cold(guard.Slot)!.OrderQueue);
+        Assert.DoesNotContain(world.SystemOf<CombatSystem>()!.Log, hit => hit.Defender == slave.Slot);
+    }
+
+    /// <summary>
+    /// Re-enslaving a target during a running capture cancels its guard's fight and queued retries. Catches StepFight restarting the attack on an
+    /// otherwise protected slave after the combat chooser dropped it.
+    /// </summary>
+    [Fact]
+    public void A_running_arrest_stops_when_its_target_becomes_an_owned_obedient_slave()
+    {
+        var (world, arrest, _, guard, slave) = SlaveBountyWorld(2, true);
+        using var owned = world;
+        Assert.True(arrest.ArrestFromDialogue(world, guard, slave, capture: true));
+        world.RunTicks(2);
+        Assert.True(world.Characters.Cold(guard.Slot)!.InCombat);
+
+        var gc = world.Characters.Cold(guard.Slot)!;
+        FixtureRegistry.Enslave(world, world.Characters.Cold(slave.Slot)!, gc.Faction, gc.SquadId);
+        world.RunTicks(180);
+
+        Assert.False(gc.InCombat);
+        Assert.Empty(gc.OrderQueue);
+        Assert.Equal(1, arrest.Log.Count(e => e.Target == slave && e.Kind == ArrestEventKind.Arrest));
     }
 }

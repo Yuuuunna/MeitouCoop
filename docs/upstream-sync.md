@@ -46,6 +46,10 @@ Coop 的离线饥饿暂停、空手受击经验、被奴役玩家队伍归属、
 
 ## Coop 自行修复
 
+**Observed**（Coop 本地实现）：[服从奴隶的逮捕保护](game/economy.md#118-bounty-spotting-and-bounty-hunters)为 Coop 内自行修复：
+将己方戴镣铐且保留服从工作的奴隶选敌保护用于 NPC 攻击及逮捕订单，阻止悬赏气泡后攻击与重复逮捕。
+后续同步时，上游覆盖相同入口、已排队订单及进行中的逮捕保护后，采用上游实现并移除本地补丁及此标记；未覆盖前保留。
+
 **Observed**（Git 源码对照）：上游基准 `5108032d` 的 AI Think 并行调用 `TownDutySystem.StorageOf`，
 会写入普通存储字典及共用功能字典。Coop 自行修复这两处缓存竞态，线程契约见[模拟线程](simulation.md#threading)。
 后续同步时，若上游已修复这两处并发访问，改用上游实现并移除本地补丁及此标记；未覆盖前保留。

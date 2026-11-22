@@ -492,6 +492,7 @@ public sealed partial class CombatSystem : ITickSystem, IStateHashed, ITaskOwner
         var tc = table.Cold(t)!;
         if (cold.Fighter is null || cold.Stats is null || cold.Medical is null || cold.Race is null || tc.Medical is null) return false;
         if (cold.Medical.Incapacitated || tc.Medical.Incapacitated) return false;
+        if (TargetScore.RefusesSlaveAttack(cold, tc)) return false;
 
         // a carried mate does not fight (a prisoner neither: rows 5, 13 and 16 are not registered for the imprisoned; it may still be attacked,
         // engine choice)
@@ -577,7 +578,7 @@ public sealed partial class CombatSystem : ITickSystem, IStateHashed, ITaskOwner
     /// <summary>
     /// The attack order (row 5) needs a target that is there, awake and has a body (else it leaves the queue), and an attacker able to fight: a
     /// fighter, awake, not carried (<see cref="Engage"/>), and a target out of deep water (row 5's list B, <see cref="SwimBarred"/>; the order
-    /// waits in the queue).
+    /// waits in the queue). Coop-local: an NPC's order against its owned obedient slave leaves the queue.
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
@@ -588,6 +589,8 @@ public sealed partial class CombatSystem : ITickSystem, IStateHashed, ITaskOwner
             return OrderCheck.Gone;
 
         var cold = table.Cold(slot)!;
+        if (TargetScore.RefusesSlaveAttack(cold, table.Cold(t)!)) return OrderCheck.Gone;
+
         bool able = cold is { Fighter: not null, Stats: not null, Race: not null, Medical.Incapacitated: false } && cold.CarriedBy.IsNone
             && !SwimBarred(cold, table.Cold(t), focused: true);
 
@@ -596,14 +599,17 @@ public sealed partial class CombatSystem : ITickSystem, IStateHashed, ITaskOwner
 
     /// <summary>
     /// A started attack order is planned again each update: its target gone into deep water ends the fight and the order waits queued until it is
-    /// out (row 5's list B, <see cref="SwimBarred"/>).
+    /// out (row 5's list B, <see cref="SwimBarred"/>). Coop-local: becoming the NPC's owned obedient slave also stops its attack.
     /// </summary>
     bool IOrderOwner.StillHolds(World world, int slot, OrderEntry order)
     {
         if (order.Row == TaskType.AttackEnemies) return true;   // the fight is on the finder's pick, not on the saved hand
 
         var table = world.Characters;
-        return !table.TryResolveNext(order.Target, out int t) || !SwimBarred(table.Cold(slot)!, table.Cold(t), focused: true);
+        if (!table.TryResolveNext(order.Target, out int t)) return true;
+
+        var cold = table.Cold(slot)!;
+        return !TargetScore.RefusesSlaveAttack(cold, table.Cold(t)!) && !SwimBarred(cold, table.Cold(t), focused: true);
     }
 
     /// <summary>

@@ -489,12 +489,13 @@ public sealed partial class ArrestSystem : IOrderOwner
     /// <summary>
     /// <c>DA_ARREST_TARGET</c> (29, <c>FUN_140680560</c>): in his own town the speaker is ordered 240 Capture Target and 112 Find and put in cage on
     /// the target, elsewhere 4 Attacking (<see cref="OrderArrest"/>). <paramref name="capture"/> is <see cref="CapturesInTown"/>, asked once by the
-    /// caller, which tags the memory by the same answer. False: either is gone.
+    /// caller, which tags the memory by the same answer. False: either is gone or the Coop-local obedient slave protection refuses the arrest.
     /// </summary>
     public bool ArrestFromDialogue(World world, CharacterId guard, CharacterId target, bool capture)
     {
         var table = world.Characters;
         if (!table.TryResolveNext(guard, out int g) || !table.TryResolveNext(target, out int t) || g == t) return false;
+        if (Combat.TargetScore.RefusesSlaveAttack(table.Cold(g)!, table.Cold(t)!)) return false;
 
         OrderArrest(world, g, t, capture);
         return true;

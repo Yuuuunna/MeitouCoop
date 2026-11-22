@@ -871,6 +871,8 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     {
         var table = world.Characters;
         var gc = table.Cold(g)!;
+        if (TargetScore.RefusesSlaveAttack(gc, table.Cold(t)!)) return;
+
         var guard = table.IdOf(g);
         var target = table.IdOf(t);
         if (capture)
@@ -905,7 +907,8 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// The arrest orders' checks; 108 is the player's put in cage (<see cref="CanCage"/>). 240 and 213 need their target there and not caged (240
     /// also alive), else they leave the queue; a guard awake and not carried; and 240 its need 113 targetAtATown, which no row provides, so while the
     /// target stands in no town the order waits queued and the guard goes on with his package (with town data; docs/game/ai-tasks.md "Arrest and
-    /// prison rows"). 112 needs a body carried and a free cage for it (its finder: none, the order leaves the queue).
+    /// prison rows"). 112 needs a body carried and a free cage for it (its finder: none, the order leaves the queue). Coop-local: 240 also leaves
+    /// when the target is the NPC's owned obedient slave, including an order restored from a save.
     /// </summary>
     OrderCheck IOrderOwner.CanRun(World world, int slot, OrderEntry order)
     {
@@ -923,6 +926,7 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
         bool capture = order.Row == TaskType.LiftPersonSnatchingAllowedInTownOnly;
         if (!table.TryResolveNext(order.Target, out int t) || t == slot || table.Cold(t) is not { IsImprisoned: false } tc) return OrderCheck.Gone;
         if (capture && tc.Medical is { Dead: true }) return OrderCheck.Gone;
+        if (capture && TargetScore.RefusesSlaveAttack(c, tc)) return OrderCheck.Gone;
         if (c.Medical is { Incapacitated: true } || !c.CarriedBy.IsNone) return OrderCheck.Blocked();
 
         return capture && !TargetInTown(world, slot, order) ? OrderCheck.Blocked() : OrderCheck.Run;
@@ -1151,10 +1155,19 @@ public sealed partial class ArrestSystem(CrimeSystem crimes, GameConstants const
     /// The fight: once the target is down the guard lifts it; a fight that stopped with the target still up starts again, however far it is. The
     /// order stays queued and is planned again each update (<c>FUN_140510920</c> pops it only on its desire or its done test; a failed step pops
     /// the front only when it is the order's own row, <c>FUN_140506b10</c> comparing the task type, so the fight row 4 ending pops nothing,
-    /// <b>Verified</b>), and its need 7 plans the fight again. Only the town needs (113, 95) or a new order stop it.
+    /// <b>Verified</b>), and its need 7 plans the fight again. The town needs (113, 95) or a new order stop it; Coop-local slave protection also
+    /// cancels it when the target becomes the guard's owned obedient slave.
     /// </summary>
     bool StepFight(World world, Arrest a, int g, int t, CharacterCold gc, CharacterCold tc, ref CharacterHot gn, float dt)
     {
+        if (TargetScore.RefusesSlaveAttack(gc, tc))
+        {
+            if (world.SystemOf<CombatSystem>() is { } combat && Fights(combat, a.Guard, a.Target))
+                combat.Disengage(world.Characters, a.Guard);
+
+            return End(world, a, ArrestEventKind.GaveUp);
+        }
+
         if (tc.Medical is { Incapacitated: true }) return StepTargetDown(world, a, g, gc, dt);
         if (gn.Task != (byte)CharacterTask.Attack && !gc.InCombat && a.Time >= 1)
         {
