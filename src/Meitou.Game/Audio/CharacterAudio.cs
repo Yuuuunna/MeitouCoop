@@ -536,7 +536,7 @@ sealed class CharacterAudio(GameHost host)
                 sounds.Shot(subject);
                 break;
             case SoundKind.TurretShot:
-                sounds.TurretShot(e.Position);
+                sounds.TurretShot(e.Position, e.ShootSound);
                 break;
             case SoundKind.WallBroken:
                 sounds.WallBreak(e.Position, host.Config.FixDoorBreak);

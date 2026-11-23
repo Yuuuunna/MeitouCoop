@@ -120,6 +120,26 @@ sealed class BuildMode(PlayerInterface player)
     /// </summary>
     WallSnap? _wallEndSnap, _ghostSnap;
     /// <summary>
+    /// The host building of the <c>is node</c> snap point the current ghost snapped onto; null when not snapped to a building's node.
+    /// </summary>
+    SnapHost? _ghostSnappedOn;
+    /// <summary>
+    /// Scratch list for blue snap node marker positions collected each frame while holding a node-snapping ghost.
+    /// </summary>
+    readonly List<Vector3> _blueNodes = [];
+    /// <summary>
+    /// Scratch list of matching <c>is node</c> snap targets collected once per frame for both ghost snapping and blue node markers.
+    /// </summary>
+    readonly List<SnapTarget> _nodeTargets = [];
+    /// <summary>
+    /// Scratch set of site ids seen while collecting <see cref="_nodeTargets"/>, reused across frames.
+    /// </summary>
+    readonly HashSet<string> _snapHostSeen = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Whether blue snap nodes were handed to the marker renderer last frame, so leaving clears them once.
+    /// </summary>
+    bool _blueNodesDrawn;
+    /// <summary>
     /// The buildable buildings by record id, made on first use.
     /// </summary>
     Dictionary<string, BuildingBuildData>? _buildIndex;
@@ -138,6 +158,14 @@ sealed class BuildMode(PlayerInterface player)
     /// in reach are counted).
     /// </summary>
     const float LevelWallReach = 300;
+    /// <summary>
+    /// How far round the camera/cursor matching blue snap nodes are drawn while holding a node-snapping building.
+    /// </summary>
+    const float BlueNodeDrawReach = 800;
+    /// <summary>
+    /// The <c>node type</c> of <c>Node Turret</c>, the snap node a building with a <c>gun turret</c> snaps to (<b>Verified</b>, <c>0x1404dd250</c>).
+    /// </summary>
+    const int TurretNodeType = 3;
 
     #endregion
 
@@ -175,6 +203,7 @@ sealed class BuildMode(PlayerInterface player)
         Active = on;
         _buildHeld.Clear();
         Ghost = null;
+        _ghostSnappedOn = null;
         _buildMessage = null;
         _buildClock = 0;
         WallLine = null;
@@ -206,6 +235,7 @@ sealed class BuildMode(PlayerInterface player)
         {
             BuildQueue.Clear();
             player.FaithfulScreens.Close("build");
+            ClearBlueNodes();
             ShowGhosts();
             // Confirm, Esc and the window's close all clear the request (FUN_1404d1870 -> FUN_140787d40(0)); a game that was paused before stays
             // paused.
@@ -346,6 +376,7 @@ sealed class BuildMode(PlayerInterface player)
         player.Furniture.UpdateRock();
         if (!Active || Services is not { } host)
         {
+            if (_blueNodesDrawn) ClearBlueNodes();
             if (_ghostsDrawn) ShowGhosts();
             return;
         }
@@ -370,7 +401,10 @@ sealed class BuildMode(PlayerInterface player)
         _ghostMargins = PlacementCheck.VerticalMargins.Unlimited;
         WallPieces.Clear();
         _wallEndSnap = _ghostSnap = null;
+        _ghostSnappedOn = null;
         if (WallLine is { } line && line.Master != CurrentBuilding()) WallLine = null;
+
+        UpdateBlueNodes(host);
 
         if (WallLine is { } active && !player.PointerPanel.PointerOverUi && player.Ray(player.Mouse) is { } lineRay
             && player.Picking.GroundHit(lineRay.Origin, lineRay.Direction) is { } lineEnd)
@@ -411,7 +445,8 @@ sealed class BuildMode(PlayerInterface player)
         var query = new PlacementQuery(building, position, rotation, _ghostYaw, on?.Floor ?? 0, host.Parts(building.Id),
             BuildQueue, snapshot.Characters, snapshot.Buildings, host.Towns(), host.PlayerFactionId(), host.Placement)
         { On = on, Surface = surface, Lift = _ghostLift, PassThrough = surface is null ? null : IsWall };
-        query = SnapToWall(query) ?? SnapToTarget(host, query, footprint) ?? Settled(query);
+        query = SnapToWall(query) ?? SnapToTarget(host, query, footprint, ray) ?? Settled(query);
+        _ghostSnappedOn = query.SnappedOn;
 
         var failure = player.LevelEditorPanel.LevelBuild ? PlacementFailure.None
             : !Unlocked().Contains(building.Id) ? PlacementFailure.NotAvailable
@@ -473,17 +508,25 @@ sealed class BuildMode(PlayerInterface player)
     }
 
     /// <summary>
-    /// A <c>snaps to</c> ghost takes the place and turn of its nearest target (<see cref="GhostSnap"/>); its target never blocks it, nor, on a
-    /// wall, the other walls. Null when it snaps to nothing or finds no target in reach: it then stands where the cursor is (engine choice, the
-    /// original's "marked by blue nodes" refusal is not decided).
+    /// A snapping ghost takes the place and turn of its nearest target (<see cref="GhostSnap"/>): a <c>snaps to</c> building, or a snap node of its
+    /// <see cref="SnapNodeType"/> (such as <c>Node Light Mount</c>, or <c>Node Turret</c> for a turret) on an owned building or player site. A
+    /// node-snapping ghost without a <c>gun turret</c> marks <see cref="PlacementQuery.NeedsSnap"/> so unsnapped placement fails with
+    /// <see cref="PlacementFailure.NeedsSnapNode"/> (<c>0x1404d0ff0</c>).
     /// </summary>
-    PlacementQuery? SnapToTarget(BuildServices host, PlacementQuery q, Simulation.Navigation.BuildingFootprint? footprint)
+    PlacementQuery? SnapToTarget(BuildServices host, PlacementQuery q, Simulation.Navigation.BuildingFootprint? footprint,
+        (Vector3 Origin, Vector3 Direction) ray)
     {
         var building = q.Building;
-        if (building.SnapsTo.Count == 0) return null;
+        var nodeType = SnapNodeType(host, building);
+        if (nodeType is null && building.SnapsTo.Count == 0) return null;
 
+        bool needsSnap = nodeType is not null && !building.HasGunTurret;
         var (min, max) = footprint?.Bounds ?? (Vector2.Zero, Vector2.Zero);
-        if (GhostSnap.Find(building, (min + max) / 2, q.Position, SnapTargets(host, building, q.Position)) is not { } target) return null;
+        var candidates = nodeType is null ? StandaloneSnapTargets(host, building, q.Position) : _nodeTargets;
+        if (GhostSnap.Find(building, (min + max) / 2, q.Position, candidates, ray) is not { } target)
+            return needsSnap ? q with { NeedsSnap = true } : null;
+
+        if (target.Host is { } hostBuilding) return SnapToNode(q, target, hostBuilding, needsSnap);
 
         bool onWall = IsWall(target.Record);
         return q with
@@ -495,15 +538,52 @@ sealed class BuildMode(PlayerInterface player)
             On = null,
             Surface = null,
             Snapped = true,
+            NeedsSnap = needsSnap,
             PassThrough = record => building.SnapsTo.Contains(record) || onWall && IsWall(record),
         };
     }
 
     /// <summary>
-    /// What <paramref name="building"/> may snap to round <paramref name="near"/>: the queued ghosts, the player's sites and the level's buildings
-    /// (a level building that is a site already is the site's).
+    /// The ghost on the snap node <paramref name="target"/> of <paramref name="hostBuilding"/>: the node's place and turn, a turret's turned
+    /// 180 degrees about its own up (<b>Verified</b>, <c>0x1404dda21</c>: a <c>gun turret</c> ghost's yaw gains 180 through <c>0x1404d4f80</c>
+    /// after it takes the node's). Walls do not block a turret on a wall's node (engine choice: the node stands on the walkway, so the next wall
+    /// piece's footprint reaches it).
     /// </summary>
-    IEnumerable<SnapTarget> SnapTargets(BuildServices host, BuildingBuildData building, Vector3 near)
+    PlacementQuery SnapToNode(PlacementQuery q, SnapTarget target, SnapHost hostBuilding, bool needsSnap)
+    {
+        bool turret = q.Building.HasGunTurret;
+        var rotation = turret ? target.Rotation * Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI) : target.Rotation;
+        return q with
+        {
+            Position = target.Position,
+            Rotation = rotation,
+            Yaw = PlacementCheck.YawOf(rotation),
+            Floor = 0,
+            On = null,
+            Surface = null,
+            PassThrough = turret ? IsWall : null,
+            Snapped = true,
+            SnappedOn = hostBuilding,
+            NeedsSnap = needsSnap,
+        };
+    }
+
+    /// <summary>
+    /// The <c>node type</c> of the snap nodes <paramref name="building"/> snaps to; null when it snaps to buildings (or not at all) (<b>Verified</b>,
+    /// <c>0x1404dd250</c>): 3 (<c>Node Turret</c>) for a building with a <c>gun turret</c>, else the node type of its first <c>snaps to</c> record
+    /// when that is an <c>is node</c> record (<c>Node Light Mount</c> 5).
+    /// </summary>
+    static int? SnapNodeType(BuildServices host, BuildingBuildData building)
+    {
+        if (building.HasGunTurret) return TurretNodeType;
+        return building.SnapsTo.Count == 0 ? null : host.Placement.NodeTypeOf(building.SnapsTo[0]);
+    }
+
+    /// <summary>
+    /// The <c>snaps to</c> buildings <paramref name="building"/> may snap to round <paramref name="near"/>: queued ghosts, player sites and level
+    /// buildings of its target records.
+    /// </summary>
+    IEnumerable<SnapTarget> StandaloneSnapTargets(BuildServices host, BuildingBuildData building, Vector3 near)
     {
         var sites = player.Session.CurrentSnapshot.Buildings;
         var known = sites.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
@@ -512,6 +592,99 @@ sealed class BuildMode(PlayerInterface player)
         return BuildQueue.Select(g => new SnapTarget(g.Building.Id, g.Position, g.Rotation))
             .Concat(sites.Select(s => new SnapTarget(s.Record, s.Position, s.Rotation)))
             .Concat(level.Select(b => new SnapTarget(b.Record, b.Position, b.Rotation)));
+    }
+
+    /// <summary>
+    /// Collects the snap nodes of <paramref name="nodeType"/> (any record of that <c>node type</c>, as the original matches them, <c>0x14038aca0</c>)
+    /// within <paramref name="radius"/> of <paramref name="centre"/> on player sites and owned level buildings (all non-destroyed buildings while
+    /// the level editor builds, matching <c>showBlueNodes</c> <c>0x14038cdf0</c>) into <see cref="_nodeTargets"/>.
+    /// </summary>
+    void FillNodeSnapTargets(BuildServices host, int nodeType, Vector2 centre, float radius)
+    {
+        _nodeTargets.Clear();
+        _snapHostSeen.Clear();
+        bool levelBuild = player.LevelEditorPanel.LevelBuild;
+        int playerFaction = player.Session.ActiveFaction;
+        var sites = player.Session.CurrentSnapshot.Buildings;
+        float maxDistSq = radius * radius;
+        foreach (var s in sites)
+        {
+            _snapHostSeen.Add(s.Id);
+            if (s.Destroyed || !levelBuild && s.Owner != playerFaction) continue;
+            if (Vector2.DistanceSquared(new Vector2(s.Position.X, s.Position.Z), centre) > maxDistSq) continue;
+
+            var nodes = host.Placement.SnapNodesOf(s.Record);
+            if (nodes.Count == 0) continue;
+
+            var snapHost = new SnapHost(s.Id, s.Id, s.LevelPlacement is not null, true, s.Destroyed, false);
+            AddMatchingNodes(nodes, s.Position, s.Rotation, snapHost);
+        }
+
+        foreach (var b in host.Placement.SnapHostsAround(centre, radius, OfType))
+        {
+            if (_snapHostSeen.Contains(b.Key) || b.Host.Destroyed || !levelBuild && !b.Host.Owned) continue;
+
+            var nodes = host.Placement.SnapNodesOf(b.Record);
+            if (nodes.Count == 0) continue;
+
+            AddMatchingNodes(nodes, b.Position, b.Rotation, b.Host);
+        }
+
+        void AddMatchingNodes(IReadOnlyList<PlacedSnapNode> nodes, Vector3 hostPos, Quaternion hostRot, SnapHost snapHost)
+        {
+            var rot = NormalizeQuaternion(hostRot);
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                var n = nodes[i];
+                if (!OfType(n.Record)) continue;
+
+                var worldPos = hostPos + Vector3.Transform(n.Position, rot);
+                var worldRot = NormalizeQuaternion(rot * n.Rotation);
+                _nodeTargets.Add(new SnapTarget(n.Record, worldPos, worldRot, snapHost));
+            }
+        }
+
+        bool OfType(string record) => host.Placement.NodeTypeOf(record) == nodeType;
+    }
+
+    /// <summary>
+    /// Unit quaternion, falling back to identity for a degenerate zero length.
+    /// </summary>
+    static Quaternion NormalizeQuaternion(Quaternion q) => q.LengthSquared() > 1e-10f ? Quaternion.Normalize(q) : Quaternion.Identity;
+
+    /// <summary>
+    /// Collects the snap targets of the held ghost's <see cref="SnapNodeType"/> once per frame and updates the blue snap node spheres in
+    /// <see cref="PlayerInterface.Markers"/> (<b>Verified</b>: <c>PreviewBuilding_Snapping</c> slot 7, <c>0x1404deb80</c>, shows the blue nodes of
+    /// its snap node type, a turret's <c>Node Turret</c> ones too).
+    /// </summary>
+    void UpdateBlueNodes(BuildServices host)
+    {
+        if (WallLine is not null || CurrentBuilding() is not { } building || SnapNodeType(host, building) is not { } nodeType)
+        {
+            _nodeTargets.Clear();
+            if (_blueNodesDrawn) ClearBlueNodes();
+            return;
+        }
+
+        var cam = player.Session.Camera.Current.Target;
+        FillNodeSnapTargets(host, nodeType, new Vector2(cam.X, cam.Z), BlueNodeDrawReach);
+        if (player.Markers is not { } markers) return;
+
+        _blueNodes.Clear();
+        for (int i = 0; i < _nodeTargets.Count; i++) _blueNodes.Add(_nodeTargets[i].Position);
+        markers.BlueNodes = _blueNodes.Count == 0 ? [] : [.. _blueNodes];
+        _blueNodesDrawn = _blueNodes.Count > 0;
+    }
+
+    /// <summary>
+    /// Clears any blue snap node markers handed to <see cref="PlayerInterface.Markers"/>.
+    /// </summary>
+    void ClearBlueNodes()
+    {
+        if (player.Markers is { } markers) markers.BlueNodes = [];
+        _blueNodes.Clear();
+        _nodeTargets.Clear();
+        _blueNodesDrawn = false;
     }
 
     /// <summary>
@@ -795,7 +968,9 @@ sealed class BuildMode(PlayerInterface player)
     {
         if (WallClick()) return;
         if (Ghost is not { Failure: PlacementFailure.None } g) return;
-        BuildQueue.Add(new QueuedGhost(g.Building, g.Position, g.Rotation, g.On?.Floor ?? 0, g.Hull, g.On?.Parent));
+        string? parent = g.On?.Parent ?? _ghostSnappedOn?.Parent;
+        bool outside = g.On is null && _ghostSnappedOn is not null;
+        BuildQueue.Add(new QueuedGhost(g.Building, g.Position, g.Rotation, g.On?.Floor ?? 0, g.Hull, parent, outside));
         player.InterfaceSounds.Sound("Building_Place", "Building_Place", g.On is null ? "Outdoors" : "Indoors");
         _ghostLift = 0;
     }
@@ -844,7 +1019,7 @@ sealed class BuildMode(PlayerInterface player)
 
         player.InterfaceSounds.Sound("Building_Confirm");
         var planned = BuildQueue.Select(q =>
-            new PlannedBuilding(q.Building.Id, q.Position, q.Rotation, q.Floor, q.Parent, GhostBoundsSize(q.Building)));
+            new PlannedBuilding(q.Building.Id, q.Position, q.Rotation, q.Floor, q.Parent, GhostBoundsSize(q.Building), q.Outside));
         player.Say(new PlaceBuildings([.. planned]) { Tick = player.Session.CommandTick, Faction = player.Session.ActiveFaction });
         BuildQueue.Clear();
         SetBuildMode(false);
@@ -1082,6 +1257,18 @@ sealed class BuildMode(PlayerInterface player)
     readonly Dictionary<string, (Vector3 Min, Vector3 Max)?> _ghostBoxes = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// How far (X/Z) each building record's footprint hull and collision triangles reach from its position, turned about Y in any way: the bound
+    /// of <see cref="PickSiteAt"/>'s coarse cull, by record; made once a record's footprint has loaded.
+    /// </summary>
+    readonly Dictionary<string, float> _siteReach = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The site pick of the shared pick open (<see cref="WorldPicking.BeginShared"/>): its scope, pixel and answer, reused by the pointer's second
+    /// look (the building hover after the right-click target).
+    /// </summary>
+    (int Scope, Vector2 Pixel, (BuildingSnapshot Site, float T)? Result) _sitePick;
+
+    /// <summary>
     /// The nearest of the player's sites (and finished buildings) under a pixel, by a ray against each one's footprint prism (a sphere round its
     /// position without a footprint).
     /// </summary>
@@ -1091,6 +1278,19 @@ sealed class BuildMode(PlayerInterface player)
     /// <see cref="PickSite"/> with the distance along the ray.
     /// </summary>
     internal (BuildingSnapshot Site, float T)? PickSiteAt(Vector2 pixel)
+    {
+        int scope = player.Picking.SharedScope;
+        if (scope != 0 && _sitePick.Scope == scope && _sitePick.Pixel == pixel) return _sitePick.Result;
+
+        var result = FindSiteAt(pixel);
+        if (scope != 0) _sitePick = (scope, pixel, result);
+        return result;
+    }
+
+    /// <summary>
+    /// <see cref="PickSiteAt"/> worked out.
+    /// </summary>
+    (BuildingSnapshot Site, float T)? FindSiteAt(Vector2 pixel)
     {
         if (Services is not { } host || player.Session.CurrentSnapshot.Buildings.Count == 0 || player.Ray(pixel) is not { } ray) return null;
 
@@ -1104,21 +1304,15 @@ sealed class BuildMode(PlayerInterface player)
         var hits = new List<(BuildingSnapshot Site, float T)>();
         foreach (var site in player.Session.CurrentSnapshot.Buildings)
         {
-            var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, PlacementCheck.YawOf(site.Rotation));
-
-            // No selectable geometry: an invisible sitting node must leave the click to ground movement.
+            // The coarse cull before the floor and ray tests (no effect on the pick): a hit on a footprint's prism or collision lies within their
+            // X/Z reach of the site. A site without a footprint (a plot, a sitting node, one still loading) takes the full tests.
             var bounds = host.Placement.Footprint(site.Record);
-            bool invisible = bounds is null
-                && player.Production.Machine(site.Id)?.Function is TownBuildings.ChairFunction or TownBuildings.ThroneFunction;
-            if (invisible && host.Parts(site.Record).Count == 0) continue;
+            if (bounds is { } outline && !WorldPicking.RayPassesXz(ray, site.Position, SiteReach(host, site.Record, outline), ground)) continue;
 
-            float? t = bounds is { } footprint
-                ? player.Picking.BuildingRayT(ray, footprint.Place(site.Position, yaw), footprint.YMin, footprint.YMax, site.Record, site.Position,
-                    site.Position.Y, yaw)
-                : host.Placement.Plot(site.Record) is { } plot
-                    ? WorldPicking.PlotT(ray, plot.Place(site.Position, yaw), terrain)
-                    : WorldPicking.RaySegment(ray.Origin, ray.Direction, site.Position, site.Position + new Vector3(0, 16, 0), 12);
-            if (t is not { } hit || hit >= ground) continue;
+            // Not drawn above the viewed floor of an opened house, so not picked there, as a bed or a container (FurnitureUse).
+            if (player.Furniture.AboveViewedFloor?.Invoke(site.Position) == true) continue;
+
+            if (SiteRayT(host, ray, site, bounds, terrain) is not { } hit || hit >= ground) continue;
 
             hits.Add((site, hit));
             if (hit < bestT) (bestT, best) = (hit, site);
@@ -1130,6 +1324,45 @@ sealed class BuildMode(PlayerInterface player)
             && hits.Where(h => StandsIn(h.Site, best) && !player.Hidden(ray, h.T)).OrderBy(h => h.T).FirstOrDefault() is { Site: not null } inside)
             (best, bestT) = inside;
         return best is null ? null : (WallOf(best), bestT);
+    }
+
+    /// <summary>
+    /// Where the ray meets a site: by its footprint's prism and collision, else its plot (a farm), else a 12-unit segment over its position; null
+    /// for none, or an invisible sitting node without parts (no selectable geometry: the click is left to ground movement).
+    /// </summary>
+    float? SiteRayT(BuildServices host, (Vector3 Origin, Vector3 Direction) ray, BuildingSnapshot site,
+        Simulation.Navigation.BuildingFootprint? bounds, float? terrain)
+    {
+        var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, PlacementCheck.YawOf(site.Rotation));
+
+        // No selectable geometry: an invisible sitting node must leave the click to ground movement.
+        bool invisible = bounds is null
+            && player.Production.Machine(site.Id)?.Function is TownBuildings.ChairFunction or TownBuildings.ThroneFunction;
+        if (invisible && host.Parts(site.Record).Count == 0) return null;
+
+        return bounds is { } footprint
+            ? player.Picking.BuildingRayT(ray, footprint.Place(site.Position, yaw), footprint.YMin, footprint.YMax, site.Record, site.Position,
+                site.Position.Y, yaw)
+            : host.Placement.Plot(site.Record) is { } plot
+                ? WorldPicking.PlotT(ray, plot.Place(site.Position, yaw), terrain)
+                : WorldPicking.RaySegment(ray.Origin, ray.Direction, site.Position, site.Position + new Vector3(0, 16, 0), 12);
+    }
+
+    /// <summary>
+    /// <see cref="_siteReach"/> of <paramref name="record"/>, whose loaded footprint is <paramref name="footprint"/>.
+    /// </summary>
+    float SiteReach(BuildServices host, string record, Simulation.Navigation.BuildingFootprint footprint)
+    {
+        if (_siteReach.TryGetValue(record, out float known)) return known;
+
+        float reach = 0;
+        foreach (var p in footprint.Hull) reach = MathF.Max(reach, p.Length());
+        foreach (var (vertices, _) in host.Placement.CollisionMesh(record, false))
+        {
+            foreach (var v in vertices) reach = MathF.Max(reach, new Vector2(v.X, v.Z).Length());
+        }
+
+        return _siteReach[record] = reach;
     }
 
     /// <summary>
@@ -1279,6 +1512,44 @@ sealed class BuildMode(PlayerInterface player)
     }
 
     /// <summary>
+    /// The rows of the code mods' job offers for a site (docs/modding.md "Mod jobs"), shown after its verbs (<see cref="ContextMenuWindow.Menu"/>):
+    /// on a finished building of the player's faction, each offer that names the building's record and is for one of the selected characters;
+    /// choosing it gives the selection that job there, Shift or not. The simulation tests the building and each character again as it applies
+    /// the command (<see cref="Simulation.Production.AddJob"/>).
+    /// </summary>
+    internal List<(string Caption, Action Give)> OfferedJobs(BuildingSnapshot site)
+    {
+        var rows = new List<(string, Action)>();
+        if (!site.Complete || site.Owner != player.Session.ActiveFaction) return rows;
+
+        var selected = player.Selected();
+        var selection = player.SelectedIds();
+        foreach (var offer in JobOffers())
+        {
+            if (!offer.On(site.Record) || !selected.Any(c => offer.Takes(c.Animal))) continue;
+
+            rows.Add((offer.Caption, () => GiveOffered(selection, offer, site)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// Sends the command that gives the selection an offered job on a site (<see cref="OfferedJobs"/>).
+    /// </summary>
+    void GiveOffered(IReadOnlyList<CharacterId> selection, Simulation.Production.ModJobOffer offer, BuildingSnapshot site) =>
+        player.Say(new Simulation.Production.AddJob(selection, offer.Type, site.Id)
+        { SiteRevision = site.SiteRevision, RootRevision = site.RootRevision, Tick = player.Session.CommandTick });
+
+    /// <summary>
+    /// The code mods' job offers in registration order (docs/modding.md "Mod jobs"); none without mods.
+    /// </summary>
+    IReadOnlyList<Simulation.Production.ModJobOffer> JobOffers()
+    {
+        return player.Session.CurrentSnapshot.ModJobOffers;
+    }
+
+    /// <summary>
     /// A finished building's doors: the door panel's open/close and lock buttons, for all its doors at once (docs/simulation.md "Cages, beds and
     /// locks").
     /// </summary>
@@ -1326,7 +1597,7 @@ sealed class BuildMode(PlayerInterface player)
         if (!SiteIsObject(site) && SomethingInsideAt(p)) return false;
         // With Shift a storage takes a job even without verbs.
         bool shiftStorage = player.SlowModifier && site.Complete && player.Production.Machine(site.Id) is { IsStorage: true };
-        if (SiteVerbs(site).Count == 0 && !shiftStorage) return false;
+        if (SiteVerbs(site).Count == 0 && OfferedJobs(site).Count == 0 && !shiftStorage) return false;
         _sitePending = (site, p, System.Diagnostics.Stopwatch.GetTimestamp());
         return true;
     }
@@ -1469,7 +1740,7 @@ sealed class BuildMode(PlayerInterface player)
 
         _sitePending = null;
         if (player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == pending.Site.Id) is not { } site) return;
-        player.ContextMenuWindow.OpenMenu = player.ContextMenuWindow.Menu(SiteName(site), pending.At, SiteVerbs(site));
+        player.ContextMenuWindow.OpenMenu = player.ContextMenuWindow.Menu(SiteName(site), pending.At, SiteVerbs(site), OfferedJobs(site));
     }
 
     /// <summary>

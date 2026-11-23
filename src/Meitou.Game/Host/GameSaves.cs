@@ -506,8 +506,6 @@ sealed class GameSaves(GameHost host)
                 loaded = SaveLoader.Load(world, read.Result, data, loadOptions ?? new SaveLoadOptions { Appearances = data.Appearances });
                 host.Modding.RestoreModData(world, read.Result);
                 host.Modding.DropUnownedAutonomy(world);
-                if (host.Modding.Mods is { } mods) mods.TellReady(world, fromSave: true);
-                else world.TellReady(fromSave: true);
                 if (world.Squads.Find(world.Player.Squad) is { Members.Count: > 0 } squad)
                 {
                     world.Player.Selection.Clear();
@@ -520,6 +518,11 @@ sealed class GameSaves(GameHost host)
             Console.Error.WriteLine($"load      failed: {e}");
             throw new GameHost.SceneLoadFailed($"Load failed: {e.Message}");
         }
+
+        // After the swap, so a mod's Ready that queues a command or reads the tick reaches this world, not the one it replaced.
+        if (host.Modding.Mods is { } readyMods) readyMods.TellReady(host.LocalSession.World, fromSave: true);
+        else host.LocalSession.World.TellReady(fromSave: true);
+
         host.PopData = nextData;
         Difficulty = nextDifficulty;
         // The New game window then shows the loaded save's options (the original loads them into its globals).
@@ -558,9 +561,9 @@ sealed class GameSaves(GameHost host)
         if (saved.HasView)
         {
             var (yaw, pitch, distance) = KenshiCamera.FromSaved(saved.Rotation, saved.Zoom);
-            var pivot = KenshiCamera.SavedPivotInBounds(saved.Position) ? new Vector2(saved.Position.X, saved.Position.Z)
-                : KenshiCamera.SavedPivotFallback;
-            host.Session.Camera.Place(pivot, yaw, pitch, distance);
+            bool inBounds = KenshiCamera.SavedPivotInBounds(saved.Position);
+            var pivot = inBounds ? new Vector2(saved.Position.X, saved.Position.Z) : KenshiCamera.SavedPivotFallback;
+            host.Session.Camera.Place(pivot, yaw, pitch, distance, inBounds ? saved.Position.Y : null);
         }
         if (host.PlayerSquad is { } squad && !squad.Leader.IsNone)
         {
@@ -568,7 +571,7 @@ sealed class GameSaves(GameHost host)
             if (!saved.HasView)
             {
                 var view = host.Session.Camera.Current;
-                host.Session.Camera.Place(new Vector2(at.X, at.Z), view.Yaw, view.Pitch, view.Distance);
+                host.Session.Camera.Place(new Vector2(at.X, at.Z), view.Yaw, view.Pitch, view.Distance, at.Y);
             }
             navmesh = NavmeshAround(at);
         }
@@ -690,6 +693,7 @@ sealed class GameSaves(GameHost host)
             (data.BodyOptions.Dismemberment, data.BodyOptions.Decapitation, data.BodyOptions.AdvancedRagdolls) =
                 (gameplay.Dismemberment, host.Config.Decapitation, host.Config.AdvancedRagdolls);
             (data.BodyOptions.SquadXp, data.BodyOptions.OthersXp) = (host.Config.SquadXp, host.Config.OthersXp);
+            data.BodyOptions.SquadSkillXp = SkillXp.Rates(host.Config.SquadSkillXp);
         }
 
         foreach (var population in host.LocalSession.World.Systems.OfType<PopulationSystem>())
@@ -731,6 +735,7 @@ sealed class GameSaves(GameHost host)
                 KeepCampaignClocks = host.Config.FixRaidClocks,
                 KeepWild = host.Config.KeepWild,
                 ResidentSchedule = host.Config.ResidentSchedule,
+                KeepDowned = host.Config.KeepDowned,
                 OffscreenOverrides = host.Config.OffscreenOverrides,
                 NestsMultiplier = (settings ?? Difficulty)[6],
                 SquadSizeMultiplier = Gameplay.SquadSize,
@@ -751,7 +756,7 @@ sealed class GameSaves(GameHost host)
             Combat = new Simulation.Combat.CombatOptions { SelfApproach = false, TickMedical = false, RecordLog = host.Duel.IsDuel,
                 AttackSlots = host.Config.AttackSlotsOption, StuckLimit = Gameplay.HarpoonLimit, LateDefences = host.Config.LateDefences,
                 GunnerFacesBarrel = host.Config.FixGunnerFacing, PunchReachFix = host.Config.FixPunchReach,
-                AnimalMovesFix = host.Config.FixAnimalMoves },
+                AnimalMovesFix = host.Config.FixAnimalMoves, TurretAssault = host.Config.FixTurretAssault },
             AnimalsPickUp = host.Config.AnimalsPickUp,
             AnimationLengths = host.AnimationLengths,
             AnimationLibrary = host.AnimationLibrary,

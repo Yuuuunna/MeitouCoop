@@ -98,7 +98,7 @@ sealed class PlayerTalks(DialogueSystem dialogue)
         }
         if (!dialogue.TalkReady(world, talk.Talker, talk.Target)) return;
 
-        if (DialogueSystem.InTalkRange(table, p, n))
+        if (DialogueSystem.InTalkRange(world, p, n))
         {
             Arrive(world, talk, p);
             return;

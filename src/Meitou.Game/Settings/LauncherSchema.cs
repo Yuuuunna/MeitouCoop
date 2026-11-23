@@ -146,6 +146,7 @@ static class LauncherSchema
         Graphics(WorldFrame.GradingSlider, 0, 1, 1, 1) with { Name = "Colour grading", Labels = ["Off", "On"] },
         Graphics(WorldFrame.HeatHazeStrengthSlider, 0, 3, 0.05f, Enhancements.MeitouHeatHazeStrength) with { Format = "0.00" },
         Graphics(WorldFrame.NightGradeStrengthSlider, 0, 1, 0.05f, NightGrade.MeitouStrength) with { Format = "0.00" },
+        Graphics(WorldFrame.AdaptiveExposureSlider, 1, 3, 0.05f, PostOptions.MeitouAdaptiveExposureStrength) with { Format = "0.00", Suffix = "x" },
         Graphics(WorldFrame.BloomStrengthSlider, 0, 0.25f, 0.005f, new PostOptions().BloomStrength) with { Format = "0.000" },
         Graphics(WorldFrame.DofApertureSlider, 0.25f, 22, 0.05f, new PostOptions().DofAperture) with { Logarithmic = true, Format = "0.00" },
         Graphics(WorldFrame.VignetteStrengthSlider, 0, 1, 0.05f, new PostOptions().VignetteStrength) with { Format = "0.00" },
@@ -269,6 +270,7 @@ static class LauncherSchema
         // An optional effect, in neither look: plain Off / On (Toggle.Optional).
         yield return Switch(WorldFrame.BloomSwitch, "Off", "On", false);
         yield return Switch(WorldFrame.CameraEffectsSwitch, "Off", "On", false);
+        yield return Switch(WorldFrame.SimpleTerrainSwitch, "Off", "On", false);
         // Faithful / Meitou switches whose game side is off; both start off (Ultra turns them on).
         yield return Switch(WorldFrame.RockSmoothingSwitch, "Off", "Meitou: on", false);
         yield return Switch(WorldFrame.OutlineRefineSwitch, "Off", "Meitou: on", false);

@@ -48,6 +48,13 @@ sealed class GroundItemPicks(PlayerInterface player)
         new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
+    /// How far (X/Z) a ground item's shape reaches from its position, by record and whether it fell (what chooses its shape:
+    /// GroundItemSync.GroundShape), from the first such item whose shape was read: the cull before the shape. The shape is drawn at the item's X/Z
+    /// (only its height is placed), so a ray that passes farther in X/Z cannot meet it.
+    /// </summary>
+    readonly Dictionary<(string Record, bool Fell), float> _shapeReach = [];
+
+    /// <summary>
     /// The ground item whose label is under the pixel, else the nearest the ray meets on its collision (<see cref="GroundItemShape"/>), as the
     /// original's pick hits an item's shapes; one inside or behind a building seen from outside does not count.
     /// </summary>
@@ -61,14 +68,22 @@ sealed class GroundItemPicks(PlayerInterface player)
         if (LabelAt(pixel) is { } labelled) return (labelled, 0);
         if (player.Ray(pixel) is not { } ray || GroundItemShape is not { } shapeOf) return null;
 
+        // Only what the ray meets before the ground counts, as for buildings (WorldPicking.PickReach): an item behind a hill is not picked
+        // through it, and the cull only walks the ray's part up to there.
+        var (limit, _) = player.Picking.PickReach(ray.Origin, ray.Direction, float.MaxValue);
         (int, float)? best = null;
-        float bestT = float.MaxValue;
+        float bestT = limit;
         foreach (var g in player.Session.CurrentSnapshot.GroundItems)
         {
+            var reachKey = (g.Record, g.Fall is not null);
+            if (_shapeReach.TryGetValue(reachKey, out float reach) && !WorldPicking.RayPassesXz(ray, g.Position, reach, limit)) continue;
             if (GroundItemHidden?.Invoke(g.Id) == true) continue;
-            if (shapeOf(g) is not { } shape || !RayNears(ray, shape.Mesh, shape.At, shape.Rotation)) continue;
+            if (shapeOf(g) is not { } shape) continue;
+
+            _shapeReach.TryAdd(reachKey, ShapeReach(shape.Mesh));
+            if (!RayNears(ray, shape.Mesh, shape.At, shape.Rotation)) continue;
             if (WorldPicking.RayMesh(ray, shape.Mesh, shape.At, shape.Rotation) is not { } t) continue;
-            if (!(t < bestT) || player.Hidden(ray, t)) continue;
+            if (!(t < bestT) || player.Obscured(ray, t)) continue;
 
             (best, bestT) = ((g.Id, t), t);
         }
@@ -83,33 +98,48 @@ sealed class GroundItemPicks(PlayerInterface player)
     internal bool RayNears((Vector3 Origin, Vector3 Direction) ray, IReadOnlyList<(Vector3[] Vertices, int[] Indices)> mesh, Vector3 at,
         Quaternion rotation)
     {
-        if (!_shapeSpheres.TryGetValue(mesh, out var sphere))
-        {
-            var min = new Vector3(float.MaxValue);
-            var max = new Vector3(float.MinValue);
-            foreach (var (vertices, _) in mesh)
-            {
-                foreach (var v in vertices)
-                {
-                    min = Vector3.Min(min, v);
-                    max = Vector3.Max(max, v);
-                }
-            }
-
-            float reach = 0;
-            foreach (var (vertices, _) in mesh)
-            {
-                foreach (var v in vertices) reach = MathF.Max(reach, Vector3.Distance(v, (min + max) / 2));
-            }
-
-            _shapeSpheres[mesh] = sphere = ((min + max) / 2, reach * 1.001f + 1e-3f);   // widened a little for rounding
-        }
-
+        var sphere = ShapeSphere(mesh);
         var q = rotation.LengthSquared() < 1e-12f ? Quaternion.Identity : Quaternion.Normalize(rotation);
         var toCentre = at + Vector3.Transform(sphere.Centre, q) - ray.Origin;
         // The ray's nearest point to the centre, not behind its origin.
         float along = MathF.Max(Vector3.Dot(toCentre, ray.Direction) / ray.Direction.LengthSquared(), 0);
         return (toCentre - ray.Direction * along).LengthSquared() <= sphere.Radius * sphere.Radius;
+    }
+
+    /// <summary>
+    /// The shape's bounding sphere in its own space (<see cref="_shapeSpheres"/>), made once.
+    /// </summary>
+    (Vector3 Centre, float Radius) ShapeSphere(IReadOnlyList<(Vector3[] Vertices, int[] Indices)> mesh)
+    {
+        if (_shapeSpheres.TryGetValue(mesh, out var sphere)) return sphere;
+
+        var min = new Vector3(float.MaxValue);
+        var max = new Vector3(float.MinValue);
+        foreach (var (vertices, _) in mesh)
+        {
+            foreach (var v in vertices)
+            {
+                min = Vector3.Min(min, v);
+                max = Vector3.Max(max, v);
+            }
+        }
+
+        float reach = 0;
+        foreach (var (vertices, _) in mesh)
+        {
+            foreach (var v in vertices) reach = MathF.Max(reach, Vector3.Distance(v, (min + max) / 2));
+        }
+
+        return _shapeSpheres[mesh] = ((min + max) / 2, reach * 1.001f + 1e-3f);   // widened a little for rounding
+    }
+
+    /// <summary>
+    /// How far the shape reaches from its own origin, however it is turned: its bounding sphere's centre distance plus radius.
+    /// </summary>
+    float ShapeReach(IReadOnlyList<(Vector3[] Vertices, int[] Indices)> mesh)
+    {
+        var sphere = ShapeSphere(mesh);
+        return sphere.Centre.Length() + sphere.Radius;
     }
 
     /// <summary>

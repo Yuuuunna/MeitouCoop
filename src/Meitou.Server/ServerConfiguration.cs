@@ -1,4 +1,5 @@
 using Meitou.Simulation.Bodies;
+using Meitou.Data.Gameplay.Bodies;
 using Meitou.Simulation.Items;
 using Meitou.Modding;
 using System.Globalization;
@@ -66,6 +67,8 @@ public sealed record ServerConfiguration
         static bool Range(float value, float min, float max) => float.IsFinite(value) && value >= min && value <= max;
         return rules is not null && Enum.IsDefined(rules.Dismemberment) && (rules.AttackSlots is null or >= 1 and <= 5) && rules.HarpoonLimit is >= 10 and <= 10000 && rules.TownAttacks is >= 0 and <= 5 && rules.GroundItemLimit is >= 1 and <= Meitou.Simulation.Items.GroundItems.MaxLimit && (rules.AutoSaveSeconds == 0 || rules.AutoSaveSeconds is >= 10 and <= 86400) && Range(rules.SquadSize, .5f, 3) && Range(rules.Population, .5f, 4) && Range(rules.RaidSize, .25f, 4) && Range(rules.RaidFrequency, .25f, 3) && Range(rules.GlobalDamageMultiplier, .5f, 4) && Range(rules.HungerTime, .25f, 8) && Range(rules.ChanceOfDeath, .5f, 4) && Range(rules.ProductionSpeed, .5f, 2) && Range(rules.ResearchSpeed, .5f, 2) && Range(rules.BuildingSpeed, .5f, 2) && Range(rules.NestsMultiplier, .5f, 4)
             && Range(rules.SquadXp, BuiltInModSettings.MinXpRate, BuiltInModSettings.MaxXpRate)
+            && rules.SquadSkillXp is { } skillRates && (skillRates.Length == 0 || skillRates.Length == StatsInfo.Count)
+            && skillRates.All(value => Range(value, XpSkills.Follows, BuiltInModSettings.MaxXpRate))
             && Range(rules.OthersXp, BuiltInModSettings.MinXpRate, BuiltInModSettings.MaxXpRate);
     }
 
@@ -75,10 +78,26 @@ public sealed record ServerConfiguration
     /// </summary>
     public ServerConfiguration AdoptBuiltIns(GameInstall install, string path)
     {
-        var settings = new BuiltInModSettings { SquadXp = Gameplay.SquadXp, FixAnimalMoves = Gameplay.AnimalMovesFix, AdoptedMods = [.. AdoptedMods], ModSettings = ModSettings };
+        var settings = new BuiltInModSettings
+        {
+            SquadXp = Gameplay.SquadXp,
+            SquadSkillXp = XpSkills.Saved(Gameplay.SquadSkillXp),
+            FixAnimalMoves = Gameplay.AnimalMovesFix,
+            AdoptedMods = [.. AdoptedMods],
+            ModSettings = ModSettings
+        };
         if (BuiltInMods.Adopt(settings, install).Count == 0) return this;
 
-        var updated = this with { Gameplay = Gameplay with { SquadXp = settings.SquadXp, AnimalMovesFix = settings.FixAnimalMoves }, AdoptedMods = [.. settings.AdoptedMods] };
+        var updated = this with
+        {
+            Gameplay = Gameplay with
+            {
+                SquadXp = settings.SquadXp,
+                SquadSkillXp = XpSkills.Rates(settings.SquadSkillXp),
+                AnimalMovesFix = settings.FixAnimalMoves
+            },
+            AdoptedMods = [.. settings.AdoptedMods]
+        };
         string target = Path.GetFullPath(path);
         string temporary = target + ".adopt-" + Guid.NewGuid().ToString("N");
         try

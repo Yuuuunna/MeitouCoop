@@ -56,7 +56,7 @@ sealed class FurnitureUse(PlayerInterface player)
                 var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, b.Yaw);
                 var placed = footprint.Place(b.Position, yaw);
                 if (player.Picking.BuildingRayT(ray, placed, footprint.YMin, footprint.YMax, b.Record, b.Position, b.Position.Y, yaw) is { } t
-                    && t < bestT && AboveViewedFloor?.Invoke(b.Position) != true && !player.Hidden(ray, t))
+                    && t < bestT && AboveViewedFloor?.Invoke(b.Position) != true && !player.Obscured(ray, t))
                 {
                     (hit, bestT) = ((b, t), t);
                 }
@@ -152,9 +152,12 @@ sealed class FurnitureUse(PlayerInterface player)
                 : ("Sleep", () => SleepIn(bed)),
         };
 
-        // A bed the player built: its site's verbs too (dismantle...), which its quick click no longer reaches.
+        // A bed the player built: its site's verbs too (dismantle...), which its quick click no longer reaches, and the code mods' job offers.
         if (player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => bed.Id == s.Id + "@bed0") is { } site)
+        {
             verbs.AddRange(player.Build.SiteVerbs(site));
+            verbs.AddRange(player.Build.OfferedJobs(site));
+        }
 
         player.ContextMenuWindow.OpenMenu = new(player.Build.Services?.ItemName(bed.Record) ?? bed.Record, pending.At, verbs);
     }
@@ -186,7 +189,7 @@ sealed class FurnitureUse(PlayerInterface player)
             var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, c.Yaw);
             var placed = footprint.Place(c.Position, yaw);
             if (player.Picking.BuildingRayT(ray, placed, footprint.YMin, footprint.YMax, c.Record, c.Position, c.Position.Y, yaw) is { } t
-                && t < bestT && AboveViewedFloor?.Invoke(c.Position) != true && !player.Hidden(ray, t))
+                && t < bestT && AboveViewedFloor?.Invoke(c.Position) != true && !player.Obscured(ray, t))
             {
                 (hit, bestT) = ((c, t), t);
             }
@@ -300,9 +303,7 @@ sealed class FurnitureUse(PlayerInterface player)
     {
         if (player.SelectedIds().Count == 0 || PickCageAt(p)?.Cage is not { } cage) return false;
 
-        var verbs = CageVerbs(cage);
-
-        if (!player.InventoryWindows.PressShift && player.ContextMenuWindow.Menu(Loc.Tr("Cage"), p, verbs) is { } now)
+        if (!player.InventoryWindows.PressShift && CageMenu(cage, p) is { } now)
         {
             player.ContextMenuWindow.OpenMenu = now;
             return true;
@@ -311,7 +312,21 @@ sealed class FurnitureUse(PlayerInterface player)
         // The quick order is the cage's use (108 / 107 / 76), never the own cage's Lock or Unlock.
         var clickedVerbs = CageVerbs(cage, clicked: true);
         Action? quick = cage.Occupant.IsNone ? clickedVerbs.FirstOrDefault(v => v.Caption is not ("Lock" or "Unlock")).Give : null;
-        return player.ContextMenuWindow.ContextPressOn(p, at => player.ContextMenuWindow.Menu(Loc.Tr("Cage"), at, CageVerbs(cage)), quick);
+        return player.ContextMenuWindow.ContextPressOn(p, at => CageMenu(cage, at), quick);
+    }
+
+    /// <summary>
+    /// The cage's menu: its verbs, and for one the player built its site's (Repair 95, Dismantle 96, sorted in by order number as the original's
+    /// building rows, so the own cage reads Unlock, Dismantle, Put in; #1089) and the code mods' job offers.
+    /// </summary>
+    internal ContextMenuWindow.ContextMenu? CageMenu(CageSpot cage, Vector2 at)
+    {
+        var verbs = CageVerbs(cage);
+        if (player.Session.CurrentSnapshot.Buildings.FirstOrDefault(s => s.Id == cage.Id) is not { } site)
+            return player.ContextMenuWindow.Menu(Loc.Tr("Cage"), at, verbs);
+
+        verbs.AddRange(player.Build.SiteVerbs(site));
+        return player.ContextMenuWindow.Menu(Loc.Tr("Cage"), at, verbs, player.Build.OfferedJobs(site));
     }
 
     #endregion
@@ -356,7 +371,7 @@ sealed class FurnitureUse(PlayerInterface player)
             var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, c.Yaw);
             var placed = footprint.Place(c.Position, yaw);
             if (player.Picking.BuildingRayT(ray, placed, footprint.YMin, footprint.YMax, c.Record, c.Position, c.Position.Y, yaw) is { } t
-                && t < bestT && AboveViewedFloor?.Invoke(c.Position) != true && !player.Hidden(ray, t))
+                && t < bestT && AboveViewedFloor?.Invoke(c.Position) != true && !player.Obscured(ray, t))
             {
                 (hit, bestT) = ((c, t), t);
             }
@@ -440,7 +455,7 @@ sealed class FurnitureUse(PlayerInterface player)
             var turn = door.Rotation ?? Quaternion.CreateFromAxisAngle(Vector3.UnitY, door.Yaw);
 
             if (player.GroundItemPicks.RayNears(ray, mesh, at, turn) && WorldPicking.RayMesh(ray, mesh, at, turn) is { } t && t < bestT
-                && !player.Hidden(ray, t - DoorPickSlack))
+                && !player.Obscured(ray, t - DoorPickSlack))
             {
                 (best, bestT) = (((door, state.Locked), t), t);
             }
@@ -454,6 +469,19 @@ sealed class FurnitureUse(PlayerInterface player)
     /// order (95).
     /// </summary>
     internal bool DoorBroken(DoorPick door) => player.Session.CurrentSnapshot.Doors.GetValueOrDefault((door.Building, door.Door)).Broken;
+
+    /// <summary>
+    /// The broken door's Repair (95): the selection repairs it; with Shift it also takes the Engineer job (125, the job of 95), as a site's Repair.
+    /// </summary>
+    internal void RepairDoor(DoorPick door)
+    {
+        long tick = player.Session.CommandTick;
+        player.Say(new Simulation.Construction.BuildOrder(player.SelectedIds(), door.Id) { SiteRevision = door.Revision, Tick = tick });
+        if (!player.SlowModifier) return;
+
+        var job = new Simulation.Production.AddJob(player.SelectedIds(), Data.Gameplay.Ai.TaskType.Repair, door.Id) { SiteRevision = door.Revision, Tick = tick };
+        player.Say(job);
+    }
 
     /// <summary>
     /// The pointer over a door: <c>spanner</c> for a broken one (<c>FUN_1407fc6e0</c>), <c>lock</c> for the player's own locked one, <c>lockpick</c>
@@ -480,9 +508,11 @@ sealed class FurnitureUse(PlayerInterface player)
 
         // The door's quick order is appended to the queue, Shift or not (FUN_1407fc6e0 gives it through FUN_1407f9e20 with the keep flag set,
         // Verified by disassembly); the broken door's Repair clears it.
-        void Quick() => player.Say(DoorBroken(pick.Door)
-            ? new Simulation.Construction.BuildOrder([], pick.Door.Id) { SiteRevision = pick.Door.Revision, Tick = player.Session.CommandTick }
-            : new DoorOrder(player.SelectedIds().ToArray(), pick.Door.Id, alt) { Tick = player.Session.CommandTick, ExpectedFixtureRevision = pick.Door.Revision, Clicked = true, Queued = true });
+        void Quick()
+        {
+            if (DoorBroken(pick.Door)) RepairDoor(pick.Door);
+            else player.Say(new DoorOrder(player.SelectedIds().ToArray(), pick.Door.Id, alt) { Tick = player.Session.CommandTick, ExpectedFixtureRevision = pick.Door.Revision, Clicked = true, Queued = true });
+        }
 
         ContextMenuWindow.ContextMenu? DoorMenu(Vector2 at) =>
             player.ContextMenuWindow.Menu(Loc.Tr("Door"), at, player.ContextMenuWindow.DoorVerbs(pick));
@@ -523,7 +553,7 @@ sealed class FurnitureUse(PlayerInterface player)
                 var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, d.Yaw);
                 var placed = footprint.Place(d.Position, yaw);
                 if (player.Picking.BuildingRayT(ray, placed, footprint.YMin, footprint.YMax, d.Record, d.Position, d.Position.Y, yaw) is { } t
-                    && t < bestT && AboveViewedFloor?.Invoke(d.Position) != true && !player.Hidden(ray, t))
+                    && t < bestT && AboveViewedFloor?.Invoke(d.Position) != true && !player.Obscured(ray, t))
                 {
                     (hit, bestT) = ((d, t), t);
                 }
@@ -615,7 +645,7 @@ sealed class FurnitureUse(PlayerInterface player)
             var hull = candidate.Footprint.Place(b.Position, b.Rotation);
             var hit = player.Picking.BuildingRayT(ray, hull, candidate.Footprint.YMin, candidate.Footprint.YMax, b.BuildingId, b.Position, y,
                 b.Rotation);
-            if (hit is not { } t || t >= bestT || player.Hidden(ray, t) || host.WorldInfo(b) is not { Turret: true, Destroyed: false }) continue;
+            if (hit is not { } t || t >= bestT || player.Obscured(ray, t) || host.WorldInfo(b) is not { Turret: true, Destroyed: false }) continue;
 
             (best, bestT) = ((b.Key, b.BuildingId, t), t);
         }
@@ -693,7 +723,7 @@ sealed class FurnitureUse(PlayerInterface player)
                 var yaw = Quaternion.CreateFromAxisAngle(Vector3.UnitY, b.PlacementYaw);
                 var placed = footprint.Place(b.Position, yaw);
                 if (player.Picking.BuildingRayT(ray, placed, footprint.YMin, footprint.YMax, b.Record, b.Position, b.Position.Y, yaw) is { } t
-                    && t < bestT && AboveViewedFloor?.Invoke(b.Position) != true && !player.Hidden(ray, t))
+                    && t < bestT && AboveViewedFloor?.Invoke(b.Position) != true && !player.Obscured(ray, t))
                 {
                     (hit, bestT) = ((b, t), t);
                 }

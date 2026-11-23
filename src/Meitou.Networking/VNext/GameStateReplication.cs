@@ -593,8 +593,15 @@ public sealed partial class GameStatePublisher(WorldViewCodec codec, Func<Charac
 internal static class GameStateWire
 {
     internal const int MaximumBytes = 32 * 1024 * 1024, FrameBytes = 4096, HeaderBytes = 76;
-    internal static IReadOnlyList<byte[]> Split(ulong session, ulong view, ulong sequence, bool baseline, byte[] payload)
+    internal static IReadOnlyList<byte[]> Split(ulong session, ulong view, ulong sequence, bool baseline, byte[] payload, bool compress = false)
     {
+        byte flags = (byte)(baseline ? 1 : 0);
+        if (compress)
+        {
+            byte[] encoded = AbsolutePayloadCompression.Encode(payload, quality: 6);
+            if (!ReferenceEquals(encoded, payload)) flags |= 2;
+            payload = encoded;
+        }
         int capacity = FrameBytes - HeaderBytes;
         byte[] hash = SHA256.HashData(payload);
         var result = new List<byte[]>();
@@ -604,7 +611,7 @@ internal static class GameStateWire
             using var w = new BinaryWriter(stream);
             w.Write("MGC1"u8);
             w.Write((ushort)21);
-            w.Write((byte)(baseline ? 1 : 0));
+            w.Write(flags);
             w.Write((byte)0);
             w.Write(session);
             w.Write(view);
@@ -644,7 +651,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
     Meitou.Data.World.WeatherTime _weatherTime;
     byte[]? _staged, _digest;
     ulong _stagedSequence;
-    bool _stagedBaseline;
+    bool _stagedBaseline, _stagedCompressed;
     int _stagedOffset;
     ulong _latestServerTick;
     double _presentedTick;
@@ -709,7 +716,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
         if (!r.ReadBytes(4).AsSpan().SequenceEqual("MGC1"u8) || r.ReadUInt16() != 21)
             throw new InvalidDataException("Unknown game frame.");
         byte flags = r.ReadByte(), reserved = r.ReadByte();
-        if (flags > 1 || reserved != 0)
+        if ((flags & ~3) != 0 || reserved != 0)
             throw new InvalidDataException("Unknown game frame flags.");
         ulong session = r.ReadUInt64(), epoch = r.ReadUInt64(), sequence = r.ReadUInt64();
         int length = r.ReadInt32(), offset = r.ReadInt32(), count = r.ReadInt32();
@@ -725,11 +732,13 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             _staged = new byte[length];
             _digest = hash;
             _stagedSequence = sequence;
-            _stagedBaseline = flags == 1;
+            _stagedBaseline = (flags & 1) != 0;
+            _stagedCompressed = (flags & 2) != 0;
             _stagedOffset = 0;
         }
 
-        if (_staged is null || _stagedSequence != sequence || _staged.Length != length || _stagedOffset != offset || _stagedBaseline != (flags == 1) || !hash.AsSpan().SequenceEqual(_digest))
+        if (_staged is null || _stagedSequence != sequence || _staged.Length != length || _stagedOffset != offset
+            || _stagedBaseline != ((flags & 1) != 0) || _stagedCompressed != ((flags & 2) != 0) || !hash.AsSpan().SequenceEqual(_digest))
             throw new InvalidDataException("Noncontiguous game publication.");
         frame[GameStateWire.HeaderBytes..].CopyTo(_staged.AsSpan(offset));
         _stagedOffset += count;
@@ -741,6 +750,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             throw new InvalidDataException("Game publication digest mismatch.");
         try
         {
+            if (_stagedCompressed) complete = AbsolutePayloadCompression.Expand(complete);
             ApplyPublication(complete, sequence, _stagedBaseline);
             return true;
         }
@@ -761,6 +771,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
             _collections.Clear();
             _animationDescriptors.Clear();
             _criticalEventFragment = null;
+            _criticalVisualManifest = null;
             _latestServerTick = 0;
             throw;
         }
@@ -827,7 +838,7 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                 ushort field = r.ReadUInt16();
                 byte[] value = ReadValue(r);
                 int valueBytes = kind == 2 ? GameComponentSchema.ExpandedSize(field, value)
-                    : kind == 7 && GameCollectionSchema.Ids.Contains(field) ? GameCollectionSchema.ExpandedEntrySize(value)
+                    : kind == 7 && GameCollectionSchema.Ids.Contains(field) ? GameCollectionSchema.ExpandedEntrySize(field, value)
                     : value.Length;
                 ReserveExpanded(valueBytes - (long)value.Length);
                 if (kind == 9)
@@ -888,6 +899,8 @@ public sealed partial class GameStateReplica(WorldViewCodec codec, ulong session
                     ApplyCollection(kind, entity, generation, field, value, revision);
                 else if (kind == 5)
                     ApplyCriticalEventFragment(entity, generation, field, value, revision, ReserveExpanded);
+                else if (kind == 10)
+                    ApplyCriticalVisualManifest(entity, generation, field, value, revision, ReserveExpanded);
                 else if (kind == 2)
                 {
                     var key = (entity, field);

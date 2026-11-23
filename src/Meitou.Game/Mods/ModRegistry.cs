@@ -7,6 +7,7 @@ using Meitou.Simulation;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Combat;
 using Meitou.Simulation.Items;
+using Meitou.Simulation.Production;
 
 namespace Meitou.Modding;
 
@@ -62,6 +63,10 @@ sealed class ModRegistrations
     /// The mod's own job types and their names.
     /// </summary>
     public Dictionary<Data.Gameplay.Ai.TaskType, string> JobTypes { get; } = [];
+    /// <summary>
+    /// The mod's offers of its job types on the player's buildings, in registration order.
+    /// </summary>
+    public List<ModJobOffer> JobOffers { get; } = [];
     /// <summary>
     /// The mod's own NPC goal types and their names.
     /// </summary>
@@ -237,6 +242,15 @@ sealed class ModRegistry
     /// </summary>
     public List<ModFactionList> FactionLists { get; } = [];
     /// <summary>
+    /// The mods' queued and playing display-only effects (<see cref="ModContext.PlayEffect(string, System.Numerics.Vector3, float,
+    /// System.Numerics.Vector3?)"/>).
+    /// </summary>
+    public ModEffects Effects { get; } = new();
+    /// <summary>
+    /// The mods' display-only glows (<see cref="ModContext.Glow"/>).
+    /// </summary>
+    public ModGlows Glows { get; } = new();
+    /// <summary>
     /// The record types' names by type number.
     /// </summary>
     public Dictionary<int, string> RecordTypes { get; } = [];
@@ -291,6 +305,7 @@ sealed class ModRegistry
             Simulation.JobTypes[type] = name;
             Simulation.TaskOwners[type] = mod;
         }
+        Simulation.JobOffers.AddRange(r.JobOffers);
         foreach (var (type, name) in r.GoalTypes)
         {
             _goalTypeOwners[type] = mod;

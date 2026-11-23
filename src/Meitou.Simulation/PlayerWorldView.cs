@@ -166,11 +166,21 @@ public sealed partial class World
         var managedMachines = _production is null ? [] : Machines.All.Where(m => Manage(_production.StorageOwner(this, m.Site)))
             .Select(m => m.Site).ToHashSet(StringComparer.Ordinal);
         var machines = _production is null ? [] : Machines.All.Where(m => managedMachines.Contains(m.Site) || Nearby(m.Position))
-            .Select(m => PublishMachineFor(connection.Player, m, managedMachines.Contains(m.Site))).ToArray();
+            .Select(m => PublishMachineFor(connection.Player, m, managedMachines.Contains(m.Site), state.ShownMachines.Contains(m.Site))).ToArray();
         var openContainer = PublishContainer(connection.Player);
         if (openContainer is not null && (!visible.Contains(openContainer.ContainerOpener)
             || !Players.CanControl(connection.Player, openContainer.ContainerOpener))) openContainer = null;
-        if (openContainer is not null) machines = [.. machines.Where(m => m.Site != openContainer.Site), openContainer];
+        if (openContainer is not null)
+        {
+            if (!state.ShownMachines.Contains(openContainer.Site)) openContainer = openContainer with
+            {
+                StorageSize = openContainer.StorageSize,
+                StorageEmpty = openContainer.StorageEmpty,
+                Storage = null,
+                StorageRevision = 0,
+            };
+            machines = [.. machines.Where(m => m.Site != openContainer.Site), openContainer];
+        }
         machines = machines.Select(m => m with { AuthorityFaction = _production?.StorageOwner(this, m.Site) ?? -1 }).ToArray();
         var doors = Fixtures.DoorPicks.Where(d => Nearby(d.Position) || Manage(d.Owner)).ToArray();
         var doorKeys = doors.Select(d => (d.Building, d.Door)).ToHashSet();
@@ -228,6 +238,8 @@ public sealed partial class World
             CappedHeads = activeFaction?.CappedHeads ?? 0,
             InventoriesClosed = state.InventoriesClosed,
             ModJobNames = PublishModJobNames(),
+            ModJobOffers = PublishModJobOffers(),
+            ModVisuals = CaptureModVisuals(visible, Nearby),
             ActiveSquad = activeFaction?.Squads.Any(s => s.Id == state.Squad) == true ? state.Squad : -1,
             Buildings = buildings,
             BuildingsRevision = Buildings.Revision,
@@ -271,6 +283,11 @@ public sealed partial class World
             {
                 InspectedRichness = _production?.RichnessOf(this, inspected),
                 InspectedLevelPower = _production?.LevelPowerOf(this, inspected),
+                InspectedTownMachine = _production?.TownMachineOf(this, inspected) is { } townMachine
+                    ? machines.FirstOrDefault(machine => machine.Site == townMachine.Site) : null,
+                InspectedOwnMachine = _production?.OwnTownMachineOf(this, inspected, state.Faction) is { } ownSite
+                    && machines.FirstOrDefault(machine => machine.Site == ownSite) is { ControlRevision: not 0 } ? ownSite : null,
+                InspectedTurret = SystemOf<Meitou.Simulation.Combat.CombatSystem>()?.TurretPanelOf(this, inspected),
             };
             var detail = SystemOf<Locks.BedSystem>()?.DetailOf(this, inspected, state.Faction) ?? Fixtures.DetailOf(inspected, state.Faction);
             if (detail is not null) snapshot = snapshot with
@@ -295,6 +312,29 @@ public sealed partial class World
             Weather = Weather is IWeatherPresentationSource source ? source.CaptureWeather() : Weather is null
                     ? new WeatherFrame(WeatherTime.FromHours(GameHours), []) { Enabled = false } : null
         };
+    }
+
+    /// <summary>
+    /// Shared visuals reveal only published characters, nearby points and buildings whose position is already observable.
+    /// </summary>
+    ModVisualSnapshot CaptureModVisuals(IReadOnlySet<CharacterId> visible, Func<Vector3, bool> nearby)
+    {
+        var visuals = ModVisuals.Capture(this);
+        if (visuals.Effects.Length == 0 && visuals.Glows.Length == 0) return visuals;
+        return new(visuals.Effects.Where(effect => Visible(effect.Anchor)).ToArray(),
+            visuals.Glows.Where(glow => visible.Contains(glow.Target.On)).ToArray());
+
+        bool Visible(Meitou.Modding.EffectAnchor anchor)
+        {
+            if (anchor.Kind is Meitou.Modding.EffectAnchorKind.Bone or Meitou.Modding.EffectAnchorKind.Weapon)
+                return visible.Contains(anchor.Character);
+            if (anchor.Kind == Meitou.Modding.EffectAnchorKind.Point) return nearby(anchor.Offset);
+            if (anchor.Kind != Meitou.Modding.EffectAnchorKind.Building || anchor.Name is not { } name) return false;
+            Vector3? at = Buildings.Find(name)?.Position ?? Fixtures.Find(name)?.Position
+                ?? NestBuildings.Published().FirstOrDefault(building => building.Id == name)?.Position
+                ?? _production?.LevelBuildingPosition(this, name);
+            return at is { } position && nearby(position);
+        }
     }
 
     /// <summary>
@@ -345,6 +385,8 @@ public sealed partial class World
     {
         DrawYaw = c.DrawYaw,
         RecordId = c.RecordId,
+        LastingId = c.LastingId,
+        TagHeight = c.TagHeight,
         DrawDistanceScale = c.DrawDistanceScale,
         Knockdown = c.Knockdown,
         IsDiplomat = c.IsDiplomat,
@@ -412,22 +454,25 @@ public sealed partial class World
     };
 
     /// <summary>
-    /// Work revisions identify visible machines; inventory requires nearby interaction or asset permission, and controls require asset permission.
+    /// Work revisions identify visible machines. Storage items additionally require this recipient's shown window and current stock access;
+    /// controls still require asset permission, independently of whether the window is shown.
     /// </summary>
-    MachineSnapshot PublishMachineFor(PlayerId recipient, Machine machine, bool managed)
+    MachineSnapshot PublishMachineFor(PlayerId recipient, Machine machine, bool managed, bool shown)
     {
-        var view = MachineSnapshot.Of(machine, _production!.Items);
-        if (managed || _production.CanInspectStock(this, recipient, machine.Site))
+        var production = _production!;
+        bool stock = managed || production.CanInspectStock(this, recipient, machine.Site);
+        var view = machine.View.ViewOf(machine, production.Items, shown: stock && shown);
+        if (stock)
         {
             return view with
             {
-                StorageRevision = MachineRevision(machine),
+                StorageRevision = shown ? MachineRevision(machine) : 0,
                 ControlRevision = managed ? MachineControlRevision(machine) : 0,
-                SiteRevision = _production.WorkSiteRevision(this, machine.Site),
+                SiteRevision = production.WorkSiteRevision(this, machine.Site),
             };
         }
 
-        return PublicMachine(view) with { SiteRevision = _production.WorkSiteRevision(this, machine.Site) };
+        return PublicMachine(view) with { SiteRevision = production.WorkSiteRevision(this, machine.Site) };
     }
 
     static MachineSnapshot PublicMachine(MachineSnapshot m) => new(m.Site, m.Record, [], null, null, m.Farm, m.Status, 0, 0)
@@ -436,5 +481,6 @@ public sealed partial class World
         Rotation = m.Rotation,
         Wind = m.Wind,
         Broken = m.Broken,
+        StorageSize = m.StorageSize,
     };
 }

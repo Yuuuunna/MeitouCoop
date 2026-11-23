@@ -4,12 +4,6 @@ using Meitou.Data.Ui;
 namespace Meitou.Game.Ui;
 
 /// <summary>
-/// A widget event of a screen: the widget, the action (its own, or select, accept, text), the text and the value; <paramref name="Press"/> marks a
-/// legacy slider's event raised by the mouse button going down on it, not by a drag.
-/// </summary>
-public sealed record MyGuiEvent(string Screen, string Widget, string Action, string Text = "", float Value = 0, bool Press = false);
-
-/// <summary>
 /// A screen's controls as one arrange laid them out.
 /// </summary>
 public sealed record MyGuiScreenFrame(string Id, IReadOnlyList<UiControl> Controls);
@@ -192,6 +186,11 @@ public sealed partial class MyGuiScreenHost(MyGuiResources resources)
     /// The open screens' ids, bottom first.
     /// </summary>
     public IReadOnlyList<string> OpenScreens => _open.ToArray();
+
+    /// <summary>
+    /// Whether the open screens are <paramref name="ids"/>, bottom first (as <see cref="OpenScreens"/> would list them, without copying them).
+    /// </summary>
+    public bool OpenScreensAre(ReadOnlySpan<string> ids) => System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_open).SequenceEqual(ids);
 
     /// <summary>
     /// Registers screen <paramref name="id"/> with <paramref name="layout"/> (its templates expanded).

@@ -96,21 +96,21 @@ public class GameStateReplicationTests
     {
         var db = WorldViewCodecTests.Database(); var codec = new WorldViewCodec(db); var source = WithoutAnimation(WorldViewCodecTests.View(db));
         var random = new Random(724591);
-        string[] inventory = Enumerable.Range(0, 6000).Select(_ =>
+        var jobs = Enumerable.Range(0, 6000).Select(_ =>
         {
             byte[] value = new byte[24];
             random.NextBytes(value);
-            return Convert.ToBase64String(value);
+            return new Meitou.Simulation.Production.PermaJob(Meitou.Data.Gameplay.Ai.TaskType.OperateMachinery, Convert.ToBase64String(value));
         }).ToArray();
-        string first = inventory[0];
-        source = source with { Snapshot = source.Snapshot with { Characters = [source.Snapshot.Characters[0] with { Inventory = inventory }] } };
+        string first = jobs[0].Site!;
+        source = source with { Snapshot = source.Snapshot with { Characters = [source.Snapshot.Characters[0] with { Jobs = jobs }] } };
         var publisher = new GameStatePublisher(codec, _ => 42, 11, 22); var baseline = publisher.Capture(source);
         Assert.True(baseline.RequiresBulk); Assert.True(baseline.Frames.Count > 20); Assert.All(baseline.Frames, f => Assert.True(f.Length <= 4096));
-        inventory[0] = "mutated-after-capture";
+        jobs[0] = jobs[0] with { Site = "mutated-after-capture" };
         var replica = new GameStateReplica(codec, 11, 22);
         foreach (var frame in baseline.Frames.Take(baseline.Frames.Count - 1)) { Assert.False(replica.Apply(frame)); Assert.Null(replica.View); }
         Assert.True(replica.Apply(baseline.Frames[^1]));
-        Assert.Equal(first, replica.View!.Snapshot.Characters[0].Inventory[0]);
+        Assert.Equal(first, replica.View!.Snapshot.Characters[0].Jobs[0].Site);
     }
     [Fact]
     public void PureClockCaptureDoesNotRepeatAnyEntityDeclarationsOrFields()

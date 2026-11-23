@@ -114,6 +114,7 @@ public static class BuildingSave
                     : state.Bools.GetValueOrDefault("is inside building") && handles.Building(Hand.Read(state, "isInsideBuilding")) is { } building
                         ? idOf.GetValueOrDefault(building)
                         : null;
+                string? mount = handles.Building(Hand.Read(state, "mounted")) is { } stoodOn ? idOf.GetValueOrDefault(stoodOn) : null;
                 float y = state.Floats.TryGetValue("world Y pos", out float absolute) ? absolute : instance.Position.Y;
                 var townHand = Hand.Read(state, "town");
                 int town = townHand.IsNull ? 0 : townOf.GetValueOrDefault((townHand.C, CS: townHand.Cs));
@@ -127,6 +128,9 @@ public static class BuildingSave
                     Rotation = instance.Rotation,
                     Floor = state.Ints.GetValueOrDefault("floornum"),
                     Parent = parent,
+                    Outside = parent is not null
+                        && (state.Ints.TryGetValue("flags", out int flags) ? (flags & 1) != 0 : state.Bools.GetValueOrDefault("is outside")),
+                    MountedOn = mount,
                     Town = town,
                     ForeignTown = live ? townHand : null,
                     InNoTown = live && foreign[(townHand.C, townHand.Cs)],
@@ -790,7 +794,7 @@ public static class BuildingSave
             state.Floats[$"{i}construction mats"] = site.Materials[i].Delivered;
 
         state.Ints["version"] = StateVersion;
-        state.Ints["flags"] = site.Parent is null ? 1 : 0;   // bit 0: is outside
+        state.Ints["flags"] = site.Parent is null || site.Outside ? 1 : 0;   // bit 0: is outside
         state.Ints["floornum"] = site.Floor;
         state.Ints["serialised interior"] = 1;
         hand.Write(state, "handle");

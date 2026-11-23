@@ -89,6 +89,23 @@ public sealed class PostOptions
     public bool LitDust = true;
 
     /// <summary>
+    /// Meitou switch (<c>exposure</c>; docs/render-post.md "Adaptive exposure"): by day the exposure adapts below the game's daytime minimum, so a
+    /// scene in deep shade is exposed up to 1.7 times brighter; Faithful keeps the game's band, which leaves such a scene dark.
+    /// </summary>
+    public bool AdaptiveExposure = true;
+
+    /// <summary>
+    /// The most <see cref="AdaptiveExposure"/> brightens a scene in deep shade by day (1 to 3; the Adaptive exposure strength slider).
+    /// </summary>
+    public float AdaptiveExposureStrength = MeitouAdaptiveExposureStrength;
+
+    /// <summary>
+    /// The default <see cref="AdaptiveExposureStrength"/>: the daytime minimum 0.8 goes down to 0.47, about the geometric mean of the game's day
+    /// and night minimums.
+    /// </summary>
+    public const float MeitouAdaptiveExposureStrength = 1.7f;
+
+    /// <summary>
     /// Meitou switch (<c>gihybrid</c>; docs/render-gi.md "Hybrid GI"), off by default: nothing it holds has been seen on a GPU.
     /// <c>--gi-hybrid</c> picks among its parts.
     /// </summary>
@@ -441,6 +458,12 @@ public sealed class PostOptions
     public bool CameraEffectsHeld;
 
     /// <summary>
+    /// Whether the camera effects may run on this frame's camera: not a frame that is no world, and the free or a cinematic camera or the strategy
+    /// camera by the player's choice. The caller adds that the view is a whole view of a scene.
+    /// </summary>
+    public bool CameraEffectsAllowed => !CameraEffectsHeld && (CinematicView || CameraEffectsEverywhere);
+
+    /// <summary>
     /// Meitou switch (<c>lampshadows</c>; docs/render-lights.md "Traced lamp shadows"), off by default even in the Meitou look; Faithful is the
     /// game's: lamps cast no shadows.
     /// </summary>
@@ -461,6 +484,11 @@ public sealed class PostOptions
     /// Photo mode's depth of field: on or off whatever <see cref="DepthOfField"/> says; null outside it.
     /// </summary>
     public bool? PhotoDepthOfField;
+
+    /// <summary>
+    /// Whether the depth of field is asked for: photo mode's choice where it has one, else the <c>dof</c> switch.
+    /// </summary>
+    public bool DepthOfFieldOn => PhotoDepthOfField ?? DepthOfField;
 
     /// <summary>
     /// How many times larger than the window the picture being drawn is (photo mode's Picture size; 1 otherwise): the depth of field's largest CoC
@@ -672,12 +700,12 @@ public sealed class PostOptions
                 o.Fxaa = o.HeatHaze = false;
                 o.ContactShadows = false;
                 o.Ssao = o.Dither = o.LowResParticles = o.LightShafts = o.MeitouFog = false;
-                o.MeitouHeatHaze = o.ToneMapping = o.NightGrade = o.Bloom = o.LampShadows = false;
+                o.MeitouHeatHaze = o.ToneMapping = o.NightGrade = o.Bloom = o.LampShadows = o.AdaptiveExposure = false;
                 break;
             case "kenshi":
                 o.ContactShadows = false;
                 o.Ssao = o.Dither = o.LowResParticles = o.LightShafts = o.MeitouFog = false;
-                o.MeitouHeatHaze = o.ToneMapping = o.NightGrade = o.Bloom = o.LampShadows = false;
+                o.MeitouHeatHaze = o.ToneMapping = o.NightGrade = o.Bloom = o.LampShadows = o.AdaptiveExposure = false;
 
                 // Kenshi's chain with the shipped settings: exposure only (no curve, bloom magnitude 0, SSAO commented
                 // out), and FXAA then the heat haze on the final image.
@@ -720,6 +748,8 @@ public sealed class PostOptions
         ShaftAirDawn = other.ShaftAirDawn;
         ParticleDivisor = other.ParticleDivisor;
         Exposure = other.Exposure;
+        AdaptiveExposure = other.AdaptiveExposure;
+        AdaptiveExposureStrength = other.AdaptiveExposureStrength;
         ToneMap = other.ToneMap;
         ToneMix = other.ToneMix;
         Grade = other.Grade;

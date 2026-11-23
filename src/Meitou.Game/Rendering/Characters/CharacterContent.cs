@@ -71,6 +71,10 @@ internal sealed class AssetPart
     /// </summary>
     public bool IsWeapon;
     /// <summary>
+    /// The part's attach slot, if it has one (a code mod's glow on a slot, <see cref="CharacterGlow"/>).
+    /// </summary>
+    public AttachSlot? Slot;
+    /// <summary>
     /// When it shows by the bolts loaded in its crossbow (<see cref="CharacterPart.ShownShots"/>).
     /// </summary>
     public int ShownShots;
@@ -523,6 +527,11 @@ internal sealed class CharacterAsset
     /// How far the body shape lifts the feet in the bind pose (negative: sinks them); the renderer lowers the character by it.
     /// </summary>
     public float GroundOffset;
+    /// <summary>
+    /// The worn boots' or leg replacements' lift (<see cref="CharacterShape.FeetLiftOf"/>): all a sleeper in a bed is raised by, as the original
+    /// lays the skeleton's root at the bed's node whatever the body shape (docs/game/locks.md "Heights").
+    /// </summary>
+    public float FeetLift;
     /// <summary>
     /// The skeleton's <c>Bip01 Head</c> (-1: none), which the portrait camera looks at.
     /// </summary>
@@ -1727,6 +1736,7 @@ internal sealed class CharacterContent : IDisposable
         var setup = Rigs.For(c);
         asset.Shape = setup?.Shape;
         asset.GroundOffset = setup?.GroundOffset ?? 0;
+        asset.FeetLift = CharacterShape.FeetLiftOf(c.Parts);
         asset.HeadBone = rig.Handle("Bip01 Head") ?? -1;
         AddMorph(asset, c, body, bodyPath);
         AddBody(asset, c, body, bodyPath);
@@ -1855,6 +1865,7 @@ internal sealed class CharacterContent : IDisposable
                 BoundsRadius = loaded.Radius,
                 Shown = part.Shown,
                 IsWeapon = part.Slot == AttachSlot.Weapon,
+                Slot = part.Slot,
                 ShownShots = part.ShownShots,
                 Muzzle = part is { Field: "live ammo", ShownShots: 1, Shown: WeaponShown.RangedDrawn },
                 HideSide = part.HideSide,

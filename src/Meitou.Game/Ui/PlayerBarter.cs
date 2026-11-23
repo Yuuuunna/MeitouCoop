@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using Meitou.Data.Ui;
+using Meitou.Localisation;
 using Meitou.Simulation.Trading;
 
 namespace Meitou.Game.Ui;
@@ -40,28 +41,28 @@ sealed class PlayerBarter(PlayerInterface player)
         var textProperties = new Dictionary<string, string> { ["FontName"] = "Kenshi_StandardFont_Medium", ["TextAlign"] = "Left VCenter" };
         void Row(string id, string text, float x, float y, float w, bool button = false, bool enabled = true)
         {
-            controls.Add(new("player-trade-" + id, button ? "Button" : "TextBox", new(left + x * scale, top + y * scale, w * scale, 28 * scale), text,
+            controls.Add(new("player-trade-" + id, button ? "Button" : "TextBox", new(left + x * scale, top + y * scale, w * scale, 28 * scale), Loc.Tr(text),
                 button ? "player-trade-" + id : "", button ? "Kenshi_Button1Skin" : "Kenshi_GenericTextBoxFlatSkin", enabled,
                 textProperties, Vector4.Zero, TextColour: new Vector4(.9f, .9f, .86f, 1), Pickable: button));
         }
-        controls.Add(new("player-trade-panel", "Window", new(left, top, width, 470 * scale), "Player trade", "", "", true, textProperties, new Vector4(.09f, .09f, .08f, .98f)));
-        Row("title", $"PLAYER TRADE  |  quote {trade.Revision}", 12, 8, 550);
+        controls.Add(new("player-trade-panel", "Window", new(left, top, width, 470 * scale), Loc.Tr("Player trade"), "", "", true, textProperties, new Vector4(.09f, .09f, .08f, .98f)));
+        Row("title", Loc.Tr("PLAYER TRADE  |  quote {1}", trade.Revision), 12, 8, 550);
         Row("cancel", "Cancel", 610, 8, 95, true);
-        Row("own", $"Your offer: c.{trade.Own.Money}  {(trade.Own.Confirmed ? "CONFIRMED" : "")}", 12, 42, 340);
-        Row("other", $"Their offer: c.{trade.Other.Money}  {(trade.Other.Confirmed ? "CONFIRMED" : "")}", 370, 42, 335);
+        Row("own", Loc.Tr("Your offer: c.{1}  {2}", trade.Own.Money, trade.Own.Confirmed ? Loc.Tr("CONFIRMED") : ""), 12, 42, 340);
+        Row("other", Loc.Tr("Their offer: c.{1}  {2}", trade.Other.Money, trade.Other.Confirmed ? Loc.Tr("CONFIRMED") : ""), 370, 42, 335);
         if (!trade.Own.Accepted)
         {
             if (trade.PaymentFactions.Count > 0)
             {
                 _playerTradeFaction = Math.Clamp(_playerTradeFaction, 0, trade.PaymentFactions.Count - 1);
-                Row("faction", $"Paying faction: {trade.PaymentFactions[_playerTradeFaction]} (change)", 12, 82, 340, true);
+                Row("faction", Loc.Tr("Paying faction: {1} (change)", trade.PaymentFactions[_playerTradeFaction]), 12, 82, 340, true);
                 Row("accept", "Accept invitation", 12, 120, 340, true);
             }
             else Row("no-funds", "You need an account with spending permission.", 12, 82, 690);
             return;
         }
-        Row("account", $"Your paying faction: {trade.Own.PaymentFaction}", 12, 74, 340);
-        Row("other-account", trade.Other.Accepted ? $"Their paying faction: {trade.Other.PaymentFaction}" : "Waiting for invitation acceptance", 370, 74, 335);
+        Row("account", Loc.Tr("Your paying faction: {1}", trade.Own.PaymentFaction), 12, 74, 340);
+        Row("other-account", trade.Other.Accepted ? Loc.Tr("Their paying faction: {1}", trade.Other.PaymentFaction) : "Waiting for invitation acceptance", 370, 74, 335);
         for (int i = 0; i < 4; i++)
         {
             long step = i switch { 0 => 1, 1 => 10, 2 => 100, _ => 1000 };

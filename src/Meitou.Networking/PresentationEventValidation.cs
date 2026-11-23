@@ -95,10 +95,11 @@ internal static class PresentationEventValidation
     static string? SoundProblem(SoundEventEntry entry)
     {
         var value = entry.Value;
-        if (!Enum.IsDefined(value.Kind)) return $"unknown-kind kind={(int)value.Kind}";
+        if (!Enum.IsDefined(value.Kind) || (byte)value.Kind > 31) return $"unknown-kind kind={(int)value.Kind}";
         if (!Finite(value.Position)) return "non-finite-position";
         if (value.Item?.Length > 4096) return $"item-length length={value.Item.Length} maximum=4096";
         if (value.Armour is < 0 or > 3) return "invalid-armour-material";
+        if (value.ShootSound is < 0 or > 3) return "invalid-turret-shoot-sound";
         bool posted = value.Kind is SoundKind.Posted or SoundKind.PostedInterface;
         if (posted != (value.Posted is not null)) return "invalid-posted-sound-kind";
         if (value.Posted is { } sound)

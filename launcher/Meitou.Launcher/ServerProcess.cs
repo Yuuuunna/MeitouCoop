@@ -89,7 +89,7 @@ sealed class ServerProcess
         Ready = false;
         lock (_gate) _lines.Clear();
 
-        Capture($"[{DateTimeOffset.Now:O}] {target.Exe} --config {target.ConfigPath}", log);
+        Capture($"[{DateTimeOffset.Now:O}] {target.Exe} " + "--config " + target.ConfigPath, log);
         _completion = ObserveAsync(_process, log);
     }
 
@@ -133,7 +133,7 @@ sealed class ServerProcess
                 await Task.WhenAll(ReadAsync(process.StandardOutput, log), ReadAsync(process.StandardError, log), process.WaitForExitAsync())
                     .ConfigureAwait(false);
                 ExitCode = process.ExitCode;
-                Capture($"[{DateTimeOffset.Now:O}] Exit code: {ExitCode}", log);
+                Capture($"[{DateTimeOffset.Now:O}] " + LauncherText.Translate("Exit code: {1}", ExitCode), log);
             }
             catch (Exception error) when (error is IOException or InvalidOperationException)
             {
@@ -167,7 +167,7 @@ sealed class ServerProcess
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
             {
-                AddLine("Could not write server log: " + error.Message);
+                AddLine(LauncherText.Translate("Could not write server log: {1}", error.Message));
             }
         }
     }

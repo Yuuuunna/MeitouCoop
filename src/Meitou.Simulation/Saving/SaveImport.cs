@@ -308,8 +308,8 @@ public static class SaveImport
     static readonly string[] KnowledgeBools = ["is nest", "discovered", "explored", "recently discovered"];
 
     /// <summary>
-    /// The factions' state: with "Relations" the relation tables, ranks and the factions met stay, without them the factions start from their FACTION
-    /// records. War states never stay (their campaigns name platoons this world lacks).
+    /// The factions' state: with "Relations" the relation tables, ranks, global trust and the factions met stay, without them the factions start from
+    /// their FACTION records. War states never stay (their campaigns name platoons this world lacks).
     /// </summary>
     static void FilterFactions(SaveGame game, ImportOptions options)
     {
@@ -319,6 +319,7 @@ public static class SaveImport
         {
             f.SetRelations([]);
             f.Rank = 0;
+            f.GlobalTrust = 0;
         }
 
         if (game.PlayerFaction is { } player) player.Known = [];

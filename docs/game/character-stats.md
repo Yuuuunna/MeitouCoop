@@ -279,6 +279,9 @@ skill x 0.8 when treating oneself and q = min(skill, kit quality):
 - **Bandaging.** The first part in part order of the kit's kind with h + b < M takes rate x dt (rate below); only if that fills it
   (clamped to M) does the next part also take the full rate x dt. The kit drains once per part bandaged. So a patient with n injured
   parts takes about n times as long, and n times the charges, as one with a single part of the same damage.
+  Meitou (engine choice, `FirstAidSystem.RoomLeft`): a part counts as bandaged up within 1e-4 of its M. A growing animal's parts gain HP every
+  tick (its size, [animals](animals.md)), about 2.5e-6 of M for a Skin Spider, so a fully bandaged animal otherwise always had a new sliver
+  to bandage and its medic treated it for ever, a kit drained each update.
 - **Drain** = lerp(`medkit drain 99`, `medkit drain 1`, (100 - skill) / 100) x dt (skill, not q), x `robot medic speed mult` for a
   robot kit (function 12).
 - **Reach.** **Observed** (one run, an original save with a prisoner caged upstairs in the Rebirth
@@ -308,7 +311,7 @@ skill x 0.8 when treating oneself and q = min(skill, kit quality):
   takes the item of that function with 0 < charges < 99999 and the fewest charges (the first of equals). No squad mates, no buildings.
   The task keeps the kit it found (task `+0x80`, **Verified**: `FUN_14033c7e0`, called from `FUN_1403563a0`): it searches again only when the stored kit is null or of another
   function (`+0x124`); a found kit that `FUN_14032dff0` calls invalid (not an item, or no charges: it is then removed from its holder) is dropped and the search runs once more, firing event 0x16 (EV_FIRSTAID_KIT_EMPTY)
-  when that finds none (a first search that finds none is left to `FUN_1403563a0`: the robot phase, else the end); `FUN_14033c5a0` clears it when it is used up. Meitou: `CharacterCold.TreatKit` (`FirstAidSystem.KitOf`; runtime, derived), also dropped when no longer held.
+  when that finds none (a first search that finds none is left to `FUN_1403563a0`: the robot phase, else the end); `FUN_14033c5a0` clears it when it is used up. Meitou: `CharacterCold.TreatKit` (`FirstAidSystem.KitOf`; runtime, derived), also dropped when no longer held. A used-up kit leaves its stack and the next unit starts with full charges (`FirstAidSystem.Drain`), as an eaten stack's does; a save holding a stack at no charges (older Meitou) loads with that unit gone and the next full (`SavedKit.DropSpentUnit`).
 - **Stuck bolts.** The same function sets the patient's bolt-clear flag whenever it runs with no open wound (see [Bolt visuals](combat.md#bolt-visuals)).
 - **Unknown**: while no wound is open but bleeding (medical +0x78) is positive, `FUN_14064d800` bandages an extra time and lowers it
   by q x 0.01 x dt; it is recomputed every medical tick, so Meitou leaves it out.
@@ -442,7 +445,7 @@ and corresponding test expectations.
 | Mass combat | `FUN_1408c5e80` | **Verified**: +0x9c rises by 0.75 x 0.05 per call, straight; one caller, the answer to a slot ask `FUN_140666a30` ([combat](combat.md#attack-slots-and-circling): the asked character's, while stumbling or fighting; nothing reads the stat; not called in Meitou) |
 | Other crafting and machine skills | callers of `FUN_1408c7250` / `FUN_1408c7310` | `FUN_1408c7250(stat)` picks a per-stat base `amount` and calls the generic entry with a global float as `dt` (`DAT_142133794`, the game-speed-scaled frame time, the third time value of [game-loop.md](game-loop.md#the-three-time-values)): 0.5 by default, thievery and lockpicking 0.1, turrets 1.0, perception 3.0, farming 0.75, crossbows 1.2 (**Observed**; the farming and crossbows values come from a switch fall-through, 0.5 x 1.5 and 0.8 x 1.5). `FUN_1408c7310(stat, amount)` is the same with dt 1 |
 
-Meitou ("Squad XP" and "Others' XP", Advanced settings, 1x; not the original's): `BodySystem` sets `CharacterStats.XpRate` on each body step, the squad rate for the player's characters and faction, the other for everyone else. `CharacterStats.Gain` multiplies an amount the core would take by it, held to 20 so a multiplied gain is never dropped, and gives no raise to a stat at or past the gain's cap (a training dummy's level stands); Medic multiplies its time (a raise only below 100), Mass combat its step. A rate below 1 always applies; 0 stops XP.
+Meitou ("Squad XP" and "Others' XP", Advanced settings, 1x; not the original's): `BodySystem` sets `CharacterStats.XpRate` on each body step, the squad rate for the player's characters and faction, the other for everyone else. `CharacterStats.Gain` multiplies an amount the core would take by it, held to 20 so a multiplied gain is never dropped, and gives no raise to a stat at or past the gain's cap (a training dummy's level stands); Medic multiplies its time (a raise only below 100), Mass combat its step. A rate below 1 always applies; 0 stops XP. Squad XP opens to a slider per skill (the 33 of the skills window, `SkillXp`, saved by STATS field name in `meitou.user.json` `squadSkillXp`): a skill given its own rate takes it in place of Squad XP (`CharacterStats.SkillXpRates`, by storage, so hive medic and vet follow Field medic); one at the slider's left end (a quarter below 0, so the arrow keys step to 0) follows Squad XP; Mass combat and a code mod's skill always take Squad XP. "Show Squad XP" (off) shows "XP x<Squad XP>" at the top left during play.
 
 ### Effective stats: injuries and hunger
 

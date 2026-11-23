@@ -12,9 +12,10 @@ Rules digests retain exact authoritative values. A hash does not prove honest cl
 `NetworkingCompatibilityTests` verifies content/order/rule changes, normalization and mismatch handling.
 
 **Observed** (source): `ServerCompatibility.EngineBuild` is the shared client/server identity for the integrated upstream rules.
-The current identity is `meitou-upstream-1b361074-authority-1`; both endpoints require lasting-character IDs, tag heights, resolved mod tints,
+The current identity is `meitou-upstream-1e317e34-authority-1`; both endpoints require lasting-character IDs, tag heights, resolved mod tints,
 named mod sounds, cage-click commands, item-tag digests, compressed JSON component envelopes,
-experience rules, corpse-machine sound metadata and sparse binary ragdoll poses,
+experience rules, corpse-machine sound metadata, sparse binary ragdoll poses, shared authority visuals, counted stack lifts,
+shown-machine hints and turret-shot sound selection,
 the [diagnostic control messages](diagnostics.md), mod-presentation components and editor-open command, in addition to the presentation-event
 and bounty contracts in [networking-next](networking-next.md).
 Ground-item material IDs and optional blood-event attacker IDs
@@ -28,6 +29,8 @@ remote settings are read-only; head-turn release, photo poses/lights and other p
 
 **Observed** (source): `CagedAnimalFix`, `KeepCampaignClocks`, `ArrestLiftFix` and `OffscreenOverrides` also use authoritative rules,
 the compatibility digest and read-only remote settings. Campaign clocks and offscreen AI are evaluated by the server.
+`CounterTalk`, `TurretAssault`, `KeepDowned` and per-skill `SquadSkillXp` rates also belong to the authoritative rules and compatibility digest.
+Faction home is shared faction state; player membership and asset permissions still gate home assignment.
 
 Trusted code-mod data phases run before derived game content. Both endpoints independently fingerprint the actual merged-record edits
 under `code-data/*`; copying the server's rule strings cannot substitute for running the locally trusted phase. The client reuses the
@@ -170,62 +173,108 @@ Upstream queued dialogue, trade, body-disposal and cage-escape actions preserve 
 Server-origin mod orders carry internal trusted provenance, which is absent from the remote command schema. Mod-owned faction shops
 remain server-only configuration; ordinary players use their attributed trade sessions and existing inventory revisions.
 
+### Shared mod effects, glows and machine windows
+
+**Observed** (source): snapshot collection 1068 carries authority `PlayEffect`/`KeepEffect`/`StopEffect` and glow requests. Server combat-mod
+callbacks enqueue these requests on the authority. Clients use compatible particle assets and the shared request data; they do not need to
+execute that server mod to display them. Local UI-mod callbacks remain local. Character/bone/weapon effects and glows require a visible
+character; point effects require a nearby position; building effects include observable player, level and nest buildings. Recipient
+withdrawal removes the corresponding visuals. Particle instances, simulation and per-frame bone transforms are not streamed.
+
+Stable IDs, separately revisioned definitions/readings and absolute start/expiry times preserve renewals without sending countdowns or
+unchanged anchors and names. The client deduplicates
+one-shots, skips already expired initial history and clears handles on world/view replacement. The authority retains expired requests for
+three seconds so short effects survive a publication boundary; clients still apply expiry at their presentation clock. A kept effect is
+identified by owner, effect and anchor, so choosing a different anchor creates a different request. Shared visuals are cosmetic and unsaved.
+Binary values, reliable burst staging and lossless compression are specified in [the wire contract](networking-next.md#shared-visual-collection).
+
+Fields 1065/1066 carry the inspected canonical town-machine panel and manageable machine site. They reuse the authorized machine projection
+rather than creating a second stock inventory. `ShowMachinesCommand` (185) names the recipient's zero, one or two current machine windows;
+closing sends an empty list. It is a presentation hint, never a stock-access grant. Authority execution rejects unknown/unpublished sites
+and projection independently rechecks current stock permission or an authorized nearby interaction. Only shown authorized windows carry
+storage items and a positive storage revision; static grid size, permitted emptiness and control metadata remain available. A validated
+open-container session is also scoped to that player's shown window. Changing one player's windows cannot crop another player's inventory.
+Single-player host snapshots use the same shown-window optimization; multiplayer capture does not read the host's hint as a global filter.
+Obsolete character `Inventory` component 2016 is retired, without reusing its wire ID.
+
+**Verified** (repository-external .NET 11 diagnostics using real `World`/`AuthorityGateway` and the production publisher/replica): 39 machine
+window/permission checks cover two recipients, alternating snapshot caches, close/reopen, permission withdrawal and unauthorized hints.
+Shared-visual diagnostics preserve exact float/double values and signed zero, leave unchanged visuals without a delta, reject late baseline
+resurrection, process 70,000 cumulative transient identities, and deliver a 10,000-effect burst through 29 reliable publications. Replacing
+40,000 current effects with 40,000 new effects keeps the old manifest complete until the final new manifest; an old baseline interleaved
+midway and replayed afterward cannot restore withdrawn entries. Four independent cross-lane checks cover a bulk definition overtaken by
+a critical reading, critical definition delivery before an old baseline, and exact membership/value A-to-B-to-A changes overtaken by old
+bulk. Each asserts the immediately visible result before later bulk can repair it. These checks do not establish renderer or installed-game acceptance.
+
 ### Incremental component bandwidth
 
-**Observed** (2026-11-21, .NET 11 Release, repository-external deterministic diagnostic): detached snapshots use the production
-`GameStatePublisher`, `GameStateReplica`, `MotionReplicationProducer`, scheduler, bulk/control framing and reverse acknowledgements.
-World time advances at 30 Hz, motion capture at 20 Hz and full/critical publication at 10 Hz; the established interest tiers still
-select each character's motion cadence. Each result averages ten seconds after baseline. Character positions and velocities differ,
-combat headings drift independently, and head targets change unpredictably. This trace sets DrawYaw to Yaw + 0.15 radians; its predictor
-savings depend on that correlation, and the encoder keeps the earlier representation when prediction is not smaller. Named sounds use
-10/7/5-byte ASCII event/group/value names and retain the full rolling three-second history,
-not just the newest publication's events. Sound journals are prefilled before measurement, so all 100 captures in the 100-sound/s cases
-contain 310 retained sounds. Every decoded motion record is compared with its authoritative capture and applied to the replica.
+**Observed** (2026-11-23, .NET 11 Release, repository-external deterministic diagnostics): the production `GameStatePublisher`,
+`GameStateReplica`, `MotionReplicationProducer`, scheduler, bulk/control framing and reverse acknowledgements encode detached recipient
+views. Each trace covers ten seconds after its initial baseline, world time at 30 Hz, motion capture at 20 Hz and full/critical capture at
+10 Hz. All 500 characters are interactive combat actors with independent scattered positions, drift rates and changing head targets.
+DrawYaw is Yaw + 0.151527 radians, so this trace benefits from the existing reversible bit predictor. Every scenario delivers 100,000
+motion records, each compared bit-for-bit against its capture, with no reduced-cadence result. The first moving transition's 500 reliable
+checkpoint records are included in the ten-second totals. The one-time entry baseline is reported separately.
 
-The table counts application bytes in both directions, including ordinary components, critical frames, motion, reliable checkpoints,
-bulk manifests/chunks/commits and reverse ACKs. KiB means 1024 bytes. The last column adds a separate **96 bytes per application message**
-allowance, including reverse messages; it is a budget model, not a measurement of QUIC/TLS/UDP/IP overhead.
+Application rates include both directions: ordinary components, critical frames, motion, checkpoints, bulk manifests/chunks/commit and
+reverse ACKs. The separate budget column adds **96 bytes per application message**, including reverse messages; this is a model, not
+measured QUIC/TLS/UDP/IP overhead. KiB means 1024 bytes. Turret-sound traces generate 100 new sounds/s with exact selector 0–3 and retain
+300 source sounds across a rolling three-second history. `PendingPresentationEvents.Admit` releases only extended unadmitted retention;
+it does not remove still-current source history. The diagnostic follows that contract rather than dropping admitted journal entries.
 
-| One-recipient scene | Application KiB/s | Messages/s | With 96 B/message KiB/s |
+#### Authority API workload
+
+The renewal rows call the real `ModVisuals.Play`/`Glow`/`Capture` APIs on a ticking `World`: 64 kept effects retain their exact anchors and
+256 glows retain their targets, while tint, colour, strength and expiry change at the stated frequency. The seeded values have independent
+high entropy. Bone following remains local and does not mutate the shared relative anchor. No particle instances enter the snapshots.
+
+| Scene | Application KiB/s | With 96 B/message KiB/s | Entry baseline KiB |
 | --- | ---: | ---: | ---: |
-| 100 nearby moving characters | 16.83 | 91.0 | 25.36 |
-| 500 nearby moving characters | 49.69 | 154.8 | 64.20 |
-| 500 scattered combat characters | 362.59 | 414.8 | 401.48 |
-| Combat + 10 named sounds/s | 368.70 | 414.8 | 407.58 |
-| Combat + 100 named sounds/s | 395.23 | 414.8 | 434.12 |
-| Combat + four tints per character, changed at 1 Hz | 417.83 | 442.8 | 459.34 |
-| Combat + 100 named sounds/s + four tints at 1 Hz | 450.47 | 442.8 | 491.99 |
-| Combat + four tints per character, changed at 10 Hz | 914.96 | 694.8 | 980.10 |
-| Combat + all nine tint float parameters randomized at 10 Hz | 1059.91 | 754.8 | 1130.67 |
+| 500 combat actors, no shared visual changes | 374.12 | 413.01 | 90.94 |
+| 64 effects + 256 glows renewed at 1 Hz | 379.75 | 418.73 | 105.40 |
+| Same renewals at 4 Hz | 396.62 | 435.88 | 105.40 |
+| Same renewals at 10 Hz | 430.38 | 470.20 | 105.40 |
+| 4 Hz renewals + 100 turret sounds/s | 423.65 | 463.29 | 106.68 |
+| 10 Hz renewals + 100 turret sounds/s | 458.12 | 498.88 | 106.68 |
 
-The ordinary tint traces randomize seven nondefault parameters per tint; the final row randomizes all nine. The 10 Hz rows are
-explicit high-entropy stress cases and remain above the 500 KiB/s target. Keeping arbitrary new float values, all 500 visible characters
-and the same publication frequency cannot guarantee a fixed bandwidth ceiling. The implementation does not silently
-quantize values, discard events, lower cadence or add a rate cap. Actual mod workloads must be included in live acceptance.
+An identical-input comparison isolates the representation change: the reference uses complete keyed JSON visual entries, uncompressed
+critical bodies and quality-1 bulk compression; the current encoder uses exact binary definition/reading pairs, quality-6 critical and
+quality-4 bulk compression. Other traffic, sampling, field precision and event counts are the same.
 
-The scattered combat trace's motion lane falls from 4,184,313 to 2,904,414 bytes per ten seconds. Grouping within the same capture changes
-4800 datagrams to 3200; the trace observes up to 32 records per packed packet and a maximum wire size of 970 bytes. Incompressible batches fall
-back to the original canonical capacity. Sampling, float bits, publication/epoch fences, reliable checkpoints and retransmission semantics
-stay unchanged. The independent packet formats and allocation limits are specified in the
-[transport contract](networking-next.md#absolute-bulk-and-motion-compression).
+| API workload | Reference application KiB/s | Reference +96 B KiB/s | Current application KiB/s | Current +96 B KiB/s |
+| --- | ---: | ---: | ---: | ---: |
+| 4 Hz renewals | 785.09 | 833.72 | 396.62 | 435.88 |
+| 10 Hz renewals | 1397.79 | 1461.06 | 430.38 | 470.20 |
+| 4 Hz renewals + 100 sounds/s | 811.83 | 860.68 | 423.65 | 463.29 |
+| 10 Hz renewals + 100 sounds/s | 1424.72 | 1488.40 | 458.12 | 498.88 |
 
-A five-run warmed encoder prototype on the same 32-record trace measured 227.5 ms median CPU without the optional DrawYaw bit predictor
-and 388.6 ms with it, per ten simulated seconds. The predictor saves another 9.00 KiB/s at approximately 16.1 ms extra CPU per simulated
-second for this recipient. This is an encoder comparison, not a real-game frame-time or complete server CPU measurement.
+In one separate compression-only probe of that ten-second mixed 10 Hz trace, Brotli `TryCompress` time for critical plus bulk bodies was
+77.75 ms at the selected qualities, versus 16.41 ms with quality 1 for both (about 6.1 ms additional encoding work per simulated second).
+This runner-local sample excludes serialization, allocations, decoding, rendering and transport; it is not a server capacity measurement.
+Higher critical qualities provided no useful size reduction in the same probe. The 498.88 KiB/s modeled result leaves little margin and
+does not establish that a real encrypted link stays below 500 KiB/s.
 
-Unchanged identities and tints send zero steady-state deltas. In the 500-character baseline, adding `LastingId`/`TagHeight` costs 5033 bytes
-including reverse ACKs. Four static tints per character increase that baseline from 220,315 to 280,180 bytes; those are one-time totals,
-not per-second rates. An isolated tint change does not resend the appearance descriptor, and appearance/tint arrival in either order,
-withdrawal and interest re-entry preserve the exact resolved result. Status-effect descriptions remain cached; ordinary countdowns do
-not resend definitions, although new high-entropy descriptions can still create a large baseline transfer.
+#### DTO encoding stress and limits
 
-The diagnostics additionally exercised all five event families and 22 sound kinds, exact integer IDs and float bits, null versus empty
-names, malformed envelopes, motion MTU/expansion bounds, and appearance withdrawal/re-entry. They do not simulate actual Kenshi animation,
-equipment churn, all combat event families at once, player-command traffic, RTT, loss or retransmission. Baseline transfers are excluded
-from steady-state averages. Therefore neither the application results nor the 96-byte allowance establish an on-wire guarantee.
-500 KiB/s/player remains an average optimization target; real mixed gameplay and sustained mod activity require the installed-game checks.
+A separate input changes every anchor transform and colour in the same 64 effect IDs plus 256 glow IDs at 10 Hz. This tests encoding
+entropy, not normal `KeepEffect` renewal: the authority keys kept effects by anchor, so changing an anchor creates another identity.
+Its final application/model rates are 457.47/498.23 KiB/s without sound and 484.62/525.38 KiB/s with 100 turret sounds/s. A separate
+10-new-one-shot-requests/s DTO trace measures 380.73/419.62 KiB/s (92.39 KiB entry baseline). These inputs retain all requested values.
+The target cannot be guaranteed for arbitrary new high-entropy values or arbitrarily many requests. No rate cap, event dropping,
+quantization or reduced cadence hides an overrun.
+
+These diagnostics do not simulate installed Kenshi animation, equipment/inventory churn, all combat event families simultaneously,
+player commands, RTT, loss or retransmissions. They verify the measured encoding path and its limits, not real-game wire acceptance.
+500 KiB/s/player remains an average optimization target; mixed gameplay and sustained mod workloads require installed-game measurement.
 
 ### Item actions and shared stock
+
+**Observed** (source): command 160 carries an integer stack `Count`; the decoder rejects nonpositive counts, and execution retains the
+current actor grant, source revision, item token and held-session checks. The source-compatible whole-stack constructor uses the token's
+quantity. Planned buildings carry `Outside` through the existing placement command. Door repair jobs retain the selected actors and bind the
+displayed door revision. Field 1067 publishes bounded immutable `ModJobOffers`; custom task codes travel through the existing `AddJob`
+command, whose handler resolves the registered offer and rechecks current site, membership, control and work permissions.
+
 
 **Observed** (source): mod item-use handlers run only on the authority, with the issuing player's current character grant, inventory
 revision and item identity. Each inventory or trade item carries an optional 32-character `ModTagDigest` instead of its raw mod

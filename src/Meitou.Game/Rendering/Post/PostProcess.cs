@@ -124,7 +124,7 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
         _merged.Dispose();
         _upscaleExposure.Dispose();
         _bloom.Dispose();
-        DisposeDepthOfField();
+        _depthOfField?.Dispose();
         DisposeGtao();
         DisposeLampShadows();
         Hiz?.Dispose();
@@ -277,9 +277,9 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
         /// </summary>
         public readonly SamplerSlot Luminance, Last;
         /// <summary>
-        /// The program's uniforms <c>uLevel</c>, <c>uBlend</c>, <c>uBand</c>.
+        /// The program's uniforms <c>uLevel</c>, <c>uBlend</c>, <c>uBand</c>, <c>uIndoor</c>, <c>uShade</c>.
         /// </summary>
-        public readonly UniformHandle Level, Blend, Band, Indoor;
+        public readonly UniformHandle Level, Blend, Band, Indoor, Shade;
         /// <summary>
         /// Compiles the program and resolves its handles.
         /// </summary>
@@ -287,6 +287,7 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
         {
             (Luminance, Last) = (P.Sampler("uLuminance"), P.Sampler("uLast"));
             (Level, Blend, Band, Indoor) = (P.Uniform("uLevel"), P.Uniform("uBlend"), P.Uniform("uBand"), P.Uniform("uIndoor"));
+            Shade = P.Uniform("uShade");
         }
     }
 
@@ -782,7 +783,8 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
         _characterVisibility = _characterGatherLast = _characterGatherPooled = _roomMask = null;
         _shafts.Free();
         _bloom.Free();
-        FreeDepthOfField();
+        _depthOfField?.Free();
+        _dofPicture = null;
         _adaptedValid = _historyValid = _softDepthReady = false;
         _adaptedFrames = 0;
     }
@@ -1163,6 +1165,34 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
     Target2D _postColour = null!;
 
     /// <summary>
+    /// The depth of field, made the first time it runs (<see cref="DepthOfField"/>).
+    /// </summary>
+    DepthOfField? _depthOfField;
+
+    /// <summary>
+    /// The depth of field's output as a target the rest of the chain reads (made again only when the output texture is).
+    /// </summary>
+    Target2D? _dofPicture;
+
+    /// <summary>
+    /// The picture through the lens, or <paramref name="scene"/> when the depth of field does not run: it is off, or the camera is not one of the
+    /// camera effects' (<see cref="PostOptions.CameraEffectsAllowed"/>), or the view is not a whole view of a scene.
+    /// </summary>
+    Target2D RunDepthOfField(Target2D scene)
+    {
+        if (!Options.DepthOfFieldOn || !_haveScene || !ViewWindow.Current.IsWhole || !Options.CameraEffectsAllowed) return scene;
+
+        _depthOfField ??= new DepthOfField(Gpu);
+        var camera = new DepthOfField.Camera(_fovNow, _planes.X, _planes.Y, JitterPixels);
+        var picture = _depthOfField.Run(Segment(), scene.Texture, _sceneDepth!.Texture, Options, camera);
+        Stamp("dof");
+
+        if (_dofPicture?.Texture != picture) _dofPicture = new Target2D(picture, TextureMinFilter.Linear, TextureMagFilter.Linear);
+
+        return _dofPicture;
+    }
+
+    /// <summary>
     /// Binds the scene framebuffer (recreating it when the size or the upscaler changed) and clears nothing: the caller does.
     /// </summary>
     public void Begin(int w, int h)
@@ -1321,40 +1351,18 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
     }
 
     /// <summary>
-    /// The composite's look after the grade: photo mode's filter, the vignette and the film grain (docs/render-post.md "Vignette and film grain").
-    /// The vignette and the grain need a whole view of a scene (not a tiled shot's tile, not the title), in any camera; the grain's size grows with a
-    /// picture drawn larger than the window, so it looks the same in it.
+    /// The composite's look after the grade: photo mode's filter, the vignette and the film grain (<see cref="CompositeLook"/>).
     /// </summary>
     void SetLook(CompositePass c, PostOptions o)
     {
-        var filter = o.PhotoFilter;
-        c.P.Set(c.FilterR, filter?.Red ?? Vector4.Zero);
-        c.P.Set(c.FilterG, filter?.Green ?? Vector4.Zero);
-        c.P.Set(c.FilterB, filter?.Blue ?? Vector4.Zero);
-        c.P.Set(c.FilterContrast, filter?.Contrast ?? 0f);
-
         bool whole = _haveScene && ViewWindow.Current.IsWhole && !o.CameraEffectsHeld;
-        var (centre, corner) = VignetteWindow(_displayWidth, _displayHeight, o.VignetteAspect);
-        c.P.Set(c.Vignette, new Vector4(centre, corner, whole && o.Vignette ? Math.Clamp(o.VignetteStrength, 0, 1) : 0));
-        float grainSize = 1.5f * MathF.Max(o.PictureScale, 1);
-        c.P.Set(c.Grain, whole && o.FilmGrain ? Math.Clamp(o.GrainStrength, 0, 1) : 0f, grainSize, Gpu.Frame.Number % 997);
-    }
-
-    /// <summary>
-    /// The centre of the part of a <paramref name="width"/> x <paramref name="height"/> picture the vignette darkens towards, and the distance from it
-    /// to its corner (pixels): the whole picture, or the centred window of <paramref name="aspect"/> photo mode's frame leaves (as
-    /// <c>PhotoGuides.Window</c>).
-    /// </summary>
-    static (Vector2 Centre, float Corner) VignetteWindow(int width, int height, float aspect)
-    {
-        float w = width, h = height;
-        if (aspect > 0)
-        {
-            if (aspect > w / MathF.Max(h, 1)) h = w / aspect;
-            else w = h * aspect;
-        }
-
-        return (new Vector2(width, height) * 0.5f, new Vector2(w, h).Length() * 0.5f);
+        var look = CompositeLook.Of(o, whole, _displayWidth, _displayHeight, Gpu.Frame.Number);
+        c.P.Set(c.FilterR, look.FilterR);
+        c.P.Set(c.FilterG, look.FilterG);
+        c.P.Set(c.FilterB, look.FilterB);
+        c.P.Set(c.FilterContrast, look.FilterContrast);
+        c.P.Set(c.Vignette, look.Vignette);
+        c.P.Set(c.Grain, look.Grain);
     }
 
     /// <summary>
@@ -2923,6 +2931,10 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
     /// </summary>
     const float AdaptationRate = 0.5f;
     /// <summary>
+    /// The adaptation rate with Adaptive exposure (1 / s): 90 % of a change in 1.2 s, against the game's 4.6 s.
+    /// </summary>
+    public const float AdaptiveExposureRate = 2;
+    /// <summary>
     /// Kenshi's exposure: the luminance measure (mipmapped) and the adapted value (1 × 1, ping-pong).
     /// </summary>
     Target2D? _luminance, _adaptA, _adaptB;
@@ -2952,6 +2964,16 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
     /// way.
     /// </summary>
     public (float Min, float Max)? AutoExposure { get; set; }
+    /// <summary>
+    /// Adaptive exposure (<see cref="IWorldPostChain.ShadeExposure"/>): under the band's minimum the adaptation's target is the mean times Scale,
+    /// no lower than Floor; Scale 0 keeps the game's band. Not applied while an exposure is held.
+    /// </summary>
+    public (float Scale, float Floor) ShadeExposure { get; set; }
+    /// <summary>
+    /// The mean luminance of an open desert by day, which a darker scene is exposed as (<see cref="ShadeExposure"/>): 0.567, the new game's
+    /// start at 10:00 (0.574 with every switch Faithful), under the game's daytime minimum 0.8 like most daytime views.
+    /// </summary>
+    public const float ShadeExposureReference = 0.57f;
     /// <summary>
     /// Above 0 (an interior is in view, lit by its probes): the band's minimum follows the scene down, to the mean luminance times this, and no
     /// lower than <see cref="IndoorExposureFloor"/> of itself. The game's minimum is set for a room lit evenly by its ambient; a room lit by
@@ -2983,6 +3005,11 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
     /// </summary>
     float IndoorFloorShare(float bandMin) =>
         IndoorExposureMin > 0 ? MathF.Min(IndoorExposureFloor, IndoorExposureMin / MathF.Max(bandMin, 1e-4f)) : IndoorExposureFloor;
+    /// <summary>
+    /// The adaptation rate (1 / s): <see cref="AdaptiveExposureRate"/> with Adaptive exposure, else the game's.
+    /// </summary>
+    internal static float Rate(PostOptions o) => o.AdaptiveExposure ? AdaptiveExposureRate : AdaptationRate;
+
     /// <summary>
     /// Skip the smoothing: the exposure settles at once (screenshots, benchmarks).
     /// </summary>
@@ -3028,11 +3055,13 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
             _adaptClock.Restart();
 
             // Seed both ping-pong targets before smoothing; the next frame reads the other one.
-            float mblend = InstantAdaptation || !_adaptedValid || _adaptedFrames < 2 ? 1 : 1 - MathF.Exp(-mdt * AdaptationRate);
+            float mblend = InstantAdaptation || !_adaptedValid || _adaptedFrames < 2 ? 1 : 1 - MathF.Exp(-mdt * Rate(Options));
             (_adaptA, _adaptB) = (_adaptB, _adaptA);
             var mband = ExposureBand();
             var rooms = RoomMaskNow;
-            _merged.Exposure(mblend, mband, _postColour, _adaptA!, _adaptB!, rooms is null ? 0 : IndoorExposure, IndoorFloorShare(mband.Min), rooms);
+            var mshade = _exposureHold is null ? ShadeExposure : default;
+            float indoor = rooms is null ? 0 : IndoorExposure;
+            _merged.Exposure(mblend, mband, _postColour, _adaptA!, _adaptB!, indoor, IndoorFloorShare(mband.Min), rooms, mshade);
             _adaptedValid = true;
             _adaptedFrames = Math.Min(_adaptedFrames + 1, 2);
             return;
@@ -3047,7 +3076,7 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
         _adaptClock.Restart();
 
         // Seed both ping-pong targets before smoothing; the next frame reads the other one.
-        float blend = InstantAdaptation || !_adaptedValid || _adaptedFrames < 2 ? 1 : 1 - MathF.Exp(-dt * AdaptationRate);
+        float blend = InstantAdaptation || !_adaptedValid || _adaptedFrames < 2 ? 1 : 1 - MathF.Exp(-dt * Rate(Options));
         var previous = _adaptB;   // the target written last frame; the swap below makes it adaptA
         (_adaptA, _adaptB) = (_adaptB, _adaptA);
         var ap = _adaptPass;
@@ -3059,6 +3088,8 @@ public sealed unsafe partial class PostProcess : IDisposable, IWorldPostChain
         var band = ExposureBand();
         ap.P.Set(ap.Band, band.Min, band.Max);
         ap.P.Set(ap.Indoor, pinned ? 0 : IndoorExposure, IndoorFloorShare(band.Min));
+        var shade = pinned ? default : ShadeExposure;
+        ap.P.Set(ap.Shade, shade.Scale, shade.Floor);
         Draw(ap.P, _adaptB!);
         _adaptedValid = true;
         _adaptedFrames = Math.Min(_adaptedFrames + 1, 2);

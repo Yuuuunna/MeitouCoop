@@ -837,7 +837,7 @@ public sealed partial class CombatSystem : IProjectileSource
         var events = _hitEvents;
         events.Clear();
         float toughness = dc.Stats is { } ds ? ds[StatsEnumerated.Toughness] * dc.Medical.StatMultiplier(StatsEnumerated.Toughness) : 0;
-        ReadOnlySpan<ArmourPiece> armour = dc.Fighter is { } df ? df.Armour : default;
+        var armour = world.ArmourFilters.Pieces(world, CombatHitSource.Projectile, table.IdOf(v), dc.Fighter);
         var cover = new BoltCover(world.Seed, Rng.Key(table.IdOf(v)), p.Id);
         bool observe = world.WantsCombatHits;
         bool wasAlive = observe && !dc.Medical.Dead, wasIncapacitated = observe && dc.Medical.Incapacitated;
@@ -923,6 +923,10 @@ public sealed partial class CombatSystem : IProjectileSource
         // shooter's aimed hit still renews its Assault, as its landed blow does (CrimeSystem.Hit; an engine choice).
         if (shooterAlive && intended && world.Characters.Cold(p.Shooter) is { IsPlayer: false })
             Crimes?.Assault(world, p.Shooter, v);
+
+        // Meitou (TurretAssault): a player gunner's turret harpoon is an assault, as Attack Unprovoked is; the original books none.
+        if (shooterAlive && intended && p.Turret && p.ShooterIsPlayer && TurretAssault)
+            Crimes?.Assault(world, p.Shooter, v, VictimFighting(world.Characters, world.Characters.IdOf(v)));
 
         if (shooterAlive && !medical.Incapacitated)
         {

@@ -51,6 +51,11 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     /// </summary>
     ReflectedProgram _colourProg;
     readonly ReflectedProgram _depthProg, _motionProg;
+
+    /// <summary>
+    /// The colour program lit without the sun shadows and probe GI (<see cref="LeanLighting"/>), made the first world frame that has neither.
+    /// </summary>
+    ReflectedProgram? _colourLean;
     /// <summary>
     /// The meshes, textures, rigs, morphs and material table the assets are built from.
     /// </summary>
@@ -520,6 +525,10 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         /// </summary>
         public ulong Blood;
         /// <summary>
+        /// The blood its worn items show, a byte per part as <see cref="Blood"/>: the wound's, or the stain the items kept if more (<see cref="GearBlood"/>).
+        /// </summary>
+        public ulong WornBlood;
+        /// <summary>
         /// Its weapon's blood this frame (<see cref="GearBlood"/>): the colour as 24 bits, the amount and wetness as two bytes.
         /// </summary>
         public float GearColour, GearAmounts;
@@ -527,6 +536,10 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         /// Which of its weapons took the blood of <see cref="GearColour"/>: true the back melee weapon (as <see cref="BackDrawn"/>), false the other.
         /// </summary>
         public bool GearBack;
+        /// <summary>
+        /// The mods' glows on it this frame (<see cref="Glows"/>; null: none).
+        /// </summary>
+        public CharacterGlow? Glow;
         /// <summary>
         /// Posed this frame whatever the thinning (the player's, a ragdoll, a new asset or a first pose).
         /// </summary>
@@ -994,6 +1007,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     {
         string fragment = Gi.GiResolveShaders.WithAlbedo(CharacterShaders.Fragment(Gpu.Shaders.DiscardNeedsLateDepth), inShader: true);
         _colourProg = new ReflectedProgram(Gpu, _nativeFrame, CharacterShaders.Vertex(), fragment, "characters", CharacterShaders.InstanceLocation);
+        _colourLean = null;   // made again from the new text when next used, as the visibility below
         _visibility = null;   // made again from the new text when next used; the old one stays alive as the old colour program does
     }
 
@@ -1359,7 +1373,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         l.AttachBase = _attachCount;
         _attachCount += asset.AttachCount;
         l.Bones = inst.Bones;
-        l.Blood = inst.Blood;
+        l.Blood = l.WornBlood = inst.Blood;
         l.Pixels = 2 * l.Radius * _viewPixelsPerRadian / MathF.Max(1, Vector3.Distance(eye, centre));
         l.LayerStart = _layerCount;
         l.LayerCount = 0;
@@ -1379,20 +1393,26 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     static Matrix4x4 WorldOf(in CharacterInstance inst, CharacterAsset asset, float scale)
     {
         if (inst.World is { } world) return world;
-        if (inst.Rotation is { } rotation) return Turned(asset, inst.Position, rotation, scale);
+        if (inst.Rotation is { } rotation) return Turned(inst.Position, rotation, scale, Lowering(inst, asset));
 
-        var placed = Matrix4x4.CreateRotationY(inst.Yaw) * Matrix4x4.CreateTranslation(inst.Position - new Vector3(0, asset.GroundOffset, 0));
+        var placed = Matrix4x4.CreateRotationY(inst.Yaw) * Matrix4x4.CreateTranslation(inst.Position - new Vector3(0, Lowering(inst, asset), 0));
         return scale != 1 ? Matrix4x4.CreateScale(scale) * placed : placed;
     }
 
     /// <summary>
-    /// The world matrix of a node at <paramref name="position"/> turned by its whole <paramref name="rotation"/>: lowered by the ground offset in
-    /// its own frame, then turned and moved.
+    /// How far the character is drawn below its position: the ground offset, but in a bed (<see cref="CharacterInstance.UnitMovement"/>) only
+    /// less the feet's lift, as the original lays the root bone at the node whatever the body shape (a short-legged paladin's 1.23 put its back
+    /// through the mattress, docs/game/locks.md "Heights").
     /// </summary>
-    static Matrix4x4 Turned(CharacterAsset asset, Vector3 position, Quaternion rotation, float scale)
+    static float Lowering(in CharacterInstance inst, CharacterAsset asset) => inst.UnitMovement ? -asset.FeetLift : asset.GroundOffset;
+
+    /// <summary>
+    /// The world matrix of a node at <paramref name="position"/> turned by its whole <paramref name="rotation"/>: lowered by
+    /// <paramref name="lowering"/> in its own frame, then turned and moved.
+    /// </summary>
+    static Matrix4x4 Turned(Vector3 position, Quaternion rotation, float scale, float lowering)
     {
-        var placed = Matrix4x4.CreateTranslation(0, -asset.GroundOffset, 0) * Matrix4x4.CreateFromQuaternion(rotation)
-            * Matrix4x4.CreateTranslation(position);
+        var placed = Matrix4x4.CreateTranslation(0, -lowering, 0) * Matrix4x4.CreateFromQuaternion(rotation) * Matrix4x4.CreateTranslation(position);
         return scale != 1 ? Matrix4x4.CreateScale(scale) * placed : placed;
     }
 
@@ -1415,11 +1435,14 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         {
             l.Soak = 0;
             (l.GearColour, l.GearAmounts) = (0, 0);
+            l.Glow = null;
         }
         else
         {
             Soaked(ref l, state);
             WeaponBloodOf(ref l);
+            GlowOf(ref l);
+            WornStainOf(ref l);
         }
 
         // A moving ragdoll is posed every frame: its bones move by physics, not by a clip the thinning could thin out (a frozen one hands over the
@@ -1599,7 +1622,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
     void MoveTo(ref Live l, Vector3 position, Quaternion rotation)
     {
         var state = l.State;
-        l.World = Turned(l.Asset, position, rotation, l.Scale);
+        l.World = Turned(position, rotation, l.Scale, l.Asset.GroundOffset);
         l.Centre = position + new Vector3(0, l.Asset.Height * 0.5f * l.Scale, 0);
 
         (state.World, state.Centre) = (l.World, l.Centre);
@@ -2124,6 +2147,7 @@ internal sealed unsafe partial class CharacterRenderer : IDisposable
         if (_updateCount > 0) Console.WriteLine($"characters {Statistics()}");
         _visibility?.Dispose();
         _colourProg.Dispose();
+        _colourLean?.Dispose();
         _depthProg.Dispose();
         _motionProg.Dispose();
         _nativeFrame.Dispose();

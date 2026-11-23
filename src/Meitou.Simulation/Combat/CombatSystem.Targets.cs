@@ -138,6 +138,8 @@ public sealed partial class CombatSystem
                 if ((uint)t.Slot < (uint)prev.Length && prev[t.Slot].Generation == t.Generation && !Crippled(table, t.Slot))
                     Consider(world, ref q, t.Slot, false);
 
+        if (TroubleMaker(world, i, in s, cold) is >= 0 and var maker) Consider(world, ref q, maker, false);
+
         if (q.Best >= 0 || senses is not { Enemies: > 0 }) return q.Best;
 
         q.BestScore = float.NegativeInfinity;
@@ -165,6 +167,24 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>
+    /// Engine choice (#1122, the original's rule not worked out): the character a 34 Attacking trouble makers fight was started on, a candidate of
+    /// the fight's target choice while the fighter's AI still holds that goal as its own fight's; -1 otherwise. The goal holds only while its finder
+    /// picks a trouble maker, so the fight lets go once the target stops. Without it a neutral shooting someone else is on none of the guard's
+    /// lists, and the guard stood in its stance without a target until the victim fell.
+    /// </summary>
+    static int TroubleMaker(World world, int i, in CombatSlot s, CharacterCold cold)
+    {
+        if (cold.Ai is not { Goal.Task.Type: Data.Gameplay.Ai.TaskType.AttackTroubleMakers } mind || !Ai.AiSystem.OwnsFight(cold, mind))
+            return -1;
+
+        var table = world.Characters;
+        int t = s.TaskSlot;
+        if ((uint)t >= (uint)table.Previous.Length || table.Previous[t].Generation != s.TaskGeneration || Crippled(table, t)) return -1;
+
+        return CharacterFacts.Knows(world, i, new CharacterId(t, s.TaskGeneration)) ? t : -1;
+    }
+
+    /// <summary>
     /// The chooser's lists leave out a crippled candidate (Character vslot 0x360, the crippled flag: <see cref="Bodies.MedicalState.Crawling"/>).
     /// </summary>
     static bool Crippled(CharacterTable table, int c) => table.Cold(c)?.Medical is { Crawling: true };
@@ -178,8 +198,8 @@ public sealed partial class CombatSystem
     /// after it was last sensed); a world without senses never holds it. Engine choice: an enemy in a cage is not counted and a task target in a cage
     /// counts as gone. The original ends such a fight through its goal (an arrest's effect 129 holds once the target is imprisoned), which the
     /// engine's own fights (an arrest's, a joiner's) do not have: left in it, guards stood in combat mode at the cage and turned on the prisoner
-    /// once it was let out (#629). A player character's fight that its own goal started ends sooner (<see cref="GoalSpent"/>). Reads the last tick's
-    /// fights and the senses of the last look.
+    /// once it was let out (#629). A player character's fight that its own goal started ends sooner (<see cref="GoalSpent"/>), and a follow row's
+    /// fight skips the enemy count (<see cref="FollowStep"/>). Reads the last tick's fights and the senses of the last look.
     /// </summary>
     bool NothingLeft(World world, int i, in CombatSlot s)
     {
@@ -187,8 +207,10 @@ public sealed partial class CombatSystem
 
         var senses = CharacterFacts.Senses(world, i);
         if (senses is { ThreatToAllies: > 0 }) return false;
-        if (GoalSpent(world.Characters.Cold(i)!, senses)) return true;
-        if (senses is not null && senses.Enemies > senses.CagedEnemies) return false;
+
+        var cold = world.Characters.Cold(i)!;
+        if (GoalSpent(cold, senses)) return true;
+        if (senses is not null && senses.Enemies > senses.CagedEnemies && !FollowStep(cold)) return false;
 
         var table = world.Characters;
         var prev = table.Previous;
@@ -210,6 +232,16 @@ public sealed partial class CombatSystem
     static bool GoalSpent(CharacterCold cold, SenseBlock? senses) =>
         cold.IsPlayer && cold.Running is { Source: Ai.TaskSource.Goal, Row: Data.Gameplay.Ai.TaskType.AttackAttackersOf }
         && senses is not { ThreatToMe: > 0 };
+
+    /// <summary>
+    /// Whether the fight is a step of a follow row (45 Bodyguard, 31 Staying close, 289) for its job or order (<see cref="Ai.FollowDefence"/>). Such a
+    /// fight without a target ends on its task target alone (down, gone or no longer sensed), whatever <see cref="SenseBlock.Enemies"/> still counts: the
+    /// job pass or order step then resumes the follow and plans the row again, fighting the charge's next attacker or following (docs/game/combat.md
+    /// "Leaving a fight").
+    /// </summary>
+    static bool FollowStep(CharacterCold cold) =>
+        cold.Running is { Source: Ai.TaskSource.Job or Ai.TaskSource.Order, Task: Movement.CharacterTask.Attack } run
+        && Production.PermaJobs.Follows(run.Row);
 
     /// <summary>
     /// <c>AI::findAttackerOf</c> (<c>FUN_14099c3b0</c>, <b>Verified</b>) for a character joining <paramref name="subject"/>'s fight: the candidates

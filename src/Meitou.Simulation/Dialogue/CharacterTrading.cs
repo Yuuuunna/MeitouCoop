@@ -304,7 +304,7 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
         if (state.Trade is not { } t) return;
         var table = world.Characters;
         if (!system.Authorized(world, t.Context) || !table.TryResolveNext(t.Slaver, out int s) || !table.TryResolveNext(t.Player, out int p) || !DialogueSystem.Awake(table, s)
-            || !DialogueSystem.Awake(table, p) || !DialogueSystem.InTalkRange(table, p, s)) state.Trade = null;
+            || !DialogueSystem.Awake(table, p) || !DialogueSystem.InTalkRange(world, p, s)) state.Trade = null;
     }
 
     /// <summary>
@@ -354,7 +354,7 @@ sealed class CharacterTrading(DialogueSystem system, PopulationData data)
                 chosen.Add((c, cc, row.Price));
         long total = chosen.Sum(x => x.Price);
         if (chosen.Count == 0 || chosen.Count != command.Selected.Distinct().Count() || total < 0 || total > buyerMoney) return;
-        if (!table.TryResolveNext(t.Player, out int buyerSlot) || !DialogueSystem.Awake(table, buyerSlot) || !DialogueSystem.Awake(table, s) || !DialogueSystem.InTalkRange(table, buyerSlot, s)) return;
+        if (!table.TryResolveNext(t.Player, out int buyerSlot) || !DialogueSystem.Awake(table, buyerSlot) || !DialogueSystem.Awake(table, s) || !DialogueSystem.InTalkRange(world, buyerSlot, s)) return;
         foreach (var (slot, current, _) in chosen)
         {
             var id = table.IdOf(slot);

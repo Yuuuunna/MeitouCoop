@@ -115,9 +115,10 @@ internal static class NavTileBuilder
         foreach (int c in solids)
             NavSolidCarving.RemoveInside(g.Solids[c], chf);
         foreach (int c in meshSolids)
-            NavSolidCarving.RemoveInside(g.MeshSolids[c], chf, g.Solids, solids);
-        if (g.Ground is { } ground)
-            NavSolidCarving.RemoveUnderground(ground, s.AgentHeight, chf);
+            NavSolidCarving.RemoveInside(g.MeshSolids[c], chf);
+
+        if (g.Ground is { } ground) NavSolidCarving.RemoveUnderground(ground, s.AgentHeight, chf);
+
         foreach (int c in painters)
             Mark(ctx, g.Painters[c], NavArea.Door, chf, s.CellSize * s.DoorInflateCells);
     }

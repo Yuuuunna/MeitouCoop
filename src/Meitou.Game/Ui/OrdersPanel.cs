@@ -51,6 +51,11 @@ sealed class OrdersPanel(PlayerInterface player)
     /// </summary>
     internal (CharacterId Character, ulong Revision, int Index)? JobDrag;
 
+    /// <summary>
+    /// The code mods' buttons beside the jobs list (docs/modding.md "Character panel lines and job panel buttons").
+    /// </summary>
+    internal JobModButtons ModButtons { get; } = new(player);
+
     #endregion
 
     #region Order toggles
@@ -91,6 +96,24 @@ sealed class OrdersPanel(PlayerInterface player)
     #region Jobs list
 
     /// <summary>
+    /// The jobs rows' parts by what they are made from (<see cref="JobRowParts"/> depends on nothing else), kept from one arrangement to the next:
+    /// the parts only change when the jobs, the window or the language do.
+    /// </summary>
+    Dictionary<JobRowKey, List<UiControl>> _jobRowParts = [];
+
+    /// <summary>
+    /// The parts the arrangement under way uses; they become <see cref="_jobRowParts"/> once it is done, so rows gone are dropped.
+    /// </summary>
+    Dictionary<JobRowKey, List<UiControl>> _jobRowPartsNext = [];
+
+    /// <summary>
+    /// What a jobs row's parts are made from: the row's name, place, clip, caption and argument, whether it is dimmed, the row layout and the
+    /// layers it is arranged with, and the language its captions are translated into.
+    /// </summary>
+    readonly record struct JobRowKey(string Name, UiRect Bounds, UiRect? Clip, string Caption, string Argument, bool Dimmed, MyGuiLayout Layout,
+        IReadOnlyList<string> Layers, GameLanguage Language);
+
+    /// <summary>
     /// The jobs list (<c>JobsPanel</c>, docs/game/ui-screens.md section 4): the lead's jobs, one <c>Kenshi_OrdersPanelOrder</c> row each, int(24 x
     /// height / 1080) tall (<see cref="AddJobRowParts"/>), numbered from 1, with an X that removes it from that character; with none, the layout's
     /// hint. Rows are dragged to reorder.
@@ -119,6 +142,7 @@ sealed class OrdersPanel(PlayerInterface player)
             ["LineHeight"] = ((int)(24 * player.UiScale)).ToString(CultureInfo.InvariantCulture),
         };
         b.ScrollOffsets["JobsPanel"] = player.ScrollBars.InventoryScroll.GetValueOrDefault("JobsPanel");
+        ModButtons.Bind(b, lead);
 
         // The brackets are the panel's, not the catalog's (its keys have none: "No jobs assigned", "To add jobs, hold shift key when giving an
         // order").
@@ -245,8 +269,24 @@ sealed class OrdersPanel(PlayerInterface player)
 
             bool dimmed = _dimmedJobs.Contains(row.Argument);
             controls[i] = row with { Caption = "", Properties = Dimmed(row.Properties, dimmed) };
-            controls.InsertRange(i + 1, JobRowParts(row, dimmed));
+            controls.InsertRange(i + 1, KeptJobRowParts(row, dimmed));
         }
+
+        (_jobRowParts, _jobRowPartsNext) = (_jobRowPartsNext, _jobRowParts);
+        _jobRowPartsNext.Clear();
+    }
+
+    /// <summary>
+    /// <see cref="JobRowParts"/> of <paramref name="row"/>, reused while the row is made from the same things.
+    /// </summary>
+    List<UiControl> KeptJobRowParts(UiControl row, bool dimmed)
+    {
+        var key = new JobRowKey(row.Name, row.Bounds, row.Clip, row.Caption, row.Argument, dimmed, OrdersRowLayout!, player.UiResources.Layers,
+            Loc.Language);
+        if (!_jobRowParts.TryGetValue(key, out var parts)) parts = JobRowParts(row, dimmed);
+
+        _jobRowPartsNext[key] = parts;
+        return parts;
     }
 
     /// <summary>

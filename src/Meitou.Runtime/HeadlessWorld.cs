@@ -103,7 +103,16 @@ public sealed class HeadlessWorld : IDisposable
         WorldRuntime? runtime = null;
         try
         {
-            content = WorldContent.Load(install, db, new GameAssets(install), terrain.HeightAt, levels,
+            var assets = new GameAssets(install);
+            var particles = new Lazy<Meitou.Data.Particles.ParticleLibrary>(() => Meitou.Data.Particles.ParticleLibrary.Load(assets.Configured, assets.Materials));
+            string? ResolveEffect(string id)
+            {
+                string system = db.Find(id) is { Type: Meitou.Data.Fcs.FcsRecordType.Effect } record
+                    ? Meitou.Data.Particles.EffectRecord.From(record).ParticleSystem : id;
+                return particles.Value.FindSystem(system) is not null ? system : null;
+            }
+
+            content = WorldContent.Load(install, db, assets, terrain.HeightAt, levels,
                 gameplay is null ? null : new Meitou.Simulation.Bodies.BodyOptions
                 {
                     Dismemberment = gameplay.Dismemberment,
@@ -113,12 +122,13 @@ public sealed class HeadlessWorld : IDisposable
                     HungerTime = gameplay.HungerTime,
                     ChanceOfDeath = gameplay.ChanceOfDeath,
                     SquadXp = gameplay.SquadXp,
+                    SquadSkillXp = [.. gameplay.SquadSkillXp],
                     OthersXp = gameplay.OthersXp,
                 });
             var (enabled, disabled) = dataPhase.CodeMods();
             BuiltInMods.SkipCovered(enabled, disabled);
             var modOptions = new ModHostOptions(enabled, allowed, db, content.Population, () => runtime?.World,
-                id => modSettings?.GetValueOrDefault(id), GameVersion: ModHost.RunningVersion(), Disabled: disabled, StrictSystems: true);
+                id => modSettings?.GetValueOrDefault(id), GameVersion: ModHost.RunningVersion(), Disabled: disabled, StrictSystems: true, SharedVisuals: true, ResolveEffect: ResolveEffect);
             var mods = dataPhase.Mods;
             if (mods is null) mods = ModHost.Load(modOptions);
             else mods.Start(modOptions);
@@ -188,6 +198,7 @@ public sealed class HeadlessWorld : IDisposable
             GunnerFacesBarrel = rules.GunnerFacesBarrel,
             PunchReachFix = rules.PunchReachFix,
             AnimalMovesFix = rules.AnimalMovesFix,
+            TurretAssault = rules.TurretAssault,
         },
         Population = new PopulationSettings
         {
@@ -202,6 +213,7 @@ public sealed class HeadlessWorld : IDisposable
             OffscreenHealing = rules.OffscreenHealing,
             CampaignAncestorsOnce = rules.CampaignAncestorsOnce,
             KeepWild = rules.KeepWild,
+            KeepDowned = rules.KeepDowned,
             ResidentSchedule = rules.ResidentSchedule,
             OffscreenOverrides = rules.OffscreenOverrides,
             KeepCampaignClocks = rules.KeepCampaignClocks,
@@ -237,6 +249,7 @@ public sealed class HeadlessWorld : IDisposable
         world.CagedAnimalFix = rules.CagedAnimalFix;
         world.GroundRepair = rules.GroundRepair;
         world.BagSearchFix = rules.BagSearchFix;
+        world.CounterTalk = rules.CounterTalk;
         world.Luckyren = rules.Luckyren;
         world.GroundItems.Limit = rules.GroundItemLimit;
         world.Sight.InteriorLampsAllDay = rules.InteriorLampsAllDay;
@@ -262,6 +275,8 @@ public sealed class HeadlessWorld : IDisposable
         foreach (var (record, handler) in configured.ItemUses.Concat(mods.ItemUses))
             result.ItemUses.Add(record, handler);
         foreach (var (row, name) in configured.JobTypes.Concat(mods.JobTypes)) result.JobTypes.Add(row, name);
+        result.JobOffers.AddRange(configured.JobOffers);
+        result.JobOffers.AddRange(mods.JobOffers);
         foreach (var (row, goal) in configured.GoalTypes.Concat(mods.GoalTypes)) result.GoalTypes.Add(row, goal);
         foreach (var (row, owner) in configured.TaskOwners.Concat(mods.TaskOwners)) result.TaskOwners.Add(row, owner);
         return result;

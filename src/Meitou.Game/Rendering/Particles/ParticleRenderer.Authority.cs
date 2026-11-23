@@ -13,6 +13,10 @@ public sealed unsafe partial class ParticleRenderer
     EffectGroup GroupAt(int i) => i < LocalGroupCount ? _groups.At(i) : _presented.Groups[i - LocalGroupCount];
     readonly PresentedEffectSet _presented;
     readonly HashSet<EffectGroup> _mapPlacerGroups = [];
+    /// <summary>
+    /// Reused region inputs with authority-owned roots removed.
+    /// </summary>
+    readonly List<RegionWeatherInput> _filteredRegions = [];
     WeatherEffectFrame? _authorityFrame;
     object? _authorityOwner;
     IReadOnlyList<WeatherEffectEntry>? _filteredSource;
@@ -58,6 +62,17 @@ public sealed unsafe partial class ParticleRenderer
             Version = input.Version,
             Region = input.Region
         };
+    }
+
+    /// <summary>
+    /// Nearby region particles use the same authority filter as camera weather, so damaging roots are not simulated twice.
+    /// </summary>
+    IReadOnlyList<RegionWeatherInput> FilterRegionWeather(IReadOnlyList<RegionWeatherInput> regions)
+    {
+        if (_authorityFrame is null) return regions;
+        _filteredRegions.Clear();
+        foreach (var region in regions) _filteredRegions.Add(region with { Input = FilterWeather(region.Input) });
+        return _filteredRegions;
     }
 
     // Include replica roots without allocating LINQ iterators in the per-frame walks.

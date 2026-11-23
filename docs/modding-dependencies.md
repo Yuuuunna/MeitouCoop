@@ -5,6 +5,10 @@ instead of a private copy. Code: `CodeModManifest`, `CodeModVersion`, `CodeModCh
 `ModLoadContext`, `ModHost`, `ModContext.Dependency<T>` (`Meitou.Modding`), the launcher's mod list. Tests: `ModDependencyTests`.
 General loader contract: [modding](modding.md).
 
+`EffectAnchor` and `GlowTarget` retain the `Meitou.Modding` namespace but are compiled into `Meitou.Simulation` so authority visual requests
+share one wire type. The matching Coop reference package includes both assemblies. Job offers and authority visual requests add no manifest
+keys; their registration, dependency failure cleanup and remote presentation contracts are in [modding](modding.md).
+
 **Observed** (source): `ModContext.AddEquipmentSlot` registrations commit in dependency order through the shared
 `Meitou.Modding` assembly on both client and server. A failed initialization commits no pending slots; duplicate
 inventory sections or FCS slot numbers are refused. This adds no manifest keys.
@@ -18,7 +22,8 @@ add no manifest keys. Covered legacy XP code mods are classified as disabled on 
 runs from the authority's public gameplay rules. See [item use and XP adoption](modding.md).
 
 **Observed** (Coop source): the chooser contract is API 3. Key binding and key-action types keep their `Meitou.Game.Host.Input` namespace but
-are compiled once into `Meitou.Modding`, so the headless host and game initialize the same mod entry. The UI callbacks submit supported typed
+are compiled once into `Meitou.Modding`, so the headless host and game initialize the same mod entry. `MyGuiEvent`, item-tooltip contracts and
+character/job-panel contracts use that same shared assembly; their screen renderer remains game-owned. The UI callbacks submit supported typed
 commands through the recipient's session. World-state sidecars restore with the mod context scoped to the candidate world; strict failures
 abort replacement without changing the active world.
 

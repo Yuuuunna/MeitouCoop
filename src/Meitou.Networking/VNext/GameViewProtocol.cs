@@ -73,7 +73,7 @@ public static class GameViewProtocol
             offset += frame.Length + 4;
         }
 
-        return AbsolutePayloadCompression.Encode(result);
+        return AbsolutePayloadCompression.Encode(result, quality: 4);
     }
 
     /// <summary>

@@ -179,5 +179,6 @@ public static class PermaJobSave
         || instances.Contains(id)
         || ProductionSystem.IsNatural(id)
         || Locks.FixtureRegistry.IsDummy(id)
+        || Locks.FixtureRegistry.IsSeat(id)
         || id.IndexOf('/') is > 0 and var slash && instances.Contains(id[..slash]);
 }

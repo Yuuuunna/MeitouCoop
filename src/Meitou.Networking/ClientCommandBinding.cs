@@ -268,6 +268,10 @@ public static class ClientCommandBinding
 
         command = command switch
         {
+            AddJob c when c.SiteRevision == 0 && view.Snapshot.DoorPicks.FirstOrDefault(d => d.Id == c.Site) is { } door => c with
+            {
+                SiteRevision = door.Revision
+            },
             ToggleDoorsOrder c when c.ExpectedDoorGroupRevision == 0 => c with
             {
                 ExpectedDoorGroupRevision = view.Snapshot.DoorGroupRevisions.GetValueOrDefault(c.Building)
@@ -312,6 +316,8 @@ public static class ClientCommandBinding
                 return dummy.Owner;
             if (view.Snapshot.Seats.FirstOrDefault(s => s.Id == site)is { } seat)
                 return seat.Owner;
+            if (view.Snapshot.DoorPicks.FirstOrDefault(d => d.Id == site) is { } door)
+                return door.Owner;
             foreach (var workSite in view.Snapshot.WorkSites)
                 if (workSite.Id == site) return workSite.Owner;
             throw Missing();

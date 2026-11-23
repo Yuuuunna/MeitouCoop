@@ -299,7 +299,7 @@ sealed class OnlineAdmission(PlayerInterface player)
         }
         if (drafts.Count == 0)
         {
-            player.Confirm("Create characters", $"Create {preview.Members.Length} character(s) and enter the server?", CommitOnlineEditor);
+            player.Confirm("Create characters", Loc.Tr("Create {1} character(s) and enter the server?", preview.Members.Length), CommitOnlineEditor);
             return;
         }
         player.CharacterEditor.Editor = new(EditKind.Creation, drafts.Keys.ToArray(), new HashSet<CharacterId>(), CharacterId.None);

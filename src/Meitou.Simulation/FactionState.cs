@@ -28,6 +28,10 @@ public sealed class FactionState
     /// </summary>
     public bool PlayerOwned { get; internal set; }
     public string? Name { get; set; }
+    /// <summary>
+    /// The faction's first eligible home building, shared by its players and found again after loading.
+    /// </summary>
+    public string? Home { get; set; }
     public long Money { get; set; }
     public bool TryDebit(long amount)
     {
@@ -54,6 +58,11 @@ public sealed class FactionState
         h.Add(Name is not null);
         if (Name is not null) h.Add(Rng.StableHash(Name));
         Research.Hash(ref h);
+        if (Home is { } home)
+        {
+            h.Add(0x486F6D65);
+            h.Add(Rng.StableHash(home));
+        }
     }
 }
 
@@ -84,7 +93,7 @@ public sealed class FactionStates
         foreach (var (index, state) in _states)
         {
             if (index == localFaction) continue; // the existing single-player hash includes its resources
-            if (!state.PlayerOwned && state.Money == 0 && state.Name is null && !state.Research.Changed) continue; // querying default NPC resources does not change world state
+            if (!state.PlayerOwned && state.Money == 0 && state.Name is null && state.Home is null && !state.Research.Changed) continue; // querying default NPC resources does not change world state
             h.Add(0x46616374);
             state.Hash(ref h);
         }

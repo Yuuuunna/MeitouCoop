@@ -77,6 +77,16 @@ public sealed partial class World
     readonly SnapshotBuffer[] _snapshotRing = [new(), new(), new(), new()];
 
     /// <summary>
+    /// The jobs arrays the snapshots hand out, kept per slot while unchanged (<see cref="FillOrders"/>).
+    /// </summary>
+    readonly SlotArrays<Production.PermaJob> _publishedJobs = new();
+
+    /// <summary>
+    /// The stuck-bolt arrays the snapshots hand out, kept per slot while unchanged (<see cref="FillIdentity"/>).
+    /// </summary>
+    readonly SlotArrays<StuckBolt> _publishedBolts = new();
+
+    /// <summary>
     /// The buffers <see cref="Snapshot"/>, <see cref="PreviousSnapshot"/> and the snapshot before that were filled from (null:
     /// <see cref="WorldSnapshot.Empty"/>).
     /// </summary>
@@ -135,8 +145,12 @@ public sealed partial class World
     /// <param name="BodyConstants">The body system's constants.</param>
     /// <param name="Population">The population data.</param>
     /// <param name="ExtraBloodLoss">The body parts' extra blood loss factor (1 without a body system).</param>
+    /// <param name="OwnerSlot">The recipient inventory window's default character, or -1.</param>
+    /// <param name="AllSelectedGrids">Whether this recipient requests every selected character's inventory grid.</param>
     readonly record struct PublishFacts(int KoSlot, int LeadSlot, CharacterId Pointed, Dialogue.DialogueSystem? Talk,
-        Combat.CombatSystem? Combat, GameConstants? BodyConstants, PopulationData? Population, float ExtraBloodLoss, PlayerState Viewer, bool FullDetails, bool[] Eligible, ulong[] InventoryRevisions, ulong[] JobRevisions, PlayerId? Recipient);
+        Combat.CombatSystem? Combat, GameConstants? BodyConstants, PopulationData? Population, float ExtraBloodLoss,
+        PlayerState Viewer, bool FullDetails, bool[] Eligible, ulong[] InventoryRevisions, ulong[] JobRevisions,
+        PlayerId? Recipient, int OwnerSlot, bool AllSelectedGrids);
     /// <summary>
     /// Publishes the baseline after the complete serial world boundary.
     /// </summary>
@@ -147,6 +161,8 @@ public sealed partial class World
     void Publish(TickProfile? prof = null, bool farShared = false, bool views = true)
     {
         _publishedPointed = Player.Pointed;
+        _publishedAllGrids = Player.AllSelectedGrids;
+        _publishedShownMachines = Player.ShownMachines;
         var list = PublishCharacters(Player, prof: prof, farShared: farShared);
         var population = SystemOf<PopulationSystem>()?.Data;
         PreviousSnapshot = Snapshot;
@@ -187,12 +203,33 @@ public sealed partial class World
     }
 
     /// <summary>
+    /// The selected character with the lowest slot (as <see cref="Viewed"/> counts one selected), -1 for none: the snapshot lists the characters
+    /// by slot, and the host's inventory window shows the first selected one it finds unless a selected looter opened a window.
+    /// </summary>
+    int InventoryOwnerSlot(PlayerState viewer)
+    {
+        var table = Characters;
+        var state = table.Previous;
+        int owner = -1;
+
+        foreach (var s in viewer.Selection)
+        {
+            int k = s.Slot;
+            bool listed = (uint)k < (uint)state.Length && state[k].Alive && state[k].Generation == s.Generation;
+            if (listed && (owner < 0 || k < owner) && table.Cold(k) is { IsPlayer: true }) owner = k;
+        }
+
+        return owner;
+    }
+
+    /// <summary>
     /// The world's snapshot of the tick over the published <paramref name="list"/>: the characters and every view of the world and the panels.
     /// </summary>
     WorldSnapshot SnapshotOf(IReadOnlyList<CharacterSnapshot> list, PopulationData? population, Locks.BedSystem? beds, Combat.CombatSystem? combat)
     {
         var machineViews = _production is null ? Array.Empty<Production.MachineSnapshot>() : Machines.All
-            .Select(machine => Production.MachineSnapshot.Of(machine, _production.Items) with
+            .Select(machine => machine.View.ViewOf(machine, _production.Items,
+                shown: Players.RequiresExplicitControl || Player.ShownMachines.Contains(machine.Site)) with
             {
                 StorageRevision = MachineRevision(machine),
                 ControlRevision = MachineControlRevision(machine),
@@ -218,6 +255,8 @@ public sealed partial class World
             PlayerSquads = PublishSquads(),
             IndependentSquads = PublishIndependentSquads(),
             ModJobNames = PublishModJobNames(),
+            ModJobOffers = PublishModJobOffers(),
+            ModVisuals = ModVisuals.Capture(this),
             FactionHeads = SquadManagement.FactionHeads(this),
             CappedHeads = SquadManagement.CappedHeads(this),
             ActiveSquad = Player.Squad,
@@ -250,6 +289,8 @@ public sealed partial class World
             InspectedBuilding = beds?.DetailOf(this, Player.InspectedBuilding) ?? Fixtures.DetailOf(Player.InspectedBuilding, Player.Faction),
             InspectedRichness = _production?.RichnessOf(this, Player.InspectedBuilding),
             InspectedLevelPower = _production?.LevelPowerOf(this, Player.InspectedBuilding),
+            InspectedTownMachine = _production?.TownMachineOf(this, Player.InspectedBuilding),
+            InspectedOwnMachine = _production?.OwnTownMachineOf(this, Player.InspectedBuilding),
             InspectedTurret = combat?.TurretPanelOf(this, Player.InspectedBuilding),
             Machines = OpenContainerView() is { } container ? [.. machineViews.Where(m => m.Site != container.Site), container] : machineViews,
             MachinesVersion = Machines.Version,
@@ -315,6 +356,13 @@ public sealed partial class World
     /// </summary>
     IReadOnlyDictionary<int, string> PublishModJobNames() =>
         SystemOf<PlayerSystem>()?.Extensions?.PublishedJobNames ?? System.Collections.Frozen.FrozenDictionary<int, string>.Empty;
+
+    /// <summary>
+    /// Copies registered offers and their building lists so recipient encoding never observes a mutable mod registry.
+    /// </summary>
+    IReadOnlyList<Production.ModJobOffer> PublishModJobOffers() =>
+        SystemOf<PlayerSystem>()?.Extensions?.JobOffers.Select(offer => offer with { Buildings = offer.Buildings.ToArray() }).ToArray() ?? [];
+
 
     #endregion
 
@@ -396,7 +444,7 @@ public sealed partial class World
         s.Faction = cold?.Faction ?? -1;
         s.WeaponDrawn = cold is not null && cold.DrawnWeapon != WeaponKinds.None;
         s.CrossbowShots = cold?.CrossbowShots ?? 0;
-        s.StuckBolts = cold?.StuckBolts is { Count: > 0 } bolts ? bolts.ToArray() : [];
+        s.StuckBolts = _publishedBolts.Of(i, state[i].Generation, cold?.StuckBolts);
         s.RangedDrawn = cold is not null && cold.DrawnWeapon != WeaponKinds.None
             && cold.DrawnWeapon == HandHold.OfCategory((int)Data.Gameplay.Combat.WeaponCategory.Bow).Weapon;
         s.BackDrawn = cold?.Fighter?.WeaponIsBack ?? false;
@@ -432,9 +480,8 @@ public sealed partial class World
             ? new SkillSummary(sk[StatsEnumerated.MeleeAttack], sk[StatsEnumerated.MeleeDefence], sk[StatsEnumerated.Dodge], sk.Toughness,
                 sk.Strength, sk.Athletics)
             : null;
-        s.Inventory = (f.FullDetails && v.Eligible || selected) && cold!.Inventory is { } carried ? Items.InventoryText.Lines(carried) : [];
         s.AllSkills = detailed && cold!.Stats is { } allStats ? Array.AsReadOnly(allStats.ToEffectiveArray()) : [];
-        s.SkillXpMultipliers = detailed && cold!.Race is { } skillRace ? Array.AsReadOnly((float[])skillRace.StatMultipliers.Clone()) : [];
+        s.SkillXpMultipliers = detailed && cold!.Race is { } skillRace ? skillRace.StatMultiplierList : [];
         s.Hud = detailed && cold!.Medical is { } hudMed && cold.Race is { } hudRace && cold.Stats is { } hudStats
             ? HudOf(id, cold, hudMed, hudRace, hudStats, state[i], combat, bodyConstants, !Sight.Outdoors(i), Sight.Inside(i), population?.Db)
             : null;
@@ -449,13 +496,11 @@ public sealed partial class World
         s.BloodAmounts = cold?.Medical?.ShownBlood ?? 0UL;
         s.Knockdown = cold?.Knockdown ?? default;
 
-        // A character an inventory window shows (selected, the open loot, a pinned own one) gets its grid and closed sections.
-        bool windowed = v.Eligible && (f.FullDetails || selected || id == f.Viewer.OpenLoot ||
-            cold is { IsPlayer: true } && f.Viewer.InventoryShown.Contains(id));
+        // A character an inventory window shows (the inventory's own, the open loot, a pinned own one) gets its grid and closed sections.
+        bool windowed = GridShown(i, in v, in f);
         s.ClosedSlots = cold is null || !(detailed || windowed) ? [] : ClosedSlotsOf(cold);
         s.HealthParts = detailed && cold!.Medical is { } health && cold.Race is { } anatomy ? HealthPartsOf(health, anatomy) : [];
-        s.ItemGrid = v.Eligible && (f.FullDetails || selected || id == f.Viewer.OpenLoot || cold is { IsPlayer: true } && f.Viewer.InventoryShown.Contains(id))
-            && cold!.Inventory is { } grid
+        s.ItemGrid = windowed && cold!.Inventory is { } grid
             ? InventoryViewOf(cold, grid, population, bodyConstants, f.Viewer.Held,
                 id == f.Viewer.OpenLoot ? LootStealChance(i, f.Viewer) : null) with { Revision = f.InventoryRevisions[i] } : null;
         s.Bounties = detailed && cold!.Bounties is not null
@@ -464,7 +509,7 @@ public sealed partial class World
         s.Slave = cold is { SlaveState: >= 1 and <= 3 }
             ? new SlaveView(cold.SlaveState,
                 population is { Factions: { } factions } && (uint)cold.SlaveOwner < (uint)factions.Count ? factions[cold.SlaveOwner].Name : "",
-                _systems.OfType<Kidnap.CaptiveSystem>().FirstOrDefault()?.LooksLikeSlaveLevel(cold) ?? 0)
+                SystemOf<Kidnap.CaptiveSystem>()?.LooksLikeSlaveLevel(cold) ?? 0)
             : null;
         s.Disguise = detailed && cold is { IsPlayer: true } && (cold.DisguiseLevel > 0 || cold.RecentlyWanted > 0)
             ? DisguiseOf(cold, state[i].Position, population)
@@ -475,6 +520,27 @@ public sealed partial class World
             && (guilt.NpcClass is FundamentalType.Bandit or FundamentalType.Slave || population is { Factions: { } fl }
                 && (uint)guilt.Faction < (uint)fl.Count && fl[guilt.Faction].NotReal);
         s.Body = cold?.Medical is { } med && cold.Race is { } race ? BodyOf(cold, med, race, state[i].Task, extraBloodLoss) : null;
+    }
+
+    /// <summary>
+    /// Whether a window can show the character's inventory, so the publish builds its grid (<see cref="CharacterSnapshot.ItemGrid"/>): the open
+    /// loot's body, a pinned window's own character, and of the selection the inventory window's character: its first by slot, the selected
+    /// opener of the open loot or container window, and the lead (the agent's orders); every selected one with
+    /// <see cref="PublishFacts.AllSelectedGrids"/>.
+    /// </summary>
+    bool GridShown(int i, in PublishedCharacter v, in PublishFacts f)
+    {
+        if (!v.Eligible) return false;
+        if (f.FullDetails) return true;
+
+        var viewer = f.Viewer;
+        var id = v.Id;
+        if (id == viewer.OpenLoot || v.Cold is { IsPlayer: true } && viewer.InventoryShown.Contains(id)) return true;
+        if (!v.Selected) return false;
+
+        bool opener = !viewer.OpenLoot.IsNone && id == viewer.LootOpener
+            || viewer.OpenContainer is not null && id == viewer.ContainerOpener;
+        return f.AllSelectedGrids || i == f.OwnerSlot || i == f.LeadSlot || opener;
     }
 
     /// <summary>
@@ -543,7 +609,7 @@ public sealed partial class World
         s.JobsRevision = f.JobRevisions[i];
         s.Controller = Players.ControlOf(id)?.Player;
         s.WantsToTalk = cold is { IsPlayer: false } && f.Talk?.HasInterrupt(id, f.Recipient ?? PlayerId.Local) == true;
-        s.Jobs = cold is { Jobs.Count: > 0 } ? cold.Jobs.ToArray() : [];
+        s.Jobs = _publishedJobs.Of(i, state[i].Generation, cold?.Jobs);
         s.Scale = cold?.Animal is { } animal ? animal.Scale(cold.ShownAge) : 1;   // the size last refreshed (BodySystem.Age)
         s.TagHeight = cold is null ? CharacterSnapshot.PersonTagHeight : Combat.CombatSystem.NameTagHeight(cold);
         s.DrawDistanceScale = cold?.Race is { Gigantic: true } ? RaceData.GiganticDrawScale : 1;
@@ -589,9 +655,9 @@ public sealed partial class World
         s.InPlayerBuilding = cold is { IsPlayer: false } && cold.Faction != f.Viewer.Faction
             && (cold.Medical is { Unconscious: true } || Carrying.CarrySystem.Asleep(table, i))
             && _production?.InPlayerBuilding(this, state[i].Position, f.Viewer.Faction) == true;
-        s.BedRecoveryRate = detailed && cold is { InSomething: Locks.HeldState.Bed } ? _systems
-            .OfType<BodySystem>()
-            .FirstOrDefault()?.BedRecoveryRate(this, cold, in state[i]) : null;
+        s.BedRecoveryRate = detailed && cold is { InSomething: Locks.HeldState.Bed }
+            ? SystemOf<BodySystem>()?.BedRecoveryRate(this, cold, in state[i])
+            : null;
         s.Stealth = sneaking ? watchers.Length == 0 ? StealthExposure.Unobserved : watchers.Max(w => w.Level) : null;
         s.Light = sneaking ? Sight.PeekLight(i) : 1;
         s.Watchers = watchers;
@@ -700,7 +766,7 @@ public sealed partial class World
         bool Marked(int k) => marks is not null && marks[k] > 0;
 
         string name = data is { Factions: { } factions } && (uint)c.DisguiseFaction < (uint)factions.Count ? factions[c.DisguiseFaction].Name : "";
-        bool secure = _systems.OfType<Crime.ArrestSystem>().FirstOrDefault()?.SecureLocation(this, at) ?? false;
+        bool secure = SystemOf<Crime.ArrestSystem>()?.SecureLocation(this, at) ?? false;
         return new DisguiseView(c.DisguiseLevel, name, c.RecentlyWanted, Crime.ArrestSystem.SeenFaction(c) != c.Faction, secure,
             Marked(Crime.ArrestSystem.SameFactionMark), Marked(Crime.ArrestSystem.SlaveOwnerMark), Marked(Crime.ArrestSystem.KnowsMeMark));
     }
@@ -716,7 +782,7 @@ public sealed partial class World
         if (c.SquadId >= 0 && Squads.Find(c.SquadId) is { PlatoonId: >= 0 } squad && squad.Leader == id
             && Platoons.Find(squad.PlatoonId) is { Campaign: { } inst } platoon && inst.Leader == platoon.Id)
         {
-            return new(_systems.OfType<PopulationSystem>().FirstOrDefault()?.CampaignOf(inst.CampaignId)?.IsHostile == true
+            return new(SystemOf<PopulationSystem>()?.CampaignOf(inst.CampaignId)?.IsHostile == true
                 ? StatusKind.WarLeader
                 : StatusKind.Leader);
         }
@@ -975,7 +1041,7 @@ public sealed partial class World
         var hc = combat?.HudNumbers(this, id.Slot, cold);
         var lines = HudTips.Lines(cold, med, stats, hc, constants, inBuilding, inside, mode);
         bool combatMode = combat is not null && CharacterFacts.InCombatMode(combat, Characters, id, cold, true, true);
-        var extended = cold.Extended is { } x0 && _systems.OfType<BodySystem>().FirstOrDefault() is { } bodies
+        var extended = cold.Extended is { } x0 && SystemOf<BodySystem>() is { } bodies
             ? bodies.WithCombatMode(x0, cold, combatMode)
             : cold.Extended;
         bool stealthMode = (cold.Orders & CharacterOrders.Sneak) != 0 && !combatMode;
@@ -1143,12 +1209,12 @@ public sealed partial class World
             if (table.TryResolveNext(s, out int l)) { leadSlot = l; break; }
         // The character under the pointer: with the selected and inspected ones it gets the context menu's figures, the crowd does not (docs/simulation.md, tick order).
         var pointed = viewer.Pointed;
-        var talk = _systems.OfType<Dialogue.DialogueSystem>().FirstOrDefault();
-        var combat = _systems.OfType<Combat.CombatSystem>().FirstOrDefault();
-        var beds = _systems.OfType<Locks.BedSystem>().FirstOrDefault();
-        var bodyConstants = _systems.OfType<BodySystem>().FirstOrDefault()?.Constants;
-        var population = _systems.OfType<PopulationSystem>().FirstOrDefault()?.Data;
-        float extraBloodLoss = _systems.OfType<BodySystem>().FirstOrDefault()?.Constants.ExtraBloodLossFromBodyparts ?? 1;
+        var talk = SystemOf<Dialogue.DialogueSystem>();
+        var combat = SystemOf<Combat.CombatSystem>();
+        var beds = SystemOf<Locks.BedSystem>();
+        var bodyConstants = SystemOf<BodySystem>()?.Constants;
+        var population = SystemOf<PopulationSystem>()?.Data;
+        float extraBloodLoss = SystemOf<BodySystem>()?.Constants.ExtraBloodLossFromBodyparts ?? 1;
         var included = new bool[state.Length];
         var eligible = new bool[state.Length];
         var inventoryRevisions = new ulong[state.Length];
@@ -1164,7 +1230,7 @@ public sealed partial class World
         }
         Movement.LookTargets.Gather(this, _looks);
         var facts = new PublishFacts(koSlot, leadSlot, pointed, talk, combat, bodyConstants, population, extraBloodLoss,
-            viewer, fullDetails, eligible, inventoryRevisions, jobRevisions, recipient);
+            viewer, fullDetails, eligible, inventoryRevisions, jobRevisions, recipient, InventoryOwnerSlot(viewer), viewer.AllSelectedGrids);
         bool ring = include is null && detailEligible is null && !fullDetails;
         var buffer = ring ? Array.Find(_snapshotRing, b => b != _shownBuffer && b != _previousBuffer && b != _olderBuffer)! : new SnapshotBuffer();
         if (buffer.Slots.Length < state.Length)
@@ -1174,6 +1240,8 @@ public sealed partial class World
             Array.Resize(ref buffer.Spare, state.Length);
         }
         var slots = buffer.Slots;
+        _publishedJobs.Reserve(state.Length);
+        _publishedBolts.Reserve(state.Length);
         // A character the far cadence skipped this tick has not changed: the last publish's object stands for it again (docs/simulation.md "Far cadence").
         var kept = ring && farShared ? _shownBuffer?.Slots : null;
         ParallelFor((state.Length + PublishChunk - 1) / PublishChunk, chunk =>

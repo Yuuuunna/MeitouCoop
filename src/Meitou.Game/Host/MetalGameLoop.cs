@@ -800,6 +800,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         host.LocalSession.World.CagedAnimalFix = host.Config.FixCagedAnimals;
         host.LocalSession.World.GroundRepair = host.Config.FixGround;
         host.LocalSession.World.BagSearchFix = host.Config.FixBagSearch;
+        host.LocalSession.World.CounterTalk = host.Config.CounterTalk;
         host.LocalSession.World.TakeIntoBackpack = host.Config.TakeIntoBackpack;
         host.LocalSession.World.ActionLog = host.ActionLogs.Log;
         host.LocalSession.Simulation.SetFastSpeeds(host.Config.FastSpeed, host.Config.FastestSpeed);
@@ -1126,6 +1127,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             SpeedUnit = host.Config.SpeedUnit,
             Floaters = host.Config.Floaters,
             FeedbackButtonInPlay = host.Config.FeedbackButton,
+            XpLabel = Settings.SkillXp.Label(host.Config, host.Session.IsRemote ? host.Session.AuthorityRules : null),
         };
         host.Player = _hud;
         _hud.LoadUi(host.GameOptions.UiMode ?? host.Config.UiMode, host.Assets.Find);
@@ -1346,7 +1348,12 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
                 foreach (var combat in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>())
                     combat.AnimalMovesFix = on;
             },
+            TurretAssaultChanged = on =>
+            {
+                foreach (var combat in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Combat.CombatSystem>()) combat.TurretAssault = on;
+            },
             BagSearchChanged = on => host.LocalSession.World.BagSearchFix = on,
+            CounterTalkChanged = on => host.LocalSession.World.CounterTalk = on,
             TakeIntoBackpackChanged = on => host.LocalSession.World.TakeIntoBackpack = on,
             TutorialsChanged = on => { if (host.Saves.Tutorials is { } t) t.Enabled = on; },
             ResetTutorials = () => host.Saves.Tutorials?.Reset(),
@@ -1358,6 +1365,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
                         population.KeepWild, population.ResidentSchedule) = (host.Config.KeepRoamers, host.Config.OffscreenFights,
                         host.Config.OffscreenHealing, host.Config.CampaignAncestorsOnce, host.Config.KeepWild, host.Config.ResidentSchedule);
                     population.OffscreenOverrides = host.Config.OffscreenOverrides;
+                    population.KeepDowned = host.Config.KeepDowned;
                 }
                 foreach (var production in host.LocalSession.World.Systems.OfType<Meitou.Simulation.Production.ProductionSystem>())
                     production.UnloadedProduction = host.Config.UnloadedProduction;
@@ -1695,6 +1703,8 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             v => _worldGpu.ParticleDensity = MathF.Round(v * 20) / 20, "0.00"));
         sliders.Add(new Slider("Night grading strength (0 = game)", 0, 1, () => host.WorldOptions.Post.NightGradeStrength,
             v => host.WorldOptions.Post.NightGradeStrength = MathF.Round(v * 20) / 20, "0.00"));
+        sliders.Add(new Slider(WorldFrame.AdaptiveExposureSlider, 1, 3, () => host.WorldOptions.Post.AdaptiveExposureStrength,
+            v => host.WorldOptions.Post.AdaptiveExposureStrength = MathF.Round(v * 20) / 20, "0.00"));
         sliders.Add(new Slider("Light shafts strength", 0, 1, () => host.WorldOptions.Post.ShaftStrength,
             v => host.WorldOptions.Post.ShaftStrength = MathF.Round(v * 20) / 20, "0.00"));
         sliders.Add(new Slider("Light shafts air (0 = none)", 0, 4, () => host.WorldOptions.Post.ShaftAir,
@@ -2019,7 +2029,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
     }
 
     /// <summary>
-    /// The keys that are the host's own and not the session's: Shift+F11 steps the navmesh overlay, Ctrl+F9 the fps counter (F9 is the game's
+    /// The keys that are the host's own and not the session's: Shift+F11 steps the navmesh overlay, Shift+F9 the fps counter (F9 is the game's
     /// quickload), the interface's switch hides the interface (true: taken). The screenshot, statistics, fps and profiler bindings reach
     /// <see cref="OnTicked"/> as actions, so they can be rebound.
     /// </summary>
@@ -2030,7 +2040,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             host.DebugOverlays.ToggleNavOverlay();
             return true;
         }
-        if (key == SilkKey.F9 && Ctrl())
+        if (key == SilkKey.F9 && (_shiftDown || Ctrl()))
         {
             host.DebugMenu.FpsVisible = !host.DebugMenu.FpsVisible;
             return true;
@@ -2899,7 +2909,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             && (_tour.Active || !host.Session.Camera.IsFree && !_tourHolds))
         {
             var clearEye = host.Camera.Eye;
-            float shortfall = host.Session.Camera.EyeGroundAt(clearEye.X, clearEye.Z) +
+            float shortfall = host.Session.Camera.EyeGroundAt(clearEye.X, clearEye.Z, clearEye.Y) +
                 Meitou.Data.World.KenshiCamera.EyeClearance(host.Camera.Distance) - clearEye.Y;
             // Over a hair only.
             if (shortfall > 1e-3f) host.Camera.Target += new Vector3(0, shortfall, 0);

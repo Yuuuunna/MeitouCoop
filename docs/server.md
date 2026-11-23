@@ -53,8 +53,12 @@ changes them. Compatibility hashes `gameplay/*` values captured from the active 
 configuration output. Gameplay values use the same bounded finite ranges as their game settings; invalid values reject configuration.
 
 **Observed** (source): `Gameplay.SquadXp` and `Gameplay.OthersXp` default to 1 and accept finite values from 0 through 1000;
-`Gameplay.BagSearchFix` defaults to true. Squad XP applies to all player factions. Before compatibility is published, enabled legacy
-Player-Only XP mods are adopted once into Squad XP and their names persist in `AdoptedMods`; later starts preserve administrator changes.
+`Gameplay.SquadSkillXp` is empty (every skill follows Squad XP) or has `StatsInfo.Count` finite entries in [-0.25, 1000];
+negative entries follow Squad XP, zero stops that skill's XP, and positive entries override the shared multiplier.
+`CounterTalk`, `TurretAssault`, `KeepDowned` and `BagSearchFix` default to true. These rules are included in the compatibility digest
+and read-only client projection. Squad XP applies to every player faction. Before compatibility is published, enabled legacy
+Player-Only XP mods are adopted into Squad XP and per-skill overrides; `AdoptedMods` records the initial and per-skill adoption separately.
+Later starts preserve administrator changes.
 Covered code mods are disabled to prevent double multiplication. Both hosts use the same adoption logic without executing those DLLs.
 
 `--create-account NAME [--output FILE]` issues a random credential and writes a private connection JSON,

@@ -46,7 +46,11 @@ internal static class GameComponentSchema
         F(1061, "InventoriesClosed", (WorldSnapshot x) => x.InventoriesClosed, (x, v) => x with { InventoriesClosed = v }),
         F(1062, "ModJobNames", (WorldSnapshot x) => x.ModJobNames, (x, v) => x with { ModJobNames = v }),
         F(1063, "FactionHeads", (WorldSnapshot x) => x.FactionHeads, (x, v) => x with { FactionHeads = v }),
-        F(1064, "CappedHeads", (WorldSnapshot x) => x.CappedHeads, (x, v) => x with { CappedHeads = v }), ];
+        F(1064, "CappedHeads", (WorldSnapshot x) => x.CappedHeads, (x, v) => x with { CappedHeads = v }),
+        F(1065, "InspectedTownMachine", (WorldSnapshot x) => x.InspectedTownMachine, (x, v) => x with { InspectedTownMachine = v }),
+        F(1066, "InspectedOwnMachine", (WorldSnapshot x) => x.InspectedOwnMachine, (x, v) => x with { InspectedOwnMachine = v }),
+        F(1067, "ModJobOffers", (WorldSnapshot x) => x.ModJobOffers, (x, v) => x with { ModJobOffers = v }),
+        F(1068, "ModVisuals", (WorldSnapshot x) => x.ModVisuals, (x, v) => x with { ModVisuals = v }), ];
     /// <summary>
     /// Independently replicated character values; binary codecs retain their own uncompressed format.
     /// </summary>
@@ -68,7 +72,7 @@ internal static class GameComponentSchema
         F(2013, "RangedDrawn", (CharacterSnapshot x) => x.RangedDrawn, (x, v) => x with { RangedDrawn = v }),
         F(2014, "BackDrawn", (CharacterSnapshot x) => x.BackDrawn, (x, v) => x with { BackDrawn = v }),
         F(2015, "StuckBolts", (CharacterSnapshot x) => x.StuckBolts, (x, v) => x with { StuckBolts = v }),
-        F(2016, "Inventory", (CharacterSnapshot x) => x.Inventory, (x, v) => x with { Inventory = v }),
+        // Retired field 2016 was the removed display-only Inventory text; its ID is never reused.
         F(2017, "LimbBits", (CharacterSnapshot x) => x.LimbBits, (x, v) => x with { LimbBits = v }),
         F(2018, "BloodAmounts", (CharacterSnapshot x) => x.BloodAmounts, (x, v) => x with { BloodAmounts = v }),
         F(2019, "HeldTool", (CharacterSnapshot x) => x.HeldTool, (x, v) => x with { HeldTool = v }),

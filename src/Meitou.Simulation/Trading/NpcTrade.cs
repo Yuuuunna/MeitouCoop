@@ -58,7 +58,7 @@ public static class NpcTrade
         var table = world.Characters;
         if (table.Cold(buyer) is not { } cold) return NpcSale.NoItem;
 
-        foreach (var (stock, owner, counterFaction) in Sellers(world, building))
+        foreach (var (stock, owner, counterFaction, site) in Sellers(world, building))
         {
             int count = 0;
             foreach (var item in stock.Items)
@@ -113,6 +113,8 @@ public static class NpcTrade
             if (ownerFunds is not null) ownerFunds.TryCredit(price);
             else if (owner is not null) owner.Money += price;
 
+            if (world.TradeObservers.Active) Report(world, buyer, unit.Record, price, owner?.Id ?? -1, seller, site, toBuyer);
+
             // FUN_1409a14b0: a sale worth more than nothing floats the price over the shopper and posts Sell_Item on it (both only while the interface
             // is shown, which the host decides).
             if (price > 0) Announce(world, buyer, price);
@@ -125,6 +127,16 @@ public static class NpcTrade
     /// <summary>Compatibility entry point; ownership now resolves from every authoritative player faction.</summary>
     public static NpcSale Buy(World world, Market market, int playerFaction, int buyer, TownBuilding building, int function, ulong roll) =>
         Buy(world, market, buyer, building, function, roll);
+
+    /// <summary>
+    /// Tells the trade observers of the sale (<see cref="ITradeObserver"/>): one unit from the stock of <paramref name="site"/>, owned by
+    /// <paramref name="ownerSquad"/> (-1 none) of <paramref name="sellerFaction"/>.
+    /// </summary>
+    static void Report(World world, int buyer, string record, long price, int ownerSquad, int sellerFaction, string site, bool delivered)
+    {
+        var seller = new TradeParty(CharacterId.None, ownerSquad, sellerFaction);
+        TradeObservers.Report(world, TradeSaleKind.Shopping, record, 1, price, TradeObservers.Party(world, buyer), seller, site, delivered);
+    }
 
     /// <summary>
     /// The price floater over the shopper and its <c>Sell_Item</c> (<see cref="SoundKind.NpcBought"/>). Display only.
@@ -145,9 +157,9 @@ public static class NpcTrade
     /// <summary>
     /// The building's stock containers in its order, each with the squad that owns what it holds: the squad with a building shop living in it, else
     /// the first squad living in it (none: the money goes nowhere; the original pays the owner faction); then the shop counters the player built in
-    /// it, which pay their actual owning faction.
+    /// it, which pay their actual owning faction. Each offer carries its canonical container or counter site for trade observers.
     /// </summary>
-    static IEnumerable<(Inventory Stock, Squad? Owner, int CounterFaction)> Sellers(World world, TownBuilding building)
+    static IEnumerable<(Inventory Stock, Squad? Owner, int CounterFaction, string Site)> Sellers(World world, TownBuilding building)
     {
         Squad? resident = null, shop = null;
 
@@ -161,10 +173,10 @@ public static class NpcTrade
 
         foreach (var f in building.Fixtures)
         {
-            if (f.HoldsShopStock && world.Fixtures.Find(f.Id)?.Contents is { } box) yield return (box, shop ?? resident, -1);
+            if (f.HoldsShopStock && world.Fixtures.Find(f.Id)?.Contents is { } box) yield return (box, shop ?? resident, -1, f.Id);
         }
 
         foreach (int faction in world.PlayerFactionIndices())
-            foreach (var counter in PlayerShops.Counters(world, building, faction)) yield return (counter, null, faction);
+            foreach (var (site, counter) in PlayerShops.Counters(world, building, faction)) yield return (counter, null, faction, site);
     }
 }

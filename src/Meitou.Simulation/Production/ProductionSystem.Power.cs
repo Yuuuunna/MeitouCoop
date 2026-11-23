@@ -48,6 +48,10 @@ public sealed partial class ProductionSystem
     /// </summary>
     readonly Dictionary<(int Town, int Owner), TownPower> _townPower = [];
     /// <summary>
+    /// The outposts the town panel was last given, handed out again while unchanged (<see cref="OutpostView"/>).
+    /// </summary>
+    readonly OutpostViews _outposts = new();
+    /// <summary>
     /// The generation of each town of the level data (negative grid keys) that holds a player machine this tick: what its placed generators give
     /// (<see cref="NpcGeneration"/>). A scratch map.
     /// </summary>
@@ -124,11 +128,10 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
-    /// The player outposts with their grids' totals, for the town panel (docs/game/ui-screens.md "Town panel").
+    /// The player outposts with their grids' totals, for the town panel (docs/game/ui-screens.md "Town panel"); the same list while unchanged.
     /// </summary>
-    public IReadOnlyList<OutpostSnapshot> OutpostView(World world) => world.Buildings.Towns.Count == 0 ? []
-        : [.. world.Buildings.Towns.Select(t => new OutpostSnapshot(t.Number, t.Name, t.Position, t.Radius, t.Owner, t.Public,
-            _townPower.GetValueOrDefault(GridKey(world, t.Number, t.Owner))) { Revision = world.TownRevision(t) })];
+    public IReadOnlyList<OutpostSnapshot> OutpostView(World world) => _outposts.Of(world.Buildings.Towns,
+        t => _townPower.GetValueOrDefault(GridKey(world, t.Number, t.Owner)), world.TownRevision);
 
     /// <summary>
     /// The towns' round-robin cursor of the power frame (the static <c>DAT_14213543c</c>, advanced before each use); not saved.
@@ -147,6 +150,23 @@ public sealed partial class ProductionSystem
     /// A hash of the player towns' numbers and centres this tick; a cached <see cref="_powerTowns"/> entry is valid for one layout.
     /// </summary>
     int _townLayout;
+    /// <summary>
+    /// The town-less buildings by their grid (<see cref="TownlessGrid"/>), each list in the order of <see cref="PopulationData.Townless"/>, with the
+    /// player towns' layout and the list it was built for; null until first built (<see cref="TownlessByGrid"/>). Replaced whole, never changed.
+    /// </summary>
+    (int Layout, IReadOnlyList<TownlessBuilding> Source, Dictionary<int, List<TownlessBuilding>> ByGrid)? _townlessByGrid;
+    /// <summary>
+    /// The grids with machines this tick in ascending key (<see cref="ShareOneTown"/>). A scratch list.
+    /// </summary>
+    readonly List<(int Town, int Owner)> _framedTowns = [];
+    /// <summary>
+    /// The towns whose totals or supply <see cref="ShareOneTown"/> drops this tick. A scratch list.
+    /// </summary>
+    readonly List<(int Town, int Owner)> _goneTowns = [];
+    /// <summary>
+    /// The consumers of the frame <see cref="Share"/> runs. A scratch list.
+    /// </summary>
+    readonly List<Machine> _shareConsumers = [];
 
     /// <summary>
     /// The town whose power frame a site's machine joins (<c>FUN_140296940</c> and <c>FUN_1409f9180</c>, <b>Observed</b>): the town of its building,
@@ -339,14 +359,37 @@ public sealed partial class ProductionSystem
     List<PseudoDraw> TownlessDraws(World world, int grid)
     {
         var draws = new List<PseudoDraw>();
-        foreach (var b in world.SystemOf<PopulationSystem>()?.Data.Townless ?? [])
+        if (!TownlessByGrid(world).TryGetValue(grid, out var near)) return draws;
+
+        foreach (var b in near)
         {
-            if (b.Destroyed || TownlessGrid(world, b) != grid) continue;
+            if (b.Destroyed) continue;
 
             if (Draw(world, b.RecordId, outdoors: true) is { } draw) draws.Add(new PseudoDraw(b.Key, draw, TownlessGetsBattery(world, b)));
         }
 
         return draws;
+    }
+
+    /// <summary>
+    /// The town-less buildings by their grid (<see cref="_townlessByGrid"/>), built again when the player towns' layout or the list changes; a
+    /// grid's buildings keep the list's order, so the frame's draws come in the order a scan of the whole list gives.
+    /// </summary>
+    Dictionary<int, List<TownlessBuilding>> TownlessByGrid(World world)
+    {
+        var all = world.SystemOf<PopulationSystem>()?.Data.Townless ?? [];
+        if (_townlessByGrid is { } known && known.Layout == _townLayout && ReferenceEquals(known.Source, all)) return known.ByGrid;
+
+        var byGrid = new Dictionary<int, List<TownlessBuilding>>();
+        foreach (var b in all)
+        {
+            int grid = TownlessGrid(world, b);
+            if (!byGrid.TryGetValue(grid, out var list)) byGrid[grid] = list = [];
+            list.Add(b);
+        }
+
+        _townlessByGrid = (_townLayout, all, byGrid);
+        return byGrid;
     }
 
     /// <summary>
@@ -467,6 +510,19 @@ public sealed partial class ProductionSystem
         if (grid == NoPowerTown) return new LevelPowerView(key, demand, 0);
 
         return new LevelPowerView(key, demand, Recorded(world, key, grid, demand) ?? UnsharedGrant(world, grid, demand));
+    }
+
+    /// <summary>
+    /// The selected town generator, research bench or crafting bench, projected from its canonical machine and inventory.
+    /// No separate temporary machine is created by a view request.
+    /// </summary>
+    public MachineSnapshot? TownMachineOf(World world, string? key)
+    {
+        if (key is null || world.Buildings.Find(key) is not { LevelMachine: true, Destroyed: false } site) return null;
+        if (!world.Fixtures.CurrentTownMachine(site) || world.Machines.Find(key) is not { } machine) return null;
+        if (!machine.Data.IsGenerator && !machine.Data.IsResearch && !machine.Data.IsCrafting) return null;
+
+        return MachineSnapshot.Of(machine, Items);
     }
 
     /// <summary>
@@ -655,12 +711,17 @@ public sealed partial class ProductionSystem
     /// A level generator's switched construction fraction. Fresh/reset zones complete and switch on NPC buildings; player ownership bypasses
     /// that reset guard. Otherwise the save's whole state replaces the level state (FUN_1402a1750, FUN_140552b70; "NPC generator state").
     /// </summary>
-    float NpcGeneratorHealth(World world, TownSite town, TownBuilding b)
+    float NpcGeneratorHealth(World world, TownSite town, TownBuilding b) => Switched(NpcGeneratorState(world, town, b));
+
+    /// <summary>
+    /// A level generator's switch and construction fraction, as <see cref="NpcGeneratorHealth"/> reads them.
+    /// </summary>
+    (bool On, float Fraction) NpcGeneratorState(World world, TownSite town, TownBuilding b)
     {
         var saved = world.Fixtures.Saved?.GetValueOrDefault(b.Key);
-        if (!world.SavedZones.Contains(b.Zone) && !PlayerGeneratorOwner(world, town, b, saved)) return 1;
+        if (!world.SavedZones.Contains(b.Zone) && !PlayerGeneratorOwner(world, town, b, saved)) return (true, 1);
 
-        return SwitchedHealth(b.BuildingId, saved, b.LevelState);
+        return SwitchedState(b.BuildingId, saved, b.LevelState);
     }
 
     /// <summary>
@@ -668,18 +729,27 @@ public sealed partial class ProductionSystem
     /// (<see cref="SavedPieceState"/>; an entry is only in a zone file that loads, so the guard holds); with no entry (a fresh zone, or an interior
     /// made again from its layout) complete and switched on (<c>FUN_140562340</c>).
     /// </summary>
-    float PieceGeneratorHealth(World world, TownLayoutBuilding piece) =>
-        SavedPieceState(world, piece) is { } saved ? SwitchedHealth(piece.RecordId, saved, null) : 1;
+    float PieceGeneratorHealth(World world, TownLayoutBuilding piece) => Switched(PieceGeneratorState(world, piece));
 
     /// <summary>
-    /// The construction fraction of a building of <paramref name="record"/> by its state (the save's, else the level's), 0 when switched off: a
+    /// A layout generator's switch and construction fraction, as <see cref="PieceGeneratorHealth"/> reads them.
+    /// </summary>
+    (bool On, float Fraction) PieceGeneratorState(World world, TownLayoutBuilding piece) =>
+        SavedPieceState(world, piece) is { } saved ? SwitchedState(piece.RecordId, saved, null) : (true, 1);
+
+    /// <summary>
+    /// A switch and construction fraction as one fraction: 0 when switched off.
+    /// </summary>
+    static float Switched((bool On, float Fraction) state) => state.On ? state.Fraction : 0;
+
+    /// <summary>
+    /// Whether a building of <paramref name="record"/> is switched on and its construction fraction, by its state (the save's, else the level's): a
     /// missing <c>power on</c> is off and missing progress 0 once a state is read; no state at all is complete and on.
     /// </summary>
-    float SwitchedHealth(string record, Meitou.Data.Fcs.FcsRecord? saved, Meitou.Data.GameRecord? level)
+    (bool On, float Fraction) SwitchedState(string record, Meitou.Data.Fcs.FcsRecord? saved, Meitou.Data.GameRecord? level)
     {
         bool on = saved is not null ? saved.Bools.GetValueOrDefault("power on") : level?.GetBool("power on") ?? true;
-        if (!on) return 0;
-        if (saved is null && level is null) return 1;
+        if (saved is null && level is null) return (on, 1);
 
         if (!_npcTargets.TryGetValue(record, out var known) || known.Version != _db.Version)
         {
@@ -688,10 +758,10 @@ public sealed partial class ProductionSystem
         }
 
         float target = known.Target;
-        if (target <= 0) return 1;
+        if (target <= 0) return (on, 1);
 
         float progress = saved is not null ? saved.Floats.GetValueOrDefault("construction progress") : level!.GetFloat("construction progress");
-        return Math.Clamp(progress / target, 0, 1);
+        return (on, Math.Clamp(progress / target, 0, 1));
     }
 
     /// <summary>
@@ -750,11 +820,11 @@ public sealed partial class ProductionSystem
     void ShareOneTown(World world, float dt)
     {
         NpcGeneration(world);
-        var towns = _grids.Where(g => g.Value.Count > 0).Select(g => g.Key).Order().ToList();
-        foreach (var gone in _townPower.Keys.Where(t => !towns.Contains(t)).ToList()) _townPower.Remove(gone);
+        var towns = FramedTowns();
+        DropUnframed(_townPower);
 
         // A town whose frame has gone reads its generators again (TownHasPower), not the supply of its last frame.
-        foreach (var gone in _townSupply.Keys.Where(t => !towns.Contains(t)).ToList()) _townSupply.Remove(gone);
+        DropUnframed(_townSupply);
 
         if (towns.Count == 0) return;
 
@@ -764,6 +834,31 @@ public sealed partial class ProductionSystem
         foreach (var m in _grids[picked]) m.Power = 1;
         Share(world, picked, _grids[picked]);
         foreach (var town in towns) ChargeBatteries(world, town, _grids[town], dt);
+    }
+
+    /// <summary>
+    /// The grids that hold a machine this tick, in ascending key (<see cref="_framedTowns"/>).
+    /// </summary>
+    List<(int Town, int Owner)> FramedTowns()
+    {
+        _framedTowns.Clear();
+        foreach (var (town, grid) in _grids)
+            if (grid.Count > 0) _framedTowns.Add(town);
+
+        _framedTowns.Sort();
+        return _framedTowns;
+    }
+
+    /// <summary>
+    /// Removes the towns that have no frame this tick (not in <see cref="_framedTowns"/>) from <paramref name="byTown"/>, in its key order.
+    /// </summary>
+    void DropUnframed<T>(Dictionary<(int Town, int Owner), T> byTown)
+    {
+        _goneTowns.Clear();
+        foreach (var town in byTown.Keys)
+            if (_framedTowns.BinarySearch(town) < 0) _goneTowns.Add(town);
+
+        foreach (var town in _goneTowns) byTown.Remove(town);
     }
 
     /// <summary>
@@ -898,7 +993,8 @@ public sealed partial class ProductionSystem
     {
         bool mode = _batteryMode.GetValueOrDefault(town);
         float supply = 0, batteries = 0, demandTotal = 0;
-        var consumers = new List<Machine>();
+        var consumers = _shareConsumers;
+        consumers.Clear();
         foreach (var m in grid)
         {
             m.Granted = 0;

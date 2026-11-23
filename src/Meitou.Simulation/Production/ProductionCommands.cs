@@ -34,8 +34,9 @@ public abstract record SiteWorkCommand : OrderCommand
 }
 
 /// <summary>
-/// Gives characters (the selection when empty) the job an order of <paramref name="Type"/> on a player building becomes, at the end of their job lists (the original's Shift with an order;
-/// <see cref="PermaJobs.Add"/>).
+/// Gives characters (the selection when empty) the job an order of <paramref name="Type"/> on a player building becomes, at the end of their job
+/// lists (the original's Shift with an order; <see cref="PermaJobs.Add"/>). A job type a code mod offers on buildings is given by its offer
+/// (<see cref="ModJobOffer"/>, <see cref="PermaJobs.GiveOffered"/>).
 /// </summary>
 public sealed record AddJob(IReadOnlyList<CharacterId> Characters, Meitou.Data.Gameplay.Ai.TaskType Type, string Site) : SiteWorkCommand { public ulong RootRevision { get; init; } }
 

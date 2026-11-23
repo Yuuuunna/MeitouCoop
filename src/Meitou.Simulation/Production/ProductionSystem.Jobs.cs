@@ -22,6 +22,7 @@ using Meitou.Simulation.Construction;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Perception;
 using Meitou.Simulation.Player;
+using StorageUse = Meitou.Simulation.Items.StorageUse;
 
 namespace Meitou.Simulation.Production;
 /// <summary>
@@ -29,8 +30,8 @@ namespace Meitou.Simulation.Production;
 /// first job of a player character's list that can run (ListJobs here is the production pick's contributor), so a higher job takes over as soon as it
 /// can run and a blocked one passes to the next. Meitou runs Operating machine (87, the operator below), Operating automatic machine (152: an
 /// operator that only hauls for it), Hauling to (124: a machine's output carried to the job's storage, CharacterTask.Haul; on an automatic machine,
-/// carried inputs into it), Engineer (125: ConstructionSystem builds the site its finder picks) and Turret guard (234: manning the job's turret as an
-/// operator). Blocked uses one test for starting and for going on.
+/// carried inputs into it), Engineer (125: ConstructionSystem builds the site or repairs the door its finder picks) and Turret guard (234: manning
+/// the job's turret as an operator). Blocked uses one test for starting and for going on.
 /// </summary>
 public sealed partial class ProductionSystem
 {
@@ -40,10 +41,17 @@ public sealed partial class ProductionSystem
     /// </summary>
     public const int JobCheckTicks = 10;
     /// <summary>
-    /// Gives each player character named a job of the order's type on its site (when the site exists).
+    /// Gives each player character named a job of the order's type on its site (when the site exists); a type a code mod offers on buildings goes
+    /// by its offer (<see cref="GiveOffered"/>).
     /// </summary>
     void AddJobs(World world, AddJob add)
     {
+        if (world.SystemOf<PlayerSystem>()?.Extensions?.JobOffers.Find(o => o.Type == add.Type) is { } offer)
+        {
+            GiveOffered(world, add, offer);
+            return;
+        }
+
         bool builder = add.Type is TaskType.Build or TaskType.Repair or TaskType.JobBuilder;
         var site = Site(world, add.Site);
         int owner;
@@ -59,6 +67,7 @@ public sealed partial class ProductionSystem
             {
                 Tick = add.Tick,
                 Issuer = add.Issuer,
+                ControlGrants = add.ControlGrants,
                 SiteRevision = add.SiteRevision,
                 RootRevision = add.RootRevision,
                 FactionGrantRevision = add.FactionGrantRevision
@@ -83,6 +92,25 @@ public sealed partial class ProductionSystem
         foreach (var id in world.CommandCharacters(add, add.Characters))
             if (table.TryResolveNext(id, out int slot) && table.Cold(slot)is { } cold && (site is not null && !builder ? MayWork(world, cold, site) : world.MayUseAssets(cold, owner)) && PermaJobs.Add(cold, builder ? TaskType.Build : add.Type, builder ? new PermaJob(TaskType.Build, site?.Id ?? add.Site) : new PermaJob(add.Type, add.Site)))
                 _sweep = true;
+    }
+
+    /// <summary>
+    /// A code mod's offered job (docs/modding.md "Mod jobs"): when the site is a finished building of the player's faction and of one of the offer's
+    /// records, each living player character named that the offer is for takes the job there (<see cref="PermaJobs.GiveOffered"/>).
+    /// </summary>
+    void GiveOffered(World world, AddJob add, ModJobOffer offer)
+    {
+        if (world.Buildings.Find(add.Site) is not { Complete: true } site) return;
+        if (!offer.On(site.Record) || !MayStartWork(world, add, site)
+            || !world.MayManage(add, site.Owner, FactionPermission.ManageAssets)) return;
+
+        var table = world.Characters;
+        foreach (var id in world.CommandCharacters(add, add.Characters))
+        {
+            if (!table.TryResolveNext(id, out int slot) || table.Cold(slot) is not { } cold) continue;
+            if (cold is { IsPlayer: true, DiedTick: < 0 } && MayWork(world, cold, site) && offer.Takes(CharacterFacts.Animal(cold)))
+                PermaJobs.GiveOffered(cold, offer.Type, site.Id);
+        }
     }
 
     /// <summary>
@@ -412,12 +440,20 @@ public sealed partial class ProductionSystem
         var on = PermaJobs.ListJob(cold, (CharacterTask)table.Next[slot].Task)is { Implicit: true } running ? running.Row : TaskType.None;
         if ((options & SquadAi.Ditch) != 0)
         {
-            if (on == TaskType.DitchAllResources && cold.HaulTo is { } keep && !PlayerOrders.Holds(world, slot) && cold.Inventory is { } held && Site(world, keep)is { Complete: true } keptSite && MayWork(world, cold, keptSite) && Ensure(world, keptSite)is { } keptStore && keptStore.Data.IsStorage && keptStore.Storage is not null && Ditchable(held).Any(item => Stores(keptStore, item)))
+            // The 242 entry is rebuilt every pass (FUN_14050e5b0): the trip goes on only while no order is queued and its storage still takes
+            // something carried.
+            if (on == TaskType.DitchAllResources && cold.HaulTo is { } keep && !PlayerOrders.Holds(world, slot) && cold.Inventory is { } held
+                && Site(world, keep) is { Complete: true } keptSite && MayWork(world, cold, keptSite)
+                && Ensure(world, keptSite) is { } keptStore && keptStore.Data.IsStorage && keptStore.Storage is not null
+                && Ditchable(held).Any(item => Stores(keptStore, item)) && world.StorageAllows(cold, keep, StorageUse.Put, DitchRecord(world, held)))
                 return (TaskType.DitchAllResources, keep);
 
-            if (!PlayerOrders.Holds(world, slot) && cold.Inventory is { } inv
-                && NearestSite(world, at, float.MaxValue, (s, m) => InFinderRange(s.Position, at) && TakesDitched(m, inv), cold.Faction) is { } store)
+            bool ditching = !PlayerOrders.Holds(world, slot) && cold.Inventory is { } carried && Ditchable(carried).Any();
+            if (ditching && NearestSite(world, at, float.MaxValue, IsStore, Ditches, cold.Faction) is { } store)
                 return (TaskType.DitchAllResources, store);
+
+            bool Ditches(BuildSite s, Machine m) => InFinderRange(s.Position, at) && TakesDitched(m, cold.Inventory!)
+                && world.StorageAllows(cold, s.Id, StorageUse.Put, DitchRecord(world, cold.Inventory!));
         }
 
         // Sleep and Sit not while holding position (FUN_1402b2b90), carrying someone (+0x348) or selected by the player (FUN_1407f4d20, the
@@ -435,8 +471,8 @@ public sealed partial class ProductionSystem
         {
             if (on == TaskType.SitAround && cold.OperateSite is { } seat && Site(world, seat)is { } kept && Gap(kept.Position, at) <= SeatRange)
                 return (TaskType.SitAround, seat);
-            if (NearestSite(world, at, SeatRange, (s, m) => IsSeat(m) && Free(world, cold, s, m), cold.Faction)is { } free)
-                return (TaskType.SitAround, free);
+
+            if (NearestSite(world, at, SeatRange, IsSeat, (s, m) => Free(world, cold, s, m), cold.Faction) is { } free) return (TaskType.SitAround, free);
         }
 
         return null;
@@ -481,6 +517,13 @@ public sealed partial class ProductionSystem
     /// BF_THRONE.
     /// </summary>
     const int ThroneFunction = 24;
+
+    /// <summary>
+    /// Whether machine <paramref name="m"/> takes the character as an operator (<c>FUN_1400f7c90</c>, <b>Verified</b>): it operates it already, or
+    /// fewer than its <c>max operators</c> do.
+    /// </summary>
+    internal static bool TakesOperator(World world, CharacterCold cold, Machine m) =>
+        cold.OperateSite == m.Site || OperatorsOf(world, m.Site) < m.Data.MaxOperators;
 
     /// <summary>
     /// Nobody else lies or sits on it.
@@ -632,11 +675,11 @@ public sealed partial class ProductionSystem
         if (CharacterFacts.GettingUp(cold, world.Tick)) return false;
         var at = world.Characters.Next[slot].Position;
 
-        // The engineer job ignores its target: its finder picks any site (the original's row 125 finder, docs/game/buildings-production.md "Builders
-        // and dismantle"); a pick out of range fails the job, and so does a character with no working arm (row 2's state 38).
+        // The engineer job ignores its target: its finder picks any site or door (the original's row 125 finder, docs/game/buildings-production.md
+        // "Builders and dismantle"); a pick out of range fails the job, and so does a character with no working arm (row 2's state 38).
         if (job.Type == TaskType.JobBuilder)
         {
-            return ConstructionSystem.HasWorkingArm(cold) && Construction?.EngineerSite(world, slot) is { } pick
+            return ConstructionSystem.HasWorkingArm(cold) && Construction?.EngineerWork(world, slot) is { } pick
                 && Vector3.DistanceSquared(at, pick.Position) < JobRangeSq;
         }
 
@@ -748,7 +791,7 @@ public sealed partial class ProductionSystem
         {
             if (input.Rate <= 0 || input.Level + input.Count > 0) continue;
             if (cold.Inventory is { } inv && Carried(inv, input.Item).Any()) continue;
-            if (Settings.AutoHaul && NearestSource(world, site, input.Item, cold) is not null) continue;
+            if (Settings.AutoHaul && NearestSource(world, site, input.Item, cold, operating: cold) is not null) continue;
             return false;
         }
 
@@ -768,12 +811,12 @@ public sealed partial class ProductionSystem
         {
             if (input.Rate <= 0) continue;
             if (input.Count < input.Recipe.Capacity && Carried(inv, input.Item).Any()) return true;
-            if (fetch && input.Count == 0 && NearestSource(world, site, input.Item, cold) is not null) return true;
+            if (fetch && input.Count == 0 && NearestSource(world, site, input.Item, cold, operating: cold) is not null) return true;
         }
 
         if (!fetch || m.Output is not { } output || _items.Create(output.Recipe.Item, 1) is not { } one) return false;
         if (!output.Full && !Carried(inv, one.Record).Any()) return false;
-        return NearestStorage(world, site, cold, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null;
+        return NearestStorage(world, site, cold, one.Record, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null;
     }
 
     /// <summary>
@@ -781,7 +824,7 @@ public sealed partial class ProductionSystem
     /// </summary>
     bool Room(World world, BuildSite site, Machine m, CharacterCold cold) =>
         m.Output is { } o && (!o.Full || Settings.AutoHaul && _items.Create(o.Recipe.Item, 1) is { } one
-            && NearestStorage(world, site, cold, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null);
+            && NearestStorage(world, site, cold, one.Record, s => s.Data.Accepts(one.Record, one.Type) && Fits(s.Storage!, one)) is not null);
 
     /// <summary>
     /// A carried item a "Hauling to" job takes to its storage: a loose stack of something a player machine makes or crafts (not the character's own
@@ -796,6 +839,22 @@ public sealed partial class ProductionSystem
     internal static bool Stores(Machine store, Items.ItemInstance item) =>
         item.Section is "main" or "backpack_content" && !item.LockedOn && item.Contents is null && store.Data.Accepts(item.Record, item.Type)
             && Fits(store.Storage!, item);
+
+    /// <summary>
+    /// The record the storage filters are asked about for a ditch trip: the one every ditchable item shares, else null; none without a filter.
+    /// </summary>
+    static string? DitchRecord(World world, Items.Inventory inv) =>
+        world.StorageFilters.Active ? Meitou.Simulation.Items.StorageFilters.OneRecord(Ditchable(inv)) : null;
+
+    /// <summary>
+    /// A storage machine with its grid (what <see cref="TakesDitched"/> asks first).
+    /// </summary>
+    static bool IsStore(Machine m) => m.Data.IsStorage && m.Storage is not null;
+
+    /// <summary>
+    /// A machine that is not a storage.
+    /// </summary>
+    static bool IsMaker(Machine m) => !m.Data.IsStorage;
 
     /// <summary>
     /// A storage machine that takes something 242 Ditch all resources carries off from <paramref name="inv"/>.
@@ -865,7 +924,7 @@ public sealed partial class ProductionSystem
         if (job.Type == TaskType.JobBuilder)
         {
             End(world, slot);
-            Construction!.StartBuilding(world, slot, Construction.EngineerSite(world, slot)!, k);
+            Construction!.StartBuilding(world, slot, Construction.EngineerWork(world, slot)!.Value, k);
             return;
         }
 

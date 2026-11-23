@@ -214,7 +214,8 @@ one's); that its Medic job then treats it where it lies is **Observed** (#870, t
   tick by the character's senses' counts (`BodySystem.Senses`, [senses](perception.md#senses); the character looks while playing dead or about to wake, faded counts would always read safe); the waking window is Act's longest step, so a far character is asked too. A vital part or
   the blood ends a knockout on the tick it heals, which no window foresees: one whose senses faded (`SenseBlock.Faded`, not carried
   or a slave) is held down, unconscious, until its next look (`MedicalContext.GetUpUnasked`, engine choice), then asked; a player
-  order standing it up grants the toughness (`BodySystem.GotUpByOrder`); animals never play dead. Rechecked every 15 ticks
+  order standing it up grants the toughness (`BodySystem.GotUpByOrder`); animals never play dead, nor does one in a bed or a cage
+  (posture 3 is chosen only in the WHOLE branch, which never runs there, above; one playing dead when put in gets up; #1159). Rechecked every 15 ticks
   (engine choice). `MedicalState.StandUp` ends it. Health header: `HudText.HealthWord`. The medic gates read it as awake
   (`FirstAidSystem.Awake`), and `BodySystem` keeps its treatment of itself.
 
@@ -386,7 +387,7 @@ Driver `FUN_1405b8180` (AnimationClass), update `FUN_1407d3c00`:
 Freeze = every body put to sleep and updates skipped (`FUN_1407d1f70`), WHOLE only:
 - after 2 s of ragdoll, within the next 5 s when ≥ 60% of bodies sleep; after 5 s a downward ray
   from 20 above the node against groups 2, 9–12, 15–22 (mask 0x7f9e04) decides (`FUN_1407d2440`);
-- at once when the terrain tile under it is not loaded (`FUN_1405b8180`). `FUN_1405d2c30` drains the character's animation request queue and then calls `FUN_1405b8180` (**Verified**; the earlier note that this is the AI task manager was wrong). Meitou: a whole ragdoll whose root is outside `World.ActiveZones` freezes at once (`RagdollSystem`).
+- at once when the terrain tile under it is not loaded (`FUN_1405b8180`). `FUN_1405d2c30` drains the character's animation request queue and then calls `FUN_1405b8180` (**Verified**; the earlier note that this is the AI task manager was wrong). Meitou: a new whole ragdoll waits until its zone is in `World.ActiveZones`, one already falling freezes if its zone leaves `ActiveZones` and thaws when that zone loads again, and a saved frozen ragdoll under `FreezeEarliest` thaws on load to finish settling (`RagdollSystem`).
 
 The frozen flag clears when a body wakes (`FUN_1407d2050`). `FUN_1407d4270` (reset timers, wake all
 with 0.4) runs when bone flags are applied and when a frozen ragdoll is carried. A root

@@ -250,6 +250,11 @@ checking call keeps the target it was given (`FUN_140678f30` param 3) and `FUN_1
 shows from the next speaker resolution, walk or click (`FUN_140683c00` re-reads the handle). Callers: the `target carrying character`, `target has item (type)` and
 `target race` tests above, and two conditions in `FUN_140676950` (IS_FEMALE's branch and HAS_ILLEGAL_ITEM's). Meitou: `SetTarget` writes `Conversation.Player` when the
 check's `me` is the conversation's NPC (an interjector candidate's own state is not the conversation's); `Pick` tests the target it started with.
+With the dialogue window up, the same function repaints the window's player side to the new target: portrait, name and the window's player character
+(`FUN_140722ef0(window, member, 1)`, **Verified**; not the money label). A [player conversation](#player-conversation)'s start undoes a search made
+during it; a search in a line reached by a reply click keeps its move (`FUN_140683c00` writes nothing back), and from there the window, the replies
+and Trade go to the member found (**Observed**, 1.0.68: a pack
+animal carrying the searched item took the window and the trade one reply deep, whether the searching line passed or failed).
 
 ### Speakers
 
@@ -276,7 +281,15 @@ NPC answers an event's lines like any other; the rule is also in [Arrival banter
 
 `FUN_140684320`:
 - Dropped unless the player character is within 9216 units of the camera node (inferred as the camera).
-- Plays Wwise `Initiate_Conversation`. Chooses the root and its best child, says it.
+- Plays Wwise `Initiate_Conversation` and says the opening line. For a Talk the line is picked before it is called (`FUN_140684990` walks the
+  event's roots with `FUN_14067a0c0`, which descends into a passing root's children, and hands it the line); a pending interrupt root is handed
+  whole and its children are picked inside (**Verified**).
+- **The target during the start** (**Verified**, `FUN_140684320`): it sets the talker as the target, picks a pending interrupt's line, says the
+  line (tokens, effects, then the replies, `FUN_1406839a0`), checks the replies (`FUN_140679b00`), asks for the window, and **writes the talker
+  back as the target at its end**. So a [retargeting](#retargeting) search during a Talk's pick changes nothing; one while the opening line's
+  replies are checked, or in an interrupt's pick, lasts until the write-back. **Observed** (1.0.68): the window, the replies and Trade stay with
+  the talker when the opening line's search finds a pack animal or another person carrying the item. Meitou: `Start` sets
+  `Conversation.Player` to the talker after the pick (without a pending interrupt) and again after `Say` / `Offer` unless the conversation ended.
 - Opens the DialogueWindow when the said line has passing children; **the window pauses the game** (clock speed 0, the previous speed
   restored on close, `FUN_140787fb0`).
 - **What holds the two** (**Verified**, `FUN_140684320`, `FUN_1406746a0`, `FUN_140788100`, `FUN_140674830`): the pause alone; the window's open calls the pause
@@ -294,6 +307,15 @@ NPC answers an event's lines like any other; the rule is also in [Arrival banter
   radius +0x364 x a scale) + 7 x 3 (7 x 2 when the target is a ragdoll), that reach **doubled when the talker is not moving**, and
   |dy| < 10 (< 35 on the same floor); else within 7 x 1.6 = 11.2 on the same floor or |dy| < 35. Meitou (`DialogueSystem.InTalkRange`):
   the target's scaled radius (`CombatSteering.Radius`: footprint x body scale) + 21, doubled once stopped, |dy| < 35; also for an NPC walking up to talk (task 102, engine choice).
+- **Counter reach** (Meitou only, Gameplay setting "Talk across shop counters", `World.CounterTalk`, on): a target standing (not walking) whose AI
+  goal is row 20 (standing at a shopkeeper node) is reached with 31 instead of 21 while walking (stopped reach stays 21 x 2 = 42), so the customer
+  talks and trades from the counter's front. **Observed** (measured) from the base game's `interiors.level` layouts (gamedata.base, Newwworld,
+  rebirth) and the counters' PhysX
+  boxes: 107 distinct shopkeeper nodes within the length of a `Shop Counter` (box half extents 15.8 long x 5.74 deep, centred) stand a median
+  12.4 behind its centre line (75% within 15.3, 90% within 20.0). A walker of footprint 4 against the counter's front then needs a reach beyond
+  the target's radius of median 18.1 (75%: 21.0, 90%: 25.7); one that passes only the front corner while rounding the counter's end median 22.2
+  (75%: 26.0, 90%: 28.9). 31 covers 99% of the nodes from the front and 94% from the corner (21: 75% and 41%). **Observed** in play:
+  26 stopped about two paces short of a typical counter.
 - **Order 12** (**Verified**, `Task_PlayerTalkto` slots 1 and 2, `FUN_14034be70`, `FUN_14034bfc0`): the start stops the talker's mover and, when the target handle resolves,
   fires event 1 at the target's dialogue with the talker (`FUN_140684990`); the update then empties the talker's order queue and second list (`FUN_1405074a0`) and sets
   the task-ended flag `+0x26c`; with a null target handle it sets `+0x26d` instead. It is a deque entry like any order and is saved with the queue
@@ -341,12 +363,13 @@ nothing; an animal looker without event-3 lines, nothing; a target without a pla
 update flag: within the camera's range and frustum tests, always set for the player's faction) reacts only to a target in view or with the player
 (`FUN_140856bc0`: of the player's faction, or under an AI contract of a character of it); a down target (slot 6), nothing; an animal, event 27
 (I_SEE_ANIMAL_SQUAD) whether seen now or not. The rest needs Dialogue `+0x28` (below) and the entry seen or heard at the last look (`+0x38` /
-`+0x39`, `FUN_140855710`). **Friend** (slot 126 regards the target friendly): 67 only while the looker's platoon is in no campaign
+`+0x39`, `FUN_140855710`). **Friend** (slot 126 regards the target friendly, its disguise read: flag 1, so a working uniform of the looker's side lands here,
+**Verified**, `FUN_140859680` passes 1; Meitou `SightSystem`): 67 only while the looker's platoon is in no campaign
 (`FUN_1409c4540`: its faction's war manager holds it) and the target is no slave (state 1), of the player's faction and allied (`FUN_1406b2630`;
 the same faction counts). **Others**: only a looker in slave state 0, not an escaped prisoner (status `+0xe8`) and without a pending crime
 (`+0x148`); first the crime events, 45 for an escaped prisoner and, at a target not regarded as an enemy (slot 125), 36 / 40 for escaping slaves
 ([escaping slave spotted](ai-tasks.md#slave-work-shout-and-capture)), 17 and 9. Then, while neither side is in combat mode and the target has no
-pending crime, unless the looker's squad loves it (`FUN_140599590`) or regards it friendly with the disguise read (slot 126, 0): 34
+pending crime, unless the looker's squad loves it (`FUN_140599590`) or regards it friendly by its real faction (slot 126 with 0, disguise unread): 34
 I_SEE_UNIFORM_IMPOSTER when the target's disguise level (status `+0x100`, [disguise](perception.md#disguise)) is above 0.25 for a target wearing a
 uniform piece of the looker's faction outside the shirt and boots slots (Character vfunc `0x408`), else above 0.5 when its uniform's faction
 (`+0x108`) is allied to the looker's, else never (99), and the looker has a line for it and senses no enemy (before the line, `FUN_140852e10`
@@ -435,7 +458,7 @@ the event was delivered in the speaker's current town (the per-event map the con
 **Verified** (`PlayerInterface::triggerAreaArrivalDialogue` `FUN_1407ffe40`, called when the biome banner hides, [ui-screens](ui-screens.md)): the active squad needs 2 members;
 candidates are members not unconscious, not carried, not in a bed or prison, not animals, not in combat mode, on screen and, for a BIOME_GROUP, not in a town. A member
 sensing an enemy (`numEnemies` > 0) stops it, tested only for members that are up, free, not animals and not in melee combat mode (`FUN_1407ffe40` :100-117; the in-town and on-screen filters come after it, so an in-town member still aborts). With 2 or more candidates every candidate x every `arrival dialog` DIALOGUE is scored (`Dialogue::scoreCustomDialog`) and the best
-runs (`runCustomDialog`). A `dumb` speaker (CHARACTER record flag, `FUN_1405e89c0`; Agnu and Ray in the base data) scores only when the DIALOGUE's `is character`
+runs (`runCustomDialog`). Scoring a DIALOGUE first runs the [line check](#line-check) on the DIALOGUE itself, so its `repetition limit` (the root is stamped used with each said line) and `locked` apply, then chooses its line (`FUN_14067a0c0`); a failing DIALOGUE scores -1 (**Verified**, `FUN_14067e060` disassembly: `FUN_140678f30` on the node before `FUN_14067a0c0`). Meitou: `StartBubbles(checkRoot)`; without it a once-only banter such as "Biome entries Longen world state" repeated every retry (#1121). A `dumb` speaker (CHARACTER record flag, `FUN_1405e89c0`; Agnu and Ray in the base data) scores only when the DIALOGUE's `is character`
 lists it, an empty list failing; any other speaker needs the list only when it is non-empty (**Verified**, `FUN_14067e060`, `FUN_140684d70`). Meitou: `DialogueSystem.ListsSpeaker` for interjections and the arrival banter; the line check tests only a non-empty list. Meitou (`AreaArrivalDialogue.Arrive`): the first dialogue, speaker
 (with that rule, `MaySpeak`) and partner in squad order with a line win; "on screen" is the camera view test (`MedicalClock.OnScreen`), so a member
 travelling alone far from its squad gets no banter (#430: without it the mate was out of sight and the speaker seemed to talk to itself).
@@ -509,8 +532,8 @@ me, 5 captor, 6 friendly, 7 defeated my squad, 8 I beat his squad, 9 killed my f
   failed kidnap ([carry-loot](carry-loot.md#kidnapping)) and the alarm investigators ([economy](economy.md#town-alarms)).
 - **Readers**: DC 18 (`FUN_140673290`: hours since the time, **9999.99** when never noted), DC 20 (an entry exists), DC 23, DC 52
   (long & 0xc), DC 53 (long & 0x2b0), "regards as friendly" (`FUN_1407923d0`, Character slot 126: same faction; not with TEMP ENEMY;
-  yes with TEMP ALLY or love; else faction ally) and "regards as enemy" (`FUN_14079c950`, slot 125): TEMP ENEMY makes, and TEMP ALLY
-  unmakes, an enemy across faction relations; `FUN_140599390` (a grudge: long & 0x7b2 or short & 0xb6).
+  yes with TEMP ALLY or love; else faction ally, with its flag set the faction a working disguise gives, `FUN_1407c0520`) and "regards as
+  enemy" (`FUN_14079c950`, slot 125): TEMP ENEMY makes, and TEMP ALLY unmakes, an enemy across faction relations; `FUN_140599390` (a grudge: long & 0x7b2 or short & 0xb6).
 - **"Regards as enemy" in order** (`FUN_14079c950(A, B)`, **Observed**): the same faction: no. Otherwise: A's squad holds TEMP ENEMY on B, or A's
   faction is the player's and B's squad holds TEMP ENEMY on A: yes; A's squad holds TEMP ALLY on B: no; else the faction relation test (hostile
   A -> B plus extra gates for disguise, coexistence and a flag at faction `+0x1d0`).

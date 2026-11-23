@@ -475,10 +475,12 @@ public sealed class ZoneNavMesh
     /// </summary>
     bool Covers(PointIndex ix, int p, float x, float z) => Kept[p] && x >= ix.Min[p].X - 1e-3f && x <= ix.Max[p].X + 1e-3f && z >= ix.Min[p].Y - 1e-3f && z <= ix.Max[p].Y + 1e-3f && Contains(p, x, z);
     /// <summary>
-    /// The kept polygon nearest to (x, y, z) in XZ distance (ties and containing polygons by height), within <paramref name = "maxDistance"/>, not one
-    /// <paramref name = "skip"/> rules out; −1 when none.
+    /// The kept polygon nearest to (x, y, z) in XZ distance (ties and containing polygons by height), within <paramref name="maxDistance"/>, not one
+    /// <paramref name="skip"/> rules out nor one whose height there is more than <paramref name="heightSlack"/> from <paramref name="y"/>; −1 when
+    /// none.
     /// </summary>
-    public int Nearest(float x, float y, float z, float maxDistance, out float distance, Func<int, bool>? skip = null)
+    public int Nearest(float x, float y, float z, float maxDistance, out float distance, Func<int, bool>? skip = null,
+        float heightSlack = float.PositiveInfinity)
     {
         var ix = _index.Value;
         int best = -1;
@@ -498,6 +500,7 @@ public sealed class ZoneNavMesh
                     if (d > maxDistance)
                         continue;
                     float py = HeightAt(p, Math.Clamp(x, ix.Min[p].X, ix.Max[p].X), Math.Clamp(z, ix.Min[p].Y, ix.Max[p].Y));
+                    if (Math.Abs(py - y) > heightSlack) continue;
                     // XZ distance first, then how far the surface is from the wanted height.
                     float score = d * 4 + Math.Abs(py - y);
                     if (score < bestScore)

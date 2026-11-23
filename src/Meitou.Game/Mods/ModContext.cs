@@ -42,7 +42,15 @@ public sealed class ModContext
     /// A remote client's local presentation sink; it never submits a sound to the shared authority.
     /// </summary>
     readonly Action<SoundEvent>? _postSound;
-    internal ModContext(LoadedMod mod, ModRegistry registry, GameDatabase data, PopulationData population, Func<World?> world, IReadOnlyDictionary<string, string>? savedSettings = null, Action<SimCommand>? enqueue = null, Func<long>? tick = null, Func<PopulationData>? currentPopulation = null, Action<SoundEvent>? postSound = null)
+    /// <summary>
+    /// A dedicated authority publishes visual requests to its recipients; client interface effects remain local.
+    /// </summary>
+    readonly bool _sharedVisuals;
+    /// <summary>
+    /// The authority's configured particle library resolves EFFECT records and particle system names without a renderer.
+    /// </summary>
+    readonly Func<string, string?>? _resolveEffect;
+    internal ModContext(LoadedMod mod, ModRegistry registry, GameDatabase data, PopulationData population, Func<World?> world, IReadOnlyDictionary<string, string>? savedSettings = null, Action<SimCommand>? enqueue = null, Func<long>? tick = null, Func<PopulationData>? currentPopulation = null, Action<SoundEvent>? postSound = null, bool sharedVisuals = false, Func<string, string?>? resolveEffect = null)
     {
         Mod = mod;
         this._registry = registry;
@@ -54,6 +62,8 @@ public sealed class ModContext
         _initialPopulation = population;
         this._currentPopulation = currentPopulation;
         _postSound = postSound;
+        _sharedVisuals = sharedVisuals;
+        _resolveEffect = resolveEffect;
         RngPurpose = (RngPurpose)(uint)(Rng.StableHash(mod.Manifest.Id) | 0x8000_0000UL);
     }
 
@@ -428,6 +438,41 @@ public sealed class ModContext
     }
 
     /// <summary>
+    /// An offer of one of the mod's job types on the player's buildings (docs/modding.md "Mod jobs"): the right-click menu of a finished building
+    /// of the player's faction whose record the offer names shows its caption to a selection holding a character it is for, and choosing it gives
+    /// each such character the job on that building, in the place of the one of that type it held. After the type's <see cref="AddJobType"/>; one
+    /// offer per type. Refused: what <see cref="Simulation.Production.ModJobOffer.Refusal"/> names, a caption that is the label of one of the
+    /// game's own verbs, and a building that is no BUILDING of the loaded data.
+    /// </summary>
+    public void AddJobOffer(Simulation.Production.ModJobOffer offer)
+    {
+        CheckOpen();
+        ArgumentNullException.ThrowIfNull(offer);
+        if (!Pending.JobTypes.ContainsKey(offer.Type))
+            throw new InvalidOperationException($"Job type {offer.Type} is not one mod '{Id}' has claimed (AddJobType comes first).");
+        if (Pending.JobOffers.Any(o => o.Type == offer.Type))
+            throw new InvalidOperationException($"Job type {offer.Type} is offered twice by mod '{Id}'.");
+        if (_registry.Simulation.JobOffers.Count + Pending.JobOffers.Count >= SimulationExtensions.MaximumJobTypes)
+            throw new InvalidOperationException("Too many mod job offers.");
+        ThrowIfRefused(offer);
+
+        Pending.JobOffers.Add(offer with { Buildings = [.. offer.Buildings.Distinct(StringComparer.Ordinal)] });
+    }
+
+    /// <summary>
+    /// Throws when the mod's job offer cannot be registered: its own refusal, a caption the game's verbs have, or a building the data lacks.
+    /// </summary>
+    void ThrowIfRefused(Simulation.Production.ModJobOffer offer)
+    {
+        if (offer.Refusal() is { } refusal) throw new ArgumentException(refusal, nameof(offer));
+        if (ContextVerbNames.Ordered.ContainsKey(offer.Caption))
+            throw new ArgumentException($"'{offer.Caption}' is the label of one of the game's own verbs.", nameof(offer));
+
+        string? missing = offer.Buildings.FirstOrDefault(b => Data.Find(b) is not { Type: global::Meitou.Data.Fcs.FcsRecordType.Building });
+        if (missing is not null) throw new ArgumentException($"'{missing}' is not a BUILDING of the loaded data.", nameof(offer));
+    }
+
+    /// <summary>
     /// A goal type of the mod's own (docs/modding.md "Chooser goals and jobs"): a task type number (<see cref="SimulationExtensions.FirstModCode"/>
     /// and up, so never a game task) that AI_TASK records of a data mod name in AI packages and goal lists; characters whose lists hold it weigh it in
     /// the AI's chooser by the desire of the goal one of the mod's systems registers (<see cref="Meitou.Simulation.Ai.IChooserOwner"/>), and the
@@ -470,6 +515,93 @@ public sealed class ModContext
         ArgumentNullException.ThrowIfNull(view);
         Pending.HitFeeds.Add(new ModHitFeed(Id, view));
     }
+
+    /// <summary>
+    /// Plays a display-only effect on <paramref name="anchor"/> (docs/modding.md "Visual effects"): a world point, a character's bone or held
+    /// weapon, or a building, the system's origin at the anchor, its axes turned to the anchor's frame and its emitters scaled by its stretch,
+    /// following it while it emits; while the anchor cannot be located (not drawn, weapon sheathed, building gone) it pauses, until its lifetime
+    /// ends. <paramref name="effect"/> is an EFFECT record's string id or a particle system name, <paramref name="seconds"/> how long it emits (0
+    /// to <see cref="ModEffects.MaxSeconds"/>), <paramref name="tint"/> the particles' colour (rgb, 1 the full channel, up to
+    /// <see cref="ModEffects.MaxTint"/>; null: their texture's). Each call plays a new one (<see cref="KeepEffect"/> renews one). On the host's
+    /// thread, from a host-side callback such as a combat hit feed, never a tick system; started at the next frame. False when rejected (logged
+    /// once per mod and problem). The dedicated authority accepts these callbacks at serialized world boundaries and publishes the request to
+    /// interested clients; remote interface mods play only on their own client.
+    /// </summary>
+    public bool PlayEffect(string effect, EffectAnchor anchor, float seconds = 1, System.Numerics.Vector3? tint = null) =>
+        AskEffect(effect, anchor, seconds, tint, kept: false);
+
+    /// <summary>
+    /// Plays a display-only effect at a world point: <see cref="PlayEffect(string, EffectAnchor, float, System.Numerics.Vector3?)"/> on
+    /// <see cref="EffectAnchor.At"/>.
+    /// </summary>
+    public bool PlayEffect(string effect, System.Numerics.Vector3 at, float seconds = 1, System.Numerics.Vector3? tint = null) =>
+        PlayEffect(effect, EffectAnchor.At(at), seconds, tint);
+
+    /// <summary>
+    /// Plays a display-only effect on a character's <paramref name="bone"/> (null: the chest, <c>Bip01 Spine2</c>):
+    /// <see cref="PlayEffect(string, EffectAnchor, float, System.Numerics.Vector3?)"/> on <see cref="EffectAnchor.Bone"/>.
+    /// </summary>
+    public bool PlayEffect(string effect, CharacterId on, string? bone = null, float seconds = 1, System.Numerics.Vector3? tint = null) =>
+        PlayEffect(effect, EffectAnchor.Bone(on, bone ?? EffectAnchor.ChestBone), seconds, tint);
+
+    /// <summary>
+    /// Plays <paramref name="effect"/> on <paramref name="anchor"/> as <see cref="PlayEffect(string, EffectAnchor, float,
+    /// System.Numerics.Vector3?)"/>, but as this mod's one for that effect and anchor: called again before it ends it is renewed to
+    /// <paramref name="seconds"/> from then rather than restarted (another tint restarts it), so a mod keeps an aura up by calling it within
+    /// <see cref="ModEffects.MaxSeconds"/>.
+    /// </summary>
+    public bool KeepEffect(string effect, EffectAnchor anchor, float seconds, System.Numerics.Vector3? tint = null) =>
+        AskEffect(effect, anchor, seconds, tint, kept: true);
+
+    /// <summary>
+    /// Shared authority requests are validated and retained by the world; graphical host callbacks use their local presentation queue.
+    /// </summary>
+    bool AskEffect(string effect, in EffectAnchor anchor, float seconds, System.Numerics.Vector3? tint, bool kept)
+    {
+        if (!_sharedVisuals)
+            return kept ? _registry.Effects.Keep(Id, effect, anchor, tint, seconds) : _registry.Effects.Play(Id, effect, anchor, tint, seconds);
+        if (_world() is not { } world || string.IsNullOrWhiteSpace(effect)) return false;
+        if (_resolveEffect?.Invoke(effect) is not { } system) return false;
+
+        return world.ModVisuals.Play(world, Id, effect, system, anchor, tint, seconds, kept);
+    }
+
+    /// <summary>
+    /// Ends this mod's kept <paramref name="effect"/> on <paramref name="anchor"/> (<see cref="KeepEffect"/>); its particles live out. False when
+    /// it keeps none there.
+    /// </summary>
+    public bool StopEffect(string effect, EffectAnchor anchor) => _sharedVisuals
+        ? _world() is { } world && world.ModVisuals.StopEffect(world, Id, effect, anchor)
+        : _registry.Effects.Stop(Id, effect, anchor);
+
+    /// <summary>
+    /// Makes <paramref name="target"/> give off light of its own (docs/modding.md "Glow"), display only: a whole character, the blade it holds
+    /// drawn, or its parts in one slot. <paramref name="colour"/> is rgb (1 the full channel, up to <see cref="ModGlows.MaxColour"/>),
+    /// <paramref name="seconds"/> its lifetime (0 to <see cref="ModGlows.MaxSeconds"/>, on the game clock), <paramref name="strength"/> 0 to
+    /// <see cref="ModGlows.MaxStrength"/>. One glow a target: it replaces the one before, fading from where that stood, so calling it again
+    /// before it ends keeps it up with no restart. Particles are separate (<see cref="KeepEffect"/>). On the host's thread, as
+    /// <see cref="PlayEffect(string, EffectAnchor, float, System.Numerics.Vector3?)"/>. False when rejected (logged once per mod and problem).
+    /// </summary>
+    public bool Glow(GlowTarget target, System.Numerics.Vector3 colour, float seconds, float strength = 1) =>
+        _sharedVisuals
+            ? _world() is { } world && world.ModVisuals.Glow(world, Id, target, colour, seconds, strength)
+            : _registry.Glows.Start(Id, target, colour, seconds, strength);
+
+    /// <summary>
+    /// Fades out early the glow this mod set on <paramref name="target"/>; false when it set none there.
+    /// </summary>
+    public bool StopGlow(GlowTarget target) => _sharedVisuals
+        ? _world() is { } world && world.ModVisuals.StopGlow(world, Id, target)
+        : _registry.Glows.Stop(Id, target);
+
+    /// <summary>
+    /// Whether <paramref name="effect"/> (an EFFECT record's string id or a particle system name) names a particle system the game has now, so a
+    /// mod can choose another before asking for it. The graphical host returns false before particles load, while they are off, or off its thread;
+    /// the dedicated authority checks its configured particle library without a renderer.
+    /// </summary>
+    public bool HasEffect(string effect) => _sharedVisuals
+        ? !string.IsNullOrWhiteSpace(effect) && _resolveEffect?.Invoke(effect) is not null
+        : _registry.Effects.Has(effect);
 
     /// <summary>
     /// Arranges the faction tab's relations list (docs/modding.md "Faction list"): <paramref name="arrange"/> gets the rows the tab would show,

@@ -78,6 +78,14 @@ public sealed partial class EffectUnit
     /// </summary>
     public float LifeScale { get; set; } = 1;
     /// <summary>
+    /// The node's scale (<see cref="ParticleSimulation.Stretch"/>).
+    /// </summary>
+    public float Stretch { get; set; } = 1;
+    /// <summary>
+    /// The node keeps its particles in its frame (<see cref="ParticleSimulation.KeepLocal"/>).
+    /// </summary>
+    public bool KeepLocal { get; set; }
+    /// <summary>
     /// The node's bounding sphere for culling (<see cref="float.PositiveInfinity"/>: always drawn).
     /// </summary>
     public float Radius { get; set; }
@@ -196,6 +204,8 @@ public sealed partial class EffectUnit
             Orientation = Orientation,
             Size = Size,
             LifeScale = LifeScale,
+            Stretch = Stretch,
+            KeepLocal = KeepLocal,
         };
         Anchor = Position;
     }
@@ -230,6 +240,7 @@ public sealed partial class EffectUnit
         sim.WorldOffset = Anchor;
         sim.Origin = local;
         sim.Orientation = Orientation;   // a steered burst turns with what it follows (ParticleRenderer.MoveBurst)
+        sim.Stretch = Stretch;
         sim.EmissionStopped = Stopped;
         float left = Pending;
         Pending = 0;
@@ -272,7 +283,7 @@ public sealed partial class EffectUnit
     }
 
     static float? Optional(float value) => float.IsPositiveInfinity(value) ? null : value;
-    public EffectUnitState Capture() => new(Seed, Position, Anchor, Tint, Alpha, Orientation, Size, LifeScale, Optional(Radius), Optional(Life), Age, Stopped, StoppedFor, Environment, DistanceToCamera, Heading, TurnTimer, GroundTimer, Wrap, WrapCentre, WrapSize, Optional(WrapMaxHeight), WrapAhead, Pending, _wrapSalt, Simulation?.Capture());
+    public EffectUnitState Capture() => new(Seed, Position, Anchor, Tint, Alpha, Orientation, Size, LifeScale, Optional(Radius), Optional(Life), Age, Stopped, StoppedFor, Environment, DistanceToCamera, Heading, TurnTimer, GroundTimer, Wrap, WrapCentre, WrapSize, Optional(WrapMaxHeight), WrapAhead, Pending, _wrapSalt, Simulation?.Capture(), Stretch, KeepLocal);
     internal static EffectUnit FromState(EffectRecord effect, PuSystemDef system, EffectUnitState s)
     {
         if (s is null || !Finite(s.Position) || !Finite(s.Anchor) || !Finite(s.Tint) || !Finite(s.WrapCentre) || !Finite(s.WrapAhead) || !Finite(s.Heading) || !Finite(new Vector4(s.Orientation.X, s.Orientation.Y, s.Orientation.Z, s.Orientation.W)) || !Finite(s.Environment.Wind) || !float.IsFinite(s.Environment.WindSpeedMultiplier) || !float.IsFinite(s.Environment.EmissionScale) || new[]
@@ -280,6 +291,7 @@ public sealed partial class EffectUnit
             s.Alpha,
             s.Size,
             s.LifeScale,
+            s.Stretch,
             s.Age,
             s.StoppedFor,
             s.DistanceToCamera,
@@ -305,6 +317,8 @@ public sealed partial class EffectUnit
             Orientation = s.Orientation,
             Size = s.Size,
             LifeScale = s.LifeScale,
+            Stretch = s.Stretch,
+            KeepLocal = s.KeepLocal,
             Radius = s.Radius ?? float.PositiveInfinity,
             Life = s.Life ?? float.PositiveInfinity,
             Age = s.Age,

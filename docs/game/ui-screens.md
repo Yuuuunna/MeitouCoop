@@ -290,7 +290,9 @@ HUD text size: `Kenshi_StandardFont_Medium` (the MyGUI default font, `core_setti
 em (**Verified**, `kenshi_fonts.xml`). The base game draws HUD text at that size at 1080 p (**Observed**: user screenshots; Meitou's
 former 16 px floor came out 10-15 % wider). Meitou uses it as the in-game minimum and for the HUD panel and body-part lines.
 HUD text colours (**Observed**, ink sampled from a base-game screenshot): StatsText labels (MARTIAL ARTS ...) are grey ~#69625e,
-taken as the skins' `0.4 0.380392 0.356863` (#66615b, also the orders buttons' text); the jobs hint is ~#483b30, which is
+the `TextColour` `0.4 0.380392 0.356863` (#66615b, also the orders buttons' text) of `Kenshi_TextboxPaintedText`, the template whose font
+(`Kenshi_PaintedTextFont_Medium`) they use (**Verified**, `kenshi_templates.xml`); Meitou takes these labels, and the Stats window's attribute
+rows, from that template so a UI mod that recolours it applies; the jobs hint is ~#483b30, which is
 Secondary at the `JobsPanelInfo` EditBox's `Alpha` 0.5 (**Verified** property, `Kenshi_MainPanel.layout`): MyGUI multiplies a
 widget's alpha into its children (`InheritsAlpha`, default true), and the text is drawn by the EditBox template's client.
 **Verified** (`Kenshi_MainPanel.layout`): `OrdersChaseButton` is captioned JOBS; Meitou binds it
@@ -463,7 +465,8 @@ to Jobs; the saved `chase mode` flag is that switch (**Verified**, [perma-jobs](
   and is unreachable. The row is skipped for robot races (race +0x7c, KenshiLib 1ce4a16, Observed). The parts come in the
   medical part array's order ([part order](character-stats.md#part-order), **Verified**): head, torso, arms, legs, left before right.
 - Information panel: `ExtendingPanel` starts collapsed, its bottom moved onto the panel's bottom (behind the Overlapped `StatsPanel`), and slides over
-  0.5 s to its layout place when `ExtendedStatsButton` is pressed (**Verified**). `BountyPanel` shows only for one selected character
+  0.5 s to its layout place when `ExtendedStatsButton` is pressed (**Verified**). Meitou fix (Fixes page `Information panel stays open`, on by default;
+  `UserConfig.KeepInfoPanel`): it starts as last left, the state kept in the config at each press. `BountyPanel` shows only for one selected character
   (`MainBarGUI` `FUN_1407211b0`, **Verified**) that is Diplomatic Status, has a bounty (`FUN_140853740` 1 or more), a slave state, leads a war campaign, has a pending crime
   (`+0x148`), the escaped flag or the bare kidnap victim flag (`+0xe9`, carried or not). Meitou: `TooltipRuntime.ShowsBountyPanel`.
 - Status rows (`FUN_1405d4260`, **Observed**; Meitou puts the slave rows ahead of the bounty rows): a character in slave state 1 / 2 / 3
@@ -799,6 +802,10 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
     by the probe of the merged data). Turret `FUN_14030c2a0`: section 6 the gun's slot 14 lines then 154, section 7 (`ExtendedStatsText`) 155 then 154; Furnace
     `FUN_14030b750` draws its own section 0xf (`Total Metals:`, the `Active:` toggle) and hands every other section to `FUN_1402ffeb0`, so 155, 154, 153 as a
     production building.
+    Meitou: a town's generator, research bench or crafting bench (a level building or a layout object) has a machine only once a worker or the player's
+    order comes, so its lines come from a machine made for the inspected building alone that never joins the world, with its save's inputs and state and its
+    town frame's output, load and grant (`ProductionSystem.TownMachineOf`, published as `WorldSnapshot.InspectedTownMachine`); once its own machine is made,
+    that one's workers and inputs with the same power and wind figures.
   - Farms (FarmBuilding slot 40 `FUN_1400e21a0` runs `FUN_1402ffeb0` first, so section 6 is its own 186, 155, 154, 153): Workers (`FUN_1400e0020`) is `-` with
     "No workers required until the crop is ready to harvest." while grown (+0x518) is below 1, else the common line. Efficiency (`FUN_1400e2d50`) only on a farm
     with +0x558 set, which the constructor `FUN_1400e8420` sets when the FARM_DATA's `fertility effect` is 0 (hydroponic and indoor farms): one line, no Max
@@ -882,7 +889,8 @@ How a building gets selected: [ui-input](ui-input.md#building-picking-and-select
   which the host sets from its clock, is inactive: no demand, efficiency 0; indoors = `is interior furniture` and a parent building). Mines and rocks get the header Output full / No workers /
   Working (plus the power words) and no `Output:` line; other machines keep Meitou's status words and `Output:` line.
 - **Window.** Selecting a complete building of the player's faction opens its window (Building slot 38 → `FUN_1406e6640`; one window per
-  building, made on first use by slot 48). Classes from RTTI vtable names, layouts **Verified** (each layout string is referenced only by
+  building, made on first use by slot 48). **Verified** (decompile): `FUN_1405504a0` and `FUN_140729c80` open it only when slot 0x228 (complete)
+  is set and the owner faction (slot 0x58) has `+0x250`, so another faction's machine or farm shows its window only through an order (Loot, #1155); a town building of the player's opens its own. Classes from RTTI vtable names, layouts **Verified** (each layout string is referenced only by
   the base constructor listed):
 
 | Building classes | Window class | Layout |
@@ -1176,7 +1184,7 @@ Overview tab 2 (`ResearchTab`), part of `ManagementScreen` (constructor `FUN_140
 
 Overview tab 3 (`CraftingQueue`, constructor `FUN_1402bf0f0`; Meitou: `ProductionWindows`; the rules are in [buildings-production](buildings-production.md#crafting)). A layout with a
 `QueuePanel` (older ones, e.g. the Dark UI mod's, which have no `CraftQueue`) gets a `CraftQueue` ItemBox created inside it, skin `Kenshi_ItemBoxEmpty`, align
-stretch; the research tab does the same with `ResearchQueueList` in `ResearchQueuePanel` (`FUN_14049f5b0`) (**Verified**, decompile; Meitou: `QueueBox`, #463). `CraftQueue` is an
+stretch; the research tab does the same with `ResearchQueueList` in `ResearchQueuePanel` (`FUN_14049f5b0`) (**Verified**, decompile; Meitou: `QueueBox`, #463). The skin `Kenshi_ItemBoxEmpty` (`gui/templates/kenshi_templates.xml`) gives the box a `VScroll` 15 wide (`Kenshi_ScrollBarV`), so a queue taller than the box scrolls (**Observed**, the template); Meitou: `QueueView` draws that bar when the queue overflows and scrolls the rows with its arrows, track, thumb and the wheel (#1224). `CraftQueue` is an
 ItemBox of the bench's queue (building `+0x498` deque, filled by `FUN_1402b5ca0`, the ITEMS click `FUN_1402b9770` and the save loader); its tooltip callback `FUN_1402be650` sets the hovered index
 and calls `FUN_1402bcf60`, which writes into `QueueDescriptionPanel2` (the ingredients and the item's own tooltip rows come from `FUN_1402b6b40`, Panel 1 and 2). A hovered ITEMS row
 has a different description, `FUN_1402b79b0` ("Estimated Craft Time:", "-Materials Cost:", "-Fabrics Cost:"; **Verified** strings; Meitou's option description is not that).
@@ -1254,11 +1262,14 @@ unless marked; Meitou: `SquadPanel`, commands in `SquadManagement`.
     `gui_notrade`). Cell = (pointer - grid origin) / cell, clamped. Locked (shackles) items do not lift. In a trade an item flagged equipped on a non-player owner: "That's not for sale.".
     A single unit, or Shift or Ctrl held: the whole stack lifts; otherwise one unit is split off and the rest stays. `Item_Lift`; the grab offset is kept, clamped so the pointer stays at
     least half a cell inside the footprint (`FUN_140713560`).
+    Meitou option `SplitStacks` (Advanced page, "Split stacks", on by default, Meitou side of the Faithful / Meitou switch): a press lifts the whole stack, Shift half of it
+    (rounded up), Alt (the Highlight key) one unit, Shift + Alt opens the message box ("SPLIT STACK") with a slider from one unit to the whole stack, at half to start (`StackSplitDialog`; TAKE lifts
+    that many, the item then stays on the mouse for the next press). `LiftItem.Count` carries the units; right clicks are unchanged.
   - Release, or a press while holding: the target is the window under the pointer, else under the item's centre. Over a window's section: placed; over a window elsewhere: back to its
     origin; over no window: given or dropped (below). After a swap or a partial place the other item or the rest stays on the mouse for the next press.
   - Place (`FUN_140715560`): the cell is round((item top-left - grid origin) / cell), clamped, then slid left, up and diagonally toward 0,0 until the footprint is inside
     (`FUN_14074bec0`); only a footprint larger than the section fails. Acceptance (`FUN_14074bc30`): a limited section (allowed-item list) takes only its records, a general one anything,
-    otherwise the item's attach slot (`Item+0x110`) must be the section's type ("Invalid container type."), whatever the record type (**Verified** by decompile and disassembly): the item's slot is its record's `slot` (`Item::Item` `FUN_14075faf0`; a missing field reads 0; `fcs.def` defaults WEAPON and CROSSBOW 0, ARMOUR 5, CONTAINER and ITEM 7), a crossbow's always 0 (`FUN_140898c90`, though two base CROSSBOWs say 7); `CharacterHuman::setupInventorySections` (`FUN_14062c4e0`) types `hip` and `back` 0 (Weapon), `head` 3, `armour` 5, `legs` 6, `shirt` 8, `boots` 9, `backpack_attach` 12, `belt` 14 and `main` 7 (general), an animal's `backpack_attach` 12 too (`FUN_14062a130`). In the base data every CONTAINER has slot 12. A bag's inner inventory is never looked at, and every CONTAINER item has one (its constructor `FUN_140763810` always makes it); armour-only sections take ARMOUR; non-general sections with a wearer also check its race before the slot type ("Can't wear that
+    otherwise the item's attach slot (`Item+0x110`) must be the section's type ("Invalid container type."), whatever the record type (**Verified** by decompile and disassembly): the item's slot is its record's `slot` (`Item::Item` `FUN_14075faf0`; a missing field reads 0; `fcs.def` defaults WEAPON and CROSSBOW 0, ARMOUR 5, CONTAINER and ITEM 7), a crossbow's always 0 (`FUN_140898c90`, though two base CROSSBOWs say 7), a map's (MAP_ITEM, which has no `slot` field) always 7 (the MapItem constructor `FUN_140762520` sets `+0x110` = 7 after `Item::Item`), so no equipment section takes a map and a quick move puts it in the grid; `CharacterHuman::setupInventorySections` (`FUN_14062c4e0`) types `hip` and `back` 0 (Weapon), `head` 3, `armour` 5, `legs` 6, `shirt` 8, `boots` 9, `backpack_attach` 12, `belt` 14 and `main` 7 (general), an animal's `backpack_attach` 12 too (`FUN_14062a130`). In the base data every CONTAINER has slot 12. A bag's inner inventory is never looked at, and every CONTAINER item has one (its constructor `FUN_140763810` always makes it); armour-only sections take ARMOUR; non-general sections with a wearer also check its race before the slot type ("Can't wear that
     item."; `RaceLimiter`, built per item by `FUN_140763150`, **Verified** by decompile: a non-empty `races` list names the only races and `races exclude` is then not read, otherwise `races exclude`
     names the barred ones; `fcs.def` gives both lists to ARMOUR, CONTAINER, ITEM, LIMB_REPLACEMENT, NEST_ITEM, WEAPON and CROSSBOW `races` only. Vanilla shirts (Rag Shirt, Cloth Shirt, Leather Turtleneck...) exclude the 10 Hive and Deadhive races, read with `meitou-tools armour`); a section named `out` refuses everything; a non-empty CONTAINER into a CONTAINER's inventory: "Container cannot be placed here unless it is empty.". Under the footprint: two or
     more items refuse it; none, but the section's item-count cap reached, refuses it (`FUN_14071a6b0`: InventorySection `+0xa8` KenshiLib `itemsLimit`, when above 0, at most the

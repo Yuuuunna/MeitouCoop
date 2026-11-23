@@ -57,7 +57,7 @@ public sealed class LoadedMod
 /// <param name = "SavedSettings">The player's saved settings of a mod by its id (setting key to text), or null.</param>
 /// <param name = "GameVersion">The running Meitou for <c>gameVersion</c> ranges; null passes every range.</param>
 /// <param name = "Disabled">The installed code mods not enabled, only so a dependent's refusal says "not enabled" rather than "not installed".</param>
-public sealed record ModHostOptions(IReadOnlyList<ModInfo> Enabled, IReadOnlySet<string> Allowed, GameDatabase Data, PopulationData Population, Func<World?> World, Func<string, IReadOnlyDictionary<string, string>?>? SavedSettings = null, CodeModVersion? GameVersion = null, IReadOnlyList<ModInfo>? Disabled = null, Action<SimCommand>? Enqueue = null, Func<long>? Tick = null, bool StrictSystems = false, Action<SoundEvent>? PostSound = null)
+public sealed record ModHostOptions(IReadOnlyList<ModInfo> Enabled, IReadOnlySet<string> Allowed, GameDatabase Data, PopulationData Population, Func<World?> World, Func<string, IReadOnlyDictionary<string, string>?>? SavedSettings = null, CodeModVersion? GameVersion = null, IReadOnlyList<ModInfo>? Disabled = null, Action<SimCommand>? Enqueue = null, Func<long>? Tick = null, bool StrictSystems = false, Action<SoundEvent>? PostSound = null, bool SharedVisuals = false, Func<string, string?>? ResolveEffect = null)
 {
     /// <summary>
     /// Loads the enabled code set for an explicit local tool invocation.
@@ -182,6 +182,16 @@ public sealed class ModHost
             }
         }
     }
+
+    /// <summary>
+    /// The mods' display-only effects (docs/modding.md "Visual effects"), played by the host once a frame.
+    /// </summary>
+    internal ModEffects Effects => _registry.Effects;
+
+    /// <summary>
+    /// The mods' display-only glows (docs/modding.md "Glow"), handed to the renderer by the host once a frame.
+    /// </summary>
+    internal ModGlows Glows => _registry.Glows;
 
     /// <summary>
     /// Whether a mod arranges the faction tab's list.
@@ -698,15 +708,17 @@ public sealed class ModHost
         }
 
         var context = new ModContext(mod, _registry, options.Data, options.Population, CurrentWorld,
-            options.SavedSettings?.Invoke(mod.Manifest.Id), Enqueue, CurrentTick, CurrentPopulation, PostLocalSound);
+            options.SavedSettings?.Invoke(mod.Manifest.Id), Enqueue, CurrentTick, CurrentPopulation, PostLocalSound, options.SharedVisuals, options.ResolveEffect);
         try
         {
             mod.Instance!.Initialize(context);
         }
         catch
         {
-            if (context.HasHarmony)
-                context.Harmony.UnpatchAll(context.Id);
+            if (context.HasHarmony) context.Harmony.UnpatchAll(context.Id);
+            _registry.Effects.Drop(context.Id);
+            _registry.Glows.Drop(context.Id);
+            if (options.SharedVisuals) CurrentWorld()?.ModVisuals.RemoveOwner(context.Id);
             TellDependenciesItFailed(mod);
             throw;
         }

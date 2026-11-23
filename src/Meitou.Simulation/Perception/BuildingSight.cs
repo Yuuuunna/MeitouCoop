@@ -38,18 +38,22 @@ public sealed class BuildingSight(GameInstall install, GameDatabase db, WorldLev
     public bool EnforcesCeiling(TownBuilding building) => db.Find(building.BuildingId)?.GetBool("enforce ceiling") == true;
 
     /// <inheritdoc/>
-    public GroundHit? TopAt(TownBuilding building, bool destroyed, Vector2 at) => building.Resolved is { } r
-        ? Ground.Hit(r.Record, building.Key, r.Position, r.Placement.Rotation, destroyed, at)
+    public GroundHit? TopAt(TownBuilding building, bool destroyed, Vector2 at, float from = float.PositiveInfinity) => building.Resolved is { } r
+        ? Ground.Hit(r.Record, building.Key, r.Position, r.Placement.Rotation, destroyed, at, from)
         : null;
 
     /// <inheritdoc/>
-    public GroundHit? TopAt(string record, string id, Vector3 position, Quaternion rotation, bool destroyed, Vector2 at) =>
-        db.Find(record) is { } building ? Ground.Hit(building, id, position, rotation, destroyed, at) : null;
+    public GroundHit? TopAt(string record, string id, Vector3 position, Quaternion rotation, bool destroyed, Vector2 at,
+        float from = float.PositiveInfinity) =>
+        db.Find(record) is { } building ? Ground.Hit(building, id, position, rotation, destroyed, at, from) : null;
 
     /// <inheritdoc/>
     public float BoundsRadius(TownBuilding building, bool destroyed) => building.Resolved is { } r
         ? BuildingShape.BoundsRadius(db, r.Record, building.Key, r.Position, r.Placement.Rotation, destroyed, _collisions)
         : 0;
+
+    /// <inheritdoc/>
+    public bool HangsFromCeiling(string record) => db.Find(record)?.GetBool("ceiling placement") == true;
 
     /// <summary>
     /// A completed player building's lamps, placed as the renderer lights them (<c>GameHost.UpdateLamps</c>: its own lights, no interior layouts).
@@ -60,7 +64,7 @@ public sealed class BuildingSight(GameInstall install, GameDatabase db, WorldLev
 
         var placed = new List<PlacedLight>();
         WorldObjectLayout.Building(db, record, site.Id, site.Position, site.Rotation, new BuildingState { Identity = site.Id }, placed);
-        bool indoors = WorldLights.IsIndoors(record, site.Parent is not null);
+        bool indoors = WorldLights.IsIndoors(record, site.Parent is not null && !site.Outside);
         return [.. placed.Select(p => WorldLights.FromPlaced(p, interior: false, indoors: indoors))];
     }
 }

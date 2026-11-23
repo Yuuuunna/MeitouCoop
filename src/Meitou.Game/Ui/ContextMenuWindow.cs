@@ -61,59 +61,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// offers): the menu lists its verbs in ascending order number, as the original's set of orders. Meitou's own verbs (not in the table) follow, in
     /// the order they were added.
     /// </summary>
-    static readonly Dictionary<string, int> VerbOrders = new()
-    {
-        ["Build"] = 2,
-        ["Steal"] = 3,
-        ["Attack Target"] = 5,
-        ["Talk To"] = 12,
-        ["Attack All"] = 16,
-        ["First Aid"] = 25,
-        ["Inventory"] = 26,
-        ["Trade"] = 26,
-        ["Loot"] = 26,
-        ["Stand Up"] = 28,
-        ["Follow"] = 31,
-        ["Bodyguard"] = 45,
-        ["Repairs"] = 60,
-        ["Attack Unprovoked"] = 61,
-        ["Put Down"] = 69,
-        ["Open"] = 72,
-        ["Close"] = 73,
-        ["Pick Lock"] = 76,
-        ["Lock"] = 77,
-        ["Unlock"] = 78,
-        ["Use"] = 87,
-        ["Repair"] = 95,
-        ["Dismantle"] = 96,
-        ["Training"] = 97,
-        ["Put in Bed"] = 99,
-        ["Get in"] = 107,
-        ["Put in"] = 108,
-        ["Knock Out"] = 109,
-        ["Set Free"] = 110,
-        ["Break Out"] = 111,
-        ["Auto-Haul"] = 124,
-        ["Corpse Disposal"] = 136,
-        ["Man Turret"] = 146,
-        ["Capture"] = 166,
-        ["Use Tools"] = 185,
-        ["Use Strength"] = 186,
-        ["Unlock Shackles"] = 201,
-        ["Escape"] = 207,
-        ["Throw out of home"] = 223,
-        ["Pick Up"] = 225,
-        ["Smash"] = 226,
-        ["Stealth KO"] = 228,
-        ["Stealth Kill"] = 229,
-        ["Shoot At"] = 235,
-        ["Kidnap"] = 246,
-        ["Splint Injuries"] = 249,
-        ["Escape (skill)"] = 251,
-        ["Escape (strength)"] = 252,
-        ["Sleep"] = 258,
-        ["Throw out of town"] = 273,
-    };
+    static IReadOnlyDictionary<string, int> VerbOrders => ContextVerbNames.Ordered;
 
     /// <summary>
     /// The only orders an animals-only selection is offered (<c>FUN_1407f23b0</c>): attack, attack unprovoked, bodyguard, follow and the smash
@@ -192,10 +140,18 @@ sealed class ContextMenuWindow(PlayerInterface player)
     static int? OrderOf(string caption) => VerbOrders.TryGetValue(SplitChance(caption).Caption, out int order) ? order : null;
 
     /// <summary>
-    /// The menu for <paramref name="verbs"/>, as the original fills it: an animals-only selection keeps only its orders, the rest sorted by order
-    /// number; null when none is left.
+    /// Whether <paramref name="caption"/> is the label of one of the original's verbs. A code mod's job offer may not take one: its row would read
+    /// as the game's.
     /// </summary>
-    internal ContextMenu? Menu(string title, Vector2 at, List<(string Caption, Action Give)> verbs)
+    internal static bool IsGameVerb(string caption) => OrderOf(caption) is not null;
+
+    /// <summary>
+    /// The menu for <paramref name="verbs"/>, as the original fills it: an animals-only selection keeps only its orders, the rest sorted by order
+    /// number. Then <paramref name="offered"/>, the rows of the code mods' job offers (<see cref="Building.BuildMode.OfferedJobs"/>): an offer
+    /// names who it is for, so its row stays for an animals-only selection too. Null when no row is left.
+    /// </summary>
+    internal ContextMenu? Menu(string title, Vector2 at, List<(string Caption, Action Give)> verbs,
+        IReadOnlyList<(string Caption, Action Give)>? offered = null)
     {
         var selected = player.Selected();
         IEnumerable<(string Caption, Action Give)> kept = verbs;
@@ -203,6 +159,8 @@ sealed class ContextMenuWindow(PlayerInterface player)
             kept = kept.Where(v => OrderOf(v.Caption) is { } o && AnimalVerbOrders.Contains(o));
 
         var list = kept.Select((v, i) => (v, i)).OrderBy(x => OrderOf(x.v.Caption) ?? int.MaxValue).ThenBy(x => x.i).Select(x => x.v).ToList();
+        if (offered is not null) list.AddRange(offered);
+
         return list.Count == 0 ? null : new ContextMenu(title, at, list);
     }
 
@@ -694,11 +652,11 @@ sealed class ContextMenuWindow(PlayerInterface player)
         var door = pick.Door;
         bool own = door.Owner == player.Session.ActiveFaction;
 
-        // A broken door is repaired (95, the building branch of FUN_1407fc6e0); the job of Shift is not built (the Engineer job works sites only).
+        // A broken door is repaired (95, the building branch of FUN_1407fc6e0); with Shift the Engineer job (125) too.
         if (player.Furniture.DoorBroken(door))
         {
             if (own)
-                verbs.Add(("Repair", () => player.Say(new Simulation.Construction.BuildOrder([], door.Id) { SiteRevision = door.Revision, Tick = player.Session.CommandTick })));
+                verbs.Add(("Repair", () => player.Furniture.RepairDoor(door)));
 
             return verbs;
         }

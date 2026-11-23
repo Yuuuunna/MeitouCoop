@@ -213,7 +213,6 @@ sealed class FeedbackPanel(PlayerInterface player)
         return MyGuiReader.ParseLayout($"""
             <MyGUI type="Layout">
               <Widget type="Window" skin="Kenshi_WindowCX" position_real="0 0 0.36 {height.ToString(System.Globalization.CultureInfo.InvariantCulture)}" layer="Window" name="Root">
-                <Property key="Caption" value="SEND FEEDBACK"/>
                 <Widget type="TextBox" skin="Kenshi_TextboxStandardText" position_real="0.03 {F(0.02)} 0.94 {F(0.1)}" name="lbIntro"><Property key="WordWrap" value="true"/><Property key="TextAlign" value="Left Top"/></Widget>
                 <Widget type="TextBox" skin="Kenshi_TextboxStandardText" position_real="0.03 {F(0.13)} 0.94 {F(0.045)}" name="lbTitleBox"><Property key="TextAlign" value="Left VCenter"/></Widget>
                 <Widget type="EditBox" skin="Kenshi_EditBox" position_real="0.03 {F(0.175)} 0.94 {F(0.065)}" name="{FeedbackTitleBox}"><Property key="MaxTextLength" value="100"/></Widget>

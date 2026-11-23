@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Meitou.Content;
 using Meitou.Data;
 using Meitou.Data.World;
@@ -155,11 +156,20 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     /// </summary>
     public float GroundHeight(float x, float z, float nearY) => _ground.HeightAt(x, z);
     /// <inheritdoc/>
-    public bool Buildings(Vector3 min, Vector3 max, List<Vector3> triangles) => Collect(min, max, triangles, roofs: false);
+    public bool Buildings(Vector3 min, Vector3 max, List<Vector3> triangles)
+    {
+        var add = new Appender(triangles);
+        return Collect(min, max, roofs: false, ref add);
+    }
+
     /// <summary>
     /// Collision groups 23..26, kept independently of building collision.
     /// </summary>
-    public bool Roofs(Vector3 min, Vector3 max, List<Vector3> triangles) => Collect(min, max, triangles, roofs: true);
+    public bool Roofs(Vector3 min, Vector3 max, List<Vector3> triangles)
+    {
+        var add = new Appender(triangles);
+        return Collect(min, max, roofs: true, ref add);
+    }
 
     /// <summary>
     /// Whether a zone's first building gather finished. A failed gather counts as loaded without collision, as in the upstream loader.
@@ -193,22 +203,41 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     }
 
     /// <summary>
-    /// Collects cells from every zone whose buildings can reach the box; missing first gathers report not ready.
+    /// Hands the visitor the gathered cells' own triangle lists, uncopied (<see cref="IRagdollEnvironment.VisitBuildings"/>): a gathered cell is
+    /// never changed, a gather again replaces the zone's cells whole.
     /// </summary>
-    bool Collect(Vector3 min, Vector3 max, List<Vector3> triangles, bool roofs)
+    public bool VisitBuildings<TVisitor>(Vector3 min, Vector3 max, bool roofs, ref TVisitor visitor) where TVisitor : struct, ITriangleVisitor =>
+        Collect(min, max, roofs, ref visitor);
+
+    /// <summary>
+    /// Adds each run of triangles to a list (<see cref="Buildings"/>, <see cref="Roofs"/>).
+    /// </summary>
+    readonly struct Appender(List<Vector3> triangles) : ITriangleVisitor
+    {
+        /// <summary>
+        /// Adds the run to the list.
+        /// </summary>
+        public void Visit(ReadOnlySpan<Vector3> run) => triangles.AddRange(run);
+    }
+
+    /// <summary>
+    /// Hands the visitor the gathered triangles of the cells between the corners, from every zone within <see cref="Reach"/> of them, starting a
+    /// gather for a zone not asked for yet; false while one of those zones is still being gathered.
+    /// </summary>
+    bool Collect<TVisitor>(Vector3 min, Vector3 max, bool roofs, ref TVisitor visitor) where TVisitor : struct, ITriangleVisitor
     {
         lock (_cacheLock)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             RefreshRuntime();
-            return CollectZones(min, max, triangles, roofs);
+            return CollectZones(min, max, roofs, ref visitor);
         }
     }
 
     /// <summary>
     /// Adds the requested cells from the current entries, starting first gathers as needed.
     /// </summary>
-    bool CollectZones(Vector3 min, Vector3 max, List<Vector3> triangles, bool roofs)
+    bool CollectZones<TVisitor>(Vector3 min, Vector3 max, bool roofs, ref TVisitor visitor) where TVisitor : struct, ITriangleVisitor
     {
         bool ready = true;
         int cx0 = Cell(min.X), cx1 = Cell(max.X - 1e-3f), cz0 = Cell(min.Z), cz1 = Cell(max.Z - 1e-3f);
@@ -228,7 +257,7 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
                     continue;
                 }
 
-                AddCells(task.Result, cx0, cx1, cz0, cz1, triangles);
+                VisitCells(task.Result, cx0, cx1, cz0, cz1, ref visitor);
             }
         }
 
@@ -239,11 +268,12 @@ public sealed class RagdollGeometry : IRagdollEnvironment, IDisposable
     /// <summary>
     /// Adds cells in the requested rectangle from one gathered zone.
     /// </summary>
-    static void AddCells(CellMap cells, int cx0, int cx1, int cz0, int cz1, List<Vector3> triangles)
+    static void VisitCells<TVisitor>(CellMap cells, int cx0, int cx1, int cz0, int cz1, ref TVisitor visitor)
+        where TVisitor : struct, ITriangleVisitor
     {
         for (int x = cx0; x <= cx1; x++)
             for (int z = cz0; z <= cz1; z++)
-                if (cells.TryGetValue((x, z), out var cell)) triangles.AddRange(cell);
+                if (cells.TryGetValue((x, z), out var cell)) visitor.Visit(CollectionsMarshal.AsSpan(cell));
     }
 
     /// <summary>

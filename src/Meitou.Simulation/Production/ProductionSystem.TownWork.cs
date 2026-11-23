@@ -139,6 +139,22 @@ public sealed partial class ProductionSystem
     }
 
     /// <summary>
+    /// The selected canonical town machine owned by the local player's faction, or null when none is available.
+    /// </summary>
+    public string? OwnTownMachineOf(World world, string? key) => OwnTownMachineOf(world, key, world.Player.Faction);
+
+    /// <summary>
+    /// The selected canonical town machine owned by the recipient's faction. Read only; the network applies its inventory access grants separately.
+    /// </summary>
+    public string? OwnTownMachineOf(World world, string? key, int faction)
+    {
+        if (key is null || faction < 0 || world.Buildings.Find(key) is not { LevelMachine: true, Destroyed: false } site) return null;
+        if (site.Owner != faction || !world.Fixtures.CurrentTownMachine(site)) return null;
+
+        return world.Machines.Find(site.Id) is null ? null : site.Id;
+    }
+
+    /// <summary>
     /// The town building of a run-time key and the faction owning its town; null for none.
     /// </summary>
     (TownBuilding Building, int Owner, int Site)? TownBuildingOf(World world, string key) =>

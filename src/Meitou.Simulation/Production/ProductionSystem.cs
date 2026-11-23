@@ -133,6 +133,8 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         _xp = new XpService(constants, options);
         _resources = new ResourceField(db, biomes, nodes);
         this._nodes = nodes;
+        _craftOptions = new CraftOptionsCache(BuildCraftOptions);
+        _smiths = new SmithViewCache(db);
         UnloadedProduction = Settings.UnloadedProduction;
     }
 
@@ -574,44 +576,47 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
     /// <summary>
     /// A player turret's post (its functionality's <c>use range</c> and <c>gun turret</c>), null for a building that is no turret.
     /// </summary>
-    Meitou.Data.World.TurretPost? TurretPostOf(BuildSite site)
-    {
-        if (_db.Find(site.Record) is not { } record
-            || (record.GetReferences("functionality") is [var link, ..] ? _db.Find(link.TargetStringId) : null) is not { } fn
-            || fn.GetInt("function") != Meitou.Data.World.ObjectRanges.TurretFunction) return null;
-        var forward = Vector3.Transform(Vector3.UnitZ, site.Rotation);
-        return new Meitou.Data.World.TurretPost(site.Position, MathF.Atan2(forward.X, forward.Z), fn.GetFloat("use range", 10),
-            record.GetReferences("gun turret").Select(r => r.TargetStringId).FirstOrDefault() ?? "", null);
-    }
+    Meitou.Data.World.TurretPost? TurretPostOf(BuildSite site) => PlacedTurrets.PostOf(_db, site);
 
     /// <summary>
-    /// Where an operator walks to: a turret's gunner spot (<see cref="Ai.AiSystem.TurretSpot"/>), else the floor point at or next to the building's
-    /// place, a rock's middle (furniture cuts a hole in the floor's navmesh; <see cref="MovementSystem.GoToFloor"/>).
+    /// Where a character at <paramref name="from"/> walks to for a machine, and the height of the floor it walks on: a turret's gunner spot
+    /// (<see cref="Ai.AiSystem.TurretSpot"/>); a rock's middle (<see cref="RockGoal"/>); else the spot on the machine's floor within its use range
+    /// nearest the walker (<see cref="SiteReach.WorkSpot"/>), which <see cref="AtSite"/> then passes: furniture cuts a hole in the floor's navmesh,
+    /// and a walk to the place itself could end on a stair beside it, short of the height test.
     /// </summary>
-    Vector2 GoalOf(World world, BuildSite site, Machine m)
+    Vector3 GoalOf(World world, BuildSite site, Machine m, Vector3 from)
     {
         if (m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction && TurretPostOf(site) is { } post)
         {
             var spot = AiSystem.TurretSpot(world, post);
             _turretSpots[site.Id] = (spot, post.UseRange);
-            return new Vector2(spot.X, spot.Z);
+            return spot;
         }
 
-        // A rock is walked to at its bounds' middle, which its footprint holds (its origin can lie off its pile).
-        var to = _naturalBounds.TryGetValue(site.Id, out var rock) ? rock.Centre : site.Position;
-        var at = world.Walkability.FloorNear(to.X, to.Z, to.Y, MovementSystem.FloorSlack) ?? to;
-        return new Vector2(at.X, at.Z);
+        if (_naturalBounds.TryGetValue(site.Id, out var rock)) return RockGoal(world, site, rock.Centre);
+
+        float limit = SiteReach.HeightLimit(world.Fixtures.DoorsByBuilding[site.Id].Any(), SiteReach.InBuilding(site));
+        return SiteReach.WorkSpot(world.Walkability, Settings.EdgeGap, site, site.Position.Y, limit, m.Data.UseRange, from);
     }
 
     /// <summary>
-    /// Sends an operator towards <paramref name="goal"/> (<see cref="GoalOf"/>) on the site's own floor (not a turret's, whose spot may stand above
-    /// it).
+    /// A rock is walked to at its bounds' middle, which its footprint holds (its origin can lie off its pile): the floor point at or next to it
+    /// (<see cref="MovementSystem.GoToFloor"/>), on the rock's own height.
     /// </summary>
-    void WalkToSite(ref CharacterHot n, CharacterCold cold, BuildSite site, Vector2 goal)
+    static Vector3 RockGoal(World world, BuildSite site, Vector3 centre)
     {
-        n.Goal = goal;
+        var at = world.Walkability.FloorNear(centre.X, centre.Z, centre.Y, MovementSystem.FloorSlack) ?? centre;
+        return new Vector3(at.X, site.Position.Y, at.Z);
+    }
+
+    /// <summary>
+    /// Sends an operator towards <paramref name="goal"/> (<see cref="GoalOf"/>) on the goal's floor (a turret's gunner spot's own).
+    /// </summary>
+    void WalkToSite(ref CharacterHot n, CharacterCold cold, BuildSite site, Vector3 goal)
+    {
+        n.Goal = new Vector2(goal.X, goal.Z);
         n.Flags |= (ushort)MoveFlags.NeedPath;
-        (cold.GoalHeight, cold.GoalHeightAt) = _turretSpots.ContainsKey(site.Id) ? (float.NaN, default) : (site.Position.Y, n.Goal);
+        (cold.GoalHeight, cold.GoalHeightAt) = (goal.Y, n.Goal);
     }
 
     /// <summary>
@@ -711,7 +716,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
     /// Building slot 59 (<c>isIndoors</c>, <b>Verified</b>): a machine whose record is interior furniture and which stands in a building. One rule
     /// for the power tick, a light's work and a farm's crop match and rain.
     /// </summary>
-    static bool IsIndoors(MachineData data, BuildSite? site) => data.InteriorFurniture && site?.Parent is not null;
+    static bool IsIndoors(MachineData data, BuildSite? site) => data.InteriorFurniture && site is { Parent: not null, Outside: false };
 
     /// <summary>
     /// Whether the operator is at the machine: a turret's gunner at its spot or within the turret's use range, a rock's within
@@ -725,7 +730,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         if (_turretSpots.TryGetValue(site.Id, out var turret))
         {
             bool near = Gap(n.Position, turret.Spot) <= AiSystem.TurretSlack || SiteReach.Within(n, Gap(n.Position, site.Position), turret.Range);
-            return near && MathF.Abs(n.Position.Y - turret.Spot.Y) < SiteReach.HeightLimit(door: false, site.Parent is not null);
+            return near && MathF.Abs(n.Position.Y - turret.Spot.Y) < SiteReach.HeightLimit(door: false, site.Parent is not null && !site.Outside);
         }
 
         // A rock: at its footprint (engine choice, #587: the original's use range of the position marker, doubled when stopped, has a copper
@@ -846,9 +851,8 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         cold.HaulFetch = null;
         cold.Operating = false;
         cold.HaulTo = null;
-        var goal = GoalOf(world, site, m);
-        if (!AtSite(world, n, site, m))
-            WalkToSite(ref n, cold, site, goal);
+        var goal = GoalOf(world, site, m, n.Position);
+        if (!AtSite(world, n, site, m)) WalkToSite(ref n, cold, site, goal);
         _sweep = true;
     }
 
@@ -946,7 +950,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
     void Approach(World world, ref CharacterHot n, CharacterCold cold, BuildSite site, Machine m, float dt)
     {
         const ushort path = (ushort)MoveFlags.AnyPath;
-        if (m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction && !_turretSpots.ContainsKey(site.Id)) GoalOf(world, site, m);
+        if (m.Data.Function == Meitou.Data.World.ObjectRanges.TurretFunction && !_turretSpots.ContainsKey(site.Id)) GoalOf(world, site, m, n.Position);
         if (AtSite(world, n, site, m))
         {
             cold.NavigationWaiting = false;
@@ -965,7 +969,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         if ((n.Flags & path) != 0) return;
         n.TaskTime -= dt;
         if (n.TaskTime > 0) return;
-        WalkToSite(ref n, cold, site, GoalOf(world, site, m));
+        WalkToSite(ref n, cold, site, GoalOf(world, site, m, n.Position));
         n.Mode = SpeedMode.Free;
         n.TaskTime = PursuitSystem.RepathSeconds;
     }
@@ -991,7 +995,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
 
     /// <summary>
     /// The serial step: prospecting, the sync and the errands, the operator counts and the research bench, the town workers and obedient slaves; then
-    /// the farms, the machines' own work and every operator's step, the power, and the touches.
+    /// the farms, the machines' own work and every operator's step, the power, and the work count (<see cref="MachineRegistry.Worked"/>).
     /// </summary>
     public void SlowWorld(World world)
     {
@@ -1027,7 +1031,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
         foreach (var faction in world.Factions.All)
             if (faction.Research.Queue.Count > 0 && _researchContributions.GetValueOrDefault(faction.Index) > 0)
                 faction.Research.Touch();
-        world.Machines.Touch();
+        world.Machines.Work();
     }
 
     /// <summary>
@@ -1742,7 +1746,7 @@ public sealed partial class ProductionSystem : ITickSystem, ITaskOwner, ITaskHan
     /// <summary>
     /// The research state's and the machines' versions <see cref = "_publishedResearch"/> was built at.
     /// </summary>
-    long _machinesVersion = -1;
+    (long Version, long Worked) _machinesVersion = (-1, -1);
 
     /// <summary>
     /// The focus zone <see cref="_publishedResearch"/> was built for.

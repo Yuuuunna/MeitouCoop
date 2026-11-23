@@ -48,6 +48,10 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// </summary>
     internal const int GraphicsPageIndex = 1;
     /// <summary>
+    /// The Advanced page (its Squad XP folds the skills' own multipliers).
+    /// </summary>
+    internal const int AdvancedPageIndex = 4;
+    /// <summary>
     /// The MODS page (<see cref="Settings.ModsPage"/>): the loaded mods, each with the settings its code registered.
     /// </summary>
     internal const int ModsPageIndex = 8;
@@ -431,6 +435,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     public Action<bool>? AnimalMovesChanged { get; init; }
 
     /// <summary>
+    /// Applies the turret assault fix (<see cref="UserConfig.FixTurretAssault"/>) to the running combat system.
+    /// </summary>
+    public Action<bool>? TurretAssaultChanged { get; init; }
+
+    /// <summary>
     /// Applies the bench facing fix (<see cref="UserConfig.FixBenchFacing"/>).
     /// </summary>
     public Action<bool>? BenchFacingChanged { get; init; }
@@ -449,6 +458,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// Applies the bag search fix (<see cref="UserConfig.FixBagSearch"/>).
     /// </summary>
     public Action<bool>? BagSearchChanged { get; init; }
+
+    /// <summary>
+    /// Applies the shop counter talk reach (<see cref="UserConfig.CounterTalk"/>).
+    /// </summary>
+    public Action<bool>? CounterTalkChanged { get; init; }
 
     /// <summary>
     /// Called when an off-screen switch changes (the config holds the new values).
@@ -637,11 +651,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
                 or WorldFrame.GiRaysSwitch or WorldFrame.GiCharactersSwitch => "Lighting",
             "Water" or "Water contact foam, wakes and ripples" or "Reflections" => "Water & reflections",
             "Ground parallax" or "Ground displacement (tessellation)" or "Ground trails" or WorldFrame.RockSmoothingSwitch
-                or WorldFrame.OutlineRefineSwitch => "Terrain",
+                or WorldFrame.OutlineRefineSwitch or WorldFrame.SimpleTerrainSwitch => "Terrain",
             "Foliage ranges" or "Foliage levels" or "Far impostors" or WorldFrame.GrassCoverSwitch or WorldFrame.NearTreeFadeSwitch => "Vegetation",
             "Haze" or "Night air" or "Night sky" or "Clouds" or "Cloud shadows" or "Cloud shadows in fog" or "Fog" or "Lit dust"
                 or WorldFrame.WetWorldSwitch => "Sky & weather",
-            "Tone map and grade" or "Night grading" or "Dithering" => "Colour",
+            "Tone map and grade" or "Adaptive exposure" or "Night grading" or "Dithering" => "Colour",
             "Heat haze" or WorldFrame.BloomSwitch or WorldFrame.DepthOfFieldSwitch or WorldFrame.CameraEffectsSwitch or WorldFrame.VignetteSwitch
                 or WorldFrame.FilmGrainSwitch => "Post FX",
             "Skin" or "Character levels" or "Advanced materials" or "Blood on weapons and gear" or "Blood cells" or "Blood on surfaces"
@@ -670,7 +684,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             return "Vegetation";
         if (S("Haze") || label == WorldFrame.HazeDistanceSlider || label == WorldFrame.CloudHeightSlider || WorldFrame.ParticleSliders.Contains(label))
             return "Sky & weather";
-        if (S("Tone map") || S("Hybrid") || S("Grading") || S("Night grading")) return "Colour";
+        if (S("Tone map") || S("Hybrid") || S("Grading") || S("Night grading") || S("Adaptive exposure")) return "Colour";
         if (S("Bloom") || S("Depth of field") || S("Heat haze") || S("Vignette") || S("Film grain")) return "Post FX";
         if (label == WorldFrame.CharacterDistanceSlider) return "Characters";
 
@@ -851,6 +865,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
                 or WorldFrame.MaterialMetalSwitch or WorldFrame.MaterialBeadsSwitch => SwitchOn("Advanced materials"),
             WorldFrame.MaterialPolishSwitch => SwitchOn("Advanced materials") && SwitchOn(WorldFrame.MaterialMetalSwitch),
             WorldFrame.NightGradeStrengthSlider => SwitchOn("Night grading"),
+            WorldFrame.AdaptiveExposureSlider => SwitchOn("Adaptive exposure"),
             WorldFrame.BloomStrengthSlider => SwitchOn(WorldFrame.BloomSwitch),
             WorldFrame.DofApertureSlider or WorldFrame.CameraEffectsSwitch => SwitchOn(WorldFrame.DepthOfFieldSwitch),
             WorldFrame.VignetteStrengthSlider => SwitchOn(WorldFrame.VignetteSwitch),
@@ -926,7 +941,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     }
 
     /// <summary>
-    /// The rows shown: the search's results while it has a query, else the page's, the Display and Graphics ones folded into features
+    /// The rows shown: the search's results while it has a query, else the page's, the Display, Graphics and Advanced ones folded into features
     /// (on Display, the upscaler's and the HDR output's settings under their rows).
     /// </summary>
     internal List<Entry> Entries()
@@ -935,7 +950,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
 
         var rows = PageRows(Page, GraphicsPage);
 
-        return Page is 0 or GraphicsPageIndex ? Grouping.Grouped(rows) : rows;
+        return Page is 0 or GraphicsPageIndex or AdvancedPageIndex ? Grouping.Grouped(rows) : rows;
     }
 
     /// <summary>
@@ -1101,7 +1116,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// </summary>
     string HdrPaperText(float v) =>
         v < UserConfig.HdrPaperAuto
-            ? Loc.Tr("Automatic ({0})", Config.HdrPaperNitsNow.ToString("0", CultureInfo.InvariantCulture))
+            ? Loc.Tr("Automatic ({1})", Config.HdrPaperNitsNow.ToString("0", CultureInfo.InvariantCulture))
             : v.ToString("0", CultureInfo.InvariantCulture);
 
     /// <summary>
@@ -1551,17 +1566,21 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             Config.LateDefences = false;
             LateDefencesChanged?.Invoke(false);
             Config.KeepRoamers = Config.OffscreenFights = Config.OffscreenHealing = Config.CampaignAncestorsOnce = Config.KeepWild
-                = Config.ResidentSchedule = Config.OffscreenOverrides = Config.UnloadedProduction = true;
+                = Config.ResidentSchedule = Config.OffscreenOverrides = Config.UnloadedProduction = Config.KeepDowned = true;
             Config.Decapitation = true;
             Config.AdvancedRagdolls = true;
         }
         Config.PauseOnLoad = true;
         Config.LoadingPause = false;
         Player.InventoryWindows.AutoOpenBags = Config.AutoOpenBags = true;
+        Player.InventoryWindows.SplitStacks = Config.SplitStacks = true;
+        Config.KeepInfoPanel = true;
         if (!Player.IsRemoteSession)
         {
             Config.AnimalsPickUp = false;
             Config.CagesSpareOwn = false;
+            Config.CounterTalk = true;
+            CounterTalkChanged?.Invoke(true);
             AnimalsPickUpChanged?.Invoke(false);
         }
         Config.FixDoorBreak = Config.FixAmbienceSuffix = Config.FixWindStop = true;
@@ -1574,6 +1593,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             PunchReachChanged?.Invoke(true);
             Config.FixAnimalMoves = true;
             AnimalMovesChanged?.Invoke(true);
+            Config.FixTurretAssault = true;
+            TurretAssaultChanged?.Invoke(true);
             Config.FixPrisonPose = true;
             PrisonPoseChanged?.Invoke(true);
             Config.FixGround = true;
@@ -1612,6 +1633,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         Config.HoverOutline = true;
         Config.BuildingOutline = true;
         Player.BuildingSelection.DeselectBuildings = Config.DeselectBuildings = true;
+        if (!Player.IsRemoteSession) Config.LuckyrenMode = false;
+        Rendering.Characters.GearBlood.KeptStains = Config.KeptStains = true;
         Config.CameraLeash = true;
         GamePages.ResetOptional();
         if (!Player.IsRemoteSession)
@@ -1628,7 +1651,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         Player.InterfaceScale = Config.InterfaceScale = 1;
         Player.ShowNames = Config.ShowNames = true;
         Player.FeedbackButtonInPlay = Config.FeedbackButton = true;
-        Config.TickAhead = TickAheadMode.Dynamic;
+        Config.TickAhead = TickAheadMode.Always;
         Bindings.ResetToDefaults();
         Config.LookPreset = null;
         Config.FaithfulLook = false;
@@ -1877,7 +1900,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     /// <summary>
     /// Whether a settings row changes authoritative simulation behavior.
     /// </summary>
-    static bool AuthoritySetting(string label) => label is
+    static bool AuthoritySetting(string label) => label.StartsWith("Squad XP ", StringComparison.Ordinal) || label is
         "Squad size multiplier" or "Global population multiplier" or "Town raid events: size" or "Town raid events: frequency" or
         "Fast zone hopping" or "Turret gunners turn" or "Animals pick up items" or "Fast speed" or "Fastest speed" or "Town attacks frequency" or "Dismemberment" or "Auto save" or "Auto save time (minutes)" or
         "Interior lamps" or "Attackers per target" or "Harpoon limit" or "Late dodges and blocks" or
@@ -1886,7 +1909,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         "Advanced ragdolls" or "luckyren Mode" or "Dropped items kept" or "Raids as written" or "Weak punch reach" or "Bench facing"
         or "Bags in the inventory" or "Squad XP" or "Others' XP" or "Swamp turtle attacks" or "Prisoners hold still"
         or "Holes and needles in the ground" or "Caged animals idle" or "Towns change far away"
-        or "Raids keep their progress" or "Guards stop passing bodies";
+        or "Raids keep their progress" or "Guards stop passing bodies" or "Knocked out stay" or "Talk across shop counters" or "Turret fire is a crime";
 
     /// <summary>
     /// Presents a server-owned row without mutation controls.

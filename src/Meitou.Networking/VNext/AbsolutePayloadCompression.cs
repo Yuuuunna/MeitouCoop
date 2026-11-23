@@ -5,13 +5,14 @@ using System.IO.Compression;
 namespace Meitou.Networking.VNext;
 
 /// <summary>
-/// Stateless lossless compression of complete bulk publications, immutable effect definitions and individual motion datagrams.
+/// Stateless lossless compression of complete bulk and lifecycle publications, immutable effect definitions and individual motion datagrams.
 /// Each payload decodes independently under its caller's allocation bound.
 /// </summary>
 internal static class AbsolutePayloadCompression
 {
     /// <summary>
     /// This prefix cannot be a valid definition count, packed frame length or the canonical MTN2 motion magic.
+    /// A lifecycle frame has an explicit compressed flag because its raw body starts with an arbitrary world GUID.
     /// </summary>
     static ReadOnlySpan<byte> Magic => "MBCF"u8;
 
@@ -21,10 +22,10 @@ internal static class AbsolutePayloadCompression
     const int HeaderBytes = 9;
 
     /// <summary>
-    /// Uses low-cost Brotli only when saving both 128 bytes and one eighth of the original. Bulk and metadata start at 1024 bytes;
+    /// Uses stateless Brotli only when saving both 128 bytes and one eighth of the original. Bulk and metadata start at 1024 bytes;
     /// independently bounded motion batches also consider smaller packets, never one-character updates.
     /// </summary>
-    internal static byte[] Encode(byte[] payload, int minimumBytes = 1024)
+    internal static byte[] Encode(byte[] payload, int minimumBytes = 1024, int quality = 1)
     {
         if (payload.Length < Math.Max(256, minimumBytes)) return payload;
 
@@ -32,7 +33,7 @@ internal static class AbsolutePayloadCompression
         byte[] scratch = ArrayPool<byte>.Shared.Rent(capacity);
         try
         {
-            if (!BrotliEncoder.TryCompress(payload, scratch.AsSpan(0, capacity), out int written, quality: 1, window: 22))
+            if (!BrotliEncoder.TryCompress(payload, scratch.AsSpan(0, capacity), out int written, quality, window: 22))
                 return payload;
 
             byte[] result = new byte[HeaderBytes + written];

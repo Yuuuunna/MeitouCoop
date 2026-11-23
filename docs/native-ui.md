@@ -36,7 +36,7 @@ positions turn the global illumination on, whose rays they use), Ambient occlusi
 Probes + hybrid; Off leaves the cascades). Each reads and writes the switches it stands for, which keep their saved keys and get no rows of
 their own; the screen-space contact shadows, in the Shadows group, have no row where the device traces rays. The looks and the tiers set the switches, not the choices.
 
-A row whose setting is read at start-up only (`SettingsMenu.RestartKeys`: HDR output, texture quality, the water grid and its wave resolution) carries a tag beside its name: "Needs restart", and a filled "Restart to apply" once its value is no longer the one the game started with. The Display page folds the upscaler's and the HDR output's settings under their rows, as the Graphics features. An optional effect's switch is Off | On.
+A row whose setting is read at start-up only (`SettingsMenu.RestartKeys`: HDR output, texture quality, the water grid and its wave resolution) carries a tag beside its name: "Needs restart", and a filled "Restart to apply" once its value is no longer the one the game started with. The Display page folds the upscaler's and the HDR output's settings under their rows, as the Graphics features, and the Advanced page folds a slider per skill under Squad XP. An optional effect's switch is Off | On.
 
 Graphics (`LookPresets`, `QualityTiers`, `FeatureGrouping`; `--settings-showcase` with `--screenshot` captures it) has two
 rows above its tabs:
@@ -62,6 +62,7 @@ rows above its tabs:
   | Advanced materials, ground trails, water contact foam, far grass cover | off | on | on | on | on |
   | Reflections, GTAO (quality Medium; High from Ultra) | off | off | on | on | on |
   | Rock smoothing, outline refinement | off | off | start default | on | on |
+  | Simple terrain shading ([render-terrain](render-terrain.md#simple-material)) | on | off | off | off | off |
   | Hybrid GI, traced sun shadows, lamp shadows, GI traced on characters (off without the indirect light's traced scene, `TracedSwitches`) | off | off | off | on | on |
   | Traced grass shadows | off | off | off | off | on |
 
@@ -161,7 +162,8 @@ with optional UI-mode restriction. OverrideControl can extend context.CreateBase
 AddMapMarkers adds world map markers from a per-frame source (modding.md "Map markers").
 AddSquadAiOptions adds tick buttons to the overview's AI tab, AddBuildingActions button lines to the
 selected building's panel after the game's own, AddTownPanelLines lines (text or buttons) to the
-town panel under the game's own; a press queues SimCommands
+town panel under the game's own, AddCharacterPanelLines lines under the HUD's stats lines,
+AddJobPanelButtons buttons above the jobs list; a press queues SimCommands
 ([modding](modding.md#registration-surface)).
 Source/test interfaces are authoritative for signatures; samples in Ui extension tests.
 
@@ -172,7 +174,7 @@ insert into builtin layout. Override factory or choose explicit child placement.
 
 ## Layout, input and lifetime
 
-Panels/labels/buttons/images/compound children: pixel/percentage/offset/right-bottom placement,
+Panels/labels/buttons/images/text boxes ([modding](modding.md#registration-surface))/compound children: pixel/percentage/offset/right-bottom placement,
 absolute/row/column flow, padding/gaps. Parent disabled propagates; clip drawing/hits to parent/
 slot. Labels and images pass input through; panels block world in region. An image node
 (`UiNodeKind.Image`) shows the file at `UiNode.Image` (full path; PNG, TGA, JPEG, BMP, DDS) stretched
