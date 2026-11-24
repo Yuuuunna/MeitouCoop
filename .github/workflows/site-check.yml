@@ -5,7 +5,6 @@ on:
   pull_request:
     paths:
       - "site/**"
-      - "bench/**"
       - ".github/workflows/site-check.yml"
 
 permissions:
@@ -19,13 +18,8 @@ jobs:
         working-directory: site
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - name: Fetch engine benchmark history
-        run: git fetch --no-tags https://github.com/VlcekM/MeitouClient.git master:refs/remotes/benchmark-upstream/master
-      - run: python3 ../bench/tools/generate.py --ref refs/remotes/benchmark-upstream/master --out public/bench/bench.json
       - run: npm ci
       - run: npm run build

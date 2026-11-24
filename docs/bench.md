@@ -4,10 +4,6 @@ The world viewer's offscreen harness measures frame cost and visual effects of r
 Implementation: `tools/Meitou.ModelViewer/BenchSession.cs`, `src/Meitou.Game/Rendering/Bench/`, `BenchHarnessTests`.
 Options: [viewer.md](viewer.md).
 
-**Observed** (CI workflows): benchmark validation and site PR builds fetch `VlcekM/MeitouClient` master into
-`refs/remotes/benchmark-upstream/master` and pass it as `generate.py --ref`. Benchmark ancestry follows the engine
-repository, including commits a Coop synchronization PR has not yet merged into its base branch.
-
 ## Runs
 
 ```text
@@ -58,7 +54,7 @@ the terrain decal layers redrawn), so `upd-terrain` and `gi` hold only their own
 `sim` (game only) is the simulation ticks run on the render thread before the frame's clock starts (`FrameProfiler.Outside`); it counts in the total. The tick run ahead during the world draw ([simulation](simulation.md#tick-ahead)) is not in it: its wall time is the `tick ahead` row.
 It opens (not plotted) to the world ticks per frame and the mean tick's ms, the tick phases (`World.Profile`, `TickProfile`; on while F12 shows; a
 parallel phase is wall time up to its barrier), `outside ticks` (control ticks, host orders), the ten costliest systems (all their spans: serial calls, parallel phases, effect applies), then the
-parts systems mark inside their own time (`TickProfile.Part`; Ragdoll's `rag setup`, `rag step` (the physics), `rag back`, `rag sweep`) and, per parallel
+parts systems mark inside their own time (`TickProfile.Part`; Ragdoll's `rag look` (parallel), `rag setup`, `rag step` (the physics), `rag back`, `rag sweep`) and, per parallel
 phase, `<phase> cpu` (its jobs' time summed over the threads) and `<phase> slow` (each system's slowest job, summed): wall near `slow` is one job holding up the rest.
 F12's legend groups stages (update, pre-frame, scene, present) into one summed row and line each; a click on a `+` row opens it (plotting
 its stages instead), `-` closes it.
@@ -137,7 +133,7 @@ Loading the same autosave and resaving after 300 headless ticks gave matching SH
 - The render-thread stages (`cpu_*`) come from the shared `WorldFrame` laps; `cpu_sim` stays 0 (`update_ms` has the ticks).
 - The summary's run line names the device, scene and window sizes, the upscaler, the pacing, the GPU budget
   (`--metal-gpu-budget`) and the memory guard's state at the end. The saved graphics apply; `--benchmark-baseline` is
-  not applied on Metal, so its numbers do not compare with the benchmarks page.
+  not applied on Metal, so its numbers do not compare with Vulkan benchmark runs.
 - The Metal loop saves vsync, frame limit, full screen, upscaler and graphics at exit whatever the run's options were:
   point a bench run at a copy of `meitou.user.json` (the file is read from the working directory first).
 

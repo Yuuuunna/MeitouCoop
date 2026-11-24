@@ -36,6 +36,14 @@ sealed partial class GameHost
         /// Times the load, for the log.
         /// </summary>
         public readonly Stopwatch Clock = Stopwatch.StartNew();
+        /// <summary>
+        /// The world running when the load started: a stage that fails after another was swapped in left that one half-made.
+        /// </summary>
+        public required object From;
+        /// <summary>
+        /// The load is the main menu's (<see cref="NewGameLaunch.LeaveForMainMenu"/>).
+        /// </summary>
+        public bool ToMainMenu;
     }
 
     /// <summary>
@@ -158,7 +166,7 @@ sealed partial class GameHost
         if (ActiveSceneLoad is not null) return;
 
         DebugMenu.DebugMenuOpen = false;
-        ActiveSceneLoad = new();
+        ActiveSceneLoad = new() { From = Session.WorldIdentity };
         bool flies = mainMenuTransition ? Player.MeitouMainMenu && Config.MainMenuTransitions
             : Player.UiMode == Data.Ui.UiMode.Meitou && Config.InGameTransitions;
         if (flies)
@@ -210,6 +218,9 @@ sealed partial class GameHost
             PresentationHour = null;
             if (e is not SceneLoadFailed) Console.Error.WriteLine($"scene     load failed: {e}");
             Player.Notice(e is SceneLoadFailed ? e.Message : $"Load failed: {e.Message}", true);
+
+            // A world swapped in before the failure (its first tick threw, #1198) stopped mid-phase: the main menu's world replaces it.
+            if (!Session.IsRemote && !ReferenceEquals(Session.WorldIdentity, load.From) && !load.ToMainMenu) NewGame.LeaveForMainMenu();
         }
     }
 

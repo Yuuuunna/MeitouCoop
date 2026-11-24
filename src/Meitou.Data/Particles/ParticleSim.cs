@@ -110,6 +110,33 @@ public sealed partial class ParticleSimulation
     /// </summary>
     public float LifeScale { get; set; } = 1;
     /// <summary>
+    /// The system node's uniform scale, as Particle Universe's system scale: it multiplies the system's <c>scale</c> and <c>scale_velocity</c>, so
+    /// every place, shape, particle size and speed, and the technique's position (1 for every effect but a code mod's anchored one,
+    /// docs/modding.md "Visual effects").
+    /// </summary>
+    public float Stretch { get; set; } = 1;
+
+    /// <summary>
+    /// The system's <c>scale</c> with the node's (<see cref="Stretch"/>).
+    /// </summary>
+    Vector3 Scale => Definition.Scale * Stretch;
+
+    /// <summary>
+    /// The system's <c>scale_velocity</c> with the node's (<see cref="Stretch"/>).
+    /// </summary>
+    float ScaleVelocity => Definition.ScaleVelocity * Stretch;
+    /// <summary>
+    /// The whole system keeps its particles in its node's frame, its place and its turn (as every technique's <c>keep_local</c>, and turned
+    /// too): they move and turn with the node and are placed in the world when read (<see cref="Collect"/>). Off for every effect but a code
+    /// mod's on a bone or weapon (docs/modding.md "Visual effects").
+    /// </summary>
+    public bool KeepLocal { get; set; }
+
+    /// <summary>
+    /// The technique's particles are in the node's frame (its own <c>keep_local</c>, or <see cref="KeepLocal"/>).
+    /// </summary>
+    bool Local(TechniqueState t) => KeepLocal || t.Def.KeepLocal;
+    /// <summary>
     /// The system was stopped (an effect whose life is over): the emitters make nothing more and the particles live out.
     /// </summary>
     public bool EmissionStopped { get; set; }
@@ -155,6 +182,10 @@ public sealed partial class ParticleSimulation
         /// A <c>force_emission</c> emitter has thrown its one burst.
         /// </summary>
         public bool Forced;
+        /// <summary>
+        /// Whether at least one particle was emitted in the current <c>duration</c> cycle.
+        /// </summary>
+        public bool CycleEmitted;
     }
 
     /// <summary>
@@ -440,8 +471,9 @@ public sealed partial class ParticleSimulation
             if (!def.Enabled || def.Type is PuEmitterType.Slave or PuEmitterType.Unknown) continue;
             st.Age += dt;
             if (!Working(def, st, dt)) continue;
-            float rate = def.Rate.Evaluate(st.Age, _random) * env.EmissionScale;
-            int n = Requested(def, st, Math.Max(rate, 0), dt);
+            float unscaled = Math.Max(def.Rate.Evaluate(st.Age, _random), 0);
+            float rate = unscaled * env.EmissionScale;
+            int n = Requested(def, st, rate, unscaled, dt);
             for (; n > 0 && t.Count < t.Capacity; n--) Spawn(t, e, def, env);
         }
     }
@@ -449,20 +481,31 @@ public sealed partial class ParticleSimulation
     /// <summary>
     /// The particles an emitter asks for this step (the plugin's <c>ParticleEmitter::_calculateRequestedParticles</c>, <b>Verified</b>, decompile):
     /// the rate times the step with the fraction carried over; a <c>force_emission</c> emitter throws the rate as a count once, at its first working
-    /// step, then nothing (docs/formats/particle-universe.md).
+    /// step, then nothing (docs/formats/particle-universe.md). When a positive <see cref="ParticleEnvironment.EmissionScale"/> (particle density)
+    /// would reduce a finite-duration or forced emitter below one particle even though the unscaled emitter would emit one, one particle is kept so
+    /// low-rate effects such as Venge's sky beams do not vanish at low particle density.
     /// </summary>
-    static int Requested(PuEmitterDef def, EmitterState st, float rate, float dt)
+    static int Requested(PuEmitterDef def, EmitterState st, float rate, float unscaled, float dt)
     {
         if (def.ForceEmission)
         {
             int burst = st.Forced ? 0 : (int)rate;
+            if (!st.Forced && burst == 0 && rate > 0 && unscaled >= 1) burst = 1;
             st.Forced = true;
             return burst;
+        }
+
+        if (!st.CycleEmitted && def.Duration is not null && rate > 0 && unscaled * st.Cycle >= 1 && rate * st.Cycle < 1.05f)
+        {
+            st.CycleEmitted = true;
+            st.Accumulator = 0;
+            return 1;
         }
 
         st.Accumulator += rate * dt;
         int n = (int)st.Accumulator;
         st.Accumulator -= n;
+        if (n > 0) st.CycleEmitted = true;
         return n;
     }
 
@@ -472,7 +515,11 @@ public sealed partial class ParticleSimulation
     bool Working(PuEmitterDef def, EmitterState st, float dt)
     {
         if (def.Duration is not { } duration) return true;
-        if (st.Cycle < 0) st.Cycle = Math.Max(duration.Evaluate(0, _random), 0);
+        if (st.Cycle < 0)
+        {
+            st.Cycle = Math.Max(duration.Evaluate(0, _random), 0);
+            st.CycleEmitted = false;
+        }
         st.Clock += dt;
         if (!st.Resting)
         {
@@ -492,6 +539,7 @@ public sealed partial class ParticleSimulation
         {
             st.Clock = 0;
             st.Cycle = Math.Max(duration.Evaluate(0, _random), 0);
+            st.CycleEmitted = false;
             st.Resting = false;
             return true;
         }
@@ -503,15 +551,11 @@ public sealed partial class ParticleSimulation
     /// </summary>
     void Spawn(TechniqueState t, int emitterIndex, PuEmitterDef e, in ParticleEnvironment env)
     {
-        var scale = Definition.Scale;
+        var scale = Scale;
         Vector3 offset = SpawnOffset(e, scale);
         var direction = e.AutoDirection && offset.LengthSquared() > 1e-12f ? Vector3.Normalize(offset)
             : Cone(e.Direction.LengthSquared() > 1e-12f ? Vector3.Normalize(e.Direction) : Vector3.UnitY, e.Angle.Evaluate(0, _random));
-        if (!Orientation.IsIdentity)
-        {
-            offset = Vector3.Transform(offset, Orientation);
-            direction = Vector3.Transform(direction, Orientation);
-        }
+        if (!Orientation.IsIdentity && !KeepLocal) direction = Vector3.Transform(direction, Orientation);
 
         if (env.WindDirectionEmission && env.Wind.LengthSquared() > 1e-6f)
         {
@@ -521,15 +565,15 @@ public sealed partial class ParticleSimulation
         }
 
         // The emitter's attributes are read at the system's age (Verified, the plugin's _initParticleVelocity / TimeToLive / Dimensions).
-        float speed = e.Velocity.Evaluate(Time, _random) * Definition.ScaleVelocity;
+        float speed = e.Velocity.Evaluate(Time, _random) * ScaleVelocity;
         float life = Math.Max(e.Life.Evaluate(Time, _random) * LifeScale, 1e-3f);
         var (width, height, depth) = SpawnDimensions(t, e);
         var colour = SpawnColour(e);
 
         t.Grow();
         int i = t.Count++;
-        var local = t.Def.Position + e.Position * scale + offset;
-        var p = t.Def.KeepLocal ? local : Origin + local;
+        var local = Placed(t.Def.Position * Stretch + e.Position * scale + offset);
+        var p = Local(t) ? local : Origin + local;
         t.X[i] = p.X;
         t.Y[i] = p.Y;
         t.Z[i] = p.Z;
@@ -553,6 +597,12 @@ public sealed partial class ParticleSimulation
         t.RotationSpeed[i] = 0;
         InitTextureRotation(t, i, e);
     }
+
+    /// <summary>
+    /// A new particle's place in the system node's frame (the technique's and emitter's positions plus the shape's offset, all scaled) turned
+    /// by <see cref="Orientation"/>, unless the whole system keeps its particles in the node's frame (<see cref="KeepLocal"/>: turned when read).
+    /// </summary>
+    Vector3 Placed(Vector3 local) => Orientation.IsIdentity || KeepLocal ? local : Vector3.Transform(local, Orientation);
 
     /// <summary>
     /// The offset of a new particle from the emitter's centre, by the emitter's shape (one random draw or more, in the shape's order).
@@ -776,7 +826,7 @@ public sealed partial class ParticleSimulation
                 // given, else x / y / z; read at the life fraction or the system's age. A size that would not stay above 0 is
                 // left as it was (Verified, the plugin's ScaleAffector::_affect and setOwnDimensions).
                 float f = a.SinceStartSystem ? Time : t.Age[i] / t.Life[i];
-                var s = Definition.Scale * (dt * Size);
+                var s = Scale * (dt * Size);
                 float rx, ry, rz;
                 if (a.ScaleXyz is not null) rx = ry = rz = a.ScaleXyz.Evaluate(f);
                 else
@@ -836,8 +886,8 @@ public sealed partial class ParticleSimulation
     void AffectVortex(TechniqueState t, PuAffectorDef a, bool[]? excluded, int n, float dt)
     {
         var axis = a.Axis.LengthSquared() > 1e-12f ? Vector3.Normalize(a.Axis) : Vector3.UnitY;
-        var centre = Origin + a.Position * Definition.Scale;
-        if (t.Def.KeepLocal) centre = a.Position * Definition.Scale;
+        var centre = Origin + a.Position * Scale;
+        if (Local(t)) centre = a.Position * Scale;
         // The plugin's VortexAffector::_preProcessParticles (Verified): once per update the angle is the rotation speed (radians a
         // second) read at the SYSTEM's age (a dyn_random draws anew each update), times the step. _affect then turns every
         // particle's place about the affector's position, and its velocity, by it.
@@ -868,9 +918,9 @@ public sealed partial class ParticleSimulation
         // mass * the affector's mass / |d|^2) * dt, d the vector to the affector's place (nothing at d = 0). The motion step then
         // multiplies the direction by the scale velocity again, and the velocities here are those moved distances, so the pull is
         // scale velocity squared in all.
-        var centre = (t.Def.KeepLocal ? Vector3.Zero : Origin) + a.Position * Definition.Scale;
+        var centre = (Local(t) ? Vector3.Zero : Origin) + a.Position * Scale;
         float g = a.Strength?.Evaluate(0) ?? 0;
-        float pull = Definition.ScaleVelocity * Definition.ScaleVelocity * g * a.MassAffector * dt;
+        float pull = ScaleVelocity * ScaleVelocity * g * a.MassAffector * dt;
         ForRange(n, (lo, hi) =>
         {
             for (int i = lo; i < hi; i++)
@@ -959,8 +1009,8 @@ public sealed partial class ParticleSimulation
 
         uint step = t.Step * 2654435761u + (uint)k * 40503u;
         bool kick = a.RandomDirection;
-        var dev = a.MaxDeviation * (kick ? Definition.ScaleVelocity * rate : rate);
-        var place = kick ? Vector3.One : Definition.Scale;
+        var dev = a.MaxDeviation * (kick ? ScaleVelocity * rate : rate);
+        var place = kick ? Vector3.One : Scale;
         ForRange(n, (lo, hi) =>
         {
             for (int i = lo; i < hi; i++)
@@ -1033,7 +1083,7 @@ public sealed partial class ParticleSimulation
             {
                 // The particle's own position: world space unless the technique keeps its particles local (Observed: the plugin compares the position
                 // attribute).
-                float shift = t.Def.KeepLocal ? 0 : o.Axis switch { 0 => WorldOffset.X, 1 => WorldOffset.Y, _ => WorldOffset.Z };
+                float shift = Local(t) ? 0 : o.Axis switch { 0 => WorldOffset.X, 1 => WorldOffset.Y, _ => WorldOffset.Z };
                 var axis = o.Axis switch { 0 => t.X, 1 => t.Y, _ => t.Z };
                 for (int i = t.Count - 1; i >= 0; i--)
                 {
@@ -1068,7 +1118,7 @@ public sealed partial class ParticleSimulation
     {
         foreach (var t in _techniques)
         {
-            if (t.Def.KeepLocal) continue;
+            if (Local(t)) continue;
             for (int i = 0; i < t.Count; i++)
             {
                 t.X[i] += delta.X;
@@ -1087,7 +1137,7 @@ public sealed partial class ParticleSimulation
         float edge = halfExtent * 2;
         foreach (var t in _techniques)
         {
-            if (t.Def.KeepLocal) continue;
+            if (Local(t)) continue;
             for (int i = 0; i < t.Count; i++)
             {
                 t.X[i] = WrapAxis(t.X[i] - centre.X, halfExtent, edge) + centre.X;
@@ -1110,7 +1160,7 @@ public sealed partial class ParticleSimulation
         var shift = ahead * (radius * 1.5f);
         foreach (var t in _techniques)
         {
-            if (t.Def.KeepLocal) continue;
+            if (Local(t)) continue;
             for (int i = 0; i < t.Count; i++)
             {
                 float dx = t.X[i] - centre.X, dy = t.Y[i] - centre.Y, dz = t.Z[i] - centre.Z;
@@ -1147,6 +1197,11 @@ public sealed partial class ParticleSimulation
     }
 
     /// <summary>
+    /// <paramref name="v"/> turned by <paramref name="turn"/> (untouched by the identity, so a world-space system reads as it did).
+    /// </summary>
+    static Vector3 Turned(Vector3 v, Quaternion turn) => turn.IsIdentity ? v : Vector3.Transform(v, turn);
+
+    /// <summary>
     /// Technique <paramref name="index"/>'s particles into <paramref name="destination"/> (at least its <see cref="TechniqueParticleCount"/>
     /// long); returns how many were written. The colour is multiplied by <paramref name="tint"/> (rgb) and <paramref name="alpha"/>;
     /// <paramref name="worldOffset"/> is added to every position (the sim keeps small numbers near its own origin; the caller adds where that origin
@@ -1158,14 +1213,15 @@ public sealed partial class ParticleSimulation
     {
         var t = _techniques[index];
         int n = Math.Min(t.Count, destination.Length);
-        var offset = (t.Def.KeepLocal ? Origin : Vector3.Zero) + worldOffset;
+        var offset = (Local(t) ? Origin : Vector3.Zero) + worldOffset;
+        var turn = KeepLocal ? Orientation : Quaternion.Identity;
         for (int i = 0; i < n; i++)
         {
-            var v = new Vector3(t.Vx[i], t.Vy[i], t.Vz[i]);
+            var v = Turned(new Vector3(t.Vx[i], t.Vy[i], t.Vz[i]), turn);
             float len = v.Length();
             destination[i] = new ParticleInstance
             {
-                Position = new Vector3(t.X[i], t.Y[i], t.Z[i]) + offset + v * ahead,
+                Position = Turned(new Vector3(t.X[i], t.Y[i], t.Z[i]), turn) + offset + v * ahead,
                 Rotation = t.Rotation[i],
                 Direction = len > 1e-4f ? v / len : Vector3.Zero,
                 Width = t.Width[i],
@@ -1228,8 +1284,8 @@ public sealed partial class ParticleSimulation
         if (_random is not CheckpointRandom stored)
             throw new InvalidOperationException("This particle simulation does not use checkpointable randomness.");
 
-        return new(2, Definition.Name, stored.Capture(), Origin, WorldOffset, Orientation, Size, LifeScale, EmissionStopped, Time,
-            _techniques.Select(CaptureTechnique).ToArray());
+        return new(3, Definition.Name, stored.Capture(), Origin, WorldOffset, Orientation, Size, LifeScale, EmissionStopped, Time,
+            _techniques.Select(CaptureTechnique).ToArray(), Stretch, KeepLocal);
     }
 
     /// <summary>
@@ -1244,7 +1300,7 @@ public sealed partial class ParticleSimulation
     /// Encodes a permanently resting emitter's infinite cycle as null.
     /// </summary>
     static ParticleEmitterState CaptureEmitter(EmitterState e) =>
-        new(e.Accumulator, e.Clock, float.IsPositiveInfinity(e.Cycle) ? null : e.Cycle, e.Resting, e.Age);
+        new(e.Accumulator, e.Clock, float.IsPositiveInfinity(e.Cycle) ? null : e.Cycle, e.Resting, e.Age, e.Forced, e.CycleEmitted);
 
     /// <summary>
     /// Validates the complete checkpoint before replacing this simulation's state.
@@ -1261,6 +1317,8 @@ public sealed partial class ParticleSimulation
         Orientation = state.Orientation;
         Size = state.Size;
         LifeScale = state.LifeScale;
+        Stretch = state.Stretch;
+        KeepLocal = state.KeepLocal;
         EmissionStopped = state.EmissionStopped;
         Time = state.Time;
 
@@ -1272,9 +1330,9 @@ public sealed partial class ParticleSimulation
     /// </summary>
     void ValidateCheckpoint(ParticleSimulationState state)
     {
-        if (state is null || state.Version is not (1 or 2) || state.System != Definition.Name || state.Techniques is null
+        if (state is null || state.Version is not (1 or 2 or 3) || state.System != Definition.Name || state.Techniques is null
             || state.Techniques.Length != _techniques.Length || !Finite(state.Origin) || !Finite(state.WorldOffset)
-            || !Finite(state.Orientation) || !float.IsFinite(state.Size) || !float.IsFinite(state.LifeScale)
+            || !Finite(state.Orientation) || !float.IsFinite(state.Size) || !float.IsFinite(state.LifeScale) || !float.IsFinite(state.Stretch)
             || !float.IsFinite(state.Time) || state.Time < 0)
             throw new InvalidDataException("Invalid particle simulation checkpoint.");
 
@@ -1333,6 +1391,8 @@ public sealed partial class ParticleSimulation
             e.Cycle = saved.Cycle ?? float.PositiveInfinity;
             e.Resting = saved.Resting;
             e.Age = saved.Age;
+            e.Forced = saved.Forced;
+            e.CycleEmitted = saved.CycleEmitted;
         }
 
         t.ObserverClock = s.ObserverClock;

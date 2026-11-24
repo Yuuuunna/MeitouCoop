@@ -238,7 +238,7 @@ faction) when no member is a character that is not dead: with the template's `re
 (and may run again); else it logs "Platoon::declareDead: <name>" to death.log, takes the platoon out of its town's pool set (lowering the pool by its living count, 0 here), sets the saved
 `dead` flag (+0x1f0) and clears `persistent` (destroyed at its next unload, its PLATOON record deleted by `FUN_1407ec5e0`; a campaign's platoon stays with its campaign, `FUN_1407ec570`); a save before then leaves it out unless the player is near ([save.md](../formats/save.md#npc-platoons-meitou-mapping)).
 Meitou: `Platoon.Dead` (saved as `dead`, read at load), set in `StepLoaded`; the platoon leaves the pool counts at once, is not kept and is despawned when it unloads (its dead lie where they fell).
-Meitou (g-008): a town unloads with its coverage zones only; a town squad with a living member in the loaded box of an active zone, or one carrying a player character (the carry test of `FUN_1404febd0`), then stays in the world as a loaded pinned platoon (`PopulationSystem.KeepLoaded`) that unloads by its own place after `TownUnloadGraceSeconds` (0), as each original platoon checks itself (the old "town stays loaded while a member is active" engine choice is gone; wild sites keep it).
+Meitou (g-008): a town unloads with its coverage zones only; a town squad with a living member in the loaded box of an active zone, or one carrying a player character (the carry test of `FUN_1404febd0`), or one with a member on screen (`+0x1a9` below; #1085: a guard carried off and put down in view vanished with Blister Hill), then stays in the world as a loaded pinned platoon (`PopulationSystem.KeepLoaded`) that unloads by its own place after `TownUnloadGraceSeconds` (0), as each original platoon checks itself (the old "town stays loaded while a member is active" engine choice is gone; wild sites keep it).
 A pinned platoon is otherwise wanted and made with its town's zone (engine choice), except one under a contract (hired bodyguards, a base defence;
 `PopulationSystem.TownBound`): that one is wanted, gated and activated by its own place like any original platoon, at game load too, and
 unloads after the original's 4 s outside the loaded zones (#858).
@@ -252,7 +252,8 @@ member with `+0x1a9` never is). An out-of-zone member is destroyed (`FUN_140799a
 in a loaded or requested zone) is out of zone, so is every in-zone member not in view within 600 of it (squared 360000, `DAT_141714bd4`; 3D distance; reason "leader wandered out of zone").
 The platoon stays active while any member is left, and the test repeats every frame; with none left it is destroyed as above. Before that, a platoon with 2 or more members whose members include one carried (`+0x3d4`), imprisoned
 (`+0x2f8` = 2) or flagged `+0x320` runs the split pass `FUN_14079c1c0` (see below). Meitou (`PopulationSystem.ThinOutOfZone`, Faithful
-unload of a non-kept roaming squad, after its grace): the same per-member rule on living members, with the effective leader as anchor, except the in-view exemption (render state) and the split;
+unload of a non-kept roaming squad, after its grace): the same per-member rule on living members, with the effective leader as anchor and the in-view exemption (`MedicalClock.OnScreen` against the host's camera, none headless), except the split;
+a kept or pinned platoon whose timer ran out stays active while any member, dead or alive, is on screen (`PopulationSystem.StaysActive`, `MemberInView`);
 when no living member would stay the squad is despawned whole as before.
 
 **Split at unload** (**Verified** `FUN_14079c1c0`, run for any platoon with 2+ members and no pointer at +0xe8): each member is skipped when its chain-owner handle (+0x330, a character or platoon) resolves to an
@@ -284,7 +285,7 @@ platoon's `+0xa0` member does not fit the `declareDead` reading above; unresolve
 | +8 | float | accumulated positive trust |
 | +0xc | float | accumulated negative trust |
 
-On the faction's FactionRelations object itself: +0x10 int rank, +0x18 float **global trust** (starts 0; slot 9 adds, DC_REPUTATION reads it as an int; not saved, **Observed**; the player table's saved `global trust` is read and written at +0x14). Meitou: `FactionRelations.GlobalTrust` / `AddGlobalTrust`.
+On the faction's FactionRelations object itself: +0x10 int rank, +0x18 float **global trust** (starts 0; slot 9 adds, DC_REPUTATION reads it as an int; not saved, **Observed**; the player table's saved `global trust` is read and written at +0x14). Meitou: `FactionRelations.GlobalTrust` / `AddGlobalTrust`; a new game and an import without Relations start it at 0 again (`FactionRelations.Reset`, `SaveImport.FilterFactions`).
 
 ### 3.2 Faction rank
 
@@ -612,6 +613,33 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   "startoff- Wanderer squad"); `FUN_1404ffad0` (the platoon's own template +0x108, from its constructor's argument or, at load, a typed 0x34
   `squad template` lookup in `FUN_1407ed0f0`). Three early returns of `FUN_14095b210` (**Observed**, constructors `FUN_14055ca90`, `FUN_14029fb40`, factory `FUN_14057cc70`): the building's location hand `+0x88` must be null (type 0xb; the base constructor copies it from a parent object or a door's parent building), its parent `+0x238` null (a turret mounted on a building has one) and its byte `+0x1a0` clear (set only by `DoorStuff`); so only a child object is refused, never a level-data home. Meitou: `TradeSystem.StockHome` refuses a turret post, for the squad path and `StockEmptyHome` alike. `FUN_14057f4c0` stamps its template's designation on the building even when the template makes no squad (`NoteMade` for every home).
 
+### The player's home
+
+**Verified** (decompile). An `Ownerships` holds money (`+0x88`), a home town (`+0x30`), a home building hand (`+0x38`), an occupied town (`+0x80`), a
+slave list (`+0x8`) and an owned list (`+0x58`). Each platoon has one inline (`+0x148`, Platoon vfunc `0x98` `FUN_1407f2320`), saved in its record
+(`money`, `hometown`, `homebuilding`, `occupied`, `slave<i>`, `owned<i>`; writer `FUN_140624120`, reader `FUN_140624640`, called only by the platoon
+writer `FUN_140372ef0` and loader `FUN_1407ed0f0`). Each faction has one more (`+0x80`, made with the faction, `FUN_1407fe270`), never saved but for
+the player's money (`player money`, `FUN_140375360`). `Character::getOwnerships` (`FUN_1407956a0`) returns the player faction's for a character of a
+player faction (faction `+0x250`), else its platoon's, else an empty static one. So every reader of a character's Ownerships home (the turret
+finder's filter, [combat goals](ai-tasks.md#combat-goals); the medic's and the cage finders' home tests) reads one building for all the player's
+characters, whatever their squad.
+
+That home is taken by `Ownerships::addOwned` (`FUN_1407ecb00`: a BUILDING hand, type 0, while the home hand is null, type 11, goes to `setHome`;
+then the hand joins the owned list unless there). `setHome` (`FUN_1407ec9e0`) does nothing when the home already is that hand (**Observed**: the home hand's vfunc 8, the equality `addOwned` calls with the hand, shown without its argument), and for a building
+takes it only when it is a gateway (Building slot 123 non-null: the factory's GatewayBuilding, record `is wall gate`) or has an interior object
+(`+0x1f0`) and is no wall (slot 89: WallBuilding, `links together`). The player faction's Ownerships is given a building in two places: the building
+factory (`FUN_14057cc70`, placed or loaded) gives it every building whose faction is a player faction and that is no door (`+0x1a0`; a loaded one's faction is its state's `owner faction ID`, which the factory resolves before it makes the building), unless the
+player object's `+0x298` is set (**Observed**: an object with a road list that `FUN_1407f3720` makes and frees, taken as the in-game editor); and the purchase of a town house (`FUN_1407ad6c0`) takes the house out of its old faction's
+(`FUN_1407ec0f0`, which nulls a home that was it) and gives it to the player's. Nothing takes a dismantled or destroyed building out, so a home that
+is gone stays as a hand that resolves to nothing, and a filter on it passes no building, until the next load makes the factions and their
+Ownerships again. The character factory (`FUN_140581770`) also calls `setHome` with a spawn's home building on the character's Ownerships;
+**Observed**: no player character is made with one.
+
+Meitou: `PlayerState.Home` (a building key; hashed, not saved), taken while null by `PlayerHome.Find` at the construction step's start from the first
+building of the player's faction that `PlayerHome.Accepts`. The original's order is the order its zones make their buildings; Meitou's is its town
+houses by key, then the placed buildings in the registry's order (**engine choice**). `AiSystem.OwnershipsHome` is the getter; of the readers only the
+turret finder uses it so far (the others read the squad's home, which a player squad has none of). Check on a save: `meitou-tools probe <save> home`.
+
 ### Squads without packages
 
 **Verified** (decompile) unless marked.
@@ -773,8 +801,13 @@ Meitou: [ground items](../simulation.md#items-and-eating).
   - `debris` (`spawnDebris` `FUN_140937510`, disassembly for the arguments): per entry v0 to v1 clusters (`Rand_IntInRange`: lo + a uniform step over
     [lo, hi], clamped, so lo when lo > hi), scale v2 × 0.01 (v2 0: 1). A NEST_ITEM without `physics file`: a point within `size radius`, then `cluster min`
     to `cluster max` meshes, each within `cluster range` × scale of the one before, yaw random, scale ± 0.1, its `ground mesh` (else `mesh`); with
-    `number of meshes` n > 1 the bare name less its last character plus an int in [1, n] (`FUN_14092bdc0`: `bone1.mesh`, 6 → `bone1`..`bone6`). Drawn
-    only (a static batch); every variant takes the item's own `material`, as the named mesh does (engine reading: the data names only the first). With a `physics file` (`Beak Thing Egg`): as many real items within `cluster range` of the entry's point, each persisted to
+    `number of meshes` n > 1 the bare name less its last character plus an int in [1, n] (`FUN_14092bdc0`: `bone1.mesh`, 6 → `bone1`..`bone6`); the
+    first mesh at the cluster's point, each step taken after a mesh is placed. Drawn
+    only (a static batch); every variant takes the item's own `material`, as the named mesh does (engine reading: the data names only the first).
+    Height of every point (cluster point, mesh, physics item; **Verified**, disassembly of `FUN_140937510` 1.0.68): with a home (`_nestUpThisSpot`
+    passes its `Building*` on) a ray from the point before (the spot for the first, the home's position) plus 1000 up, cast along -Y with mask
+    0x204 (the terrain and group 9), lies on its first hit; with no home, or a miss (y -99), `getTerrainHeightFast`. Never the navmesh: a
+    two-storey home's debris lies on its floor-0 parts, not its upper floor (#1090). With a `physics file` (`Beak Thing Egg`): as many real items within `cluster range` of the entry's point, each persisted to
     the nest. Then the item's own `cluster` list from the last one placed (v0 to v1 clusters within v2; the egg's `Bone Fragment=15,0,0` is 15).
   - `loot spawn` (VENDOR_LIST): the list for the nest's faction (`FUN_1409592a0`), v0 to v1 items rolled as an item slot's (`FUN_1409540d0`), each at
     a point within `size radius` snapped to the navmesh, none below height 1; persisted to the nest.

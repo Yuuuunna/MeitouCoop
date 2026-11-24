@@ -564,6 +564,8 @@ public sealed class AuthorityGateway : IDisposable
         if (!Current(connection)) return AuthorityStatus.InvalidConnection;
         if (connection.Phase != AdmissionPhase.Active) return AuthorityStatus.NotActive;
         if (!HasRole(connection.Player)) { connection.Phase = AdmissionPhase.Preparing; return AuthorityStatus.NoActiveRole; }
+        if (request.Command is ShowMachinesCommand shown && !ShownMachinesValid(connection, shown))
+            return AuthorityStatus.InvalidRequest;
         if (request.Command is PointedCommand pointed && !pointed.Target.IsNone && !connection.PublishedCharacters.Contains(pointed.Target)
             || request.Command is InspectCommand inspect && !inspect.Target.IsNone && !connection.PublishedCharacters.Contains(inspect.Target)
             || request.Command is InspectBuildingCommand { Instance: { } site } && !connection.PublishedSites.Contains(site)
@@ -591,6 +593,14 @@ public sealed class AuthorityGateway : IDisposable
             (faction >= 0 ? _world.Players.Find(connection.Player)!.MembershipRevision(faction) : 0)) return AuthorityStatus.StaleAuthority;
         return AuthorityStatus.Evaluated;
     }
+
+    /// <summary>
+    /// A window hint names only the two UI slots and previously published sites. It never loads a site or grants stock access.
+    /// </summary>
+    static bool ShownMachinesValid(AuthorityConnection connection, ShowMachinesCommand command) =>
+        command.Sites is { Count: <= ShowMachinesCommand.MaximumSites } sites
+        && sites.All(site => !string.IsNullOrWhiteSpace(site) && connection.PublishedSites.Contains(site))
+        && sites.Distinct(StringComparer.Ordinal).Count() == sites.Count;
 
     bool HasRole(PlayerId player) => _world.Players.KnownRoles(player).Any(_world.Players.Validate);
     bool Current(AuthorityConnection connection) => !_disposed && !_faulted && connection is not null &&

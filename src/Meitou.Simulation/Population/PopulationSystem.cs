@@ -177,6 +177,7 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         CampaignAncestorsOnce = this._settings.CampaignAncestorsOnce;
         KeepWild = this._settings.KeepWild;
         ResidentSchedule = this._settings.ResidentSchedule;
+        KeepDowned = this._settings.KeepDowned;
         OffscreenOverrides = this._settings.OffscreenOverrides;
         _overrides = new TownOverrides(_data.Db);
         _live = new WorldStates(data.Db, data.Relations);
@@ -214,6 +215,10 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
     /// The residents' schedule switch (<see cref="PopulationSettings.ResidentSchedule"/>), changed live by the host.
     /// </summary>
     public bool ResidentSchedule { get; set; }
+    /// <summary>
+    /// The knocked-out members' switch (<see cref="PopulationSettings.KeepDowned"/>), changed live by the host.
+    /// </summary>
+    public bool KeepDowned { get; set; }
     /// <summary>
     /// The off-screen town override switch (<see cref="PopulationSettings.OffscreenOverrides"/>), changed live by the host.
     /// </summary>
@@ -367,7 +372,7 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         // changed), not at the look.
         RefreshStates(world);
         TickDiscover(world);
-        if (world.Tick % _settings.CheckEveryTicks != 0) { if (_wars is not null) StepWarManager(world); return; }
+        if (!world.Beat(_settings.CheckEveryTicks, TickPhases.PopulationCheck)) { if (_wars is not null) StepWarManager(world); return; }
         world.Uniques.SeedPrisoners(_data.Db);
         RefreshUniques(world);
         RefreshStates(world);
@@ -782,11 +787,16 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
 
     /// <summary>
     /// Starts loading a town: its replacement or held squads settled, its residents built (on the build thread when there is one, else made at once);
-    /// a zone gate that says no leaves it for the next look.
+    /// a zone gate that says no for one of its zones (<see cref="TownZonesReady"/>) leaves it for the next look, those zones asked for meanwhile.
     /// </summary>
     void Load(World world, TownSite site, SiteState state)
     {
-        if (ZoneGate is { } gate && !gate(site.Zone)) return;   // retried at the next look
+        if (!TownZonesReady(site))
+        {
+            AskCoverage(site);
+            return;   // retried at the next look
+        }
+
         state.Status = SiteStatus.Loading;
         state.LoadId++;
         long loadId = state.LoadId;
@@ -813,6 +823,33 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         {
             _work.Add(() => _built.Enqueue(BuildTown(site, loadId, seed, walk, held, owned)));
         }
+    }
+
+    /// <summary>
+    /// Whether the host's <see cref="ZoneGate"/> lets the town be made: the navmesh is ready in its own zone and in each of its
+    /// <see cref="TownSite.Coverage"/> zones (engine choice: its residents stand in buildings of those zones too, and one made where the mesh is not
+    /// loaded yet would stand on the terrain under its floor; #1125: World's End's library in the zone beside its own).
+    /// </summary>
+    bool TownZonesReady(TownSite site)
+    {
+        if (ZoneGate is not { } gate) return true;
+        if (!gate(site.Zone)) return false;
+
+        foreach (var zone in site.Coverage)
+            if (!gate(zone)) return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// A town waiting for its zones (<see cref="TownZonesReady"/>) asks for its coverage zones for as long as its own zone is asked for, so their
+    /// navmesh is loaded (<see cref="AskTownZones"/> asks only for a town loaded or loading).
+    /// </summary>
+    void AskCoverage(TownSite site)
+    {
+        if (!_loadedUntil.TryGetValue(site.Zone, out long until)) return;
+
+        foreach (var zone in site.Coverage) Ask(zone, until);
     }
 
     /// <summary>
@@ -1224,12 +1261,15 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
     /// A town squad with a living member in the loaded box of an active zone is not stored with its town: it stays in the world as a pinned platoon
     /// that unloads on its own, as the original checks each platoon by its place (<c>FUN_1404febd0</c>, after 4 s outside every loaded zone; a zone's
     /// unload touches no platoon, <c>FUN_1409fe980</c>), so a squad chasing the player away from home does not vanish with its town. One carrying a
-    /// player character is kept wherever it is (<see cref="SquadCarriesPlayer"/>). True when it was kept.
+    /// player character is kept wherever it is (<see cref="SquadCarriesPlayer"/>), and one with a member on screen while one is
+    /// (<see cref="MemberInView"/>: a guard carried off and put down in view stays). True when it was kept.
     /// </summary>
     bool KeepLoaded(World world, int site, Squad squad)
     {
         var at = PlatoonPosition(world, squad, new Vector2(squad.Position.X, squad.Position.Z));
-        if (!ZoneActivation.InLoadedBox(at.X, at.Y, _active) && !SquadCarriesPlayer(world, squad)) return false;
+        bool held = ZoneActivation.InLoadedBox(at.X, at.Y, _active) || SquadCarriesPlayer(world, squad) || MemberInView(world, squad);
+        if (!held) return false;
+
         var stored = new StoredSquad
         {
             Name = squad.Name,
@@ -1316,7 +1356,7 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
             if (p is { Unmade: true, Guest: false, State: PlatoonState.Unloaded } && p.Origin == site)
             {
                 if (p.Saved is { } sp) sp.PlatoonId = -1;
-                world.Platoons.Remove(p.Id);
+                world.Platoons.Remove(p.Id, PlatoonGone.Dropped);
             }
         }
     }

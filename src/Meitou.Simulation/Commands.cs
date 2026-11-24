@@ -189,6 +189,17 @@ public sealed record InspectCommand(CharacterId Target) : SimCommand;
 public sealed record ShowInventoryCommand(IReadOnlyList<CharacterId> Targets) : SimCommand;
 
 /// <summary>
+/// The machine windows this player shows. An empty list closes both windows; the sites only request presentation and grant no stock access.
+/// </summary>
+public sealed record ShowMachinesCommand(IReadOnlyList<string> Sites) : SimCommand
+{
+    /// <summary>
+    /// The interface has one inspected machine window and one pinned own-machine window.
+    /// </summary>
+    public const int MaximumSites = 2;
+}
+
+/// <summary>
 /// The building the HUD panels show (docs/game/ui-screens.md "Selected building"): the snapshot then carries its doors' state. A null instance clears
 /// it. Display only.
 /// </summary>
@@ -390,7 +401,7 @@ public static class PlayerCommandRouting
         or Locks.ToggleDoorsOrder or Locks.ToggleDoorLocksOrder
         or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld or Items.RotateHeld
         or Items.PickUpItemOrder
-        or PointedCommand or InspectCommand or InspectBuildingCommand or ShowInventoryCommand
+        or PointedCommand or InspectCommand or InspectBuildingCommand or ShowInventoryCommand or ShowMachinesCommand
         or Trading.OpenPlayerTrade or Trading.AcceptPlayerTrade or Trading.RevisePlayerTrade or Trading.ConfirmPlayerTrade or Trading.CancelPlayerTrade;
 }
 

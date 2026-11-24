@@ -15,8 +15,10 @@ public readonly record struct TaskProfile(float Desire, float CommitMin = 0, flo
     bool EndsWithTask = false);
 
 /// <summary>
-/// The <see cref="TaskProfile"/> of every goal type the engine acts out (<see cref="TaskBehaviours"/>); other types get the default (special, no
-/// commitment, crowd 1).
+/// The <see cref="TaskProfile"/> of every goal type the engine acts out (<see cref="TaskBehaviours"/>); other types get the default (the registered
+/// desire, no commitment, crowd 1). Every desire is the row's registered one (<see cref="TaskDesires"/>: a constant, <see cref="Random"/> for AI
+/// slot 48, <see cref="Special"/> for a function of its own or a type with no TaskData row); the table's must agree with it (checked when the class
+/// loads).
 /// </summary>
 public static class TaskProfiles
 {
@@ -24,11 +26,6 @@ public static class TaskProfiles
     /// The desire stand-ins: a random desire (0.01 + 0.4 x a fresh roll) and a special one (a TaskData function of its own).
     /// </summary>
     public const float Random = -1, Special = -2;
-
-    /// <summary>
-    /// The profile of a type not in <see cref="Table"/>: special desire, no commitment, crowd 1.
-    /// </summary>
-    static readonly TaskProfile Default = new(Special);
 
     /// <summary>
     /// The profile of every goal type the engine acts out.
@@ -56,7 +53,7 @@ public static class TaskProfiles
         // machine, a step of plans (FUN_140319a60, Verified).
         [TaskType.AutoLabouringMines] = new(1),
         [TaskType.AutoLabouringMinesPretend] = new(1, 0.5f, 2, true, EndsWithTask: true),
-        [TaskType.PretendToOperateMachinery] = new(Special, 0.5f, 2, true, EndsWithTask: true),
+        [TaskType.PretendToOperateMachinery] = new(1, 0.5f, 2, true, EndsWithTask: true),
         [TaskType.FollowSlavemaster] = new(1),
         [TaskType.Bodyguard] = new(Special, Crowd: 0.9f),
         // Medic: the desire function's 1 times the finder's score (FUN_140998410); crowd factor 0.8 (FUN_140319a60, Observed).
@@ -79,20 +76,35 @@ public static class TaskProfiles
     static readonly TaskProfile[] Flat = BuildFlat();
 
     /// <summary>
-    /// Builds <see cref="Flat"/>: <see cref="Default"/> for every type, then the table's entries.
+    /// Builds <see cref="Flat"/>: the registered desire for every type, then the table's entries, each checked against it.
     /// </summary>
     static TaskProfile[] BuildFlat()
     {
         var a = new TaskProfile[TaskBehaviours.TypeCount];
-        Array.Fill(a, Default);
-        foreach (var (type, p) in Table) a[(int)type] = p;
+        for (int t = 0; t < a.Length; t++) a[t] = new(RegisteredDesire((TaskType)t));
+        foreach (var (type, p) in Table)
+        {
+            if (p.Desire != RegisteredDesire(type)) throw new InvalidOperationException($"{type}: desire {p.Desire} is not the registered one");
+            a[(int)type] = p;
+        }
+
         return a;
     }
 
     /// <summary>
-    /// The profile of a goal type (<see cref="Default"/> for one out of range).
+    /// A type's registered desire as a profile holds it (<see cref="TaskDesires"/>).
     /// </summary>
-    public static TaskProfile Of(TaskType type) => (uint)type < (uint)Flat.Length ? Flat[(int)type] : Default;
+    static float RegisteredDesire(TaskType type) => TaskDesires.Of(type) switch
+    {
+        { Kind: TaskDesireKind.Constant } d => d.Value,
+        { Kind: TaskDesireKind.Random } => Random,
+        _ => Special,
+    };
+
+    /// <summary>
+    /// The profile of a type (a type out of range: <see cref="Special"/>, no commitment, crowd 1).
+    /// </summary>
+    public static TaskProfile Of(TaskType type) => (uint)type < (uint)Flat.Length ? Flat[(int)type] : new(Special);
 }
 
 /// <summary>
@@ -120,11 +132,30 @@ public static class TaskAggression
     };
 
     /// <summary>
-    /// The intended aggression of a character's current goal (status +0xac): in a fight its row (16 for a goal's or an NPC's attack, 13 for a
-    /// defence), else its AI goal, else its running row. Engine reading of "current goal" for Meitou's split of goals and engine starts.
+    /// The intended aggression of a character's current goal (status <c>+0xac</c>, <c>FUN_14050ed60</c>): the started order's row for an order-owned
+    /// task (such as 240 arrest, 5 attack or 61 unprovoked attack), the mind's goal for a goal duty (such as 204 arrest) or a fight its AI started
+    /// (16, 21, 144 rate 1; 34, 32 and the protect goals rate 0), else a fight's own row (a defence row 13 rates 0: the original plans it under 32
+    /// Self preservation or a protect goal, which rate 0), else the AI goal, else the running row.
     /// </summary>
-    public static float OfGoal(CharacterCold c) =>
-        c.InCombat && c.Running is { } fight ? Of(fight.Row) : c.Ai?.Goal is { } goal ? Of(goal.Task.Type) : c.Running is { } run ? Of(run.Row) : 0;
+    public static float OfGoal(CharacterCold c)
+    {
+        if (c.Running is { Source: TaskSource.Order } && c.OrderQueue.Front is { Started: true } order)
+            return Of(order.Row);
+
+        if (c.Running is { Source: TaskSource.Goal } && c.Ai is { Goal: { } dutyGoal })
+            return Of(dutyGoal.Task.Type);
+
+        if (c.Running is { Task: Movement.CharacterTask.Attack } fight)
+        {
+            if (c.Ai is { Goal: { } goal } mind && AiSystem.OwnsFight(c, mind))
+                return Of(goal.Task.Type);
+
+            return fight.Row == TaskType.AttackAttackersOf ? 0 : Of(fight.Row);
+        }
+
+        if (c.Ai is { Goal: { } current }) return Of(current.Task.Type);
+        return c.Running is { } run ? (run.Row == TaskType.AttackAttackersOf ? 0 : Of(run.Row)) : 0;
+    }
 
     /// <summary>
     /// The intended aggression of a character's running task (status +0xa0).

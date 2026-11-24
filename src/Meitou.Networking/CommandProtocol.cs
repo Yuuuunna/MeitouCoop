@@ -143,6 +143,7 @@ public static class CommandProtocol
         [182] = typeof(ShowInventoryCommand),
         [183] = typeof(PointedCommand),
         [184] = typeof(AreaArrival),
+        [185] = typeof(ShowMachinesCommand),
         [170] = typeof(OpenPlayerTrade),
         [171] = typeof(AcceptPlayerTrade),
         [172] = typeof(RevisePlayerTrade),
@@ -256,6 +257,11 @@ public static class CommandProtocol
         {
             case InPlayEditorOpened opened when opened.Character.IsNone || opened.SessionId == Guid.Empty:
                 throw new InvalidDataException("Opening the character editor requires its authorized character and session.");
+            case LiftItem lift when lift.Count <= 0:
+                throw new InvalidDataException("A lifted stack count must be positive.");
+            case ShowMachinesCommand shown when shown.Sites is null || shown.Sites.Count > ShowMachinesCommand.MaximumSites
+                || shown.Sites.Any(string.IsNullOrWhiteSpace) || shown.Sites.Distinct(StringComparer.Ordinal).Count() != shown.Sites.Count:
+                throw new InvalidDataException("Invalid shown machine sites.");
             case MoveOrder move:
                 Position(move.Target);
                 break;
@@ -334,6 +340,9 @@ public static class CommandProtocol
         static ulong Bits(T value) => Enum.GetUnderlyingType(typeof(T)) == typeof(ulong) ? Convert.ToUInt64(value) : unchecked((ulong)Convert.ToInt64(value));
         static void Validate(T value)
         {
+            // Mod job types are registered by the authority; the handler still resolves the offer and verifies actor/site grants.
+            if (typeof(T) == typeof(Meitou.Data.Gameplay.Ai.TaskType)
+                && Convert.ToInt64(value) >= SimulationExtensions.FirstModCode) return;
             if (Flags ? (Bits(value) & ~Mask) != 0 : !Enum.IsDefined(value))
                 throw new JsonException("Unknown command enum value.");
         }

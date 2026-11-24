@@ -1442,10 +1442,16 @@ public sealed class AiMind
     public TravelAsk TravelAsk { get; internal set; }
 
     /// <summary>
-    /// Where the stranger a static guard stands beside is (<see cref="AiSystem"/>'s <c>GuardFactor</c>, FUN_14099edd0); null: the plain guard post.
-    /// Derived by the think; hashed while set.
+    /// Where the stranger the static guard's finder drew on its latest run is (<see cref="AiSystem"/>'s <c>GuardFactor</c>, FUN_14099edd0); null:
+    /// the plain guard post. Derived by the think; hashed while set.
     /// </summary>
     public Vector3? GuardVisitorAt { get; set; }
+
+    /// <summary>
+    /// The stranger a static guard stands beside: <see cref="GuardVisitorAt"/> as it was when the goal was taken up, kept while the goal stays
+    /// current (the pick keeps a current goal without setting its target again, FUN_140510650); null: the plain guard post. Hashed while set.
+    /// </summary>
+    public Vector3? GuardVisitorHeld { get; set; }
 
     /// <summary>
     /// What the think asks of the <see cref="FleeSystem"/> this tick: to run the character from its threats (Self preservation's provider 35) or from
@@ -1627,12 +1633,18 @@ public sealed class AiMind
             hasher.Add(visitor);
         }
 
+        if (GuardVisitorHeld is { } held)
+        {
+            hasher.Add(0x47486c64);
+            hasher.Add(held);
+        }
+
         if (FightFrom != 0) hasher.Add(FightFrom);
         if (Guard is { } guard)
         {
             hasher.Add(0x47726454);   // "GrdT": only while Self preservation holds a turret
             hasher.Add(guard.Site);
-            hasher.Add(Rng.StableHash(guard.Building.Key));
+            hasher.Add(Rng.StableHash(guard.Key));
         }
 
         if (!TravelDetour.IsNone)
@@ -1671,6 +1683,13 @@ public sealed class AiMind
 }
 
 /// <summary>
-/// A town turret Self preservation's 234 took (<see cref="AiMind.Guard"/>): the town site and the turret building.
+/// A turret Self preservation's 234 took (<see cref="AiMind.Guard"/>): a town's (its site and building) or a placed one (site -1, no town
+/// building), with its key (a town building's key, a placed building's id) and its post.
 /// </summary>
-public sealed record GuardTurret(int Site, TownBuilding Building);
+public sealed record GuardTurret(int Site, string Key, TurretPost Post, TownBuilding? Building)
+{
+    /// <summary>
+    /// Where the turret building stands.
+    /// </summary>
+    public Vector3 Position => Building?.Position ?? Post.Position;
+}

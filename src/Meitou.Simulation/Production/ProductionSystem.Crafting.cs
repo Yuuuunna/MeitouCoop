@@ -41,6 +41,16 @@ public sealed partial class ProductionSystem
     HashSet<(CraftKind, string)>? _everEnabled;
 
     /// <summary>
+    /// The benches' published craft options (<see cref="CraftsView"/>).
+    /// </summary>
+    readonly CraftOptionsCache _craftOptions;
+
+    /// <summary>
+    /// The benches' published smiths (<see cref="SmithsView"/>).
+    /// </summary>
+    readonly SmithViewCache _smiths;
+
+    /// <summary>
     /// Crafts some research unlocks; anything no research lists is craftable from the start (engine reading).
     /// </summary>
     HashSet<(CraftKind, string)> EverEnabled()
@@ -54,6 +64,20 @@ public sealed partial class ProductionSystem
     /// Whether the player can queue an option now: its record (and a weapon's model) unlocked, and its level within the bench's tech level.
     /// </summary>
     public bool CanCraft(World world, CraftBench bench, CraftOption option) => CanCraft(world, bench, option, world.Player.Faction);
+
+    /// <summary>
+    /// Whether a finished research has enabled the weapon type or model <paramref name="id"/>.
+    /// </summary>
+    bool Researched(World world, string id, int faction) => ResearchFor(world, faction).UnlockedCrafts.Contains((CraftKind.Weapon, id));
+
+    /// <summary>
+    /// Whether some research could enable the weapon option: its type and model are each in a research's enable lists. The original's bench never
+    /// lists one that cannot be (<see cref="CanCraft"/>), so the Craft tab leaves it out.
+    /// </summary>
+    bool EverOffered(CraftOption option) =>
+        option.Kind != CraftKind.Weapon
+            || (EverEnabled().Contains((CraftKind.Weapon, option.Item))
+                && (option.Model is null || EverEnabled().Contains((CraftKind.Weapon, option.Model))));
 
     /// <summary>
     /// The recipe of a bench option on the machine.
@@ -287,7 +311,7 @@ public sealed partial class ProductionSystem
     /// The model a weapon craft comes out as: the queued one, or below the crafter's skill with no critical the best model of the bench at or below
     /// the skill (else its lowest).
     /// </summary>
-    static CraftOption WeaponModel(CraftBench bench, CraftOption option, float skill, bool critical) =>
+    internal static CraftOption WeaponModel(CraftBench bench, CraftOption option, float skill, bool critical) =>
         skill >= option.Level || critical
             ? option
             : bench.Options.Where(o => o.Kind == CraftKind.Weapon && o.Item == option.Item && o.Level <= skill)
@@ -296,111 +320,36 @@ public sealed partial class ProductionSystem
                 ?? bench.Options.Where(o => o.Kind == CraftKind.Weapon && o.Item == option.Item).OrderBy(o => o.Level).First();
 
     /// <summary>
-    /// The cache of the smiths' craft predictions (null: made again).
+    /// The Craft tab's Current Smith per bench: his name, effective level of the bench's stat and its multiplier's penalty, and for each queued craft
+    /// what he would make (<see cref="CraftPrediction"/>). A bench's view is made again when its smith, his level or penalty, or its queue changed
+    /// (<see cref="SmithViewCache"/>).
     /// </summary>
-    IReadOnlyDictionary<string, CraftSmithView>? _publishedSmiths;
-    /// <summary>
-    /// The machine registry version <see cref="_publishedSmiths"/> was made at (-1: never).
-    /// </summary>
-    long _smithsVersion = -1;
+    public IReadOnlyDictionary<string, CraftSmithView> SmithsView(World world) => _smiths.Of(world);
 
     /// <summary>
-    /// The Craft tab's Current Smith per bench (<c>FUN_1402bcf60</c>): the bench's last operator (<see cref="Machine.Smith"/>) while it is alive with
-    /// stats, his effective level of the bench's stat and the penalty of its multiplier, and for each queued craft what that smith would make
-    /// (<see cref="CraftPrediction"/>). Rebuilt when the machines changed.
+    /// Every crafting bench's options by site: one list per bench record, made again when research unlocks change (<see cref="CraftOptionsCache"/>).
     /// </summary>
-    public IReadOnlyDictionary<string, CraftSmithView> SmithsView(World world)
-    {
-        if (_publishedSmiths is not null && _smithsVersion == world.Machines.Version) return _publishedSmiths;
-        _smithsVersion = world.Machines.Version;
-        var map = new Dictionary<string, CraftSmithView>(StringComparer.Ordinal);
-        foreach (var m in world.Machines.All)
-        {
-            if (m.Craft is not { } state || m.Data.Craft is not { } bench || m.Data.Stat <= 0 || !world.Characters.IsAlive(m.Smith)
-                || world.Characters.Cold(m.Smith.Slot) is not { Stats: { } stats, Medical: { } medical } cold) continue;
-            var (level, penalty) = World.EffectiveSkill(cold, medical, stats, (StatsEnumerated)m.Data.Stat);
-
-            // FUN_1402b5900 reads the first queued craft whichever one is hovered.
-            int critical = state.Queue.Count == 0
-                ? 0
-                : Math.Clamp((int)(CraftBench.CriticalChance(level, m.Data.Stat, state.Queue[0].Option.Level) * 100), 0, 100);
-            var entries = new List<CraftPrediction>(state.Queue.Count);
-            foreach (var job in state.Queue)
-            {
-                var option = job.Option;
-                var none = new CraftPrediction(-1, null, false, 0, -1);
-                switch (option.Kind)
-                {
-                    case CraftKind.Armour or CraftKind.Crossbow:
-                        entries.Add(none with { Quality = CraftBench.ArmourQuality(level, false), Critical = critical });
-                        break;
-                    case CraftKind.Weapon:
-                        var model = WeaponModel(bench, option, level, false);
-                        entries.Add(none with
-                        {
-                            Model = model.Model is { } id ? _db.Find(id)?.Name ?? id : "",
-                            ModelChanged = model.Model != option.Model,
-                            MaterialCost = _db.Find(option.Item)?.GetInt("material cost", 4) ?? 4,
-                            Critical = critical,
-                        });
-                        break;
-                    default:
-                        entries.Add(none);
-                        break;
-                }
-            }
-
-            map[m.Site] = new CraftSmithView(cold.Name, (int)level, penalty, entries);
-        }
-
-        return _publishedSmiths = map;
-    }
-
-    /// <summary>
-    /// The cache of the benches' craft options (null: made again).
-    /// </summary>
-    IReadOnlyDictionary<string, IReadOnlyList<CraftOptionView>>? _publishedCrafts;
-    /// <summary>
-    /// The research count <see cref = "_publishedCrafts"/> was made at (-1: never).
-    /// </summary>
-    (int Faction, long Version)[] _craftsResearch = [];
-    /// <summary>
-    /// The bench count <see cref="_publishedCrafts"/> was made at (-1: never).
-    /// </summary>
-    int _craftsBenches = -1;
-    /// <summary>
-    /// Every crafting bench's options (rebuilt when research or the set of benches changed).
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<CraftOptionView>> CraftsView(World world)
-    {
-        int benches = 0;
-        foreach (var m in world.Machines.All)
-            if (m.Craft is not null)
-                benches++;
-        var versions = world.Factions.All.Select(f => (f.Index, f.Research.Version)).ToArray();
-        if (_publishedCrafts is not null && _craftsResearch.SequenceEqual(versions) && _craftsBenches == benches)
-            return _publishedCrafts;
-        _craftsResearch = versions;
-        _craftsBenches = benches;
-        var map = new Dictionary<string, IReadOnlyList<CraftOptionView>>(StringComparer.Ordinal);
-        foreach (var m in world.Machines.All)
-            if (m.Craft is not null)
-                map[m.Site] = CraftOptions(world, m.Site);
-        return _publishedCrafts = map;
-    }
+    public IReadOnlyDictionary<string, IReadOnlyList<CraftOptionView>> CraftsView(World world) => _craftOptions.Of(world);
 
     /// <summary>
     /// What a bench can craft, for its Craft tab: every option with its recipe and whether it can be queued now.
     /// </summary>
-    public IReadOnlyList<CraftOptionView> CraftOptions(World world, string site)
+    public IReadOnlyList<CraftOptionView> CraftOptions(World world, string site) => _craftOptions.Of(world, site);
+
+    /// <summary>
+    /// Every option of a crafting machine's bench with its recipe and whether it can be queued now (<see cref="CraftOptionsCache"/> keeps them).
+    /// </summary>
+    IReadOnlyList<CraftOptionView> BuildCraftOptions(World world, Machine m) =>
+        m.Data.Craft is { } bench ? [.. bench.Options.Where(EverOffered).Select(o => OptionView(world, m, bench, o))] : [];
+
+    /// <summary>
+    /// One option of a bench as its Craft tab shows it.
+    /// </summary>
+    CraftOptionView OptionView(World world, Machine m, CraftBench bench, CraftOption option)
     {
-        if (world.Machines.Find(site)is not { Data.Craft: { } bench } m)
-            return[];
-        return[..bench.Options.Select(o =>
-        {
-            var recipe = RecipeOf(m, o);
-            return new CraftOptionView(o.Key, recipe.Name, o.Kind, o.Level, recipe.Hours, [..recipe.Inputs.Select(i => (_items.Info(i.Item)?.Name ?? i.Item, i.PerItem))], CanCraft(world, bench, o, Site(world, m.Site)?.Owner ?? -1));
-        })];
+        var recipe = RecipeOf(m, option);
+        var inputs = recipe.Inputs.Select(i => (_items.Info(i.Item)?.Name ?? i.Item, i.PerItem)).ToArray();
+        return new CraftOptionView(option.Key, recipe.Name, option.Kind, option.Level, recipe.Hours, inputs, CanCraft(world, bench, option, Site(world, m.Site)?.Owner ?? -1));
     }
 
     /// <summary>
@@ -444,7 +393,10 @@ public sealed partial class ProductionSystem
     }
 
     bool Unlocked(World world, CraftKind kind, string id, int faction) => ResearchFor(world, faction).UnlockedCrafts.Contains((kind, id)) || !EverEnabled().Contains((kind, id));
-    public bool CanCraft(World world, CraftBench bench, CraftOption option, int faction) => Unlocked(world, option.Kind, option.Item, faction) && (option.Model is null || Unlocked(world, CraftKind.Weapon, option.Model, faction)) && option.Level <= bench.TechLevel;
+    public bool CanCraft(World world, CraftBench bench, CraftOption option, int faction) => option.Level <= bench.TechLevel
+        && (option.Kind == CraftKind.Weapon
+            ? Researched(world, option.Item, faction) && (option.Model is null || Researched(world, option.Model, faction))
+            : Unlocked(world, option.Kind, option.Item, faction));
     /// <summary>Where the camera looks (the last <see cref = "FocusCommand"/>; null: not told, as in headless runs): research costs are counted round it. Derived from the commands, not saved or hashed.</summary>
     readonly Dictionary<PlayerId, Vector3> _focuses = [];
     PlayerId _researchViewer = PlayerId.Local;
@@ -580,7 +532,7 @@ public sealed partial class ProductionSystem
     {
         var zone = FocusZone(viewer);
         var state = ResearchFor(world, faction);
-        if (_publishedResearch is not null && _publishedResearchFaction == faction && _researchViewer == viewer && _researchVersion == state.Version && _machinesVersion == world.Machines.Version && _researchZone == zone)
+        if (_publishedResearch is not null && _publishedResearchFaction == faction && _researchViewer == viewer && _researchVersion == state.Version && _machinesVersion == (world.Machines.Version, world.Machines.Worked) && _researchZone == zone)
             return _publishedResearch;
         var lists = (state.Completed.Count, state.Queue.Count, state.Paid.Count, state.BenchLevel);
         if (_publishedResearch is not null && _publishedResearchFaction == faction && _researchViewer == viewer && _researchLists == lists && (ulong)(world.Tick - _researchBuilt) < ResearchRefreshTicks)
@@ -591,7 +543,7 @@ public sealed partial class ProductionSystem
         _researchViewer = viewer;
         _publishedResearchFaction = faction;
         _researchVersion = ResearchFor(world, faction).Version;
-        _machinesVersion = world.Machines.Version;
+        _machinesVersion = (world.Machines.Version, world.Machines.Worked);
         _allResearch ??= ResearchData.LoadAll(_db);
         var queue = state.Queue.Select(q => (q.Id, Research(q.Id)?.Name ?? q.Id, Research(q.Id)is { } d ? Math.Clamp(q.Seconds / (d.Hours(_constants, Settings.ResearchOption, state.Times(q.Id)) * (MachineData.DaySeconds / 24)), 0, 1) : 0)).ToArray();
         var available = _allResearch.Where(r => Available(world, r, faction)).Select(r => new ResearchOption(r.Id, r.Name, r.Category, r.LevelAt(state.Times(r.Id)), r.Hours(_constants, Settings.ResearchOption, state.Times(r.Id)), Affordable(world, r, faction, viewer), r.LevelAt(state.Times(r.Id)) > state.BenchLevel, state.Partial.TryGetValue(r.Id, out float s) ? Math.Clamp(s / (r.Hours(_constants, Settings.ResearchOption, state.Times(r.Id)) * (MachineData.DaySeconds / 24)), 0, 1) : 0) { Description = r.Description, Paid = state.Paid.Contains(r.Id, StringComparer.Ordinal), Cost = state.Paid.Contains(r.Id, StringComparer.Ordinal) ? [] : [..r.CostAt(state.Times(r.Id)).Select(c => (_items.Info(c.Item)?.Name ?? c.Item, c.Count, CountInBenches(world, c.Item, faction, viewer) >= c.Count))], // The description lists the RESEARCH requirements only (FUN_140495e00 looks them up as type 21).
@@ -870,12 +822,13 @@ public sealed partial class ProductionSystem
 
     static bool MayEditJobs(World world, JobListCommand command, CharacterId character) => world.MayOrder(command, character) && (command.Issuer is null && command.JobsRevision == 0 || command.JobsRevision != 0 && world.JobsRevision(character) == command.JobsRevision);
     /// <summary>The player's complete building nearest <paramref name = "at"/> within <paramref name = "range"/> whose machine passes <paramref name = "ok"/> (ties: the lower site id).</summary>
-    string? NearestSite(World world, Vector3 at, float range, Func<BuildSite, Machine, bool> ok, int faction)
+    string? NearestSite(World world, Vector3 at, float range, Func<Machine, bool> kind, Func<BuildSite, Machine, bool> ok, int faction)
     {
         string? best = null;
         float bestGap = float.MaxValue;
         foreach (var m in world.Machines.All)
         {
+            if (!kind(m)) continue;
             if (Site(world, m.Site)is not { Complete: true } site || site.Owner != faction || world.Players.RequiresExplicitControl && !WorkSiteOpen(world, site))
                 continue;
             float gap = Gap(site.Position, at);

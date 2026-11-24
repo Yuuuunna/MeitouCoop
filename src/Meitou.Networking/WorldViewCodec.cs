@@ -321,6 +321,8 @@ public sealed partial class WorldViewCodec
         ValidateSquadPresentation(view);
         ValidateDrawAnchors(view.Snapshot);
         ValidateModPresentation(view.Snapshot);
+        ValidateModVisuals(view.Snapshot.ModVisuals);
+        ValidateJobOffers(view.Snapshot.ModJobOffers);
         if (view.Snapshot.GroundItems is null || view.Snapshot.GroundItems.Any(item => item.Material is null || item.Material.Length > 4096))
             throw new InvalidDataException("Invalid ground item material identity.");
         if (view.Snapshot.Projectiles is null || view.Snapshot.Projectiles.Any(p => !float.IsFinite(p.Speed) || p.Speed < 0))
@@ -346,6 +348,40 @@ public sealed partial class WorldViewCodec
             if (report.Map is { } map && (map.Size < 1 || map.Heights is null || (long)map.Size * map.Size != map.Heights.Length || map.Extent <= 0 || !float.IsFinite(map.Extent) || !float.IsFinite(map.X) || !float.IsFinite(map.Z) || map.Fields is null || map.Rocks is null || map.Fields.Count != report.Resources.Count || map.Rocks.Count != report.Resources.Count || map.Fields.Any(f => f is not null && f.Length != map.Heights.Length) || map.Rocks.Any(r => r is null)))
                 throw new InvalidDataException("Invalid private survey map.");
         }
+    }
+
+    /// <summary>
+    /// The authority's immutable job menu table remains within the same type, text and record bounds used by registration.
+    /// </summary>
+    static void ValidateJobOffers(IReadOnlyList<Meitou.Simulation.Production.ModJobOffer> offers)
+    {
+        if (offers is null || offers.Count > SimulationExtensions.MaximumJobTypes
+            || offers.Any(offer => offer is null || (int)offer.Type < SimulationExtensions.FirstModCode || offer.Refusal() is not null
+                || offer.Buildings.Count > 4096 || offer.Buildings.Any(id => id.Length > 4096))
+            || offers.Select(offer => offer.Type).Distinct().Count() != offers.Count)
+            throw new InvalidDataException("Invalid authoritative mod job offers.");
+    }
+
+    /// <summary>
+    /// Visual lifetimes and anchors are validated without requiring other component references to arrive on the same lane.
+    /// </summary>
+    static void ValidateModVisuals(ModVisualSnapshot visuals)
+    {
+        if (visuals?.Effects is null || visuals.Glows is null || (long)visuals.Effects.Length + visuals.Glows.Length > 65536)
+            throw new InvalidDataException("Invalid shared visual collection.");
+        if (visuals.Effects.Any(effect => effect is null || effect.Id <= 0 || !Name(effect.Owner, 256)
+                || !Name(effect.Effect, 4096) || !Name(effect.System, 4096) || !ModVisuals.ValidAnchor(effect.Anchor)
+                || !Times(effect.StartedAt, effect.ExpiresAt) || effect.Tint is { } tint && !Colour(tint))
+            || visuals.Effects.Select(effect => effect.Id).Distinct().Count() != visuals.Effects.Length)
+            throw new InvalidDataException("Invalid shared mod effect.");
+        if (visuals.Glows.Any(glow => glow is null || glow.Id <= 0 || !Name(glow.Owner, 256) || !ModVisuals.ValidTarget(glow.Target)
+                || !Times(glow.StartedAt, glow.ExpiresAt) || !Colour(glow.Colour) || glow.Strength is not (>= 0 and <= 4))
+            || visuals.Glows.Select(glow => glow.Id).Distinct().Count() != visuals.Glows.Length)
+            throw new InvalidDataException("Invalid shared mod glow.");
+
+        static bool Name(string value, int maximum) => !string.IsNullOrWhiteSpace(value) && value.Length <= maximum;
+        static bool Times(double started, double expires) => double.IsFinite(started) && double.IsFinite(expires) && expires >= started;
+        static bool Colour(Vector3 value) => value.X is >= 0 and <= 4 && value.Y is >= 0 and <= 4 && value.Z is >= 0 and <= 4;
     }
 
     /// <summary>

@@ -95,7 +95,7 @@ and the next frame tries again (`PostProcess.Unallocated`). Before this, a 3840 
 
 ## Kept points
 
-Advanced "Keep textures at characters" (Meitou, default on, `UserConfig.KeepTexturesAtCharacters`): the host sets `WorldFrame` `Kept` to
+Advanced "Keep textures at characters" (default on, `UserConfig.KeepTexturesAtCharacters`): the host sets `WorldFrame` `Kept` to
 the drawn position of every squad bar member each frame; its sub-option "Keep textures at all squads" (default off, shown only while the
 main one is on, `KeepTexturesAtAllSquads`) takes every player squad's members instead. `ObjectStreamer.Near` / zone layout count the nearest of eye, `Ahead` and `Kept`,
 so object meshes and texture mips stay loaded round each character (a resolving instance's first texture need is measured the same way, else
@@ -279,27 +279,41 @@ Motion vectors (temporal upscalers): an instance with a door, turret joint or ro
 
 **Original** (**Verified** by code, Ghidra, unless marked):
 - A building with an `interior` list owns an interior object, open or closed.
-- **Opening.** `FUN_1407f7230` runs every frame. Each player character whose location is a non-destroyed building sets that interior's keep-open timer to 10. The timer falls by the game-time step (`FUN_14054a790`) only while the building is complete (its vtable slot 69 returns the building's is-complete byte `+0x160`, **Verified**; Meitou: a construction site is held open), and the interior closes below 0 (`FUN_14054b690`). A building just left shows every floor (floor 4) until then.
+- **Opening.** `FUN_1407f7230` runs every frame. Each player character whose location is a non-destroyed building sets that interior's keep-open timer to 10. The timer falls by the game-time step (`FUN_14054a790`) only while the building is complete (its vtable slot 69 returns the building's is-complete byte `+0x160`, **Verified**; Meitou: a construction site is held open), and the interior closes below 0 (`FUN_14054b690`). A building just left shows every floor (floor 4) until then. The same pass also opens, while build mode's ghost (`DAT_14212de48` `+0x18`) has `is interior furniture` (its slot 6, `FUN_14042df90`, which reads `is node` too), the buildings the player's faction owns in the town nearest the cursor's ground point (`FUN_140928890`, within each town's radius; the town's list `vfunc 0x2d8`), and an object at PlayerInterface `+0x298` whose flags `+0xa1` and `+0xa2` are set; this branch writes no keep-open timer, and while `+0x298` is set or a ghost without `is interior furniture` is held, the characters' buildings are emptied from the set (**Verified**, decompile of `FUN_1407f7230`).
 - **Closing** (`FUN_14054b130`) hides the interior's contained objects in every pass, except those flagged outside (`RootObject+0x240`). Their entities are destroyed and the lights go off.
 - **Contained objects** are registered by `FUN_14054f3d0`. They are interior-layout furniture and buildings with a parent building: a saved `isInsideBuilding`, or player ghosts placed inside.
 - **The outside flag:**
   - Loaded from a state's `flags` bit 0, or the older `is outside` (`FUN_140552b70`).
   - Exterior-layout objects get it from their layout (`+0xa0`, `FUN_1405765c0`).
   - Interior-layout objects spawn without it (`FUN_140583400`).
+  - A player's building placed in or on another (a ghost with a parent) gets it when the ghost is made real (`FUN_1404d72a0`): set when a ray cast straight up from the ghost's position, without end, hits nothing in the collision groups `0x8079e00` (`FUN_1409b7430`, `FUN_1409b6a90`), or when the parent building is destroyed (Building slot `0x330`, `+0x1a1`); the object factory (`FUN_14057cc70`) takes it as its last argument. So furniture on a roof, with open sky over it, is outside and stays drawn while the building is closed.
 - `is interior furniture` / `is exterior furniture` only pick collision groups and the build label (`FUN_14055f6e0`, `FUN_1404df450`).
 - Ground items and characters have no closed-interior rule, only the floor sweep `FUN_1409fb540` (**Observed**).
 - **Unknown:** what makes the doorway black. There is no occluder object; the mask is destroyed on close.
 
 **Meitou:**
-- Opening is `GameHost.UpdateInteriorView`, which holds a left building open with all floors for 10 s of simulation time, or until it is unloaded, removed or destroyed.
+- Opening is `GameHost.UpdateInteriorView`, which holds a left building open with all floors for 10 s of simulation time, or until it is unloaded, removed or destroyed. While an interior-furniture or node ghost is out, `InteriorView.OpenForFurniture` adds, at the viewed floor and with no keep-open, the player's buildings in the town nearest the ghost within its radius (the level's towns by `TownData.Radius`, the player's outposts by theirs): its complete sites there and the town houses it owns (#1225). Not modelled: in the original, while `+0x298` is set or a ghost without `is interior furniture` is held, the buildings opened for the player's characters are left out of the set.
 - An interior layout's object is hidden while its building is closed unless its `interiors.level` state has the outside flag (`LayoutItem.Outside`). The flag set at the editor is taken as the runtime setters' result (**Observed**).
   - In the install's interior layouts, 10 170 objects without the flag are `is exterior furniture` (barrels, cages, camp beds, Stack's rooftop awnings); these are now hidden while closed.
   - 1 820 objects with the flag (yard tents, torches) stay.
 - A building inside another (`PlacedMesh.Contained`) is hidden while the building whose hull holds it is closed (`ClosedAround`); a player site takes its parent's hull over a neighbour's within the 2-unit margin (`PlacedMesh.ContainerId`). These are player sites with a parent (saved with `flags` 0), and zone states with `is inside building` and no outside flag.
+  - A player site is outside, and not hidden, when nothing of its holder's floor, stairs or roof collision stands straight over it (`PlacedMesh.OutsideWhenUncovered`, `InteriorVolume.Covered`), decided while drawing rather than stored. Engine choice: only the holder's collision is tested, where the original's ray meets any building. **Not done:** the parent being destroyed at placement, and the outside bit in the save (`flags` is still 0 for every site with a parent).
 - Shadow passes keep what the floor view hides above the viewed floor (parts, objects standing above it; `WorldObjectRenderer.DrawReal`), so a lower
   floor stays shaded under its ceiling (a watchtower's floor 0 was sunlit). The traced scene keeps them too (`WorldObjectRenderer.LeftOutOfRays`): the rays stand for the sun and the sky, so a roof the view hides still shades the room and blocks the sky. Faithful shadows leave them out (`HiddenFloorsCast`), as the game does: **Verified** (decompile) `Building::setFloorVisibility` (`FUN_1405482e0`) calls the scene node's `setVisible(vis, cascade)` for each physical entity of the floor, and an invisible object is in no camera's queue, the shadow cameras' included.
 - **Not done:** interior lamps still light a closed interior.
 
+## Lean lighting
+
+While a frame has no sun shadows (the shadow pass off: its receivers' term is 1) and no probe GI (no `GiProbes`: `uGiParams` stays the published zeros,
+so no GI, traced sun or contact sun), the objects' colour and solid programs, the terrain's colour sets and resolve (`TerrainPrograms` keys them by it)
+and the characters' world colour program (not a portrait's) are swapped for ones built with `LIGHTING_LEAN` (`LeanLighting`,
+`AtmosphereShaders.kenshiLight`): the shadow lookup, the traced-sun share and the probe reads are compiled out; the lamps, sky, haze and reflections'
+surface target stay. Decided each frame (`WorldFrame.PrepareTracedSun`), made the first frame it applies; A/B `lean-lighting`.
+**Observed** (2026-11-23, Iris Xe, `--low-end` 1920x1080 at scale 0.83, save "fps"'s spot, camera 800 units off, paired A/B): objects 6.79 -> 5.69 ms,
+GPU frame 21.2 -> 19.7; 10 pixels differ, by 1 / 255. With the terrain too: terrain 4.97 -> 4.50 ms there, 9.43 -> 7.98 from the viewer's default
+distance (GPU 16.0 -> 14.4; 193 scattered pixels differ, as the dust's from run to run). Play bench idle (one run each): GPU 18.1 -> 17.0 ms, 53 -> 56 fps. Stripping the paths one by one in separate runs: the shadow lookup and the probe and traced paths
+about 1 ms together, the lamps about 0.4 more (kept: the night needs them); the ambient map and cloud shadow nothing. The lookups cost their registers
+whether they ran or not.
 ## Validation
 
 Main, reflection and shadow stages repeat object work; inspect all three. **Observed** swamp

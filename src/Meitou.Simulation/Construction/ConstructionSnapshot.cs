@@ -48,6 +48,11 @@ public sealed record BuildingSnapshot(string Id, string Record, Vector3 Position
     public bool Destroyed { get; init; }
 
     /// <summary>
+    /// Whether a parented building sits outside its parent (such as an exterior wall light snapped to a building's light node).
+    /// </summary>
+    public bool Outside { get; init; }
+
+    /// <summary>
     /// A camp building's town (<see cref="Population.NestBuildings"/>: the nest or town that stood it up), for the owner its name bar shows; none
     /// for any other.
     /// </summary>

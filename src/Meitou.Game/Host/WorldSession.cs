@@ -176,6 +176,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         bool cagedAnimal = World.CagedAnimalFix;
         bool fixGround = World.GroundRepair;
         bool bagSearch = World.BagSearchFix;
+        bool counterTalk = World.CounterTalk;
         bool takeIntoBackpack = World.TakeIntoBackpack;
         var next = _runtime.ReplaceWorld(systems, candidate =>
         {
@@ -186,6 +187,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
             candidate.CagedAnimalFix = cagedAnimal;
             candidate.GroundRepair = fixGround;
             candidate.BagSearchFix = bagSearch;
+            candidate.CounterTalk = counterTalk;
             candidate.TakeIntoBackpack = takeIntoBackpack;
             setup?.Invoke(candidate);
         });
@@ -435,15 +437,12 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         volatile bool _stopping;
         WorldRuntime? _runtime;
         /// <summary>
-        /// Starts the runner's background thread.
+        /// Starts the runner's background thread, above normal like the render thread: it takes simulation items itself, so it
+        /// must not sit below its own WorkerPool helpers and get preempted mid-phase.
         /// </summary>
         public TickRunner()
         {
-            _thread = new Thread(Run)
-            {
-                IsBackground = true,
-                Name = "Meitou.Tick"
-            };
+            _thread = new Thread(Run) { IsBackground = true, Name = "Meitou.Tick", Priority = ThreadPriority.AboveNormal };
             _thread.Start();
         }
 

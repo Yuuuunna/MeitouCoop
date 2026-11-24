@@ -28,6 +28,8 @@ drop-in replacement that runs original content and mods unchanged.
 
 - `src`: Core (shared with the launcher), Data (formats and pure rules), Simulation (the headless world: never references Game), Game
   (the executable `MeitouClient`). Tests, tools and the viewer reference Game. Metal code compiles where `MeitouMetal` is set (macOS).
+- `analyzers`: Roslyn analyzers the build runs on src and the launcher (wired in `Directory.Build.targets`); MEI0001 (`$"..."` text) and
+  MEI0002 (missing translation) port `.github/scripts/loc-strings.mjs`'s check, so change both together.
 - Folders are feature slices and the namespace follows the folder (`Simulation/Population` is `Meitou.Simulation.Population`); a
   project's kernel types sit at its root. `Game/Mods` keeps `Meitou.Modding` until the mod contract moves to Simulation.
 - Never name a folder like a type: the namespace captures the name (`World`, `Orders`, `Inventory` are types).
@@ -80,6 +82,12 @@ drop-in replacement that runs original content and mods unchanged.
 
 - After merging a branch into master, remove its worktree (`git worktree remove`) and delete the branch
   (`git branch -d`) without asking, once the worktree has no uncommitted work.
+
+## Player-facing text
+
+- Meitou's own texts go through `Loc.Tr` (placeholders `{1}`, never concatenation or `$"..."`) and need a translation in every built-in
+  catalog (the build fails without one: MEI0002): `node .github/scripts/loc-strings.mjs --write` updates the template, without arguments it
+  lists what each catalog lacks, and `loc-fill.mjs` translates the gaps ([localisation](docs/formats/localisation.md)).
 
 ## Code mods
 

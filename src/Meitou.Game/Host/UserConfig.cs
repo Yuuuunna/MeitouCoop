@@ -40,8 +40,8 @@ enum FrameGenerationVendor
 }
 
 /// <summary>
-/// When the next world tick runs during the world draw (<see cref="UserConfig.TickAhead"/>): never (Faithful), while ticks are expensive (Meitou),
-/// always.
+/// When the next world tick runs during the world draw (<see cref="UserConfig.TickAhead"/>): never (Faithful), while ticks are expensive, or
+/// always (the default).
 /// </summary>
 enum TickAheadMode
 {
@@ -50,11 +50,11 @@ enum TickAheadMode
     /// </summary>
     Faithful,
     /// <summary>
-    /// While a tick is expensive (Meitou, the default).
+    /// While a tick is expensive.
     /// </summary>
     Dynamic,
     /// <summary>
-    /// Every frame.
+    /// Every frame (Meitou's default).
     /// </summary>
     Always
 }
@@ -102,7 +102,7 @@ sealed class UserConfig
     /// retyped or read with a new meaning, and convert older files in <see cref="Migrate"/>. A Tab panel slider whose numbering changes
     /// takes a new label instead (<c>WorldFrame.UpscalerSliders</c>), so its old value is not misread.
     /// </summary>
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
     /// <summary>
     /// The default of <see cref="CharacterFlightSeconds"/>, and the distance from the view a squad member must be past for a double click to
     /// fly there.
@@ -310,12 +310,12 @@ sealed class UserConfig
     public float InGameTransitionSpeed { get; set; } = 1.5f;
     /// <summary>
     /// A double click (or double tap) on a squad member farther than <see cref="FlightDistance"/> from the view flies the camera there in an arc
-    /// (Advanced settings; Meitou only, the game cuts).
+    /// (Advanced settings; off by default, the game cuts).
     /// </summary>
     public bool CharacterFlights { get; set; } = false;
     /// <summary>
     /// Keeps the object meshes and textures and the terrain textures around every squad bar character loaded, not only around the camera (Advanced
-    /// settings; Meitou only, costs video memory).
+    /// settings; on by default, costs video memory).
     /// </summary>
     public bool KeepTexturesAtCharacters { get; set; } = true;
     /// <summary>
@@ -336,9 +336,9 @@ sealed class UserConfig
     public int TickRate { get; set; } = 30;
     /// <summary>
     /// The next world tick run during the world draw (Display settings, docs/simulation.md "Tick ahead"): Faithful never (the world, then the draw,
-    /// as the game), Meitou (the default) while a tick is expensive, or always. Running ahead adds up to a tick (33 ms) of input delay.
+    /// as the game), while a tick is expensive, or always (the default). Running ahead adds up to a tick (33 ms) of input delay.
     /// </summary>
-    public TickAheadMode TickAhead { get; set; } = TickAheadMode.Dynamic;
+    public TickAheadMode TickAhead { get; set; } = TickAheadMode.Always;
     /// <summary>
     /// How many enemies may swing at one target at once (Advanced settings, 1-5; plus the race's extra slots): Faithful 1 (the game's CONSTANTS, the
     /// default), Meitou 3.
@@ -394,6 +394,11 @@ sealed class UserConfig
     /// </summary>
     public bool ResidentSchedule { get; set; } = true;
     /// <summary>
+    /// A knocked-out character left lying near the player's squads stays when his squad or town unloads, split off as a carried one is (Advanced
+    /// settings; Faithful off: he goes with them once out of view, as the game does; #1085).
+    /// </summary>
+    public bool KeepDowned { get; set; } = true;
+    /// <summary>
     /// A town away from the player's squads takes its override version (taken over, destroyed) as soon as the story allows (Advanced settings;
     /// Faithful off: only when the player comes near, as the game does).
     /// </summary>
@@ -419,6 +424,15 @@ sealed class UserConfig
     /// </summary>
     public float SquadXp { get; set; } = 1;
     /// <summary>
+    /// A skill's own multiplier in place of <see cref="SquadXp"/> (Advanced settings, under "Squad XP"), by its STATS field name
+    /// (<c>strength</c>, <c>attack</c>...; <see cref="SkillXp"/>); a skill not listed follows Squad XP.
+    /// </summary>
+    public Dictionary<string, float> SquadSkillXp { get; set; } = [];
+    /// <summary>
+    /// The Squad XP multiplier ("XP x10") at the top left of the screen during play (Advanced settings "Show Squad XP"; off).
+    /// </summary>
+    public bool ShowSquadXp { get; set; }
+    /// <summary>
     /// What every other character's XP gains are multiplied by (Advanced settings "Others' XP"; 1, as in the game).
     /// </summary>
     public float OthersXp { get; set; } = 1;
@@ -427,11 +441,12 @@ sealed class UserConfig
     /// </summary>
     public const float MinXpRate = 0, MaxXpRate = 1000;
     /// <summary>
-    /// The mods (by <c>mods.cfg</c> name) whose settings Meitou has taken into its own built-in feature, once each (<c>BuiltInMods</c>).
+    /// The mods (by <c>mods.cfg</c> name) whose settings Meitou has taken into its own built-in feature, once each (<c>BuiltInMods</c>); a name
+    /// followed by " (again)" marks a second takeover, of settings a later Meitou added to the feature.
     /// </summary>
     public List<string> AdoptedMods { get; set; } = [];
     /// <summary>
-    /// A loaded or imported save starts paused (Advanced settings, a Faithful / Meitou switch; on by default, Meitou: in the game it runs at once).
+    /// A loaded or imported save starts paused (Advanced settings; on by default; in the game it runs at once).
     /// <c>--load</c> is not paused.
     /// </summary>
     public bool PauseOnLoad { get; set; } = true;
@@ -445,6 +460,11 @@ sealed class UserConfig
     /// Meitou: in the game each bag stays shut until OPEN BAG is pressed once per session).
     /// </summary>
     public bool AutoOpenBags { get; set; } = true;
+    /// <summary>
+    /// Meitou's stack splitting (Advanced settings, a Faithful / Meitou switch; on by default, Meitou): a left press lifts the whole stack, Shift
+    /// half, Alt one unit, Shift + Alt asks how many. Off, as in the game: one unit, the whole stack with Shift or Ctrl.
+    /// </summary>
+    public bool SplitStacks { get; set; } = true;
     /// <summary>
     /// The player's animals pick up loose items into their bags (Advanced settings, a Faithful / Meitou switch whose
     /// Faithful side is on, as the game lets animals pick up; off by default, Meitou;
@@ -487,6 +507,11 @@ sealed class UserConfig
     /// </summary>
     public bool FixAnimalMoves { get; set; } = true;
     /// <summary>
+    /// A player gunner's turret harpoon that hits its target is an Assault, as an unprovoked attack is (Fixes settings; off: no crime, as the game
+    /// does; docs/game/economy.md "Turret fire").
+    /// </summary>
+    public bool FixTurretAssault { get; set; } = true;
+    /// <summary>
     /// A bench with its table behind is sat facing away from it (Fixes settings; off: towards the world origin, as the game does;
     /// docs/game/ai-tasks.md "Town goals").
     /// </summary>
@@ -505,6 +530,11 @@ sealed class UserConfig
     /// and the worn backpack, as the game does; docs/game/dialogue.md "Conditions").
     /// </summary>
     public bool FixBagSearch { get; set; } = true;
+    /// <summary>
+    /// A shopkeeper at its counter is talked to from the counter's front (Gameplay settings, Meitou; off: the game's talk reach, so the customer
+    /// walks round behind the counter; <c>World.CounterTalk</c>).
+    /// </summary>
+    public bool CounterTalk { get; set; } = true;
     /// <summary>
     /// Other buildings' parts (the Hub's wall in the Shinobi Thieves tower) are cut inside a building in the interior view (Fixes settings; off:
     /// drawn, as the game does; docs/render-interior-cut.md).
@@ -530,6 +560,15 @@ sealed class UserConfig
     /// read at start; <c>HeightmapRepair</c>, docs/formats/terrain.md "Holes and needles").
     /// </summary>
     public bool FixGround { get; set; } = true;
+    /// <summary>
+    /// The information panel opens extended or collapsed as it was last left (<see cref="InfoPanelExtended"/>), also after a restart (Fixes
+    /// settings; off: collapsed at every start, as the game does; docs/game/ui-screens.md "Information panel").
+    /// </summary>
+    public bool KeepInfoPanel { get; set; } = true;
+    /// <summary>
+    /// The information panel was last left extended (its ^ button), written at every press; read at start while <see cref="KeepInfoPanel"/> is on.
+    /// </summary>
+    public bool InfoPanelExtended { get; set; }
     /// <summary>
     /// The strategy camera's turn and tilt rate in degrees per second per unit of input (Controls settings): the original's <c>mouse speed pan</c> /
     /// <c>mouse speed tilt</c> (slider 2 … 50, default 6), one value for both here.
@@ -634,6 +673,11 @@ sealed class UserConfig
     /// by default, not part of the all Faithful / all Meitou switches; docs/game/luckyren.md).
     /// </summary>
     public bool LuckyrenMode { get; set; }
+    /// <summary>
+    /// With "Blood on weapons and gear" on, worn items keep their blood stains after the wound heals and wash clean (Advanced settings, a Faithful /
+    /// Meitou switch; on by default, Meitou; <c>GearBlood.KeptStains</c>, docs/game/blood-decals.md "On weapons and gear").
+    /// </summary>
+    public bool KeptStains { get; set; } = true;
     /// <summary>
     /// The camera following a character looks at a point moved up and sideways from the game's (Advanced settings; optional, off by default;
     /// <see cref="Cameras.FollowFocus"/>, after ErasmianFolly's Camera Tweaks mod).
@@ -930,6 +974,17 @@ sealed class UserConfig
         }
         if (from < 3) MigrateMetalUpscaling(json);
         if (from < 4) MigrateShadowCascades(json);
+        if (from < 5) MigrateTickAhead(json);
+    }
+
+    /// <summary>
+    /// Layout 5 makes Always the default tick ahead: a file's "while busy" (<see cref="TickAheadMode.Dynamic"/>, the earlier default, which every
+    /// file wrote) becomes Always; Faithful stays.
+    /// </summary>
+    static void MigrateTickAhead(JsonObject json)
+    {
+        if (json["tickAhead"] is JsonValue value && value.TryGetValue(out int mode) && mode == (int)TickAheadMode.Dynamic)
+            json["tickAhead"] = (int)TickAheadMode.Always;
     }
 
     /// <summary>
@@ -1055,6 +1110,7 @@ sealed class UserConfig
         AdoptedMods ??= [];
         SquadXp = float.IsFinite(SquadXp) ? Math.Clamp(SquadXp, MinXpRate, MaxXpRate) : 1;
         OthersXp = float.IsFinite(OthersXp) ? Math.Clamp(OthersXp, MinXpRate, MaxXpRate) : 1;
+        SquadSkillXp = SkillXp.Kept(SquadSkillXp);
         foreach (var (mod, saved) in ModSettings.ToList())
             if (saved is null) ModSettings.Remove(mod);
     }

@@ -228,31 +228,52 @@ static partial class WorldFrame
     /// </summary>
     public static string GcName() => System.Runtime.GCSettings.IsServerGC ? "server" : "workstation";
     /// <summary>
-    /// Feeds the particle renderer the weather state's effect list, strength and wind (the renderer is made the first time a weather has effects; a
-    /// weather without any empties it again). The effect groups are rebuilt only when the weather's list changes.
+    /// Feeds the particle renderer the camera weather's camera-centric effects and every nearby region's spatial effects (the renderer is made the
+    /// first time a weather has effects; a weather without any retires its groups).
     /// </summary>
     static void UpdateParticles(WorldGpu gpu, WorldCamera camera)
     {
         if (gpu.Weather is not { } weather || gpu.MakeParticles is null)
             return;
+        if (gpu.AuthorityEffects is not null)
+            (gpu.Particles ??= gpu.MakeParticles()).SetAuthorityEffects(gpu.AuthorityEffects, gpu.EffectContent, gpu.EffectWorldIdentity);
+        else gpu.Particles?.SetAuthorityEffects(null, gpu.EffectContent, gpu.EffectWorldIdentity);
         // In flight (KenshiCamera.FlightHeight, the platoons' gate) the weather's effects stop, as its fog does (SkyRenderer.WeatherFogScale).
-        var input = gpu.Sky.WeatherFogScale == 0 ? WeatherEffectInput.None : weather.EffectInput();
-        if (input.Effects.Count == 0 && gpu.AuthorityEffects?.Nodes.Count is not > 0 && gpu.Particles is null)
-            return;
-        var particles = gpu.Particles ??= gpu.MakeParticles();
-        particles.SetAuthorityEffects(gpu.AuthorityEffects, gpu.EffectContent, gpu.EffectWorldIdentity);
-        // The effects are placed in the camera's weather region: the area follows the cell the camera is in.
-        if (gpu.WeatherAreas is { } areas)
+        if (gpu.Sky.WeatherFogScale == 0)
         {
-            var(cx, cz) = WeatherAreas.CellOf(camera.Eye.X, camera.Eye.Z);
-            if (WeatherAreas.InMap(cx, cz) && areas.ColourOf(cx, cz)is var colour && colour != gpu.ParticleAreaColour)
+            if (gpu.Particles is { } p)
             {
-                gpu.ParticleAreaColour = colour;
-                particles.World.Area = RegionArea.At(areas, camera.Eye.X, camera.Eye.Z);
+                p.SetWeather(WeatherEffectInput.None);
+                p.SetRegionWeathers([]);
             }
+            return;
         }
 
-        particles.SetWeather(input);
+        if (weather.World.ForcedWeather is not null)
+        {
+            var forced = weather.EffectInput();
+            if (forced.Effects.Count == 0 && gpu.Particles is null) return;
+            var particles = gpu.Particles ??= gpu.MakeParticles();
+            if (gpu.WeatherAreas is { } areas)
+            {
+                var (cx, cz) = WeatherAreas.CellOf(camera.Eye.X, camera.Eye.Z);
+                if (WeatherAreas.InMap(cx, cz) && areas.ColourOf(cx, cz) is var colour && colour != gpu.ParticleAreaColour)
+                {
+                    gpu.ParticleAreaColour = colour;
+                    particles.World.Area = RegionArea.At(areas, camera.Eye.X, camera.Eye.Z);
+                }
+            }
+            particles.SetWeather(forced);
+            particles.SetRegionWeathers([]);
+            return;
+        }
+
+        var cameraInput = weather.CameraEffectInput();
+        var regionInputs = weather.NearbyRegionInputs(camera.Eye);
+        if (cameraInput.Effects.Count == 0 && regionInputs.Count == 0 && gpu.Particles is null) return;
+        var renderer = gpu.Particles ??= gpu.MakeParticles();
+        renderer.SetWeather(cameraInput);
+        renderer.SetRegionWeathers(regionInputs);
     }
 
     /// <summary>
@@ -413,6 +434,7 @@ static partial class WorldFrame
         VignetteStrengthSlider = "Vignette strength",
         GrainStrengthSlider = "Film grain strength",
         NightGradeStrengthSlider = "Night grading strength (0 = game)",
+        AdaptiveExposureSlider = "Adaptive exposure strength (max x)",
         ShaftStrengthSlider = "Light shafts strength",
         ShaftAirSlider = "Light shafts air (0 = none)",
         ShaftAirDawnSlider = "Light shafts air at dawn and dusk (x)";
@@ -430,7 +452,10 @@ static partial class WorldFrame
         GroundParallaxSwitch = "Ground parallax",
         GroundDisplaceSwitch = "Ground displacement (tessellation)",
         RockSmoothingSwitch = "Rock smoothing (tessellation)",
-        OutlineRefineSwitch = "Terrain outline refinement (tessellation)";
+        OutlineRefineSwitch = "Terrain outline refinement (tessellation)",
+
+        // The simple terrain material for weak GPUs (TerrainSimpleShading), on at Low.
+        SimpleTerrainSwitch = "Simple terrain shading";
 
     /// <summary>
     /// The mutually exclusive techniques as one choice each (docs/native-ui.md "Settings"), over the switches they stand for (which stay the saved
@@ -1032,6 +1057,8 @@ static partial class WorldFrame
             Logarithmic: true));
         sliders.Add(new Slider(NightGradeStrengthSlider, 0, 1, () => options.NightGradeStrength, v => options.NightGradeStrength = Round20(v),
             "0.00"));
+        sliders.Add(new Slider(AdaptiveExposureSlider, 1, 3, () => options.AdaptiveExposureStrength,
+            v => options.AdaptiveExposureStrength = Round20(v), "0.00"));
 
         sliders.Add(new Slider(ShaftStrengthSlider, 0, 1, () => options.ShaftStrength, v => options.ShaftStrength = Round20(v), "0.00"));
         sliders.Add(new Slider(ShaftAirSlider, 0, 4, () => options.ShaftAir, v => options.ShaftAir = Round20(v), "0.00"));
@@ -1087,6 +1114,8 @@ static partial class WorldFrame
         }
 
         if (g.Characters is not null && g.Options is { } materials) AddMaterialToggles(toggles, g, materials);
+        toggles.Add(new Toggle(SimpleTerrainSwitch, () => TerrainSimpleShading.Enabled, v => TerrainSimpleShading.Enabled = v, Remaster: true,
+            OnOff: true, Optional: true));
         if (tessellation)
         {
             toggles.Add(new Toggle(RockSmoothingSwitch, () => RockSmoothing.TessellateActive, v => RockSmoothing.TessellateActive = v, Remaster: true,

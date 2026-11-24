@@ -115,7 +115,7 @@ sealed class BuildingSync(GameHost host)
     /// <summary>
     /// Gives the navmesh the player's outposts (centre, the template's <c>no-foliage range</c>, owned by the player's faction or not) as towns that
     /// keep <c>avoid towns</c> foliage away, and the foliage renderer the same list. Before the sites are diffed, so a building added in the same
-    /// snapshot is built with them.
+    /// snapshot is built with them. A new list whose towns are the same (only a grid's power moved) is not given again.
     /// </summary>
     void UpdateFoliageTowns(WorldSnapshot snapshot)
     {
@@ -128,6 +128,24 @@ sealed class BuildingSync(GameHost host)
             if (host.Session.IsRemote) host.Nav.SetPlayerTowns(snapshot.FoliageOutposts);
         }
         host.ActiveFoliage?.SetPlayerTowns(host.Nav.Runtime.FoliageTowns);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="before"/> and <paramref name="now"/> give the same foliage towns: the same centres on the ground and the same
+    /// ownership by <paramref name="player"/>, in order.
+    /// </summary>
+    static bool SameFoliageTowns(IReadOnlyList<Simulation.Production.OutpostSnapshot> before,
+        IReadOnlyList<Simulation.Production.OutpostSnapshot> now, int player)
+    {
+        if (before.Count != now.Count) return false;
+
+        for (int k = 0; k < now.Count; k++)
+        {
+            var (a, b) = (before[k], now[k]);
+            if (a.Position.X != b.Position.X || a.Position.Z != b.Position.Z || (a.Owner == player) != (b.Owner == player)) return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -236,7 +254,7 @@ sealed class BuildingSync(GameHost host)
         }
         var placed = new List<PlacedLight>();
         WorldObjectLayout.Building(db, record, site.Id, site.Position, site.Rotation, new BuildingState { Identity = site.Id }, placed);
-        bool indoors = WorldLights.IsIndoors(record, site.Parent is not null);
+        bool indoors = WorldLights.IsIndoors(record, site.Parent is not null && !site.Outside);
         lamps.SetRuntime(site.Id, placed.Select(p => WorldLights.FromPlaced(p, interior: false, indoors: indoors)));
     }
 
@@ -271,7 +289,8 @@ sealed class BuildingSync(GameHost host)
         return new(WorldLayout.ZoneOf(site.Position.X, site.Position.Z), site.Id, site.Record, site.Position, site.Rotation, null, site.Position.Y)
         {
             Key = site.Id,
-            Contained = site.Parent is not null,
+            Contained = site.Parent is not null && !site.Outside,
+            OutsideWhenUncovered = site.Parent is not null && !site.Outside,
             ContainerId = site.Parent,
             PlayerOwned = mine,
         };
@@ -383,6 +402,62 @@ sealed class BuildingSync(GameHost host)
             lastReadout = (record, at, readout);
             return readout;
         }
+        var nodeTypes = new Dictionary<string, int?>(StringComparer.Ordinal);
+        int? NodeTypeOf(string record)
+        {
+            if (nodeTypes.TryGetValue(record, out int? known)) return known;
+
+            var r = db.Find(record);
+            return nodeTypes[record] = r is { Type: Data.Fcs.FcsRecordType.Building } && r.GetBool("is node") ? r.GetInt("node type") : null;
+        }
+        var snapNodes = new Dictionary<string, IReadOnlyList<PlacedSnapNode>>(StringComparer.Ordinal);
+        IReadOnlyList<PlacedSnapNode> SnapNodesOf(string record) => snapNodes.TryGetValue(record, out var known) ? known
+            : snapNodes[record] = db.Find(record) is { Type: Data.Fcs.FcsRecordType.Building } r ? WorldObjectLayout.SnapNodes(db, r) : [];
+        (PopulationData Data, HashSet<string> Real)? realFactions = null;
+        HashSet<string>? RealFactions()
+        {
+            if (host.PopData is not { } d) return null;
+            if (realFactions is { } cached && ReferenceEquals(cached.Data, d)) return cached.Real;
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var f in d.Factions) if (!f.NotReal) set.Add(f.Id);
+            realFactions = (d, set);
+            return set;
+        }
+        var snapHostsScratch = new List<(string Key, string Record, Vector3 Position, Quaternion Rotation, SnapHost Host)>();
+        IReadOnlyList<(string Key, string Record, Vector3 Position, Quaternion Rotation, SnapHost Host)> SnapHostsAround(
+            Vector2 centre, float radius, Func<string, bool> needsNode)
+        {
+            snapHostsScratch.Clear();
+            var owners = LevelOwners();
+            string player = host.Session.DescribeFaction(host.Session.ActiveFaction)?.RecordId ?? "";
+            var ownedTown = host.Session.CurrentSnapshot.OwnedTownBuildings;
+            var real = RealFactions();
+            bool RecordMatches(string record)
+            {
+                var nodes = SnapNodesOf(record);
+                for (int i = 0; i < nodes.Count; i++)
+                    if (needsNode(nodes[i].Record)) return true;
+                return false;
+            }
+            foreach (var b in footprints.PlacedAround(centre, radius, RecordMatches, (x, z) => host.ActiveGround((float)x, (float)z)))
+            {
+                if (owners?.TryGetValue(b.Key, out var level) == true)
+                {
+                    bool owned = ownedTown.Contains(b.Key) || player.Length > 0 && level.Owner == player;
+                    bool destroyed = host.TownChanges.ShownRuins.TryGetValue(b.Key, out var ruin) ? ruin.Destroyed
+                        : (host.Session as WorldSession)?.World.Fixtures.SavedDestroyed(level.Building) ?? level.Building.Destroyed;
+                    bool ownerNotReal = level.Owner is not { } owner || real is null || !real.Contains(owner);
+                    snapHostsScratch.Add((b.Key, b.Record, b.Position, b.Rotation,
+                        new SnapHost(b.Key, b.Key, true, owned, destroyed, ownerNotReal)));
+                }
+                else
+                {
+                    snapHostsScratch.Add((b.Key, b.Record, b.Position, b.Rotation,
+                        new SnapHost(b.Key, b.Key, true, false, false, true)));
+                }
+            }
+            return snapHostsScratch;
+        }
         return new PlacementServices
         {
             Ground = host.ActiveGround,
@@ -396,6 +471,9 @@ sealed class BuildingSync(GameHost host)
             LinkedAround = (centre, radius) => footprints.LinkedAround(centre, radius, (x, z) => host.ActiveGround((float)x, (float)z)),
             PlacedAround = (centre, radius, record) =>
                 footprints.PlacedAround(centre, radius, record, (x, z) => host.ActiveGround((float)x, (float)z)),
+            NodeTypeOf = NodeTypeOf,
+            SnapNodesOf = SnapNodesOf,
+            SnapHostsAround = SnapHostsAround,
             StaticAround = footprints.StaticAround,
             StaticPlacementsAround = (centre, radius) => footprints.PlacementsAround(centre, radius).Where(b => Pickable(b.BuildingId)),
             StaticAlong = (origin, direction, length) => footprints.Along(origin, direction, length).Where(b => Pickable(b.Placement.BuildingId)),
@@ -555,7 +633,7 @@ sealed class BuildingSync(GameHost host)
     /// <summary>
     /// The floor a ghost stands on in <paramref name="room"/>: a player site's, else a level building's with what <c>PlacementRules.MayBuildIn</c>
     /// reads (whether the player's faction owns it, whether it is a ruin, whether its owner is <c>not real</c>). A repaired town house is shown as a
-    /// site but stays a level building, so what is built in it names the level instance as its parent (as in any owned town building). A level
+    /// site but stays a level building, so what is built in it names the canonical level key as its parent (as in any owned town building). A level
     /// building of no town has no owner: the original's "nofac", which is not real.
     /// </summary>
     GhostFloor GhostFloorOf(InteriorVolume room, int floor)
@@ -567,7 +645,7 @@ sealed class BuildingSync(GameHost host)
 
         string player = host.Session.DescribeFaction(host.Session.ActiveFaction)?.RecordId ?? "";
         bool owned = host.Session.CurrentSnapshot.OwnedTownBuildings.Contains(room.PlacementId) || player.Length > 0 && level.Owner == player;
-        return new(room.PlacementId, room.Footprint, floor, level.Instance, owned)
+        return new(room.PlacementId, room.Footprint, floor, room.PlacementId, owned)
         {
             Destroyed = host.TownChanges.ShownRuins.TryGetValue(room.PlacementId, out var ruin) ? ruin.Destroyed
                 : (host.Session as WorldSession)?.World.Fixtures.SavedDestroyed(level.Building) ?? level.Building.Destroyed,

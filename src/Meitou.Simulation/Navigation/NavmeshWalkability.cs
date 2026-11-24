@@ -522,9 +522,13 @@ public sealed partial class NavmeshWalkability : IWalkability
     }
 
     /// <summary>
-    /// Whether a mesh path ends within the goal's horizontal snap distance.
+    /// Whether a path ending at <paramref name="end"/> has arrived at <paramref name="goal"/>: within <see cref="NavQuery.GoalSnap"/> of it on the
+    /// X/Z plane and on the same floor (<see cref="NavQuery.GoalFloorSlack"/>). A point on the stairs or ground below an upper-floor or roof goal
+    /// behind a locked door has not arrived.
     /// </summary>
-    static bool Arrives(Vector3 end, Vector3 goal) => Vector2.Distance(new(end.X, end.Z), new(goal.X, goal.Z)) <= NavQuery.GoalSnap;
+    static bool Arrives(Vector3 end, Vector3 goal) =>
+        Vector2.Distance(new(end.X, end.Z), new(goal.X, goal.Z)) <= NavQuery.GoalSnap
+        && MathF.Abs(end.Y - goal.Y) <= NavQuery.GoalFloorSlack;
 
     /// <summary>
     /// Reuses a failed search only for starts on ground that search actually covered; reaching its endpoint alone is insufficient.
@@ -573,7 +577,7 @@ public sealed partial class NavmeshWalkability : IWalkability
     /// The goal polygon and traversal properties that decide whether two failed searches can be shared.
     /// </summary>
     static (NavRef, float, bool)? UnreachableKey(NavWorld world, Vector3 to, NavAgent agent) =>
-        world.TryFindPolygon(to, NavQuery.GoalSnap, out var goal, out _) ? (goal, agent.Radius, agent.DoorsClosed) : null;
+        world.TryFindGoalPolygon(to, out var goal, out _) ? (goal, agent.Radius, agent.DoorsClosed) : null;
 
     /// <inheritdoc/>
     public void TickStarts(long tick, float tickSeconds)
@@ -700,14 +704,19 @@ public sealed partial class NavmeshWalkability : IWalkability
     }
 
     /// <summary>
-    /// Whether some mesh layer lies under <paramref name = "p"/> (X/Z).
+    /// Whether a mesh layer lies under <paramref name="p"/> (X/Z) within the stand limits of its height. A layer only beyond them is not its
+    /// own: a walker on the ground under a ramp's slope 12.4 above (save "butt", -56098,1079,-12942) started its paths on the slope and walked
+    /// into the ramp for good.
     /// </summary>
     static bool IsOnMesh(NavWorld w, Vector3 p)
     {
         var heights = s_scratch ??= [];
         heights.Clear();
         w.HeightsAt(p.X, p.Z, heights);
-        return heights.Count > 0;
+        foreach (float h in heights)
+            if (h - p.Y <= StandRise && p.Y - h <= StandDrop) return true;
+
+        return false;
     }
 
     /// <summary>

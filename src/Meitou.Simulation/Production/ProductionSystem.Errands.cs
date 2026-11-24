@@ -163,7 +163,7 @@ public sealed partial class ProductionSystem
         if (Carry is null)
             return;
         ValidateErrands(world);
-        if (world.Tick % ErrandEveryTicks != 0)
+        if (!world.Beat(ErrandEveryTicks, TickPhases.Errands))
             return;
         var table = world.Characters;
         foreach (var gone in _errands.Keys.Where(k => !table.IsAlive(k)).ToList())
@@ -425,7 +425,7 @@ public sealed partial class ProductionSystem
         if (e.BoundSite?.Id != machine.Id && Site(world, machine.Id) is { } site && Ensure(world, site) is { } bound)
             BindDisposal(world, e, site, bound);
         (e.Site, e.Machine) = (machine.Id, machine);
-        goal = DisposalGoal(world, machine);
+        goal = DisposalGoal(world, machine, world.Characters.Next[i].Position);
         return true;
     }
 
@@ -512,11 +512,16 @@ public sealed partial class ProductionSystem
         CorpseDisposal.Feed(world, Carry!, i, machine.Position, Data(machine.RecordId)?.Label ?? "");
 
     /// <summary>
-    /// Where the carrier walks to: a player machine's operator goal (<see cref="GoalOf"/>), else the floor point at or next to the disposal.
+    /// Where the carrier at <paramref name="from"/> walks to: a player machine's operator goal (<see cref="GoalOf"/>), else the floor point at or
+    /// next to the disposal.
     /// </summary>
-    Vector2 DisposalGoal(World world, CorpseMachine machine)
+    Vector2 DisposalGoal(World world, CorpseMachine machine, Vector3 from)
     {
-        if (world.Machines.Find(machine.Id) is { } m && Site(world, machine.Id) is { } site) return GoalOf(world, site, m);
+        if (world.Machines.Find(machine.Id) is { } m && Site(world, machine.Id) is { } site)
+        {
+            var spot = GoalOf(world, site, m, from);
+            return new Vector2(spot.X, spot.Z);
+        }
 
         var to = machine.Position;
         var at = world.Walkability.FloorNear(to.X, to.Z, to.Y, MovementSystem.FloorSlack) ?? to;

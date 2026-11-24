@@ -26,6 +26,10 @@ public sealed partial class TradeSystem
         int _customerFaction = -1;
         bool _open, _attributed;
         TradeSession _session = new();
+        /// <summary>
+        /// This interaction's paid held-item deal, reported after its goods land.
+        /// </summary>
+        HeldDeal? _heldDeal;
         CharacterControl? _authorization;
         ulong _membershipRevision;
         public ulong SessionId { get; private set; }
@@ -323,11 +327,13 @@ public sealed partial class TradeSystem
         internal bool TryPayHeld(World world, ItemInstance item, int units, bool sell, out TradeReceipt? receipt)
         {
             receipt = null;
+            _heldDeal = null;
             if (units <= 0 || units > item.Quantity || !Resolve(world, out int c, out int t, out var shop) || !sell && !CanSpend(world)) return false;
             var cold = world.Characters.Cold(c)!;
             var squad = world.Squads.Find(world.Characters.Cold(t)!.SquadId)!;
             var m = Market(world);
             int holder = sell ? cold.Faction : squad.Faction;
+            bool buyback = IsBuyback(item, sell);
             var paid = Receipt(world, m, item, units, sell, shop!.Terms, holder);
             long price = Price(world, m, item, units, sell, shop.Terms, holder);
             if (price < 0 || price > (sell ? Budget(squad.Money, Funds(world).Money) : Budget(Funds(world).Money, squad.Money))) return false;
@@ -335,7 +341,37 @@ public sealed partial class TradeSystem
             else { Funds(world).Money -= price; squad.Money += price; }
             receipt = paid;
             world.Post(playerId, Loc.Tr(sell ? "{1} sold {2} for c.{3}" : "{1} bought {2} for c.{3}", cold.Name, Units(units, item.Name), price));
+            _heldDeal = world.TradeObservers.Active ? new HeldDeal(c, t, sell, item.Record, units, price, buyback) : null;
             return true;
+        }
+
+        /// <summary>
+        /// Reports this player's pending deal once the held goods have reached their destination.
+        /// </summary>
+        internal void ReportHeld(World world)
+        {
+            if (_heldDeal is not { } deal) return;
+
+            _heldDeal = null;
+            ReportDeal(world, deal.Customer, deal.Trader, deal.Sell, deal.Record, deal.Units, deal.Price, deal.Buyback);
+        }
+
+        /// <summary>
+        /// A held item's paid deal waiting for the item to land.
+        /// </summary>
+        readonly record struct HeldDeal(int Customer, int Trader, bool Sell, string Record, int Units, long Price, bool Buyback);
+
+        /// <summary>
+        /// Reports a completed trade window transaction after money and goods have moved.
+        /// </summary>
+        static void ReportDeal(World world, int customerSlot, int traderSlot, bool sell, string record, int units, long price, bool buyback)
+        {
+            if (!world.TradeObservers.Active) return;
+
+            var customer = TradeObservers.Party(world, customerSlot);
+            var trader = TradeObservers.Party(world, traderSlot);
+            var kind = sell ? TradeSaleKind.WindowSell : TradeSaleKind.WindowBuy;
+            TradeObservers.Report(world, kind, record, units, price, sell ? trader : customer, sell ? customer : trader, buyback: buyback);
         }
 
         void Buy(World world, BuyItem buy)
@@ -353,6 +389,7 @@ public sealed partial class TradeSystem
                 world.Post(playerId, "You can't afford that.");
                 return;
             }
+            bool buyback = IsBuyback(item, false);
             var receipt = Receipt(world, m, item, units, false, shop.Terms, squad.Faction);
             var bought = item.WithQuantity(units);
             bought.Buyback = receipt;
@@ -368,6 +405,7 @@ public sealed partial class TradeSystem
             Funds(world).Money -= price;
             squad.Money += price;
             world.Post(playerId, Loc.Tr("{1} bought {2} for c.{3}", cold.Name, Units(placed, item.Name), price));
+            ReportDeal(world, c, t, false, item.Record, placed, price, buyback);
         }
 
         /// <summary>
@@ -457,6 +495,7 @@ public sealed partial class TradeSystem
                 return;
             }
             if (Smuggling(world, c, item, shop.Terms)) return;
+            bool buyback = IsBuyback(item, true);
             var receipt = Receipt(world, m, item, units, true, shop.Terms, cold.Faction);
             var sold = item.WithQuantity(units);
             sold.Buyback = receipt;
@@ -477,6 +516,7 @@ public sealed partial class TradeSystem
             squad.Money -= price;
             Funds(world).Money += price;
             world.Post(playerId, Loc.Tr("{1} sold {2} for c.{3}", cold.Name, Units(placed, item.Name), price));
+            ReportDeal(world, c, t, true, item.Record, placed, price, buyback);
         }
 
         /// <summary>

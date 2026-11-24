@@ -49,6 +49,11 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     readonly ObjProg _colourProg, _solidProg, _depthProg, _blendedProg;
 
     /// <summary>
+    /// The colour and solid programs lit without the sun shadows and probe GI (<see cref="LeanLighting"/>), made the first frame that has neither.
+    /// </summary>
+    ObjProg? _colourLean, _solidLean;
+
+    /// <summary>
     /// The objects' texture cache (decoded on workers, mip-streamed; <see cref="Textures"/>).
     /// </summary>
     readonly WorldTextureCache _textureCache;
@@ -195,6 +200,8 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         DisposeSelection();
         _colourProg.Dispose();
         _solidProg.Dispose();
+        _colourLean?.Dispose();
+        _solidLean?.Dispose();
         _depthProg.Dispose();
         _blendedProg.Dispose();
         _glassScene.Dispose();
@@ -1478,6 +1485,16 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     public InteriorVolume? InteriorAt(Vector3 p, float margin = 0) => InteriorAt(p, margin, null);
 
     /// <summary>
+    /// Every loaded building's indoor volume.
+    /// </summary>
+    public IEnumerable<InteriorVolume> LoadedInteriors()
+    {
+        foreach (var zone in _streamer.AllZones)
+            foreach (var room in zone.Interiors)
+                yield return room;
+    }
+
+    /// <summary>
     /// <see cref="InteriorAt(Vector3, float)"/> without a margin, asked again only once <paramref name="p"/> has moved farther than the nearest
     /// interior's box was (at most 50 units, over every zone the moved point could ask) or the interiors changed. Standing still inside asks nothing
     /// either: there the distance kept is 0.
@@ -1559,6 +1576,12 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     /// still being made (docs/formats/camera.md "Height").
     /// </summary>
     public float? FloorHeightAt(float x, float z, Func<string, int> floorOf) => _objects.Floors.HighestFloorAt(x, z, floorOf);
+
+    /// <summary>
+    /// The highest map feature surface at a point at or under <paramref name="top"/>; null for none or still being made (docs/formats/camera.md
+    /// "Height").
+    /// </summary>
+    public float? FeatureHeightBelow(float x, float z, float top) => _objects.FeatureFloors.HighestBelow(x, z, top);
 
     /// <summary>
     /// The loaded mask of a building or one of its layout objects (building id / item id).
@@ -1709,7 +1732,9 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         // Engine choice: the 2-unit margin the host gives characters, so an object standing on the hull's top floor counts as on it. A building
         // placed inside another takes that one's hull where it reaches it (a neighbour's within the margin is not its holder).
         var holder = InteriorAt(at, 2, inst.Placed.ContainerId);
-        return inst.Interior = new(_streamer.InteriorVersion, at, inside, holder?.PlacementId, holder?.FloorAt(at) ?? 0);
+        // Where the holder's floor collision is not known, what it holds stays inside, as before.
+        bool covered = inst.Placed.OutsideWhenUncovered && holder is not null && (!holder.KnowsCover || holder.Covered(at));
+        return inst.Interior = new(_streamer.InteriorVersion, at, inside, holder?.PlacementId, holder?.FloorAt(at) ?? 0, covered);
     }
 
     /// <summary>
@@ -1729,13 +1754,16 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
 
     /// <summary>
     /// Whether a building placed inside another (<see cref="PlacedMesh.Contained"/>) is hidden: the building whose hull holds it shows its outside
-    /// (not in the interior view; a construction site is open). Game: closing an interior hides its contained objects, in every view
-    /// (docs/render-objects.md "Closed interiors").
+    /// (not in the interior view; a construction site is open). Game: closing an interior hides its contained objects, in every view, except those
+    /// flagged outside, which a player's placed building is when nothing of the building stands over it (<see cref="PlacedMesh.OutsideWhenUncovered"/>,
+    /// docs/render-objects.md "Closed interiors"): a bench on a roof stays drawn (#1136).
     /// </summary>
     bool ClosedAround(ObjectStreamer.Instance inst)
     {
         if (!inst.Placed.Contained) return false;
-        return InteriorOf(inst).Building is { } holder && holder != inst.Placed.PlacementId && !InteriorView.ContainsKey(holder)
+        var answer = InteriorOf(inst);
+        if (inst.Placed.OutsideWhenUncovered && !answer.Covered) return false;
+        return answer.Building is { } holder && holder != inst.Placed.PlacementId && !InteriorView.ContainsKey(holder)
             && _construction?.ContainsKey(holder) != true;
     }
 
@@ -1939,7 +1967,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         UploadInstances();
 
         // 3. Draw: Prepare reads the textures (WorldTexture.Key) and makes the draw list, Record puts it into a native segment of VkGl's pass.
-        var prog = _depthPass ? _depthProg : _colourProg;
+        var prog = _depthPass ? _depthProg : ColourProg();
         int wireMode = _debugLevels == 2 ? 2 : options.Wireframe;
         if (_active.Count > 0)
         {
@@ -2418,8 +2446,8 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
     public bool CutIntoViewed { get; set; } = true;
 
     /// <summary>
-    /// Meitou (Fixes settings, <c>Rain in open buildings</c>): the rain and the other <c>CLIP_INTERIOR</c> particles are also cut in front of a
-    /// building in the interior view, over its mask (docs/render-interior-cut.md); off, only inside it, as the game does.
+    /// Meitou (Fixes settings, <c>Rain in open buildings</c>): full-size camera-box <c>CLIP_INTERIOR</c> particles (rain and ash flakes) are also
+    /// cut in front of a building in the interior view, over its mask (docs/render-interior-cut.md); off, only inside it, as the game does.
     /// </summary>
     public bool CutRainOverViewed { get; set; } = true;
 
@@ -2722,7 +2750,8 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         int segment = SegmentId(kind, prog.P, targets, state);
 
         // The fully visible draws of a colour pass use the program without a discard (own segment, own pipelines per part).
-        int solidSegment = !_depthPass && !wire ? SegmentId(4, _solidProg.P, targets, state) : 0;
+        var solidProg = SolidProg();
+        int solidSegment = !_depthPass && !wire ? SegmentId(4, solidProg.P, targets, state) : 0;
         var job = _drawJobs.Rent();
         (job.Owner, job.Targets, job.State, job.Program, job.Count) = (this, targets, state, prog.P, 0);
         job.Frame = _nativeFrame.Prepare(in view);
@@ -2744,7 +2773,7 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
             var part = d.Part;
             bool solid = d.Solid && solidSegment != 0;
             ref var n = ref (_depthPass ? ref part.DepthNative : ref (solid ? ref part.ColourSolidNative : ref part.ColourNative));
-            var drawProg = solid ? _solidProg : prog;
+            var drawProg = solid ? solidProg : prog;
             int drawSegment = solid ? solidSegment : segment;
             Current(ref n, part, drawProg);
             job.Draws[i] = new DrawJob.Draw
@@ -2762,6 +2791,20 @@ public sealed unsafe partial class WorldObjectRenderer : IDisposable
         job.Count = _drawCount;
         Gpu.Record(label, job);
     }
+
+    /// <summary>
+    /// The main colour program for this frame's lighting: the lean one while <see cref="LeanLighting.Active"/>.
+    /// </summary>
+    ObjProg ColourProg() => !LeanLighting.Active ? _colourProg
+        : _colourLean ??= new ObjProg(Gpu, _nativeFrame, BuildingLodShaders.VertexNative(), BuildingLodShaders.FragmentNative(lean: true),
+            "objects lean");
+
+    /// <summary>
+    /// The solid colour program for this frame's lighting (<see cref="ColourProg"/>).
+    /// </summary>
+    ObjProg SolidProg() => !LeanLighting.Active ? _solidProg
+        : _solidLean ??= new ObjProg(Gpu, _nativeFrame, BuildingLodShaders.VertexNative(), BuildingLodShaders.FragmentNative(solid: true, lean: true),
+            "objects solid lean");
 
     /// <summary>
     /// A stable number for a segment's pipeline state, so a part compares one int per draw.

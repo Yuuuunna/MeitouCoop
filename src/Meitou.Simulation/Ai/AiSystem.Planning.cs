@@ -111,7 +111,7 @@ public sealed partial class AiSystem
     /// <summary>
     /// Kinds of <see cref="PlanTarget"/> the finders give.
     /// </summary>
-    static class Targets
+    internal static class Targets
     {
         /// <summary>
         /// The target kinds: a spot, bed, seat, turret, town, work place, machine and store; the character a follow goal follows (its place is read
@@ -414,7 +414,7 @@ public sealed partial class AiSystem
         /// A Self preservation step's target: 146's the gun spot of the turret asked for; the others none.
         /// </summary>
         PlanTarget StepTarget(TaskType step) =>
-            step == TaskType.UseTurret && _mind.GuardAsk is { Building.Turret: { } turret }
+            step == TaskType.UseTurret && _mind.GuardAsk is { Post: var turret }
                 ? new PlanTarget(Targets.Turret, TurretSpot(_world, turret))
                 : default;
 
@@ -530,18 +530,15 @@ public sealed partial class AiSystem
         }
 
         /// <summary>
-        /// The desire of a row on the way: the sleeping desire for UseBed (0 drops the node), else the row's task profile desire, 1 for a random or
-        /// own desire function.
+        /// The desire of a row on the way (0 drops the node): a row an engine-acted goal's act-out carries out its system's (each computes the
+        /// row's registered desire), else the row's registered desire (<see cref="RowDesires"/>: a constant, AI slot 48's roll or its own function).
         /// </summary>
         public float Desire(TaskDataRow row, in PlanTarget target)
         {
-            // A row an engine-acted goal's act-out carries out: its system's desire.
             if (_duty is { } duty && duty.Acts(row.Type)) return duty.Goal.Desire(_world, AskDuty(row.Type, target));
 
-            // row 98: AI slot 30 (FUN_1405a0880); 0 drops the node
-            if (row.Type == TaskType.UseBed) return _system.SleepingDesire(_world, _board, _slot);
-            float d = TaskProfiles.Of(row.Type).Desire;
-            return d >= 0 ? d : 1;   // a random or own desire function counts as 1 on the way
+            var ask = new RowAsk(_slot, _world.Characters.Cold(_slot)!, _mind, _mind.Squad, _board, row.Type, target);
+            return _system.Rows.Of(_world, this, ask);
         }
 
         /// <summary>
@@ -588,7 +585,7 @@ public sealed partial class AiSystem
         /// <summary>
         /// A town or outpost machine addressed by its canonical building identity; the production tick is its only writer.
         /// </summary>
-        Production.Machine? MachineAt(in PlanTarget target) =>
+        internal Production.Machine? MachineAt(in PlanTarget target) =>
             target.Kind is Targets.Work or Targets.Machine && target.Building is { } key ? _world.Machines.Find(key) : null;
 
         /// <summary>
@@ -671,7 +668,7 @@ public sealed partial class AiSystem
         bool RoomForResources(in PlanTarget target, CharacterCold cold)
         {
             string? record = target.Kind is Targets.Loose or Targets.Supply ? target.Record : MachineAt(target)?.Output?.Recipe.Item;
-            return record is not null && cold.Inventory is { } bag && _system.Data.Items.Create(record, 1) is { } unit && bag.HasRoomFor(unit);
+            return record is not null && _system.Rows.RoomFor(cold, record);
         }
 
         /// <summary>

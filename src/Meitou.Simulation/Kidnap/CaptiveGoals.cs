@@ -344,7 +344,7 @@ internal sealed class CaptiveGoals(CaptiveSystem captives, PopulationData data)
     float Desire(World world, in DutyAsk ask)
     {
         if (world.Characters.Cold(ask.Slot) is not { } cold || FoodPaused(world, ask.Slot, cold, ask.Type)) return 0;
-        if (ask.Row != ask.Type) return RowDesire(ask.Row, cold);
+        if (ask.Row != ask.Type) return RowDesire(world, ask, cold);
 
         return ask.Type switch
         {
@@ -373,15 +373,23 @@ internal sealed class CaptiveGoals(CaptiveSystem captives, PopulationData data)
     static float RescueDesire(CharacterCold cold) => (cold.Orders & CharacterOrders.Hold) != 0 || !cold.Carrying.IsNone ? 0 : 1;
 
     /// <summary>
-    /// The desire of a row on the way: 3 (AI slot 72) 0 while down; 170 (AI slot 59, the lift's) 0 while carrying; the rest slot 19's 1.0
-    /// (<b>Verified</b>, the registration's stubs; 40's following desire is above 0 whenever the target lives, and the planner reads only that).
+    /// The desire of a row on the way (<b>Verified</b>, the registration's stubs): 3 (AI slot 72) 0 while down; 170 the lift's (AI slot 59,
+    /// <see cref="OrderDesire.LiftDesire"/>); 25 First aid the patient's need (<c>FUN_14099e0a0</c>,
+    /// <see cref="FirstAid.FirstAidSystem.TreatOrderDesire"/>); 40 Following's (AI slot 15, <see cref="AiSystem.FollowDesire"/>); the rest slot 19's
+    /// 1.0.
     /// </summary>
-    static float RowDesire(TaskType row, CharacterCold cold) => row switch
+    static float RowDesire(World world, in DutyAsk ask, CharacterCold cold)
     {
-        TaskType.Pickup => CharacterFacts.Down(cold) ? 0 : 1,
-        TaskType.LiftObjectButHealFirst => cold.Carrying.IsNone ? 1 : 0,
-        _ => 1,
-    };
+        var target = ask.Target.Character ?? CharacterId.None;
+        return ask.Row switch
+        {
+            TaskType.Pickup => CharacterFacts.Down(cold) ? 0 : 1,
+            TaskType.LiftObjectButHealFirst => OrderDesire.LiftDesire(world, ask.Slot, cold, target),
+            TaskType.FirstAidOrder => world.SystemOf<FirstAid.FirstAidSystem>()?.TreatOrderDesire(world, ask.Slot, target, robot: false) ?? 0,
+            TaskType.GetNearTo => world.SystemOf<AiSystem>()?.FollowDesireOf(world, TaskType.GetNearTo, target) ?? 1,
+            _ => 1,
+        };
+    }
 
     #endregion
 
@@ -541,9 +549,9 @@ internal sealed class CaptiveGoals(CaptiveSystem captives, PopulationData data)
     }
 
     /// <summary>
-    /// The asker's own states the rows list: 149 gotAFoodItem (<c>FUN_140597e20</c>: a mouthful, or food among its items or in its worn bag), 79
-    /// I_AM_IMPRISONED (held in a cage), 155 iHaveSomeSlaves (<c>FUN_14059a0e0</c>: the platoon's slave list is not empty; asked only by 194 / 218, whose look's desire is 0.25 x
-    /// that list),
+    /// The asker's own states the rows list: 149 gotAFoodItem (<c>FUN_140597e20</c>: a mouthful, or live edible food among its items or in its
+    /// worn bag; <see cref="Items.FeedSystem.HoldsFood"/>), 79 I_AM_IMPRISONED (held in a cage), 155 iHaveSomeSlaves (<c>FUN_14059a0e0</c>: the
+    /// platoon's slave list is not empty; asked only by 194 / 218, whose look's desire is 0.25 x that list),
     /// 144 "am hungry" always true and 135, 146 always false (<b>Verified</b>, docs/game/ai-tasks.md).
     /// </summary>
     bool? OwnState(World world, in DutyAsk ask, StateType state)
@@ -551,7 +559,7 @@ internal sealed class CaptiveGoals(CaptiveSystem captives, PopulationData data)
         var cold = world.Characters.Cold(ask.Slot);
         return state switch
         {
-            StateType.GotAFoodItem => cold is not null && GotFood(cold),
+            StateType.GotAFoodItem => cold is not null && Items.FeedSystem.HoldsFood(cold),
             StateType.AmImprisoned => cold is { InSomething: HeldState.Imprisoned },
             StateType.IHaveSomeSlaves => PickOf(ask) is { Desire: > 0 },
             StateType.AmHungry => true,
@@ -559,13 +567,6 @@ internal sealed class CaptiveGoals(CaptiveSystem captives, PopulationData data)
             _ => null,
         };
     }
-
-    /// <summary>
-    /// State 149's reading: a limb in the mouth, or a food item among the character's items or in its worn bag.
-    /// </summary>
-    static bool GotFood(CharacterCold cold) =>
-        cold.Mouth is not null || cold.Inventory is { } inv && (inv.Items.Exists(Items.FeedSystem.IsFood)
-            || inv.Backpack?.Contents is { } bag && bag.Items.Exists(Items.FeedSystem.IsFood));
 
     /// <summary>
     /// The states of a character target (<b>Verified</b> evaluators, each id's registry thunk followed in the 1.0.68 exe): 1 / 46 at it (its cage's

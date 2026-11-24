@@ -346,7 +346,7 @@ public sealed record InventoryItemView(int Index, string Record, string Name, st
 
     /// <summary>
     /// The view of <paramref name="item"/> as item <paramref name="index"/> of a window: everything the item itself says, none of what depends on
-    /// its holder (stolen marks, stealing chance).
+    /// its holder (stolen marks, stealing chance). A field read here is also recorded by <c>MachineViewCache.RecordItem</c>; keep them in step.
     /// </summary>
     public static InventoryItemView Of(int index, Items.ItemInstance item) =>
         new(index, item.Record, item.Name, item.Section, item.X, item.Y, item.Width, item.Height, item.Quantity, item.Weight, item.Quality)
@@ -533,10 +533,6 @@ public sealed record CharacterSnapshot
     /// </summary>
     public BodyBuild? Build { get; internal set; }
     /// <summary>
-    /// What a selected character carries, one line per item (empty for the others).
-    /// </summary>
-    public IReadOnlyList<string> Inventory { get; internal set; } = [];
-    /// <summary>
     /// A selected character's bounties, one line per faction that wants it (empty for the others and for one nobody wants).
     /// </summary>
     public IReadOnlyList<Crime.BountyLine> Bounties { get; internal set; } = [];
@@ -611,8 +607,9 @@ public sealed record CharacterSnapshot
     /// </summary>
     public IReadOnlyList<Bodies.StatusEffectView> Effects { get; internal set; } = [];
     /// <summary>
-    /// The inventory of a selected character, of the one whose loot window is open, or of a player character whose inventory is shown (null for
-    /// the others).
+    /// The inventory of a character a window can show (null for the others): of the selection, the first by slot, the lead and the selected
+    /// opener of the open loot or container window (every selected one with <see cref="Player.PlayerState.AllSelectedGrids"/>); the open loot's
+    /// body; a player character whose pinned inventory is shown.
     /// </summary>
     public InventoryView? ItemGrid { get; internal set; }
     /// <summary>
@@ -1012,6 +1009,15 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// </summary>
     public IReadOnlyDictionary<int, string> ModJobNames { get; init; } = new Dictionary<int, string>();
     /// <summary>
+    /// Authority-registered building job offers, copied before publication; clients only submit the existing authorized job command.
+    /// </summary>
+    public IReadOnlyList<Production.ModJobOffer> ModJobOffers { get; init; } = [];
+    /// <summary>
+    /// Authority-owned mod visual requests within this recipient's observation; lifetimes use the shared simulation clock.
+    /// </summary>
+    public ModVisualSnapshot ModVisuals { get; init; } = new([], []);
+
+    /// <summary>
     /// The player's characters alive, as the faction size cap counts them (<see cref="SquadManagement.FactionHeads"/>): the squads screen's
     /// count and its dismiss rule read it.
     /// </summary>
@@ -1155,6 +1161,16 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// The power of the building the HUD shows when it is a level building of a town that draws power; null for others.
     /// </summary>
     public Production.LevelPowerView? InspectedLevelPower { get; init; }
+    /// <summary>
+    /// The authorized canonical machine whose lines the HUD shows for an inspected town generator, research bench or crafting bench;
+    /// null when no observable machine exists. This panel does not create another inventory.
+    /// </summary>
+    public Production.MachineSnapshot? InspectedTownMachine { get; init; }
+    /// <summary>
+    /// The canonical machine site of an inspected standing town building or layout object that the recipient may manage;
+    /// its window opens on selection. Null for other sites.
+    /// </summary>
+    public string? InspectedOwnMachine { get; init; }
     /// <summary>
     /// The gun numbers of the building the HUD shows when it is a turret (its Stats 1 gun lines); null for others.
     /// </summary>

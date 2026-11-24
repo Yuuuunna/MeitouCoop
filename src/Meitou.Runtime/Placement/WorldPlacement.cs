@@ -7,7 +7,16 @@ using Meitou.Simulation;
 using Meitou.Simulation.Construction;
 
 namespace Meitou.Runtime.Placement;
-public readonly record struct PlacementSurface(float Height, GhostFloor Floor);
+/// <summary>
+/// A floor or exact snap node resolved from the authoritative building and its ownership.
+/// </summary>
+public readonly record struct PlacementSurface(float Height, GhostFloor Floor)
+{
+    /// <summary>
+    /// Present only after matching the attachment's position, rotation and node type against the host's actual nodes.
+    /// </summary>
+    public SnapHost? SnappedOn { get; init; }
+}
 /// <summary>
 /// Builds placement queries from live authority state, never from client snapshots or a camera.
 /// </summary>
@@ -52,6 +61,7 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
                 if (!WorldLayout.ZoneOf(corner.X, corner.Y).IsInsideGrid || !regionReady(new(corner.X, plan.Position.Y, corner.Y)))
                     return PlacementFailure.RegionNotReady;
         GhostFloor? floor = null;
+        SnapHost? snappedOn = null;
         float surface;
         if (plan.Parent is not null)
         {
@@ -59,13 +69,22 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
                 return PlacementFailure.NotOwnedBuilding;
             if (parent.Floor.Floor != plan.Floor)
                 return PlacementFailure.InvalidFloor;
-            floor = parent.Floor;
-            if (data.CeilingPlacement && floor.Ceiling is not { })
-                return PlacementFailure.InvalidFloor;
-            surface = data.CeilingPlacement ? floor.Ceiling!.Value - 1 : parent.Height;
+            if (plan.Outside)
+            {
+                if (parent.SnappedOn is not { } snap) return PlacementFailure.NeedsSnapNode;
+                snappedOn = snap;
+                surface = parent.Height;
+            }
+            else
+            {
+                floor = parent.Floor;
+                if (data.CeilingPlacement && floor.Ceiling is not { }) return PlacementFailure.InvalidFloor;
+                surface = data.CeilingPlacement ? floor.Ceiling!.Value - 1 : parent.Height;
+            }
         }
         else
         {
+            if (plan.Outside) return PlacementFailure.InvalidPlan;
             if (plan.Floor != 0)
                 return PlacementFailure.InvalidFloor;
             surface = service.Ground(plan.Position.X, plan.Position.Z);
@@ -73,7 +92,7 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
 
         if (!float.IsFinite(surface) || MathF.Abs(plan.Position.Y - surface) > MaxLift)
             return PlacementFailure.InvalidGround;
-        var sites = world.Buildings.All.Select(s => new BuildingSnapshot(s.Id, s.Record, s.Position, s.Rotation, s.Floor, s.Parent, s.Owner, s.Progress, s.Target, [], s.Complete, s.Paused) { Destroyed = s.Destroyed }).ToArray();
+        var sites = world.Buildings.All.Select(s => new BuildingSnapshot(s.Id, s.Record, s.Position, s.Rotation, s.Floor, s.Parent, s.Owner, s.Progress, s.Target, [], s.Complete, s.Paused) { Destroyed = s.Destroyed, Outside = s.Outside }).ToArray();
         if (sites.Any(s => s.Record == plan.Record && Vector3.DistanceSquared(s.Position, plan.Position) < 0.01f))
             return PlacementFailure.TooCloseToBuilding;
         var characters = new List<CharacterSnapshot>();
@@ -99,14 +118,23 @@ public sealed class WorldPlacement(GameDatabase db, Func<World, PlacementService
         var query = new PlacementQuery(data, plan.Position, plan.Rotation, PlacementCheck.YawOf(plan.Rotation), plan.Floor, layout, [], characters, sites, towns(), factionRecord(faction), service)
         {
             On = floor,
+            Snapped = snappedOn is not null,
+            SnappedOn = snappedOn,
+            NeedsSnap = !data.HasGunTurret && data.SnapsTo.Count > 0 && db.Find(data.SnapsTo[0])?.GetBool("is node") == true,
             WallPiece = data.LinksTogether,
-            IgnoreSite = Joint
+            IgnoreSite = other => Joint(other) || snappedOn is not null && data.HasGunTurret && IsWall(other.Record),
+            PassThrough = snappedOn is not null && data.HasGunTurret ? IsWall : null
         };
         // The submitted transform is already the preview's settled transform. A hypothetical corrective nudge must not authorize a floating or buried site.
         if (PlacementCheck.Margins(query)is { Down: < -0.001f } or { Up: < -0.001f })
             return PlacementFailure.NotLevel;
         return PlacementCheck.Evaluate(query);
     }
+
+    /// <summary>
+    /// A turret attached to a wall's real node may overlap adjoining wall pieces, as in its preview.
+    /// </summary>
+    bool IsWall(string record) => Data(record) is { LinksTogether: true };
 
     static bool Finite(Vector3 p) => float.IsFinite(p.X) && float.IsFinite(p.Y) && float.IsFinite(p.Z);
     static bool Observed(World world, PlayerId player, int faction, Vector3 position)

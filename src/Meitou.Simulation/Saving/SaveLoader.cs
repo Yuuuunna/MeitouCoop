@@ -100,7 +100,11 @@ public static class SaveLoader
         // Saved shops and AI timers resolve their absolute hours against this clock from the first load step.
         world.GameHours = options.GameHoursOverride ?? camera.Day * 24 + loaded.Clock.HourOfDay;
         NoteMissingMods(camera, data, loaded);
+
+        // The table is shared by the data: its change count (read by the state hash) starts with this game, not the previous one of the session.
         if (options.ResetRelations) data.Relations.Reset();
+        else if (options.ApplyRelations) data.Relations.RestartChanges();
+
         LoadFactions(save, data, options, loaded);
         TakeBaselines(data, loaded);
         int playerIndex = LoadPlayer(world, save, data, options);
@@ -119,6 +123,9 @@ public static class SaveLoader
         if (context.Memory is { } memory)
             foreach (var lp in loaded.PlayerPlatoons) memory.Restore(lp.Squad.Id, MemorySave.Read(lp.Platoon.Record, context.CharacterOf));
         RestoreSelection(world, camera, handles, bySource, playerIndex);
+
+        // The save's platoons are the world's start: the code mods' platoon observers hear only of changes from the first tick.
+        world.Platoons.ForgetNotices();
         return loaded;
     }
 
@@ -303,7 +310,7 @@ public static class SaveLoader
             }
         }
 
-        world.Fixtures.LayoutsFromSave(world, data);   // the layouts the original furnished the saved buildings with
+        world.Fixtures.LayoutsFromSave(world, data, save, context.Handles);   // the layouts the original furnished the saved buildings with
         world.Fixtures.RuinsFromSave(world, data);
 
         foreach (var site in data.Sites)
@@ -926,7 +933,7 @@ public static class SaveLoader
 
     /// <summary>
     /// The state every loaded platoon reads off its saved record, NPC or wild: its imprisoned, dead and intact flags, a code mod's marks (its
-    /// spawn flag and tag, <see cref="ModPlatoonSave"/>) and its blackboard's town and arrival hour (<see cref="Platoon.SavedTown"/>).
+    /// spawn flag, tags and named hold, <see cref="ModPlatoonSave"/>) and its blackboard's town and arrival hour (<see cref="Platoon.SavedTown"/>).
     /// </summary>
     static void ReadSavedState(Platoon p, SavePlatoon platoon)
     {
@@ -936,6 +943,7 @@ public static class SaveLoader
         p.IntactFlag = record.Bools.GetValueOrDefault("intact", true);
         p.ModSpawned = ModPlatoonSave.Spawned(record);
         p.ModTag = ModPlatoonSave.Tag(record);
+        ModPlatoonSave.Read(record, p);
         p.SavedTown = CurrentTownSave.Read(record);
     }
 

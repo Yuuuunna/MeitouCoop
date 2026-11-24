@@ -218,6 +218,7 @@ public class PlayerWorldViewTests
             return machine;
         }
         var a = Storage(7); var b = Storage(8);
+        s.A.State.ShownMachines = [a.Site];
         var first = s.View().Snapshot;
         Assert.Equal(7, first.Machines.Single(m => m.Site == a.Site).AuthorityFaction);
         Assert.Equal(8, first.Machines.Single(m => m.Site == b.Site).AuthorityFaction);

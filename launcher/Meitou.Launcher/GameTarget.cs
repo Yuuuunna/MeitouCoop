@@ -156,7 +156,7 @@ sealed record GameTarget(string Exe, string Version, bool Local)
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
-            return $"Could not read build information: {error.Message}";
+            return LauncherText.Translate("Could not read build information: {1}", error.Message);
         }
     }
 

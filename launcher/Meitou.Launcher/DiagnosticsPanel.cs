@@ -95,7 +95,7 @@ public sealed class DiagnosticsPanel : StackPanel
             if (Directory.Exists(recovery)) packages = packages.Concat(Directory.GetFiles(recovery, "*.zip")).ToArray();
             _packages.ItemsSource = packages.Select(p => new Package(p)).OrderByDescending(p => File.GetLastWriteTimeUtc(p.Path)).ToArray();
             _packages.SelectedIndex = packages.Length == 0 ? -1 : 0;
-            _status.Text = $"{_store.Pending().Length} pending. Packages stay local until submitted. Recovery snapshots may be up to 15 seconds old.";
+            _status.Text = LauncherText.Translate("{1} pending. Packages stay local until submitted. Recovery snapshots may be up to 15 seconds old.", _store.Pending().Length);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -116,7 +116,7 @@ public sealed class DiagnosticsPanel : StackPanel
         try
         {
             DiagnosticControl.Write(_store.Root, _enabled.IsChecked == true);
-            _status.Text = "Collection preference saved; running clients update within one second. Existing packages are retained.";
+            _status.Text = LauncherText.Translate("Collection preference saved; running clients update within one second. Existing packages are retained.");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -134,13 +134,13 @@ public sealed class DiagnosticsPanel : StackPanel
         {
             var destination = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Export diagnostic report", SuggestedFileName = System.IO.Path.GetFileName(package.Path), DefaultExtension = "zip"
+                Title = LauncherText.Translate("Export diagnostic report"), SuggestedFileName = System.IO.Path.GetFileName(package.Path), DefaultExtension = "zip"
             });
             if (destination is null) return;
             await using var input = File.OpenRead(package.Path);
             await using var output = await destination.OpenWriteAsync();
             await input.CopyToAsync(output);
-            _status.Text = "Diagnostic package exported.";
+            _status.Text = LauncherText.Translate("Diagnostic package exported.");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -157,7 +157,7 @@ public sealed class DiagnosticsPanel : StackPanel
         if (!Uri.TryCreate(_collector.Text?.Trim(), UriKind.Absolute, out var collector) || collector.Scheme != "https" ||
             collector.UserInfo.Length != 0 || collector.Query.Length != 0 || collector.Fragment.Length != 0)
         {
-            _status.Text = "Enter the private collector HTTPS URL supplied by the server operator.";
+            _status.Text = LauncherText.Translate("Enter the private collector HTTPS URL supplied by the server operator.");
             return;
         }
 
@@ -170,18 +170,18 @@ public sealed class DiagnosticsPanel : StackPanel
             if (Path.GetFileName(Path.GetDirectoryName(path)) == "recovery") path = await Task.Run(() => _store.QueueRecovery(path));
             if (path.EndsWith(".sent.zip", StringComparison.Ordinal) || File.Exists(path[..^4] + ".sent.zip"))
             {
-                _status.Text = "This package was already submitted.";
+                _status.Text = LauncherText.Translate("This package was already submitted.");
                 return;
             }
 
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             await _store.SubmitAsync(path, collector, http);
             Refresh();
-            _status.Text = "Diagnostic package submitted privately.";
+            _status.Text = LauncherText.Translate("Diagnostic package submitted privately.");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
         {
-            _status.Text = "Submission failed; the local package is retained. " + error.Message;
+            _status.Text = LauncherText.Translate("Submission failed; the local package is retained. {1}", error.Message);
         }
         finally
         {
@@ -197,7 +197,7 @@ public sealed class DiagnosticsPanel : StackPanel
         /// <summary>
         /// Distinguishes recovery, acknowledged and pending artifacts at a glance.
         /// </summary>
-        public override string ToString() => (System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(Path)) == "recovery" ? "Recovery: " : "") +
+        public override string ToString() => (System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(Path)) == "recovery" ? LauncherText.Translate("Recovery: ") : "") +
             System.IO.Path.GetFileName(Path);
     }
 }

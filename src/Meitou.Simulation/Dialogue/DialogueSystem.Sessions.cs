@@ -85,7 +85,7 @@ public sealed partial class DialogueSystem
     internal bool Authorized(World world, Conversation c) => c.Actor is null || c.Control is { } grant && world.Players.Validate(grant)
         && world.Players.Find(c.Actor.Value)?.MembershipRevision(c.Faction) == c.MembershipRevision
         && (c.Interaction is null || world.Characters.TryResolveNext(c.Player, out int player) && Awake(world.Characters, player)
-            && world.Characters.TryResolveNext(c.Npc, out int npc) && Talkable(world.Characters, npc) && InTalkRange(world.Characters, player, npc)
+            && world.Characters.TryResolveNext(c.Npc, out int npc) && Talkable(world.Characters, npc) && InTalkRange(world, player, npc)
             && (world.Players.ControlOf(c.Npc) is not { } npcControl || npcControl.Player == c.Actor));
     internal bool CanSpend(World world, Conversation c) => Authorized(world, c) && (c.Actor is null || world.Players.Find(c.Actor.Value)?.HasPermission(c.Faction, FactionPermission.SpendFunds) == true);
     internal bool CanManage(World world, Conversation c) => Authorized(world, c) && (c.Actor is null || world.Players.Find(c.Actor.Value)?.HasPermission(c.Faction, FactionPermission.ManageFaction) == true);

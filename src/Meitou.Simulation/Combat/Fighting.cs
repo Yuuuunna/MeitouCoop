@@ -129,7 +129,7 @@ public sealed class PursuitSystem(CombatSystem combat) : ITickSystem
 
         // A crossbowman walks only while closing in (out of range or the line of fire blocked); aiming and reloading it stands.
         bool shooting = st.Ranged && st.RangedState != (byte)RangedStates.Closing;
-        bool holding = HoldsBack(cold, n.Position, next, t);
+        bool holding = HoldsBack(cold, st, n.Position, next, t);
 
         // In its footwork with a clear line to the target, the fight steering moves it (docs/game/combat.md "Fight steering"): its state sets the
         // band, no paths.
@@ -199,11 +199,15 @@ public sealed class PursuitSystem(CombatSystem combat) : ITickSystem
 
     /// <summary>
     /// On Hold it walks only to a target within the post test's reach of the hold point (80, 140 when the target is in a fight and heads for it;
-    /// Orders.HoldFar), else it stands (engine reading). True when it holds back from target <paramref name="t"/>.
+    /// Orders.HoldFar), else it stands (engine reading). The player's own attack target (orders 5 and 61) is walked to wherever it is: the original's
+    /// chooser returns that focused target without the post test (docs/game/combat.md "Target selection"), and the fight's decision reads Hold only
+    /// to skip a path chase in one case, never to stand still ("Leaving a fight"); a crossbowman's closing in reads Hold (docs/game/combat.md), so it
+    /// still holds back. True when it holds back from target <paramref name="t"/>.
     /// </summary>
-    bool HoldsBack(CharacterCold cold, Vector3 here, Span<CharacterHot> next, int t)
+    bool HoldsBack(CharacterCold cold, in CombatSlot st, Vector3 here, Span<CharacterHot> next, int t)
     {
         if (!Orders.Holding(cold)) return false;
+        if (st.Picked && !st.Ranged && st.TaskSlot == t && st.TaskGeneration == next[t].Generation) return false;
 
         bool targetFights = combat.StateOf(new CharacterId(t, next[t].Generation)).TargetSlot >= 0;
         float far = Orders.HoldFar(here, next[t].Position, next[t].Yaw, targetFights);
@@ -426,7 +430,7 @@ public sealed class PursuitSystem(CombatSystem combat) : ITickSystem
     /// <summary>
     /// Lapses the path failures and, after a path request that found no way, adds <paramref name="target"/> (<see cref="CharacterCold.Ignored"/>). A
     /// lapsed one is armed for another <see cref="PathFailureSeconds"/> while there is still no path to its target, else dropped
-    /// (<c>AITaskSytem::update4Frame</c>, <b>Observed</b>; at most one dropped per call).
+    /// (<c>AITaskSytem::update4Frame</c>, <b>Observed</b>; at most one dropped per call; <see cref="StillNoPath"/>).
     /// </summary>
     internal static void NotePathFailure(World world, int i, CharacterCold cold, CharacterId target, float endReach)
     {
@@ -447,7 +451,7 @@ public sealed class PursuitSystem(CombatSystem combat) : ITickSystem
 
                 if (failures[k].Until > world.Tick || dropped) continue;
 
-                if (!PathExists(world, i, cold, failures[k].Key.Id, endReach)) failures[k] = (failures[k].Key, armed);
+                if (StillNoPath(world, i, cold, failures[k].Key.Id, endReach)) failures[k] = (failures[k].Key, armed);
                 else
                 {
                     failures.RemoveAt(k);
@@ -461,6 +465,14 @@ public sealed class PursuitSystem(CombatSystem combat) : ITickSystem
         cold.PathFailed = false;
         (cold.Ignored ??= []).Add((IgnoreKey.Of(target), armed));
     }
+
+    /// <summary>
+    /// Whether a lapsed path failure on <paramref name="target"/> is armed again. With synchronous paths (headless runs, tests) the walkability is
+    /// asked on the spot (<see cref="PathExists"/>); with path threads (the interactive game) it is dropped, as <see cref="GiveUp"/> drops them: a
+    /// search inside the tick stalled it for hundreds of milliseconds, and a chase after the target again notes its failure from the threads' answer.
+    /// </summary>
+    static bool StillNoPath(World world, int i, CharacterCold cold, CharacterId target, float endReach) =>
+        world.SystemOf<MovementSystem>()?.Paths.IsSynchronous != false && !PathExists(world, i, cold, target, endReach);
 
     /// <summary>
     /// Whether fighter <paramref name="i"/> has a path to <paramref name="target"/> (<c>Character::pathExists</c>): a gone target counts as one (the

@@ -16,6 +16,10 @@ public sealed record GameplayRules
     /// </summary>
     public float SquadXp { get; init; } = 1;
     /// <summary>
+    /// Per-stat authority experience overrides; negative values follow SquadXp, and an empty array means all skills follow.
+    /// </summary>
+    public float[] SquadSkillXp { get; init; } = [];
+    /// <summary>
     /// The authority's experience multiplier for NPC factions and animals.
     /// </summary>
     public float OthersXp { get; init; } = 1;
@@ -36,6 +40,10 @@ public sealed record GameplayRules
     /// Uses animal moves for natural weapons whose item category would choose an unavailable person animation.
     /// </summary>
     public bool AnimalMovesFix { get; init; } = true;
+    /// <summary>
+    /// Records turret attacks as assault for the authority's crime system.
+    /// </summary>
+    public bool TurretAssault { get; init; } = true;
     /// <summary>
     /// Keeps wounded prisoners in their cage or pole pose.
     /// </summary>
@@ -61,6 +69,10 @@ public sealed record GameplayRules
     /// </summary>
     public bool BagSearchFix { get; init; } = true;
     /// <summary>
+    /// Approaches a shopkeeper from the front of the counter.
+    /// </summary>
+    public bool CounterTalk { get; init; } = true;
+    /// <summary>
     /// Cage guards spare captives of their own faction when the authority enables the optional rule.
     /// </summary>
     public bool CagesSpareOwn { get; init; }
@@ -79,6 +91,10 @@ public sealed record GameplayRules
     public bool OffscreenHealing { get; init; } = true;
     public bool CampaignAncestorsOnce { get; init; } = true;
     public bool KeepWild { get; init; } = true;
+    /// <summary>
+    /// Keeps a knocked-out squad member in a loaded region when its squad leaves.
+    /// </summary>
+    public bool KeepDowned { get; init; } = true;
     public bool ResidentSchedule { get; init; } = true;
     /// <summary>
     /// Applies town overrides while their regions are unloaded.
@@ -104,6 +120,7 @@ public sealed record GameplayRules
             HungerTime = bodies?.HungerTime ?? 1,
             ChanceOfDeath = bodies?.ChanceOfDeath ?? 1,
             SquadXp = bodies?.SquadXp ?? 1,
+            SquadSkillXp = bodies?.SquadSkillXp is { } rates ? [.. rates] : [],
             OthersXp = bodies?.OthersXp ?? 1,
             ProductionSpeed = production?.Settings.ProductionOption ?? 1,
             ResearchSpeed = production?.Settings.ResearchOption ?? 1,
@@ -119,12 +136,14 @@ public sealed record GameplayRules
             PunchReachFix = combat?.PunchReachFix ?? true,
             BenchFacingFix = world.BenchFacingFix,
             AnimalMovesFix = combat?.AnimalMovesFix ?? true,
+            TurretAssault = combat?.TurretAssault ?? true,
             PrisonPoseFix = world.PrisonPoseFix,
             CagedAnimalFix = world.CagedAnimalFix,
             KeepCampaignClocks = population?.Settings.KeepCampaignClocks ?? true,
             ArrestLiftFix = world.SystemOf<Crime.ArrestSystem>()?.Settings.LiftFix ?? true,
             GroundRepair = world.GroundRepair,
             BagSearchFix = world.BagSearchFix,
+            CounterTalk = world.CounterTalk,
             CagesSpareOwn = captives?.Settings.SpareOwnFaction ?? false,
             AnimalsPickUp = world.SystemOf<PlayerSystem>()?.AnimalsPickUp ?? false,
             SquadSize = population?.Settings.SquadSizeMultiplier ?? 1,
@@ -138,6 +157,7 @@ public sealed record GameplayRules
             OffscreenHealing = population?.OffscreenHealing ?? true,
             CampaignAncestorsOnce = population?.CampaignAncestorsOnce ?? true,
             KeepWild = population?.KeepWild ?? true,
+            KeepDowned = population?.KeepDowned ?? true,
             ResidentSchedule = population?.ResidentSchedule ?? true,
             OffscreenOverrides = population?.OffscreenOverrides ?? true,
             UnloadedProduction = production?.UnloadedProduction ?? true,

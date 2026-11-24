@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using Meitou.Data.Gameplay;
 using Meitou.Data.Ui;
+using Meitou.Game.Building;
 using Meitou.Game.Rendering.Ui;
 using Meitou.Game.Tutorials;
 using Meitou.Simulation.Items;
@@ -36,6 +37,15 @@ sealed class ProductionWindows(PlayerInterface player)
     /// window the player closed (not reopened until the selection changes).
     /// </summary>
     internal string? OwnMachine;
+
+    /// <summary>
+    /// The recipient view last told which machine windows are visible; a replacement baseline needs the intent again, including an empty list.
+    /// </summary>
+    (object? World, ulong Epoch) _machinesFor;
+    /// <summary>
+    /// At most two distinct machine sites last submitted to the remote authority.
+    /// </summary>
+    string[] _machinesSent = [];
 
     /// <summary>
     /// A selected building whose own window the player closed beside a target, and the building selected when the target opened (the order closed
@@ -89,7 +99,7 @@ sealed class ProductionWindows(PlayerInterface player)
     /// window.
     /// </summary>
     internal static string MachineScreen(MachineSnapshot m) =>
-        m.Storage is null || m.Inputs.Count > 0 || m.Output is not null ? "building"
+        !m.HasStorage || m.Inputs.Count > 0 || m.Output is not null ? "building"
         : m.TechLevel == 0 ? "storage"
         : "bench";
 
@@ -120,11 +130,43 @@ sealed class ProductionWindows(PlayerInterface player)
         var focus = player.BuildingSelection.BuildingFocus();
 
         // A rock's natural site is no registry building: its machine, once mined, is enough.
-        var selected = SiteMachine(focus?.SiteId);
-        if (selected is { Inputs.Count: 0, Output: null, Storage: null, Craft: null }) selected = null;
+        var selected = SiteMachine(MachineSiteOf(focus));
+        if (selected is { Inputs.Count: 0, Output: null, HasStorage: false, Craft: null }) selected = null;
 
         SyncShownMachine(selected);
         SyncOwnMachine(selected);
+    }
+
+    /// <summary>
+    /// Tells the world which machines' windows are shown (<see cref="Simulation.Player.PlayerState.ShownMachines"/>): only their storages are
+    /// published with their items. A new list only when they changed, so the paused world publishes again only then.
+    /// </summary>
+    internal void ShareShownMachines()
+    {
+        string? shown = string.IsNullOrEmpty(ShownMachine) ? null : ShownMachine;
+        string? own = string.IsNullOrEmpty(OwnMachine) || OwnMachine == shown ? null : OwnMachine;
+        if (player.Session is Meitou.Game.Host.WorldSession local)
+        {
+            if (!Same(local.World.Player.ShownMachines)) local.World.Player.ShownMachines = Sites();
+            return;
+        }
+        if (player.Session is not Meitou.Game.Host.RemotePlayerSession remote || !remote.HasWorldView)
+        {
+            _machinesFor = default;
+            _machinesSent = [];
+            return;
+        }
+        var at = (World: remote.WorldIdentity, Epoch: remote.PresentationEpoch);
+        if (ReferenceEquals(_machinesFor.World, at.World) && _machinesFor.Epoch == at.Epoch && Same(_machinesSent)) return;
+
+        var sites = Sites();
+        remote.Submit(new ShowMachinesCommand(sites) { Tick = remote.CommandTick });
+        _machinesFor = at;
+        _machinesSent = sites;
+
+        string[] Sites() => new[] { shown, own }.OfType<string>().ToArray();
+        bool Same(IReadOnlyList<string> sites) => sites.Count == (shown is null ? 0 : 1) + (own is null ? 0 : 1)
+            && (shown is null || sites.Contains(shown)) && (own is null || sites.Contains(own));
     }
 
     /// <summary>
@@ -286,7 +328,7 @@ sealed class ProductionWindows(PlayerInterface player)
     {
         ShownMachine = m.Site;
         _shownName = player.BuildingSelection.Selected?.Name;
-        _targetSelection = player.BuildingSelection.BuildingFocus()?.SiteId;
+        _targetSelection = MachineSiteOf(player.BuildingSelection.BuildingFocus());
         string screen = MachineScreen(m);
         player.ScrollBars.InventoryScroll.Remove(screen);
 
@@ -335,6 +377,20 @@ sealed class ProductionWindows(PlayerInterface player)
 
         string screen = MachineScreen(m);
         return player.FaithfulScreens.IsOpen(screen) ? screen : null;
+    }
+
+    /// <summary>
+    /// The machine site a selected building's window shows: its own site, else the canonical machine of a town building or layout object of
+    /// the player's faction, as the original opens the window of any complete building the player's faction owns (<c>FUN_1405504a0</c>,
+    /// docs/game/ui-input.md "Building picking and selection"); null for none.
+    /// </summary>
+    string? MachineSiteOf(BuildingSelection.SelectedBuilding? focus)
+    {
+        if (focus is null) return null;
+        if (focus.SiteId is { } site) return site;
+
+        string? own = player.Session.CurrentSnapshot.InspectedOwnMachine;
+        return own == focus.Instance ? own : null;
     }
 
     /// <summary>
@@ -428,9 +484,9 @@ sealed class ProductionWindows(PlayerInterface player)
             b.Hidden.Add("TypeText");
         }
 
-        if (m?.Storage is { } sg)
+        if (m?.StorageSize is { } size)
         {
-            player.InventoryLayout.BindContainerGeometry(id, b, sg.Width, sg.Height);
+            player.InventoryLayout.BindContainerGeometry(id, b, size.Width, size.Height);
         }
 
         b.TemplateScale = player.UiScale;
@@ -450,9 +506,9 @@ sealed class ProductionWindows(PlayerInterface player)
         b.Actions["ArrangeButton"] = "ArrangeButton";
         if (!CanArrange(m)) b.Hidden.Add("ArrangeButton");
 
-        if (m?.Storage is { } grid)
+        if (m?.StorageSize is { } size)
         {
-            player.InventoryLayout.BindContainerGeometry(id, b, grid.Width, grid.Height);
+            player.InventoryLayout.BindContainerGeometry(id, b, size.Width, size.Height);
         }
 
         b.TemplateScale = player.UiScale;
@@ -483,7 +539,7 @@ sealed class ProductionWindows(PlayerInterface player)
         {
             string n = (k + 1).ToString(CultureInfo.InvariantCulture);
 
-            if (k == 0 && FurnaceGrid(m) is not null)
+            if (k == 0 && FurnaceSize(m) is not null)
             {
                 BindFurnaceInput(b);
                 continue;
@@ -572,12 +628,12 @@ sealed class ProductionWindows(PlayerInterface player)
     /// </summary>
     void BindColumnTitles(MachineSnapshot m, UiBindings b)
     {
-        int inputCount = FurnaceGrid(m) is not null ? 1 : m.Inputs.Count;
+        int inputCount = FurnaceSize(m) is not null ? 1 : m.Inputs.Count;
         if (inputCount > 0) b.Text["InputTitleText"] = Loc.Plural("Input", "Inputs", inputCount);
 
         b.Text["OutputTitleText"] = Loc.Tr("Output");
-        if (m.Inputs.Count == 0 && FurnaceGrid(m) is null) b.Hidden.Add("InputTitleText");
-        if (m.Inputs.Count == 0 && FurnaceGrid(m) is null) b.Hidden.Add("InputColumn");
+        if (m.Inputs.Count == 0 && FurnaceSize(m) is null) b.Hidden.Add("InputTitleText");
+        if (m.Inputs.Count == 0 && FurnaceSize(m) is null) b.Hidden.Add("InputColumn");
     }
 
     /// <summary>
@@ -588,7 +644,7 @@ sealed class ProductionWindows(PlayerInterface player)
         var geometry = new InventoryGeometry(player.FaithfulScreens.Layout(id), player.Width, player.Height,
             player.InterfaceScale, player.UiScale);
         var cell = player.InventoryCellSize;
-        var furnace = FurnaceGrid(machine);
+        var furnace = FurnaceSize(machine);
         Vector2[] inputs = furnace is { } grid
             ? [new Vector2(grid.Width, grid.Height) * cell]
             : machine.Inputs.Take(2).Select(s => new Vector2(s.Width, s.Height) * cell).ToArray();
@@ -599,9 +655,15 @@ sealed class ProductionWindows(PlayerInterface player)
     }
 
     /// <summary>
-    /// A furnace's item grid (its <c>in1</c> section, kept as the machine's storage); null for any other machine.
+    /// A furnace's item grid with its items (its <c>in1</c> section, kept as the machine's storage); null for any other machine, and for a
+    /// furnace until its window is shown (<see cref="ShareShownMachines"/>).
     /// </summary>
     internal static InventoryView? FurnaceGrid(MachineSnapshot? m) => m is { Furnace: not null, Inputs.Count: 0, Storage: { } grid } ? grid : null;
+
+    /// <summary>
+    /// A furnace's item grid's size, published whether or not its window is shown; null for any other machine.
+    /// </summary>
+    internal static (int Width, int Height)? FurnaceSize(MachineSnapshot? m) => m is { Furnace: not null, Inputs.Count: 0 } ? m.StorageSize : null;
 
     /// <summary>
     /// A bench's current craft: the queue's front while its progress is below 1 (docs/game/ui-screens.md "Selected building", crafting window); null:
@@ -649,20 +711,21 @@ sealed class ProductionWindows(PlayerInterface player)
 
         for (int k = 0; k < Math.Min(2, m.Inputs.Count); k++) AddSlot(controls, m, $"in{k + 1}", m.Inputs[k], 10 + k);
 
-        if (FurnaceGrid(m) is { } fg && m.Furnace is { } burn) AddFurnaceGrid(controls, m, fg, burn);
+        if (FurnaceSize(m) is { } size && m.Furnace is { } burn) AddFurnaceGrid(controls, m, size, burn);
 
         AddOutputSlot(controls, m);
     }
 
     /// <summary>
-    /// A bench's or storage's grid and its items, placed in the window's <c>backpack_content</c>.
+    /// A bench's or storage's grid and its items, placed in the window's <c>backpack_content</c>; the items once the snapshot carries them (the
+    /// publish after the window was shown).
     /// </summary>
     void AddStorageGrid(string id, List<UiControl> controls, MachineSnapshot m)
     {
-        if (m.Storage is not { } grid) return;
+        if (!m.HasStorage) return;
 
         player.InventoryLayout.ArrangeContainerGrid(id, controls);
-        if (controls.FirstOrDefault(c => c.Name == "backpack_content") is not { } slot) return;
+        if (m.Storage is not { } grid || controls.FirstOrDefault(c => c.Name == "backpack_content") is not { } slot) return;
 
         var area = slot.Bounds;
 
@@ -737,17 +800,18 @@ sealed class ProductionWindows(PlayerInterface player)
     }
 
     /// <summary>
-    /// A furnace's input grid and its items.
+    /// A furnace's input grid of <paramref name="size"/> and its items (none until the snapshot carries them, the publish after the window was
+    /// shown).
     /// </summary>
-    void AddFurnaceGrid(List<UiControl> controls, MachineSnapshot m, InventoryView fg, FurnaceView burn)
+    void AddFurnaceGrid(List<UiControl> controls, MachineSnapshot m, (int Width, int Height) size, FurnaceView burn)
     {
         // The furnace's grid in in1, its items the storage's (picked up as storage items); disabled while it burns
         // (InventorySection::setEnabled(!active)).
-        AddSlot(controls, m, "in1", new MachineSlotView("", "", 0, 0, 0, fg.Width, fg.Height), -1);
+        AddSlot(controls, m, "in1", new MachineSlotView("", "", 0, 0, 0, size.Width, size.Height), -1);
         if (burn.Burning) DisableSection(controls, "in1");
         int gi = controls.FindIndex(c => c.Name == "in1");
 
-        if (gi >= 0)
+        if (gi >= 0 && FurnaceGrid(m) is { } fg)
         {
             var g = controls[gi];
 
@@ -1407,14 +1471,18 @@ sealed class ProductionWindows(PlayerInterface player)
 
         if (QueueBox(controls, "ResearchQueueList", "ResearchQueuePanel") is { } queue)
         {
+            var view = QueueView(controls, queue.Bounds, research.Queue.Count, line, (TutorialPanel.ResearchTab, null), out float scroll);
             for (int i = 0; i < research.Queue.Count; i++)
             {
+                float top = view.Y + i * line - scroll;
+                if (top + line <= view.Y || top >= view.Y + view.Height) continue;   // out of the box: not drawn
                 var (qid, name, progress) = research.Queue[i];
-                controls.Add(new($"research-queue-{i}", "Button", new(queue.Bounds.X + 6, queue.Bounds.Y + i * line, queue.Bounds.Width - 12, line),
+                controls.Add(new($"research-queue-{i}", "Button", new(view.X + 6, top, view.Width - 12, line),
                     $"{name}  {(int)(progress * 100)}%", "research-cancel:" + qid, "", true, face, Vector4.Zero,
-                    TextColour: i == 0 ? new(0.66f, 0.72f, 0.45f, 1) : ink, HoverColour: new(1, 0.4f, 0.3f, 1), Pickable: true, Clip: queue.Bounds));
+                    TextColour: i == 0 ? new(0.66f, 0.72f, 0.45f, 1) : ink, HoverColour: new(1, 0.4f, 0.3f, 1), Pickable: true, Clip: view));
             }
         }
+        else ClearQueueScroll();
 
         var hovered = controls.LastOrDefault(IsHoveredResearchRow)?.Action;
         string? focus = hovered is { Length: > 15 } h ? h[15..] : ResearchFocus;
@@ -1619,6 +1687,7 @@ sealed class ProductionWindows(PlayerInterface player)
                 ?? stations.FirstOrDefault(s => StationName(s) == e.Text)?.Site
                 ?? _craftStation;
             _craftScroll = 0;
+            ClearQueueScroll();
         }
         else if (e.Action.Split(':') is [var action, var r, var s, var value] && ulong.TryParse(r, NumberStyles.None, CultureInfo.InvariantCulture, out ulong revision))
         {
@@ -1642,9 +1711,10 @@ sealed class ProductionWindows(PlayerInterface player)
     /// </summary>
     internal void AddCraftContent(List<UiControl> controls)
     {
-        if (player.FaithfulScreens.GetTab("overview", "TabsMain") != CraftTab || _craftStation is null
-            || Machine(_craftStation) is not { Craft: { } craft, ControlRevision: > 0 })
+        int tab = player.FaithfulScreens.GetTab("overview", "TabsMain");
+        if (tab != CraftTab || _craftStation is null || Machine(_craftStation) is not { Craft: { } craft, ControlRevision: > 0 })
         {
+            if (tab != TutorialPanel.ResearchTab) ClearQueueScroll();
             return;
         }
 
@@ -1677,14 +1747,18 @@ sealed class ProductionWindows(PlayerInterface player)
 
         if (QueueBox(controls, "CraftQueue", "QueuePanel") is { } queue)
         {
+            var view = QueueView(controls, queue.Bounds, craft.Queue.Count, line, (CraftTab, _craftStation), out float scroll);
             for (int i = 0; i < craft.Queue.Count; i++)
             {
+                float top = view.Y + i * line - scroll;
+                if (top + line <= view.Y || top >= view.Y + view.Height) continue;   // out of the box: not drawn
                 var (_, name, progress, _) = craft.Queue[i];
-                controls.Add(new($"craft-queue-{i}", "Button", new(queue.Bounds.X + 6, queue.Bounds.Y + i * line, queue.Bounds.Width - 12, line),
+                controls.Add(new($"craft-queue-{i}", "Button", new(view.X + 6, top, view.Width - 12, line),
                     $"{name}  {(int)(progress * 100)}%", CraftActionId("craft-cancel", Machine(_craftStation)!, i.ToString(CultureInfo.InvariantCulture)), "", true, face, Vector4.Zero,
-                    TextColour: i == 0 ? new(0.66f, 0.72f, 0.45f, 1) : ink, HoverColour: new(1, 0.4f, 0.3f, 1), Pickable: true, Clip: queue.Bounds));
+                    TextColour: i == 0 ? new(0.66f, 0.72f, 0.45f, 1) : ink, HoverColour: new(1, 0.4f, 0.3f, 1), Pickable: true, Clip: view));
             }
         }
+        else ClearQueueScroll();
 
         // A queued craft under the pointer has its own description (the CraftQueue box's tooltip, FUN_1402be650 -> FUN_1402bcf60).
         if (controls.LastOrDefault(IsHoveredCraftQueue) is { } over
@@ -1722,10 +1796,66 @@ sealed class ProductionWindows(PlayerInterface player)
         controls.FirstOrDefault(c => c.Name == name) ?? controls.FirstOrDefault(c => c.Name == panel);
 
     /// <summary>
+    /// The queue the overview's scroll offset belongs to (<see cref="QueueView"/>): its tab and bench.
+    /// </summary>
+    (int Tab, string? Bench) _queueOwner;
+
+    /// <summary>
+    /// The overview window's screen id, the key of its queue's scroll view.
+    /// </summary>
+    const string OverviewScreen = "overview";
+
+    /// <summary>
+    /// The queue box's scrolling: the original's queue is an ItemBox whose skin (<c>Kenshi_ItemBoxEmpty</c>) has a vertical scroll bar, 15 wide, so
+    /// a queue taller than its box scrolls (bar, arrows, track, thumb and wheel; the overview window's scroll view, <see cref="ScrollBars"/>).
+    /// Returns the rows' rectangle, narrowed by the bar when the queue overflows, and the scroll offset. The offset belongs to one queue
+    /// (<paramref name="owner"/>: the tab and the bench), as each box has its own: another queue starts at the top. The arrows and the wheel move it
+    /// a row.
+    /// </summary>
+    UiRect QueueView(List<UiControl> controls, UiRect box, int count, float line, (int Tab, string? Bench) owner, out float scroll)
+    {
+        var bars = player.ScrollBars;
+        float maximum = MathF.Max(0, count * line - box.Height);
+
+        if (maximum <= 0 || owner != _queueOwner) ClearQueueScroll();
+
+        if (maximum <= 0)
+        {
+            scroll = 0;
+            return box;
+        }
+
+        _queueOwner = owner;
+        bars.ViewSteps[OverviewScreen] = line;
+        scroll = bars.InventoryScroll[OverviewScreen] = Math.Clamp(bars.InventoryScroll.GetValueOrDefault(OverviewScreen), 0, maximum);
+
+        float barWidth = 15 * player.UiScale;
+        var view = box with { Width = MathF.Max(0, box.Width - barWidth) };
+        bars.InventoryViews[OverviewScreen] = (box, maximum);   // the wheel over the bar scrolls too
+        bars.AddScrollBar(OverviewScreen, controls, new UiRect(box.X + box.Width - barWidth, box.Y, barWidth, box.Height), box.Height,
+            box.Height + maximum, scroll, maximum, box);
+
+        return view;
+    }
+
+    /// <summary>
+    /// The overview window has no scrolled queue (another tab, another bench, or a queue that fits).
+    /// </summary>
+    void ClearQueueScroll()
+    {
+        player.ScrollBars.InventoryScroll.Remove(OverviewScreen);
+        player.ScrollBars.InventoryViews.Remove(OverviewScreen);
+        player.ScrollBars.InventoryTracks.Remove(OverviewScreen);
+        player.ScrollBars.ViewSteps.Remove(OverviewScreen);
+        _queueOwner = default;
+    }
+
+    /// <summary>
     /// A queued craft's row under the pointer.
     /// </summary>
     bool IsHoveredCraftQueue(UiControl c) =>
-        c.Name.StartsWith("craft-queue-", StringComparison.Ordinal) && c.Bounds.Contains(player.Mouse.X, player.Mouse.Y);
+        c.Name.StartsWith("craft-queue-", StringComparison.Ordinal) && c.Bounds.Contains(player.Mouse.X, player.Mouse.Y)
+        && c.Clip?.Contains(player.Mouse.X, player.Mouse.Y) != false;
 
     /// <summary>
     /// A craft option's row under the pointer.

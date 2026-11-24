@@ -23,6 +23,11 @@ struct Projectile
     public bool ShooterIsPlayer;
 
     /// <summary>
+    /// A turret's harpoon (<see cref="CombatSystem.TurretAssault"/>).
+    /// </summary>
+    public bool Turret;
+
+    /// <summary>
     /// The shooter's effective Crossbows (or Turrets) level when it fired: the victim's "hit taken" XP weighs it.
     /// </summary>
     public float ShooterSkill;
@@ -137,6 +142,17 @@ sealed class ProjectileFlight
     #region Pool
 
     /// <summary>
+    /// The list <see cref="Publish"/> last handed out, given again while no bolt was added or flown since (only stuck ones left); never changed once
+    /// published (the host reads it on its own thread).
+    /// </summary>
+    IReadOnlyList<ProjectileSnapshot> _published = [];
+
+    /// <summary>
+    /// Whether the bolts changed since <see cref="_published"/> was made.
+    /// </summary>
+    bool _changed;
+
+    /// <summary>
     /// Stuck bolts kept in the world per bolt mesh (<see cref="CombatSystem.StuckLimit"/>).
     /// </summary>
     public int StuckLimit { get; set; }
@@ -169,12 +185,27 @@ sealed class ProjectileFlight
     /// <summary>
     /// A bolt just fired joins the list (flown from the next tick's schedule).
     /// </summary>
-    public void Add(in Projectile p) => _projectiles.Add(p);
+    public void Add(in Projectile p)
+    {
+        _projectiles.Add(p);
+        _changed = true;
+    }
 
     /// <summary>
-    /// The bolts as the snapshot shows them.
+    /// The bolts as the snapshot shows them: the last list while they have not changed.
     /// </summary>
     public IReadOnlyList<ProjectileSnapshot> Publish()
+    {
+        if (!_changed) return _published;
+
+        _changed = false;
+        return _published = Snapshots();
+    }
+
+    /// <summary>
+    /// A new list of the bolts' snapshots.
+    /// </summary>
+    ProjectileSnapshot[] Snapshots()
     {
         if (_projectiles.Count == 0) return [];
 
@@ -219,6 +250,9 @@ sealed class ProjectileFlight
     public void Fly(World world, CombatSystem combat)
     {
         if (_projectiles.Count == 0) return;
+
+        // Only a bolt in flight moves or goes: a list of stuck ones stays as published.
+        if (InFlight > 0) _changed = true;
 
         float dt = world.TickSeconds;
         for (int k = 0; k < _projectiles.Count; k++)

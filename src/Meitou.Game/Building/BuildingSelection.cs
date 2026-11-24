@@ -773,21 +773,25 @@ sealed class BuildingSelection(PlayerInterface player)
     /// <summary>
     /// The machine the selected building's panels show: its site's (the player's, a mined rock's, a town machine's selected by its Loot order),
     /// else a town's farm or producer that a left click selected (its <c>townwork:</c> machine): the original's farm and production sections
-    /// (slot 40) test no owner. Null for none. The machine's window still opens only by the Loot order.
+    /// (slot 40) test no owner. Null for none. Its window opens on selection only when the player's faction owns it, else by the Loot order.
     /// </summary>
     internal Simulation.Production.MachineSnapshot? PanelMachine(SelectedBuilding focus) =>
         player.Production.Machine(focus.SiteId) ?? TownMachine(focus);
 
     /// <summary>
-    /// The machine of a town building or layout object selected without a site, when it is a farm or has an output (a well, a mine, a refinery);
-    /// null for any other, whose lines stay the UseableStuff ones (<see cref="UseableLines.AddStatsLines"/>).
+    /// The machine of a town building or layout object selected without a site: its own when it is a farm or has an output (a well, a mine, a
+    /// refinery), else for a generator, research bench or crafting bench the one the simulation publishes for the selection (its own or a view
+    /// of one, <c>WorldSnapshot.InspectedTownMachine</c>); null for any other, whose lines stay the UseableStuff ones
+    /// (<see cref="UseableLines.AddStatsLines"/>).
     /// </summary>
     Simulation.Production.MachineSnapshot? TownMachine(SelectedBuilding focus)
     {
         if (focus.SiteId is not null) return null;
 
         var machine = player.Production.Machine(focus.Instance);
-        return machine is { Farm: not null } or { Output: not null } ? machine : null;
+        if (machine is { Farm: not null } or { Output: not null }) return machine;
+
+        return player.Session.CurrentSnapshot.InspectedTownMachine is { } inspected && inspected.Site == focus.Instance ? inspected : null;
     }
 
     /// <summary>

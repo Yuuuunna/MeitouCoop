@@ -18,9 +18,9 @@ internal static class PresentationEventsCodec
     static ReadOnlySpan<byte> Magic => "\0MPE"u8;
 
     /// <summary>
-    /// Version one interleaves sound cores and posted references; version two puts XORed sound cores in byte planes before those references.
+    /// Versions three and four preserve the turret switch in the kind byte; four packs XORed cores in byte planes.
     /// </summary>
-    const byte Version = 1, PlaneVersion = 2;
+    const byte Version = 3, PlaneVersion = 4;
 
     /// <summary>
     /// Envelope bytes and the plain body's marker, JSON length, sound count and name count.
@@ -28,7 +28,7 @@ internal static class PresentationEventsCodec
     const int HeaderBytes = 9, BodyHeaderBytes = 9;
 
     /// <summary>
-    /// An ID, kind, packed flags/armour, two character IDs, three float32 coordinates and an optional item name reference.
+    /// An ID, packed kind/turret switch, packed flags/armour, two character IDs, three float32 coordinates and an optional item name reference.
     /// Posted sounds additionally carry event, switch group and switch value name references (six bytes).
     /// </summary>
     const int SoundBytes = 40, PostedBytes = 6;
@@ -228,7 +228,7 @@ internal static class PresentationEventsCodec
         byte flags = (byte)((value.Heavy ? 1 : 0) | (value.AttackerUnarmed ? 2 : 0) | (value.AttackerRobot ? 4 : 0)
             | (value.Armoured ? 8 : 0) | (value.Fatal ? 16 : 0) | (value.Armour << 5));
         writer.Write(entry.Id);
-        writer.Write((byte)value.Kind);
+        writer.Write((byte)((byte)value.Kind | value.ShootSound << 5));
         writer.Write(flags);
         writer.Write(value.Subject.Slot);
         writer.Write(value.Subject.Generation);
@@ -272,7 +272,7 @@ internal static class PresentationEventsCodec
     }
 
     /// <summary>
-    /// Version one's interleaved cores and optional posted references remain independently decodable.
+    /// Version three's interleaved cores and optional posted references remain independently decodable.
     /// </summary>
     static SoundEventEntry[] ReadSounds(ref Reader reader, int count, string[] names, ref int used)
     {
@@ -328,7 +328,10 @@ internal static class PresentationEventsCodec
     static SoundEvent ReadSoundCore(ref Reader reader, string[] names, ref int used, out ulong id)
     {
         id = reader.UInt64();
-        var kind = (SoundKind)reader.Byte();
+        byte kindAndSwitch = reader.Byte();
+        if ((kindAndSwitch & 0x80) != 0) throw new InvalidDataException("Invalid presentation sound kind bits.");
+        var kind = (SoundKind)(kindAndSwitch & 31);
+        int shootSound = (kindAndSwitch >> 5) & 3;
         byte flags = reader.Byte();
         if ((flags & 0x80) != 0) throw new InvalidDataException("Invalid presentation sound flags.");
         var subject = new CharacterId(reader.Int32(), reader.Int32());
@@ -336,11 +339,11 @@ internal static class PresentationEventsCodec
         var position = new Vector3(reader.Single(), reader.Single(), reader.Single());
         string? item = ReadName(ref reader, names, ref used);
         return new SoundEvent(kind, subject, other, position, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0,
-            (flags & 8) != 0, (flags & 16) != 0, item, (flags >> 5) & 3);
+            (flags & 8) != 0, (flags & 16) != 0, item, (flags >> 5) & 3, shootSound);
     }
 
     /// <summary>
-    /// Consumes the three optional posted references from their row (version one) or separate suffix (version two).
+    /// Consumes the three optional posted references from their row (version three) or separate suffix (version four).
     /// </summary>
     static SoundEvent ReadPosted(ref Reader reader, SoundEvent value, string[] names, ref int used)
     {

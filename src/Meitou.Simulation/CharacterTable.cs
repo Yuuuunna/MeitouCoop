@@ -118,6 +118,11 @@ public sealed class CharacterCold
     /// </summary>
     public LastingId LastingId { get; internal set; }
     /// <summary>
+    /// The character's id while it is in the table (set when it enters, none once it leaves): for code that holds the character's state but not its
+    /// slot.
+    /// </summary>
+    internal CharacterId Id { get; set; } = CharacterId.None;
+    /// <summary>
     /// The character's faction, a position in the world's faction list.
     /// </summary>
     public int Faction { get; set; }
@@ -1220,7 +1225,9 @@ public sealed class CharacterCold
     public bool OrderedUp { get; set; }
 
     /// <summary>
-    /// The player's speed group (<c>SpeedGroup</c>, made for the selection by Group speed: the first member's slot; -1 none). Runtime only.
+    /// The player's speed group (<c>SpeedGroup</c>, made for the characters given Group speed together, and again for those given a move order
+    /// together unless they already make up their whole group: a key from <see cref="World.NextSpeedGroup"/>; -1
+    /// none). Runtime only.
     /// </summary>
     public int SpeedGroup { get; set; } = -1;
 
@@ -1773,6 +1780,7 @@ public sealed class CharacterTable
         if (!cold.Entity.IsNone) _entities.Add(cold.Entity, new CharacterId(slot, generation));
         Spawns++;
         var id = new CharacterId(slot, generation);
+        cold.Id = id;
         if (!cold.LastingId.IsNone) IndexLasting(cold.LastingId, id);
         Watch?.Added(id, cold);
         return id;
@@ -1811,6 +1819,7 @@ public sealed class CharacterTable
             if (!removed.Entity.IsNone) _entities.Remove(removed.Entity);
             EntityRemoved?.Invoke(removed, unloaded);
         }
+        _cold[slot]!.Id = CharacterId.None;
         _cold[slot] = null;
         _free.Push(slot);
         _recentRemovals.Add(id, !unloaded); _removalOrder.Enqueue(id);
@@ -1862,12 +1871,23 @@ public sealed class CharacterTable
     }
 
     /// <summary>
+    /// One slot's part of <see cref="Hash"/> hashed on its own, so two runs that differ can name the characters that do (<c>meitou-tools
+    /// mod-check</c>).
+    /// </summary>
+    internal ulong SlotHash(int slot)
+    {
+        var h = new StateHasher();
+        HashSlot(ref h, slot);
+        return h.Value;
+    }
+
+    /// <summary>
     /// One slot's part of <see cref="Hash"/>: its hot state, then, while alive, its cold state in groups (the order is fixed: the golden hashes
-    /// depend on it).
+    /// depend on it). The hot state is the last tick's, or during a tick the one being computed (<see cref="World.AfterPhase"/>).
     /// </summary>
     void HashSlot(ref StateHasher hasher, int i)
     {
-        ref readonly var c = ref _previous[i];
+        ref readonly var c = ref (_inTick ? _next : _previous)[i];
         hasher.Add(c.Alive);
         hasher.Add(c.Generation);
         if (!c.Alive) return;

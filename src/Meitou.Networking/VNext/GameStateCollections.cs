@@ -13,14 +13,30 @@ internal sealed class GameCollectionState
     internal ulong Revision;
     internal byte[] ManifestDigest = [];
     internal CollectionManifest Manifest = new(false, false, []);
-    internal readonly Dictionary<string, (ulong Revision, object? Value, byte[] Digest)> Items = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Current visual membership lets its manifest revision replace unbounded per-event deletion tombstones.
+    /// </summary>
+    internal IReadOnlySet<string> VisualKeys = new HashSet<string>(StringComparer.Ordinal);
+    /// <summary>
+    /// Ahead-of-manifest visuals are staged separately from live membership for the existing count and byte limits.
+    /// </summary>
+    internal readonly Dictionary<string, int> VisualPendingSizes = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Sum of staged entry envelopes; replacements update this ledger without scanning the pending set.
+    /// </summary>
+    internal long VisualPendingBytes;
+    /// <summary>
+    /// Distinct logical staged visuals, independent of whether one or both of their parts has arrived.
+    /// </summary>
+    internal int VisualPendingCount;
+    internal readonly Dictionary<string, (ulong Revision, object? Value, byte[] Digest, int Bytes)> Items = new(StringComparer.Ordinal);
 }
 
 internal interface IGameCollection
 {
     ushort Id { get; }
 
-    (CollectionManifest Manifest, IReadOnlyList<(string Key, byte[] Value)> Items) Capture(WorldViewCodec codec, PlayerWorldView view);
+    (CollectionManifest Manifest, IReadOnlyList<(string Key, byte[] Value)> Items) Capture(WorldViewCodec codec, PlayerWorldView view, IReadOnlyDictionary<string, byte[]>? previous);
     object Decode(WorldViewCodec codec, string key, byte[] value);
     PlayerWorldView Build(PlayerWorldView view, GameCollectionState state);
 }
@@ -28,16 +44,26 @@ internal interface IGameCollection
 internal static class GameCollectionSchema
 {
     static readonly UTF8Encoding StrictUtf8 = new(false, true);
-    internal static readonly IGameCollection[] All = [new Collection<GroundItemSnapshot>(1011, v => v.Snapshot.GroundItems, v => v.Id.ToString(CultureInfo.InvariantCulture), (v, x, _, _) => v with { Snapshot = v.Snapshot with { GroundItems = x } }), new Collection<ContainerSpot>(1013, v => v.Snapshot.Containers, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Containers = x } }), new Collection<BedSpot>(1014, v => v.Snapshot.Beds, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Beds = x } }), new Collection<SeatSpot>(1016, v => v.Snapshot.Seats, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Seats = x } }), new Collection<CageSpot>(1017, v => v.Snapshot.Cages, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Cages = x } }), new Collection<WeatherRegionSnapshot>(9, v => v.Weather?.Regions ?? [], v => v.RegionId, (v, x, p, e) => v with { Weather = p ? new(v.Weather?.Time ?? default, x) { Enabled = e } : null }, v => v.Weather is not null, v => v.Weather?.Enabled ?? false), ];
+    internal static readonly IGameCollection[] All = [new Collection<GroundItemSnapshot>(1011, v => v.Snapshot.GroundItems, v => v.Id.ToString(CultureInfo.InvariantCulture), (v, x, _, _) => v with { Snapshot = v.Snapshot with { GroundItems = x } }), new Collection<ContainerSpot>(1013, v => v.Snapshot.Containers, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Containers = x } }), new Collection<BedSpot>(1014, v => v.Snapshot.Beds, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Beds = x } }), new Collection<SeatSpot>(1016, v => v.Snapshot.Seats, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Seats = x } }), new Collection<CageSpot>(1017, v => v.Snapshot.Cages, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Cages = x } }), new Collection<WeatherRegionSnapshot>(9, v => v.Weather?.Regions ?? [], v => v.RegionId, (v, x, p, e) => v with { Weather = p ? new(v.Weather?.Time ?? default, x) { Enabled = e } : null }, v => v.Weather is not null, v => v.Weather?.Enabled ?? false),
+        new ModVisualCollection(), ];
     internal static readonly IReadOnlySet<ushort> Ids = All.Select(s => s.Id).ToHashSet();
-    sealed class Collection<T>(ushort id, Func<PlayerWorldView, IReadOnlyList<T>> get, Func<T, string> key, Func<PlayerWorldView, IReadOnlyList<T>, bool, bool, PlayerWorldView> set, Func<PlayerWorldView, bool>? present = null, Func<PlayerWorldView, bool>? enabled = null) : IGameCollection
+
+    /// <summary>
+    /// Shared visuals have two independently revisioned records per logical identity; other collections retain one record per identity.
+    /// </summary>
+    internal static int MaximumKeys(ushort field) => field == 1068 ? ModVisualCollection.MaximumKeys : 65536;
+
+    sealed class Collection<T>(ushort id, Func<PlayerWorldView, IReadOnlyList<T>> get, Func<T, string> key,
+        Func<PlayerWorldView, IReadOnlyList<T>, bool, bool, PlayerWorldView> set, Func<PlayerWorldView, bool>? present = null,
+        Func<PlayerWorldView, bool>? enabled = null, Func<T, byte[]>? encode = null, Func<byte[], T>? decode = null) : IGameCollection
     {
         public ushort Id => id;
 
         /// <summary>
         /// Encodes collection entries in view order and reports the field, key and world tick of a duplicate.
         /// </summary>
-        public (CollectionManifest Manifest, IReadOnlyList<(string Key, byte[] Value)> Items) Capture(WorldViewCodec codec, PlayerWorldView view)
+        public (CollectionManifest Manifest, IReadOnlyList<(string Key, byte[] Value)> Items) Capture(
+            WorldViewCodec codec, PlayerWorldView view, IReadOnlyDictionary<string, byte[]>? previous)
         {
             var values = get(view);
             if (values.Count > 65536) throw new InvalidDataException("Collection exceeds record bound.");
@@ -55,7 +81,7 @@ internal static class GameCollectionSchema
                         + $"at tick {view.Snapshot.Tick}: {System.Text.Json.JsonSerializer.Serialize(itemKey)}.");
 
                 keys[i] = itemKey;
-                entries[i] = (itemKey, JsonComponentCompression.Encode(codec, item));
+                entries[i] = (itemKey, encode?.Invoke(item) ?? JsonComponentCompression.Encode(codec, item));
             }
 
             return (new(present?.Invoke(view) ?? true, enabled?.Invoke(view) ?? true, keys), entries);
@@ -63,7 +89,7 @@ internal static class GameCollectionSchema
 
         public object Decode(WorldViewCodec codec, string expectedKey, byte[] value)
         {
-            var item = JsonComponentCompression.Decode<T>(codec, value);
+            var item = decode is null ? JsonComponentCompression.Decode<T>(codec, value) : decode(value);
             if (key(item) != expectedKey)
                 throw new InvalidDataException("Keyed value identity does not match its envelope.");
             return item!;
@@ -101,9 +127,9 @@ internal static class GameCollectionSchema
     }
 
     /// <summary>
-    /// The wire or expanded byte budget of one JSON upsert, including its key. Manifests and removal entries are not compressed JSON values.
+    /// The wire or expanded byte budget of one upsert, including its key. Shared visuals are exact binary; other collections use JSON.
     /// </summary>
-    internal static int ExpandedEntrySize(ReadOnlySpan<byte> bytes)
+    internal static int ExpandedEntrySize(ushort field, ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length < 3) throw new InvalidDataException("Truncated keyed entry.");
 
@@ -111,13 +137,19 @@ internal static class GameCollectionSchema
         if (length > 1024 || length >= bytes.Length - 2)
             throw new InvalidDataException("Invalid keyed entry bounds.");
 
-        return Math.Max(bytes.Length, 2 + length + JsonComponentCompression.DecodedLength(bytes[(2 + length)..]));
+        return 2 + length + ExpandedItemSize(field, bytes[(2 + length)..]);
     }
 
-    internal static byte[] EncodeManifest(CollectionManifest manifest)
+    /// <summary>
+    /// A binary visual has no nested compression; only the complete lifecycle publication may use its bounded compression envelope.
+    /// </summary>
+    internal static int ExpandedItemSize(ushort field, ReadOnlySpan<byte> bytes) => field == 1068 ? bytes.Length
+        : Math.Max(bytes.Length, JsonComponentCompression.DecodedLength(bytes));
+
+    internal static byte[] EncodeManifest(CollectionManifest manifest, int maximumKeys = 65536)
     {
         int count = manifest.Keys.Count;
-        if (count > 65536)
+        if (count > maximumKeys)
             throw new InvalidDataException("Collection exceeds record bound.");
         long[]? ints = count > 0 ? new long[count] : null;
         if (ints is not null)
@@ -179,7 +211,7 @@ internal static class GameCollectionSchema
         return stream.ToArray();
     }
 
-    internal static CollectionManifest DecodeManifest(byte[] bytes)
+    internal static CollectionManifest DecodeManifest(byte[] bytes, int maximumKeys = 65536)
     {
         if (bytes.Length < 3 || bytes[0] != 1 || (bytes[1] & ~0x07) != 0)
             throw new InvalidDataException("Invalid collection manifest header.");
@@ -191,7 +223,7 @@ internal static class GameCollectionSchema
             _ = reader.ReadByte();
             _ = reader.ReadByte();
             int count = reader.Read7BitEncodedInt();
-            if (count < 0 || count > 65536 || (count == 0 && integerKeys))
+            if (count < 0 || count > maximumKeys || (count == 0 && integerKeys))
                 throw new InvalidDataException("Invalid collection manifest count.");
             var keys = new string[count];
             if (integerKeys)
@@ -251,36 +283,59 @@ internal static class GameCollectionSchema
 public sealed partial class GameStatePublisher
 {
     readonly Dictionary<ushort, EncodedCollection> _collections = new();
+    /// <summary>
+    /// Definitions and membership announced through ordered lifecycle delivery, independent of newer values captured into delayed bulk.
+    /// The initial baseline seeds both ledgers under its Ready transaction.
+    /// </summary>
+    readonly Dictionary<string, ulong> _criticalVisualDefinitions = new(StringComparer.Ordinal);
+    CollectionManifest? _criticalVisualMembership;
+    /// <summary>
+    /// Ordinary bulk can encode A, then B, then A before lifecycle capture. A lane-local dirty fence reasserts the latest value despite equality.
+    /// </summary>
+    readonly HashSet<string> _criticalVisualDirty = new(StringComparer.Ordinal);
+    bool _criticalVisualMembershipDirty;
     sealed class EncodedCollection(CollectionManifest manifest, Dictionary<string, byte[]> items)
     {
         internal CollectionManifest Manifest = manifest;
         internal Dictionary<string, byte[]> Items = items;
     }
 
-    long CaptureCollections(PlayerWorldView view, Action<byte, ushort, byte[]> add)
+    long CaptureCollections(PlayerWorldView view, Action<byte, ushort, byte[]> add, ushort? onlyField = null)
     {
         long total = 0;
         foreach (var schema in GameCollectionSchema.All)
         {
-            var captured = schema.Capture(codec, view);
+            if (onlyField is { } field && field != schema.Id) continue;
+            _collections.TryGetValue(schema.Id, out var previousCollection);
+            var captured = schema.Capture(codec, view, previousCollection?.Items);
             var current = captured.Items.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal);
             byte[]? encodedManifest = null;
-            _collections.TryGetValue(schema.Id, out var previousCollection);
-            if (previousCollection is null || captured.Manifest.Present != previousCollection.Manifest.Present || captured.Manifest.Enabled != previousCollection.Manifest.Enabled || !captured.Manifest.Keys.SequenceEqual(previousCollection.Manifest.Keys))
+            bool criticalVisuals = schema.Id == 1068 && onlyField == 1068;
+            bool changedMembership = previousCollection is null || !SameManifest(captured.Manifest, previousCollection.Manifest);
+            if (schema.Id == 1068 && !criticalVisuals && _sequence != 1 && changedMembership) _criticalVisualMembershipDirty = true;
+            bool announceVisualMembership = criticalVisuals && (_criticalVisualMembershipDirty || !SameManifest(captured.Manifest, _criticalVisualMembership));
+            if (changedMembership || announceVisualMembership)
             {
-                encodedManifest = GameCollectionSchema.EncodeManifest(captured.Manifest);
+                encodedManifest = GameCollectionSchema.EncodeManifest(captured.Manifest, GameCollectionSchema.MaximumKeys(schema.Id));
                 add(6, schema.Id, encodedManifest);
             }
 
             total += (encodedManifest?.Length ?? 16) + 19;
-            total += current.Sum(p => (long)Math.Max(p.Value.Length, JsonComponentCompression.DecodedLength(p.Value))
+            total += current.Sum(p => (long)GameCollectionSchema.ExpandedItemSize(schema.Id, p.Value)
                 + Encoding.UTF8.GetByteCount(p.Key) + 21);
             if (total > GameStateWire.MaximumBytes)
                 throw new InvalidDataException("Keyed collection capture exceeds bulk bound.");
             foreach (var item in captured.Items)
-                if (previousCollection is null || !previousCollection.Items.TryGetValue(item.Key, out var old) || !old.AsSpan().SequenceEqual(item.Value))
+            {
+                bool changed = previousCollection is null || !previousCollection.Items.TryGetValue(item.Key, out var old)
+                    || !old.AsSpan().SequenceEqual(item.Value);
+                if (schema.Id == 1068 && !criticalVisuals && _sequence != 1 && changed) _criticalVisualDirty.Add(item.Key);
+                if (changed || criticalVisuals && (NeedsVisualDefinition(item.Key, item.Value) || _criticalVisualDirty.Contains(item.Key)))
                     add(7, schema.Id, GameCollectionSchema.Entry(item.Key, item.Value));
-            if (previousCollection is not null)
+            }
+            // Transient visuals withdraw through their complete manifest. Separate removals would break the complete old manifest while
+            // a large critical burst is still delivering its new entries, and would retain redundant per-event deletion tombstones.
+            if (previousCollection is not null && schema.Id != 1068)
                 foreach (var key in previousCollection.Items.Keys.Where(k => !current.ContainsKey(k)))
                 {
                     total += Encoding.UTF8.GetByteCount(key) + 21L;
@@ -289,9 +344,41 @@ public sealed partial class GameStatePublisher
                     add(8, schema.Id, GameCollectionSchema.Entry(key, []));
                 }
             _collections[schema.Id] = new(captured.Manifest, current);
+            if (schema.Id == 1068) RememberVisualDefinitions(current, captured.Manifest, criticalVisuals || _sequence == 1);
         }
 
         return total;
+    }
+
+    /// <summary>
+    /// Membership equality does not depend on allocation identity.
+    /// </summary>
+    static bool SameManifest(CollectionManifest value, CollectionManifest? previous) => previous is not null
+        && value.Present == previous.Present && value.Enabled == previous.Enabled && value.Keys.SequenceEqual(previous.Keys);
+
+    /// <summary>
+    /// A dynamic reading may have been captured after its definition entered ordinary bulk. The lifecycle lane must declare both together.
+    /// </summary>
+    bool NeedsVisualDefinition(string key, byte[] value)
+    {
+        string definition = ModVisualCollection.IsDefinition(key) ? key : ModVisualCollection.Partner(key);
+        return _criticalVisualDefinitions.GetValueOrDefault(definition) != ModVisualCodec.DefinitionVersion(value);
+    }
+
+    /// <summary>
+    /// Commits only the lane's own declarations and discards departed identities, so transient effects cannot grow this ledger indefinitely.
+    /// </summary>
+    void RememberVisualDefinitions(Dictionary<string, byte[]> current, CollectionManifest membership, bool announced)
+    {
+        foreach (string key in _criticalVisualDefinitions.Keys.Where(key => !current.ContainsKey(key)).ToArray())
+            _criticalVisualDefinitions.Remove(key);
+        _criticalVisualDirty.RemoveWhere(key => !current.ContainsKey(key));
+        if (!announced) return;
+        foreach (var item in current)
+            if (ModVisualCollection.IsDefinition(item.Key)) _criticalVisualDefinitions[item.Key] = ModVisualCodec.DefinitionVersion(item.Value);
+        _criticalVisualMembership = membership;
+        _criticalVisualDirty.Clear();
+        _criticalVisualMembershipDirty = false;
     }
 }
 
@@ -317,22 +404,32 @@ public sealed partial class GameStateReplica
                 return;
             }
 
-            var manifest = GameCollectionSchema.DecodeManifest(value);
+            var manifest = GameCollectionSchema.DecodeManifest(value, GameCollectionSchema.MaximumKeys(field));
             if (field != 9 && (!manifest.Present || !manifest.Enabled) || !manifest.Present && manifest.Enabled)
                 throw new InvalidDataException("Invalid collection presence flags.");
-            if (manifest.Keys is null || manifest.Keys.Count > 65536 || manifest.Keys.Distinct(StringComparer.Ordinal).Count() != manifest.Keys.Count || !manifest.Present && manifest.Keys.Count != 0 || !manifest.Enabled && manifest.Keys.Count != 0)
+            if (manifest.Keys is null || manifest.Keys.Count > GameCollectionSchema.MaximumKeys(field) || manifest.Keys.Distinct(StringComparer.Ordinal).Count() != manifest.Keys.Count || !manifest.Present && manifest.Keys.Count != 0 || !manifest.Enabled && manifest.Keys.Count != 0)
                 throw new InvalidDataException("Invalid collection manifest.");
             foreach (var key in manifest.Keys)
                 GameCollectionSchema.ValidateKey(key);
             state.Manifest = manifest;
             state.Revision = revision;
             state.ManifestDigest = digest;
+            if (field == 1068)
+            {
+                state.VisualKeys = ModVisualCollection.ValidateManifest(manifest.Keys);
+                foreach (var removed in state.Items.Where(pair => pair.Value.Revision <= revision && !state.VisualKeys.Contains(pair.Key)).ToArray())
+                    state.Items.Remove(removed.Key);
+                RebuildVisualPending(state);
+                if (LiveCollectionItems() > 65536) throw new InvalidDataException("Keyed entry fence bound exceeded.");
+            }
             _revisions[(0, field)] = revision;
             _valueDigests[(0, field)] = digest;
         }
         else
         {
             var entry = GameCollectionSchema.ReadEntry(value);
+            // A newer manifest already withdrew this transient ID. Its global revision fences late bulk without keeping one tombstone per effect.
+            if (field == 1068 && state.Revision >= revision && !state.VisualKeys.Contains(entry.Key)) return;
             state.Items.TryGetValue(entry.Key, out var old);
             if (old.Revision > revision)
                 return;
@@ -344,12 +441,49 @@ public sealed partial class GameStateReplica
                 return;
             }
 
-            if (_collections.Values.Sum(s => s.Items.Count) >= 65536 && !state.Items.ContainsKey(entry.Key))
+            bool pendingVisual = field == 1068 && !state.VisualKeys.Contains(entry.Key);
+            if (field != 1068 && LiveCollectionItems() >= 65536 && !state.Items.ContainsKey(entry.Key))
                 throw new InvalidDataException("Keyed entry fence bound exceeded.");
             if (kind == 8 && entry.Value.Length != 0 || kind == 7 && entry.Value.Length == 0)
                 throw new InvalidDataException("Invalid keyed entry operation.");
-            state.Items[entry.Key] = (revision, kind == 7 ? schema.Decode(codec, entry.Key, entry.Value) : null, digest);
+            int bytes = checked(value.Length + 19);
+            if (pendingVisual) ReserveVisualPending(state, entry.Key, bytes);
+            state.Items[entry.Key] = (revision, kind == 7 ? schema.Decode(codec, entry.Key, entry.Value) : null, digest, bytes);
         }
+    }
+
+    /// <summary>
+    /// Pending visual values do not consume the active-collection identity allowance; they have their own bounded staging ledger.
+    /// </summary>
+    int LiveCollectionItems() => _collections.Sum(pair => pair.Key == 1068 ? pair.Value.VisualKeys.Count / 2 : pair.Value.Items.Count);
+
+    /// <summary>
+    /// A complete new manifest may activate staged entries, retire old live values or leave newer out-of-scope entries pending.
+    /// This linear pass runs once per membership change, never for every upsert in a large burst.
+    /// </summary>
+    static void RebuildVisualPending(GameCollectionState state)
+    {
+        state.VisualPendingSizes.Clear();
+        state.VisualPendingBytes = 0;
+        state.VisualPendingCount = 0;
+        foreach (var item in state.Items)
+            if (!state.VisualKeys.Contains(item.Key)) ReserveVisualPending(state, item.Key, item.Value.Bytes);
+    }
+
+    /// <summary>
+    /// Reserves the exact staged entry envelope before decoding. A valid replacement can stage one full next collection while keeping
+    /// the old manifest complete, without extending either the 65536 live-identity limit or the 32 MiB pending-byte limit.
+    /// </summary>
+    static void ReserveVisualPending(GameCollectionState state, string key, int bytes)
+    {
+        long total = state.VisualPendingBytes - state.VisualPendingSizes.GetValueOrDefault(key) + bytes;
+        string partner = ModVisualCollection.Partner(key);
+        bool newIdentity = !state.VisualPendingSizes.ContainsKey(key) && !state.VisualPendingSizes.ContainsKey(partner);
+        if (total > GameStateWire.MaximumBytes || newIdentity && state.VisualPendingCount >= 65536)
+            throw new InvalidDataException("Shared visual staging exceeds collection bounds.");
+        if (newIdentity) state.VisualPendingCount++;
+        state.VisualPendingSizes[key] = bytes;
+        state.VisualPendingBytes = total;
     }
 
     void RefreshCollections(bool requireComplete)

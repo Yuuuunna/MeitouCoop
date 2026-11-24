@@ -78,8 +78,8 @@ public sealed partial class MainWindow
         var path = Path.Combine(target.Folder, SettingsSchema.FileName);
         if (target.Local) return (null, "Use Refresh client on the Play page to obtain this client's settings.");
         return (null, File.Exists(path)
-            ? $"Meitou {target.Version} describes its settings in a newer way than this launcher reads: update the launcher (Settings)."
-            : $"Meitou {target.Version} has no settings schema: change its settings in the game.");
+            ? Tr("Meitou {1} describes its settings in a newer way than this launcher reads: update the launcher (Settings).", target.Version)
+            : Tr("Meitou {1} has no settings schema: change its settings in the game.", target.Version));
     }
 
     /// <summary>

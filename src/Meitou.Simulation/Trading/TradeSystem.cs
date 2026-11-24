@@ -348,7 +348,7 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     {
         MarkShownHomes(world);
 
-        if (world.Tick % Settings.CheckEveryTicks == 0)
+        if (world.Beat(Settings.CheckEveryTicks, TickPhases.TradeCheck))
         {
             // Fresh characters receive wages before their shop's first fill replaces its purse.
             _wages.Pay(world);
@@ -418,6 +418,14 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     {
         receipt = null;
         return _interactions.TryGetValue(player, out var interaction) && interaction.TryPayHeld(world, item, units, sell, out receipt);
+    }
+
+    /// <summary>
+    /// Reports the held-item deal of the player whose command just placed its goods.
+    /// </summary>
+    internal void ReportHeld(World world, PlayerId player)
+    {
+        if (_interactions.TryGetValue(player, out var interaction)) interaction.ReportHeld(world);
     }
 
     public static float FenceChance(float thievery, bool stolenFromShopFaction, bool stolenFromShopSquad = false) =>

@@ -171,6 +171,13 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
             case ShowInventoryCommand show:
                 player.InventoryShown.Clear(); player.InventoryShown.AddRange(show.Targets);
                 break;
+            case ShowMachinesCommand shown:
+                if (shown.Sites is not { Count: <= ShowMachinesCommand.MaximumSites } sites || sites.Any(string.IsNullOrWhiteSpace)
+                    || sites.Distinct(StringComparer.Ordinal).Count() != sites.Count)
+                    break;
+
+                player.ShownMachines = [.. sites];
+                break;
             case Items.OpenContainerOrder open:
                 ContainerAccess.OpenContainerInput(world, open, _pickUps);
                 break;

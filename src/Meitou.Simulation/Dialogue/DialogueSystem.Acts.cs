@@ -43,9 +43,10 @@ public sealed partial class DialogueSystem
     /// <summary>
     /// "A regards B as friendly" (Character slot 126, <c>FUN_1407923d0</c>): the same faction; never when A's squad holds TEMP_ENEMY on B (or, for a
     /// player-faction A, B's squad on A); always when B's squad holds TEMP_ALLY on a player-faction A, A's squad TEMP_ALLY on B, or A loves B (DC
-    /// 52); else A's faction is allied to B's. Engine: the uniform disguise the original can substitute for B's faction is not read.
+    /// 52); else A's faction is allied to B's, with <paramref name="disguise"/> the faction B's working disguise passes for (the third argument,
+    /// <c>FUN_1407c0520</c>, <see cref="Crime.ArrestSystem.SeenFaction"/>; <b>Verified</b>). The same-faction test reads the real factions.
     /// </summary>
-    bool RegardsFriendly(World world, CharacterId a, CharacterCold ac, CharacterId b, CharacterCold bc)
+    bool RegardsFriendly(World world, CharacterId a, CharacterCold ac, CharacterId b, CharacterCold bc, bool disguise = false)
     {
         if (ac.Faction == bc.Faction) return true;
         // One memory lookup each way (A's squad on B, B's on A) for all the tag tests.
@@ -58,7 +59,9 @@ public sealed partial class DialogueSystem
             if (Has(ba, MemoryTag.TempAlly)) return true;
         }
         if (Has(ab, MemoryTag.TempAlly) || (abEntry?.Long & MemoryTag.LoveMask) is > 0) return true;
-        return _data.Relations.Contains(ac.Faction) && _data.Relations.Contains(bc.Faction) && _data.Relations.IsAlly(ac.Faction, bc.Faction);
+
+        int seen = disguise ? Crime.ArrestSystem.SeenFaction(bc) : bc.Faction;
+        return _data.Relations.Contains(ac.Faction) && _data.Relations.Contains(seen) && _data.Relations.IsAlly(ac.Faction, seen);
     }
 
     /// <summary>
@@ -111,6 +114,43 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
+    /// Forgives <paramref name="target"/> across a booking faction (a paid fine in <see cref="ClearBounties"/> or an expired bounty in
+    /// <see cref="Crime.BountyBook.Expire"/>). Engine choice, no counterpart known in the original: every squad of <paramref name="bookingFaction"/>
+    /// or of a faction sharing its <c>legal system</c> drops its short-term TEMP_ENEMY, criminal and aggressor tags on <paramref name="target"/>, and
+    /// <paramref name="target"/>'s squad drops its TEMP_ENEMY tags on those factions (as <see cref="Captured"/> does for #599). Otherwise a guard tag
+    /// from an arrest attempt can outlive the bounty and start a fight whose police blows book Assault (<see cref="Crime.CrimeSystem.Hit"/>).
+    /// </summary>
+    internal void ForgiveBookingFaction(World world, int bookingFaction, CharacterId target)
+    {
+        if (bookingFaction < 0) return;
+
+        int targetSquad = world.Characters.TryResolveNext(target, out int slot) && world.Characters.Cold(slot) is { SquadId: >= 0 } tc
+            ? tc.SquadId : -1;
+        HashSet<int>? cleared = targetSquad >= 0 ? [] : null;
+
+        foreach (var squad in world.Squads.All)
+        {
+            if (!InLawSystem(squad.Faction, bookingFaction)) continue;
+
+            Memory.ClearShort(squad.Id, target, MemoryTag.TempEnemy);
+            Memory.ClearShort(squad.Id, target, MemoryTag.Criminal);
+            Memory.ClearShort(squad.Id, target, MemoryTag.Aggressor);
+            if (cleared is not null && cleared.Add(squad.Faction))
+                Memory.ClearShortOfFaction(world, targetSquad, squad.Faction, MemoryTag.TempEnemy);
+        }
+
+        if (cleared is not null && cleared.Add(bookingFaction))
+            Memory.ClearShortOfFaction(world, targetSquad, bookingFaction, MemoryTag.TempEnemy);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="faction"/> is <paramref name="bookingFaction"/> or books its bounties under it
+    /// (<see cref="Crime.CrimeFactions.BookingKey"/>).
+    /// </summary>
+    bool InLawSystem(int faction, int bookingFaction) =>
+        faction == bookingFaction || Crime.CrimeFactions.BookingKey(_data.Relations, faction) == bookingFaction;
+
+    /// <summary>
     /// Whether factions <paramref name="a"/> and <paramref name="b"/> are the same or allied (false for a missing one).
     /// </summary>
     bool AlliedFactions(int a, int b) =>
@@ -132,13 +172,13 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
-    /// The medic finders' slot 126 (<c>isAlly</c>, <see cref="RegardsFriendly(World, CharacterId, CharacterCold, CharacterId, CharacterCold)"/>) for
-    /// two characters by slot.
+    /// The medic finders' slot 126 (<c>isAlly</c>, <see cref="RegardsFriendly(World, CharacterId, CharacterCold, CharacterId, CharacterCold, bool)"/>)
+    /// for two characters by slot; <paramref name="disguise"/> reads B's working disguise (the sight pass's friend test).
     /// </summary>
-    public bool RegardsFriendly(World world, int a, int b)
+    public bool RegardsFriendly(World world, int a, int b, bool disguise = false)
     {
         var table = world.Characters;
-        return table.Cold(a) is { } ac && table.Cold(b) is { } bc && RegardsFriendly(world, table.IdOf(a), ac, table.IdOf(b), bc);
+        return table.Cold(a) is { } ac && table.Cold(b) is { } bc && RegardsFriendly(world, table.IdOf(a), ac, table.IdOf(b), bc, disguise);
     }
 
     /// <summary>

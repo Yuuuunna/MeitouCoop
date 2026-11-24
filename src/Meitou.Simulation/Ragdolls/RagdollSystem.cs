@@ -122,8 +122,8 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
     const int TileBudget = 8;
     /// <summary>
     /// Whole bodies started falling in one tick (a knockdown, a put-down, a stored squad's downed member coming back); the rest start on a later
-    /// tick. A save's frozen ragdoll is not counted: it is the save's state and costs no settling. Engine choice: a build is 0.7 ms (bodies, joints,
-    /// the ground probe), and a zone's arrivals asked for 20 in a tick.
+    /// tick. A settled frozen saved ragdoll is not counted: it is the save's state and costs no settling. Engine choice: a build is 0.7 ms (bodies,
+    /// joints, the ground probe), and a zone's arrivals asked for 20 in a tick.
     /// </summary>
     const int StartBudget = 4;
     /// <summary>
@@ -328,6 +328,10 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
         /// </summary>
         public bool Frozen;
         /// <summary>
+        /// Whether it was frozen only because its zone left <see cref="World.ActiveZones"/>, and should thaw once that zone loads.
+        /// </summary>
+        public bool Unloaded;
+        /// <summary>
         /// The seconds since the whole-body ragdoll started (see <see cref="FreezeEarliest"/>).
         /// </summary>
         public float Age;
@@ -489,6 +493,22 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
     #region The tick
 
     /// <summary>
+    /// What step 1's parallel look found for one slot (<see cref="Prepare"/>): whether the slot is set up this tick, the parts it wants, where a
+    /// carried body hangs, and the pose of the pinned bodies of a ragdoll that keeps its mask (null: none, or <see cref="SetUp"/> makes its own).
+    /// </summary>
+    readonly record struct Prepared(bool Ready, RagdollPart Wanted, CarryAttach? Attach, RigidTransform[]? Animated);
+
+    /// <summary>
+    /// The slots a job of step 1's parallel look takes.
+    /// </summary>
+    const int SlotsPerJob = 32;
+
+    /// <summary>
+    /// Step 1's look by slot this tick (<see cref="Prepare"/>), taken and cleared by <see cref="SetUp"/>.
+    /// </summary>
+    Prepared[] _prepared = [];
+
+    /// <summary>
     /// <c>Character::isRagdoll</c> (<c>FUN_1407d1440</c>): carried or whole-body ragdolled, the WHOLE or CARRY_MODE parts of <see cref="Wanted"/>;
     /// the simulation's rule, whether or not the host has the rig to show it (the original needs a visual or death to ragdoll).
     /// </summary>
@@ -535,12 +555,15 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
             if (!table.TryResolveNext(id, out _)) Destroy(_ragdolls[id]);
         _order.RemoveAll(id => !_ragdolls.ContainsKey(id));
 
-        // 1. Masks, building and pinning.
+        // 1. Masks, building and pinning: each slot's own look in parallel, then the builds, budgets and physics bodies serially in slot order.
         var next = table.Next;
+        PrepareAll(world, next.Length);
+        world.Profile.Part("rag look");   // F12: the masks, the carried bodies' hangs and the pins' animated poses, in parallel
+
         int tilesLeft = TileBudget, startsLeft = StartBudget;
         for (int i = 0; i < next.Length; i++) SetUp(world, i, env, dt, tick, ref tilesLeft, ref startsLeft);
 
-        world.Profile.Part("rag setup");   // F12: the masks, the builds, the pins and the ground tiles
+        world.Profile.Part("rag setup");   // F12: the builds, the pins and the ground tiles
 
         // 2. The step.
         Step(world, dt, stepDt);
@@ -555,31 +578,88 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
     }
 
     /// <summary>
-    /// Step 1 for one character: its mask, the build of a new ragdoll (within the tick's budgets), and its pins.
+    /// Step 1's look (parallel by blocks of slots, <see cref="Prepare"/>): each slot reads only its own state, its ragdoll and its carrier's
+    /// animation, none of which another slot's <see cref="SetUp"/> changes, and writes only its own entry, so the result does not depend on the
+    /// thread count.
     /// </summary>
-    void SetUp(World world, int i, IRagdollEnvironment env, float dt, long tick, ref int tilesLeft, ref int startsLeft)
+    void PrepareAll(World world, int count)
+    {
+        if (_prepared.Length < count) _prepared = new Prepared[count];
+        world.ParallelFor((count + SlotsPerJob - 1) / SlotsPerJob, job =>
+        {
+            for (int i = job * SlotsPerJob, end = Math.Min(count, i + SlotsPerJob); i < end; i++) _prepared[i] = Prepare(world, i);
+        });
+    }
+
+    /// <summary>
+    /// One slot's look: whether it is set up this tick, the parts it wants, its carried hang and, for a ragdoll keeping its mask, its pins' pose.
+    /// Reads only; thread-safe against the other slots' looks.
+    /// </summary>
+    Prepared Prepare(World world, int i)
     {
         var table = world.Characters;
         var next = table.Next;
-        if (!next[i].Alive || table.Cold(i) is not { } cold) return;
+        if (!next[i].Alive || table.Cold(i) is not { } cold) return default;
 
         // The far cadence (World.Steps): a far character skipped this tick is left as it is, unless its ragdoll is moving (its pins follow the
         // animation every physics step).
-        if (!world.Steps(i) && !(_ragdolls.TryGetValue(table.IdOf(i), out var moving) && !moving.Frozen && moving.Mask != RagdollPart.None))
-            return;
+        _ragdolls.TryGetValue(table.IdOf(i), out var r);
+        if (!world.Steps(i) && !(r is { Frozen: false } && r.Mask != RagdollPart.None)) return default;
 
-        cold.CarryAttach = cold.CarriedBy.IsNone ? null : AttachOf(table, cold);
+        var attach = cold.CarriedBy.IsNone ? null : AttachOf(table, cold);
+        var wanted = WantedNear(world, i, cold, r);
+        return new Prepared(true, wanted, attach, PinPose(r, cold, attach, next[i], wanted));
+    }
+
+    /// <summary>
+    /// The pose <see cref="Pin"/> gives the pinned bodies of a ragdoll that keeps its mask and is not frozen; null for any other (a mask change
+    /// makes its pose in <see cref="Remask"/>, a frozen one pins nothing).
+    /// </summary>
+    RigidTransform[]? PinPose(Ragdoll? r, CharacterCold cold, CarryAttach? attach, in CharacterHot hot, RagdollPart wanted)
+    {
+        if (r is null || r.Frozen || r.Mask == RagdollPart.None || wanted != r.Mask || !r.Dynamic.Any(d => !d)) return null;
+
+        return Animated(r, cold, Placement(r, cold.CarriedBy.IsNone, attach, hot));
+    }
+
+    /// <summary>
+    /// Step 1 for one character, serial in slot order after its look (<see cref="Prepare"/>): the build of a new ragdoll (within the tick's
+    /// budgets), its mask and its pins.
+    /// </summary>
+    void SetUp(World world, int i, IRagdollEnvironment env, float dt, long tick, ref int tilesLeft, ref int startsLeft)
+    {
+        var prepared = _prepared[i];
+        _prepared[i] = default;
+        if (!prepared.Ready) return;
+
+        var table = world.Characters;
+        var next = table.Next;
+        var cold = table.Cold(i)!;
+        cold.CarryAttach = prepared.Attach;
         var id = table.IdOf(i);
         _ragdolls.TryGetValue(id, out var r);
-        var wanted = WantedNear(world, i, cold, r);
+        var wanted = prepared.Wanted;
         if (r is null && wanted == RagdollPart.None)
         {
+            if (cold.Save is not null) cold.Save.Ragdoll = null;
+            cold.Blow = null;
             Slide(ref next[i], cold, env, dt);
             return;
         }
 
         float scale = ScaleOf(cold);
-        if (!Budgeted(next[i].Position, cold, r, wanted, scale, env, tick, ref tilesLeft, ref startsLeft)) return;
+        bool thaw = r is { Frozen: true, Unloaded: true } && (wanted & RagdollPart.Whole) != 0 && (wanted & RagdollPart.CarryMode) == 0;
+        if (!Budgeted(world, next[i].Position, cold, r, wanted, thaw, scale, env, tick, ref tilesLeft, ref startsLeft))
+        {
+            // A carried or limb ragdoll transitioning to whole-body in an unloaded zone cannot start falling yet; drop it instead of leaving it
+            // stepping unpinned every tick until the zone loads.
+            if (r is not null && (r.Mask & RagdollPart.Whole) == 0 && !ZoneLoaded(world, next[i].Position))
+            {
+                Destroy(r);
+                _order.Remove(id);
+            }
+            return;
+        }
 
         // Meitou (BodyOptions.AdvancedRagdolls): a new whole-body ragdoll goes on as the character moved, pushed by the blow that put it down
         // (CombatSystem.Knockdown), else as it moved last tick.
@@ -591,9 +671,22 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
         if (r is null) return;
 
         var placement = Placement(r, cold, next[i]);
-        var animated = wanted != r.Mask ? Remask(world, r, cold, ref next[i], wanted, placement, restore, blow, advanced) : null;
+        var animated = wanted != r.Mask ? Remask(world, r, cold, ref next[i], wanted, placement, restore, blow, advanced) : prepared.Animated;
         if (r.Mask == RagdollPart.None) return;
 
+        if (thaw && r.Frozen && r.Unloaded)
+            Rebuild(r, r.Mask, (RigidTransform[])r.Pose.Clone(), default, advanced, world.Seed);
+
+        Settle(world, r, cold, placement, animated, advanced, env, dt, tick, ref tilesLeft);
+    }
+
+    /// <summary>
+    /// The rest of step 1 for a ragdoll with a mask: its hang, a pending launch, its tone, its pins (to <paramref name="animated"/>, else the
+    /// animation's pose now) and the ground tiles round it.
+    /// </summary>
+    void Settle(World world, Ragdoll r, CharacterCold cold, Matrix4x4 placement, RigidTransform[]? animated, bool advanced, IRagdollEnvironment env,
+        float dt, long tick, ref int tilesLeft)
+    {
         r.HungIn = (r.Mask & RagdollPart.CarryMode) != 0 ? placement : null;
         if (cold.Launch is { } launch)
         {
@@ -628,19 +721,27 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
     }
 
     /// <summary>
-    /// Whether a ragdoll may start or change now: a whole body about to fall takes one of the tick's builds and the ground under it; false holds it
-    /// to a later tick.
+    /// Whether <paramref name="at"/> lies in a loaded zone (always true when the world has no active-zone filter).
     /// </summary>
-    bool Budgeted(Vector3 at, CharacterCold cold, Ragdoll? r, RagdollPart wanted, float scale, IRagdollEnvironment env, long tick,
-        ref int tilesLeft, ref int startsLeft)
+    static bool ZoneLoaded(World world, Vector3 at) =>
+        world.ActiveZones is not { } loaded || loaded.Contains(Data.World.WorldLayout.ZoneOf(at.X, at.Z));
+
+    /// <summary>
+    /// Whether a ragdoll may start or change now: a whole body about to fall takes one of the tick's builds and the ground under it, and waits
+    /// while its zone is not loaded (<see cref="World.ActiveZones"/>); false holds it to a later tick.
+    /// </summary>
+    bool Budgeted(World world, Vector3 at, CharacterCold cold, Ragdoll? r, RagdollPart wanted, bool thaw, float scale, IRagdollEnvironment env,
+        long tick, ref int tilesLeft, ref int startsLeft)
     {
-        // A whole body about to fall needs the ground under it and costs a build (TileBudget, StartBudget: past them it starts next tick, its blow
-        // and saved pose kept); a frozen saved one needs none, and a get-up, a limb's dangle or a lift never waits.
+        // A whole body about to fall needs its zone loaded, the ground under it and one of the tick's builds (TileBudget, StartBudget: past them it
+        // starts next tick, its blow and saved pose kept); a settled frozen saved one needs none, and a get-up, a limb's dangle or a lift never waits.
         bool falls = (wanted & RagdollPart.Whole) != 0 && (wanted & RagdollPart.CarryMode) == 0;
         bool fell = r is not null && (r.Mask & RagdollPart.Whole) != 0 && (r.Mask & RagdollPart.CarryMode) == 0;
-        bool starts = falls && !fell && cold.Save?.Ragdoll is not { Frozen: true };
+        bool settledSave = cold.Save?.Ragdoll is { Frozen: true, Age: >= FreezeEarliest };
+        bool starts = falls && (!fell && !settledSave || thaw);
         if (starts)
         {
+            if (!ZoneLoaded(world, at)) return false;
             if (startsLeft <= 0) return false;
             if (!_physics.Covered(at, TileReach * scale))
             {
@@ -713,7 +814,7 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
         if (restored)
         {
             r.Age = restore!.Age;
-            if (restore.Frozen) Freeze(r);
+            if (restore.Frozen && restore.Age >= FreezeEarliest) Freeze(r);
             hot.Position = r.Definition.RootAt(r.Pose);   // a frozen one is never read back
         }
 
@@ -778,8 +879,12 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
                     // A root far under the ground is lifted back onto it (FUN_1407d4470: more than 200 below), and frozen.
                     if (root.Y < ground - 200) { Shift(r, new Vector3(0, ground + 2 - root.Y, 0)); Freeze(r); }
                     // At once when the terrain tile under it is not loaded (FUN_1405b8180 -> FUN_1407d1f70): a zone outside the active set, or off
-                    // the grid.
-                    else if (world.ActiveZones is { } loaded && !loaded.Contains(Data.World.WorldLayout.ZoneOf(root.X, root.Z))) Freeze(r);
+                    // the grid; marked so it thaws and finishes settling once that zone loads again.
+                    else if (!ZoneLoaded(world, root))
+                    {
+                        Freeze(r);
+                        r.Unloaded = true;
+                    }
                     else if (r.Age >= FreezeLatest || r.Age >= FreezeEarliest && StillShare(r) >= FreezeShare) Freeze(r);
                     hot.Position = r.Definition.RootAt(r.Pose);
                     hot.Velocity = Vector3.Zero;
@@ -812,10 +917,16 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
     /// The character's drawn placement: position, facing (a carried body's on its carrier's shoulder: <see cref="CarryPose"/>), size; the renderer's
     /// world matrix.
     /// </summary>
-    static Matrix4x4 Placement(Ragdoll r, CharacterCold cold, in CharacterHot hot)
+    static Matrix4x4 Placement(Ragdoll r, CharacterCold cold, in CharacterHot hot) => Placement(r, cold.CarriedBy.IsNone, cold.CarryAttach, hot);
+
+    /// <summary>
+    /// <see cref="Placement(Ragdoll, CharacterCold, in CharacterHot)"/> of a body that is carried or not (<paramref name="free"/>) and hangs on
+    /// <paramref name="attach"/> when carried.
+    /// </summary>
+    static Matrix4x4 Placement(Ragdoll r, bool free, CarryAttach? attach, in CharacterHot hot)
     {
-        if (cold.CarriedBy.IsNone) return CharacterRigs.Placement(r.Setup, hot.Position, hot.Yaw, r.Scale);
-        var (at, rotation) = (cold.CarryAttach ?? CarryPose.Fallback).World(hot.Position, hot.Yaw);
+        if (free) return CharacterRigs.Placement(r.Setup, hot.Position, hot.Yaw, r.Scale);
+        var (at, rotation) = (attach ?? CarryPose.Fallback).World(hot.Position, hot.Yaw);
         return CharacterRigs.Placement(r.Setup, at, rotation, r.Scale);
     }
 
@@ -922,7 +1033,7 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
     /// </summary>
     public SavedRagdoll? SaveState(CharacterId id) =>
         _ragdolls.TryGetValue(id, out var r) && (r.Mask & RagdollPart.Whole) != 0 && (r.Mask & RagdollPart.CarryMode) == 0 && r.Pose.Length > 0
-            ? new SavedRagdoll(r.Frozen, r.Age, (RigidTransform[])r.Pose.Clone())
+            ? new SavedRagdoll(r.Frozen && !r.Unloaded, r.Age, (RigidTransform[])r.Pose.Clone())
             : null;
 
     /// <summary>
@@ -1002,6 +1113,7 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
         Clear(r);
         r.Mask = mask;
         r.Frozen = false;
+        r.Unloaded = false;
         r.Soft = soft;
         if (mask == RagdollPart.None) return;
         if ((mask & RagdollPart.Whole) != 0 && !r.InScene) r.Age = 0;
@@ -1715,6 +1827,7 @@ public sealed class RagdollSystem : ITickSystem, IStateHashed, IRagdollState, IR
             hasher.Add(id);
             hasher.Add((int)r.Mask);
             hasher.Add(r.Frozen);
+            if (r.Unloaded) hasher.Add(true);
             hasher.Add(r.Age);
             hasher.Add(r.BlendLeft);
             foreach (var p in r.Pose)

@@ -18,6 +18,12 @@ static class ServerRuleValues
         if (label == "Fast speed") return session.TimeScales[1].ToString("0.##", CultureInfo.InvariantCulture);
         if (label == "Fastest speed") return session.TimeScales[2].ToString("0.##", CultureInfo.InvariantCulture);
         if (session.AuthorityRules is not { } rules) return null;
+        foreach (var (skill, stat, _, _) in SkillXp.Skills)
+        {
+            if (label != "Squad XP " + skill) continue;
+            float rate = (int)stat < rules.SquadSkillXp.Length ? rules.SquadSkillXp[(int)stat] : SkillXp.Follows;
+            return rate >= 0 ? rate.ToString("0.##", CultureInfo.InvariantCulture) : rules.SquadXp.ToString("0.##", CultureInfo.InvariantCulture);
+        }
         object? value = label switch
         {
             "Squad size multiplier" => rules.SquadSize,
@@ -37,6 +43,7 @@ static class ServerRuleValues
             "Fights far away" => rules.OffscreenFights,
             "Healing far away" => rules.OffscreenHealing,
             "Wild squads stay" => rules.KeepWild,
+            "Knocked out stay" => rules.KeepDowned,
             "Towns keep their schedule" => rules.ResidentSchedule,
             "Towns change far away" => rules.OffscreenOverrides,
             "Production far away" => rules.UnloadedProduction,
@@ -55,6 +62,8 @@ static class ServerRuleValues
             "Holes and needles in the ground" => rules.GroundRepair,
             "Bench facing" => rules.BenchFacingFix,
             "Bags in the inventory" => rules.BagSearchFix,
+            "Talk across shop counters" => rules.CounterTalk,
+            "Turret fire is a crime" => rules.TurretAssault,
             "Squad XP" => rules.SquadXp,
             "Others' XP" => rules.OthersXp,
             "Turret gunners turn" => rules.GunnerFacesBarrel,

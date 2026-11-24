@@ -20,9 +20,20 @@ public sealed partial class World
     CharacterId _publishedPointed;
 
     /// <summary>
-    /// Applies the interface's commands between ticks while paused, without advancing time or running simulation phases: selection, order toggles, job lists, crafting and
-    /// research queues, squads, inventory, open-shop transactions, building settings, the Stop order and every order (<see cref="OrderCommand"/>: each goes into its characters'
-    /// queues through the one order path, <see cref="PlayerOrders.Give"/>, and sets their tasks; nobody moves or fights until the next tick).
+    /// <see cref="PlayerState.AllSelectedGrids"/> when the last snapshot was published.
+    /// </summary>
+    bool _publishedAllGrids;
+
+    /// <summary>
+    /// The shown machines the last machine views were made for (<see cref="PlayerState.ShownMachines"/>; null: none made yet).
+    /// </summary>
+    IReadOnlyList<string>? _publishedShownMachines;
+
+    /// <summary>
+    /// Applies the interface's commands between ticks while paused, without advancing time or running simulation phases:
+    /// selection, order toggles, job lists, crafting and research queues, squads, inventory, open-shop transactions, building settings,
+    /// the Stop order and every order (<see cref="OrderCommand"/>: each goes into its characters' queues through the one order path,
+    /// <see cref="PlayerOrders.Give"/>, and sets their tasks; nobody moves or fights until the next tick).
     /// </summary>
     public void ApplyPausedInterfaceCommands()
     {
@@ -32,7 +43,7 @@ public sealed partial class World
         var due = Commands.TakeDue(Tick, c => c is OrderCommand or ManoeuvreCommand or SelectCommand or OrdersCommand or RunSpeedCommand or StandUpCommand or SquadCommand or SquadAiCommand or SquadFormationCommand or RenameFactionCommand or SeenDiscoveriesCommand
             or Production.OperateOrder or Production.UseTurretOrder or Production.AddJob or Production.AddOrderJob or Production.RemoveJob or Production.MoveJob or FirstAid.MedicJobCommand { Job: true } or Carrying.RescueJobCommand { Job: true }
             or Production.QueueCraft or Production.CancelCraft or Production.RepeatCrafts or Production.SetMachinePower or Production.IncinerateFurnace or Production.QueueResearch or Production.CancelResearch
-            or Items.OpenContainerOrder or Items.CloseContainer or Locks.BuyBuilding or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic or InspectCommand or PointedCommand or InspectBuildingCommand or ShowInventoryCommand or Items.HeldCommand or Items.QuickMoveItem or Items.ReadMapItem or Items.ArrangeInventory or Items.TransferInventoryItem
+            or Items.OpenContainerOrder or Items.CloseContainer or Locks.BuyBuilding or Construction.UpgradeSite or Construction.DowngradeSite or Construction.SetBuildingPublic or InspectCommand or PointedCommand or InspectBuildingCommand or ShowInventoryCommand or ShowMachinesCommand or Items.HeldCommand or Items.QuickMoveItem or Items.ReadMapItem or Items.ArrangeInventory or Items.TransferInventoryItem
             or Carrying.TakeLootItem or Carrying.PutLootItem or Production.PutInMachine or Production.TakeFromMachine
             or Trading.BuyItem or Trading.SellItem or Trading.ArrangeStock or Trading.CloseTrade or Dialogue.DialogueChoice or Dialogue.EndConversation or Dialogue.ConfirmCharacterTrade or Dialogue.CloseCharacterTrade
             or Construction.BuildOrder or Construction.DismantleOrder or Construction.RenameTown or Construction.SetTownPublic or Construction.PlaceBuildings or Construction.CancelSite or Construction.ConfirmDismantle or Construction.PauseSite or Editing.EditCharacter or Editing.FinishCreation or Editing.InPlayEditorOpened
@@ -48,7 +59,12 @@ public sealed partial class World
         if (due.Count == 0 && authorityCount == 0)
         {
             RuntimeBoundary?.Invoke(this);
-            if (Player.Pointed != _publishedPointed) PublishPaused();
+            // The pointer moved onto another character, the selection's grids are wanted or no longer, or a machine window opened or closed:
+            // publish again, as what its menu offers with a chance (stealth KO, kidnap) is published only for the character pointed at, selected or
+            // inspected (#878), and a storage's items only for a shown machine.
+            bool shownChanged = !ReferenceEquals(Player.ShownMachines, _publishedShownMachines);
+            bool gridsChanged = Player.AllSelectedGrids != _publishedAllGrids;
+            if (Player.Pointed != _publishedPointed || gridsChanged || shownChanged) PublishPaused();
             return;
         }
         Characters.BeginTick();
@@ -87,6 +103,16 @@ public sealed partial class World
         foreach (var trade in _systems.OfType<Trading.TradeSystem>()) trade.RefreshView(this);
         foreach (var talk in _systems.OfType<Dialogue.DialogueSystem>()) talk.RefreshView(this);
         PublishPaused();
+    }
+
+    /// <summary>
+    /// The machines' views for a publish, the shown machines' storages with their items (<see cref="PlayerState.ShownMachines"/>, remembered for
+    /// the paused publish).
+    /// </summary>
+    IReadOnlyList<Production.MachineSnapshot> MachineViews()
+    {
+        var shown = _publishedShownMachines = Player.ShownMachines;
+        return _production is null ? [] : Machines.Published(_production.Items, Players.RequiresExplicitControl ? null : shown);
     }
 
     /// <summary>
@@ -152,6 +178,7 @@ public sealed partial class World
         state.LootOpener = CharacterId.None;
         state.LootSessionId = checked(state.LootSessionId + 1);
         state.InventoryShown.Clear();
+        state.ShownMachines = [];
         SystemOf<Trading.TradeSystem>()?.EndTrade(this, owner);
         PlayerTrades.Disconnect(owner);
         state.InventoriesClosed = checked(state.InventoriesClosed + 1);
@@ -259,6 +286,7 @@ public sealed partial class World
                 PlayerTrades.Disconnect(id);
                 PlayerSystem.CloseContainer(player.State);
                 player.State.OpenLoot = player.State.LootOpener = player.State.LootWalker = player.State.OpeningLoot = CharacterId.None;
+                player.State.ShownMachines = [];
                 StateRevision = checked(StateRevision + 1);
             }
             finally { Characters.Phase = TablePhase.Outside; Characters.EndTick(); }

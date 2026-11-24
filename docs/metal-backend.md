@@ -508,7 +508,7 @@ move the strategy camera; edge scrolling, left click/box select, right-click mov
 Ctrl+/ writes one frame's Metal capture (`.gputrace`), Alt+Enter toggles full screen. The view keys are the Controls page's bindings, as on Vulkan:
 `ToggleInterface` (F7) hides the interface, `Screenshot` (F8, Print Screen) saves the picture as `_screens/screenshot_<n>.png`
 ([ui-input](game/ui-input.md) "Screenshots"), `ToggleStats` (F11) lists the frame, `CycleProfiler` (F12) shows the frame-rate lines (the profiler
-chart waits for Metal timestamps), `ToggleFps` (unbound; Ctrl+F9) the fps counter. Insert or Ctrl+` opens the dev console ([ui-input](game/ui-input.md)
+chart waits for Metal timestamps), `ToggleFps` (unbound; Shift+F9) the fps counter. Insert or Ctrl+` opens the dev console ([ui-input](game/ui-input.md)
 "Dev console"), and the F10 menu's Tools rows open the pick & collision inspector's menu (its hulls drawn by the shared frame) and the interior
 editor. The agent control channel (`--control-dir`, `--exec`, `--screenshot-after`, `screenshot`, `state`, `hud`) is polled each frame; its `mouse`
 and `click` need the window's pointer path and are not done. Full screen on macOS is native (`NSWindow toggleFullScreen:`, the window
@@ -531,8 +531,8 @@ Stills and `--play-bench` keep their normal pacing. The frontend shell is in: th
 start chooser, save/load slots and confirmations, the in-game Esc menu, the loading screen and sky transitions, and the
 audio system (main theme, interface sounds, ambience, music and world emitters, with the saved volume sliders).
 Photo mode (P, [viewer](viewer.md#photo-mode)) runs on the shared `PhotoMode`, wired in `MetalGameLoop`'s `Photo mode` region and its
-key, pointer, wheel, frame, overlay-pass and picture hooks; its panel and guides draw into the overlay's one pass. Not drawn on Metal: the
-depth of field (the Metal chain has none), so the Focus tab's rows change nothing; the ambient animation (water, clouds) keeps the real
+key, pointer, wheel, frame, overlay-pass and picture hooks; its panel and guides draw into the overlay's one pass. The depth of field runs
+(`DepthOfField`, [post](render-post.md#depth-of-field)), so the Focus tab's rows act. The ambient animation (water, clouds) keeps the real
 clock, so it does not stop with the paused simulation.
 Still missing: the pointer sprite, the free camera and the cinema camera, the control channel's `mouse` and `click`, and
 the tiled screenshot of `screens.cfg`'s `multiplier`.

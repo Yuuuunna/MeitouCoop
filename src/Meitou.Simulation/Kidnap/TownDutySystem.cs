@@ -1100,25 +1100,24 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
 
     /// <summary>
     /// The storage facts of a container's record, by record id: function 2 or 13 (BF_RESOURCE_STORAGE, BF_GENERAL_STORAGE), its itemtype limit and
-    /// its limit inventory list. Derived from the data; shared by parallel planner queries and serial errands.
-    /// Coop-local concurrency fix; upstream replacement policy: docs/upstream-sync.md.
+    /// its limit inventory list. Derived from the data. Filled on first ask from the planner's workers too (its storage finders' read-only look), so
+    /// concurrent.
     /// </summary>
-    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit)> _storageRecords
-        = new(StringComparer.Ordinal);
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit)> _storageRecords =
+        new(StringComparer.Ordinal);
 
     /// <summary>
-    /// State 149 gotAFoodItem (<c>FUN_140597e20</c>): a limb in the mouth, or something edible among its items or in its worn bag.
+    /// State 149 gotAFoodItem (<c>FUN_140597e20</c>): a limb in the mouth, or live edible food among its items or in its worn bag.
     /// </summary>
-    internal static bool HoldsFood(CharacterCold cold) =>
-        cold.Mouth is not null
-        || cold.Inventory is { } inv && (inv.Items.Any(i => i.IsFood) || inv.Backpack?.Contents is { } bag && bag.Items.Any(i => i.IsFood));
+    internal static bool HoldsFood(CharacterCold cold) => FeedSystem.HoldsFood(cold);
 
     /// <summary>
     /// The nearest store of the town with food in it (<c>BuildingFinder_LootFoodAndStuff</c>, its filter only partly read: buildings with an
     /// inventory holding food): a complete player storage of the town (for a player-faction character's 243 also one in a placed town's bought
     /// house), or a container that is not locked inside the town. Its id and where the member walks. With <paramref name="owner"/> (a player-faction
     /// character's 243) only stores of that faction; for an <paramref name="animal"/> raw food counts too and a store inside another building is
-    /// skipped (the finder's animal tests).
+    /// skipped (the finder's animal tests). A store the storage filters refuse <paramref name="asker"/> is skipped
+    /// (<see cref="Items.IStorageFilter"/>).
     /// </summary>
     (string Id, Vector2 Spot)? Store(World world, Vector3 at, CampaignTown town, int looter = -1, int owner = -1, bool animal = false,
             RaceData? race = null, CharacterCold? asker = null)
@@ -1140,7 +1139,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
                     continue;
 
                 float d = Vector2.DistanceSquared(here, Flat(site.Position));
-                if (d < bestD) (best, bestD) = ((m.Site, Flat(site.Position)), d);
+                if (d < bestD && Allowed(world, asker, m.Site)) (best, bestD) = ((m.Site, Flat(site.Position)), d);
             }
         }
 
@@ -1154,11 +1153,18 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
                 continue;
 
             float d = Vector2.DistanceSquared(here, Flat(f.Position));
-            if (d < bestD) (best, bestD) = ((f.Id, Flat(f.Position)), d);
+            if (d < bestD && Allowed(world, asker, f.Id)) (best, bestD) = ((f.Id, Flat(f.Position)), d);
         }
 
         return best;
     }
+
+    /// <summary>
+    /// Whether the storage filters let <paramref name="asker"/> take food from the store <paramref name="id"/> (<see cref="Items.IStorageFilter"/>);
+    /// true with no asker.
+    /// </summary>
+    static bool Allowed(World world, CharacterCold? asker, string id) =>
+        asker is null || world.StorageAllows(asker, id, Items.StorageUse.Take, null);
 
     /// <summary>
     /// Whether a store belongs to the food finder's search (<c>FUN_1408cb650</c> over <c>FUN_1409fc540</c>, <b>Verified</b>): in the given town, or,
@@ -1215,26 +1221,28 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
     public static bool CarriesLoot(World world, CharacterCold c) => LootOf(world, c).Any();
 
     /// <summary>
-    /// Whether a fixture is a store, with the item type and the items it is limited to (cached by record).
+    /// Whether a fixture is a store, with the item type and the items it is limited to (cached by record; any thread).
     /// </summary>
-    (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit) StorageOf(Fixture f) => _storageRecords.GetOrAdd(f.RecordId, ReadStorage);
+    (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit) StorageOf(Fixture f) =>
+        _storageRecords.GetOrAdd(f.RecordId, static (id, self) => self.StorageFacts(id), this);
 
     /// <summary>
-    /// Reads storage facts on a cache miss. Function resolution uses a local cache, keeping concurrent factories off the serial gate cache.
+    /// The storage facts of record <paramref name="id"/> (<see cref="_storageRecords"/>). Its functionality is looked up without the shared gate
+    /// cache, which only the serial phases fill.
     /// </summary>
-    (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit) ReadStorage(string recordId)
+    (bool Storage, Data.Fcs.FcsRecordType Type, string[] Limit) StorageFacts(string id)
     {
-        var record = data.Db.Find(recordId);
-        (bool, Data.Fcs.FcsRecordType, string[]) made = (false, Data.Fcs.FcsRecordType.Item, []);
-        if (record is not null
-                && Data.World.TownBuildings.FunctionOf(data.Db, record, [])?.GetInt("function")
-                    is Data.World.TownBuildings.ResourceStorageFunction or Data.World.TownBuildings.GeneralStorageFunction)
+        var record = data.Db.Find(id);
+        var functions = new Dictionary<string, Data.GameRecord?>(StringComparer.Ordinal);
+
+        if (record is null || Data.World.TownBuildings.FunctionOf(data.Db, record, functions)?.GetInt("function")
+                is not (Data.World.TownBuildings.ResourceStorageFunction or Data.World.TownBuildings.GeneralStorageFunction))
         {
-            made = (true, (Data.Fcs.FcsRecordType)record.GetInt("itemtype limit", (int)Data.Fcs.FcsRecordType.Item),
-                    [.. Data.Gameplay.Construction.MachineData.Limits(data.Db, record).Select(r => r.TargetStringId)]);
+            return (false, Data.Fcs.FcsRecordType.Item, []);
         }
 
-        return made;
+        return (true, (Data.Fcs.FcsRecordType)record.GetInt("itemtype limit", (int)Data.Fcs.FcsRecordType.Item),
+                [.. Data.Gameplay.Construction.MachineData.Limits(data.Db, record).Select(r => r.TargetStringId)]);
     }
 
     /// <summary>
@@ -1284,8 +1292,9 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             => StoreFor(world, squad, cold, at, town, [.. LootOf(world, cold)], register: true);
 
     /// <summary>
-    /// The storage <see cref="StashStore"/>'s search finds for <paramref name="loot"/> (any carried items); <paramref name="register"/> false is a
-    /// read-only look (the planner's finder, run on a worker).
+    /// The storage <see cref="StashStore"/>'s search finds for <paramref name="loot"/> (any carried items), among those the storage filters let the
+    /// member put them in (<see cref="Items.IStorageFilter"/>); <paramref name="register"/> false is a read-only look (the planner's finder, run on a
+    /// worker).
     /// </summary>
     (string Id, Vector2 Spot)? StoreFor(World world, Squad squad, CharacterCold cold, Vector3 at, CampaignTown town, List<ItemInstance> loot,
             bool register)
@@ -1296,6 +1305,7 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
         if (register && search.Site >= 0) world.Fixtures.RegisterSite(world, data, search.Site);
         int townOwner = search.Owner(world, data);
         bool Usable(int owner) => listed || owner == cold.Faction || townOwner < 0 || owner == townOwner;
+        string? record = world.StorageFilters.Active ? Items.StorageFilters.OneRecord(loot) : null;
         (string, Vector2)? best = null;
         float bestD = float.MaxValue;
         if (search.PlayerTown > 0)
@@ -1307,7 +1317,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
                     continue;
 
                 float d = Vector3.DistanceSquared(at, site.Position);
-                if (d <= Production.ProductionSystem.JobRangeSq && d < bestD && loot.Any(i => Production.ProductionSystem.Stores(m, i)))
+                if (d <= Production.ProductionSystem.JobRangeSq && d < bestD && loot.Any(i => Production.ProductionSystem.Stores(m, i))
+                        && world.StorageAllows(cold, m.Site, Items.StorageUse.Put, record))
                     (best, bestD) = ((m.Site, Flat(site.Position)), d);
             }
         }
@@ -1318,7 +1329,8 @@ public sealed class TownDutySystem(PopulationData data, PopulationSystem populat
             float d = Vector3.DistanceSquared(at, f.Position);
             if (d > Production.ProductionSystem.JobRangeSq || d >= bestD || AiSystem.TownAt(data, world, f.Position) != search) continue;
 
-            if (loot.Any(i => Takes(f, i))) (best, bestD) = ((f.Id, Flat(f.Position)), d);
+            if (loot.Any(i => Takes(f, i)) && world.StorageAllows(cold, f.Id, Items.StorageUse.Put, record))
+                (best, bestD) = ((f.Id, Flat(f.Position)), d);
         }
 
         return best;

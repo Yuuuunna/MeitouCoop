@@ -20,6 +20,11 @@ namespace Meitou.Game.Ui;
 sealed class HudPanels(PlayerInterface player)
 {
     /// <summary>
+    /// The code mods' lines under the stats lines (docs/modding.md "Character panel lines and job panel buttons").
+    /// </summary>
+    internal CharacterModLines ModLines { get; } = new(player);
+
+    /// <summary>
     /// The goal line for a character the AI is not running (the player's orders, a fight, a job): what its movement task is, else Aimless.
     /// </summary>
     static string TaskText(CharacterTask task) => task switch
@@ -384,19 +389,24 @@ sealed class HudPanels(PlayerInterface player)
 
     /// <summary>
     /// The stats lines: the value the character fights with, then its change from the trained value in brackets, the whole value Bad when it is lower
-    /// and Good when higher. The labels show upper case and in Main on the panel's dark side (<b>Observed</b> in the original; where the case comes
-    /// from is <b>Unknown</b>).
+    /// and Good when higher. The labels show upper case (<b>Observed</b> in the original) in <paramref name="labelInk"/>.
     /// </summary>
-    internal static PlayerInterface.HudLine[] StatsLines(CharacterSnapshot lead) => lead.Hud is not { } hud ? [] : [.. hud.Stats.Select(s =>
+    internal static PlayerInterface.HudLine[] StatsLines(CharacterSnapshot lead, string labelInk) =>
+        lead.Hud is not { } hud ? [] : [.. hud.Stats.Select(s => StatsLine(s, labelInk))];
+
+    /// <summary>
+    /// One of <see cref="StatsLines"/>: a word value as it is, a number with its change.
+    /// </summary>
+    static PlayerInterface.HudLine StatsLine(HudStatLine s, string labelInk)
     {
         if (s.Text is { } word)
-            return new PlayerInterface.HudLine(Loc.Tr(s.Label).ToUpperInvariant(), word, PlayerInterface.StatLabelColour, TooltipRows: s.Tip);
+            return new PlayerInterface.HudLine(Loc.Tr(s.Label).ToUpperInvariant(), word, labelInk, TooltipRows: s.Tip);
 
         int value = (int)s.Value, change = value - (int)s.Base;
         string text = change == 0 ? value.ToString(CultureInfo.InvariantCulture) : change < 0 ? $"{value} ({change})" : $"{value} (+{change})";
-        return new PlayerInterface.HudLine(Loc.Tr(s.Label).ToUpperInvariant(), text, PlayerInterface.StatLabelColour,
+        return new PlayerInterface.HudLine(Loc.Tr(s.Label).ToUpperInvariant(), text, labelInk,
             change < 0 ? PlayerInterface.BadColour : change > 0 ? PlayerInterface.GoodColour : null, TooltipRows: s.Tip);
-    })];
+    }
 
     /// <summary>
     /// The extended lines (shown when the information panel is expanded; <c>FUN_140895350</c>, docs/game/ui-screens.md section 4): the XP rates, the
@@ -639,6 +649,7 @@ sealed class HudPanels(PlayerInterface player)
         if (player.BuildingSelection.BuildingFocus() is { } focus)
         {
             var (name, state, stats, _, _, extended) = player.BuildingSelection.BuildingLines(focus);
+            ModLines.Clear();
             player.AddLines(controls, "NameText", [name], row, sidePixels);
             player.AddLines(controls, "StateText", state, row, sidePixels);
 
@@ -653,7 +664,11 @@ sealed class HudPanels(PlayerInterface player)
             return;
         }
 
-        if (player.Lead() is not { } lead) return;
+        if (player.Lead() is not { } lead)
+        {
+            ModLines.Clear();
+            return;
+        }
 
         string faction = player.FactionName?.Invoke(lead.Faction) ?? "";
         player.AddLines(controls, "NameText", [new(lead.Name, faction, PlayerInterface.TitleColour, PlayerInterface.TitleColour)], row, sidePixels);
@@ -663,8 +678,10 @@ sealed class HudPanels(PlayerInterface player)
 
         // The base game draws the stats labels in the painted face (Observed: glyph shapes and widths match Sentencia at its resized 22 pt); the
         // values take the standard face, like the medical column's numbers.
-        player.AddLines(controls, "StatsText", StatsLines(lead), row, font: "Kenshi_PaintedTextFont_Medium", valueFont: "Kenshi_StandardFont_Medium",
+        var statsLines = StatsLines(lead, player.StatLabelColour);
+        player.AddLines(controls, "StatsText", statsLines, row, font: "Kenshi_PaintedTextFont_Medium", valueFont: "Kenshi_StandardFont_Medium",
             valuePixels: sidePixels);
+        ModLines.AddContent(controls, lead, statsLines.Length, row, sidePixels);
 
         if (player.InfoExpanded)
         {

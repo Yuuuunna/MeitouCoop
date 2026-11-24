@@ -734,6 +734,7 @@ sealed partial class GameHost(
         LocalSession.World.CagedAnimalFix = Config.FixCagedAnimals;
         LocalSession.World.GroundRepair = Config.FixGround;
         LocalSession.World.BagSearchFix = Config.FixBagSearch;
+        LocalSession.World.CounterTalk = Config.CounterTalk;
         LocalSession.World.TakeIntoBackpack = Config.TakeIntoBackpack;
         LocalSession.World.ActionLog = ActionLogs.Log;
         LocalSession.Simulation.SetFastSpeeds(Config.FastSpeed, Config.FastestSpeed);
@@ -761,6 +762,7 @@ sealed partial class GameHost(
                 Decapitation = Config.Decapitation,
                 AdvancedRagdolls = Config.AdvancedRagdolls,
                 SquadXp = Config.SquadXp,
+                SquadSkillXp = SkillXp.Rates(Config.SquadSkillXp),
                 OthersXp = Config.OthersXp,
             }, Scene.Objects?.Layouts, Console.WriteLine);
         Nav = SimulationContent.Navigation;
@@ -857,7 +859,7 @@ sealed partial class GameHost(
             bindings.Set(InputAction.ToggleDebugMenu, EngineKey.F10);
         }
 
-        // F9 is the game's quickload now (F5 quicksave); older saved configs took F9 for the fps counter, which is on Ctrl+F9 and unbound here.
+        // F9 is the game's quickload now (F5 quicksave); older saved configs took F9 for the fps counter, which is on Shift+F9 and unbound here.
         if (BoundOnlyTo(InputAction.ToggleFps, Binding.Of(EngineKey.F9))) bindings.Set(InputAction.ToggleFps);
 
         // Tab is the game's change_squad, not the settings (they open from the Esc menu); older saved configs bound Tab to them.
@@ -895,10 +897,12 @@ sealed partial class GameHost(
         Player.ShowNames = Config.ShowNames;
         Player.Floaters = Config.Floaters;
         Player.FeedbackButtonInPlay = Config.FeedbackButton;
+        Player.XpLabel = SkillXp.Label(Config, Session.IsRemote ? Session.AuthorityRules : null);
         Player.Frontend.FixLoadButton = Config.FixLoadButton;
         Player.BuildingSelection.DeselectBuildings = Config.DeselectBuildings;
         Player.InventoryWindows.RotateItems = Config.RotateItems;
         Player.InventoryWindows.AutoOpenBags = Config.AutoOpenBags;
+        Rendering.Characters.GearBlood.KeptStains = Config.KeptStains;
 
         // The region (BIOME_GROUP) under a point, for the biome banner.
         Player.BiomeBanner.RegionAt = (x, z) => Gpu.Weather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
@@ -1069,7 +1073,7 @@ sealed partial class GameHost(
         var yaw = (WorldOptions.Yaw ?? 30) * MathF.PI / 180;
         var pitch = (WorldOptions.Pitch ?? Data.World.KenshiCamera.InitialPitchDegrees) * MathF.PI / 180;
         var distance = WorldOptions.Distance ?? Data.World.KenshiCamera.InitialDistance;
-        Session.Camera.Place(new Vector2(target.X, target.Z), yaw, pitch, distance);
+        Session.Camera.Place(new Vector2(target.X, target.Z), yaw, pitch, distance, target.Y);
 
         SendFocus();
         ApplyCamera(Session.Camera.Current);
@@ -1120,6 +1124,8 @@ sealed partial class GameHost(
     {
         Modding.ConnectModUi(ui);
         ConnectSaves(ui);
+        ConnectInfoPanel(ui);
+        ui.InventoryWindows.SplitStacks = Config.SplitStacks;
 
         // The region (BIOME_GROUP) under a point, for the biome banner.
         ui.BiomeBanner.RegionAt = (x, z) => ActiveWeather?.World.RegionAt(x, z).Def is { } def ? (def.StringId, def.Name) : null;
@@ -1144,6 +1150,24 @@ sealed partial class GameHost(
         ui.Frontend.HideKenshiSavesChanged = KeepHideKenshiSaves;
         ui.Frontend.SaveInUse = SaveInUse;
         ui.Frontend.DeleteSave = DeleteSave;
+    }
+
+    /// <summary>
+    /// The information panel opens as it was last left while the fix keeps it (<see cref="UserConfig.KeepInfoPanel"/>); each press is kept.
+    /// </summary>
+    void ConnectInfoPanel(PlayerInterface ui)
+    {
+        ui.InfoExpanded = Config.KeepInfoPanel && Config.InfoPanelExtended;
+        ui.InfoExpandedChanged = KeepInfoPanelState;
+    }
+
+    /// <summary>
+    /// Writes the information panel's state to the config at once, so a quit or crash keeps it.
+    /// </summary>
+    void KeepInfoPanelState(bool extended)
+    {
+        Config.InfoPanelExtended = extended;
+        Config.Save();
     }
 
     /// <summary>
@@ -1456,6 +1480,8 @@ sealed partial class GameHost(
         UpdateWakes();
         UpdateSplashes();
         Modding.UpdateModHits();
+        Modding.UpdateModEffects();
+        Modding.UpdateModGlows();
         Modding.UpdateModFaults();
         Rendering.Profiling.StageClock.Lap(Rendering.Profiling.StageClock.Blood, "blood marks");
 
@@ -1506,9 +1532,9 @@ sealed partial class GameHost(
     internal bool TickAhead;
 
     /// <summary>
-    /// Meitou's dynamic tick ahead (engine choice): on once a world tick takes <see cref="AheadOnMs"/> (smoothed), off again under
-    /// <see cref="AheadOffMs"/>, so a quiet world keeps the game's input delay and a big fight or crowd overlaps; a tick run ahead is slower (it
-    /// shares the cores with the draw), hence the gap.
+    /// Meitou's dynamic tick ahead (engine choice): on once a world tick takes <see cref="AheadOnMs"/> (smoothed, times the game speed when above
+    /// 1x: a frame at 5x runs that many more ticks), off again under <see cref="AheadOffMs"/>, so a quiet world keeps the game's input delay and a
+    /// big fight or crowd overlaps; a tick run ahead is slower (it shares the cores with the draw), hence the gap.
     /// </summary>
     const double AheadOnMs = 4, AheadOffMs = 2;
     /// <summary>
@@ -1522,9 +1548,15 @@ sealed partial class GameHost(
     internal bool TickAheadWanted() => Session is WorldSession && Config.TickAhead switch
     {
         TickAheadMode.Always => true,
-        TickAheadMode.Dynamic => _worldBusy = LocalSession.TickMs >= (_worldBusy ? AheadOffMs : AheadOnMs),
+        TickAheadMode.Dynamic => _worldBusy = SpeedTickMs() >= (_worldBusy ? AheadOffMs : AheadOnMs),
         _ => false,
     };
+
+    /// <summary>
+    /// The smoothed world tick's ms times the game speed (at least 1x), what the dynamic tick ahead weighs: the ticks a frame runs grow with the
+    /// speed.
+    /// </summary>
+    double SpeedTickMs() => LocalSession.TickMs * Math.Max(1.0, LocalSession.Simulation.Speed);
 
     #endregion
 }

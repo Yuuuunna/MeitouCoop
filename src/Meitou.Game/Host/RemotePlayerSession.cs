@@ -64,6 +64,10 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     }
 
     public object WorldIdentity { get; } = new();
+    /// <summary>
+    /// Changes when the connection installs another recipient view, even if the adapter and world identity remain the same.
+    /// </summary>
+    internal ulong PresentationEpoch => _presentationFrame?.ViewEpoch ?? 0;
     public bool HasWorldView => !_disposed && _view is not null && _connection.State.View is not null;
     public GameplayRules? AuthorityRules => HasWorldView ? _view?.AuthorityRules : null;
     public PlayerMessageBatch Messages => _view?.Messages ?? PlayerMessageBatch.Empty;

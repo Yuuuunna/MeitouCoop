@@ -185,8 +185,8 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
 
     /// <summary>
     /// The update budgets' turns of this tick (<see cref="MedicalTimeBudget"/>); then who may not get up this tick: a knocked-out person (not an
-    /// animal) whose knockout ends, or who plays dead, when <see cref="SafeToGetUp"/> fails, and who is kept down until it has looked
-    /// (<see cref="Unasked"/>). Serial, from the last tick's state.
+    /// animal, not in a bed or a cage) whose knockout ends, or who plays dead, when <see cref="SafeToGetUp"/> fails, and who is kept down until it
+    /// has looked (<see cref="Unasked"/>). Serial, from the last tick's state.
     /// </summary>
     public void Schedule(World world)
     {
@@ -205,6 +205,11 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
             if (!table.Previous[i].Alive
                 || table.Cold(i) is not { Animal: null, Medical: { Unconscious: true, Dead: false, HasStatsObject: true } medical } cold)
                 continue;
+
+            // The posture is chosen only in a whole-body ragdoll, which a bed or a cage refuses: one held there wakes, and one playing dead
+            // when put in gets up (docs/game/ragdolls.md "Playing dead").
+            if (cold.InSomething != Locks.HeldState.None) continue;
+
             if (medical.PlayingDead && was && (world.Tick + i) % PlayDeadRecheckTicks != 0)
             {
                 _playDead[i] = true;
@@ -289,7 +294,9 @@ public sealed class BodySystem(GameConstants constants, BodyOptions? options = n
         StopIncapacitated(table, i, cold, medical, ref n);
         SheatheRagdolled(cold);
         if (medical.Dead) return;
-        stats.XpRate = AggroSystem.PlayerSide(world, cold) ? Options.SquadXp : Options.OthersXp;
+        bool squad = AggroSystem.PlayerSide(world, cold);
+        stats.XpRate = squad ? Options.SquadXp : Options.OthersXp;
+        stats.SkillXpRates = squad ? Options.SquadSkillXp : null;
         if (!TryStartStep(world, i, cold, medical, out float dt)) return;
         if (cold.Animal is { } animal) Age(cold, animal, stats, dt);
 

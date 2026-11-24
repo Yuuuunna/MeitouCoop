@@ -123,6 +123,18 @@ public sealed partial class FixtureRegistry
         (_properties.TryGetValue(building, out var p) ? p.Owner == faction : OfBuilding(building).Any(f => f.Owner == faction));
 
     /// <summary>
+    /// The building keys of the properties <paramref name="faction"/> owns, in registration order (deterministic, unlike
+    /// <see cref="OwnedProperties"/>'s set).
+    /// </summary>
+    internal IEnumerable<string> OwnedPropertyKeys(int faction)
+    {
+        if (faction < 0) yield break;
+
+        foreach (var (key, p) in _properties)
+            if (p.Owner == faction) yield return key;
+    }
+
+    /// <summary>
     /// The building keys of the properties <paramref name="faction"/> owns (cached).
     /// </summary>
     public IReadOnlySet<string> OwnedProperties(int faction)
@@ -134,6 +146,22 @@ public sealed partial class FixtureRegistry
         }
 
         return _ownedProperties;
+    }
+
+    /// <summary>
+    /// The first town house <paramref name="faction"/> owns that can be the player's home (<see cref="Meitou.Simulation.Player.PlayerHome"/>:
+    /// it has an interior; a property is never a gate or a wall), by key, or null.
+    /// </summary>
+    public string? FirstHome(int faction)
+    {
+        string? first = null;
+        foreach (var (key, p) in _properties)
+        {
+            if (faction < 0 || p.Owner != faction || !p.Building.HasInterior) continue;
+            if (first is null || string.CompareOrdinal(key, first) < 0) first = key;
+        }
+
+        return first;
     }
 
     /// <summary>

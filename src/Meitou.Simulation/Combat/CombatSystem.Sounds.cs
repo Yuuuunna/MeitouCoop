@@ -20,11 +20,14 @@ public sealed partial class CombatSystem
         bool unarmed = false,
         bool robot = false,
         bool armoured = false,
-        bool fatal = false, CharacterId? otherIdentity = null)
+        bool fatal = false,
+        CharacterId? otherIdentity = null,
+        int shootSound = 3)
     {
         if (!world.HasSoundSink) return;
 
-        world.EmitSound(new SoundEvent(kind, Id(world, subject), otherIdentity ?? Id(world, other), at, heavy, unarmed, robot, armoured, fatal));
+        world.EmitSound(new SoundEvent(kind, Id(world, subject), otherIdentity ?? Id(world, other), at, heavy, unarmed, robot, armoured, fatal,
+            ShootSound: shootSound));
     }
 
     /// <summary>

@@ -58,7 +58,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Meitou.Runtime/Meitou.Runtime.csproj" />
-    <Compile Remove="Mods/*.cs;Ui/UiHost.cs;Ui/UiNode.cs;Ui/MarkerImagePaths.cs;Host/Input/Keys.cs;Host/Input/InputState.cs;Host/Input/InputBindings.cs;Host/Input/ModKeyActions.cs" />
+    <Compile Remove="Mods/*.cs;Ui/UiHost.cs;Ui/UiNode.cs;Ui/MarkerImagePaths.cs;Ui/ContextVerbNames.cs;Ui/CharacterPanelHooks.cs;Ui/ItemTooltipLines.cs;Ui/MyGuiEvent.cs;Host/Input/Keys.cs;Host/Input/InputState.cs;Host/Input/InputBindings.cs;Host/Input/ModKeyActions.cs" />
     <Compile Include="Mods/GameMods.cs;Mods/PlayerUiExtension.cs" />
     <ProjectReference Include="..\Meitou.Core\Meitou.Core.csproj" />
     <ProjectReference Include="..\Meitou.Data\Meitou.Data.csproj" />
@@ -73,6 +73,7 @@
     <RuntimeHostConfigurationOption Include="System.GC.Gen0MaxBudget" Value="16777216" />
     <!-- The window icon: the two moons, 256 x 256 raw RGBA (assets/branding). -->
     <EmbeddedResource Include="../../assets/branding/meitou-256.rgba" LogicalName="meitou-256.rgba" Link="Assets/meitou-256.rgba" />
+    <EmbeddedResource Include="../../assets/branding/meitou-128.png" LogicalName="meitou-128.png" Link="Assets/meitou-128.png" />
     <!-- The Meitou title's wordmark (TitleLogo). -->
     <EmbeddedResource Include="../../assets/branding/kenshi-logo.png" LogicalName="kenshi-logo.png" Link="Assets/kenshi-logo.png" />
     <!-- The picture under the luckyren Mode setting (SettingsMenuArt). -->

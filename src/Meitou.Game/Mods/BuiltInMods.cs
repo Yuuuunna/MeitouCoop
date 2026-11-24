@@ -1,5 +1,5 @@
-using System.Globalization;
 using Meitou.Content;
+using Meitou.Localisation;
 
 namespace Meitou.Modding;
 
@@ -12,28 +12,37 @@ public static class BuiltInMods
 {
     /// <summary>
     /// A mod Meitou covers (its entry in <see cref="CoveredMods.BuiltIn"/>), what the notice says became of its settings, and how they are taken in
-    /// (from the mod and the mods on disk by name).
+    /// (from the mod and the mods on disk by name). <see cref="Covered.Again"/>: what a later Meitou takes in from a mod already taken in, once (a feature
+    /// grown since: the XP mods' per-skill settings), and <see cref="Covered.AgainTaken"/> its notice.
     /// </summary>
-    sealed record Covered(BuiltInMod Mod, string Taken, Action<BuiltInModSettings, ModInfo, IReadOnlyDictionary<string, ModInfo>> Adopt);
+    sealed record Covered(BuiltInMod Mod, string Taken, Action<BuiltInModSettings, ModInfo, IReadOnlyDictionary<string, ModInfo>> Adopt,
+        Action<BuiltInModSettings, ModInfo, IReadOnlyDictionary<string, ModInfo>>? Again = null, string AgainTaken = "");
 
     /// <summary>
-    /// The XP multiplier both XP mods start at.
+    /// What marks a mod's second takeover (<see cref="Covered.Again"/>) in <see cref="BuiltInModSettings.AdoptedMods"/>, after its name.
     /// </summary>
-    const float DefaultXpMod = 10;
+    const string AgainMark = " (again)";
 
     /// <summary>
     /// What the XP mods' notice says became of their settings.
     /// </summary>
-    const string XpTaken = "its multiplier is now Squad XP in the Advanced settings (per-skill multipliers are not kept)";
+    const string XpTaken = "its multipliers are now Squad XP in the Advanced settings (open it for each skill's own) and Show Squad XP";
+
+    /// <summary>
+    /// What the XP mods' second notice says (their settings were taken in before Squad XP had a multiplier per skill).
+    /// </summary>
+    const string XpTakenAgain = "its per-skill multipliers are now under Squad XP in the Advanced settings, and its XP label is Show Squad XP";
 
     /// <summary>
     /// The mods Meitou covers.
     /// </summary>
     static readonly Covered[] All =
     [
-        new(CoveredMods.RekenshiXp, XpTaken, (config, mod, _) => config.SquadXp = Clamped(RekenshiXp(mod.Folder) ?? DefaultXpMod)),
-        // The port uses the plugin's file over its own saved setting when the plugin is installed.
-        new(CoveredMods.XpPort, XpTaken, (config, _, onDisk) => config.SquadXp = Clamped(PortXp(config, onDisk))),
+        new(CoveredMods.RekenshiXp, XpTaken, (config, mod, _) => XpModSettings.AdoptPlugin(config, mod.Folder),
+            (config, mod, _) => XpModSettings.AdoptPlugin(config, mod.Folder, main: false), XpTakenAgain),
+        // The port uses the plugin's file over its own saved settings when the plugin is installed.
+        new(CoveredMods.XpPort, XpTaken, (config, _, onDisk) => XpModSettings.AdoptPort(config, onDisk),
+            (config, _, onDisk) => XpModSettings.AdoptPort(config, onDisk, main: false), XpTakenAgain),
         new(CoveredMods.SwampTurtleFix, "Swamp turtle attacks on the Fixes page is on", (config, _, _) => config.FixAnimalMoves = true),
         new(CoveredMods.CharacterHighlight, "Hover outline in the Advanced settings is on", (config, _, _) => config.HoverOutline = true),
     ];
@@ -48,15 +57,35 @@ public static class BuiltInMods
         var onDisk = ModsOnDisk(install);
         foreach (var mod in ModList.ReadEnabled(install).Select(onDisk.GetValueOrDefault).OfType<ModInfo>())
         {
-            if (CoveredOf(mod) is not { } covered || config.AdoptedMods.Contains(mod.Name)) continue;
+            if (CoveredOf(mod) is not { } covered || AdoptOnce(config, covered, mod, onDisk) is not { } taken) continue;
 
-            covered.Adopt(config, mod, onDisk);
-            config.AdoptedMods.Add(mod.Name);
-            Console.WriteLine($"mods      {mod.Name} is built into Meitou: {covered.Taken}");
-            notices.Add($"{mod.Name} is built into Meitou now: {covered.Taken}.");
+            Console.WriteLine($"mods      {mod.Name} is built into Meitou: {taken}");
+            notices.Add(Loc.Tr("{1} is built into Meitou now: {2}.", mod.Name, Loc.Tr(taken)));
         }
 
         return notices;
+    }
+
+    /// <summary>
+    /// Takes in <paramref name="mod"/>'s settings if they were not taken in before, else what <see cref="Covered.Again"/> takes if that was not;
+    /// marks it in <see cref="BuiltInModSettings.AdoptedMods"/> and returns the notice's text, or null when there was nothing to take.
+    /// </summary>
+    static string? AdoptOnce(BuiltInModSettings config, Covered covered, ModInfo mod, IReadOnlyDictionary<string, ModInfo> onDisk)
+    {
+        string again = mod.Name + AgainMark;
+        if (!config.AdoptedMods.Contains(mod.Name))
+        {
+            covered.Adopt(config, mod, onDisk);
+            config.AdoptedMods.Add(mod.Name);
+            if (covered.Again is not null) config.AdoptedMods.Add(again);
+            return covered.Taken;
+        }
+
+        if (covered.Again is not { } adoptAgain || config.AdoptedMods.Contains(again)) return null;
+
+        adoptAgain(config, mod, onDisk);
+        config.AdoptedMods.Add(again);
+        return covered.AgainTaken;
     }
 
     /// <summary>
@@ -104,60 +133,7 @@ public static class BuiltInMods
     /// The entry covering <paramref name="mod"/> (<see cref="CoveredMods.BuiltInOf"/>); null when Meitou does not cover it.
     /// </summary>
     static Covered? CoveredOf(ModInfo mod) => CoveredMods.BuiltInOf(mod) is { } built ? All.FirstOrDefault(c => c.Mod == built) : null;
-
-    /// <summary>
-    /// The plugin's <c>xp_multiplier</c> in <c>plugin/player_xp_boost.ini</c> of <paramref name="folder"/> (a trailing <c>;</c> or <c>#</c> comment
-    /// ignored); null when the file or the line is missing (the original game writes the file on its first run).
-    /// </summary>
-    static float? RekenshiXp(string folder)
-    {
-        string path = GameFiles.Resolve(Path.Combine(folder, "plugin", "player_xp_boost.ini"));
-        try
-        {
-            if (!File.Exists(path)) return null;
-            foreach (string line in File.ReadLines(path))
-                if (IniValue(line, "xp_multiplier") is { } value) return value;
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            Console.Error.WriteLine($"mods      {path} could not be read: {e.Message}");
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// The number of a <c>key=value</c> line for <paramref name="key"/>; null for another line or a value that is not a number.
-    /// </summary>
-    static float? IniValue(string line, string key)
-    {
-        int equals = line.IndexOf('=');
-        if (equals <= 0 || !line[..equals].Trim().Equals(key, StringComparison.OrdinalIgnoreCase)) return null;
-
-        string value = line[(equals + 1)..];
-        int comment = value.IndexOfAny([';', '#']);
-        if (comment >= 0) value = value[..comment];
-        return float.TryParse(value.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float number) ? number : null;
-    }
-
-    /// <summary>
-    /// The multiplier the port ran with: the plugin's file when the plugin is installed and the file names one, else the port's saved
-    /// <c>Multiplier</c> setting, else its default.
-    /// </summary>
-    static float PortXp(BuiltInModSettings config, IReadOnlyDictionary<string, ModInfo> onDisk)
-    {
-        if (onDisk.GetValueOrDefault(CoveredMods.RekenshiXp.ModName!) is { } plugin && RekenshiXp(plugin.Folder) is { } shared)
-            return shared;
-
-        string? saved = config.ModSettings.GetValueOrDefault("player-only-xp")?.GetValueOrDefault("Multiplier");
-        return float.TryParse(saved, NumberStyles.Float, CultureInfo.InvariantCulture, out float value) ? value : DefaultXpMod;
-    }
-
-    /// <summary>
-    /// A mod's multiplier within the slider's range; the default for one that is not a finite number.
-    /// </summary>
-    static float Clamped(float value) => float.IsFinite(value) ? Math.Clamp(value, BuiltInModSettings.MinXpRate, BuiltInModSettings.MaxXpRate) : DefaultXpMod;
 }
-
 
 /// <summary>
 /// Settings shared by the graphical and headless hosts when adopting a feature supplied by an older mod.
@@ -173,6 +149,16 @@ public sealed class BuiltInModSettings
     /// Player faction experience rate, updated only for a mod not adopted before.
     /// </summary>
     public float SquadXp { get; set; } = 1;
+
+    /// <summary>
+    /// Per-skill experience overrides keyed by the original STATS field name.
+    /// </summary>
+    public Dictionary<string, float> SquadSkillXp { get; set; } = [];
+
+    /// <summary>
+    /// Client presentation preference adopted from the legacy XP indicator.
+    /// </summary>
+    public bool ShowSquadXp { get; set; }
 
     /// <summary>
     /// Client-only hover outline, enabled when the graphical host adopts the character-highlight mod.

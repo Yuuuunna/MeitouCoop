@@ -248,7 +248,7 @@ sealed class LookPresets(SettingsMenu menu)
         "Anti-aliasing" or "Weather particles" => "Hidden",
         "Shadows" or "Indirect light" or "Indoor GI" or "Ambient occlusion" or "Light shafts" or "Planetshine" => "Light",
         "Haze" or "Night air" or "Night sky" or "Clouds" or "Cloud shadows" or "Cloud shadows in fog" or "Heat haze" or "Fog" or "Lit dust" => "Sky",
-        "Tone map and grade" or "Night grading" or "Dithering" or WorldFrame.BloomSwitch
+        "Tone map and grade" or "Adaptive exposure" or "Night grading" or "Dithering" or WorldFrame.BloomSwitch
             or WorldFrame.DepthOfFieldSwitch or WorldFrame.CameraEffectsSwitch or WorldFrame.VignetteSwitch or WorldFrame.FilmGrainSwitch => "Colour",
         "Water" => "Water",
         "Skin" => "Skin",
@@ -269,7 +269,7 @@ sealed class LookPresets(SettingsMenu menu)
 
         if (S("Haze") || S("Heat haze")) return "Sky";
 
-        if (S("Tone map") || S("Hybrid") || S("Grading") || S("Night grading") || S("Bloom") || S("Depth of field") || S("Vignette")
+        if (S("Tone map") || S("Hybrid") || S("Grading") || S("Night grading") || S("Adaptive exposure") || S("Bloom") || S("Depth of field") || S("Vignette")
             || S("Film grain")) return "Colour";
 
         if (label.Contains("clarity", StringComparison.Ordinal) || label.Contains("see-through", StringComparison.Ordinal))

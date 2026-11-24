@@ -311,55 +311,27 @@ its visible view. These are codec/authority checks, not transport, graphical or 
 
 ## Upstream presentation budget
 
-The following measurements describe the prior `704cc1ec` presentation integration. They do not include the current inventory/trade workload.
-
-**Verified** (synthetic serialization, Linux .NET 11; no Kenshi or network): 100 captures over 10 seconds of virtual time at 10 Hz,
-124 visible characters, 2 UI actors, 4 meters and 34 mod skills per active actor, a 32-byte inspected-power ID, and one static attachment per
-visible character. Typical value/arrows/tooltip lengths are 4/1/96 UTF-8 bytes; maximum strings use their 256/64/4096-byte limits.
-All dynamic values change each capture. The authority retains exact values; display equivalence compares against the last transmitted value.
-
-| Scenario | New components + records, bytes/s | Game frames, bytes/s | Reliable bulk with framing, bytes/s |
-|---|---:|---:|---:|
-| No mod display data; unchanged new fields | 0 | 1,750 | 2,350 |
-| Typical values; static tooltip | 6,560 (6.41 KiB/s) | 8,310 | 8,910 |
-| Typical values; tooltip changes each capture | 14,880 (14.53 KiB/s) | 16,630 | 17,230 |
-| Maximum strings; static tooltip | 31,760 (31.02 KiB/s) | 33,510 | 34,110 |
-| Maximum strings; tooltip changes each capture, paced at 2 Hz | 75,024 (73.27 KiB/s) | 77,990 | 79,550 |
-
-The actual `GameStatePublisher`, `GameViewProtocol.Pack`, `BulkChunkCodec` and `ReliableLaneFramer` produce these lengths.
-Bulk accounting includes 4 bytes per packed game frame, 52 bytes per chunk and 4 bytes per reliable frame. It excludes control/ACK messages,
-other changing game state, QUIC/UDP/IP and retransmissions. Unchanged new fields send zero bytes after baseline.
+The current mixed-scene measurements, both directions, one-time baseline sizes and transport-overhead model live in
+[Incremental component bandwidth](networking.md#incremental-component-bandwidth). The 500 KiB/s/player average is an optimization target;
+`BandwidthScheduler` bounds/coalesces queue ownership and does not impose a bytes/s limiter. Mixed mod inputs can exceed that target.
 
 **Observed** (source): dynamic bars/value/arrows (2097) and the complete tooltip table (2100) are independently revisioned absolute components;
 a SHA256 digest joins them without stale text under reordering. Static text is not retransmitted with changing bars. When a changing complete
 tooltip table exceeds 1024 bytes, the whole meter presentation pair coalesces to a 500 ms interval, using monotonic time independent of game
 pause or time scale. Until due it retains the last sent pair; then it publishes only the latest capture. Baselines, new entities, scope/slot
 withdrawal, slot-count changes and explicit tooltip removal bypass that delay. Short changing tooltips and bars with static tooltips retain
-their normal cadence. Before pacing, maximum changing text measured 360,080 component bytes/s and 367,910 game-frame bytes/s.
-
-**Verified** (actual motion producer/scheduler and codecs, synthetic immediately completed sends, 124 moving characters): near 5 Hz costs
-33,800 application datagram bytes/s; 2 interactive at 20 Hz plus 122 near cost 36,140; all interactive at 20 Hz cost 135,200.
-The heaviest UI bulk above plus all-interactive motion totals **214,750 bytes/s (209.72 KiB/s)**, leaving **297,250 bytes/s (290.28 KiB/s)**
-of the 512,000-byte budget for other state/control and transport overhead. This is measured application headroom, not whole-game or VPS
-acceptance. Actual combined directions, retransmissions and cold entry still require the 120-second installed-content capture above.
-`BandwidthScheduler` bounds/coalesces queues and outstanding sends; it is not a hard bytes/s limiter. Frequent attachment changes and
-immediate visibility transitions can add bursts beyond the measured scenarios.
+their normal cadence.
 
 A component record adds 19 bytes. Nonempty bar payload = `33 + sum(1 + present*(16 + valueBytes + arrowBytes))`; an empty list costs 1 byte.
 Tooltip-table payload = `1 + sum(1 + present*(2 + tooltipBytes))`; a null tooltip has a two-byte marker and no text. Skills = `2 + 4N`.
 Power = 1 byte absent or `11 + instanceBytes` present. Empty new fields add `81 * visibleCharacters + 20` baseline bytes (10,064 for 124),
-then zero unchanged. The maximum-string scenario's initial baseline is 55,230 new-component bytes, 354,478 game-frame bytes and
-359,698 reliable-bulk bytes. Cold baselines are reported separately from steady state.
+then zero unchanged. Cold baselines are reported separately from steady state.
 
 A bone-mesh declaration costs `34 + keyBytes + meshPathBytes + boneNameBytes`, plus one count byte per list. Up to 64 declarations per character
 send once/on change, never per animation frame; they are not a pose stream. Wire and mod setters share bounds: 4 meters, 34 skills, the text caps
 above and attachment key/path/bone caps 128/1024/256 UTF-8 bytes. Malformed lengths, duplicate keys, invalid transforms and nonfinite new values
 are rejected, except the intentional mod-skill NaN sentinel. Whole-view JSON wraps hidden meter slots without relaxing generic null-array
 rejection. Existing content agreement remains mandatory.
-
-**Verified** (scratch diagnostics, no new repository tests): 47 ordering/lifecycle/pacing checks pass, including both component arrival orders,
-late baselines, mandatory field coverage, generation changes, immediate withdrawals, 499/500 ms and 1024/1025-byte boundaries. All five full
-baseline round trips and hidden-meter/NaN-skill JSON and binary round trips pass. These are codec checks, not graphical or transport acceptance.
 
 Timers/performance assertions are Bench; game/GPU/long-run cases are Slow. Normal tests cover deterministic
 packet schedules, correlation and queue invariants without wall-clock performance thresholds.
@@ -485,11 +457,12 @@ publication retain the 32 MiB expanded-byte limit, including framing within the 
 the existing 256 KiB bound and against the publication that applies them. Schema metadata distinguishes compressed JSON from binary fields.
 Raw `WorldViewCodec.EncodeComponent` and event-retention accounting remain uncompressed.
 
-**Observed** (`PresentationEventsCodec`, schema field 7): events retain their presence byte and use a `00 4D 50 45` envelope, version `01`
-or `02`, and exact original JSON length (little-endian int32). The independent body contains the four non-sound event families as JSON, one
+**Observed** (`PresentationEventsCodec`, schema field 7): events retain their presence byte and use a `00 4D 50 45` envelope, version `03`
+or `04`, and exact original JSON length (little-endian int32). The independent body contains the four non-sound event families as JSON, one
 packet-local strict UTF-8 name table, and exact binary sound records. Each sound uses 40 bytes for its ID, kind, flags, armour, subject,
-other actor, float32 position and item-name reference; named mod sounds add three uint16 name references. Null and empty names remain
-distinct. Version 1 interleaves each sound core and its optional named references; version 2 XORs adjacent 40-byte cores, gathers matching
+other actor, float32 position and item-name reference; named mod sounds add three uint16 name references. The kind byte uses its low five bits
+for `SoundKind`, bits 5–6 for exact `ShootSound` 0–3, and rejects reserved bit 7. The new turret sound selector adds no core bytes. Null and empty names remain
+distinct. Version 3 interleaves each sound core and its optional named references; version 4 XORs adjacent 40-byte cores, gathers matching
 byte positions, then appends named references in the original sound order. The encoder keeps the smaller complete body. An optional
 `MBCF` body uses the ordinary quality-1 compression and savings threshold. No earlier event batch or name dictionary is needed.
 Decode checks counts, first-use name ordering, duplicate or unused names, reserved bits, complete consumption and all five
@@ -499,11 +472,46 @@ Events retain the 256 KiB original-JSON retention bound, and expanded accounting
 expanded body. Critical capture reserves a further 4 KiB for lifecycle framing. Completed fragments charge their assembled expanded
 bytes before decoding. Event IDs, high-water acknowledgement, ordering, reliable retention and publication frequency are unchanged.
 
+### Shared visual collection
+
+**Observed** (source): snapshot field 1068 is a keyed collection with two independently revisioned parts per logical visual. `e:<Id>` and
+`g:<Id>` hold effect/glow definitions; `E:<Id>` and `G:<Id>` hold their dynamic readings. `ModVisualCodec` version 2 starts with a version byte,
+family byte (1/2 definition, 3/4 reading), positive int64 ID and positive uint64 definition version. Definitions contain owner and stable
+effect/system/anchor/kept or glow-target data. Readings contain tint or colour/strength, plus absolute float64 start/expiry times. Geometry
+and colours preserve exact little-endian float32 bits; names use bounded strict UTF-8 and nullable/boolean flags are explicit. The key
+must match the family/ID. Only equal definition versions join, followed by ordinary typed validation of the complete snapshot.
+
+A changed definition increments its version and changes the paired reading even when that reading's other values are identical. Critical
+packing keeps both changed parts in the same publication. Lifecycle declaration state is separate from the ordinary bulk comparison
+cache: a critical reading re-declares a definition that bulk has encoded but lifecycle has not yet declared. Ordinary changes also mark
+keys and membership dirty until critical capture reasserts them, including exact A-to-B-to-A changes. A late bulk value or withdrawal
+therefore cannot undo a newer critical reading. Renewing an unchanged anchor sends only the reading; clients still follow bones locally.
+
+Critical capture includes visual changes while ordinary UI bulk is active. It writes every changed entry before the final membership
+manifest; entries outside the current manifest stage without replacing its visible membership. Each intermediate publication therefore
+still has a complete current collection, including if an older baseline arrives between reliable parts. A manifest above 48 KiB uses
+kind-10 fragments with total length, offset, SHA-256 and final publication revision. Only a complete digest-checked manifest activates it.
+Normal baseline completeness checks remain unchanged. Manifest revisions reject late withdrawn entries and reclaim departed visual IDs;
+visual removals need no separate per-event tombstone record.
+
+The existing live collection limit remains 65,536 logical entries across all collections; two visual parts count as one, and manifests
+require both parts. Ahead-of-manifest visuals have a distinct pending ledger of at most 65,536 logical identities and 32 MiB of exact
+encoded entry envelopes, checked before decoding; each upsert updates it in constant time.
+Manifest activation first retires old values, rebuilds the pending ledger once and rechecks the live limit. A full legal replacement can
+therefore hold its old visible collection and next staged collection without counting both as live. Each critical body is at most 60 KiB;
+one ordered batch retains at most 32 MiB before/after compression. Existing native ownership and event-journal bounds are independent.
+These are finite memory/protocol bounds, not a bytes/s quota or a lower visual update frequency.
+
+`MGC1` flag bit 0 still denotes baseline; bit 1 explicitly marks an independently compressed publication. It is required because a raw
+body starts with an arbitrary world GUID. The complete encoded payload's length and SHA-256 are checked before decompression; output is
+bounded to 32 MiB before allocation, then ordinary field expansion, schema and revision validation run. Critical bodies use the `MBCF`
+envelope and saving threshold described below with Brotli quality 6. This removes repeated entry metadata without delaying a publication.
+
 ### Absolute bulk and motion compression
 
 **Observed** (`AbsolutePayloadCompression`, `GameViewProtocol`, `MotionReplicationProducer`): complete ordinary component batches and
 status-effect definition tables may use an independent `MBCF` envelope: four ASCII magic bytes, version `01`, exact uncompressed
-little-endian int32 length, then one Brotli stream (quality 1, window 22). Bulk/definitions consider payloads from 1024 bytes; motion
+little-endian int32 length, then one Brotli stream (window 22; quality 4 for bulk, 1 for definitions and ordinary motion). Bulk/definitions consider payloads from 1024 bytes; motion
 considers batches from 256 bytes. The envelope must save both 128 bytes and one eighth of the original or the original bytes are sent.
 There is no dictionary from an earlier publication, delay to accumulate packets, changed precision or changed publication frequency.
 
