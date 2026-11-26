@@ -552,6 +552,7 @@ sealed class GameLoop(GameHost host)
             BagSearchChanged = on => { if (host.Session is WorldSession local) local.World.BagSearchFix = on; },
             CounterTalkChanged = on => { if (host.Session is WorldSession local) local.World.CounterTalk = on; },
             TakeIntoBackpackChanged = on => { if (host.Session is WorldSession local) local.World.TakeIntoBackpack = on; },
+            DropFromLootChanged = on => { if (host.Session is WorldSession local) local.World.DropFromLoot = on; },
             TimeSpeedsChanged = () => { if (host.Session is WorldSession local) local.Simulation.SetFastSpeeds(host.Config.FastSpeed, host.Config.FastestSpeed); },
             AnimalsPickUpChanged = on => EachSystem<Simulation.Player.PlayerSystem>(players => players.AnimalsPickUp = on),
             OffscreenChanged = ApplyOffscreenSettings,
@@ -1178,10 +1179,11 @@ sealed class GameLoop(GameHost host)
             ToggleSquadTour();
             return;
         }
-        // A numpad key bound to a game hotkey (the orders, NUM0..NUM8 by default) is the game's, except with Ctrl (saving a shot) or the cinema's
-        // editor open (F6).
+        // A numpad key bound to an action (the orders hotkeys, NUM0..NUM8 by default, or any the player binds, such as the speed keys) is the
+        // game's, except with Ctrl (saving a shot) or the cinema's editor open (F6).
         bool hotkey = !host.Duel.IsDuel && !ctrl && !_cinema.EditorVisible && KeyMap.Map(k) is { } gameKey
-            && (host.Player.GameHotkeys.IsHotkey(gameKey) || host.Player.Build.OwnsBuildNumpad(gameKey));
+            && (host.Player.GameHotkeys.IsHotkey(gameKey) || host.Session.Bindings.IsNumpadBound(gameKey)
+                || host.Player.Build.OwnsBuildNumpad(gameKey));
         if (!hotkey && Enum.TryParse(k.ToString(), out CinemaKey cinemaKey) && _cinema.OnKey(cinemaKey, ctrl, _shiftDown)) return;
         // Consume the modified F9 before the quickload binding. Keep Ctrl+F9 where the desktop passes it through.
         if (k == SilkKey.F9 && (_shiftDown || ctrl))

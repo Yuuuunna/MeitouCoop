@@ -3,6 +3,7 @@ using Meitou.Data.World;
 using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Movement;
 using System.Numerics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -487,6 +488,12 @@ public sealed partial class WorldViewCodec
     /// </summary>
     static void ValidateModPresentation(WorldSnapshot snapshot)
     {
+        if (snapshot.CraftStations is not { } stations || stations.Count > 65536
+            || stations.Any(station => string.IsNullOrWhiteSpace(station.Site) || Encoding.UTF8.GetByteCount(station.Site) > 1024
+                || station.Name is null || station.Name.Length > 4096)
+            || stations.Select(station => station.Site).Distinct(StringComparer.Ordinal).Count() != stations.Count)
+            throw new InvalidDataException("Invalid crafting station directory.");
+
         foreach (var character in snapshot.Characters)
         {
             StatusEffectPresentationCodec.Validate(character.Effects);

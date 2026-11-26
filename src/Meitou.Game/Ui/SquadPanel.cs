@@ -370,7 +370,8 @@ sealed class SquadPanel(PlayerInterface player)
                 Vector4.Zero, Pickable: false, Clip: clip));
         }
 
-        controls.Add(new($"{name}-name", "TextBox", At(0.05f, 0.05f, 0.9f, 0.8875f), member.Name, "", "Kenshi_TextboxStandardText", true,
+        string shown = player.ShownName(member, ShownPlace.Squad);
+        controls.Add(new($"{name}-name", "TextBox", At(0.05f, 0.05f, 0.9f, 0.8875f), shown, "", "Kenshi_TextboxStandardText", true,
             new Dictionary<string, string>
             {
                 ["TextAlign"] = "HCenter Bottom",
@@ -527,7 +528,8 @@ sealed class SquadPanel(PlayerInterface player)
             return;
         }
 
-        string name = player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id) is { } who ? player.ShownName(who) : "";
+        var who = player.Session.CurrentSnapshot.Characters.FirstOrDefault(c => c.Id == id);
+        string name = who is null ? "" : player.ShownName(who, ShownPlace.Window);
         int faction = player.Session.ActiveFaction;
         player.Confirm("Dismiss character", Loc.Tr("Dismiss character '{1}'?", name),
             () => player.Say(new DismissCommand(id) { Faction = faction, Tick = player.Session.CommandTick }));

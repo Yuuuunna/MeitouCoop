@@ -134,6 +134,7 @@ public static class CommandProtocol
         [153] = typeof(PayBailOrder),
         [154] = typeof(DoorLockOrder),
         [155] = typeof(CageClickOrder),
+        [156] = typeof(TakeOffShacklesOrder),
         [160] = typeof(LiftItem),
         [161] = typeof(PlaceHeld),
         [162] = typeof(GiveHeld),
@@ -258,6 +259,8 @@ public static class CommandProtocol
 
         switch (command)
         {
+            case TakeOffShacklesOrder takeOff when takeOff.Wearer.IsNone || takeOff.Wearer.Slot < 0 || takeOff.Wearer.Generation < 0:
+                throw new InvalidDataException("Taking off shackles requires a valid controlled wearer.");
             case InPlayEditorOpened opened when opened.Character.IsNone || opened.SessionId == Guid.Empty:
                 throw new InvalidDataException("Opening the character editor requires its authorized character and session.");
             case LiftItem lift when lift.Count <= 0:
@@ -282,6 +285,22 @@ public static class CommandProtocol
                     float norm = plan.Rotation.LengthSquared();
                     if (!float.IsFinite(norm) || MathF.Abs(norm - 1) > .01f)
                         throw new InvalidDataException("Placement rotation must be a unit quaternion.");
+                }
+
+                if (placement.WallLines is null || placement.WallLines.Count > placement.Plans.Count)
+                    throw new InvalidDataException("Invalid wall line batch.");
+
+                int previousEnd = 0;
+                foreach (var line in placement.WallLines)
+                {
+                    if (line is null || line.Intent is not { } intent || string.IsNullOrWhiteSpace(intent.Master)
+                        || intent.Master.Length > 4096 || line.FirstPlan < previousEnd || line.PieceCount <= 0
+                        || line.PieceCount > placement.Plans.Count || line.FirstPlan > placement.Plans.Count - line.PieceCount)
+                        throw new InvalidDataException("Invalid or overlapping wall line.");
+
+                    Position(intent.Start);
+                    Position(intent.End);
+                    previousEnd = line.FirstPlan + line.PieceCount;
                 }
 
                 break;

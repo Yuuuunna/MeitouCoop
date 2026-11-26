@@ -63,14 +63,39 @@ public sealed class GameDatabase
     /// <paramref name="record"/> ("" none) and called <paramref name="name"/>, as the mods' text sources show it
     /// (<see cref="ShownText.Name"/>: still its record's name, asked as the record's; else as a name of its own). Display only.
     /// </summary>
-    public string ShownName(string what, string record, string name) =>
+    public string ShownName(string what, string record, string name) => ShownName(what, record, name, 0, ShownPlace.Unknown);
+
+    /// <summary>
+    /// As <see cref="ShownName(string, string, string)"/>, for one character's name: <paramref name="character"/> its lasting id (0: none),
+    /// <paramref name="place"/> where it is shown (<see cref="ShownText.Name(string, string, string, string, ulong, ShownPlace)"/>).
+    /// </summary>
+    public string ShownName(string what, string record, string name, ulong character, ShownPlace place) =>
         !ShownText.Any ? name
-            : ShownText.Name(what, record ?? "", record is { Length: > 0 } && Find(record) is { } r ? r.Name : "", name);
+            : ShownText.Name(what, record ?? "", record is { Length: > 0 } && Find(record) is { } r ? r.Name : "", name, character, place);
 
     /// <summary>
     /// Every record of <paramref name="type"/>, in no defined order (a scan of all records each call).
     /// </summary>
     public IEnumerable<GameRecord> OfType(FcsRecordType type) => _records.Values.Where(r => r.Type == type);
+
+    /// <summary>
+    /// The mods whose data files (or data phase, which counts as the mod's <c>.mod</c> file) define or change <paramref name="record"/>, by name
+    /// (the file without <c>.mod</c>), each once, in load order; empty for a base-game record no mod changed. The core files
+    /// (<see cref="LoadOrder.BaseFiles"/>) and translation files are not mods.
+    /// </summary>
+    public IReadOnlyList<string> ModsOf(GameRecord record)
+    {
+        var mods = new List<string>();
+        foreach (var file in record.ModifiedBy.Prepend(record.DefinedBy))
+        {
+            if (LoadOrder.BaseFiles.Contains(file) || Translations.Contains(file)) continue;
+
+            string name = file.EndsWith(".mod", StringComparison.OrdinalIgnoreCase) ? file[..^4] : file;
+            if (!mods.Contains(name)) mods.Add(name);
+        }
+
+        return mods;
+    }
 
     /// <summary>
     /// Translation files applied, by file name, in order (not in <see cref="Files"/>: they are not data files a save depends on).

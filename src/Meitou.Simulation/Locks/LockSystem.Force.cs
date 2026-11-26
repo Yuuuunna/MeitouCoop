@@ -69,16 +69,16 @@ public sealed partial class LockSystem
         {
             case LockForce.Tools when Lockpicking.BestTool(walker) is null:
                 if (order.Issuer is { } issuerTools)
-                    world.Post(issuerTools, $"{world.ShownName(walker)}: I don't have any tools");
-                else world.PostCharacter(walker, $"{world.ShownName(walker)}: I don't have any tools");
+                    world.Post(issuerTools, $"{world.ShownName(walker, ShownPlace.Notice)}: I don't have any tools");
+                else world.PostCharacter(walker, $"{world.ShownName(walker, ShownPlace.Notice)}: I don't have any tools");
                 return;
             case LockForce.Smash:
                 // Task_BashDoor needs a weapon (an animal's natural one counts); a door without a published spot cannot be struck.
                 if (walker.Fighter is not { } fighter || !fighter.IsAnimal && fighter.Unarmed)
                 {
                     if (order.Issuer is { } issuerSmash)
-                        world.Post(issuerSmash, $"{world.ShownName(walker)}: I need a weapon to smash that");
-                    else world.PostCharacter(walker, $"{world.ShownName(walker)}: I need a weapon to smash that");
+                        world.Post(issuerSmash, $"{world.ShownName(walker, ShownPlace.Notice)}: I need a weapon to smash that");
+                    else world.PostCharacter(walker, $"{world.ShownName(walker, ShownPlace.Notice)}: I need a weapon to smash that");
                     return;
                 }
 

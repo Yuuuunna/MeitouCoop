@@ -88,6 +88,9 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
                 case PutShacklesOrder putOn:
                     PutShacklesInput(world, putOn);
                     break;
+                case TakeOffShacklesOrder takeOff:
+                    TakeOffShacklesInput(world, takeOff);
+                    break;
                 case ToggleDoorsOrder or ToggleDoorLocksOrder or Construction.SetBuildingPublic:
                     DoorInputs(world, command);
                     break;
@@ -320,5 +323,6 @@ public sealed partial class LockSystem(GameConstants constants, BodyOptions opti
     /// Posts a character's own line as "name: line" (a lock worker's "It's locked."). The line is a game msgid looked up on its own, so every
     /// language with a game catalogue shows it translated; the "{1}: {2}" frame is Meitou's.
     /// </summary>
-    static void Say(World world, CharacterCold c, string line) => world.PostCharacter(c, Loc.Tr("{1}: {2}", world.ShownName(c), Loc.Tr(line)));
+    static void Say(World world, CharacterCold c, string line) =>
+        world.PostCharacter(c, Loc.Tr("{1}: {2}", world.ShownName(c, ShownPlace.Notice), Loc.Tr(line)));
 }

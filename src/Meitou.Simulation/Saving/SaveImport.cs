@@ -106,24 +106,14 @@ public static class SaveImport
         AddArtifacts(game, data);
         FilterZones(game, playerId, options);
 
-        // The weather and the terrain decals are the new world's; the research is the start's unless it is imported.
+        // The weather and the terrain decals are the new world's; the research is the start's unless it is imported. The Extra Extensions
+        // variables are the data's: the plugin reads them back only in a load (its loadAllPlatoons hook, which the import never calls).
         records.RemoveAll(r => r.RecordType is FcsRecordType.Biomes or FcsRecordType.TerrainDecals or FcsRecordType.WarSavestate);
-        if ((options & ImportOptions.Research) == 0 && records.FirstOrDefault(r => r.RecordType == FcsRecordType.Research) is { } research)
-        {
-            foreach (var key in research.Strings.Keys.Where(k => k.StartsWith("finished", StringComparison.Ordinal) || k.StartsWith("current", StringComparison.Ordinal) || k.StartsWith("paid", StringComparison.Ordinal)).ToList()) research.Strings.Remove(key);
-            foreach (var key in research.Floats.Keys.Where(k => k.StartsWith("current prog", StringComparison.Ordinal)).ToList()) research.Floats.Remove(key);
-            research.Strings["finished0"] = Meitou.Data.Gameplay.Construction.ResearchGate.DefaultStartId;
-            research.Floats["num finished"] = 1;
-            research.Floats["num currents"] = 0;
-        }
+        records.RemoveAll(VariableSave.IsVariable);
+        if ((options & ImportOptions.Research) == 0) ResetResearch(records);
+
         game.Camera.PlayerMoney = Math.Max(0, game.Camera.PlayerMoney);
-        // The same records and files under views made again from them.
-        var imported = new SaveGame(game.Quick) { Portraits = game.Portraits };
-        foreach (var p in imported.Platoons) p.File = game.Platoons.First(q => ReferenceEquals(q.Record, p.Record)).File;
-        foreach (var (coordinate, zone) in game.Zones) imported.Zones[coordinate] = zone;
-        imported.Reindex();
-        imported.UpdateDerived();
-        return imported;
+        return Rebuild(game);
     }
 
     /// <summary>

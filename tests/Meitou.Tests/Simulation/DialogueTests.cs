@@ -116,6 +116,11 @@ public partial class DialogueTests
 
         public void Say(SimCommand c) => World.Commands.Enqueue(c with { Tick = World.Tick });
         public ConversationView? Talk => Dialogue.PublishConversation();
+
+        /// <summary>
+        /// The bubble <paramref name="who"/> shows now, or null.
+        /// </summary>
+        public string? Bubble(CharacterId who) => Dialogue.PublishSpeech().FirstOrDefault(b => b.Speaker == who)?.Text;
     }
 
     sealed class MultiplayerVillage : IDisposable
@@ -147,12 +152,14 @@ public partial class DialogueTests
 
         public void Send(PlayerId actor, SimCommand command) => World.Commands.Enqueue(actor, command with { Tick = World.Tick });
         public ConversationView View(PlayerId actor) => Assert.IsType<ConversationView>(Dialogue.PublishConversation(actor));
-        public void OpenBoth()
+        public void OpenBoth(bool secondRemainsOpen = true)
         {
             Send(A.Id, new TalkOrder(First, NpcA) { Tick = 0 });
             Send(B.Id, new TalkOrder(Second, NpcB) { Tick = 0 });
             World.RunTicks(2);
-            Assert.NotNull(Dialogue.PublishConversation(A.Id)); Assert.NotNull(Dialogue.PublishConversation(B.Id));
+            Assert.NotNull(Dialogue.PublishConversation(A.Id));
+            if (secondRemainsOpen) Assert.NotNull(Dialogue.PublishConversation(B.Id));
+            else Assert.Null(Dialogue.PublishConversation(B.Id));
         }
         public void Choose(PlayerId actor, ConversationView view, int index) => Send(actor,
             new DialogueChoice(index) { Tick = 0, SessionId = view.SessionId, ChoiceRevision = view.ChoiceRevision });
@@ -160,21 +167,21 @@ public partial class DialogueTests
     }
 
     [Fact]
-    public void IndependentConversationsReadAndChargeTheirOwnFactionWithoutReplacingAnotherWindow()
+    public void IndependentConversationsChargeTheirOwnFactionAndChildlessRepliesBecomeBubbles()
     {
         using var v = new MultiplayerVillage();
         v.B.State.Money = 100;
-        v.OpenBoth();
-        var a = v.View(v.A.Id); var b = v.View(v.B.Id);
+        v.OpenBoth(secondRemainsOpen: false);
+        var a = v.View(v.A.Id);
         Assert.Contains("rich", a.Text);
-        Assert.Equal("Hello.", b.Text);
-        Assert.NotEqual(a.SessionId, b.SessionId);
+        Assert.Equal("Hello.", v.Village.Bubble(v.NpcB));
         Assert.Null(v.Dialogue.PublishConversation());
         v.Choose(v.A.Id, a, 0);
         v.World.RunTick();
         Assert.Equal(900, v.A.State.Money);
         Assert.Equal(100, v.B.State.Money);
-        Assert.Equal(b.SessionId, v.View(v.B.Id).SessionId);
+        Assert.Null(v.Dialogue.PublishConversation(v.B.Id));
+        Assert.Equal("Hello.", v.Village.Bubble(v.NpcB));
         Assert.Contains(v.World.TakeMessages(v.A.Id), m => m.Contains("Paid", StringComparison.Ordinal));
         Assert.Empty(v.World.TakeMessages(v.B.Id));
         Assert.Empty(v.World.TakeMessages());
@@ -229,7 +236,11 @@ public partial class DialogueTests
     [Fact]
     public void RevokedAuthorityAndSharedFundsAreRecheckedBeforeDialogueEffects()
     {
-        using var v = new MultiplayerVillage(sharedFaction: true);
+        using var v = new MultiplayerVillage(ExtraExtensions(), sharedFaction: true);
+        var firstItems = v.World.Characters.Cold(v.First.Slot)!.Inventory!;
+        var secondItems = v.World.Characters.Cold(v.Second.Slot)!.Inventory!;
+        firstItems.Items.Add(new ItemInstance { Record = "quest-token", Type = FcsRecordType.Item, Quantity = 2 });
+        secondItems.Items.Add(new ItemInstance { Record = "quest-token", Type = FcsRecordType.Item, Quantity = 2 });
         v.OpenBoth();
         var a = v.View(v.A.Id); var b = v.View(v.B.Id);
         v.A.State.Money = 150;
@@ -238,6 +249,10 @@ public partial class DialogueTests
         Assert.Equal(50, v.A.State.Money);
         Assert.NotNull(v.Dialogue.PublishConversation(v.B.Id));
         Assert.False(v.World.Characters.Cold(v.NpcB.Slot)!.DialogueLocks?.GetValueOrDefault("rich-d") == true);
+        Assert.Equal(1, Assert.Single(firstItems.Items).Quantity);
+        Assert.Equal(2, Assert.Single(secondItems.Items).Quantity);
+        Assert.Empty(v.World.Characters.Cold(v.NpcB.Slot)!.Inventory!.Items);
+        Assert.Equal(1, v.World.Variables.Value(v.Village.Data.Db, "paid-quests"));
         v.A.State.Money = 1000;
         var pending = v.View(v.B.Id);
         v.Choose(v.B.Id, pending, 0);
@@ -246,6 +261,59 @@ public partial class DialogueTests
         v.World.RunTick();
         Assert.Equal(1000, v.A.State.Money);
         Assert.Null(v.Dialogue.PublishConversation(v.B.Id));
+        Assert.Equal(2, Assert.Single(secondItems.Items).Quantity);
+        Assert.Equal(1, v.World.Variables.Value(v.Village.Data.Db, "paid-quests"));
+    }
+
+    /// <summary>
+    /// A paid line that transfers one quest item and advances an Extra Extensions world variable before its ordinary effects.
+    /// </summary>
+    static PopulationData ExtraExtensions()
+    {
+        var data = Data();
+        var file = new FcsFile();
+        file.Records.Add(Rec("quest-token", FcsRecordType.Item));
+        file.Records.Add(Rec("paid-quests", (FcsRecordType)Meitou.Data.Gameplay.VariableData.RecordType, r => r.Ints["value"] = 0));
+        file.Records.Add(Rec("buy-l", FcsRecordType.DialogueLine, r =>
+        {
+            r.References["take item"] = [Ref("quest-token", 1)];
+            r.References["add to variable"] = [Ref("paid-quests", 1)];
+        }));
+        data.Db.Apply(file, "quest-effects.mod");
+        return data;
+    }
+
+    /// <summary>
+    /// Both players act on their own talker's inventory while the plugin's world variable is shared; replaying a consumed choice does neither.
+    /// </summary>
+    [Fact]
+    public void ExtraExtensionEffectsUseTheInitiatingCharacterAndRunOncePerAcceptedChoice()
+    {
+        using var v = new MultiplayerVillage(ExtraExtensions());
+        var firstItems = v.World.Characters.Cold(v.First.Slot)!.Inventory!;
+        var secondItems = v.World.Characters.Cold(v.Second.Slot)!.Inventory!;
+        firstItems.Items.Add(new ItemInstance { Record = "quest-token", Type = FcsRecordType.Item, Quantity = 2 });
+        secondItems.Items.Add(new ItemInstance { Record = "quest-token", Type = FcsRecordType.Item, Quantity = 2 });
+        v.OpenBoth();
+        var a = v.View(v.A.Id);
+        v.Choose(v.A.Id, a, 0);
+        v.Choose(v.A.Id, a, 0);
+        v.World.RunTick();
+
+        Assert.Equal(1, Assert.Single(firstItems.Items).Quantity);
+        Assert.Equal(2, Assert.Single(secondItems.Items).Quantity);
+        Assert.Equal("quest-token", Assert.Single(v.World.Characters.Cold(v.NpcA.Slot)!.Inventory!.Items).Record);
+        Assert.Empty(v.World.Characters.Cold(v.NpcB.Slot)!.Inventory!.Items);
+        Assert.Equal(1, v.World.Variables.Value(v.Village.Data.Db, "paid-quests"));
+        Assert.Equal(900, v.A.State.Money);
+        Assert.Equal(1000, v.B.State.Money);
+
+        v.Choose(v.B.Id, v.View(v.B.Id), 0);
+        v.World.RunTick();
+        Assert.Equal(1, Assert.Single(secondItems.Items).Quantity);
+        Assert.Equal("quest-token", Assert.Single(v.World.Characters.Cold(v.NpcB.Slot)!.Inventory!.Items).Record);
+        Assert.Equal(2, v.World.Variables.Value(v.Village.Data.Db, "paid-quests"));
+        Assert.Equal(900, v.B.State.Money);
     }
 
     [Fact]
@@ -259,7 +327,8 @@ public partial class DialogueTests
         Assert.Equal(1, v.A.State.FactionState.Rank(guild));
         Assert.Equal(0, v.B.State.FactionState.Rank(guild));
         v.Send(v.A.Id, new TalkOrder(v.First, v.NpcA) { Tick = 0 }); v.World.RunTick();
-        Assert.Contains("sell off", v.View(v.A.Id).Text);
+        Assert.Null(v.Dialogue.PublishConversation(v.A.Id));
+        Assert.Contains("sell off", v.Village.Bubble(v.NpcA));
         Assert.Equal("I don't know you.", v.View(v.B.Id).Text);
         int squad = v.World.Characters.Cold(v.NpcA.Slot)!.SquadId;
         v.Dialogue.Memory.Remember(v.World, squad, v.First, MemoryTag.Captor);
@@ -341,12 +410,17 @@ public partial class DialogueTests
     [Fact]
     public void DialogueCannotReadOrSpendFactionFundsWithoutTheCorrespondingPermission()
     {
-        using var v = new MultiplayerVillage();
+        var data = Data();
+        var file = new FcsFile();
+        file.Records.Add(Rec("plain-l", FcsRecordType.DialogueLine, r => r.References["lines"] = [Ref("bye-l")]));
+        data.Db.Apply(file, "funds-view.mod");
+        using var v = new MultiplayerVillage(data);
         v.World.Players.SetMembership(v.A.Id, v.A.State.Faction, FactionPermission.ReadFunds);
         v.World.Players.SetMembership(v.B.Id, v.B.State.Faction, FactionPermission.None);
         v.OpenBoth();
         var a = v.View(v.A.Id); var b = v.View(v.B.Id);
         Assert.Contains("rich", a.Text);
+        Assert.True(a.FundsVisible);
         Assert.Equal("Hello.", b.Text);
         Assert.False(b.FundsVisible);
         Assert.Equal(0, b.PlayerMoney);
@@ -414,12 +488,8 @@ public partial class DialogueTests
         v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
         v.World.RunTicks(2);
 
-        Assert.Equal(("Hello.", "[Leave]"), (v.Talk!.Text, v.Talk.Choices.Single()));
-
-        v.Say(new DialogueChoice(0) { Tick = 0 });
-        v.World.RunTicks(1);
-
-        Assert.Null(v.Talk);
+        // a childless line ends the talk and is said as a bubble (FUN_1406839a0)
+        Assert.Equal((null, "Hello."), (v.Talk, v.Bubble(v.Villager)));
 
         v.World.Player.Money = 1000;
         v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
@@ -441,7 +511,7 @@ public partial class DialogueTests
         v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });   // locked: back to "plain"
         v.World.RunTicks(2);
 
-        Assert.Equal("Hello.", v.Talk!.Text);
+        Assert.Equal((null, "Hello."), (v.Talk, v.Bubble(v.Villager)));
 
         // The lock is saved as the original's lok0 pair.
         var state = new FcsRecord { StringId = "s", RecordType = FcsRecordType.GamestateCharacter };
@@ -476,14 +546,14 @@ public partial class DialogueTests
             v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
             v.World.RunTicks(2);
 
-            Assert.Equal("Hello.", v.Talk!.Text);
+            Assert.Equal("Hello.", v.Bubble(v.Villager));
         }
         using (var v = new Village(data: Dumb(listed: true)))
         {
             v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
             v.World.RunTicks(2);
 
-            Assert.Equal("Hello.", v.Talk!.Text);
+            Assert.Equal("Hello.", v.Bubble(v.Villager));
         }
     }
 
@@ -506,7 +576,7 @@ public partial class DialogueTests
         v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
         v.World.RunTicks(2);
 
-        Assert.Equal("Need to sell off some junk?", v.Talk!.Text);
+        Assert.Equal("Need to sell off some junk?", v.Bubble(v.Villager));
         Assert.False(v.Data.Relations.RaiseRank(guild, 1));   // the join line's cap
         Assert.Equal(1, v.Data.Relations.Rank(guild));
     }
@@ -607,7 +677,8 @@ public partial class DialogueTests
             Rec("ask-l", FcsRecordType.DialogueLine,
                     r => { r.Strings["text0"] = "Talk to the boss."; r.References["effects"] = [Ref("leader-da")]; }),
             Rec("boss-d", FcsRecordType.Dialogue, r => r.References["lines"] = [Ref("boss-l")]),
-            Rec("boss-l", FcsRecordType.DialogueLine, r => r.Strings["text0"] = "What do you want?"),
+            Rec("boss-l", FcsRecordType.DialogueLine, r => { r.Strings["text0"] = "What do you want?"; r.References["lines"] = [Ref("nothing-l")]; }),
+            Rec("nothing-l", FcsRecordType.DialogueLine, r => { r.Ints["speaker"] = (int)Talker.Target; r.Strings["text0"] = "Nothing."; }),
         ]), []);
         var dialogue = new DialogueSystem(data);
         var ground = new OpenGroundWalkability((_, _) => 150);
@@ -638,12 +709,9 @@ public partial class DialogueTests
         world.Commands.Enqueue(new TalkOrder(hero, guard) { Tick = world.Tick });
         world.RunTicks(2);
 
-        Assert.Equal(("Talk to the boss.", "[Leave]"), (dialogue.PublishConversation()!.Text, dialogue.PublishConversation()!.Choices.Single()));
-
-        world.Commands.Enqueue(new DialogueChoice(0) { Tick = world.Tick });
-        world.RunTicks(1);
-
+        // the guard's childless line ends the talk as a bubble (FUN_1406839a0); its effect still sends the leader
         Assert.Null(dialogue.PublishConversation());
+        Assert.Equal("Talk to the boss.", dialogue.PublishSpeech().Single(b => b.Speaker == guard).Text);
 
         for (int i = 0; i < 600 && dialogue.PublishConversation() is null; i++) world.RunTicks(1);
         var talk = dialogue.PublishConversation();
@@ -776,7 +844,8 @@ public partial class DialogueTests
         {
             v.World.RunTicks(target - (int)v.World.Tick);
             if (target == 1) v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
-            if (target is 300 or 320) said += v.Talk?.Text + "|";
+            if (target == 300) said += v.Talk?.Text + "|";
+            if (target == 320) said += v.Bubble(v.Villager) + "|";   // "Hello." is childless: said as a bubble (FUN_1406839a0)
             if (target == 300) v.Say(new DialogueChoice(0) { Tick = 0 });
             if (target == 310) v.Say(new TalkOrder(v.Hero, v.Villager) { Tick = 0 });
             hashes.Add(v.World.StateHash());

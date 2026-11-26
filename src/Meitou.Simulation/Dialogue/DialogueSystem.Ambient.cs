@@ -523,7 +523,7 @@ public sealed partial class DialogueSystem
             string bubble = shown + cost;
             _shown[speaker] = (bubble, until, IsLarge(c.Event), IsInterrupting(c.Event), c.Event);
             _speechChanged = true;
-            LogLine(world, c, speaker, world.ShownName(speaker), bubble, world.Characters.Cold(n) is { IsPlayer: true });
+            LogLine(world, c, speaker, world.ShownName(speaker, ShownPlace.Dialogue), bubble, world.Characters.Cold(n) is { IsPlayer: true });
         }
         LogBubble(world, c, line, speaker, text);
 

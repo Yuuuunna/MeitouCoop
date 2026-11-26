@@ -180,6 +180,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
         bool bagSearch = World.BagSearchFix;
         bool counterTalk = World.CounterTalk;
         bool takeIntoBackpack = World.TakeIntoBackpack;
+        bool dropFromLoot = World.DropFromLoot;
         var next = _runtime.ReplaceWorld(systems, candidate =>
         {
             candidate.Floaters = floaters;
@@ -193,6 +194,7 @@ public sealed partial class WorldSession : IDisposable, IClientSession
             candidate.BagSearchFix = bagSearch;
             candidate.CounterTalk = counterTalk;
             candidate.TakeIntoBackpack = takeIntoBackpack;
+            candidate.DropFromLoot = dropFromLoot;
             setup?.Invoke(candidate);
         });
         // A tick the old world ran ahead goes with it.

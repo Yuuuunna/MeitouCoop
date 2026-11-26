@@ -590,10 +590,13 @@ sealed class CharacterAudio(GameHost host)
                 sounds.WallBreak(e.Position, host.Config.FixDoorBreak);
                 break;
             case SoundKind.Down:
-                sounds.Down(subject, other);
+                sounds.Down(subject);
                 break;
             case SoundKind.Alert:
                 sounds.Alert(subject);
+                break;
+            case SoundKind.Victory:
+                sounds.Victory(subject);
                 break;
             case SoundKind.Eat:
                 sounds.Job(subject, "Character_Consume", CharacterSounds.FootstepLimit, "Consume", "Eat");
@@ -607,7 +610,7 @@ sealed class CharacterAudio(GameHost host)
             case SoundKind.PickedUp:
                 sounds.Job(subject, "Character_Pick_Up_Ground");
                 break;
-            case SoundKind.ShacklesOn:
+            case SoundKind.ShacklesOn or SoundKind.ShacklesOff:
                 if (e.Item is not null) host.Sound.Ui.Sounds?.Play(new UiSoundEvent("Item_Drop", Item: e.Item));
                 break;
             case SoundKind.BountyPaid:

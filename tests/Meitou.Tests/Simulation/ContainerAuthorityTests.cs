@@ -257,4 +257,75 @@ public class ContainerAuthorityTests
         var placed = Assert.Single(s.Box.Contents!.Items);
         Assert.Equal((2, 1, 1), (placed.Quantity, placed.X, placed.Y)); Assert.Null(s.A.State.Held);
     }
+    /// <summary>
+    /// Two remote windows hold and focus their own openers; closing one cannot change the other's pause or recovery delay.
+    /// </summary>
+    [Fact]
+    public void RemoteContainerPauseAndCloseDelayBelongToTheirOpener()
+    {
+        using var s = new Scene();
+        s.Open(s.A, s.First);
+        s.Open(s.B, s.Second, s.OtherBox);
+        s.World.RunTicks(3);
+
+        Assert.Equal([s.First], s.A.State.Selection);
+        Assert.Equal([s.Second], s.B.State.Selection);
+        Assert.True(ContainerAccess.Holds(s.World, s.First.Slot, s.Box.Id));
+        Assert.True(ContainerAccess.Holds(s.World, s.Second.Slot, s.OtherBox.Id));
+
+        ulong current = s.A.State.ContainerSessionId;
+        s.Send(s.A, new CloseContainer { Tick = 0, SessionId = s.B.State.ContainerSessionId });
+        s.Apply();
+        Assert.Equal(0, s.World.Characters.Cold(s.First.Slot)!.JobsWaitUntil);
+        Assert.True(ContainerAccess.Holds(s.World, s.First.Slot, s.Box.Id));
+
+        s.Send(s.A, new CloseContainer { Tick = 0, SessionId = current });
+        s.Apply();
+        long due = s.World.Tick + (long)MathF.Ceiling(InventoryPause.ResumeSeconds / s.World.TickSeconds);
+        Assert.Equal(due, s.World.Characters.Cold(s.First.Slot)!.JobsWaitUntil);
+        Assert.False(ContainerAccess.Holds(s.World, s.First.Slot, s.Box.Id));
+        Assert.True(ContainerAccess.Holds(s.World, s.Second.Slot, s.OtherBox.Id));
+        Assert.Equal(0, s.World.Characters.Cold(s.Second.Slot)!.JobsWaitUntil);
+    }
+
+    /// <summary>
+    /// A stale former opener can close its own UI but cannot hold or delay a role whose current controller is another player.
+    /// </summary>
+    [Fact]
+    public void ATransferredContainerOpenerCannotBePausedByItsFormerWindow()
+    {
+        using var s = new Scene();
+        s.Open(s.A, s.First);
+        ulong session = s.A.State.ContainerSessionId;
+        s.World.Players.SetMembership(s.B.Id, s.A.State.Faction, FactionPermission.None);
+        Assert.True(s.World.Players.TryTransfer(s.A.Id, s.World.Players.ControlOf(s.First)!.Value, s.B.Id, out _));
+
+        s.Send(s.A, new CloseContainer { Tick = 0, SessionId = session });
+        s.Apply();
+        s.World.RunTick();
+
+        Assert.Null(s.A.State.OpenContainer);
+        Assert.Equal(0, s.World.Characters.Cold(s.First.Slot)!.JobsWaitUntil);
+        Assert.False(ContainerAccess.Holds(s.World, s.First.Slot, s.Box.Id));
+    }
+
+    /// <summary>
+    /// Disconnect cleanup withdraws only that player's container hold; the other player's window stays usable.
+    /// </summary>
+    [Fact]
+    public void DisconnectCleanupReleasesOnlyThatPlayersContainerPause()
+    {
+        using var s = new Scene();
+        s.Open(s.A, s.First);
+        s.Open(s.B, s.Second, s.OtherBox);
+
+        s.World.ResetPlayerInteractions(s.A.Id);
+        s.World.RunTick();
+
+        Assert.Null(s.A.State.OpenContainer);
+        Assert.False(ContainerAccess.Holds(s.World, s.First.Slot, s.Box.Id));
+        Assert.True(ContainerAccess.Holds(s.World, s.Second.Slot, s.OtherBox.Id));
+        Assert.Equal(s.OtherBox.Id, s.World.PublishContainer(s.B.Id)!.Site);
+    }
+
 }

@@ -53,6 +53,8 @@ internal static class GameCollectionSchema
 {
     static readonly UTF8Encoding StrictUtf8 = new(false, true);
     internal static readonly IGameCollection[] All = [new Collection<GroundItemSnapshot>(1011, v => v.Snapshot.GroundItems, v => v.Id.ToString(CultureInfo.InvariantCulture), (v, x, _, _) => v with { Snapshot = v.Snapshot with { GroundItems = x } }), new Collection<ContainerSpot>(1013, v => v.Snapshot.Containers, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Containers = x } }), new Collection<BedSpot>(1014, v => v.Snapshot.Beds, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Beds = x } }), new Collection<SeatSpot>(1016, v => v.Snapshot.Seats, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Seats = x } }), new Collection<CageSpot>(1017, v => v.Snapshot.Cages, v => v.Id, (v, x, _, _) => v with { Snapshot = v.Snapshot with { Cages = x } }), new Collection<WeatherRegionSnapshot>(9, v => v.Weather?.Regions ?? [], v => v.RegionId, (v, x, p, e) => v with { Weather = p ? new(v.Weather?.Time ?? default, x) { Enabled = e } : null }, v => v.Weather is not null, v => v.Weather?.Enabled ?? false),
+        new Collection<Meitou.Simulation.Production.CraftStationView>(1073, v => v.Snapshot.CraftStations, station => station.Site,
+            (view, stations, _, _) => view with { Snapshot = view.Snapshot with { CraftStations = stations } }),
         new ModVisualCollection(), new ItemTagCollection(), ];
     internal static readonly IReadOnlySet<ushort> Ids = All.Select(s => s.Id).ToHashSet();
 

@@ -1,6 +1,7 @@
 using System.Numerics;
 using Meitou.Data.Gameplay.Dialogue;
 using Meitou.Simulation.Aggro;
+using Meitou.Simulation.Bodies;
 using Meitou.Simulation.Factions;
 using Meitou.Simulation.Population;
 
@@ -153,14 +154,17 @@ public sealed partial class DialogueSystem
             || node.IsCharacter.Count == 0 && !((node.IsRoot || node.Interjection) && _data.Db.Find(record)?.GetBool("dumb") == true);
 
     /// <summary>
-    /// The line check (<c>FUN_140678f30</c>, docs/game/dialogue.md "Line check") with <paramref name="me"/> as the speaker and
-    /// <paramref name="other"/> the target: tag masks, the lock, <c>chance temporary</c>, the record lists, <c>repetition limit</c>, <c>target is
-    /// type</c>, <c>chance permanent</c>, then the conditions. <paramref name="retarget"/> false is the flag the token expander passes
-    /// (<c>FUN_14067a530</c>): a <c>target race</c> hit in the target's squad passes the line but does not become the target.
+    /// The line check (<c>FUN_140678f30</c>, docs/game/dialogue.md "Line check") with <paramref name="me"/> as the speaker and <paramref
+    /// name="other"/> the target, after BFrizz's Extra Extensions' conditions and variables (its hooks run first): tag masks, the lock, <c>chance
+    /// temporary</c>, the record lists, <c>repetition limit</c>, <c>target is type</c>, <c>chance permanent</c>, then the conditions. <paramref
+    /// name="retarget"/> false is the flag the token expander passes (<c>FUN_14067a530</c>): a <c>target race</c> hit in the target's squad passes
+    /// the line but does not become the target.
     /// </summary>
     bool Check(World world, Conversation c, DialogueNode node, CharacterId me, CharacterId other, bool retarget = true)
     {
         var table = world.Characters;
+        if (!_extraChecks.ConditionsPass(world, node, me, other) || !_extraChecks.TagConditionsPass(world, node, me, other)) return false;
+        if (!VariablesHold(world, node)) return false;
         if (!table.TryResolveNext(me, out int ms) || table.Cold(ms) is not { } mc) return false;
         var tc = Cold(world, other);
         if (!SpeakerPasses(world, c, node, me, ms, mc, tc, other)) return false;
@@ -177,6 +181,19 @@ public sealed partial class DialogueSystem
             return false;
         }
         return LastChecksPass(world, c, node, me, mc, tc, other);
+    }
+
+    /// <summary>
+    /// BFrizz's Extra Extensions variable conditions (docs/game/dialogue.md "Variables"), ANDed onto the line check's first test: each variable's
+    /// current value (<see cref="World.Variables"/>) against the reference's val0.
+    /// </summary>
+    bool VariablesHold(World world, DialogueNode node)
+    {
+        foreach (var test in node.Variables)
+        {
+            if (!test.Holds(world.Variables.Value(_data.Db, test.Variable))) return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -347,17 +364,14 @@ public sealed partial class DialogueSystem
         Cold(world, id) is { SquadId: >= 0 } c && world.Squads.Find(c.SquadId) is { } squad ? squad.Members : [id];
 
     /// <summary>
-    /// The members of <paramref name="target"/>'s squad that <paramref name="me"/> perceives (<c>FUN_140855960</c>): the target itself, and the
-    /// others within <paramref name="me"/>'s sight range (engine stand-in for the original's sensed list).
+    /// The members of <paramref name="target"/>'s squad that <paramref name="me"/> knows (<c>FUN_140855960</c> with its flag clear, as every squad
+    /// search of the line check calls it): the target itself, <paramref name="me"/>, and the members its senses hold an entry of
+    /// (<see cref="CharacterFacts.Knows"/>).
     /// </summary>
     static IEnumerable<CharacterId> Known(World world, CharacterId me, CharacterId target)
     {
-        var table = world.Characters;
-        if (!table.TryResolveNext(me, out int ms) || table.Cold(ms) is not { } mc) return [];
-        var at = table.Next[ms].Position;
-        float r = AggroSystem.RangeOf(mc, AggroSystem.OutdoorSight);
-        return SquadOf(world, target).Where(m => m == target || m == me
-            || table.TryResolveNext(m, out int s) && Vector3.DistanceSquared(table.Next[s].Position, at) <= r * r);
+        if (!world.Characters.TryResolveNext(me, out int ms)) return [];
+        return SquadOf(world, target).Where(m => m == target || m == me || CharacterFacts.Knows(world, ms, m));
     }
 
     /// <summary>

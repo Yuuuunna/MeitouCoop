@@ -805,6 +805,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         host.LocalSession.World.BagSearchFix = host.Config.FixBagSearch;
         host.LocalSession.World.CounterTalk = host.Config.CounterTalk;
         host.LocalSession.World.TakeIntoBackpack = host.Config.TakeIntoBackpack;
+        host.LocalSession.World.DropFromLoot = host.Config.DropFromLoot;
         host.LocalSession.World.ActionLog = host.ActionLogs.Log;
         host.LocalSession.Simulation.SetFastSpeeds(host.Config.FastSpeed, host.Config.FastestSpeed);
         host.Render.Grid = host.Sandbox.IsSandbox;
@@ -1380,6 +1381,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
             BagSearchChanged = on => host.LocalSession.World.BagSearchFix = on,
             CounterTalkChanged = on => host.LocalSession.World.CounterTalk = on,
             TakeIntoBackpackChanged = on => host.LocalSession.World.TakeIntoBackpack = on,
+            DropFromLootChanged = on => host.LocalSession.World.DropFromLoot = on,
             TutorialsChanged = on => { if (host.Saves.Tutorials is { } t) t.Enabled = on; },
             ResetTutorials = () => host.Saves.Tutorials?.Reset(),
             OffscreenChanged = () =>
@@ -1619,6 +1621,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         sliders.Add(new Slider(WorldFrame.CloudHeightSlider, Meitou.Data.World.VolumetricClouds.MinBottom,
             Meitou.Data.World.VolumetricClouds.MaxBottom, () => _sky.CloudHeight,
             v => _sky.CloudHeight = MathF.Round(v / 100) * 100, "0", Logarithmic: true));
+        WorldFrame.AddHighCloudSliders(sliders);
         sliders.Add(new Slider("Ambient light strength (1 = game)", 0, 3, () => _sky.AmbientStrength,
             v => _sky.AmbientStrength = MathF.Round(v * 20) / 20, "0.00"));
         sliders.Add(new Slider("Night ambient light strength (1 = game)", 0, 5, () => _sky.NightAmbientStrength,
@@ -1633,6 +1636,7 @@ sealed class MetalGameLoop(GameHost host, Data.Gameplay.NewGameStart? start)
         toggles.Add(new Toggle("Planetshine", () => _sky.Planetshine, v => _sky.Planetshine = v));
         toggles.Add(new Toggle("Night sky", () => _sky.MeitouStars, v => _sky.MeitouStars = v));
         toggles.Add(new Toggle("Clouds", () => _sky.LitClouds, v => _sky.LitClouds = v));
+        toggles.Add(new Toggle("High Altitude Clouds", () => HighClouds.Enabled, v => HighClouds.Enabled = v));
     }
 
     /// <summary>

@@ -11,7 +11,12 @@ namespace Meitou.Game.Rendering.Frame;
 /// <see cref="Pressure"/>: <see cref="Streaming"/> goes false (no new zone layouts, grass pages, textures or mesh uploads are started, but for the
 /// zones and meshes within <see cref="NearReach"/> of the camera), the caches evict what has been idle for a couple of seconds instead of a minute,
 /// and <see cref="RangeScale"/> falls by about 12% every 0.75 s (down to <see cref="MinScale"/>) while the use stays high: every renderer multiplies
-/// the ranges it draws and streams to by it. The farthest things leave first because the ranges they were in end first.</item>
+/// the ranges it draws and streams to by it. The farthest things leave first because the ranges they were in end first. A step waits while the
+/// held use (<see cref="HeldFraction"/>) fell by <see cref="SheddingFall"/> since the last one (the evictions lag the cut by a couple of seconds)
+/// or is under <see cref="Low"/> (evictions leave holes in our blocks, so the driver's figure that ends the pressure falls later), and the
+/// steps stop after <see cref="FutileSteps"/> that did not take it <see cref="SheddingFall"/> under where they began (the rest is not held by
+/// the ranges), until it grows by <see cref="RegrowRise"/>. Observed (#1429's save, 1080p, a 4000 MB budget): without these the ranges fell
+/// to x0.15 within 10 s and stayed, the held use going from 85% to 82% only; with them they held at x0.53 at 85%.</item>
 /// <item>Pressure ends under <see cref="Low"/> (80%); streaming resumes. The ranges come back, 4% a second, while the use less the room free
 /// in our own blocks (<see cref="HeldFraction"/>: holes the evictions left, empty blocks, spares; new allocations fill them before the driver's
 /// figure grows) has stayed under <see cref="Recover"/> (80%) for four seconds, up to a step below the scale the pressure began at, and to 1
@@ -74,6 +79,23 @@ public sealed class VramGuard
     public const float StepDown = 0.88f, StepUp = 1.04f, MinScale = 0.15f;
 
     /// <summary>
+    /// The fall of the held use (a fraction of the budget) since the last step down under which the next one waits: the shorter ranges are
+    /// already being shed.
+    /// </summary>
+    public const double SheddingFall = 0.01;
+
+    /// <summary>
+    /// Steps down in a row that may leave the held use where they began (the evictions lag a cut by a couple of seconds) before the guard stops
+    /// stepping.
+    /// </summary>
+    public const int FutileSteps = 4;
+
+    /// <summary>
+    /// The rise of the held use (a fraction of the budget) over where the futile steps began after which the ranges are stepped down again.
+    /// </summary>
+    public const double RegrowRise = 0.05;
+
+    /// <summary>
     /// How far round the camera zones are still laid out and object meshes still decoded under <see cref="Pressure"/> (world units): a card that
     /// never gets back under <see cref="Low"/> would otherwise never load the town the player stands in (#336). The range clamp's floor
     /// (<see cref="MinScale"/> of the default object distance) is about this.
@@ -109,6 +131,21 @@ public sealed class VramGuard
     /// When the last sample and the last range step were taken, and since when the use has stayed under <see cref="Recover"/> (seconds).
     /// </summary>
     double _lastSample = double.NegativeInfinity, _lastStep, _calmSince;
+
+    /// <summary>
+    /// The held use (<see cref="HeldFraction"/>) at the last step down, or at the last one that waited (negative infinity: none since the pressure began).
+    /// </summary>
+    double _heldAtStep = double.NegativeInfinity;
+
+    /// <summary>
+    /// The held use when the steps down that have not shed anything yet began.
+    /// </summary>
+    double _heldAtUnpaid;
+
+    /// <summary>
+    /// The steps down since <see cref="_heldAtUnpaid"/> that have not shed anything.
+    /// </summary>
+    int _unpaidSteps;
 
     /// <summary>
     /// Whether the guard is under pressure (<see cref="Pressure"/>); read from the job threads.
@@ -192,10 +229,13 @@ public sealed class VramGuard
     public bool Streaming => !_pressure;
 
     /// <summary>
-    /// Whether what lies within <see cref="NearReach"/> may start loading: always, but under pressure only while the use is under <see
-    /// cref="PriorityCeiling"/>.
+    /// Whether what lies within <see cref="NearReach"/> may start loading: always, but under pressure only while the held use (<see
+    /// cref="HeldFraction"/>) is under <see cref="PriorityCeiling"/> and the driver's figure under the budget (<see cref="BudgetBytes"/>, the reserve
+    /// for the other programs already taken off): mesh uploads ask nothing else. Measured by the driver's figure against the ceiling, the holes a
+    /// reload leaves in our blocks (300 to 380 MB) kept it at 94.6 to 96.1% with 88% held: nothing near was loaded to fill them, and the vegetation
+    /// round the camera stayed away (#1440).
     /// </summary>
-    public bool StreamsNear => !_pressure || Fraction < PriorityCeiling;
+    public bool StreamsNear => !_pressure || HeldFraction < PriorityCeiling && Fraction < 1;
 
     /// <summary>
     /// The last sample, as a fraction of the budget.
@@ -405,6 +445,7 @@ public sealed class VramGuard
     {
         if (!_pressure || now - _lastSqueeze < SqueezeSeconds) return;
         _lastSqueeze = _lastStep = now;
+        _heldAtStep = HeldFraction;
         _scale = Math.Max(MinScale, _scale * StepDown);
         LowestScale = Math.Min(LowestScale, _scale);
         Squeezes++;
@@ -425,6 +466,8 @@ public sealed class VramGuard
         Activations++;
         if (Allocator is { } a) a.Lean = true;
         _lastStep = now - StepDownSeconds;   // the first step at once
+        _heldAtStep = double.NegativeInfinity;
+        (_heldAtUnpaid, _unpaidSteps) = (HeldFraction, 0);
         if (_logged) return;
         _logged = true;
         _log?.Invoke(string.Create(CultureInfo.InvariantCulture,
@@ -461,15 +504,35 @@ public sealed class VramGuard
     }
 
     /// <summary>
-    /// Under pressure: the ranges a step shorter every <see cref="StepDownSeconds"/>, down to <see cref="MinScale"/>.
+    /// Under pressure: the ranges a step shorter every <see cref="StepDownSeconds"/>, down to <see cref="MinScale"/>, but not while the held use
+    /// is falling (<see cref="SheddingFall"/>), already under <see cref="Low"/> (the rest of the driver's figure is room in our own blocks), or
+    /// the last steps did not lower it (<see cref="CutsAreFutile"/>).
     /// </summary>
     void StepDownRanges(double now)
     {
         if (now - _lastStep < StepDownSeconds) return;
 
+        double held = HeldFraction;
+        bool shedding = held <= _heldAtStep - SheddingFall;
+        _heldAtStep = held;
+        _lastStep = now;
+        if (shedding || held < Low || CutsAreFutile(held)) return;
+
         _scale = Math.Max(MinScale, _scale * StepDown);
         LowestScale = Math.Min(LowestScale, _scale);
-        _lastStep = now;
+        _unpaidSteps++;
+    }
+
+    /// <summary>
+    /// Whether <see cref="FutileSteps"/> steps in a row left the held use (<paramref name="held"/>) where they began: the memory is not the
+    /// ranges'. A use <see cref="SheddingFall"/> under that start (the steps paid) or <see cref="RegrowRise"/> over it begins a new count.
+    /// </summary>
+    bool CutsAreFutile(double held)
+    {
+        bool paid = held <= _heldAtUnpaid - SheddingFall, regrown = held >= _heldAtUnpaid + RegrowRise;
+        if (paid || regrown) (_heldAtUnpaid, _unpaidSteps) = (held, 0);
+
+        return _unpaidSteps >= FutileSteps;
     }
 
     /// <summary>

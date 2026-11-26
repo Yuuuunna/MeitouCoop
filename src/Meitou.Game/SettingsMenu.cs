@@ -519,6 +519,11 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
     public Action<bool>? CounterTalkChanged { get; init; }
 
     /// <summary>
+    /// Applies the drop out of loot windows (<see cref="UserConfig.DropFromLoot"/>).
+    /// </summary>
+    public Action<bool>? DropFromLootChanged { get; init; }
+
+    /// <summary>
     /// Called when an off-screen switch changes (the config holds the new values).
     /// </summary>
     public Action? OffscreenChanged { get; init; }
@@ -684,7 +689,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         if (label is "Time of day" or "Time speed") return "Advanced";
         if (label is "VSync" or "Full screen" or MetalUseUpscalingSlider or MetalPresetSlider or MetalRenderScaleSlider or MetalRenderResolutionSlider
                 or MetalRetinaResolutionSlider or MetalUiResolutionSlider
-            || WorldFrame.UpscalerSliders.Contains(label) || label == WorldFrame.DlssPresetSlider
+            || WorldFrame.UpscalerSliders.Contains(label) || label is WorldFrame.DlssPresetSlider or WorldFrame.SmaaQualitySlider
             || label == WorldFrame.FilteringSlider || label == WorldFrame.TextureQualitySlider) return "Display";
 
         return GraphicsSection(label, false);
@@ -720,8 +725,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             "Ground parallax" or "Ground displacement (tessellation)" or "Ground trails" or WorldFrame.RockSmoothingSwitch
                 or WorldFrame.OutlineRefineSwitch or WorldFrame.SimpleTerrainSwitch => "Terrain",
             "Foliage ranges" or "Foliage levels" or "Far impostors" or WorldFrame.GrassCoverSwitch or WorldFrame.NearTreeFadeSwitch => "Vegetation",
-            "Haze" or "Night air" or "Night sky" or "Clouds" or "Cloud shadows" or "Cloud shadows in fog" or "Fog" or "Lit dust"
-                or WorldFrame.WetWorldSwitch => "Sky & weather",
+            "Haze" or "Night air" or "Night sky" or "Clouds" or "Cloud shadows" or "Cloud shadows in fog" or "High Altitude Clouds"
+                or "Fog" or "Lit dust" or WorldFrame.WetWorldSwitch => "Sky & weather",
             "Tone map and grade" or "Adaptive exposure" or "Night grading" or "Dithering" => "Colour",
             "Heat haze" or WorldFrame.BloomSwitch or WorldFrame.DepthOfFieldSwitch or WorldFrame.CameraEffectsSwitch or WorldFrame.VignetteSwitch
                 or WorldFrame.FilmGrainSwitch => "Post FX",
@@ -749,7 +754,8 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         if (S("Terrain") || S("Ground")) return "Terrain";
         if (S("Foliage") || S("Large foliage") || S("Medium foliage") || S("Small foliage") || S("Grass") || S("Impostor") || S("Large impostor"))
             return "Vegetation";
-        if (S("Haze") || label == WorldFrame.HazeDistanceSlider || label == WorldFrame.CloudHeightSlider || WorldFrame.ParticleSliders.Contains(label))
+        if (S("Haze") || label == WorldFrame.HazeDistanceSlider || label == WorldFrame.CloudHeightSlider
+            || WorldFrame.HighCloudSliders.Contains(label) || WorldFrame.ParticleSliders.Contains(label))
             return "Sky & weather";
         if (S("Tone map") || S("Hybrid") || S("Grading") || S("Night grading") || S("Adaptive exposure")) return "Colour";
         if (S("Bloom") || S("Depth of field") || S("Heat haze") || S("Vignette") || S("Film grain")) return "Post FX";
@@ -921,6 +927,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             WorldFrame.ShaftStrengthSlider or WorldFrame.ShaftAirSlider or WorldFrame.ShaftAirDawnSlider
                 or WorldFrame.ShaftQualitySlider => SwitchOn("Light shafts"),
             WorldFrame.PlanetshineStrengthSlider => SwitchOn("Planetshine"),
+            _ when WorldFrame.HighCloudSliders.Contains(label) => SwitchOn("High Altitude Clouds"),
             WorldFrame.WaterClaritySlider or WorldFrame.FarWaterClaritySlider or WorldFrame.WaterClearDistanceSlider => SwitchOn("Water"),
             WorldFrame.LandmarkDistanceSlider => SwitchOn("Draw distances"),
             WorldFrame.FoliageLodSlider => SwitchOn("Foliage levels"),
@@ -1159,7 +1166,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         result.RemoveAll(e => !ShownNow(e));
         result = [.. result.OrderBy(e => RowOrder(e.Raw ?? ""))];
 
-        return [.. result.SelectMany(Modes.ModeEntries).Select(Restarting)];
+        return [.. result.SelectMany(row => Modes.ModeEntries(row, SliderValue)).Select(Restarting)];
     }
 
     /// <summary>
@@ -1210,11 +1217,16 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             : v.ToString("0", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// False for a row the catalogue shows only while another setting is at a value (<c>ShownWhen</c>: the DLSS preset) and that one is not.
+    /// False for a row the catalogue shows only while another setting is at a value (<c>ShownWhen</c>: the DLSS preset, SMAA's quality, the
+    /// upscalers' render scale and sharpness) and that one is not.
     /// </summary>
     bool ShownNow(Entry entry) => entry.Raw is not { } key || (DisplayRowShown?.Invoke(key) ?? true)
-        && (LauncherSchema.Find(key)?.ShownWhen is not { } when
-            || Values.Sliders.FirstOrDefault(s => s.Label == when.Key) is not { } other || when.Matches(other.Get()));
+        && (LauncherSchema.Find(key)?.ShownWhen is not { } when || when.Holds(SliderValue));
+
+    /// <summary>
+    /// A slider's value by label; null when the panel has none.
+    /// </summary>
+    float? SliderValue(string label) => Values.Sliders.FirstOrDefault(s => s.Label == label)?.Get();
 
     /// <summary>
     /// An action's name for its row: its words spaced.
@@ -1736,7 +1748,9 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
             Config.AnimalsPickUp = false;
             Config.CagesSpareOwn = false;
             Config.CounterTalk = true;
+            Config.DropFromLoot = true;
             CounterTalkChanged?.Invoke(true);
+            DropFromLootChanged?.Invoke(true);
             AnimalsPickUpChanged?.Invoke(false);
         }
         Config.FixDoorBreak = Config.FixAmbienceSuffix = Config.FixWindStop = true;
@@ -2095,7 +2109,7 @@ sealed class SettingsMenu(PlayerInterface player, SettingsPanel values, InputBin
         or "Holes and needles in the ground" or "Caged animals idle" or "Towns change far away"
         or "Raids keep their progress" or "Guards stop passing bodies" or "Knocked out stay" or "Talk across shop counters" or "Turret fire is a crime"
         or "Beds used as seats" or "Pick-up thefts from the owner" or "Guards give up lost suspects"
-        or "Max faction size" or "Max squad size" or "Max squads";
+        or "Max faction size" or "Max squad size" or "Max squads" or "Drop from loot";
 
     /// <summary>
     /// Presents a server-owned row without mutation controls.

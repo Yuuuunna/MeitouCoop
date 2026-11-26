@@ -10,7 +10,7 @@ namespace Meitou.Tests.Navigation;
 public class WorkApproachTests
 {
     /// <summary>
-    /// A loaded zone with a reachable floor ending sixty units short of the requested workplace centre.
+    /// A loaded zone with a reachable floor ending before the requested workplace centre.
     /// </summary>
     static NavmeshWalkability Floor()
     {
@@ -34,13 +34,15 @@ public class WorkApproachTests
     /// <summary>
     /// An obstacle at the goal must not discard the complete approach or append an unverified walk into the obstacle.
     /// </summary>
-    [Fact]
-    public void LoadedWorkplaceKeepsItsReachableApproach()
+    [Theory]
+    [InlineData(160, true)]
+    [InlineData(460, false)]
+    public void LoadedWorkplaceKeepsItsReachableApproach(float goalX, bool goalSnaps)
     {
         var walk = Floor();
         var start = new Vector3(10, 0, 50);
-        var goal = new Vector3(160, 0, 50);
-        Assert.False(new NavQuery(walk.World).FindPath(start, goal).Found);
+        var goal = new Vector3(goalX, 0, 50);
+        Assert.Equal(goalSnaps, new NavQuery(walk.World).FindPath(start, goal).Found);
 
         var path = walk.FindPath(start, goal);
 

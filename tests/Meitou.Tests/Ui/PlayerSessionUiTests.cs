@@ -8,14 +8,19 @@ using Meitou.Game.Host.Cameras;
 using Meitou.Game.Host.Input;
 using Meitou.Simulation.Session;
 using Meitou.Game;
+using Meitou.Localisation;
+using Meitou.Networking;
+using Meitou.Networking.VNext;
 using Meitou.Simulation;
 using Meitou.Simulation.Movement;
 using Meitou.Simulation.Player;
 using Meitou.Simulation.Production;
 using Meitou.Tests.Simulation;
+using Meitou.Tests.Engine;
 
 namespace Meitou.Tests.Ui;
 
+[Collection("Shown text")]
 public class PlayerSessionUiTests
 {
     // Intentionally owns no World or simulation clock: the UI may only consume this presentation boundary.
@@ -67,6 +72,71 @@ public class PlayerSessionUiTests
         var move = Assert.IsType<MoveOrder>(session.Commands[1]);
         Assert.Equal(new Vector3(5, 6, 7), move.Target); Assert.True(move.Queued); Assert.Equal(123, move.Tick);
         Assert.Same(WorldSnapshot.Empty, session.CurrentSnapshot);
+    }
+
+    /// <summary>
+    /// A remote UI resolves same-named characters from compatible presentation records and exact replicated IDs, without a local population.
+    /// Text refresh stays local, and an old baseline cannot restore a character after the authority withdraws it.
+    /// </summary>
+    [Fact]
+    public void Remote_character_names_use_presentation_records_and_replicated_identity_and_respect_withdrawal()
+    {
+        var database = WorldViewCodecTests.Database();
+        var source = WorldViewCodecTests.View(database);
+        var first = source.Snapshot.Characters[0] with
+        {
+            Name = "Guard", RecordId = "2-t", LastingId = new(0xfedcba9876543210), Animations = [],
+        };
+        var second = first with { Id = new(2, 2), LastingId = new(0xfedcba9876543211) };
+        source = source with { Snapshot = source.Snapshot with { Characters = [first, second] } };
+        var codec = new WorldViewCodec(database);
+        var publisher = new GameStatePublisher(codec, id => (ulong)id.Slot + 100, 11, 22);
+        var baseline = publisher.Capture(source);
+        var replica = new GameStateReplica(codec, 11, 22);
+        foreach (var frame in baseline.Frames) replica.Apply(frame);
+        var session = new RemotePresentation { CurrentSnapshot = replica.View!.Snapshot };
+        var ui = new PlayerInterface(session, (_, _) => 0, c => c.Position)
+        {
+            PopulationOf = () => throw new InvalidOperationException("Remote presentation must not inspect a local population."),
+            FactionName = _ => "Testfolk",
+        };
+        ui.ConfigureFrontend(database, () => [], "");
+        var host = new object();
+        string title = "Captain";
+        ShownText.Add(host, "remote-character-names", context => context.Character == 0 ? null : $"{title}:{context.Character:X16}:{context.Place}");
+        try
+        {
+            var a = session.CurrentSnapshot.Characters.Single(c => c.Id == first.Id);
+            var b = session.CurrentSnapshot.Characters.Single(c => c.Id == second.Id);
+            Assert.Equal(first.LastingId, a.LastingId);
+            Assert.Equal(second.LastingId, b.LastingId);
+            Assert.Equal("Captain:FEDCBA9876543210:Label", ui.ShownName(a, ShownPlace.Label));
+            Assert.Equal("Captain:FEDCBA9876543211:Label", ui.ShownName(b, ShownPlace.Label));
+            Assert.Equal("Captain:FEDCBA9876543210:Panel", ui.ShownLeadName(a, ShownPlace.Panel));
+            Assert.Equal("Testfolk", ui.ShownFactionName(17));
+            Assert.Equal("Testfolk", ui.ShownFactionName("Testfolk"));
+            title = "Commander";
+            ShownText.Refresh();
+            Assert.Equal("Commander:FEDCBA9876543210:Label", ui.ShownName(a, ShownPlace.Label));
+            Assert.All(session.CurrentSnapshot.Characters, character => Assert.Equal("Guard", character.Name));
+
+            var unchanged = publisher.Capture(source with { Publication = 2 });
+            Assert.DoesNotContain((ushort)2007, unchanged.ComponentBytes.Keys);
+            Assert.DoesNotContain((ushort)2008, unchanged.ComponentBytes.Keys);
+            Assert.DoesNotContain((ushort)2104, unchanged.ComponentBytes.Keys);
+            var withdrawal = publisher.Capture(source with { Publication = 3, Snapshot = source.Snapshot with { Characters = [] } });
+            foreach (var frame in withdrawal.Frames) replica.Apply(frame);
+            foreach (var frame in baseline.Frames) replica.Apply(frame);
+            session.CurrentSnapshot = replica.View!.Snapshot;
+            Assert.Empty(session.CurrentSnapshot.Characters);
+            Assert.Null(ui.ShownLeadName(session.CurrentSnapshot.Characters.FirstOrDefault(), ShownPlace.Panel));
+            Assert.Empty(session.Commands);
+        }
+        finally
+        {
+            ShownText.Remove(host);
+            ui.DisposeUi();
+        }
     }
 
     /// <summary>

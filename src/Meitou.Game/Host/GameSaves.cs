@@ -699,6 +699,7 @@ sealed class GameSaves(GameHost host)
     {
         if (host.Session.IsRemote) return;
         var gameplay = Gameplay;
+        host.LocalSession.World.DropFromLoot = host.Config.DropFromLoot;
         if (host.PopData is { } data)
         {
             (data.BodyOptions.Dismemberment, data.BodyOptions.Decapitation, data.BodyOptions.AdvancedRagdolls) =

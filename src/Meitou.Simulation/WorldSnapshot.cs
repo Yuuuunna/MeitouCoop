@@ -730,7 +730,7 @@ public sealed record CharacterSnapshot
     /// </summary>
     public bool NoLootGuilt { get; internal set; }
     /// <summary>
-    /// Wears locked armour (shackles, <see cref="Items.ItemInstance.IsLocked"/>): the portrait's <c>Slave</c> overlay.
+    /// Wears shackles (<see cref="Items.ItemInstance.IsLocked"/>) in the boots or armour section, locked or not: the portrait's <c>Slave</c> overlay.
     /// </summary>
     public bool Shackled { get; internal set; }
     /// <summary>
@@ -738,6 +738,11 @@ public sealed record CharacterSnapshot
     /// Strength. Set for a selected, inspected or pointed character only (<see cref="PlayerState.Pointed"/>).
     /// </summary>
     public bool ShacklesLocked { get; internal set; }
+    /// <summary>
+    /// A player character wearing open shackles (<see cref="Locks.LockSystem.OpenShackles"/>): the context menu offers Take off Shackles. Pointed
+    /// only, as <see cref="ShacklesLocked"/>.
+    /// </summary>
+    public bool ShacklesOpen { get; internal set; }
     /// <summary>
     /// Alive, down or caged and wearing no shackles (<see cref="Locks.LockSystem.CanBeShackled"/>): the context menu offers Put on Shackles to a
     /// selection that carries some. Pointed only, as <see cref="ShacklesLocked"/>.
@@ -1228,6 +1233,10 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// The player's research: levels, queue, rate and what may be queued.
     /// </summary>
     public Production.ResearchSnapshot Research { get; init; } = Production.ResearchSnapshot.Empty;
+    /// <summary>
+    /// The crafting stations the Craft tab lists: the player's faction's and its allies' (<see cref="Production.ProductionSystem.CraftStationsView"/>).
+    /// </summary>
+    public IReadOnlyList<Production.CraftStationView> CraftStations { get; init; } = [];
     /// <summary>
     /// What each of the player's crafting benches can craft (by site), for the Craft tab.
     /// </summary>

@@ -231,7 +231,7 @@ sealed class ContextMenuWindow(PlayerInterface player)
     /// </summary>
     internal ContextMenu? CharacterMenu(CharacterSnapshot target, Vector2 at)
     {
-        string name = player.ShownName(target);
+        string name = player.ShownName(target, ShownPlace.Menu);
         if (CageOf(target) is not { } cage) return Menu(name, at, Verbs(target));
 
         // The cage's menu is built first: each Menu takes the code mods' rows target its own verbs set.
@@ -339,6 +339,11 @@ sealed class ContextMenuWindow(PlayerInterface player)
             }
             ));
         }
+
+        // Meitou stand-in for dragging open shackles out of the player's own character's boots or armour slot: they go into its inventory, else onto
+        // the ground, and the Slave overlay goes with them.
+        if (target.ShacklesOpen && target.Body is not { Dead: true })
+            verbs.Add(("Take off Shackles", () => player.Say(new TakeOffShacklesOrder(id) { Tick = player.Session.CommandTick })));
 
         // Shift turns an order into a job (SquadPanel); a medic verb no selected character has the kit for is unavailable.
         List<(string, Action)> rows = [.. verbs.Select(v => KitVerb(v.Item1, player.SquadWindows.JobOrOrder(v.Item1, id, v.Item2)))];

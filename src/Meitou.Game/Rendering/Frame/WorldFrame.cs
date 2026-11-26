@@ -385,13 +385,19 @@ static partial class WorldFrame
     /// </summary>
     public static readonly string[] ParticleSliders = ["Weather particles: 0 off 1 quarter 2 half 3 auto 4 full", "Particle density x"];
     /// <summary>
+    /// The high clouds' sliders.
+    /// </summary>
+    public static readonly string[] HighCloudSliders =
+        [HighCloudAmountSlider, HighCloudDensitySlider, HighCirrusAmountSlider, HighCirrusDensitySlider];
+
+    /// <summary>
     /// The Tab panel sliders' labels: the meitou.user.json keys, and the launcher's settings schema names them (keep them).
     /// </summary>
     public const string ObjectDistanceSlider = "Object draw distance", GrassDensitySlider = "Grass density x",
         WaterReflectionSlider = "Water reflection 0-4 (game)", ShadowDistanceSlider = "Shadow distance (game 1k-9k, 0 off)",
         ShadowMapSlider = "Shadow map size (game quality 0-2)", GroundReliefQualitySlider = "Ground relief quality",
         ShaftQualitySlider = "Light shafts quality", GtaoQualitySlider = "Ambient occlusion quality (GTAO)",
-        ShadowCascadesSlider = "Shadow cascades (Meitou)";
+        ShadowCascadesSlider = "Shadow cascades (Meitou)", SmaaQualitySlider = "SMAA quality";
 
     /// <summary>
     /// More of the Tab panel sliders' labels, kept as saved and as the launcher names them.
@@ -423,6 +429,10 @@ static partial class WorldFrame
         HazeStrengthSlider = "Haze strength (1 = game)",
         PlanetshineStrengthSlider = "Planetshine strength (x physical)",
         CloudHeightSlider = "Cloud height (Meitou)",
+        HighCloudAmountSlider = "Altocumulus amount",
+        HighCloudDensitySlider = "Altocumulus density",
+        HighCirrusAmountSlider = "Cirrus amount",
+        HighCirrusDensitySlider = "Cirrus density",
         AmbientStrengthSlider = "Ambient light strength (1 = game)",
         NightAmbientStrengthSlider = "Night ambient light strength (1 = 1.2x game)",
         ToneMapSlider = "Tone map (0 = game)",
@@ -953,6 +963,19 @@ static partial class WorldFrame
             ShadowPass.MaxCascadeSetting), "0", Step: 1);
 
     /// <summary>
+    /// The high clouds' sliders (the altocumulus's and the cirrus's amount and density), shared by the Vulkan and Metal panels.
+    /// </summary>
+    public static void AddHighCloudSliders(List<Slider> sliders)
+    {
+        sliders.Add(new Slider(HighCloudAmountSlider, 0, 100, () => HighClouds.Amount, v => HighClouds.Amount = MathF.Round(v / 5) * 5, "0"));
+        sliders.Add(new Slider(HighCloudDensitySlider, 0, 100, () => HighClouds.Density, v => HighClouds.Density = MathF.Round(v / 5) * 5, "0"));
+        sliders.Add(new Slider(HighCirrusAmountSlider, 0, 100, () => HighClouds.CirrusAmount,
+            v => HighClouds.CirrusAmount = MathF.Round(v / 5) * 5, "0"));
+        sliders.Add(new Slider(HighCirrusDensitySlider, 0, 100, () => HighClouds.CirrusDensity,
+            v => HighClouds.CirrusDensity = MathF.Round(v / 5) * 5, "0"));
+    }
+
+    /// <summary>
     /// The sky's haze, planetshine, cloud height and ambient light.
     /// </summary>
     static void AddSkySliders(List<Slider> sliders, SkyRenderer sky, WorldOptions? options)
@@ -965,6 +988,7 @@ static partial class WorldFrame
         sliders.Add(new Slider(PlanetshineStrengthSlider, 0, 200, () => sky.PlanetshineStrength, v => sky.PlanetshineStrength = MathF.Round(v), "0"));
         sliders.Add(new Slider(CloudHeightSlider, VolumetricClouds.MinBottom, VolumetricClouds.MaxBottom, () => sky.CloudHeight,
             v => sky.CloudHeight = MathF.Round(v / 100) * 100, "0", Logarithmic: true));
+        AddHighCloudSliders(sliders);
         // Ours: the sky's ambient light (shade, nights, interiors), a multiple of the game's.
         sliders.Add(new Slider(AmbientStrengthSlider, 0, 3, () => sky.AmbientStrength, v => sky.AmbientStrength = MathF.Round(v * 20) / 20, "0.00"));
 
@@ -987,6 +1011,7 @@ static partial class WorldFrame
             int i = (int)MathF.Round(v);
             post.Options.Smaa = i == 2;
             post.Options.Fxaa = i >= 1 && i != 2;   // 0: no anti-aliasing at all (FXAA off, no upscaler); FXAA stays the fallback of the upscalers
+            up.Spatial = i is 1 or 2;
             if (up.Kind != UpscalerKind.Off) up.Preferred = up.Kind;   // what the Meitou anti-aliasing switch turns back on
         }, "0"));
         sliders.Add(new Slider(UpscalerSliders[1], 0.33f, 1, () => up.EffectiveScale, v => up.Scale = MathF.Round(v * 100) / 100, "0.00", Text: v =>
@@ -996,6 +1021,7 @@ static partial class WorldFrame
         }));
         sliders.Add(new Slider(UpscalerSliders[2], 0, 1, () => up.Sharpness, v => up.Sharpness = v, "0.00"));
         sliders.Add(DlssPresetSliderFor(up));
+        sliders.Add(SmaaQuality(post.Options));
 
         // The weather's particles (docs/render-post.md "Particles"): off, forced to a quarter or half of the render size, by sprite size (the Meitou
         // default), or all full size (as the game).
@@ -1066,6 +1092,13 @@ static partial class WorldFrame
         sliders.Add(ShaftQuality(options));
         sliders.Add(OcclusionQuality(options));
     }
+
+    /// <summary>
+    /// SMAA's quality row: Low, Medium, High, Ultra (<see cref="PostOptions.SmaaQuality"/>).
+    /// </summary>
+    static Slider SmaaQuality(PostOptions options) => new(SmaaQualitySlider, 0, PostOptions.MaxSmaaQuality, () => options.SmaaQuality,
+        v => options.SmaaQuality = Math.Clamp((int)MathF.Round(v), 0, PostOptions.MaxSmaaQuality), "0",
+        Text: v => QualityName((int)MathF.Round(v)));
 
     /// <summary>
     /// The light shafts' quality row (also the Metal panel's): Low, Medium, High, Ultra (<see cref="PostOptions.ShaftQuality"/>).
