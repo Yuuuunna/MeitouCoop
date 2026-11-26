@@ -123,6 +123,7 @@ public static class SaveLoader
         if (context.Memory is { } memory)
             foreach (var lp in loaded.PlayerPlatoons) memory.Restore(lp.Squad.Id, MemorySave.Read(lp.Platoon.Record, context.CharacterOf));
         RestoreSelection(world, camera, handles, bySource, playerIndex);
+        if (multiplayerFactions is null) world.StarterAvatars.MigrateLocal(loaded.PlayerPlatoons, bySource);
 
         // The save's platoons are the world's start: the code mods' platoon observers hear only of changes from the first tick.
         world.Platoons.ForgetNotices();
@@ -197,6 +198,7 @@ public static class SaveLoader
             camera.PlayerFactionName is { Length: > 0 } savedName && playerIndex >= 0 && savedName != data.Factions[playerIndex].Name
                 ? savedName
                 : null;
+        FactionResourceSave.ReadAccounts(world, data, camera.Record);
         world.Player.SquadAi = SquadAiKeys.Read(camera.Record);
         if (camera.Record.Bools.ContainsKey("ditch") && camera.Record.Ints.TryGetValue(SquadAiKeys.FormationKey, out int formation))
             SquadAiKeys.SetFormation(world, playerIndex, formation, data.Factions);
@@ -219,6 +221,7 @@ public static class SaveLoader
         // Building locks and doors are taken from the zones when their town registers; held characters name their bed or cage by building instance.
         var buildingStates = HeldSave.BuildingStates(save);
         world.Fixtures.Saved = buildingStates;
+        world.Fixtures.ReadTitles(data, buildingStates);
         world.Fixtures.SavedPlayer = save.PlayerFaction?.Id;
         world.Fixtures.SavedSpots = HeldSave.BuildingSpots(save);
         world.Fixtures.SavedPieces = new SavedPieces(save);

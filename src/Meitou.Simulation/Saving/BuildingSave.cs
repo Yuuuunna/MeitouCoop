@@ -140,7 +140,9 @@ public static class BuildingSave
                     Town = town,
                     ForeignTown = live ? townHand : null,
                     InNoTown = live && foreign[(townHand.C, townHand.Cs)],
-                    Owner = playerIndex,
+                    Owner = state.Bools.GetValueOrDefault(TransferredSiteKey) && population is not null
+                        && population.FactionIndex(state.Strings.GetValueOrDefault("owner faction ID", "")) is >= 0 and var owner
+                        ? owner : playerIndex,
                     Materials = materials,
                     Target = target,
                     Rate = data.Rate,
@@ -529,7 +531,8 @@ public static class BuildingSave
     /// handle each player town (by number) was written with. The game database resolves template ownership when pruning obsolete outposts;
     /// production callers supply it, with the population system as a fallback.
     /// </summary>
-    public static IReadOnlyDictionary<int, Hand> Write(SaveGame game, World world, string playerFactionId, ulong seed = 0, GameDatabase? db = null)
+    public static IReadOnlyDictionary<int, Hand> Write(SaveGame game, World world, string playerFactionId, ulong seed = 0, GameDatabase? db = null,
+        PopulationData? population = null)
     {
         var reg = world.Buildings;
         var live = reg.All.ToDictionary(s => s.Id, s => s.LevelPlacement is null ? s.Zone : (ZoneCoordinate?)null, StringComparer.Ordinal);
@@ -537,7 +540,8 @@ public static class BuildingSave
         var townHands = WriteTowns(game, world, _ => playerFactionId, seed, multiplayer: false);
         if (reg.Count == 0) return townHands;
 
-        WriteSites(game, world, _ => playerFactionId, seed, townHands, multiplayer: false);
+        string Owner(int index) => population is not null && (uint)index < population.Factions.Count ? population.Factions[index].Id : playerFactionId;
+        WriteSites(game, world, Owner, seed, townHands, multiplayer: false, localOwner: playerFactionId);
         WriteParents(game, world);
         return townHands;
     }
@@ -546,7 +550,7 @@ public static class BuildingSave
     /// Writes the current sites using one building and inventory index per zone.
     /// </summary>
     static void WriteSites(SaveGame game, World world, Func<int, string> ownerId, ulong seed, IReadOnlyDictionary<int, Hand> townHands,
-        bool multiplayer)
+        bool multiplayer, string? localOwner = null)
     {
         var zones = new Dictionary<ZoneCoordinate, SiteRecords>();
         foreach (var site in world.Buildings.All.Where(s => s.LevelPlacement is null))
@@ -561,7 +565,8 @@ public static class BuildingSave
                 throw new InvalidDataException("Constructed building has an unknown outpost.");
 
             var town = site.Town == 0 && site.ForeignTown is { } kept ? kept : townHands.GetValueOrDefault(site.Town, Hand.Null);
-            WriteSite(records, site, ownerId(site.Owner), seed, town, world.Fixtures, world.Walkability, multiplayer);
+            string owner = ownerId(site.Owner);
+            WriteSite(records, site, owner, seed, town, world.Fixtures, world.Walkability, multiplayer, localOwner is not null && owner != localOwner);
         }
     }
 
@@ -653,7 +658,7 @@ public static class BuildingSave
     /// Writes one site: its instance in the zone's building list, its state record and its keys.
     /// </summary>
     static void WriteSite(SiteRecords records, BuildSite site, string playerFactionId, ulong seed, Hand town, Locks.FixtureRegistry fixtures,
-        IWalkability walkability, bool multiplayer)
+        IWalkability walkability, bool multiplayer, bool transferred)
     {
         var state = records.GetOrAddState(site.Id + StateSuffix);
         var instance = records.GetOrAddInstance(site.Id);
@@ -667,6 +672,8 @@ public static class BuildingSave
 
         var hand = WriteSlot(records.Zone.File, records.Zone, state, site, seed);
         WriteSiteKeys(state, site, playerFactionId, hand, town, fixtures);
+        if (transferred) state.Bools[TransferredSiteKey] = true;
+        else state.Bools.Remove(TransferredSiteKey);
         if (multiplayer)
         {
             state.Bools[ManagedKey] = true;
@@ -1222,8 +1229,10 @@ public static class BuildingSave
     /// <summary>
     /// Whether a save instance is a constructed site owned by the requested legacy faction.
     /// </summary>
+    const string TransferredSiteKey = "meitou transferred construction";
+
     static bool IsPlayerBuilt(string instance, FcsRecord? state, string faction) =>
         state is not null && BuildingRegistry.TryParseId(instance, out _, out _)
         && !state.Bools.GetValueOrDefault("meitou town construction")
-        && state.Strings.GetValueOrDefault("owner faction ID") == faction;
+        && (state.Strings.GetValueOrDefault("owner faction ID") == faction || state.Bools.GetValueOrDefault(TransferredSiteKey));
 }

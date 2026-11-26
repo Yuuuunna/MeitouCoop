@@ -77,6 +77,7 @@ public sealed partial class PopulationSystem
         }
 
         SetStartPlayer(world, start, squads[0]);
+        world.StartProvenance.NoteBirths(PlayerId.Local, squads.SelectMany(s => s.Members));
         return squads[0];
     }
 

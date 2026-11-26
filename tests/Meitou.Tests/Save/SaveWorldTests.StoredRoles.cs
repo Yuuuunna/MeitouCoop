@@ -23,6 +23,34 @@ public partial class SaveWorldTests
         public void Unload(Meitou.Data.World.ZoneCoordinate zone) => Requested.Remove(zone);
     }
     [Fact]
+    public void LegacyCoopMigrationBindsOnlyPreexistingGrantsBeforeStoredRolesMaterialize()
+    {
+        using var game = NewGame();
+        var world = game.World;
+        var owner = new PlayerId(2);
+        world.Players.Register(owner);
+        world.Players.SetMembership(owner, game.Data.PlayerFaction, FactionPermission.All);
+        foreach (var member in game.Squad.Members) world.Players.AssignInitial(owner, member);
+        var save = SaveCapture.Capture(world, game.Data, new SaveClock(1, 12, 0));
+        save.LastingIds = null;
+        var metadata = PlayerRegistrySave.Capture(world, game.Data);
+
+        using var restored = EmptyWorld();
+        SaveLoader.Load(restored, save, game.Data, new SaveLoadOptions { MultiplayerMetadata = metadata, DeferPlayerRoles = true });
+        PlayerRegistrySave.Restore(restored, game.Data, metadata);
+        var ids = restored.StarterAvatars.ForPlayer(owner);
+        Assert.Equal(game.Squad.Members.Count, ids.Count);
+        Assert.Equal(0, restored.Characters.Count);
+        var navigation = new StoredRoleNavigation { Available = true };
+        new Meitou.Runtime.WorldRegionNavigation(navigation).Synchronize(restored);
+        foreach (var id in ids) Assert.True(restored.StarterAvatars.IsProtected(restored.LastingIds.Find(id)));
+        var newcomer = restored.Characters.Spawn(new CharacterHot(), new CharacterCold { IsPlayer = true, Faction = game.Data.PlayerFaction }, 0);
+        restored.Players.AssignInitial(owner, newcomer);
+        Assert.False(restored.StarterAvatars.IsProtected(newcomer));
+        Assert.False(restored.StarterAvatars.CanInherit(owner, newcomer));
+    }
+
+    [Fact]
     public void DeferredRolesActivateWhenRegionsBecomeReadyWithoutWaitingForAnyClient()
     {
         using var g = NewGame(); var player = new PlayerId(2);

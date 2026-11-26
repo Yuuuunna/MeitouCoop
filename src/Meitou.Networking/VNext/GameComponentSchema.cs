@@ -54,7 +54,8 @@ internal static class GameComponentSchema
         F(1069, "ItemTags", (WorldSnapshot x) => x.ItemTags, (x, v) => x with { ItemTags = v }),
         F(1070, "MaxFactionSize", (WorldSnapshot x) => x.MaxFactionSize, (x, v) => x with { MaxFactionSize = v }),
         F(1071, "MaxSquadSize", (WorldSnapshot x) => x.MaxSquadSize, (x, v) => x with { MaxSquadSize = v }),
-        F(1072, "MaxSquads", (WorldSnapshot x) => x.MaxSquads, (x, v) => x with { MaxSquads = v }), ];
+        F(1072, "MaxSquads", (WorldSnapshot x) => x.MaxSquads, (x, v) => x with { MaxSquads = v }),
+        F(1073, "ModViews", (WorldSnapshot x) => x.ModViews, (x, v) => x with { ModViews = v }), ];
     /// <summary>
     /// Independently replicated character values; binary codecs retain their own uncompressed format.
     /// </summary>

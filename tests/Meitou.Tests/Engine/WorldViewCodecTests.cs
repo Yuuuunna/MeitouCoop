@@ -31,6 +31,25 @@ public class WorldViewCodecTests
         Assert.Throws<InvalidDataException>(() => codec.Decode(Encoding.UTF8.GetBytes(duplicate)));
     }
 
+    [Fact]
+    public void ModPanelIsDetachedAndPrivateAcrossRecipientsAndUnicodeWireChunks()
+    {
+        var panels = new PlayerModViews();
+        string text = new string('x', 8191) + "🗺" + new string('纸', 12_000);
+        panels.Publish(new(1), "worldcontinuity", text);
+        panels.Publish(new(2), "worldcontinuity", "other player's archive");
+        var db = Database();
+        var view = View(db);
+        var snapshot = view.Snapshot with { ModViews = panels.Capture(new(1)) };
+        panels.Publish(new(1), "worldcontinuity", "");
+        Assert.Empty(panels.Capture(new(1)));
+        Assert.Equal("other player's archive", Assert.Single(panels.Capture(new(2))).Text);
+        var codec = new WorldViewCodec(db);
+        var restored = codec.Decode(codec.Encode(view with { Snapshot = snapshot }));
+        Assert.Equal(text, Assert.Single(restored.Snapshot.ModViews).Text);
+        Assert.Throws<ArgumentOutOfRangeException>(() => panels.Publish(new(2), "worldcontinuity", new string('x', 65537)));
+    }
+
     internal static GameDatabase Database() => SyntheticTown.Database(extra:
         [SyntheticTown.Rec("wire-race", FcsRecordType.Race, "Race"), SyntheticTown.Rec("wire-clothes", FcsRecordType.Armour, "Clothes")]);
     internal static PlayerWorldView View(GameDatabase db)

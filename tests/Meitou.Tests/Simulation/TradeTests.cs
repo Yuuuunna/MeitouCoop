@@ -178,6 +178,48 @@ public class TradeTests
         public TradeView View => World.Snapshot.Trade!;
     }
 
+    [Fact]
+    public void Local_merchant_interaction_opens_only_the_nearby_customers_window_and_keeps_their_task()
+    {
+        using var shop = new MultiplayerShop();
+        shop.World.AfterPhase = (w, phase) =>
+        {
+            if (phase != "inputs") return;
+            ref var customer = ref w.Characters.Next[shop.CustomerA.Slot];
+            TaskStart.StartOwn(w, shop.CustomerA.Slot,
+                new TaskRequest(CharacterTask.GoTo, Meitou.Data.Gameplay.Ai.TaskType.MoveCusOrdered, TaskSource.Goal) { Goal = new Vector2(250, 350) });
+            Assert.True(w.Physical.OpenLocalTrade(shop.CustomerA, shop.Trader));
+            Assert.Equal((byte)CharacterTask.GoTo, customer.Task);
+            Assert.Equal(new Vector2(250, 350), customer.Goal);
+            Assert.NotNull(shop.Trade.PublishTrade(shop.A));
+            Assert.Null(shop.Trade.PublishTrade(shop.B));
+            w.Characters.Next[shop.CustomerB.Slot].Position = new Vector3(4000, 150, 0);
+            Assert.False(w.Physical.OpenLocalTrade(shop.CustomerB, shop.Trader));
+        };
+        shop.World.RunTick();
+    }
+
+    [Fact]
+    public void Contextual_recruitment_checks_the_payers_funds_and_assigns_only_their_own_coop_squad()
+    {
+        using var shop = new MultiplayerShop();
+        shop.Bazaar.SquadOf(shop.CustomerB).PlayerManaged = true;
+        shop.World.AfterPhase = (w, phase) =>
+        {
+            if (phase != "inputs") return;
+            Assert.False(w.Physical.Recruit(shop.Trader, shop.CustomerB, 1001, contextualRecruit: true));
+            Assert.Null(w.Players.ControlOf(shop.Trader));
+            Assert.Equal(1000, shop.PlayerB.State.Money);
+            Assert.True(w.Physical.Recruit(shop.Trader, shop.CustomerB, 150, contextualRecruit: true));
+            Assert.Equal(shop.B, w.Players.ControlOf(shop.Trader)!.Value.Player);
+            Assert.Equal(w.Characters.Cold(shop.CustomerB.Slot)!.SquadId, w.Characters.Cold(shop.Trader.Slot)!.SquadId);
+            Assert.Equal(850, shop.PlayerB.State.Money);
+            Assert.False(w.Physical.Recruit(shop.Trader, shop.CustomerA, 150, contextualRecruit: true));
+            Assert.Equal(1000, shop.PlayerA.State.Money);
+        };
+        shop.World.RunTick();
+    }
+
     sealed class MultiplayerShop : IDisposable
     {
         public Bazaar Bazaar { get; } = new();

@@ -94,6 +94,14 @@ internal interface IModFrameHost
     /// </summary>
     IReadOnlyList<Binding> Bindings(InputAction action);
     /// <summary>
+    /// Moves the local camera to a world X/Z point.
+    /// </summary>
+    bool FocusCamera(Vector2 worldPos) => false;
+    /// <summary>
+    /// Selects one locally controllable presented character.
+    /// </summary>
+    bool SelectCharacter(CharacterId character) => false;
+    /// <summary>
     /// Shows a local interface notice.
     /// </summary>
     void Notify(string text, bool error);
@@ -203,6 +211,16 @@ public sealed class ModFrame
     /// The point the camera looks at.
     /// </summary>
     public Vector3 CameraTarget => _host.CameraTarget;
+
+    /// <summary>
+    /// Places the local strategy camera over a finite world X/Z point, preserving angle and distance.
+    /// </summary>
+    public bool FocusCamera(Vector2 worldPos) => _host.FocusCamera(worldPos);
+
+    /// <summary>
+    /// Requests selection of a visible character controlled by the local player through the native selection path.
+    /// </summary>
+    public bool SelectCharacter(CharacterId character) => _host.SelectCharacter(character);
 
     /// <summary>
     /// The screen pixel of world point <paramref name="point"/> as the last frame was drawn; null behind the camera.

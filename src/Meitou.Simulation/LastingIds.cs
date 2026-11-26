@@ -5,10 +5,10 @@ namespace Meitou.Simulation;
 
 /// <summary>
 /// The characters' lasting ids (docs/modding.md "Character ids"), for code mods that keep data per character: <see cref="GetOrGive"/> gives a
-/// character one the first time a mod asks, and it stays with the character (its <see cref="CharacterCold.LastingId"/>) for life; <see cref="Find"/>
+/// character one on creation as a starter or when a mod asks, and it stays with the character (its <see cref="CharacterCold.LastingId"/>) for life; <see cref="Find"/>
 /// goes the other way and <see cref="KeptIds"/> tells the ids of characters the game still keeps from those gone for good. Saved beside the save
 /// (<see cref="SaveLastingIds"/>, by <see cref="SaveCapture"/>) and given back by the load, a character of an NPC platoon when its platoon is made.
-/// Until a mod asks for an id, or a save with ids is loaded, nothing here holds anything, the state hash is as without it and no file is written.
+/// Until an id is assigned or a save with ids is loaded, nothing here holds anything, the state hash is as without it and no file is written.
 /// </summary>
 public sealed class LastingIds(World world)
 {
@@ -50,16 +50,44 @@ public sealed class LastingIds(World world)
         if (table.Phase == TablePhase.Parallel)
             throw new InvalidOperationException("LastingIds.GetOrGive runs in the serial phases only; read CharacterCold.LastingId in a parallel one");
         if (table.SaveHold) throw new InvalidOperationException(DuringSave);
+        return Assign(character);
+    }
 
+    /// <summary>
+    /// Initial role creation may immediately follow a checkpoint without an intervening tick. Its durable transaction owns
+    /// a distinct mutation boundary and captures this assignment in the new checkpoint.
+    /// </summary>
+    internal LastingId CreatedStarter(CharacterId character) =>
+        world.HasPendingDurableMutation && world.AtTickBoundary ? Assign(character) : GetOrGive(character);
+
+    /// <summary>
+    /// Binds the reserved identity or allocates a lasting id on the serialized world owner.
+    /// </summary>
+    LastingId Assign(CharacterId character)
+    {
+        var table = world.Characters;
         if (!table.TryResolveNext(character, out int slot) || table.Cold(slot) is not { } cold) return LastingId.None;
         if (!cold.LastingId.IsNone) return cold.LastingId;
 
-        var id = Next();
+        var reserved = world.StartProvenance.Reserved(cold.Entity);
+        var id = reserved.IsNone ? Next() : reserved;
         cold.LastingId = id;
         table.IndexLasting(id, character);
 
         // A character made from a save's NPC platoon is made again from it when its platoon comes back: the id goes with its save handle.
         if (cold.Save is { } link) (_bySave ??= [])[link.Source.Handle] = new SavedId(id, link.Source.RecordId);
+        return id;
+    }
+
+    /// <summary>
+    /// Retains an unloaded legacy starter by its actual saved handle. A retired role without a source still receives a never-reused identity.
+    /// </summary>
+    internal LastingId ReserveStarter(SaveCharacter? source)
+    {
+        if (source is null) return Next();
+        if (_bySave is not null && _bySave.TryGetValue(source.Handle, out var saved)) return saved.Id;
+        var id = Next();
+        (_bySave ??= [])[source.Handle] = new(id, source.RecordId);
         return id;
     }
 
@@ -175,10 +203,12 @@ public sealed class LastingIds(World world)
     /// </summary>
     internal void Load(SaveLastingIds.Contents contents, SaveGame save)
     {
-        if (contents.Entries.Count == 0 && contents.Next == 0) return;
+        world.StarterAvatars.Restore(contents.Starters, contents.StarterOwners);
+        if (contents.Entries.Count == 0 && contents.Next == 0 && contents.Starters.Count == 0) return;
 
         _prefix = contents.Prefix;
         ulong highest = contents.Entries.Count > 0 ? contents.Entries.Max(e => e.Id & 0xFFFF_FFFFUL) : 0;
+        foreach (var s in contents.Starters) highest = Math.Max(highest, s.Id & 0xFFFF_FFFFUL);
         _next = Math.Max(contents.Next, highest + 1);
 
         var byHand = CharactersByHand(save);
@@ -206,7 +236,7 @@ public sealed class LastingIds(World world)
     /// </summary>
     internal byte[]? Write(SaveGame game, IReadOnlyDictionary<CharacterCold, Hand> written)
     {
-        if (!Any) return null;
+        if (!Any && !world.StarterAvatars.HasOwners) return null;
 
         var byHand = CharactersByHand(game);
         var entries = new List<SaveLastingIds.Entry>();
@@ -216,7 +246,7 @@ public sealed class LastingIds(World world)
             if (!cold.LastingId.IsNone) AddEntry(entries, ids, hands, byHand, cold.LastingId, hand, null);
         foreach (var (hand, saved) in _bySave ?? []) AddEntry(entries, ids, hands, byHand, saved.Id, hand, saved.Record);
 
-        return SaveLastingIds.Write(entries, _prefix, _next);
+        return SaveLastingIds.Write(entries, _prefix, _next, world.StarterAvatars.Entries, world.StarterAvatars.Owners);
     }
 
     /// <summary>

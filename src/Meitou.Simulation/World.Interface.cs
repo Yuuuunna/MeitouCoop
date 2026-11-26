@@ -38,6 +38,7 @@ public sealed partial class World
     /// </summary>
     public void ApplyPausedInterfaceCommands()
     {
+        using var tickThread = Physical.EnterTick();
         RequireNoDurableMutation();
         if (Characters.Phase != TablePhase.Outside)
             throw new InvalidOperationException("interface commands require a tick boundary");
@@ -363,6 +364,7 @@ public sealed partial class World
     internal void ApplyAuthorityCommand(SimCommand command)
     {
         if (Characters.Phase != TablePhase.Outside) throw new InvalidOperationException("Authority requires a tick boundary.");
+        using var tickThread = Physical.EnterTick();
         Characters.BeginTick();
         Characters.Phase = TablePhase.Inputs;
         try

@@ -279,8 +279,7 @@ Meitou only (optional "Blood on weapons and gear", [blood-decals.md](../game/blo
 ### Character ids
 
 Meitou only ([modding](../modding.md#registration-surface) "Character ids"): `meitou-mods/character-ids.json`, written with the other files
-(`SaveLastingIds`, `SaveGame.LastingIds`) only once a code mod asked for a character's id or the loaded save had the file; not a field of any
-original file. UTF-8 JSON `{ "format": 1, "prefix": p, "next": n, "characters": [ { "hand": [type, C, CS, I, S], "id", "record" } ] }`: `hand` the
+(`SaveLastingIds`, `SaveGame.LastingIds`) when starter creation or a code mod assigned ids, or the loaded save had the file. UTF-8 JSON `{ "format": 1, "prefix": p, "next": n, "characters": [ { "hand": [type, C, CS, I, S], "id", "record" } ] }`: `hand` the
 character's handle in this save, `id` its lasting id, `record` the string id of the CHARACTER record it was made from, `prefix` the high half of new
 ids and `next` the counter their low half continues from. The capture writes each character with an id under the handle it just wrote it with (a
 character that changed squads has a new handle), then the loaded file's entries whose characters the save keeps unchanged with the same record (an
@@ -291,6 +290,11 @@ load note, and a malformed entry or one repeating a handle or id is dropped alon
 `Meitou.Data`): a save read, five entries added, written with `SaveGame.Write` and read back gives the same entries, prefix and counter, each handle
 naming a character of the reloaded save; a hand-made file with a non-object entry, a text handle part, a repeated id, a repeated handle and an id of
 0 keeps only its two good entries.
+
+**Verified** by `NativeInteractionTests` and `SaveWorldTests`: the optional `starters` array records the player id, lasting id and confirmed death
+(`player`, `id`, `dead`) for each starter and successor, plus the optional Coop `entity`. `starterOwners` retains classified owners, including
+empty slots. Rows survive unloading and corpse removal. Legacy migration prefers initial-start receipts, otherwise captures the existing solo
+player platoons or Coop role grants once. The migrated checkpoint excludes subsequent hires from starter protection.
 
 ### Save requests (`FUN_14047c310`)
 

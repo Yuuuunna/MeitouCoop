@@ -625,7 +625,7 @@ sealed class BuildingSync(GameHost host)
                 && (camp.Known & Simulation.Player.TownKnowledge.Explored) != 0 && d.Db.Find(camp.TownId)?.GetBool("is secret") != true,
             _ => false,
         };
-        return shown ? d.ShownFactionName(owner) : null;
+        return shown ? host.Player.ShownFactionName(owner) : null;
     }
 
     /// <summary>

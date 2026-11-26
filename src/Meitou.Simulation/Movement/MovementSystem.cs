@@ -1940,7 +1940,7 @@ public sealed partial class MovementSystem(PathService paths) : ITickSystem, IDi
     /// </summary>
     void MoveCharacter(World world, int i, float dt, in CharacterHot p, ref CharacterHot n, CharacterCold cold)
     {
-        if (HeldStill(world, p, ref n, cold)) return;
+        if (HeldStill(world, p, ref n, cold) || world.TalkPauses.Hold(i, p, ref n, cold)) return;
 
         TrackOrderPoints(ref n, cold);
         var s = new StepState { Dt = dt, Speed = MathF.Sqrt(p.Velocity.X * p.Velocity.X + p.Velocity.Z * p.Velocity.Z) };

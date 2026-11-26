@@ -365,6 +365,7 @@ public sealed partial class PopulationSystem
     /// </summary>
     void CheckRegeneration(World world, int site)
     {
+        if (_encounterSites.ContainsKey(site)) return;
         // A wiped-out town remakes nothing (TownBase::activate runs the pass only while it is not ded).
         if (_townPools[site] is not { Ded: false } pools) return;
 
@@ -373,6 +374,26 @@ public sealed partial class PopulationSystem
         int running = PoolLiving(world, site);
         running = MarkRegeneration(residents, running, pools.Residents.Current, Regenerates);
         MarkRegeneration(roamers, running, pools.Roaming.Current, static _ => false);
+    }
+
+    /// <summary>
+    /// Independent claimants preserving a town's actual wounded garrison through an encounter.
+    /// </summary>
+    readonly Dictionary<int, HashSet<string>> _encounterSites = [];
+
+    /// <summary>
+    /// Prevents native regeneration from replacing the current residents during a settlement encounter. Serial phases only.
+    /// </summary>
+    public void SuppressEncounterRefill(int site, string claimant, bool suppress)
+    {
+        if (site < 0 || site >= _data.Sites.Count || string.IsNullOrEmpty(claimant)) return;
+        if (suppress)
+        {
+            if (!_encounterSites.TryGetValue(site, out var owners)) _encounterSites.Add(site, owners = new(StringComparer.Ordinal));
+            owners.Add(claimant);
+        }
+        else if (_encounterSites.TryGetValue(site, out var owners) && owners.Remove(claimant) && owners.Count == 0)
+            _encounterSites.Remove(site);
     }
 
     /// <summary>

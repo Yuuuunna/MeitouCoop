@@ -39,6 +39,11 @@ static class ModCheck
         /// The run's character count at the end (said with the report).
         /// </summary>
         public int Characters { get; set; }
+
+        /// <summary>
+        /// A stopped mod can agree at every tick in every run.
+        /// </summary>
+        public string? Fault { get; set; }
     }
 
     /// <summary>
@@ -63,10 +68,22 @@ static class ModCheck
             Console.Error.WriteLine($"no {SaveFolder.QuickSaveName} in {options.Save}");
             return 2;
         }
-        var setup = LoadSetup(install);
-        var mods = LoadMods(CodeMods(install, options), setup);
-        if (mods is null) return 1;
-        return Compare(options, setup, mods);
+        var enabled = CodeMods(install, options);
+        if (enabled.Count == 0)
+        {
+            Console.Error.WriteLine("no code mods to check (none enabled in mods.cfg, or no --mod folder with a manifest)");
+            return 1;
+        }
+
+        var allowed = enabled.Select(mod => mod.Name).ToHashSet(StringComparer.Ordinal);
+        var mods = ModHost.Prepare(enabled, allowed);
+        var setup = LoadSetup(install, data => mods.EditData(data, allowed));
+        Console.WriteLine($"mods      running the code of {string.Join(", ", enabled.Select(mod => mod.Name))}");
+        mods.Start(new ModHostOptions(enabled, allowed, setup.Db, setup.Data, () => s_current, StrictSystems: true));
+        foreach (var notice in mods.Notices) Console.Error.WriteLine($"mods      {notice}");
+        if (mods.Mods.Count != enabled.Count) return 1;
+
+        return Compare(options, setup, mods, install);
     }
 
     /// <summary>
@@ -101,10 +118,10 @@ static class ModCheck
     /// <summary>
     /// The merged data and the population data of the world, walking the terrain (no navmesh: its zones load on threads, no run repeats them).
     /// </summary>
-    static Setup LoadSetup(GameInstall install)
+    static Setup LoadSetup(GameInstall install, Action<GameDatabase>? edit = null)
     {
         var watch = Stopwatch.StartNew();
-        var db = GameDatabase.Load(LoadOrder.FromInstall(install));
+        var db = GameDatabase.Load(LoadOrder.FromInstall(install), edit);
         var levels = WorldLevelData.Load(install, includeInteriors: true);
         var map = TerrainHeightmap.Open(install);
         var gate = new Lock();
@@ -133,26 +150,10 @@ static class ModCheck
     }
 
     /// <summary>
-    /// Loads the code mods into a host bound to the world being run; null (said on the console) when there is none or none loads.
-    /// </summary>
-    static ModHost? LoadMods(List<ModInfo> enabled, Setup setup)
-    {
-        if (enabled.Count == 0)
-        {
-            Console.Error.WriteLine("no code mods to check (none enabled in mods.cfg, or no --mod folder with a manifest)");
-            return null;
-        }
-        Console.WriteLine($"mods      running the code of {string.Join(", ", enabled.Select(m => m.Name))}");
-        var mods = ModHost.Load(new ModHostOptions(enabled, setup.Db, setup.Data, () => s_current));
-        foreach (var notice in mods.Notices) Console.Error.WriteLine($"mods      {notice}");
-        return mods.Mods.Count > 0 ? mods : null;
-    }
-
-    /// <summary>
     /// Runs the save twice on one thread and once on <see cref="Options.Threads"/>, compares them and, on a difference, looks closer at it and runs
     /// it without mods too. Returns 0 when the runs agree, else 1.
     /// </summary>
-    static int Compare(Options options, Setup setup, ModHost mods)
+    static int Compare(Options options, Setup setup, ModHost mods, GameInstall install)
     {
         var first = Play(options, setup, mods, threads: 1);
         var again = Play(options, setup, mods, threads: 1);
@@ -162,12 +163,19 @@ static class ModCheck
         int threads = Report($"1 against {options.Threads} threads", first, parallel);
         if (repeats < 0 && threads < 0)
         {
+            if ((first.Fault ?? again.Fault ?? parallel.Fault) is { } fault)
+            {
+                Console.Error.WriteLine($"FAIL      {fault}");
+                return 1;
+            }
+
+            Console.WriteLine($"hash      {first.Ticks[^1].World:X16}");
             Console.WriteLine($"PASS      {options.Ticks} ticks agree run to run and across thread counts");
             return 0;
         }
 
         LookAtFirstDifference(options, setup, mods, first, repeats, threads);
-        CheckGameAlone(options, setup, repeats >= 0);
+        CheckGameAlone(options, LoadSetup(install), repeats >= 0);
         return 1;
     }
 
@@ -230,6 +238,7 @@ static class ModCheck
         finally
         {
             s_current = null;
+            foreach (var system in world.Systems.OfType<IDisposable>()) system.Dispose();
         }
     }
 
@@ -251,7 +260,8 @@ static class ModCheck
         try
         {
             SaveLoader.Load(world, save, setup.Data, new SaveLoadOptions { Appearances = setup.Data.Appearances });
-            mods?.RestoreSaveData(world, save.ModData);
+            mods?.RestoreSaveData(world, save.ModData, strict: true);
+            mods?.TellReady(world, new WorldStart(WorldStartKind.Load));
         }
         catch
         {
@@ -286,6 +296,7 @@ static class ModCheck
             trace.Ticks.Add(Snapshot(world, mods));
         }
         trace.Characters = world.Characters.Count;
+        if (world.TryTakeModFaultNotice(out string notice)) trace.Fault = notice;
         return trace;
     }
 

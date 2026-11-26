@@ -335,6 +335,11 @@ public sealed class UiFrameContext
     public bool Enabled(string key) => !_disabled.Contains(key);
 
     /// <summary>
+    /// The authority's latest private panel data for this player and mod, or null before publication.
+    /// </summary>
+    public string? ModView(string modId) => _host.ReadModView?.Invoke(modId);
+
+    /// <summary>
     /// A registered control <paramref name="id"/>, the last override's if any.
     /// </summary>
     public UiNode CreateControl(string id) => _host.CreateControl(id, this);
@@ -343,6 +348,16 @@ public sealed class UiFrameContext
     /// A registered control <paramref name="id"/> as its owner made it, without overrides.
     /// </summary>
     public UiNode CreateBaseControl(string id) => _host.CreateControl(id, this, useOverrides: false);
+
+    /// <summary>
+    /// Centres the local camera over the given world X/Z point.
+    /// </summary>
+    public bool FocusCamera(Vector2 worldPos) => _host.FocusCamera?.Invoke(worldPos) == true;
+
+    /// <summary>
+    /// Selects a presented, locally controlled character.
+    /// </summary>
+    public bool SelectCharacter(Meitou.Simulation.CharacterId character) => _host.SelectCharacter?.Invoke(character) == true;
 
     /// <summary>
     /// The size in pixels <paramref name="text"/> takes as a node's caption in font resource <paramref name="font"/> at text scale
@@ -412,6 +427,21 @@ public sealed partial class UiHost
     /// without one.
     /// </summary>
     internal Func<string, string, float, Vector2>? Measurer { get; set; }
+
+    /// <summary>
+    /// Centres the presentation camera over a world X/Z point.
+    /// </summary>
+    internal Func<Vector2, bool>? FocusCamera { get; set; }
+
+    /// <summary>
+    /// Requests native selection of a controllable character.
+    /// </summary>
+    internal Func<Meitou.Simulation.CharacterId, bool>? SelectCharacter { get; set; }
+
+    /// <summary>
+    /// Resolves the active session's recipient-private mod panel.
+    /// </summary>
+    internal Func<string, string?>? ReadModView { get; set; }
 
     /// <summary>
     /// The styles by id, with their owners.

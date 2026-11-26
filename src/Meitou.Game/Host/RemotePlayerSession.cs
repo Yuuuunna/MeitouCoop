@@ -130,6 +130,12 @@ public sealed partial class RemotePlayerSession : IClientSession, IAsyncDisposab
     public bool CanChangeSpeed => false;
     public double TimeScale => _view?.TimeScale ?? 0;
     public bool IsPaused => TimeScale == 0;
+
+    /// <summary>
+    /// Whether the current authority view admits local selection of this character.
+    /// </summary>
+    internal bool CanSelectRole(CharacterId id) => CanControl && _view!.Roles.Any(r => r.Character == id && r.Available && !r.Dead);
+
     public bool CanControl => !_disposed && _view is not null && _connection.State.CanControl;
     public int PendingCommands => _pending.Count;
     public RemoteCommandCompletion? LastCompletion { get; private set; }

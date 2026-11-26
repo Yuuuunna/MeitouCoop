@@ -45,6 +45,16 @@ public sealed class WorldRegions
     }
 
     /// <summary>
+    /// Adds trusted simulation leases to the local camera and role loading box without widening navigation-only leases.
+    /// </summary>
+    internal void AddSimulationLeases(HashSet<ZoneCoordinate> into)
+    {
+        lock (_gate)
+            foreach (var hold in _holds.Values)
+                if (hold.Simulation) into.UnionWith(hold.Zones);
+    }
+
+    /// <summary>
     /// Capture at a serial world boundary. Each source contributes once per zone; overlapping users never subtract one another.
     /// </summary>
     public IReadOnlyDictionary<ZoneCoordinate, RegionDemand> Capture(bool simulation = true, int ring = 0)

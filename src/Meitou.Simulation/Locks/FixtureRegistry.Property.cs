@@ -64,6 +64,57 @@ public sealed partial class FixtureRegistry
     const string OwnerKey = "owner faction ID";
 
     /// <summary>
+    /// Explicit deeds distinguish a transfer from a legacy level-owner string or a house purchase that empties the interior.
+    /// </summary>
+    const string TitleKey = "meitou title transfer";
+    readonly SortedDictionary<string, int> _titles = new(StringComparer.Ordinal);
+
+    internal bool HasTransferredTitle(string key) => _titles.ContainsKey(key);
+
+    internal void ReadTitles(PopulationData data, IReadOnlyDictionary<string, FcsRecord> states)
+    {
+        foreach (var (key, state) in states)
+            if (state.Bools.GetValueOrDefault(TitleKey) && state.Strings.GetValueOrDefault(OwnerKey) is { } owner
+                && data.FactionIndex(owner) is >= 0 and var faction) _titles[key] = faction;
+    }
+
+    internal int TransferredOwner(string key) => PropertyOwner(key) ?? OfBuilding(key).FirstOrDefault()?.Owner ?? TownMachineOwner(key)
+        ?? _titles.GetValueOrDefault(key, -1);
+
+    internal bool TransferTitle(World world, string key, int owner)
+    {
+        var site = world.Buildings.Find(key);
+        bool level = _townMachines.TryGetValue(key, out var placement);
+        if (!level && site is null) return false;
+        if (site is not null) site.Owner = owner;
+        if (level)
+        {
+            _titles[key] = owner;
+            world.ItemSlots.TransferBuilding(world, placement.Building, owner);
+        }
+        if (_properties.TryGetValue(key, out var property))
+        {
+            property.Owner = owner;
+            property.Revision = NextPropertyRevision();
+            _ownedProperties = null;
+        }
+        TransferTownMachine(world, key, owner);
+        TransferSeats(key, owner);
+        foreach (var fixture in OfBuilding(key))
+        {
+            fixture.Owner = owner;
+            RevisionOf(fixture);
+        }
+        _containerSpots = null;
+        _doorPicks = null;
+        _bedSpots = null;
+        _bedList = null;
+        _cageList = null;
+        _dummySpots = null;
+        return true;
+    }
+
+    /// <summary>
     /// The town properties by building key.
     /// </summary>
     readonly Dictionary<string, Property> _properties = new(StringComparer.Ordinal);
@@ -215,6 +266,7 @@ public sealed partial class FixtureRegistry
     /// </summary>
     public int? SavedOwner(PopulationData data, TownBuilding b)
     {
+        if (_titles.TryGetValue(b.Key, out int transferred)) return transferred;
         if (Saved?.GetValueOrDefault(b.Key)?.Strings.GetValueOrDefault(OwnerKey) is not { Length: > 0 } id) return null;
         if (data.FactionIndex(id) is not (>= 0 and var faction)) return null;
 
@@ -246,6 +298,15 @@ public sealed partial class FixtureRegistry
                 if (!states.TryGetValue(b.Key, out var state)) continue;
 
                 int owner = OwnerNow(data, b, townFaction);
+                if (_titles.TryGetValue(b.Key, out int transferred))
+                {
+                    state.Bools[TitleKey] = true;
+                    state.Bools[PurchasedKey] = _properties.TryGetValue(b.Key, out var property) ? property.Purchased
+                        : Saved?.GetValueOrDefault(b.Key)?.Bools.GetValueOrDefault(PurchasedKey) == true;
+                    state.Strings[OwnerKey] = data.Factions[transferred].Id;
+                    continue;
+                }
+                state.Bools.Remove(TitleKey);
                 if ((uint)owner < (uint)data.Factions.Count && owner != data.PlayerFaction) state.Strings[OwnerKey] = data.Factions[owner].Id;
             }
         }
@@ -327,6 +388,7 @@ public sealed partial class FixtureRegistry
     void TakeOver(World world, Property p, int owner, bool ruin)
     {
         string key = p.Building.Key;
+        _titles.Remove(key);
         p.Owner = owner;
         p.Purchased = true;
         TransferTownMachine(world, key, owner);
@@ -366,7 +428,7 @@ public sealed partial class FixtureRegistry
         var town = data.Sites[site];
         int player = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
         var reset = town.Buildings
-            .Where(b => b.Zone == town.Zone && !IsPlayers(world, data, site, b, player))
+            .Where(b => b.Zone == town.Zone && !HasTransferredTitle(b.Key) && !IsPlayers(world, data, site, b, player))
             .Select(b => b.Key)
             .ToHashSet(StringComparer.Ordinal);
         var rebuilt = HousedHomes(world, data, site);
@@ -403,6 +465,7 @@ public sealed partial class FixtureRegistry
         string? playerId = data.PlayerFaction >= 0 ? data.Factions[data.PlayerFaction].Id : null;
         int player = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
         var players = PlayerOwnedIn(world, data, site, player);
+        players.UnionWith(_titles.Keys);
         var homes = ResidentRuins.HomeTemplates(data.Db, town.Town, faction, town.Buildings, playerId, players);
         return homes.Keys
             .Where(key => !players.Contains(key))
@@ -450,6 +513,7 @@ public sealed partial class FixtureRegistry
         int player = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
         foreach (var b in town.Buildings)
         {
+            if (HasTransferredTitle(b.Key)) continue;
             if (reset.Contains(b.Key))
             {
                 Unregister(b.Key);
@@ -737,6 +801,12 @@ public sealed partial class FixtureRegistry
     /// </summary>
     void HashProperties(ref StateHasher h)
     {
+        foreach (var (key, owner) in _titles)
+        {
+            h.Add(0x5469746c);
+            h.Add(Rng.StableHash(key));
+            h.Add(owner);
+        }
         foreach (var (key, p) in _properties.Where(p => p.Value.Purchased || p.Value.Owner == p.Value.Data.PlayerFaction).OrderBy(p => p.Key,
                 StringComparer.Ordinal))
         {

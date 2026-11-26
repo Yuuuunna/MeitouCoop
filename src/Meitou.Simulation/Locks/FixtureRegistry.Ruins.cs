@@ -59,7 +59,8 @@ public sealed partial class FixtureRegistry
     {
         var town = data.Sites[site];
         int player = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
-        HashSet<string> own = [.. town.Buildings.Where(b => b.Zone == town.Zone && !IsPlayers(world, data, site, b, player)).Select(b => b.Key)];
+        HashSet<string> own = [.. town.Buildings.Where(b => b.Zone == town.Zone && !HasTransferredTitle(b.Key)
+            && !IsPlayers(world, data, site, b, player)).Select(b => b.Key)];
         RelayTown(world, data, site,
                 own.Where(key => Saved?.GetValueOrDefault(key)?.Strings.ContainsKey(ResidentRuins.InteriorKey) != true).ToHashSet());
         ApplyTownRuins(world, data, site, own);
@@ -77,9 +78,12 @@ public sealed partial class FixtureRegistry
         var faction = factionIndex >= 0 ? data.Factions[factionIndex] : null;
         string? playerId = data.PlayerFaction >= 0 ? data.Factions[data.PlayerFaction].Id : null;
         int player = world.Player.Faction >= 0 ? world.Player.Faction : data.PlayerFaction;
-        var homes = ResidentRuins.HomeTemplates(data.Db, town.Town, faction, town.Buildings, playerId, PlayerOwnedIn(world, data, site, player));
+        var preserved = PlayerOwnedIn(world, data, site, player);
+        preserved.UnionWith(_titles.Keys);
+        var homes = ResidentRuins.HomeTemplates(data.Db, town.Town, faction, town.Buildings, playerId, preserved);
         foreach (var b in town.Buildings.ToList())
         {
+            if (HasTransferredTitle(b.Key)) continue;
             bool home = homes.TryGetValue(b.Key, out var template);
             bool ruined = home && ResidentRuins.Ruins(data.Db, template!, b);
             if (reset.Contains(b.Key)) SetRuin(world, data, site, b, home ? ruined : b.LevelDestroyed);

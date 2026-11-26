@@ -50,6 +50,10 @@ sealed class GameModFrameHost(GameHost host) : IModFrameHost
     /// <inheritdoc/>
     public Vector3 CameraTarget => host.Session.Camera.Current.Target;
     /// <inheritdoc/>
+    public bool FocusCamera(Vector2 worldPos) => Ui.FocusCamera(worldPos);
+    /// <inheritdoc/>
+    public bool SelectCharacter(CharacterId character) => Ui.SelectModCharacter(character);
+    /// <inheritdoc/>
     public Vector2? Project(Vector3 point) => Ui.Project(point);
     /// <inheritdoc/>
     public IReadOnlyList<string> OpenScreens => [.. Ui.FaithfulScreens.OpenIds];

@@ -116,6 +116,27 @@ public sealed partial class DialogueSystem
     }
 
     /// <summary>
+    /// Recruits for the payer's own squad after checking the same session grants as a paid dialogue. The fee is charged only after joining.
+    /// </summary>
+    internal bool RecruitForPayment(World world, CharacterId recruit, CharacterId payer, int fee, bool contextualRecruit)
+    {
+        var table = world.Characters;
+        if (!table.TryResolveNext(recruit, out int slot) || table.Cold(slot) is not { IsPlayer: false } npc
+            || !table.TryResolveNext(payer, out int actor) || table.Cold(actor) is not { IsPlayer: true } talker
+            || !Awake(table, actor) || !Talkable(table, slot) || !InTalkRange(world, slot, actor)
+            || UniqueCharacters.IsUnique(_data.Db.Find(npc.RecordId))) return false;
+        bool hostile = _data.Relations.IsHostile(npc.Faction, talker.Faction);
+        if (!contextualRecruit && (hostile || !Recruitable(world, _data, slot))) return false;
+        if (hostile && npc.NpcClass is FundamentalType.LawEnforcement or FundamentalType.Military) return false;
+        var context = Context(world, new Conversation { Player = payer, Npc = recruit, Event = 0 });
+        if (world.Players.RequiresExplicitControl && (context.Actor is not { } owner || !world.Players.CanControl(owner, payer))) return false;
+        if (!CanManage(world, context) || !CanSpend(world, context) || Funds(world, context) is not { } funds || funds.Money < fee) return false;
+        if (!JoinPlayer(world, context, slot, talker)) return false;
+        funds.Money -= fee;
+        return true;
+    }
+
+    /// <summary>
     /// The character at <paramref name="slot"/> leaves its squad and joins the player's active squad (or a new blank squad when it is full) as a
     /// player character.
     /// </summary>

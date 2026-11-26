@@ -36,6 +36,14 @@ public sealed partial class World
     internal bool CanObserveLevelBuilding(PlayerId player, string key, PlayerViewRequest? request, PlayerObservationRules? rules)
     {
         if (request is null || rules is null || _production?.LevelBuildingPosition(this, key) is not { } position) return false;
+        return CanObservePoint(player, position, request, rules);
+    }
+
+    /// <summary>
+    /// Applies the recipient's existing subscription and current authorized role anchors to a point in the world.
+    /// </summary>
+    internal bool CanObservePoint(PlayerId player, Vector3 position, PlayerViewRequest request, PlayerObservationRules rules)
+    {
         var anchors = Players.KnownRoles(player).Select(ObservationAnchor).OfType<Vector3>();
         return InsideObservation(position, request.Zones?.ToHashSet(), anchors, rules.Radius * rules.Radius);
     }

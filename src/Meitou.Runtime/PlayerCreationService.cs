@@ -203,6 +203,7 @@ public sealed class PlayerCreationService
                 prepared = _population.RetargetNewFaction(_world, prepared, faction);
             }
 
+            bool firstRoster = _world.Players.Find(player)?.RoleHistory == PlayerRoleHistory.NeverAssigned;
             var squads = _population.MaterializePlayerSquads(_world, prepared);
             // From this point unexpected failure is terminal: never continue a world with partly granted/charged creation output.
             granting = true;
@@ -211,6 +212,8 @@ public sealed class PlayerCreationService
             foreach (var squad in squads)
                 foreach (var role in squad.Members)
                     _world.Players.AssignInitial(player, role);
+            if (initial || firstRoster)
+                _world.StarterAvatars.Capture(player, squads.SelectMany(s => s.Members));
             var receipt = _world.CreationQualifications.Complete(reservation, squads);
             reservation = null;
             _world.AdvanceDurableRevision(barrier);

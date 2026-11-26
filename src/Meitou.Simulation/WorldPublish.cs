@@ -254,6 +254,7 @@ public sealed partial class World
             SquadAi = Player.SquadAi,
             PlayerSquads = PublishSquads(),
             IndependentSquads = PublishIndependentSquads(),
+            ModViews = ModViews.Capture(PlayerId.Local),
             ModJobNames = PublishModJobNames(),
             ModJobOffers = PublishModJobOffers(),
             ModVisuals = ModVisuals.Capture(this),
@@ -331,9 +332,13 @@ public sealed partial class World
             .ToArray()) _barks.Remove(gone);
         if (_barks.Count == 0) return speech;
 
-        var all = new List<Dialogue.SpeechBubble>(speech);
-        foreach (var (who, (text, _)) in _barks)
-            if (!speech.Any(s => s.Speaker == who)) all.Add(new Dialogue.SpeechBubble(who, text, false));
+        var all = speech.Where(s => !_barks.TryGetValue(s.Speaker, out var bark) || !bark.Direct).ToList();
+        foreach (var (who, (text, _, style, direct)) in _barks)
+        {
+            if (!direct && speech.Any(s => s.Speaker == who)) continue;
+            string shown = style == SpeechStyle.Whisper ? "(" + text + ")" : text;
+            all.Add(new Dialogue.SpeechBubble(who, shown, style == SpeechStyle.Shout));
+        }
 
         return all;
     }

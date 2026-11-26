@@ -153,6 +153,39 @@ public class NetworkCommandTests
     }
 
     [Fact]
+    public async Task ModClientInputUsesAuthenticatedActorGrantAndBoundedPayload()
+    {
+        var recorder = new Recorder();
+        using var world = World(recorder);
+        var (connection, own, expected) = Register(world, 2);
+        var (_, other, otherExpected) = Register(world, 3);
+        Activate(world, connection);
+        using var channel = Channel(world, connection);
+        var input = new ModClientInput("fixture.mod", "speak", own, "你好") { Tick = long.MaxValue };
+        var frame = CommandProtocol.Encode(connection.World, 1, input, expected);
+        var decoded = Assert.IsType<ModClientInput>(CommandProtocol.Decode(frame).Command);
+        Assert.Equal(input.Payload, decoded.Payload);
+        Assert.Equal(0, decoded.Tick);
+        Assert.Null(decoded.Issuer);
+        Assert.Throws<InvalidDataException>(() => CommandProtocol.Decode(Change(frame, n => n["Body"]!["Issuer"] = 3)));
+        Assert.Throws<InvalidDataException>(() => CommandProtocol.Encode(connection.World, 4,
+            input with { Payload = new string('界', 342) }, expected));
+        Assert.Throws<InvalidDataException>(() => CommandProtocol.Encode(connection.World, 4,
+            input with { Action = "../invalid" }, expected));
+
+        var accepted = channel.ReceiveCommand(frame);
+        var forbidden = channel.ReceiveCommand(CommandProtocol.Encode(connection.World, 2, input with { Actor = other }, otherExpected));
+        world.ApplyPausedInterfaceCommands();
+        Assert.Equal(AuthorityStatus.Evaluated, (await accepted).Status);
+        Assert.Equal(AuthorityStatus.StaleAuthority, (await forbidden).Status);
+        var applied = Assert.IsType<ModClientInput>(Assert.Single(recorder.Commands));
+        Assert.Equal(connection.Player, applied.Issuer);
+        Assert.Equal(own, applied.Actor);
+        Assert.True(applied.IsAuthorized(world));
+        Assert.False((applied with { Actor = other }).IsAuthorized(world));
+    }
+
+    [Fact]
     public async Task ReconnectCancelsOldQueuedCommandsAndOldChannelCannotCloseNewConnection()
     {
         var recorder = new Recorder(); using var world = World(recorder);

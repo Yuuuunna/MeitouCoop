@@ -242,6 +242,7 @@ public sealed partial class World
             FactionHeads = activeFaction?.FactionHeads ?? 0,
             CappedHeads = activeFaction?.CappedHeads ?? 0,
             InventoriesClosed = state.InventoriesClosed,
+            ModViews = ModViews.Capture(connection.Player),
             ModJobNames = PublishModJobNames(),
             ModJobOffers = PublishModJobOffers(),
             ModVisuals = CaptureModVisuals(visible, Nearby),

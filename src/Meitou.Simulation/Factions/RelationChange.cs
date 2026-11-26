@@ -34,7 +34,11 @@ public enum RelationCauseType
     /// <summary>
     /// A debug command.
     /// </summary>
-    Debug
+    Debug,
+    /// <summary>
+    /// A serial code-mod faction decision.
+    /// </summary>
+    Mod
 }
 
 /// <summary>

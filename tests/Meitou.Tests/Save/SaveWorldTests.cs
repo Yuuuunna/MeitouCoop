@@ -49,6 +49,66 @@ public partial class SaveWorldTests
     static string Dir(string name) => Temp(name);
 
     [Fact]
+    public void StartingRosterRetainsEveryAvatarAcrossNativeSaveLoad()
+    {
+        using var game = NewGame();
+        var ids = game.World.StarterAvatars.ForPlayer(PlayerId.Local);
+        Assert.Equal(game.Squad.Members.Count, ids.Count);
+        Assert.All(game.Squad.Members, member => Assert.True(game.World.StarterAvatars.IsProtected(member)));
+        var save = SaveCapture.Capture(game.World, game.Data, new SaveClock(1, 12, 0));
+        using var loaded = EmptyWorld();
+        SaveLoader.Load(loaded, save, game.Data);
+        Assert.Equal(ids, loaded.StarterAvatars.ForPlayer(PlayerId.Local));
+        foreach (var id in ids) Assert.True(loaded.StarterAvatars.IsProtected(loaded.LastingIds.Find(id)));
+    }
+
+    sealed class Succeed(CharacterId candidate) : ITickSystem
+    {
+        public void Schedule(SimWorld world) => Assert.True(world.StarterAvatars.TryInherit(PlayerId.Local, candidate));
+    }
+
+    [Fact]
+    public void LegacyMigrationFreezesExistingRosterAndAllowsLaterHireToSucceed()
+    {
+        using var game = NewGame();
+        var legacy = SaveCapture.Capture(game.World, game.Data, new SaveClock(1, 12, 0));
+        legacy.LastingIds = null;
+        using var first = EmptyWorld();
+        var source = SaveLoader.Load(first, legacy, game.Data);
+        var original = first.StarterAvatars.ForPlayer(PlayerId.Local);
+        Assert.Equal(game.Squad.Members.Count, original.Count);
+        var migrated = SaveCapture.Capture(first, game.Data, new SaveClock(1, 12, 0), source);
+        using var restored = EmptyWorld();
+        SaveLoader.Load(restored, migrated, game.Data);
+        var roster = restored.StarterAvatars;
+        Assert.Equal(original, roster.ForPlayer(PlayerId.Local));
+
+        var recruit = restored.Characters.Spawn(new CharacterHot(), new CharacterCold { IsPlayer = true, Faction = game.Data.PlayerFaction }, 0);
+        Assert.False(roster.IsProtected(recruit));
+        Assert.False(roster.CanInherit(PlayerId.Local, recruit));
+        foreach (var id in original) restored.Characters.Cold(restored.LastingIds.Find(id).Slot)!.DiedTick = 0;
+        restored.AddSystem(new Succeed(recruit));
+        restored.RunTick();
+        Assert.True(roster.IsProtected(recruit));
+        Assert.Equal(original.Count + 1, roster.ForPlayer(PlayerId.Local).Count);
+    }
+
+    [Fact]
+    public void CaptureIncludesStarterDeathAfterLastSchedule()
+    {
+        using var game = NewGame();
+        var roster = game.World.StarterAvatars;
+        var ids = roster.ForPlayer(PlayerId.Local);
+        Assert.Same(ids, roster.ForPlayer(PlayerId.Local));
+        var dead = game.Squad.Leader;
+        game.World.Characters.Cold(dead.Slot)!.DiedTick = game.World.Tick;
+        var save = SaveCapture.Capture(game.World, game.Data, new SaveClock(1, 12, 0));
+        var saved = SaveLastingIds.Read(save.LastingIds)!.Value;
+        Assert.Equal(game.World.Characters.Cold(dead.Slot)!.LastingId.Value, Assert.Single(saved.Starters, s => s.Dead).Id);
+        Assert.Same(ids, roster.ForPlayer(PlayerId.Local));
+    }
+
+    [Fact]
     public void A_dead_player_character_leaves_its_squad_for_the_hidden_dead_squad()
     {
         using var g = NewGame();

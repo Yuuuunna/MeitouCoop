@@ -8,6 +8,36 @@ RE_Kenshi plugin DLLs are never loaded: wishlist plugins get built in or ported 
 
 ## Multiplayer authority
 
+**Authoritative physical operations.** `World.Physical` is available to trusted simulation systems in Inputs, Schedule,
+Apply and SlowWorld. Calls require the executing world's serial tick thread, including the authoritative command boundary.
+Resolve entity ids on that thread. The caller checks reach, office jurisdiction, consent and any mod-specific limits.
+
+- `QueryItems(owner)` returns the native stacks, including bag contents. `PhysicalOwner` accepts a `CharacterId` or a
+  loaded fixture/storage-machine instance key. `SpawnItem(owner, templateId, modTag, count)`, `RemoveItem(owner, item, count)`,
+  `TransferItem(from, to, item, count)` and `SetModTag(owner, item, tag)` return success. Requery after a transfer.
+  A full destination rejects the entire transaction. `WriteOnPaper(owner, sheet, template, tag)` consumes one sheet and places
+  one tagged item atomically, including in the vacated cell. The caller checks the pen and paper templates. Native inventories
+  retain tags in saves and hashes. `ResolveItem(owner, token)` rechecks the native stack token, including the tag or its remote
+  `ItemTagIdentity.Digest`, before an interaction.
+- `GetOwner(buildingId)`, `SetOwner(buildingId, faction)` and `SetLocked(buildingId, locked)` use the registered building and
+  its native fixtures. A title transfer preserves occupants and storage. `DamageGate(buildingId, damage)` damages the first
+  intact gate leaf through combat's door strike. `ApplyLimbDamage(character, limb, damage)` uses native hit and severance
+  processing for left arm, right arm, left leg or right leg (0–3). `ApplyBodyDamage` accepts a native anatomical part index.
+  `StopAgentCombat(actor)` ends the current order and disengages immediately, subject to starter-avatar protection.
+- `TransferCats(from, to, amount)` accepts faction indices or character ids, requires a positive amount, checks the entire
+  payment and returns success. Player roles use their faction account. NPCs carry denomination items and need space for
+  incoming cash or change. `Barter(seller, buyer, item, quantity, price)` exchanges the goods and payment atomically within
+  five metres, including when each party vacates the cell the other needs. `OpenLocalTrade(customer, trader)` opens the
+  merchant window for the nearby customer's controller and preserves the customer's current order.
+  `AddOrClearBounty(character, faction, delta)` adjusts the live bounty and clears it when reduced
+  to zero. `AdjustRelation(fromFaction, toFaction, delta)` changes directed standing through the relation observer path.
+  `SetDisplayName(faction, name)` updates the native faction catalogue. Treasuries and names persist by faction.
+- `Recruit(recruit, payer, fee, contextualRecruit: false)` requires a nearby awake payer, native join eligibility,
+  permission to manage the faction and spend funds, and sufficient funds. Trusted mods can supply a verified contextual
+  recruitment reason for a consenting ordinary NPC. Unique characters and hostile police or military remain ineligible.
+  `JoinNpcPlatoon(actor, platoon, asLeader)` moves a living NPC and its equipment into a loaded NPC platoon, retaining
+  its lasting identity. Player avatars and controlled roles cannot be transferred.
+
 **Observed** (source inspection; runtime acceptance not yet verified): the server loads only enabled code mods approved in
 `ServerConfiguration.TrustedCodeMods`, using its `ModSettings`; an unapproved mod still contributes its ordinary `.mod` data, but no C# executes.
 The same trust gate runs before data-phase assemblies or entry constructors load. Trusted data-phase, initialization or system-factory failure
@@ -1060,8 +1090,8 @@ holds refuses the second mod.
   branch, and nothing tells branches apart, so a mod that keeps data outside the save (one file across saves) cannot rely on ids there. Saved in
   `meitou-mods/character-ids.json` ([save](formats/save.md#character-ids)); after a load a player character has its id when `IModSaveData.Read` and
   `IWorldReady` run, an NPC when its platoon is made. A character the save does not write loses its id, which is never given again. An import starts
-  with none. Until a mod asks (or a save with ids loads) nothing is held, hashed or written; then the ids enter the state hash. Engine API, not in
-  the original.
+  with none. The host records every birth at startup and assigns lasting ids on first access to the starter registry or at checkpoint capture.
+  Other characters get ids on demand. Assigned ids enter the state hash.
 - **Character save fields:** `world.SaveFields` (`CharacterSaveFields`, `Meitou.Simulation.Saving`) keeps a mod's per-character values in
   the vanilla save, under keys of its choosing (an original plugin's own, so a save taken to the original keeps them):
   `SetInt`/`SetFloat`/`SetBool`/`SetString(character, CharacterSaveRecord, key, value)` and `Remove`, read back with `Int`/`Float`/`Bool`/
@@ -1258,6 +1288,12 @@ holds refuses the second mod.
 - **Debug rows:** `AddDebugCommand(label, run, hasField)` adds a row to the F10 menu after the vanilla ones. `run` gets
   `DebugCommandContext` (field, selection, camera target, tick, `Enqueue`) on the host thread while a tick may be in flight, so it must
   not touch the world; it returns the status line, and a throw shows as the status.
+- **Coop mod inputs:** enqueue `ModClientInput(ModId, Action, Actor, Payload)` through the normal interface or key action command queue.
+  The envelope carries one acting character, an opaque payload of at most 1024 UTF-8 bytes, and mod/action identifiers of up to 48 ASCII
+  letters, digits, underscores, hyphens or periods. The authority validates the actor's control grant and membership before dispatching to
+  serial `Inputs`. It supplies the real issuer and tick. The mod's system handles its own identifier, validates action data and any
+  additional targets, and rejects stale world or operation identifiers. `Bind` copies the host stamp onto a decoded mod command for direct
+  use inside the same serial step. Use the same validation for local inputs where a legacy standalone role has no explicit player grant.
 - **Key actions:** `AddKeyAction(name, label, pressed, defaults)` (`ModKeyAction`, `src/Meitou.Game/Host/Input`) adds an action the player binds
   like the game's: a row `label [mod name]` on the settings' Controls page after the game's rows, in load order, rebound there as theirs are
   (a key taken from another action, the game's or a mod's, leaves it, with the same notice; Delete or Backspace unbinds). At start the game's
@@ -2164,6 +2200,25 @@ unchanged. The dialogue hooks are built but not exercised. **Verified** by `Modd
 sidecar round trip, and a hashed mod system agreeing at 1 and 4 threads.
 
 
+## Native speech, starters and player input
+
+- **Verified** by `NativeInteractionTests`. `World.PostSpeechBubble(speaker, text, SpeechStyle.Normal|Whisper|Shout)` posts up to 4,096 characters
+  through the native snapshot and the visible speaker's public dialogue journal. The native bubble supplies expiry and distance fading. Whisper uses
+  parentheses and shout uses the large font. Text, style and journal are presentation data. The caller validates the speaker's authorization.
+- **Verified** by `NativeInteractionTests`. `World.GiveTalkPause(listener, target, durationTicks)` holds a conscious listener facing the target for up to
+  thirty simulation seconds. The active hold enters the world hash and preserves its route. Combat, damage, flight, a manual order, expiry or loss of
+  the target releases it. `World.EndTalkPause(listener)` releases it on an early reply or cancellation. A starter cannot be held. Both speech and pause APIs require the authority's serial simulation owner.
+- **Verified** by `NativeInteractionTests`, `SaveWorldTests` and `PlayerCreationServiceTests`. `World.StarterAvatars.ForPlayer(player)` returns the
+  lasting ids of the player's entire initial creation roster and successors. On a legacy load the host recovers native Coop initial-creation receipts.
+  For owners with no such evidence it protects exactly the then-existing player platoon members (solo) or role grants (Coop, including stored members).
+  Later recruits retain autonomy. A UI can read `CanInherit(player, candidate)`. On an explicit request from that player,
+  `TryInherit(player, candidate)` promotes a living controlled recruit when every previously protected starter or successor has a confirmed death.
+  An unloaded starter retains its protection. Creation provenance and deaths travel with the [character ids](formats/save.md#character-ids).
+- **Verified** by `NativeInteractionTests`. A mod tick system implementing `IPlayerOrderObserver.OnPlayerOrder(world, issuer, character, command)`
+  observes native movement, right-click orders, stop, speed and stance inputs against authorized recipients. Deferred simulation orders do not trigger it.
+- **Observed** in `GameModFrameHost` and `PlayerInterface`. `ModFrame` and `UiFrameContext` expose `FocusCamera(Vector2 worldPos)` for a local world X/Z
+  jump and `SelectCharacter(CharacterId)` for native selection of a visible, locally controllable role. Each returns whether the request was accepted.
+
 ## Built-in XP settings in Coop
 
 **Observed** (implementation): `SquadXp` applies to every player faction and `OthersXp` to NPC factions. `SquadSkillXp` overrides individual
@@ -2181,3 +2236,17 @@ caps unless their squad is uncounted. Ending an own purse credits that faction's
 on overflow. NPC shoppers use a mod-owned squad purse when present, and public counters credit their actual owning faction across all players.
 Dormant saved members do not keep regions active merely because they are stored player roles; an explicitly authorized role entry can still load
 the requested character. Missing mod cleanup restores counts, returns purses, and wakes dormant squads before world-ready callbacks.
+
+### Coordinating a native encounter
+
+**Observed** in `PopulationSystem`, `WorldRegions` and `PhysicalWorld`. A serial authority can defer a named NPC platoon's ordinary activation with `SetEncounterActivation`. `ActivateEncounter(world, ids)` waits for all participants' navigation gates, then materializes each eligible native roster on the serial thread. A platoon with an obsolete town version or an empty template follows its normal removal path. Tagged never-made stand-ins retain their tag through save capture. A simulation lease contributes its zones to population activation in local and multiplayer worlds. Navigation-only leases request preparation.
+
+`EncounterResident(world, squadId)` gives an existing town resident squad the same persistent platoon it would receive on town unload, preserving its members and inventory. `SuppressEncounterRefill(site, claimant, true)` pauses native garrison regeneration and roaming-pool top-up until that claimant releases it. The owning authority restores temporary activation and refill claims after a load. `Physical.ApplyBodyDamage(id, anatomicalIndex, amount)` resolves a wound through the native combat, medical and death observers. An anatomical index identifies the existing character's medical part, including vital parts on non-humanoid characters.
+
+### Recipient-specific mod panels
+
+A serial system publishes a detached text payload with `world.ModViews.Publish(player, modId, text)`. The recipient's `WorldSnapshot.ModViews` carries at most 16 entries of up to 64 KiB UTF-8 each. Empty text withdraws an entry. Each native UI extension reads its data through `UiFrameContext.ModView(modId)`. Single-player and Coop project the addressed player's data at snapshot capture. The publisher decides which observations that player is entitled to see. Presentation data does not enter the physics hash.
+
+`meitou-tools mod-check` prepares the selected code mods before building population from the edited database, restores their sidecars and calls world-ready before sampling. The tool compares all tick hashes and reports the final hash; a stopped mod fails the check even when its disabled state repeats.
+
+At a serial boundary, `AuthorityGateway.ObservationGeneration(player, point)` returns the active connection generation only for a point inside the current published observation subscription and authorized role radius of the recipient. The query leaves observation grants unchanged.

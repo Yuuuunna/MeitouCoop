@@ -222,6 +222,9 @@ sealed partial class PlayerInterface
         FaithfulScreens.Activated += ScreenRouter.FaithfulAction;
         _uiHost.Diagnostic += d => Console.Error.WriteLine($"ui        {d.Extension} {d.Operation}: {d.Error.Message}");
         _uiHost.Measurer = MeasureCaption;
+        _uiHost.FocusCamera = FocusCamera;
+        _uiHost.SelectCharacter = SelectModCharacter;
+        _uiHost.ReadModView = id => Session.CurrentSnapshot.ModViews.FirstOrDefault(view => view.ModId == id)?.Text;
         _uiRegistration = _uiHost.Register(new PlayerUiExtension(ExecuteUiAction));
         _xpLabelRegistration = _uiHost.Register(new SquadXpLabel(() => XpLabel));
     }

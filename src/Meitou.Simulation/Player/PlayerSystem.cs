@@ -140,6 +140,7 @@ public sealed partial class PlayerSystem(PopulationData? data = null) : ITickSys
         foreach (var command in commands)
         {
             if (world.CommandPlayer(command) is not { } player) continue;
+            if (command.ManualInput) world.ObservePlayerOrder(command);
             if (OrderGiver.Ordered(command) is { } ordered) WantsToGetUp(world, player, command, ordered);
             if (!ApplyViewCommand(world, player, command)) ApplyActionCommand(world, player, command);
         }

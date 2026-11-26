@@ -64,6 +64,7 @@ public sealed partial class World
     /// </summary>
     internal string ShownFaction(int faction, string name)
     {
+        if (Factions.Find(faction)?.Name is { Length: > 0 } live) name = live;
         if (!ShownText.Any || EventLog.Relations(this) is not { } relations || !relations.Contains(faction)) return name;
         var f = relations.Factions[faction];
         if (name == f.Name) return ShownText.Record(f.Id, name);

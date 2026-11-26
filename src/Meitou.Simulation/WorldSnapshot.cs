@@ -1033,6 +1033,10 @@ public sealed record WorldSnapshot(long Tick, IReadOnlyList<CharacterSnapshot> C
     /// </summary>
     public IReadOnlyList<Production.ModJobOffer> ModJobOffers { get; init; } = [];
     /// <summary>
+    /// Detached mod panels published to this recipient.
+    /// </summary>
+    public IReadOnlyList<PublishedModView> ModViews { get; init; } = [];
+    /// <summary>
     /// Authority-owned mod visual requests within this recipient's observation; lifetimes use the shared simulation clock.
     /// </summary>
     public ModVisualSnapshot ModVisuals { get; init; } = new([], []);

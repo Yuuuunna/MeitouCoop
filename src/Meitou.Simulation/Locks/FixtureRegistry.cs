@@ -534,6 +534,7 @@ public sealed partial class FixtureRegistry
 
         Unregister(building);
         _properties.Remove(building);
+        _titles.Remove(building);
         _resetBuildings.Remove(building);
         _rebuilt.Remove(building);
         _publicFlags.Remove(building);

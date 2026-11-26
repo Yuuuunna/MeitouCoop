@@ -147,6 +147,7 @@ public static class CommandProtocol
         [183] = typeof(PointedCommand),
         [184] = typeof(AreaArrival),
         [185] = typeof(ShowMachinesCommand),
+        [190] = typeof(ModClientInput),
         [170] = typeof(OpenPlayerTrade),
         [171] = typeof(AcceptPlayerTrade),
         [172] = typeof(RevisePlayerTrade),
@@ -258,6 +259,8 @@ public static class CommandProtocol
 
         switch (command)
         {
+            case ModClientInput input when !input.IsValid():
+                throw new InvalidDataException("Invalid code-mod input envelope.");
             case InPlayEditorOpened opened when opened.Character.IsNone || opened.SessionId == Guid.Empty:
                 throw new InvalidDataException("Opening the character editor requires its authorized character and session.");
             case LiftItem lift when lift.Count <= 0:

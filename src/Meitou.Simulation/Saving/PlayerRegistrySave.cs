@@ -178,6 +178,7 @@ public static class PlayerRegistrySave
         FactionResourceSave.Restore(world, document.Resources, data.Db);
         data.Relations.Restore(document.Diplomacy);
         world.CreationQualifications.Restore(document.Qualifications!, data.Factions.Count);
+        world.StarterAvatars.MigrateMultiplayer(document.Authority, document.Qualifications!);
         world.Invitations.Restore(document.Invitations!);
         CampaignTargetSave.Restore(world, data, document.Campaigns!);
         foreach (var dialogue in world.Systems.OfType<Dialogue.DialogueSystem>()) dialogue.RestoreAreaArrivals(document.AreaArrivals!);

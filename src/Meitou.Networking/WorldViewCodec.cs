@@ -317,6 +317,7 @@ public sealed partial class WorldViewCodec
     {
         if (view.World == Guid.Empty || view.Player.IsNone || view.ConnectionGeneration == 0 || view.Publication == 0 || !double.IsFinite(view.GameHours) || view.TimeScale is not (0 or 1 or 2 or 5) || view.ActiveFaction < -1 || view.Snapshot is null || view.Snapshot.Tick < 0 || view.Roles is null || view.Factions is null || view.Messages is null || view.Messages.Items is null || view.FactionCatalogue is null)
             throw new InvalidDataException("Invalid view identity.");
+        if (!PlayerModViews.Valid(view.Snapshot.ModViews)) throw new InvalidDataException("Invalid recipient mod view.");
         ItemTagProjection.Validate(view.Snapshot.ItemTags);
         view.Weather?.Validate();
         view.WeatherEffects?.Validate();

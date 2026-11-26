@@ -200,6 +200,12 @@ public class PlayerCreationServiceTests
         Assert.Equal(1234, s.Runtime.World.Factions.Find(receipt.Faction)!.Money);
         Assert.Equal(500, s.Approver.State.Money);
         Assert.Equal(PlayerRoleHistory.Assigned, s.Newcomer.RoleHistory);
+        Assert.Equal(receipt.Roles.Length, s.Runtime.World.StarterAvatars.ForPlayer(s.Newcomer.Id).Count);
+        foreach (var entity in receipt.Roles)
+        {
+            Assert.True(s.Runtime.World.Entities.TryResolve(entity, out var starter));
+            Assert.True(s.Runtime.World.StarterAvatars.IsProtected(starter));
+        }
         Assert.Equal(receipt.Roles, s.Service.Execute(connection, request).Roles);
         Assert.Equal(1234, s.Runtime.World.Factions.Find(receipt.Faction)!.Money);
         Assert.False(s.Runtime.World.HasPendingDurableMutation);

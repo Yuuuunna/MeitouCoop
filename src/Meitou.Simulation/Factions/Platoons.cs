@@ -302,6 +302,10 @@ public sealed class Platoon
 public sealed class StoredSquad
 {
     /// <summary>
+    /// A loaded native platoon acquired new NPC members. Save its current roster while retaining the original members' native records.
+    /// </summary>
+    internal bool RetainMemberRecords { get; init; }
+    /// <summary>
     /// The squad's name.
     /// </summary>
     public required string Name { get; init; }
@@ -538,6 +542,7 @@ public sealed class PlatoonRegistry
             h.Add((int)p.State);
             h.Add(p.SquadId);
             h.Add(p.UnloadAtTick);
+            if (p.Stored?.RetainMemberRecords == true) h.Add(0x526f7374);
             if (p.Held) h.Add(0x48656C64);   // only when held, so worlds without code mods hash as before
             if (p.Guest) h.Add(0x47756573);   // only for a guest, so worlds without town overrides hash as before
             HashMod(ref h, p);

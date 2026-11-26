@@ -116,7 +116,7 @@ public sealed partial class TradeSystem
             Close(world);
         }
 
-        internal void OpenNow(World world, CharacterId customer, CharacterId trader, SimCommand source)
+        internal void OpenNow(World world, CharacterId customer, CharacterId trader, SimCommand source, bool stand = true)
         {
             Close(world);
             if (!Accepts(world, customer, trader, source, out int slot) || !Resolve(world, out _, out _, out var shop))
@@ -124,7 +124,7 @@ public sealed partial class TradeSystem
                 Close(world);
                 return;
             }
-            TaskStart.Stand(world.Characters, slot);
+            if (stand) TaskStart.Stand(world.Characters, slot);
             owner.PrepareView(world, shop!);
             _open = true;
             RefreshView(world);

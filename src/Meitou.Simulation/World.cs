@@ -191,7 +191,7 @@ public sealed partial class World : IDisposable
     /// <summary>
     /// The lines over characters' heads and the tick each ends at (<see cref="Bark"/>).
     /// </summary>
-    readonly Dictionary<CharacterId, (string Text, long Until)> _barks = [];
+    readonly Dictionary<CharacterId, (string Text, long Until, SpeechStyle Style, bool Direct)> _barks = [];
     /// <summary>
     /// The animation system (null: none).
     /// </summary>
@@ -228,6 +228,8 @@ public sealed partial class World : IDisposable
         Settings = settings;
         Player = new PlayerState(Factions);
         Players = new WorldPlayers(this);
+        StartProvenance = new StarterAvatars(this);
+        TalkPauses = new TalkPauses(this);
         Commands = new CommandQueue(this);
         Authority = new AuthorityGateway(this);
         PlayerTrades = new Trading.PlayerTradeService(Authority.IsActive);
@@ -236,6 +238,7 @@ public sealed partial class World : IDisposable
         GameHours = settings.StartHours;
         Walkability = walkability;
         LastingIds = new LastingIds(this);
+        Physical = new(this);
         SaveFields = new Saving.CharacterSaveFields(this);
         this._systems = [.. systems ?? []];
         foreach (var system in this._systems) ModFaults.Add(system);
@@ -293,6 +296,7 @@ public sealed partial class World : IDisposable
 
         Characters = characters ?? new CharacterTable();
         Characters.EntityRemoved = Players.RoleRemoved;
+        Characters.EntityRemoved += StartProvenance.Removed;
         Entities = new WorldEntities(Characters);
         Regions = new WorldRegions(this);
         WatchCharacters();
@@ -729,6 +733,10 @@ public sealed partial class World : IDisposable
     /// </summary>
     public Construction.BuildingRegistry Buildings { get; } = new();
     /// <summary>
+    /// Authoritative item, property, faction and encounter operations available to serial tick systems.
+    /// </summary>
+    public PhysicalWorld Physical { get; }
+    /// <summary>
     /// The buildings the loaded nests stood up round themselves (docs/game/factions-squads-towns.md "Nest furniture"); not saved.
     /// </summary>
     public NestBuildings NestBuildings { get; } = new();
@@ -1114,6 +1122,7 @@ public sealed partial class World : IDisposable
     /// </summary>
     public void RunTick(bool publish = true, bool views = true)
     {
+        using var tickThread = Physical.EnterTick();
         RequireNoDurableMutation();
         Authority.ProcessPending();
         var table = Characters;
@@ -1198,6 +1207,8 @@ public sealed partial class World : IDisposable
     void RunSchedule(CharacterTable table, TickProfile? prof)
     {
         table.Phase = TablePhase.Schedule;
+        TalkPauses.Prune();
+        StartProvenance.RecordDeaths();
         HungerActivity.Capture(this);
         Grid.Build(table.Previous);
         RefreshCadence();
@@ -1421,8 +1432,96 @@ public sealed partial class World : IDisposable
     /// </summary>
     public void Bark(CharacterId speaker, string text)
     {
-        _barks[speaker] = (text, Tick + (long)MathF.Ceiling((2 + 0.12f * text.Length) / TickSeconds));
+        StoreBubble(speaker, text, SpeechStyle.Normal, false);
     }
+
+    /// <summary>
+    /// Posts a line through the native overhead renderer and the visibility-filtered speech journal.
+    /// The authority calls this in a serial phase after checking who may speak for the character.
+    /// </summary>
+    public bool PostSpeechBubble(CharacterId speaker, string text, SpeechStyle style = SpeechStyle.Normal)
+    {
+        Physical.RequireSerial();
+        if (string.IsNullOrWhiteSpace(text) || text.Length > 4096 || !Enum.IsDefined(style)) return false;
+        if (!Characters.TryResolveNext(speaker, out int slot) || Characters.Cold(slot) is not { } cold
+            || cold.DiedTick >= 0 || cold.Medical is { Incapacitated: true }) return false;
+
+        StoreBubble(speaker, text, style, true);
+        SaidPublic(speaker, cold.Name, text, cold.IsPlayer);
+        return true;
+    }
+
+    /// <summary>
+    /// Keeps the line for the native ambient duration.
+    /// </summary>
+    void StoreBubble(CharacterId speaker, string text, SpeechStyle style, bool direct) =>
+        _barks[speaker] = (text, Tick + (long)MathF.Ceiling((2 + 0.12f * text.Length) / TickSeconds), style, direct);
+
+    /// <summary>
+    /// Delivers authenticated player input in execution order after recipient authorization and before automatic work.
+    /// </summary>
+    internal void ObservePlayerOrder(SimCommand command)
+    {
+        var targets = command switch
+        {
+            OrdersCommand stance => stance.Characters,
+            RunSpeedCommand speed => speed.Characters,
+            ManoeuvreCommand mode => mode.Characters,
+            StandUpCommand stand => stand.Characters,
+            StopCommand stop => stop.Characters,
+            _ => OrderGiver.Ordered(command),
+        };
+        if (targets is null) return;
+
+        foreach (var id in CommandCharacters(command, targets))
+        {
+            if (!Characters.TryResolveNext(id, out int slot) || Characters.Cold(slot) is not { IsPlayer: true } cold
+                || Squads.IsIndependent(cold.SquadId)) continue;
+            TalkPauses.Cancel(id);
+            for (int k = 0; k < _systems.Count; k++)
+            {
+                if (_systems[k] is not IPlayerOrderObserver observer) continue;
+                var owner = command.Issuer ?? PlayerId.Local;
+                if (ModFaults.IsMod(k))
+                    ModFaults.Run(k, "player order", observer, this, (owner, id, command),
+                        static (s, w, input) => ((IPlayerOrderObserver)s).OnPlayerOrder(w, input.owner, input.id, input.command));
+                else observer.OnPlayerOrder(this, owner, id, command);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Holds an available listener facing the speaker for a bounded number of simulation ticks.
+    /// </summary>
+    public bool GiveTalkPause(CharacterId character, CharacterId target, int durationTicks)
+    {
+        Physical.RequireSerial();
+        return TalkPauses.Give(character, target, durationTicks);
+    }
+
+    /// <summary>
+    /// Releases a listener immediately when the authority finishes or cancels its conversation.
+    /// </summary>
+    public void EndTalkPause(CharacterId character)
+    {
+        Physical.RequireSerial();
+        TalkPauses.Cancel(character);
+    }
+
+    /// <summary>
+    /// Timed listener movement holds, owned by this world.
+    /// </summary>
+    internal TalkPauses TalkPauses { get; }
+
+    /// <summary>
+    /// The starting characters of every player, tracked by lasting identity.
+    /// </summary>
+    public StarterAvatars StarterAvatars => StartProvenance.Materialize();
+
+    /// <summary>
+    /// World-owned birth evidence before any mod or checkpoint requests a lasting identity.
+    /// </summary>
+    internal StarterAvatars StartProvenance { get; }
 
     /// <summary>
     /// Takes the messages posted since the last call (the host, between ticks).
@@ -1642,6 +1741,8 @@ public sealed partial class World : IDisposable
         ("entities", static (World w, ref StateHasher h) => w.Entities.Hash(ref h)),
 
         // only once a mod asked for a character id or a save held some
+        ("starter avatars", static (World w, ref StateHasher h) => w.StartProvenance.Hash(ref h)),
+        ("talk pauses", static (World w, ref StateHasher h) => w.TalkPauses.Hash(ref h)),
         ("lasting ids", static (World w, ref StateHasher h) => { if (w.LastingIds.Any) w.LastingIds.Hash(ref h); }),
 
         // only once a code mod set a character save field
@@ -1865,6 +1966,11 @@ public sealed partial class World : IDisposable
     public WorldEntities Entities { get; }
 
     public WorldRegions Regions { get; }
+
+    /// <summary>
+    /// Detached mod UI publications addressed to individual players.
+    /// </summary>
+    public PlayerModViews ModViews { get; } = new();
 
     readonly Dictionary<PlayerId, List<string>> _playerMessages = [];
 

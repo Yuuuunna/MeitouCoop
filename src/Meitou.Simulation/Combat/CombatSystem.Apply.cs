@@ -337,6 +337,37 @@ public sealed partial class CombatSystem
     }
 
     /// <summary>
+    /// A serially requested limb wound uses the same hit context, severance events and character appearance updates as a combat blow.
+    /// </summary>
+    internal bool DamageLimb(World world, int slot, CharacterCold cold, int limb, float damage)
+    {
+        if (cold.Medical is not { } medical) return false;
+        for (int part = 0; part < medical.Parts.Count; part++)
+        {
+            var target = medical.Parts[part];
+            if (target.Template.LimbSlot != limb || target.Limb == LimbState.Stump) continue;
+            return DamageBodyPart(world, slot, cold, part, damage);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Applies a serial hit to an actual anatomical part, including vital parts of non-humanoid races.
+    /// </summary>
+    internal bool DamageBodyPart(World world, int slot, CharacterCold cold, int part, float damage)
+    {
+        if (cold is not { Race: { } race, Stats: not null, Medical: { Dead: false } medical }
+            || (uint)part >= (uint)medical.Parts.Count || medical.Parts[part].Limb == LimbState.Stump) return false;
+
+        var events = new List<MedicalEvent>();
+        HealthObservers.Before(world, slot);
+        medical.ApplyHit(part, new(damage, 0, 0), MakeContext(world, slot, cold), events);
+        HealthObservers.After(world, slot, HealthChangeKind.Hit);
+        HitEvents(world, slot, cold, medical, race, events);
+        return true;
+    }
+
+    /// <summary>
     /// A shackled defender is knocked out instead of staggered a quarter of the time (<c>Character::_startStumble</c>: <c>MedicalSystem::knockout</c>
     /// with factor 0.002, the floor of 3 s). True when it was.
     /// </summary>

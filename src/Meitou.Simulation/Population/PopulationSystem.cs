@@ -598,7 +598,10 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         if (world.Players.RequiresExplicitControl)
             _boxZones.UnionWith(world.Regions.Capture(ring: _settings.FastZoneHopping ? 1 : 0).Keys);
         else
+        {
             foreach (var p in _players) ZoneActivation.AddZonesAround(p, _settings.FastZoneHopping ? 1 : 0, _boxZones);
+            world.Regions.AddSimulationLeases(_boxZones);
+        }
         foreach (var p in world.Platoons.All)
             if (world.IsPlayerFaction(p.Faction) && !world.Squads.IsDormant(p.SquadId))
                 ZoneActivation.AddZonesAround(new Vector3(p.Position.X, 0, p.Position.Y), _settings.FastZoneHopping ? 1 : 0, _boxZones);
@@ -1277,11 +1280,11 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
     /// player character is kept wherever it is (<see cref="SquadCarriesPlayer"/>), and one with a member on screen while one is
     /// (<see cref="MemberInView"/>: a guard carried off and put down in view stays). True when it was kept.
     /// </summary>
-    bool KeepLoaded(World world, int site, Squad squad)
+    bool KeepLoaded(World world, int site, Squad squad, bool encounter = false)
     {
         var at = PlatoonPosition(world, squad, new Vector2(squad.Position.X, squad.Position.Z));
         bool held = ZoneActivation.InLoadedBox(at.X, at.Y, _active) || SquadCarriesPlayer(world, squad) || MemberInView(world, squad);
-        if (!held) return false;
+        if (!held && !encounter) return false;
 
         var stored = new StoredSquad
         {
@@ -1313,6 +1316,38 @@ public sealed partial class PopulationSystem : ITickSystem, Bodies.ICharacterDea
         squad.Pinned = true;
         world.Platoons.Add(platoon);
         return true;
+    }
+
+    /// <summary>
+    /// Gives an existing local resident squad its usual persistent native platoon identity without replacing or moving its members.
+    /// </summary>
+    public int EncounterResident(World world, int squadId)
+    {
+        if (world.Squads.Find(squadId) is not { TownOwn: true } squad || world.IsPlayerFaction(squad.Faction)) return -1;
+        if (squad.PlatoonId >= 0) return squad.PlatoonId;
+        if ((uint)squad.Town >= (uint)_states.Length || !_states[squad.Town].Squads.Contains(squadId)) return -1;
+        if (!KeepLoaded(world, squad.Town, squad, encounter: true)) return -1;
+
+        _states[squad.Town].Squads.Remove(squadId);
+        return squad.PlatoonId;
+    }
+
+    /// <summary>
+    /// Prepares the native first census of a settlement reached by an off-screen assault. Existing or depleted resident rosters take precedence.
+    /// The caller requests the town's coverage as navigation-only demand until all native gates are ready.
+    /// </summary>
+    public bool EnsureEncounterResidents(World world, int site)
+    {
+        if ((uint)site >= (uint)_states.Length) return false;
+        var state = _states[site];
+        if (state.Status == SiteStatus.Loaded) return true;
+        if (state.Status == SiteStatus.Loading) return false;
+        EnsurePools(world);
+        if (HoldsSquads(world, site) || PoolsOf(site) is { Started: true }) return true;
+        var town = _data.Sites[site];
+        if (!TownZonesReady(town)) return false;
+        Load(world, town, state);
+        return state.Status == SiteStatus.Loaded;
     }
 
     /// <summary>

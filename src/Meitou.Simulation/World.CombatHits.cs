@@ -28,7 +28,7 @@ public sealed partial class World
     /// <summary>
     /// A resolved hit has somewhere to go (an observer or <see cref="CombatHitFeed"/>); the combat paths build no payload otherwise.
     /// </summary>
-    internal bool WantsCombatHits => _activeCombatHitObservers > 0 || _combatHitFeed is not null;
+    internal bool WantsCombatHits => _activeCombatHitObservers > 0 || _combatHitFeed is not null || TalkPauses.Active;
 
     /// <summary>
     /// A copy of every resolved hit for the host (the mods' hit feeds, docs/modding.md); null (the default) records none. The host sets it and
@@ -70,6 +70,7 @@ public sealed partial class World
     /// </summary>
     internal void ObserveCombatHit(in CombatHit hit)
     {
+        TalkPauses.Cancel(hit.Victim);
         _combatHitFeed?.Enqueue(hit);
         if (!HasCombatHitObservers) return;
 

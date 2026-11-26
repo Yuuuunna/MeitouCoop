@@ -82,10 +82,14 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
     /// full stacks of its <c>stackable</c> and then the rest. Base data: String of Cats (10), then Cats (1), both <c>stackable</c> 100. A
     /// <c>stackable</c> of 0 would divide by zero in the original; it counts 1 here.
     /// </summary>
-    public List<ItemInstance> MoneyStacks(int amount)
+    public List<ItemInstance> MoneyStacks(int amount) => [.. EnumerateMoney(amount)];
+
+    /// <summary>
+    /// Denominated cash without allocating stacks past the receiving inventory's capacity.
+    /// </summary>
+    internal IEnumerable<ItemInstance> EnumerateMoney(int amount)
     {
-        var stacks = new List<ItemInstance>();
-        if (amount <= 0) return stacks;
+        if (amount <= 0) yield break;
 
         foreach (var (value, stackable, id) in _denominations.Value)
         {
@@ -93,19 +97,10 @@ public sealed class ItemFactory(GameDatabase db, GameConstants constants, Func<M
             amount -= count * value;
 
             int per = Math.Max(stackable, 1);
-            for (int full = count / per; full > 0; full--) AddMoney(stacks, id, per);
-            if (count % per > 0) AddMoney(stacks, id, count % per);
+            for (int full = count / per; full > 0; full--)
+                if (Create(id, per) is { } stack) yield return stack;
+            if (count % per > 0 && Create(id, count % per) is { } remainder) yield return remainder;
         }
-
-        return stacks;
-    }
-
-    /// <summary>
-    /// Adds one stack of the money item <paramref name="id"/> to <paramref name="stacks"/>.
-    /// </summary>
-    void AddMoney(List<ItemInstance> stacks, string id, int quantity)
-    {
-        if (Create(id, quantity) is { } stack) stacks.Add(stack);
     }
 
     /// <summary>

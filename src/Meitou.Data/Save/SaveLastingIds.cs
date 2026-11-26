@@ -23,14 +23,35 @@ public static class SaveLastingIds
     /// <summary>
     /// What a file holds: the entries, the high half of the ids the game gives (0: none chosen) and the counter their low half is made from.
     /// </summary>
-    public readonly record struct Contents(List<Entry> Entries, uint Prefix, ulong Next);
+    public readonly record struct Contents(List<Entry> Entries, uint Prefix, ulong Next)
+    {
+        /// <summary>
+        /// Optional start provenance. Older files carry no starter records.
+        /// </summary>
+        public IReadOnlyList<Starter> Starters { get; init; } = [];
+
+        /// <summary>
+        /// Owners classified at first load, including an empty legacy roster.
+        /// </summary>
+        public IReadOnlyList<ulong> StarterOwners { get; init; } = [];
+    }
+
+    /// <summary>
+    /// The original owner, lasting identity and confirmed death of a starter or its explicit successor.
+    /// </summary>
+    public readonly record struct Starter(ulong Player, ulong Id, bool Dead, ulong Entity = 0);
 
     #region Writing
 
     /// <summary>
     /// The file for <paramref name="entries"/>, the ids' high half <paramref name="prefix"/> and the counter <paramref name="next"/>.
     /// </summary>
-    public static byte[] Write(IEnumerable<Entry> entries, uint prefix, ulong next)
+    public static byte[] Write(IEnumerable<Entry> entries, uint prefix, ulong next) => Write(entries, prefix, next, null);
+
+    /// <summary>
+    /// Writes character identities and optional original-owner/death records under the same checkpoint boundary.
+    /// </summary>
+    public static byte[] Write(IEnumerable<Entry> entries, uint prefix, ulong next, IEnumerable<Starter>? starters, IEnumerable<ulong>? starterOwners = null)
     {
         using var stream = new MemoryStream();
         using (var w = new Utf8JsonWriter(stream))
@@ -42,6 +63,26 @@ public static class SaveLastingIds
             w.WriteStartArray("characters");
             foreach (var e in entries) WriteEntry(w, e);
             w.WriteEndArray();
+            if (starters is not null)
+            {
+                w.WriteStartArray("starters");
+                foreach (var s in starters)
+                {
+                    w.WriteStartObject();
+                    w.WriteNumber("player", s.Player);
+                    w.WriteNumber("id", s.Id);
+                    w.WriteBoolean("dead", s.Dead);
+                    if (s.Entity != 0) w.WriteNumber("entity", s.Entity);
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+            }
+            if (starterOwners is not null)
+            {
+                w.WriteStartArray("starterOwners");
+                foreach (ulong owner in starterOwners) w.WriteNumberValue(owner);
+                w.WriteEndArray();
+            }
             w.WriteEndObject();
         }
 
@@ -85,12 +126,52 @@ public static class SaveLastingIds
 
             uint prefix = root.TryGetProperty("prefix", out var pf) && pf.ValueKind == JsonValueKind.Number && pf.TryGetUInt32(out uint p) ? p : 0;
             ulong next = root.TryGetProperty("next", out var n) && n.ValueKind == JsonValueKind.Number && n.TryGetUInt64(out ulong v) ? v : 0;
-            return new Contents(Entries(characters), prefix, next);
+            var starters = ReadStarters(root);
+            return new Contents(Entries(characters), prefix, next)
+            {
+                Starters = starters ?? [],
+                StarterOwners = starters is null ? [] : ReadOwners(root),
+            };
         }
         catch (JsonException)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Reads optional creation provenance atomically. Invalid provenance keeps the conservative legacy protection for the entire roster.
+    /// </summary>
+    static IReadOnlyList<Starter>? ReadStarters(JsonElement root)
+    {
+        if (!root.TryGetProperty("starters", out var list) || list.ValueKind != JsonValueKind.Array) return null;
+        var result = new List<Starter>();
+        var ids = new HashSet<ulong>();
+        var entities = new HashSet<ulong>();
+        foreach (var e in list.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty("id", out var i) || i.ValueKind != JsonValueKind.Number
+                || !i.TryGetUInt64(out ulong id) || id == 0 || !ids.Add(id) || !e.TryGetProperty("player", out var p)
+                || p.ValueKind != JsonValueKind.Number || !p.TryGetUInt64(out ulong player) || player == 0
+                || !e.TryGetProperty("dead", out var d) || d.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
+            ulong entity = 0;
+            if (e.TryGetProperty("entity", out var native) && (native.ValueKind != JsonValueKind.Number
+                || !native.TryGetUInt64(out entity) || entity == 0 || !entities.Add(entity))) return null;
+            result.Add(new(player, id, d.GetBoolean(), entity));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// The registered owners whose existing role sets were already classified.
+    /// </summary>
+    static IReadOnlyList<ulong> ReadOwners(JsonElement root)
+    {
+        if (!root.TryGetProperty("starterOwners", out var list) || list.ValueKind != JsonValueKind.Array) return [];
+        var owners = new SortedSet<ulong>();
+        foreach (var element in list.EnumerateArray())
+            if (element.ValueKind != JsonValueKind.Number || !element.TryGetUInt64(out ulong owner) || owner == 0 || !owners.Add(owner)) return [];
+        return [.. owners];
     }
 
     /// <summary>

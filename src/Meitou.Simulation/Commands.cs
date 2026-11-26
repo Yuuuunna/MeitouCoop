@@ -21,10 +21,47 @@ public abstract record SimCommand
     /// </summary>
     public PlayerId? Issuer { get; internal init; }
 
+    /// <summary>
+    /// Set by the host for native player interface input or authenticated client dispatch.
+    /// World-internal commands and deferred AI actions keep their default provenance.
+    /// </summary>
+    internal bool ManualInput { get; init; }
+
     internal IReadOnlyList<CharacterControl> ControlGrants { get; init; } = [];
 
     internal ulong FactionGrantRevision { get; init; }
 
+}
+
+/// <summary>
+/// An opaque, bounded player input for an installed code mod. The authority verifies the
+/// acting character's grant and supplies <see cref="SimCommand.Issuer"/>. The receiving mod
+/// owns action decoding and must validate world, target and action-specific permissions.
+/// </summary>
+public sealed record ModClientInput(string ModId, string Action, CharacterId Actor, string Payload) : SimCommand
+{
+    public const int MaximumPayloadBytes = 1024;
+
+    public bool IsValid() => Identifier(ModId) && Identifier(Action) && !Actor.IsNone
+        && Payload is not null && Payload.Length <= MaximumPayloadBytes
+        && System.Text.Encoding.UTF8.GetByteCount(Payload) <= MaximumPayloadBytes;
+
+    /// <summary>Checks that the actor still belongs to the stamped player, or the local player in standalone games.</summary>
+    public bool IsAuthorized(World world)
+    {
+        if (!IsValid()) return false;
+        if (Issuer is not null) return world.MayOrder(this, Actor);
+        if (world.Players.RequiresExplicitControl) return world.Players.CanControl(PlayerId.Local, Actor);
+        return world.Characters.TryResolveNext(Actor, out int slot) && world.Characters.Cold(slot) is { IsPlayer: true, DiedTick: < 0 } body
+            && body.Faction == world.Player.Faction && body.Medical?.Dead != true;
+    }
+
+    static bool Identifier(string? value) => value is { Length: > 0 and <= 48 }
+        && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.');
+
+    /// <summary>Copies the authority's tick, issuer and actor grant onto a decoded mod command.</summary>
+    public T Bind<T>(T command) where T : SimCommand =>
+        (T)((SimCommand)command with { Tick = Tick, Issuer = Issuer, ControlGrants = ControlGrants });
 }
 
 /// <summary>
@@ -147,7 +184,7 @@ public sealed class CommandQueue
             if (_world.Players.ControlOf(id) is { } grant && grant.Player == issuer) grants.Add(grant);
         int faction = PlayerCommandRouting.Faction(_world, command);
         ulong factionRevision = faction >= 0 ? _world.Players.Find(issuer)?.MembershipRevision(faction) ?? 0 : 0;
-        Enqueue(command with { Issuer = issuer, ControlGrants = grants.ToArray(), FactionGrantRevision = factionRevision });
+        Enqueue(command with { Issuer = issuer, ManualInput = true, ControlGrants = grants.ToArray(), FactionGrantRevision = factionRevision });
     }
 
     internal CommandQueue(World world) => this._world = world;
@@ -245,6 +282,7 @@ public static class PlayerCommandRouting
 {
     public static IReadOnlyList<CharacterId> Characters(SimCommand command) => command switch
     {
+        ModClientInput c => [c.Actor],
         MoveOrder c => c.Characters,
         FollowOrder c => c.Characters,
         StopCommand c => c.Characters,
@@ -404,7 +442,8 @@ public static class PlayerCommandRouting
         or Items.LiftItem or Items.PlaceHeld or Items.GiveHeld or Items.DropHeld or Items.ReturnHeld or Items.RotateHeld
         or Items.PickUpItemOrder
         or PointedCommand or InspectCommand or InspectBuildingCommand or ShowInventoryCommand or ShowMachinesCommand
-        or Trading.OpenPlayerTrade or Trading.AcceptPlayerTrade or Trading.RevisePlayerTrade or Trading.ConfirmPlayerTrade or Trading.CancelPlayerTrade;
+        or Trading.OpenPlayerTrade or Trading.AcceptPlayerTrade or Trading.RevisePlayerTrade or Trading.ConfirmPlayerTrade or Trading.CancelPlayerTrade
+        or ModClientInput;
 }
 
 

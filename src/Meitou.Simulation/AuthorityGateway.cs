@@ -133,6 +133,22 @@ public sealed class AuthorityGateway : IDisposable
     }
 
     /// <summary>
+    /// Reads the active connection generation when a horizontal point is within the player's already published observation scope.
+    /// Called at a serial world boundary. The query does not change subscriptions, published grants or loading demand.
+    /// </summary>
+    public ulong? ObservationGeneration(PlayerId player, System.Numerics.Vector2 point)
+    {
+        if (!float.IsFinite(point.X) || !float.IsFinite(point.Y)) return null;
+        lock (_gate)
+        {
+            if (_disposed || _faulted || !_players.TryGetValue(player, out var ledger) ||
+                ledger.Connection is not { Phase: AdmissionPhase.Active, PublishedGrants.Count: > 0 } connection ||
+                connection.Observation is not { } observation || connection.ObservationRules is not { } rules) return null;
+            return _world.CanObservePoint(player, new(point.X, 0, point.Y), observation, rules) ? connection.Generation : null;
+        }
+    }
+
+    /// <summary>
     /// Copies current Active connection generations together so a tick never mixes connection states across its characters or phases.
     /// </summary>
     internal void CopyActivePlayers(HashSet<PlayerId> players)
@@ -447,6 +463,7 @@ public sealed class AuthorityGateway : IDisposable
             if (!Current(connection)) return Reject(AuthorityStatus.InvalidConnection);
             if (number == 0 || command is null || context?.Characters is null) return Reject(AuthorityStatus.InvalidRequest);
             if (!PlayerCommandRouting.Supports(command)) return Reject(AuthorityStatus.Unsupported);
+            if (command is ModClientInput input && !input.IsValid()) return Reject(AuthorityStatus.InvalidRequest);
             SimCommand frozen;
             AuthorityContext expected;
             byte[] hash;
@@ -533,6 +550,7 @@ public sealed class AuthorityGateway : IDisposable
                                 {
                                     Tick = _world.Tick,
                                     Issuer = request.Connection.Player,
+                                    ManualInput = true,
                                     ControlGrants = request.Context.Characters,
                                     FactionGrantRevision = request.Context.MembershipRevision,
                                 });

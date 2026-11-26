@@ -47,6 +47,11 @@ public sealed class StoredPlayerRoles
             if (!entity.IsNone && !_entities.TryAdd(entity, entry)) throw new InvalidDataException("Duplicate stored player identity.");
         }
     }
+    /// <summary>
+    /// The checkpoint record backing this role, even when its squad has not yet entered the world.
+    /// </summary>
+    internal SaveCharacter? Source(EntityId entity) => _entities.GetValueOrDefault(entity)?.Source;
+
     internal void MarkLoaded(SaveCharacter source) { if (_sources.TryGetValue(source, out var entry)) entry.Consumed = true; }
     internal void MarkDead(SaveCharacter source) { if (_sources.TryGetValue(source, out var entry)) entry.Dead = true; }
     internal (PlayerRoleAvailability State, Vector3? Position, int Faction)? Locate(EntityId entity)

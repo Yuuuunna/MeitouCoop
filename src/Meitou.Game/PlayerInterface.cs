@@ -958,7 +958,7 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         TalkRequests.Cancel();
         command = FixtureIntents.Prepare(Session, SelectedIds(), command);
         InterfaceSounds.SoundForCommand(command);
-        Session.Submit(command);
+        Session.Submit(command with { ManualInput = true });
     }
 
     /// <summary>
@@ -1496,6 +1496,28 @@ sealed partial class PlayerInterface(IPlayerSession session, Func<float, float, 
         }
 
         return c;
+    }
+
+    /// <summary>
+    /// Moves the local camera to a world X/Z point with the current view angles and zoom.
+    /// </summary>
+    internal bool FocusCamera(Vector2 point)
+    {
+        if (TitleOpen || !float.IsFinite(point.X) || !float.IsFinite(point.Y)) return false;
+        var view = Session.Camera.Current;
+        Follow = null;
+        Session.Camera.Place(point, view.Yaw, view.Pitch, view.Distance);
+        return true;
+    }
+
+    /// <summary>
+    /// Selects a currently controllable character using the usual authority-checked selection path.
+    /// </summary>
+    internal bool SelectModCharacter(CharacterId id)
+    {
+        if (TitleOpen || !Own(id) || Session is RemotePlayerSession remote && !remote.CanSelectRole(id)) return false;
+        Select([id], false);
+        return true;
     }
 
     /// <summary>

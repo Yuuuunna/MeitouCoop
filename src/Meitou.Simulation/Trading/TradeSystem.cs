@@ -372,21 +372,22 @@ public sealed partial class TradeSystem : ITickSystem, ITradeSource
     internal bool IsServingOther(CharacterId npc, PlayerId player) => false;
 
     /// <summary>Opens the arriving trade order or dialogue effect for its authorized player.</summary>
-    internal void OpenAt(World world, CharacterId customer, CharacterId trader, SimCommand? source = null, bool trusted = false)
+    internal bool OpenAt(World world, CharacterId customer, CharacterId trader, SimCommand? source = null, bool trusted = false, bool stand = true)
     {
         if (source is null && world.Players.RequiresExplicitControl)
         {
             if (!trusted || world.Players.ControlOf(customer) is not { } grant || !world.Players.Validate(grant)
-                || world.Players.Find(grant.Player) is not { } recipient) return;
+                || world.Players.Find(grant.Player) is not { } recipient) return false;
             source = new OpenTradeNow(customer, trader) { Tick = world.Tick, Issuer = grant.Player, ControlGrants = [grant],
                 FactionGrantRevision = recipient.MembershipRevision(grant.Faction) };
         }
         var actor = source?.Issuer ?? PlayerId.Local;
-        if (world.Players.Find(actor) is null) return;
+        if (world.Players.Find(actor) is null) return false;
         if (!_interactions.TryGetValue(actor, out var interaction))
             _interactions.Add(actor, interaction = new Interaction(this, actor));
-        interaction.OpenNow(world, customer, trader, source ?? new OpenTradeNow(customer, trader) { Tick = world.Tick });
+        interaction.OpenNow(world, customer, trader, source ?? new OpenTradeNow(customer, trader) { Tick = world.Tick }, stand);
         interaction.SettleStock(world);
+        return interaction.View is not null;
     }
 
     /// <summary>

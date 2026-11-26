@@ -16,6 +16,36 @@ internal sealed record SavedFactionResources(int Faction, long Money, string? Na
 /// </summary>
 internal static class FactionResourceSave
 {
+    /// <summary>
+    /// Single-player saves keep NPC treasuries and renames by stable faction record id. CAMERA's ordinary money field is a signed int.
+    /// </summary>
+    const string AccountsKey = "meitou faction accounts";
+    sealed record Account(string Id, long Money, string? Name);
+
+    internal static void WriteAccounts(World world, PopulationData data, FcsRecord camera)
+    {
+        camera.Strings.Remove(AccountsKey);
+        if (world.Players.RequiresExplicitControl) return;
+        var accounts = world.Factions.All.Where(f => (uint)f.Index < data.Factions.Count
+            && (f.Index == world.Player.Faction ? f.Money is < int.MinValue or > int.MaxValue : f.Name is not null || f.Money != 0))
+            .Select(f => new Account(data.Factions[f.Index].Id, f.Money, f.Name)).OrderBy(f => f.Id, StringComparer.Ordinal).ToArray();
+        if (accounts.Length > 0) camera.Strings[AccountsKey] = System.Text.Json.JsonSerializer.Serialize(accounts);
+    }
+
+    internal static void ReadAccounts(World world, PopulationData data, FcsRecord camera)
+    {
+        if (!camera.Strings.TryGetValue(AccountsKey, out string? text)) return;
+        var accounts = System.Text.Json.JsonSerializer.Deserialize<Account[]>(text) ?? throw new InvalidDataException("Missing faction accounts.");
+        foreach (var account in accounts)
+        {
+            int index = data.FactionIndex(account.Id);
+            if (index < 0) continue;
+            var state = world.Factions.GetOrCreate(index);
+            state.Money = account.Money;
+            state.Name = account.Name;
+        }
+    }
+
     internal static SavedFactionResources[] Capture(World world) => world.Factions.All.Select(f => new SavedFactionResources(
         f.Index, f.Money, f.Name, f.Ranks.Select(r => new SavedRank(r.Key, r.Value)).ToArray(),
         new SavedResearch(f.Research.Completed.ToArray(), f.Research.Queue.Select(q => new SavedResearchProgress(q.Id, q.Seconds)).ToArray(),

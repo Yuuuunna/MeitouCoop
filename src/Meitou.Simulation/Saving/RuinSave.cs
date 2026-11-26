@@ -86,7 +86,7 @@ public static class RuinSave
                 if (!world.Fixtures.IsDestroyed(b) || Hand.Read(state, "handle") is not { IsNull: false } hand) continue;
 
                 players ??= world.Fixtures.PlayerOwnedIn(world, data, site.Index, player);
-                if (!players.Contains(b.Key)) ruins.Add((hand.C, hand.I));
+                if (!players.Contains(b.Key) && !world.Fixtures.HasTransferredTitle(b.Key)) ruins.Add((hand.C, hand.I));
             }
         }
 

@@ -181,7 +181,7 @@ public sealed partial class PopulationSystem
                         break;
                     }
 
-                    if (p.State == PlatoonState.Unloaded && Dwelt(world, p, dt) && Wanted(world, p)) Activate(world, p);
+                    if (p.State == PlatoonState.Unloaded && !_batchParticipants.Contains(p.Id) && Dwelt(world, p, dt) && Wanted(world, p)) Activate(world, p);
                     break;
                 case PlatoonState.Loaded:
                     StepLoaded(world, p, dt);
@@ -711,7 +711,7 @@ public sealed partial class PopulationSystem
     /// The platoon leaves the world: its prisoners split off, its package and target kept, its characters kept or despawned (Faithful: a
     /// platoon the original does not keep), the squad released; the platoon goes on as a stand-in.
     /// </summary>
-    void Unload(World world, Platoon p, Squad squad)
+    void Unload(World world, Platoon p, Squad squad, bool retainCharacters = false)
     {
         var table = world.Characters;
         if (squad.Members.Count >= 2) SplitCaptives(world, p, squad);   // before the members are released: a prisoner is not a stray
@@ -732,7 +732,7 @@ public sealed partial class PopulationSystem
 
         // Faithful: a platoon the original does not keep (not a town's own, not in a campaign, not occupying) is despawned as it leaves; a save's
         // wild one by the wild switch.
-        if (!p.Pinned && !Kept(world, p))
+        if (!retainCharacters && !p.Pinned && !Kept(world, p))
         {
             PayRoamerDespawn(world, p, squad);
             Despawn(world, p);
@@ -1030,7 +1030,7 @@ public sealed partial class PopulationSystem
     /// Starts bringing a platoon's characters into the world: a stand-in that travelled comes back on walkable ground, and its characters are built
     /// (on the build thread when there is one).
     /// </summary>
-    void Activate(World world, Platoon p)
+    void Activate(World world, Platoon p, bool encounter = false)
     {
         if (DropOutdated(world, p) || RefuseReplacedHome(world, p)) return;
         p.State = PlatoonState.Activating;
@@ -1059,7 +1059,7 @@ public sealed partial class PopulationSystem
         }
 
         // A town's or nest's squad that lost too many: made afresh (its characters are gone).
-        if (p.Regenerate)
+        if (p.Regenerate && !encounter && !_encounterSites.ContainsKey(p.Origin))
         {
             p.Regenerate = false;
             var remade = p.Origin < 0 ? RegenerateWild(world, p)
@@ -1080,7 +1080,7 @@ public sealed partial class PopulationSystem
         // A save's platoon: its saved characters (their records read on the build thread, like a new squad's looks).
         if (p.Saved is { } saved && world.Saved is { } context)
         {
-            if (_work is null)
+            if (_work is null || encounter)
                 FinishRoamer(world, new BuiltRoamer(id, null, Saving.SavedCharacters.Prepare(saved, _data, context.Appearances, context)));
             else
             {
@@ -1098,7 +1098,7 @@ public sealed partial class PopulationSystem
             return;
         }
 
-        if (_work is null) FinishRoamer(world, new BuiltRoamer(id, BuildRoamer(p.TemplateId, p.Faction, p.Key, seed, position, p.MemberCap)));
+        if (_work is null || encounter) FinishRoamer(world, new BuiltRoamer(id, BuildRoamer(p.TemplateId, p.Faction, p.Key, seed, position, p.MemberCap)));
         else
         {
             string template = p.TemplateId;
@@ -1107,6 +1107,54 @@ public sealed partial class PopulationSystem
             int cap = p.MemberCap;
             _work.Add(() => _builtRoamers.Enqueue(new BuiltRoamer(id, BuildRoamer(template, faction, key, seed, position, cap))));
         }
+    }
+
+    /// <summary>
+    /// Materializes the named non-player participants together on the serial boundary once every required navigation zone is ready.
+    /// Existing bodies, dead members and saved inventories follow the same restoration path as an ordinary load.
+    /// </summary>
+    public bool ActivateEncounter(World world, IReadOnlyList<int> ids)
+    {
+        if (ids.Count is 0 or > 128) return false;
+        var participants = new List<Platoon>(ids.Count);
+        foreach (int id in ids.Distinct().Order())
+        {
+            var p = world.Platoons.Find(id);
+            if (p is null || world.IsPlayerFaction(p.Faction) || p.State == PlatoonState.Activating) return false;
+            if (p.State == PlatoonState.Unloaded && !Ready(world, p)) return false;
+            participants.Add(p);
+        }
+
+        foreach (var p in participants)
+            if (p.State == PlatoonState.Unloaded) Activate(world, p, encounter: true);
+        return participants.All(p => p.State == PlatoonState.Loaded && world.Platoons.Find(p.Id) == p);
+    }
+
+    /// <summary>
+    /// Stores a remotely settled group's real bodies and inventories through the native unload path at the same serial boundary.
+    /// The caller supplies only NPCs it just activated away from all players and cameras.
+    /// </summary>
+    public void StoreEncounter(World world, IReadOnlyList<int> ids)
+    {
+        foreach (int id in ids.Distinct().Order())
+        {
+            if (world.Platoons.Find(id) is not { State: PlatoonState.Loaded } p || world.IsPlayerFaction(p.Faction)) continue;
+            if (world.Squads.Find(p.SquadId) is { } squad) Unload(world, p, squad, retainCharacters: true);
+        }
+    }
+
+    /// <summary>
+    /// Platoons whose next activation is coordinated as a group by the authority.
+    /// </summary>
+    readonly HashSet<int> _batchParticipants = [];
+
+    /// <summary>
+    /// Defers ordinary activation of an NPC stand-in until its authority calls ActivateEncounter or releases the claim.
+    /// </summary>
+    public void SetEncounterActivation(int platoon, bool deferred)
+    {
+        if (deferred) _batchParticipants.Add(platoon);
+        else _batchParticipants.Remove(platoon);
     }
 
     /// <summary>
@@ -1274,7 +1322,7 @@ public sealed partial class PopulationSystem
         bool playersListed = false;   // the player's characters, scanned once per look and only when a town gets as far as placing a squad
         foreach (var site in _data.Sites)
         {
-            if (_states[site.Index].Status != SiteStatus.Loaded || site.Town.RoamingSquads.Count == 0) continue;
+            if (_encounterSites.ContainsKey(site.Index) || _states[site.Index].Status != SiteStatus.Loaded || site.Town.RoamingSquads.Count == 0) continue;
             int factionIndex = _data.SiteFactions[site.Index];
             if (factionIndex < 0) continue;
             int cap = (int)MathF.Floor(_settings.RoamingShare * _data.Factions[factionIndex].RoamingPopulation * _settings.PopulationMultiplier);
